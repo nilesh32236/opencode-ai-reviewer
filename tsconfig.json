@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "noEmit": true
+  },
+  "include": [],
+  "references": [
+    { "path": "./lib" },
+    { "path": "./action" },
+    { "path": "./app" }
+  ]
+}

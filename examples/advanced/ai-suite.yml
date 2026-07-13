@@ -1,0 +1,155 @@
+# Advanced Example — Full Suite
+# Copy to your repo: .github/workflows/ai-suite.yml
+
+name: AI Code Quality Suite
+
+on:
+  pull_request:
+    types: [opened, synchronize, labeled]
+  issue_comment:
+    types: [created]
+  schedule:
+    - cron: '0 */6 * * *'  # Audit every 6 hours
+  workflow_dispatch:
+    inputs:
+      audit_category:
+        description: 'Specific audit category (omit for random)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+# ─── Human PR Review ───
+jobs:
+  # Review human PRs (skip autofix PRs)
+  review:
+    if: |
+      github.event_name != 'schedule' &&
+      github.actor != 'github-actions[bot]' &&
+      !contains(github.event.pull_request.labels.*.name, 'autofix') &&
+      !contains(github.event.pull_request.labels.*.name, 'autofix:approved') &&
+      !contains(github.event.pull_request.labels.*.name, 'autofix:merged') &&
+      (
+        github.event_name == 'pull_request' ||
+        contains(github.event.comment.body || '', '/review') ||
+        contains(github.event.comment.body || '', '/oc')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - uses: nilesh32236/opencode-ai-reviewer@v1
+        id: review
+        with:
+          mode: review
+          model: 'opencode/deepseek-v4-flash-free'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN || secrets.GH_PAT }}
+
+  # ─── Autofix Review Loop ───
+  autofix-review:
+    if: |
+      github.event_name != 'schedule' &&
+      (
+        contains(github.event.pull_request.labels.*.name, 'autofix') &&
+        !contains(github.event.pull_request.labels.*.name, 'autofix:approved') &&
+        !contains(github.event.pull_request.labels.*.name, 'autofix:merged')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      approved: ${{ steps.review.outputs.verdict }}
+      pr_number: ${{ steps.pr-info.outputs.number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: Get PR number
+        id: pr-info
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN || secrets.GH_PAT }}
+        run: |
+          PR="${{ github.event.pull_request.number }}"
+          echo "number=$PR" >> "$GITHUB_OUTPUT"
+
+      - name: AI Review
+        id: review
+        uses: nilesh32236/opencode-ai-reviewer@v1
+        with:
+          mode: review
+          model: 'opencode/deepseek-v4-flash-free'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN || secrets.GH_PAT }}
+
+  autofix-fix:
+    needs: [autofix-review]
+    if: needs.autofix-review.result == 'success' && needs.autofix-review.outputs.approved != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - uses: nilesh32236/opencode-ai-reviewer@v1
+        with:
+          mode: fix
+          model: 'opencode/deepseek-v4-flash-free'
+          max_fix_iterations: 3
+          auto_merge: true
+          run_checks_after_fix: 'pnpm lint && pnpm typecheck'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN || secrets.GH_PAT }}
+
+  # ─── Scheduled Audit ───
+  audit:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: nilesh32236/opencode-ai-reviewer@v1
+        with:
+          mode: audit
+          model: 'opencode/deepseek-v4-flash-free'
+          audit_prompt_file: ${{ github.event.inputs.audit_category }}
+          audit_create_issues: true
+          audit_auto_fix: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN || secrets.GH_PAT }}
+
+  # ─── Fix Audit Issue (triggered by /fix comment or autofix-trigger label) ───
+  fix-issue:
+    if: |
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request == null &&
+      contains(github.event.comment.body || '', '/fix')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: nilesh32236/opencode-ai-reviewer@v1
+        with:
+          mode: fix
+          model: 'opencode/deepseek-v4-flash-free'
+          max_fix_iterations: 3
+          auto_merge: true
+          run_checks_after_fix: 'pnpm lint && pnpm typecheck'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN || secrets.GH_PAT }}

@@ -1,0 +1,16 @@
+name: opencode-pr-agent
+description: AI-powered PR review, auto-fix, and codebase audit using OpenCode
+url: https://github.com/marketplace/opencode-pr-agent
+
+default_events:
+  - pull_request
+  - pull_request_review_comment
+  - issue_comment
+  - issues
+  - label
+
+default_permissions:
+  pull_requests: write
+  issues: write
+  contents: write
+  metadata: read

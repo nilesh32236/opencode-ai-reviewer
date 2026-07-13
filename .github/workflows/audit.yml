@@ -1,0 +1,90 @@
+# ─── Reusable Workflow: AI Codebase Audit ───
+# Usage:
+#   jobs:
+#     audit:
+#       uses: nilesh32236/opencode-ai-reviewer/.github/workflows/audit.yml@v1
+#       secrets: inherit
+
+name: AI Codebase Audit
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: 'OpenCode model to use'
+        required: false
+        type: string
+        default: 'opencode/deepseek-v4-flash-free'
+      prompt_name:
+        description: 'Specific audit category (omit for random)'
+        required: false
+        type: string
+      target_dir:
+        description: 'Specific directory to audit (omit for random)'
+        required: false
+        type: string
+      create_issues:
+        description: 'Create GitHub issues from findings'
+        required: false
+        type: boolean
+        default: true
+      auto_fix:
+        description: 'Auto-trigger fix workflow'
+        required: false
+        type: boolean
+        default: true
+      openai_api_key:
+        required: false
+        type: string
+      anthropic_api_key:
+        required: false
+        type: string
+      google_api_key:
+        required: false
+        type: string
+    outputs:
+      critical_count:
+        value: ${{ jobs.audit.outputs.critical_count }}
+      important_count:
+        value: ${{ jobs.audit.outputs.important_count }}
+    secrets:
+      github_token:
+        description: 'GitHub token with issues:write, pull-requests:write'
+        required: true
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      critical_count: ${{ steps.ai-audit.outputs.critical_count }}
+      important_count: ${{ steps.ai-audit.outputs.important_count }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: AI Audit
+        id: ai-audit
+        uses: ./
+        with:
+          mode: audit
+          model: ${{ inputs.model }}
+          audit_prompt_file: ${{ inputs.prompt_name }}
+          audit_target_dir: ${{ inputs.target_dir }}
+          audit_create_issues: ${{ inputs.create_issues }}
+          audit_auto_fix: ${{ inputs.auto_fix }}
+          github_token: ${{ secrets.github_token }}
+          openai_api_key: ${{ inputs.openai_api_key }}
+          anthropic_api_key: ${{ inputs.anthropic_api_key }}
+          google_api_key: ${{ inputs.google_api_key }}

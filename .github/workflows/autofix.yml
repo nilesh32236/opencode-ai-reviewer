@@ -1,0 +1,126 @@
+# ─── Reusable Workflow: AI Autofix Review Loop ───
+# Usage:
+#   jobs:
+#     autofix:
+#       uses: nilesh32236/opencode-ai-reviewer/.github/workflows/autofix.yml@v1
+#       secrets: inherit
+
+name: AI Autofix Loop
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: 'OpenCode model to use'
+        required: false
+        type: string
+        default: 'opencode/deepseek-v4-flash-free'
+      max_iterations:
+        description: 'Max review-fix iterations'
+        required: false
+        type: number
+        default: 3
+      auto_merge:
+        description: 'Auto-merge approved PRs'
+        required: false
+        type: boolean
+        default: true
+      run_checks:
+        description: 'Commands to run after fix (space-separated, && joined)'
+        required: false
+        type: string
+        default: ''
+      openai_api_key:
+        required: false
+        type: string
+      anthropic_api_key:
+        required: false
+        type: string
+      google_api_key:
+        required: false
+        type: string
+    outputs:
+      approved:
+        description: 'Whether the PR was approved'
+        value: ${{ jobs.review.outputs.approved }}
+    secrets:
+      github_token:
+        description: 'GitHub token with contents:write, pull-requests:write, issues:write'
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: autofix-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Job 1: Review ──
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      approved: ${{ steps.ai-review.outputs.verdict }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: AI Review
+        id: ai-review
+        uses: ./
+        with:
+          mode: review
+          model: ${{ inputs.model }}
+          github_token: ${{ secrets.github_token }}
+          openai_api_key: ${{ inputs.openai_api_key }}
+          anthropic_api_key: ${{ inputs.anthropic_api_key }}
+          google_api_key: ${{ inputs.google_api_key }}
+
+  # ── Job 2: Fix ──
+  fix:
+    needs: [review]
+    if: always() && needs.review.result == 'success' && needs.review.outputs.approved != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: AI Fix
+        id: ai-fix
+        uses: ./
+        with:
+          mode: fix
+          model: ${{ inputs.model }}
+          max_fix_iterations: ${{ inputs.max_iterations }}
+          run_checks_after_fix: ${{ inputs.run_checks }}
+          github_token: ${{ secrets.github_token }}
+          openai_api_key: ${{ inputs.openai_api_key }}
+          anthropic_api_key: ${{ inputs.anthropic_api_key }}
+          google_api_key: ${{ inputs.google_api_key }}
+
+  # ── Job 3: Auto-merge ──
+  auto-merge:
+    needs: [review]
+    if: needs.review.result == 'success' && needs.review.outputs.approved == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Enable Auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.github_token }}
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          gh pr merge "$PR_NUMBER" --squash --auto --delete-branch || {
+            echo "::warning::Auto-merge failed — PR may need manual merge"
+          }

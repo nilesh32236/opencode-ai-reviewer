@@ -1,0 +1,32 @@
+{
+  "name": "opencode-ai-reviewer",
+  "version": "1.0.0",
+  "description": "AI-powered PR review, auto-fix, and codebase audit — as a reusable GitHub Action & GitHub App",
+  "private": false,
+  "license": "MIT",
+  "author": "nilesh32236",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nilesh32236/opencode-ai-reviewer"
+  },
+  "packageManager": "pnpm@10.8.0",
+  "scripts": {
+    "build": "pnpm --recursive build",
+    "test": "pnpm --recursive test",
+    "lint": "eslint '*/src/**/*.ts'",
+    "typecheck": "pnpm --recursive typecheck",
+    "setup:local": "docker compose -f docker/docker-compose.yml up -d --build",
+    "teardown:local": "docker compose -f docker/docker-compose.yml down"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.15.0",
+    "eslint": "^9.16.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.3.2",
+    "typescript": "^5.8.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

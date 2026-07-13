@@ -1,0 +1,49 @@
+# Monorepo Example — Next.js + Express
+# Copy this file to your repo: .github/workflows/ai-review.yml
+# Also copy the .opencode-reviewer.yml config from this directory.
+
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: |
+      github.actor != 'github-actions[bot]' &&
+      !contains(github.event.pull_request.labels.*.name, 'autofix') &&
+      (
+        github.event_name == 'pull_request' ||
+        contains(github.event.comment.body || '', '/review') ||
+        contains(github.event.comment.body || '', '/oc')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - uses: nilesh32236/opencode-ai-reviewer@v1
+        id: ai-review
+        with:
+          mode: review
+          model: 'opencode/deepseek-v4-flash-free'
+          max_files_per_batch: 3
+          include_strengths: true
+          # Config file .opencode-reviewer.yml provides project context
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,52 @@
+# Basic Example — Single Project
+# Copy this file to your repo: .github/workflows/ai-review.yml
+
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Skip bot PRs, trigger on /review comment
+    if: |
+      github.actor != 'github-actions[bot]' &&
+      (
+        github.event_name == 'pull_request' ||
+        contains(github.event.comment.body || '', '/review')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - uses: nilesh32236/opencode-ai-reviewer@v1
+        id: ai-review
+        with:
+          mode: review
+          model: 'opencode/deepseek-v4-flash-free'
+          # Uncomment to use OpenAI instead:
+          # openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Optional: Block merge on critical issues
+      - name: Check for critical issues
+        if: steps.ai-review.outputs.verdict != 'true'
+        run: |
+          echo "::warning::AI review found issues. See the review comment on the PR."

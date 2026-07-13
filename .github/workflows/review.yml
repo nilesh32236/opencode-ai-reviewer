@@ -1,0 +1,109 @@
+# ─── Reusable Workflow: AI PR Review ───
+# Usage: Reference this workflow from your repo's .github/workflows/
+#
+#   jobs:
+#     review:
+#       uses: nilesh32236/opencode-ai-reviewer/.github/workflows/review.yml@v1
+#       with:
+#         model: 'opencode/deepseek-v4-flash-free'
+#       secrets: inherit
+
+name: AI PR Review
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: 'OpenCode model to use'
+        required: false
+        type: string
+        default: 'opencode/deepseek-v4-flash-free'
+      max_files_per_batch:
+        description: 'Max files per sub-agent batch'
+        required: false
+        type: number
+        default: 3
+      fail_on_critical:
+        description: 'Fail workflow on critical issues'
+        required: false
+        type: boolean
+        default: false
+      include_strengths:
+        description: 'Include strengths in review'
+        required: false
+        type: boolean
+        default: true
+      project_context:
+        description: 'Custom project context'
+        required: false
+        type: string
+        default: ''
+      openai_api_key:
+        description: 'OpenAI API key'
+        required: false
+        type: string
+      anthropic_api_key:
+        description: 'Anthropic API key'
+        required: false
+        type: string
+      google_api_key:
+        description: 'Google AI API key'
+        required: false
+        type: string
+    outputs:
+      verdict:
+        description: 'Review verdict (true/false)'
+        value: ${{ jobs.review.outputs.verdict }}
+      critical_count:
+        description: 'Number of critical issues'
+        value: ${{ jobs.review.outputs.critical_count }}
+      important_count:
+        description: 'Number of important issues'
+        value: ${{ jobs.review.outputs.important_count }}
+      minor_count:
+        description: 'Number of minor issues'
+        value: ${{ jobs.review.outputs.minor_count }}
+    secrets:
+      github_token:
+        description: 'GitHub token with pull-requests:write'
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      verdict: ${{ steps.ai-review.outputs.verdict }}
+      critical_count: ${{ steps.ai-review.outputs.critical_count }}
+      important_count: ${{ steps.ai-review.outputs.important_count }}
+      minor_count: ${{ steps.ai-review.outputs.minor_count }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: AI Code Review
+        id: ai-review
+        uses: ./                    # Points to action.yml in the repo root
+        with:
+          mode: review
+          model: ${{ inputs.model }}
+          max_files_per_batch: ${{ inputs.max_files_per_batch }}
+          fail_on_critical: ${{ inputs.fail_on_critical }}
+          include_strengths: ${{ inputs.include_strengths }}
+          project_context: ${{ inputs.project_context }}
+          openai_api_key: ${{ inputs.openai_api_key }}
+          anthropic_api_key: ${{ inputs.anthropic_api_key }}
+          google_api_key: ${{ inputs.google_api_key }}
+          github_token: ${{ secrets.github_token }}

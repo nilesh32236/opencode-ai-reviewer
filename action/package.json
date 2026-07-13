@@ -1,0 +1,22 @@
+{
+  "name": "@opencode-pr-agent/action",
+  "version": "1.0.0",
+  "private": true,
+  "main": "lib/index.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@actions/core": "^1.11.1",
+    "@actions/github": "^6.0.0",
+    "@actions/exec": "^1.1.1",
+    "@actions/io": "^1.1.3",
+    "@opencode-pr-agent/lib": "workspace:*",
+    "typescript": "^5.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0"
+  }
+}
