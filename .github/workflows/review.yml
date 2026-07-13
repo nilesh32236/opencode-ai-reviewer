@@ -64,7 +64,7 @@ on:
         description: 'Number of minor issues'
         value: ${{ jobs.review.outputs.minor_count }}
     secrets:
-      github_token:
+      repo_token:
         description: 'GitHub token with pull-requests:write'
         required: true
 
@@ -106,4 +106,4 @@ jobs:
           openai_api_key: ${{ inputs.openai_api_key }}
           anthropic_api_key: ${{ inputs.anthropic_api_key }}
           google_api_key: ${{ inputs.google_api_key }}
-          github_token: ${{ secrets.github_token }}
+          github_token: ${{ secrets.repo_token }}

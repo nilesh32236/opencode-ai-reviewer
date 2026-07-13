@@ -44,7 +44,7 @@ on:
         description: 'Whether the PR was approved'
         value: ${{ jobs.review.outputs.approved }}
     secrets:
-      github_token:
+      repo_token:
         description: 'GitHub token with contents:write, pull-requests:write, issues:write'
         required: true
 
@@ -77,7 +77,7 @@ jobs:
         with:
           mode: review
           model: ${{ inputs.model }}
-          github_token: ${{ secrets.github_token }}
+          github_token: ${{ secrets.repo_token }}
           openai_api_key: ${{ inputs.openai_api_key }}
           anthropic_api_key: ${{ inputs.anthropic_api_key }}
           google_api_key: ${{ inputs.google_api_key }}
@@ -103,7 +103,7 @@ jobs:
           model: ${{ inputs.model }}
           max_fix_iterations: ${{ inputs.max_iterations }}
           run_checks_after_fix: ${{ inputs.run_checks }}
-          github_token: ${{ secrets.github_token }}
+          github_token: ${{ secrets.repo_token }}
           openai_api_key: ${{ inputs.openai_api_key }}
           anthropic_api_key: ${{ inputs.anthropic_api_key }}
           google_api_key: ${{ inputs.google_api_key }}
