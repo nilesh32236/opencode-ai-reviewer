@@ -1,10 +1,16 @@
 {
-  "extends": "../tsconfig.json",
   "compilerOptions": {
     "composite": true,
-    "noEmit": false,
+    "target": "ES2022",
+    "module": "commonjs",
+    "moduleResolution": "node",
     "outDir": "lib",
-    "rootDir": "src"
+    "rootDir": "src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "declaration": true
   },
   "include": ["src/**/*"],
   "references": [{ "path": "../lib" }]
