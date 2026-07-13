@@ -70,7 +70,7 @@ jobs:
       important_count: ${{ steps.ai-audit.outputs.important_count }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 1
 
