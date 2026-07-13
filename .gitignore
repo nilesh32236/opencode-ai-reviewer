@@ -19,3 +19,5 @@ coverage/
 *.log
 npm-debug.log*
 .superpowers/
+*.tsbuildinfo
+
