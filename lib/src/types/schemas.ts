@@ -125,7 +125,8 @@ export function parseReviewOutput(jsonlContent: string): ParsedReviewOutput {
       result.valid.push(parsed);
 
       if (parsed.type === 'summary') result.summary = parsed.text;
-      if (parsed.type === 'verdict') result.verdict = { ready: parsed.ready, reasoning: parsed.reasoning };
+      if (parsed.type === 'verdict')
+        result.verdict = { ready: parsed.ready, reasoning: parsed.reasoning };
       if (parsed.type === 'strength') result.strengths.push(parsed);
       if (parsed.type === 'issue') result.issues.push(parsed);
     } catch (err) {

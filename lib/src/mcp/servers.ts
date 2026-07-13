@@ -35,8 +35,5 @@ export const githubMCPServer = (token: string): MCPServerConfig => ({
  * Includes Context7 for docs and GitHub for repo context.
  */
 export function getDefaultMCPServers(githubToken: string): MCPServerConfig[] {
-  return [
-    context7Server,
-    githubMCPServer(githubToken),
-  ];
+  return [context7Server, githubMCPServer(githubToken)];
 }

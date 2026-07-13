@@ -1,15 +1,10 @@
 import { promises as fs } from 'fs';
-import type {
-  AgentConfig,
-  PRContext,
-  ReviewResult,
-  MCPContextEntry,
-} from './types/index.js';
-import { MCPManager } from './mcp/client.js';
-import { buildReviewPrompt, buildFixPrompt, buildAuditPrompt } from './prompts/builder.js';
-import { runOpenCode, ensureOutputDir, getGitStatus } from './opencode.js';
-import { GitHubHelper } from './utils/github.js';
 import { parseJsonlFile } from './jsonl-parser.js';
+import { MCPManager } from './mcp/client.js';
+import { ensureOutputDir, getGitStatus, runOpenCode } from './opencode.js';
+import { buildAuditPrompt, buildFixPrompt, buildReviewPrompt } from './prompts/builder.js';
+import type { AgentConfig, MCPContextEntry, PRContext, ReviewResult } from './types/index.js';
+import { GitHubHelper } from './utils/github.js';
 
 export class ReviewEngine {
   private mcp: MCPManager;
@@ -23,7 +18,7 @@ export class ReviewEngine {
   }
 
   async reviewPR(pr: PRContext): Promise<ReviewResult> {
-    let mcpContext: MCPContextEntry[] = [];
+    const mcpContext: MCPContextEntry[] = [];
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
       try {
         await this.mcp.connect();
@@ -54,7 +49,7 @@ export class ReviewEngine {
         projectContext: this.config.projectContext.description || undefined,
         maxFilesPerBatch: this.config.batchSize,
       },
-      contextMarkdown + mcpSection
+      contextMarkdown + mcpSection,
     );
 
     const promptFile = '/tmp/opencode-review-prompt.txt';
@@ -70,7 +65,7 @@ export class ReviewEngine {
   async runFix(
     prNumber: number,
     iteration: number,
-    contextMarkdown: string
+    contextMarkdown: string,
   ): Promise<{ changesMade: boolean; stuck?: boolean; stuckReason?: string }> {
     let mcpDocs = '';
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
@@ -96,7 +91,7 @@ export class ReviewEngine {
         maxFixIterations: this.config.maxIterations,
       },
       fixContext,
-      iteration
+      iteration,
     );
 
     const promptFile = '/tmp/opencode-fix-prompt.txt';
@@ -150,7 +145,7 @@ export class ReviewEngine {
         projectContext: this.config.projectContext.description || undefined,
       },
       enrichedPrompt,
-      targetDir
+      targetDir,
     );
 
     const promptFile = '/tmp/opencode-audit-prompt.txt';
@@ -212,7 +207,11 @@ function detectLibraries(files: string[]): string[] {
       libraries.add('react');
     }
 
-    if (file.includes('useQuery') || file.includes('useMutation') || file.includes('query-client')) {
+    if (
+      file.includes('useQuery') ||
+      file.includes('useMutation') ||
+      file.includes('query-client')
+    ) {
       libraries.add('@tanstack/react-query');
     }
 

@@ -1,10 +1,6 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import {
-  type AgentConfig,
-  GitHubHelper,
-  ReviewEngine,
-} from '@opencode-pr-agent/lib';
+import type { AgentConfig, GitHubHelper, ReviewEngine } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs';
 
 export async function runReview(
@@ -12,13 +8,13 @@ export async function runReview(
   config: AgentConfig,
   engine: ReviewEngine,
   gh: GitHubHelper,
-  repo: string
+  repo: string,
 ): Promise<void> {
   const prNumberInput = core.getInput('pr-number');
   let prNumber: number | null = null;
 
   if (prNumberInput) {
-    prNumber = parseInt(prNumberInput, 10);
+    prNumber = Number.parseInt(prNumberInput, 10);
   } else {
     const fromPR = github.context.payload.pull_request?.number;
     if (fromPR) {

@@ -1,10 +1,15 @@
-import { Probot, ProbotOctokit } from 'probot';
-import { ReviewEngine, GitHubHelper, DEFAULT_CONFIG, getDefaultMCPServers } from '@opencode-pr-agent/lib';
+import {
+  DEFAULT_CONFIG,
+  GitHubHelper,
+  ReviewEngine,
+  getDefaultMCPServers,
+} from '@opencode-pr-agent/lib';
 import type { AgentConfig, ReviewResult } from '@opencode-pr-agent/lib';
-import { handlePRReview } from './handlers/pr-review.js';
-import { handleAutofixLoop } from './handlers/autofix.js';
+import type { Probot, ProbotOctokit } from 'probot';
 import { handleAudit } from './handlers/audit.js';
+import { handleAutofixLoop } from './handlers/autofix.js';
 import { handleCommand } from './handlers/commands.js';
+import { handlePRReview } from './handlers/pr-review.js';
 
 export default (app: Probot): void => {
   app.on(['pull_request.opened', 'pull_request.synchronize'], async (context) => {
@@ -68,7 +73,11 @@ export default (app: Probot): void => {
 
     const labels = pr.labels?.map((l: { name: string }) => l.name) || [];
     if (!labels.includes('autofix')) return;
-    if (labels.some((l: string) => ['autofix:approved', 'autofix:needs-manual-review', 'autofix:merged'].includes(l))) {
+    if (
+      labels.some((l: string) =>
+        ['autofix:approved', 'autofix:needs-manual-review', 'autofix:merged'].includes(l),
+      )
+    ) {
       return;
     }
 
@@ -84,25 +93,26 @@ function buildConfig(_context: unknown): AgentConfig {
     ...DEFAULT_CONFIG,
     reviewModel: process.env.REVIEW_MODEL || DEFAULT_CONFIG.reviewModel,
     fixModel: process.env.FIX_MODEL || DEFAULT_CONFIG.fixModel,
-    batchSize: parseInt(process.env.BATCH_SIZE || '3', 10),
-    maxIterations: parseInt(process.env.MAX_ITERATIONS || '3', 10),
+    batchSize: Number.parseInt(process.env.BATCH_SIZE || '3', 10),
+    maxIterations: Number.parseInt(process.env.MAX_ITERATIONS || '3', 10),
     enableMCP: process.env.ENABLE_MCP !== 'false',
-    mcpServers: process.env.ENABLE_MCP !== 'false'
-      ? getDefaultMCPServers(process.env.GITHUB_TOKEN || '')
-      : [],
+    mcpServers:
+      process.env.ENABLE_MCP !== 'false'
+        ? getDefaultMCPServers(process.env.GITHUB_TOKEN || '')
+        : [],
     projectContext: {
       description: process.env.PROJECT_DESCRIPTION || '',
       conventionsPath: process.env.CONVENTIONS_PATH || undefined,
       typecheckCommands: process.env.TYPECHECK_COMMANDS
         ? process.env.TYPECHECK_COMMANDS.split(',')
         : [],
-      lintCommands: process.env.LINT_COMMANDS
-        ? process.env.LINT_COMMANDS.split(',')
-        : [],
+      lintCommands: process.env.LINT_COMMANDS ? process.env.LINT_COMMANDS.split(',') : [],
     },
   };
 }
 
-async function getInstallationToken(context: { octokit: InstanceType<typeof ProbotOctokit> }): Promise<string> {
+async function getInstallationToken(context: {
+  octokit: InstanceType<typeof ProbotOctokit>;
+}): Promise<string> {
   return (context.octokit as unknown as { token?: string }).token || process.env.GITHUB_TOKEN || '';
 }

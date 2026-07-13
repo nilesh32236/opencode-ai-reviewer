@@ -37,23 +37,26 @@ export function parseInputs(): ActionInputs {
     throw new Error(`Invalid mode: "${modeStr}". Must be one of: ${VALID_MODES.join(', ')}`);
   }
 
-  const maxFixIterations = parseInt(core.getInput('max_fix_iterations') || '3', 10);
+  const maxFixIterations = Number.parseInt(core.getInput('max_fix_iterations') || '3', 10);
   if (isNaN(maxFixIterations) || maxFixIterations < 1 || maxFixIterations > 10) {
     throw new Error('max_fix_iterations must be between 1 and 10');
   }
 
-  const maxFilesPerBatch = parseInt(core.getInput('max_files_per_batch') || '3', 10);
+  const maxFilesPerBatch = Number.parseInt(core.getInput('max_files_per_batch') || '3', 10);
   if (isNaN(maxFilesPerBatch) || maxFilesPerBatch < 1) {
     throw new Error('max_files_per_batch must be a positive integer');
   }
 
-  const maxLinesPerFile = parseInt(core.getInput('max_lines_per_file') || '500', 10);
+  const maxLinesPerFile = Number.parseInt(core.getInput('max_lines_per_file') || '500', 10);
   if (isNaN(maxLinesPerFile) || maxLinesPerFile < 1) {
     throw new Error('max_lines_per_file must be a positive integer');
   }
 
   const auditLabelsStr = core.getInput('audit_labels') || 'audit';
-  const auditLabels = auditLabelsStr.split(',').map((l) => l.trim()).filter(Boolean);
+  const auditLabels = auditLabelsStr
+    .split(',')
+    .map((l) => l.trim())
+    .filter(Boolean);
 
   return {
     mode: modeStr as ActionMode,

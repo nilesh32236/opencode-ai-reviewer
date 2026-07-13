@@ -9,10 +9,18 @@
       "recommended": true,
       "suspicious": {
         "noExplicitAny": "warn",
-        "noConsoleLog": "off"
+        "noConsoleLog": "off",
+        "noGlobalIsNan": "off",
+        "noAssignInExpressions": "off"
       },
       "correctness": {
         "noUnusedVariables": "warn"
+      },
+      "style": {
+        "useNodejsImportProtocol": "off",
+        "noUnusedTemplateLiteral": "off",
+        "useTemplate": "off",
+        "noNonNullAssertion": "off"
       }
     }
   },
@@ -27,5 +35,8 @@
     "formatter": {
       "quoteStyle": "single"
     }
+  },
+  "files": {
+    "ignore": ["dist", "action/lib", "lib/tests/*.js", "lib/tests/*.d.ts", "lib/vitest.config.js"]
   }
 }

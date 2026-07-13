@@ -1,15 +1,15 @@
 import type { AgentConfig } from '@opencode-pr-agent/lib';
 import { GitHubHelper } from '@opencode-pr-agent/lib';
-import { handlePRReview } from './pr-review.js';
-import { handleAutofixLoop } from './autofix.js';
 import { handleAudit } from './audit.js';
+import { handleAutofixLoop } from './autofix.js';
+import { handlePRReview } from './pr-review.js';
 
 export async function handleCommand(
   command: 'fix' | 'review' | 'audit',
   issueNumber: number,
   repo: string,
   token: string,
-  config: AgentConfig
+  config: AgentConfig,
 ): Promise<void> {
   const gh = new GitHubHelper(token, repo);
 
@@ -40,13 +40,15 @@ export async function handleCommand(
 
 async function findExistingAutofixPR(
   gh: GitHubHelper,
-  issueNumber: number
+  issueNumber: number,
 ): Promise<number | null> {
   try {
     const issue = await gh.getIssue(issueNumber);
     const prLink = issue.body?.match(/PR #(\d+)/)?.[1];
-    if (prLink) return parseInt(prLink, 10);
-  } catch { /* skip */ }
+    if (prLink) return Number.parseInt(prLink, 10);
+  } catch {
+    /* skip */
+  }
   return null;
 }
 
@@ -55,12 +57,14 @@ async function createAutofixPR(
   issueNumber: number,
   repo: string,
   token: string,
-  config: AgentConfig
+  config: AgentConfig,
 ): Promise<void> {
   console.log(`🔧 Fix triggered for issue #${issueNumber}`);
 
   await gh.ensureLabels(['autofix', 'autofix-trigger', 'autofix:needs-fix']);
   await gh.addLabels(issueNumber, ['autofix']);
 
-  console.log(`Fix flow initiated for issue #${issueNumber}. In production, this creates a branch, runs the fix, and opens a PR.`);
+  console.log(
+    `Fix flow initiated for issue #${issueNumber}. In production, this creates a branch, runs the fix, and opens a PR.`,
+  );
 }

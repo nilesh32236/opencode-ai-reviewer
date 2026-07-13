@@ -1,11 +1,7 @@
-import * as core from '@actions/core';
 import * as fs from 'fs';
 import * as path from 'path';
-import {
-  type AgentConfig,
-  ReviewEngine,
-  GitHubHelper,
-} from '@opencode-pr-agent/lib';
+import * as core from '@actions/core';
+import type { AgentConfig, GitHubHelper, ReviewEngine } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs';
 
 export async function runAudit(
@@ -14,15 +10,21 @@ export async function runAudit(
   engine: ReviewEngine,
   gh: GitHubHelper,
   repo: string,
-  token: string
+  token: string,
 ): Promise<void> {
   const promptsDir = core.getInput('audit-prompts-dir') || config.audit.promptsDir;
   const targetDir = inputs.auditTargetDir;
   const promptName = core.getInput('audit-prompt-name');
 
   await gh.ensureLabels([
-    'audit', 'audit:critical', 'audit:important', 'audit:minor',
-    'autofix', 'autofix-trigger', 'autofix:approved', 'autofix:needs-fix',
+    'audit',
+    'audit:critical',
+    'audit:important',
+    'audit:minor',
+    'autofix',
+    'autofix-trigger',
+    'autofix:approved',
+    'autofix:needs-fix',
   ]);
 
   const prompts = fs.readdirSync(promptsDir).filter((f) => f.endsWith('.md'));
@@ -89,7 +91,17 @@ function selectRandomTarget(dirs: string[]): string {
 function buildAuditIssueBody(
   category: string,
   targetDir: string,
-  result: { summary: string; stats: { critical: number; important: number; minor: number }; issues: Array<{ severity: string; file: string; line: number; message: string; suggestion?: string }> }
+  result: {
+    summary: string;
+    stats: { critical: number; important: number; minor: number };
+    issues: Array<{
+      severity: string;
+      file: string;
+      line: number;
+      message: string;
+      suggestion?: string;
+    }>;
+  },
 ): string {
   const lines: string[] = [
     '<!-- audit-issue -->',
@@ -106,7 +118,9 @@ function buildAuditIssueBody(
   ];
 
   for (const issue of result.issues) {
-    lines.push(`- **${issue.severity.toUpperCase()}** \`${issue.file}:${issue.line}\` — ${issue.message}`);
+    lines.push(
+      `- **${issue.severity.toUpperCase()}** \`${issue.file}:${issue.line}\` — ${issue.message}`,
+    );
     if (issue.suggestion) {
       lines.push(`  - *Fix:* ${issue.suggestion}`);
     }

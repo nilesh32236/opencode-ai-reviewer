@@ -1,11 +1,7 @@
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as github from '@actions/github';
-import {
-  type AgentConfig,
-  GitHubHelper,
-  ReviewEngine,
-} from '@opencode-pr-agent/lib';
+import type { AgentConfig, GitHubHelper, ReviewEngine } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs';
 
 export async function runFix(
@@ -14,7 +10,7 @@ export async function runFix(
   engine: ReviewEngine,
   gh: GitHubHelper,
   repo: string,
-  token: string
+  token: string,
 ): Promise<void> {
   const prNumber = await resolvePrNumber();
   if (prNumber === null) {
@@ -67,7 +63,7 @@ export async function runAutofixLoop(
   engine: ReviewEngine,
   gh: GitHubHelper,
   repo: string,
-  token: string
+  token: string,
 ): Promise<void> {
   const prNumber = await resolvePrNumber();
   if (prNumber === null) {
@@ -92,7 +88,7 @@ export async function runAutofixLoop(
     await gh.postOrUpdateComment(
       prNumber,
       '<!-- autofix-review -->',
-      `## Autofix Review (Iteration ${i + 1}/${config.maxIterations})\n\n${result.summary}`
+      `## Autofix Review (Iteration ${i + 1}/${config.maxIterations})\n\n${result.summary}`,
     );
 
     const contextMarkdown = await gh.gatherContext({ prNumber });
@@ -110,7 +106,7 @@ export async function runAutofixLoop(
     await gh.postOrUpdateComment(
       prNumber,
       '<!-- autofix-status -->',
-      `Fix applied (iteration ${i + 1}). Waiting for review...`
+      `Fix applied (iteration ${i + 1}). Waiting for review...`,
     );
   }
 }
@@ -118,7 +114,7 @@ export async function runAutofixLoop(
 async function resolvePrNumber(): Promise<number | null> {
   const prNumberInput = core.getInput('pr-number');
   if (prNumberInput) {
-    return parseInt(prNumberInput, 10);
+    return Number.parseInt(prNumberInput, 10);
   }
   const fromIssue = github.context.payload.issue?.number;
   const fromPR = github.context.payload.pull_request?.number;

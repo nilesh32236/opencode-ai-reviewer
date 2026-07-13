@@ -1,13 +1,13 @@
 import { execSync } from 'child_process';
 import { promises as fs } from 'fs';
 import type { AgentConfig } from '@opencode-pr-agent/lib';
-import { ReviewEngine, GitHubHelper, buildFixPrompt } from '@opencode-pr-agent/lib';
+import { GitHubHelper, ReviewEngine, buildFixPrompt } from '@opencode-pr-agent/lib';
 
 export async function handleAutofixLoop(
   prNumber: number,
   repo: string,
   token: string,
-  config: AgentConfig
+  config: AgentConfig,
 ): Promise<void> {
   console.log(`🔄 Starting autofix loop for PR #${prNumber} in ${repo}`);
 
@@ -23,7 +23,7 @@ export async function handleAutofixLoop(
     await gh.postOrUpdateComment(
       prNumber,
       '<!-- autofix-status -->',
-      `⚠️ **Max iterations reached** (${config.maxIterations}). This PR needs manual review.`
+      `⚠️ **Max iterations reached** (${config.maxIterations}). This PR needs manual review.`,
     );
     return;
   }
@@ -33,7 +33,8 @@ export async function handleAutofixLoop(
   try {
     const result = await engine.reviewPR(pr);
 
-    const isApproved = result.verdict.ready && result.stats.critical === 0 && result.stats.important === 0;
+    const isApproved =
+      result.verdict.ready && result.stats.critical === 0 && result.stats.important === 0;
 
     const reviewBody = buildReviewComment(result, iteration);
     await gh.postOrUpdateComment(prNumber, '<!-- autofix-review -->', reviewBody);
@@ -48,20 +49,19 @@ export async function handleAutofixLoop(
         await gh.postOrUpdateComment(
           prNumber,
           '<!-- autofix-status -->',
-          '✅ Review approved. Auto-merge enabled — will merge when CI passes.'
+          '✅ Review approved. Auto-merge enabled — will merge when CI passes.',
         );
 
         if (pr.linkedIssue) {
           try {
             await gh.closeIssue(pr.linkedIssue, `✅ Fixed by PR #${prNumber}`);
-          } catch {
-          }
+          } catch {}
         }
       } else {
         await gh.postOrUpdateComment(
           prNumber,
           '<!-- autofix-status -->',
-          '⚠️ Review approved but auto-merge failed. Please merge manually.'
+          '⚠️ Review approved but auto-merge failed. Please merge manually.',
         );
       }
     } else {
@@ -72,7 +72,9 @@ export async function handleAutofixLoop(
         try {
           const issue = await gh.getIssue(pr.linkedIssue);
           contextMd += `\n\n## Issue #${pr.linkedIssue}\n\n${issue.body}`;
-        } catch { /* skip */ }
+        } catch {
+          /* skip */
+        }
       }
 
       contextMd += `\n\n## Review Feedback (Iteration ${iteration})\n\n`;
@@ -108,7 +110,16 @@ export async function handleAutofixLoop(
   }
 }
 
-function buildReviewComment(result: { summary: string; verdict: { ready: boolean; reasoning: string }; strengths: any[]; issues: any[]; stats: { critical: number; important: number; minor: number } }, iteration: number): string {
+function buildReviewComment(
+  result: {
+    summary: string;
+    verdict: { ready: boolean; reasoning: string };
+    strengths: any[];
+    issues: any[];
+    stats: { critical: number; important: number; minor: number };
+  },
+  iteration: number,
+): string {
   const lines: string[] = [
     '<!-- autofix-review -->',
     '',
@@ -121,7 +132,9 @@ function buildReviewComment(result: { summary: string; verdict: { ready: boolean
   if (result.verdict.ready && result.stats.critical === 0 && result.stats.important === 0) {
     lines.push(`✅ **Ready to merge** — ${result.verdict.reasoning}`);
   } else {
-    lines.push(`❌ **Needs fixes** — ${result.stats.critical} critical, ${result.stats.important} important, ${result.stats.minor} minor`);
+    lines.push(
+      `❌ **Needs fixes** — ${result.stats.critical} critical, ${result.stats.important} important, ${result.stats.minor} minor`,
+    );
     lines.push('');
     lines.push(`**Reasoning:** ${result.verdict.reasoning}`);
   }
@@ -151,5 +164,7 @@ function buildReviewComment(result: { summary: string; verdict: { ready: boolean
 function configureGit(token: string, repo: string): void {
   execSync('git config --global user.name "opencode-pr-agent[bot]"');
   execSync('git config --global user.email "opencode-pr-agent[bot]@users.noreply.github.com"');
-  execSync(`git config --global url."https://x-access-token:${token}@github.com/".insteadOf "https://github.com/"`);
+  execSync(
+    `git config --global url."https://x-access-token:${token}@github.com/".insteadOf "https://github.com/"`,
+  );
 }

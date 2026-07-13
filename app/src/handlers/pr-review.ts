@@ -1,11 +1,11 @@
 import type { AgentConfig } from '@opencode-pr-agent/lib';
-import { ReviewEngine, GitHubHelper } from '@opencode-pr-agent/lib';
+import { GitHubHelper, ReviewEngine } from '@opencode-pr-agent/lib';
 
 export async function handlePRReview(
   prNumber: number,
   repo: string,
   token: string,
-  config: AgentConfig
+  config: AgentConfig,
 ): Promise<void> {
   console.log(`🔍 Starting review for PR #${prNumber} in ${repo}`);
 
@@ -27,8 +27,7 @@ export async function handlePRReview(
       try {
         const issue = await gh.getIssue(pr.linkedIssue);
         contextMd += `\n\n## Issue #${pr.linkedIssue}\n\n**Title:** ${issue.title}\n\n${issue.body}`;
-      } catch {
-      }
+      } catch {}
     }
 
     const result = await engine.reviewPR(pr);

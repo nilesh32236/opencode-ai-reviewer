@@ -128,7 +128,9 @@ function validateAndNormalize(obj: Record<string, unknown>): Finding {
 
     case 'issue': {
       if (!VALID_SEVERITIES.includes(obj.severity as Severity)) {
-        throw new Error(`Invalid severity: ${obj.severity}. Must be one of: ${VALID_SEVERITIES.join(', ')}`);
+        throw new Error(
+          `Invalid severity: ${obj.severity}. Must be one of: ${VALID_SEVERITIES.join(', ')}`,
+        );
       }
       if (typeof obj.file !== 'string' || obj.file.trim().length === 0) {
         throw new Error('Issue finding must have a non-empty "file" field');
@@ -204,7 +206,7 @@ export function buildReviewBody(result: ReviewResult): string {
 
 export function buildInlineComments(
   result: ReviewResult,
-  diffLines?: Set<string>
+  diffLines?: Set<string>,
 ): Array<{ path: string; line: number; side: string; body: string }> {
   return result.issues
     .filter((issue) => {

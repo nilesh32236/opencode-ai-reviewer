@@ -10,7 +10,7 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import type { MCPServerConfig, MCPContextEntry, MCPQueryResult } from '../types/index.js';
+import type { MCPContextEntry, MCPQueryResult, MCPServerConfig } from '../types/index.js';
 
 export class MCPManager {
   private clients: Map<string, { client: Client; transport: StdioClientTransport }> = new Map();
@@ -52,7 +52,9 @@ export class MCPManager {
           console.log(`  ${server.name}: Remote MCP not yet supported, skipping`);
         }
       } catch (err) {
-        console.log(`  ${server.name}: Failed to connect — ${err instanceof Error ? err.message : err}`);
+        console.log(
+          `  ${server.name}: Failed to connect — ${err instanceof Error ? err.message : err}`,
+        );
       }
     }
 
@@ -63,7 +65,7 @@ export class MCPManager {
   /**
    * Query all MCP servers for context relevant to the given query.
    */
-  async queryContext(query: string, maxTokens: number = 4000): Promise<MCPQueryResult> {
+  async queryContext(query: string, maxTokens = 4000): Promise<MCPQueryResult> {
     const entries: MCPContextEntry[] = [];
     let totalTokens = 0;
 
@@ -76,7 +78,8 @@ export class MCPManager {
         // Try to find relevant documentation
         const tools = await client.listTools();
         const searchTool = tools.tools.find(
-          (t) => t.name.includes('search') || t.name.includes('resolve') || t.name.includes('context')
+          (t) =>
+            t.name.includes('search') || t.name.includes('resolve') || t.name.includes('context'),
         );
 
         if (searchTool) {
@@ -96,7 +99,9 @@ export class MCPManager {
           }
         }
       } catch (err) {
-        console.log(`::warning::MCP query failed for ${name}: ${err instanceof Error ? err.message : err}`);
+        console.log(
+          `::warning::MCP query failed for ${name}: ${err instanceof Error ? err.message : err}`,
+        );
       }
     }
 

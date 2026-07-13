@@ -1,22 +1,28 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import type { AgentConfig } from '@opencode-pr-agent/lib';
-import { ReviewEngine, GitHubHelper } from '@opencode-pr-agent/lib';
+import { GitHubHelper, ReviewEngine } from '@opencode-pr-agent/lib';
 
 export async function handleAudit(
   repo: string,
   token: string,
   config: AgentConfig,
   targetDir?: string,
-  promptName?: string
+  promptName?: string,
 ): Promise<void> {
   console.log(`🔎 Starting audit for ${repo}${targetDir ? ` targeting ${targetDir}` : ''}`);
 
   const gh = new GitHubHelper(token, repo);
 
   await gh.ensureLabels([
-    'audit', 'audit:critical', 'audit:important', 'audit:minor',
-    'autofix', 'autofix-trigger', 'autofix:approved', 'autofix:needs-fix',
+    'audit',
+    'audit:critical',
+    'audit:important',
+    'audit:minor',
+    'autofix',
+    'autofix-trigger',
+    'autofix:approved',
+    'autofix:needs-fix',
   ]);
 
   const promptsDir = config.audit.promptsDir;
@@ -50,7 +56,10 @@ export async function handleAudit(
     return;
   }
 
-  const auditTarget = targetDir || config.audit.targetDirs[Math.floor(Math.random() * config.audit.targetDirs.length)] || '.';
+  const auditTarget =
+    targetDir ||
+    config.audit.targetDirs[Math.floor(Math.random() * config.audit.targetDirs.length)] ||
+    '.';
 
   const promptContent = await fs.readFile(selectedFile, 'utf-8');
 
@@ -59,7 +68,9 @@ export async function handleAudit(
   try {
     const result = await engine.runAudit(promptContent, auditTarget);
 
-    console.log(`Audit complete: ${result.stats.critical} critical, ${result.stats.important} important, ${result.stats.minor} minor`);
+    console.log(
+      `Audit complete: ${result.stats.critical} critical, ${result.stats.important} important, ${result.stats.minor} minor`,
+    );
 
     if (result.stats.critical > 0 || result.stats.important > 0) {
       const issueBody = buildAuditIssue(category, auditTarget, result);

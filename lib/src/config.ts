@@ -38,8 +38,8 @@ const yaml = {
           }
           if (val === 'true') val = true;
           else if (val === 'false') val = false;
-          else if (typeof val === 'string' && /^\d+$/.test(val)) val = parseInt(val, 10);
-          else if (typeof val === 'string' && /^\d+\.\d+$/.test(val)) val = parseFloat(val);
+          else if (typeof val === 'string' && /^\d+$/.test(val)) val = Number.parseInt(val, 10);
+          else if (typeof val === 'string' && /^\d+\.\d+$/.test(val)) val = Number.parseFloat(val);
           else if (typeof val === 'string' && val.startsWith('|')) val = null;
 
           result[currentKey] = val;
@@ -62,7 +62,7 @@ const CONFIG_FILENAMES = [
   '.github/opencode-reviewer.yaml',
 ];
 
-export function loadConfig(workingDir: string = '.'): PromptConfig | null {
+export function loadConfig(workingDir = '.'): PromptConfig | null {
   for (const filename of CONFIG_FILENAMES) {
     const fullPath = path.resolve(workingDir, filename);
     if (fs.existsSync(fullPath)) {
@@ -82,7 +82,7 @@ export function loadConfig(workingDir: string = '.'): PromptConfig | null {
 
 export function mergeConfigWithInputs(
   config: PromptConfig | null,
-  inputs: Record<string, unknown>
+  inputs: Record<string, unknown>,
 ): Record<string, unknown> {
   if (!config) return inputs;
 
@@ -104,9 +104,7 @@ function validateConfig(config: PromptConfig): PromptConfig {
       result.review.extraContext = config.review.extraContext;
     }
     if (Array.isArray(config.review.customRules)) {
-      result.review.customRules = config.review.customRules.filter(
-        (r) => typeof r === 'string'
-      );
+      result.review.customRules = config.review.customRules.filter((r) => typeof r === 'string');
     }
   }
 
@@ -145,9 +143,7 @@ function validateConfig(config: PromptConfig): PromptConfig {
       result.project.description = config.project.description;
     }
     if (Array.isArray(config.project.conventions)) {
-      result.project.conventions = config.project.conventions.filter(
-        (c) => typeof c === 'string'
-      );
+      result.project.conventions = config.project.conventions.filter((c) => typeof c === 'string');
     }
     if (config.project.commandReference && typeof config.project.commandReference === 'object') {
       result.project.commandReference = { ...config.project.commandReference };

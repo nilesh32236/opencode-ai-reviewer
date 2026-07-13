@@ -1,11 +1,11 @@
-import * as core from '@actions/core';
-import * as exec from '@actions/exec';
-import * as io from '@actions/io';
-import * as tc from '@actions/tool-cache';
 import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as core from '@actions/core';
+import * as exec from '@actions/exec';
+import * as io from '@actions/io';
+import * as tc from '@actions/tool-cache';
 
 let opencodePath: string | null = null;
 
@@ -21,7 +21,7 @@ function detectArch(): string {
   }
 }
 
-export async function setupOpenCode(version: string = 'latest'): Promise<string> {
+export async function setupOpenCode(version = 'latest'): Promise<string> {
   await ensurePnpm();
 
   const existingPath = await io.which('opencode', false);
@@ -84,7 +84,7 @@ export async function runOpenCode(
     workingDirectory?: string;
     timeoutMinutes?: number;
     env?: Record<string, string>;
-  }
+  },
 ): Promise<{ success: boolean; output: string; durationMs: number }> {
   const binaryPath = opencodePath || (await setupOpenCode());
   const startTime = Date.now();
@@ -135,14 +135,16 @@ export function configureGit(userName?: string, userEmail?: string, token?: stri
 
   if (token) {
     cp.execSync(
-      'git config --global url.https://x-access-token:' + token + '@github.com/.insteadOf https://github.com/'
+      'git config --global url.https://x-access-token:' +
+        token +
+        '@github.com/.insteadOf https://github.com/',
     );
   }
 
   core.info(`Git configured: ${name} <${email}>`);
 }
 
-export async function ensurePnpm(pnpmVersion: string = '10.8.0'): Promise<void> {
+export async function ensurePnpm(pnpmVersion = '10.8.0'): Promise<void> {
   try {
     cp.execSync('corepack enable', { stdio: 'pipe' });
     core.info('Corepack enabled');

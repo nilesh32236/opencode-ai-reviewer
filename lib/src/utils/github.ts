@@ -1,12 +1,12 @@
 import * as core from '@actions/core';
 import type {
-  PRContext,
   ChangedFile,
-  IssueContext,
   IssueComment,
+  IssueContext,
+  PRContext,
   ReviewComment,
-  ReviewResult,
   ReviewIssue,
+  ReviewResult,
   ReviewStrength,
 } from '../types/index';
 
@@ -14,7 +14,7 @@ export class GitHubHelper {
   constructor(
     private token: string,
     private repo: string,
-    private apiUrl: string = 'https://api.github.com'
+    private apiUrl = 'https://api.github.com',
   ) {}
 
   private async api<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -56,7 +56,7 @@ export class GitHubHelper {
     let linkedIssue: number | undefined;
     if (pr.body) {
       const match = pr.body.match(/(?:Fixes|Closes|Resolves)\s+#(\d+)/i);
-      if (match) linkedIssue = parseInt(match[1], 10);
+      if (match) linkedIssue = Number.parseInt(match[1], 10);
     }
 
     return {
@@ -98,11 +98,13 @@ export class GitHubHelper {
       labels: Array<{ name: string }>;
     }>(`/issues/${number}`);
 
-    const comments = await this.api<Array<{
-      user: { login: string };
-      created_at: string;
-      body: string;
-    }>>(`/issues/${number}/comments`);
+    const comments = await this.api<
+      Array<{
+        user: { login: string };
+        created_at: string;
+        body: string;
+      }>
+    >(`/issues/${number}/comments`);
 
     return {
       number: issue.number,
@@ -118,12 +120,14 @@ export class GitHubHelper {
   }
 
   async getPRComments(number: number): Promise<ReviewComment[]> {
-    const comments = await this.api<Array<{
-      user: { login: string };
-      path: string;
-      line?: number;
-      body: string;
-    }>>(`/pulls/${number}/comments`);
+    const comments = await this.api<
+      Array<{
+        user: { login: string };
+        path: string;
+        line?: number;
+        body: string;
+      }>
+    >(`/pulls/${number}/comments`);
 
     return comments.map((c) => ({
       author: c.user.login,
@@ -134,11 +138,13 @@ export class GitHubHelper {
   }
 
   async getIssueComments(number: number): Promise<IssueComment[]> {
-    const comments = await this.api<Array<{
-      user: { login: string };
-      created_at: string;
-      body: string;
-    }>>(`/issues/${number}/comments`);
+    const comments = await this.api<
+      Array<{
+        user: { login: string };
+        created_at: string;
+        body: string;
+      }>
+    >(`/issues/${number}/comments`);
 
     return comments.map((c) => ({
       author: c.user.login,
@@ -167,8 +173,8 @@ export class GitHubHelper {
       const hunkRegex = /^@@\s+-[0-9,]+\s+\+([0-9]+),([0-9]+)\s+@@/gm;
       let match: RegExpExecArray | null;
       while ((match = hunkRegex.exec(diffText)) !== null) {
-        const startLine = parseInt(match[1], 10);
-        const lineCount = parseInt(match[2], 10);
+        const startLine = Number.parseInt(match[1], 10);
+        const lineCount = Number.parseInt(match[2], 10);
         for (let i = 0; i < lineCount; i++) {
           lines.add(`${startLine + i}`);
         }
@@ -185,7 +191,7 @@ export class GitHubHelper {
   async postReview(
     prNumber: number,
     commitSha: string,
-    result: ReviewResult
+    result: ReviewResult,
   ): Promise<{ success: boolean; method: 'full' | 'body-only' | 'failed' }> {
     const inlineComments = result.issues
       .filter((i) => i.inline)
@@ -243,12 +249,12 @@ export class GitHubHelper {
   async postOrUpdateComment(
     issueNumber: number,
     marker: string,
-    body: string
+    body: string,
   ): Promise<{ action: 'created' | 'updated'; commentId: number }> {
     const markedBody = `${marker}\n\n${body}`;
 
     const allComments = await this.api<Array<{ id: number; body: string }>>(
-      `/issues/${issueNumber}/comments`
+      `/issues/${issueNumber}/comments`,
     );
 
     const existing = allComments.find((c) => c.body?.startsWith(marker));
@@ -273,7 +279,7 @@ export class GitHubHelper {
   async createIssue(
     title: string,
     body: string,
-    labels: string[]
+    labels: string[],
   ): Promise<{ number: number; url: string }> {
     const result = await this.api<{ number: number; html_url: string }>('/issues', {
       method: 'POST',
@@ -317,8 +323,8 @@ export class GitHubHelper {
           body: JSON.stringify({ name: label, color: generateLabelColor(label) }),
         }).catch(() => {
           // Label already exists
-        })
-      )
+        }),
+      ),
     );
   }
 
@@ -344,9 +350,9 @@ export class GitHubHelper {
       parts.push(issue.body || 'No description.');
       parts.push('');
 
-      const comments = await this.api<Array<{ user: { login: string }; created_at: string; body: string }>>(
-        `/issues/${options.issueNumber}/comments`
-      );
+      const comments = await this.api<
+        Array<{ user: { login: string }; created_at: string; body: string }>
+      >(`/issues/${options.issueNumber}/comments`);
       if (comments.length > 0) {
         parts.push('### Comments');
         parts.push('');
@@ -370,13 +376,15 @@ export class GitHubHelper {
       parts.push(pr.body || 'No description.');
       parts.push('');
 
-      const reviewComments = await this.api<Array<{
-        user: { login: string };
-        path: string;
-        line?: number;
-        original_line?: number;
-        body: string;
-      }>>(`/pulls/${options.prNumber}/comments`);
+      const reviewComments = await this.api<
+        Array<{
+          user: { login: string };
+          path: string;
+          line?: number;
+          original_line?: number;
+          body: string;
+        }>
+      >(`/pulls/${options.prNumber}/comments`);
       if (reviewComments.length > 0) {
         parts.push('### Inline Review Comments');
         parts.push('');

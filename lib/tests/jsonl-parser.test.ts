@@ -1,11 +1,11 @@
-import {
-  parseJsonlString,
-  parseJsonlFile,
-  buildReviewBody,
-  buildInlineComments,
-} from '../src/jsonl-parser.js';
 import * as fs from 'fs';
 import * as path from 'path';
+import {
+  buildInlineComments,
+  buildReviewBody,
+  parseJsonlFile,
+  parseJsonlString,
+} from '../src/jsonl-parser.js';
 import type { ReviewResult } from '../src/types/index.js';
 
 describe('jsonl-parser', () => {
@@ -14,7 +14,12 @@ describe('jsonl-parser', () => {
       const input = [
         JSON.stringify({ type: 'summary', text: 'Overall looks good.' }),
         JSON.stringify({ type: 'verdict', ready: true, reasoning: 'No issues found.' }),
-        JSON.stringify({ type: 'strength', file: 'src/foo.ts', line: 10, message: 'Good pattern.' }),
+        JSON.stringify({
+          type: 'strength',
+          file: 'src/foo.ts',
+          line: 10,
+          message: 'Good pattern.',
+        }),
         JSON.stringify({
           type: 'issue',
           severity: 'critical',
@@ -69,12 +74,7 @@ describe('jsonl-parser', () => {
     });
 
     it('handles blank lines', () => {
-      const input = [
-        '',
-        '  ',
-        JSON.stringify({ type: 'summary', text: 'Test.' }),
-        '',
-      ].join('\n');
+      const input = ['', '  ', JSON.stringify({ type: 'summary', text: 'Test.' }), ''].join('\n');
 
       const result = parseJsonlString(input);
       expect(result.summary).not.toBe('');
@@ -126,10 +126,13 @@ describe('jsonl-parser', () => {
     it('reads and parses a file', () => {
       const fixturePath = path.join(__dirname, 'fixtures/sample-review-output.jsonl');
       if (!fs.existsSync(fixturePath)) {
-        fs.writeFileSync(fixturePath, [
-          JSON.stringify({ type: 'summary', text: 'Test summary.' }),
-          JSON.stringify({ type: 'verdict', ready: true, reasoning: 'Looks good.' }),
-        ].join('\n'));
+        fs.writeFileSync(
+          fixturePath,
+          [
+            JSON.stringify({ type: 'summary', text: 'Test summary.' }),
+            JSON.stringify({ type: 'verdict', ready: true, reasoning: 'Looks good.' }),
+          ].join('\n'),
+        );
       }
 
       const result = parseJsonlFile(fixturePath);
@@ -149,9 +152,7 @@ describe('jsonl-parser', () => {
       const result: ReviewResult = {
         summary: 'Good PR overall.',
         verdict: { ready: false, reasoning: 'One critical issue found.' },
-        strengths: [
-          { type: 'strength', file: 'src/a.ts', line: 10, message: 'Clean function.' },
-        ],
+        strengths: [{ type: 'strength', file: 'src/a.ts', line: 10, message: 'Clean function.' }],
         issues: [
           {
             type: 'issue',

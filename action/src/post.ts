@@ -1,15 +1,16 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { GitHubHelper } from '@opencode-pr-agent/lib';
+import type { GitHubHelper } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs';
 
 export async function runPost(
   inputs: ActionInputs,
   gh: GitHubHelper,
   repo: string,
-  token: string
+  token: string,
 ): Promise<void> {
-  const prNumber = github.context.payload.pull_request?.number || github.context.payload.issue?.number;
+  const prNumber =
+    github.context.payload.pull_request?.number || github.context.payload.issue?.number;
   if (!prNumber) {
     core.setFailed('Could not determine PR number for post-processing');
     return;
@@ -33,7 +34,7 @@ export async function runPost(
     await gh.postOrUpdateComment(
       prNumber,
       '<!-- review-summary -->',
-      `## Review Summary\n\n${reviewSummary}`
+      `## Review Summary\n\n${reviewSummary}`,
     );
     core.info('Posted review summary comment');
   }

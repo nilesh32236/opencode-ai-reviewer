@@ -22,7 +22,9 @@ export function buildReviewPrompt(inputs: PromptBuilderInputs, prContext: string
   const batchSize = inputs.maxFilesPerBatch || 3;
   const sections: string[] = [];
 
-  sections.push('You are a Senior Code Reviewer with deep expertise in software architecture, design patterns, and best practices. Review this pull request thoroughly.');
+  sections.push(
+    'You are a Senior Code Reviewer with deep expertise in software architecture, design patterns, and best practices. Review this pull request thoroughly.',
+  );
 
   sections.push('\n## PR & Issue Context');
   sections.push('');
@@ -34,7 +36,9 @@ export function buildReviewPrompt(inputs: PromptBuilderInputs, prContext: string
 
   sections.push('\n## Context Window Management');
   sections.push('');
-  sections.push('This repository may be too large to review in one pass. To prevent context overflow:');
+  sections.push(
+    'This repository may be too large to review in one pass. To prevent context overflow:',
+  );
   sections.push('');
   sections.push('1. Get the full list of changed files.');
   sections.push('2. Determine which project(s) the PR touches based on file paths.');
@@ -46,15 +50,23 @@ export function buildReviewPrompt(inputs: PromptBuilderInputs, prContext: string
 
   sections.push('\n## Calibration');
   sections.push('');
-  sections.push('Be specific — reference file paths and line numbers for every issue. Explain WHY each issue matters, not just what\'s wrong. Categorize by actual severity — not everything is Critical. Acknowledge what was done well before listing issues.');
+  sections.push(
+    "Be specific — reference file paths and line numbers for every issue. Explain WHY each issue matters, not just what's wrong. Categorize by actual severity — not everything is Critical. Acknowledge what was done well before listing issues.",
+  );
   sections.push('');
   sections.push('If you find significant deviations from the PR intent, flag them specifically.');
   sections.push('');
   sections.push('## Severity Guide');
   sections.push('');
-  sections.push('- **critical**: Bug, security hole, broken functionality, HTML spec violation, PII exposure — must fix before merge');
-  sections.push('- **important**: Architecture concern, maintainability debt, significant duplication, missing error handling, accessibility gaps — should fix');
-  sections.push('- **minor**: Style, naming, optimization, documentation, small refactors — nice to have');
+  sections.push(
+    '- **critical**: Bug, security hole, broken functionality, HTML spec violation, PII exposure — must fix before merge',
+  );
+  sections.push(
+    '- **important**: Architecture concern, maintainability debt, significant duplication, missing error handling, accessibility gaps — should fix',
+  );
+  sections.push(
+    '- **minor**: Style, naming, optimization, documentation, small refactors — nice to have',
+  );
 
   sections.push('\n## Output Format: JSON Lines');
   sections.push('');
@@ -69,10 +81,10 @@ export function buildReviewPrompt(inputs: PromptBuilderInputs, prContext: string
   sections.push('- Acknowledge strengths before issues');
   sections.push('- Give a clear verdict');
   sections.push('');
-  sections.push('**DON\'T:**');
+  sections.push("**DON'T:**");
   sections.push('- Say "looks good" without checking');
   sections.push('- Mark nitpicks as Critical');
-  sections.push('- Give feedback on code you didn\'t actually read');
+  sections.push("- Give feedback on code you didn't actually read");
   sections.push('- Be vague ("improve error handling")');
   sections.push('- Avoid giving a clear verdict');
   sections.push('- Run git push, git commit, or create any pull requests');
@@ -86,7 +98,11 @@ export function buildReviewPrompt(inputs: PromptBuilderInputs, prContext: string
   return sections.join('\n');
 }
 
-export function buildFixPrompt(inputs: PromptBuilderInputs, context: string, iteration: number): string {
+export function buildFixPrompt(
+  inputs: PromptBuilderInputs,
+  context: string,
+  iteration: number,
+): string {
   const projectContext = inputs.projectContext || getDefaultProjectContext();
   const maxIterations = inputs.maxFixIterations || 3;
 
@@ -125,7 +141,11 @@ ${projectContext}
 - Verify every change compiles before finishing`;
 }
 
-export function buildAuditPrompt(inputs: PromptBuilderInputs, categoryPrompt: string, targetDir: string): string {
+export function buildAuditPrompt(
+  inputs: PromptBuilderInputs,
+  categoryPrompt: string,
+  targetDir: string,
+): string {
   const projectContext = inputs.projectContext || getDefaultProjectContext();
 
   return `${categoryPrompt}

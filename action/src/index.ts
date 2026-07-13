@@ -2,18 +2,18 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import {
   type AgentConfig,
-  type MCPServerConfig,
   DEFAULT_CONFIG,
-  validateConfig,
-  ReviewEngine,
   GitHubHelper,
+  type MCPServerConfig,
+  ReviewEngine,
   getDefaultMCPServers,
+  validateConfig,
 } from '@opencode-pr-agent/lib';
-import { parseInputs } from './inputs';
-import { runReview } from './review';
-import { runFix, runAutofixLoop } from './fix';
 import { runAudit } from './audit';
+import { runAutofixLoop, runFix } from './fix';
+import { parseInputs } from './inputs';
 import { runPost } from './post';
+import { runReview } from './review';
 
 async function run(): Promise<void> {
   try {
