@@ -1,0 +1,269 @@
+import * as fs from 'fs';
+import * as path from 'path';
+
+interface PromptBuilderInputs {
+  reviewPromptFile?: string;
+  reviewPromptExtra?: string;
+  maxFilesPerBatch?: number;
+  projectContext?: string;
+  runChecksAfterFix?: string;
+  maxFixIterations?: number;
+}
+
+export function buildReviewPrompt(inputs: PromptBuilderInputs, prContext: string): string {
+  if (inputs.reviewPromptFile) {
+    const customPrompt = loadPromptFile(inputs.reviewPromptFile);
+    if (customPrompt) {
+      return customPrompt + (inputs.reviewPromptExtra ? '\n\n' + inputs.reviewPromptExtra : '');
+    }
+  }
+
+  const projectContext = inputs.projectContext || getDefaultProjectContext();
+  const batchSize = inputs.maxFilesPerBatch || 3;
+  const sections: string[] = [];
+
+  sections.push('You are a Senior Code Reviewer with deep expertise in software architecture, design patterns, and best practices. Review this pull request thoroughly.');
+
+  sections.push('\n## PR & Issue Context');
+  sections.push('');
+  sections.push(prContext);
+
+  sections.push('\n## Project Context');
+  sections.push('');
+  sections.push(projectContext);
+
+  sections.push('\n## Context Window Management');
+  sections.push('');
+  sections.push('This repository may be too large to review in one pass. To prevent context overflow:');
+  sections.push('');
+  sections.push('1. Get the full list of changed files.');
+  sections.push('2. Determine which project(s) the PR touches based on file paths.');
+  sections.push(`3. Group files into batches of at most ${batchSize} files per batch.`);
+  sections.push('4. For each batch, review for ALL items listed under "What to Check".');
+  sections.push('5. Collect all results, deduplicate, and write the final output.');
+
+  sections.push('\n' + buildWhatToCheck());
+
+  sections.push('\n## Calibration');
+  sections.push('');
+  sections.push('Be specific — reference file paths and line numbers for every issue. Explain WHY each issue matters, not just what\'s wrong. Categorize by actual severity — not everything is Critical. Acknowledge what was done well before listing issues.');
+  sections.push('');
+  sections.push('If you find significant deviations from the PR intent, flag them specifically.');
+  sections.push('');
+  sections.push('## Severity Guide');
+  sections.push('');
+  sections.push('- **critical**: Bug, security hole, broken functionality, HTML spec violation, PII exposure — must fix before merge');
+  sections.push('- **important**: Architecture concern, maintainability debt, significant duplication, missing error handling, accessibility gaps — should fix');
+  sections.push('- **minor**: Style, naming, optimization, documentation, small refactors — nice to have');
+
+  sections.push('\n## Output Format: JSON Lines');
+  sections.push('');
+  sections.push(buildOutputFormat());
+
+  sections.push('\n## Critical Rules');
+  sections.push('');
+  sections.push('**DO:**');
+  sections.push('- Reference specific file:line for every issue');
+  sections.push('- Explain WHY each issue matters');
+  sections.push('- Categorize by actual severity');
+  sections.push('- Acknowledge strengths before issues');
+  sections.push('- Give a clear verdict');
+  sections.push('');
+  sections.push('**DON\'T:**');
+  sections.push('- Say "looks good" without checking');
+  sections.push('- Mark nitpicks as Critical');
+  sections.push('- Give feedback on code you didn\'t actually read');
+  sections.push('- Be vague ("improve error handling")');
+  sections.push('- Avoid giving a clear verdict');
+  sections.push('- Run git push, git commit, or create any pull requests');
+
+  if (inputs.reviewPromptExtra) {
+    sections.push('\n## Additional Instructions');
+    sections.push('');
+    sections.push(inputs.reviewPromptExtra);
+  }
+
+  return sections.join('\n');
+}
+
+export function buildFixPrompt(inputs: PromptBuilderInputs, context: string, iteration: number): string {
+  const projectContext = inputs.projectContext || getDefaultProjectContext();
+  const maxIterations = inputs.maxFixIterations || 3;
+
+  return `You are a Senior Code Fixer. Fix the issues found during code review.
+
+## Full Context (Issue + PR + Review Comments)
+
+${context}
+
+---
+
+## Fix Iteration: ${iteration} of ${maxIterations}
+
+Read ALL the review comments above carefully. Focus on:
+1. Issues marked as CRITICAL — these must be fixed
+2. Issues marked as IMPORTANT — these should be fixed
+3. Issues marked as MINOR — fix these if straightforward
+
+## Project Context
+${projectContext}
+
+## Steps
+1. Read and understand each issue from the review feedback above
+2. For each issue, open the referenced file at the reported line
+3. Apply a minimal, correct fix
+4. After fixing, run verification commands${inputs.runChecksAfterFix ? ': ' + inputs.runChecksAfterFix : ' (if configured)'}
+5. Fix any errors introduced by your changes
+
+## CRITICAL RULES
+- Do NOT run \`git push\`, \`git commit\`, or create any pull requests
+- Do NOT run any git commands at all — the workflow handles git operations
+- Fix ONLY the issues from the review feedback — nothing more
+- Prefer minimal, targeted fixes over rewrites
+- Do not add features or change unrelated code
+- If a fix requires significant refactoring outside scope, skip it
+- Verify every change compiles before finishing`;
+}
+
+export function buildAuditPrompt(inputs: PromptBuilderInputs, categoryPrompt: string, targetDir: string): string {
+  const projectContext = inputs.projectContext || getDefaultProjectContext();
+
+  return `${categoryPrompt}
+
+---
+
+Audit the directory: \`${targetDir}\`
+
+## Project Context
+${projectContext}
+
+Context window management:
+- If the target directory has more than 15 files, batch them into groups of at most 5 files.
+- Collect all results before writing the final output.
+- If any single file exceeds 300 lines, audit it separately.
+
+For each finding:
+- Reference the specific file path and line number
+- Explain WHY the issue matters, not just what is wrong
+- Categorize by actual severity — not everything is Critical
+
+Safety rules:
+- Do not modify any files — this is a read-only audit
+- Do NOT run git push, git commit, or create any pull requests
+
+Write your findings to the output file in JSON Lines format:
+
+{"type":"summary","text":"overall assessment"}
+{"type":"issue","severity":"critical|important|minor","file":"path","line":N,"message":"what's wrong","suggestion":"how to fix","inline":false}`;
+}
+
+export function loadPromptFile(filePath: string): string | null {
+  const absolutePath = path.resolve(filePath);
+  if (!fs.existsSync(absolutePath)) return null;
+  try {
+    return fs.readFileSync(absolutePath, 'utf-8');
+  } catch {
+    return null;
+  }
+}
+
+export function loadAuditCategoryPrompt(category: string, promptsDir?: string): string | null {
+  const dirs = promptsDir
+    ? [promptsDir]
+    : [path.resolve('.audit-prompts'), path.resolve('prompts/audit-categories')];
+
+  for (const dir of dirs) {
+    const filePath = path.join(dir, `${category}.md`);
+    if (fs.existsSync(filePath)) {
+      return fs.readFileSync(filePath, 'utf-8');
+    }
+  }
+
+  return null;
+}
+
+export function listAuditCategories(promptsDir?: string): string[] {
+  const dirs = promptsDir
+    ? [promptsDir]
+    : [path.resolve('.audit-prompts'), path.resolve('prompts/audit-categories')];
+
+  const categories: Set<string> = new Set();
+  for (const dir of dirs) {
+    if (!fs.existsSync(dir)) continue;
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.md'));
+    for (const file of files) {
+      categories.add(path.basename(file, '.md'));
+    }
+  }
+  return Array.from(categories).sort();
+}
+
+function buildWhatToCheck(): string {
+  return `## What to Check
+
+**Plan alignment:**
+- Does the implementation match what the PR description states?
+- Are deviations justified improvements, or problematic departures?
+- Is all intended functionality present?
+
+**Bugs & correctness:**
+- Logic errors, missing null checks, race conditions
+- Improper error handling (swallowed errors, bare throws)
+- Type safety issues (loose \`any\`, missing generics)
+- Edge cases not handled (empty states, boundaries, timeouts)
+
+**Security (CRITICAL):**
+- PII exposure in logs, URLs, or client-side code
+- Missing authentication or authorization checks
+- Role-based access control (RBAC) gaps
+- XSS vectors in user-facing content
+- Secrets, tokens, or API keys hardcoded in source
+- SQL injection via raw queries, missing rate limiting
+
+**Dead code & YAGNI:**
+- Unused state variables, imports, parameters, or functions
+- Console.log / debug code left in
+- Features implemented but never called
+- Commented-out code blocks
+
+**Architecture:**
+- Clean separation of concerns?
+- Sound design decisions for this codebase's scale?
+- Integrates cleanly with surrounding code?
+- Reasonable performance
+
+**Test gaps (if tests exist in the PR):**
+- Do tests verify real behavior or just mocks?
+- Are edge cases covered?
+- Are integration tests present where they matter?`;
+}
+
+function buildOutputFormat(): string {
+  return `\`\`\`
+{"type":"summary","text":"Brief overall assessment of the PR. 2-3 sentences."}
+{"type":"verdict","ready":false,"reasoning":"1-2 sentence technical assessment."}
+{"type":"strength","file":"src/example.ts","line":10,"message":"What's well done and why."}
+{"type":"issue","severity":"critical","file":"src/example.ts","line":42,"message":"What's wrong.","suggestion":"How to fix it.","inline":true}
+\`\`\`
+
+**Rules for the JSONL file:**
+- Write exactly ONE \`summary\` line and exactly ONE \`verdict\` line
+- Write zero or more \`strength\` and \`issue\` lines
+- \`severity\` must be exactly "critical", "important", or "minor"
+- Every issue MUST include file and line
+- Suggestion is optional but recommended
+- \`"inline": true\` ONLY if the line is in the PR diff
+- If you find zero issues, write a verdict with \`"ready": true\`
+- Do NOT wrap in an array, do NOT add commas between lines`;
+}
+
+function getDefaultProjectContext(): string {
+  return `Configure project context via the \`project_context\` input or a \`.opencode-reviewer.yml\` config file.
+
+Default checks apply:
+- TypeScript/JavaScript best practices
+- Security (XSS, injection, secrets exposure)
+- Error handling
+- Dead code
+- Architecture and separation of concerns`;
+}

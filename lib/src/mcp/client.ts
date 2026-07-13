@@ -1,0 +1,203 @@
+/**
+ * MCP (Model Context Protocol) client for enriching prompts with
+ * up-to-date documentation from external sources.
+ *
+ * Supports:
+ * - Context7: Latest library/framework docs to reduce false positives
+ * - GitHub MCP: Repository-aware context
+ * - Custom local/remote MCP servers
+ */
+
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import type { MCPServerConfig, MCPContextEntry, MCPQueryResult } from '../types/index.js';
+
+export class MCPManager {
+  private clients: Map<string, { client: Client; transport: StdioClientTransport }> = new Map();
+  private initialized = false;
+
+  constructor(private servers: MCPServerConfig[]) {}
+
+  /**
+   * Initialize all configured MCP servers.
+   */
+  async connect(): Promise<void> {
+    if (this.servers.length === 0) {
+      console.log('::group::MCP: No servers configured, skipping');
+      console.log('::endgroup::');
+      return;
+    }
+
+    console.log(`::group::MCP: Connecting to ${this.servers.length} server(s)`);
+
+    for (const server of this.servers) {
+      try {
+        if (server.type === 'local' && server.command) {
+          const transport = new StdioClientTransport({
+            command: server.command[0],
+            args: server.command.slice(1),
+            env: { ...process.env, ...server.environment } as Record<string, string>,
+          });
+
+          const client = new Client({ name: 'opencode-pr-agent', version: '1.0.0' });
+          await client.connect(transport);
+          this.clients.set(server.name, { client, transport });
+
+          // List available tools
+          const tools = await client.listTools();
+          console.log(`  ${server.name}: ${tools.tools.length} tools available`);
+        } else if (server.type === 'remote' && server.url) {
+          // For remote MCP servers, we'd use a different transport
+          // For now, log a warning
+          console.log(`  ${server.name}: Remote MCP not yet supported, skipping`);
+        }
+      } catch (err) {
+        console.log(`  ${server.name}: Failed to connect — ${err instanceof Error ? err.message : err}`);
+      }
+    }
+
+    this.initialized = true;
+    console.log('::endgroup::');
+  }
+
+  /**
+   * Query all MCP servers for context relevant to the given query.
+   */
+  async queryContext(query: string, maxTokens: number = 4000): Promise<MCPQueryResult> {
+    const entries: MCPContextEntry[] = [];
+    let totalTokens = 0;
+
+    if (!this.initialized) {
+      return { entries: [], totalTokens: 0 };
+    }
+
+    for (const [name, { client }] of this.clients) {
+      try {
+        // Try to find relevant documentation
+        const tools = await client.listTools();
+        const searchTool = tools.tools.find(
+          (t) => t.name.includes('search') || t.name.includes('resolve') || t.name.includes('context')
+        );
+
+        if (searchTool) {
+          const result = await client.callTool({
+            name: searchTool.name,
+            arguments: { query, maxTokens: String(maxTokens / this.clients.size) },
+          });
+
+          const text = extractTextFromResult(result);
+          if (text) {
+            entries.push({
+              source: name,
+              content: text,
+              relevance: 0.8, // Default relevance for MCP-sourced context
+            });
+            totalTokens += estimateTokens(text);
+          }
+        }
+      } catch (err) {
+        console.log(`::warning::MCP query failed for ${name}: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+
+    // Sort by relevance and trim to token budget
+    entries.sort((a, b) => b.relevance - a.relevance);
+    return trimToTokenBudget(entries, maxTokens);
+  }
+
+  /**
+   * Get context specifically for library documentation.
+   * Useful for resolving false positives caused by API changes.
+   */
+  async getLibraryDocs(libraries: string[]): Promise<string> {
+    const sections: string[] = [];
+
+    for (const lib of libraries) {
+      try {
+        const context7Client = this.clients.get('context7');
+        if (context7Client) {
+          const tools = await context7Client.client.listTools();
+          const resolveTool = tools.tools.find((t) => t.name.includes('resolve'));
+
+          if (resolveTool) {
+            const result = await context7Client.client.callTool({
+              name: resolveTool.name,
+              arguments: { libraryName: lib },
+            });
+
+            const text = extractTextFromResult(result);
+            if (text) {
+              sections.push(`### ${lib}\n${text}`);
+            }
+          }
+        }
+      } catch {
+        // Silently skip unavailable docs
+      }
+    }
+
+    return sections.join('\n\n');
+  }
+
+  /**
+   * Clean up all MCP connections.
+   */
+  async disconnect(): Promise<void> {
+    for (const [name, { client, transport }] of this.clients) {
+      try {
+        await client.close();
+        transport.close();
+        console.log(`MCP: Disconnected from ${name}`);
+      } catch {
+        // Best effort
+      }
+    }
+    this.clients.clear();
+    this.initialized = false;
+  }
+}
+
+// ─── Helpers ──────────────────────────────────────────────
+
+function extractTextFromResult(result: unknown): string {
+  if (!result) return '';
+  // MCP tool results have a `content` array
+  const r = result as { content?: Array<{ type: string; text?: string }> };
+  if (Array.isArray(r.content)) {
+    return r.content
+      .filter((c) => c.type === 'text' && c.text)
+      .map((c) => c.text!)
+      .join('\n');
+  }
+  return '';
+}
+
+function estimateTokens(text: string): number {
+  // Rough estimate: ~4 chars per token
+  return Math.ceil(text.length / 4);
+}
+
+function trimToTokenBudget(entries: MCPContextEntry[], maxTokens: number): MCPQueryResult {
+  let total = 0;
+  const trimmed: MCPContextEntry[] = [];
+
+  for (const entry of entries) {
+    const tokens = estimateTokens(entry.content);
+    if (total + tokens > maxTokens) {
+      // Truncate this entry to fit
+      const remaining = maxTokens - total;
+      if (remaining > 100) {
+        trimmed.push({
+          ...entry,
+          content: entry.content.slice(0, remaining * 4),
+        });
+        total = maxTokens;
+      }
+      break;
+    }
+    trimmed.push(entry);
+    total += tokens;
+  }
+
+  return { entries: trimmed, totalTokens: total };
+}

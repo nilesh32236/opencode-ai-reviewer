@@ -1,0 +1,7 @@
+{"type":"summary","text":"The PR implements JWT authentication middleware. Overall good structure with some security concerns."}
+{"type":"verdict","ready":false,"reasoning":"Found 3 issues including one critical security vulnerability."}
+{"type":"strength","file":"src/auth/middleware.ts","line":15,"message":"Well-structured middleware with clear error handling."}
+{"type":"strength","file":"src/auth/jwt.ts","line":42,"message":"Good use of type-safe JWT payload parsing."}
+{"type":"issue","severity":"critical","file":"src/auth/jwt.ts","line":28,"message":"JWT secret hardcoded in source","suggestion":"Use environment variable JWT_SECRET instead of hardcoded value.","inline":true}
+{"type":"issue","severity":"important","file":"src/auth/middleware.ts","line":55,"message":"No token expiration check","suggestion":"Add token expiration validation using jwt.verify options.","inline":true}
+{"type":"issue","severity":"minor","file":"src/routes/user.ts","line":10,"message":"Unused import of ResponseType","suggestion":"Remove unused import.","inline":false}
