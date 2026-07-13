@@ -2,11 +2,18 @@
 
 AI-powered PR review, auto-fix, and codebase audit — as a GitHub Action and a GitHub App (Probot).
 
-- **Review** PRs for bugs, security issues, and style problems
-- **Auto-fix** issues with iterative AI-driven patches
-- **Audit** an entire codebase and file GitHub issues for findings
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![TypeScript](https://img.shields.io/badge/Language-TypeScript-blue.svg)](https://www.typescriptlang.org/)
+[![PNPM](https://img.shields.io/badge/Package%20Manager-pnpm-orange.svg)](https://pnpm.io/)
+[![Architecture Guide](https://img.shields.io/badge/Architecture-Agentic-purple.svg)](agent.md)
 
-Uses OpenCode models (DeepSeek V4 Flash Free) by default; supports OpenAI, Anthropic, and Gemini.
+- **Review** PRs for bugs, security issues, and style problems.
+- **Auto-fix** issues iteratively using compiler and test errors.
+- **Audit** an entire codebase and file GitHub issues for findings.
+
+Uses OpenCode models (`opencode/deepseek-v4-flash-free`) by default; also supports OpenAI, Anthropic, and Gemini.
+
+For details on the agent's internal architecture, execution loops, and prompt designs, refer to the [Architecture & Design Guide](agent.md).
 
 ---
 
@@ -159,5 +166,23 @@ pnpm teardown:local         # stop local Docker services
 ├── docker/                 # Docker Compose for local dev
 ├── docs/                   # Additional documentation
 ├── examples/               # Example workflows
+├── .agents/                # Customizations folder for AI agents
+│   └── AGENTS.md           # Coding rules and commands for development agents
+├── .opencode-reviewer.yml  # Dogfooding configuration file for reviews
+├── .env.example            # Environment variables template
+├── LICENSE                 # MIT License details
 └── pnpm-workspace.yaml     # Workspace config (lib, action, app)
 ```
+
+---
+
+## Workspace Customization Rules (`AGENTS.md`)
+
+If you are developing this codebase using an AI assistant (like Gemini or Antigravity), a dedicated workspace rule file is available under [`.agents/AGENTS.md`](.agents/AGENTS.md). This file guides the agent on monorepo package relationships, build instructions, linting commands, and verification processes.
+
+---
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+

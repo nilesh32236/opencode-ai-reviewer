@@ -1,0 +1,40 @@
+# OpenCode AI Reviewer Config (Dogfooding Configuration)
+# For syntax details, see lib/src/config.ts
+
+project:
+  name: "OpenCode AI Reviewer"
+  description: "An agentic AI assistant for code review, auto-fixing, and codebase audits (Actions & Probot App)."
+  conventions:
+    - "Use strict TypeScript (.ts) for all workspace packages."
+    - "Keep library logic in 'lib' decoupled from 'action' and 'app' wrappers."
+    - "Avoid using 'any' - favor strong type definitions and interfaces."
+    - "Document public functions and configurations using JSDoc style."
+  commandReference:
+    "pnpm build": "Compile all packages in the workspace recursively"
+    "pnpm test": "Run Jest/Vitest unit testing suites"
+    "pnpm lint": "Run ESLint code styling verifications"
+    "pnpm typecheck": "Run strict TypeScript compiler typechecks"
+
+review:
+  customRules:
+    - "Verify error boundary handling in asynchronous functions and network requests."
+    - "Check that config loaders fall back gracefully to default values."
+    - "Review command execution paths for input validation and shell escapes."
+
+fix:
+  maxIterations: 3
+  runChecks:
+    - "pnpm build"
+    - "pnpm typecheck"
+    - "pnpm lint"
+
+audit:
+  promptsDir: "prompts"
+  categories:
+    - "code-quality-conventions"
+  targetDirs:
+    - "lib/src"
+    - "action/src"
+    - "app/src"
+  createIssues: true
+  autoFix: false
