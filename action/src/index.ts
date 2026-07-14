@@ -53,6 +53,7 @@ async function run(): Promise<void> {
       reviewModel: inputs.reviewModel,
       fixModel: inputs.fixModel,
       batchSize: inputs.maxFilesPerBatch,
+      maxLinesPerFile: inputs.maxLinesPerFile,
       maxIterations: inputs.maxFixIterations,
       enableMCP: inputs.enableMCP,
       mcpServers,

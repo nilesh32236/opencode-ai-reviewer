@@ -24,12 +24,15 @@ export class ReviewEngine {
   }
 
   async reviewPR(pr: PRContext): Promise<ReviewResult> {
+    console.log(`Reviewing PR #${pr.number} (${pr.changedFiles.length} files)`);
+
     const mcpContext: MCPContextEntry[] = [];
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
       try {
         await this.mcp.connect();
         const libraries = detectLibraries(pr.changedFiles.map((f) => f.path));
         if (libraries.length > 0) {
+          console.log(`Fetching MCP docs for: ${libraries.join(', ')}`);
           const docs = await this.mcp.getLibraryDocs(libraries);
           if (docs) {
             mcpContext.push({
@@ -44,7 +47,11 @@ export class ReviewEngine {
       }
     }
 
+    console.log('Building PR context string');
     const contextMarkdown = this.buildPRContextString(pr);
+    const contextSize = Buffer.byteLength(contextMarkdown, 'utf-8');
+    console.log(`PR context size: ${(contextSize / 1024).toFixed(1)} KB`);
+
     const mcpSection =
       mcpContext.length > 0
         ? '\n\n## Library Context\n' + mcpContext.map((e) => e.content).join('\n')
@@ -63,13 +70,18 @@ export class ReviewEngine {
       lessons,
     );
 
+    const promptSize = Buffer.byteLength(prompt, 'utf-8');
+    console.log(`Total prompt size: ${(promptSize / 1024).toFixed(1)} KB`);
+
     const promptFile = '/tmp/opencode-review-prompt.txt';
     await fs.writeFile(promptFile, prompt);
 
+    console.log(`Running OpenCode review (model: ${this.config.reviewModel})`);
     await runOpenCode(prompt, {
       model: this.config.reviewModel,
     });
 
+    console.log('Parsing review output');
     return parseJsonlFile('.opencode/review-output.jsonl');
   }
 
@@ -175,6 +187,7 @@ export class ReviewEngine {
 
   private buildPRContextString(pr: PRContext): string {
     const parts: string[] = [];
+    const maxLines = this.config.maxLinesPerFile;
 
     parts.push(`## PR #${pr.number}: ${pr.title}`);
     parts.push('');
@@ -195,8 +208,20 @@ export class ReviewEngine {
     parts.push('### Changed Files');
     parts.push('');
     for (const f of pr.changedFiles) {
-      parts.push(`- \`${f.path}\` (${f.status}, +${f.additions}/-${f.deletions})`);
-      if (f.patch) {
+      const stats = `${f.path} (${f.status}, +${f.additions}/-${f.deletions})`;
+      parts.push(`- \`${stats}\``);
+      if (f.patch && maxLines > 0) {
+        const lines = f.patch.split('\n');
+        const totalLines = lines.length;
+        const truncated = totalLines > maxLines;
+        const included = truncated ? lines.slice(0, maxLines) : lines;
+        parts.push('  ```diff');
+        parts.push(`  ${included.join('\n  ')}`);
+        parts.push('  ```');
+        if (truncated) {
+          parts.push(`  *(${totalLines} diff lines; showing first ${maxLines})*`);
+        }
+      } else if (f.patch) {
         parts.push('  ```diff');
         parts.push(`  ${f.patch}`);
         parts.push('  ```');

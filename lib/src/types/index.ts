@@ -88,6 +88,8 @@ export interface AgentConfig {
   fixModel: string;
   /** Max files per sub-agent batch */
   batchSize: number;
+  /** Max diff lines per file in context (0 = unlimited) */
+  maxLinesPerFile: number;
   /** Max review-fix iterations */
   maxIterations: number;
   /** Whether to use MCP servers for context enrichment */
@@ -357,6 +359,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   reviewModel: 'opencode/deepseek-v4-flash-free',
   fixModel: 'opencode/deepseek-v4-flash-free',
   batchSize: 3,
+  maxLinesPerFile: 200,
   maxIterations: 3,
   enableMCP: true,
   mcpServers: [],

@@ -126,6 +126,7 @@ function buildConfig(): AgentConfig {
     reviewModel: process.env.REVIEW_MODEL || DEFAULT_CONFIG.reviewModel,
     fixModel: process.env.FIX_MODEL || DEFAULT_CONFIG.fixModel,
     batchSize: Number.parseInt(process.env.BATCH_SIZE || '3', 10),
+    maxLinesPerFile: Number.parseInt(process.env.MAX_LINES_PER_FILE || '200', 10),
     maxIterations: Number.parseInt(process.env.MAX_ITERATIONS || '3', 10),
     enableMCP: process.env.ENABLE_MCP !== 'false',
     mcpServers:
