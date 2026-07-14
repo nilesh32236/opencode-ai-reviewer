@@ -1,7 +1,5 @@
 import {
   DEFAULT_CONFIG,
-  GitHubHelper,
-  ReviewEngine,
   getDefaultMCPServers,
   EventBus,
   EventRouter,
@@ -11,9 +9,8 @@ import {
   MetaReviewSubscriber,
 } from '@opencode-pr-agent/lib';
 import type { AgentConfig, Subscriber, GitHubEvent } from '@opencode-pr-agent/lib';
-import type { Probot, ProbotOctokit } from 'probot';
+import type { Probot } from 'probot';
 import { handleAudit } from './handlers/audit.js';
-import { handleAutofixLoop } from './handlers/autofix.js';
 import { handleCommand } from './handlers/commands.js';
 import { handlePRReview } from './handlers/pr-review.js';
 
