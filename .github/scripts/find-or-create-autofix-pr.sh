@@ -18,7 +18,7 @@ ISSUE_NUM="$2"
 BRANCH_NAME="$3"
 TITLE="$4"
 BODY_FILE="$5"
-GH_TOKEN="$6"
+export GH_TOKEN="$6"
 
 # Check for existing open autofix PR for this issue
 EXISTING_PR=$(gh pr list \
