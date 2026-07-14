@@ -2,7 +2,7 @@
 
 You are auditing the **OpenCode AI Reviewer** codebase for performance bottlenecks, inefficient patterns, and resource usage concerns.
 
-Scan the target directories recursively (`lib/src`, `action/src`, `app/src`). Output findings to `.audit-output.jsonl`.
+Analyze the provided target directory for these issues.
 
 ## What to Check
 
@@ -26,15 +26,6 @@ Scan the target directories recursively (`lib/src`, `action/src`, `app/src`). Ou
 ### Concurrency & Async
 - **Unbounded concurrency**: Using `Promise.all()` on large arrays without concurrency limits can overwhelm system resources. Use batching or throttling.
 - **Blocking operations**: Avoid synchronous file I/O or CPU-heavy operations inside async functions without offloading.
-
-## Output Format
-
-Write findings to the output file in JSON Lines format:
-
-```jsonl
-{"type":"summary","text":"Audited {target_dir}. Found X performance issues."}
-{"type":"issue","severity":"critical|important|minor","file":"relative/path","line":42,"message":"What the issue is","suggestion":"How to fix it","inline":false}
-```
 
 ## Severity Guide
 

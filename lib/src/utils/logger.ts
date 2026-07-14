@@ -62,7 +62,7 @@ export class Logger {
         core.debug(fullMessage);
         break;
       case 'info':
-        console.log(fullMessage);
+        core.info(fullMessage);
         break;
       case 'warn':
         core.warning(fullMessage);
@@ -85,13 +85,19 @@ export class Logger {
     if (this.context.prNumber) parts.push(`pr#${this.context.prNumber}`);
     if (this.context.repo) parts.push(`${this.context.repo}`);
     if (this.context.eventType) parts.push(`${this.context.eventType}`);
+    for (const [k, v] of Object.entries(this.context)) {
+      if (!['prNumber', 'repo', 'eventType'].includes(k) && v !== undefined) {
+        parts.push(`${k}=${v}`);
+      }
+    }
     return parts.length > 0 ? ` [${parts.join(' ')}]` : '';
   }
 
   private formatData(data: unknown): string {
     if (typeof data === 'string') return data;
+    if (data instanceof Error) return data.stack || data.message;
     try {
-      return JSON.stringify(data, null, 0);
+      return JSON.stringify(data);
     } catch {
       return String(data);
     }

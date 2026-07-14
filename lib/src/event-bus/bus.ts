@@ -83,11 +83,13 @@ export class EventBus {
   }
 
   getSubscriberHealth(): SubscriberHealth[] {
-    return Array.from(this.subscriberHealth.values());
+    return Array.from(this.subscriberHealth.values()).map((h) => ({ ...h }));
   }
 
   getFailedSubscribers(): SubscriberHealth[] {
-    return Array.from(this.subscriberHealth.values()).filter((h) => h.failedCalls > 0);
+    return Array.from(this.subscriberHealth.values())
+      .filter((h) => h.failedCalls > 0)
+      .map((h) => ({ ...h }));
   }
 
   resetHealth(subscriberName: string): void {
