@@ -1,0 +1,166 @@
+name: AI Self Review & Audit
+
+on:
+  pull_request:
+    types: [opened, synchronize, labeled]
+  issue_comment:
+    types: [created]
+  schedule:
+    - cron: '0 0 * * *'  # Daily audit at midnight UTC
+  workflow_dispatch:
+    inputs:
+      audit_category:
+        description: 'Specific audit category (omit for random)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  # ─── PR Review (for human PRs) ───
+  review:
+    if: |
+      github.event_name != 'schedule' &&
+      github.actor != 'github-actions[bot]' &&
+      !contains(github.event.pull_request.labels.*.name, 'autofix') &&
+      !contains(github.event.pull_request.labels.*.name, 'autofix:approved') &&
+      !contains(github.event.pull_request.labels.*.name, 'autofix:merged') &&
+      (
+        github.event_name == 'pull_request' ||
+        (
+          github.event_name == 'issue_comment' &&
+          github.event.issue.pull_request != null &&
+          (contains(github.event.comment.body || '', '/review') || contains(github.event.comment.body || '', '/oc'))
+        )
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Resolve PR Ref
+        id: resolve-ref
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "issue_comment" ] && [ -n "${{ github.event.issue.pull_request }}" ]; then
+            PR_NUMBER="${{ github.event.issue.number }}"
+            REF=$(gh pr view "$PR_NUMBER" --json headRefName --jq .headRefName)
+            echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ github.event.pull_request.head.ref }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.resolve-ref.outputs.ref }}
+
+      - uses: ./action
+        with:
+          mode: review
+          model: 'opencode/deepseek-v4-flash-free'
+          github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+
+  # ─── Autofix Review Loop ───
+  autofix:
+    if: |
+      github.event_name != 'schedule' &&
+      (
+        (
+          github.event_name == 'pull_request' &&
+          contains(github.event.pull_request.labels.*.name, 'autofix') &&
+          !contains(github.event.pull_request.labels.*.name, 'autofix:approved') &&
+          !contains(github.event.pull_request.labels.*.name, 'autofix:merged')
+        ) ||
+        (
+          github.event_name == 'issue_comment' &&
+          github.event.issue.pull_request != null &&
+          contains(github.event.comment.body || '', '/fix')
+        )
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Resolve PR Ref
+        id: resolve-ref
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "issue_comment" ] && [ -n "${{ github.event.issue.pull_request }}" ]; then
+            PR_NUMBER="${{ github.event.issue.number }}"
+            REF=$(gh pr view "$PR_NUMBER" --json headRefName --jq .headRefName)
+            echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ github.event.pull_request.head.ref }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.resolve-ref.outputs.ref }}
+
+      - uses: ./action
+        with:
+          mode: fix
+          model: 'opencode/deepseek-v4-flash-free'
+          max_fix_iterations: 3
+          run_checks_after_fix: 'pnpm lint && pnpm typecheck && pnpm test'
+          github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+
+  # ─── Daily Codebase Audit ───
+  audit:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - uses: ./action
+        with:
+          mode: audit
+          model: 'opencode/deepseek-v4-flash-free'
+          audit_prompt_file: ${{ inputs.audit_category }}
+          audit_create_issues: true
+          audit_auto_fix: true
+          github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+
+  # ─── Fix Audit Issue (triggered by /fix comment on a regular issue) ───
+  fix-issue:
+    if: |
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request == null &&
+      contains(github.event.comment.body || '', '/fix')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: ./action
+        with:
+          mode: fix
+          model: 'opencode/deepseek-v4-flash-free'
+          max_fix_iterations: 3
+          run_checks_after_fix: 'pnpm lint && pnpm typecheck && pnpm test'
+          github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
