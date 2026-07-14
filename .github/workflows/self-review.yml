@@ -132,6 +132,12 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Ensure autofix label exists
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create "autofix" --force --color "243cd4" 2>/dev/null || true
+
       - uses: ./action
         with:
           mode: audit
@@ -156,6 +162,12 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Ensure autofix label exists
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create "autofix" --force --color "243cd4" 2>/dev/null || true
 
       - uses: ./action
         with:
