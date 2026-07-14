@@ -105,28 +105,36 @@ export async function setupOpenCode(version = 'latest'): Promise<string> {
 }
 
 /**
- * Write an opencode.json config in the working directory that sets all
- * permissions to "allow" so OpenCode never pauses waiting for user input.
- * Without this, any tool call (edit/bash/webfetch) that defaults to "ask"
- * will block forever in a non-interactive CI environment.
+ * Build the OpenCode CI config object.
+ *
+ * Based on https://opencode.ai/docs/permissions and https://opencode.ai/docs/config:
+ *
+ * - "permission": "allow"  →  shorthand that sets ALL tools to allow at once
+ * - external_directory     →  gates access to paths outside the working dir;
+ *                             defaults to "ask" which blocks CI sub-agents that
+ *                             read files in /tmp or other external locations
+ * - doom_loop              →  triggered when the same tool call repeats 3×;
+ *                             defaults to "ask" which would hang CI
+ * - task                   →  controls sub-agent invocation (task tool)
+ *
+ * The old `tools: { bash: true, ... }` block is deprecated since v1.1.1 —
+ * the permission system now controls tool access entirely.
+ *
+ * We inject this as OPENCODE_CONFIG_CONTENT (highest-precedence env var,
+ * overrides even a project-level opencode.json) so no file needs to be written
+ * and the config can never be overridden by a repo's own config.
  */
-function writeOpencodeConfig(cwd: string): void {
-  const configDir = path.join(cwd, '.opencode');
-  if (!fs.existsSync(configDir)) {
-    fs.mkdirSync(configDir, { recursive: true });
-  }
-
+function buildCIConfig(): string {
   const config = {
-    permission: {
-      edit: 'allow',
-      bash: 'allow',
-      webfetch: 'allow',
-    },
+    $schema: 'https://opencode.ai/config.json',
+    // "allow" as a string is the shorthand that enables every tool without
+    // prompting. Docs: https://opencode.ai/docs/permissions#configuration
+    permission: 'allow',
+    // Disable auto-update and sharing — irrelevant in CI and slow things down.
+    autoupdate: false,
+    share: 'disabled',
   };
-
-  const configPath = path.join(configDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-  core.info(`OpenCode config written: ${configPath}`);
+  return JSON.stringify(config);
 }
 
 export async function runOpenCode(
@@ -144,19 +152,20 @@ export async function runOpenCode(
   const cwd = options.workingDirectory || process.cwd();
   const timeoutMs = (options.timeoutMinutes ?? 10) * 60 * 1000;
 
-  // Write permissions config so OpenCode never blocks on permission prompts.
-  writeOpencodeConfig(cwd);
-
-  // Write the prompt to a temp file and pass it via --file so the full prompt
-  // text doesn't appear in the GitHub Actions command-echo log.
+  // Write the prompt to a temp file and pass via --file.
+  // Avoids echoing the full prompt on the command line in the Actions log and
+  // sidesteps OS argument length limits on large review prompts.
   const promptFile = path.join(os.tmpdir(), `opencode-prompt-${Date.now()}.txt`);
   fs.writeFileSync(promptFile, prompt, 'utf-8');
 
-  // --print-logs streams OpenCode's internal progress to stderr, making it
-  // visible in the Actions log instead of appearing completely silent.
+  // --auto  → auto-approves any permission that is not explicitly "deny".
+  //           This is the documented CI mechanism for opencode run.
+  //           Docs: https://opencode.ai/docs/permissions#auto-mode
   const args = [
-    '--print-logs',
+    '--print-logs',        // stream internal progress to stderr in real time
+    '--log-level', 'INFO', // show INFO-level events (tool calls, model turns)
     'run',
+    '--auto',              // approve all non-denied permissions automatically
     '--model', options.model,
     '--file', promptFile,
     'Review the attached file and produce the output as instructed.',
@@ -164,41 +173,64 @@ export async function runOpenCode(
 
   core.info(`Running OpenCode (model: ${options.model}, timeout: ${options.timeoutMinutes ?? 10}m)...`);
 
+  let timedOut = false;
+  const timeoutHandle = setTimeout(() => {
+    timedOut = true;
+    core.warning(`OpenCode has been running for ${options.timeoutMinutes ?? 10}m — possible hang.`);
+  }, timeoutMs);
+
   try {
     await exec.exec(binaryPath, args, {
       cwd,
       env: {
         ...process.env,
         ...options.env,
-        // Belt-and-suspenders: also set permissions via env var so they apply
-        // even if a project-level config overrides the file we wrote above.
-        OPENCODE_PERMISSION: JSON.stringify({ edit: 'allow', bash: 'allow', webfetch: 'allow' }),
+        // OPENCODE_CONFIG_CONTENT is the highest-precedence config source.
+        // It overrides remote, global, and project opencode.json configs.
+        // We use it to guarantee all permissions are "allow" and autoupdate
+        // is disabled regardless of what the target repo's config says.
+        // Docs: https://opencode.ai/docs/config#locations
+        OPENCODE_CONFIG_CONTENT: buildCIConfig(),
+        // Disable auto-update checks — irrelevant in CI, wastes time.
+        OPENCODE_DISABLE_AUTOUPDATE: 'true',
       } as { [key: string]: string },
-      outStream: process.stdout,
-      errStream: process.stderr,
-      // silent: true keeps the command line from being echoed (which would
-      // dump the full --file path and prompt message into the log).
+      // Route stdout/stderr through core.info so every line gets a timestamp
+      // and appears in the GitHub Actions log in real time.
+      // (outStream/errStream writes to raw process streams which can be
+      // invisible depending on how the Actions runner buffers output.)
+      listeners: {
+        stdout: (data: Buffer) => {
+          const text = data.toString();
+          for (const line of text.split('\n')) {
+            if (line.trim()) core.info(`[opencode] ${line}`);
+          }
+        },
+        stderr: (data: Buffer) => {
+          const text = data.toString();
+          for (const line of text.split('\n')) {
+            if (line.trim()) core.info(`[opencode] ${line}`);
+          }
+        },
+      },
+      // silent: true suppresses the command-line echo (avoids dumping the
+      // full --file path and long prompt message into the log).
       silent: true,
       ignoreReturnCode: true,
     });
 
     const durationMs = Date.now() - startTime;
     core.info(`OpenCode finished in ${(durationMs / 1000).toFixed(1)}s`);
-
     return { success: true, output: '', durationMs };
   } catch (err) {
     const durationMs = Date.now() - startTime;
     core.error(`OpenCode execution failed: ${String(err)}`);
     return { success: false, output: '', durationMs };
   } finally {
-    // Clean up temp prompt file — best effort.
-    try { fs.unlinkSync(promptFile); } catch { /* ignore */ }
-
-    // Warn if we're over budget (helps diagnose future hangs).
-    const elapsed = Date.now() - startTime;
-    if (elapsed >= timeoutMs) {
-      core.warning(`OpenCode hit the ${options.timeoutMinutes ?? 10}m timeout — it may have hung.`);
+    clearTimeout(timeoutHandle);
+    if (timedOut) {
+      core.warning(`OpenCode may have hung — exceeded the ${options.timeoutMinutes ?? 10}m timeout.`);
     }
+    try { fs.unlinkSync(promptFile); } catch { /* best-effort cleanup */ }
   }
 }
 
