@@ -29,4 +29,4 @@ COPY . .
 
 RUN pnpm build
 
-CMD ["pnpm", "test"]
+CMD ["pnpm", "--filter", "app", "start"]
