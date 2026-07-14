@@ -104,11 +104,37 @@ export async function setupOpenCode(version = 'latest'): Promise<string> {
   return binPath;
 }
 
+/**
+ * Write an opencode.json config in the working directory that sets all
+ * permissions to "allow" so OpenCode never pauses waiting for user input.
+ * Without this, any tool call (edit/bash/webfetch) that defaults to "ask"
+ * will block forever in a non-interactive CI environment.
+ */
+function writeOpencodeConfig(cwd: string): void {
+  const configDir = path.join(cwd, '.opencode');
+  if (!fs.existsSync(configDir)) {
+    fs.mkdirSync(configDir, { recursive: true });
+  }
+
+  const config = {
+    permission: {
+      edit: 'allow',
+      bash: 'allow',
+      webfetch: 'allow',
+    },
+  };
+
+  const configPath = path.join(configDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+  core.info(`OpenCode config written: ${configPath}`);
+}
+
 export async function runOpenCode(
   prompt: string,
   options: {
     model: string;
     workingDirectory?: string;
+    /** Timeout in minutes before killing OpenCode. Default: 10. */
     timeoutMinutes?: number;
     env?: Record<string, string>;
   },
@@ -116,18 +142,42 @@ export async function runOpenCode(
   const binaryPath = opencodePath || (await setupOpenCode());
   const startTime = Date.now();
   const cwd = options.workingDirectory || process.cwd();
+  const timeoutMs = (options.timeoutMinutes ?? 10) * 60 * 1000;
 
-  const args = ['run', '--model', options.model, prompt];
-  core.info(`Running OpenCode (model: ${options.model})...`);
+  // Write permissions config so OpenCode never blocks on permission prompts.
+  writeOpencodeConfig(cwd);
 
-  let output = '';
+  // Write the prompt to a temp file and pass it via --file so the full prompt
+  // text doesn't appear in the GitHub Actions command-echo log.
+  const promptFile = path.join(os.tmpdir(), `opencode-prompt-${Date.now()}.txt`);
+  fs.writeFileSync(promptFile, prompt, 'utf-8');
+
+  // --print-logs streams OpenCode's internal progress to stderr, making it
+  // visible in the Actions log instead of appearing completely silent.
+  const args = [
+    '--print-logs',
+    'run',
+    '--model', options.model,
+    '--file', promptFile,
+    'Review the attached file and produce the output as instructed.',
+  ];
+
+  core.info(`Running OpenCode (model: ${options.model}, timeout: ${options.timeoutMinutes ?? 10}m)...`);
 
   try {
     await exec.exec(binaryPath, args, {
       cwd,
-      env: { ...process.env, ...options.env } as { [key: string]: string },
+      env: {
+        ...process.env,
+        ...options.env,
+        // Belt-and-suspenders: also set permissions via env var so they apply
+        // even if a project-level config overrides the file we wrote above.
+        OPENCODE_PERMISSION: JSON.stringify({ edit: 'allow', bash: 'allow', webfetch: 'allow' }),
+      } as { [key: string]: string },
       outStream: process.stdout,
       errStream: process.stderr,
+      // silent: true keeps the command line from being echoed (which would
+      // dump the full --file path and prompt message into the log).
       silent: true,
       ignoreReturnCode: true,
     });
@@ -135,11 +185,20 @@ export async function runOpenCode(
     const durationMs = Date.now() - startTime;
     core.info(`OpenCode finished in ${(durationMs / 1000).toFixed(1)}s`);
 
-    return { success: true, output, durationMs };
+    return { success: true, output: '', durationMs };
   } catch (err) {
     const durationMs = Date.now() - startTime;
     core.error(`OpenCode execution failed: ${String(err)}`);
-    return { success: false, output, durationMs };
+    return { success: false, output: '', durationMs };
+  } finally {
+    // Clean up temp prompt file — best effort.
+    try { fs.unlinkSync(promptFile); } catch { /* ignore */ }
+
+    // Warn if we're over budget (helps diagnose future hangs).
+    const elapsed = Date.now() - startTime;
+    if (elapsed >= timeoutMs) {
+      core.warning(`OpenCode hit the ${options.timeoutMinutes ?? 10}m timeout — it may have hung.`);
+    }
   }
 }
 

@@ -73,9 +73,6 @@ export class ReviewEngine {
     const promptSize = Buffer.byteLength(prompt, 'utf-8');
     console.log(`Total prompt size: ${(promptSize / 1024).toFixed(1)} KB`);
 
-    const promptFile = '/tmp/opencode-review-prompt.txt';
-    await fs.writeFile(promptFile, prompt);
-
     console.log(`Running OpenCode review (model: ${this.config.reviewModel})`);
     await runOpenCode(prompt, {
       model: this.config.reviewModel,
@@ -116,9 +113,6 @@ export class ReviewEngine {
       fixContext,
       iteration,
     );
-
-    const promptFile = '/tmp/opencode-fix-prompt.txt';
-    await fs.writeFile(promptFile, prompt);
 
     await runOpenCode(prompt, {
       model: this.config.fixModel,
@@ -170,9 +164,6 @@ export class ReviewEngine {
       enrichedPrompt,
       targetDir,
     );
-
-    const promptFile = '/tmp/opencode-audit-prompt.txt';
-    await fs.writeFile(promptFile, prompt);
 
     await runOpenCode(prompt, {
       model: this.config.reviewModel,
