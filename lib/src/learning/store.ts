@@ -58,7 +58,7 @@ export class LearningStore {
       .run(generateId(), feedback.findingId, feedback.signalType, feedback.signalValue, feedback.prNumber);
   }
 
-  getFalsePositiveRate(category?: string): number {
+  getFalsePositiveRate(): number {
     const total = this.db
       .prepare('SELECT COUNT(*) as count FROM feedback')
       .get() as { count: number };

@@ -39,16 +39,9 @@ export class FeedbackSubscriber implements Subscriber {
     }
   }
 
-  private async handleReviewCommentDismissed(event: GitHubEvent): Promise<void> {
-    const prNumber = event.prNumber || 0;
-    if (!prNumber) return;
-
-    this.store.recordFeedback({
-      findingId: `review_${event.timestamp}`,
-      signalType: 'dismissed',
-      signalValue: 'comment_dismissed',
-      prNumber,
-    });
+  private async handleReviewCommentDismissed(_event: GitHubEvent): Promise<void> {
+    // No reliable way to map a dismissed comment to a finding without
+    // linking review_comment IDs in the findings table
   }
 
   private async handleCommentCreated(event: GitHubEvent): Promise<void> {

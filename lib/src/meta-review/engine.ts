@@ -1,3 +1,4 @@
+import { promises as fs } from 'fs';
 import { LearningStore } from '../learning/store.js';
 import { buildMetaReviewPrompt } from './prompts.js';
 import type { GitHubEvent, Subscriber } from '../types/index.js';
@@ -30,8 +31,7 @@ export class MetaReviewEngine {
 
     let result: Record<string, unknown> = {};
     try {
-      const fs = await import('fs');
-      const content = await fs.promises.readFile('.opencode/meta-review-output.jsonl', 'utf-8');
+      const content = await fs.readFile('.opencode/meta-review-output.jsonl', 'utf-8');
       const parsed = JSON.parse(content.trim().split('\n').pop() || '{}');
       result = parsed;
     } catch {
