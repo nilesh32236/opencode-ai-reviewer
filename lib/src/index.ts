@@ -26,3 +26,13 @@ export {
   listAuditCategories,
 } from './prompts/builder.js';
 export { ReviewEngine } from './engine.js';
+export { EventBus } from './event-bus/bus.js';
+export { EventRouter } from './event-bus/router.js';
+export { LearningStore } from './learning/store.js';
+export { getDatabase, getDbPath } from './learning/schema.js';
+export { FeedbackSubscriber } from './learning/feedback-subscriber.js';
+export { MetaReviewEngine, MetaReviewSubscriber } from './meta-review/engine.js';
+export { buildMetaReviewPrompt } from './meta-review/prompts.js';
+export { PatternDetector } from './pattern-detector/engine.js';
+export { clusterFindings } from './pattern-detector/cluster.js';
+export { RuleApprovalSubscriber } from './pattern-detector/rule-approval.js';
