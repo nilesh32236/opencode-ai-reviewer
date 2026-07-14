@@ -133,6 +133,9 @@ function buildCIConfig(): string {
     // Disable auto-update and sharing — irrelevant in CI and slow things down.
     autoupdate: false,
     share: 'disabled',
+    // Clear MCP and plugins to prevent downloading external dependencies in CI
+    mcp: {},
+    plugin: [],
   };
   return JSON.stringify(config);
 }

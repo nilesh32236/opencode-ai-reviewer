@@ -29,9 +29,11 @@ fix:
     - "pnpm lint"
 
 audit:
-  promptsDir: "prompts"
+  promptsDir: ".audit-prompts"
   categories:
     - "code-quality-conventions"
+    - "security-privacy"
+    - "error-handling-resilience"
   targetDirs:
     - "lib/src"
     - "action/src"
