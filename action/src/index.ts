@@ -21,7 +21,7 @@ async function run(): Promise<void> {
   try {
     const inputs = parseInputs();
 
-    const repo = core.getInput('repo') || github.context.repo.repo;
+    const repo = core.getInput('repo') || `${github.context.repo.owner}/${github.context.repo.repo}`;
     const token = inputs.githubToken;
 
     await setupOpenCode(inputs.opencodeVersion);
