@@ -44,7 +44,6 @@ describe('MetaReviewEngine', () => {
   });
 
   it('adds prompt override when FP rate is high', async () => {
-    // Create 2 findings with 2 disputes → 100% FP rate
     const id1 = store.recordFinding({ prNumber: 1, type: 'issue', message: 'fp1' });
     store.recordFeedback({ findingId: id1, signalType: 'dismissed', signalValue: 'fp', prNumber: 1 });
     const id2 = store.recordFinding({ prNumber: 1, type: 'issue', message: 'fp2' });
@@ -66,7 +65,7 @@ describe('MetaReviewEngine', () => {
 });
 
 describe('MetaReviewSubscriber', () => {
-  it('only runs at configured interval', () => {
+  it('has correct subscriber configuration', () => {
     const store = new LearningStore(':memory:');
     const engine = new MetaReviewEngine(store);
     const sub = new MetaReviewSubscriber(engine, store, 3);

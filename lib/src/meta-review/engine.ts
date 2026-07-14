@@ -3,8 +3,6 @@ import { buildMetaReviewPrompt } from './prompts.js';
 import type { GitHubEvent, Subscriber } from '../types/index.js';
 import { runOpenCode } from '../opencode.js';
 
-const DISPUTE_KEYWORDS = ['false positive', 'not an issue', 'wrong', 'incorrect', 'false alarm'];
-
 export class MetaReviewEngine {
   constructor(private store: LearningStore) {}
 
@@ -37,7 +35,6 @@ export class MetaReviewEngine {
       const parsed = JSON.parse(content.trim().split('\n').pop() || '{}');
       result = parsed;
     } catch {
-      // Fallback defaults if OpenCode call fails
       result = {
         actionabilityScore: 70,
         coverageScore: 70,
@@ -57,7 +54,6 @@ export class MetaReviewEngine {
 
     this.store.recordQuality(quality);
 
-    // If false positive rate > 30%, add a prompt override suggestion
     if (fpRate > 0.3) {
       this.store.addPromptOverride(
         'general',
