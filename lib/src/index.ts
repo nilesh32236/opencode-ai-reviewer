@@ -1,5 +1,5 @@
-export * from './types/index';
-export * from './types/schemas';
+export * from './types/index.js';
+export * from './types/schemas.js';
 export {
   setupOpenCode,
   runOpenCode,
@@ -7,15 +7,15 @@ export {
   configureGit,
   getGitStatus,
   setupWorkspaceDependencies,
-} from './opencode';
-export { GitHubHelper } from './utils/github';
+} from './opencode.js';
+export { GitHubHelper } from './utils/github.js';
 export {
   parseJsonlFile,
   parseJsonlString,
   buildReviewBody,
   buildInlineComments,
-} from './jsonl-parser';
-export { loadConfig, mergeConfigWithInputs } from './config';
+} from './jsonl-parser.js';
+export { loadConfig, mergeConfigWithInputs } from './config.js';
 export { MCPManager } from './mcp/client.js';
 export { context7Server, githubMCPServer, getDefaultMCPServers } from './mcp/servers.js';
 export {

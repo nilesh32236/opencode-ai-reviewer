@@ -24,12 +24,11 @@ export class LearningStore {
     suggestion?: string;
   }): string {
     const id = finding.id || generateId();
-    this.db
-      .prepare(
-        `INSERT OR REPLACE INTO findings (id, pr_number, type, severity, file, line, message, suggestion)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(id, finding.prNumber, finding.type, finding.severity || null, finding.file || null, finding.line || null, finding.message, finding.suggestion || null);
+    const stmt = this.db.prepare(
+      `INSERT OR REPLACE INTO findings (id, pr_number, type, severity, file, line, message, suggestion)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    stmt.run(id, finding.prNumber, finding.type, finding.severity || null, finding.file || null, finding.line || null, finding.message, finding.suggestion || null);
     return id;
   }
 
@@ -130,16 +129,19 @@ export class LearningStore {
   }
 
   incrementAndCheckMetaReviewInterval(interval: number): boolean {
-    const row = this.db
-      .prepare('SELECT count FROM meta_review_counter WHERE id = 1')
-      .get() as { count: number } | undefined;
+    const tick = this.db.transaction(() => {
+      const row = this.db
+        .prepare('SELECT count FROM meta_review_counter WHERE id = 1')
+        .get() as { count: number } | undefined;
 
-    if (!row) return false;
+      if (!row) return false;
 
-    const newCount = row.count + 1;
-    this.db.prepare('UPDATE meta_review_counter SET count = ? WHERE id = 1').run(newCount);
+      const newCount = row.count + 1;
+      this.db.prepare('UPDATE meta_review_counter SET count = ? WHERE id = 1').run(newCount);
 
-    return newCount % interval === 0;
+      return newCount % interval === 0;
+    });
+    return tick();
   }
 
   recordPattern(pattern: {
@@ -148,30 +150,33 @@ export class LearningStore {
     frequency: number;
     fileTypes: string[];
   }): void {
-    const existing = this.db
-      .prepare('SELECT id, frequency FROM patterns WHERE pattern_key = ?')
-      .get(pattern.patternKey) as { id: string; frequency: number } | undefined;
+    const upsert = this.db.transaction(() => {
+      const existing = this.db
+        .prepare('SELECT id, frequency FROM patterns WHERE pattern_key = ?')
+        .get(pattern.patternKey) as { id: string; frequency: number } | undefined;
 
-    if (existing) {
-      this.db
-        .prepare(
-          'UPDATE patterns SET frequency = ?, last_seen = datetime(\'now\'), file_types = ? WHERE pattern_key = ?',
-        )
-        .run(existing.frequency + 1, pattern.fileTypes.join(','), pattern.patternKey);
-    } else {
-      this.db
-        .prepare(
-          `INSERT INTO patterns (id, pattern_key, message_cluster, frequency, file_types, first_seen, last_seen)
-           VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
-        )
-        .run(
-          generateId(),
-          pattern.patternKey,
-          JSON.stringify(pattern.messageCluster),
-          pattern.frequency,
-          pattern.fileTypes.join(','),
-        );
-    }
+      if (existing) {
+        this.db
+          .prepare(
+            "UPDATE patterns SET frequency = ?, last_seen = datetime('now'), file_types = ? WHERE pattern_key = ?",
+          )
+          .run(existing.frequency + 1, pattern.fileTypes.join(','), pattern.patternKey);
+      } else {
+        this.db
+          .prepare(
+            `INSERT INTO patterns (id, pattern_key, message_cluster, frequency, file_types, first_seen, last_seen)
+             VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+          )
+          .run(
+            generateId(),
+            pattern.patternKey,
+            JSON.stringify(pattern.messageCluster),
+            pattern.frequency,
+            pattern.fileTypes.join(','),
+          );
+      }
+    });
+    upsert();
   }
 
   getPatterns(minFrequency = 3): Array<Record<string, unknown>> {

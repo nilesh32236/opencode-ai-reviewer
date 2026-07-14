@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as core from '@actions/core';
 import type { AgentConfig, GitHubHelper, ReviewEngine } from '@opencode-pr-agent/lib';
-import type { ActionInputs } from './inputs';
+import type { ActionInputs } from './inputs.js';
 
 export async function runAudit(
   inputs: ActionInputs,

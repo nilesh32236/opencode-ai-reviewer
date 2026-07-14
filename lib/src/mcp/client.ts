@@ -11,6 +11,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { MCPContextEntry, MCPQueryResult, MCPServerConfig } from '../types/index.js';
+import { withRetry } from '../utils/retry.js';
 
 export class MCPManager {
   private clients: Map<string, { client: Client; transport: StdioClientTransport }> = new Map();
@@ -40,7 +41,10 @@ export class MCPManager {
           });
 
           const client = new Client({ name: 'opencode-pr-agent', version: '1.0.0' });
-          await client.connect(transport);
+          await withRetry(() => client.connect(transport), {
+            maxRetries: 2,
+            baseDelayMs: 500,
+          });
           this.clients.set(server.name, { client, transport });
 
           // List available tools

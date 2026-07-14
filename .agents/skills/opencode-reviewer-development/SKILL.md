@@ -24,6 +24,11 @@ This is a `pnpm` monorepo containing three core packages:
 - ** ESM Extensions in Imports**: Because of Node ESM/CJS compatibility configuration, all TypeScript file imports MUST end with `.js` (e.g. `import { loadConfig } from './config.js';`), NOT `.ts` or omitting extensions.
 - **Strict Typing**: Avoid using the `any` type. Define explicit interfaces for configuration inputs, payloads, and events.
 
+### Error Resilience Patterns
+- **Retry Utility**: Use `withRetry()` from `lib/src/utils/retry.ts` for all external API calls. It provides exponential backoff with jitter, configurable retry counts, and status code filtering.
+- **SQLite Transactions**: Wrap read-then-write operations in `better-sqlite3` transactions using `db.transaction()`. This prevents race conditions in the learning store.
+- **Graceful Degradation**: Non-critical subsystems (MCP, learning store) should fail independently without crashing the main review flow.
+
 ### Monorepo Build Flow
 - **Rebuilding is Mandatory**: The `action` and `app` packages depend on `lib`. If you modify anything inside `lib/src/`, you **must** run `pnpm build` so changes compile and propagate to the wrappers.
 - **ncc Bundle**: The GitHub Action runs `action/lib/index.js` compiled by `ncc`. If you modify `action/src/` or `lib/src/`, you must rebuild to update the bundle.
