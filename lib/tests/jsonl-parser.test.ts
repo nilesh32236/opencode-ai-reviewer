@@ -1,4 +1,3 @@
-import * as fs from 'fs';
 import * as path from 'path';
 import {
   buildInlineComments,
@@ -125,16 +124,6 @@ describe('jsonl-parser', () => {
   describe('parseJsonlFile', () => {
     it('reads and parses a file', () => {
       const fixturePath = path.join(__dirname, 'fixtures/sample-review-output.jsonl');
-      if (!fs.existsSync(fixturePath)) {
-        fs.writeFileSync(
-          fixturePath,
-          [
-            JSON.stringify({ type: 'summary', text: 'Test summary.' }),
-            JSON.stringify({ type: 'verdict', ready: true, reasoning: 'Looks good.' }),
-          ].join('\n'),
-        );
-      }
-
       const result = parseJsonlFile(fixturePath);
       expect(result.summary).toContain('JWT authentication');
       expect(result.verdict.ready).toBe(false);

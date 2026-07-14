@@ -129,11 +129,11 @@ describe('FeedbackSubscriber', () => {
   });
 
   it('detects all dispute keywords', async () => {
-    store.recordFinding({ prNumber: 1, type: 'issue', message: 'test' });
-
     const keywords = ['false positive', 'not an issue', 'wrong', 'incorrect', 'false alarm'];
-    for (const kw of keywords) {
-      const s = new LearningStore(TEST_DB + '_kw');
+    for (let i = 0; i < keywords.length; i++) {
+      const kw = keywords[i];
+      const dbPath = TEST_DB + `_kw_${i}`;
+      const s = new LearningStore(dbPath);
       const sub = new FeedbackSubscriber(s);
 
       s.recordFinding({ prNumber: 1, type: 'issue', message: 'test' });
@@ -147,6 +147,7 @@ describe('FeedbackSubscriber', () => {
 
       expect(s.getFalsePositiveRate()).toBeGreaterThan(0);
       s.close();
+      try { fs.unlinkSync(dbPath); } catch { /* ok */ }
     }
   });
 

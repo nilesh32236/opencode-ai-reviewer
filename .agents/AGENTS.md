@@ -31,7 +31,7 @@ When writing or reviewing code in this repository, follow these patterns:
 
 1. **Use `withRetry()` for external API calls**: Import from `lib/src/utils/retry.ts`. All GitHub API calls should use this utility for exponential backoff and retry on transient errors (429, 5xx).
 2. **Wrap SQLite read-then-write in transactions**: Use `db.transaction()` from `better-sqlite3` for operations that read a value, compute, and then write (e.g., `recordPattern`, `incrementAndCheckMetaReviewInterval`).
-3. **Graceful degradation**: Non-critical subsystems (MCP, learning store) should fail independently. Use try/catch with empty catch blocks for non-critical operations.
+3. **Graceful degradation**: Non-critical subsystems (MCP, learning store) should fail independently. Catch and log (debug/warning level) rather than silently swallowing errors, so degraded operation remains observable.
 4. **Timeouts for long-running operations**: Always pass a timeout to long-running operations, especially OpenCode CLI execution.
 
 ---

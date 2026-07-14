@@ -33,23 +33,30 @@ export class MCPManager {
 
     for (const server of this.servers) {
       try {
-        if (server.type === 'local' && server.command) {
-          const transport = new StdioClientTransport({
-            command: server.command[0],
-            args: server.command.slice(1),
-            env: { ...process.env, ...server.environment } as Record<string, string>,
-          });
+        const cmd = server.command;
+        if (server.type === 'local' && cmd) {
+          let mcpClient: Client | undefined;
+          let mcpTransport: StdioClientTransport | undefined;
 
-          const client = new Client({ name: 'opencode-pr-agent', version: '1.0.0' });
-          await withRetry(() => client.connect(transport), {
+          await withRetry(async () => {
+            mcpTransport = new StdioClientTransport({
+              command: cmd[0],
+              args: cmd.slice(1),
+              env: { ...process.env, ...server.environment } as Record<string, string>,
+            });
+
+            mcpClient = new Client({ name: 'opencode-pr-agent', version: '1.0.0' });
+            await mcpClient.connect(mcpTransport);
+            this.clients.set(server.name, { client: mcpClient, transport: mcpTransport });
+          }, {
             maxRetries: 2,
             baseDelayMs: 500,
           });
-          this.clients.set(server.name, { client, transport });
 
-          // List available tools
-          const tools = await client.listTools();
-          console.log(`  ${server.name}: ${tools.tools.length} tools available`);
+          if (mcpClient) {
+            const tools = await mcpClient.listTools();
+            console.log(`  ${server.name}: ${tools.tools.length} tools available`);
+          }
         } else if (server.type === 'remote' && server.url) {
           // For remote MCP servers, we'd use a different transport
           // For now, log a warning
@@ -140,8 +147,8 @@ export class MCPManager {
             }
           }
         }
-      } catch {
-        // Silently skip unavailable docs
+      } catch (err) {
+        console.log(`MCP docs unavailable for ${lib}: ${err instanceof Error ? err.message : err}`);
       }
     }
 
@@ -157,8 +164,8 @@ export class MCPManager {
         await client.close();
         transport.close();
         console.log(`MCP: Disconnected from ${name}`);
-      } catch {
-        // Best effort
+      } catch (err) {
+        console.log(`MCP disconnect error for ${name}: ${err instanceof Error ? err.message : err}`);
       }
     }
     this.clients.clear();

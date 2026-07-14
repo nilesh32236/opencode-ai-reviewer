@@ -20,6 +20,8 @@ export class GitHubHelper {
 
   private async api<T>(path: string, options: RequestInit = {}): Promise<T> {
     const url = `${this.apiUrl}/repos/${this.repo}${path}`;
+    const method = (options.method ?? 'GET').toUpperCase();
+    const isIdempotent = method === 'GET' || method === 'HEAD' || method === 'PUT' || method === 'DELETE';
 
     return withRetry(async () => {
       const res = await fetch(url, {
@@ -42,7 +44,7 @@ export class GitHubHelper {
       if (res.status === 204) return undefined as T;
       return res.json();
     }, {
-      retryableStatuses: [429, 500, 502, 503, 504],
+      retryableStatuses: isIdempotent ? [429, 500, 502, 503, 504] : [429],
     });
   }
 

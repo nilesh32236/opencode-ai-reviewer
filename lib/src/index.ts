@@ -13,7 +13,6 @@ export {
   parseJsonlFile,
   parseJsonlString,
   buildReviewBody,
-  buildInlineComments,
 } from './jsonl-parser.js';
 export { loadConfig, mergeConfigWithInputs } from './config.js';
 export { MCPManager } from './mcp/client.js';

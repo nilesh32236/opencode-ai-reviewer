@@ -222,15 +222,15 @@ export function configureGit(userName?: string, userEmail?: string, token?: stri
   const name = userName || process.env.GITHUB_ACTOR || 'opencode-ai-reviewer[bot]';
   const email = userEmail || `${name}@users.noreply.github.com`;
 
-  cp.execSync('git config --global user.name "' + name + '"');
-  cp.execSync('git config --global user.email "' + email + '"');
+  cp.execFileSync('git', ['config', '--global', 'user.name', name]);
+  cp.execFileSync('git', ['config', '--global', 'user.email', email]);
 
   if (token) {
-    cp.execSync(
-      'git config --global url.https://x-access-token:' +
-        token +
-        '@github.com/.insteadOf https://github.com/',
-    );
+    cp.execFileSync('git', [
+      'config', '--global',
+      `url.https://x-access-token:${token}@github.com/.insteadOf`,
+      'https://github.com/',
+    ]);
   }
 
   core.info(`Git configured: ${name} <${email}>`);

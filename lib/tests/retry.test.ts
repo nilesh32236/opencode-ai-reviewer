@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { withRetry } from '../src/utils/retry.js';
+import { withRetry, withRetryAndTimeout } from '../src/utils/retry.js';
 
 describe('withRetry', () => {
   it('returns the successful result on first try', async () => {
@@ -70,6 +70,41 @@ describe('withRetry', () => {
 
     const result = await withRetry(fn, { maxRetries: 2, baseDelayMs: 10 });
     expect(result).toBe('recovered');
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('withRetryAndTimeout', () => {
+  it('rejects when fn exceeds timeout', async () => {
+    const fn = vi.fn().mockImplementation(async (signal: AbortSignal) => {
+      await new Promise<void>((resolve) => {
+        if (signal.aborted) {
+          resolve();
+          return;
+        }
+        signal.addEventListener('abort', () => resolve());
+      });
+      throw new Error('Operation timed out');
+    });
+
+    await expect(withRetryAndTimeout(fn, 50, { maxRetries: 1, baseDelayMs: 10 })).rejects.toThrow('Operation timed out');
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves when fn completes before timeout', async () => {
+    const fn = vi.fn().mockImplementation(async (_signal: AbortSignal) => 'fast');
+
+    const result = await withRetryAndTimeout(fn, 5000, { maxRetries: 1 });
+    expect(result).toBe('fast');
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries on retryable error and respects timeout', async () => {
+    const fn = vi.fn().mockImplementation(async (_signal: AbortSignal) => {
+      throw Object.assign(new Error('Server error'), { status: 502 });
+    });
+
+    await expect(withRetryAndTimeout(fn, 5000, { maxRetries: 2, baseDelayMs: 10 })).rejects.toThrow('Server error');
     expect(fn).toHaveBeenCalledTimes(2);
   });
 });

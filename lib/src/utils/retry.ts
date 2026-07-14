@@ -65,7 +65,7 @@ export async function withRetry<T>(
 }
 
 export async function withRetryAndTimeout<T>(
-  fn: () => Promise<T>,
+  fn: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number,
   options: RetryOptions = {},
 ): Promise<T> {
@@ -74,7 +74,7 @@ export async function withRetryAndTimeout<T>(
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
       try {
-        return await fn();
+        return await fn(controller.signal);
       } finally {
         clearTimeout(timeoutId);
       }

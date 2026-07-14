@@ -39,7 +39,7 @@ on:
       anthropic_api_key:
         required: false
         type: string
-      google_api_key:
+      gemini_api_key:
         required: false
         type: string
     outputs:
@@ -87,4 +87,4 @@ jobs:
           github_token: ${{ secrets.repo_token }}
           openai_api_key: ${{ inputs.openai_api_key }}
           anthropic_api_key: ${{ inputs.anthropic_api_key }}
-          google_api_key: ${{ inputs.google_api_key }}
+          gemini_api_key: ${{ inputs.gemini_api_key }}
