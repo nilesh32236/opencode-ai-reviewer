@@ -11,6 +11,11 @@ import type {
 } from '../types/index.js';
 import { withRetry } from './retry.js';
 
+export interface PaginatedResult<T> {
+  items: T[];
+  totalCount: number;
+}
+
 export class GitHubHelper {
   constructor(
     private token: string,
@@ -46,6 +51,28 @@ export class GitHubHelper {
     }, {
       retryableStatuses: isIdempotent ? [429, 500, 502, 503, 504] : [429],
     });
+  }
+
+  private async paginate<T>(
+    path: string,
+    params: { perPage?: number; maxPages?: number } = {},
+  ): Promise<T[]> {
+    const perPage = params.perPage ?? 100;
+    const maxPages = params.maxPages ?? 10;
+    const allItems: T[] = [];
+    let page = 1;
+
+    while (page <= maxPages) {
+      const separator = path.includes('?') ? '&' : '?';
+      const pagePath = `${path}${separator}per_page=${perPage}&page=${page}`;
+      const items = await this.api<T[]>(pagePath);
+      allItems.push(...items);
+
+      if (items.length < perPage) break;
+      page++;
+    }
+
+    return allItems;
   }
 
   // ─── PR Operations ──────────────────────────────────────

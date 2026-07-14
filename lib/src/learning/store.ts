@@ -32,6 +32,34 @@ export class LearningStore {
     return id;
   }
 
+  recordFindings(findings: Array<{
+    prNumber: number;
+    type: string;
+    severity?: string;
+    file?: string;
+    line?: number;
+    message: string;
+    suggestion?: string;
+  }>): string[] {
+    const batch = this.db.transaction(() => {
+      return findings.map((finding) => this.recordFinding(finding));
+    });
+    return batch();
+  }
+
+  deleteFindings(prNumber: number): number {
+    const result = this.db
+      .prepare('DELETE FROM findings WHERE pr_number = ?')
+      .run(prNumber);
+    return result.changes;
+  }
+
+  getFindingsByType(type: string, limit = 50): Array<Record<string, unknown>> {
+    return this.db
+      .prepare('SELECT * FROM findings WHERE type = ? ORDER BY created_at DESC LIMIT ?')
+      .all(type, limit) as Array<Record<string, unknown>>;
+  }
+
   getFindings(prNumber?: number, limit = 100): Array<Record<string, unknown>> {
     if (prNumber) {
       return this.db
