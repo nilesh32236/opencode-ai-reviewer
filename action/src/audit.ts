@@ -12,7 +12,8 @@ export async function runAudit(
   repo: string,
   token: string,
 ): Promise<void> {
-  const promptsDir = core.getInput('audit-prompts-dir') || config.audit.promptsDir;
+  const promptsDirRaw = core.getInput('audit-prompts-dir');
+  const promptsDir = promptsDirRaw || config.audit.promptsDir;
   const targetDir = inputs.auditTargetDir;
   const promptName = core.getInput('audit-prompt-name');
 
@@ -27,6 +28,11 @@ export async function runAudit(
     'autofix:needs-fix',
   ]);
 
+  if (!fs.existsSync(promptsDir)) {
+    core.setFailed(`Audit prompts directory not found: ${promptsDir}`);
+    return;
+  }
+
   const prompts = fs.readdirSync(promptsDir).filter((f) => f.endsWith('.md'));
   if (prompts.length === 0) {
     core.setFailed(`No prompt files found in ${promptsDir}`);
@@ -39,7 +45,7 @@ export async function runAudit(
   if (promptName) {
     const specific = path.join(promptsDir, `${promptName}.md`);
     if (!fs.existsSync(specific)) {
-      core.setFailed(`Prompt '${promptName}' not found`);
+      core.setFailed(`Prompt '${promptName}' not found in ${promptsDir}`);
       return;
     }
     selectedPrompt = specific;
@@ -50,7 +56,14 @@ export async function runAudit(
     category = path.basename(prompts[rand], '.md');
   }
 
-  const auditTarget = targetDir || selectRandomTarget(config.audit.targetDirs);
+  const allTargetDirs = [
+    ...(targetDir ? [targetDir] : []),
+    ...inputs.auditTargetDirs,
+    ...config.audit.targetDirs,
+  ];
+  const auditTarget = allTargetDirs.length > 0
+    ? allTargetDirs[Math.floor(Math.random() * allTargetDirs.length)]
+    : '.';
   const promptContent = fs.readFileSync(selectedPrompt, 'utf-8');
 
   const result = await engine.runAudit(promptContent, auditTarget);

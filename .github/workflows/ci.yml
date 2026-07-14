@@ -29,8 +29,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build
-        run: pnpm build
+      - name: Build lib
+        run: pnpm --filter @opencode-pr-agent/lib build
 
       - name: Type check
         run: pnpm typecheck
@@ -41,11 +41,13 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
+      - name: Build action
+        run: pnpm --filter @opencode-pr-agent/action build
+
       - name: Verify dist
         run: |
           test -f lib/dist/index.js || { echo "lib/dist/index.js missing!"; exit 1; }
           test -f action/lib/index.js || { echo "action/lib/index.js missing!"; exit 1; }
-          test -f app/dist/index.js || { echo "app/dist/index.js missing!"; exit 1; }
           echo "Build artifacts verified."
 
   coverage:

@@ -7,13 +7,17 @@ branding:
 
 inputs:
   mode:
-    description: 'Action mode: review, fix, audit, post, or pr-review'
+    description: 'Action mode: review, fix, audit, or post'
     required: true
     default: 'review'
 
   github_token:
     description: 'GitHub token for API access'
     required: true
+
+  model:
+    description: 'Model to use (shorthand — sets review_model, fix_model, and audit_model)'
+    required: false
 
   openai_api_key:
     description: 'OpenAI API key'
@@ -121,10 +125,22 @@ inputs:
     required: false
     default: 'audit'
 
+  audit_target_dirs:
+    description: 'Comma-separated list of directories to audit (randomly selected)'
+    required: false
+
   opencode_version:
-    description: 'OpenCode CLI version to use'
+    description: 'OpenCode CLI version to use (e.g. "latest" or a specific tag like "v0.1.0")'
     required: false
     default: 'latest'
+
+  git_user_name:
+    description: 'Git user name for commits (default: GITHUB_ACTOR)'
+    required: false
+
+  git_user_email:
+    description: 'Git user email for commits (default: GITHUB_ACTOR email)'
+    required: false
 
 outputs:
   review_summary:

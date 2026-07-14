@@ -76,7 +76,7 @@ jobs:
 
       - name: AI Audit
         id: ai-audit
-        uses: ./
+        uses: ./action
         with:
           mode: audit
           model: ${{ inputs.model }}

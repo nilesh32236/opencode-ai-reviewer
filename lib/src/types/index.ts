@@ -282,7 +282,7 @@ export interface PromptContext {
 }
 
 // ─── Action Mode ──────────────────────────────────────────
-export type ActionMode = 'review' | 'fix' | 'audit';
+export type ActionMode = 'review' | 'fix' | 'audit' | 'post';
 
 // ─── Issue Details ────────────────────────────────────────
 export interface IssueDetails {

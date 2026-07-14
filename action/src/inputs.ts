@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import type { ActionMode } from '@opencode-pr-agent/lib';
 
-const VALID_MODES: ActionMode[] = ['review', 'fix', 'audit'];
+const VALID_MODES: ActionMode[] = ['review', 'fix', 'audit', 'post'];
 
 export interface ActionInputs {
   mode: ActionMode;
@@ -18,6 +18,7 @@ export interface ActionInputs {
   maxFixIterations: number;
   enableAudit: boolean;
   auditTargetDir?: string;
+  auditTargetDirs: string[];
   maxFilesPerBatch: number;
   maxLinesPerFile: number;
   projectContext?: string;
@@ -29,6 +30,7 @@ export interface ActionInputs {
   auditCreateIssues: boolean;
   auditAutoFix: boolean;
   auditLabels: string[];
+  opencodeVersion: string;
 }
 
 export function parseInputs(): ActionInputs {
@@ -58,21 +60,32 @@ export function parseInputs(): ActionInputs {
     .map((l) => l.trim())
     .filter(Boolean);
 
+  const auditTargetDirsStr = core.getInput('audit_target_dirs') || '';
+  const auditTargetDirs = auditTargetDirsStr
+    .split(',')
+    .map((d) => d.trim())
+    .filter(Boolean);
+
+  const opencodeVersion = core.getInput('opencode_version') || core.getInput('opencode-version') || 'latest';
+
+  const globalModel = core.getInput('model');
+
   return {
     mode: modeStr as ActionMode,
     githubToken: core.getInput('github_token', { required: true }),
     openAiKey: core.getInput('openai_api_key') || undefined,
     anthropicKey: core.getInput('anthropic_api_key') || undefined,
     geminiKey: core.getInput('gemini_api_key') || undefined,
-    reviewModel: core.getInput('review_model') || 'opencode/deepseek-v4-flash-free',
-    fixModel: core.getInput('fix_model') || 'opencode/deepseek-v4-flash-free',
-    auditModel: core.getInput('audit_model') || 'opencode/deepseek-v4-flash-free',
+    reviewModel: core.getInput('review_model') || globalModel || 'opencode/deepseek-v4-flash-free',
+    fixModel: core.getInput('fix_model') || globalModel || 'opencode/deepseek-v4-flash-free',
+    auditModel: core.getInput('audit_model') || globalModel || 'opencode/deepseek-v4-flash-free',
     reviewPromptFile: core.getInput('review_prompt_file') || undefined,
     reviewPromptExtra: core.getInput('review_prompt_extra') || undefined,
     enableFix: core.getInput('enable_fix') !== 'false',
     maxFixIterations,
     enableAudit: core.getInput('enable_audit') === 'true',
     auditTargetDir: core.getInput('audit_target_dir') || undefined,
+    auditTargetDirs,
     maxFilesPerBatch,
     maxLinesPerFile,
     projectContext: core.getInput('project_context') || undefined,
@@ -84,5 +97,6 @@ export function parseInputs(): ActionInputs {
     auditCreateIssues: core.getInput('audit_create_issues') !== 'false',
     auditAutoFix: core.getInput('audit_auto_fix') === 'true',
     auditLabels,
+    opencodeVersion,
   };
 }
