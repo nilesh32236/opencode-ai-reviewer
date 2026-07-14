@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as core from '@actions/core';
-import type { PromptConfig } from './types/index';
+import type { PromptConfig } from './types/index.js';
 
 const yaml = {
   load: (content: string): unknown => {

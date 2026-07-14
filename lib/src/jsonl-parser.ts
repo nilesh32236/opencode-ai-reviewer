@@ -9,7 +9,7 @@ import type {
   StrengthFinding,
   SummaryFinding,
   VerdictFinding,
-} from './types/index';
+} from './types/index.js';
 
 const VALID_TYPES: FindingType[] = ['summary', 'verdict', 'strength', 'issue'];
 const VALID_SEVERITIES: Severity[] = ['critical', 'important', 'minor'];

@@ -1,7 +1,5 @@
-/**
- * Shared types for the OpenCode PR Agent system.
- * Used by both the GitHub Action and GitHub App.
- */
+// Shared types for the OpenCode PR Agent system.
+// Used by both the GitHub Action and GitHub App.
 
 // ─── Severity ─────────────────────────────────────────────
 export type Severity = 'critical' | 'important' | 'minor';

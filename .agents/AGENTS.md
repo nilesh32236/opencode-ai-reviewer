@@ -21,8 +21,18 @@ Other directories:
 
 - **Language**: TypeScript (`.ts`) is strictly required. No pure JavaScript for source code.
 - **Type Safety**: Avoid using `any` unless absolutely necessary. Write explicit interfaces for all payloads, config schemas, and internal data transfers.
+- **ESM Imports**: All relative TypeScript imports MUST end with `.js` extension (e.g., `import { foo } from './bar.js'`). This is required by Node.js ESM module resolution.
 - **Dependency Flow**: The `action` and `app` packages depend on `lib`. If you modify anything inside `lib`, you **must** rebuild the packages for changes to propagate.
 - **Documentation**: Keep code comments and docstrings intact. If adding functions or modules, write standard JSDoc comments.
+
+## Error Resilience Patterns
+
+When writing or reviewing code in this repository, follow these patterns:
+
+1. **Use `withRetry()` for external API calls**: Import from `lib/src/utils/retry.ts`. All GitHub API calls should use this utility for exponential backoff and retry on transient errors (429, 5xx).
+2. **Wrap SQLite read-then-write in transactions**: Use `db.transaction()` from `better-sqlite3` for operations that read a value, compute, and then write (e.g., `recordPattern`, `incrementAndCheckMetaReviewInterval`).
+3. **Graceful degradation**: Non-critical subsystems (MCP, learning store) should fail independently. Catch and log (debug/warning level) rather than silently swallowing errors, so degraded operation remains observable.
+4. **Timeouts for long-running operations**: Always pass a timeout to long-running operations, especially OpenCode CLI execution.
 
 ---
 

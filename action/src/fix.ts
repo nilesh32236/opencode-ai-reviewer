@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as github from '@actions/github';
 import type { AgentConfig, GitHubHelper, ReviewEngine } from '@opencode-pr-agent/lib';
-import type { ActionInputs } from './inputs';
+import type { ActionInputs } from './inputs.js';
 
 export async function runFix(
   inputs: ActionInputs,

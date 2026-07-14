@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import { promises as fs } from 'fs';
 import type { AgentConfig } from '@opencode-pr-agent/lib';
 import { GitHubHelper, ReviewEngine, buildFixPrompt } from '@opencode-pr-agent/lib';
@@ -91,10 +91,10 @@ export async function handleAutofixLoop(
       const fixResult = await engine.runFix(prNumber, iteration, contextMd);
 
       if (fixResult.changesMade) {
-        execSync('git add -A');
-        execSync(`git commit -m "fix: address review feedback (iteration ${iteration + 1})"`);
-        execSync(`git remote set-url origin https://x-access-token:${token}@github.com/${repo}`);
-        execSync(`git push origin ${pr.headRef}`);
+        execFileSync('git', ['add', '-A']);
+        execFileSync('git', ['commit', '-m', `fix: address review feedback (iteration ${iteration + 1})`]);
+        execFileSync('git', ['remote', 'set-url', 'origin', `https://x-access-token:${token}@github.com/${repo}`]);
+        execFileSync('git', ['push', 'origin', pr.headRef]);
       }
 
       await gh.removeLabel(prNumber, 'autofix:needs-fix');
@@ -162,9 +162,11 @@ function buildReviewComment(
 }
 
 function configureGit(token: string, repo: string): void {
-  execSync('git config --global user.name "opencode-pr-agent[bot]"');
-  execSync('git config --global user.email "opencode-pr-agent[bot]@users.noreply.github.com"');
-  execSync(
-    `git config --global url."https://x-access-token:${token}@github.com/".insteadOf "https://github.com/"`,
-  );
+  execFileSync('git', ['config', '--global', 'user.name', 'opencode-pr-agent[bot]']);
+  execFileSync('git', ['config', '--global', 'user.email', 'opencode-pr-agent[bot]@users.noreply.github.com']);
+  execFileSync('git', [
+    'config', '--global',
+    `url.https://x-access-token:${token}@github.com/.insteadOf`,
+    'https://github.com/',
+  ]);
 }

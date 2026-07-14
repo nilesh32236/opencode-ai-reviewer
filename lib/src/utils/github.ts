@@ -8,7 +8,8 @@ import type {
   ReviewIssue,
   ReviewResult,
   ReviewStrength,
-} from '../types/index';
+} from '../types/index.js';
+import { withRetry } from './retry.js';
 
 export class GitHubHelper {
   constructor(
@@ -19,23 +20,32 @@ export class GitHubHelper {
 
   private async api<T>(path: string, options: RequestInit = {}): Promise<T> {
     const url = `${this.apiUrl}/repos/${this.repo}${path}`;
-    const res = await fetch(url, {
-      ...options,
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-        ...options.headers,
-      },
+    const method = (options.method ?? 'GET').toUpperCase();
+    const isIdempotent = method === 'GET' || method === 'HEAD' || method === 'PUT' || method === 'DELETE';
+
+    return withRetry(async () => {
+      const res = await fetch(url, {
+        ...options,
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          ...options.headers,
+        },
+      });
+
+      if (!res.ok) {
+        const body = await res.text();
+        const err = new Error(`GitHub API ${res.status} on ${path}: ${body}`);
+        (err as Error & { status: number }).status = res.status;
+        throw err;
+      }
+
+      if (res.status === 204) return undefined as T;
+      return res.json();
+    }, {
+      retryableStatuses: isIdempotent ? [429, 500, 502, 503, 504] : [429],
     });
-
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`GitHub API ${res.status} on ${path}: ${body}`);
-    }
-
-    if (res.status === 204) return undefined as T;
-    return res.json();
   }
 
   // ─── PR Operations ──────────────────────────────────────

@@ -25,6 +25,55 @@ describe('clusterFindings', () => {
   it('returns empty array for empty input', () => {
     expect(clusterFindings([], 0.3)).toEqual([]);
   });
+
+  it('returns only clusters with at least 2 messages', () => {
+    const messages = [
+      'Missing error handling in async route',
+      'Unhandled promise rejection in error handling route',
+      'Unique message that stands alone',
+    ];
+
+    const clusters = clusterFindings(messages, 0.3);
+    for (const c of clusters) {
+      expect(c.messages.length).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('handles single message gracefully', () => {
+    expect(clusterFindings(['Only message'], 0.3)).toEqual([]);
+  });
+
+  it('uses custom threshold correctly', () => {
+    const messages = [
+      'error handling missing in async route handler',
+      'completely different topic about database queries',
+      'yet another completely different topic about caching',
+    ];
+
+    const strictClusters = clusterFindings(messages, 0.9);
+    expect(strictClusters.length).toBe(0);
+
+    const looseClusters = clusterFindings(messages, 0.1);
+    expect(looseClusters.length).toBe(1);
+  });
+
+  it('handles identical messages', () => {
+    const messages = Array(5).fill('Missing error handling in async function');
+    const clusters = clusterFindings(messages, 0.3);
+    expect(clusters.length).toBeGreaterThanOrEqual(1);
+    expect(clusters[0].messages.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('handles special characters in messages', () => {
+    const messages = [
+      'Error in route /api/v1/users (timeout)',
+      'Error in route /api/v1/users (connection)',
+      'Some other random thing',
+    ];
+
+    const clusters = clusterFindings(messages, 0.3);
+    expect(clusters.length).toBeGreaterThanOrEqual(1);
+  });
 });
 
 describe('PatternDetector', () => {

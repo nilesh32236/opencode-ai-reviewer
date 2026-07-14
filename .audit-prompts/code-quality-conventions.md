@@ -15,6 +15,7 @@ Scan the target directories recursively (`lib/src`, `action/src`, `app/src`). Ou
 - **No `any` usage**: Avoid using the `any` type unless absolutely necessary. Look for explicit, strong interfaces for payloads, configuration schemas, and data structures.
 - **Strict type checking**: Verify types are correctly defined and there are no type assertions (`as any` or `as unknown` when unnecessary).
 - **TypeScript files**: All source files must be TypeScript (`.ts`). No pure JavaScript (`.js`) files in `src/` directories.
+- **Null/undefined safety**: Check for proper null checks (using `??` or `?.`) rather than loose truthiness checks that could mask bugs.
 
 ### Import Path Conventions
 - **ESM Extensions**: Due to Node ESM requirements, TS file imports from other TS files MUST end with `.js` extensions (e.g. `import { EventBus } from './bus.js'`). Check that local imports do not omit `.js` or use `.ts`.

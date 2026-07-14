@@ -14,11 +14,11 @@ import {
   mergeConfigWithInputs,
   setupWorkspaceDependencies,
 } from '@opencode-pr-agent/lib';
-import { runAudit } from './audit';
-import { runAutofixLoop, runFix, runFixIssue } from './fix';
-import { parseInputs } from './inputs';
-import { runPost } from './post';
-import { runReview } from './review';
+import { runAudit } from './audit.js';
+import { runAutofixLoop, runFix, runFixIssue } from './fix.js';
+import { parseInputs } from './inputs.js';
+import { runPost } from './post.js';
+import { runReview } from './review.js';
 
 async function run(): Promise<void> {
   try {

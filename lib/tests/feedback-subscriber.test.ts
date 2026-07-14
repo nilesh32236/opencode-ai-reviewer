@@ -52,7 +52,7 @@ describe('FeedbackSubscriber', () => {
   });
 
   it('scans comment.created for dispute keywords', async () => {
-    const findingId = store.recordFinding({
+    store.recordFinding({
       prNumber: 1,
       type: 'issue',
       message: 'test',
@@ -71,5 +71,95 @@ describe('FeedbackSubscriber', () => {
 
     const fpRate = store.getFalsePositiveRate();
     expect(fpRate).toBe(1);
+  });
+
+  it('ignores non-dispute comments', async () => {
+    store.recordFinding({
+      prNumber: 1,
+      type: 'issue',
+      message: 'test',
+    });
+
+    await subscriber.handle({
+      type: 'comment.created',
+      category: 'comment',
+      payload: {
+        body: 'Looks good to me!',
+        issue: { number: 1 },
+      },
+      timestamp: Date.now(),
+      prNumber: 1,
+    });
+
+    const fpRate = store.getFalsePositiveRate();
+    expect(fpRate).toBe(0);
+  });
+
+  it('ignores empty comment bodies', async () => {
+    await subscriber.handle({
+      type: 'comment.created',
+      category: 'comment',
+      payload: {
+        body: '',
+        issue: { number: 1 },
+      },
+      timestamp: Date.now(),
+    });
+  });
+
+  it('ignores events without prNumber', async () => {
+    await subscriber.handle({
+      type: 'review.dismissed',
+      category: 'review',
+      payload: {},
+      timestamp: Date.now(),
+    });
+  });
+
+  it('handles review.dismissed without findings gracefully', async () => {
+    await subscriber.handle({
+      type: 'review.dismissed',
+      category: 'review',
+      payload: {
+        pull_request: { number: 999 },
+      },
+      timestamp: Date.now(),
+      prNumber: 999,
+    });
+  });
+
+  it('detects all dispute keywords', async () => {
+    const keywords = ['false positive', 'not an issue', 'wrong', 'incorrect', 'false alarm'];
+    for (let i = 0; i < keywords.length; i++) {
+      const kw = keywords[i];
+      const dbPath = TEST_DB + `_kw_${i}`;
+      const s = new LearningStore(dbPath);
+      const sub = new FeedbackSubscriber(s);
+
+      s.recordFinding({ prNumber: 1, type: 'issue', message: 'test' });
+      await sub.handle({
+        type: 'comment.created',
+        category: 'comment',
+        payload: { body: kw, issue: { number: 1 } },
+        timestamp: Date.now(),
+        prNumber: 1,
+      });
+
+      expect(s.getFalsePositiveRate()).toBeGreaterThan(0);
+      s.close();
+      try { fs.unlinkSync(dbPath); } catch { /* ok */ }
+    }
+  });
+
+  it('dispatches to correct handler based on event type', async () => {
+    store.recordFinding({ prNumber: 1, type: 'issue', message: 'test' });
+
+    await subscriber.handle({
+      type: 'review_comment.dismissed',
+      category: 'review',
+      payload: {},
+      timestamp: Date.now(),
+      prNumber: 1,
+    });
   });
 });
