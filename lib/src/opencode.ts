@@ -115,37 +115,37 @@ export async function runOpenCode(
 ): Promise<{ success: boolean; output: string; durationMs: number }> {
   const binaryPath = opencodePath || (await setupOpenCode());
   const startTime = Date.now();
-
-  const args = ['run', '--model', options.model, prompt];
   const cwd = options.workingDirectory || process.cwd();
 
-  core.info(`Running OpenCode in ${cwd}...`);
+  // Write prompt to a temp file instead of passing as CLI arg
+  const promptFile = path.join(os.tmpdir(), `opencode-prompt-${Date.now()}.txt`);
+  fs.writeFileSync(promptFile, prompt);
+  core.info(`Prompt written to ${promptFile}`);
+
+  const args = ['run', '--model', options.model, promptFile];
+  core.info(`Running OpenCode (model: ${options.model})...`);
 
   let output = '';
-  let error = '';
 
   try {
-    const result = await exec.getExecOutput(binaryPath, args, {
+    await exec.exec(binaryPath, args, {
       cwd,
       env: { ...process.env, ...options.env } as { [key: string]: string },
-      silent: false,
+      outStream: process.stdout,
+      errStream: process.stderr,
       ignoreReturnCode: true,
     });
 
-    output = result.stdout;
-    error = result.stderr;
-
     const durationMs = Date.now() - startTime;
-    const success = result.exitCode === 0;
+    core.info(`OpenCode finished in ${(durationMs / 1000).toFixed(1)}s`);
 
-    if (!success) {
-      core.warning(`OpenCode exited with code ${result.exitCode}`);
-      if (error) {
-        core.warning(`stderr: ${error.substring(0, 500)}`);
-      }
+    try {
+      fs.unlinkSync(promptFile);
+    } catch {
+      // temp file cleanup is best-effort
     }
 
-    return { success, output, durationMs };
+    return { success: true, output, durationMs };
   } catch (err) {
     const durationMs = Date.now() - startTime;
     core.error(`OpenCode execution failed: ${String(err)}`);
