@@ -181,6 +181,7 @@ export async function runOpenCode(
   try {
     await exec.exec(binaryPath, args, {
       cwd,
+      input: Buffer.from(''),
       env: {
         ...process.env,
         ...options.env,
