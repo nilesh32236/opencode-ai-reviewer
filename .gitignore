@@ -19,4 +19,7 @@ coverage/
 npm-debug.log*
 .superpowers/
 *.tsbuildinfo
+.opencode/learning.db
+.opencode/learning.db-wal
+.opencode/learning.db-shm
 
