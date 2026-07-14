@@ -1781,11 +1781,6 @@ async function runOpenCode(prompt, options) {
     const startTime = Date.now();
     const cwd = options.workingDirectory || process.cwd();
     const timeoutMs = (options.timeoutMinutes ?? 10) * 60 * 1000;
-    // Write the prompt to a temp file and pass via --file.
-    // Avoids echoing the full prompt on the command line in the Actions log and
-    // sidesteps OS argument length limits on large review prompts.
-    const promptFile = path.join(os.tmpdir(), `opencode-prompt-${Date.now()}.txt`);
-    fs.writeFileSync(promptFile, prompt, 'utf-8');
     // --auto  → auto-approves any permission that is not explicitly "deny".
     //           This is the documented CI mechanism for opencode run.
     //           Docs: https://opencode.ai/docs/permissions#auto-mode
@@ -1795,8 +1790,7 @@ async function runOpenCode(prompt, options) {
         'run',
         '--auto', // approve all non-denied permissions automatically
         '--model', options.model,
-        '--file', promptFile,
-        'Review the attached file and produce the output as instructed.',
+        prompt,
     ];
     core.info(`Running OpenCode (model: ${options.model}, timeout: ${options.timeoutMinutes ?? 10}m)...`);
     let timedOut = false;
@@ -1858,10 +1852,6 @@ async function runOpenCode(prompt, options) {
         if (timedOut) {
             core.warning(`OpenCode may have hung — exceeded the ${options.timeoutMinutes ?? 10}m timeout.`);
         }
-        try {
-            fs.unlinkSync(promptFile);
-        }
-        catch { /* best-effort cleanup */ }
     }
 }
 function configureGit(userName, userEmail, token) {
