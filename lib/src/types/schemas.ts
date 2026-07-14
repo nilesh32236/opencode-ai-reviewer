@@ -76,6 +76,21 @@ export const AuditConfigSchema = z.object({
   issueSeverityThreshold: SeveritySchema.default('important'),
 });
 
+export const LearningConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  feedbackSignals: z.array(z.string()).default(['dismissed', 'reaction', 'disputed_comment']),
+  metaReview: z.object({
+    enabled: z.boolean().default(true),
+    interval: z.number().int().min(1).max(100).default(5),
+    minFindingsForReview: z.number().int().min(1).default(3),
+  }).default({}),
+  patternDiscovery: z.object({
+    enabled: z.boolean().default(true),
+    minFrequency: z.number().int().min(1).default(3),
+    windowSize: z.number().int().min(10).max(1000).default(100),
+  }).default({}),
+});
+
 export const AgentConfigSchema = z.object({
   reviewModel: z.string().default('opencode/deepseek-v4-flash-free'),
   fixModel: z.string().default('opencode/deepseek-v4-flash-free'),
@@ -90,6 +105,7 @@ export const AgentConfigSchema = z.object({
   }),
   review: ReviewConfigSchema.default({}),
   audit: AuditConfigSchema.default({}),
+  learning: LearningConfigSchema.default({}),
 });
 
 // ─── Parse & Validate Helpers ─────────────────────────────

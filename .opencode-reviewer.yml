@@ -38,3 +38,18 @@ audit:
     - "app/src"
   createIssues: true
   autoFix: false
+
+learning:
+  enabled: true
+  feedbackSignals:
+    - "dismissed"
+    - "reaction"
+    - "disputed_comment"
+  metaReview:
+    enabled: true
+    interval: 5
+    minFindingsForReview: 3
+  patternDiscovery:
+    enabled: true
+    minFrequency: 3
+    windowSize: 100

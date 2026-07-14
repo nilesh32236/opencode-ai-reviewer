@@ -100,6 +100,8 @@ export interface AgentConfig {
   review: ReviewConfig;
   /** Audit behavior */
   audit: AuditConfig;
+  /** Learning behavior */
+  learning: LearningConfig;
 }
 
 export interface MCPServerConfig {
@@ -328,6 +330,20 @@ export interface PromptConfig {
     createIssues?: boolean;
     autoFix?: boolean;
   };
+  learning?: {
+    enabled?: boolean;
+    feedbackSignals?: string[];
+    metaReview?: {
+      enabled?: boolean;
+      interval?: number;
+      minFindingsForReview?: number;
+    };
+    patternDiscovery?: {
+      enabled?: boolean;
+      minFrequency?: number;
+      windowSize?: number;
+    };
+  };
   project?: {
     name?: string;
     description?: string;
@@ -362,6 +378,20 @@ export const DEFAULT_CONFIG: AgentConfig = {
     autoFix: true,
     triggerLabel: 'autofix-trigger',
     issueSeverityThreshold: 'important',
+  },
+  learning: {
+    enabled: true,
+    feedbackSignals: ['dismissed', 'reaction', 'disputed_comment'],
+    metaReview: {
+      enabled: true,
+      interval: 5,
+      minFindingsForReview: 3,
+    },
+    patternDiscovery: {
+      enabled: true,
+      minFrequency: 3,
+      windowSize: 100,
+    },
   },
 };
 

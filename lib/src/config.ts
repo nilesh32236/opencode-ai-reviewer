@@ -134,6 +134,23 @@ function validateConfig(config: PromptConfig): PromptConfig {
     }
   }
 
+  if (config.learning) {
+    result.learning = {
+      enabled: config.learning.enabled,
+      feedbackSignals: config.learning.feedbackSignals,
+      metaReview: {
+        enabled: config.learning.metaReview?.enabled ?? true,
+        interval: config.learning.metaReview?.interval ?? 5,
+        minFindingsForReview: config.learning.metaReview?.minFindingsForReview ?? 3,
+      },
+      patternDiscovery: {
+        enabled: config.learning.patternDiscovery?.enabled ?? true,
+        minFrequency: config.learning.patternDiscovery?.minFrequency ?? 3,
+        windowSize: config.learning.patternDiscovery?.windowSize ?? 100,
+      },
+    };
+  }
+
   if (config.project) {
     result.project = {};
     if (typeof config.project.name === 'string') {
