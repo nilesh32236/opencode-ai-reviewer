@@ -159,8 +159,6 @@ export async function runOpenCode(
   //           This is the documented CI mechanism for opencode run.
   //           Docs: https://opencode.ai/docs/permissions#auto-mode
   const args = [
-    '--print-logs',        // stream internal progress to stderr in real time
-    '--log-level', 'INFO', // show INFO-level events (tool calls, model turns)
     'run',
     '--auto',              // approve all non-denied permissions automatically
     '--model', options.model,
@@ -175,12 +173,22 @@ export async function runOpenCode(
     core.warning(`OpenCode has been running for ${options.timeoutMinutes ?? 10}m — possible hang.`);
   }, timeoutMs);
 
+  const githubToken = process.env.GITHUB_TOKEN || process.env.INPUT_GITHUB_TOKEN || '';
+  const openaiApiKey = process.env.OPENAI_API_KEY || process.env.INPUT_OPENAI_API_KEY || '';
+  const anthropicApiKey = process.env.ANTHROPIC_API_KEY || process.env.INPUT_ANTHROPIC_API_KEY || '';
+  const geminiApiKey = process.env.GEMINI_API_KEY || process.env.INPUT_GEMINI_API_KEY || '';
+
   try {
     await exec.exec(binaryPath, args, {
       cwd,
       env: {
         ...process.env,
         ...options.env,
+        GITHUB_TOKEN: githubToken,
+        GH_TOKEN: githubToken,
+        OPENAI_API_KEY: openaiApiKey,
+        ANTHROPIC_API_KEY: anthropicApiKey,
+        GEMINI_API_KEY: geminiApiKey,
         // OPENCODE_CONFIG_CONTENT is the highest-precedence config source.
         // It overrides remote, global, and project opencode.json configs.
         // We use it to guarantee all permissions are "allow" and autoupdate
@@ -190,27 +198,6 @@ export async function runOpenCode(
         // Disable auto-update checks — irrelevant in CI, wastes time.
         OPENCODE_DISABLE_AUTOUPDATE: 'true',
       } as { [key: string]: string },
-      // Route stdout/stderr through core.info so every line gets a timestamp
-      // and appears in the GitHub Actions log in real time.
-      // (outStream/errStream writes to raw process streams which can be
-      // invisible depending on how the Actions runner buffers output.)
-      listeners: {
-        stdout: (data: Buffer) => {
-          const text = data.toString();
-          for (const line of text.split('\n')) {
-            if (line.trim()) core.info(`[opencode] ${line}`);
-          }
-        },
-        stderr: (data: Buffer) => {
-          const text = data.toString();
-          for (const line of text.split('\n')) {
-            if (line.trim()) core.info(`[opencode] ${line}`);
-          }
-        },
-      },
-      // silent: true suppresses the command-line echo (avoids dumping the
-      // full --file path and long prompt message into the log).
-      silent: true,
       ignoreReturnCode: true,
     });
 
