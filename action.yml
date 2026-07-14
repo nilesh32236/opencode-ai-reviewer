@@ -1,0 +1,161 @@
+name: 'OpenCode AI Reviewer'
+description: 'AI-powered PR review, auto-fix, and codebase audit using OpenCode'
+author: 'nilesh32236'
+branding:
+  icon: 'code'
+  color: 'blue'
+
+inputs:
+  mode:
+    description: 'Action mode: review, fix, audit, or post'
+    required: true
+    default: 'review'
+
+  github_token:
+    description: 'GitHub token for API access'
+    required: true
+
+  model:
+    description: 'Model to use (shorthand — sets review_model, fix_model, and audit_model)'
+    required: false
+
+  openai_api_key:
+    description: 'OpenAI API key'
+    required: false
+
+  anthropic_api_key:
+    description: 'Anthropic API key'
+    required: false
+
+  gemini_api_key:
+    description: 'Google Gemini API key'
+    required: false
+
+  review_model:
+    description: 'Model to use for PR review'
+    required: false
+    default: 'opencode/deepseek-v4-flash-free'
+
+  fix_model:
+    description: 'Model to use for auto-fix'
+    required: false
+    default: 'opencode/deepseek-v4-flash-free'
+
+  audit_model:
+    description: 'Model to use for codebase audit'
+    required: false
+    default: 'opencode/deepseek-v4-flash-free'
+
+  review_prompt_file:
+    description: 'Path to a custom review prompt file'
+    required: false
+
+  review_prompt_extra:
+    description: 'Extra context to append to the review prompt'
+    required: false
+
+  enable_fix:
+    description: 'Enable auto-fix mode'
+    required: false
+    default: 'true'
+
+  max_fix_iterations:
+    description: 'Maximum number of review-fix iterations'
+    required: false
+    default: '3'
+
+  enable_audit:
+    description: 'Enable codebase audit mode'
+    required: false
+    default: 'false'
+
+  audit_target_dir:
+    description: 'Target directory for audit'
+    required: false
+
+  max_files_per_batch:
+    description: 'Maximum files per sub-agent batch'
+    required: false
+    default: '3'
+
+  max_lines_per_file:
+    description: 'Maximum lines per file to include in context'
+    required: false
+    default: '500'
+
+  project_context:
+    description: 'Project description for the review prompt'
+    required: false
+
+  enable_mcp:
+    description: 'Enable MCP servers for context enrichment'
+    required: false
+    default: 'true'
+
+  include_strengths:
+    description: 'Include positive feedback in review output'
+    required: false
+    default: 'true'
+
+  review_comment_summary:
+    description: 'Include a summary comment on the PR'
+    required: false
+    default: 'true'
+
+  run_checks_after_fix:
+    description: 'Commands to run after fix (e.g. npm run lint)'
+    required: false
+
+  audit_prompt_file:
+    description: 'Path to a custom audit prompt file'
+    required: false
+
+  audit_create_issues:
+    description: 'Create GitHub issues for audit findings'
+    required: false
+    default: 'true'
+
+  audit_auto_fix:
+    description: 'Auto-trigger fixes for audit findings'
+    required: false
+    default: 'false'
+
+  audit_labels:
+    description: 'Labels to apply to audit issues (comma-separated)'
+    required: false
+    default: 'audit'
+
+  audit_target_dirs:
+    description: 'Comma-separated list of directories to audit (randomly selected)'
+    required: false
+
+  opencode_version:
+    description: 'OpenCode CLI version to use (e.g. "latest" or a specific tag like "v0.1.0")'
+    required: false
+    default: 'latest'
+
+  git_user_name:
+    description: 'Git user name for commits (default: GITHUB_ACTOR)'
+    required: false
+
+  git_user_email:
+    description: 'Git user email for commits (default: GITHUB_ACTOR email)'
+    required: false
+
+outputs:
+  review_summary:
+    description: 'Summary of the review'
+  verdict:
+    description: 'Whether the PR is ready to merge'
+  critical_count:
+    description: 'Number of critical issues found'
+  important_count:
+    description: 'Number of important issues found'
+  minor_count:
+    description: 'Number of minor issues found'
+  changes_made:
+    description: 'Whether changes were made during fix'
+
+runs:
+  using: 'node20'
+  main: 'action/lib/index.js'
