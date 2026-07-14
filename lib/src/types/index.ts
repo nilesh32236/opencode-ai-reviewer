@@ -364,3 +364,69 @@ export const DEFAULT_CONFIG: AgentConfig = {
     issueSeverityThreshold: 'important',
   },
 };
+
+// ─── Event Bus ───────────────────────────────────────────
+export type EventCategory = 'pr' | 'issue' | 'comment' | 'review' | 'internal';
+
+export interface GitHubEvent {
+  type: string;
+  category: EventCategory;
+  payload: unknown;
+  timestamp: number;
+  repo?: string;
+  prNumber?: number;
+}
+
+export interface Subscriber {
+  name: string;
+  subscribedEvents: string[];
+  handle(event: GitHubEvent): Promise<void>;
+}
+
+// ─── Learning Store ──────────────────────────────────────
+export interface LearningConfig {
+  enabled: boolean;
+  feedbackSignals: string[];
+  metaReview: {
+    enabled: boolean;
+    interval: number;
+    minFindingsForReview: number;
+  };
+  patternDiscovery: {
+    enabled: boolean;
+    minFrequency: number;
+    windowSize: number;
+  };
+}
+
+export interface LearningFeedback {
+  findingId: string;
+  signalType: 'dismissed' | 'reaction' | 'disputed_comment';
+  signalValue: string;
+  prNumber: number;
+  createdAt: string;
+}
+
+export interface LearningQuality {
+  prNumber: number;
+  actionabilityScore: number;
+  accuracyScore: number;
+  coverageScore: number;
+  consistencyScore: number;
+}
+
+export interface LearningPattern {
+  patternKey: string;
+  messageCluster: string[];
+  frequency: number;
+  fileTypes: string[];
+  firstSeen: string;
+  lastSeen: string;
+}
+
+export interface CustomRule {
+  ruleText: string;
+  source: 'auto' | 'manual';
+  status: 'pending' | 'active' | 'declined';
+  approvedAt?: string;
+}
