@@ -210,22 +210,11 @@ export class ReviewEngine {
     for (const f of pr.changedFiles) {
       const stats = `${f.path} (${f.status}, +${f.additions}/-${f.deletions})`;
       parts.push(`- \`${stats}\``);
-      if (f.patch && maxLines > 0) {
-        const lines = f.patch.split('\n');
-        const totalLines = lines.length;
-        const truncated = totalLines > maxLines;
-        const included = truncated ? lines.slice(0, maxLines) : lines;
-        parts.push('  ```diff');
-        parts.push(`  ${included.join('\n  ')}`);
-        parts.push('  ```');
-        if (truncated) {
-          parts.push(`  *(${totalLines} diff lines; showing first ${maxLines})*`);
-        }
-      } else if (f.patch) {
-        parts.push('  ```diff');
-        parts.push(`  ${f.patch}`);
-        parts.push('  ```');
-      }
+    }
+    parts.push('');
+    const totalDiffLines = pr.changedFiles.reduce((s, f) => s + (f.patch ? f.patch.split('\n').length : 0), 0);
+    if (totalDiffLines > maxLines && maxLines > 0) {
+      parts.push(`> Total diff: ~${totalDiffLines} lines across ${pr.changedFiles.length} files. For large changes, read each file individually using the \`read\` tool and dispatch sub-agents to review batches of files.`);
     }
 
     return parts.join('\n');
