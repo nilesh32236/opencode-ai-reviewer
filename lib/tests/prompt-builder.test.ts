@@ -30,6 +30,16 @@ describe('prompt-builder', () => {
     expect(prompt).toContain(extra);
   });
 
+  it('injects learning lessons when provided', () => {
+    const prompt = buildReviewPrompt(
+      { maxFilesPerBatch: 3 },
+      '## PR Context\n...',
+      ['Always handle async errors', 'Use strict equality checks'],
+    );
+    expect(prompt).toContain('## Historical Lessons');
+    expect(prompt).toContain('Always handle async errors');
+  });
+
   it('buildFixPrompt returns a non-empty string', () => {
     const prompt = buildFixPrompt(
       { reviewPromptFile: '', reviewPromptExtra: '', maxFilesPerBatch: 3, projectContext: '' },

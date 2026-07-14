@@ -4,6 +4,7 @@ import { MCPManager } from './mcp/client.js';
 import { ensureOutputDir, getGitStatus, runOpenCode } from './opencode.js';
 import { buildAuditPrompt, buildFixPrompt, buildReviewPrompt } from './prompts/builder.js';
 import type { AgentConfig, MCPContextEntry, PRContext, ReviewResult } from './types/index.js';
+import { LearningStore } from './learning/store.js';
 import { GitHubHelper } from './utils/github.js';
 
 export class ReviewEngine {
@@ -11,7 +12,12 @@ export class ReviewEngine {
   private github: GitHubHelper;
   private config: AgentConfig;
 
-  constructor(config: AgentConfig, githubToken: string, repo: string) {
+  constructor(
+    config: AgentConfig,
+    githubToken: string,
+    repo: string,
+    private learningStore?: LearningStore,
+  ) {
     this.config = config;
     this.github = new GitHubHelper(githubToken, repo);
     this.mcp = new MCPManager(config.mcpServers);
@@ -44,12 +50,17 @@ export class ReviewEngine {
         ? '\n\n## Library Context\n' + mcpContext.map((e) => e.content).join('\n')
         : '';
 
+    const lessons = this.learningStore
+      ? this.learningStore.getRelevantLessons(pr.changedFiles.map((f) => f.path))
+      : [];
+
     const prompt = buildReviewPrompt(
       {
         projectContext: this.config.projectContext.description || undefined,
         maxFilesPerBatch: this.config.batchSize,
       },
       contextMarkdown + mcpSection,
+      lessons,
     );
 
     const promptFile = '/tmp/opencode-review-prompt.txt';

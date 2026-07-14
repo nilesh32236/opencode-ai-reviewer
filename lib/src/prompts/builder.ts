@@ -10,7 +10,11 @@ interface PromptBuilderInputs {
   maxFixIterations?: number;
 }
 
-export function buildReviewPrompt(inputs: PromptBuilderInputs, prContext: string): string {
+export function buildReviewPrompt(
+  inputs: PromptBuilderInputs,
+  prContext: string,
+  lessons?: string[],
+): string {
   if (inputs.reviewPromptFile) {
     const customPrompt = loadPromptFile(inputs.reviewPromptFile);
     if (customPrompt) {
@@ -71,6 +75,16 @@ export function buildReviewPrompt(inputs: PromptBuilderInputs, prContext: string
   sections.push('\n## Output Format: JSON Lines');
   sections.push('');
   sections.push(buildOutputFormat());
+
+  if (lessons && lessons.length > 0) {
+    sections.push('\n## Historical Lessons');
+    sections.push('');
+    sections.push('The following patterns were detected in similar code in past reviews:');
+    sections.push('');
+    for (const lesson of lessons) {
+      sections.push(`- ${lesson}`);
+    }
+  }
 
   sections.push('\n## Critical Rules');
   sections.push('');
