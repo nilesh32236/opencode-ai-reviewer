@@ -10,6 +10,8 @@ import {
   getDefaultMCPServers,
   setupOpenCode,
   validateConfig,
+  loadConfig,
+  mergeConfigWithInputs,
 } from '@opencode-pr-agent/lib';
 import { runAudit } from './audit';
 import { runAutofixLoop, runFix, runFixIssue } from './fix';
@@ -20,6 +22,7 @@ import { runReview } from './review';
 async function run(): Promise<void> {
   try {
     const inputs = parseInputs();
+    const loadedConfig = loadConfig();
 
     const repo = core.getInput('repo') || `${github.context.repo.owner}/${github.context.repo.repo}`;
     const token = inputs.githubToken;
@@ -48,32 +51,51 @@ async function run(): Promise<void> {
       }
     }
 
+    const mergedDefaults = mergeConfigWithInputs(loadedConfig, {});
+
     const config: AgentConfig = {
       ...DEFAULT_CONFIG,
       reviewModel: inputs.reviewModel,
       fixModel: inputs.fixModel,
       batchSize: inputs.maxFilesPerBatch,
       maxLinesPerFile: inputs.maxLinesPerFile,
-      maxIterations: inputs.maxFixIterations,
+      maxIterations: loadedConfig?.fix?.maxIterations || inputs.maxFixIterations,
       enableMCP: inputs.enableMCP,
       mcpServers,
       projectContext: {
-        description: inputs.projectContext || '',
-        typecheckCommands: [],
+        description: inputs.projectContext || (mergedDefaults.project_context as string) || '',
+        typecheckCommands: loadedConfig?.fix?.runChecks || [],
         lintCommands: [],
+        customRules: loadedConfig?.review?.customRules?.join('\n') || undefined,
       },
       review: {
         ...DEFAULT_CONFIG.review,
       },
       audit: {
         ...DEFAULT_CONFIG.audit,
+        promptsDir: loadedConfig?.audit?.promptsDir || DEFAULT_CONFIG.audit.promptsDir,
         targetDirs:
           inputs.auditTargetDirs.length > 0
             ? inputs.auditTargetDirs
             : inputs.auditTargetDir
               ? [inputs.auditTargetDir]
-              : DEFAULT_CONFIG.audit.targetDirs,
+              : loadedConfig?.audit?.targetDirs || DEFAULT_CONFIG.audit.targetDirs,
+        autoFix: loadedConfig?.audit?.autoFix !== undefined ? loadedConfig.audit.autoFix : DEFAULT_CONFIG.audit.autoFix,
       },
+      learning: loadedConfig?.learning ? {
+        enabled: loadedConfig.learning.enabled ?? DEFAULT_CONFIG.learning.enabled,
+        feedbackSignals: loadedConfig.learning.feedbackSignals || DEFAULT_CONFIG.learning.feedbackSignals,
+        metaReview: {
+          enabled: loadedConfig.learning.metaReview?.enabled ?? DEFAULT_CONFIG.learning.metaReview.enabled,
+          interval: loadedConfig.learning.metaReview?.interval ?? DEFAULT_CONFIG.learning.metaReview.interval,
+          minFindingsForReview: loadedConfig.learning.metaReview?.minFindingsForReview ?? DEFAULT_CONFIG.learning.metaReview.minFindingsForReview,
+        },
+        patternDiscovery: {
+          enabled: loadedConfig.learning.patternDiscovery?.enabled ?? DEFAULT_CONFIG.learning.patternDiscovery.enabled,
+          minFrequency: loadedConfig.learning.patternDiscovery?.minFrequency ?? DEFAULT_CONFIG.learning.patternDiscovery.minFrequency,
+          windowSize: loadedConfig.learning.patternDiscovery?.windowSize ?? DEFAULT_CONFIG.learning.patternDiscovery.windowSize,
+        },
+      } : DEFAULT_CONFIG.learning,
     };
 
     try {

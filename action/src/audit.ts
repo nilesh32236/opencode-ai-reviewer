@@ -13,7 +13,7 @@ export async function runAudit(
   token: string,
 ): Promise<void> {
   const promptsDirRaw = core.getInput('audit-prompts-dir');
-  const promptsDir = promptsDirRaw || config.audit.promptsDir;
+  let promptsDir = promptsDirRaw || config.audit.promptsDir;
   const targetDir = inputs.auditTargetDir;
   const promptName = core.getInput('audit-prompt-name');
 
@@ -29,11 +29,20 @@ export async function runAudit(
   ]);
 
   if (!fs.existsSync(promptsDir)) {
-    core.setFailed(`Audit prompts directory not found: ${promptsDir}`);
-    return;
+    if (promptsDir === '.audit-prompts' && fs.existsSync('prompts/audit-categories')) {
+      promptsDir = 'prompts/audit-categories';
+    } else {
+      core.setFailed(`Audit prompts directory not found: ${promptsDir}`);
+      return;
+    }
   }
 
-  const prompts = fs.readdirSync(promptsDir).filter((f) => f.endsWith('.md'));
+  let prompts = fs.readdirSync(promptsDir).filter((f) => f.endsWith('.md'));
+  if (prompts.length === 0 && fs.existsSync(path.join(promptsDir, 'audit-categories'))) {
+    promptsDir = path.join(promptsDir, 'audit-categories');
+    prompts = fs.readdirSync(promptsDir).filter((f) => f.endsWith('.md'));
+  }
+
   if (prompts.length === 0) {
     core.setFailed(`No prompt files found in ${promptsDir}`);
     return;
