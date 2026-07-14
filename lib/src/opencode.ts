@@ -244,6 +244,77 @@ export function getGitStatus(): string {
   }
 }
 
+export async function setupWorkspaceDependencies(cwd: string): Promise<void> {
+  core.info('Checking workspace package manager and dependencies...');
+
+  const hasPnpmLock = fs.existsSync(path.join(cwd, 'pnpm-lock.yaml'));
+  const hasYarnLock = fs.existsSync(path.join(cwd, 'yarn.lock'));
+  const hasPackageJson = fs.existsSync(path.join(cwd, 'package.json'));
+
+  if (!hasPackageJson) {
+    core.info('No package.json found in workspace root. Skipping package manager setup.');
+    return;
+  }
+
+  // 1. Install package manager if needed
+  if (hasPnpmLock) {
+    try {
+      cp.execSync('pnpm --version', { stdio: 'ignore' });
+      core.info('pnpm is already installed.');
+    } catch {
+      core.info('pnpm not found. Installing pnpm globally...');
+      try {
+        cp.execSync('npm install -g pnpm', { stdio: 'inherit' });
+        core.info('pnpm installed successfully.');
+      } catch (err) {
+        core.warning(`Failed to install pnpm globally: ${String(err)}. Trying with sudo...`);
+        try {
+          cp.execSync('sudo npm install -g pnpm', { stdio: 'inherit' });
+          core.info('pnpm installed successfully with sudo.');
+        } catch (sudoErr) {
+          core.error(`Failed to install pnpm globally: ${String(sudoErr)}. Checks using pnpm might fail.`);
+        }
+      }
+    }
+  } else if (hasYarnLock) {
+    try {
+      cp.execSync('yarn --version', { stdio: 'ignore' });
+      core.info('yarn is already installed.');
+    } catch {
+      core.info('yarn not found. Installing yarn globally...');
+      try {
+        cp.execSync('npm install -g yarn', { stdio: 'inherit' });
+        core.info('yarn installed successfully.');
+      } catch (err) {
+        core.warning(`Failed to install yarn globally: ${String(err)}`);
+      }
+    }
+  }
+
+  // 2. Install workspace dependencies if node_modules does not exist
+  const hasNodeModules = fs.existsSync(path.join(cwd, 'node_modules'));
+  if (!hasNodeModules) {
+    core.info('node_modules not found. Installing dependencies...');
+    try {
+      if (hasPnpmLock) {
+        core.info('Running pnpm install...');
+        cp.execSync('pnpm install', { cwd, stdio: 'inherit' });
+      } else if (hasYarnLock) {
+        core.info('Running yarn install...');
+        cp.execSync('yarn install', { cwd, stdio: 'inherit' });
+      } else {
+        core.info('Running npm install...');
+        cp.execSync('npm install', { cwd, stdio: 'inherit' });
+      }
+      core.info('Workspace dependencies installed successfully.');
+    } catch (err) {
+      core.error(`Failed to install workspace dependencies: ${String(err)}`);
+    }
+  } else {
+    core.info('node_modules directory already exists. Skipping dependency installation.');
+  }
+}
+
 export function ensureOutputDir(outputFile: string): void {
   const dir = path.dirname(path.resolve(outputFile));
   if (!fs.existsSync(dir)) {

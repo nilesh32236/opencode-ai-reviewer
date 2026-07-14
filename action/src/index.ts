@@ -12,6 +12,7 @@ import {
   validateConfig,
   loadConfig,
   mergeConfigWithInputs,
+  setupWorkspaceDependencies,
 } from '@opencode-pr-agent/lib';
 import { runAudit } from './audit';
 import { runAutofixLoop, runFix, runFixIssue } from './fix';
@@ -28,6 +29,7 @@ async function run(): Promise<void> {
     const token = inputs.githubToken;
 
     await setupOpenCode(inputs.opencodeVersion);
+    await setupWorkspaceDependencies(process.cwd());
 
     configureGit(
       core.getInput('git_user_name') || process.env.GITHUB_ACTOR || 'opencode-ai-reviewer[bot]',

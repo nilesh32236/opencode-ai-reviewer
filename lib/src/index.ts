@@ -6,6 +6,7 @@ export {
   ensureOutputDir,
   configureGit,
   getGitStatus,
+  setupWorkspaceDependencies,
 } from './opencode';
 export { GitHubHelper } from './utils/github';
 export {
