@@ -117,12 +117,7 @@ export async function runOpenCode(
   const startTime = Date.now();
   const cwd = options.workingDirectory || process.cwd();
 
-  // Write prompt to a temp file instead of passing as CLI arg
-  const promptFile = path.join(os.tmpdir(), `opencode-prompt-${Date.now()}.txt`);
-  fs.writeFileSync(promptFile, prompt);
-  core.info(`Prompt written to ${promptFile}`);
-
-  const args = ['run', '--model', options.model, promptFile];
+  const args = ['run', '--model', options.model, prompt];
   core.info(`Running OpenCode (model: ${options.model})...`);
 
   let output = '';
@@ -133,17 +128,12 @@ export async function runOpenCode(
       env: { ...process.env, ...options.env } as { [key: string]: string },
       outStream: process.stdout,
       errStream: process.stderr,
+      silent: true,
       ignoreReturnCode: true,
     });
 
     const durationMs = Date.now() - startTime;
     core.info(`OpenCode finished in ${(durationMs / 1000).toFixed(1)}s`);
-
-    try {
-      fs.unlinkSync(promptFile);
-    } catch {
-      // temp file cleanup is best-effort
-    }
 
     return { success: true, output, durationMs };
   } catch (err) {
