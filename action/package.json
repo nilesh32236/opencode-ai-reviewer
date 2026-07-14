@@ -4,7 +4,7 @@
   "private": true,
   "main": "lib/index.js",
   "scripts": {
-    "build": "ncc build src/index.ts -o lib --minify --external @actions/core --external @actions/github --external @actions/exec --external @actions/io --external @actions/tool-cache",
+    "build": "ncc build src/index.ts -o lib --minify",
     "build:tsc": "tsc",
     "watch": "tsc --watch",
     "typecheck": "tsc --noEmit"
