@@ -157,5 +157,5 @@ outputs:
     description: 'Whether changes were made during fix'
 
 runs:
-  using: 'node22'
+  using: 'node24'
   main: 'lib/index.js'
