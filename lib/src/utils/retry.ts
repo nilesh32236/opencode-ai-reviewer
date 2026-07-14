@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 
 export interface RetryOptions {
+  /** Total number of attempts (including the first call). E.g. maxRetries: 2 permits 2 total calls and 1 retry. */
   maxRetries?: number;
   baseDelayMs?: number;
   maxDelayMs?: number;
