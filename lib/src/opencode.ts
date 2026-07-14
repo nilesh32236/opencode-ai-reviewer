@@ -21,9 +21,34 @@ function detectArch(): string {
   }
 }
 
-export async function setupOpenCode(version = 'latest'): Promise<string> {
-  await ensurePnpm();
+async function fetchWithRetry(url: string, retries = 3): Promise<Response> {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const response = await fetch(url, {
+        headers: {
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      });
+      if (response.ok) return response;
+      if (response.status === 403 && attempt < retries) {
+        const wait = Math.pow(2, attempt) * 1000;
+        core.warning(`GitHub API rate limited. Retrying in ${wait}ms... (attempt ${attempt}/${retries})`);
+        await new Promise((r) => setTimeout(r, wait));
+        continue;
+      }
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    } catch (err) {
+      if (attempt === retries) throw err;
+      const wait = Math.pow(2, attempt) * 1000;
+      core.warning(`Fetch failed: ${err}. Retrying in ${wait}ms... (attempt ${attempt}/${retries})`);
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
+  throw new Error('Max retries exceeded');
+}
 
+export async function setupOpenCode(version = 'latest'): Promise<string> {
   const existingPath = await io.which('opencode', false);
   if (existingPath) {
     core.info(`OpenCode already available at: ${existingPath}`);
@@ -38,28 +63,30 @@ export async function setupOpenCode(version = 'latest'): Promise<string> {
   if (version === 'latest') {
     releaseUrl = 'https://api.github.com/repos/anomalyco/opencode/releases/latest';
   } else {
-    releaseUrl = `https://api.github.com/repos/anomalyco/opencode/releases/tags/${version}`;
+    const tag = version.startsWith('v') ? version : `v${version}`;
+    releaseUrl = `https://api.github.com/repos/anomalyco/opencode/releases/tags/${tag}`;
   }
 
-  const response = await fetch(releaseUrl);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch release info: ${response.status} ${response.statusText}`);
-  }
+  const response = await fetchWithRetry(releaseUrl);
   const release = (await response.json()) as {
+    tag_name?: string;
     assets: Array<{ name: string; browser_download_url: string }>;
   };
 
   const assetName = `opencode-${arch}.tar.gz`;
   const asset = release.assets.find((a) => a.name === assetName);
   if (!asset) {
-    throw new Error(`Could not find asset "${assetName}" in release`);
+    throw new Error(
+      `Could not find asset "${assetName}" in release ${release.tag_name || version}`,
+    );
   }
 
   core.info(`Downloading from: ${asset.browser_download_url}`);
   const downloadPath = await tc.downloadTool(asset.browser_download_url);
   const extractPath = await tc.extractTar(downloadPath);
 
-  const cachedPath = await tc.cacheDir(extractPath, 'opencode', version.replace(/^v/, ''));
+  const semver = (release.tag_name || version).replace(/^v/, '');
+  const cachedPath = await tc.cacheDir(extractPath, 'opencode', semver);
   const binPath = path.join(cachedPath, 'opencode');
 
   fs.chmodSync(binPath, 0o755);
@@ -127,7 +154,7 @@ export async function runOpenCode(
 }
 
 export function configureGit(userName?: string, userEmail?: string, token?: string): void {
-  const name = userName || process.env.GITHUB_ACTOR || 'github-actions[bot]';
+  const name = userName || process.env.GITHUB_ACTOR || 'opencode-ai-reviewer[bot]';
   const email = userEmail || `${name}@users.noreply.github.com`;
 
   cp.execSync('git config --global user.name "' + name + '"');
@@ -142,34 +169,6 @@ export function configureGit(userName?: string, userEmail?: string, token?: stri
   }
 
   core.info(`Git configured: ${name} <${email}>`);
-}
-
-export async function ensurePnpm(pnpmVersion = '10.8.0'): Promise<void> {
-  try {
-    cp.execSync('corepack enable', { stdio: 'pipe' });
-    core.info('Corepack enabled');
-  } catch {
-    core.warning('Could not enable corepack — continuing');
-  }
-
-  const existingPnpm = await io.which('pnpm', false);
-  if (existingPnpm) {
-    const version = cp.execSync('pnpm --version', { encoding: 'utf-8' }).trim();
-    core.info(`pnpm already available: ${version}`);
-    return;
-  }
-
-  try {
-    cp.execSync(`corepack prepare pnpm@${pnpmVersion} --activate`, { stdio: 'pipe' });
-    core.info(`pnpm ${pnpmVersion} installed via corepack`);
-  } catch {
-    try {
-      cp.execSync('npm install -g pnpm', { stdio: 'pipe' });
-      core.info('pnpm installed via npm');
-    } catch {
-      core.warning('Could not install pnpm — continuing without it');
-    }
-  }
 }
 
 export function getGitStatus(): string {

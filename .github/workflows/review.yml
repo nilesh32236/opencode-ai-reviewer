@@ -95,7 +95,7 @@ jobs:
 
       - name: AI Code Review
         id: ai-review
-        uses: ./                    # Points to action.yml in the repo root
+        uses: ./action
         with:
           mode: review
           model: ${{ inputs.model }}

@@ -6,7 +6,6 @@ export {
   ensureOutputDir,
   configureGit,
   getGitStatus,
-  ensurePnpm,
 } from './opencode';
 export { GitHubHelper } from './utils/github';
 export {

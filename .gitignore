@@ -1,6 +1,5 @@
 node_modules/
 dist/
-action/lib/
 *.js.map
 .opencode/
 .audit-output.jsonl

@@ -73,7 +73,7 @@ jobs:
 
       - name: AI Review
         id: ai-review
-        uses: ./
+        uses: ./action
         with:
           mode: review
           model: ${{ inputs.model }}
@@ -97,7 +97,7 @@ jobs:
 
       - name: AI Fix
         id: ai-fix
-        uses: ./
+        uses: ./action
         with:
           mode: fix
           model: ${{ inputs.model }}

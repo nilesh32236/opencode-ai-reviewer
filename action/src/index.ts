@@ -6,11 +6,13 @@ import {
   GitHubHelper,
   type MCPServerConfig,
   ReviewEngine,
+  configureGit,
   getDefaultMCPServers,
+  setupOpenCode,
   validateConfig,
 } from '@opencode-pr-agent/lib';
 import { runAudit } from './audit';
-import { runAutofixLoop, runFix } from './fix';
+import { runAutofixLoop, runFix, runFixIssue } from './fix';
 import { parseInputs } from './inputs';
 import { runPost } from './post';
 import { runReview } from './review';
@@ -21,6 +23,15 @@ async function run(): Promise<void> {
 
     const repo = core.getInput('repo') || github.context.repo.repo;
     const token = inputs.githubToken;
+
+    await setupOpenCode(inputs.opencodeVersion);
+
+    configureGit(
+      core.getInput('git_user_name') || process.env.GITHUB_ACTOR || 'opencode-ai-reviewer[bot]',
+      core.getInput('git_user_email') ||
+        `${process.env.GITHUB_ACTOR || 'opencode-ai-reviewer[bot]'}@users.noreply.github.com`,
+      token,
+    );
 
     let mcpServers: MCPServerConfig[] = [];
     if (inputs.enableMCP) {
@@ -55,6 +66,12 @@ async function run(): Promise<void> {
       },
       audit: {
         ...DEFAULT_CONFIG.audit,
+        targetDirs:
+          inputs.auditTargetDirs.length > 0
+            ? inputs.auditTargetDirs
+            : inputs.auditTargetDir
+              ? [inputs.auditTargetDir]
+              : DEFAULT_CONFIG.audit.targetDirs,
       },
     };
 
@@ -74,7 +91,11 @@ async function run(): Promise<void> {
           await runReview(inputs, config, engine, gh, repo);
           break;
         case 'fix':
-          if (inputs.enableFix) {
+          if (github.context.payload.issue?.pull_request) {
+            await runAutofixLoop(inputs, config, engine, gh, repo, token);
+          } else if (github.context.payload.issue?.number && !github.context.payload.issue?.pull_request) {
+            await runFixIssue(inputs, config, engine, gh, repo, token);
+          } else if (inputs.enableFix) {
             await runAutofixLoop(inputs, config, engine, gh, repo, token);
           } else {
             await runFix(inputs, config, engine, gh, repo, token);
@@ -82,6 +103,9 @@ async function run(): Promise<void> {
           break;
         case 'audit':
           await runAudit(inputs, config, engine, gh, repo, token);
+          break;
+        case 'post':
+          await runPost(inputs, gh, repo, token);
           break;
         default:
           core.setFailed(`Unknown mode: ${inputs.mode}`);
