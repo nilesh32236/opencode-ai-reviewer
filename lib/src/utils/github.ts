@@ -19,23 +19,58 @@ export class GitHubHelper {
 
   private async api<T>(path: string, options: RequestInit = {}): Promise<T> {
     const url = `${this.apiUrl}/repos/${this.repo}${path}`;
-    const res = await fetch(url, {
-      ...options,
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-        ...options.headers,
-      },
-    });
+    const maxRetries = 3;
 
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`GitHub API ${res.status} on ${path}: ${body}`);
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const res = await fetch(url, {
+          ...options,
+          headers: {
+            Authorization: `Bearer ${this.token}`,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            ...options.headers,
+          },
+        });
+
+        if (res.ok) {
+          if (res.status === 204) return undefined as T;
+          return res.json();
+        }
+
+        if (res.status === 429 || res.status === 403) {
+          const retryAfter = res.headers.get('Retry-After');
+          const waitMs = retryAfter ? Number.parseInt(retryAfter, 10) * 1000 : Math.pow(2, attempt) * 1000;
+          if (attempt < maxRetries) {
+            core.warning(`GitHub API ${res.status} on ${path}. Retrying in ${waitMs}ms... (attempt ${attempt}/${maxRetries})`);
+            await new Promise((r) => setTimeout(r, waitMs));
+            continue;
+          }
+        }
+
+        if (res.status >= 500 && attempt < maxRetries) {
+          const waitMs = Math.pow(2, attempt) * 1000;
+          core.warning(`GitHub API ${res.status} on ${path}. Retrying in ${waitMs}ms... (attempt ${attempt}/${maxRetries})`);
+          await new Promise((r) => setTimeout(r, waitMs));
+          continue;
+        }
+
+        const body = await res.text();
+        const truncated = body.length > 500 ? body.slice(0, 500) + '...' : body;
+        throw new Error(`GitHub API ${res.status} on ${path}: ${truncated}`);
+      } catch (err) {
+        if (attempt === maxRetries) throw err;
+        if (err instanceof TypeError) {
+          const waitMs = Math.pow(2, attempt) * 1000;
+          core.warning(`Network error on ${path}. Retrying in ${waitMs}ms... (attempt ${attempt}/${maxRetries})`);
+          await new Promise((r) => setTimeout(r, waitMs));
+        } else {
+          throw err;
+        }
+      }
     }
 
-    if (res.status === 204) return undefined as T;
-    return res.json();
+    throw new Error(`Max retries exceeded for ${path}`);
   }
 
   // ─── PR Operations ──────────────────────────────────────
@@ -170,13 +205,21 @@ export class GitHubHelper {
       }
       const diffText = await res.text();
       const lines = new Set<string>();
-      const hunkRegex = /^@@\s+-[0-9,]+\s+\+([0-9]+),([0-9]+)\s+@@/gm;
-      let match: RegExpExecArray | null;
-      while ((match = hunkRegex.exec(diffText)) !== null) {
-        const startLine = Number.parseInt(match[1], 10);
-        const lineCount = Number.parseInt(match[2], 10);
-        for (let i = 0; i < lineCount; i++) {
-          lines.add(`${startLine + i}`);
+      const diffLines = diffText.split('\n');
+      let currentFile = '';
+      for (const line of diffLines) {
+        const fileMatch = line.match(/^\+\+\+ b\/(.+)$/);
+        if (fileMatch) {
+          currentFile = fileMatch[1];
+          continue;
+        }
+        const hunkMatch = line.match(/^@@\s+-[0-9,]+\s+\+([0-9]+),([0-9]+)\s+@@/);
+        if (hunkMatch && currentFile) {
+          const startLine = Number.parseInt(hunkMatch[1], 10);
+          const lineCount = Number.parseInt(hunkMatch[2], 10);
+          for (let i = 0; i < lineCount; i++) {
+            lines.add(`${currentFile}:${startLine + i}`);
+          }
         }
       }
       return lines;
@@ -309,7 +352,7 @@ export class GitHubHelper {
 
   async setLabels(issueNumber: number, add: string[], remove: string[]): Promise<void> {
     await Promise.all([
-      ...add.map((l) => this.addLabels(issueNumber, [l])),
+      ...add.map((l) => this.addLabels(issueNumber, [l]).catch(() => core.warning(`Failed to add label: ${l}`))),
       ...remove.map((l) => this.removeLabel(issueNumber, l)),
     ]);
   }
@@ -414,21 +457,26 @@ export class GitHubHelper {
 
   async closeOpenCodePRs(since?: string): Promise<void> {
     type PRSummary = { number: number; head: { ref: string }; created_at: string };
-    const prs = await this.api<PRSummary[]>('/pulls?state=open&per_page=100');
-    for (const pr of prs) {
-      if (pr.head?.ref?.startsWith('opencode/')) {
-        if (since && pr.created_at < since) continue;
-        try {
-          await this.api(`/pulls/${pr.number}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ state: 'closed' }),
-          });
-          core.info(`Closed auto-created PR #${pr.number} (${pr.head.ref})`);
-        } catch {
-          core.debug(`Could not close PR #${pr.number}`);
+    let page = 1;
+    for (;;) {
+      const prs = await this.api<PRSummary[]>(`/pulls?state=open&per_page=100&page=${page}`);
+      if (prs.length === 0) break;
+      for (const pr of prs) {
+        if (pr.head?.ref?.startsWith('opencode/')) {
+          if (since && pr.created_at < since) continue;
+          try {
+            await this.api(`/pulls/${pr.number}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ state: 'closed' }),
+            });
+            core.info(`Closed auto-created PR #${pr.number} (${pr.head.ref})`);
+          } catch {
+            core.debug(`Could not close PR #${pr.number}`);
+          }
         }
       }
+      page++;
     }
   }
 

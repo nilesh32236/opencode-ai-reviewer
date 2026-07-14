@@ -130,16 +130,20 @@ export class LearningStore {
   }
 
   incrementAndCheckMetaReviewInterval(interval: number): boolean {
-    const row = this.db
-      .prepare('SELECT count FROM meta_review_counter WHERE id = 1')
-      .get() as { count: number } | undefined;
+    const update = this.db.transaction(() => {
+      const row = this.db
+        .prepare('SELECT count FROM meta_review_counter WHERE id = 1')
+        .get() as { count: number } | undefined;
 
-    if (!row) return false;
+      if (!row) return false;
 
-    const newCount = row.count + 1;
-    this.db.prepare('UPDATE meta_review_counter SET count = ? WHERE id = 1').run(newCount);
+      const newCount = row.count + 1;
+      this.db.prepare('UPDATE meta_review_counter SET count = ? WHERE id = 1').run(newCount);
 
-    return newCount % interval === 0;
+      return newCount % interval === 0;
+    });
+
+    return update() as boolean;
   }
 
   recordPattern(pattern: {

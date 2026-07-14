@@ -110,7 +110,23 @@ export default (app: Probot): void => {
   bus.registerAll(subscribers);
 
   app.onAny(async (context) => {
-    await router.handle(context.name, context.payload);
+    try {
+      await router.handle(context.name, context.payload);
+    } catch (err) {
+      console.error(`Event handler failed for ${context.name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
+
+  process.on('SIGTERM', () => {
+    console.log('Received SIGTERM — closing learning store...');
+    learningStore.close();
+    process.exit(0);
+  });
+
+  process.on('SIGINT', () => {
+    console.log('Received SIGINT — closing learning store...');
+    learningStore.close();
+    process.exit(0);
   });
 
   console.log('✅ OpenCode PR Agent app loaded (self-improving)');

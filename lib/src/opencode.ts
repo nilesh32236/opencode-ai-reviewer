@@ -82,8 +82,24 @@ export async function setupOpenCode(version = 'latest'): Promise<string> {
   }
 
   core.info(`Downloading from: ${asset.browser_download_url}`);
-  const downloadPath = await tc.downloadTool(asset.browser_download_url);
-  const extractPath = await tc.extractTar(downloadPath);
+
+  let downloadPath = '';
+  let extractPath = '';
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      downloadPath = await tc.downloadTool(asset.browser_download_url);
+      extractPath = await tc.extractTar(downloadPath);
+      break;
+    } catch (err) {
+      if (attempt === 3) {
+        core.error(`Failed to download/extract OpenCode after 3 attempts: ${String(err)}`);
+        throw err;
+      }
+      const wait = Math.pow(2, attempt) * 1000;
+      core.warning(`Download attempt ${attempt} failed, retrying in ${wait}ms: ${String(err)}`);
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
 
   const semver = (release.tag_name || version).replace(/^v/, '');
   const cachedPath = await tc.cacheDir(extractPath, 'opencode', semver);
@@ -167,21 +183,16 @@ export async function runOpenCode(
 
   core.info(`Running OpenCode (model: ${options.model}, timeout: ${options.timeoutMinutes ?? 10}m)...`);
 
-  let timedOut = false;
-  const timeoutHandle = setTimeout(() => {
-    timedOut = true;
-    core.warning(`OpenCode has been running for ${options.timeoutMinutes ?? 10}m — possible hang.`);
-  }, timeoutMs);
-
   const githubToken = process.env.GITHUB_TOKEN || process.env.INPUT_GITHUB_TOKEN || '';
   const openaiApiKey = process.env.OPENAI_API_KEY || process.env.INPUT_OPENAI_API_KEY || '';
   const anthropicApiKey = process.env.ANTHROPIC_API_KEY || process.env.INPUT_ANTHROPIC_API_KEY || '';
   const geminiApiKey = process.env.GEMINI_API_KEY || process.env.INPUT_GEMINI_API_KEY || '';
 
-  try {
-    await exec.exec(binaryPath, args, {
+  const childProcess = cp.execFile(
+    binaryPath,
+    args,
+    {
       cwd,
-      input: Buffer.from(''),
       env: {
         ...process.env,
         ...options.env,
@@ -190,31 +201,52 @@ export async function runOpenCode(
         OPENAI_API_KEY: openaiApiKey,
         ANTHROPIC_API_KEY: anthropicApiKey,
         GEMINI_API_KEY: geminiApiKey,
-        // OPENCODE_CONFIG_CONTENT is the highest-precedence config source.
-        // It overrides remote, global, and project opencode.json configs.
-        // We use it to guarantee all permissions are "allow" and autoupdate
-        // is disabled regardless of what the target repo's config says.
-        // Docs: https://opencode.ai/docs/config#locations
         OPENCODE_CONFIG_CONTENT: buildCIConfig(),
-        // Disable auto-update checks — irrelevant in CI, wastes time.
         OPENCODE_DISABLE_AUTOUPDATE: 'true',
       } as { [key: string]: string },
-      ignoreReturnCode: true,
+      timeout: timeoutMs,
+      maxBuffer: 10 * 1024 * 1024,
+    },
+    (err) => {
+      if (err && err.killed) {
+        core.warning(`OpenCode was terminated after ${options.timeoutMinutes ?? 10}m timeout.`);
+      }
+    },
+  );
+
+  const timeoutHandle = setTimeout(() => {
+    core.warning(`OpenCode exceeded ${options.timeoutMinutes ?? 10}m timeout — killing process.`);
+    childProcess.kill('SIGTERM');
+    setTimeout(() => {
+      if (childProcess.exitCode === null) childProcess.kill('SIGKILL');
+    }, 5000);
+  }, timeoutMs);
+
+  try {
+    const { stdout, stderr } = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+      let stdout = '';
+      let stderr = '';
+      childProcess.stdout?.on('data', (data: Buffer) => { stdout += data.toString(); });
+      childProcess.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
+      childProcess.on('error', reject);
+      childProcess.on('close', (code) => {
+        if (code === 0 || code === null) {
+          resolve({ stdout, stderr });
+        } else {
+          reject(new Error(`OpenCode exited with code ${code}: ${stderr.slice(0, 500)}`));
+        }
+      });
     });
 
     const durationMs = Date.now() - startTime;
     core.info(`OpenCode finished in ${(durationMs / 1000).toFixed(1)}s`);
-    return { success: true, output: '', durationMs };
+    return { success: true, output: stdout, durationMs };
   } catch (err) {
     const durationMs = Date.now() - startTime;
     core.error(`OpenCode execution failed: ${String(err)}`);
     return { success: false, output: '', durationMs };
   } finally {
     clearTimeout(timeoutHandle);
-    if (timedOut) {
-      core.warning(`OpenCode may have hung — exceeded the ${options.timeoutMinutes ?? 10}m timeout.`);
-    }
-
   }
 }
 
@@ -222,15 +254,15 @@ export function configureGit(userName?: string, userEmail?: string, token?: stri
   const name = userName || process.env.GITHUB_ACTOR || 'opencode-ai-reviewer[bot]';
   const email = userEmail || `${name}@users.noreply.github.com`;
 
-  cp.execSync('git config --global user.name "' + name + '"');
-  cp.execSync('git config --global user.email "' + email + '"');
+  cp.execFileSync('git', ['config', '--global', 'user.name', name]);
+  cp.execFileSync('git', ['config', '--global', 'user.email', email]);
 
   if (token) {
-    cp.execSync(
-      'git config --global url.https://x-access-token:' +
-        token +
-        '@github.com/.insteadOf https://github.com/',
-    );
+    cp.execFileSync('git', [
+      'config', '--global',
+      `url.https://x-access-token:${token}@github.com/.insteadOf`,
+      'https://github.com/',
+    ]);
   }
 
   core.info(`Git configured: ${name} <${email}>`);

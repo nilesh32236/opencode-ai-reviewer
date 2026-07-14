@@ -136,8 +136,8 @@ export class MCPManager {
             }
           }
         }
-      } catch {
-        // Silently skip unavailable docs
+      } catch (err) {
+        console.log(`MCP docs unavailable for ${lib}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 

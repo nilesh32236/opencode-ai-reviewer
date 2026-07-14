@@ -42,8 +42,8 @@ export class ReviewEngine {
             });
           }
         }
-      } catch {
-        // Non-critical — proceed without MCP
+      } catch (err) {
+        console.log(`MCP unavailable — continuing without library docs: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
@@ -96,8 +96,8 @@ export class ReviewEngine {
         if (libraries.length > 0) {
           mcpDocs = await this.mcp.getLibraryDocs(libraries);
         }
-      } catch {
-        // Non-critical
+      } catch (err) {
+        console.log(`MCP unavailable — continuing without library docs: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
@@ -148,8 +148,8 @@ export class ReviewEngine {
         if (libraries.length > 0) {
           mcpDocs = await this.mcp.getLibraryDocs(libraries);
         }
-      } catch {
-        // Non-critical
+      } catch (err) {
+        console.log(`MCP unavailable — continuing without library docs: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
@@ -174,6 +174,9 @@ export class ReviewEngine {
 
   async cleanup(): Promise<void> {
     await this.mcp.disconnect();
+    if (this.learningStore) {
+      this.learningStore.close();
+    }
   }
 
   private buildPRContextString(pr: PRContext): string {

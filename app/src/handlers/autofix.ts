@@ -91,10 +91,15 @@ export async function handleAutofixLoop(
       const fixResult = await engine.runFix(prNumber, iteration, contextMd);
 
       if (fixResult.changesMade) {
-        execSync('git add -A');
-        execSync(`git commit -m "fix: address review feedback (iteration ${iteration + 1})"`);
-        execSync(`git remote set-url origin https://x-access-token:${token}@github.com/${repo}`);
-        execSync(`git push origin ${pr.headRef}`);
+        try {
+          execSync('git add -A');
+          execSync(`git commit -m "fix: address review feedback (iteration ${iteration + 1})"`);
+          execSync(`git remote set-url origin https://x-access-token:${token}@github.com/${repo}`);
+          execSync(`git push origin ${pr.headRef}`);
+        } catch (err) {
+          console.error(`Git operation failed: ${err instanceof Error ? err.message : String(err)}`);
+          throw err;
+        }
       }
 
       await gh.removeLabel(prNumber, 'autofix:needs-fix');

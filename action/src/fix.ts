@@ -177,40 +177,51 @@ export async function runAutofixLoop(
   let approved = false;
 
   for (let i = 0; i < config.maxIterations; i++) {
-    core.info(`=== Autofix iteration ${i + 1}/${config.maxIterations} ===`);
+    try {
+      core.info(`=== Autofix iteration ${i + 1}/${config.maxIterations} ===`);
 
-    const pr = await gh.getPR(prNumber);
-    const result = await engine.reviewPR(pr);
+      const pr = await gh.getPR(prNumber);
+      const result = await engine.reviewPR(pr);
 
-    if (result.verdict.ready && result.stats.critical === 0 && result.stats.important === 0) {
-      core.info('PR approved — all issues resolved');
-      approved = true;
-      break;
+      if (result.verdict.ready && result.stats.critical === 0 && result.stats.important === 0) {
+        core.info('PR approved — all issues resolved');
+        approved = true;
+        break;
+      }
+
+      await gh.postOrUpdateComment(
+        prNumber,
+        '<!-- autofix-review -->',
+        `## Autofix Review (Iteration ${i + 1}/${config.maxIterations})\n\n${result.summary}`,
+      );
+
+      const contextMarkdown = await gh.gatherContext({ prNumber });
+      const fixResult = await engine.runFix(prNumber, i, contextMarkdown);
+
+      if (!fixResult.changesMade) {
+        core.info('Fix agent made no changes — stopping loop');
+        break;
+      }
+
+      await exec.exec('git', ['add', '-A']);
+      await exec.exec('git', ['commit', '-m', `fix: autofix iteration ${i + 1}`]);
+      await exec.exec('git', ['push', 'origin', pr.headRef]);
+
+      await gh.postOrUpdateComment(
+        prNumber,
+        '<!-- autofix-status -->',
+        `Fix applied (iteration ${i + 1}). Waiting for review...`,
+      );
+    } catch (err) {
+      core.error(`Autofix iteration ${i + 1} failed: ${String(err)}`);
+      await gh.postOrUpdateComment(
+        prNumber,
+        '<!-- autofix-status -->',
+        `⚠️ Autofix iteration ${i + 1} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      await gh.setLabels(prNumber, ['autofix:needs-manual-review'], ['autofix', 'autofix:needs-fix']);
+      throw err;
     }
-
-    await gh.postOrUpdateComment(
-      prNumber,
-      '<!-- autofix-review -->',
-      `## Autofix Review (Iteration ${i + 1}/${config.maxIterations})\n\n${result.summary}`,
-    );
-
-    const contextMarkdown = await gh.gatherContext({ prNumber });
-    const fixResult = await engine.runFix(prNumber, i, contextMarkdown);
-
-    if (!fixResult.changesMade) {
-      core.info('Fix agent made no changes — stopping loop');
-      break;
-    }
-
-    await exec.exec('git', ['add', '-A']);
-    await exec.exec('git', ['commit', '-m', `fix: autofix iteration ${i + 1}`]);
-    await exec.exec('git', ['push', 'origin', pr.headRef]);
-
-    await gh.postOrUpdateComment(
-      prNumber,
-      '<!-- autofix-status -->',
-      `Fix applied (iteration ${i + 1}). Waiting for review...`,
-    );
   }
 
   core.setOutput('approved', String(approved));
