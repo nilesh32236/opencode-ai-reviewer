@@ -82,6 +82,13 @@ export class LearningStore {
       lessons.push(rule.rule_text);
     }
 
+    const generalOverrides = this.db
+      .prepare("SELECT override_text FROM prompt_overrides WHERE category = 'general'")
+      .all() as Array<{ override_text: string }>;
+    for (const o of generalOverrides) {
+      lessons.push(o.override_text);
+    }
+
     const extensions = [...new Set(filePaths.map((f) => {
       const ext = f.split('.').pop();
       return ext ? `.${ext}` : '';

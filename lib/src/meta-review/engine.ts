@@ -1,0 +1,110 @@
+import { LearningStore } from '../learning/store.js';
+import { buildMetaReviewPrompt } from './prompts.js';
+import type { GitHubEvent, Subscriber } from '../types/index.js';
+import { runOpenCode } from '../opencode.js';
+
+const DISPUTE_KEYWORDS = ['false positive', 'not an issue', 'wrong', 'incorrect', 'false alarm'];
+
+export class MetaReviewEngine {
+  constructor(private store: LearningStore) {}
+
+  async runMetaReview(context: {
+    prNumber: number;
+    reviewSummary: string;
+    findingsCount: number;
+    issuesCount: number;
+    strengthsCount: number;
+    hasVerdict: boolean;
+    fileCount: number;
+  }): Promise<{
+    actionabilityScore: number;
+    accuracyScore: number;
+    coverageScore: number;
+    consistencyScore: number;
+    suggestions: string[];
+  }> {
+    const fpRate = this.store.getFalsePositiveRate();
+    const prompt = buildMetaReviewPrompt(context);
+
+    await runOpenCode(prompt, {
+      model: 'opencode/deepseek-v4-flash-free',
+    });
+
+    let result: Record<string, unknown> = {};
+    try {
+      const fs = await import('fs');
+      const content = await fs.promises.readFile('.opencode/meta-review-output.jsonl', 'utf-8');
+      const parsed = JSON.parse(content.trim().split('\n').pop() || '{}');
+      result = parsed;
+    } catch {
+      // Fallback defaults if OpenCode call fails
+      result = {
+        actionabilityScore: 70,
+        coverageScore: 70,
+        consistencyScore: 70,
+        accuracyScore: Math.max(0, 100 - fpRate * 100),
+        suggestions: ['Unable to complete meta-review analysis'],
+      };
+    }
+
+    const quality = {
+      prNumber: context.prNumber,
+      actionabilityScore: (result.actionabilityScore as number) || 70,
+      accuracyScore: (result.accuracyScore as number) || Math.max(0, 100 - fpRate * 100),
+      coverageScore: (result.coverageScore as number) || 70,
+      consistencyScore: (result.consistencyScore as number) || 70,
+    };
+
+    this.store.recordQuality(quality);
+
+    // If false positive rate > 30%, add a prompt override suggestion
+    if (fpRate > 0.3) {
+      this.store.addPromptOverride(
+        'general',
+        `Note: Recent reviews had a ${Math.round(fpRate * 100)}% false positive rate. Be more conservative with issue severity.`,
+        fpRate,
+      );
+    }
+
+    return {
+      ...quality,
+      suggestions: (result.suggestions as string[]) || [],
+    };
+  }
+}
+
+export class MetaReviewSubscriber implements Subscriber {
+  name = 'MetaReviewSubscriber';
+  subscribedEvents = ['review.completed'];
+
+  constructor(
+    private engine: MetaReviewEngine,
+    private store: LearningStore,
+    private interval: number,
+  ) {}
+
+  async handle(event: GitHubEvent): Promise<void> {
+    const shouldRun = this.store.incrementAndCheckMetaReviewInterval(this.interval);
+    if (!shouldRun) return;
+
+    const payload = event.payload as {
+      prNumber?: number;
+      reviewSummary?: string;
+      findingsCount?: number;
+      issuesCount?: number;
+      strengthsCount?: number;
+      hasVerdict?: boolean;
+      fileCount?: number;
+    };
+
+    await this.engine.runMetaReview({
+      prNumber: payload.prNumber || event.prNumber || 0,
+      reviewSummary: payload.reviewSummary || '',
+      findingsCount: payload.findingsCount || 0,
+      issuesCount: payload.issuesCount || 0,
+      strengthsCount: payload.strengthsCount || 0,
+      hasVerdict: payload.hasVerdict || false,
+      fileCount: payload.fileCount || 0,
+    });
+  }
+}
