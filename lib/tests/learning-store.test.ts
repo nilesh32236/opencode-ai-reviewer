@@ -135,4 +135,57 @@ describe('LearningStore', () => {
     const lessons = await store.getRelevantLessons(['test.ts']);
     expect(lessons).toContain('Test rule');
   });
+
+  it('deleteFindings cascades to feedback', async () => {
+    const id = await store.recordFinding({
+      prNumber: 42,
+      type: 'issue',
+      severity: 'minor',
+      message: 'Cascade test',
+    });
+    await store.recordFeedback({
+      findingId: id,
+      signalType: 'dismissed',
+      signalValue: 'false positive',
+      prNumber: 42,
+    });
+
+    const deleted = await store.deleteFindings(42);
+    expect(deleted).toBe(1);
+
+    const remaining = await store.getFindings(42);
+    expect(remaining).toHaveLength(0);
+  });
+
+  it('getFindingsByType filters by type', async () => {
+    await store.recordFinding({ prNumber: 1, type: 'issue', message: 'Issue A' });
+    await store.recordFinding({ prNumber: 1, type: 'strength', message: 'Strength A' });
+    await store.recordFinding({ prNumber: 1, type: 'issue', message: 'Issue B' });
+
+    const issues = await store.getFindingsByType('issue');
+    expect(issues.length).toBeGreaterThanOrEqual(2);
+    const strengths = await store.getFindingsByType('strength');
+    expect(strengths.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('recordFindings batch inserts findings', async () => {
+    const ids = await store.recordFindings([
+      { prNumber: 99, type: 'issue', severity: 'minor', message: 'Batch 1' },
+      { prNumber: 99, type: 'issue', severity: 'critical', message: 'Batch 2' },
+    ]);
+    expect(ids).toHaveLength(2);
+
+    const findings = await store.getFindings(99);
+    expect(findings).toHaveLength(2);
+  });
+
+  it('recordFindings returns empty for empty input', async () => {
+    const ids = await store.recordFindings([]);
+    expect(ids).toEqual([]);
+  });
+
+  it('deleteFindings returns 0 for non-existent PR', async () => {
+    const deleted = await store.deleteFindings(99999);
+    expect(deleted).toBe(0);
+  });
 });

@@ -172,36 +172,48 @@ export class JsonDatabase implements DatabaseInstance {
           cleanSql.startsWith('INSERT OR REPLACE INTO findings') ||
           cleanSql.startsWith('INSERT INTO findings')
         ) {
-          const [id, pr_number, type, severity, file, line, message, suggestion] = params;
-          const idx = self.data.findings.findIndex((f) => f.id === id);
-          const entry = {
-            id: id as string,
-            pr_number: pr_number as number,
-            type: type as string,
-            severity: severity as string | undefined,
-            file: file as string | undefined,
-            line: line as number | undefined,
-            message: message as string,
-            suggestion: suggestion as string | undefined,
-            created_at: new Date().toISOString(),
-          };
-          if (idx >= 0) {
-            self.data.findings[idx] = entry;
-          } else {
-            self.data.findings.push(entry);
+          const rowSize = 8;
+          for (let i = 0; i < params.length; i += rowSize) {
+            const [id, pr_number, type, severity, file, line, message, suggestion] = params.slice(
+              i,
+              i + rowSize,
+            );
+            const idx = self.data.findings.findIndex((f) => f.id === id);
+            const entry = {
+              id: id as string,
+              pr_number: pr_number as number,
+              type: type as string,
+              severity: severity as string | undefined,
+              file: file as string | undefined,
+              line: line as number | undefined,
+              message: message as string,
+              suggestion: suggestion as string | undefined,
+              created_at: new Date().toISOString(),
+            };
+            if (idx >= 0) {
+              self.data.findings[idx] = entry;
+            } else {
+              self.data.findings.push(entry);
+            }
+            changes++;
           }
-          changes = 1;
         } else if (cleanSql.startsWith('INSERT INTO feedback')) {
-          const [id, finding_id, signal_type, signal_value, pr_number] = params;
-          self.data.feedback.push({
-            id: id as string,
-            finding_id: finding_id as string,
-            signal_type: signal_type as string,
-            signal_value: signal_value as string | undefined,
-            pr_number: pr_number as number,
-            created_at: new Date().toISOString(),
-          });
-          changes = 1;
+          const rowSize = 5;
+          for (let i = 0; i < params.length; i += rowSize) {
+            const [id, finding_id, signal_type, signal_value, pr_number] = params.slice(
+              i,
+              i + rowSize,
+            );
+            self.data.feedback.push({
+              id: id as string,
+              finding_id: finding_id as string,
+              signal_type: signal_type as string,
+              signal_value: signal_value as string | undefined,
+              pr_number: pr_number as number,
+              created_at: new Date().toISOString(),
+            });
+            changes++;
+          }
         } else if (cleanSql.startsWith('INSERT INTO review_quality')) {
           const [
             id,
@@ -240,6 +252,11 @@ export class JsonDatabase implements DatabaseInstance {
             status: status as string,
           });
           changes = 1;
+        } else if (cleanSql.startsWith('DELETE FROM feedback WHERE pr_number = ?')) {
+          const prNumber = params[0] as number;
+          const initialLength = self.data.feedback.length;
+          self.data.feedback = self.data.feedback.filter((f) => f.pr_number !== prNumber);
+          changes = initialLength - self.data.feedback.length;
         } else if (cleanSql.startsWith('DELETE FROM findings WHERE pr_number = ?')) {
           const prNumber = params[0] as number;
           const initialLength = self.data.findings.length;

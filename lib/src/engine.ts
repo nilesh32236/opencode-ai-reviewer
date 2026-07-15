@@ -234,35 +234,87 @@ function detectLibraries(files: string[]): string[] {
   const libraries = new Set<string>();
 
   for (const file of files) {
-    if (file.includes('package.json')) continue;
+    if (file.includes('package.json') || file.endsWith('.lock')) continue;
 
+    // React / Next.js detection
     if (file.endsWith('.tsx') || file.endsWith('.jsx')) {
-      libraries.add('next.js');
       libraries.add('react');
     }
+    if (
+      file.includes('/pages/') ||
+      file.includes('/app/') ||
+      file.endsWith('next.config.js') ||
+      file.endsWith('next.config.ts')
+    ) {
+      libraries.add('next.js');
+    }
 
+    // React Query detection
     if (
       file.includes('useQuery') ||
       file.includes('useMutation') ||
-      file.includes('query-client')
+      file.includes('query-client') ||
+      file.endsWith('queries.ts') ||
+      file.endsWith('queries.tsx')
     ) {
       libraries.add('@tanstack/react-query');
     }
 
-    if (file.includes('routes/') || file.includes('middleware/') || file.includes('app.')) {
+    // Express / NestJS detection
+    if (
+      file.includes('/routes/') ||
+      file.includes('/middleware/') ||
+      file.endsWith('router.ts') ||
+      file.endsWith('router.js')
+    ) {
+      libraries.add('express');
+    }
+    if (
+      file.includes('/controllers/') ||
+      file.includes('/modules/') ||
+      file.endsWith('.module.ts')
+    ) {
       libraries.add('express');
     }
 
-    if (file.includes('prisma/') || file.includes('.prisma')) {
+    // Prisma detection
+    if (file.includes('prisma/') || file.includes('.prisma') || file.endsWith('schema.prisma')) {
       libraries.add('prisma');
     }
 
-    if (file.includes('schema') || file.includes('validation')) {
+    // Zod detection
+    if (
+      file.endsWith('.schema.ts') ||
+      file.includes('/schemas/') ||
+      file.includes('/validators/') ||
+      file.endsWith('validation.ts')
+    ) {
       libraries.add('zod');
     }
 
-    if (file.endsWith('.css') || file.includes('tailwind')) {
+    // Tailwind CSS detection
+    if (
+      file.includes('tailwind') ||
+      file.endsWith('tailwind.config.js') ||
+      file.endsWith('tailwind.config.ts')
+    ) {
       libraries.add('tailwindcss');
+    }
+
+    // Additional library detection
+    if (file.endsWith('.vue')) {
+      libraries.add('vue');
+    }
+    if (file.endsWith('.svelte')) {
+      libraries.add('svelte');
+    }
+    if (file.includes('/graphql/') || file.endsWith('.graphql') || file.endsWith('.gql')) {
+      libraries.add('graphql');
+    }
+    if (file.includes('/__tests__/') || file.includes('.test.') || file.includes('.spec.')) {
+      if (file.endsWith('.ts') || file.endsWith('.tsx')) {
+        libraries.add('vitest');
+      }
     }
   }
 

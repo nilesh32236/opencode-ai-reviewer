@@ -23,6 +23,9 @@ export class GitHubHelper {
     private apiUrl = 'https://api.github.com',
   ) {}
 
+  private static readonly RATE_LIMIT_THRESHOLD = 50;
+  private pendingWarned = false;
+
   private async api<T>(
     path: string,
     options: RequestInit = {},
@@ -45,6 +48,8 @@ export class GitHubHelper {
           },
         });
 
+        this.checkRateLimit(res);
+
         if (!res.ok) {
           const body = await res.text();
           const err = new Error(`GitHub API ${res.status} on ${path}: ${body}`);
@@ -59,6 +64,30 @@ export class GitHubHelper {
         retryableStatuses: isIdempotent ? [429, 500, 502, 503, 504] : [429],
       },
     );
+  }
+
+  private checkRateLimit(res: Response): void {
+    const remaining = res.headers.get('X-RateLimit-Remaining');
+    const reset = res.headers.get('X-RateLimit-Reset');
+    if (remaining !== null) {
+      const remainingNum = Number.parseInt(remaining, 10);
+      if (remainingNum <= GitHubHelper.RATE_LIMIT_THRESHOLD) {
+        const resetDate = reset
+          ? new Date(Number.parseInt(reset, 10) * 1000).toISOString()
+          : 'unknown';
+        core.warning(
+          `GitHub API rate limit low: ${remainingNum} remaining (resets at ${resetDate})`,
+        );
+      }
+    }
+    // Warn once if we receive a 429 with retry-after header
+    if (res.status === 429) {
+      const retryAfter = res.headers.get('Retry-After');
+      if (retryAfter && !this.pendingWarned) {
+        this.pendingWarned = true;
+        core.warning(`GitHub API rate limited — retrying after ${retryAfter}s`);
+      }
+    }
   }
 
   private async paginate<T>(

@@ -106,3 +106,29 @@ describe('withRetryAndTimeout', () => {
     expect(fn).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('withRetry signal support', () => {
+  it('aborts retry loop when signal is already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const fn = vi.fn().mockResolvedValue('ok');
+
+    await expect(
+      withRetry(fn, { maxRetries: 3, baseDelayMs: 10, signal: controller.signal }),
+    ).rejects.toThrow('aborted');
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it('aborts mid-retry when signal fires', async () => {
+    const controller = new AbortController();
+    const fn = vi.fn().mockImplementation(async () => {
+      controller.abort();
+      throw Object.assign(new Error('Server error'), { status: 502 });
+    });
+
+    await expect(
+      withRetry(fn, { maxRetries: 5, baseDelayMs: 10, signal: controller.signal }),
+    ).rejects.toThrow('aborted');
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+});
