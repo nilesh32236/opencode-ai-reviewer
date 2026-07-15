@@ -346,6 +346,15 @@ export class GitHubHelper {
     return { action: 'created' as const, commentId: created.id };
   }
 
+  async createComment(issueNumber: number, body: string): Promise<{ id: number }> {
+    const created = await this.api<{ id: number }>(`/issues/${issueNumber}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body }),
+    });
+    return { id: created.id };
+  }
+
   async createIssue(
     title: string,
     body: string,

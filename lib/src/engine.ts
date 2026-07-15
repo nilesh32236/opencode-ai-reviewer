@@ -1,10 +1,17 @@
 import { promises as fs } from 'fs';
+import * as cp from 'node:child_process';
 import { parseJsonlFile } from './jsonl-parser.js';
 import type { LearningStore } from './learning/store.js';
 import { MCPManager } from './mcp/client.js';
 import { ensureOutputDir, getGitStatus, runOpenCode } from './opencode.js';
 import { buildAuditPrompt, buildFixPrompt, buildReviewPrompt } from './prompts/builder.js';
-import type { AgentConfig, MCPContextEntry, PRContext, ReviewResult } from './types/index.js';
+import type {
+  AgentConfig,
+  FixResult,
+  MCPContextEntry,
+  PRContext,
+  ReviewResult,
+} from './types/index.js';
 import { GitHubHelper } from './utils/github.js';
 
 export class ReviewEngine {
@@ -93,7 +100,7 @@ export class ReviewEngine {
     iteration: number,
     contextMarkdown: string,
     cachedPR?: PRContext,
-  ): Promise<{ changesMade: boolean; stuck?: boolean; stuckReason?: string }> {
+  ): Promise<FixResult> {
     let mcpDocs = '';
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
       try {
@@ -140,9 +147,17 @@ export class ReviewEngine {
         // No stuck file — good
       }
 
-      return { changesMade, stuck, stuckReason };
+      let filesChanged: string[] = [];
+      if (changesMade) {
+        try {
+          const raw = cp.execSync('git diff --name-only', { encoding: 'utf-8' }).toString().trim();
+          filesChanged = raw ? raw.split('\n') : [];
+        } catch {}
+      }
+
+      return { changesMade, filesChanged, stuck, stuckReason };
     } catch {
-      return { changesMade: false };
+      return { changesMade: false, filesChanged: [] };
     }
   }
 

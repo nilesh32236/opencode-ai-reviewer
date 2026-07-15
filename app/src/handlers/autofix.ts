@@ -9,18 +9,21 @@ interface IterationRecord {
   critical: number;
   important: number;
   minor: number;
+  filesChanged?: string[];
+  commitMessage?: string;
 }
 
-const AUTOFIX_MARKER = '<!-- autofix-review -->';
+const REVIEW_MARKER = '<!-- autofix-review -->';
+const FIX_MARKER = '<!-- autofix-applied -->';
+const _MERGE_MARKER = '<!-- autofix-merged -->';
 
-function buildAutofixBody(
+function buildReviewBody(
   history: IterationRecord[],
   maxIterations: number,
-  phase: 'reviewing' | 'approved' | 'no-changes' | 'max-iterations' | 'merged' | 'merge-failed',
+  phase: 'reviewing' | 'approved' | 'no-changes' | 'max-iterations',
   current?: ReviewResult,
 ): string {
   const lines: string[] = ['## 🤖 Autofix Review', ''];
-
   const currentIter = history.length;
 
   switch (phase) {
@@ -38,19 +41,10 @@ function buildAutofixBody(
     case 'max-iterations':
       lines.push('**Status:** ⚠️ Manual review required');
       break;
-    case 'merged':
-      lines.push('**Status:** ✅ Merged');
-      break;
-    case 'merge-failed':
-      lines.push('**Status:** ⚠️ Approved but auto-merge failed');
-      break;
   }
 
   if (current) {
-    if (current.summary) {
-      lines.push('', '### Summary', '', current.summary);
-    }
-
+    if (current.summary) lines.push('', '### Summary', '', current.summary);
     if (current.issues.length > 0) {
       lines.push('', '### Issues Found');
       for (const i of current.issues) {
@@ -58,7 +52,6 @@ function buildAutofixBody(
         if (i.suggestion) lines.push(`  > ${i.suggestion}`);
       }
     }
-
     if (current.strengths.length > 0) {
       lines.push('', '### Strengths');
       for (const s of current.strengths) {
@@ -104,14 +97,47 @@ function buildAutofixBody(
         `⚠️ **Max iterations reached (${maxIterations}).** This PR needs manual review.`,
       );
       break;
-    case 'merged':
-      lines.push('', '✅ **PR has been merged.**');
-      break;
-    case 'merge-failed':
-      lines.push('', '⚠️ **Approved but auto-merge failed.** Please merge manually.');
-      break;
   }
 
+  return lines.join('\n');
+}
+
+function buildFixBody(history: IterationRecord[]): string {
+  const last = history[history.length - 1];
+  const lines: string[] = ['## 🔧 Autofix Applied', ''];
+  if (last) {
+    lines.push(`**Iteration:** ${last.iteration}`);
+    lines.push(`**Files changed:** ${last.filesChanged?.length ?? 0}`);
+    if (last.commitMessage) lines.push(`**Commit:** \`${last.commitMessage}\``);
+    if (last.filesChanged && last.filesChanged.length > 0) {
+      lines.push('', '### Changed Files');
+      for (const f of last.filesChanged) lines.push(`- \`${f}\``);
+    }
+  }
+  lines.push(
+    '',
+    '---',
+    '',
+    '🤖 The fix agent has applied changes. The PR will be reviewed again on the next iteration.',
+  );
+  return lines.join('\n');
+}
+
+function buildReadyBody(history: IterationRecord[], prNumber: number): string {
+  const lines: string[] = ['## ✅ Ready to Merge', ''];
+  lines.push(`All issues have been resolved in PR #${prNumber}.`);
+  lines.push(
+    '',
+    'The review agent has approved this PR. A maintainer can merge it at their discretion.',
+  );
+  if (history.length > 0) {
+    for (const h of history) {
+      if (h.summary) {
+        lines.push('', '### Summary', '', h.summary);
+        break;
+      }
+    }
+  }
   return lines.join('\n');
 }
 
@@ -124,7 +150,6 @@ export async function handleAutofixLoop(
   console.log(`🔄 Starting autofix loop for PR #${prNumber} in ${repo}`);
 
   const gh = new GitHubHelper(token, repo);
-
   const engine = new ReviewEngine(config, token, repo);
   const history: IterationRecord[] = [];
   let approved = false;
@@ -152,11 +177,10 @@ export async function handleAutofixLoop(
         approved = true;
         entry.status = 'approved';
         history.push(entry);
-        await gh.postOrUpdateComment(
-          prNumber,
-          AUTOFIX_MARKER,
-          buildAutofixBody(history, config.maxIterations, 'approved'),
-        );
+
+        await gh.setLabels(prNumber, ['autofix:ready'], ['autofix', 'autofix:needs-fix']);
+        await gh.createComment(prNumber, buildReadyBody(history, prNumber));
+        console.log('Posted ready-to-merge notification');
         break;
       }
 
@@ -164,8 +188,8 @@ export async function handleAutofixLoop(
       history.push(entry);
       await gh.postOrUpdateComment(
         prNumber,
-        AUTOFIX_MARKER,
-        buildAutofixBody(history, config.maxIterations, 'reviewing', result),
+        REVIEW_MARKER,
+        buildReviewBody(history, config.maxIterations, 'reviewing', result),
       );
 
       let contextMd = `## PR #${prNumber}\n\n${pr.body}`;
@@ -199,46 +223,25 @@ export async function handleAutofixLoop(
         history[history.length - 1].status = 'no-changes';
         await gh.postOrUpdateComment(
           prNumber,
-          AUTOFIX_MARKER,
-          buildAutofixBody(history, config.maxIterations, 'no-changes', result),
+          REVIEW_MARKER,
+          buildReviewBody(history, config.maxIterations, 'no-changes', result),
         );
         console.log('Fix agent made no changes — stopping loop');
         break;
       }
 
       history[history.length - 1].status = 'fix-applied';
+      history[history.length - 1].filesChanged = fixResult.filesChanged;
+      history[history.length - 1].commitMessage = fixResult.commitMessage;
 
       execFileSync('git', ['add', '-A']);
       execFileSync('git', ['commit', '-m', `fix: address review feedback (iteration ${i + 1})`]);
       execFileSync('git', ['push', 'origin', pr.headRef]);
+
+      await gh.postOrUpdateComment(prNumber, FIX_MARKER, buildFixBody(history));
     }
 
-    if (approved) {
-      await gh.setLabels(prNumber, ['autofix:approved'], ['autofix', 'autofix:needs-fix']);
-      const merged = await gh.mergePR(prNumber);
-
-      if (merged) {
-        await gh.setLabels(prNumber, ['autofix:merged'], ['autofix:approved', 'autofix']);
-        await gh.postOrUpdateComment(
-          prNumber,
-          AUTOFIX_MARKER,
-          buildAutofixBody(history, config.maxIterations, 'merged'),
-        );
-
-        const mergePr = await gh.getPR(prNumber);
-        if (mergePr.linkedIssue) {
-          try {
-            await gh.closeIssue(mergePr.linkedIssue, `✅ Fixed by PR #${prNumber}`);
-          } catch {}
-        }
-      } else {
-        await gh.postOrUpdateComment(
-          prNumber,
-          AUTOFIX_MARKER,
-          buildAutofixBody(history, config.maxIterations, 'merge-failed'),
-        );
-      }
-    } else {
+    if (!approved) {
       console.log(`⚠️ Max iterations reached (${config.maxIterations}) for PR #${prNumber}`);
       await gh.setLabels(
         prNumber,
@@ -247,8 +250,8 @@ export async function handleAutofixLoop(
       );
       await gh.postOrUpdateComment(
         prNumber,
-        AUTOFIX_MARKER,
-        buildAutofixBody(history, config.maxIterations, 'max-iterations'),
+        REVIEW_MARKER,
+        buildReviewBody(history, config.maxIterations, 'max-iterations'),
       );
     }
   } finally {

@@ -2,7 +2,7 @@ name: AI Self Review & Audit
 
 on:
   pull_request:
-    types: [opened, synchronize, labeled]
+    types: [opened, synchronize, labeled, closed]
   issues:
     types: [labeled, opened]
   issue_comment:
@@ -33,6 +33,7 @@ jobs:
   review:
     if: |
       github.event_name != 'schedule' &&
+      github.event.action != 'closed' &&
       github.actor != 'github-actions[bot]' &&
       !contains(github.event.pull_request.labels.*.name, 'autofix') &&
       !contains(github.event.pull_request.labels.*.name, 'autofix:approved') &&
@@ -82,6 +83,7 @@ jobs:
       cancel-in-progress: false
     if: |
       github.event_name != 'schedule' &&
+      github.event.action != 'closed' &&
       (
         (
           github.event_name == 'pull_request' &&
@@ -186,3 +188,45 @@ jobs:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+
+  # ─── Merge Notification (when autofix-ready PR is merged) ───
+  notify-merged:
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.merged == true &&
+      contains(github.event.pull_request.labels.*.name, 'autofix:ready')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Post merge notification
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          cat <<'EOF' > /tmp/merge-body.txt
+          ## ✅ Merged to Main
+
+          PR #${PR_NUMBER} has been merged to \`main\`.
+
+          All autofix issues were resolved before merge. The review agent confirmed the PR was ready.
+
+          ---
+          *🤖 This notification was posted automatically by opencode-ai-reviewer*
+          EOF
+          gh issue comment "$PR_NUMBER" --repo "${{ github.repository }}" --body-file /tmp/merge-body.txt
+
+      - name: Update labels
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr edit "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            --remove-label "autofix:ready" 2>/dev/null || true
+          gh pr edit "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            --add-label "autofix:merged" 2>/dev/null || true
