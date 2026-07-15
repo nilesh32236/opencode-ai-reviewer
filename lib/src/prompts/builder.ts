@@ -45,11 +45,17 @@ export function buildReviewPrompt(
   );
   sections.push('');
   sections.push('1. Review the list of changed files and their diff statistics.');
-  sections.push('2. Use the `read` tool to view each changed file directly (do NOT include full diffs in the prompt).');
+  sections.push(
+    '2. Use the `read` tool to view each changed file directly (do NOT include full diffs in the prompt).',
+  );
   sections.push('3. Determine which project(s) the PR touches based on file paths.');
-  sections.push(`4. If more than ${batchSize} files changed or total diff exceeds ~500 lines, dispatch sub-agents:`);
+  sections.push(
+    `4. If more than ${batchSize} files changed or total diff exceeds ~500 lines, dispatch sub-agents:`,
+  );
   sections.push(`   - Group files into batches of at most ${batchSize} files.`);
-  sections.push('   - For each batch, use the `task` tool with `subagent_type: "general"` to review that batch.');
+  sections.push(
+    '   - For each batch, use the `task` tool with `subagent_type: "general"` to review that batch.',
+  );
   sections.push('   - Pass the list of file paths and PR context to each sub-agent.');
   sections.push(`5. Collect all results, deduplicate, and write the final output.`);
 

@@ -23,10 +23,7 @@ function isRetryable(status: number, retryableStatuses: number[]): boolean {
   return retryableStatuses.includes(status);
 }
 
-export async function withRetry<T>(
-  fn: () => Promise<T>,
-  options: RetryOptions = {},
-): Promise<T> {
+export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions = {}): Promise<T> {
   const { maxRetries, baseDelayMs, maxDelayMs, retryableStatuses } = {
     ...DEFAULT_OPTIONS,
     ...options,
@@ -53,7 +50,7 @@ export async function withRetry<T>(
         throw err;
       }
 
-      const delay = Math.min(baseDelayMs * Math.pow(2, attempt - 1), maxDelayMs);
+      const delay = Math.min(baseDelayMs * 2 ** (attempt - 1), maxDelayMs);
       const jitter = Math.random() * 0.3 * delay;
       core.warning(
         `Retryable error (attempt ${attempt}/${maxRetries}): ${err instanceof Error ? err.message : err}. Retrying in ${Math.round((delay + jitter) / 1000)}s...`,
@@ -70,16 +67,13 @@ export async function withRetryAndTimeout<T>(
   timeoutMs: number,
   options: RetryOptions = {},
 ): Promise<T> {
-  return withRetry(
-    async () => {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-      try {
-        return await fn(controller.signal);
-      } finally {
-        clearTimeout(timeoutId);
-      }
-    },
-    options,
-  );
+  return withRetry(async () => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fn(controller.signal);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }, options);
 }

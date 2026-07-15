@@ -8,11 +8,11 @@ import {
   ReviewEngine,
   configureGit,
   getDefaultMCPServers,
-  setupOpenCode,
-  validateConfig,
   loadConfig,
   mergeConfigWithInputs,
+  setupOpenCode,
   setupWorkspaceDependencies,
+  validateConfig,
 } from '@opencode-pr-agent/lib';
 import { runAudit } from './audit.js';
 import { runAutofixLoop, runFix, runFixIssue } from './fix.js';
@@ -25,7 +25,8 @@ async function run(): Promise<void> {
     const inputs = parseInputs();
     const loadedConfig = loadConfig();
 
-    const repo = core.getInput('repo') || `${github.context.repo.owner}/${github.context.repo.repo}`;
+    const repo =
+      core.getInput('repo') || `${github.context.repo.owner}/${github.context.repo.repo}`;
     const token = inputs.githubToken;
 
     await setupOpenCode(inputs.opencodeVersion);
@@ -82,22 +83,40 @@ async function run(): Promise<void> {
             : inputs.auditTargetDir
               ? [inputs.auditTargetDir]
               : loadedConfig?.audit?.targetDirs || DEFAULT_CONFIG.audit.targetDirs,
-        autoFix: loadedConfig?.audit?.autoFix !== undefined ? loadedConfig.audit.autoFix : DEFAULT_CONFIG.audit.autoFix,
+        autoFix:
+          loadedConfig?.audit?.autoFix !== undefined
+            ? loadedConfig.audit.autoFix
+            : DEFAULT_CONFIG.audit.autoFix,
       },
-      learning: loadedConfig?.learning ? {
-        enabled: loadedConfig.learning.enabled ?? DEFAULT_CONFIG.learning.enabled,
-        feedbackSignals: loadedConfig.learning.feedbackSignals || DEFAULT_CONFIG.learning.feedbackSignals,
-        metaReview: {
-          enabled: loadedConfig.learning.metaReview?.enabled ?? DEFAULT_CONFIG.learning.metaReview.enabled,
-          interval: loadedConfig.learning.metaReview?.interval ?? DEFAULT_CONFIG.learning.metaReview.interval,
-          minFindingsForReview: loadedConfig.learning.metaReview?.minFindingsForReview ?? DEFAULT_CONFIG.learning.metaReview.minFindingsForReview,
-        },
-        patternDiscovery: {
-          enabled: loadedConfig.learning.patternDiscovery?.enabled ?? DEFAULT_CONFIG.learning.patternDiscovery.enabled,
-          minFrequency: loadedConfig.learning.patternDiscovery?.minFrequency ?? DEFAULT_CONFIG.learning.patternDiscovery.minFrequency,
-          windowSize: loadedConfig.learning.patternDiscovery?.windowSize ?? DEFAULT_CONFIG.learning.patternDiscovery.windowSize,
-        },
-      } : DEFAULT_CONFIG.learning,
+      learning: loadedConfig?.learning
+        ? {
+            enabled: loadedConfig.learning.enabled ?? DEFAULT_CONFIG.learning.enabled,
+            feedbackSignals:
+              loadedConfig.learning.feedbackSignals || DEFAULT_CONFIG.learning.feedbackSignals,
+            metaReview: {
+              enabled:
+                loadedConfig.learning.metaReview?.enabled ??
+                DEFAULT_CONFIG.learning.metaReview.enabled,
+              interval:
+                loadedConfig.learning.metaReview?.interval ??
+                DEFAULT_CONFIG.learning.metaReview.interval,
+              minFindingsForReview:
+                loadedConfig.learning.metaReview?.minFindingsForReview ??
+                DEFAULT_CONFIG.learning.metaReview.minFindingsForReview,
+            },
+            patternDiscovery: {
+              enabled:
+                loadedConfig.learning.patternDiscovery?.enabled ??
+                DEFAULT_CONFIG.learning.patternDiscovery.enabled,
+              minFrequency:
+                loadedConfig.learning.patternDiscovery?.minFrequency ??
+                DEFAULT_CONFIG.learning.patternDiscovery.minFrequency,
+              windowSize:
+                loadedConfig.learning.patternDiscovery?.windowSize ??
+                DEFAULT_CONFIG.learning.patternDiscovery.windowSize,
+            },
+          }
+        : DEFAULT_CONFIG.learning,
     };
 
     try {
@@ -118,7 +137,10 @@ async function run(): Promise<void> {
         case 'fix':
           if (github.context.payload.issue?.pull_request) {
             await runAutofixLoop(inputs, config, engine, gh, repo, token);
-          } else if (github.context.payload.issue?.number && !github.context.payload.issue?.pull_request) {
+          } else if (
+            github.context.payload.issue?.number &&
+            !github.context.payload.issue?.pull_request
+          ) {
             await runFixIssue(inputs, config, engine, gh, repo, token);
           } else if (inputs.enableFix) {
             await runAutofixLoop(inputs, config, engine, gh, repo, token);

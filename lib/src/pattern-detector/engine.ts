@@ -1,4 +1,4 @@
-import { LearningStore } from '../learning/store.js';
+import type { LearningStore } from '../learning/store.js';
 import { clusterFindings } from './cluster.js';
 
 export interface DiscoveredPattern {
@@ -11,8 +11,8 @@ export interface DiscoveredPattern {
 export class PatternDetector {
   constructor(private store: LearningStore) {}
 
-  discover(minFrequency: number): DiscoveredPattern[] {
-    const findings = this.store.getFindings(undefined, 100);
+  async discover(minFrequency: number): Promise<DiscoveredPattern[]> {
+    const findings = await this.store.getFindings(undefined, 100);
     if (findings.length === 0) return [];
 
     const messages = findings.map((f) => f.message as string).filter(Boolean);
@@ -23,9 +23,7 @@ export class PatternDetector {
     for (const cluster of clusters) {
       if (cluster.messages.length < minFrequency) continue;
 
-      const relatedFindings = findings.filter((f) =>
-        cluster.messages.some((m) => m === f.message),
-      );
+      const relatedFindings = findings.filter((f) => cluster.messages.some((m) => m === f.message));
 
       const fileTypes = [
         ...new Set(
@@ -52,7 +50,7 @@ export class PatternDetector {
         fileTypes,
       });
 
-      this.store.recordPattern({
+      await this.store.recordPattern({
         patternKey,
         messageCluster: cluster.messages,
         frequency: cluster.messages.length,

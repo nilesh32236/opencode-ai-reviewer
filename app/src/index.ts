@@ -1,14 +1,14 @@
 import {
   DEFAULT_CONFIG,
-  getDefaultMCPServers,
   EventBus,
   EventRouter,
-  LearningStore,
   FeedbackSubscriber,
+  LearningStore,
   MetaReviewEngine,
   MetaReviewSubscriber,
+  getDefaultMCPServers,
 } from '@opencode-pr-agent/lib';
-import type { AgentConfig, Subscriber, GitHubEvent } from '@opencode-pr-agent/lib';
+import type { AgentConfig, GitHubEvent, Subscriber } from '@opencode-pr-agent/lib';
 import type { Probot } from 'probot';
 import { handleAudit } from './handlers/audit.js';
 import { handleCommand } from './handlers/commands.js';
@@ -38,7 +38,8 @@ export default (app: Probot): void => {
       if (event.type === 'pr.opened' || event.type === 'pr.synchronize') {
         if (payload.pull_request?.user?.login === 'github-actions[bot]') return;
         const labels = payload.pull_request?.labels?.map((l) => l.name) || [];
-        if (labels.some((l) => ['autofix', 'autofix:approved', 'autofix:merged'].includes(l))) return;
+        if (labels.some((l) => ['autofix', 'autofix:approved', 'autofix:merged'].includes(l)))
+          return;
       }
 
       const config = buildConfig();
@@ -50,7 +51,15 @@ export default (app: Probot): void => {
       await bus.publish({
         type: 'review.completed',
         category: 'internal',
-        payload: { prNumber, reviewSummary: '', findingsCount: 0, issuesCount: 0, strengthsCount: 0, hasVerdict: true, fileCount: 0 },
+        payload: {
+          prNumber,
+          reviewSummary: '',
+          findingsCount: 0,
+          issuesCount: 0,
+          strengthsCount: 0,
+          hasVerdict: true,
+          fileCount: 0,
+        },
         timestamp: Date.now(),
         repo: event.repo,
         prNumber,
@@ -62,7 +71,11 @@ export default (app: Probot): void => {
     name: 'FixSubscriber',
     subscribedEvents: ['comment.created', 'issue.labeled'],
     async handle(event: GitHubEvent) {
-      const payload = event.payload as { body?: string; issue?: { number: number }; labels?: Array<{ name: string }> };
+      const payload = event.payload as {
+        body?: string;
+        issue?: { number: number };
+        labels?: Array<{ name: string }>;
+      };
 
       if (event.type === 'comment.created') {
         if (!payload.body?.includes('/fix')) return;

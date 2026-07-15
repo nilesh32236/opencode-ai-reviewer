@@ -66,7 +66,8 @@ export function parseInputs(): ActionInputs {
     .map((d) => d.trim())
     .filter(Boolean);
 
-  const opencodeVersion = core.getInput('opencode_version') || core.getInput('opencode-version') || 'latest';
+  const opencodeVersion =
+    core.getInput('opencode_version') || core.getInput('opencode-version') || 'latest';
 
   const globalModel = core.getInput('model');
 

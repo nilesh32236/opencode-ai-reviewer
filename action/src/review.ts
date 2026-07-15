@@ -4,11 +4,11 @@ import type { AgentConfig, GitHubHelper, ReviewEngine } from '@opencode-pr-agent
 import type { ActionInputs } from './inputs.js';
 
 export async function runReview(
-  inputs: ActionInputs,
+  _inputs: ActionInputs,
   config: AgentConfig,
   engine: ReviewEngine,
   gh: GitHubHelper,
-  repo: string,
+  _repo: string,
 ): Promise<void> {
   const prNumberInput = core.getInput('pr-number');
   let prNumber: number | null = null;

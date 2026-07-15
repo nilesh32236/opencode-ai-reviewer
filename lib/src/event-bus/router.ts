@@ -1,5 +1,5 @@
-import type { GitHubEvent, EventCategory } from '../types/index.js';
-import { EventBus } from './bus.js';
+import type { EventCategory, GitHubEvent } from '../types/index.js';
+import type { EventBus } from './bus.js';
 
 const EVENT_CATEGORY_MAP: Record<string, EventCategory> = {
   'pull_request.opened': 'pr',
@@ -50,7 +50,7 @@ export class EventRouter {
   }
 }
 
-function extractPRNumber(rawEvent: string, payload: unknown): number | undefined {
+function extractPRNumber(_rawEvent: string, payload: unknown): number | undefined {
   if (typeof payload !== 'object' || payload === null) return undefined;
   const p = payload as Record<string, unknown>;
   if (p.pull_request && typeof p.pull_request === 'object') {

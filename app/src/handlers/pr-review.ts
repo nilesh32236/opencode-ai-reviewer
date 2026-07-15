@@ -21,12 +21,12 @@ export async function handlePRReview(
   const engine = new ReviewEngine(config, token, repo);
 
   try {
-    let contextMd = `## PR #${prNumber}\n\n**Title:** ${pr.title}\n\n${pr.body}`;
+    let _contextMd = `## PR #${prNumber}\n\n**Title:** ${pr.title}\n\n${pr.body}`;
 
     if (pr.linkedIssue) {
       try {
         const issue = await gh.getIssue(pr.linkedIssue);
-        contextMd += `\n\n## Issue #${pr.linkedIssue}\n\n**Title:** ${issue.title}\n\n${issue.body}`;
+        _contextMd += `\n\n## Issue #${pr.linkedIssue}\n\n**Title:** ${issue.title}\n\n${issue.body}`;
       } catch {}
     }
 

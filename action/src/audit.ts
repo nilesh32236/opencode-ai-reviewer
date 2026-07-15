@@ -9,8 +9,8 @@ export async function runAudit(
   config: AgentConfig,
   engine: ReviewEngine,
   gh: GitHubHelper,
-  repo: string,
-  token: string,
+  _repo: string,
+  _token: string,
 ): Promise<void> {
   const promptsDirRaw = core.getInput('audit-prompts-dir');
   let promptsDir = promptsDirRaw || config.audit.promptsDir;
@@ -70,9 +70,10 @@ export async function runAudit(
     ...inputs.auditTargetDirs,
     ...config.audit.targetDirs,
   ];
-  const auditTarget = allTargetDirs.length > 0
-    ? allTargetDirs[Math.floor(Math.random() * allTargetDirs.length)]
-    : '.';
+  const auditTarget =
+    allTargetDirs.length > 0
+      ? allTargetDirs[Math.floor(Math.random() * allTargetDirs.length)]
+      : '.';
   const promptContent = fs.readFileSync(selectedPrompt, 'utf-8');
 
   const result = await engine.runAudit(promptContent, auditTarget);
@@ -103,11 +104,6 @@ export async function runAudit(
   } else {
     core.info('No critical or important issues found — skipping issue creation');
   }
-}
-
-function selectRandomTarget(dirs: string[]): string {
-  if (dirs.length === 0) return '.';
-  return dirs[Math.floor(Math.random() * dirs.length)];
 }
 
 function buildAuditIssueBody(

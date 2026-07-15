@@ -1,8 +1,8 @@
 import { promises as fs } from 'fs';
-import { LearningStore } from '../learning/store.js';
-import { buildMetaReviewPrompt } from './prompts.js';
-import type { GitHubEvent, Subscriber } from '../types/index.js';
+import type { LearningStore } from '../learning/store.js';
 import { runOpenCode } from '../opencode.js';
+import type { GitHubEvent, Subscriber } from '../types/index.js';
+import { buildMetaReviewPrompt } from './prompts.js';
 
 export class MetaReviewEngine {
   constructor(private store: LearningStore) {}
@@ -22,7 +22,7 @@ export class MetaReviewEngine {
     consistencyScore: number;
     suggestions: string[];
   }> {
-    const fpRate = this.store.getFalsePositiveRate();
+    const fpRate = await this.store.getFalsePositiveRate();
     const prompt = buildMetaReviewPrompt(context);
 
     await runOpenCode(prompt, {
@@ -52,10 +52,10 @@ export class MetaReviewEngine {
       consistencyScore: (result.consistencyScore as number) || 70,
     };
 
-    this.store.recordQuality(quality);
+    await this.store.recordQuality(quality);
 
     if (fpRate > 0.3) {
-      this.store.addPromptOverride(
+      await this.store.addPromptOverride(
         'general',
         `Note: Recent reviews had a ${Math.round(fpRate * 100)}% false positive rate. Be more conservative with issue severity.`,
         fpRate,
@@ -80,7 +80,7 @@ export class MetaReviewSubscriber implements Subscriber {
   ) {}
 
   async handle(event: GitHubEvent): Promise<void> {
-    const shouldRun = this.store.incrementAndCheckMetaReviewInterval(this.interval);
+    const shouldRun = await this.store.incrementAndCheckMetaReviewInterval(this.interval);
     if (!shouldRun) return;
 
     const payload = event.payload as {

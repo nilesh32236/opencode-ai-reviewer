@@ -58,7 +58,9 @@ export class CircuitBreaker {
       if (this.successCount >= this.options.successThreshold) {
         const count = this.successCount;
         this.reset();
-        core.info(`[${this.options.name}] Circuit HALF_OPEN -> CLOSED after ${count} consecutive successes`);
+        core.info(
+          `[${this.options.name}] Circuit HALF_OPEN -> CLOSED after ${count} consecutive successes`,
+        );
       }
     } else {
       this.reset();
@@ -72,7 +74,9 @@ export class CircuitBreaker {
     if (this.state === 'HALF_OPEN') {
       this.state = 'OPEN';
       this.successCount = 0;
-      core.warning(`[${this.options.name}] Circuit HALF_OPEN -> OPEN after failure in half-open state`);
+      core.warning(
+        `[${this.options.name}] Circuit HALF_OPEN -> OPEN after failure in half-open state`,
+      );
     } else if (this.state === 'CLOSED' && this.failureCount >= this.options.failureThreshold) {
       this.state = 'OPEN';
       this.successCount = 0;

@@ -1,14 +1,14 @@
+import { spawnSync } from 'child_process';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { spawnSync } from 'child_process';
 import type { GitHubHelper } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 
 export async function runPost(
   inputs: ActionInputs,
   gh: GitHubHelper,
-  repo: string,
-  token: string,
+  _repo: string,
+  _token: string,
 ): Promise<void> {
   const prNumber =
     github.context.payload.pull_request?.number || github.context.payload.issue?.number;

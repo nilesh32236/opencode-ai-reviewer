@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import fs from 'fs';
+import path from 'path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { FeedbackSubscriber } from '../src/learning/feedback-subscriber.js';
 import { LearningStore } from '../src/learning/store.js';
-import path from 'path';
-import fs from 'fs';
 
 const TEST_DB = path.join(__dirname, '.test-feedback.db');
 
@@ -11,16 +11,42 @@ describe('FeedbackSubscriber', () => {
   let subscriber: FeedbackSubscriber;
 
   beforeEach(() => {
-    try { fs.unlinkSync(TEST_DB); } catch { /* ok */ }
-    try { fs.unlinkSync(TEST_DB + '-wal'); } catch { /* ok */ }
+    try {
+      fs.unlinkSync(TEST_DB);
+    } catch {
+      /* ok */
+    }
+    try {
+      fs.unlinkSync(TEST_DB + '-wal');
+    } catch {
+      /* ok */
+    }
+    try {
+      fs.unlinkSync(TEST_DB.replace(/\.db$/, '.json'));
+    } catch {
+      /* ok */
+    }
     store = new LearningStore(TEST_DB);
     subscriber = new FeedbackSubscriber(store);
   });
 
-  afterEach(() => {
-    store.close();
-    try { fs.unlinkSync(TEST_DB); } catch { /* ok */ }
-    try { fs.unlinkSync(TEST_DB + '-wal'); } catch { /* ok */ }
+  afterEach(async () => {
+    await store.close();
+    try {
+      fs.unlinkSync(TEST_DB);
+    } catch {
+      /* ok */
+    }
+    try {
+      fs.unlinkSync(TEST_DB + '-wal');
+    } catch {
+      /* ok */
+    }
+    try {
+      fs.unlinkSync(TEST_DB.replace(/\.db$/, '.json'));
+    } catch {
+      /* ok */
+    }
   });
 
   it('subscribes to review and comment events', () => {
@@ -30,7 +56,7 @@ describe('FeedbackSubscriber', () => {
   });
 
   it('records feedback on review.dismissed', async () => {
-    const findingId = store.recordFinding({
+    const _findingId = await store.recordFinding({
       prNumber: 1,
       type: 'issue',
       message: 'test',
@@ -47,12 +73,12 @@ describe('FeedbackSubscriber', () => {
       prNumber: 1,
     });
 
-    const fpRate = store.getFalsePositiveRate();
+    const fpRate = await store.getFalsePositiveRate();
     expect(fpRate).toBeGreaterThan(0);
   });
 
   it('scans comment.created for dispute keywords', async () => {
-    store.recordFinding({
+    await store.recordFinding({
       prNumber: 1,
       type: 'issue',
       message: 'test',
@@ -69,12 +95,12 @@ describe('FeedbackSubscriber', () => {
       prNumber: 1,
     });
 
-    const fpRate = store.getFalsePositiveRate();
+    const fpRate = await store.getFalsePositiveRate();
     expect(fpRate).toBe(1);
   });
 
   it('ignores non-dispute comments', async () => {
-    store.recordFinding({
+    await store.recordFinding({
       prNumber: 1,
       type: 'issue',
       message: 'test',
@@ -91,7 +117,7 @@ describe('FeedbackSubscriber', () => {
       prNumber: 1,
     });
 
-    const fpRate = store.getFalsePositiveRate();
+    const fpRate = await store.getFalsePositiveRate();
     expect(fpRate).toBe(0);
   });
 
@@ -136,7 +162,7 @@ describe('FeedbackSubscriber', () => {
       const s = new LearningStore(dbPath);
       const sub = new FeedbackSubscriber(s);
 
-      s.recordFinding({ prNumber: 1, type: 'issue', message: 'test' });
+      await s.recordFinding({ prNumber: 1, type: 'issue', message: 'test' });
       await sub.handle({
         type: 'comment.created',
         category: 'comment',
@@ -145,14 +171,23 @@ describe('FeedbackSubscriber', () => {
         prNumber: 1,
       });
 
-      expect(s.getFalsePositiveRate()).toBeGreaterThan(0);
-      s.close();
-      try { fs.unlinkSync(dbPath); } catch { /* ok */ }
+      expect(await s.getFalsePositiveRate()).toBeGreaterThan(0);
+      await s.close();
+      try {
+        fs.unlinkSync(dbPath);
+      } catch {
+        /* ok */
+      }
+      try {
+        fs.unlinkSync(dbPath.replace(/\.db$/, '.json'));
+      } catch {
+        /* ok */
+      }
     }
   });
 
   it('dispatches to correct handler based on event type', async () => {
-    store.recordFinding({ prNumber: 1, type: 'issue', message: 'test' });
+    await store.recordFinding({ prNumber: 1, type: 'issue', message: 'test' });
 
     await subscriber.handle({
       type: 'review_comment.dismissed',

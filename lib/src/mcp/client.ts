@@ -38,20 +38,23 @@ export class MCPManager {
           let mcpClient: Client | undefined;
           let mcpTransport: StdioClientTransport | undefined;
 
-          await withRetry(async () => {
-            mcpTransport = new StdioClientTransport({
-              command: cmd[0],
-              args: cmd.slice(1),
-              env: { ...process.env, ...server.environment } as Record<string, string>,
-            });
+          await withRetry(
+            async () => {
+              mcpTransport = new StdioClientTransport({
+                command: cmd[0],
+                args: cmd.slice(1),
+                env: { ...process.env, ...server.environment } as Record<string, string>,
+              });
 
-            mcpClient = new Client({ name: 'opencode-pr-agent', version: '1.0.0' });
-            await mcpClient.connect(mcpTransport);
-            this.clients.set(server.name, { client: mcpClient, transport: mcpTransport });
-          }, {
-            maxRetries: 2,
-            baseDelayMs: 500,
-          });
+              mcpClient = new Client({ name: 'opencode-pr-agent', version: '1.0.0' });
+              await mcpClient.connect(mcpTransport);
+              this.clients.set(server.name, { client: mcpClient, transport: mcpTransport });
+            },
+            {
+              maxRetries: 2,
+              baseDelayMs: 500,
+            },
+          );
 
           if (mcpClient) {
             const tools = await mcpClient.listTools();
@@ -78,7 +81,7 @@ export class MCPManager {
    */
   async queryContext(query: string, maxTokens = 4000): Promise<MCPQueryResult> {
     const entries: MCPContextEntry[] = [];
-    let totalTokens = 0;
+    let _totalTokens = 0;
 
     if (!this.initialized) {
       return { entries: [], totalTokens: 0 };
@@ -106,7 +109,7 @@ export class MCPManager {
               content: text,
               relevance: 0.8, // Default relevance for MCP-sourced context
             });
-            totalTokens += estimateTokens(text);
+            _totalTokens += estimateTokens(text);
           }
         }
       } catch (err) {
@@ -165,7 +168,9 @@ export class MCPManager {
         transport.close();
         console.log(`MCP: Disconnected from ${name}`);
       } catch (err) {
-        console.log(`MCP disconnect error for ${name}: ${err instanceof Error ? err.message : err}`);
+        console.log(
+          `MCP disconnect error for ${name}: ${err instanceof Error ? err.message : err}`,
+        );
       }
     }
     this.clients.clear();

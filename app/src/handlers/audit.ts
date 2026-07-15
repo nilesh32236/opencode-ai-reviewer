@@ -1,6 +1,6 @@
 import { promises as fs } from 'fs';
 import path from 'path';
-import type { AgentConfig } from '@opencode-pr-agent/lib';
+import type { AgentConfig, ReviewResult } from '@opencode-pr-agent/lib';
 import { GitHubHelper, ReviewEngine } from '@opencode-pr-agent/lib';
 
 export async function handleAudit(
@@ -90,7 +90,7 @@ export async function handleAudit(
   }
 }
 
-function buildAuditIssue(category: string, targetDir: string, result: any): string {
+function buildAuditIssue(category: string, targetDir: string, result: ReviewResult): string {
   const lines = [
     '<!-- audit-issue -->',
     '',

@@ -4,4 +4,4 @@ export interface EventBusConfig {
   name: string;
 }
 
-export { GitHubEvent, Subscriber };
+export type { GitHubEvent, Subscriber };

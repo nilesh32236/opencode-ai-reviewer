@@ -1,5 +1,5 @@
 import type { GitHubEvent, Subscriber } from '../types/index.js';
-import { LearningStore } from './store.js';
+import type { LearningStore } from './store.js';
 
 const DISPUTE_KEYWORDS = ['false positive', 'not an issue', 'wrong', 'incorrect', 'false alarm'];
 
@@ -24,13 +24,16 @@ export class FeedbackSubscriber implements Subscriber {
   }
 
   private async handleReviewDismissed(event: GitHubEvent): Promise<void> {
-    const payload = event.payload as { review?: { id?: number }; pull_request?: { number?: number } };
+    const payload = event.payload as {
+      review?: { id?: number };
+      pull_request?: { number?: number };
+    };
     const prNumber = payload?.pull_request?.number || event.prNumber || 0;
     if (!prNumber) return;
 
-    const findings = this.store.getFindings(prNumber);
+    const findings = await this.store.getFindings(prNumber);
     for (const finding of findings) {
-      this.store.recordFeedback({
+      await this.store.recordFeedback({
         findingId: finding.id as string,
         signalType: 'dismissed',
         signalValue: 'review_dismissed',
@@ -54,9 +57,9 @@ export class FeedbackSubscriber implements Subscriber {
     const isDispute = DISPUTE_KEYWORDS.some((kw) => lower.includes(kw));
     if (!isDispute) return;
 
-    const findings = this.store.getFindings(prNumber, 5);
+    const findings = await this.store.getFindings(prNumber, 5);
     for (const finding of findings) {
-      this.store.recordFeedback({
+      await this.store.recordFeedback({
         findingId: finding.id as string,
         signalType: 'disputed_comment',
         signalValue: body.slice(0, 200),

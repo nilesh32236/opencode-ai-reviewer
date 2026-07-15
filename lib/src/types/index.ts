@@ -18,8 +18,8 @@ export interface ReviewVerdict {
 
 export interface ReviewStrength {
   type: 'strength';
-  file: string;
-  line: number;
+  file?: string;
+  line?: number;
   message: string;
 }
 

@@ -1,10 +1,10 @@
 import { promises as fs } from 'fs';
 import { parseJsonlFile } from './jsonl-parser.js';
+import type { LearningStore } from './learning/store.js';
 import { MCPManager } from './mcp/client.js';
 import { ensureOutputDir, getGitStatus, runOpenCode } from './opencode.js';
 import { buildAuditPrompt, buildFixPrompt, buildReviewPrompt } from './prompts/builder.js';
 import type { AgentConfig, MCPContextEntry, PRContext, ReviewResult } from './types/index.js';
-import { LearningStore } from './learning/store.js';
 import { GitHubHelper } from './utils/github.js';
 
 export class ReviewEngine {
@@ -58,7 +58,7 @@ export class ReviewEngine {
         : '';
 
     const lessons = this.learningStore
-      ? this.learningStore.getRelevantLessons(pr.changedFiles.map((f) => f.path))
+      ? await this.learningStore.getRelevantLessons(pr.changedFiles.map((f) => f.path))
       : [];
 
     const prompt = buildReviewPrompt(
@@ -203,9 +203,14 @@ export class ReviewEngine {
       parts.push(`- \`${stats}\``);
     }
     parts.push('');
-    const totalDiffLines = pr.changedFiles.reduce((s, f) => s + (f.patch ? f.patch.split('\n').length : 0), 0);
+    const totalDiffLines = pr.changedFiles.reduce(
+      (s, f) => s + (f.patch ? f.patch.split('\n').length : 0),
+      0,
+    );
     if (totalDiffLines > maxLines && maxLines > 0) {
-      parts.push(`> Total diff: ~${totalDiffLines} lines across ${pr.changedFiles.length} files. For large changes, read each file individually using the \`read\` tool and dispatch sub-agents to review batches of files.`);
+      parts.push(
+        `> Total diff: ~${totalDiffLines} lines across ${pr.changedFiles.length} files. For large changes, read each file individually using the \`read\` tool and dispatch sub-agents to review batches of files.`,
+      );
     }
 
     return parts.join('\n');
