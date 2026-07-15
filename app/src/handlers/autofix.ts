@@ -193,7 +193,7 @@ export async function handleAutofixLoop(
         token,
       );
 
-      const fixResult = await engine.runFix(prNumber, i, contextMd);
+      const fixResult = await engine.runFix(prNumber, i, contextMd, pr);
 
       if (!fixResult.changesMade) {
         history[history.length - 1].status = 'no-changes';

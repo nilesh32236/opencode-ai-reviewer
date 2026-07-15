@@ -92,12 +92,13 @@ export class ReviewEngine {
     prNumber: number,
     iteration: number,
     contextMarkdown: string,
+    cachedPR?: PRContext,
   ): Promise<{ changesMade: boolean; stuck?: boolean; stuckReason?: string }> {
     let mcpDocs = '';
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
       try {
         await this.mcp.connect();
-        const pr = await this.github.getPR(prNumber);
+        const pr = cachedPR ?? (await this.github.getPR(prNumber));
         const libraries = detectLibraries(pr.changedFiles.map((f) => f.path));
         if (libraries.length > 0) {
           mcpDocs = await this.mcp.getLibraryDocs(libraries);
