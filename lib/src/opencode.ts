@@ -264,34 +264,54 @@ export function configureGit(userName?: string, userEmail?: string, token?: stri
     cp.execFileSync('git', ['config', '--global', 'user.email', email]);
 
     if (token) {
-      // 1. Unset the checkout's local extraheader to prevent duplicate header conflicts
+      // Remove ALL http.extraheader entries from every git config file
+      // (including those from actions/checkout@v6+ stored via includeIf).
+      // Without this, git sends duplicate Authorization headers on push.
+      try {
+        const origins = cp
+          .execSync('git config --list --show-origin 2>/dev/null || true')
+          .toString();
+        for (const line of origins.split('\n')) {
+          if (!line.includes('http.') || !line.includes('.extraheader')) continue;
+          const tabIdx = line.indexOf('\t');
+          if (tabIdx <= 0) continue;
+          const prefix = line.substring(0, tabIdx);
+          if (!prefix.startsWith('file:')) continue;
+          const cfg = prefix.substring(5);
+          try {
+            cp.execFileSync('git', [
+              'config',
+              '--file',
+              cfg,
+              '--unset-all',
+              'http.https://github.com/.extraheader',
+            ]);
+          } catch {
+            /* key not in this file */
+          }
+        }
+      } catch {
+        /* git config --list failed entirely */
+      }
+
+      // Use an inline credential helper instead of extraheader so we stay
+      // compatible with every version of actions/checkout.
       try {
         cp.execFileSync('git', [
           'config',
           '--local',
           '--unset-all',
-          'http.https://github.com/.extraheader',
+          'credential.https://github.com/.helper',
         ]);
-      } catch {}
-
-      // 2. Append our own extraheader locally to .git/config
-      const configPath = path.join(process.cwd(), '.git', 'config');
-      if (fs.existsSync(configPath)) {
-        const credentials = Buffer.from(`x-access-token:${token}`).toString('base64');
-        const configData = `\n[http "https://github.com/"]\n\textraheader = AUTHORIZATION: basic ${credentials}\n`;
-        fs.appendFileSync(configPath, configData, 'utf-8');
-      } else {
-        // Fall back to git config command only if .git/config file isn't present directly
-        const credentials = Buffer.from(`x-access-token:${token}`).toString('base64');
-        try {
-          cp.execFileSync('git', [
-            'config',
-            '--global',
-            'http.https://github.com/.extraheader',
-            `AUTHORIZATION: basic ${credentials}`,
-          ]);
-        } catch {}
+      } catch {
+        /* no previous helper to clear */
       }
+      cp.execFileSync('git', [
+        'config',
+        '--local',
+        'credential.https://github.com/.helper',
+        `!f() { echo "username=x-access-token"; echo "password=${token}"; }; f`,
+      ]);
     }
   } catch (err) {
     core.warning(`configureGit failed: ${String(err)}`);
