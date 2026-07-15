@@ -3,6 +3,7 @@ import * as exec from '@actions/exec';
 import * as github from '@actions/github';
 import type { AgentConfig, GitHubHelper, ReviewEngine } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
+import { splitCommand } from './utils.js';
 
 export async function runFix(
   inputs: ActionInputs,
@@ -47,11 +48,12 @@ export async function runFix(
   if (inputs.runChecksAfterFix && changesMade) {
     core.info('Running verification commands...');
     const checkCommands = inputs.runChecksAfterFix.split('&&').map((c) => c.trim());
-    const shell = process.platform === 'win32' ? 'cmd' : 'sh';
-    const flag = process.platform === 'win32' ? '/c' : '-c';
     for (const cmd of checkCommands) {
       try {
-        await exec.exec(shell, [flag, cmd]);
+        const { command, args } = splitCommand(cmd);
+        if (command) {
+          await exec.exec(command, args);
+        }
       } catch (error) {
         core.warning(`Verification command failed: ${cmd} — ${String(error)}`);
       }

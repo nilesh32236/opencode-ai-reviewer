@@ -1,8 +1,9 @@
-import { spawnSync } from 'child_process';
 import * as core from '@actions/core';
+import * as exec from '@actions/exec';
 import * as github from '@actions/github';
 import type { GitHubHelper } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
+import { splitCommand } from './utils.js';
 
 export async function runPost(
   inputs: ActionInputs,
@@ -22,7 +23,10 @@ export async function runPost(
     const checkCommands = inputs.runChecksAfterFix.split('&&').map((c) => c.trim());
     for (const cmd of checkCommands) {
       try {
-        spawnSync(cmd, [], { stdio: 'inherit', shell: true });
+        const { command, args } = splitCommand(cmd);
+        if (command) {
+          await exec.exec(command, args);
+        }
       } catch (error) {
         core.warning(`Verification command failed: ${cmd} — ${String(error)}`);
       }

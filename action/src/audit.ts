@@ -52,12 +52,12 @@ export async function runAudit(
   let category: string;
 
   if (promptName) {
-    const specific = path.join(promptsDir, `${promptName}.md`);
-    if (!fs.existsSync(specific)) {
+    const filename = `${promptName}.md`;
+    if (!prompts.includes(filename)) {
       core.setFailed(`Prompt '${promptName}' not found in ${promptsDir}`);
       return;
     }
-    selectedPrompt = specific;
+    selectedPrompt = path.join(promptsDir, filename);
     category = promptName;
   } else {
     const rand = Math.floor(Math.random() * prompts.length);

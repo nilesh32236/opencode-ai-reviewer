@@ -263,15 +263,37 @@ export function configureGit(userName?: string, userEmail?: string, token?: stri
   cp.execFileSync('git', ['config', '--global', 'user.email', email]);
 
   if (token) {
+    const configPath = path.join(process.cwd(), '.git', 'config');
     const credentials = Buffer.from(`x-access-token:${token}`).toString('base64');
-    try {
-      cp.execFileSync('git', [
-        'config',
-        'http.https://github.com/.extraheader',
-        `AUTHORIZATION: basic ${credentials}`,
-      ]);
-    } catch {
+    const headerLine = `extraheader = AUTHORIZATION: basic ${credentials}`;
+
+    if (fs.existsSync(configPath)) {
       try {
+        let content = fs.readFileSync(configPath, 'utf-8');
+        const sectionRegex = /\[http\s+"https:\/\/github\.com\/"\][^\[]*/g;
+        const match = sectionRegex.exec(content);
+        if (match) {
+          const sectionContent = match[0];
+          if (sectionContent.includes('extraheader')) {
+            const updatedSection = sectionContent.replace(
+              /extraheader\s*=.*(\r?\n)/,
+              `${headerLine}$1`,
+            );
+            content = content.replace(sectionContent, updatedSection);
+          } else {
+            const updatedSection = sectionContent.trimEnd() + `\n\t${headerLine}\n`;
+            content = content.replace(sectionContent, updatedSection);
+          }
+        } else {
+          content += `\n[http "https://github.com/"]\n\t${headerLine}\n`;
+        }
+        fs.writeFileSync(configPath, content, 'utf-8');
+      } catch (err) {
+        core.warning(`Failed to write local git config: ${String(err)}`);
+      }
+    } else {
+      try {
+        // Fall back to git config command only if .git/config file isn't present directly
         cp.execFileSync('git', [
           'config',
           '--global',
@@ -313,16 +335,18 @@ export async function setupWorkspaceDependencies(cwd: string): Promise<void> {
     } catch {
       core.info('pnpm not found. Installing pnpm globally...');
       try {
-        cp.execSync('npm install -g pnpm', { stdio: 'inherit' });
-        core.info('pnpm installed successfully.');
+        cp.execSync('corepack enable && corepack prepare pnpm@latest --activate', {
+          stdio: 'inherit',
+        });
+        core.info('pnpm enabled successfully via corepack.');
       } catch (err) {
-        core.warning(`Failed to install pnpm globally: ${String(err)}. Trying with sudo...`);
+        core.info(`Corepack failed: ${String(err)}. Installing pnpm globally without sudo...`);
         try {
-          cp.execSync('sudo npm install -g pnpm', { stdio: 'inherit' });
-          core.info('pnpm installed successfully with sudo.');
-        } catch (sudoErr) {
+          cp.execSync('npm install -g pnpm', { stdio: 'inherit' });
+          core.info('pnpm installed successfully.');
+        } catch (npmErr) {
           core.error(
-            `Failed to install pnpm globally: ${String(sudoErr)}. Checks using pnpm might fail.`,
+            `Failed to install pnpm globally: ${String(npmErr)}. Checks using pnpm might fail.`,
           );
         }
       }
