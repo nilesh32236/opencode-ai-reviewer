@@ -9,7 +9,6 @@ import type {
   ReviewResult,
 } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { splitCommand } from './utils.js';
 
 export async function runFix(
   inputs: ActionInputs,
@@ -53,16 +52,10 @@ export async function runFix(
 
   if (inputs.runChecksAfterFix && changesMade) {
     core.info('Running verification commands...');
-    const checkCommands = inputs.runChecksAfterFix.split('&&').map((c) => c.trim());
-    for (const cmd of checkCommands) {
-      try {
-        const { command, args } = splitCommand(cmd);
-        if (command) {
-          await exec.exec(command, args);
-        }
-      } catch (error) {
-        core.warning(`Verification command failed: ${cmd} — ${String(error)}`);
-      }
+    try {
+      await exec.exec('bash', ['-c', inputs.runChecksAfterFix]);
+    } catch (error) {
+      core.warning(`Verification command failed: ${inputs.runChecksAfterFix} — ${String(error)}`);
     }
   }
 
@@ -329,7 +322,7 @@ export async function runAutofixLoop(
     core.info(`=== Autofix iteration ${i + 1}/${config.maxIterations} ===`);
 
     const pr = await gh.getPR(prNumber);
-    const result = await engine.reviewPR(pr, i);
+    const result = await engine.reviewPR(pr, i, inputs.reviewPromptFile, inputs.reviewPromptExtra);
 
     const entry: IterationRecord = {
       iteration: i + 1,
@@ -387,16 +380,10 @@ export async function runAutofixLoop(
 
     if (inputs.runChecksAfterFix) {
       core.info('Running verification commands...');
-      const checkCommands = inputs.runChecksAfterFix.split('&&').map((c) => c.trim());
-      for (const cmd of checkCommands) {
-        try {
-          const { command, args } = splitCommand(cmd);
-          if (command) {
-            await exec.exec(command, args);
-          }
-        } catch (error) {
-          core.warning(`Verification command failed: ${cmd} — ${String(error)}`);
-        }
+      try {
+        await exec.exec('bash', ['-c', inputs.runChecksAfterFix]);
+      } catch (error) {
+        core.warning(`Verification command failed: ${inputs.runChecksAfterFix} — ${String(error)}`);
       }
     }
   }

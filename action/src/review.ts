@@ -4,7 +4,7 @@ import type { AgentConfig, GitHubHelper, ReviewEngine } from '@opencode-pr-agent
 import type { ActionInputs } from './inputs.js';
 
 export async function runReview(
-  _inputs: ActionInputs,
+  inputs: ActionInputs,
   config: AgentConfig,
   engine: ReviewEngine,
   gh: GitHubHelper,
@@ -46,7 +46,12 @@ export async function runReview(
     return;
   }
 
-  const result = await engine.reviewPR(pr);
+  const result = await engine.reviewPR(
+    pr,
+    undefined,
+    inputs.reviewPromptFile,
+    inputs.reviewPromptExtra,
+  );
 
   const reviewResult = await gh.postReview(prNumber, pr.headSha, result);
 

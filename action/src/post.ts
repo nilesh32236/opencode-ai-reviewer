@@ -3,7 +3,6 @@ import * as exec from '@actions/exec';
 import * as github from '@actions/github';
 import type { GitHubHelper } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { splitCommand } from './utils.js';
 
 export async function runPost(
   inputs: ActionInputs,
@@ -20,16 +19,10 @@ export async function runPost(
 
   if (inputs.runChecksAfterFix) {
     core.info('Running verification commands after fix...');
-    const checkCommands = inputs.runChecksAfterFix.split('&&').map((c) => c.trim());
-    for (const cmd of checkCommands) {
-      try {
-        const { command, args } = splitCommand(cmd);
-        if (command) {
-          await exec.exec(command, args);
-        }
-      } catch (error) {
-        core.warning(`Verification command failed: ${cmd} — ${String(error)}`);
-      }
+    try {
+      await exec.exec('bash', ['-c', inputs.runChecksAfterFix]);
+    } catch (error) {
+      core.warning(`Verification command failed: ${inputs.runChecksAfterFix} — ${String(error)}`);
     }
   }
 
