@@ -264,12 +264,22 @@ export function configureGit(userName?: string, userEmail?: string, token?: stri
 
   if (token) {
     const credentials = Buffer.from(`x-access-token:${token}`).toString('base64');
-    cp.execFileSync('git', [
-      'config',
-      '--global',
-      'http.https://github.com/.extraheader',
-      `AUTHORIZATION: basic ${credentials}`,
-    ]);
+    try {
+      cp.execFileSync('git', [
+        'config',
+        'http.https://github.com/.extraheader',
+        `AUTHORIZATION: basic ${credentials}`,
+      ]);
+    } catch {
+      try {
+        cp.execFileSync('git', [
+          'config',
+          '--global',
+          'http.https://github.com/.extraheader',
+          `AUTHORIZATION: basic ${credentials}`,
+        ]);
+      } catch {}
+    }
   }
 
   core.info(`Git configured: ${name} <${email}>`);
