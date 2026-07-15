@@ -26,31 +26,35 @@ export class GitHubHelper {
   private async api<T>(path: string, options: RequestInit = {}): Promise<T> {
     const url = `${this.apiUrl}/repos/${this.repo}${path}`;
     const method = (options.method ?? 'GET').toUpperCase();
-    const isIdempotent = method === 'GET' || method === 'HEAD' || method === 'PUT' || method === 'DELETE';
+    const isIdempotent =
+      method === 'GET' || method === 'HEAD' || method === 'PUT' || method === 'DELETE';
 
-    return withRetry(async () => {
-      const res = await fetch(url, {
-        ...options,
-        headers: {
-          Authorization: `Bearer ${this.token}`,
-          Accept: 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2022-11-28',
-          ...options.headers,
-        },
-      });
+    return withRetry(
+      async () => {
+        const res = await fetch(url, {
+          ...options,
+          headers: {
+            Authorization: `Bearer ${this.token}`,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            ...options.headers,
+          },
+        });
 
-      if (!res.ok) {
-        const body = await res.text();
-        const err = new Error(`GitHub API ${res.status} on ${path}: ${body}`);
-        (err as Error & { status: number }).status = res.status;
-        throw err;
-      }
+        if (!res.ok) {
+          const body = await res.text();
+          const err = new Error(`GitHub API ${res.status} on ${path}: ${body}`);
+          (err as Error & { status: number }).status = res.status;
+          throw err;
+        }
 
-      if (res.status === 204) return undefined as T;
-      return res.json();
-    }, {
-      retryableStatuses: isIdempotent ? [429, 500, 502, 503, 504] : [429],
-    });
+        if (res.status === 204) return undefined as T;
+        return res.json();
+      },
+      {
+        retryableStatuses: isIdempotent ? [429, 500, 502, 503, 504] : [429],
+      },
+    );
   }
 
   private async paginate<T>(
@@ -561,5 +565,28 @@ function generateLabelColor(name: string): string {
     hash = name.charCodeAt(i) + ((hash << 5) - hash);
   }
   const hue = Math.abs(hash) % 360;
-  return `hsl(${hue}, 65%, 45%)`;
+  // Convert HSL (hue, 65%, 45%) to 6-character hex string without leading '#'
+  const h = hue / 360;
+  const s = 0.65;
+  const l = 0.45;
+
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+
+  const hueToRgb = (t: number) => {
+    let nt = t;
+    if (nt < 0) nt += 1;
+    if (nt > 1) nt -= 1;
+    if (nt < 1 / 6) return p + (q - p) * 6 * nt;
+    if (nt < 1 / 2) return q;
+    if (nt < 2 / 3) return p + (q - p) * (2 / 3 - nt) * 6;
+    return p;
+  };
+
+  const r = Math.round(hueToRgb(h + 1 / 3) * 255);
+  const g = Math.round(hueToRgb(h) * 255);
+  const b = Math.round(hueToRgb(h - 1 / 3) * 255);
+
+  const toHex = (x: number) => x.toString(16).padStart(2, '0');
+  return `${toHex(r)}${toHex(g)}${toHex(b)}`;
 }

@@ -1,7 +1,7 @@
 import { execFileSync, execSync } from 'child_process';
 import { promises as fs } from 'fs';
-import type { AgentConfig } from '@opencode-pr-agent/lib';
-import { GitHubHelper, ReviewEngine, buildFixPrompt } from '@opencode-pr-agent/lib';
+import type { AgentConfig, ReviewResult } from '@opencode-pr-agent/lib';
+import { GitHubHelper, ReviewEngine, buildFixPrompt, configureGit } from '@opencode-pr-agent/lib';
 
 export async function handleAutofixLoop(
   prNumber: number,
@@ -31,7 +31,7 @@ export async function handleAutofixLoop(
   const engine = new ReviewEngine(config, token, repo);
 
   try {
-    const result = await engine.reviewPR(pr);
+    const result = await engine.reviewPR(pr, iteration);
 
     const isApproved =
       result.verdict.ready && result.stats.critical === 0 && result.stats.important === 0;
@@ -86,14 +86,21 @@ export async function handleAutofixLoop(
         contextMd += '\n';
       }
 
-      configureGit(token, repo);
+      configureGit(
+        'opencode-pr-agent[bot]',
+        'opencode-pr-agent[bot]@users.noreply.github.com',
+        token,
+      );
 
       const fixResult = await engine.runFix(prNumber, iteration, contextMd);
 
       if (fixResult.changesMade) {
         execFileSync('git', ['add', '-A']);
-        execFileSync('git', ['commit', '-m', `fix: address review feedback (iteration ${iteration + 1})`]);
-        execFileSync('git', ['remote', 'set-url', 'origin', `https://x-access-token:${token}@github.com/${repo}`]);
+        execFileSync('git', [
+          'commit',
+          '-m',
+          `fix: address review feedback (iteration ${iteration + 1})`,
+        ]);
         execFileSync('git', ['push', 'origin', pr.headRef]);
       }
 
@@ -110,16 +117,7 @@ export async function handleAutofixLoop(
   }
 }
 
-function buildReviewComment(
-  result: {
-    summary: string;
-    verdict: { ready: boolean; reasoning: string };
-    strengths: any[];
-    issues: any[];
-    stats: { critical: number; important: number; minor: number };
-  },
-  iteration: number,
-): string {
+function buildReviewComment(result: ReviewResult, iteration: number): string {
   const lines: string[] = [
     '<!-- autofix-review -->',
     '',
@@ -159,14 +157,4 @@ function buildReviewComment(
   }
 
   return lines.join('\n');
-}
-
-function configureGit(token: string, repo: string): void {
-  execFileSync('git', ['config', '--global', 'user.name', 'opencode-pr-agent[bot]']);
-  execFileSync('git', ['config', '--global', 'user.email', 'opencode-pr-agent[bot]@users.noreply.github.com']);
-  execFileSync('git', [
-    'config', '--global',
-    `url.https://x-access-token:${token}@github.com/.insteadOf`,
-    'https://github.com/',
-  ]);
 }

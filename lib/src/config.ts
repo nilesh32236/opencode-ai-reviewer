@@ -1,59 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as core from '@actions/core';
+import yaml from 'js-yaml';
 import type { PromptConfig } from './types/index.js';
-
-const yaml = {
-  load: (content: string): unknown => {
-    try {
-      return JSON.parse(content);
-    } catch {
-      const result: Record<string, unknown> = {};
-      const lines = content.split('\n');
-      let currentKey = '';
-      let currentList: string[] = [];
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('#')) continue;
-
-        const listMatch = trimmed.match(/^\s*-[\s]+(.+)$/);
-        if (listMatch && currentKey) {
-          const val = listMatch[1].trim().replace(/^['"]|['"]$/g, '');
-          currentList.push(val);
-          continue;
-        }
-
-        if (currentKey && currentList.length > 0) {
-          result[currentKey] = currentList;
-          currentList = [];
-        }
-
-        const kvMatch = trimmed.match(/^([\w]+)[:\s]+(.+)$/);
-        if (kvMatch) {
-          currentKey = kvMatch[1];
-          let val: unknown = kvMatch[2].trim();
-          if (typeof val === 'string') {
-            val = val.replace(/^["']|["']$/g, '');
-          }
-          if (val === 'true') val = true;
-          else if (val === 'false') val = false;
-          else if (typeof val === 'string' && /^\d+$/.test(val)) val = Number.parseInt(val, 10);
-          else if (typeof val === 'string' && /^\d+\.\d+$/.test(val)) val = Number.parseFloat(val);
-          else if (typeof val === 'string' && val.startsWith('|')) val = null;
-
-          result[currentKey] = val;
-        }
-      }
-
-      if (currentKey && currentList.length > 0) {
-        result[currentKey] = currentList;
-      }
-
-      return result;
-    }
-  },
-};
 
 const CONFIG_FILENAMES = [
   '.opencode-reviewer.yml',

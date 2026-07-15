@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import fs from 'fs';
+import path from 'path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { LearningStore } from '../src/learning/store.js';
 import { clusterFindings } from '../src/pattern-detector/cluster.js';
 import { PatternDetector } from '../src/pattern-detector/engine.js';
 import { RuleApprovalSubscriber } from '../src/pattern-detector/rule-approval.js';
-import { LearningStore } from '../src/learning/store.js';
-import path from 'path';
-import fs from 'fs';
 
 const TEST_DB = path.join(__dirname, '.test-pattern.db');
 
@@ -81,21 +81,47 @@ describe('PatternDetector', () => {
   let detector: PatternDetector;
 
   beforeEach(() => {
-    try { fs.unlinkSync(TEST_DB); } catch { /* ok */ }
-    try { fs.unlinkSync(TEST_DB + '-wal'); } catch { /* ok */ }
+    try {
+      fs.unlinkSync(TEST_DB);
+    } catch {
+      /* ok */
+    }
+    try {
+      fs.unlinkSync(TEST_DB + '-wal');
+    } catch {
+      /* ok */
+    }
+    try {
+      fs.unlinkSync(TEST_DB.replace(/\.db$/, '.json'));
+    } catch {
+      /* ok */
+    }
     store = new LearningStore(TEST_DB);
     detector = new PatternDetector(store);
   });
 
-  afterEach(() => {
-    store.close();
-    try { fs.unlinkSync(TEST_DB); } catch { /* ok */ }
-    try { fs.unlinkSync(TEST_DB + '-wal'); } catch { /* ok */ }
+  afterEach(async () => {
+    await store.close();
+    try {
+      fs.unlinkSync(TEST_DB);
+    } catch {
+      /* ok */
+    }
+    try {
+      fs.unlinkSync(TEST_DB + '-wal');
+    } catch {
+      /* ok */
+    }
+    try {
+      fs.unlinkSync(TEST_DB.replace(/\.db$/, '.json'));
+    } catch {
+      /* ok */
+    }
   });
 
-  it('detects patterns from findings with same message', () => {
+  it('detects patterns from findings with same message', async () => {
     for (let i = 0; i < 3; i++) {
-      store.recordFinding({
+      await store.recordFinding({
         prNumber: i + 1,
         type: 'issue',
         severity: 'important',
@@ -104,7 +130,7 @@ describe('PatternDetector', () => {
       });
     }
 
-    const patterns = detector.discover(3);
+    const patterns = await detector.discover(3);
     expect(patterns.length).toBeGreaterThanOrEqual(1);
     expect(patterns[0].frequency).toBeGreaterThanOrEqual(3);
   });
@@ -115,20 +141,46 @@ describe('RuleApprovalSubscriber', () => {
   let sub: RuleApprovalSubscriber;
 
   beforeEach(() => {
-    try { fs.unlinkSync(TEST_DB); } catch { /* ok */ }
-    try { fs.unlinkSync(TEST_DB + '-wal'); } catch { /* ok */ }
+    try {
+      fs.unlinkSync(TEST_DB);
+    } catch {
+      /* ok */
+    }
+    try {
+      fs.unlinkSync(TEST_DB + '-wal');
+    } catch {
+      /* ok */
+    }
+    try {
+      fs.unlinkSync(TEST_DB.replace(/\.db$/, '.json'));
+    } catch {
+      /* ok */
+    }
     store = new LearningStore(TEST_DB);
     sub = new RuleApprovalSubscriber(store);
   });
 
-  afterEach(() => {
-    store.close();
-    try { fs.unlinkSync(TEST_DB); } catch { /* ok */ }
-    try { fs.unlinkSync(TEST_DB + '-wal'); } catch { /* ok */ }
+  afterEach(async () => {
+    await store.close();
+    try {
+      fs.unlinkSync(TEST_DB);
+    } catch {
+      /* ok */
+    }
+    try {
+      fs.unlinkSync(TEST_DB + '-wal');
+    } catch {
+      /* ok */
+    }
+    try {
+      fs.unlinkSync(TEST_DB.replace(/\.db$/, '.json'));
+    } catch {
+      /* ok */
+    }
   });
 
   it('handles /approve-rule command', async () => {
-    const ruleId = store.addCustomRule('Test rule', 'auto');
+    const ruleId = await store.addCustomRule('Test rule', 'auto');
 
     await sub.handle({
       type: 'comment.created',
@@ -141,7 +193,7 @@ describe('RuleApprovalSubscriber', () => {
       prNumber: 1,
     });
 
-    const pending = store.getPendingRules();
+    const pending = await store.getPendingRules();
     expect(pending).toHaveLength(0);
   });
 

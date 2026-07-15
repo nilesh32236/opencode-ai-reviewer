@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { EventBus } from '../src/event-bus/bus.js';
 import { EventRouter } from '../src/event-bus/router.js';
 import type { GitHubEvent, Subscriber } from '../src/types/index.js';
@@ -38,7 +38,12 @@ describe('EventBus', () => {
 
     bus.register(sub);
     await bus.publish({ type: 'pr.opened', category: 'pr', payload: {}, timestamp: 1 });
-    await bus.publish({ type: 'review.completed', category: 'internal', payload: {}, timestamp: 2 });
+    await bus.publish({
+      type: 'review.completed',
+      category: 'internal',
+      payload: {},
+      timestamp: 2,
+    });
 
     expect(handled).toEqual(['pr.opened', 'review.completed']);
   });
@@ -74,12 +79,16 @@ describe('EventBus', () => {
       {
         name: 'a',
         subscribedEvents: ['pr.opened'],
-        async handle() { handled.push('a'); },
+        async handle() {
+          handled.push('a');
+        },
       },
       {
         name: 'b',
         subscribedEvents: ['pr.synchronize'],
-        async handle() { handled.push('b'); },
+        async handle() {
+          handled.push('b');
+        },
       },
     ]);
 
@@ -99,7 +108,9 @@ describe('EventRouter', () => {
     bus.register({
       name: 'collector',
       subscribedEvents: ['pr.opened'],
-      async handle(e) { events.push(e); },
+      async handle(e) {
+        events.push(e);
+      },
     });
 
     await router.handle('pull_request.opened', {
@@ -121,7 +132,9 @@ describe('EventRouter', () => {
     bus.register({
       name: 'collector',
       subscribedEvents: ['*'],
-      async handle(e) { events.push(e); },
+      async handle(e) {
+        events.push(e);
+      },
     });
 
     await router.handle('some.unknown.event', {});

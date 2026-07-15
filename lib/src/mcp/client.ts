@@ -37,25 +37,46 @@ export class MCPManager {
         if (server.type === 'local' && cmd) {
           let mcpClient: Client | undefined;
           let mcpTransport: StdioClientTransport | undefined;
+          try {
+            await withRetry(
+              async () => {
+                mcpTransport = new StdioClientTransport({
+                  command: cmd[0],
+                  args: cmd.slice(1),
+                  env: { ...process.env, ...server.environment } as Record<string, string>,
+                });
 
-          await withRetry(async () => {
-            mcpTransport = new StdioClientTransport({
-              command: cmd[0],
-              args: cmd.slice(1),
-              env: { ...process.env, ...server.environment } as Record<string, string>,
-            });
+                const clientInstance = new Client({ name: 'opencode-pr-agent', version: '1.0.0' });
 
-            mcpClient = new Client({ name: 'opencode-pr-agent', version: '1.0.0' });
-            await mcpClient.connect(mcpTransport);
-            this.clients.set(server.name, { client: mcpClient, transport: mcpTransport });
-          }, {
-            maxRetries: 2,
-            baseDelayMs: 500,
-          });
+                await Promise.race([
+                  clientInstance.connect(mcpTransport),
+                  new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('Connection timed out after 5000ms')), 5000),
+                  ),
+                ]);
 
-          if (mcpClient) {
-            const tools = await mcpClient.listTools();
-            console.log(`  ${server.name}: ${tools.tools.length} tools available`);
+                mcpClient = clientInstance;
+                this.clients.set(server.name, { client: mcpClient, transport: mcpTransport });
+              },
+              {
+                maxRetries: 1,
+                baseDelayMs: 500,
+              },
+            );
+
+            if (mcpClient) {
+              const tools = await mcpClient.listTools();
+              console.log(`  ${server.name}: ${tools.tools.length} tools available`);
+            }
+          } catch (err) {
+            console.log(
+              `  ${server.name}: Failed to connect — ${err instanceof Error ? err.message : err}`,
+            );
+            if (mcpTransport) {
+              try {
+                mcpTransport.close();
+              } catch {}
+            }
           }
         } else if (server.type === 'remote' && server.url) {
           // For remote MCP servers, we'd use a different transport
@@ -78,7 +99,7 @@ export class MCPManager {
    */
   async queryContext(query: string, maxTokens = 4000): Promise<MCPQueryResult> {
     const entries: MCPContextEntry[] = [];
-    let totalTokens = 0;
+    let _totalTokens = 0;
 
     if (!this.initialized) {
       return { entries: [], totalTokens: 0 };
@@ -106,7 +127,7 @@ export class MCPManager {
               content: text,
               relevance: 0.8, // Default relevance for MCP-sourced context
             });
-            totalTokens += estimateTokens(text);
+            _totalTokens += estimateTokens(text);
           }
         }
       } catch (err) {
@@ -165,7 +186,9 @@ export class MCPManager {
         transport.close();
         console.log(`MCP: Disconnected from ${name}`);
       } catch (err) {
-        console.log(`MCP disconnect error for ${name}: ${err instanceof Error ? err.message : err}`);
+        console.log(
+          `MCP disconnect error for ${name}: ${err instanceof Error ? err.message : err}`,
+        );
       }
     }
     this.clients.clear();

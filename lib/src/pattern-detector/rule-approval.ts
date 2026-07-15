@@ -1,5 +1,5 @@
+import type { LearningStore } from '../learning/store.js';
 import type { GitHubEvent, Subscriber } from '../types/index.js';
-import { LearningStore } from '../learning/store.js';
 
 const APPROVE_RULE_RE = /^\/approve-rule\s+(\S+)/;
 
@@ -18,6 +18,6 @@ export class RuleApprovalSubscriber implements Subscriber {
     if (!match) return;
 
     const ruleId = match[1];
-    this.store.approveRule(ruleId);
+    await this.store.approveRule(ruleId);
   }
 }

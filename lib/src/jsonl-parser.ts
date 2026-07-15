@@ -69,6 +69,8 @@ export function parseJsonlString(content: string): ReviewResult {
     verdict: {
       ready: verdict?.ready ?? false,
       reasoning: verdict?.reasoning || '',
+      autoFixable: verdict?.autoFixable ?? false,
+      confidence: verdict?.confidence || 'low',
     },
     strengths: strengths.map((s) => ({
       type: 'strength' as const,
@@ -116,6 +118,11 @@ function validateAndNormalize(obj: Record<string, unknown>): Finding {
         type: 'verdict',
         ready: obj.ready,
         reasoning: typeof obj.reasoning === 'string' ? obj.reasoning.trim() : '',
+        autoFixable: typeof obj.autoFixable === 'boolean' ? obj.autoFixable : false,
+        confidence:
+          typeof obj.confidence === 'string' && ['high', 'medium', 'low'].includes(obj.confidence)
+            ? (obj.confidence as 'high' | 'medium' | 'low')
+            : 'low',
       } as VerdictFinding;
 
     case 'strength':
@@ -157,7 +164,7 @@ function validateAndNormalize(obj: Record<string, unknown>): Finding {
 function emptyResult(): ReviewResult {
   return {
     summary: '',
-    verdict: { ready: false, reasoning: '' },
+    verdict: { ready: false, reasoning: '', autoFixable: false, confidence: 'low' },
     strengths: [],
     issues: [],
     stats: { total: 0, critical: 0, important: 0, minor: 0 },

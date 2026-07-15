@@ -21,12 +21,12 @@ export async function handlePRReview(
   const engine = new ReviewEngine(config, token, repo);
 
   try {
-    let contextMd = `## PR #${prNumber}\n\n**Title:** ${pr.title}\n\n${pr.body}`;
+    let _contextMd = `## PR #${prNumber}\n\n**Title:** ${pr.title}\n\n${pr.body}`;
 
     if (pr.linkedIssue) {
       try {
         const issue = await gh.getIssue(pr.linkedIssue);
-        contextMd += `\n\n## Issue #${pr.linkedIssue}\n\n**Title:** ${issue.title}\n\n${issue.body}`;
+        _contextMd += `\n\n## Issue #${pr.linkedIssue}\n\n**Title:** ${issue.title}\n\n${issue.body}`;
       } catch {}
     }
 
@@ -38,6 +38,18 @@ export async function handlePRReview(
       console.log(`✅ Review posted to PR #${prNumber} (${reviewResult.method})`);
     } else {
       console.log(`⚠️ Failed to post review to PR #${prNumber}`);
+    }
+
+    if (
+      !result.verdict.ready &&
+      result.verdict.autoFixable &&
+      result.verdict.confidence === 'high'
+    ) {
+      console.log(
+        `🤖 Review agent confirmed issues are auto-fixable with high confidence. Launching handleAutofixLoop...`,
+      );
+      const { handleAutofixLoop } = await import('./autofix.js');
+      await handleAutofixLoop(prNumber, repo, token, config);
     }
   } finally {
     await engine.cleanup();

@@ -40,6 +40,16 @@ describe('parseReviewOutput', () => {
     expect(result.verdict).toBeUndefined();
   });
 
+  it('parses strength without file or line', () => {
+    const jsonl = `{"type":"strength","message":"Great overall structure."}`;
+    const result = parseReviewOutput(jsonl);
+    expect(result.valid.length).toBe(1);
+    expect(result.invalid.length).toBe(0);
+    expect(result.strengths[0].message).toBe('Great overall structure.');
+    expect(result.strengths[0].file).toBeUndefined();
+    expect(result.strengths[0].line).toBeUndefined();
+  });
+
   it('parses sample fixture file correctly', () => {
     const fs = require('fs');
     const path = require('path');

@@ -10,15 +10,32 @@ import * as tc from '@actions/tool-cache';
 let opencodePath: string | null = null;
 
 function detectArch(): string {
+  const platform = os.platform();
   const arch = os.arch();
-  switch (arch) {
-    case 'x64':
-      return 'linux-x64';
-    case 'arm64':
-      return 'linux-arm64';
-    default:
-      throw new Error(`Unsupported architecture: ${arch}. Only x64 and arm64 are supported.`);
+
+  let osName = '';
+  if (platform === 'linux') {
+    osName = 'linux';
+  } else if (platform === 'darwin') {
+    osName = 'darwin';
+  } else if (platform === 'win32') {
+    osName = 'windows';
+  } else {
+    throw new Error(
+      `Unsupported platform: ${platform}. Only Linux, macOS, and Windows are supported.`,
+    );
   }
+
+  let archName = '';
+  if (arch === 'x64') {
+    archName = 'x64';
+  } else if (arch === 'arm64') {
+    archName = 'arm64';
+  } else {
+    throw new Error(`Unsupported architecture: ${arch}. Only x64 and arm64 are supported.`);
+  }
+
+  return `${osName}-${archName}`;
 }
 
 async function fetchWithRetry(url: string, retries = 3): Promise<Response> {
@@ -32,16 +49,20 @@ async function fetchWithRetry(url: string, retries = 3): Promise<Response> {
       });
       if (response.ok) return response;
       if (response.status === 403 && attempt < retries) {
-        const wait = Math.pow(2, attempt) * 1000;
-        core.warning(`GitHub API rate limited. Retrying in ${wait}ms... (attempt ${attempt}/${retries})`);
+        const wait = 2 ** attempt * 1000;
+        core.warning(
+          `GitHub API rate limited. Retrying in ${wait}ms... (attempt ${attempt}/${retries})`,
+        );
         await new Promise((r) => setTimeout(r, wait));
         continue;
       }
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     } catch (err) {
       if (attempt === retries) throw err;
-      const wait = Math.pow(2, attempt) * 1000;
-      core.warning(`Fetch failed: ${err}. Retrying in ${wait}ms... (attempt ${attempt}/${retries})`);
+      const wait = 2 ** attempt * 1000;
+      core.warning(
+        `Fetch failed: ${err}. Retrying in ${wait}ms... (attempt ${attempt}/${retries})`,
+      );
       await new Promise((r) => setTimeout(r, wait));
     }
   }
@@ -73,7 +94,9 @@ export async function setupOpenCode(version = 'latest'): Promise<string> {
     assets: Array<{ name: string; browser_download_url: string }>;
   };
 
-  const assetName = `opencode-${arch}.tar.gz`;
+  const platform = os.platform();
+  const extension = platform === 'win32' ? 'zip' : 'tar.gz';
+  const assetName = `opencode-${arch}.${extension}`;
   const asset = release.assets.find((a) => a.name === assetName);
   if (!asset) {
     throw new Error(
@@ -83,13 +106,22 @@ export async function setupOpenCode(version = 'latest'): Promise<string> {
 
   core.info(`Downloading from: ${asset.browser_download_url}`);
   const downloadPath = await tc.downloadTool(asset.browser_download_url);
-  const extractPath = await tc.extractTar(downloadPath);
+
+  let extractPath: string;
+  if (extension === 'zip') {
+    extractPath = await tc.extractZip(downloadPath);
+  } else {
+    extractPath = await tc.extractTar(downloadPath);
+  }
 
   const semver = (release.tag_name || version).replace(/^v/, '');
   const cachedPath = await tc.cacheDir(extractPath, 'opencode', semver);
-  const binPath = path.join(cachedPath, 'opencode');
+  const binName = platform === 'win32' ? 'opencode.exe' : 'opencode';
+  const binPath = path.join(cachedPath, binName);
 
-  fs.chmodSync(binPath, 0o755);
+  if (platform !== 'win32') {
+    fs.chmodSync(binPath, 0o755);
+  }
 
   core.addPath(cachedPath);
 
@@ -160,12 +192,15 @@ export async function runOpenCode(
   //           Docs: https://opencode.ai/docs/permissions#auto-mode
   const args = [
     'run',
-    '--auto',              // approve all non-denied permissions automatically
-    '--model', options.model,
+    '--auto', // approve all non-denied permissions automatically
+    '--model',
+    options.model,
     prompt,
   ];
 
-  core.info(`Running OpenCode (model: ${options.model}, timeout: ${options.timeoutMinutes ?? 10}m)...`);
+  core.info(
+    `Running OpenCode (model: ${options.model}, timeout: ${options.timeoutMinutes ?? 10}m)...`,
+  );
 
   let timedOut = false;
   const timeoutHandle = setTimeout(() => {
@@ -175,7 +210,8 @@ export async function runOpenCode(
 
   const githubToken = process.env.GITHUB_TOKEN || process.env.INPUT_GITHUB_TOKEN || '';
   const openaiApiKey = process.env.OPENAI_API_KEY || process.env.INPUT_OPENAI_API_KEY || '';
-  const anthropicApiKey = process.env.ANTHROPIC_API_KEY || process.env.INPUT_ANTHROPIC_API_KEY || '';
+  const anthropicApiKey =
+    process.env.ANTHROPIC_API_KEY || process.env.INPUT_ANTHROPIC_API_KEY || '';
   const geminiApiKey = process.env.GEMINI_API_KEY || process.env.INPUT_GEMINI_API_KEY || '';
 
   try {
@@ -212,9 +248,10 @@ export async function runOpenCode(
   } finally {
     clearTimeout(timeoutHandle);
     if (timedOut) {
-      core.warning(`OpenCode may have hung — exceeded the ${options.timeoutMinutes ?? 10}m timeout.`);
+      core.warning(
+        `OpenCode may have hung — exceeded the ${options.timeoutMinutes ?? 10}m timeout.`,
+      );
     }
-
   }
 }
 
@@ -226,10 +263,12 @@ export function configureGit(userName?: string, userEmail?: string, token?: stri
   cp.execFileSync('git', ['config', '--global', 'user.email', email]);
 
   if (token) {
+    const credentials = Buffer.from(`x-access-token:${token}`).toString('base64');
     cp.execFileSync('git', [
-      'config', '--global',
-      `url.https://x-access-token:${token}@github.com/.insteadOf`,
-      'https://github.com/',
+      'config',
+      '--global',
+      'http.https://github.com/.extraheader',
+      `AUTHORIZATION: basic ${credentials}`,
     ]);
   }
 
@@ -272,7 +311,9 @@ export async function setupWorkspaceDependencies(cwd: string): Promise<void> {
           cp.execSync('sudo npm install -g pnpm', { stdio: 'inherit' });
           core.info('pnpm installed successfully with sudo.');
         } catch (sudoErr) {
-          core.error(`Failed to install pnpm globally: ${String(sudoErr)}. Checks using pnpm might fail.`);
+          core.error(
+            `Failed to install pnpm globally: ${String(sudoErr)}. Checks using pnpm might fail.`,
+          );
         }
       }
     }

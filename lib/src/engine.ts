@@ -1,10 +1,10 @@
 import { promises as fs } from 'fs';
 import { parseJsonlFile } from './jsonl-parser.js';
+import type { LearningStore } from './learning/store.js';
 import { MCPManager } from './mcp/client.js';
 import { ensureOutputDir, getGitStatus, runOpenCode } from './opencode.js';
 import { buildAuditPrompt, buildFixPrompt, buildReviewPrompt } from './prompts/builder.js';
 import type { AgentConfig, MCPContextEntry, PRContext, ReviewResult } from './types/index.js';
-import { LearningStore } from './learning/store.js';
 import { GitHubHelper } from './utils/github.js';
 
 export class ReviewEngine {
@@ -23,8 +23,10 @@ export class ReviewEngine {
     this.mcp = new MCPManager(config.mcpServers);
   }
 
-  async reviewPR(pr: PRContext): Promise<ReviewResult> {
-    console.log(`Reviewing PR #${pr.number} (${pr.changedFiles.length} files)`);
+  async reviewPR(pr: PRContext, iteration?: number): Promise<ReviewResult> {
+    console.log(
+      `Reviewing PR #${pr.number} (${pr.changedFiles.length} files)${iteration !== undefined ? ` (Iteration ${iteration + 1})` : ''}`,
+    );
 
     const mcpContext: MCPContextEntry[] = [];
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
@@ -58,13 +60,17 @@ export class ReviewEngine {
         : '';
 
     const lessons = this.learningStore
-      ? this.learningStore.getRelevantLessons(pr.changedFiles.map((f) => f.path))
+      ? await this.learningStore.getRelevantLessons(pr.changedFiles.map((f) => f.path))
       : [];
 
     const prompt = buildReviewPrompt(
       {
         projectContext: this.config.projectContext.description || undefined,
         maxFilesPerBatch: this.config.batchSize,
+        reviewPromptExtra:
+          iteration !== undefined
+            ? `This is review iteration ${iteration + 1} of autofix. If this is the final check, verify carefully that no regressions or new bugs were introduced, and that the code compiles/passes all checks. Only set "ready" to true if you are confident it is production-ready.`
+            : undefined,
       },
       contextMarkdown + mcpSection,
       lessons,
@@ -139,7 +145,11 @@ export class ReviewEngine {
     }
   }
 
-  async runAudit(promptContent: string, targetDir: string): Promise<ReviewResult> {
+  async runAudit(
+    promptContent: string,
+    targetDir: string,
+    category: string,
+  ): Promise<ReviewResult> {
     let mcpDocs = '';
     if (this.config.enableMCP) {
       try {
@@ -163,13 +173,15 @@ export class ReviewEngine {
       },
       enrichedPrompt,
       targetDir,
+      category,
     );
 
     await runOpenCode(prompt, {
       model: this.config.reviewModel,
     });
 
-    return parseJsonlFile('.audit-output.jsonl');
+    const outputPath = `.opencode/audit-${category}.jsonl`;
+    return parseJsonlFile(outputPath);
   }
 
   async cleanup(): Promise<void> {
@@ -203,9 +215,14 @@ export class ReviewEngine {
       parts.push(`- \`${stats}\``);
     }
     parts.push('');
-    const totalDiffLines = pr.changedFiles.reduce((s, f) => s + (f.patch ? f.patch.split('\n').length : 0), 0);
+    const totalDiffLines = pr.changedFiles.reduce(
+      (s, f) => s + (f.patch ? f.patch.split('\n').length : 0),
+      0,
+    );
     if (totalDiffLines > maxLines && maxLines > 0) {
-      parts.push(`> Total diff: ~${totalDiffLines} lines across ${pr.changedFiles.length} files. For large changes, read each file individually using the \`read\` tool and dispatch sub-agents to review batches of files.`);
+      parts.push(
+        `> Total diff: ~${totalDiffLines} lines across ${pr.changedFiles.length} files. For large changes, read each file individually using the \`read\` tool and dispatch sub-agents to review batches of files.`,
+      );
     }
 
     return parts.join('\n');

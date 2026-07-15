@@ -52,10 +52,7 @@ describe('withRetry', () => {
 
   it('handles Response-like errors', async () => {
     const response = new Response(null, { status: 429 });
-    const fn = vi
-      .fn()
-      .mockRejectedValueOnce(response)
-      .mockResolvedValue('ok');
+    const fn = vi.fn().mockRejectedValueOnce(response).mockResolvedValue('ok');
 
     const result = await withRetry(fn, { maxRetries: 2, baseDelayMs: 10 });
     expect(result).toBe('ok');
@@ -63,10 +60,7 @@ describe('withRetry', () => {
   });
 
   it('handles non-Error throw values', async () => {
-    const fn = vi
-      .fn()
-      .mockRejectedValueOnce('string error')
-      .mockResolvedValue('recovered');
+    const fn = vi.fn().mockRejectedValueOnce('string error').mockResolvedValue('recovered');
 
     const result = await withRetry(fn, { maxRetries: 2, baseDelayMs: 10 });
     expect(result).toBe('recovered');
@@ -87,7 +81,9 @@ describe('withRetryAndTimeout', () => {
       throw new Error('Operation timed out');
     });
 
-    await expect(withRetryAndTimeout(fn, 50, { maxRetries: 1, baseDelayMs: 10 })).rejects.toThrow('Operation timed out');
+    await expect(withRetryAndTimeout(fn, 50, { maxRetries: 1, baseDelayMs: 10 })).rejects.toThrow(
+      'Operation timed out',
+    );
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
@@ -104,7 +100,9 @@ describe('withRetryAndTimeout', () => {
       throw Object.assign(new Error('Server error'), { status: 502 });
     });
 
-    await expect(withRetryAndTimeout(fn, 5000, { maxRetries: 2, baseDelayMs: 10 })).rejects.toThrow('Server error');
+    await expect(withRetryAndTimeout(fn, 5000, { maxRetries: 2, baseDelayMs: 10 })).rejects.toThrow(
+      'Server error',
+    );
     expect(fn).toHaveBeenCalledTimes(2);
   });
 });

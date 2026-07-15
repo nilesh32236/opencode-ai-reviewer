@@ -17,12 +17,14 @@ export const ReviewVerdictSchema = z.object({
   type: z.literal('verdict'),
   ready: z.boolean(),
   reasoning: z.string().min(5, 'Verdict reasoning must be at least 5 characters'),
+  autoFixable: z.boolean().optional().default(false),
+  confidence: z.enum(['high', 'medium', 'low']).optional().default('low'),
 });
 
 export const ReviewStrengthSchema = z.object({
   type: z.literal('strength'),
-  file: z.string().min(1),
-  line: z.number().int().positive(),
+  file: z.string().min(1).optional(),
+  line: z.number().int().positive().optional(),
   message: z.string().min(5),
 });
 
@@ -79,16 +81,20 @@ export const AuditConfigSchema = z.object({
 export const LearningConfigSchema = z.object({
   enabled: z.boolean().default(true),
   feedbackSignals: z.array(z.string()).default(['dismissed', 'reaction', 'disputed_comment']),
-  metaReview: z.object({
-    enabled: z.boolean().default(true),
-    interval: z.number().int().min(1).max(100).default(5),
-    minFindingsForReview: z.number().int().min(1).default(3),
-  }).default({}),
-  patternDiscovery: z.object({
-    enabled: z.boolean().default(true),
-    minFrequency: z.number().int().min(1).default(3),
-    windowSize: z.number().int().min(10).max(1000).default(100),
-  }).default({}),
+  metaReview: z
+    .object({
+      enabled: z.boolean().default(true),
+      interval: z.number().int().min(1).max(100).default(5),
+      minFindingsForReview: z.number().int().min(1).default(3),
+    })
+    .default({}),
+  patternDiscovery: z
+    .object({
+      enabled: z.boolean().default(true),
+      minFrequency: z.number().int().min(1).default(3),
+      windowSize: z.number().int().min(10).max(1000).default(100),
+    })
+    .default({}),
 });
 
 export const AgentConfigSchema = z.object({

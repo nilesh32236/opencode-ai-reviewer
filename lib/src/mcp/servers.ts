@@ -14,7 +14,7 @@ import type { MCPServerConfig } from '../types/index.js';
 export const context7Server: MCPServerConfig = {
   name: 'context7',
   type: 'local',
-  command: ['npx', '-y', '@upstash/context7-mcp'],
+  command: ['npx', '-y', '--quiet', '@upstash/context7-mcp'],
   environment: {
     CONTEXT7_API_KEY: process.env.CONTEXT7_API_KEY || '',
   },
@@ -27,7 +27,7 @@ export const context7Server: MCPServerConfig = {
 export const githubMCPServer = (token: string): MCPServerConfig => ({
   name: 'github',
   type: 'local',
-  command: ['npx', '-y', '@github/github-mcp-server'],
+  command: ['npx', '-y', '--quiet', '@github/github-mcp-server'],
   environment: {
     GITHUB_TOKEN: token,
   },
@@ -37,6 +37,6 @@ export const githubMCPServer = (token: string): MCPServerConfig => ({
  * Default MCP configuration for typical use.
  * Includes Context7 for docs.
  */
-export function getDefaultMCPServers(githubToken: string): MCPServerConfig[] {
+export function getDefaultMCPServers(_githubToken: string): MCPServerConfig[] {
   return [context7Server];
 }

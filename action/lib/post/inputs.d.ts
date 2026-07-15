@@ -1,0 +1,31 @@
+import type { ActionMode } from '@opencode-pr-agent/lib';
+export interface ActionInputs {
+    mode: ActionMode;
+    githubToken: string;
+    openAiKey?: string;
+    anthropicKey?: string;
+    geminiKey?: string;
+    reviewModel: string;
+    fixModel: string;
+    auditModel: string;
+    reviewPromptFile?: string;
+    reviewPromptExtra?: string;
+    enableFix: boolean;
+    maxFixIterations: number;
+    enableAudit: boolean;
+    auditTargetDir?: string;
+    auditTargetDirs: string[];
+    maxFilesPerBatch: number;
+    maxLinesPerFile: number;
+    projectContext?: string;
+    enableMCP: boolean;
+    includeStrengths: boolean;
+    reviewCommentSummary: boolean;
+    runChecksAfterFix?: string;
+    auditPromptFile?: string;
+    auditCreateIssues: boolean;
+    auditAutoFix: boolean;
+    auditLabels: string[];
+    opencodeVersion: string;
+}
+export declare function parseInputs(): ActionInputs;

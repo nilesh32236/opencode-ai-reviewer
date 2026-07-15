@@ -9,8 +9,8 @@ export async function runFix(
   config: AgentConfig,
   engine: ReviewEngine,
   gh: GitHubHelper,
-  repo: string,
-  token: string,
+  _repo: string,
+  _token: string,
 ): Promise<void> {
   const prNumber = await resolvePrNumber();
   if (prNumber === null) {
@@ -47,9 +47,11 @@ export async function runFix(
   if (inputs.runChecksAfterFix && changesMade) {
     core.info('Running verification commands...');
     const checkCommands = inputs.runChecksAfterFix.split('&&').map((c) => c.trim());
+    const shell = process.platform === 'win32' ? 'cmd' : 'sh';
+    const flag = process.platform === 'win32' ? '/c' : '-c';
     for (const cmd of checkCommands) {
       try {
-        await exec.exec(cmd, []);
+        await exec.exec(shell, [flag, cmd]);
       } catch (error) {
         core.warning(`Verification command failed: ${cmd} — ${String(error)}`);
       }
@@ -62,8 +64,8 @@ export async function runFix(
 }
 
 export async function runFixIssue(
-  inputs: ActionInputs,
-  config: AgentConfig,
+  _inputs: ActionInputs,
+  _config: AgentConfig,
   engine: ReviewEngine,
   gh: GitHubHelper,
   repo: string,
@@ -108,11 +110,7 @@ export async function runFixIssue(
   }
 
   await exec.exec('git', ['add', '-A']);
-  await exec.exec('git', [
-    'commit',
-    '-m',
-    `fix: address issue #${issueNumber}`,
-  ]);
+  await exec.exec('git', ['commit', '-m', `fix: address issue #${issueNumber}`]);
   await exec.exec('git', ['push', 'origin', branchName, '--force']);
 
   const issue = await gh.getIssue(issueNumber);
@@ -151,22 +149,18 @@ export async function runFixIssue(
   core.info(`Created PR: ${prUrl}`);
   core.setOutput('pr_url', prUrl);
 
-  await gh.postOrUpdateComment(
-    issueNumber,
-    '<!-- autofix-pr-link -->',
-    `🔧 Autofix PR: ${prUrl}`,
-  );
+  await gh.postOrUpdateComment(issueNumber, '<!-- autofix-pr-link -->', `🔧 Autofix PR: ${prUrl}`);
 
   core.setOutput('changes_made', 'true');
 }
 
 export async function runAutofixLoop(
-  inputs: ActionInputs,
+  _inputs: ActionInputs,
   config: AgentConfig,
   engine: ReviewEngine,
   gh: GitHubHelper,
-  repo: string,
-  token: string,
+  _repo: string,
+  _token: string,
 ): Promise<void> {
   const prNumber = await resolvePrNumber();
   if (prNumber === null) {
@@ -180,7 +174,7 @@ export async function runAutofixLoop(
     core.info(`=== Autofix iteration ${i + 1}/${config.maxIterations} ===`);
 
     const pr = await gh.getPR(prNumber);
-    const result = await engine.reviewPR(pr);
+    const result = await engine.reviewPR(pr, i);
 
     if (result.verdict.ready && result.stats.critical === 0 && result.stats.important === 0) {
       core.info('PR approved — all issues resolved');
@@ -210,6 +204,42 @@ export async function runAutofixLoop(
       prNumber,
       '<!-- autofix-status -->',
       `Fix applied (iteration ${i + 1}). Waiting for review...`,
+    );
+  }
+
+  if (approved) {
+    core.info('PR is approved. Auto-merging...');
+    await gh.setLabels(prNumber, ['autofix:approved'], ['autofix', 'autofix:needs-fix']);
+    const merged = await gh.mergePR(prNumber);
+    if (merged) {
+      await gh.setLabels(prNumber, ['autofix:merged'], ['autofix:approved', 'autofix']);
+      await gh.postOrUpdateComment(
+        prNumber,
+        '<!-- autofix-status -->',
+        '✅ Review approved. Auto-merged PR successfully!',
+      );
+      const pr = await gh.getPR(prNumber);
+      if (pr.linkedIssue) {
+        try {
+          await gh.closeIssue(pr.linkedIssue, `✅ Fixed by PR #${prNumber}`);
+        } catch {}
+      }
+    } else {
+      await gh.postOrUpdateComment(
+        prNumber,
+        '<!-- autofix-status -->',
+        '⚠️ Review approved but auto-merge failed. Please merge manually.',
+      );
+    }
+  } else {
+    core.warning(
+      `Max iterations reached (${config.maxIterations}) or agent not approved. Needs manual review.`,
+    );
+    await gh.setLabels(prNumber, ['autofix:needs-manual-review'], ['autofix', 'autofix:needs-fix']);
+    await gh.postOrUpdateComment(
+      prNumber,
+      '<!-- autofix-status -->',
+      `⚠️ **Max iterations reached** (${config.maxIterations}). This PR needs manual review.`,
     );
   }
 

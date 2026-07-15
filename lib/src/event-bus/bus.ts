@@ -51,7 +51,7 @@ export class EventBus {
     const matching = this.subscribers.get(event.type) || [];
     const wildcard = this.subscribers.get('*') || [];
 
-    for (const sub of [...matching, ...wildcard]) {
+    const dispatches = [...matching, ...wildcard].map(async (sub) => {
       const health = this.subscriberHealth.get(sub.name);
       if (health) {
         health.totalCalls++;
@@ -71,7 +71,9 @@ export class EventBus {
           { prNumber: event.prNumber, repo: event.repo },
         );
       }
-    }
+    });
+
+    await Promise.all(dispatches);
   }
 
   getHistory(): GitHubEvent[] {

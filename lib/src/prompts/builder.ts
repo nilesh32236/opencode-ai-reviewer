@@ -45,11 +45,17 @@ export function buildReviewPrompt(
   );
   sections.push('');
   sections.push('1. Review the list of changed files and their diff statistics.');
-  sections.push('2. Use the `read` tool to view each changed file directly (do NOT include full diffs in the prompt).');
+  sections.push(
+    '2. Use the `read` tool to view each changed file directly (do NOT include full diffs in the prompt).',
+  );
   sections.push('3. Determine which project(s) the PR touches based on file paths.');
-  sections.push(`4. If more than ${batchSize} files changed or total diff exceeds ~500 lines, dispatch sub-agents:`);
+  sections.push(
+    `4. If more than ${batchSize} files changed or total diff exceeds ~500 lines, dispatch sub-agents:`,
+  );
   sections.push(`   - Group files into batches of at most ${batchSize} files.`);
-  sections.push('   - For each batch, use the `task` tool with `subagent_type: "general"` to review that batch.');
+  sections.push(
+    '   - For each batch, use the `task` tool with `subagent_type: "general"` to review that batch.',
+  );
   sections.push('   - Pass the list of file paths and PR context to each sub-agent.');
   sections.push(`5. Collect all results, deduplicate, and write the final output.`);
 
@@ -164,6 +170,7 @@ export function buildAuditPrompt(
   inputs: PromptBuilderInputs,
   categoryPrompt: string,
   targetDir: string,
+  category: string,
 ): string {
   const projectContext = inputs.projectContext || getDefaultProjectContext();
 
@@ -190,7 +197,8 @@ Safety rules:
 - Do not modify any files — this is a read-only audit
 - Do NOT run git push, git commit, or create any pull requests
 
-Write your findings to the output file in JSON Lines format:
+Write your findings in JSON Lines format to the file \`.opencode/audit-${category}.jsonl\`.
+After writing the file, you MUST verify that the JSONL file exists, is valid JSONL, and conforms strictly to the specified schema and rules.
 
 {"type":"summary","text":"overall assessment"}
 {"type":"issue","severity":"critical|important|minor","file":"path","line":N,"message":"what's wrong","suggestion":"how to fix","inline":false}`;
@@ -280,19 +288,24 @@ function buildWhatToCheck(): string {
 function buildOutputFormat(): string {
   return `\`\`\`
 {"type":"summary","text":"Brief overall assessment of the PR. 2-3 sentences."}
-{"type":"verdict","ready":false,"reasoning":"1-2 sentence technical assessment."}
+{"type":"verdict","ready":false,"reasoning":"1-2 sentence technical assessment.","autoFixable":true,"confidence":"high"}
 {"type":"strength","file":"src/example.ts","line":10,"message":"What's well done and why."}
 {"type":"issue","severity":"critical","file":"src/example.ts","line":42,"message":"What's wrong.","suggestion":"How to fix it.","inline":true}
 \`\`\`
 
 **Rules for the JSONL file:**
+- You MUST write the JSONL content directly to the file \`.opencode/review-output.jsonl\`.
+- After writing the file, you MUST verify that the JSONL file exists, is valid JSONL, and conforms strictly to the specified schema and rules (e.g. having exactly one summary, exactly one verdict, and correct fields).
 - Write exactly ONE \`summary\` line and exactly ONE \`verdict\` line
+- In the \`verdict\` line, you MUST also provide the following fields if \`ready\` is false:
+  - \`autoFixable\` (boolean): Set to true only if ALL remaining critical and important issues are straightforward and safe for an automated agent to fix.
+  - \`confidence\` (string): Set to "high", "medium", or "low". Set to "high" only if you are confident that the proposed fixes are correct and will not introduce regressions.
 - Write zero or more \`strength\` and \`issue\` lines
 - \`severity\` must be exactly "critical", "important", or "minor"
 - Every issue MUST include file and line
 - Suggestion is optional but recommended
 - \`"inline": true\` ONLY if the line is in the PR diff
-- If you find zero issues, write a verdict with \`"ready": true\`
+- If you find zero issues, write a verdict with \`"ready": true\`, \`"autoFixable": false\`, and \`"confidence": "high"\`
 - Do NOT wrap in an array, do NOT add commas between lines`;
 }
 

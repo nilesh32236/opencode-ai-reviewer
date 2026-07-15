@@ -159,3 +159,4 @@ outputs:
 runs:
   using: 'node24'
   main: 'action/lib/index.js'
+  post: 'action/lib/post/index.js'
