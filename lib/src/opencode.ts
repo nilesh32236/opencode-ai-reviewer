@@ -8,6 +8,7 @@ import * as io from '@actions/io';
 import * as tc from '@actions/tool-cache';
 
 let opencodePath: string | null = null;
+let cachedCIConfig: string | null = null;
 
 function detectArch(): string {
   const platform = os.platform();
@@ -157,6 +158,7 @@ export async function setupOpenCode(version = 'latest'): Promise<string> {
  * and the config can never be overridden by a repo's own config.
  */
 function buildCIConfig(): string {
+  if (cachedCIConfig) return cachedCIConfig;
   const config = {
     $schema: 'https://opencode.ai/config.json',
     // "allow" as a string is the shorthand that enables every tool without
@@ -169,7 +171,8 @@ function buildCIConfig(): string {
     mcp: {},
     plugin: [],
   };
-  return JSON.stringify(config);
+  cachedCIConfig = JSON.stringify(config);
+  return cachedCIConfig;
 }
 
 export async function runOpenCode(

@@ -35,6 +35,10 @@ export async function applyMigrations(db: DbAdapter): Promise<void> {
       );
     `);
 
+    await db.exec(`CREATE INDEX IF NOT EXISTS idx_findings_pr_number ON findings(pr_number)`);
+    await db.exec(`CREATE INDEX IF NOT EXISTS idx_findings_type ON findings(type)`);
+    await db.exec(`CREATE INDEX IF NOT EXISTS idx_feedback_finding_id ON feedback(finding_id)`);
+
     await db.exec(`
       CREATE TABLE IF NOT EXISTS review_quality (
         id TEXT PRIMARY KEY,
@@ -68,6 +72,8 @@ export async function applyMigrations(db: DbAdapter): Promise<void> {
         approved_at TEXT
       );
     `);
+
+    await db.exec(`CREATE INDEX IF NOT EXISTS idx_custom_rules_status ON custom_rules(status)`);
 
     await db.exec(`
       CREATE TABLE IF NOT EXISTS prompt_overrides (

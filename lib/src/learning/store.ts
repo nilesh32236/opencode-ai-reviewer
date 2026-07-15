@@ -59,6 +59,7 @@ export class LearningStore {
       suggestion?: string;
     }>,
   ): Promise<string[]> {
+    if (findings.length === 0) return [];
     const db = await this.dbPromise;
     return db.transaction(async () => {
       const ids: string[] = [];
@@ -114,6 +115,26 @@ export class LearningStore {
     );
   }
 
+  async recordFeedbackBatch(
+    feedbacks: Array<{
+      findingId: string;
+      signalType: LearningFeedback['signalType'];
+      signalValue: string;
+      prNumber: number;
+    }>,
+  ): Promise<void> {
+    const db = await this.dbPromise;
+    await db.transaction(async () => {
+      for (const fb of feedbacks) {
+        await db.run(
+          `INSERT INTO feedback (id, finding_id, signal_type, signal_value, pr_number)
+           VALUES (?, ?, ?, ?, ?)`,
+          [generateId(), fb.findingId, fb.signalType, fb.signalValue, fb.prNumber],
+        );
+      }
+    });
+  }
+
   async getFalsePositiveRate(): Promise<number> {
     const db = await this.dbPromise;
     const total = await db.get<{ count: number }>('SELECT COUNT(*) as count FROM feedback');
@@ -152,13 +173,13 @@ export class LearningStore {
           return ext ? `.${ext}` : '';
         }),
       ),
-    ];
+    ].filter(Boolean);
 
-    for (const ext of extensions) {
-      if (!ext) continue;
+    if (extensions.length > 0) {
+      const placeholders = extensions.map(() => '?').join(',');
       const overrides = await db.all<{ override_text: string }>(
-        'SELECT override_text FROM prompt_overrides WHERE category = ?',
-        [ext],
+        `SELECT override_text FROM prompt_overrides WHERE category IN (${placeholders})`,
+        extensions,
       );
       for (const o of overrides) {
         lessons.push(o.override_text);

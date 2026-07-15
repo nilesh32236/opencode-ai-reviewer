@@ -85,7 +85,7 @@ export class ReviewEngine {
     });
 
     console.log('Parsing review output');
-    return parseJsonlFile('.opencode/review-output.jsonl');
+    return await parseJsonlFile('.opencode/review-output.jsonl');
   }
 
   async runFix(
@@ -181,7 +181,7 @@ export class ReviewEngine {
     });
 
     const outputPath = `.opencode/audit-${category}.jsonl`;
-    return parseJsonlFile(outputPath);
+    return await parseJsonlFile(outputPath);
   }
 
   async cleanup(): Promise<void> {

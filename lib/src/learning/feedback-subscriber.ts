@@ -32,14 +32,15 @@ export class FeedbackSubscriber implements Subscriber {
     if (!prNumber) return;
 
     const findings = await this.store.getFindings(prNumber);
-    for (const finding of findings) {
-      await this.store.recordFeedback({
-        findingId: finding.id as string,
-        signalType: 'dismissed',
+    if (findings.length === 0) return;
+    await this.store.recordFeedbackBatch(
+      findings.map((f) => ({
+        findingId: f.id as string,
+        signalType: 'dismissed' as const,
         signalValue: 'review_dismissed',
         prNumber,
-      });
-    }
+      })),
+    );
   }
 
   private async handleReviewCommentDismissed(_event: GitHubEvent): Promise<void> {
@@ -58,13 +59,14 @@ export class FeedbackSubscriber implements Subscriber {
     if (!isDispute) return;
 
     const findings = await this.store.getFindings(prNumber, 5);
-    for (const finding of findings) {
-      await this.store.recordFeedback({
-        findingId: finding.id as string,
-        signalType: 'disputed_comment',
+    if (findings.length === 0) return;
+    await this.store.recordFeedbackBatch(
+      findings.map((f) => ({
+        findingId: f.id as string,
+        signalType: 'disputed_comment' as const,
         signalValue: body.slice(0, 200),
         prNumber,
-      });
-    }
+      })),
+    );
   }
 }

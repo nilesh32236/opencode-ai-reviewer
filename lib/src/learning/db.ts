@@ -167,9 +167,19 @@ class MysqlAdapter implements DbAdapter {
 
 class SqliteAdapter implements DbAdapter {
   private db: SqliteDatabase;
+  private stmtCache = new Map<string, ReturnType<SqliteDatabase['prepare']>>();
 
   constructor(db: SqliteDatabase) {
     this.db = db;
+  }
+
+  private prepareStmt(sql: string): ReturnType<SqliteDatabase['prepare']> {
+    let stmt = this.stmtCache.get(sql);
+    if (!stmt) {
+      stmt = this.db.prepare(sql);
+      this.stmtCache.set(sql, stmt);
+    }
+    return stmt;
   }
 
   async exec(sql: string): Promise<void> {
@@ -177,16 +187,16 @@ class SqliteAdapter implements DbAdapter {
   }
 
   async run(sql: string, params: unknown[] = []): Promise<{ changes: number }> {
-    const res = this.db.prepare(sql).run(...params);
+    const res = this.prepareStmt(sql).run(...params);
     return { changes: res.changes };
   }
 
   async all<T>(sql: string, params: unknown[] = []): Promise<T[]> {
-    return this.db.prepare(sql).all(...params) as T[];
+    return this.prepareStmt(sql).all(...params) as T[];
   }
 
   async get<T>(sql: string, params: unknown[] = []): Promise<T | undefined> {
-    return this.db.prepare(sql).get(...params) as T | undefined;
+    return this.prepareStmt(sql).get(...params) as T | undefined;
   }
 
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
