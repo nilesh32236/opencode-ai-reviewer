@@ -252,6 +252,11 @@ export class JsonDatabase implements DatabaseInstance {
             status: status as string,
           });
           changes = 1;
+        } else if (cleanSql.startsWith('DELETE FROM feedback WHERE pr_number = ?')) {
+          const prNumber = params[0] as number;
+          const initialLength = self.data.feedback.length;
+          self.data.feedback = self.data.feedback.filter((f) => f.pr_number !== prNumber);
+          changes = initialLength - self.data.feedback.length;
         } else if (cleanSql.startsWith('DELETE FROM findings WHERE pr_number = ?')) {
           const prNumber = params[0] as number;
           const initialLength = self.data.findings.length;
