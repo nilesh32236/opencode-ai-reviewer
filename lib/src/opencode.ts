@@ -263,11 +263,12 @@ export function configureGit(userName?: string, userEmail?: string, token?: stri
   cp.execFileSync('git', ['config', '--global', 'user.email', email]);
 
   if (token) {
+    const credentials = Buffer.from(`x-access-token:${token}`).toString('base64');
     cp.execFileSync('git', [
       'config',
       '--global',
-      `url.https://x-access-token:${token}@github.com/.insteadOf`,
-      'https://github.com/',
+      'http.https://github.com/.extraheader',
+      `AUTHORIZATION: basic ${credentials}`,
     ]);
   }
 

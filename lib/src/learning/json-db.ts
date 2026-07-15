@@ -88,6 +88,7 @@ export class JsonDatabase implements DatabaseInstance {
     meta_review_counter: MetaReviewCounterRow[];
   };
   private filePath: string;
+  private inTransaction = false;
 
   constructor(filePath: string) {
     this.filePath = filePath.endsWith('.db') ? filePath.replace(/\.db$/, '.json') : filePath;
@@ -119,6 +120,7 @@ export class JsonDatabase implements DatabaseInstance {
   }
 
   public save() {
+    if (this.inTransaction) return;
     const dir = path.dirname(this.filePath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
@@ -137,11 +139,22 @@ export class JsonDatabase implements DatabaseInstance {
   }
 
   transaction<T extends (...args: unknown[]) => unknown>(fn: T): T {
-    return ((...args: unknown[]) => {
-      const res = fn(...args);
-      this.save();
-      return res;
-    }) as unknown as T;
+    const self = this;
+    return function (this: unknown, ...args: unknown[]) {
+      const backup = JSON.stringify(self.data);
+      self.inTransaction = true;
+      try {
+        const res = fn.apply(this, args);
+        self.inTransaction = false;
+        self.save();
+        return res;
+      } catch (err) {
+        self.inTransaction = false;
+        self.data = JSON.parse(backup);
+        self.save();
+        throw err;
+      }
+    } as unknown as T;
   }
 
   close(): void {
