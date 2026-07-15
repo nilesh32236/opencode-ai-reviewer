@@ -173,7 +173,7 @@ function buildAutofixBody(
   phase: 'reviewing' | 'approved' | 'no-changes' | 'max-iterations' | 'merged' | 'merge-failed',
   current?: ReviewResult,
 ): string {
-  const lines: string[] = [AUTOFIX_MARKER, '', `## 🤖 Autofix Review`, ''];
+  const lines: string[] = ['## 🤖 Autofix Review', ''];
 
   const currentIter = history.length;
 
@@ -272,7 +272,7 @@ function buildAutofixBody(
 }
 
 export async function runAutofixLoop(
-  _inputs: ActionInputs,
+  inputs: ActionInputs,
   config: AgentConfig,
   engine: ReviewEngine,
   gh: GitHubHelper,
@@ -343,6 +343,21 @@ export async function runAutofixLoop(
     await exec.exec('git', ['add', '-A']);
     await exec.exec('git', ['commit', '-m', `fix: autofix iteration ${i + 1}`]);
     await exec.exec('git', ['push', 'origin', pr.headRef]);
+
+    if (inputs.runChecksAfterFix) {
+      core.info('Running verification commands...');
+      const checkCommands = inputs.runChecksAfterFix.split('&&').map((c) => c.trim());
+      for (const cmd of checkCommands) {
+        try {
+          const { command, args } = splitCommand(cmd);
+          if (command) {
+            await exec.exec(command, args);
+          }
+        } catch (error) {
+          core.warning(`Verification command failed: ${cmd} — ${String(error)}`);
+        }
+      }
+    }
   }
 
   if (approved) {

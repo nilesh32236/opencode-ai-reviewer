@@ -19,7 +19,7 @@ function buildAutofixBody(
   phase: 'reviewing' | 'approved' | 'no-changes' | 'max-iterations' | 'merged' | 'merge-failed',
   current?: ReviewResult,
 ): string {
-  const lines: string[] = [AUTOFIX_MARKER, '', '## 🤖 Autofix Review', ''];
+  const lines: string[] = ['## 🤖 Autofix Review', ''];
 
   const currentIter = history.length;
 
@@ -225,13 +225,11 @@ export async function handleAutofixLoop(
           buildAutofixBody(history, config.maxIterations, 'merged'),
         );
 
-        if (prNumber) {
-          const pr = await gh.getPR(prNumber);
-          if (pr.linkedIssue) {
-            try {
-              await gh.closeIssue(pr.linkedIssue, `✅ Fixed by PR #${prNumber}`);
-            } catch {}
-          }
+        const mergePr = await gh.getPR(prNumber);
+        if (mergePr.linkedIssue) {
+          try {
+            await gh.closeIssue(mergePr.linkedIssue, `✅ Fixed by PR #${prNumber}`);
+          } catch {}
         }
       } else {
         await gh.postOrUpdateComment(
