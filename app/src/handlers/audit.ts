@@ -66,7 +66,7 @@ export async function handleAudit(
   const engine = new ReviewEngine(config, token, repo);
 
   try {
-    const result = await engine.runAudit(promptContent, auditTarget);
+    const result = await engine.runAudit(promptContent, auditTarget, category);
 
     console.log(
       `Audit complete: ${result.stats.critical} critical, ${result.stats.important} important, ${result.stats.minor} minor`,

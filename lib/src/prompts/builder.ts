@@ -170,6 +170,7 @@ export function buildAuditPrompt(
   inputs: PromptBuilderInputs,
   categoryPrompt: string,
   targetDir: string,
+  category: string,
 ): string {
   const projectContext = inputs.projectContext || getDefaultProjectContext();
 
@@ -196,7 +197,8 @@ Safety rules:
 - Do not modify any files — this is a read-only audit
 - Do NOT run git push, git commit, or create any pull requests
 
-Write your findings to the output file in JSON Lines format:
+Write your findings in JSON Lines format to the file \`.opencode/audit-${category}.jsonl\`.
+After writing the file, you MUST verify that the JSONL file exists, is valid JSONL, and conforms strictly to the specified schema and rules.
 
 {"type":"summary","text":"overall assessment"}
 {"type":"issue","severity":"critical|important|minor","file":"path","line":N,"message":"what's wrong","suggestion":"how to fix","inline":false}`;
@@ -292,6 +294,8 @@ function buildOutputFormat(): string {
 \`\`\`
 
 **Rules for the JSONL file:**
+- You MUST write the JSONL content directly to the file \`.opencode/review-output.jsonl\`.
+- After writing the file, you MUST verify that the JSONL file exists, is valid JSONL, and conforms strictly to the specified schema and rules (e.g. having exactly one summary, exactly one verdict, and correct fields).
 - Write exactly ONE \`summary\` line and exactly ONE \`verdict\` line
 - In the \`verdict\` line, you MUST also provide the following fields if \`ready\` is false:
   - \`autoFixable\` (boolean): Set to true only if ALL remaining critical and important issues are straightforward and safe for an automated agent to fix.

@@ -76,7 +76,7 @@ export async function runAudit(
       : '.';
   const promptContent = fs.readFileSync(selectedPrompt, 'utf-8');
 
-  const result = await engine.runAudit(promptContent, auditTarget);
+  const result = await engine.runAudit(promptContent, auditTarget, category);
 
   if (inputs.auditCreateIssues && (result.stats.critical > 0 || result.stats.important > 0)) {
     const labels = [...inputs.auditLabels, `audit:${category}`];

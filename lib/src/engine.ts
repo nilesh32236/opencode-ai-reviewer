@@ -145,7 +145,11 @@ export class ReviewEngine {
     }
   }
 
-  async runAudit(promptContent: string, targetDir: string): Promise<ReviewResult> {
+  async runAudit(
+    promptContent: string,
+    targetDir: string,
+    category: string,
+  ): Promise<ReviewResult> {
     let mcpDocs = '';
     if (this.config.enableMCP) {
       try {
@@ -169,13 +173,15 @@ export class ReviewEngine {
       },
       enrichedPrompt,
       targetDir,
+      category,
     );
 
     await runOpenCode(prompt, {
       model: this.config.reviewModel,
     });
 
-    return parseJsonlFile('.audit-output.jsonl');
+    const outputPath = `.opencode/audit-${category}.jsonl`;
+    return parseJsonlFile(outputPath);
   }
 
   async cleanup(): Promise<void> {
