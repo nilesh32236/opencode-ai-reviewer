@@ -25,45 +25,55 @@ export default (app: Probot): void => {
     name: 'ReviewSubscriber',
     subscribedEvents: ['pr.opened', 'pr.synchronize', 'comment.created'],
     async handle(event: GitHubEvent) {
-      if (event.type === 'comment.created') {
-        const payload = event.payload as { body?: string; issue?: { number: number } };
-        if (!payload.body?.includes('/review') && !payload.body?.includes('/oc')) return;
+      try {
+        if (event.type === 'comment.created') {
+          const payload = event.payload as { body?: string; issue?: { number: number } };
+          if (!payload.body?.includes('/review') && !payload.body?.includes('/oc')) return;
+        }
+
+        const payload = event.payload as {
+          pull_request?: { user?: { login: string }; labels?: Array<{ name: string }> };
+          issue?: { number: number };
+        };
+
+        if (event.type === 'pr.opened' || event.type === 'pr.synchronize') {
+          if (payload.pull_request?.user?.login === 'github-actions[bot]') return;
+          const labels = payload.pull_request?.labels?.map((l) => l.name) || [];
+          if (labels.some((l) => ['autofix', 'autofix:approved', 'autofix:merged'].includes(l)))
+            return;
+        }
+
+        const config = buildConfig();
+        const prNumber = event.prNumber || 0;
+        if (!prNumber) return;
+
+        await handlePRReview(prNumber, event.repo || '', getToken(), config);
+      } catch (err) {
+        console.error(`ReviewSubscriber failed: ${err instanceof Error ? err.message : err}`);
       }
 
-      const payload = event.payload as {
-        pull_request?: { user?: { login: string }; labels?: Array<{ name: string }> };
-        issue?: { number: number };
-      };
-
-      if (event.type === 'pr.opened' || event.type === 'pr.synchronize') {
-        if (payload.pull_request?.user?.login === 'github-actions[bot]') return;
-        const labels = payload.pull_request?.labels?.map((l) => l.name) || [];
-        if (labels.some((l) => ['autofix', 'autofix:approved', 'autofix:merged'].includes(l)))
-          return;
+      try {
+        await bus.publish({
+          type: 'review.completed',
+          category: 'internal',
+          payload: {
+            prNumber: event.prNumber || 0,
+            reviewSummary: '',
+            findingsCount: 0,
+            issuesCount: 0,
+            strengthsCount: 0,
+            hasVerdict: true,
+            fileCount: 0,
+          },
+          timestamp: Date.now(),
+          repo: event.repo,
+          prNumber: event.prNumber || 0,
+        });
+      } catch (err) {
+        console.error(
+          `Failed to publish review.completed event: ${err instanceof Error ? err.message : err}`,
+        );
       }
-
-      const config = buildConfig();
-      const prNumber = event.prNumber || 0;
-      if (!prNumber) return;
-
-      await handlePRReview(prNumber, event.repo || '', getToken(), config);
-
-      await bus.publish({
-        type: 'review.completed',
-        category: 'internal',
-        payload: {
-          prNumber,
-          reviewSummary: '',
-          findingsCount: 0,
-          issuesCount: 0,
-          strengthsCount: 0,
-          hasVerdict: true,
-          fileCount: 0,
-        },
-        timestamp: Date.now(),
-        repo: event.repo,
-        prNumber,
-      });
     },
   };
 
@@ -71,28 +81,34 @@ export default (app: Probot): void => {
     name: 'FixSubscriber',
     subscribedEvents: ['comment.created', 'issue.labeled'],
     async handle(event: GitHubEvent) {
-      const payload = event.payload as {
-        body?: string;
-        issue?: { number: number };
-        labels?: Array<{ name: string }>;
-      };
+      try {
+        const payload = event.payload as {
+          body?: string;
+          issue?: { number: number };
+          labels?: Array<{ name: string }>;
+        };
 
-      if (event.type === 'comment.created') {
-        if (!payload.body?.includes('/fix')) return;
+        if (event.type === 'comment.created') {
+          if (!payload.body?.includes('/fix')) return;
+        }
+
+        if (event.type === 'issue.labeled') {
+          const labels = payload.labels?.map((l) => l.name) || [];
+          if (!labels.includes('autofix-trigger')) return;
+          const issuePayload = event.payload as { issue?: { pull_request?: unknown } };
+          if (issuePayload.issue?.pull_request) return;
+        }
+
+        const config = buildConfig();
+        const prNumber = event.prNumber || 0;
+        if (!prNumber) return;
+
+        await handleCommand('fix', prNumber, event.repo || '', getToken(), config);
+      } catch (err) {
+        console.error(
+          `FixSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${err instanceof Error ? err.message : err}`,
+        );
       }
-
-      if (event.type === 'issue.labeled') {
-        const labels = payload.labels?.map((l) => l.name) || [];
-        if (!labels.includes('autofix-trigger')) return;
-        const issuePayload = event.payload as { issue?: { pull_request?: unknown } };
-        if (issuePayload.issue?.pull_request) return;
-      }
-
-      const config = buildConfig();
-      const prNumber = event.prNumber || 0;
-      if (!prNumber) return;
-
-      await handleCommand('fix', prNumber, event.repo || '', getToken(), config);
     },
   };
 
@@ -100,10 +116,16 @@ export default (app: Probot): void => {
     name: 'AuditSubscriber',
     subscribedEvents: ['comment.created'],
     async handle(event: GitHubEvent) {
-      const payload = event.payload as { body?: string };
-      if (!payload.body?.includes('/audit')) return;
-      const config = buildConfig();
-      await handleAudit(event.repo || '', getToken(), config);
+      try {
+        const payload = event.payload as { body?: string };
+        if (!payload.body?.includes('/audit')) return;
+        const config = buildConfig();
+        await handleAudit(event.repo || '', getToken(), config);
+      } catch (err) {
+        console.error(
+          `AuditSubscriber failed for repo ${event.repo}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
     },
   };
 
@@ -123,14 +145,24 @@ export default (app: Probot): void => {
   bus.registerAll(subscribers);
 
   app.onAny(async (context) => {
-    await router.handle(context.name, context.payload);
+    try {
+      await router.handle(context.name, context.payload);
+    } catch (err) {
+      console.error(
+        `Unhandled error in event router for ${context.name}: ${err instanceof Error ? err.message : err}`,
+      );
+    }
   });
 
   console.log('✅ OpenCode PR Agent app loaded (self-improving)');
 };
 
 function getToken(): string {
-  return process.env.GITHUB_TOKEN || '';
+  const token = process.env.GITHUB_TOKEN || '';
+  if (!token) {
+    console.warn('GITHUB_TOKEN is not set — all GitHub API calls will fail with 401');
+  }
+  return token;
 }
 
 function buildConfig(): AgentConfig {

@@ -12,7 +12,12 @@ export class PatternDetector {
   constructor(private store: LearningStore) {}
 
   async discover(minFrequency: number): Promise<DiscoveredPattern[]> {
-    const findings = await this.store.getFindingMessages(100);
+    let findings: { message: string; file?: string }[];
+    try {
+      findings = await this.store.getFindingMessages(100);
+    } catch {
+      return [];
+    }
     if (findings.length === 0) return [];
 
     const messages = findings.map((f) => f.message).filter(Boolean);
@@ -50,12 +55,16 @@ export class PatternDetector {
         fileTypes,
       });
 
-      await this.store.recordPattern({
-        patternKey,
-        messageCluster: cluster.messages,
-        frequency: cluster.messages.length,
-        fileTypes,
-      });
+      try {
+        await this.store.recordPattern({
+          patternKey,
+          messageCluster: cluster.messages,
+          frequency: cluster.messages.length,
+          fileTypes,
+        });
+      } catch {
+        console.warn(`Failed to record pattern: ${patternKey}`);
+      }
     }
 
     return patterns;

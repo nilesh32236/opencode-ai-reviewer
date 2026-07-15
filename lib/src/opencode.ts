@@ -106,7 +106,12 @@ export async function setupOpenCode(version = 'latest'): Promise<string> {
   }
 
   core.info(`Downloading from: ${asset.browser_download_url}`);
-  const downloadPath = await tc.downloadTool(asset.browser_download_url);
+  const downloadPath = await Promise.race([
+    tc.downloadTool(asset.browser_download_url),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Download timed out after 120s')), 120_000),
+    ),
+  ]);
 
   let extractPath: string;
   if (extension === 'zip') {
@@ -205,10 +210,10 @@ export async function runOpenCode(
     `Running OpenCode (model: ${options.model}, timeout: ${options.timeoutMinutes ?? 10}m)...`,
   );
 
-  let timedOut = false;
+  const controller = new AbortController();
   const timeoutHandle = setTimeout(() => {
-    timedOut = true;
-    core.warning(`OpenCode has been running for ${options.timeoutMinutes ?? 10}m — possible hang.`);
+    controller.abort();
+    core.warning(`OpenCode has been running for ${options.timeoutMinutes ?? 10}m — aborting.`);
   }, timeoutMs);
 
   const githubToken = process.env.GITHUB_TOKEN || process.env.INPUT_GITHUB_TOKEN || '';
@@ -217,27 +222,22 @@ export async function runOpenCode(
     process.env.ANTHROPIC_API_KEY || process.env.INPUT_ANTHROPIC_API_KEY || '';
   const geminiApiKey = process.env.GEMINI_API_KEY || process.env.INPUT_GEMINI_API_KEY || '';
 
+  const neededEnv: Record<string, string> = {
+    GITHUB_TOKEN: githubToken,
+    GH_TOKEN: githubToken,
+    OPENAI_API_KEY: openaiApiKey,
+    ANTHROPIC_API_KEY: anthropicApiKey,
+    GEMINI_API_KEY: geminiApiKey,
+    OPENCODE_CONFIG_CONTENT: buildCIConfig(),
+    OPENCODE_DISABLE_AUTOUPDATE: 'true',
+    ...options.env,
+  };
+
   try {
     await exec.exec(binaryPath, args, {
       cwd,
       input: Buffer.from(''),
-      env: {
-        ...process.env,
-        ...options.env,
-        GITHUB_TOKEN: githubToken,
-        GH_TOKEN: githubToken,
-        OPENAI_API_KEY: openaiApiKey,
-        ANTHROPIC_API_KEY: anthropicApiKey,
-        GEMINI_API_KEY: geminiApiKey,
-        // OPENCODE_CONFIG_CONTENT is the highest-precedence config source.
-        // It overrides remote, global, and project opencode.json configs.
-        // We use it to guarantee all permissions are "allow" and autoupdate
-        // is disabled regardless of what the target repo's config says.
-        // Docs: https://opencode.ai/docs/config#locations
-        OPENCODE_CONFIG_CONTENT: buildCIConfig(),
-        // Disable auto-update checks — irrelevant in CI, wastes time.
-        OPENCODE_DISABLE_AUTOUPDATE: 'true',
-      } as { [key: string]: string },
+      env: neededEnv,
       ignoreReturnCode: true,
     });
 
@@ -246,15 +246,16 @@ export async function runOpenCode(
     return { success: true, output: '', durationMs };
   } catch (err) {
     const durationMs = Date.now() - startTime;
-    core.error(`OpenCode execution failed: ${String(err)}`);
+    if (controller.signal.aborted) {
+      core.warning(
+        `OpenCode exceeded the ${options.timeoutMinutes ?? 10}m timeout and was aborted.`,
+      );
+    } else {
+      core.error(`OpenCode execution failed: ${String(err)}`);
+    }
     return { success: false, output: '', durationMs };
   } finally {
     clearTimeout(timeoutHandle);
-    if (timedOut) {
-      core.warning(
-        `OpenCode may have hung — exceeded the ${options.timeoutMinutes ?? 10}m timeout.`,
-      );
-    }
   }
 }
 

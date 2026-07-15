@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import type { AgentConfig, GitHubHelper, ReviewEngine } from '@opencode-pr-agent/lib';
+import type { AgentConfig, GitHubHelper, PRContext, ReviewEngine } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 
 export async function runReview(
@@ -32,7 +32,13 @@ export async function runReview(
     return;
   }
 
-  const pr = await gh.getPR(prNumber);
+  let pr: PRContext;
+  try {
+    pr = await gh.getPR(prNumber);
+  } catch (err) {
+    core.setFailed(`Failed to get PR #${prNumber}: ${err instanceof Error ? err.message : err}`);
+    return;
+  }
 
   const hasSkipLabel = pr.labels.some((l) => config.review.skipLabels.includes(l));
   const isSkippedActor = config.review.skipActors.includes(pr.author);
@@ -47,6 +53,11 @@ export async function runReview(
   }
 
   const result = await engine.reviewPR(pr);
+
+  if (!result || (!result.summary && result.issues.length === 0 && result.strengths.length === 0)) {
+    core.setFailed('Review returned no meaningful content - AI model may have failed silently');
+    return;
+  }
 
   const reviewResult = await gh.postReview(prNumber, pr.headSha, result);
 

@@ -39,15 +39,23 @@ export async function runFix(
 
   const fixResult = await engine.runFix(prNumber, iteration, contextMarkdown, pr);
 
+  if (!fixResult) {
+    core.warning('Fix engine returned no result - treating as no changes');
+  }
+
   let changesMade = false;
-  if (fixResult.changesMade) {
+  if (fixResult?.changesMade) {
     await exec.exec('git', ['add', '-A']);
     await exec.exec('git', [
       'commit',
       '-m',
       `fix: address review feedback (iteration ${iteration + 1})`,
     ]);
-    await exec.exec('git', ['push', 'origin', pr.headRef]);
+    try {
+      await exec.exec('git', ['push', 'origin', pr.headRef]);
+    } catch (err) {
+      core.warning(`Git push failed: ${err instanceof Error ? err.message : err}`);
+    }
     changesMade = true;
   }
 
@@ -68,7 +76,7 @@ export async function runFix(
 
   await gh.removeLabel(prNumber, 'autofix:needs-fix');
 
-  core.setOutput('changes_made', String(changesMade));
+  core.setOutput('changes_made', String(changesMade ?? false));
 }
 
 export async function runFixIssue(
@@ -103,14 +111,15 @@ export async function runFixIssue(
 
   const fixResult = await engine.runFix(issueNumber, 0, issueContext);
 
-  if (!fixResult.changesMade) {
+  if (!fixResult?.changesMade) {
     core.info('No changes made by fix agent');
     return;
   }
 
   const hasChanges = await exec
     .getExecOutput('git', ['status', '--porcelain'])
-    .then((r) => r.stdout.trim().length > 0);
+    .then((r) => r.stdout.trim().length > 0)
+    .catch(() => false);
 
   if (!hasChanges) {
     core.info('No file changes to commit');
@@ -119,7 +128,11 @@ export async function runFixIssue(
 
   await exec.exec('git', ['add', '-A']);
   await exec.exec('git', ['commit', '-m', `fix: address issue #${issueNumber}`]);
-  await exec.exec('git', ['push', 'origin', branchName, '--force']);
+  try {
+    await exec.exec('git', ['push', 'origin', branchName, '--force']);
+  } catch (err) {
+    core.warning(`Git push failed: ${err instanceof Error ? err.message : err}`);
+  }
 
   const issue = await gh.getIssue(issueNumber);
   const prTitle = `[Autofix] ${issue.title}`;
@@ -152,12 +165,28 @@ export async function runFixIssue(
         env: { ...process.env, GH_TOKEN: token } as { [key: string]: string },
       },
     )
-    .then((r) => r.stdout.trim());
+    .then((r) => r.stdout.trim())
+    .catch((err) => {
+      core.warning(`Failed to create PR: ${err instanceof Error ? err.message : err}`);
+      return '';
+    });
 
-  core.info(`Created PR: ${prUrl}`);
-  core.setOutput('pr_url', prUrl);
+  if (prUrl) {
+    core.info(`Created PR: ${prUrl}`);
+    core.setOutput('pr_url', prUrl);
+  }
 
-  await gh.postOrUpdateComment(issueNumber, '<!-- autofix-pr-link -->', `🔧 Autofix PR: ${prUrl}`);
+  if (prUrl) {
+    try {
+      await gh.postOrUpdateComment(
+        issueNumber,
+        '<!-- autofix-pr-link -->',
+        `🔧 Autofix PR: ${prUrl}`,
+      );
+    } catch (err) {
+      core.warning(`Failed to post autofix comment: ${err instanceof Error ? err.message : err}`);
+    }
+  }
 
   core.setOutput('changes_made', 'true');
 }
@@ -331,6 +360,23 @@ export async function runAutofixLoop(
     const pr = await gh.getPR(prNumber);
     const result = await engine.reviewPR(pr, i);
 
+    if (
+      !result ||
+      (!result.summary && result.issues.length === 0 && result.strengths.length === 0)
+    ) {
+      core.warning(`Review result empty in iteration ${i + 1} — treating as failure`);
+      const entry: IterationRecord = {
+        iteration: i + 1,
+        status: 'needs-fix',
+        summary: 'Review returned no meaningful content',
+        critical: 0,
+        important: 0,
+        minor: 0,
+      };
+      history.push(entry);
+      break;
+    }
+
     const entry: IterationRecord = {
       iteration: i + 1,
       status: 'approved',
@@ -355,11 +401,15 @@ export async function runAutofixLoop(
     entry.status = 'needs-fix';
     entry.summary = result.summary;
     history.push(entry);
-    await gh.postOrUpdateComment(
-      prNumber,
-      REVIEW_MARKER,
-      buildReviewBody(history, config.maxIterations, 'reviewing', result),
-    );
+    try {
+      await gh.postOrUpdateComment(
+        prNumber,
+        REVIEW_MARKER,
+        buildReviewBody(history, config.maxIterations, 'reviewing', result),
+      );
+    } catch (err) {
+      core.warning(`Failed to post review comment: ${err instanceof Error ? err.message : err}`);
+    }
 
     const contextMarkdown = await gh.gatherContext({ prNumber });
     const fixResult = await engine.runFix(prNumber, i, contextMarkdown, pr);
@@ -379,11 +429,27 @@ export async function runAutofixLoop(
     history[history.length - 1].filesChanged = fixResult.filesChanged;
     history[history.length - 1].commitMessage = fixResult.commitMessage;
 
-    await exec.exec('git', ['add', '-A']);
-    await exec.exec('git', ['commit', '-m', `fix: autofix iteration ${i + 1}`]);
-    await exec.exec('git', ['push', 'origin', pr.headRef]);
+    try {
+      await exec.exec('git', ['add', '-A']);
+      await exec.exec('git', ['commit', '-m', `fix: autofix iteration ${i + 1}`]);
+      await exec.exec('git', ['push', 'origin', pr.headRef]);
+    } catch (err) {
+      core.warning(
+        `Git operations failed in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
+      );
+      await gh.postOrUpdateComment(
+        prNumber,
+        REVIEW_MARKER,
+        buildReviewBody(history, config.maxIterations, 'reviewing', result),
+      );
+      break;
+    }
 
-    await gh.postOrUpdateComment(prNumber, FIX_MARKER, buildFixBody(history));
+    try {
+      await gh.postOrUpdateComment(prNumber, FIX_MARKER, buildFixBody(history));
+    } catch (err) {
+      core.warning(`Failed to post fix comment: ${err instanceof Error ? err.message : err}`);
+    }
 
     if (inputs.runChecksAfterFix) {
       core.info('Running verification commands...');

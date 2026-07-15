@@ -32,7 +32,14 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
   const stream = fs.createReadStream(absolutePath, 'utf-8');
   const rl = readline.createInterface({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
 
+  let streamError: Error | null = null;
+  stream.on('error', (err) => {
+    streamError = err;
+    stream.destroy();
+  });
+
   for await (const line of rl) {
+    if (streamError) throw streamError;
     const trimmed = line.trim();
     if (trimmed.length === 0) continue;
     rawLines.push(trimmed);

@@ -18,6 +18,12 @@ export class RuleApprovalSubscriber implements Subscriber {
     if (!match) return;
 
     const ruleId = match[1];
-    await this.store.approveRule(ruleId);
+    try {
+      await this.store.approveRule(ruleId);
+    } catch (err) {
+      console.error(
+        `Failed to approve rule ${ruleId}: ${err instanceof Error ? err.message : err}`,
+      );
+    }
   }
 }

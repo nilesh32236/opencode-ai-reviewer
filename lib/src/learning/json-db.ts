@@ -121,11 +121,15 @@ export class JsonDatabase implements DatabaseInstance {
 
   public save() {
     if (this.inTransaction) return;
-    const dir = path.dirname(this.filePath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+    try {
+      const dir = path.dirname(this.filePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2), 'utf-8');
+    } catch (err) {
+      console.warn(`Failed to save JSON database: ${err instanceof Error ? err.message : err}`);
     }
-    fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2), 'utf-8');
   }
 
   pragma(_sql: string): void {}

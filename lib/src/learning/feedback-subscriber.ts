@@ -31,7 +31,15 @@ export class FeedbackSubscriber implements Subscriber {
     const prNumber = payload?.pull_request?.number || event.prNumber || 0;
     if (!prNumber) return;
 
-    const findings = await this.store.getFindings(prNumber);
+    let findings: Array<Record<string, unknown>>;
+    try {
+      findings = await this.store.getFindings(prNumber);
+    } catch (err) {
+      console.error(
+        `Failed to get findings for pr ${prNumber}: ${err instanceof Error ? err.message : err}`,
+      );
+      return;
+    }
     if (findings.length === 0) return;
     await this.store.recordFeedbackBatch(
       findings.map((f) => ({

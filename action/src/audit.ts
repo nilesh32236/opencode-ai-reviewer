@@ -17,16 +17,20 @@ export async function runAudit(
   const targetDir = inputs.auditTargetDir;
   const promptName = core.getInput('audit-prompt-name');
 
-  await gh.ensureLabels([
-    'audit',
-    'audit:critical',
-    'audit:important',
-    'audit:minor',
-    'autofix',
-    'autofix-trigger',
-    'autofix:approved',
-    'autofix:needs-fix',
-  ]);
+  try {
+    await gh.ensureLabels([
+      'audit',
+      'audit:critical',
+      'audit:important',
+      'audit:minor',
+      'autofix',
+      'autofix-trigger',
+      'autofix:approved',
+      'autofix:needs-fix',
+    ]);
+  } catch (err) {
+    core.warning(`Failed to ensure labels: ${err instanceof Error ? err.message : err}`);
+  }
 
   if (!fs.existsSync(promptsDir)) {
     if (promptsDir === '.audit-prompts' && fs.existsSync('prompts/audit-categories')) {
@@ -37,10 +41,18 @@ export async function runAudit(
     }
   }
 
-  let prompts = fs.readdirSync(promptsDir).filter((f) => f.endsWith('.md'));
-  if (prompts.length === 0 && fs.existsSync(path.join(promptsDir, 'audit-categories'))) {
-    promptsDir = path.join(promptsDir, 'audit-categories');
+  let prompts: string[];
+  try {
     prompts = fs.readdirSync(promptsDir).filter((f) => f.endsWith('.md'));
+    if (prompts.length === 0 && fs.existsSync(path.join(promptsDir, 'audit-categories'))) {
+      promptsDir = path.join(promptsDir, 'audit-categories');
+      prompts = fs.readdirSync(promptsDir).filter((f) => f.endsWith('.md'));
+    }
+  } catch (err) {
+    core.setFailed(
+      `Failed to read audit prompts directory ${promptsDir}: ${err instanceof Error ? err.message : err}`,
+    );
+    return;
   }
 
   if (prompts.length === 0) {
@@ -78,6 +90,11 @@ export async function runAudit(
 
   const result = await engine.runAudit(promptContent, auditTarget, category);
 
+  if (!result || (!result.summary && result.issues.length === 0)) {
+    core.warning('Audit returned no meaningful content');
+    return;
+  }
+
   if (inputs.auditCreateIssues && (result.stats.critical > 0 || result.stats.important > 0)) {
     const labels = [...inputs.auditLabels, `audit:${category}`];
 
@@ -96,10 +113,12 @@ export async function runAudit(
 
     try {
       const issue = await gh.createIssue(title, issueBody, labels);
-      core.setOutput('issue-number', String(issue.number));
-      core.info(`Created issue #${issue.number}: ${issue.url}`);
+      if (issue) {
+        core.setOutput('issue-number', String(issue.number));
+        core.info(`Created issue #${issue.number}: ${issue.url}`);
+      }
     } catch (error) {
-      core.error(`Failed to create audit issue: ${String(error)}`);
+      core.warning(`Failed to create audit issue: ${String(error)}`);
     }
   } else {
     core.info('No critical or important issues found — skipping issue creation');

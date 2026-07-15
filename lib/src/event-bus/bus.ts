@@ -59,8 +59,17 @@ export class EventBus {
         health.lastEventTimestamp = Date.now();
       }
 
+      const TIMEOUT_MS = 120_000;
       try {
-        await sub.handle(event);
+        await Promise.race([
+          sub.handle(event),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error(`Subscriber ${sub.name} timed out after ${TIMEOUT_MS}ms`)),
+              TIMEOUT_MS,
+            ),
+          ),
+        ]);
       } catch (err) {
         if (health) {
           health.failedCalls++;
@@ -70,6 +79,14 @@ export class EventBus {
           `Subscriber ${sub.name} failed on ${event.type}: ${err instanceof Error ? err.message : err}`,
           { prNumber: event.prNumber, repo: event.repo },
         );
+
+        // Circuit breaker: skip subscriber after N consecutive failures
+        if (health && health.failedCalls >= 5) {
+          this.logger.warn(
+            `Subscriber ${sub.name} has failed ${health.failedCalls} times consecutively — skipping until next event`,
+            { prNumber: event.prNumber, repo: event.repo },
+          );
+        }
       }
     }
   }
