@@ -37,7 +37,11 @@ export async function applyMigrations(db: DbAdapter): Promise<void> {
 
     await db.exec(`CREATE INDEX IF NOT EXISTS idx_findings_pr_number ON findings(pr_number)`);
     await db.exec(`CREATE INDEX IF NOT EXISTS idx_findings_type ON findings(type)`);
+    await db.exec(`CREATE INDEX IF NOT EXISTS idx_findings_created_at ON findings(created_at)`);
+
     await db.exec(`CREATE INDEX IF NOT EXISTS idx_feedback_finding_id ON feedback(finding_id)`);
+    await db.exec(`CREATE INDEX IF NOT EXISTS idx_feedback_pr_number ON feedback(pr_number)`);
+    await db.exec(`CREATE INDEX IF NOT EXISTS idx_feedback_signal_type ON feedback(signal_type)`);
 
     await db.exec(`
       CREATE TABLE IF NOT EXISTS review_quality (
@@ -62,6 +66,9 @@ export async function applyMigrations(db: DbAdapter): Promise<void> {
         last_seen TEXT NOT NULL
       );
     `);
+
+    await db.exec(`CREATE INDEX IF NOT EXISTS idx_patterns_frequency ON patterns(frequency DESC)`);
+    await db.exec(`CREATE INDEX IF NOT EXISTS idx_patterns_key ON patterns(pattern_key)`);
 
     await db.exec(`
       CREATE TABLE IF NOT EXISTS custom_rules (

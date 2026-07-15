@@ -6,9 +6,11 @@ export interface RetryOptions {
   baseDelayMs?: number;
   maxDelayMs?: number;
   retryableStatuses?: number[];
+  /** Optional AbortSignal to cancel retry loop mid-flight */
+  signal?: AbortSignal;
 }
 
-const DEFAULT_OPTIONS: Required<RetryOptions> = {
+const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'signal'>> = {
   maxRetries: 3,
   baseDelayMs: 1000,
   maxDelayMs: 30000,
@@ -28,10 +30,15 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
     ...DEFAULT_OPTIONS,
     ...options,
   };
+  const signal = options.signal;
 
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    if (signal?.aborted) {
+      throw new DOMException('Retry aborted by signal', 'AbortError');
+    }
+
     try {
       return await fn();
     } catch (err) {

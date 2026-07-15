@@ -97,6 +97,45 @@ describe('EventBus', () => {
 
     expect(handled).toEqual(['a', 'b']);
   });
+
+  it('unregister removes subscriber and stops dispatch', async () => {
+    const bus = new EventBus();
+    const handled: string[] = [];
+
+    const sub = {
+      name: 'removable',
+      subscribedEvents: ['pr.opened'],
+      async handle() {
+        handled.push('called');
+      },
+    };
+
+    bus.register(sub);
+    await bus.publish({ type: 'pr.opened', category: 'pr', payload: {}, timestamp: 1 });
+    expect(handled).toEqual(['called']);
+
+    const removed = bus.unregister('removable');
+    expect(removed).toBe(true);
+
+    await bus.publish({ type: 'pr.opened', category: 'pr', payload: {}, timestamp: 2 });
+    expect(handled).toEqual(['called']);
+  });
+
+  it('unregister returns false for non-existent subscriber', () => {
+    const bus = new EventBus();
+    expect(bus.unregister('nonexistent')).toBe(false);
+  });
+
+  it('unregister cleans up health tracking', () => {
+    const bus = new EventBus();
+    bus.register({
+      name: 'healthy',
+      subscribedEvents: ['*'],
+      async handle() {},
+    });
+    bus.unregister('healthy');
+    expect(bus.getSubscriberHealth()).toHaveLength(0);
+  });
 });
 
 describe('EventRouter', () => {

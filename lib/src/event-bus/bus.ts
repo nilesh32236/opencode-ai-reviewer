@@ -82,6 +82,23 @@ export class EventBus {
     return this.subscribers.size;
   }
 
+  unregister(subscriberName: string): boolean {
+    let removed = false;
+    for (const [eventType, subs] of this.subscribers.entries()) {
+      const filtered = subs.filter((s) => s.name !== subscriberName);
+      if (filtered.length !== subs.length) {
+        if (filtered.length === 0) {
+          this.subscribers.delete(eventType);
+        } else {
+          this.subscribers.set(eventType, filtered);
+        }
+        removed = true;
+      }
+    }
+    this.subscriberHealth.delete(subscriberName);
+    return removed;
+  }
+
   getSubscriberHealth(): SubscriberHealth[] {
     return Array.from(this.subscriberHealth.values()).map((h) => ({ ...h }));
   }

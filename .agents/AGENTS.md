@@ -29,13 +29,14 @@ Other directories:
 
 When writing or reviewing code in this repository, follow these patterns:
 
-1. **Use `withRetry()` for external API calls**: Import from `lib/src/utils/retry.ts`. All GitHub API calls should use this utility for exponential backoff and retry on transient errors (429, 5xx).
+1. **Use `withRetry()` for external API calls**: Import from `lib/src/utils/retry.ts`. All GitHub API calls should use this utility for exponential backoff and retry on transient errors (429, 5xx). Supports optional `AbortSignal` via the `signal` option for cancellation.
 2. **Use `CircuitBreaker` for repeated API calls**: Import from `lib/src/utils/circuit-breaker.ts`. Wrap external API calls that should stop being attempted after repeated failures. The circuit trips OPEN after `failureThreshold` failures, re-tries after `cooldownMs`, and requires `successThreshold` consecutive successes in HALF_OPEN to reset.
-3. **Wrap SQLite read-then-write in transactions**: Use `db.transaction()` from `better-sqlite3` for operations that read a value, compute, and then write (e.g., `recordPattern`, `incrementAndCheckMetaReviewInterval`).
+3. **Wrap SQLite read-then-write in transactions**: Use `db.transaction()` from `better-sqlite3` for operations that read a value, compute, and then write (e.g., `recordPattern`, `incrementAndCheckMetaReviewInterval`). The `LearningStore.deleteFindings()` automatically uses a transaction to cascade-delete related feedback rows.
 4. **Graceful degradation**: Non-critical subsystems (MCP, learning store) should fail independently. Catch and log (debug/warning level) rather than silently swallowing errors, so degraded operation remains observable.
-5. **Timeouts for long-running operations**: Always pass a timeout to long-running operations, especially OpenCode CLI execution.
+5. **Timeouts for long-running operations**: Always pass a timeout to long-running operations, especially OpenCode CLI execution. Use `withRetryAndTimeout()` from `lib/src/utils/retry.ts` for operations that need both timeout and retry.
 6. **Use `Logger` for structured logging**: Import from `lib/src/utils/logger.ts`. Provides log levels (debug/info/warn/error), structured context (PR number, repo, event type), and outputs via `@actions/core` in GitHub Actions environments.
-7. **GitHub API pagination**: Use the `paginate` method on `GitHubHelper` (or the exported `paginate` function) when fetching list endpoints to automatically follow `Link` headers and collect all pages.
+7. **GitHub API pagination**: Use the `paginate` method on `GitHubHelper` when fetching list endpoints. The helper also tracks `X-RateLimit-Remaining` headers and warns when approaching the limit.
+8. **EventBus lifecycle**: The `EventBus` supports `register()`, `registerAll()`, and `unregister()` for subscriber lifecycle management. Use `getSubscriberHealth()` to inspect subscriber failures and `resetHealth()` to clear metrics.
 
 ---
 

@@ -84,8 +84,11 @@ export class LearningStore {
 
   async deleteFindings(prNumber: number): Promise<number> {
     const db = await this.dbPromise;
-    const result = await db.run('DELETE FROM findings WHERE pr_number = ?', [prNumber]);
-    return result.changes;
+    return db.transaction(async () => {
+      await db.run('DELETE FROM feedback WHERE pr_number = ?', [prNumber]);
+      const result = await db.run('DELETE FROM findings WHERE pr_number = ?', [prNumber]);
+      return result.changes;
+    });
   }
 
   async getFindingsByType(type: string, limit = 50): Promise<Array<Record<string, unknown>>> {
