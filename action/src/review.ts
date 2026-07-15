@@ -4,7 +4,7 @@ import type { AgentConfig, GitHubHelper, ReviewEngine } from '@opencode-pr-agent
 import type { ActionInputs } from './inputs.js';
 
 export async function runReview(
-  _inputs: ActionInputs,
+  inputs: ActionInputs,
   config: AgentConfig,
   engine: ReviewEngine,
   gh: GitHubHelper,
@@ -59,4 +59,12 @@ export async function runReview(
   core.setOutput('critical_count', String(result.stats.critical));
   core.setOutput('important_count', String(result.stats.important));
   core.setOutput('minor_count', String(result.stats.minor));
+
+  if (!result.verdict.ready && result.verdict.autoFixable && result.verdict.confidence === 'high') {
+    core.info(
+      '🤖 Review agent confirmed issues are auto-fixable with high confidence. Launching autofix loop...',
+    );
+    const { runAutofixLoop } = await import('./fix.js');
+    await runAutofixLoop(inputs, config, engine, gh, _repo, inputs.githubToken);
+  }
 }

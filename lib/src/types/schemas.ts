@@ -17,6 +17,8 @@ export const ReviewVerdictSchema = z.object({
   type: z.literal('verdict'),
   ready: z.boolean(),
   reasoning: z.string().min(5, 'Verdict reasoning must be at least 5 characters'),
+  autoFixable: z.boolean().optional().default(false),
+  confidence: z.enum(['high', 'medium', 'low']).optional().default('low'),
 });
 
 export const ReviewStrengthSchema = z.object({

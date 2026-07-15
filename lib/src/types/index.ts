@@ -14,6 +14,8 @@ export interface ReviewVerdict {
   type: 'verdict';
   ready: boolean;
   reasoning: string;
+  autoFixable?: boolean;
+  confidence?: 'high' | 'medium' | 'low';
 }
 
 export interface ReviewStrength {
@@ -204,6 +206,8 @@ export interface VerdictFinding extends BaseFinding {
   type: 'verdict';
   ready: boolean;
   reasoning: string;
+  autoFixable?: boolean;
+  confidence?: 'high' | 'medium' | 'low';
 }
 
 export interface StrengthFinding extends BaseFinding {
@@ -231,6 +235,8 @@ export interface ReviewResult {
   verdict: {
     ready: boolean;
     reasoning: string;
+    autoFixable: boolean;
+    confidence: 'high' | 'medium' | 'low';
   };
   strengths: ReviewStrength[];
   issues: ReviewIssue[];

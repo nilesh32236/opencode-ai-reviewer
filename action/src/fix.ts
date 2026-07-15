@@ -174,7 +174,7 @@ export async function runAutofixLoop(
     core.info(`=== Autofix iteration ${i + 1}/${config.maxIterations} ===`);
 
     const pr = await gh.getPR(prNumber);
-    const result = await engine.reviewPR(pr);
+    const result = await engine.reviewPR(pr, i);
 
     if (result.verdict.ready && result.stats.critical === 0 && result.stats.important === 0) {
       core.info('PR approved — all issues resolved');
@@ -204,6 +204,42 @@ export async function runAutofixLoop(
       prNumber,
       '<!-- autofix-status -->',
       `Fix applied (iteration ${i + 1}). Waiting for review...`,
+    );
+  }
+
+  if (approved) {
+    core.info('PR is approved. Auto-merging...');
+    await gh.setLabels(prNumber, ['autofix:approved'], ['autofix', 'autofix:needs-fix']);
+    const merged = await gh.mergePR(prNumber);
+    if (merged) {
+      await gh.setLabels(prNumber, ['autofix:merged'], ['autofix:approved', 'autofix']);
+      await gh.postOrUpdateComment(
+        prNumber,
+        '<!-- autofix-status -->',
+        '✅ Review approved. Auto-merged PR successfully!',
+      );
+      const pr = await gh.getPR(prNumber);
+      if (pr.linkedIssue) {
+        try {
+          await gh.closeIssue(pr.linkedIssue, `✅ Fixed by PR #${prNumber}`);
+        } catch {}
+      }
+    } else {
+      await gh.postOrUpdateComment(
+        prNumber,
+        '<!-- autofix-status -->',
+        '⚠️ Review approved but auto-merge failed. Please merge manually.',
+      );
+    }
+  } else {
+    core.warning(
+      `Max iterations reached (${config.maxIterations}) or agent not approved. Needs manual review.`,
+    );
+    await gh.setLabels(prNumber, ['autofix:needs-manual-review'], ['autofix', 'autofix:needs-fix']);
+    await gh.postOrUpdateComment(
+      prNumber,
+      '<!-- autofix-status -->',
+      `⚠️ **Max iterations reached** (${config.maxIterations}). This PR needs manual review.`,
     );
   }
 

@@ -31,7 +31,7 @@ export async function handleAutofixLoop(
   const engine = new ReviewEngine(config, token, repo);
 
   try {
-    const result = await engine.reviewPR(pr);
+    const result = await engine.reviewPR(pr, iteration);
 
     const isApproved =
       result.verdict.ready && result.stats.critical === 0 && result.stats.important === 0;

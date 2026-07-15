@@ -286,19 +286,22 @@ function buildWhatToCheck(): string {
 function buildOutputFormat(): string {
   return `\`\`\`
 {"type":"summary","text":"Brief overall assessment of the PR. 2-3 sentences."}
-{"type":"verdict","ready":false,"reasoning":"1-2 sentence technical assessment."}
+{"type":"verdict","ready":false,"reasoning":"1-2 sentence technical assessment.","autoFixable":true,"confidence":"high"}
 {"type":"strength","file":"src/example.ts","line":10,"message":"What's well done and why."}
 {"type":"issue","severity":"critical","file":"src/example.ts","line":42,"message":"What's wrong.","suggestion":"How to fix it.","inline":true}
 \`\`\`
 
 **Rules for the JSONL file:**
 - Write exactly ONE \`summary\` line and exactly ONE \`verdict\` line
+- In the \`verdict\` line, you MUST also provide the following fields if \`ready\` is false:
+  - \`autoFixable\` (boolean): Set to true only if ALL remaining critical and important issues are straightforward and safe for an automated agent to fix.
+  - \`confidence\` (string): Set to "high", "medium", or "low". Set to "high" only if you are confident that the proposed fixes are correct and will not introduce regressions.
 - Write zero or more \`strength\` and \`issue\` lines
 - \`severity\` must be exactly "critical", "important", or "minor"
 - Every issue MUST include file and line
 - Suggestion is optional but recommended
 - \`"inline": true\` ONLY if the line is in the PR diff
-- If you find zero issues, write a verdict with \`"ready": true\`
+- If you find zero issues, write a verdict with \`"ready": true\`, \`"autoFixable": false\`, and \`"confidence": "high"\`
 - Do NOT wrap in an array, do NOT add commas between lines`;
 }
 

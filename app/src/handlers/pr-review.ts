@@ -39,6 +39,18 @@ export async function handlePRReview(
     } else {
       console.log(`⚠️ Failed to post review to PR #${prNumber}`);
     }
+
+    if (
+      !result.verdict.ready &&
+      result.verdict.autoFixable &&
+      result.verdict.confidence === 'high'
+    ) {
+      console.log(
+        `🤖 Review agent confirmed issues are auto-fixable with high confidence. Launching handleAutofixLoop...`,
+      );
+      const { handleAutofixLoop } = await import('./autofix.js');
+      await handleAutofixLoop(prNumber, repo, token, config);
+    }
   } finally {
     await engine.cleanup();
   }
