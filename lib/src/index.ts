@@ -27,9 +27,15 @@ export {
 } from './prompts/builder.js';
 export { ReviewEngine } from './engine.js';
 export { EventBus } from './event-bus/bus.js';
+export type { SubscriberHealth } from './event-bus/bus.js';
 export { EventRouter } from './event-bus/router.js';
 export { LearningStore } from './learning/store.js';
 export { getDatabase, getDbPath } from './learning/schema.js';
+export { withRetry, withRetryAndTimeout } from './utils/retry.js';
+export { CircuitBreaker } from './utils/circuit-breaker.js';
+export type { CircuitState, CircuitBreakerOptions } from './utils/circuit-breaker.js';
+export { Logger } from './utils/logger.js';
+export type { LogLevel, LogContext } from './utils/logger.js';
 export { FeedbackSubscriber } from './learning/feedback-subscriber.js';
 export { MetaReviewEngine, MetaReviewSubscriber } from './meta-review/engine.js';
 export { buildMetaReviewPrompt } from './meta-review/prompts.js';
