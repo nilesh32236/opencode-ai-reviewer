@@ -3,6 +3,8 @@ name: AI Self Review & Audit
 on:
   pull_request:
     types: [opened, synchronize, labeled]
+  issues:
+    types: [labeled, opened]
   issue_comment:
     types: [created]
   schedule:
@@ -150,12 +152,14 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
 
-  # ─── Fix Audit Issue (triggered by /fix comment on a regular issue) ───
+  # ─── Fix Audit Issue (triggered by /fix comment or autofix-trigger label) ───
   fix-issue:
     if: |
-      github.event_name == 'issue_comment' &&
-      github.event.issue.pull_request == null &&
-      contains(github.event.comment.body || '', '/fix')
+      github.event.issue.pull_request == null && (
+        (github.event_name == 'issue_comment' && contains(github.event.comment.body || '', '/fix'))
+        ||
+        (github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'autofix-trigger'))
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
