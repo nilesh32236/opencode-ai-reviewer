@@ -17,8 +17,23 @@ const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'signal'>> = {
   retryableStatuses: [429, 500, 502, 503, 504],
 };
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(new DOMException('Retry aborted by signal', 'AbortError'));
+  }
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    function onAbort(): void {
+      clearTimeout(timeout);
+      reject(new DOMException('Retry aborted by signal', 'AbortError'));
+    }
+    if (signal) {
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+  });
 }
 
 function isRetryable(status: number, retryableStatuses: number[]): boolean {
@@ -62,7 +77,7 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
       core.warning(
         `Retryable error (attempt ${attempt}/${maxRetries}): ${err instanceof Error ? err.message : err}. Retrying in ${Math.round((delay + jitter) / 1000)}s...`,
       );
-      await sleep(delay + jitter);
+      await sleep(delay + jitter, signal);
     }
   }
 
