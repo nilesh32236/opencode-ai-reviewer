@@ -31,7 +31,7 @@ export async function runFix(
   const pr = await gh.getPR(prNumber);
   const contextMarkdown = await gh.gatherContext({ prNumber });
 
-  const fixResult = await engine.runFix(prNumber, iteration, contextMarkdown);
+  const fixResult = await engine.runFix(prNumber, iteration, contextMarkdown, pr);
 
   let changesMade = false;
   if (fixResult.changesMade) {
@@ -325,7 +325,7 @@ export async function runAutofixLoop(
     );
 
     const contextMarkdown = await gh.gatherContext({ prNumber });
-    const fixResult = await engine.runFix(prNumber, i, contextMarkdown);
+    const fixResult = await engine.runFix(prNumber, i, contextMarkdown, pr);
 
     if (!fixResult.changesMade) {
       core.info('Fix agent made no changes — stopping loop');

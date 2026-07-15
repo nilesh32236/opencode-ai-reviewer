@@ -23,7 +23,11 @@ export class GitHubHelper {
     private apiUrl = 'https://api.github.com',
   ) {}
 
-  private async api<T>(path: string, options: RequestInit = {}): Promise<T> {
+  private async api<T>(
+    path: string,
+    options: RequestInit = {},
+    responseType?: 'json' | 'text',
+  ): Promise<T> {
     const url = `${this.apiUrl}/repos/${this.repo}${path}`;
     const method = (options.method ?? 'GET').toUpperCase();
     const isIdempotent =
@@ -49,7 +53,7 @@ export class GitHubHelper {
         }
 
         if (res.status === 204) return undefined as T;
-        return res.json();
+        return responseType === 'text' ? (res.text() as T) : res.json();
       },
       {
         retryableStatuses: isIdempotent ? [429, 500, 502, 503, 504] : [429],
@@ -82,17 +86,18 @@ export class GitHubHelper {
   // ─── PR Operations ──────────────────────────────────────
 
   async getPR(number: number): Promise<PRContext> {
-    const pr = await this.api<{
-      number: number;
-      title: string;
-      body: string | null;
-      head: { ref: string; sha: string };
-      base: { ref: string };
-      user: { login: string };
-      labels: Array<{ name: string }>;
-    }>(`/pulls/${number}`);
-
-    const files = await this.api<ChangedFile[]>(`/pulls/${number}/files`);
+    const [pr, files] = await Promise.all([
+      this.api<{
+        number: number;
+        title: string;
+        body: string | null;
+        head: { ref: string; sha: string };
+        base: { ref: string };
+        user: { login: string };
+        labels: Array<{ name: string }>;
+      }>(`/pulls/${number}`),
+      this.api<ChangedFile[]>(`/pulls/${number}/files`),
+    ]);
 
     let linkedIssue: number | undefined;
     if (pr.body) {
@@ -132,20 +137,21 @@ export class GitHubHelper {
   // ─── Issue Operations ───────────────────────────────────
 
   async getIssue(number: number): Promise<IssueContext> {
-    const issue = await this.api<{
-      number: number;
-      title: string;
-      body: string | null;
-      labels: Array<{ name: string }>;
-    }>(`/issues/${number}`);
-
-    const comments = await this.api<
-      Array<{
-        user: { login: string };
-        created_at: string;
-        body: string;
-      }>
-    >(`/issues/${number}/comments`);
+    const [issue, comments] = await Promise.all([
+      this.api<{
+        number: number;
+        title: string;
+        body: string | null;
+        labels: Array<{ name: string }>;
+      }>(`/issues/${number}`),
+      this.api<
+        Array<{
+          user: { login: string };
+          created_at: string;
+          body: string;
+        }>
+      >(`/issues/${number}/comments`),
+    ]);
 
     return {
       number: issue.number,
@@ -161,14 +167,12 @@ export class GitHubHelper {
   }
 
   async getPRComments(number: number): Promise<ReviewComment[]> {
-    const comments = await this.api<
-      Array<{
-        user: { login: string };
-        path: string;
-        line?: number;
-        body: string;
-      }>
-    >(`/pulls/${number}/comments`);
+    const comments = await this.paginate<{
+      user: { login: string };
+      path: string;
+      line?: number;
+      body: string;
+    }>(`/pulls/${number}/comments`);
 
     return comments.map((c) => ({
       author: c.user.login,
@@ -198,18 +202,13 @@ export class GitHubHelper {
 
   async getDiffLines(prNumber: number): Promise<Set<string>> {
     try {
-      const url = `${this.apiUrl}/repos/${this.repo}/pulls/${prNumber}`;
-      const res = await fetch(url, {
-        headers: {
-          Authorization: `Bearer ${this.token}`,
-          Accept: 'application/vnd.github.v3.diff',
+      const diffText = await this.api<string>(
+        `/pulls/${prNumber}`,
+        {
+          headers: { Accept: 'application/vnd.github.v3.diff' },
         },
-      });
-      if (!res.ok) {
-        core.warning(`Diff fetch returned ${res.status}`);
-        return new Set();
-      }
-      const diffText = await res.text();
+        'text',
+      );
       const lines = new Set<string>();
       const hunkRegex = /^@@\s+-[0-9,]+\s+\+([0-9]+),([0-9]+)\s+@@/gm;
       let match: RegExpExecArray | null;
@@ -296,6 +295,7 @@ export class GitHubHelper {
 
     const allComments = await this.paginate<{ id: number; body: string }>(
       `/issues/${issueNumber}/comments`,
+      { perPage: 100, maxPages: 5 },
     );
 
     const existing = allComments.find((c) => c.body?.startsWith(marker));
@@ -349,24 +349,28 @@ export class GitHubHelper {
   }
 
   async setLabels(issueNumber: number, add: string[], remove: string[]): Promise<void> {
-    await Promise.all([
-      ...add.map((l) => this.addLabels(issueNumber, [l])),
-      ...remove.map((l) => this.removeLabel(issueNumber, l)),
-    ]);
+    const operations = [
+      ...add.map((l) => () => this.addLabels(issueNumber, [l])),
+      ...remove.map((l) => () => this.removeLabel(issueNumber, l)),
+    ];
+    for (let i = 0; i < operations.length; i += 5) {
+      await Promise.all(operations.slice(i, i + 5).map((fn) => fn()));
+    }
   }
 
   async ensureLabels(labels: string[]): Promise<void> {
-    await Promise.all(
-      labels.map((label) =>
-        this.api('/labels', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: label, color: generateLabelColor(label) }),
-        }).catch(() => {
-          // Label already exists
-        }),
-      ),
-    );
+    const concurrency = 3;
+    for (let i = 0; i < labels.length; i += concurrency) {
+      await Promise.all(
+        labels.slice(i, i + concurrency).map((label) =>
+          this.api('/labels', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: label, color: generateLabelColor(label) }),
+          }).catch(() => {}),
+        ),
+      );
+    }
   }
 
   // ─── Context ────────────────────────────────────────────

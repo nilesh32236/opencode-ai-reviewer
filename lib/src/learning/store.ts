@@ -32,7 +32,7 @@ export class LearningStore {
     const db = await this.dbPromise;
     const id = finding.id || generateId();
     await db.run(
-      `INSERT OR REPLACE INTO findings (id, pr_number, type, severity, file, line, message, suggestion)
+      `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
@@ -62,10 +62,22 @@ export class LearningStore {
     if (findings.length === 0) return [];
     const db = await this.dbPromise;
     return db.transaction(async () => {
-      const ids: string[] = [];
-      for (const finding of findings) {
-        ids.push(await this.recordFinding(finding));
-      }
+      const ids = findings.map(() => generateId());
+      const placeholders = findings.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+      const values = findings.flatMap((f, i) => [
+        ids[i],
+        f.prNumber,
+        f.type,
+        f.severity || null,
+        f.file || null,
+        f.line || null,
+        f.message,
+        f.suggestion || null,
+      ]);
+      await db.run(
+        `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion) VALUES ${placeholders}`,
+        values,
+      );
       return ids;
     });
   }
@@ -123,16 +135,30 @@ export class LearningStore {
       prNumber: number;
     }>,
   ): Promise<void> {
+    if (feedbacks.length === 0) return;
     const db = await this.dbPromise;
     await db.transaction(async () => {
-      for (const fb of feedbacks) {
-        await db.run(
-          `INSERT INTO feedback (id, finding_id, signal_type, signal_value, pr_number)
-           VALUES (?, ?, ?, ?, ?)`,
-          [generateId(), fb.findingId, fb.signalType, fb.signalValue, fb.prNumber],
-        );
-      }
+      const placeholders = feedbacks.map(() => '(?, ?, ?, ?, ?)').join(', ');
+      const values = feedbacks.flatMap((fb) => [
+        generateId(),
+        fb.findingId,
+        fb.signalType,
+        fb.signalValue,
+        fb.prNumber,
+      ]);
+      await db.run(
+        `INSERT INTO feedback (id, finding_id, signal_type, signal_value, pr_number) VALUES ${placeholders}`,
+        values,
+      );
     });
+  }
+
+  async getFindingMessages(limit = 100): Promise<Array<{ message: string; file?: string }>> {
+    const db = await this.dbPromise;
+    return db.all<{ message: string; file: string }>(
+      'SELECT message, file FROM findings ORDER BY created_at DESC LIMIT ?',
+      [limit],
+    );
   }
 
   async getFalsePositiveRate(): Promise<number> {
@@ -150,21 +176,6 @@ export class LearningStore {
 
   async getRelevantLessons(filePaths: string[]): Promise<string[]> {
     const db = await this.dbPromise;
-    const lessons: string[] = [];
-
-    const rules = await db.all<{ rule_text: string }>(
-      "SELECT rule_text FROM custom_rules WHERE status = 'active'",
-    );
-    for (const rule of rules) {
-      lessons.push(rule.rule_text);
-    }
-
-    const generalOverrides = await db.all<{ override_text: string }>(
-      "SELECT override_text FROM prompt_overrides WHERE category = 'general'",
-    );
-    for (const o of generalOverrides) {
-      lessons.push(o.override_text);
-    }
 
     const extensions = [
       ...new Set(
@@ -175,13 +186,34 @@ export class LearningStore {
       ),
     ].filter(Boolean);
 
+    const queries: Promise<unknown[]>[] = [
+      db.all<{ rule_text: string }>("SELECT rule_text FROM custom_rules WHERE status = 'active'"),
+      db.all<{ override_text: string }>(
+        "SELECT override_text FROM prompt_overrides WHERE category = 'general'",
+      ),
+    ];
+
     if (extensions.length > 0) {
       const placeholders = extensions.map(() => '?').join(',');
-      const overrides = await db.all<{ override_text: string }>(
-        `SELECT override_text FROM prompt_overrides WHERE category IN (${placeholders})`,
-        extensions,
+      queries.push(
+        db.all<{ override_text: string }>(
+          `SELECT override_text FROM prompt_overrides WHERE category IN (${placeholders})`,
+          extensions,
+        ),
       );
-      for (const o of overrides) {
+    }
+
+    const [rules, generalOverrides, ...extOverrideResults] = await Promise.all(queries);
+
+    const lessons: string[] = [];
+    for (const rule of rules as Array<{ rule_text: string }>) {
+      lessons.push(rule.rule_text);
+    }
+    for (const o of generalOverrides as Array<{ override_text: string }>) {
+      lessons.push(o.override_text);
+    }
+    for (const result of extOverrideResults) {
+      for (const o of result as Array<{ override_text: string }>) {
         lessons.push(o.override_text);
       }
     }

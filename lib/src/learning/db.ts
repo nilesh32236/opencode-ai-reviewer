@@ -174,10 +174,11 @@ class SqliteAdapter implements DbAdapter {
   }
 
   private prepareStmt(sql: string): ReturnType<SqliteDatabase['prepare']> {
-    let stmt = this.stmtCache.get(sql);
+    const normalized = sql.trim().replace(/\s+/g, ' ');
+    let stmt = this.stmtCache.get(normalized);
     if (!stmt) {
-      stmt = this.db.prepare(sql);
-      this.stmtCache.set(sql, stmt);
+      stmt = this.db.prepare(normalized);
+      this.stmtCache.set(normalized, stmt);
     }
     return stmt;
   }

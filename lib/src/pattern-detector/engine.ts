@@ -12,10 +12,10 @@ export class PatternDetector {
   constructor(private store: LearningStore) {}
 
   async discover(minFrequency: number): Promise<DiscoveredPattern[]> {
-    const findings = await this.store.getFindings(undefined, 100);
+    const findings = await this.store.getFindingMessages(100);
     if (findings.length === 0) return [];
 
-    const messages = findings.map((f) => f.message as string).filter(Boolean);
+    const messages = findings.map((f) => f.message).filter(Boolean);
     const clusters = clusterFindings(messages, 0.3);
 
     const patterns: DiscoveredPattern[] = [];
@@ -29,7 +29,7 @@ export class PatternDetector {
         ...new Set(
           relatedFindings
             .map((f) => {
-              const file = f.file as string;
+              const file = f.file;
               if (!file) return '';
               const ext = file.split('.').pop();
               return ext ? `.${ext}` : '';
