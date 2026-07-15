@@ -77,6 +77,9 @@ jobs:
 
   # ─── Autofix Review Loop ───
   autofix:
+    concurrency:
+      group: autofix-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: false
     if: |
       github.event_name != 'schedule' &&
       (
