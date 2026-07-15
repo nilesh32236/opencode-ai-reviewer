@@ -122,15 +122,15 @@ describe('jsonl-parser', () => {
   });
 
   describe('parseJsonlFile', () => {
-    it('reads and parses a file', () => {
+    it('reads and parses a file', async () => {
       const fixturePath = path.join(__dirname, 'fixtures/sample-review-output.jsonl');
-      const result = parseJsonlFile(fixturePath);
+      const result = await parseJsonlFile(fixturePath);
       expect(result.summary).toContain('JWT authentication');
       expect(result.verdict.ready).toBe(false);
     });
 
-    it('returns empty result for non-existent file', () => {
-      const result = parseJsonlFile('/nonexistent/path/file.jsonl');
+    it('returns empty result for non-existent file', async () => {
+      const result = await parseJsonlFile('/nonexistent/path/file.jsonl');
       expect(result.summary).toBe('');
       expect(result.issues).toHaveLength(0);
     });

@@ -294,7 +294,7 @@ export class GitHubHelper {
   ): Promise<{ action: 'created' | 'updated'; commentId: number }> {
     const markedBody = `${marker}\n\n${body}`;
 
-    const allComments = await this.api<Array<{ id: number; body: string }>>(
+    const allComments = await this.paginate<{ id: number; body: string }>(
       `/issues/${issueNumber}/comments`,
     );
 
@@ -391,9 +391,11 @@ export class GitHubHelper {
       parts.push(issue.body || 'No description.');
       parts.push('');
 
-      const comments = await this.api<
-        Array<{ user: { login: string }; created_at: string; body: string }>
-      >(`/issues/${options.issueNumber}/comments`);
+      const comments = await this.paginate<{
+        user: { login: string };
+        created_at: string;
+        body: string;
+      }>(`/issues/${options.issueNumber}/comments`);
       if (comments.length > 0) {
         parts.push('### Comments');
         parts.push('');
@@ -417,15 +419,13 @@ export class GitHubHelper {
       parts.push(pr.body || 'No description.');
       parts.push('');
 
-      const reviewComments = await this.api<
-        Array<{
-          user: { login: string };
-          path: string;
-          line?: number;
-          original_line?: number;
-          body: string;
-        }>
-      >(`/pulls/${options.prNumber}/comments`);
+      const reviewComments = await this.paginate<{
+        user: { login: string };
+        path: string;
+        line?: number;
+        original_line?: number;
+        body: string;
+      }>(`/pulls/${options.prNumber}/comments`);
       if (reviewComments.length > 0) {
         parts.push('### Inline Review Comments');
         parts.push('');
@@ -436,8 +436,9 @@ export class GitHubHelper {
         }
       }
 
-      type Review = { user: { login: string }; state: string; body: string };
-      const reviews = await this.api<Review[]>(`/pulls/${options.prNumber}/reviews`);
+      const reviews = await this.paginate<{ user: { login: string }; state: string; body: string }>(
+        `/pulls/${options.prNumber}/reviews`,
+      );
       const substantialReviews = reviews.filter((r) => r.body && r.body.trim().length > 0);
       if (substantialReviews.length > 0) {
         parts.push('### Reviews');
@@ -455,7 +456,7 @@ export class GitHubHelper {
 
   async closeOpenCodePRs(since?: string): Promise<void> {
     type PRSummary = { number: number; head: { ref: string }; created_at: string };
-    const prs = await this.api<PRSummary[]>('/pulls?state=open&per_page=100');
+    const prs = await this.paginate<PRSummary>('/pulls?state=open', { perPage: 100 });
     for (const pr of prs) {
       if (pr.head?.ref?.startsWith('opencode/')) {
         if (since && pr.created_at < since) continue;

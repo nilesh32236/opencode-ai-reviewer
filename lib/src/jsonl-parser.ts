@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as readline from 'readline';
 import type {
   Finding,
   FindingType,
@@ -14,14 +15,87 @@ import type {
 const VALID_TYPES: FindingType[] = ['summary', 'verdict', 'strength', 'issue'];
 const VALID_SEVERITIES: Severity[] = ['critical', 'important', 'minor'];
 
-export function parseJsonlFile(filePath: string): ReviewResult {
+export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
   const absolutePath = path.resolve(filePath);
   if (!fs.existsSync(absolutePath)) {
     return emptyResult();
   }
 
-  const content = fs.readFileSync(absolutePath, 'utf-8');
-  return parseJsonlString(content);
+  const rawLines: string[] = [];
+  let failedLines = 0;
+
+  let summary: SummaryFinding | null = null;
+  let verdict: VerdictFinding | null = null;
+  const strengths: StrengthFinding[] = [];
+  const issues: IssueFinding[] = [];
+
+  const stream = fs.createReadStream(absolutePath, 'utf-8');
+  const rl = readline.createInterface({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
+
+  for await (const line of rl) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    rawLines.push(trimmed);
+
+    try {
+      const parsed = JSON.parse(trimmed);
+      const finding = validateAndNormalize(parsed);
+
+      switch (finding.type) {
+        case 'summary':
+          summary = finding as SummaryFinding;
+          break;
+        case 'verdict':
+          verdict = finding as VerdictFinding;
+          break;
+        case 'strength':
+          strengths.push(finding as StrengthFinding);
+          break;
+        case 'issue':
+          issues.push(finding as IssueFinding);
+          break;
+      }
+    } catch {
+      failedLines++;
+    }
+  }
+
+  const criticalCount = issues.filter((i) => i.severity === 'critical').length;
+  const importantCount = issues.filter((i) => i.severity === 'important').length;
+  const minorCount = issues.filter((i) => i.severity === 'minor').length;
+
+  return {
+    summary: summary?.text || '',
+    verdict: {
+      ready: verdict?.ready ?? false,
+      reasoning: verdict?.reasoning || '',
+      autoFixable: verdict?.autoFixable ?? false,
+      confidence: verdict?.confidence || 'low',
+    },
+    strengths: strengths.map((s) => ({
+      type: 'strength' as const,
+      file: s.file || '',
+      line: s.line || 0,
+      message: s.message,
+    })),
+    issues: issues.map((i) => ({
+      type: 'issue' as const,
+      severity: i.severity,
+      file: i.file,
+      line: i.line,
+      message: i.message,
+      suggestion: i.suggestion,
+      inline: i.inline,
+    })),
+    stats: {
+      total: issues.length,
+      critical: criticalCount,
+      important: importantCount,
+      minor: minorCount,
+    },
+    rawLines,
+    failedLines,
+  };
 }
 
 export function parseJsonlString(content: string): ReviewResult {
