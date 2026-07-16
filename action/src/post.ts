@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as github from '@actions/github';
 import type { GitHubHelper } from '@opencode-pr-agent/lib';
+import { validateRunChecksCommand } from './inputs.js';
 import type { ActionInputs } from './inputs.js';
 
 export async function runPost(
@@ -20,7 +21,8 @@ export async function runPost(
   if (inputs.runChecksAfterFix) {
     core.info('Running verification commands after fix...');
     try {
-      await exec.exec('bash', ['-c', inputs.runChecksAfterFix]);
+      const { program, args } = validateRunChecksCommand(inputs.runChecksAfterFix);
+      await exec.exec(program, args);
     } catch (error) {
       core.warning(`Verification command failed: ${inputs.runChecksAfterFix} — ${String(error)}`);
     }
