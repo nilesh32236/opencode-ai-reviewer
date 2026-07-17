@@ -57,8 +57,8 @@ export class ReviewEngine {
             });
           }
         }
-      } catch {
-        core.warning('MCP enrichment skipped due to connection error');
+      } catch (err) {
+        core.warning(`MCP enrichment skipped: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
@@ -121,8 +121,8 @@ export class ReviewEngine {
         if (libraries.length > 0) {
           mcpDocs = await this.mcp.getLibraryDocs(libraries);
         }
-      } catch {
-        core.warning('MCP enrichment skipped due to connection error');
+      } catch (err) {
+        core.warning(`MCP enrichment skipped: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
@@ -187,8 +187,8 @@ export class ReviewEngine {
         if (libraries.length > 0) {
           mcpDocs = await this.mcp.getLibraryDocs(libraries);
         }
-      } catch {
-        core.warning('MCP enrichment skipped due to connection error');
+      } catch (err) {
+        core.warning(`MCP enrichment skipped: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 

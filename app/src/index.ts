@@ -128,6 +128,7 @@ export default (app: Probot): void => {
 
   process.on('SIGTERM', async () => {
     await learningStore.close();
+    process.exit(0);
   });
 
   console.log('✅ OpenCode PR Agent app loaded (self-improving)');

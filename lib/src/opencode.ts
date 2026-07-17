@@ -223,20 +223,39 @@ export async function runOpenCode(
     } as { [key: string]: string },
   });
 
+  let timedOut = false;
   const timeoutHandle = setTimeout(() => {
+    timedOut = true;
     core.warning(
       `OpenCode timeout of ${options.timeoutMinutes ?? 10}m exceeded — killing process.`,
     );
     childProcess.kill();
   }, timeoutMs);
 
+  let exitCode: number | null = null;
+  let processError: string | undefined;
+
   try {
     await new Promise<void>((resolve) => {
-      childProcess.on('exit', () => resolve());
-      childProcess.on('error', () => resolve());
+      childProcess.on('exit', (code) => {
+        exitCode = code;
+        resolve();
+      });
+      childProcess.on('error', (err) => {
+        processError = err.message;
+        resolve();
+      });
     });
 
     const durationMs = Date.now() - startTime;
+
+    if (timedOut || exitCode !== 0 || processError) {
+      core.warning(
+        `OpenCode did not complete successfully (timedOut: ${timedOut}, exitCode: ${exitCode}, error: ${processError ?? 'none'})`,
+      );
+      return { success: false, output: '', durationMs };
+    }
+
     core.info(`OpenCode finished in ${(durationMs / 1000).toFixed(1)}s`);
     return { success: true, output: '', durationMs };
   } catch (err) {
