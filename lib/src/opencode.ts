@@ -6,6 +6,7 @@ import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as io from '@actions/io';
 import * as tc from '@actions/tool-cache';
+import { withRetry } from './utils/retry.js';
 
 let opencodePath: string | null = null;
 let cachedCIConfig: string | null = null;
@@ -40,8 +41,8 @@ function detectArch(): string {
 }
 
 async function fetchWithRetry(url: string, retries = 3): Promise<Response> {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
+  return withRetry(
+    async () => {
       const response = await fetch(url, {
         headers: {
           Accept: 'application/vnd.github+json',
@@ -49,25 +50,15 @@ async function fetchWithRetry(url: string, retries = 3): Promise<Response> {
         },
       });
       if (response.ok) return response;
-      if (response.status === 403 && attempt < retries) {
-        const wait = 2 ** attempt * 1000;
-        core.warning(
-          `GitHub API rate limited. Retrying in ${wait}ms... (attempt ${attempt}/${retries})`,
-        );
-        await new Promise((r) => setTimeout(r, wait));
-        continue;
-      }
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    } catch (err) {
-      if (attempt === retries) throw err;
-      const wait = 2 ** attempt * 1000;
-      core.warning(
-        `Fetch failed: ${err}. Retrying in ${wait}ms... (attempt ${attempt}/${retries})`,
-      );
-      await new Promise((r) => setTimeout(r, wait));
-    }
-  }
-  throw new Error('Max retries exceeded');
+      const err = new Error(`HTTP ${response.status}: ${response.statusText}`);
+      (err as Error & { status: number }).status = response.status;
+      throw err;
+    },
+    {
+      maxRetries: retries,
+      retryableStatuses: [403, 429, 500, 502, 503, 504],
+    },
+  );
 }
 
 export async function setupOpenCode(version = 'latest'): Promise<string> {
@@ -106,17 +97,22 @@ export async function setupOpenCode(version = 'latest'): Promise<string> {
   }
 
   core.info(`Downloading from: ${asset.browser_download_url}`);
-  const downloadPath = await tc.downloadTool(asset.browser_download_url);
+  const { cachedPath } = await withRetry(
+    async () => {
+      const dlPath = await tc.downloadTool(asset.browser_download_url);
+      let extPath: string;
+      if (extension === 'zip') {
+        extPath = await tc.extractZip(dlPath);
+      } else {
+        extPath = await tc.extractTar(dlPath);
+      }
+      const semver = (release.tag_name || version).replace(/^v/, '');
+      const cachePath = await tc.cacheDir(extPath, 'opencode', semver);
+      return { cachedPath: cachePath };
+    },
+    { maxRetries: 3, baseDelayMs: 2000 },
+  );
 
-  let extractPath: string;
-  if (extension === 'zip') {
-    extractPath = await tc.extractZip(downloadPath);
-  } else {
-    extractPath = await tc.extractTar(downloadPath);
-  }
-
-  const semver = (release.tag_name || version).replace(/^v/, '');
-  const cachedPath = await tc.cacheDir(extractPath, 'opencode', semver);
   const binName = platform === 'win32' ? 'opencode.exe' : 'opencode';
   const binPath = path.join(cachedPath, binName);
 
@@ -205,40 +201,39 @@ export async function runOpenCode(
     `Running OpenCode (model: ${options.model}, timeout: ${options.timeoutMinutes ?? 10}m)...`,
   );
 
-  let timedOut = false;
-  const timeoutHandle = setTimeout(() => {
-    timedOut = true;
-    core.warning(`OpenCode has been running for ${options.timeoutMinutes ?? 10}m — possible hang.`);
-  }, timeoutMs);
-
   const githubToken = process.env.GITHUB_TOKEN || process.env.INPUT_GITHUB_TOKEN || '';
   const openaiApiKey = process.env.OPENAI_API_KEY || process.env.INPUT_OPENAI_API_KEY || '';
   const anthropicApiKey =
     process.env.ANTHROPIC_API_KEY || process.env.INPUT_ANTHROPIC_API_KEY || '';
   const geminiApiKey = process.env.GEMINI_API_KEY || process.env.INPUT_GEMINI_API_KEY || '';
 
+  const childProcess = cp.spawn(binaryPath, args, {
+    cwd,
+    stdio: 'inherit',
+    env: {
+      ...process.env,
+      ...options.env,
+      GITHUB_TOKEN: githubToken,
+      GH_TOKEN: githubToken,
+      OPENAI_API_KEY: openaiApiKey,
+      ANTHROPIC_API_KEY: anthropicApiKey,
+      GEMINI_API_KEY: geminiApiKey,
+      OPENCODE_CONFIG_CONTENT: buildCIConfig(),
+      OPENCODE_DISABLE_AUTOUPDATE: 'true',
+    } as { [key: string]: string },
+  });
+
+  const timeoutHandle = setTimeout(() => {
+    core.warning(
+      `OpenCode timeout of ${options.timeoutMinutes ?? 10}m exceeded — killing process.`,
+    );
+    childProcess.kill();
+  }, timeoutMs);
+
   try {
-    await exec.exec(binaryPath, args, {
-      cwd,
-      input: Buffer.from(''),
-      env: {
-        ...process.env,
-        ...options.env,
-        GITHUB_TOKEN: githubToken,
-        GH_TOKEN: githubToken,
-        OPENAI_API_KEY: openaiApiKey,
-        ANTHROPIC_API_KEY: anthropicApiKey,
-        GEMINI_API_KEY: geminiApiKey,
-        // OPENCODE_CONFIG_CONTENT is the highest-precedence config source.
-        // It overrides remote, global, and project opencode.json configs.
-        // We use it to guarantee all permissions are "allow" and autoupdate
-        // is disabled regardless of what the target repo's config says.
-        // Docs: https://opencode.ai/docs/config#locations
-        OPENCODE_CONFIG_CONTENT: buildCIConfig(),
-        // Disable auto-update checks — irrelevant in CI, wastes time.
-        OPENCODE_DISABLE_AUTOUPDATE: 'true',
-      } as { [key: string]: string },
-      ignoreReturnCode: true,
+    await new Promise<void>((resolve) => {
+      childProcess.on('exit', () => resolve());
+      childProcess.on('error', () => resolve());
     });
 
     const durationMs = Date.now() - startTime;
@@ -250,11 +245,6 @@ export async function runOpenCode(
     return { success: false, output: '', durationMs };
   } finally {
     clearTimeout(timeoutHandle);
-    if (timedOut) {
-      core.warning(
-        `OpenCode may have hung — exceeded the ${options.timeoutMinutes ?? 10}m timeout.`,
-      );
-    }
   }
 }
 

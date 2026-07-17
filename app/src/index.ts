@@ -126,6 +126,10 @@ export default (app: Probot): void => {
     await router.handle(context.name, context.payload);
   });
 
+  process.on('SIGTERM', async () => {
+    await learningStore.close();
+  });
+
   console.log('✅ OpenCode PR Agent app loaded (self-improving)');
 };
 

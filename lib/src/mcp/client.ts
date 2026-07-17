@@ -48,10 +48,14 @@ export class MCPManager {
 
                 const clientInstance = new Client({ name: 'opencode-pr-agent', version: '1.0.0' });
 
+                const connectionTimeout = server.timeoutMs ?? 5000;
                 await Promise.race([
                   clientInstance.connect(mcpTransport),
                   new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error('Connection timed out after 5000ms')), 5000),
+                    setTimeout(
+                      () => reject(new Error(`Connection timed out after ${connectionTimeout}ms`)),
+                      connectionTimeout,
+                    ),
                   ),
                 ]);
 

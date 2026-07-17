@@ -1,3 +1,4 @@
+import * as core from '@actions/core';
 import type { LearningStore } from '../learning/store.js';
 import { clusterFindings } from './cluster.js';
 
@@ -50,12 +51,16 @@ export class PatternDetector {
         fileTypes,
       });
 
-      await this.store.recordPattern({
-        patternKey,
-        messageCluster: cluster.messages,
-        frequency: cluster.messages.length,
-        fileTypes,
-      });
+      try {
+        await this.store.recordPattern({
+          patternKey,
+          messageCluster: cluster.messages,
+          frequency: cluster.messages.length,
+          fileTypes,
+        });
+      } catch (err) {
+        core.warning(`Failed to record pattern: ${err instanceof Error ? err.message : err}`);
+      }
     }
 
     return patterns;

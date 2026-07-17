@@ -1,4 +1,5 @@
 import { promises as fs } from 'fs';
+import * as core from '@actions/core';
 import type { LearningStore } from '../learning/store.js';
 import { runOpenCode } from '../opencode.js';
 import type { GitHubEvent, Subscriber } from '../types/index.js';
@@ -93,14 +94,20 @@ export class MetaReviewSubscriber implements Subscriber {
       fileCount?: number;
     };
 
-    await this.engine.runMetaReview({
-      prNumber: payload.prNumber || event.prNumber || 0,
-      reviewSummary: payload.reviewSummary || '',
-      findingsCount: payload.findingsCount || 0,
-      issuesCount: payload.issuesCount || 0,
-      strengthsCount: payload.strengthsCount || 0,
-      hasVerdict: payload.hasVerdict || false,
-      fileCount: payload.fileCount || 0,
-    });
+    try {
+      await this.engine.runMetaReview({
+        prNumber: payload.prNumber || event.prNumber || 0,
+        reviewSummary: payload.reviewSummary || '',
+        findingsCount: payload.findingsCount || 0,
+        issuesCount: payload.issuesCount || 0,
+        strengthsCount: payload.strengthsCount || 0,
+        hasVerdict: payload.hasVerdict || false,
+        fileCount: payload.fileCount || 0,
+      });
+    } catch (err) {
+      core.warning(
+        `Meta-review failed for PR #${event.prNumber}: ${err instanceof Error ? err.message : err}`,
+      );
+    }
   }
 }

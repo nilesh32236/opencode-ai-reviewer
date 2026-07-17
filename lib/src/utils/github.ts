@@ -24,7 +24,6 @@ export class GitHubHelper {
   ) {}
 
   private static readonly RATE_LIMIT_THRESHOLD = 50;
-  private pendingWarned = false;
 
   private async api<T>(
     path: string,
@@ -83,8 +82,7 @@ export class GitHubHelper {
     // Warn once if we receive a 429 with retry-after header
     if (res.status === 429) {
       const retryAfter = res.headers.get('Retry-After');
-      if (retryAfter && !this.pendingWarned) {
-        this.pendingWarned = true;
+      if (retryAfter) {
         core.warning(`GitHub API rate limited — retrying after ${retryAfter}s`);
       }
     }

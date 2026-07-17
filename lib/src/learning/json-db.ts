@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as core from '@actions/core';
 
 interface FindingRow {
   id: string;
@@ -113,8 +114,8 @@ export class JsonDatabase implements DatabaseInstance {
       try {
         const content = fs.readFileSync(this.filePath, 'utf-8');
         this.data = JSON.parse(content);
-      } catch (_e) {
-        // use default
+      } catch {
+        core.warning('Failed to parse JSON database, starting with empty data');
       }
     }
   }
