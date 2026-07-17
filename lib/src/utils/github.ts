@@ -9,7 +9,7 @@ import type {
   ReviewResult,
   ReviewStrength,
 } from '../types/index.js';
-import { withRetry } from './retry.js';
+import { withRetry, withRetryAndTimeout } from './retry.js';
 
 export interface PaginatedResult<T> {
   items: T[];
@@ -37,30 +37,39 @@ export class GitHubHelper {
 
     return withRetry(
       async () => {
-        const res = await fetch(url, {
-          ...options,
-          headers: {
-            Authorization: `Bearer ${this.token}`,
-            Accept: 'application/vnd.github+json',
-            'X-GitHub-Api-Version': '2022-11-28',
-            ...options.headers,
-          },
-        });
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 30_000);
+        try {
+          const res = await fetch(url, {
+            ...options,
+            signal: controller.signal,
+            headers: {
+              Authorization: `Bearer ${this.token}`,
+              Accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+              ...options.headers,
+            },
+          });
 
-        this.checkRateLimit(res);
+          this.checkRateLimit(res);
 
-        if (!res.ok) {
-          const body = await res.text();
-          const err = new Error(`GitHub API ${res.status} on ${path}: ${body}`);
-          (err as Error & { status: number }).status = res.status;
-          throw err;
+          if (!res.ok) {
+            const body = await res.text();
+            const truncatedBody = body.length > 500 ? body.slice(0, 500) + '...' : body;
+            const err = new Error(`GitHub API ${res.status} on ${path}: ${truncatedBody}`);
+            (err as Error & { status: number }).status = res.status;
+            throw err;
+          }
+
+          if (res.status === 204) return undefined as T;
+          return responseType === 'text' ? (res.text() as T) : res.json();
+        } finally {
+          clearTimeout(timeout);
         }
-
-        if (res.status === 204) return undefined as T;
-        return responseType === 'text' ? (res.text() as T) : res.json();
       },
       {
         retryableStatuses: isIdempotent ? [429, 500, 502, 503, 504] : [429],
+        retryUnknownStatus: isIdempotent,
       },
     );
   }
@@ -100,10 +109,17 @@ export class GitHubHelper {
     while (page <= maxPages) {
       const separator = path.includes('?') ? '&' : '?';
       const pagePath = `${path}${separator}per_page=${perPage}&page=${page}`;
-      const items = await this.api<T[]>(pagePath);
-      allItems.push(...items);
+      try {
+        const items = await this.api<T[]>(pagePath);
+        allItems.push(...items);
 
-      if (items.length < perPage) break;
+        if (items.length < perPage) break;
+      } catch (err) {
+        core.warning(
+          `Failed to fetch page ${page} for ${path}: ${err instanceof Error ? err.message : err}`,
+        );
+        break;
+      }
       page++;
     }
 
@@ -113,7 +129,7 @@ export class GitHubHelper {
   // ─── PR Operations ──────────────────────────────────────
 
   async getPR(number: number): Promise<PRContext> {
-    const [pr, files] = await Promise.all([
+    const [prResult, filesResult] = await Promise.allSettled([
       this.api<{
         number: number;
         title: string;
@@ -125,6 +141,16 @@ export class GitHubHelper {
       }>(`/pulls/${number}`),
       this.api<ChangedFile[]>(`/pulls/${number}/files`),
     ]);
+
+    if (prResult.status === 'rejected') {
+      throw prResult.reason;
+    }
+
+    const pr = prResult.value;
+    if (filesResult.status === 'rejected') {
+      throw filesResult.reason;
+    }
+    const files = filesResult.value;
 
     let linkedIssue: number | undefined;
     if (pr.body) {
@@ -164,7 +190,7 @@ export class GitHubHelper {
   // ─── Issue Operations ───────────────────────────────────
 
   async getIssue(number: number): Promise<IssueContext> {
-    const [issue, comments] = await Promise.all([
+    const [issueResult, commentsResult] = await Promise.allSettled([
       this.api<{
         number: number;
         title: string;
@@ -179,6 +205,11 @@ export class GitHubHelper {
         }>
       >(`/issues/${number}/comments`),
     ]);
+
+    if (issueResult.status === 'rejected') throw issueResult.reason;
+
+    const issue = issueResult.value;
+    const comments = commentsResult.status === 'fulfilled' ? commentsResult.value : [];
 
     return {
       number: issue.number,
@@ -317,31 +348,38 @@ export class GitHubHelper {
     issueNumber: number,
     marker: string,
     body: string,
-  ): Promise<{ action: 'created' | 'updated'; commentId: number }> {
-    const markedBody = `${marker}\n\n${body}`;
+  ): Promise<{ action: 'created' | 'updated' | 'failed'; commentId: number }> {
+    try {
+      const markedBody = `${marker}\n\n${body}`;
 
-    const allComments = await this.paginate<{ id: number; body: string }>(
-      `/issues/${issueNumber}/comments`,
-      { perPage: 100, maxPages: 5 },
-    );
+      const allComments = await this.paginate<{ id: number; body: string }>(
+        `/issues/${issueNumber}/comments`,
+        { perPage: 100, maxPages: 5 },
+      );
 
-    const existing = allComments.find((c) => c.body?.startsWith(marker));
+      const existing = allComments.find((c) => c.body?.startsWith(marker));
 
-    if (existing) {
-      await this.api(`/issues/comments/${existing.id}`, {
-        method: 'PATCH',
+      if (existing) {
+        await this.api(`/issues/comments/${existing.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ body: markedBody }),
+        });
+        return { action: 'updated' as const, commentId: existing.id };
+      }
+
+      const created = await this.api<{ id: number }>(`/issues/${issueNumber}/comments`, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ body: markedBody }),
       });
-      return { action: 'updated' as const, commentId: existing.id };
+      return { action: 'created' as const, commentId: created.id };
+    } catch (err) {
+      core.warning(
+        `Failed to post or update comment on issue ${issueNumber}: ${err instanceof Error ? err.message : err}`,
+      );
+      throw err;
     }
-
-    const created = await this.api<{ id: number }>(`/issues/${issueNumber}/comments`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ body: markedBody }),
-    });
-    return { action: 'created' as const, commentId: created.id };
   }
 
   async createComment(issueNumber: number, body: string): Promise<{ id: number }> {
@@ -357,13 +395,18 @@ export class GitHubHelper {
     title: string,
     body: string,
     labels: string[],
-  ): Promise<{ number: number; url: string }> {
-    const result = await this.api<{ number: number; html_url: string }>('/issues', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, body, labels }),
-    });
-    return { number: result.number, url: result.html_url };
+  ): Promise<{ number: number; url: string } | null> {
+    try {
+      const result = await this.api<{ number: number; html_url: string }>('/issues', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, body, labels }),
+      });
+      return { number: result.number, url: result.html_url };
+    } catch (err) {
+      core.warning(`Failed to create issue: ${err instanceof Error ? err.message : err}`);
+      return null;
+    }
   }
 
   // ─── Label Operations ───────────────────────────────────
@@ -546,21 +589,34 @@ export class GitHubHelper {
   }
 
   async closeIssue(issueNumber: number, comment?: string): Promise<void> {
-    await this.api(`/issues/${issueNumber}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        state: 'closed',
-        ...(comment ? { state_reason: 'completed' } : {}),
-      }),
-    });
+    try {
+      await this.api(`/issues/${issueNumber}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          state: 'closed',
+          ...(comment ? { state_reason: 'completed' } : {}),
+        }),
+      });
+    } catch (err) {
+      core.warning(
+        `Failed to close issue ${issueNumber}: ${err instanceof Error ? err.message : err}`,
+      );
+      return;
+    }
 
     if (comment) {
-      await this.api(`/issues/${issueNumber}/comments`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body: comment }),
-      });
+      try {
+        await this.api(`/issues/${issueNumber}/comments`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ body: comment }),
+        });
+      } catch (err) {
+        core.warning(
+          `Failed to post close comment on issue ${issueNumber}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
     }
   }
 

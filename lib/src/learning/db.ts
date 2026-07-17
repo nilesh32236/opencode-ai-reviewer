@@ -168,6 +168,7 @@ class MysqlAdapter implements DbAdapter {
 class SqliteAdapter implements DbAdapter {
   private db: SqliteDatabase;
   private stmtCache = new Map<string, ReturnType<SqliteDatabase['prepare']>>();
+  private readonly MAX_CACHE_SIZE = 100;
 
   constructor(db: SqliteDatabase) {
     this.db = db;
@@ -177,6 +178,10 @@ class SqliteAdapter implements DbAdapter {
     const normalized = sql.trim().replace(/\s+/g, ' ');
     let stmt = this.stmtCache.get(normalized);
     if (!stmt) {
+      if (this.stmtCache.size >= this.MAX_CACHE_SIZE) {
+        const firstKey = this.stmtCache.keys().next().value;
+        if (firstKey) this.stmtCache.delete(firstKey);
+      }
       stmt = this.db.prepare(normalized);
       this.stmtCache.set(normalized, stmt);
     }
@@ -289,8 +294,10 @@ export async function connectDb(dbPathOrUrl: string): Promise<DbAdapter> {
     const db = new Database(dbPathOrUrl);
     db.pragma('journal_mode = WAL');
     return new SqliteAdapter(db);
-  } catch (_e) {
-    // Falls back to JSON database if better-sqlite3 cannot be loaded
+  } catch (e) {
+    console.warn(
+      `better-sqlite3 initialization failed: ${e instanceof Error ? e.message : e}. Falling back to JSON database`,
+    );
     const jsonPath = dbPathOrUrl.endsWith('.db')
       ? dbPathOrUrl.replace(/\.db$/, '.json')
       : dbPathOrUrl;

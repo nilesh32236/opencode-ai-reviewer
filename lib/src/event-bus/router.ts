@@ -46,7 +46,11 @@ export class EventRouter {
       prNumber,
     };
 
-    await this.bus.publish(event);
+    try {
+      await this.bus.publish(event);
+    } catch (err) {
+      console.error(`Failed to publish event ${type}: ${err instanceof Error ? err.message : err}`);
+    }
   }
 }
 

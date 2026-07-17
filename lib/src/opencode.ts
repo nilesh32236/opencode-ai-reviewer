@@ -99,7 +99,16 @@ export async function setupOpenCode(version = 'latest'): Promise<string> {
   core.info(`Downloading from: ${asset.browser_download_url}`);
   const { cachedPath } = await withRetry(
     async () => {
-      const dlPath = await tc.downloadTool(asset.browser_download_url);
+      let downloadTimeoutHandle: ReturnType<typeof setTimeout>;
+      const dlPath = await Promise.race([
+        tc.downloadTool(asset.browser_download_url),
+        new Promise<never>((_, reject) => {
+          downloadTimeoutHandle = setTimeout(
+            () => reject(new Error('Download timed out after 120s')),
+            120_000,
+          );
+        }),
+      ]).finally(() => clearTimeout(downloadTimeoutHandle));
       let extPath: string;
       if (extension === 'zip') {
         extPath = await tc.extractZip(dlPath);
@@ -207,20 +216,31 @@ export async function runOpenCode(
     process.env.ANTHROPIC_API_KEY || process.env.INPUT_ANTHROPIC_API_KEY || '';
   const geminiApiKey = process.env.GEMINI_API_KEY || process.env.INPUT_GEMINI_API_KEY || '';
 
+  const safeEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) {
+      safeEnv[key] = value;
+    }
+  }
+  safeEnv.GITHUB_TOKEN = githubToken;
+  safeEnv.GH_TOKEN = githubToken;
+  safeEnv.OPENAI_API_KEY = openaiApiKey;
+  safeEnv.ANTHROPIC_API_KEY = anthropicApiKey;
+  safeEnv.GEMINI_API_KEY = geminiApiKey;
+  safeEnv.OPENCODE_CONFIG_CONTENT = buildCIConfig();
+  safeEnv.OPENCODE_DISABLE_AUTOUPDATE = 'true';
+  if (options.env) {
+    for (const [key, value] of Object.entries(options.env)) {
+      if (value !== undefined) {
+        safeEnv[key] = value;
+      }
+    }
+  }
+
   const childProcess = cp.spawn(binaryPath, args, {
     cwd,
     stdio: 'inherit',
-    env: {
-      ...process.env,
-      ...options.env,
-      GITHUB_TOKEN: githubToken,
-      GH_TOKEN: githubToken,
-      OPENAI_API_KEY: openaiApiKey,
-      ANTHROPIC_API_KEY: anthropicApiKey,
-      GEMINI_API_KEY: geminiApiKey,
-      OPENCODE_CONFIG_CONTENT: buildCIConfig(),
-      OPENCODE_DISABLE_AUTOUPDATE: 'true',
-    } as { [key: string]: string },
+    env: safeEnv,
   });
 
   let timedOut = false;

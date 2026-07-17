@@ -122,7 +122,8 @@ async function run(): Promise<void> {
     try {
       validateConfig(config);
     } catch (err) {
-      core.setFailed(`Invalid config: ${err}`);
+      core.debug(`Config validation error details: ${err instanceof Error ? err.stack : err}`);
+      core.setFailed('Invalid configuration. Use core.debug() for details.');
       return;
     }
 
@@ -161,7 +162,14 @@ async function run(): Promise<void> {
       await engine.cleanup();
     }
   } catch (error) {
-    core.setFailed(`Action failed: ${error instanceof Error ? error.message : error}`);
+    const mode = core.getInput('mode') || 'unknown';
+    const prNumber =
+      github.context.payload.pull_request?.number ||
+      github.context.payload.issue?.number ||
+      'unknown';
+    core.setFailed(
+      `Action failed (mode: ${mode}, pr/issue: ${prNumber}): ${error instanceof Error ? error.message : error}`,
+    );
   }
 }
 

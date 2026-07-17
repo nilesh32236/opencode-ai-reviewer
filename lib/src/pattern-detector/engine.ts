@@ -13,7 +13,13 @@ export class PatternDetector {
   constructor(private store: LearningStore) {}
 
   async discover(minFrequency: number): Promise<DiscoveredPattern[]> {
-    const findings = await this.store.getFindingMessages(100);
+    let findings: { message: string; file?: string }[];
+    try {
+      findings = await this.store.getFindingMessages(100);
+    } catch (err) {
+      console.warn(`Failed to get finding messages: ${err instanceof Error ? err.message : err}`);
+      return [];
+    }
     if (findings.length === 0) return [];
 
     const messages = findings.map((f) => f.message).filter(Boolean);
@@ -59,7 +65,9 @@ export class PatternDetector {
           fileTypes,
         });
       } catch (err) {
-        core.warning(`Failed to record pattern: ${err instanceof Error ? err.message : err}`);
+        core.warning(
+          `Failed to record pattern: ${patternKey} — ${err instanceof Error ? err.message : err}`,
+        );
       }
     }
 

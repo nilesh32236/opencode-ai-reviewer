@@ -206,7 +206,6 @@ After writing the file, you MUST verify that the JSONL file exists, is valid JSO
 
 export function loadPromptFile(filePath: string): string | null {
   const absolutePath = path.resolve(filePath);
-  if (!fs.existsSync(absolutePath)) return null;
   try {
     return fs.readFileSync(absolutePath, 'utf-8');
   } catch {
