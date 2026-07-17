@@ -30,11 +30,10 @@ export class MetaReviewEngine {
     }
     const prompt = buildMetaReviewPrompt(context);
 
-    try {
-      await runOpenCode(prompt, {
-        model: 'opencode/deepseek-v4-flash-free',
-      });
-    } catch {
+    const metaRunResult = await runOpenCode(prompt, {
+      model: 'opencode/deepseek-v4-flash-free',
+    });
+    if (!metaRunResult.success) {
       console.warn('OpenCode meta-review execution failed, using default scores');
       return {
         actionabilityScore: 70,

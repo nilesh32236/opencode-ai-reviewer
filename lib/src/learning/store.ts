@@ -9,12 +9,21 @@ export class LearningStore {
     this.dbPromise = (async () => {
       const target = process.env.DATABASE_URL || dbPathOrUrl || getDbPath();
       const maxRetries = 3;
+      let db: DbAdapter | undefined;
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-          const db = await connectDb(target);
+          db = await connectDb(target);
           await applyMigrations(db);
           return db;
         } catch (err) {
+          if (db) {
+            try {
+              await db.close();
+            } catch {
+              /* cleanup best-effort */
+            }
+            db = undefined;
+          }
           if (attempt === maxRetries) throw err;
           console.warn(
             `DB connection attempt ${attempt} failed, retrying: ${err instanceof Error ? err.message : err}`,
@@ -61,7 +70,7 @@ export class LearningStore {
       return id;
     } catch (err) {
       console.warn(`Failed to record finding: ${err instanceof Error ? err.message : err}`);
-      return finding.id || generateId();
+      throw err;
     }
   }
 

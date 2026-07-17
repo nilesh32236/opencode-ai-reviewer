@@ -294,9 +294,10 @@ export async function connectDb(dbPathOrUrl: string): Promise<DbAdapter> {
     const db = new Database(dbPathOrUrl);
     db.pragma('journal_mode = WAL');
     return new SqliteAdapter(db);
-  } catch (_e) {
-    // Falls back to JSON database if better-sqlite3 cannot be loaded
-    console.warn('better-sqlite3 not available, falling back to JSON database');
+  } catch (e) {
+    console.warn(
+      `better-sqlite3 initialization failed: ${e instanceof Error ? e.message : e}. Falling back to JSON database`,
+    );
     const jsonPath = dbPathOrUrl.endsWith('.db')
       ? dbPathOrUrl.replace(/\.db$/, '.json')
       : dbPathOrUrl;

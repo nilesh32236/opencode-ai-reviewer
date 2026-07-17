@@ -10,6 +10,8 @@ export interface RetryOptions {
   signal?: AbortSignal;
   /** Optional operation name for log messages */
   operationName?: string;
+  /** When true (default), retries unknown/statusless errors. Set false to never retry when status is 0. */
+  retryUnknownStatus?: boolean;
 }
 
 const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'signal'>> = {
@@ -18,6 +20,7 @@ const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'signal'>> = {
   maxDelayMs: 30000,
   retryableStatuses: [429, 500, 502, 503, 504],
   operationName: 'unknown',
+  retryUnknownStatus: true,
 };
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -44,7 +47,14 @@ function isRetryable(status: number, retryableStatuses: number[]): boolean {
 }
 
 export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions = {}): Promise<T> {
-  const { maxRetries, baseDelayMs, maxDelayMs, retryableStatuses, operationName } = {
+  const {
+    maxRetries,
+    baseDelayMs,
+    maxDelayMs,
+    retryableStatuses,
+    operationName,
+    retryUnknownStatus,
+  } = {
     ...DEFAULT_OPTIONS,
     ...options,
   };
@@ -68,7 +78,10 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
       const status =
         err instanceof Error && 'status' in err ? (err as Error & { status: number }).status : 0;
 
-      if (status && !isRetryable(status, retryableStatuses)) {
+      if (status === 0 && !retryUnknownStatus) {
+        throw err;
+      }
+      if (status !== 0 && !isRetryable(status, retryableStatuses)) {
         throw err;
       }
 

@@ -209,7 +209,13 @@ export async function handleAutofixLoop(
         } catch (err) {
           console.error(`Failed to set labels: ${err instanceof Error ? err.message : err}`);
         }
-        await gh.createComment(prNumber, buildReadyBody(history, prNumber));
+        try {
+          await gh.createComment(prNumber, buildReadyBody(history, prNumber));
+        } catch (err) {
+          console.error(
+            `Failed to post ready-to-merge comment: ${err instanceof Error ? err.message : err}`,
+          );
+        }
         console.log('Posted ready-to-merge notification');
         break;
       }
@@ -286,11 +292,17 @@ export async function handleAutofixLoop(
         console.error(
           `Git operations failed in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
         );
-        await gh.postOrUpdateComment(
-          prNumber,
-          REVIEW_MARKER,
-          buildReviewBody(history, config.maxIterations, 'reviewing', result),
-        );
+        try {
+          await gh.postOrUpdateComment(
+            prNumber,
+            REVIEW_MARKER,
+            buildReviewBody(history, config.maxIterations, 'reviewing', result),
+          );
+        } catch (postErr) {
+          console.error(
+            `Failed to post recovery comment after git failure: ${postErr instanceof Error ? postErr.message : postErr}`,
+          );
+        }
         break;
       }
 
@@ -302,7 +314,9 @@ export async function handleAutofixLoop(
     }
 
     if (!approved) {
-      console.log(`⚠️ Max iterations reached (${config.maxIterations}) for PR #${prNumber}`);
+      console.log(
+        `⚠️ Loop ended without approval for PR #${prNumber} (reached iteration ${config.maxIterations})`,
+      );
       try {
         await gh.setLabels(
           prNumber,

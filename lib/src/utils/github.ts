@@ -70,6 +70,7 @@ export class GitHubHelper {
       },
       {
         retryableStatuses: isIdempotent ? [429, 500, 502, 503, 504] : [429],
+        retryUnknownStatus: isIdempotent,
       },
     );
   }
@@ -148,7 +149,10 @@ export class GitHubHelper {
     }
 
     const pr = prResult.value;
-    const files = filesResult.status === 'fulfilled' ? filesResult.value : [];
+    if (filesResult.status === 'rejected') {
+      throw filesResult.reason;
+    }
+    const files = filesResult.value;
 
     let linkedIssue: number | undefined;
     if (pr.body) {
@@ -376,7 +380,7 @@ export class GitHubHelper {
       core.warning(
         `Failed to post or update comment on issue ${issueNumber}: ${err instanceof Error ? err.message : err}`,
       );
-      return { action: 'failed', commentId: 0 };
+      throw err;
     }
   }
 

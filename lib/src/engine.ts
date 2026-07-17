@@ -94,11 +94,10 @@ export class ReviewEngine {
     console.log(`Total prompt size: ${(promptSize / 1024).toFixed(1)} KB`);
 
     console.log(`Running OpenCode review (model: ${this.config.reviewModel})`);
-    try {
-      await runOpenCode(prompt, {
-        model: this.config.reviewModel,
-      });
-    } catch {
+    const runResult = await runOpenCode(prompt, {
+      model: this.config.reviewModel,
+    });
+    if (!runResult.success) {
       console.warn('OpenCode review execution failed, returning fallback result');
       return {
         summary: '',
@@ -171,11 +170,10 @@ export class ReviewEngine {
       iteration,
     );
 
-    try {
-      await runOpenCode(prompt, {
-        model: this.config.fixModel,
-      });
-    } catch {
+    const fixRunResult = await runOpenCode(prompt, {
+      model: this.config.fixModel,
+    });
+    if (!fixRunResult.success) {
       console.warn('OpenCode fix execution failed, returning default FixResult');
       return { changesMade: false, filesChanged: [] };
     }
@@ -240,11 +238,10 @@ export class ReviewEngine {
       category,
     );
 
-    try {
-      await runOpenCode(prompt, {
-        model: this.config.reviewModel,
-      });
-    } catch {
+    const auditRunResult = await runOpenCode(prompt, {
+      model: this.config.reviewModel,
+    });
+    if (!auditRunResult.success) {
       console.warn('OpenCode audit execution failed, returning fallback empty result');
       return {
         summary: '',

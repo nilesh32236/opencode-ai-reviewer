@@ -84,6 +84,11 @@ export async function handleAudit(
       return;
     }
 
+    if (!result.summary && result.issues.length === 0) {
+      console.warn('Audit returned no meaningful content — skipping issue creation');
+      return;
+    }
+
     console.log(
       `Audit complete: ${result.stats.critical} critical, ${result.stats.important} important, ${result.stats.minor} minor`,
     );

@@ -106,12 +106,16 @@ export async function setupOpenCode(version = 'latest'): Promise<string> {
   }
 
   core.info(`Downloading from: ${asset.browser_download_url}`);
+  let downloadTimeoutHandle: ReturnType<typeof setTimeout>;
   const downloadPath = await Promise.race([
     tc.downloadTool(asset.browser_download_url),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Download timed out after 120s')), 120_000),
-    ),
-  ]);
+    new Promise<never>((_, reject) => {
+      downloadTimeoutHandle = setTimeout(
+        () => reject(new Error('Download timed out after 120s')),
+        120_000,
+      );
+    }),
+  ]).finally(() => clearTimeout(downloadTimeoutHandle));
 
   let extractPath: string;
   if (extension === 'zip') {
@@ -210,9 +214,9 @@ export async function runOpenCode(
     `Running OpenCode (model: ${options.model}, timeout: ${options.timeoutMinutes ?? 10}m)...`,
   );
 
-  const controller = new AbortController();
+  let timedOut = false;
   const timeoutHandle = setTimeout(() => {
-    controller.abort();
+    timedOut = true;
     core.warning(`OpenCode has been running for ${options.timeoutMinutes ?? 10}m — aborting.`);
   }, timeoutMs);
 
@@ -222,31 +226,49 @@ export async function runOpenCode(
     process.env.ANTHROPIC_API_KEY || process.env.INPUT_ANTHROPIC_API_KEY || '';
   const geminiApiKey = process.env.GEMINI_API_KEY || process.env.INPUT_GEMINI_API_KEY || '';
 
-  const neededEnv: Record<string, string> = {
-    GITHUB_TOKEN: githubToken,
-    GH_TOKEN: githubToken,
-    OPENAI_API_KEY: openaiApiKey,
-    ANTHROPIC_API_KEY: anthropicApiKey,
-    GEMINI_API_KEY: geminiApiKey,
-    OPENCODE_CONFIG_CONTENT: buildCIConfig(),
-    OPENCODE_DISABLE_AUTOUPDATE: 'true',
-    ...options.env,
-  };
+  const safeEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) {
+      safeEnv[key] = value;
+    }
+  }
+  safeEnv.OPENCODE_CONFIG_CONTENT = buildCIConfig();
+  safeEnv.OPENCODE_DISABLE_AUTOUPDATE = 'true';
+  safeEnv.GITHUB_TOKEN = githubToken;
+  safeEnv.GH_TOKEN = githubToken;
+  safeEnv.OPENAI_API_KEY = openaiApiKey;
+  safeEnv.ANTHROPIC_API_KEY = anthropicApiKey;
+  safeEnv.GEMINI_API_KEY = geminiApiKey;
+  if (options.env) {
+    for (const [key, value] of Object.entries(options.env)) {
+      if (value !== undefined) {
+        safeEnv[key] = value;
+      }
+    }
+  }
 
   try {
     await exec.exec(binaryPath, args, {
       cwd,
       input: Buffer.from(''),
-      env: neededEnv,
+      env: safeEnv,
       ignoreReturnCode: true,
     });
 
     const durationMs = Date.now() - startTime;
+
+    if (timedOut) {
+      core.warning(
+        `OpenCode exceeded the ${options.timeoutMinutes ?? 10}m timeout and was aborted.`,
+      );
+      return { success: false, output: '', durationMs };
+    }
+
     core.info(`OpenCode finished in ${(durationMs / 1000).toFixed(1)}s`);
     return { success: true, output: '', durationMs };
   } catch (err) {
     const durationMs = Date.now() - startTime;
-    if (controller.signal.aborted) {
+    if (timedOut) {
       core.warning(
         `OpenCode exceeded the ${options.timeoutMinutes ?? 10}m timeout and was aborted.`,
       );

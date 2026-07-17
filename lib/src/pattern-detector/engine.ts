@@ -15,7 +15,8 @@ export class PatternDetector {
     let findings: { message: string; file?: string }[];
     try {
       findings = await this.store.getFindingMessages(100);
-    } catch {
+    } catch (err) {
+      console.warn(`Failed to get finding messages: ${err instanceof Error ? err.message : err}`);
       return [];
     }
     if (findings.length === 0) return [];
@@ -62,8 +63,10 @@ export class PatternDetector {
           frequency: cluster.messages.length,
           fileTypes,
         });
-      } catch {
-        console.warn(`Failed to record pattern: ${patternKey}`);
+      } catch (err) {
+        console.warn(
+          `Failed to record pattern: ${patternKey} — ${err instanceof Error ? err.message : err}`,
+        );
       }
     }
 

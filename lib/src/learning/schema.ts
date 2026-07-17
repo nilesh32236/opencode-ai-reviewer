@@ -102,7 +102,12 @@ export async function applyMigrations(db: DbAdapter): Promise<void> {
         );
       `);
 
-      await db.run('INSERT OR IGNORE INTO meta_review_counter (id, count) VALUES (1, 0)');
+      const existing = await db.get<{ count: number }>(
+        'SELECT count FROM meta_review_counter WHERE id = 1',
+      );
+      if (!existing) {
+        await db.run('INSERT INTO meta_review_counter (id, count) VALUES (1, 0)');
+      }
     });
   } catch (err) {
     console.error(`Migration failed: ${err instanceof Error ? err.message : err}`);

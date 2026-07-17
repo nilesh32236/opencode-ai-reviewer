@@ -160,7 +160,7 @@ export default (app: Probot): void => {
 function getToken(): string {
   const token = process.env.GITHUB_TOKEN || '';
   if (!token) {
-    console.warn('GITHUB_TOKEN is not set — all GitHub API calls will fail with 401');
+    throw new Error('GITHUB_TOKEN is not set — all GitHub API calls will fail with 401');
   }
   return token;
 }

@@ -174,9 +174,6 @@ export async function runFixIssue(
   if (prUrl) {
     core.info(`Created PR: ${prUrl}`);
     core.setOutput('pr_url', prUrl);
-  }
-
-  if (prUrl) {
     try {
       await gh.postOrUpdateComment(
         issueNumber,
@@ -417,11 +414,17 @@ export async function runAutofixLoop(
     if (!fixResult.changesMade) {
       core.info('Fix agent made no changes — stopping loop');
       history[history.length - 1].status = 'no-changes';
-      await gh.postOrUpdateComment(
-        prNumber,
-        REVIEW_MARKER,
-        buildReviewBody(history, config.maxIterations, 'no-changes', result),
-      );
+      try {
+        await gh.postOrUpdateComment(
+          prNumber,
+          REVIEW_MARKER,
+          buildReviewBody(history, config.maxIterations, 'no-changes', result),
+        );
+      } catch (err) {
+        core.warning(
+          `Failed to post no-changes comment: ${err instanceof Error ? err.message : err}`,
+        );
+      }
       break;
     }
 
@@ -437,11 +440,17 @@ export async function runAutofixLoop(
       core.warning(
         `Git operations failed in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
       );
-      await gh.postOrUpdateComment(
-        prNumber,
-        REVIEW_MARKER,
-        buildReviewBody(history, config.maxIterations, 'reviewing', result),
-      );
+      try {
+        await gh.postOrUpdateComment(
+          prNumber,
+          REVIEW_MARKER,
+          buildReviewBody(history, config.maxIterations, 'reviewing', result),
+        );
+      } catch (postErr) {
+        core.warning(
+          `Failed to post recovery comment: ${postErr instanceof Error ? postErr.message : postErr}`,
+        );
+      }
       break;
     }
 
@@ -472,11 +481,17 @@ export async function runAutofixLoop(
       `Max iterations reached (${config.maxIterations}) or agent not approved. Needs manual review.`,
     );
     await gh.setLabels(prNumber, ['autofix:needs-manual-review'], ['autofix', 'autofix:needs-fix']);
-    await gh.postOrUpdateComment(
-      prNumber,
-      REVIEW_MARKER,
-      buildReviewBody(history, config.maxIterations, 'max-iterations'),
-    );
+    try {
+      await gh.postOrUpdateComment(
+        prNumber,
+        REVIEW_MARKER,
+        buildReviewBody(history, config.maxIterations, 'max-iterations'),
+      );
+    } catch (err) {
+      core.warning(
+        `Failed to post max-iterations comment: ${err instanceof Error ? err.message : err}`,
+      );
+    }
   }
 
   core.setOutput('approved', String(approved));

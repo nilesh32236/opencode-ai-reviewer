@@ -129,6 +129,7 @@ export class JsonDatabase implements DatabaseInstance {
       fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2), 'utf-8');
     } catch (err) {
       console.warn(`Failed to save JSON database: ${err instanceof Error ? err.message : err}`);
+      throw err;
     }
   }
 

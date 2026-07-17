@@ -50,6 +50,11 @@ export async function handlePRReview(
       return;
     }
 
+    if (!result.summary && result.issues.length === 0 && result.strengths.length === 0) {
+      logger.warn(`Review returned no meaningful content for PR #${prNumber}`, { prNumber, repo });
+      return;
+    }
+
     let reviewResult: { success: boolean; method: string };
     try {
       reviewResult = await gh.postReview(prNumber, pr.headSha, result);
