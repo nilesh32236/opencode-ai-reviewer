@@ -209,7 +209,6 @@ export function loadPromptFile(filePath: string): string | null {
   const resolved = path.resolve(workspace, filePath);
   const relative = path.relative(workspace, resolved);
   if (relative.startsWith('..')) return null;
-  if (!fs.existsSync(resolved)) return null;
   try {
     return fs.readFileSync(resolved, 'utf-8');
   } catch {

@@ -16,14 +16,20 @@ import type { MCPServerConfig } from '../types/index.js';
  *
  * Setup: npm install -g @context7/mcp-server
  */
-export const context7Server: MCPServerConfig = {
-  name: 'context7',
-  type: 'local',
-  command: ['npx', '-y', '--quiet', '@upstash/context7-mcp'],
-  environment: {
-    CONTEXT7_API_KEY: process.env.CONTEXT7_API_KEY || '',
-  },
-};
+export function context7Server(): MCPServerConfig {
+  const apiKey = process.env.CONTEXT7_API_KEY || '';
+  if (!apiKey) {
+    console.warn('CONTEXT7_API_KEY is empty — MCP server may fail');
+  }
+  return {
+    name: 'context7',
+    type: 'local',
+    command: ['npx', '-y', '--quiet', '@upstash/context7-mcp'],
+    environment: {
+      CONTEXT7_API_KEY: apiKey,
+    },
+  };
+}
 
 /**
  * GitHub MCP server — provides repository-aware context.
@@ -43,5 +49,5 @@ export const githubMCPServer = (token: string): MCPServerConfig => ({
  * Includes Context7 for docs.
  */
 export function getDefaultMCPServers(_githubToken: string): MCPServerConfig[] {
-  return [context7Server];
+  return [context7Server()];
 }

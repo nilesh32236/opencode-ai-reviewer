@@ -72,7 +72,14 @@ export class ReviewEngine {
         : '';
 
     const lessons = this.learningStore
-      ? await this.learningStore.getRelevantLessons(pr.changedFiles.map((f) => f.path))
+      ? await (async () => {
+          try {
+            return await this.learningStore!.getRelevantLessons(pr.changedFiles.map((f) => f.path));
+          } catch {
+            console.warn('Failed to fetch relevant lessons, defaulting to empty array');
+            return [];
+          }
+        })()
       : [];
 
     const autoFixExtra =
@@ -97,12 +104,47 @@ export class ReviewEngine {
     console.log(`Total prompt size: ${(promptSize / 1024).toFixed(1)} KB`);
 
     console.log(`Running OpenCode review (model: ${this.config.reviewModel})`);
-    await runOpenCode(prompt, {
+    const runResult = await runOpenCode(prompt, {
       model: this.config.reviewModel,
     });
+    if (!runResult.success) {
+      console.warn('OpenCode review execution failed, returning fallback result');
+      return {
+        summary: '',
+        verdict: {
+          ready: false,
+          reasoning: 'Review execution failed',
+          autoFixable: false,
+          confidence: 'low',
+        },
+        strengths: [],
+        issues: [],
+        stats: { total: 0, critical: 0, important: 0, minor: 0 },
+        rawLines: [],
+        failedLines: 0,
+      };
+    }
 
     console.log('Parsing review output');
-    return await parseJsonlFile('.opencode/review-output.jsonl');
+    try {
+      return await parseJsonlFile('.opencode/review-output.jsonl');
+    } catch {
+      console.warn('Failed to parse review output, returning empty result');
+      return {
+        summary: '',
+        verdict: {
+          ready: false,
+          reasoning: 'Failed to parse review output',
+          autoFixable: false,
+          confidence: 'low',
+        },
+        strengths: [],
+        issues: [],
+        stats: { total: 0, critical: 0, important: 0, minor: 0 },
+        rawLines: [],
+        failedLines: 0,
+      };
+    }
   }
 
   async runFix(
@@ -138,9 +180,13 @@ export class ReviewEngine {
       iteration,
     );
 
-    await runOpenCode(prompt, {
+    const fixRunResult = await runOpenCode(prompt, {
       model: this.config.fixModel,
     });
+    if (!fixRunResult.success) {
+      console.warn('OpenCode fix execution failed, returning default FixResult');
+      return { changesMade: false, filesChanged: [] };
+    }
 
     try {
       const status = getGitStatus();
@@ -205,16 +251,60 @@ export class ReviewEngine {
       category,
     );
 
-    await runOpenCode(prompt, {
+    const auditRunResult = await runOpenCode(prompt, {
       model: this.config.reviewModel,
     });
+    if (!auditRunResult.success) {
+      console.warn('OpenCode audit execution failed, returning fallback empty result');
+      return {
+        summary: '',
+        verdict: {
+          ready: false,
+          reasoning: 'Audit execution failed',
+          autoFixable: false,
+          confidence: 'low',
+        },
+        strengths: [],
+        issues: [],
+        stats: { total: 0, critical: 0, important: 0, minor: 0 },
+        rawLines: [],
+        failedLines: 0,
+      };
+    }
 
     const outputPath = `.opencode/audit-${category}.jsonl`;
-    return await parseJsonlFile(outputPath);
+    try {
+      return await parseJsonlFile(outputPath);
+    } catch {
+      console.warn(`Failed to parse audit output at ${outputPath}, returning empty result`);
+      return {
+        summary: '',
+        verdict: {
+          ready: false,
+          reasoning: 'Failed to parse audit output',
+          autoFixable: false,
+          confidence: 'low',
+        },
+        strengths: [],
+        issues: [],
+        stats: { total: 0, critical: 0, important: 0, minor: 0 },
+        rawLines: [],
+        failedLines: 0,
+      };
+    }
   }
 
   async cleanup(): Promise<void> {
-    await this.mcp.disconnect();
+    try {
+      await this.mcp.disconnect();
+    } catch {
+      console.warn('MCP disconnect failed during cleanup');
+    }
+    try {
+      await this.learningStore?.close();
+    } catch {
+      console.warn('LearningStore close failed during cleanup');
+    }
   }
 
   private buildPRContextString(pr: PRContext): string {
