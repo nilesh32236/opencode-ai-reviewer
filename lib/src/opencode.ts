@@ -6,6 +6,7 @@ import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as io from '@actions/io';
 import * as tc from '@actions/tool-cache';
+import { withRetry } from './utils/retry.js';
 
 let opencodePath: string | null = null;
 let cachedCIConfig: string | null = null;
@@ -40,8 +41,8 @@ function detectArch(): string {
 }
 
 async function fetchWithRetry(url: string, retries = 3): Promise<Response> {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
+  return withRetry(
+    async () => {
       const response = await fetch(url, {
         headers: {
           Accept: 'application/vnd.github+json',
@@ -49,25 +50,15 @@ async function fetchWithRetry(url: string, retries = 3): Promise<Response> {
         },
       });
       if (response.ok) return response;
-      if (response.status === 403 && attempt < retries) {
-        const wait = 2 ** attempt * 1000;
-        core.warning(
-          `GitHub API rate limited. Retrying in ${wait}ms... (attempt ${attempt}/${retries})`,
-        );
-        await new Promise((r) => setTimeout(r, wait));
-        continue;
-      }
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    } catch (err) {
-      if (attempt === retries) throw err;
-      const wait = 2 ** attempt * 1000;
-      core.warning(
-        `Fetch failed: ${err}. Retrying in ${wait}ms... (attempt ${attempt}/${retries})`,
-      );
-      await new Promise((r) => setTimeout(r, wait));
-    }
-  }
-  throw new Error('Max retries exceeded');
+      const err = new Error(`HTTP ${response.status}: ${response.statusText}`);
+      (err as Error & { status: number }).status = response.status;
+      throw err;
+    },
+    {
+      maxRetries: retries,
+      retryableStatuses: [403, 429, 500, 502, 503, 504],
+    },
+  );
 }
 
 export async function setupOpenCode(version = 'latest'): Promise<string> {
@@ -106,26 +97,31 @@ export async function setupOpenCode(version = 'latest'): Promise<string> {
   }
 
   core.info(`Downloading from: ${asset.browser_download_url}`);
-  let downloadTimeoutHandle: ReturnType<typeof setTimeout>;
-  const downloadPath = await Promise.race([
-    tc.downloadTool(asset.browser_download_url),
-    new Promise<never>((_, reject) => {
-      downloadTimeoutHandle = setTimeout(
-        () => reject(new Error('Download timed out after 120s')),
-        120_000,
-      );
-    }),
-  ]).finally(() => clearTimeout(downloadTimeoutHandle));
+  const { cachedPath } = await withRetry(
+    async () => {
+      let downloadTimeoutHandle: ReturnType<typeof setTimeout>;
+      const dlPath = await Promise.race([
+        tc.downloadTool(asset.browser_download_url),
+        new Promise<never>((_, reject) => {
+          downloadTimeoutHandle = setTimeout(
+            () => reject(new Error('Download timed out after 120s')),
+            120_000,
+          );
+        }),
+      ]).finally(() => clearTimeout(downloadTimeoutHandle));
+      let extPath: string;
+      if (extension === 'zip') {
+        extPath = await tc.extractZip(dlPath);
+      } else {
+        extPath = await tc.extractTar(dlPath);
+      }
+      const semver = (release.tag_name || version).replace(/^v/, '');
+      const cachePath = await tc.cacheDir(extPath, 'opencode', semver);
+      return { cachedPath: cachePath };
+    },
+    { maxRetries: 3, baseDelayMs: 2000 },
+  );
 
-  let extractPath: string;
-  if (extension === 'zip') {
-    extractPath = await tc.extractZip(downloadPath);
-  } else {
-    extractPath = await tc.extractTar(downloadPath);
-  }
-
-  const semver = (release.tag_name || version).replace(/^v/, '');
-  const cachedPath = await tc.cacheDir(extractPath, 'opencode', semver);
   const binName = platform === 'win32' ? 'opencode.exe' : 'opencode';
   const binPath = path.join(cachedPath, binName);
 
@@ -214,12 +210,6 @@ export async function runOpenCode(
     `Running OpenCode (model: ${options.model}, timeout: ${options.timeoutMinutes ?? 10}m)...`,
   );
 
-  let timedOut = false;
-  const timeoutHandle = setTimeout(() => {
-    timedOut = true;
-    core.warning(`OpenCode has been running for ${options.timeoutMinutes ?? 10}m — aborting.`);
-  }, timeoutMs);
-
   // SECURITY: These API keys are forwarded as env vars to the OpenCode child process.
   // They are accessible to any subprocess spawned by OpenCode. Consider using short-lived
   // tokens or a secrets-injecting sidecar if this is a concern in your environment.
@@ -235,13 +225,13 @@ export async function runOpenCode(
       safeEnv[key] = value;
     }
   }
-  safeEnv.OPENCODE_CONFIG_CONTENT = buildCIConfig();
-  safeEnv.OPENCODE_DISABLE_AUTOUPDATE = 'true';
   safeEnv.GITHUB_TOKEN = githubToken;
   safeEnv.GH_TOKEN = githubToken;
   safeEnv.OPENAI_API_KEY = openaiApiKey;
   safeEnv.ANTHROPIC_API_KEY = anthropicApiKey;
   safeEnv.GEMINI_API_KEY = geminiApiKey;
+  safeEnv.OPENCODE_CONFIG_CONTENT = buildCIConfig();
+  safeEnv.OPENCODE_DISABLE_AUTOUPDATE = 'true';
   if (options.env) {
     for (const [key, value] of Object.entries(options.env)) {
       if (value !== undefined) {
@@ -250,19 +240,41 @@ export async function runOpenCode(
     }
   }
 
+  const childProcess = cp.spawn(binaryPath, args, {
+    cwd,
+    stdio: 'inherit',
+    env: safeEnv,
+  });
+
+  let timedOut = false;
+  const timeoutHandle = setTimeout(() => {
+    timedOut = true;
+    core.warning(
+      `OpenCode timeout of ${options.timeoutMinutes ?? 10}m exceeded — killing process.`,
+    );
+    childProcess.kill();
+  }, timeoutMs);
+
+  let exitCode: number | null = null;
+  let processError: string | undefined;
+
   try {
-    await exec.exec(binaryPath, args, {
-      cwd,
-      input: Buffer.from(''),
-      env: safeEnv,
-      ignoreReturnCode: true,
+    await new Promise<void>((resolve) => {
+      childProcess.on('exit', (code) => {
+        exitCode = code;
+        resolve();
+      });
+      childProcess.on('error', (err) => {
+        processError = err.message;
+        resolve();
+      });
     });
 
     const durationMs = Date.now() - startTime;
 
-    if (timedOut) {
+    if (timedOut || exitCode !== 0 || processError) {
       core.warning(
-        `OpenCode exceeded the ${options.timeoutMinutes ?? 10}m timeout and was aborted.`,
+        `OpenCode did not complete successfully (timedOut: ${timedOut}, exitCode: ${exitCode}, error: ${processError ?? 'none'})`,
       );
       return { success: false, output: '', durationMs };
     }
@@ -271,13 +283,7 @@ export async function runOpenCode(
     return { success: true, output: '', durationMs };
   } catch (err) {
     const durationMs = Date.now() - startTime;
-    if (timedOut) {
-      core.warning(
-        `OpenCode exceeded the ${options.timeoutMinutes ?? 10}m timeout and was aborted.`,
-      );
-    } else {
-      core.error(`OpenCode execution failed: ${String(err)}`);
-    }
+    core.error(`OpenCode execution failed: ${String(err)}`);
     return { success: false, output: '', durationMs };
   } finally {
     clearTimeout(timeoutHandle);

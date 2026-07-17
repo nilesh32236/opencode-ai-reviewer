@@ -1,3 +1,4 @@
+import * as core from '@actions/core';
 import type { GitHubEvent, Subscriber } from '../types/index.js';
 import type { LearningStore } from './store.js';
 
@@ -10,16 +11,23 @@ export class FeedbackSubscriber implements Subscriber {
   constructor(private store: LearningStore) {}
 
   async handle(event: GitHubEvent): Promise<void> {
-    switch (event.type) {
-      case 'review.dismissed':
-        await this.handleReviewDismissed(event);
-        break;
-      case 'review_comment.dismissed':
-        await this.handleReviewCommentDismissed(event);
-        break;
-      case 'comment.created':
-        await this.handleCommentCreated(event);
-        break;
+    try {
+      switch (event.type) {
+        case 'review.dismissed':
+          await this.handleReviewDismissed(event);
+          break;
+        case 'review_comment.dismissed':
+          await this.handleReviewCommentDismissed(event);
+          break;
+        case 'comment.created':
+          await this.handleCommentCreated(event);
+          break;
+      }
+    } catch (err) {
+      core.warning(
+        `FeedbackSubscriber failed for PR #${event.prNumber} (event: ${event.type}): ${err instanceof Error ? err.message : err}`,
+      );
+      throw err;
     }
   }
 

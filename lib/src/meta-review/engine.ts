@@ -1,4 +1,5 @@
 import { promises as fs } from 'fs';
+import * as core from '@actions/core';
 import type { LearningStore } from '../learning/store.js';
 import { runOpenCode } from '../opencode.js';
 import type { GitHubEvent, Subscriber } from '../types/index.js';
@@ -132,8 +133,8 @@ export class MetaReviewSubscriber implements Subscriber {
         fileCount: payload.fileCount || 0,
       });
     } catch (err) {
-      console.error(
-        `Meta-review failed for prNumber ${event.prNumber}: ${err instanceof Error ? err.message : err}`,
+      core.warning(
+        `Meta-review failed for PR #${event.prNumber}: ${err instanceof Error ? err.message : err}`,
       );
     }
   }

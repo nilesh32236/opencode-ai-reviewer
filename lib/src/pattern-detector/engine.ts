@@ -1,3 +1,4 @@
+import * as core from '@actions/core';
 import type { LearningStore } from '../learning/store.js';
 import { clusterFindings } from './cluster.js';
 
@@ -64,7 +65,7 @@ export class PatternDetector {
           fileTypes,
         });
       } catch (err) {
-        console.warn(
+        core.warning(
           `Failed to record pattern: ${patternKey} — ${err instanceof Error ? err.message : err}`,
         );
       }

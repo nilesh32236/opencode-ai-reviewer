@@ -112,6 +112,8 @@ export interface MCPServerConfig {
   command?: string[];
   url?: string;
   environment?: Record<string, string>;
+  /** Connection timeout in milliseconds (default: 5000) */
+  timeoutMs?: number;
 }
 
 export interface ProjectContextConfig {

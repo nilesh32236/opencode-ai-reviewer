@@ -1,5 +1,6 @@
 import { promises as fs } from 'fs';
 import * as cp from 'node:child_process';
+import * as core from '@actions/core';
 import { parseJsonlFile } from './jsonl-parser.js';
 import type { LearningStore } from './learning/store.js';
 import { MCPManager } from './mcp/client.js';
@@ -36,7 +37,7 @@ export class ReviewEngine {
     reviewPromptFile?: string,
     reviewPromptExtra?: string,
   ): Promise<ReviewResult> {
-    console.log(
+    core.info(
       `Reviewing PR #${pr.number} (${pr.changedFiles.length} files)${iteration !== undefined ? ` (Iteration ${iteration + 1})` : ''}`,
     );
 
@@ -46,7 +47,7 @@ export class ReviewEngine {
         await this.mcp.connect();
         const libraries = detectLibraries(pr.changedFiles.map((f) => f.path));
         if (libraries.length > 0) {
-          console.log(`Fetching MCP docs for: ${libraries.join(', ')}`);
+          core.info(`Fetching MCP docs for: ${libraries.join(', ')}`);
           const docs = await this.mcp.getLibraryDocs(libraries);
           if (docs) {
             mcpContext.push({
@@ -56,15 +57,15 @@ export class ReviewEngine {
             });
           }
         }
-      } catch {
-        // Non-critical — proceed without MCP
+      } catch (err) {
+        core.warning(`MCP enrichment skipped: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
-    console.log('Building PR context string');
+    core.info('Building PR context string');
     const contextMarkdown = this.buildPRContextString(pr);
     const contextSize = Buffer.byteLength(contextMarkdown, 'utf-8');
-    console.log(`PR context size: ${(contextSize / 1024).toFixed(1)} KB`);
+    core.info(`PR context size: ${(contextSize / 1024).toFixed(1)} KB`);
 
     const mcpSection =
       mcpContext.length > 0
@@ -101,14 +102,14 @@ export class ReviewEngine {
     );
 
     const promptSize = Buffer.byteLength(prompt, 'utf-8');
-    console.log(`Total prompt size: ${(promptSize / 1024).toFixed(1)} KB`);
+    core.info(`Total prompt size: ${(promptSize / 1024).toFixed(1)} KB`);
 
-    console.log(`Running OpenCode review (model: ${this.config.reviewModel})`);
+    core.info(`Running OpenCode review (model: ${this.config.reviewModel})`);
     const runResult = await runOpenCode(prompt, {
       model: this.config.reviewModel,
     });
     if (!runResult.success) {
-      console.warn('OpenCode review execution failed, returning fallback result');
+      core.warning('OpenCode review execution failed, returning fallback result');
       return {
         summary: '',
         verdict: {
@@ -125,11 +126,11 @@ export class ReviewEngine {
       };
     }
 
-    console.log('Parsing review output');
+    core.info('Parsing review output');
     try {
       return await parseJsonlFile('.opencode/review-output.jsonl');
     } catch {
-      console.warn('Failed to parse review output, returning empty result');
+      core.warning('Failed to parse review output, returning empty result');
       return {
         summary: '',
         verdict: {
@@ -162,8 +163,8 @@ export class ReviewEngine {
         if (libraries.length > 0) {
           mcpDocs = await this.mcp.getLibraryDocs(libraries);
         }
-      } catch {
-        // Non-critical
+      } catch (err) {
+        core.warning(`MCP enrichment skipped: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
@@ -200,7 +201,7 @@ export class ReviewEngine {
         stuckReason = stuckContent;
         await fs.unlink('.fix-stuck.md');
       } catch {
-        // No stuck file — good
+        core.debug('No .fix-stuck.md — proceeding normally');
       }
 
       let filesChanged: string[] = [];
@@ -211,7 +212,9 @@ export class ReviewEngine {
             .toString()
             .trim();
           filesChanged = raw ? raw.split('\n') : [];
-        } catch {}
+        } catch {
+          core.warning('Could not get git diff to determine changed files');
+        }
       }
 
       return { changesMade, filesChanged, stuck, stuckReason };
@@ -233,8 +236,8 @@ export class ReviewEngine {
         if (libraries.length > 0) {
           mcpDocs = await this.mcp.getLibraryDocs(libraries);
         }
-      } catch {
-        // Non-critical
+      } catch (err) {
+        core.warning(`MCP enrichment skipped: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
