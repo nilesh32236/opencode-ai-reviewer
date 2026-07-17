@@ -1,4 +1,12 @@
 import type { ActionMode } from '@opencode-pr-agent/lib';
+/**
+ * Validate a run-checks command against an allowlist to prevent shell injection.
+ * Returns the program and args for use with array-form exec (no shell string).
+ */
+export declare function validateRunChecksCommand(command: string): {
+    program: string;
+    args: string[];
+};
 export interface ActionInputs {
     mode: ActionMode;
     githubToken: string;

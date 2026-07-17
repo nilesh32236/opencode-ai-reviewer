@@ -8,6 +8,7 @@ import type {
   ReviewEngine,
   ReviewResult,
 } from '@opencode-pr-agent/lib';
+import { validateRunChecksCommand } from './inputs.js';
 import type { ActionInputs } from './inputs.js';
 
 export async function runFix(
@@ -61,7 +62,8 @@ export async function runFix(
   if (inputs.runChecksAfterFix && changesMade) {
     core.info('Running verification commands...');
     try {
-      await exec.exec('bash', ['-c', inputs.runChecksAfterFix]);
+      const { program, args } = validateRunChecksCommand(inputs.runChecksAfterFix);
+      await exec.exec(program, args);
     } catch (error) {
       core.warning(`Verification command failed: ${inputs.runChecksAfterFix} — ${String(error)}`);
     }
@@ -456,7 +458,8 @@ export async function runAutofixLoop(
     if (inputs.runChecksAfterFix) {
       core.info('Running verification commands...');
       try {
-        await exec.exec('bash', ['-c', inputs.runChecksAfterFix]);
+        const { program, args } = validateRunChecksCommand(inputs.runChecksAfterFix);
+        await exec.exec(program, args);
       } catch (error) {
         core.warning(`Verification command failed: ${inputs.runChecksAfterFix} — ${String(error)}`);
       }

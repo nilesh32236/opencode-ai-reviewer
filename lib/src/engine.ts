@@ -207,7 +207,10 @@ export class ReviewEngine {
       let filesChanged: string[] = [];
       if (changesMade) {
         try {
-          const raw = cp.execSync('git diff --name-only', { encoding: 'utf-8' }).toString().trim();
+          const raw = cp
+            .execFileSync('git', ['diff', '--name-only'], { encoding: 'utf-8' })
+            .toString()
+            .trim();
           filesChanged = raw ? raw.split('\n') : [];
         } catch {
           core.warning('Could not get git diff to determine changed files');
