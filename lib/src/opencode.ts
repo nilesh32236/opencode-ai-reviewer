@@ -319,7 +319,8 @@ export function configureGit(userName?: string, userEmail?: string, token?: stri
       } catch {
         /* no previous helper to clear */
       }
-      const askPassPath = path.join(os.tmpdir(), `opencode-askpass-${Date.now()}.sh`);
+      const askPassDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-askpass-'));
+      const askPassPath = path.join(askPassDir, 'credential.sh');
       fs.writeFileSync(
         askPassPath,
         [
