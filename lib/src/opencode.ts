@@ -220,6 +220,9 @@ export async function runOpenCode(
     core.warning(`OpenCode has been running for ${options.timeoutMinutes ?? 10}m — aborting.`);
   }, timeoutMs);
 
+  // SECURITY: These API keys are forwarded as env vars to the OpenCode child process.
+  // They are accessible to any subprocess spawned by OpenCode. Consider using short-lived
+  // tokens or a secrets-injecting sidecar if this is a concern in your environment.
   const githubToken = process.env.GITHUB_TOKEN || process.env.INPUT_GITHUB_TOKEN || '';
   const openaiApiKey = process.env.OPENAI_API_KEY || process.env.INPUT_OPENAI_API_KEY || '';
   const anthropicApiKey =
@@ -293,35 +296,42 @@ export function configureGit(userName?: string, userEmail?: string, token?: stri
       // Remove ALL http.extraheader entries from every git config file
       // (including those from actions/checkout@v6+ stored via includeIf).
       // Without this, git sends duplicate Authorization headers on push.
+      let origins = '';
       try {
-        const origins = cp
-          .execSync('git config --list --show-origin 2>/dev/null || true')
-          .toString();
-        for (const line of origins.split('\n')) {
-          if (!line.includes('http.') || !line.includes('.extraheader')) continue;
-          const tabIdx = line.indexOf('\t');
-          if (tabIdx <= 0) continue;
-          const prefix = line.substring(0, tabIdx);
-          if (!prefix.startsWith('file:')) continue;
-          const cfg = prefix.substring(5);
-          try {
-            cp.execFileSync('git', [
-              'config',
-              '--file',
-              cfg,
-              '--unset-all',
-              'http.https://github.com/.extraheader',
-            ]);
-          } catch {
-            /* key not in this file */
-          }
-        }
+        origins = cp.execFileSync('git', ['config', '--list', '--show-origin'], {
+          encoding: 'utf-8',
+        });
       } catch {
         /* git config --list failed entirely */
       }
+      for (const line of origins.split('\n')) {
+        if (!line.includes('http.') || !line.includes('.extraheader')) continue;
+        const tabIdx = line.indexOf('\t');
+        if (tabIdx <= 0) continue;
+        const prefix = line.substring(0, tabIdx);
+        if (!prefix.startsWith('file:')) continue;
+        const cfg = prefix.substring(5);
+        const resolvedCfg = path.resolve(cfg);
+        // Only modify config files in trusted locations
+        if (!resolvedCfg.startsWith(os.homedir()) && !resolvedCfg.startsWith(process.cwd())) {
+          continue;
+        }
+        try {
+          cp.execFileSync('git', [
+            'config',
+            '--file',
+            resolvedCfg,
+            '--unset-all',
+            'http.https://github.com/.extraheader',
+          ]);
+        } catch {
+          /* key not in this file */
+        }
+      }
 
-      // Use an inline credential helper instead of extraheader so we stay
-      // compatible with every version of actions/checkout.
+      // Use GIT_ASKPASS instead of a shell-function credential helper so the token
+      // is never embedded in git config output (visible via git config --list).
+      // The token is read from an env var by the askpass script at credential time.
       try {
         cp.execFileSync('git', [
           'config',
@@ -332,12 +342,22 @@ export function configureGit(userName?: string, userEmail?: string, token?: stri
       } catch {
         /* no previous helper to clear */
       }
-      cp.execFileSync('git', [
-        'config',
-        '--local',
-        'credential.https://github.com/.helper',
-        `!f() { echo "username=x-access-token"; echo "password=${token}"; }; f`,
-      ]);
+      const askPassDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-askpass-'));
+      const askPassPath = path.join(askPassDir, 'credential.sh');
+      fs.writeFileSync(
+        askPassPath,
+        [
+          '#!/bin/sh',
+          'case "$1" in',
+          '  *Username*) echo "x-access-token" ;;',
+          '  *Password*) echo "${OPENCODE_CREDENTIAL_TOKEN}" ;;',
+          'esac',
+        ].join('\n'),
+        'utf-8',
+      );
+      fs.chmodSync(askPassPath, 0o755);
+      process.env.GIT_ASKPASS = askPassPath;
+      process.env.OPENCODE_CREDENTIAL_TOKEN = token;
     }
   } catch (err) {
     core.warning(`configureGit failed: ${String(err)}`);
@@ -348,7 +368,7 @@ export function configureGit(userName?: string, userEmail?: string, token?: stri
 
 export function getGitStatus(): string {
   try {
-    return cp.execSync('git status --porcelain').toString();
+    return cp.execFileSync('git', ['status', '--porcelain'], { encoding: 'utf-8' });
   } catch {
     return '';
   }
