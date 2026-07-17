@@ -4,7 +4,7 @@ import type { AgentConfig, GitHubHelper, PRContext, ReviewEngine } from '@openco
 import type { ActionInputs } from './inputs.js';
 
 export async function runReview(
-  _inputs: ActionInputs,
+  inputs: ActionInputs,
   config: AgentConfig,
   engine: ReviewEngine,
   gh: GitHubHelper,
@@ -52,7 +52,12 @@ export async function runReview(
     return;
   }
 
-  const result = await engine.reviewPR(pr);
+  const result = await engine.reviewPR(
+    pr,
+    undefined,
+    inputs.reviewPromptFile,
+    inputs.reviewPromptExtra,
+  );
 
   if (!result || (!result.summary && result.issues.length === 0 && result.strengths.length === 0)) {
     core.setFailed('Review returned no meaningful content - AI model may have failed silently');

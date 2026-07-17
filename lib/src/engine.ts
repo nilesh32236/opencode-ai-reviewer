@@ -30,7 +30,12 @@ export class ReviewEngine {
     this.mcp = new MCPManager(config.mcpServers);
   }
 
-  async reviewPR(pr: PRContext, iteration?: number): Promise<ReviewResult> {
+  async reviewPR(
+    pr: PRContext,
+    iteration?: number,
+    reviewPromptFile?: string,
+    reviewPromptExtra?: string,
+  ): Promise<ReviewResult> {
     console.log(
       `Reviewing PR #${pr.number} (${pr.changedFiles.length} files)${iteration !== undefined ? ` (Iteration ${iteration + 1})` : ''}`,
     );
@@ -77,14 +82,19 @@ export class ReviewEngine {
         })()
       : [];
 
+    const autoFixExtra =
+      iteration !== undefined
+        ? `This is review iteration ${iteration + 1} of autofix. If this is the final check, verify carefully that no regressions or new bugs were introduced, and that the code compiles/passes all checks. Only set "ready" to true if you are confident it is production-ready.`
+        : undefined;
+    const combinedExtra =
+      [reviewPromptExtra, autoFixExtra].filter(Boolean).join('\n\n') || undefined;
+
     const prompt = buildReviewPrompt(
       {
         projectContext: this.config.projectContext.description || undefined,
         maxFilesPerBatch: this.config.batchSize,
-        reviewPromptExtra:
-          iteration !== undefined
-            ? `This is review iteration ${iteration + 1} of autofix. If this is the final check, verify carefully that no regressions or new bugs were introduced, and that the code compiles/passes all checks. Only set "ready" to true if you are confident it is production-ready.`
-            : undefined,
+        reviewPromptFile,
+        reviewPromptExtra: combinedExtra,
       },
       contextMarkdown + mcpSection,
       lessons,
