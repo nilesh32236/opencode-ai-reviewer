@@ -13,28 +13,34 @@ export async function handleCommand(
 ): Promise<void> {
   const gh = new GitHubHelper(token, repo);
 
-  switch (command) {
-    case 'review': {
-      if (await gh.isPR(issueNumber)) {
-        await handlePRReview(issueNumber, repo, token, config);
+  try {
+    switch (command) {
+      case 'review': {
+        if (await gh.isPR(issueNumber)) {
+          await handlePRReview(issueNumber, repo, token, config);
+        }
+        break;
       }
-      break;
-    }
 
-    case 'fix': {
-      const existingPR = await findExistingAutofixPR(gh, issueNumber);
-      if (existingPR) {
-        await handleAutofixLoop(existingPR, repo, token, config);
-      } else {
-        await createAutofixPR(gh, issueNumber, repo, token, config);
+      case 'fix': {
+        const existingPR = await findExistingAutofixPR(gh, issueNumber);
+        if (existingPR) {
+          await handleAutofixLoop(existingPR, repo, token, config);
+        } else {
+          await createAutofixPR(gh, issueNumber, repo, token, config);
+        }
+        break;
       }
-      break;
-    }
 
-    case 'audit': {
-      await handleAudit(repo, token, config);
-      break;
+      case 'audit': {
+        await handleAudit(repo, token, config);
+        break;
+      }
     }
+  } catch (err) {
+    console.error(
+      `Command ${command} failed for issue ${issueNumber} in ${repo}: ${err instanceof Error ? err.message : err}`,
+    );
   }
 }
 
@@ -46,8 +52,10 @@ async function findExistingAutofixPR(
     const issue = await gh.getIssue(issueNumber);
     const prLink = issue.body?.match(/PR #(\d+)/)?.[1];
     if (prLink) return Number.parseInt(prLink, 10);
-  } catch {
-    /* skip */
+  } catch (err) {
+    console.debug(
+      `Failed to find existing autofix PR for issue ${issueNumber}: ${err instanceof Error ? err.message : err}`,
+    );
   }
   return null;
 }
@@ -61,7 +69,11 @@ async function createAutofixPR(
 ): Promise<void> {
   console.log(`🔧 Fix triggered for issue #${issueNumber}`);
 
-  await gh.ensureLabels(['autofix', 'autofix-trigger', 'autofix:needs-fix']);
+  try {
+    await gh.ensureLabels(['autofix', 'autofix-trigger', 'autofix:needs-fix']);
+  } catch (err) {
+    console.warn(`Failed to ensure autofix labels: ${err instanceof Error ? err.message : err}`);
+  }
   await gh.addLabels(issueNumber, ['autofix']);
 
   console.log(

@@ -28,12 +28,18 @@ export async function runPost(
 
   const reviewSummary = core.getInput('review_summary');
   if (reviewSummary && inputs.reviewCommentSummary) {
-    await gh.postOrUpdateComment(
-      prNumber,
-      '<!-- review-summary -->',
-      `## Review Summary\n\n${reviewSummary}`,
-    );
-    core.info('Posted review summary comment');
+    try {
+      await gh.postOrUpdateComment(
+        prNumber,
+        '<!-- review-summary -->',
+        `## Review Summary\n\n${reviewSummary}`,
+      );
+      core.info('Posted review summary comment');
+    } catch (err) {
+      core.warning(
+        `Failed to post review summary comment: ${err instanceof Error ? err.message : err}`,
+      );
+    }
   }
 
   const verdict = core.getInput('verdict');

@@ -14,16 +14,20 @@ export async function handleAudit(
 
   const gh = new GitHubHelper(token, repo);
 
-  await gh.ensureLabels([
-    'audit',
-    'audit:critical',
-    'audit:important',
-    'audit:minor',
-    'autofix',
-    'autofix-trigger',
-    'autofix:approved',
-    'autofix:needs-fix',
-  ]);
+  try {
+    await gh.ensureLabels([
+      'audit',
+      'audit:critical',
+      'audit:important',
+      'audit:minor',
+      'autofix',
+      'autofix-trigger',
+      'autofix:approved',
+      'autofix:needs-fix',
+    ]);
+  } catch (err) {
+    console.warn(`Failed to ensure audit labels: ${err instanceof Error ? err.message : err}`);
+  }
 
   const promptsDir = config.audit.promptsDir;
   let selectedFile: string;
@@ -52,7 +56,7 @@ export async function handleAudit(
       category = path.basename(mdFiles[rand], '.md');
     }
   } catch (err) {
-    console.log(`Error reading audit prompts: ${err}`);
+    console.error(`Error reading audit prompts: ${err instanceof Error ? err.message : err}`, err);
     return;
   }
 
@@ -61,12 +65,29 @@ export async function handleAudit(
     config.audit.targetDirs[Math.floor(Math.random() * config.audit.targetDirs.length)] ||
     '.';
 
-  const promptContent = await fs.readFile(selectedFile, 'utf-8');
+  let promptContent: string;
+  try {
+    promptContent = await fs.readFile(selectedFile, 'utf-8');
+  } catch (err) {
+    console.error(`Failed to read audit prompt file: ${err instanceof Error ? err.message : err}`);
+    return;
+  }
 
   const engine = new ReviewEngine(config, token, repo);
 
   try {
-    const result = await engine.runAudit(promptContent, auditTarget, category);
+    let result: ReviewResult;
+    try {
+      result = await engine.runAudit(promptContent, auditTarget, category);
+    } catch (err) {
+      console.error(`Audit engine failed: ${err instanceof Error ? err.message : err}`);
+      return;
+    }
+
+    if (!result.summary && result.issues.length === 0) {
+      console.warn('Audit returned no meaningful content — skipping issue creation');
+      return;
+    }
 
     console.log(
       `Audit complete: ${result.stats.critical} critical, ${result.stats.important} important, ${result.stats.minor} minor`,
@@ -80,13 +101,23 @@ export async function handleAudit(
       const labels = ['audit', `audit:${category}`, severityLabel];
       if (config.audit.autoFix) labels.push(config.audit.triggerLabel);
 
-      const issue = await gh.createIssue(title, issueBody, labels);
-      console.log(`Created issue #${issue.number}: ${issue.url}`);
+      try {
+        const issue = await gh.createIssue(title, issueBody, labels);
+        if (issue) {
+          console.log(`Created issue #${issue.number}: ${issue.url}`);
+        }
+      } catch (err) {
+        console.error(`Failed to create audit issue: ${err instanceof Error ? err.message : err}`);
+      }
     } else {
       console.log('No critical or important issues found — skipping issue creation');
     }
   } finally {
-    await engine.cleanup();
+    try {
+      await engine.cleanup();
+    } catch (err) {
+      console.error(`Engine cleanup failed: ${err instanceof Error ? err.message : err}`);
+    }
   }
 }
 

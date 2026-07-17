@@ -8,9 +8,30 @@ export class LearningStore {
   constructor(dbPathOrUrl?: string) {
     this.dbPromise = (async () => {
       const target = process.env.DATABASE_URL || dbPathOrUrl || getDbPath();
-      const db = await connectDb(target);
-      await applyMigrations(db);
-      return db;
+      const maxRetries = 3;
+      let db: DbAdapter | undefined;
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          db = await connectDb(target);
+          await applyMigrations(db);
+          return db;
+        } catch (err) {
+          if (db) {
+            try {
+              await db.close();
+            } catch {
+              /* cleanup best-effort */
+            }
+            db = undefined;
+          }
+          if (attempt === maxRetries) throw err;
+          console.warn(
+            `DB connection attempt ${attempt} failed, retrying: ${err instanceof Error ? err.message : err}`,
+          );
+          await new Promise((r) => setTimeout(r, 1000 * attempt));
+        }
+      }
+      throw new Error('Failed to connect to database after retries');
     })();
   }
 
@@ -29,23 +50,28 @@ export class LearningStore {
     message: string;
     suggestion?: string;
   }): Promise<string> {
-    const db = await this.dbPromise;
-    const id = finding.id || generateId();
-    await db.run(
-      `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        id,
-        finding.prNumber,
-        finding.type,
-        finding.severity || null,
-        finding.file || null,
-        finding.line || null,
-        finding.message,
-        finding.suggestion || null,
-      ],
-    );
-    return id;
+    try {
+      const db = await this.dbPromise;
+      const id = finding.id || generateId();
+      await db.run(
+        `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          finding.prNumber,
+          finding.type,
+          finding.severity || null,
+          finding.file || null,
+          finding.line || null,
+          finding.message,
+          finding.suggestion || null,
+        ],
+      );
+      return id;
+    } catch (err) {
+      console.warn(`Failed to record finding: ${err instanceof Error ? err.message : err}`);
+      throw err;
+    }
   }
 
   async recordFindings(
@@ -116,18 +142,22 @@ export class LearningStore {
     signalValue: string;
     prNumber: number;
   }): Promise<void> {
-    const db = await this.dbPromise;
-    await db.run(
-      `INSERT INTO feedback (id, finding_id, signal_type, signal_value, pr_number)
-       VALUES (?, ?, ?, ?, ?)`,
-      [
-        generateId(),
-        feedback.findingId,
-        feedback.signalType,
-        feedback.signalValue,
-        feedback.prNumber,
-      ],
-    );
+    try {
+      const db = await this.dbPromise;
+      await db.run(
+        `INSERT INTO feedback (id, finding_id, signal_type, signal_value, pr_number)
+         VALUES (?, ?, ?, ?, ?)`,
+        [
+          generateId(),
+          feedback.findingId,
+          feedback.signalType,
+          feedback.signalValue,
+          feedback.prNumber,
+        ],
+      );
+    } catch (err) {
+      console.warn(`Failed to record feedback: ${err instanceof Error ? err.message : err}`);
+    }
   }
 
   async recordFeedbackBatch(
@@ -178,66 +208,74 @@ export class LearningStore {
   }
 
   async getRelevantLessons(filePaths: string[]): Promise<string[]> {
-    const db = await this.dbPromise;
+    try {
+      const db = await this.dbPromise;
 
-    const extensions = [
-      ...new Set(
-        filePaths.map((f) => {
-          const ext = f.split('.').pop();
-          return ext ? `.${ext}` : '';
-        }),
-      ),
-    ].filter(Boolean);
-
-    const queries: Promise<unknown[]>[] = [
-      db.all<{ rule_text: string }>("SELECT rule_text FROM custom_rules WHERE status = 'active'"),
-      db.all<{ override_text: string }>(
-        "SELECT override_text FROM prompt_overrides WHERE category = 'general'",
-      ),
-    ];
-
-    if (extensions.length > 0) {
-      const placeholders = extensions.map(() => '?').join(',');
-      queries.push(
-        db.all<{ override_text: string }>(
-          `SELECT override_text FROM prompt_overrides WHERE category IN (${placeholders})`,
-          extensions,
+      const extensions = [
+        ...new Set(
+          filePaths.map((f) => {
+            const ext = f.split('.').pop();
+            return ext ? `.${ext}` : '';
+          }),
         ),
-      );
-    }
+      ].filter(Boolean);
 
-    const [rules, generalOverrides, ...extOverrideResults] = await Promise.all(queries);
+      const queries: Promise<unknown[]>[] = [
+        db
+          .all<{ rule_text: string }>("SELECT rule_text FROM custom_rules WHERE status = 'active'")
+          .catch(() => []),
+        db
+          .all<{ override_text: string }>(
+            "SELECT override_text FROM prompt_overrides WHERE category = 'general'",
+          )
+          .catch(() => []),
+      ];
 
-    const lessons: string[] = [];
-    for (const rule of rules as Array<{ rule_text: string }>) {
-      lessons.push(rule.rule_text);
-    }
-    for (const o of generalOverrides as Array<{ override_text: string }>) {
-      lessons.push(o.override_text);
-    }
-    for (const result of extOverrideResults) {
-      for (const o of result as Array<{ override_text: string }>) {
-        lessons.push(o.override_text);
+      if (extensions.length > 0) {
+        const placeholders = extensions.map(() => '?').join(',');
+        queries.push(
+          db
+            .all<{ override_text: string }>(
+              `SELECT override_text FROM prompt_overrides WHERE category IN (${placeholders})`,
+              extensions,
+            )
+            .catch(() => []),
+        );
       }
-    }
 
-    return lessons;
+      const results = await Promise.all(queries.map((q) => q.catch(() => [])));
+
+      const lessons: string[] = [];
+      for (const result of results) {
+        for (const item of result as Array<{ rule_text?: string; override_text?: string }>) {
+          lessons.push(item.rule_text || item.override_text || '');
+        }
+      }
+
+      return lessons.filter(Boolean);
+    } catch {
+      return [];
+    }
   }
 
   async recordQuality(quality: LearningQuality): Promise<void> {
-    const db = await this.dbPromise;
-    await db.run(
-      `INSERT INTO review_quality (id, pr_number, actionability_score, accuracy_score, coverage_score, consistency_score)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [
-        generateId(),
-        quality.prNumber,
-        quality.actionabilityScore,
-        quality.accuracyScore,
-        quality.coverageScore,
-        quality.consistencyScore,
-      ],
-    );
+    try {
+      const db = await this.dbPromise;
+      await db.run(
+        `INSERT INTO review_quality (id, pr_number, actionability_score, accuracy_score, coverage_score, consistency_score)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          generateId(),
+          quality.prNumber,
+          quality.actionabilityScore,
+          quality.accuracyScore,
+          quality.coverageScore,
+          quality.consistencyScore,
+        ],
+      );
+    } catch (err) {
+      console.warn(`Failed to record quality: ${err instanceof Error ? err.message : err}`);
+    }
   }
 
   async getQualityTrends(limit = 20): Promise<Array<Record<string, unknown>>> {
@@ -336,12 +374,16 @@ export class LearningStore {
     overrideText: string,
     fpRateBefore: number,
   ): Promise<void> {
-    const db = await this.dbPromise;
-    await db.run(
-      `INSERT INTO prompt_overrides (id, category, override_text, false_positive_rate_before)
-       VALUES (?, ?, ?, ?)`,
-      [generateId(), category, overrideText, fpRateBefore],
-    );
+    try {
+      const db = await this.dbPromise;
+      await db.run(
+        `INSERT INTO prompt_overrides (id, category, override_text, false_positive_rate_before)
+         VALUES (?, ?, ?, ?)`,
+        [generateId(), category, overrideText, fpRateBefore],
+      );
+    } catch (err) {
+      console.warn(`Failed to add prompt override: ${err instanceof Error ? err.message : err}`);
+    }
   }
 
   async resetCounter(): Promise<void> {

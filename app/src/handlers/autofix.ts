@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process';
-import type { AgentConfig, ReviewResult } from '@opencode-pr-agent/lib';
+import type { AgentConfig, FixResult, PRContext, ReviewResult } from '@opencode-pr-agent/lib';
 import { GitHubHelper, ReviewEngine, configureGit } from '@opencode-pr-agent/lib';
 
 interface IterationRecord {
@@ -154,12 +154,38 @@ export async function handleAutofixLoop(
   const history: IterationRecord[] = [];
   let approved = false;
 
+  configureGit('opencode-pr-agent[bot]', 'opencode-pr-agent[bot]@users.noreply.github.com', token);
   try {
     for (let i = 0; i < config.maxIterations; i++) {
       console.log(`=== Autofix iteration ${i + 1}/${config.maxIterations} ===`);
 
-      const pr = await gh.getPR(prNumber);
-      const result = await engine.reviewPR(pr, i);
+      let pr: PRContext;
+      try {
+        pr = await gh.getPR(prNumber);
+      } catch (err) {
+        console.error(
+          `Failed to get PR in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
+        );
+        break;
+      }
+
+      let result: ReviewResult;
+      try {
+        result = await engine.reviewPR(pr, i);
+      } catch (err) {
+        console.error(
+          `Review engine failed in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
+        );
+        break;
+      }
+
+      if (
+        !result ||
+        (!result.summary && result.issues.length === 0 && result.strengths.length === 0)
+      ) {
+        console.error(`Review returned empty result in iteration ${i + 1}`);
+        break;
+      }
 
       const entry: IterationRecord = {
         iteration: i + 1,
@@ -178,19 +204,35 @@ export async function handleAutofixLoop(
         entry.status = 'approved';
         history.push(entry);
 
-        await gh.setLabels(prNumber, ['autofix:ready'], ['autofix', 'autofix:needs-fix']);
-        await gh.createComment(prNumber, buildReadyBody(history, prNumber));
+        try {
+          await gh.setLabels(prNumber, ['autofix:ready'], ['autofix', 'autofix:needs-fix']);
+        } catch (err) {
+          console.error(`Failed to set labels: ${err instanceof Error ? err.message : err}`);
+        }
+        try {
+          await gh.createComment(prNumber, buildReadyBody(history, prNumber));
+        } catch (err) {
+          console.error(
+            `Failed to post ready-to-merge comment: ${err instanceof Error ? err.message : err}`,
+          );
+        }
         console.log('Posted ready-to-merge notification');
         break;
       }
 
       entry.status = 'needs-fix';
       history.push(entry);
-      await gh.postOrUpdateComment(
-        prNumber,
-        REVIEW_MARKER,
-        buildReviewBody(history, config.maxIterations, 'reviewing', result),
-      );
+      try {
+        await gh.postOrUpdateComment(
+          prNumber,
+          REVIEW_MARKER,
+          buildReviewBody(history, config.maxIterations, 'reviewing', result),
+        );
+      } catch (err) {
+        console.error(
+          `Failed to post review comment in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
 
       let contextMd = `## PR #${prNumber}\n\n${pr.body}`;
       if (pr.linkedIssue) {
@@ -211,21 +253,29 @@ export async function handleAutofixLoop(
         contextMd += '\n';
       }
 
-      configureGit(
-        'opencode-pr-agent[bot]',
-        'opencode-pr-agent[bot]@users.noreply.github.com',
-        token,
-      );
-
-      const fixResult = await engine.runFix(prNumber, i, contextMd, pr);
-
-      if (!fixResult.changesMade) {
-        history[history.length - 1].status = 'no-changes';
-        await gh.postOrUpdateComment(
-          prNumber,
-          REVIEW_MARKER,
-          buildReviewBody(history, config.maxIterations, 'no-changes', result),
+      let fixResult: FixResult | undefined;
+      try {
+        fixResult = await engine.runFix(prNumber, i, contextMd, pr);
+      } catch (err) {
+        console.error(
+          `Fix engine failed in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
         );
+        break;
+      }
+
+      if (!fixResult || !fixResult.changesMade) {
+        history[history.length - 1].status = 'no-changes';
+        try {
+          await gh.postOrUpdateComment(
+            prNumber,
+            REVIEW_MARKER,
+            buildReviewBody(history, config.maxIterations, 'no-changes', result),
+          );
+        } catch (err) {
+          console.error(
+            `Failed to post no-changes comment: ${err instanceof Error ? err.message : err}`,
+          );
+        }
         console.log('Fix agent made no changes — stopping loop');
         break;
       }
@@ -234,25 +284,61 @@ export async function handleAutofixLoop(
       history[history.length - 1].filesChanged = fixResult.filesChanged;
       history[history.length - 1].commitMessage = fixResult.commitMessage;
 
-      execFileSync('git', ['add', '-A']);
-      execFileSync('git', ['commit', '-m', `fix: address review feedback (iteration ${i + 1})`]);
-      execFileSync('git', ['push', 'origin', pr.headRef]);
+      try {
+        execFileSync('git', ['add', '-A']);
+        execFileSync('git', ['commit', '-m', `fix: address review feedback (iteration ${i + 1})`]);
+        execFileSync('git', ['push', 'origin', pr.headRef]);
+      } catch (err) {
+        console.error(
+          `Git operations failed in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
+        );
+        try {
+          await gh.postOrUpdateComment(
+            prNumber,
+            REVIEW_MARKER,
+            buildReviewBody(history, config.maxIterations, 'reviewing', result),
+          );
+        } catch (postErr) {
+          console.error(
+            `Failed to post recovery comment after git failure: ${postErr instanceof Error ? postErr.message : postErr}`,
+          );
+        }
+        break;
+      }
 
-      await gh.postOrUpdateComment(prNumber, FIX_MARKER, buildFixBody(history));
+      try {
+        await gh.postOrUpdateComment(prNumber, FIX_MARKER, buildFixBody(history));
+      } catch (err) {
+        console.error(`Failed to post fix comment: ${err instanceof Error ? err.message : err}`);
+      }
     }
 
     if (!approved) {
-      console.log(`⚠️ Max iterations reached (${config.maxIterations}) for PR #${prNumber}`);
-      await gh.setLabels(
-        prNumber,
-        ['autofix:needs-manual-review'],
-        ['autofix', 'autofix:needs-fix'],
+      console.log(
+        `⚠️ Loop ended without approval for PR #${prNumber} (reached iteration ${config.maxIterations})`,
       );
-      await gh.postOrUpdateComment(
-        prNumber,
-        REVIEW_MARKER,
-        buildReviewBody(history, config.maxIterations, 'max-iterations'),
-      );
+      try {
+        await gh.setLabels(
+          prNumber,
+          ['autofix:needs-manual-review'],
+          ['autofix', 'autofix:needs-fix'],
+        );
+      } catch (err) {
+        console.error(
+          `Failed to set manual review labels: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+      try {
+        await gh.postOrUpdateComment(
+          prNumber,
+          REVIEW_MARKER,
+          buildReviewBody(history, config.maxIterations, 'max-iterations'),
+        );
+      } catch (err) {
+        console.error(
+          `Failed to post max iterations comment: ${err instanceof Error ? err.message : err}`,
+        );
+      }
     }
   } finally {
     await engine.cleanup();

@@ -51,16 +51,41 @@ export class EventBus {
     const matching = this.subscribers.get(event.type) || [];
     const wildcard = this.subscribers.get('*') || [];
 
+    const TIMEOUT_MS = 120_000;
+
     for (const sub of [...matching, ...wildcard]) {
       const health = this.subscriberHealth.get(sub.name);
+
+      // Circuit breaker: skip subscriber after 5 consecutive failures
+      if (health && health.failedCalls >= 5) {
+        this.logger.warn(
+          `Subscriber ${sub.name} has failed ${health.failedCalls} times consecutively — skipping`,
+          { prNumber: event.prNumber, repo: event.repo },
+        );
+        continue;
+      }
+
       if (health) {
         health.totalCalls++;
         health.lastEvent = event.type;
         health.lastEventTimestamp = Date.now();
       }
 
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
       try {
-        await sub.handle(event);
+        await Promise.race([
+          sub.handle(event),
+          new Promise<never>((_, reject) => {
+            timeoutHandle = setTimeout(
+              () => reject(new Error(`Subscriber ${sub.name} timed out after ${TIMEOUT_MS}ms`)),
+              TIMEOUT_MS,
+            );
+          }),
+        ]);
+        // Reset consecutive failure count on success
+        if (health) {
+          health.failedCalls = 0;
+        }
       } catch (err) {
         if (health) {
           health.failedCalls++;
@@ -70,6 +95,15 @@ export class EventBus {
           `Subscriber ${sub.name} failed on ${event.type}: ${err instanceof Error ? err.message : err}`,
           { prNumber: event.prNumber, repo: event.repo },
         );
+
+        if (health && health.failedCalls >= 5) {
+          this.logger.warn(
+            `Subscriber ${sub.name} has now failed ${health.failedCalls} times consecutively — will be skipped on next event`,
+            { prNumber: event.prNumber, repo: event.repo },
+          );
+        }
+      } finally {
+        clearTimeout(timeoutHandle);
       }
     }
   }

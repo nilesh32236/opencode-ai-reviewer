@@ -22,12 +22,27 @@ export class MetaReviewEngine {
     consistencyScore: number;
     suggestions: string[];
   }> {
-    const fpRate = await this.store.getFalsePositiveRate();
+    let fpRate = 0;
+    try {
+      fpRate = await this.store.getFalsePositiveRate();
+    } catch {
+      console.warn('Failed to get false positive rate, defaulting to 0');
+    }
     const prompt = buildMetaReviewPrompt(context);
 
-    await runOpenCode(prompt, {
+    const metaRunResult = await runOpenCode(prompt, {
       model: 'opencode/deepseek-v4-flash-free',
     });
+    if (!metaRunResult.success) {
+      console.warn('OpenCode meta-review execution failed, using default scores');
+      return {
+        actionabilityScore: 70,
+        accuracyScore: Math.max(0, 100 - fpRate * 100),
+        coverageScore: 70,
+        consistencyScore: 70,
+        suggestions: ['Meta-review execution failed'],
+      };
+    }
 
     let result: Record<string, unknown> = {};
     try {
@@ -52,14 +67,22 @@ export class MetaReviewEngine {
       consistencyScore: (result.consistencyScore as number) || 70,
     };
 
-    await this.store.recordQuality(quality);
+    try {
+      await this.store.recordQuality(quality);
+    } catch {
+      console.warn('Failed to record quality scores');
+    }
 
     if (fpRate > 0.3) {
-      await this.store.addPromptOverride(
-        'general',
-        `Note: Recent reviews had a ${Math.round(fpRate * 100)}% false positive rate. Be more conservative with issue severity.`,
-        fpRate,
-      );
+      try {
+        await this.store.addPromptOverride(
+          'general',
+          `Note: Recent reviews had a ${Math.round(fpRate * 100)}% false positive rate. Be more conservative with issue severity.`,
+          fpRate,
+        );
+      } catch {
+        console.warn('Failed to add prompt override');
+      }
     }
 
     return {
@@ -80,8 +103,13 @@ export class MetaReviewSubscriber implements Subscriber {
   ) {}
 
   async handle(event: GitHubEvent): Promise<void> {
-    const shouldRun = await this.store.incrementAndCheckMetaReviewInterval(this.interval);
-    if (!shouldRun) return;
+    try {
+      const shouldRun = await this.store.incrementAndCheckMetaReviewInterval(this.interval);
+      if (!shouldRun) return;
+    } catch {
+      console.warn('Failed to check meta-review interval');
+      return;
+    }
 
     const payload = event.payload as {
       prNumber?: number;
@@ -93,14 +121,20 @@ export class MetaReviewSubscriber implements Subscriber {
       fileCount?: number;
     };
 
-    await this.engine.runMetaReview({
-      prNumber: payload.prNumber || event.prNumber || 0,
-      reviewSummary: payload.reviewSummary || '',
-      findingsCount: payload.findingsCount || 0,
-      issuesCount: payload.issuesCount || 0,
-      strengthsCount: payload.strengthsCount || 0,
-      hasVerdict: payload.hasVerdict || false,
-      fileCount: payload.fileCount || 0,
-    });
+    try {
+      await this.engine.runMetaReview({
+        prNumber: payload.prNumber || event.prNumber || 0,
+        reviewSummary: payload.reviewSummary || '',
+        findingsCount: payload.findingsCount || 0,
+        issuesCount: payload.issuesCount || 0,
+        strengthsCount: payload.strengthsCount || 0,
+        hasVerdict: payload.hasVerdict || false,
+        fileCount: payload.fileCount || 0,
+      });
+    } catch (err) {
+      console.error(
+        `Meta-review failed for prNumber ${event.prNumber}: ${err instanceof Error ? err.message : err}`,
+      );
+    }
   }
 }
