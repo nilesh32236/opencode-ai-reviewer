@@ -40,6 +40,13 @@ export class MCPManager {
           try {
             await withRetry(
               async () => {
+                if (mcpTransport) {
+                  try {
+                    mcpTransport.close();
+                  } catch {
+                    /* ignore */
+                  }
+                }
                 mcpTransport = new StdioClientTransport({
                   command: cmd[0],
                   args: cmd.slice(1),
@@ -70,10 +77,10 @@ export class MCPManager {
             );
 
             if (mcpClient) {
-              const tools = await withRetry(
-                () => mcpClient!.listTools(),
-                { maxRetries: 3, baseDelayMs: 2000 },
-              );
+              const tools = await withRetry(() => mcpClient!.listTools(), {
+                maxRetries: 3,
+                baseDelayMs: 2000,
+              });
               console.log(`  ${server.name}: ${tools.tools.length} tools available`);
             }
           } catch (err) {
@@ -124,10 +131,11 @@ export class MCPManager {
 
         if (searchTool) {
           const result = await withRetry(
-            () => client.callTool({
-              name: searchTool.name,
-              arguments: { query, maxTokens: String(maxTokens / this.clients.size) },
-            }),
+            () =>
+              client.callTool({
+                name: searchTool.name,
+                arguments: { query, maxTokens: String(maxTokens / this.clients.size) },
+              }),
             { maxRetries: 3, baseDelayMs: 2000 },
           );
 
@@ -169,10 +177,11 @@ export class MCPManager {
 
           if (resolveTool) {
             const result = await withRetry(
-              () => context7Client.client.callTool({
-                name: resolveTool.name,
-                arguments: { libraryName: lib },
-              }),
+              () =>
+                context7Client.client.callTool({
+                  name: resolveTool.name,
+                  arguments: { libraryName: lib },
+                }),
               { maxRetries: 3, baseDelayMs: 2000 },
             );
 

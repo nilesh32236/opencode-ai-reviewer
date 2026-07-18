@@ -28,9 +28,7 @@ export class LearningStore {
             db = undefined;
           }
           if (attempt === maxRetries) break;
-          console.warn(
-            `DB connection attempt ${attempt} failed, retrying: ${msg}`,
-          );
+          console.warn(`DB connection attempt ${attempt} failed, retrying: ${msg}`);
           await new Promise((r) => setTimeout(r, 1000 * attempt));
         }
       }

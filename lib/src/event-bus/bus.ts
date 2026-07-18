@@ -1,6 +1,7 @@
 import type { GitHubEvent, Subscriber } from '../types/index.js';
 import { CircuitBreaker } from '../utils/circuit-breaker.js';
 import { Logger } from '../utils/logger.js';
+import { withRetry } from '../utils/retry.js';
 
 const SUBSCRIBER_CONCURRENCY = 10;
 const SUBSCRIBER_TIMEOUT_MS = 120_000;
@@ -80,10 +81,10 @@ export class EventBus {
     const cb = this.circuitBreakers.get(sub.name);
 
     if (cb && cb.getState() === 'OPEN') {
-      this.logger.warn(
-        `Subscriber ${sub.name} circuit is OPEN — skipping`,
-        { prNumber: event.prNumber, repo: event.repo },
-      );
+      this.logger.warn(`Subscriber ${sub.name} circuit is OPEN — skipping`, {
+        prNumber: event.prNumber,
+        repo: event.repo,
+      });
       return;
     }
 
@@ -100,17 +101,27 @@ export class EventBus {
           sub.handle(event),
           new Promise<never>((_, reject) => {
             timeoutHandle = setTimeout(
-              () => reject(new Error(`Subscriber ${sub.name} timed out after ${SUBSCRIBER_TIMEOUT_MS}ms`)),
+              () =>
+                reject(
+                  new Error(`Subscriber ${sub.name} timed out after ${SUBSCRIBER_TIMEOUT_MS}ms`),
+                ),
               SUBSCRIBER_TIMEOUT_MS,
             );
           }),
         ]);
       };
 
+      const wrappedHandle = () =>
+        withRetry(handleFn, {
+          maxRetries: 2,
+          baseDelayMs: 1000,
+          operationName: sub.name,
+        });
+
       if (cb) {
-        await cb.call(handleFn);
+        await cb.call(wrappedHandle);
       } else {
-        await handleFn();
+        await wrappedHandle();
       }
 
       if (health) {

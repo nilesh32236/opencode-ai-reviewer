@@ -32,54 +32,51 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
   const stream = fs.createReadStream(absolutePath, 'utf-8');
   const rl = readline.createInterface({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
 
-  let streamError: Error | null = null;
-  stream.on('error', (err) => {
-    streamError = err;
-    stream.destroy();
-  });
+  await new Promise<void>((resolve, reject) => {
+    stream.on('error', reject);
 
-  for await (const line of rl) {
-    if (streamError) throw streamError;
-    const trimmed = line.trim();
-    if (trimmed.length === 0) continue;
-    rawLines.push(trimmed);
+    rl.on('line', (line) => {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) return;
+      rawLines.push(trimmed);
 
-    try {
-      const parsed = JSON.parse(trimmed);
-      const finding = validateAndNormalize(parsed);
+      try {
+        const parsed = JSON.parse(trimmed);
+        const finding = validateAndNormalize(parsed);
 
-      switch (finding.type) {
-        case 'summary':
-          summary = finding as SummaryFinding;
-          break;
-        case 'verdict':
-          verdict = finding as VerdictFinding;
-          break;
-        case 'strength':
-          strengths.push(finding as StrengthFinding);
-          break;
-        case 'issue':
-          issues.push(finding as IssueFinding);
-          break;
+        switch (finding.type) {
+          case 'summary':
+            summary = finding as SummaryFinding;
+            break;
+          case 'verdict':
+            verdict = finding as VerdictFinding;
+            break;
+          case 'strength':
+            strengths.push(finding as StrengthFinding);
+            break;
+          case 'issue':
+            issues.push(finding as IssueFinding);
+            break;
+        }
+      } catch {
+        failedLines++;
       }
-    } catch {
-      failedLines++;
-    }
-  }
+    });
 
-  if (streamError) throw streamError;
+    rl.on('close', resolve);
+  });
 
   const criticalCount = issues.filter((i) => i.severity === 'critical').length;
   const importantCount = issues.filter((i) => i.severity === 'important').length;
   const minorCount = issues.filter((i) => i.severity === 'minor').length;
 
   return {
-    summary: summary?.text || '',
+    summary: (summary as SummaryFinding | null)?.text || '',
     verdict: {
-      ready: verdict?.ready ?? false,
-      reasoning: verdict?.reasoning || '',
-      autoFixable: verdict?.autoFixable ?? false,
-      confidence: verdict?.confidence || 'low',
+      ready: (verdict as VerdictFinding | null)?.ready ?? false,
+      reasoning: (verdict as VerdictFinding | null)?.reasoning || '',
+      autoFixable: (verdict as VerdictFinding | null)?.autoFixable ?? false,
+      confidence: (verdict as VerdictFinding | null)?.confidence || 'low',
     },
     strengths: strengths.map((s) => ({
       type: 'strength' as const,
