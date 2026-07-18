@@ -157,8 +157,12 @@ export default (app: Probot): void => {
   process.on('SIGTERM', async () => {
     try {
       await learningStore.close();
-    } catch {
-      /* ignore */
+    } catch (err) {
+      console.warn(
+        `LearningStore close failed during SIGTERM shutdown: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
     }
     process.exit(0);
   });

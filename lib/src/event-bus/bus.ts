@@ -68,7 +68,7 @@ export class EventBus {
 
     const matching = this.subscribers.get(event.type) || [];
     const wildcard = this.subscribers.get('*') || [];
-    const allSubs = [...matching, ...wildcard];
+    const allSubs = [...new Set([...matching, ...wildcard])];
 
     for (let i = 0; i < allSubs.length; i += SUBSCRIBER_CONCURRENCY) {
       const batch = allSubs.slice(i, i + SUBSCRIBER_CONCURRENCY);

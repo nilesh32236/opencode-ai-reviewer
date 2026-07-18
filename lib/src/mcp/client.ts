@@ -87,6 +87,12 @@ export class MCPManager {
             console.log(
               `  ${server.name}: Failed to connect — ${err instanceof Error ? err.message : err}`,
             );
+            this.clients.delete(server.name);
+            if (mcpClient) {
+              try {
+                await mcpClient.close();
+              } catch {}
+            }
             if (mcpTransport) {
               try {
                 mcpTransport.close();
