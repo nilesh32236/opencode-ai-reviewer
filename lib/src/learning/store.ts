@@ -10,12 +10,15 @@ export class LearningStore {
       const target = process.env.DATABASE_URL || dbPathOrUrl || getDbPath();
       const maxRetries = 3;
       let db: DbAdapter | undefined;
+      const errors: string[] = [];
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
           db = await connectDb(target);
           await applyMigrations(db);
           return db;
         } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          errors.push(msg);
           if (db) {
             try {
               await db.close();
@@ -24,14 +27,14 @@ export class LearningStore {
             }
             db = undefined;
           }
-          if (attempt === maxRetries) throw err;
+          if (attempt === maxRetries) break;
           console.warn(
-            `DB connection attempt ${attempt} failed, retrying: ${err instanceof Error ? err.message : err}`,
+            `DB connection attempt ${attempt} failed, retrying: ${msg}`,
           );
           await new Promise((r) => setTimeout(r, 1000 * attempt));
         }
       }
-      throw new Error('Failed to connect to database after retries');
+      throw new Error('Failed to connect to database after retries: ' + errors.join('; '));
     })();
   }
 
@@ -50,28 +53,23 @@ export class LearningStore {
     message: string;
     suggestion?: string;
   }): Promise<string> {
-    try {
-      const db = await this.dbPromise;
-      const id = finding.id || generateId();
-      await db.run(
-        `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          id,
-          finding.prNumber,
-          finding.type,
-          finding.severity || null,
-          finding.file || null,
-          finding.line || null,
-          finding.message,
-          finding.suggestion || null,
-        ],
-      );
-      return id;
-    } catch (err) {
-      console.warn(`Failed to record finding: ${err instanceof Error ? err.message : err}`);
-      throw err;
-    }
+    const db = await this.dbPromise;
+    const id = finding.id || generateId();
+    await db.run(
+      `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        finding.prNumber,
+        finding.type,
+        finding.severity || null,
+        finding.file || null,
+        finding.line || null,
+        finding.message,
+        finding.suggestion || null,
+      ],
+    );
+    return id;
   }
 
   async recordFindings(

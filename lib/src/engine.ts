@@ -77,7 +77,7 @@ export class ReviewEngine {
           try {
             return await this.learningStore!.getRelevantLessons(pr.changedFiles.map((f) => f.path));
           } catch {
-            console.warn('Failed to fetch relevant lessons, defaulting to empty array');
+            core.warning('Failed to fetch relevant lessons, defaulting to empty array');
             return [];
           }
         })()
@@ -185,7 +185,7 @@ export class ReviewEngine {
       model: this.config.fixModel,
     });
     if (!fixRunResult.success) {
-      console.warn('OpenCode fix execution failed, returning default FixResult');
+      core.warning('OpenCode fix execution failed, returning default FixResult');
       return { changesMade: false, filesChanged: [] };
     }
 
@@ -258,7 +258,7 @@ export class ReviewEngine {
       model: this.config.reviewModel,
     });
     if (!auditRunResult.success) {
-      console.warn('OpenCode audit execution failed, returning fallback empty result');
+      core.warning('OpenCode audit execution failed, returning fallback empty result');
       return {
         summary: '',
         verdict: {
@@ -279,7 +279,7 @@ export class ReviewEngine {
     try {
       return await parseJsonlFile(outputPath);
     } catch {
-      console.warn(`Failed to parse audit output at ${outputPath}, returning empty result`);
+      core.warning(`Failed to parse audit output at ${outputPath}, returning empty result`);
       return {
         summary: '',
         verdict: {
@@ -301,12 +301,12 @@ export class ReviewEngine {
     try {
       await this.mcp.disconnect();
     } catch {
-      console.warn('MCP disconnect failed during cleanup');
+      core.warning('MCP disconnect failed during cleanup');
     }
     try {
       await this.learningStore?.close();
     } catch {
-      console.warn('LearningStore close failed during cleanup');
+      core.warning('LearningStore close failed during cleanup');
     }
   }
 

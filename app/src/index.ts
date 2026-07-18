@@ -155,7 +155,11 @@ export default (app: Probot): void => {
   });
 
   process.on('SIGTERM', async () => {
-    await learningStore.close();
+    try {
+      await learningStore.close();
+    } catch {
+      /* ignore */
+    }
     process.exit(0);
   });
 

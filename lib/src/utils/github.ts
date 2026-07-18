@@ -446,7 +446,7 @@ export class GitHubHelper {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name: label, color: generateLabelColor(label) }),
-          }).catch(() => {}),
+          }).catch(() => core.debug('Label creation failed')),
         ),
       );
     }

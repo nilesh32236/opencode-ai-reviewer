@@ -67,6 +67,8 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
     }
   }
 
+  if (streamError) throw streamError;
+
   const criticalCount = issues.filter((i) => i.severity === 'critical').length;
   const importantCount = issues.filter((i) => i.severity === 'important').length;
   const minorCount = issues.filter((i) => i.severity === 'minor').length;
