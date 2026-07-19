@@ -96,33 +96,26 @@ export class EventBus {
 
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     try {
-      const handleFn = async () => {
-        await Promise.race([
-          sub.handle(event),
-          new Promise<never>((_, reject) => {
-            timeoutHandle = setTimeout(
-              () =>
-                reject(
-                  new Error(`Subscriber ${sub.name} timed out after ${SUBSCRIBER_TIMEOUT_MS}ms`),
-                ),
-              SUBSCRIBER_TIMEOUT_MS,
-            );
-          }),
-        ]);
-      };
+      const subscriberWork = async () => sub.handle(event);
 
-      const wrappedHandle = () =>
-        withRetry(handleFn, {
-          maxRetries: 2,
-          baseDelayMs: 1000,
-          operationName: sub.name,
-        });
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(
+          () =>
+            reject(
+              new Error(`Subscriber ${sub.name} timed out after ${SUBSCRIBER_TIMEOUT_MS}ms`),
+            ),
+          SUBSCRIBER_TIMEOUT_MS,
+        );
+      });
 
-      if (cb) {
-        await cb.call(wrappedHandle);
-      } else {
-        await wrappedHandle();
-      }
+      const retriedWork = withRetry(subscriberWork, {
+        maxRetries: 2,
+        baseDelayMs: 1000,
+        operationName: sub.name,
+      });
+
+      const work = cb ? () => cb.call(() => retriedWork) : () => retriedWork;
+      await Promise.race([work(), timeoutPromise]);
 
       if (health) {
         health.failedCalls = 0;
