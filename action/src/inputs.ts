@@ -29,6 +29,14 @@ export function validateRunChecksCommand(command: string): { program: string; ar
   return { program, args: parts.slice(1) };
 }
 
+export function parseTimeoutMinutes(raw: string): number {
+  const timeoutMinutes = Number.parseInt(raw || '20', 10);
+  if (isNaN(timeoutMinutes) || timeoutMinutes < 1) {
+    throw new Error('timeout_minutes must be a positive integer');
+  }
+  return timeoutMinutes;
+}
+
 export interface ActionInputs {
   mode: ActionMode;
   githubToken: string;
@@ -126,6 +134,6 @@ export function parseInputs(): ActionInputs {
     auditAutoFix: core.getInput('audit_auto_fix') === 'true',
     auditLabels,
     opencodeVersion,
-    timeoutMinutes: Number.parseInt(core.getInput('timeout_minutes') || '20', 10),
+    timeoutMinutes: parseTimeoutMinutes(core.getInput('timeout_minutes')),
   };
 }

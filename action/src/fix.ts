@@ -128,6 +128,7 @@ export async function runFixIssue(
     await exec.exec('git', ['push', 'origin', branchName, '--force']);
   } catch (err) {
     core.warning(`Git push failed: ${err instanceof Error ? err.message : err}`);
+    core.setFailed(`Git push failed: ${err instanceof Error ? err.message : err}`);
   }
 
   const issue = await gh.getIssue(issueNumber);
@@ -359,7 +360,7 @@ export async function runAutofixLoop(
 
   const startTime = Date.now();
   const totalTimeoutMs = (config.timeoutMinutes ?? 20) * 60 * 1000;
-  const gracePeriodMs = 2 * 60 * 1000; // 2 minutes grace period for git/github operations
+  const gracePeriodMs = Math.max(30_000, totalTimeoutMs * 0.1);
 
   for (let i = 0; i < config.maxIterations; i++) {
     const elapsedMs = Date.now() - startTime;
@@ -508,7 +509,7 @@ export async function runAutofixLoop(
       // Create a new comment when we reach max iterations, rather than updating existing one
       await gh.createComment(
         prNumber,
-        buildReviewBody(history, config.maxIterations, 'max-iterations'),
+        buildReviewBody(history, config.maxIterations, 'max-iterations') + '\n\n' + REVIEW_MARKER,
       );
     } catch (err) {
       core.warning(

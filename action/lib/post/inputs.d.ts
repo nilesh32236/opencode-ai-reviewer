@@ -7,6 +7,7 @@ export declare function validateRunChecksCommand(command: string): {
     program: string;
     args: string[];
 };
+export declare function parseTimeoutMinutes(raw: string): number;
 export interface ActionInputs {
     mode: ActionMode;
     githubToken: string;
