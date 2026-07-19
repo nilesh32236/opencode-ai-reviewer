@@ -271,7 +271,7 @@ export class GitHubHelper {
       const lines = new Set<string>();
       let currentFile = '';
       const linesArray = diffText.split('\n');
-      const hunkRegex = /^@@\s+-[0-9,]+\s+\+([0-9]+),([0-9]+)\s+@@/;
+      const hunkRegex = /^@@\s+-[0-9,]+\s+\+([0-9]+)(?:,([0-9]+))?\s+@@/;
 
       for (const line of linesArray) {
         if (line.startsWith('+++ b/')) {
@@ -280,7 +280,7 @@ export class GitHubHelper {
           const match = hunkRegex.exec(line);
           if (match && currentFile) {
             const startLine = Number.parseInt(match[1], 10);
-            const lineCount = Number.parseInt(match[2], 10);
+            const lineCount = Number.parseInt(match[2], 10) || 1;
             for (let i = 0; i < lineCount; i++) {
               lines.add(`${currentFile}:${startLine + i}`);
             }

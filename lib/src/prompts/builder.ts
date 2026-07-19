@@ -23,7 +23,7 @@ export function buildReviewPrompt(
   }
 
   const projectContext = inputs.projectContext || getDefaultProjectContext();
-  const batchSize = inputs.maxFilesPerBatch || 3;
+  const batchSize = inputs.maxFilesPerBatch ?? 3;
   const sections: string[] = [];
 
   sections.push(
@@ -129,7 +129,7 @@ export function buildFixPrompt(
   iteration: number,
 ): string {
   const projectContext = inputs.projectContext || getDefaultProjectContext();
-  const maxIterations = inputs.maxFixIterations || 3;
+  const maxIterations = inputs.maxFixIterations ?? 3;
 
   return `You are a Senior Code Fixer. Fix the issues found during code review.
 

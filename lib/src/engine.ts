@@ -1,5 +1,6 @@
-import { promises as fs } from 'fs';
+import { promises as fs, existsSync, readFileSync } from 'fs';
 import * as cp from 'node:child_process';
+import * as path from 'path';
 import * as core from '@actions/core';
 import { emptyResult, parseJsonlFile } from './jsonl-parser.js';
 import type { LearningStore } from './learning/store.js';
@@ -170,24 +171,29 @@ export class ReviewEngine {
       core.warning(
         'OpenCode fix execution failed or timed out. Checking for partial changes on disk...',
       );
+      // Give filesystem time to flush writes from the killed process
+      await new Promise((r) => setTimeout(r, 500));
     }
+
+    let changesMade = false;
+    let filesChanged: string[] = [];
+    let stuck = false;
+    let stuckReason: string | undefined;
+    let summary: string | undefined;
 
     try {
       const status = getGitStatus();
-      const changesMade = status.trim().length > 0;
+      changesMade = status.trim().length > 0;
 
-      let stuck = false;
-      let stuckReason: string | undefined;
       try {
         const stuckContent = await fs.readFile('.fix-stuck.md', 'utf-8');
-        stuck = true;
+        stuck = stuckContent.trim().length > 0;
         stuckReason = stuckContent;
         await fs.unlink('.fix-stuck.md');
       } catch {
         core.debug('No .fix-stuck.md — proceeding normally');
       }
 
-      let summary: string | undefined;
       try {
         summary = await fs.readFile('.fix-summary.md', 'utf-8');
         await fs.unlink('.fix-summary.md');
@@ -195,11 +201,10 @@ export class ReviewEngine {
         core.debug('No .fix-summary.md — proceeding normally');
       }
 
-      let filesChanged: string[] = [];
       if (changesMade) {
         try {
           const raw = cp
-            .execFileSync('git', ['diff', '--name-only'], { encoding: 'utf-8' })
+            .execFileSync('git', ['diff', '--name-only', 'HEAD'], { encoding: 'utf-8' })
             .toString()
             .trim();
           filesChanged = raw ? raw.split('\n') : [];
@@ -207,11 +212,13 @@ export class ReviewEngine {
           core.warning('Could not get git diff to determine changed files');
         }
       }
-
-      return { changesMade, filesChanged, stuck, stuckReason, summary };
-    } catch {
-      return { changesMade: false, filesChanged: [] };
+    } catch (err) {
+      core.warning(
+        `Error reading fix results after OpenCode: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
+
+    return { changesMade, filesChanged, stuck, stuckReason, summary };
   }
 
   async runAudit(
@@ -434,10 +441,8 @@ function detectLibrariesFromDir(dir: string): string[] {
   // since `src` is also used by WordPress plugins for React admin UI.
   if (dir === 'src' || dir.endsWith('/src')) {
     // Check for package.json to confirm it's a JS project before adding Node libs.
-    const fs = require('node:fs') as typeof import('fs');
-    const path = require('node:path') as typeof import('path');
-    const hasPackageJson = fs.existsSync(path.join(process.cwd(), 'package.json'));
-    const hasComposerJson = fs.existsSync(path.join(process.cwd(), 'composer.json'));
+    const hasPackageJson = existsSync(path.join(process.cwd(), 'package.json'));
+    const hasComposerJson = existsSync(path.join(process.cwd(), 'composer.json'));
 
     if (hasPackageJson) {
       libs.add('react');

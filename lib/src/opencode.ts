@@ -193,7 +193,7 @@ export async function runOpenCode(
   const binaryPath = opencodePath || (await setupOpenCode());
   const startTime = Date.now();
   const cwd = options.workingDirectory || process.cwd();
-  const timeoutMs = (options.timeoutMinutes ?? 10) * 60 * 1000;
+  const timeoutMs = (options.timeoutMinutes ?? 20) * 60 * 1000;
 
   // --auto  → auto-approves any permission that is not explicitly "deny".
   //           This is the documented CI mechanism for opencode run.
@@ -229,7 +229,7 @@ export async function runOpenCode(
     ? process.env.GEMINI_API_KEY || process.env.INPUT_GEMINI_API_KEY || ''
     : '';
 
-  const safeEnv: Record<string, string | undefined> = {};
+  const safeEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined) {
       safeEnv[key] = value;
@@ -237,9 +237,12 @@ export async function runOpenCode(
   }
   // Remove all API keys first, then only set the one for the active model.
   // This prevents non-selected keys from leaking into the child process.
-  safeEnv.OPENAI_API_KEY = undefined;
-  safeEnv.ANTHROPIC_API_KEY = undefined;
-  safeEnv.GEMINI_API_KEY = undefined;
+  // biome-ignore lint/performance/noDelete: must delete, not set undefined, to prevent leaking key strings to child process spawn
+  delete safeEnv.OPENAI_API_KEY;
+  // biome-ignore lint/performance/noDelete: must delete, not set undefined, to prevent leaking key strings to child process spawn
+  delete safeEnv.ANTHROPIC_API_KEY;
+  // biome-ignore lint/performance/noDelete: must delete, not set undefined, to prevent leaking key strings to child process spawn
+  delete safeEnv.GEMINI_API_KEY;
   safeEnv.GITHUB_TOKEN = githubToken;
   safeEnv.GH_TOKEN = githubToken;
   if (openaiApiKey) safeEnv.OPENAI_API_KEY = openaiApiKey;
@@ -287,15 +290,15 @@ export async function runOpenCode(
 
     const durationMs = Date.now() - startTime;
 
-    if (timedOut || exitCode !== 0 || processError) {
-      core.warning(
-        `OpenCode did not complete successfully (timedOut: ${timedOut}, exitCode: ${exitCode}, error: ${processError ?? 'none'})`,
-      );
-      return { success: false, output: '', durationMs };
+    if (exitCode === 0 && !processError) {
+      core.info(`OpenCode finished in ${(durationMs / 1000).toFixed(1)}s`);
+      return { success: true, output: '', durationMs };
     }
 
-    core.info(`OpenCode finished in ${(durationMs / 1000).toFixed(1)}s`);
-    return { success: true, output: '', durationMs };
+    core.warning(
+      `OpenCode did not complete successfully (timedOut: ${timedOut}, exitCode: ${exitCode}, error: ${processError ?? 'none'})`,
+    );
+    return { success: false, output: '', durationMs };
   } catch (err) {
     const durationMs = Date.now() - startTime;
     core.error(`OpenCode execution failed: ${String(err)}`);

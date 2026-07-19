@@ -46,16 +46,16 @@ export async function runFix(
 
   let changesMade = false;
   if (fixResult?.changesMade) {
-    await exec.exec('git', ['add', '-A']);
-    await exec.exec('git', [
-      'commit',
-      '-m',
-      `fix: address review feedback (iteration ${iteration + 1})`,
-    ]);
     try {
+      await exec.exec('git', ['add', '-u']);
+      await exec.exec('git', [
+        'commit',
+        '-m',
+        `fix: address review feedback (iteration ${iteration + 1})`,
+      ]);
       await exec.exec('git', ['push', 'origin', pr.headRef]);
     } catch (err) {
-      core.warning(`Git push failed: ${err instanceof Error ? err.message : err}`);
+      core.warning(`Git operations failed: ${err instanceof Error ? err.message : err}`);
     }
     changesMade = true;
   }
@@ -201,7 +201,6 @@ interface IterationRecord {
 
 const REVIEW_MARKER = '<!-- autofix-review -->';
 const FIX_MARKER = '<!-- autofix-applied -->';
-const _MERGE_MARKER = '<!-- autofix-merged -->';
 
 function buildReviewBody(
   history: IterationRecord[],
@@ -408,9 +407,9 @@ export async function runAutofixLoop(
       iteration: i + 1,
       status: 'approved',
       summary: result.summary,
-      critical: result.stats.critical,
-      important: result.stats.important,
-      minor: result.stats.minor,
+      critical: result.stats?.critical ?? 0,
+      important: result.stats?.important ?? 0,
+      minor: result.stats?.minor ?? 0,
     };
 
     if (result.verdict.ready && result.stats.critical === 0 && result.stats.important === 0) {
@@ -443,7 +442,8 @@ export async function runAutofixLoop(
 
     if (!fixResult.changesMade) {
       core.info('Fix agent made no changes — stopping loop');
-      history[history.length - 1].status = 'no-changes';
+      const currentEntry = history[history.length - 1];
+      currentEntry.status = 'no-changes';
       try {
         await gh.postOrUpdateComment(
           prNumber,
@@ -458,16 +458,17 @@ export async function runAutofixLoop(
       break;
     }
 
-    history[history.length - 1].status = 'fix-applied';
-    history[history.length - 1].filesChanged = fixResult.filesChanged;
-    history[history.length - 1].fixSummary = fixResult.summary;
+    const currentEntry = history[history.length - 1];
+    currentEntry.status = 'fix-applied';
+    currentEntry.filesChanged = fixResult.filesChanged;
+    currentEntry.fixSummary = fixResult.summary;
 
     const commitMsg = `fix: autofix iteration ${i + 1}`;
     try {
-      await exec.exec('git', ['add', '-A']);
+      await exec.exec('git', ['add', '-u']);
       await exec.exec('git', ['commit', '-m', commitMsg]);
       await exec.exec('git', ['push', 'origin', pr.headRef]);
-      history[history.length - 1].commitMessage = commitMsg;
+      currentEntry.commitMessage = commitMsg;
     } catch (err) {
       core.warning(
         `Git operations failed in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
@@ -506,10 +507,9 @@ export async function runAutofixLoop(
   if (!approved) {
     await gh.setLabels(prNumber, ['autofix:needs-manual-review'], ['autofix', 'autofix:needs-fix']);
     try {
-      // Create a new comment when we reach max iterations, rather than updating existing one
       await gh.createComment(
         prNumber,
-        buildReviewBody(history, config.maxIterations, 'max-iterations') + '\n\n' + REVIEW_MARKER,
+        `<!-- autofix-max-iterations -->\n\n${buildReviewBody(history, config.maxIterations, 'max-iterations')}`,
       );
     } catch (err) {
       core.warning(
@@ -538,11 +538,11 @@ async function handleTimeoutGracefully(
 
   if (hasChanges) {
     try {
-      const raw = await exec.getExecOutput('git', ['diff', '--name-only']);
+      const raw = await exec.getExecOutput('git', ['diff', '--name-only', 'HEAD']);
       filesChanged = raw.stdout.trim().split('\n').filter(Boolean);
 
       commitMessage = `fix: address review feedback (partial changes due to timeout iteration ${iteration + 1})`;
-      await exec.exec('git', ['add', '-A']);
+      await exec.exec('git', ['add', '-u']);
       await exec.exec('git', ['commit', '-m', commitMessage]);
 
       const pr = await gh.getPR(prNumber);
