@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { JsonDatabase } from './json-db.js';
 
-function sanitizeDbError(err: unknown): string {
+export function sanitizeDbError(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
   return msg.replace(/([a-z][a-z0-9+.-]+:\/\/)[^@\s]+@/gi, '$1<redacted>@');
 }

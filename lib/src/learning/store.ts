@@ -1,11 +1,6 @@
 import type { LearningFeedback, LearningQuality } from '../types/index.js';
-import { type DbAdapter, connectDb } from './db.js';
+import { type DbAdapter, connectDb, sanitizeDbError } from './db.js';
 import { applyMigrations, generateId, getDbPath } from './schema.js';
-
-function sanitizeDbError(err: unknown): string {
-  const msg = err instanceof Error ? err.message : String(err);
-  return msg.replace(/([a-z][a-z0-9+.-]+:\/\/)[^@\s]+@/gi, '$1<redacted>@');
-}
 
 export class LearningStore {
   private dbPromise: Promise<DbAdapter>;
