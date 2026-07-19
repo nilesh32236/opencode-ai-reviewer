@@ -205,13 +205,17 @@ function validateAndNormalize(obj: Record<string, unknown>): Finding {
             : 'low',
       } as VerdictFinding;
 
-    case 'strength':
+    case 'strength': {
+      if (typeof obj.message !== 'string' || obj.message.trim().length === 0) {
+        throw new Error('Strength finding must have a non-empty "message" field');
+      }
       return {
         type: 'strength',
         file: typeof obj.file === 'string' ? obj.file : undefined,
         line: typeof obj.line === 'number' ? obj.line : undefined,
-        message: typeof obj.message === 'string' ? obj.message : '',
+        message: obj.message.trim(),
       } as StrengthFinding;
+    }
 
     case 'issue': {
       if (!VALID_SEVERITIES.includes(obj.severity as Severity)) {
@@ -241,7 +245,7 @@ function validateAndNormalize(obj: Record<string, unknown>): Finding {
   }
 }
 
-function emptyResult(): ReviewResult {
+export function emptyResult(): ReviewResult {
   return {
     summary: '',
     verdict: { ready: false, reasoning: '', autoFixable: false, confidence: 'low' },

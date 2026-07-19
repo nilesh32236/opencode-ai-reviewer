@@ -28,16 +28,20 @@ export class CircuitBreaker {
     this.options = { ...DEFAULT_OPTIONS, ...options };
   }
 
-  getState(): CircuitState {
+  private transitionState(): void {
     if (this.state === 'OPEN' && Date.now() - this.lastFailureTime >= this.options.cooldownMs) {
       this.state = 'HALF_OPEN';
       core.info(`[${this.options.name}] Circuit transitioning OPEN -> HALF_OPEN after cooldown`);
     }
+  }
+
+  getState(): CircuitState {
     return this.state;
   }
 
   async call<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.getState() === 'OPEN') {
+    this.transitionState();
+    if (this.state === 'OPEN') {
       throw new Error(
         `[${this.options.name}] Circuit is OPEN — request not attempted (cooldown: ${this.options.cooldownMs}ms)`,
       );

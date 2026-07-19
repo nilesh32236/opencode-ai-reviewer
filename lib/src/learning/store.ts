@@ -1,5 +1,5 @@
 import type { LearningFeedback, LearningQuality } from '../types/index.js';
-import { type DbAdapter, connectDb } from './db.js';
+import { type DbAdapter, connectDb, sanitizeDbError } from './db.js';
 import { applyMigrations, generateId, getDbPath } from './schema.js';
 
 export class LearningStore {
@@ -27,8 +27,10 @@ export class LearningStore {
             }
             db = undefined;
           }
-          if (attempt === maxRetries) break;
-          console.warn(`DB connection attempt ${attempt} failed, retrying: ${msg}`);
+          if (attempt === maxRetries) throw err;
+          console.warn(
+            `DB connection attempt ${attempt} failed, retrying: ${sanitizeDbError(err)}`,
+          );
           await new Promise((r) => setTimeout(r, 1000 * attempt));
         }
       }
@@ -50,24 +52,29 @@ export class LearningStore {
     line?: number;
     message: string;
     suggestion?: string;
-  }): Promise<string> {
-    const db = await this.dbPromise;
-    const id = finding.id || generateId();
-    await db.run(
-      `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        id,
-        finding.prNumber,
-        finding.type,
-        finding.severity || null,
-        finding.file || null,
-        finding.line || null,
-        finding.message,
-        finding.suggestion || null,
-      ],
-    );
-    return id;
+  }): Promise<string | null> {
+    try {
+      const db = await this.dbPromise;
+      const id = finding.id || generateId();
+      await db.run(
+        `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          finding.prNumber,
+          finding.type,
+          finding.severity || null,
+          finding.file || null,
+          finding.line || null,
+          finding.message,
+          finding.suggestion || null,
+        ],
+      );
+      return id;
+    } catch (err) {
+      console.warn(`Failed to record finding: ${err instanceof Error ? err.message : err}`);
+      return null;
+    }
   }
 
   async recordFindings(

@@ -7,7 +7,7 @@ You are auditing the **OpenCode AI Reviewer** codebase — a TypeScript monorepo
 
 Focus on checking strict TypeScript compliance, project conventions, and monorepo packaging rules.
 
-Scan the target directories recursively (`lib/src`, `action/src`, `app/src`). Output findings to `.audit-output.jsonl`.
+Scan the target directories recursively (`lib/src`, `action/src`, `app/src`). Write findings to the output file `.opencode/audit-{category}.jsonl` in JSON Lines format (the prompt builder will pass the correct category).
 
 ## What to Check
 

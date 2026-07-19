@@ -6,7 +6,7 @@ export async function handlePRReview(
   repo: string,
   token: string,
   config: AgentConfig,
-): Promise<void> {
+): Promise<ReviewResult | null> {
   const logger = new Logger('PRReview', { prNumber, repo });
   logger.info(`Starting review for PR #${prNumber}`);
 
@@ -17,13 +17,13 @@ export async function handlePRReview(
     pr = await gh.getPR(prNumber);
   } catch (err) {
     logger.error(`Failed to get PR #${prNumber}: ${err instanceof Error ? err.message : err}`);
-    return;
+    return null;
   }
 
   const hasSkipLabel = pr.labels.some((l) => config.review.skipLabels.includes(l));
   if (hasSkipLabel) {
     logger.info(`PR #${prNumber} has skip label — skipping`);
-    return;
+    return null;
   }
 
   const engine = new ReviewEngine(config, token, repo);
@@ -47,12 +47,12 @@ export async function handlePRReview(
       logger.error(
         `Review engine failed for PR #${prNumber}: ${err instanceof Error ? err.message : err}`,
       );
-      return;
+      return null;
     }
 
     if (!result.summary && result.issues.length === 0 && result.strengths.length === 0) {
       logger.warn(`Review returned no meaningful content for PR #${prNumber}`, { prNumber, repo });
-      return;
+      return null;
     }
 
     let reviewResult: { success: boolean; method: string };
@@ -62,7 +62,7 @@ export async function handlePRReview(
       logger.error(
         `Failed to post review for PR #${prNumber}: ${err instanceof Error ? err.message : err}`,
       );
-      return;
+      return null;
     }
 
     if (reviewResult.success) {
@@ -88,6 +88,8 @@ export async function handlePRReview(
         );
       }
     }
+
+    return result;
   } finally {
     try {
       await engine.cleanup();

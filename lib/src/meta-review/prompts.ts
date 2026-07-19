@@ -28,5 +28,7 @@ Output a JSON object with scores (0-100):
   "suggestions": ["<suggestion to improve>"]
 }
 
+Write this JSON object to the file \`.opencode/meta-review-output.jsonl\`.
+After writing, verify the file exists and contains valid JSON.
 Return ONLY the JSON object, no markdown fences.`;
 }
