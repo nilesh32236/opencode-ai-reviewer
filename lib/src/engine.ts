@@ -401,13 +401,42 @@ function detectLibraries(files: string[]): string[] {
 function detectLibrariesFromDir(dir: string): string[] {
   const libs = new Set<string>();
 
+  // PHP-only directories in WordPress plugins — no JS libraries apply.
+  // Returning an empty set avoids injecting irrelevant MCP docs for express/prisma.
+  const phpOnlyPatterns = ['includes', 'templates', 'vendor', 'admin', 'languages'];
+  if (phpOnlyPatterns.some((p) => dir.includes(p))) {
+    return [];
+  }
+
+  // JS/React source directories
   if (dir.includes('frontend') || dir.includes('app') || dir.includes('components')) {
     libs.add('next.js');
     libs.add('react');
     libs.add('@tanstack/react-query');
   }
 
-  if (dir.includes('backend') || dir.includes('src')) {
+  // Generic `src` directory — only add Node.js libs if no composer.json at root,
+  // since `src` is also used by WordPress plugins for React admin UI.
+  if (dir === 'src' || dir.endsWith('/src')) {
+    // Check for package.json to confirm it's a JS project before adding Node libs.
+    const fs = require('node:fs') as typeof import('fs');
+    const path = require('node:path') as typeof import('path');
+    const hasPackageJson = fs.existsSync(path.join(process.cwd(), 'package.json'));
+    const hasComposerJson = fs.existsSync(path.join(process.cwd(), 'composer.json'));
+
+    if (hasPackageJson) {
+      libs.add('react');
+    }
+    // If this is a hybrid (WP plugin with both composer + package.json), skip server-side libs.
+    if (!hasComposerJson) {
+      libs.add('express');
+      libs.add('prisma');
+      libs.add('zod');
+    }
+  }
+
+  // Pure backend directories (no ambiguity)
+  if (dir.includes('backend') || dir.includes('api') || dir.includes('server')) {
     libs.add('express');
     libs.add('prisma');
     libs.add('zod');

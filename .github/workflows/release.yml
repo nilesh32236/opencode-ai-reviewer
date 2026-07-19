@@ -55,3 +55,14 @@ jobs:
             LICENSE
           draft: false
           prerelease: ${{ contains(github.ref, 'rc') || contains(github.ref, 'beta') }}
+
+      - name: Tag as latest
+        # Only update `latest` for stable releases — not rc/beta pre-releases.
+        # Force-push so the `latest` tag always points to the newest stable commit.
+        if: ${{ !contains(github.ref, 'rc') && !contains(github.ref, 'beta') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git tag --force latest
+          git push origin latest --force
+          echo "✅ 'latest' tag updated → $(git rev-parse HEAD)"
