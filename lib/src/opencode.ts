@@ -216,7 +216,10 @@ export async function runOpenCode(
 
   const model = options.model.toLowerCase();
   const openaiApiKey =
-    model.startsWith('gpt') || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('o-')
+    model.startsWith('gpt') ||
+    model.startsWith('o1') ||
+    model.startsWith('o3') ||
+    model.startsWith('o-')
       ? process.env.OPENAI_API_KEY || process.env.INPUT_OPENAI_API_KEY || ''
       : '';
   const anthropicApiKey = model.startsWith('claude')
@@ -226,7 +229,7 @@ export async function runOpenCode(
     ? process.env.GEMINI_API_KEY || process.env.INPUT_GEMINI_API_KEY || ''
     : '';
 
-  const safeEnv: Record<string, string> = {};
+  const safeEnv: Record<string, string | undefined> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined) {
       safeEnv[key] = value;
@@ -234,9 +237,9 @@ export async function runOpenCode(
   }
   // Remove all API keys first, then only set the one for the active model.
   // This prevents non-selected keys from leaking into the child process.
-  delete safeEnv.OPENAI_API_KEY;
-  delete safeEnv.ANTHROPIC_API_KEY;
-  delete safeEnv.GEMINI_API_KEY;
+  safeEnv.OPENAI_API_KEY = undefined;
+  safeEnv.ANTHROPIC_API_KEY = undefined;
+  safeEnv.GEMINI_API_KEY = undefined;
   safeEnv.GITHUB_TOKEN = githubToken;
   safeEnv.GH_TOKEN = githubToken;
   if (openaiApiKey) safeEnv.OPENAI_API_KEY = openaiApiKey;

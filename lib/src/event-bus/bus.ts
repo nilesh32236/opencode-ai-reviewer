@@ -101,9 +101,7 @@ export class EventBus {
       const timeoutPromise = new Promise<never>((_, reject) => {
         timeoutHandle = setTimeout(
           () =>
-            reject(
-              new Error(`Subscriber ${sub.name} timed out after ${SUBSCRIBER_TIMEOUT_MS}ms`),
-            ),
+            reject(new Error(`Subscriber ${sub.name} timed out after ${SUBSCRIBER_TIMEOUT_MS}ms`)),
           SUBSCRIBER_TIMEOUT_MS,
         );
       });

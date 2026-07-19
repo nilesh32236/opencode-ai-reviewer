@@ -57,6 +57,7 @@ export interface ActionInputs {
   auditAutoFix: boolean;
   auditLabels: string[];
   opencodeVersion: string;
+  timeoutMinutes: number;
 }
 
 export function parseInputs(): ActionInputs {
@@ -125,5 +126,6 @@ export function parseInputs(): ActionInputs {
     auditAutoFix: core.getInput('audit_auto_fix') === 'true',
     auditLabels,
     opencodeVersion,
+    timeoutMinutes: Number.parseInt(core.getInput('timeout_minutes') || '20', 10),
   };
 }

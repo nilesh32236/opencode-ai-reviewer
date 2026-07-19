@@ -155,6 +155,7 @@ ${projectContext}
 3. Apply a minimal, correct fix
 4. After fixing, run verification commands${inputs.runChecksAfterFix ? ': ' + inputs.runChecksAfterFix : ' (if configured)'}
 5. Fix any errors introduced by your changes
+6. Write a detailed summary of what you fixed and what you skipped (if anything) in markdown format to the file \`.fix-summary.md\`.
 
 ## CRITICAL RULES
 - Do NOT run \`git push\`, \`git commit\`, or create any pull requests

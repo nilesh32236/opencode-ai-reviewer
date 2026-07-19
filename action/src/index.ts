@@ -63,6 +63,7 @@ async function run(): Promise<void> {
       batchSize: inputs.maxFilesPerBatch,
       maxLinesPerFile: inputs.maxLinesPerFile,
       maxIterations: loadedConfig?.fix?.maxIterations || inputs.maxFixIterations,
+      timeoutMinutes: inputs.timeoutMinutes,
       enableMCP: inputs.enableMCP,
       mcpServers,
       projectContext: {

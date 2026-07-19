@@ -35,5 +35,6 @@ export interface ActionInputs {
     auditAutoFix: boolean;
     auditLabels: string[];
     opencodeVersion: string;
+    timeoutMinutes: number;
 }
 export declare function parseInputs(): ActionInputs;

@@ -36,6 +36,7 @@ export class ReviewEngine {
     iteration?: number,
     reviewPromptFile?: string,
     reviewPromptExtra?: string,
+    timeoutMinutes?: number,
   ): Promise<ReviewResult> {
     core.info(
       `Reviewing PR #${pr.number} (${pr.changedFiles.length} files)${iteration !== undefined ? ` (Iteration ${iteration + 1})` : ''}`,
@@ -107,6 +108,7 @@ export class ReviewEngine {
     core.info(`Running OpenCode review (model: ${this.config.reviewModel})`);
     const runResult = await runOpenCode(prompt, {
       model: this.config.reviewModel,
+      timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
     });
     if (!runResult.success) {
       core.warning('OpenCode review execution failed, returning fallback result');
@@ -131,6 +133,7 @@ export class ReviewEngine {
     iteration: number,
     contextMarkdown: string,
     cachedPR?: PRContext,
+    timeoutMinutes?: number,
   ): Promise<FixResult> {
     let mcpDocs = '';
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
@@ -161,10 +164,12 @@ export class ReviewEngine {
 
     const fixRunResult = await runOpenCode(prompt, {
       model: this.config.fixModel,
+      timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
     });
     if (!fixRunResult.success) {
-      core.warning('OpenCode fix execution failed, returning default FixResult');
-      return { changesMade: false, filesChanged: [] };
+      core.warning(
+        'OpenCode fix execution failed or timed out. Checking for partial changes on disk...',
+      );
     }
 
     try {
@@ -182,6 +187,14 @@ export class ReviewEngine {
         core.debug('No .fix-stuck.md — proceeding normally');
       }
 
+      let summary: string | undefined;
+      try {
+        summary = await fs.readFile('.fix-summary.md', 'utf-8');
+        await fs.unlink('.fix-summary.md');
+      } catch {
+        core.debug('No .fix-summary.md — proceeding normally');
+      }
+
       let filesChanged: string[] = [];
       if (changesMade) {
         try {
@@ -195,7 +208,7 @@ export class ReviewEngine {
         }
       }
 
-      return { changesMade, filesChanged, stuck, stuckReason };
+      return { changesMade, filesChanged, stuck, stuckReason, summary };
     } catch {
       return { changesMade: false, filesChanged: [] };
     }
@@ -205,6 +218,7 @@ export class ReviewEngine {
     promptContent: string,
     targetDir: string,
     category: string,
+    timeoutMinutes?: number,
   ): Promise<ReviewResult> {
     let mcpDocs = '';
     if (this.config.enableMCP) {
@@ -234,6 +248,7 @@ export class ReviewEngine {
 
     const auditRunResult = await runOpenCode(prompt, {
       model: this.config.reviewModel,
+      timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
     });
     if (!auditRunResult.success) {
       core.warning('OpenCode audit execution failed, returning fallback empty result');
