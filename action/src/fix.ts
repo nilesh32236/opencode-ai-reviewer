@@ -29,8 +29,9 @@ export async function runFix(
   const iteration = comments.filter((c) => c.body.includes('<!-- autofix-review -->')).length;
 
   if (iteration >= config.maxIterations) {
-    core.warning(`Max iterations reached (${config.maxIterations}). Needs manual review.`);
+    const errorMsg = `Max iterations reached (${config.maxIterations}). Needs manual review.`;
     await gh.setLabels(prNumber, ['autofix:needs-manual-review'], ['autofix', 'autofix:needs-fix']);
+    core.setFailed(errorMsg);
     return;
   }
 
@@ -45,16 +46,16 @@ export async function runFix(
 
   let changesMade = false;
   if (fixResult?.changesMade) {
-    await exec.exec('git', ['add', '-A']);
-    await exec.exec('git', [
-      'commit',
-      '-m',
-      `fix: address review feedback (iteration ${iteration + 1})`,
-    ]);
     try {
+      await exec.exec('git', ['add', '-u']);
+      await exec.exec('git', [
+        'commit',
+        '-m',
+        `fix: address review feedback (iteration ${iteration + 1})`,
+      ]);
       await exec.exec('git', ['push', 'origin', pr.headRef]);
     } catch (err) {
-      core.warning(`Git push failed: ${err instanceof Error ? err.message : err}`);
+      core.warning(`Git operations failed: ${err instanceof Error ? err.message : err}`);
     }
     changesMade = true;
   }
@@ -127,6 +128,7 @@ export async function runFixIssue(
     await exec.exec('git', ['push', 'origin', branchName, '--force']);
   } catch (err) {
     core.warning(`Git push failed: ${err instanceof Error ? err.message : err}`);
+    core.setFailed(`Git push failed: ${err instanceof Error ? err.message : err}`);
   }
 
   const issue = await gh.getIssue(issueNumber);
@@ -187,18 +189,18 @@ export async function runFixIssue(
 
 interface IterationRecord {
   iteration: number;
-  status: 'approved' | 'fix-applied' | 'needs-fix' | 'no-changes';
+  status: 'approved' | 'fix-applied' | 'needs-fix' | 'no-changes' | 'timeout';
   summary: string;
   critical: number;
   important: number;
   minor: number;
   filesChanged?: string[];
   commitMessage?: string;
+  fixSummary?: string;
 }
 
 const REVIEW_MARKER = '<!-- autofix-review -->';
 const FIX_MARKER = '<!-- autofix-applied -->';
-const _MERGE_MARKER = '<!-- autofix-merged -->';
 
 function buildReviewBody(
   history: IterationRecord[],
@@ -267,6 +269,10 @@ function buildReviewBody(
           icon = 'ℹ️';
           detail = 'No changes made';
           break;
+        case 'timeout':
+          icon = '⚠️';
+          detail = 'Timed out — changes partially applied';
+          break;
       }
       lines.push(`- ${icon} **Iteration ${h.iteration}:** ${detail}`);
     }
@@ -300,6 +306,9 @@ function buildFixBody(history: IterationRecord[]): string {
       for (const f of last.filesChanged) {
         lines.push(`- \`${f}\``);
       }
+    }
+    if (last.fixSummary) {
+      lines.push('', '### Fix Details', '', last.fixSummary);
     }
   }
 
@@ -348,11 +357,34 @@ export async function runAutofixLoop(
   const history: IterationRecord[] = [];
   let approved = false;
 
+  const startTime = Date.now();
+  const totalTimeoutMs = (config.timeoutMinutes ?? 20) * 60 * 1000;
+  const gracePeriodMs = Math.max(30_000, totalTimeoutMs * 0.1);
+
   for (let i = 0; i < config.maxIterations; i++) {
+    const elapsedMs = Date.now() - startTime;
+    const timeLeftMs = totalTimeoutMs - elapsedMs;
+
+    if (timeLeftMs <= gracePeriodMs) {
+      core.warning(
+        `Autofix timeout approaching (remaining: ${Math.round(timeLeftMs / 1000)}s) — shutting down gracefully.`,
+      );
+      await handleTimeoutGracefully(prNumber, history, i, config, gh);
+      return;
+    }
+
+    const iterTimeoutMinutes = Math.max(1, Math.round((timeLeftMs - gracePeriodMs) / (60 * 1000)));
+
     core.info(`=== Autofix iteration ${i + 1}/${config.maxIterations} ===`);
 
     const pr = await gh.getPR(prNumber);
-    const result = await engine.reviewPR(pr, i, inputs.reviewPromptFile, inputs.reviewPromptExtra);
+    const result = await engine.reviewPR(
+      pr,
+      i,
+      inputs.reviewPromptFile,
+      inputs.reviewPromptExtra,
+      iterTimeoutMinutes,
+    );
 
     if (
       !result ||
@@ -375,9 +407,9 @@ export async function runAutofixLoop(
       iteration: i + 1,
       status: 'approved',
       summary: result.summary,
-      critical: result.stats.critical,
-      important: result.stats.important,
-      minor: result.stats.minor,
+      critical: result.stats?.critical ?? 0,
+      important: result.stats?.important ?? 0,
+      minor: result.stats?.minor ?? 0,
     };
 
     if (result.verdict.ready && result.stats.critical === 0 && result.stats.important === 0) {
@@ -406,11 +438,12 @@ export async function runAutofixLoop(
     }
 
     const contextMarkdown = await gh.gatherContext({ prNumber });
-    const fixResult = await engine.runFix(prNumber, i, contextMarkdown, pr);
+    const fixResult = await engine.runFix(prNumber, i, contextMarkdown, pr, iterTimeoutMinutes);
 
     if (!fixResult.changesMade) {
       core.info('Fix agent made no changes — stopping loop');
-      history[history.length - 1].status = 'no-changes';
+      const currentEntry = history[history.length - 1];
+      currentEntry.status = 'no-changes';
       try {
         await gh.postOrUpdateComment(
           prNumber,
@@ -425,14 +458,17 @@ export async function runAutofixLoop(
       break;
     }
 
-    history[history.length - 1].status = 'fix-applied';
-    history[history.length - 1].filesChanged = fixResult.filesChanged;
-    history[history.length - 1].commitMessage = fixResult.commitMessage;
+    const currentEntry = history[history.length - 1];
+    currentEntry.status = 'fix-applied';
+    currentEntry.filesChanged = fixResult.filesChanged;
+    currentEntry.fixSummary = fixResult.summary;
 
+    const commitMsg = `fix: autofix iteration ${i + 1}`;
     try {
-      await exec.exec('git', ['add', '-A']);
-      await exec.exec('git', ['commit', '-m', `fix: autofix iteration ${i + 1}`]);
+      await exec.exec('git', ['add', '-u']);
+      await exec.exec('git', ['commit', '-m', commitMsg]);
       await exec.exec('git', ['push', 'origin', pr.headRef]);
+      currentEntry.commitMessage = commitMsg;
     } catch (err) {
       core.warning(
         `Git operations failed in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
@@ -469,24 +505,83 @@ export async function runAutofixLoop(
   }
 
   if (!approved) {
-    core.warning(
-      `Max iterations reached (${config.maxIterations}) or agent not approved. Needs manual review.`,
-    );
     await gh.setLabels(prNumber, ['autofix:needs-manual-review'], ['autofix', 'autofix:needs-fix']);
     try {
-      await gh.postOrUpdateComment(
+      await gh.createComment(
         prNumber,
-        REVIEW_MARKER,
-        buildReviewBody(history, config.maxIterations, 'max-iterations'),
+        `<!-- autofix-max-iterations -->\n\n${buildReviewBody(history, config.maxIterations, 'max-iterations')}`,
       );
     } catch (err) {
       core.warning(
         `Failed to post max-iterations comment: ${err instanceof Error ? err.message : err}`,
       );
     }
+    const errorMsg = `Max iterations reached (${config.maxIterations}) or agent not approved. Needs manual review.`;
+    core.setFailed(errorMsg);
   }
 
   core.setOutput('approved', String(approved));
+}
+
+async function handleTimeoutGracefully(
+  prNumber: number,
+  history: IterationRecord[],
+  iteration: number,
+  config: AgentConfig,
+  gh: GitHubHelper,
+): Promise<void> {
+  const status = await exec.getExecOutput('git', ['status', '--porcelain']);
+  const hasChanges = status.stdout.trim().length > 0;
+
+  let commitMessage = '';
+  let filesChanged: string[] = [];
+
+  if (hasChanges) {
+    try {
+      const raw = await exec.getExecOutput('git', ['diff', '--name-only', 'HEAD']);
+      filesChanged = raw.stdout.trim().split('\n').filter(Boolean);
+
+      commitMessage = `fix: address review feedback (partial changes due to timeout iteration ${iteration + 1})`;
+      await exec.exec('git', ['add', '-u']);
+      await exec.exec('git', ['commit', '-m', commitMessage]);
+
+      const pr = await gh.getPR(prNumber);
+      await exec.exec('git', ['push', 'origin', pr.headRef]);
+      core.info('Successfully pushed partial changes.');
+    } catch (err) {
+      core.warning(
+        `Git push of partial changes failed: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  }
+
+  // Update history
+  history.push({
+    iteration: iteration + 1,
+    status: 'timeout',
+    summary: 'Workflow execution timed out. Changes partially applied.',
+    critical: 0,
+    important: 0,
+    minor: 0,
+    filesChanged,
+    commitMessage,
+  });
+
+  const commentBody = `<!-- autofix-timeout -->
+⚠️ **Autofix Timed Out (limit: ${config.timeoutMinutes} minutes)**
+
+The workflow run has reached its timeout limit.
+${hasChanges ? `Some changes were partially applied to ${filesChanged.length} files and pushed to the branch.` : 'No changes were pending or staged.'}
+
+Please run the workflow again to continue applying fixes.`;
+
+  try {
+    await gh.postOrUpdateComment(prNumber, '<!-- autofix-timeout -->', commentBody);
+  } catch (err) {
+    core.warning(`Failed to post timeout comment: ${err instanceof Error ? err.message : err}`);
+  }
+
+  core.setFailed(`Autofix execution timed out after ${config.timeoutMinutes} minutes.`);
 }
 
 async function resolvePrNumber(): Promise<number | null> {

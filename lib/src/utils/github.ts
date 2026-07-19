@@ -1,4 +1,5 @@
 import * as core from '@actions/core';
+import { buildInlineComments } from '../jsonl-parser.js';
 import type {
   ChangedFile,
   IssueComment,
@@ -268,13 +269,22 @@ export class GitHubHelper {
         'text',
       );
       const lines = new Set<string>();
-      const hunkRegex = /^@@\s+-[0-9,]+\s+\+([0-9]+),([0-9]+)\s+@@/gm;
-      let match: RegExpExecArray | null;
-      while ((match = hunkRegex.exec(diffText)) !== null) {
-        const startLine = Number.parseInt(match[1], 10);
-        const lineCount = Number.parseInt(match[2], 10);
-        for (let i = 0; i < lineCount; i++) {
-          lines.add(`${startLine + i}`);
+      let currentFile = '';
+      const linesArray = diffText.split('\n');
+      const hunkRegex = /^@@\s+-[0-9,]+\s+\+([0-9]+)(?:,([0-9]+))?\s+@@/;
+
+      for (const line of linesArray) {
+        if (line.startsWith('+++ b/')) {
+          currentFile = line.substring(6).trim();
+        } else {
+          const match = hunkRegex.exec(line);
+          if (match && currentFile) {
+            const startLine = Number.parseInt(match[1], 10);
+            const lineCount = Number.parseInt(match[2], 10) || 1;
+            for (let i = 0; i < lineCount; i++) {
+              lines.add(`${currentFile}:${startLine + i}`);
+            }
+          }
         }
       }
       return lines;
@@ -291,14 +301,8 @@ export class GitHubHelper {
     commitSha: string,
     result: ReviewResult,
   ): Promise<{ success: boolean; method: 'full' | 'body-only' | 'failed' }> {
-    const inlineComments = result.issues
-      .filter((i) => i.inline)
-      .map((i) => ({
-        path: i.file,
-        line: i.line,
-        side: 'RIGHT' as const,
-        body: `**${i.severity.toUpperCase()}**: ${i.message}${i.suggestion ? `\n\n> ${i.suggestion}` : ''}`,
-      }));
+    const diffLines = await this.getDiffLines(prNumber);
+    const inlineComments = buildInlineComments(result, diffLines);
 
     const body = this.buildReviewBody(result);
 

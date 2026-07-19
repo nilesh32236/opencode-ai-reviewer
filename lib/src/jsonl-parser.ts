@@ -303,7 +303,7 @@ export function buildInlineComments(
     .filter((issue) => {
       if (issue.inline !== true || !issue.line || issue.line < 1) return false;
       if (diffLines && diffLines.size > 0) {
-        const key = `${issue.file}:${issue.line}`;
+        const key = `${issue.file.replace(/^\//, '')}:${issue.line}`;
         return diffLines.has(key);
       }
       return true;

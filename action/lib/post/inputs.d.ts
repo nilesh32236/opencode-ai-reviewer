@@ -7,6 +7,7 @@ export declare function validateRunChecksCommand(command: string): {
     program: string;
     args: string[];
 };
+export declare function parseTimeoutMinutes(raw: string): number;
 export interface ActionInputs {
     mode: ActionMode;
     githubToken: string;
@@ -35,5 +36,6 @@ export interface ActionInputs {
     auditAutoFix: boolean;
     auditLabels: string[];
     opencodeVersion: string;
+    timeoutMinutes: number;
 }
 export declare function parseInputs(): ActionInputs;

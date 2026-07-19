@@ -92,6 +92,8 @@ export interface AgentConfig {
   maxLinesPerFile: number;
   /** Max review-fix iterations */
   maxIterations: number;
+  /** Max execution timeout in minutes */
+  timeoutMinutes?: number;
   /** Whether to use MCP servers for context enrichment */
   enableMCP: boolean;
   /** MCP server configurations */
@@ -258,6 +260,7 @@ export interface FixResult {
   commitMessage?: string;
   stuck?: boolean;
   stuckReason?: string;
+  summary?: string;
 }
 
 export interface AuditResult {
@@ -367,6 +370,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   batchSize: 3,
   maxLinesPerFile: 200,
   maxIterations: 3,
+  timeoutMinutes: 20,
   enableMCP: true,
   mcpServers: [],
   projectContext: {

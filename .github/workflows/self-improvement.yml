@@ -1,8 +1,15 @@
 name: Autonomous Self-Improvement
 
+# Runs weekly (or on-demand) to let the AI improve the codebase itself.
+# Creates an improvement/ branch, runs pnpm build + test to verify, then
+# opens a PR with label "self-improvement" so it gets reviewed (not auto-fixed).
+#
+# The PR is labeled "self-improvement" NOT "autofix" so it goes through the
+# normal review job in self-review.yml rather than the autofix loop.
+
 on:
   schedule:
-    - cron: '0 0 * * 0'  # Run weekly on Sunday at midnight UTC
+    - cron: '0 0 * * 0'  # Weekly, Sunday midnight UTC
   workflow_dispatch:
 
 permissions:
@@ -10,9 +17,11 @@ permissions:
   pull-requests: write
   issues: write
 
+# Weekly runs are naturally serialised. cancel-in-progress: false so a manual
+# dispatch doesn't kill a running scheduled run.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.sha }}
-  cancel-in-progress: true
+  group: self-improvement
+  cancel-in-progress: false
 
 env:
   CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
@@ -26,11 +35,12 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Configure git
         run: |
-          git config --global user.name "${{ github.actor || 'opencode-ai-reviewer[bot]' }}"
-          git config --global user.email "${{ github.actor || 'opencode-ai-reviewer[bot]' }}@users.noreply.github.com"
+          git config --global user.name "opencode-ai-reviewer[bot]"
+          git config --global user.email "opencode-ai-reviewer[bot]@users.noreply.github.com"
           git config --global url."https://x-access-token:${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
 
       - name: Setup Node.js
@@ -52,68 +62,104 @@ jobs:
 
       - name: Write Self-Improvement Prompt
         run: |
-          cat << 'EOF' > /tmp/self-improve-prompt.txt
+          cat << 'PROMPT_EOF' > /tmp/self-improve-prompt.txt
           You are a Self-Improving AI Agent for the **OpenCode AI Reviewer** codebase.
-          Your goal is to autonomously improve this repository by refactoring code, adding new features, improving workflows, updating workspace skills, or fixing bugs.
+          Your goal is to autonomously improve this repository by refactoring code,
+          adding new features, improving workflows, updating workspace skills, or fixing bugs.
 
           ## Research & Context Enrichment
-          1. Use the **search_web** tool to search for new features, best practices, or Node/TypeScript patterns.
-          2. Use **Context7 MCP** or CLI to check the latest APIs and documentation for libraries used in this project (e.g. Probot, SQLite, Vitest, @actions/core, @actions/exec).
+          1. Use the **search_web** tool to look for new features, best practices, or
+             Node/TypeScript patterns relevant to this project.
+          2. Use **Context7 MCP** to check the latest APIs and docs for libraries used here
+             (Probot, SQLite, Vitest, @actions/core, @actions/exec).
 
-          ## Tasks to Perform
-          - **Refactoring:** Enhance error boundaries, API rate-limit retries, SQLite transaction safety, or PR pagination (as highlighted in codebase audits).
-          - **New Features:** Add new functionalities to the core reviewer or Action wrappers (e.g. better diagnostic logging, new audit rules, new test utilities).
-          - **customizations:** Create or enhance agent skills under `.agents/skills/` or general project rules.
-          - **Prompt Engineering:** Improve prompts under `.audit-prompts/` to make AI audits more precise.
+          ## Tasks to Perform — pick ONE or TWO well-scoped improvements
+          - **Refactoring:** Enhance error boundaries, API rate-limit retries, SQLite
+            transaction safety, or PR pagination.
+          - **New Features:** Better diagnostic logging, new audit rules, test utilities.
+          - **Agent Skills:** Create or enhance files under `.agents/skills/` or general
+            project rules.
+          - **Prompt Engineering:** Improve prompts under `.audit-prompts/` to make AI
+            audits more precise and actionable.
 
-          ## Verification & Compilation Checklist
-          1. All changes MUST be compiled and typechecked: `pnpm build && pnpm typecheck`.
-          2. All unit tests MUST pass: `pnpm test`.
-          3. Biome linting rules must be followed: `pnpm lint`.
-          4. If compilation, linting, or tests fail, analyze the error output carefully and fix it. Do NOT commit broken code.
-          5. Do NOT perform any git operations (git push, git commit) yourself. The workflow will handle them.
+          ## Verification & Compilation Checklist (MANDATORY)
+          After making all changes, run these commands in order and fix any errors:
+          1. `pnpm build`      — must exit 0
+          2. `pnpm typecheck`  — must exit 0
+          3. `pnpm test`       — all tests must pass
+          4. `pnpm lint`       — no errors (warnings are ok)
 
-          When finished, write a detailed summary of your improvements to `.improvement-summary.md` in markdown format. Explain what you changed and why.
-          EOF
+          If any step fails, diagnose the error output, fix the code, and re-run.
+          Do NOT stop until all four commands pass.
+
+          ## Output
+          Write a concise summary of your improvements to `.improvement-summary.md`.
+          Explain what you changed and why. Use markdown headings.
+
+          ## IMPORTANT — git operations
+          Do NOT run git add / git commit / git push yourself.
+          The workflow step after you finish will handle all git operations.
+          PROMPT_EOF
 
       - name: Run OpenCode Self-Improvement
         run: |
-          opencode run --auto --model opencode/deepseek-v4-flash-free "$(cat /tmp/self-improve-prompt.txt)" < /dev/null
+          opencode run --auto --model opencode/deepseek-v4-flash-free \
+            "$(cat /tmp/self-improve-prompt.txt)" < /dev/null
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
-      - name: Commit and Create Pull Request
+      - name: Verify build after AI changes
         run: |
-          if [ -n "$(git status --porcelain)" ]; then
-            BRANCH="improvement/run-${{ github.run_id }}"
-            git checkout -b "$BRANCH"
-            git add -A
-            git commit -m "feat(improvement): autonomous codebase enhancement"
-            git push origin "$BRANCH" --force
+          echo "Running post-improvement verification..."
+          pnpm build
+          pnpm typecheck
+          pnpm test
+          echo "✅ All checks passed"
 
-            # Build PR body
-            PR_BODY="## Autonomous Codebase Improvement\n\n"
-            if [ -f .improvement-summary.md ]; then
-              PR_BODY="$PR_BODY$(cat .improvement-summary.md)"
-              rm .improvement-summary.md
-            else
-              PR_BODY="$PR_BODY The self-improving agent has refactored the codebase and verified all checks successfully."
-            fi
-
-            # Ensure autofix label exists
-            gh label create "autofix" --force --color "243cd4" 2>/dev/null || true
-
-            gh pr create \
-              --title "[Self-Improvement] Autonomous Codebase Enhancement" \
-              --body "$PR_BODY" \
-              --label "autofix" \
-              --head "$BRANCH" \
-              --base main
-          else
-            echo "No improvements or changes made."
-          fi
+      - name: Ensure self-improvement label exists
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create "self-improvement" \
+            --force --color "7057ff" \
+            --description "Autonomous self-improvement PR — review before merging" \
+            -R "${{ github.repository }}" 2>/dev/null || true
+
+      - name: Commit and Create Pull Request
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No improvements or changes made — skipping PR creation."
+            exit 0
+          fi
+
+          BRANCH="improvement/run-${{ github.run_id }}"
+          git checkout -b "$BRANCH"
+          git add -A
+          git commit -m "feat(improvement): autonomous codebase enhancement [run ${{ github.run_id }}]"
+          git push origin "$BRANCH"
+
+          # Build PR body
+          if [ -f .improvement-summary.md ]; then
+            SUMMARY="$(cat .improvement-summary.md)"
+            # Clean up summary file so it doesn't stay in the branch
+            git rm .improvement-summary.md
+            git commit -m "chore: remove improvement summary file"
+            git push origin "$BRANCH"
+          else
+            SUMMARY="The self-improving agent made changes and all verification checks passed."
+          fi
+
+          PR_BODY="$(printf '## 🤖 Autonomous Codebase Improvement\n\n%s\n\n---\n\n> **Review required** — This PR was generated autonomously. Please review the changes before merging.\n> Run ID: `%s`' "$SUMMARY" "${{ github.run_id }}")"
+
+          gh pr create \
+            --title "[Self-Improvement] Autonomous Codebase Enhancement" \
+            --body "$PR_BODY" \
+            --label "self-improvement" \
+            --head "$BRANCH" \
+            --base main \
+            --repo "${{ github.repository }}"

@@ -20,6 +20,14 @@ import { parseInputs } from './inputs.js';
 import { runPost } from './post.js';
 import { runReview } from './review.js';
 
+const sanitize = (message: string): string => {
+  return message
+    .replace(/(Bearer\s+)[a-zA-Z0-9._\-+/]+/gi, '$1***')
+    .replace(/(ghp_|gho_|ghu_|ghs_|ghr_)[a-zA-Z0-9_]+/g, '***')
+    .replace(/(sk-[a-zA-Z0-9]{20,})/g, 'sk-***')
+    .replace(/(xox[bpras]-\d+-)[a-zA-Z0-9-]+/g, '$1***');
+};
+
 async function run(): Promise<void> {
   try {
     const inputs = parseInputs();
@@ -62,7 +70,8 @@ async function run(): Promise<void> {
       fixModel: inputs.fixModel,
       batchSize: inputs.maxFilesPerBatch,
       maxLinesPerFile: inputs.maxLinesPerFile,
-      maxIterations: loadedConfig?.fix?.maxIterations || inputs.maxFixIterations,
+      maxIterations: loadedConfig?.fix?.maxIterations ?? inputs.maxFixIterations,
+      timeoutMinutes: inputs.timeoutMinutes,
       enableMCP: inputs.enableMCP,
       mcpServers,
       projectContext: {
@@ -168,9 +177,9 @@ async function run(): Promise<void> {
       github.context.payload.issue?.number ||
       'unknown';
     core.setFailed(
-      `Action failed (mode: ${mode}, pr/issue: ${prNumber}): ${error instanceof Error ? error.message : error}`,
+      `Action failed (mode: ${mode}, pr/issue: ${prNumber}): ${sanitize(error instanceof Error ? error.message : String(error))}`,
     );
   }
 }
 
-run();
+run().catch((err) => core.setFailed(sanitize(err instanceof Error ? err.message : String(err))));

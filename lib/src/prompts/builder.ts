@@ -23,7 +23,7 @@ export function buildReviewPrompt(
   }
 
   const projectContext = inputs.projectContext || getDefaultProjectContext();
-  const batchSize = inputs.maxFilesPerBatch || 3;
+  const batchSize = inputs.maxFilesPerBatch ?? 3;
   const sections: string[] = [];
 
   sections.push(
@@ -129,7 +129,7 @@ export function buildFixPrompt(
   iteration: number,
 ): string {
   const projectContext = inputs.projectContext || getDefaultProjectContext();
-  const maxIterations = inputs.maxFixIterations || 3;
+  const maxIterations = inputs.maxFixIterations ?? 3;
 
   return `You are a Senior Code Fixer. Fix the issues found during code review.
 
@@ -155,6 +155,7 @@ ${projectContext}
 3. Apply a minimal, correct fix
 4. After fixing, run verification commands${inputs.runChecksAfterFix ? ': ' + inputs.runChecksAfterFix : ' (if configured)'}
 5. Fix any errors introduced by your changes
+6. Write a detailed summary of what you fixed and what you skipped (if anything) in markdown format to the file \`.fix-summary.md\`.
 
 ## CRITICAL RULES
 - Do NOT run \`git push\`, \`git commit\`, or create any pull requests

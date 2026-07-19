@@ -101,9 +101,7 @@ export class EventBus {
       const timeoutPromise = new Promise<never>((_, reject) => {
         timeoutHandle = setTimeout(
           () =>
-            reject(
-              new Error(`Subscriber ${sub.name} timed out after ${SUBSCRIBER_TIMEOUT_MS}ms`),
-            ),
+            reject(new Error(`Subscriber ${sub.name} timed out after ${SUBSCRIBER_TIMEOUT_MS}ms`)),
           SUBSCRIBER_TIMEOUT_MS,
         );
       });
@@ -125,7 +123,7 @@ export class EventBus {
         health.failedCalls++;
         health.lastError = err instanceof Error ? err.message : String(err);
       }
-      this.logger.error(
+      this.logger.warn(
         `Subscriber ${sub.name} failed on ${event.type}: ${err instanceof Error ? err.message : err}`,
         { prNumber: event.prNumber, repo: event.repo },
       );
