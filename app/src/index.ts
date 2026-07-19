@@ -60,11 +60,7 @@ export default (app: Probot): void => {
                 issuesCount: result.issues.length,
                 strengthsCount: result.strengths.length,
                 hasVerdict: !!result.verdict.reasoning,
-                fileCount: result.issues.reduce((acc, i) => {
-                  const f = i.file;
-                  if (f && !acc.includes(f)) acc.push(f);
-                  return acc;
-                }, [] as string[]).length,
+                fileCount: new Set(result.issues.map((i) => i.file).filter(Boolean)).size,
               },
               timestamp: Date.now(),
               repo: event.repo,
