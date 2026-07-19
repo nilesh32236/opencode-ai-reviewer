@@ -210,14 +210,21 @@ export async function runOpenCode(
     `Running OpenCode (model: ${options.model}, timeout: ${options.timeoutMinutes ?? 10}m)...`,
   );
 
-  // SECURITY: These API keys are forwarded as env vars to the OpenCode child process.
-  // They are accessible to any subprocess spawned by OpenCode. Consider using short-lived
-  // tokens or a secrets-injecting sidecar if this is a concern in your environment.
+  // Only forward the API key required for the active model, not all keys unconditionally.
+  // This limits the blast radius if a subprocess is compromised.
   const githubToken = process.env.GITHUB_TOKEN || process.env.INPUT_GITHUB_TOKEN || '';
-  const openaiApiKey = process.env.OPENAI_API_KEY || process.env.INPUT_OPENAI_API_KEY || '';
-  const anthropicApiKey =
-    process.env.ANTHROPIC_API_KEY || process.env.INPUT_ANTHROPIC_API_KEY || '';
-  const geminiApiKey = process.env.GEMINI_API_KEY || process.env.INPUT_GEMINI_API_KEY || '';
+
+  const model = options.model.toLowerCase();
+  const openaiApiKey =
+    model.startsWith('gpt') || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('o-')
+      ? process.env.OPENAI_API_KEY || process.env.INPUT_OPENAI_API_KEY || ''
+      : '';
+  const anthropicApiKey = model.startsWith('claude')
+    ? process.env.ANTHROPIC_API_KEY || process.env.INPUT_ANTHROPIC_API_KEY || ''
+    : '';
+  const geminiApiKey = model.startsWith('gemini')
+    ? process.env.GEMINI_API_KEY || process.env.INPUT_GEMINI_API_KEY || ''
+    : '';
 
   const safeEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -225,11 +232,16 @@ export async function runOpenCode(
       safeEnv[key] = value;
     }
   }
+  // Remove all API keys first, then only set the one for the active model.
+  // This prevents non-selected keys from leaking into the child process.
+  delete safeEnv.OPENAI_API_KEY;
+  delete safeEnv.ANTHROPIC_API_KEY;
+  delete safeEnv.GEMINI_API_KEY;
   safeEnv.GITHUB_TOKEN = githubToken;
   safeEnv.GH_TOKEN = githubToken;
-  safeEnv.OPENAI_API_KEY = openaiApiKey;
-  safeEnv.ANTHROPIC_API_KEY = anthropicApiKey;
-  safeEnv.GEMINI_API_KEY = geminiApiKey;
+  if (openaiApiKey) safeEnv.OPENAI_API_KEY = openaiApiKey;
+  if (anthropicApiKey) safeEnv.ANTHROPIC_API_KEY = anthropicApiKey;
+  if (geminiApiKey) safeEnv.GEMINI_API_KEY = geminiApiKey;
   safeEnv.OPENCODE_CONFIG_CONTENT = buildCIConfig();
   safeEnv.OPENCODE_DISABLE_AUTOUPDATE = 'true';
   if (options.env) {
@@ -395,19 +407,18 @@ export async function setupWorkspaceDependencies(cwd: string): Promise<void> {
   // 1. Install package manager if needed
   if (hasPnpmLock) {
     try {
-      cp.execSync('pnpm --version', { stdio: 'ignore' });
+      cp.execFileSync('pnpm', ['--version'], { stdio: 'ignore' });
       core.info('pnpm is already installed.');
     } catch {
       core.info('pnpm not found. Installing pnpm globally...');
       try {
-        cp.execSync('corepack enable && corepack prepare pnpm@latest --activate', {
-          stdio: 'inherit',
-        });
+        cp.execFileSync('corepack', ['enable'], { stdio: 'inherit' });
+        cp.execFileSync('corepack', ['prepare', 'pnpm@latest', '--activate'], { stdio: 'inherit' });
         core.info('pnpm enabled successfully via corepack.');
       } catch (err) {
         core.info(`Corepack failed: ${String(err)}. Installing pnpm globally without sudo...`);
         try {
-          cp.execSync('npm install -g pnpm', { stdio: 'inherit' });
+          cp.execFileSync('npm', ['install', '-g', 'pnpm'], { stdio: 'inherit' });
           core.info('pnpm installed successfully.');
         } catch (npmErr) {
           core.error(
@@ -418,12 +429,12 @@ export async function setupWorkspaceDependencies(cwd: string): Promise<void> {
     }
   } else if (hasYarnLock) {
     try {
-      cp.execSync('yarn --version', { stdio: 'ignore' });
+      cp.execFileSync('yarn', ['--version'], { stdio: 'ignore' });
       core.info('yarn is already installed.');
     } catch {
       core.info('yarn not found. Installing yarn globally...');
       try {
-        cp.execSync('npm install -g yarn', { stdio: 'inherit' });
+        cp.execFileSync('npm', ['install', '-g', 'yarn'], { stdio: 'inherit' });
         core.info('yarn installed successfully.');
       } catch (err) {
         core.warning(`Failed to install yarn globally: ${String(err)}`);
@@ -438,13 +449,13 @@ export async function setupWorkspaceDependencies(cwd: string): Promise<void> {
     try {
       if (hasPnpmLock) {
         core.info('Running pnpm install...');
-        cp.execSync('pnpm install', { cwd, stdio: 'inherit' });
+        cp.execFileSync('pnpm', ['install'], { cwd, stdio: 'inherit' });
       } else if (hasYarnLock) {
         core.info('Running yarn install...');
-        cp.execSync('yarn install', { cwd, stdio: 'inherit' });
+        cp.execFileSync('yarn', ['install'], { cwd, stdio: 'inherit' });
       } else {
         core.info('Running npm install...');
-        cp.execSync('npm install', { cwd, stdio: 'inherit' });
+        cp.execFileSync('npm', ['install'], { cwd, stdio: 'inherit' });
       }
       core.info('Workspace dependencies installed successfully.');
     } catch (err) {
