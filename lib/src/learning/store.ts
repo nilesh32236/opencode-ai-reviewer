@@ -10,12 +10,15 @@ export class LearningStore {
       const target = process.env.DATABASE_URL || dbPathOrUrl || getDbPath();
       const maxRetries = 3;
       let db: DbAdapter | undefined;
+      const errors: string[] = [];
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
           db = await connectDb(target);
           await applyMigrations(db);
           return db;
         } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          errors.push(msg);
           if (db) {
             try {
               await db.close();
@@ -31,7 +34,7 @@ export class LearningStore {
           await new Promise((r) => setTimeout(r, 1000 * attempt));
         }
       }
-      throw new Error('Failed to connect to database after retries');
+      throw new Error('Failed to connect to database after retries: ' + errors.join('; '));
     })();
   }
 

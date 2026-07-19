@@ -22,6 +22,7 @@ export class CircuitBreaker {
   private successCount = 0;
   private lastFailureTime = 0;
   private options: Required<CircuitBreakerOptions>;
+  private inFlightProbe = false;
 
   constructor(options: CircuitBreakerOptions = {}) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
@@ -46,6 +47,15 @@ export class CircuitBreaker {
       );
     }
 
+    if (this.state === 'HALF_OPEN') {
+      if (this.inFlightProbe) {
+        throw new Error(
+          `[${this.options.name}] Circuit is HALF_OPEN with an in-flight probe — request not attempted`,
+        );
+      }
+      this.inFlightProbe = true;
+    }
+
     try {
       const result = await fn();
       this.onSuccess();
@@ -53,6 +63,8 @@ export class CircuitBreaker {
     } catch (err) {
       this.onFailure();
       throw err;
+    } finally {
+      this.inFlightProbe = false;
     }
   }
 

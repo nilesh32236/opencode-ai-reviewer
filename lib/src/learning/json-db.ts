@@ -151,6 +151,20 @@ export class JsonDatabase implements DatabaseInstance {
       self.inTransaction = true;
       try {
         const res = fn.apply(this, args);
+        if (res instanceof Promise) {
+          return res
+            .then((result) => {
+              self.inTransaction = false;
+              self.save();
+              return result;
+            })
+            .catch((err) => {
+              self.inTransaction = false;
+              self.data = JSON.parse(backup);
+              self.save();
+              throw err;
+            });
+        }
         self.inTransaction = false;
         self.save();
         return res;
@@ -337,7 +351,9 @@ export class JsonDatabase implements DatabaseInstance {
           }
         }
 
-        self.save();
+        if (!self.inTransaction) {
+          self.save();
+        }
         return { changes };
       },
 

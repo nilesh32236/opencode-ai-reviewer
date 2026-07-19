@@ -40,6 +40,13 @@ export class MCPManager {
           try {
             await withRetry(
               async () => {
+                if (mcpTransport) {
+                  try {
+                    mcpTransport.close();
+                  } catch {
+                    /* ignore */
+                  }
+                }
                 mcpTransport = new StdioClientTransport({
                   command: cmd[0],
                   args: cmd.slice(1),
@@ -64,19 +71,28 @@ export class MCPManager {
                 this.clients.set(server.name, { client: mcpClient, transport: mcpTransport });
               },
               {
-                maxRetries: 1,
-                baseDelayMs: 500,
+                maxRetries: 3,
+                baseDelayMs: 2000,
               },
             );
 
             if (mcpClient) {
-              const tools = await mcpClient.listTools();
+              const tools = await withRetry(() => mcpClient!.listTools(), {
+                maxRetries: 3,
+                baseDelayMs: 2000,
+              });
               console.log(`  ${server.name}: ${tools.tools.length} tools available`);
             }
           } catch (err) {
             console.log(
               `  ${server.name}: Failed to connect — ${err instanceof Error ? err.message : err}`,
             );
+            this.clients.delete(server.name);
+            if (mcpClient) {
+              try {
+                await mcpClient.close();
+              } catch {}
+            }
             if (mcpTransport) {
               try {
                 mcpTransport.close();
@@ -120,10 +136,14 @@ export class MCPManager {
         );
 
         if (searchTool) {
-          const result = await client.callTool({
-            name: searchTool.name,
-            arguments: { query, maxTokens: String(maxTokens / this.clients.size) },
-          });
+          const result = await withRetry(
+            () =>
+              client.callTool({
+                name: searchTool.name,
+                arguments: { query, maxTokens: String(maxTokens / this.clients.size) },
+              }),
+            { maxRetries: 3, baseDelayMs: 2000 },
+          );
 
           const text = extractTextFromResult(result);
           if (text) {
@@ -162,10 +182,14 @@ export class MCPManager {
           const resolveTool = tools.tools.find((t) => t.name.includes('resolve'));
 
           if (resolveTool) {
-            const result = await context7Client.client.callTool({
-              name: resolveTool.name,
-              arguments: { libraryName: lib },
-            });
+            const result = await withRetry(
+              () =>
+                context7Client.client.callTool({
+                  name: resolveTool.name,
+                  arguments: { libraryName: lib },
+                }),
+              { maxRetries: 3, baseDelayMs: 2000 },
+            );
 
             const text = extractTextFromResult(result);
             if (text) {

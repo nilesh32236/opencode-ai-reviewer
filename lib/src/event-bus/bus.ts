@@ -1,5 +1,10 @@
 import type { GitHubEvent, Subscriber } from '../types/index.js';
+import { CircuitBreaker } from '../utils/circuit-breaker.js';
 import { Logger } from '../utils/logger.js';
+import { withRetry } from '../utils/retry.js';
+
+const SUBSCRIBER_CONCURRENCY = 10;
+const SUBSCRIBER_TIMEOUT_MS = 120_000;
 
 export interface SubscriberHealth {
   name: string;
@@ -15,6 +20,7 @@ export class EventBus {
   private history: GitHubEvent[] = [];
   private readonly maxHistory = 100;
   private subscriberHealth: Map<string, SubscriberHealth> = new Map();
+  private circuitBreakers: Map<string, CircuitBreaker> = new Map();
   private logger = new Logger('EventBus');
 
   register(subscriber: Subscriber): void {
@@ -34,6 +40,18 @@ export class EventBus {
         lastEventTimestamp: null,
       });
     }
+
+    if (!this.circuitBreakers.has(subscriber.name)) {
+      this.circuitBreakers.set(
+        subscriber.name,
+        new CircuitBreaker({
+          failureThreshold: 5,
+          successThreshold: 2,
+          cooldownMs: 30000,
+          name: subscriber.name,
+        }),
+      );
+    }
   }
 
   registerAll(subscribers: Subscriber[]): void {
@@ -50,61 +68,76 @@ export class EventBus {
 
     const matching = this.subscribers.get(event.type) || [];
     const wildcard = this.subscribers.get('*') || [];
+    const allSubs = [...new Set([...matching, ...wildcard])];
 
-    const TIMEOUT_MS = 120_000;
+    for (let i = 0; i < allSubs.length; i += SUBSCRIBER_CONCURRENCY) {
+      const batch = allSubs.slice(i, i + SUBSCRIBER_CONCURRENCY);
+      await Promise.allSettled(batch.map((sub) => this.executeSubscriber(sub, event)));
+    }
+  }
 
-    for (const sub of [...matching, ...wildcard]) {
-      const health = this.subscriberHealth.get(sub.name);
+  private async executeSubscriber(sub: Subscriber, event: GitHubEvent): Promise<void> {
+    const health = this.subscriberHealth.get(sub.name);
+    const cb = this.circuitBreakers.get(sub.name);
 
-      // Circuit breaker: skip subscriber after 5 consecutive failures
-      if (health && health.failedCalls >= 5) {
-        this.logger.warn(
-          `Subscriber ${sub.name} has failed ${health.failedCalls} times consecutively — skipping`,
-          { prNumber: event.prNumber, repo: event.repo },
+    if (cb && cb.getState() === 'OPEN') {
+      this.logger.warn(`Subscriber ${sub.name} circuit is OPEN — skipping`, {
+        prNumber: event.prNumber,
+        repo: event.repo,
+      });
+      return;
+    }
+
+    if (health) {
+      health.totalCalls++;
+      health.lastEvent = event.type;
+      health.lastEventTimestamp = Date.now();
+    }
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const subscriberWork = async () => sub.handle(event);
+
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(
+          () =>
+            reject(
+              new Error(`Subscriber ${sub.name} timed out after ${SUBSCRIBER_TIMEOUT_MS}ms`),
+            ),
+          SUBSCRIBER_TIMEOUT_MS,
         );
-        continue;
-      }
+      });
+
+      const retriedWork = withRetry(subscriberWork, {
+        maxRetries: 2,
+        baseDelayMs: 1000,
+        operationName: sub.name,
+      });
+
+      const work = cb ? () => cb.call(() => retriedWork) : () => retriedWork;
+      await Promise.race([work(), timeoutPromise]);
 
       if (health) {
-        health.totalCalls++;
-        health.lastEvent = event.type;
-        health.lastEventTimestamp = Date.now();
+        health.failedCalls = 0;
       }
+    } catch (err) {
+      if (health) {
+        health.failedCalls++;
+        health.lastError = err instanceof Error ? err.message : String(err);
+      }
+      this.logger.error(
+        `Subscriber ${sub.name} failed on ${event.type}: ${err instanceof Error ? err.message : err}`,
+        { prNumber: event.prNumber, repo: event.repo },
+      );
 
-      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-      try {
-        await Promise.race([
-          sub.handle(event),
-          new Promise<never>((_, reject) => {
-            timeoutHandle = setTimeout(
-              () => reject(new Error(`Subscriber ${sub.name} timed out after ${TIMEOUT_MS}ms`)),
-              TIMEOUT_MS,
-            );
-          }),
-        ]);
-        // Reset consecutive failure count on success
-        if (health) {
-          health.failedCalls = 0;
-        }
-      } catch (err) {
-        if (health) {
-          health.failedCalls++;
-          health.lastError = err instanceof Error ? err.message : String(err);
-        }
-        this.logger.error(
-          `Subscriber ${sub.name} failed on ${event.type}: ${err instanceof Error ? err.message : err}`,
+      if (cb && cb.getState() === 'OPEN') {
+        this.logger.warn(
+          `Subscriber ${sub.name} circuit is now OPEN — will be skipped on next event`,
           { prNumber: event.prNumber, repo: event.repo },
         );
-
-        if (health && health.failedCalls >= 5) {
-          this.logger.warn(
-            `Subscriber ${sub.name} has now failed ${health.failedCalls} times consecutively — will be skipped on next event`,
-            { prNumber: event.prNumber, repo: event.repo },
-          );
-        }
-      } finally {
-        clearTimeout(timeoutHandle);
       }
+    } finally {
+      clearTimeout(timeoutHandle);
     }
   }
 
@@ -130,6 +163,7 @@ export class EventBus {
       }
     }
     this.subscriberHealth.delete(subscriberName);
+    this.circuitBreakers.delete(subscriberName);
     return removed;
   }
 
@@ -149,6 +183,10 @@ export class EventBus {
       health.totalCalls = 0;
       health.failedCalls = 0;
       health.lastError = null;
+    }
+    const cb = this.circuitBreakers.get(subscriberName);
+    if (cb) {
+      cb.reset();
     }
   }
 }

@@ -251,15 +251,8 @@ class JsonDbAdapter implements DbAdapter {
   }
 
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
-    const backup = JSON.stringify(this.db.data);
-    try {
-      const res = await fn();
-      return res;
-    } catch (e) {
-      this.db.data = JSON.parse(backup);
-      this.db.save();
-      throw e;
-    }
+    const txn = this.db.transaction(fn);
+    return txn();
   }
 
   async close(): Promise<void> {
@@ -275,7 +268,7 @@ export async function connectDb(dbPathOrUrl: string): Promise<DbAdapter> {
       await client.connect();
       return new PostgresAdapter(client);
     } catch (e) {
-      throw new Error(`Failed to connect to PostgreSQL: ${e}`);
+      throw new Error(`Failed to connect to PostgreSQL: ${e instanceof Error ? e.message : e}`);
     }
   }
 
@@ -285,7 +278,7 @@ export async function connectDb(dbPathOrUrl: string): Promise<DbAdapter> {
       const connection = await mysql.createConnection(dbPathOrUrl);
       return new MysqlAdapter(connection);
     } catch (e) {
-      throw new Error(`Failed to connect to MySQL: ${e}`);
+      throw new Error(`Failed to connect to MySQL: ${e instanceof Error ? e.message : e}`);
     }
   }
 

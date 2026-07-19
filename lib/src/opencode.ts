@@ -99,7 +99,7 @@ export async function setupOpenCode(version = 'latest'): Promise<string> {
   core.info(`Downloading from: ${asset.browser_download_url}`);
   const { cachedPath } = await withRetry(
     async () => {
-      let downloadTimeoutHandle: ReturnType<typeof setTimeout>;
+      let downloadTimeoutHandle: ReturnType<typeof setTimeout> | undefined = undefined;
       const dlPath = await Promise.race([
         tc.downloadTool(asset.browser_download_url),
         new Promise<never>((_, reject) => {
@@ -108,7 +108,7 @@ export async function setupOpenCode(version = 'latest'): Promise<string> {
             120_000,
           );
         }),
-      ]).finally(() => clearTimeout(downloadTimeoutHandle));
+      ]).finally(() => downloadTimeoutHandle !== undefined && clearTimeout(downloadTimeoutHandle));
       let extPath: string;
       if (extension === 'zip') {
         extPath = await tc.extractZip(dlPath);
