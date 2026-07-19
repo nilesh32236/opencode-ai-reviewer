@@ -55,7 +55,7 @@ permissions:
 
 concurrency:
   group: autofix-${{ github.event.pull_request.number || github.event.issue.number }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   # ── Job 1: Review ──
