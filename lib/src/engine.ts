@@ -1,7 +1,7 @@
 import { promises as fs } from 'fs';
 import * as cp from 'node:child_process';
 import * as core from '@actions/core';
-import { parseJsonlFile } from './jsonl-parser.js';
+import { emptyResult, parseJsonlFile } from './jsonl-parser.js';
 import type { LearningStore } from './learning/store.js';
 import { MCPManager } from './mcp/client.js';
 import { ensureOutputDir, getGitStatus, runOpenCode } from './opencode.js';
@@ -110,20 +110,9 @@ export class ReviewEngine {
     });
     if (!runResult.success) {
       core.warning('OpenCode review execution failed, returning fallback result');
-      return {
-        summary: '',
-        verdict: {
-          ready: false,
-          reasoning: 'Review execution failed',
-          autoFixable: false,
-          confidence: 'low',
-        },
-        strengths: [],
-        issues: [],
-        stats: { total: 0, critical: 0, important: 0, minor: 0 },
-        rawLines: [],
-        failedLines: 0,
-      };
+      const r = emptyResult();
+      r.verdict.reasoning = 'Review execution failed';
+      return r;
     }
 
     core.info('Parsing review output');
@@ -131,20 +120,9 @@ export class ReviewEngine {
       return await parseJsonlFile('.opencode/review-output.jsonl');
     } catch {
       core.warning('Failed to parse review output, returning empty result');
-      return {
-        summary: '',
-        verdict: {
-          ready: false,
-          reasoning: 'Failed to parse review output',
-          autoFixable: false,
-          confidence: 'low',
-        },
-        strengths: [],
-        issues: [],
-        stats: { total: 0, critical: 0, important: 0, minor: 0 },
-        rawLines: [],
-        failedLines: 0,
-      };
+      const r = emptyResult();
+      r.verdict.reasoning = 'Failed to parse review output';
+      return r;
     }
   }
 
@@ -259,20 +237,9 @@ export class ReviewEngine {
     });
     if (!auditRunResult.success) {
       console.warn('OpenCode audit execution failed, returning fallback empty result');
-      return {
-        summary: '',
-        verdict: {
-          ready: false,
-          reasoning: 'Audit execution failed',
-          autoFixable: false,
-          confidence: 'low',
-        },
-        strengths: [],
-        issues: [],
-        stats: { total: 0, critical: 0, important: 0, minor: 0 },
-        rawLines: [],
-        failedLines: 0,
-      };
+      const r = emptyResult();
+      r.verdict.reasoning = 'Audit execution failed';
+      return r;
     }
 
     const outputPath = `.opencode/audit-${category}.jsonl`;
@@ -280,20 +247,9 @@ export class ReviewEngine {
       return await parseJsonlFile(outputPath);
     } catch {
       console.warn(`Failed to parse audit output at ${outputPath}, returning empty result`);
-      return {
-        summary: '',
-        verdict: {
-          ready: false,
-          reasoning: 'Failed to parse audit output',
-          autoFixable: false,
-          confidence: 'low',
-        },
-        strengths: [],
-        issues: [],
-        stats: { total: 0, critical: 0, important: 0, minor: 0 },
-        rawLines: [],
-        failedLines: 0,
-      };
+      const r = emptyResult();
+      r.verdict.reasoning = 'Failed to parse audit output';
+      return r;
     }
   }
 

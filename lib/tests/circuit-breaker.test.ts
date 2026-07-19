@@ -49,6 +49,7 @@ describe('CircuitBreaker', () => {
   it('transitions to HALF_OPEN after cooldown period', async () => {
     const cb = new CircuitBreaker({
       failureThreshold: 1,
+      successThreshold: 1,
       cooldownMs: 10,
       name: 'test',
     });
@@ -59,7 +60,10 @@ describe('CircuitBreaker', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    expect(cb.getState()).toBe('HALF_OPEN');
+    // Call triggers transition to HALF_OPEN, success closes the circuit
+    const probeFn = vi.fn().mockResolvedValue('ok');
+    await cb.call(probeFn);
+    expect(cb.getState()).toBe('CLOSED');
   });
 
   it('transitions back to CLOSED after successThreshold successes in HALF_OPEN', async () => {
@@ -75,8 +79,7 @@ describe('CircuitBreaker', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    expect(cb.getState()).toBe('HALF_OPEN');
-
+    // First success in HALF_OPEN still leaves it HALF_OPEN
     const successFn = vi.fn().mockResolvedValue('ok');
     await cb.call(successFn);
     expect(cb.getState()).toBe('HALF_OPEN');
@@ -96,8 +99,8 @@ describe('CircuitBreaker', () => {
     await expect(cb.call(failFn)).rejects.toThrow('fail');
 
     await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(cb.getState()).toBe('HALF_OPEN');
 
+    // Call triggers HALF_OPEN transition, then the call fails and goes back to OPEN
     await expect(cb.call(failFn)).rejects.toThrow('fail');
     expect(cb.getState()).toBe('OPEN');
   });

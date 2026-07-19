@@ -2,7 +2,7 @@
 
 You are auditing the **OpenCode AI Reviewer** codebase for error propagation, crash resilience, API rate-limiting handling, and robust database operations.
 
-Scan the target directories recursively (`lib/src`, `action/src`, `app/src`). Output findings to `.audit-output.jsonl`.
+Scan the target directories recursively (`lib/src`, `action/src`, `app/src`). Write findings to the output file `.opencode/audit-{category}.jsonl` in JSON Lines format.
 
 ## What to Check
 

@@ -49,7 +49,7 @@ export class LearningStore {
     line?: number;
     message: string;
     suggestion?: string;
-  }): Promise<string> {
+  }): Promise<string | null> {
     try {
       const db = await this.dbPromise;
       const id = finding.id || generateId();
@@ -70,7 +70,7 @@ export class LearningStore {
       return id;
     } catch (err) {
       console.warn(`Failed to record finding: ${err instanceof Error ? err.message : err}`);
-      throw err;
+      return null;
     }
   }
 
