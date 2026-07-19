@@ -137,6 +137,8 @@ export async function runFixIssue(
   // Ensure the autofix label exists in the repository before referencing it in pr create
   await gh.ensureLabels(['autofix']);
 
+  const baseBranch = github.context.payload.repository?.default_branch || 'main';
+
   const prUrl = await exec
     .getExecOutput(
       'gh',
@@ -144,7 +146,7 @@ export async function runFixIssue(
         'pr',
         'create',
         '--base',
-        'main',
+        baseBranch,
         '--head',
         branchName,
         '--title',

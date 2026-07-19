@@ -1,6 +1,6 @@
 {
   "name": "opencode-ai-reviewer",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "AI-powered PR review, auto-fix, and codebase audit \u2014 as a reusable GitHub Action & GitHub App",
   "private": false,
   "license": "MIT",
