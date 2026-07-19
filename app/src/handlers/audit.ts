@@ -43,7 +43,8 @@ export async function handleAudit(
     }
 
     if (promptName) {
-      const specific = path.join(promptsDir, `${promptName}.md`);
+      const safeName = path.basename(promptName).replace(/[^a-zA-Z0-9-]/g, '');
+      const specific = path.join(promptsDir, `${safeName}.md`);
       if (!(await fs.stat(specific))) {
         console.log(`Prompt '${promptName}' not found`);
         return;

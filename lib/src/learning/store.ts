@@ -2,6 +2,11 @@ import type { LearningFeedback, LearningQuality } from '../types/index.js';
 import { type DbAdapter, connectDb } from './db.js';
 import { applyMigrations, generateId, getDbPath } from './schema.js';
 
+function sanitizeDbError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.replace(/([a-z][a-z0-9+.-]+:\/\/)[^@\s]+@/gi, '$1<redacted>@');
+}
+
 export class LearningStore {
   private dbPromise: Promise<DbAdapter>;
 
@@ -26,7 +31,7 @@ export class LearningStore {
           }
           if (attempt === maxRetries) throw err;
           console.warn(
-            `DB connection attempt ${attempt} failed, retrying: ${err instanceof Error ? err.message : err}`,
+            `DB connection attempt ${attempt} failed, retrying: ${sanitizeDbError(err)}`,
           );
           await new Promise((r) => setTimeout(r, 1000 * attempt));
         }

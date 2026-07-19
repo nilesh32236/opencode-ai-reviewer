@@ -2,6 +2,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { JsonDatabase } from './json-db.js';
 
+function sanitizeDbError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.replace(/([a-z][a-z0-9+.-]+:\/\/)[^@\s]+@/gi, '$1<redacted>@');
+}
+
 // @ts-ignore
 const req =
   typeof require !== 'undefined'
@@ -296,7 +301,7 @@ export async function connectDb(dbPathOrUrl: string): Promise<DbAdapter> {
     return new SqliteAdapter(db);
   } catch (e) {
     console.warn(
-      `better-sqlite3 initialization failed: ${e instanceof Error ? e.message : e}. Falling back to JSON database`,
+      `better-sqlite3 initialization failed: ${sanitizeDbError(e)}. Falling back to JSON database`,
     );
     const jsonPath = dbPathOrUrl.endsWith('.db')
       ? dbPathOrUrl.replace(/\.db$/, '.json')

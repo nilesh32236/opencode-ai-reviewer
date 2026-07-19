@@ -132,7 +132,7 @@ function extractDefaultsFromConfig(config: PromptConfig): Record<string, unknown
     defaults.max_fix_iterations = String(config.fix.maxIterations);
   }
   if (config.fix?.runChecks?.length) {
-    defaults.run_checks_after_fix = config.fix.runChecks.join(' && ');
+    defaults.run_checks_after_fix = config.fix.runChecks[0];
   }
   if (config.audit?.promptsDir) {
     defaults.audit_prompts_dir = config.audit.promptsDir;
