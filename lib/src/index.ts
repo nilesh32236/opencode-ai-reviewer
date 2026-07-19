@@ -10,6 +10,7 @@ export {
 } from './opencode.js';
 export { GitHubHelper } from './utils/github.js';
 export {
+  emptyResult,
   parseJsonlFile,
   parseJsonlString,
   buildReviewBody,

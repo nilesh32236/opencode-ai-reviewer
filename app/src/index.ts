@@ -47,32 +47,37 @@ export default (app: Probot): void => {
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;
 
-        await handlePRReview(prNumber, event.repo || '', getToken(), config);
+        const result = await handlePRReview(prNumber, event.repo || '', getToken(), config);
+        if (result) {
+          try {
+            await bus.publish({
+              type: 'review.completed',
+              category: 'internal',
+              payload: {
+                prNumber: event.prNumber || 0,
+                reviewSummary: result.summary,
+                findingsCount: result.issues.length + result.strengths.length,
+                issuesCount: result.issues.length,
+                strengthsCount: result.strengths.length,
+                hasVerdict: !!result.verdict.reasoning,
+                fileCount: result.issues.reduce((acc, i) => {
+                  const f = i.file;
+                  if (f && !acc.includes(f)) acc.push(f);
+                  return acc;
+                }, [] as string[]).length,
+              },
+              timestamp: Date.now(),
+              repo: event.repo,
+              prNumber: event.prNumber || 0,
+            });
+          } catch (err) {
+            console.error(
+              `Failed to publish review.completed event: ${err instanceof Error ? err.message : err}`,
+            );
+          }
+        }
       } catch (err) {
         console.error(`ReviewSubscriber failed: ${err instanceof Error ? err.message : err}`);
-      }
-
-      try {
-        await bus.publish({
-          type: 'review.completed',
-          category: 'internal',
-          payload: {
-            prNumber: event.prNumber || 0,
-            reviewSummary: '',
-            findingsCount: 0,
-            issuesCount: 0,
-            strengthsCount: 0,
-            hasVerdict: true,
-            fileCount: 0,
-          },
-          timestamp: Date.now(),
-          repo: event.repo,
-          prNumber: event.prNumber || 0,
-        });
-      } catch (err) {
-        console.error(
-          `Failed to publish review.completed event: ${err instanceof Error ? err.message : err}`,
-        );
       }
     },
   };

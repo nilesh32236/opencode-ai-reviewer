@@ -27,7 +27,6 @@ export class FeedbackSubscriber implements Subscriber {
       core.warning(
         `FeedbackSubscriber failed for PR #${event.prNumber} (event: ${event.type}): ${err instanceof Error ? err.message : err}`,
       );
-      throw err;
     }
   }
 
