@@ -230,19 +230,37 @@ export async function runOpenCode(
     : '';
 
   const safeEnv: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined) {
-      safeEnv[key] = value;
-    }
+  const WHITELISTED_KEYS = [
+    'PATH',
+    'HOME',
+    'CI',
+    'GITHUB_ACTIONS',
+    'GITHUB_ACTOR',
+    'GITHUB_REPOSITORY',
+    'GITHUB_REPOSITORY_OWNER',
+    'GITHUB_SHA',
+    'GITHUB_REF',
+    'GITHUB_BASE_REF',
+    'GITHUB_HEAD_REF',
+    'GITHUB_WORKSPACE',
+    'GITHUB_ACTION',
+    'GITHUB_EVENT_NAME',
+    'GITHUB_EVENT_PATH',
+    'GITHUB_OUTPUT',
+    'GITHUB_STEP_SUMMARY',
+    'GITHUB_ENV',
+    'GITHUB_PATH',
+    'RUNNER_OS',
+    'RUNNER_ARCH',
+    'RUNNER_TEMP',
+    'RUNNER_TOOL_CACHE',
+    'NODE_PATH',
+    'DATABASE_URL',
+  ];
+  for (const key of WHITELISTED_KEYS) {
+    const val = process.env[key];
+    if (val !== undefined) safeEnv[key] = val;
   }
-  // Remove all API keys first, then only set the one for the active model.
-  // This prevents non-selected keys from leaking into the child process.
-  // biome-ignore lint/performance/noDelete: must delete, not set undefined, to prevent leaking key strings to child process spawn
-  delete safeEnv.OPENAI_API_KEY;
-  // biome-ignore lint/performance/noDelete: must delete, not set undefined, to prevent leaking key strings to child process spawn
-  delete safeEnv.ANTHROPIC_API_KEY;
-  // biome-ignore lint/performance/noDelete: must delete, not set undefined, to prevent leaking key strings to child process spawn
-  delete safeEnv.GEMINI_API_KEY;
   safeEnv.GITHUB_TOKEN = githubToken;
   safeEnv.GH_TOKEN = githubToken;
   if (openaiApiKey) safeEnv.OPENAI_API_KEY = openaiApiKey;

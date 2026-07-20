@@ -126,9 +126,8 @@ export class MCPManager {
       return { entries: [], totalTokens: 0 };
     }
 
-    for (const [name, { client }] of this.clients) {
-      try {
-        // Try to find relevant documentation
+    const results = await Promise.allSettled(
+      [...this.clients].map(async ([name, { client }]) => {
         const tools = await client.listTools();
         const searchTool = tools.tools.find(
           (t) =>
@@ -150,14 +149,18 @@ export class MCPManager {
             entries.push({
               source: name,
               content: text,
-              relevance: 0.8, // Default relevance for MCP-sourced context
+              relevance: 0.8,
             });
             _totalTokens += estimateTokens(text);
           }
         }
-      } catch (err) {
+      }),
+    );
+
+    for (const result of results) {
+      if (result.status === 'rejected') {
         console.log(
-          `::warning::MCP query failed for ${name}: ${err instanceof Error ? err.message : err}`,
+          `::warning::MCP query failed: ${result.reason instanceof Error ? result.reason.message : result.reason}`,
         );
       }
     }
@@ -172,33 +175,37 @@ export class MCPManager {
    * Useful for resolving false positives caused by API changes.
    */
   async getLibraryDocs(libraries: string[]): Promise<string> {
-    const sections: string[] = [];
+    const context7Client = this.clients.get('context7');
+    if (!context7Client) return '';
 
-    for (const lib of libraries) {
-      try {
-        const context7Client = this.clients.get('context7');
-        if (context7Client) {
-          const tools = await context7Client.client.listTools();
-          const resolveTool = tools.tools.find((t) => t.name.includes('resolve'));
+    const results = await Promise.allSettled(
+      libraries.map(async (lib) => {
+        const tools = await context7Client.client.listTools();
+        const resolveTool = tools.tools.find((t) => t.name.includes('resolve'));
 
-          if (resolveTool) {
-            const result = await withRetry(
-              () =>
-                context7Client.client.callTool({
-                  name: resolveTool.name,
-                  arguments: { libraryName: lib },
-                }),
-              { maxRetries: 3, baseDelayMs: 2000 },
-            );
+        if (resolveTool) {
+          const result = await withRetry(
+            () =>
+              context7Client.client.callTool({
+                name: resolveTool.name,
+                arguments: { libraryName: lib },
+              }),
+            { maxRetries: 3, baseDelayMs: 2000 },
+          );
 
-            const text = extractTextFromResult(result);
-            if (text) {
-              sections.push(`### ${lib}\n${text}`);
-            }
+          const text = extractTextFromResult(result);
+          if (text) {
+            return `### ${lib}\n${text}`;
           }
         }
-      } catch (err) {
-        console.log(`MCP docs unavailable for ${lib}: ${err instanceof Error ? err.message : err}`);
+        return '';
+      }),
+    );
+
+    const sections: string[] = [];
+    for (const result of results) {
+      if (result.status === 'fulfilled' && result.value) {
+        sections.push(result.value);
       }
     }
 
