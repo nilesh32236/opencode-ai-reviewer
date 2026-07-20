@@ -40,7 +40,7 @@ export async function runReview(
     return;
   }
 
-  const hasSkipLabel = pr.labels.some((l) => config.review.skipLabels.includes(l));
+  const hasSkipLabel = pr.labels.some((l: string) => config.review.skipLabels.includes(l));
   const isSkippedActor = config.review.skipActors.includes(pr.author);
 
   if (hasSkipLabel) {

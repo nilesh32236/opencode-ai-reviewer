@@ -15,7 +15,7 @@ export {
   parseJsonlString,
   buildReviewBody,
 } from './jsonl-parser.js';
-export { loadConfig, mergeConfigWithInputs } from './config.js';
+export { loadConfig, mergeConfigWithInputs, validateConfig } from './config.js';
 export { MCPManager } from './mcp/client.js';
 export { context7Server, githubMCPServer, getDefaultMCPServers } from './mcp/servers.js';
 export {

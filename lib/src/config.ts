@@ -19,6 +19,7 @@ export function loadConfig(workingDir = '.'): PromptConfig | null {
       try {
         const content = fs.readFileSync(fullPath, 'utf-8');
         const config = yaml.load(content) as PromptConfig;
+        if (!config) return null;
         return validateConfig(config);
       } catch (error) {
         core.warning(`Failed to parse ${filename}: ${String(error)}`);
@@ -147,7 +148,7 @@ function extractDefaultsFromConfig(config: PromptConfig): Record<string, unknown
   }
   if (config.fix?.runChecks?.length) {
     if (config.fix.runChecks.length > 1) {
-      console.warn(
+      core.warning(
         `config.fix.runChecks has ${config.fix.runChecks.length} entries but only the first will be executed. Use a single command or wrap multiple checks in a script.`,
       );
     }
