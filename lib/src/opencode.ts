@@ -207,7 +207,7 @@ export async function runOpenCode(
   ];
 
   core.info(
-    `Running OpenCode (model: ${options.model}, timeout: ${options.timeoutMinutes ?? 10}m)...`,
+    `Running OpenCode (model: ${options.model}, timeout: ${options.timeoutMinutes ?? 20}m)...`,
   );
 
   // Only forward the API key required for the active model, not all keys unconditionally.
@@ -265,12 +265,22 @@ export async function runOpenCode(
   });
 
   let timedOut = false;
+  let childExited = false;
+  let forceKillHandle: ReturnType<typeof setTimeout> | undefined;
+
   const timeoutHandle = setTimeout(() => {
     timedOut = true;
     core.warning(
-      `OpenCode timeout of ${options.timeoutMinutes ?? 10}m exceeded — killing process.`,
+      `OpenCode timeout of ${options.timeoutMinutes ?? 20}m exceeded — sending SIGTERM.`,
     );
-    childProcess.kill();
+    childProcess.kill('SIGTERM');
+    // If SIGTERM is ignored or too slow, force-kill after 5 seconds
+    forceKillHandle = setTimeout(() => {
+      if (!childExited) {
+        core.warning('OpenCode did not exit after SIGTERM — sending SIGKILL.');
+        childProcess.kill('SIGKILL');
+      }
+    }, 5_000);
   }, timeoutMs);
 
   let exitCode: number | null = null;
@@ -279,10 +289,12 @@ export async function runOpenCode(
   try {
     await new Promise<void>((resolve) => {
       childProcess.on('exit', (code) => {
+        childExited = true;
         exitCode = code;
         resolve();
       });
       childProcess.on('error', (err) => {
+        childExited = true;
         processError = err.message;
         resolve();
       });
@@ -305,6 +317,9 @@ export async function runOpenCode(
     return { success: false, output: '', durationMs };
   } finally {
     clearTimeout(timeoutHandle);
+    if (forceKillHandle !== undefined) {
+      clearTimeout(forceKillHandle);
+    }
   }
 }
 

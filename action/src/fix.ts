@@ -89,6 +89,16 @@ export async function runFixIssue(
     return;
   }
 
+  // Wall-clock guard: detect when queue wait time has consumed most of the job budget.
+  // GITHUB_RUN_STARTED_AT is set by GitHub Actions to the ISO timestamp when the
+  // workflow run was queued — not when this job started. This lets us account for
+  // time spent waiting in the queue or in earlier job steps.
+  const configTimeoutMs = (_config.timeoutMinutes ?? 20) * 60 * 1000;
+  const runStartedAt = process.env.GITHUB_RUN_STARTED_AT
+    ? new Date(process.env.GITHUB_RUN_STARTED_AT).getTime()
+    : Date.now();
+  const minRequiredMs = 90_000; // Need at least 90 seconds to attempt a meaningful fix
+
   core.info(`Fixing issue #${issueNumber}`);
 
   const branchName = `autofix/issue-${issueNumber}`;
@@ -105,7 +115,40 @@ export async function runFixIssue(
 
   const issueContext = await gh.gatherContext({ issueNumber });
 
-  const fixResult = await engine.runFix(issueNumber, 0, issueContext);
+  // Check remaining time budget just before calling OpenCode, after setup steps.
+  const elapsedMs = Date.now() - runStartedAt;
+  const timeLeftMs = configTimeoutMs - elapsedMs;
+  if (timeLeftMs < minRequiredMs) {
+    const elapsedMin = (elapsedMs / 60_000).toFixed(1);
+    const budgetMin = (configTimeoutMs / 60_000).toFixed(0);
+    const msg = `Insufficient time remaining to run fix (elapsed: ${elapsedMin}m / budget: ${budgetMin}m, remaining: ${Math.round(timeLeftMs / 1000)}s < ${Math.round(minRequiredMs / 1000)}s required). The job likely waited in the queue too long. Re-trigger the fix with /fix.`;
+    core.warning(msg);
+    try {
+      await gh.postOrUpdateComment(
+        issueNumber,
+        '<!-- autofix-timeout -->',
+        `⏳ **Autofix could not start** — the GitHub Actions runner was busy and this job spent too long in the queue.\n\nPlease comment \`/fix\` again to re-trigger the fix.\n\n---\n*🤖 Posted automatically by opencode-ai-reviewer*`,
+      );
+    } catch (commentErr) {
+      core.warning(
+        `Failed to post timeout notice: ${commentErr instanceof Error ? commentErr.message : commentErr}`,
+      );
+    }
+    core.setFailed(msg);
+    return;
+  }
+
+  // Pass remaining time as the effective timeout for OpenCode so it doesn't
+  // overrun the GitHub Actions job budget.
+  const remainingTimeoutMinutes = Math.max(1, Math.floor((timeLeftMs - 30_000) / 60_000));
+
+  const fixResult = await engine.runFix(
+    issueNumber,
+    0,
+    issueContext,
+    undefined,
+    remainingTimeoutMinutes,
+  );
 
   if (!fixResult?.changesMade) {
     core.info('No changes made by fix agent');
