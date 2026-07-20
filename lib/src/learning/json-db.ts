@@ -432,6 +432,10 @@ export class JsonDatabase implements DatabaseInstance {
           const cat = params[0] as string;
           return self.data.prompt_overrides.filter((o) => o.category === cat);
         }
+        if (cleanSql.includes('prompt_overrides WHERE category IN (')) {
+          const categories = params as string[];
+          return self.data.prompt_overrides.filter((o) => categories.includes(o.category));
+        }
         if (cleanSql.includes('FROM review_quality')) {
           const limit = params[0] as number | undefined;
           return self.data.review_quality

@@ -19,13 +19,13 @@ try { await riskyOp(); } catch (e) { console.warn('failed'); }
 try { await riskyOp(); } catch (e) { core.warning(`[${opName}] failed: ${e}`); }
 ```
 
-- **Async catch blocks**: Ensure all asynchronous function calls, especially those interacting with the GitHub API or SQLite database, are wrapped in `try/catch` blocks or have `.catch()` handlers.
+- **Async catch blocks**: Ensure asynchronous operations handle failures at the appropriate operation boundary — either at the call site or by explicitly propagating errors to a higher-level handler. Do not require local `try/catch` or `.catch()` on every call when errors are intentionally propagated to a consistent boundary.
 - **Graceful degradation**: Verify that if a non-critical subsystem fails (e.g. MCP connection or posting a review reaction), it does not crash the entire review/fix run. Prefer catching specific errors, logging with `core.warning`, and continuing.
 - **Event subscriber isolation**: Subscribers registered on the EventBus should be isolated — a failure in one subscriber must not prevent others from executing. Check `feedback-subscriber.ts` and `app/src/index.ts` patterns.
 - **AbortSignal propagation**: Operations accepting `AbortSignal` should check `signal.aborted` before starting work and respect cancellation mid-flight.
 
 ### Network Requests & Retries
-- **Retry loops**: Look at functions calling external APIs (e.g. `setupOpenCode` downloading binaries, GitHub API calls). Ensure they have retry mechanisms with backoff to handle transient network errors.
+- **Retry loops**: Look at functions calling external APIs (e.g. `setupOpenCode` downloading binaries, GitHub API calls). Ensure they have retry mechanisms with backoff to handle transient network errors. Limit retries to idempotent operations; exclude non-idempotent writes unless they provide idempotency protection.
 - **Rate limiting**: Check how GitHub API rate limits (HTTP 403/429) are detected and handled (such as waiting with exponential backoff, jitter, and warning logs).
 - **Retry utility usage**: Where possible, use the shared `withRetry()` utility from `lib/src/utils/retry.ts` instead of implementing ad-hoc retry loops.
 - **Timeout handling**: Long-running operations (e.g., OpenCode CLI execution) should use `withRetryAndTimeout()` or configurable timeouts to prevent hangs.
@@ -47,8 +47,8 @@ db.transaction(async () => {
 ```
 
 - **DB Connection lifecycle**: Verify that `better-sqlite3` database connections are closed properly (e.g. in `finally` blocks). Check `store.ts`: the `close()` method should only be called once.
-- **WAL mode & Locking**: Ensure SQLite is configured in WAL (Write-Ahead Logging) mode (via `db.pragma('journal_mode = WAL')`) to prevent write locks during concurrent operations (especially relevant when the Probot App processes multiple events simultaneously).
-- **Transaction safety**: Read-then-write database operations (e.g., `recordPattern`, `incrementAndCheckMetaReviewInterval`) should be wrapped in `db.transaction()` to prevent race conditions. Sequential read+write outside a transaction is a bug.
+- **WAL mode & Locking**: Ensure SQLite is configured in WAL (Write-Ahead Logging) mode (via `db.pragma('journal_mode = WAL')`) to improve reader/writer concurrency. Note that WAL does not prevent all write locks — SQLite permits only one writer at a time. Verify appropriate transaction scope plus busy-timeout handling or retry behavior to address lock contention.
+- **Transaction safety**: Use `db.transaction()` only when the read/write sequence must preserve a concurrency-sensitive invariant and lacks an equivalent atomic SQL guarantee. Not every sequential read-then-write operation is automatically a bug — assess the isolation requirements based on the invariant, concurrency model, and whether an atomic SQL statement already provides the guarantee.
 - **Prepared statements**: All SQL queries should use prepared statements (parameterized `?` queries) to prevent SQL injection and improve performance. String interpolation in SQL is a **critical** finding.
 - **Graceful fallback**: The database layer in `db.ts` falls back to JSON database when `better-sqlite3` fails to load. Verify this fallback path actually works end-to-end and does not lose data.
 

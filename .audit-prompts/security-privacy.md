@@ -32,7 +32,8 @@ exec('opencode', ['review', '--pr', String(prNumber)]);  // safe
 
 ### Path Traversal & File Safety
 - **Path Sanitization**: The agent reads and writes files in the repository. Verify that paths are resolved securely to prevent path traversal (e.g. reading/writing files outside the workspace directory via `../` tricks). Use `path.resolve()` with a workspace root check rather than raw user-controlled paths.
-- **SQLite Database**: Ensure operations on `.opencode/learning.db` use parameterized queries (the `?` placeholder style seen in `store.ts`) to prevent SQL injection. Check `json-db.ts` for similarly parameterized queries.
+- **SQLite Database** (`lib/src/learning/db.ts`): Ensure SQLite operations use parameterized queries (the `?` placeholder style seen in `store.ts`) to prevent SQL injection.
+- **JSON Database** (`lib/src/learning/json-db.ts`): For the JSON fallback, validate safe serialization, atomic writes, and secure path handling instead of SQL parameterization.
 - **Temporary file permissions**: Files written to `.opencode/` directory (audit outputs, prompt overrides) should not be world-readable if they contain any operational metadata.
 
 ## Output Format

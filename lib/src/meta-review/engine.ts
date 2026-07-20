@@ -62,10 +62,10 @@ export class MetaReviewEngine {
 
     const quality = {
       prNumber: context.prNumber,
-      actionabilityScore: (result.actionabilityScore as number) || 70,
-      accuracyScore: (result.accuracyScore as number) || Math.max(0, 100 - fpRate * 100),
-      coverageScore: (result.coverageScore as number) || 70,
-      consistencyScore: (result.consistencyScore as number) || 70,
+      actionabilityScore: (result.actionabilityScore as number) ?? 70,
+      accuracyScore: (result.accuracyScore as number) ?? Math.max(0, 100 - fpRate * 100),
+      coverageScore: (result.coverageScore as number) ?? 70,
+      consistencyScore: (result.consistencyScore as number) ?? 70,
     };
 
     try {

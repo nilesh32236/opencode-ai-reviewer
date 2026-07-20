@@ -96,7 +96,7 @@ export class EventBus {
 
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     try {
-      const subscriberWork = async () => sub.handle(event);
+      const subscriberWork = () => sub.handle(event);
 
       const timeoutPromise = new Promise<never>((_, reject) => {
         timeoutHandle = setTimeout(
@@ -106,13 +106,7 @@ export class EventBus {
         );
       });
 
-      const retriedWork = withRetry(subscriberWork, {
-        maxRetries: 2,
-        baseDelayMs: 1000,
-        operationName: sub.name,
-      });
-
-      const work = cb ? () => cb.call(() => retriedWork) : () => retriedWork;
+      const work = cb ? () => cb.call(subscriberWork) : subscriberWork;
       await Promise.race([work(), timeoutPromise]);
 
       if (health) {

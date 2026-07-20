@@ -293,8 +293,18 @@ export async function connectDb(dbPathOrUrl: string): Promise<DbAdapter> {
     db.pragma('journal_mode = WAL');
     return new SqliteAdapter(db);
   } catch (e) {
+    const errMsg = e instanceof Error ? e.message : String(e);
+    const isMissingDriver =
+      errMsg.includes('Cannot find module') ||
+      errMsg.includes('Module not found') ||
+      errMsg.includes('Could not locate the bindings file') ||
+      errMsg.includes('Cannot locate the bindings file') ||
+      errMsg.includes('require');
+    if (!isMissingDriver) {
+      throw e;
+    }
     console.warn(
-      `better-sqlite3 initialization failed: ${sanitizeDbError(e)}. Falling back to JSON database`,
+      `better-sqlite3 not available: ${sanitizeDbError(e)}. Falling back to JSON database`,
     );
     const jsonPath = dbPathOrUrl.endsWith('.db')
       ? dbPathOrUrl.replace(/\.db$/, '.json')

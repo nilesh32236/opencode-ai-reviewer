@@ -15,7 +15,7 @@ Scan the target directories recursively (`lib/src`, `action/src`, `app/src`). Wr
 - **No `any` usage**: Avoid using the `any` type unless absolutely necessary. Look for explicit, strong interfaces for payloads, configuration schemas, and data structures. If `any` is used, it should have a Biome suppression comment explaining why.
 - **Strict type checking**: Verify types are correctly defined and there are no type assertions (`as any` or `as unknown` when unnecessary). TypeScript's `strict: true` is enabled in `tsconfig.json`.
 - **TypeScript files**: All source files must be TypeScript (`.ts`). No pure JavaScript (`.js`) files in `src/` directories.
-- **Null/undefined safety**: Check for proper null checks (using `??` or `?.`) rather than loose truthiness checks that could mask bugs. Look for patterns like `if (value)` where `value` could be `0` or `''` legitimately.
+- **Null/undefined safety**: Check for proper nullish checks (using `value == null` or `value !== null`) rather than loose truthiness checks that could mask bugs, and rather than requiring any specific syntax like `??` or `?.` which are not interchangeable with explicit null checks. When `value` could be legitimately `0` or `''`, prefer explicit nullish checks (`value == null`) over truthiness checks (`if (value)`). Determine whether falsy values are valid for the field before flagging.
 
 ### Import Path Conventions
 - **ESM Extensions**: Due to Node ESM requirements, TS file imports from other TS files MUST end with `.js` extensions (e.g. `import { EventBus } from './bus.js'`). Check that local imports do not omit `.js` or (worse) use `.ts`. This is a **critical** finding.

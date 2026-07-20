@@ -194,6 +194,11 @@ describe('LearningStore', () => {
 
     const lessons = await store.getRelevantLessons(['src/index.ts']);
     expect(lessons).toContain('Always check return types');
+
+    await store.addPromptOverride('.ts', 'Be thorough with TypeScript types', 0.1);
+    const tsLessons = await store.getRelevantLessons(['src/component.ts']);
+    expect(tsLessons).toContain('Always check return types');
+    expect(tsLessons).toContain('Be thorough with TypeScript types');
   });
 
   it('declineRule sets rule status to declined', async () => {
@@ -219,7 +224,7 @@ describe('LearningStore', () => {
       message: 'Test message B (no file)',
     });
 
-    const messages = await store.getFindingMessages(10);
+    const messages = await store.getFindingMessages(100);
     expect(messages.length).toBeGreaterThanOrEqual(2);
 
     const msgA = messages.find((m) => m.message === 'Test message A');

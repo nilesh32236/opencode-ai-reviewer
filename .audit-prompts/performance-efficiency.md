@@ -18,6 +18,7 @@ for (const f of findings) {
 ```
 **Good — batch insert in a transaction:**
 ```ts
+if (findings.length === 0) return;
 await db.transaction(async () => {
   const placeholders = findings.map(() => '(?)').join(',');
   const values = findings.flatMap(f => [f]);
@@ -31,8 +32,8 @@ await db.transaction(async () => {
 - **Connection reuse**: Ensure the database connection is opened once and reused rather than creating new connections per operation. The `LearningStore` constructor in `store.ts` should open the connection once.
 
 ### Prepared Statement Caching
-- **Statement reuse**: The `SqliteAdapter` in `db.ts` caches prepared statements in an LRU (max 100). Check that the cache is effective — frequently-run queries should hit the cache rather than re-preparing.
-- **Cache eviction**: Verify the LRU eviction strategy doesn't thrash — if more than 100 unique SQL strings are used, frequently-used statements could be evicted. Consider increasing or making configurable.
+- **Statement reuse**: The `SqliteAdapter` in `db.ts` caches prepared statements in a bounded FIFO cache (max 100). Check that the cache is effective — frequently-run queries should hit the cache rather than re-preparing.
+- **Cache eviction**: Verify the bounded FIFO eviction strategy doesn't thrash — if more than 100 unique SQL strings are used, frequently-used statements could be evicted. Consider increasing or making configurable.
 
 ### API Call Efficiency
 - **Pagination**: Large data fetches (e.g., listing all PRs, comments, or labels) should use pagination to avoid truncated results and slowdowns. Check `action/src/review.ts` and GitHub API helpers.
@@ -51,6 +52,6 @@ await db.transaction(async () => {
 
 ## Severity Guide
 
-- **critical**: N+1 database queries, unbounded memory growth, missing pagination on large list endpoints, synchronous I/O in hot paths (non-JSON-DB contexts).
+- **critical**: Unbounded memory growth, missing pagination on large list endpoints, synchronous I/O in hot paths (non-JSON-DB contexts). N+1 database queries are not automatically critical — assess based on result cardinality, execution frequency, and resource impact. Reserve critical for evidenced outage risk, unbounded growth, or severe hot-path impact.
 - **important**: Batch operations that could be optimized, missing indexes on query columns, redundant API calls, inefficient string building in loops, prepared statement cache thrashing.
 - **minor**: Minor query optimization opportunities, single-use queries that could be cached, unused imports increasing bundle size, node count of concurrent Promise.all operations not documented.
