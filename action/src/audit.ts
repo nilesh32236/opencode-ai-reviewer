@@ -43,10 +43,10 @@ export async function runAudit(
 
   let prompts: string[];
   try {
-    prompts = fs.readdirSync(promptsDir).filter((f) => f.endsWith('.md'));
+    prompts = (await fs.promises.readdir(promptsDir)).filter((f) => f.endsWith('.md'));
     if (prompts.length === 0 && fs.existsSync(path.join(promptsDir, 'audit-categories'))) {
       promptsDir = path.join(promptsDir, 'audit-categories');
-      prompts = fs.readdirSync(promptsDir).filter((f) => f.endsWith('.md'));
+      prompts = (await fs.promises.readdir(promptsDir)).filter((f) => f.endsWith('.md'));
     }
   } catch (err) {
     core.setFailed(

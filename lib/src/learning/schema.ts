@@ -95,6 +95,10 @@ export async function applyMigrations(db: DbAdapter): Promise<void> {
         );
       `);
 
+      await db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_prompt_overrides_category ON prompt_overrides(category)`,
+      );
+
       await db.exec(`
         CREATE TABLE IF NOT EXISTS meta_review_counter (
           id INTEGER PRIMARY KEY,

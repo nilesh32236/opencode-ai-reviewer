@@ -66,9 +66,15 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
     rl.on('close', resolve);
   });
 
-  const criticalCount = issues.filter((i) => i.severity === 'critical').length;
-  const importantCount = issues.filter((i) => i.severity === 'important').length;
-  const minorCount = issues.filter((i) => i.severity === 'minor').length;
+  const counts = issues.reduce(
+    (acc, i) => {
+      if (i.severity === 'critical') acc.critical++;
+      else if (i.severity === 'important') acc.important++;
+      else if (i.severity === 'minor') acc.minor++;
+      return acc;
+    },
+    { critical: 0, important: 0, minor: 0 },
+  );
 
   return {
     summary: (summary as SummaryFinding | null)?.text || '',
@@ -95,9 +101,9 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
     })),
     stats: {
       total: issues.length,
-      critical: criticalCount,
-      important: importantCount,
-      minor: minorCount,
+      critical: counts.critical,
+      important: counts.important,
+      minor: counts.minor,
     },
     rawLines,
     failedLines,
@@ -140,9 +146,15 @@ export function parseJsonlString(content: string): ReviewResult {
     }
   }
 
-  const criticalCount = issues.filter((i) => i.severity === 'critical').length;
-  const importantCount = issues.filter((i) => i.severity === 'important').length;
-  const minorCount = issues.filter((i) => i.severity === 'minor').length;
+  const counts = issues.reduce(
+    (acc, i) => {
+      if (i.severity === 'critical') acc.critical++;
+      else if (i.severity === 'important') acc.important++;
+      else if (i.severity === 'minor') acc.minor++;
+      return acc;
+    },
+    { critical: 0, important: 0, minor: 0 },
+  );
 
   return {
     summary: summary?.text || '',
@@ -169,9 +181,9 @@ export function parseJsonlString(content: string): ReviewResult {
     })),
     stats: {
       total: issues.length,
-      critical: criticalCount,
-      important: importantCount,
-      minor: minorCount,
+      critical: counts.critical,
+      important: counts.important,
+      minor: counts.minor,
     },
     rawLines,
     failedLines,

@@ -198,13 +198,11 @@ export class GitHubHelper {
         body: string | null;
         labels: Array<{ name: string }>;
       }>(`/issues/${number}`),
-      this.api<
-        Array<{
-          user: { login: string };
-          created_at: string;
-          body: string;
-        }>
-      >(`/issues/${number}/comments`),
+      this.paginate<{
+        user: { login: string };
+        created_at: string;
+        body: string;
+      }>(`/issues/${number}/comments`),
     ]);
 
     if (issueResult.status === 'rejected') throw issueResult.reason;
@@ -225,30 +223,12 @@ export class GitHubHelper {
     };
   }
 
-  async getPRComments(number: number): Promise<ReviewComment[]> {
+  async getIssueComments(number: number): Promise<IssueComment[]> {
     const comments = await this.paginate<{
       user: { login: string };
-      path: string;
-      line?: number;
+      created_at: string;
       body: string;
-    }>(`/pulls/${number}/comments`);
-
-    return comments.map((c) => ({
-      author: c.user.login,
-      path: c.path,
-      line: c.line,
-      body: c.body,
-    }));
-  }
-
-  async getIssueComments(number: number): Promise<IssueComment[]> {
-    const comments = await this.api<
-      Array<{
-        user: { login: string };
-        created_at: string;
-        body: string;
-      }>
-    >(`/issues/${number}/comments`);
+    }>(`/issues/${number}/comments`);
 
     return comments.map((c) => ({
       author: c.user.login,
@@ -470,8 +450,12 @@ export class GitHubHelper {
   }): Promise<string> {
     const parts: string[] = [];
 
-    if (options.issueNumber) {
-      const issue = await this.getIssue(options.issueNumber);
+    const [issue, pr] = await Promise.all([
+      options.issueNumber ? this.getIssue(options.issueNumber) : Promise.resolve(undefined),
+      options.prNumber ? this.getPR(options.prNumber) : Promise.resolve(undefined),
+    ]);
+
+    if (issue) {
       parts.push(`## Issue #${issue.number}`);
       parts.push('');
       parts.push(`**Title:** ${issue.title}`);
@@ -484,24 +468,18 @@ export class GitHubHelper {
       parts.push(issue.body || 'No description.');
       parts.push('');
 
-      const comments = await this.paginate<{
-        user: { login: string };
-        created_at: string;
-        body: string;
-      }>(`/issues/${options.issueNumber}/comments`);
-      if (comments.length > 0) {
+      if (issue.comments.length > 0) {
         parts.push('### Comments');
         parts.push('');
-        for (const c of comments) {
-          parts.push(`**@${c.user?.login}** (${c.created_at}):`);
+        for (const c of issue.comments) {
+          parts.push(`**@${c.author}** (${c.createdAt}):`);
           parts.push(c.body || '');
           parts.push('');
         }
       }
     }
 
-    if (options.prNumber) {
-      const pr = await this.getPR(options.prNumber);
+    if (pr) {
       parts.push(`## PR #${pr.number}`);
       parts.push('');
       parts.push(`**Title:** ${pr.title}`);
@@ -512,13 +490,19 @@ export class GitHubHelper {
       parts.push(pr.body || 'No description.');
       parts.push('');
 
-      const reviewComments = await this.paginate<{
-        user: { login: string };
-        path: string;
-        line?: number;
-        original_line?: number;
-        body: string;
-      }>(`/pulls/${options.prNumber}/comments`);
+      const [reviewComments, reviews] = await Promise.all([
+        this.paginate<{
+          user: { login: string };
+          path: string;
+          line?: number;
+          original_line?: number;
+          body: string;
+        }>(`/pulls/${options.prNumber}/comments`),
+        this.paginate<{ user: { login: string }; state: string; body: string }>(
+          `/pulls/${options.prNumber}/reviews`,
+        ),
+      ]);
+
       if (reviewComments.length > 0) {
         parts.push('### Inline Review Comments');
         parts.push('');
@@ -529,9 +513,6 @@ export class GitHubHelper {
         }
       }
 
-      const reviews = await this.paginate<{ user: { login: string }; state: string; body: string }>(
-        `/pulls/${options.prNumber}/reviews`,
-      );
       const substantialReviews = reviews.filter((r) => r.body && r.body.trim().length > 0);
       if (substantialReviews.length > 0) {
         parts.push('### Reviews');
@@ -550,19 +531,26 @@ export class GitHubHelper {
   async closeOpenCodePRs(since?: string): Promise<void> {
     type PRSummary = { number: number; head: { ref: string }; created_at: string };
     const prs = await this.paginate<PRSummary>('/pulls?state=open', { perPage: 100 });
-    for (const pr of prs) {
-      if (pr.head?.ref?.startsWith('opencode/')) {
-        if (since && pr.created_at < since) continue;
-        try {
-          await this.api(`/pulls/${pr.number}`, {
+    const opencodePRs = prs.filter(
+      (pr) => pr.head?.ref?.startsWith('opencode/') && (!since || pr.created_at >= since),
+    );
+    const concurrency = 10;
+    for (let i = 0; i < opencodePRs.length; i += concurrency) {
+      const results = await Promise.allSettled(
+        opencodePRs.slice(i, i + concurrency).map((pr) =>
+          this.api(`/pulls/${pr.number}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ state: 'closed' }),
-          });
-          core.info(`Closed auto-created PR #${pr.number} (${pr.head.ref})`);
-        } catch (err) {
+          }).then(() => pr),
+        ),
+      );
+      for (const result of results) {
+        if (result.status === 'fulfilled') {
+          core.info(`Closed auto-created PR #${result.value.number} (${result.value.head.ref})`);
+        } else {
           core.warning(
-            `Could not close PR #${pr.number}: ${err instanceof Error ? err.message : String(err)}`,
+            `Could not close PR: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
           );
         }
       }

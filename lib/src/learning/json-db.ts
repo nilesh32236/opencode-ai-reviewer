@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as fsPromises from 'node:fs/promises';
 import * as path from 'path';
 import * as core from '@actions/core';
 
@@ -75,7 +76,7 @@ export interface DatabaseInstance {
   exec(sql: string): void;
   prepare(sql: string): Statement;
   transaction<T extends (...args: unknown[]) => unknown>(fn: T): T;
-  close(): void;
+  close(): Promise<void>;
 }
 
 export class JsonDatabase implements DatabaseInstance {
@@ -90,6 +91,7 @@ export class JsonDatabase implements DatabaseInstance {
   };
   private filePath: string;
   private inTransaction = false;
+  private writeTimeout: ReturnType<typeof setTimeout> | null = null;
 
   constructor(filePath: string) {
     this.filePath = filePath.endsWith('.db') ? filePath.replace(/\.db$/, '.json') : filePath;
@@ -122,15 +124,20 @@ export class JsonDatabase implements DatabaseInstance {
 
   public save() {
     if (this.inTransaction) return;
+    if (this.writeTimeout) clearTimeout(this.writeTimeout);
+    this.writeTimeout = setTimeout(() => {
+      this.writeTimeout = null;
+      this.writeToDisk();
+    }, 100);
+  }
+
+  private async writeToDisk() {
     try {
       const dir = path.dirname(this.filePath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2), 'utf-8');
+      await fsPromises.mkdir(dir, { recursive: true });
+      await fsPromises.writeFile(this.filePath, JSON.stringify(this.data), 'utf-8');
     } catch (err) {
       console.warn(`Failed to save JSON database: ${err instanceof Error ? err.message : err}`);
-      throw err;
     }
   }
 
@@ -177,8 +184,18 @@ export class JsonDatabase implements DatabaseInstance {
     } as unknown as T;
   }
 
-  close(): void {
-    this.save();
+  async close(): Promise<void> {
+    if (this.writeTimeout) {
+      clearTimeout(this.writeTimeout);
+      this.writeTimeout = null;
+    }
+    try {
+      const dir = path.dirname(this.filePath);
+      await fsPromises.mkdir(dir, { recursive: true });
+      await fsPromises.writeFile(this.filePath, JSON.stringify(this.data), 'utf-8');
+    } catch (err) {
+      console.warn(`Failed to save JSON database: ${err instanceof Error ? err.message : err}`);
+    }
   }
 
   prepare(sql: string): Statement {

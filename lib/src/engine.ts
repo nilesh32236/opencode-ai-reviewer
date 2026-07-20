@@ -20,6 +20,8 @@ export class ReviewEngine {
   private mcp: MCPManager;
   private github: GitHubHelper;
   private config: AgentConfig;
+  private lessonsCache: { lessons: string[]; timestamp: number } | null = null;
+  private static readonly LESSONS_CACHE_TTL = 60_000;
 
   constructor(
     config: AgentConfig,
@@ -77,7 +79,18 @@ export class ReviewEngine {
     const lessons = this.learningStore
       ? await (async () => {
           try {
-            return await this.learningStore!.getRelevantLessons(pr.changedFiles.map((f) => f.path));
+            const now = Date.now();
+            if (
+              this.lessonsCache &&
+              now - this.lessonsCache.timestamp < ReviewEngine.LESSONS_CACHE_TTL
+            ) {
+              return this.lessonsCache.lessons;
+            }
+            const result = await this.learningStore!.getRelevantLessons(
+              pr.changedFiles.map((f) => f.path),
+            );
+            this.lessonsCache = { lessons: result, timestamp: now };
+            return result;
           } catch {
             core.warning('Failed to fetch relevant lessons, defaulting to empty array');
             return [];
