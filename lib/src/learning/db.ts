@@ -75,7 +75,7 @@ function translateQuery(sql: string, dialect: 'postgres' | 'mysql' | 'sqlite'): 
   return cleanSql;
 }
 
-class PostgresAdapter implements DbAdapter {
+export class PostgresAdapter implements DbAdapter {
   private client: PostgresClient;
 
   constructor(client: PostgresClient) {
@@ -122,7 +122,7 @@ class PostgresAdapter implements DbAdapter {
   }
 }
 
-class MysqlAdapter implements DbAdapter {
+export class MysqlAdapter implements DbAdapter {
   private connection: MysqlConnection;
 
   constructor(connection: MysqlConnection) {
@@ -170,7 +170,7 @@ class MysqlAdapter implements DbAdapter {
   }
 }
 
-class SqliteAdapter implements DbAdapter {
+export class SqliteAdapter implements DbAdapter {
   private db: SqliteDatabase;
   private stmtCache = new Map<string, ReturnType<SqliteDatabase['prepare']>>();
   private readonly MAX_CACHE_SIZE = 100;
@@ -227,7 +227,7 @@ class SqliteAdapter implements DbAdapter {
   }
 }
 
-class JsonDbAdapter implements DbAdapter {
+export class JsonDbAdapter implements DbAdapter {
   private db: JsonDatabase;
 
   constructor(db: JsonDatabase) {
@@ -239,15 +239,18 @@ class JsonDbAdapter implements DbAdapter {
   }
 
   async run(sql: string, params: unknown[] = []): Promise<{ changes: number }> {
-    return this.db.prepare(sql).run(...params);
+    const result = this.db.dispatch(sql, params);
+    return { changes: result.changes ?? 0 };
   }
 
   async all<T>(sql: string, params: unknown[] = []): Promise<T[]> {
-    return this.db.prepare(sql).all(...params) as T[];
+    const result = this.db.dispatch(sql, params);
+    return (result.rows ?? []) as T[];
   }
 
   async get<T>(sql: string, params: unknown[] = []): Promise<T | undefined> {
-    return this.db.prepare(sql).get(...params) as T | undefined;
+    const result = this.db.dispatch(sql, params);
+    return (result.row ?? (result.rows as T[] | undefined)?.[0]) as T | undefined;
   }
 
   async transaction<T>(fn: () => Promise<T>): Promise<T> {

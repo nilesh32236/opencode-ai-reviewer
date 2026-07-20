@@ -25,7 +25,6 @@ const {
     close = _close;
     listTools = _listTools;
     callTool = _callTool;
-    constructor(_opts: Record<string, string>) {}
   }
 
   class _MockStdioTransport {

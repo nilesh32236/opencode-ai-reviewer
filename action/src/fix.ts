@@ -5,6 +5,7 @@ import type {
   AgentConfig,
   FixResult,
   GitHubHelper,
+  IssueComment,
   ReviewEngine,
   ReviewResult,
 } from '@opencode-pr-agent/lib';
@@ -26,7 +27,9 @@ export async function runFix(
   }
 
   const comments = await gh.getIssueComments(prNumber);
-  const iteration = comments.filter((c) => c.body.includes('<!-- autofix-review -->')).length;
+  const iteration = comments.filter((c: IssueComment) =>
+    c.body.includes('<!-- autofix-review -->'),
+  ).length;
 
   if (iteration >= config.maxIterations) {
     const errorMsg = `Max iterations reached (${config.maxIterations}). Needs manual review.`;

@@ -12,7 +12,6 @@ import {
   mergeConfigWithInputs,
   setupOpenCode,
   setupWorkspaceDependencies,
-  validateConfig,
 } from '@opencode-pr-agent/lib';
 import { runAudit } from './audit.js';
 import { runAutofixLoop, runFix, runFixIssue } from './fix.js';
@@ -127,14 +126,6 @@ async function run(): Promise<void> {
           }
         : DEFAULT_CONFIG.learning,
     };
-
-    try {
-      validateConfig(config);
-    } catch (err) {
-      core.debug(`Config validation error details: ${err instanceof Error ? err.stack : err}`);
-      core.setFailed('Invalid configuration. Use core.debug() for details.');
-      process.exit(1);
-    }
 
     const engine = new ReviewEngine(config, token, repo);
     const gh = new GitHubHelper(token, repo);
