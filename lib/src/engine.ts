@@ -289,15 +289,32 @@ export class ReviewEngine {
   }
 
   async cleanup(): Promise<void> {
-    try {
-      await this.mcp.disconnect();
-    } catch {
-      core.warning('MCP disconnect failed during cleanup');
-    }
-    try {
-      await this.learningStore?.close();
-    } catch {
-      core.warning('LearningStore close failed during cleanup');
+    const timeoutMs = 15_000;
+    const start = Date.now();
+
+    const mcpTask = this.mcp
+      .disconnect()
+      .catch(() => core.warning('MCP disconnect failed during cleanup'));
+
+    const storeTask = this.learningStore
+      ?.close()
+      .catch(() => core.warning('LearningStore close failed during cleanup'));
+
+    const tasks = [mcpTask];
+    if (storeTask) tasks.push(storeTask);
+
+    const result = await Promise.race([
+      Promise.allSettled(tasks).then(() => 'ok' as const),
+      new Promise<'timeout'>((resolve) => {
+        setTimeout(() => resolve('timeout'), timeoutMs);
+      }),
+    ]);
+
+    if (result === 'timeout') {
+      const elapsed = Date.now() - start;
+      core.warning(
+        `Cleanup did not finish within ${timeoutMs}ms (took ${elapsed}ms) — MCP/learning store may still be shutting down in background`,
+      );
     }
   }
 

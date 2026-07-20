@@ -216,12 +216,29 @@ export class MCPManager {
    * Clean up all MCP connections.
    */
   async disconnect(): Promise<void> {
+    const disconnectTimeoutMs = 5_000;
     for (const [name, { client, transport }] of this.clients) {
       try {
-        await client.close();
-        transport.close();
+        const closePromise = (async () => {
+          await client.close();
+          await transport.close();
+        })();
+        closePromise.catch(() => {});
+        let disconnectTimer: ReturnType<typeof setTimeout>;
+        await Promise.race([
+          closePromise,
+          new Promise<void>((_, reject) => {
+            disconnectTimer = setTimeout(
+              () => reject(new Error(`MCP client close timed out for ${name}`)),
+              disconnectTimeoutMs,
+            );
+          }),
+        ]).finally(() => clearTimeout(disconnectTimer!));
         console.log(`MCP: Disconnected from ${name}`);
       } catch (err) {
+        try {
+          await transport.close();
+        } catch {}
         console.log(
           `MCP disconnect error for ${name}: ${err instanceof Error ? err.message : err}`,
         );
