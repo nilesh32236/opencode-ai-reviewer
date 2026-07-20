@@ -76,7 +76,7 @@ export interface DatabaseInstance {
   exec(sql: string): void;
   prepare(sql: string): Statement;
   transaction<T extends (...args: unknown[]) => unknown>(fn: T): T;
-  close(): void;
+  close(): Promise<void>;
 }
 
 export class JsonDatabase implements DatabaseInstance {
@@ -184,17 +184,15 @@ export class JsonDatabase implements DatabaseInstance {
     } as unknown as T;
   }
 
-  close(): void {
+  async close(): Promise<void> {
     if (this.writeTimeout) {
       clearTimeout(this.writeTimeout);
       this.writeTimeout = null;
     }
     try {
       const dir = path.dirname(this.filePath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      fs.writeFileSync(this.filePath, JSON.stringify(this.data), 'utf-8');
+      await fsPromises.mkdir(dir, { recursive: true });
+      await fsPromises.writeFile(this.filePath, JSON.stringify(this.data), 'utf-8');
     } catch (err) {
       console.warn(`Failed to save JSON database: ${err instanceof Error ? err.message : err}`);
     }

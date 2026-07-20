@@ -450,8 +450,12 @@ export class GitHubHelper {
   }): Promise<string> {
     const parts: string[] = [];
 
-    if (options.issueNumber) {
-      const issue = await this.getIssue(options.issueNumber);
+    const [issue, pr] = await Promise.all([
+      options.issueNumber ? this.getIssue(options.issueNumber) : Promise.resolve(undefined),
+      options.prNumber ? this.getPR(options.prNumber) : Promise.resolve(undefined),
+    ]);
+
+    if (issue) {
       parts.push(`## Issue #${issue.number}`);
       parts.push('');
       parts.push(`**Title:** ${issue.title}`);
@@ -475,8 +479,7 @@ export class GitHubHelper {
       }
     }
 
-    if (options.prNumber) {
-      const pr = await this.getPR(options.prNumber);
+    if (pr) {
       parts.push(`## PR #${pr.number}`);
       parts.push('');
       parts.push(`**Title:** ${pr.title}`);
