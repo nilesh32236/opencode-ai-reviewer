@@ -6,6 +6,8 @@ AI-powered PR review, auto-fix, and codebase audit — as a GitHub Action and a 
 [![TypeScript](https://img.shields.io/badge/Language-TypeScript-blue.svg)](https://www.typescriptlang.org/)
 [![PNPM](https://img.shields.io/badge/Package%20Manager-pnpm-orange.svg)](https://pnpm.io/)
 [![Architecture Guide](https://img.shields.io/badge/Architecture-Agentic-purple.svg)](agent.md)
+[![Contributing](https://img.shields.io/badge/Contributing-CONTRIBUTING.md-brightgreen.svg)](CONTRIBUTING.md)
+[![Changelog](https://img.shields.io/badge/Changelog-CHANGELOG.md-blue.svg)](CHANGELOG.md)
 
 - **Review** PRs for bugs, security issues, and style problems.
 - **Auto-fix** issues iteratively using compiler and test errors.
@@ -181,6 +183,14 @@ pnpm teardown:local         # stop local Docker services
 If you are developing this codebase using an AI assistant (like Gemini or Antigravity), a dedicated workspace rule file is available under [`.agents/AGENTS.md`](.agents/AGENTS.md). This file guides the agent on monorepo package relationships, build instructions, linting commands, and verification processes.
 
 ---
+
+## Contributing
+
+Please see [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, code conventions, and the PR process.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history and version notes.
 
 ## License
 

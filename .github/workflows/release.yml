@@ -43,6 +43,28 @@ jobs:
           test -f action/lib/index.js || { echo "action/lib/index.js missing!"; exit 1; }
           echo "Build artifacts verified."
 
+      - name: Generate changelog entry
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          DATE=$(date -u +%Y-%m-%d)
+          cat >> CHANGELOG.md <<-EOF
+
+          ## [${TAG}] — ${DATE}
+
+          ### Added
+          - _(list new features)_
+
+          ### Fixed
+          - _(list bug fixes)_
+
+          ### Changed
+          - _(list refactors or dependency updates)_
+
+          [${TAG}]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.0.4...${TAG}
+          EOF
+          echo "Changelog placeholder generated for ${TAG}. Update CHANGELOG.md before committing."
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
