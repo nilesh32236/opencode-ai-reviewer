@@ -10,12 +10,14 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { MCPContextEntry, MCPQueryResult, MCPServerConfig } from '../types/index.js';
 import { withRetry } from '../utils/retry.js';
 
 export class MCPManager {
   private clients: Map<string, { client: Client; transport: StdioClientTransport }> = new Map();
   private initialized = false;
+  private toolsCache: Map<string, Tool[]> = new Map();
 
   constructor(private servers: MCPServerConfig[]) {}
 
@@ -23,6 +25,7 @@ export class MCPManager {
    * Initialize all configured MCP servers.
    */
   async connect(): Promise<void> {
+    if (this.initialized) return;
     if (this.servers.length === 0) {
       console.log('::group::MCP: No servers configured, skipping');
       console.log('::endgroup::');
@@ -82,6 +85,7 @@ export class MCPManager {
                 baseDelayMs: 2000,
               });
               console.log(`  ${server.name}: ${tools.tools.length} tools available`);
+              this.toolsCache.set(server.name, tools.tools);
             }
           } catch (err) {
             console.log(
@@ -128,8 +132,13 @@ export class MCPManager {
 
     const results = await Promise.allSettled(
       [...this.clients].map(async ([name, { client }]) => {
-        const tools = await client.listTools();
-        const searchTool = tools.tools.find(
+        let toolsList = this.toolsCache.get(name);
+        if (!toolsList) {
+          const tools = await client.listTools();
+          toolsList = tools.tools;
+          this.toolsCache.set(name, toolsList);
+        }
+        const searchTool = toolsList.find(
           (t) =>
             t.name.includes('search') || t.name.includes('resolve') || t.name.includes('context'),
         );
@@ -180,8 +189,13 @@ export class MCPManager {
 
     const results = await Promise.allSettled(
       libraries.map(async (lib) => {
-        const tools = await context7Client.client.listTools();
-        const resolveTool = tools.tools.find((t) => t.name.includes('resolve'));
+        let toolsList = this.toolsCache.get('context7');
+        if (!toolsList) {
+          const tools = await context7Client.client.listTools();
+          toolsList = tools.tools;
+          this.toolsCache.set('context7', toolsList);
+        }
+        const resolveTool = toolsList.find((t) => t.name.includes('resolve'));
 
         if (resolveTool) {
           const result = await withRetry(
@@ -245,6 +259,7 @@ export class MCPManager {
       }
     }
     this.clients.clear();
+    this.toolsCache.clear();
     this.initialized = false;
   }
 }

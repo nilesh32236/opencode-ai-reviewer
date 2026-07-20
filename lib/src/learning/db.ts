@@ -173,23 +173,27 @@ export class MysqlAdapter implements DbAdapter {
 export class SqliteAdapter implements DbAdapter {
   private db: SqliteDatabase;
   private stmtCache = new Map<string, ReturnType<SqliteDatabase['prepare']>>();
-  private readonly MAX_CACHE_SIZE = 100;
+  private readonly maxCacheSize: number;
 
-  constructor(db: SqliteDatabase) {
+  constructor(db: SqliteDatabase, maxCacheSize = 100) {
     this.db = db;
+    this.maxCacheSize = maxCacheSize;
   }
 
   private prepareStmt(sql: string): ReturnType<SqliteDatabase['prepare']> {
     const normalized = sql.trim().replace(/\s+/g, ' ');
     let stmt = this.stmtCache.get(normalized);
-    if (!stmt) {
-      if (this.stmtCache.size >= this.MAX_CACHE_SIZE) {
-        const firstKey = this.stmtCache.keys().next().value;
-        if (firstKey) this.stmtCache.delete(firstKey);
-      }
-      stmt = this.db.prepare(normalized);
+    if (stmt) {
+      this.stmtCache.delete(normalized);
       this.stmtCache.set(normalized, stmt);
+      return stmt;
     }
+    if (this.stmtCache.size >= this.maxCacheSize) {
+      const firstKey = this.stmtCache.keys().next().value;
+      if (firstKey) this.stmtCache.delete(firstKey);
+    }
+    stmt = this.db.prepare(normalized);
+    this.stmtCache.set(normalized, stmt);
     return stmt;
   }
 

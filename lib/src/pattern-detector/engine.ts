@@ -56,19 +56,19 @@ export class PatternDetector {
         frequency: cluster.messages.length,
         fileTypes,
       });
+    }
 
-      try {
-        await this.store.recordPattern({
-          patternKey,
-          messageCluster: cluster.messages,
-          frequency: cluster.messages.length,
-          fileTypes,
-        });
-      } catch (err) {
-        core.warning(
-          `Failed to record pattern: ${patternKey} — ${err instanceof Error ? err.message : err}`,
-        );
-      }
+    try {
+      await this.store.recordPatterns(
+        patterns.map((p) => ({
+          patternKey: p.patternKey,
+          messageCluster: p.messages,
+          frequency: p.frequency,
+          fileTypes: p.fileTypes,
+        })),
+      );
+    } catch (err) {
+      core.warning(`Failed to record patterns: ${err instanceof Error ? err.message : err}`);
     }
 
     return patterns;
