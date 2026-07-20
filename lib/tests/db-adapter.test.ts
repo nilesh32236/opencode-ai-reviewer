@@ -1,16 +1,16 @@
 import * as fs from 'fs';
-import * as path from 'path';
 import * as os from 'os';
+import * as path from 'path';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { JsonDatabase } from '../src/learning/json-db.js';
 import {
   type DbAdapter,
+  JsonDbAdapter,
   MysqlAdapter,
   PostgresAdapter,
-  JsonDbAdapter,
   SqliteAdapter,
   connectDb,
 } from '../src/learning/db.js';
+import { JsonDatabase } from '../src/learning/json-db.js';
 
 // ---------------------------------------------------------------------------
 // JSON DB Adapter tests
@@ -160,18 +160,24 @@ describe('JsonDatabase', () => {
     });
 
     it('approves custom rule', () => {
-      jsonDb.handleSql('UPDATE custom_rules SET status = \'active\', approved_at = datetime(\'now\') WHERE id = ?', ['cr1']);
+      jsonDb.handleSql(
+        "UPDATE custom_rules SET status = 'active', approved_at = datetime('now') WHERE id = ?",
+        ['cr1'],
+      );
       expect(jsonDb.data.custom_rules[0].status).toBe('active');
       expect(jsonDb.data.custom_rules[0].approved_at).toBeTruthy();
     });
 
     it('declines custom rule', () => {
-      jsonDb.handleSql('UPDATE custom_rules SET status = \'declined\' WHERE id = ?', ['cr1']);
+      jsonDb.handleSql("UPDATE custom_rules SET status = 'declined' WHERE id = ?", ['cr1']);
       expect(jsonDb.data.custom_rules[0].status).toBe('declined');
     });
 
     it('updates pattern frequency', () => {
-      jsonDb.handleSql('UPDATE patterns SET frequency = ?, last_seen = datetime(\'now\'), file_types = ? WHERE pattern_key = ?', [3, '.ts,.js', 'test-pattern']);
+      jsonDb.handleSql(
+        "UPDATE patterns SET frequency = ?, last_seen = datetime('now'), file_types = ? WHERE pattern_key = ?",
+        [3, '.ts,.js', 'test-pattern'],
+      );
       expect(jsonDb.data.patterns[0].frequency).toBe(3);
     });
   });
@@ -193,13 +199,17 @@ describe('JsonDatabase', () => {
         'INSERT INTO patterns (id, pattern_key, message_cluster, frequency, file_types, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, datetime("now"), datetime("now"))',
         ['p1', 'unique-key', '["msg"]', 2, '.ts'],
       );
-      const result = jsonDb.handleSql('SELECT id, frequency FROM patterns WHERE pattern_key = ?', ['unique-key']);
+      const result = jsonDb.handleSql('SELECT id, frequency FROM patterns WHERE pattern_key = ?', [
+        'unique-key',
+      ]);
       expect(result.row).toBeDefined();
       expect((result.row as { id: string; frequency: number }).frequency).toBe(2);
     });
 
     it('returns undefined for missing pattern', () => {
-      const result = jsonDb.handleSql('SELECT id, frequency FROM patterns WHERE pattern_key = ?', ['nonexistent']);
+      const result = jsonDb.handleSql('SELECT id, frequency FROM patterns WHERE pattern_key = ?', [
+        'nonexistent',
+      ]);
       expect(result.row).toBeUndefined();
     });
   });
@@ -221,17 +231,26 @@ describe('JsonDatabase', () => {
     });
 
     it('gets findings by type', () => {
-      const result = jsonDb.handleSql('SELECT * FROM findings WHERE type = ? ORDER BY created_at DESC LIMIT ?', ['issue', 10]);
+      const result = jsonDb.handleSql(
+        'SELECT * FROM findings WHERE type = ? ORDER BY created_at DESC LIMIT ?',
+        ['issue', 10],
+      );
       expect(result.rows).toHaveLength(2);
     });
 
     it('gets findings by PR number', () => {
-      const result = jsonDb.handleSql('SELECT * FROM findings WHERE pr_number = ? ORDER BY created_at DESC LIMIT ?', [1, 10]);
+      const result = jsonDb.handleSql(
+        'SELECT * FROM findings WHERE pr_number = ? ORDER BY created_at DESC LIMIT ?',
+        [1, 10],
+      );
       expect(result.rows).toHaveLength(2);
     });
 
     it('gets all findings with limit', () => {
-      const result = jsonDb.handleSql('SELECT * FROM findings ORDER BY created_at DESC LIMIT ?', [2]);
+      const result = jsonDb.handleSql(
+        'SELECT * FROM findings ORDER BY created_at DESC LIMIT ?',
+        [2],
+      );
       expect(result.rows).toHaveLength(2);
     });
 
@@ -253,7 +272,9 @@ describe('JsonDatabase', () => {
         'INSERT INTO prompt_overrides (id, category, override_text, false_positive_rate_before) VALUES (?, ?, ?, ?)',
         ['po1', 'general', 'General override', 0.1],
       );
-      const result = jsonDb.handleSql("SELECT override_text FROM prompt_overrides WHERE category = 'general'");
+      const result = jsonDb.handleSql(
+        "SELECT override_text FROM prompt_overrides WHERE category = 'general'",
+      );
       expect(result.rows).toHaveLength(1);
     });
 
@@ -266,7 +287,10 @@ describe('JsonDatabase', () => {
         'INSERT INTO prompt_overrides (id, category, override_text, false_positive_rate_before) VALUES (?, ?, ?, ?)',
         ['po2', '.js', 'JS override', 0.1],
       );
-      const result = jsonDb.handleSql('SELECT override_text FROM prompt_overrides WHERE category IN (?, ?)', ['.ts', '.js']);
+      const result = jsonDb.handleSql(
+        'SELECT override_text FROM prompt_overrides WHERE category IN (?, ?)',
+        ['.ts', '.js'],
+      );
       expect(result.rows).toHaveLength(2);
     });
 
@@ -279,7 +303,10 @@ describe('JsonDatabase', () => {
         'INSERT INTO patterns (id, pattern_key, message_cluster, frequency, file_types, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, datetime("now"), datetime("now"))',
         ['p2', 'freq1', '["msg"]', 1, '.ts'],
       );
-      const result = jsonDb.handleSql('SELECT * FROM patterns WHERE frequency >= ? ORDER BY frequency DESC', [2]);
+      const result = jsonDb.handleSql(
+        'SELECT * FROM patterns WHERE frequency >= ? ORDER BY frequency DESC',
+        [2],
+      );
       expect(result.rows).toHaveLength(1);
     });
 
@@ -293,7 +320,10 @@ describe('JsonDatabase', () => {
     });
 
     it('gets finding messages', () => {
-      const result = jsonDb.handleSql('SELECT message, file FROM findings ORDER BY created_at DESC LIMIT ?', [10]);
+      const result = jsonDb.handleSql(
+        'SELECT message, file FROM findings ORDER BY created_at DESC LIMIT ?',
+        [10],
+      );
       expect(result.rows).toHaveLength(3);
       expect((result.rows as Array<{ message: string }>)[0].message).toBeTruthy();
     });
@@ -380,7 +410,10 @@ describe('JsonDbAdapter', () => {
       'INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       ['f2', 1, 'issue', 'minor', 'b.ts', 2, 'B', null],
     );
-    const rows = await adapter.all<{ message: string }>('SELECT * FROM findings ORDER BY created_at DESC LIMIT ?', [10]);
+    const rows = await adapter.all<{ message: string }>(
+      'SELECT * FROM findings ORDER BY created_at DESC LIMIT ?',
+      [10],
+    );
     expect(rows).toHaveLength(2);
   });
 
@@ -446,7 +479,9 @@ describe('SqliteAdapter', () => {
     await adapter.exec(
       'CREATE TABLE IF NOT EXISTS findings (id TEXT PRIMARY KEY, pr_number INTEGER, type TEXT, severity TEXT, file TEXT, line INTEGER, message TEXT, suggestion TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)',
     );
-    const row = await adapter.get<{ id: string }>('SELECT id FROM findings WHERE id = ?', ['nonexistent']);
+    const row = await adapter.get<{ id: string }>('SELECT id FROM findings WHERE id = ?', [
+      'nonexistent',
+    ]);
     expect(row).toBeUndefined();
   });
 
@@ -494,14 +529,13 @@ describe('PostgresAdapter', () => {
       ['f1', 1, 'issue', 'critical', 'a.ts', 10, 'msg', null],
     );
     expect(result.changes).toBe(1);
-    expect(mockQuery).toHaveBeenCalledWith(
-      expect.stringContaining('$1'),
-      expect.any(Array),
-    );
+    expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('$1'), expect.any(Array));
   });
 
   it('get returns first row', async () => {
-    const mockQuery = vi.fn().mockResolvedValue({ rowCount: 1, rows: [{ id: 'f1', message: 'test' }] });
+    const mockQuery = vi
+      .fn()
+      .mockResolvedValue({ rowCount: 1, rows: [{ id: 'f1', message: 'test' }] });
     const client = { query: mockQuery, end: vi.fn().mockResolvedValue(undefined) };
     const adapter = new PostgresAdapter(client);
 
@@ -524,7 +558,9 @@ describe('PostgresAdapter', () => {
   });
 
   it('all returns rows array', async () => {
-    const mockQuery = vi.fn().mockResolvedValue({ rowCount: 2, rows: [{ id: 'f1' }, { id: 'f2' }] });
+    const mockQuery = vi
+      .fn()
+      .mockResolvedValue({ rowCount: 2, rows: [{ id: 'f1' }, { id: 'f2' }] });
     const client = { query: mockQuery, end: vi.fn().mockResolvedValue(undefined) };
     const adapter = new PostgresAdapter(client);
 
@@ -539,7 +575,13 @@ describe('PostgresAdapter', () => {
 describe('MysqlAdapter', () => {
   it('run returns affected rows', async () => {
     const mockExecute = vi.fn().mockResolvedValue([{ affectedRows: 1 }, undefined]);
-    const connection = { execute: mockExecute, end: vi.fn().mockResolvedValue(undefined), beginTransaction: vi.fn().mockResolvedValue(undefined), commit: vi.fn().mockResolvedValue(undefined), rollback: vi.fn().mockResolvedValue(undefined) };
+    const connection = {
+      execute: mockExecute,
+      end: vi.fn().mockResolvedValue(undefined),
+      beginTransaction: vi.fn().mockResolvedValue(undefined),
+      commit: vi.fn().mockResolvedValue(undefined),
+      rollback: vi.fn().mockResolvedValue(undefined),
+    };
     const adapter = new MysqlAdapter(connection);
 
     const result = await adapter.run('DELETE FROM feedback WHERE pr_number = ?', [1]);
@@ -548,7 +590,13 @@ describe('MysqlAdapter', () => {
 
   it('all returns rows array', async () => {
     const mockExecute = vi.fn().mockResolvedValue([[{ id: 'f1' }, { id: 'f2' }], undefined]);
-    const connection = { execute: mockExecute, end: vi.fn().mockResolvedValue(undefined), beginTransaction: vi.fn().mockResolvedValue(undefined), commit: vi.fn().mockResolvedValue(undefined), rollback: vi.fn().mockResolvedValue(undefined) };
+    const connection = {
+      execute: mockExecute,
+      end: vi.fn().mockResolvedValue(undefined),
+      beginTransaction: vi.fn().mockResolvedValue(undefined),
+      commit: vi.fn().mockResolvedValue(undefined),
+      rollback: vi.fn().mockResolvedValue(undefined),
+    };
     const adapter = new MysqlAdapter(connection);
 
     const rows = await adapter.all<{ id: string }>('SELECT id FROM findings');
@@ -557,7 +605,13 @@ describe('MysqlAdapter', () => {
 
   it('get returns first row', async () => {
     const mockExecute = vi.fn().mockResolvedValue([[{ id: 'f1', message: 'test' }], undefined]);
-    const connection = { execute: mockExecute, end: vi.fn().mockResolvedValue(undefined), beginTransaction: vi.fn().mockResolvedValue(undefined), commit: vi.fn().mockResolvedValue(undefined), rollback: vi.fn().mockResolvedValue(undefined) };
+    const connection = {
+      execute: mockExecute,
+      end: vi.fn().mockResolvedValue(undefined),
+      beginTransaction: vi.fn().mockResolvedValue(undefined),
+      commit: vi.fn().mockResolvedValue(undefined),
+      rollback: vi.fn().mockResolvedValue(undefined),
+    };
     const adapter = new MysqlAdapter(connection);
 
     const row = await adapter.get<{ id: string }>('SELECT id FROM findings');
@@ -566,7 +620,13 @@ describe('MysqlAdapter', () => {
 
   it('transaction wraps with beginTransaction/commit', async () => {
     const mockExecute = vi.fn().mockResolvedValue([[[]], undefined]);
-    const connection = { execute: mockExecute, end: vi.fn().mockResolvedValue(undefined), beginTransaction: vi.fn().mockResolvedValue(undefined), commit: vi.fn().mockResolvedValue(undefined), rollback: vi.fn().mockResolvedValue(undefined) };
+    const connection = {
+      execute: mockExecute,
+      end: vi.fn().mockResolvedValue(undefined),
+      beginTransaction: vi.fn().mockResolvedValue(undefined),
+      commit: vi.fn().mockResolvedValue(undefined),
+      rollback: vi.fn().mockResolvedValue(undefined),
+    };
     const adapter = new MysqlAdapter(connection);
 
     await adapter.transaction(async () => {

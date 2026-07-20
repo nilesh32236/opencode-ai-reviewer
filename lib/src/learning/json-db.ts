@@ -94,7 +94,10 @@ export class JsonDatabase implements DatabaseInstance {
   private filePath: string;
   private inTransaction = false;
   private writeTimeout: ReturnType<typeof setTimeout> | null = null;
-  private handlers: Array<{ match: string; handler: (params: unknown[], cleanSql: string) => SqlHandlerResult }>;
+  private handlers: Array<{
+    match: string;
+    handler: (params: unknown[], cleanSql: string) => SqlHandlerResult;
+  }>;
 
   constructor(filePath: string) {
     this.filePath = filePath.endsWith('.db') ? filePath.replace(/\.db$/, '.json') : filePath;
@@ -115,44 +118,109 @@ export class JsonDatabase implements DatabaseInstance {
     }
   }
 
-  private initHandlers(): Array<{ match: string; handler: (params: unknown[], cleanSql: string) => SqlHandlerResult }> {
-    const self = this;
+  private initHandlers(): Array<{
+    match: string;
+    handler: (params: unknown[], cleanSql: string) => SqlHandlerResult;
+  }> {
     return [
-      { match: 'INSERT OR REPLACE INTO findings', handler: (p) => self.handleInsertOrReplaceFindings(p) },
-      { match: 'INSERT INTO findings', handler: (p) => self.handleInsertFindings(p) },
-      { match: 'INSERT INTO feedback', handler: (p) => self.handleInsertFeedback(p) },
-      { match: 'INSERT INTO review_quality', handler: (p) => self.handleInsertReviewQuality(p) },
-      { match: 'INSERT INTO prompt_overrides', handler: (p) => self.handleInsertPromptOverride(p) },
-      { match: 'INSERT INTO custom_rules', handler: (p) => self.handleInsertCustomRule(p) },
-      { match: 'INSERT INTO patterns', handler: (p) => self.handleInsertPattern(p) },
-      { match: 'INSERT INTO meta_review_counter (id, count) VALUES (1, 0)', handler: () => self.handleInsertMetaReviewCounter() },
-      { match: 'DELETE FROM feedback WHERE pr_number = ?', handler: (p) => self.handleDeleteFeedbackByPr(p) },
-      { match: 'DELETE FROM findings WHERE pr_number = ?', handler: (p) => self.handleDeleteFindingsByPr(p) },
-      { match: 'UPDATE meta_review_counter SET count = ? WHERE id = 1', handler: (p) => self.handleUpdateMetaReviewCounter(p) },
-      { match: 'UPDATE meta_review_counter SET count = 0 WHERE id = 1', handler: () => self.handleResetMetaReviewCounter() },
-      { match: "UPDATE custom_rules SET status = 'active', approved_at", handler: (p) => self.handleApproveCustomRule(p) },
-      { match: "UPDATE custom_rules SET status = 'declined' WHERE id = ?", handler: (p) => self.handleDeclineCustomRule(p) },
-      { match: 'UPDATE patterns SET frequency', handler: (p) => self.handleUpdatePattern(p) },
-      { match: 'SELECT count FROM meta_review_counter WHERE id = 1', handler: () => self.handleGetMetaReviewCounter() },
-      { match: "SELECT COUNT(*) as count FROM feedback WHERE signal_type IN ('dismissed', 'disputed_comment')", handler: () => self.handleGetDisputedFeedbackCount() },
-      { match: 'SELECT COUNT(*) as count FROM feedback', handler: () => self.handleGetFeedbackCount() },
-      { match: 'SELECT id, frequency FROM patterns WHERE pattern_key = ?', handler: (p) => self.handleGetPatternByKey(p) },
-      { match: 'FROM findings WHERE type = ?', handler: (p) => self.handleGetFindingsByType(p) },
-      { match: 'FROM findings WHERE pr_number = ?', handler: (p) => self.handleGetFindingsByPr(p) },
-      { match: "FROM findings ORDER BY created_at DESC LIMIT ?", handler: (p) => self.handleGetAllFindingsLimited(p) },
-      { match: 'SELECT * FROM findings', handler: (p) => self.handleGetAllFindings(p) },
-      { match: "custom_rules WHERE status = 'active'", handler: () => self.handleGetActiveCustomRules() },
-      { match: "prompt_overrides WHERE category = 'general'", handler: () => self.handleGetPromptOverridesGeneral() },
-      { match: 'prompt_overrides WHERE category = ?', handler: (p) => self.handleGetPromptOverridesByCategory(p) },
-      { match: 'prompt_overrides WHERE category IN (', handler: (p) => self.handleGetPromptOverridesByCategories(p) },
-      { match: 'FROM review_quality', handler: (p) => self.handleGetReviewQuality(p) },
-      { match: 'FROM patterns WHERE frequency >= ?', handler: (p) => self.handleGetPatternsByFrequency(p) },
-      { match: "custom_rules WHERE status = 'pending'", handler: () => self.handleGetPendingCustomRules() },
-      { match: 'SELECT message, file FROM findings', handler: (p) => self.handleGetFindingMessages(p) },
+      {
+        match: 'INSERT OR REPLACE INTO findings',
+        handler: (p) => this.handleInsertOrReplaceFindings(p),
+      },
+      { match: 'INSERT INTO findings', handler: (p) => this.handleInsertFindings(p) },
+      { match: 'INSERT INTO feedback', handler: (p) => this.handleInsertFeedback(p) },
+      { match: 'INSERT INTO review_quality', handler: (p) => this.handleInsertReviewQuality(p) },
+      { match: 'INSERT INTO prompt_overrides', handler: (p) => this.handleInsertPromptOverride(p) },
+      { match: 'INSERT INTO custom_rules', handler: (p) => this.handleInsertCustomRule(p) },
+      { match: 'INSERT INTO patterns', handler: (p) => this.handleInsertPattern(p) },
+      {
+        match: 'INSERT INTO meta_review_counter (id, count) VALUES (1, 0)',
+        handler: () => this.handleInsertMetaReviewCounter(),
+      },
+      {
+        match: 'DELETE FROM feedback WHERE pr_number = ?',
+        handler: (p) => this.handleDeleteFeedbackByPr(p),
+      },
+      {
+        match: 'DELETE FROM findings WHERE pr_number = ?',
+        handler: (p) => this.handleDeleteFindingsByPr(p),
+      },
+      {
+        match: 'UPDATE meta_review_counter SET count = ? WHERE id = 1',
+        handler: (p) => this.handleUpdateMetaReviewCounter(p),
+      },
+      {
+        match: 'UPDATE meta_review_counter SET count = 0 WHERE id = 1',
+        handler: () => this.handleResetMetaReviewCounter(),
+      },
+      {
+        match: "UPDATE custom_rules SET status = 'active', approved_at",
+        handler: (p) => this.handleApproveCustomRule(p),
+      },
+      {
+        match: "UPDATE custom_rules SET status = 'declined' WHERE id = ?",
+        handler: (p) => this.handleDeclineCustomRule(p),
+      },
+      { match: 'UPDATE patterns SET frequency', handler: (p) => this.handleUpdatePattern(p) },
+      {
+        match: 'SELECT count FROM meta_review_counter WHERE id = 1',
+        handler: () => this.handleGetMetaReviewCounter(),
+      },
+      {
+        match:
+          "SELECT COUNT(*) as count FROM feedback WHERE signal_type IN ('dismissed', 'disputed_comment')",
+        handler: () => this.handleGetDisputedFeedbackCount(),
+      },
+      {
+        match: 'SELECT COUNT(*) as count FROM feedback',
+        handler: () => this.handleGetFeedbackCount(),
+      },
+      {
+        match: 'SELECT id, frequency FROM patterns WHERE pattern_key = ?',
+        handler: (p) => this.handleGetPatternByKey(p),
+      },
+      { match: 'FROM findings WHERE type = ?', handler: (p) => this.handleGetFindingsByType(p) },
+      { match: 'FROM findings WHERE pr_number = ?', handler: (p) => this.handleGetFindingsByPr(p) },
+      {
+        match: 'FROM findings ORDER BY created_at DESC LIMIT ?',
+        handler: (p) => this.handleGetAllFindingsLimited(p),
+      },
+      { match: 'SELECT * FROM findings', handler: (p) => this.handleGetAllFindings(p) },
+      {
+        match: "custom_rules WHERE status = 'active'",
+        handler: () => this.handleGetActiveCustomRules(),
+      },
+      {
+        match: "prompt_overrides WHERE category = 'general'",
+        handler: () => this.handleGetPromptOverridesGeneral(),
+      },
+      {
+        match: 'prompt_overrides WHERE category = ?',
+        handler: (p) => this.handleGetPromptOverridesByCategory(p),
+      },
+      {
+        match: 'prompt_overrides WHERE category IN (',
+        handler: (p) => this.handleGetPromptOverridesByCategories(p),
+      },
+      { match: 'FROM review_quality', handler: (p) => this.handleGetReviewQuality(p) },
+      {
+        match: 'FROM patterns WHERE frequency >= ?',
+        handler: (p) => this.handleGetPatternsByFrequency(p),
+      },
+      {
+        match: "custom_rules WHERE status = 'pending'",
+        handler: () => this.handleGetPendingCustomRules(),
+      },
+      {
+        match: 'SELECT message, file FROM findings',
+        handler: (p) => this.handleGetFindingMessages(p),
+      },
     ];
   }
 
-  private findHandler(cleanSql: string): ((params: unknown[], cleanSql: string) => SqlHandlerResult) | null {
+  private findHandler(
+    cleanSql: string,
+  ): ((params: unknown[], cleanSql: string) => SqlHandlerResult) | null {
     for (const { match, handler } of this.handlers) {
       if (cleanSql.includes(match) || cleanSql.startsWith(match)) {
         return handler;
@@ -165,7 +233,10 @@ export class JsonDatabase implements DatabaseInstance {
     const rowSize = 8;
     let changes = 0;
     for (let i = 0; i < params.length; i += rowSize) {
-      const [id, pr_number, type, severity, file, line, message, suggestion] = params.slice(i, i + rowSize);
+      const [id, pr_number, type, severity, file, line, message, suggestion] = params.slice(
+        i,
+        i + rowSize,
+      );
       const idx = this.data.findings.findIndex((f) => f.id === id);
       const entry = {
         id: id as string,
@@ -211,7 +282,8 @@ export class JsonDatabase implements DatabaseInstance {
   }
 
   private handleInsertReviewQuality(params: unknown[]): SqlHandlerResult {
-    const [id, pr_number, actionability_score, accuracy_score, coverage_score, consistency_score] = params;
+    const [id, pr_number, actionability_score, accuracy_score, coverage_score, consistency_score] =
+      params;
     this.data.review_quality.push({
       id: id as string,
       pr_number: pr_number as number,
@@ -526,7 +598,10 @@ export class JsonDatabase implements DatabaseInstance {
   }
 
   /** Dispatch a SQL operation to the matching handler. Returns { changes, rows, row }. */
-  handleSql(sql: string, params: unknown[] = []): { changes?: number; rows?: unknown[]; row?: unknown } {
+  handleSql(
+    sql: string,
+    params: unknown[] = [],
+  ): { changes?: number; rows?: unknown[]; row?: unknown } {
     const cleanSql = sql.trim().replace(/\s+/g, ' ');
     const handler = this.findHandler(cleanSql);
     if (handler) {
@@ -563,7 +638,7 @@ export class JsonDatabase implements DatabaseInstance {
         const handler = self.findHandler(cleanSql);
         if (handler) {
           const result = handler(params, cleanSql);
-          return result.row !== undefined ? result.row : (result.rows?.[0]);
+          return result.row !== undefined ? result.row : result.rows?.[0];
         }
         return undefined;
       },
