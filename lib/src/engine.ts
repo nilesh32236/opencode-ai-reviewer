@@ -311,8 +311,9 @@ export class ReviewEngine {
     ]);
 
     if (result === 'timeout') {
+      const elapsed = Date.now() - start;
       core.warning(
-        `Cleanup did not finish within ${timeoutMs}ms (took ${Date.now() - start}ms) — forcing exit`,
+        `Cleanup did not finish within ${timeoutMs}ms (took ${elapsed}ms) — MCP/learning store may still be shutting down in background`,
       );
     }
   }
