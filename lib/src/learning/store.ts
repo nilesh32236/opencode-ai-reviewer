@@ -199,12 +199,13 @@ export class LearningStore {
 
   async getFalsePositiveRate(): Promise<number> {
     const db = await this.dbPromise;
-    const total = await db.get<{ count: number }>('SELECT COUNT(*) as count FROM feedback');
+    const [total, disputed] = await Promise.all([
+      db.get<{ count: number }>('SELECT COUNT(*) as count FROM feedback'),
+      db.get<{ count: number }>(
+        "SELECT COUNT(*) as count FROM feedback WHERE signal_type IN ('dismissed', 'disputed_comment')",
+      ),
+    ]);
     if (!total || total.count === 0) return 0;
-
-    const disputed = await db.get<{ count: number }>(
-      "SELECT COUNT(*) as count FROM feedback WHERE signal_type IN ('dismissed', 'disputed_comment')",
-    );
     if (!disputed) return 0;
 
     return disputed.count / total.count;
@@ -331,6 +332,45 @@ export class LearningStore {
             pattern.fileTypes.join(','),
           ],
         );
+      }
+    });
+  }
+
+  async recordPatterns(
+    patterns: Array<{
+      patternKey: string;
+      messageCluster: string[];
+      frequency: number;
+      fileTypes: string[];
+    }>,
+  ): Promise<void> {
+    if (patterns.length === 0) return;
+    const db = await this.dbPromise;
+    await db.transaction(async () => {
+      for (const pattern of patterns) {
+        const existing = await db.get<{ id: string; frequency: number }>(
+          'SELECT id, frequency FROM patterns WHERE pattern_key = ?',
+          [pattern.patternKey],
+        );
+
+        if (existing) {
+          await db.run(
+            `UPDATE patterns SET frequency = ?, last_seen = CURRENT_TIMESTAMP, file_types = ? WHERE pattern_key = ?`,
+            [existing.frequency + 1, pattern.fileTypes.join(','), pattern.patternKey],
+          );
+        } else {
+          await db.run(
+            `INSERT INTO patterns (id, pattern_key, message_cluster, frequency, file_types, first_seen, last_seen)
+             VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+            [
+              generateId(),
+              pattern.patternKey,
+              JSON.stringify(pattern.messageCluster),
+              pattern.frequency,
+              pattern.fileTypes.join(','),
+            ],
+          );
+        }
       }
     });
   }

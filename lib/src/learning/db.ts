@@ -189,6 +189,9 @@ export class SqliteAdapter implements DbAdapter {
       }
       stmt = this.db.prepare(normalized);
       this.stmtCache.set(normalized, stmt);
+    } else {
+      this.stmtCache.delete(normalized);
+      this.stmtCache.set(normalized, stmt);
     }
     return stmt;
   }

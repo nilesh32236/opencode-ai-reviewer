@@ -26,6 +26,12 @@ export class PatternDetector {
     const clusters = clusterFindings(messages, 0.3);
 
     const patterns: DiscoveredPattern[] = [];
+    const patternsToRecord: Array<{
+      patternKey: string;
+      messageCluster: string[];
+      frequency: number;
+      fileTypes: string[];
+    }> = [];
 
     for (const cluster of clusters) {
       if (cluster.messages.length < minFrequency) continue;
@@ -57,16 +63,20 @@ export class PatternDetector {
         fileTypes,
       });
 
+      patternsToRecord.push({
+        patternKey,
+        messageCluster: cluster.messages,
+        frequency: cluster.messages.length,
+        fileTypes,
+      });
+    }
+
+    if (patternsToRecord.length > 0) {
       try {
-        await this.store.recordPattern({
-          patternKey,
-          messageCluster: cluster.messages,
-          frequency: cluster.messages.length,
-          fileTypes,
-        });
+        await this.store.recordPatterns(patternsToRecord);
       } catch (err) {
         core.warning(
-          `Failed to record pattern: ${patternKey} — ${err instanceof Error ? err.message : err}`,
+          `Failed to record ${patternsToRecord.length} patterns — ${err instanceof Error ? err.message : err}`,
         );
       }
     }
