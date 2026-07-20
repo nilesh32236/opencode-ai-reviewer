@@ -402,6 +402,7 @@ export async function runAutofixLoop(
 
   const history: IterationRecord[] = [];
   let approved = false;
+  let exitReason: 'approved' | 'no-changes' | 'git-failure' | 'timeout' | 'exhausted' = 'exhausted';
 
   const startTime = Date.now();
   const totalTimeoutMs = (config.timeoutMinutes ?? 20) * 60 * 1000;
@@ -446,6 +447,7 @@ export async function runAutofixLoop(
         minor: 0,
       };
       history.push(entry);
+      exitReason = 'no-changes';
       break;
     }
 
@@ -461,6 +463,7 @@ export async function runAutofixLoop(
     if (result.verdict.ready && result.stats.critical === 0 && result.stats.important === 0) {
       core.info('PR approved — all issues resolved');
       approved = true;
+      exitReason = 'approved';
       entry.status = 'approved';
       history.push(entry);
 
@@ -490,6 +493,7 @@ export async function runAutofixLoop(
       core.info('Fix agent made no changes — stopping loop');
       const currentEntry = history[history.length - 1];
       currentEntry.status = 'no-changes';
+      exitReason = 'no-changes';
       try {
         await gh.postOrUpdateComment(
           prNumber,
@@ -519,6 +523,7 @@ export async function runAutofixLoop(
       core.warning(
         `Git operations failed in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
       );
+      exitReason = 'git-failure';
       try {
         await gh.postOrUpdateComment(
           prNumber,
@@ -552,17 +557,29 @@ export async function runAutofixLoop(
 
   if (!approved) {
     await gh.setLabels(prNumber, ['autofix:needs-manual-review'], ['autofix', 'autofix:needs-fix']);
-    try {
-      await gh.createComment(
-        prNumber,
-        `<!-- autofix-max-iterations -->\n\n${buildReviewBody(history, config.maxIterations, 'max-iterations')}`,
-      );
-    } catch (err) {
-      core.warning(
-        `Failed to post max-iterations comment: ${err instanceof Error ? err.message : err}`,
-      );
+
+    // Only post max-iterations comment if we actually exhausted all iterations.
+    // Other exit reasons (no-changes, git-failure) already posted their own comments.
+    if (exitReason === 'exhausted') {
+      try {
+        await gh.createComment(
+          prNumber,
+          `<!-- autofix-max-iterations -->\n\n${buildReviewBody(history, config.maxIterations, 'max-iterations')}`,
+        );
+      } catch (err) {
+        core.warning(
+          `Failed to post max-iterations comment: ${err instanceof Error ? err.message : err}`,
+        );
+      }
     }
-    const errorMsg = `Max iterations reached (${config.maxIterations}) or agent not approved. Needs manual review.`;
+
+    const reasonMsg =
+      exitReason === 'no-changes'
+        ? 'Fix agent could not resolve the issues automatically.'
+        : exitReason === 'git-failure'
+          ? 'Git operations failed during fix application.'
+          : `Max iterations reached (${config.maxIterations}) or agent not approved.`;
+    const errorMsg = `${reasonMsg} Needs manual review.`;
     core.setFailed(errorMsg);
   }
 
