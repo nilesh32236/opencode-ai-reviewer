@@ -188,4 +188,86 @@ describe('LearningStore', () => {
     const deleted = await store.deleteFindings(99999);
     expect(deleted).toBe(0);
   });
+
+  it('manages prompt override lifecycle', async () => {
+    await store.addPromptOverride('general', 'Always check return types', 0.15);
+
+    const lessons = await store.getRelevantLessons(['src/index.ts']);
+    expect(lessons).toContain('Always check return types');
+
+    await store.addPromptOverride('.ts', 'Be thorough with TypeScript types', 0.1);
+    const tsLessons = await store.getRelevantLessons(['src/component.ts']);
+    expect(tsLessons).toContain('Always check return types');
+    expect(tsLessons).toContain('Be thorough with TypeScript types');
+
+    await store.addPromptOverride('.rb', 'Check Ruby-specific patterns', 0.2);
+    const rbLessons = await store.getRelevantLessons(['lib/helper.rb']);
+    expect(rbLessons).toContain('Always check return types');
+    expect(rbLessons).toContain('Check Ruby-specific patterns');
+    expect(rbLessons).not.toContain('Be thorough with TypeScript types');
+  });
+
+  it('declineRule sets rule status to declined', async () => {
+    const id = await store.addCustomRule('Test rule to decline', 'auto');
+    await store.declineRule(id);
+
+    const pending = await store.getPendingRules();
+    expect(pending).toHaveLength(0);
+  });
+
+  it('getFindingMessages returns messages and files', async () => {
+    await store.recordFinding({
+      prNumber: 1,
+      type: 'issue',
+      severity: 'important',
+      file: 'src/bar.ts',
+      line: 10,
+      message: 'Test message A',
+    });
+    await store.recordFinding({
+      prNumber: 1,
+      type: 'issue',
+      message: 'Test message B (no file)',
+    });
+
+    const messages = await store.getFindingMessages(100);
+    expect(messages.length).toBeGreaterThanOrEqual(2);
+
+    const msgA = messages.find((m) => m.message === 'Test message A');
+    expect(msgA).toBeDefined();
+    expect(msgA!.file).toBe('src/bar.ts');
+
+    const msgB = messages.find((m) => m.message === 'Test message B (no file)');
+    expect(msgB).toBeDefined();
+  });
+
+  it('resetCounter resets meta review counter to zero', async () => {
+    await store.incrementAndCheckMetaReviewInterval(5);
+    await store.incrementAndCheckMetaReviewInterval(5);
+    await store.resetCounter();
+
+    // After reset, counter is 0, so next call should be false
+    expect(await store.incrementAndCheckMetaReviewInterval(5)).toBe(false);
+  });
+
+  it('recordFeedbackBatch inserts feedback in bulk', async () => {
+    const id1 = await store.recordFinding({
+      prNumber: 10,
+      type: 'issue',
+      message: 'Batch feedback test 1',
+    });
+    const id2 = await store.recordFinding({
+      prNumber: 10,
+      type: 'issue',
+      message: 'Batch feedback test 2',
+    });
+
+    await store.recordFeedbackBatch([
+      { findingId: id1, signalType: 'dismissed', signalValue: 'fp', prNumber: 10 },
+      { findingId: id2, signalType: 'dismissed', signalValue: 'not an issue', prNumber: 10 },
+    ]);
+
+    const fpRate = await store.getFalsePositiveRate();
+    expect(fpRate).toBeGreaterThan(0);
+  });
 });

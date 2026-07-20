@@ -102,7 +102,23 @@ describe('MetaReviewEngine', () => {
 
 describe('MetaReviewSubscriber', () => {
   it('has correct subscriber configuration', async () => {
-    const store = new LearningStore(':memory:');
+    const memoryDb = path.join(__dirname, '.test-memory-subscriber.db');
+    try {
+      fs.unlinkSync(memoryDb);
+    } catch {
+      /* ok */
+    }
+    try {
+      fs.unlinkSync(memoryDb + '-wal');
+    } catch {
+      /* ok */
+    }
+    try {
+      fs.unlinkSync(memoryDb.replace(/\.db$/, '.json'));
+    } catch {
+      /* ok */
+    }
+    const store = new LearningStore(memoryDb);
     const engine = new MetaReviewEngine(store);
     const sub = new MetaReviewSubscriber(engine, store, 3);
 
@@ -111,17 +127,17 @@ describe('MetaReviewSubscriber', () => {
 
     await store.close();
     try {
-      fs.unlinkSync(':memory:');
+      fs.unlinkSync(memoryDb);
     } catch {
       /* ok */
     }
     try {
-      fs.unlinkSync(path.resolve(':memory:'));
+      fs.unlinkSync(memoryDb + '-wal');
     } catch {
       /* ok */
     }
     try {
-      fs.unlinkSync(path.resolve(':memory:').replace(/\.db$/, '.json'));
+      fs.unlinkSync(memoryDb.replace(/\.db$/, '.json'));
     } catch {
       /* ok */
     }

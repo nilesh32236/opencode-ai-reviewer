@@ -84,18 +84,32 @@ function validateConfig(config: PromptConfig): PromptConfig {
   }
 
   if (config.learning) {
+    const rawInterval = config.learning.metaReview?.interval;
+    const rawMinFindings = config.learning.metaReview?.minFindingsForReview;
+    const rawMinFreq = config.learning.patternDiscovery?.minFrequency;
+    const rawWindowSize = config.learning.patternDiscovery?.windowSize;
+
+    const interval =
+      typeof rawInterval === 'number' && rawInterval >= 1 ? Math.round(rawInterval) : 5;
+    const minFindings =
+      typeof rawMinFindings === 'number' && rawMinFindings >= 0 ? Math.round(rawMinFindings) : 3;
+    const minFrequency =
+      typeof rawMinFreq === 'number' && rawMinFreq >= 1 ? Math.round(rawMinFreq) : 3;
+    const windowSize =
+      typeof rawWindowSize === 'number' && rawWindowSize >= 1 ? Math.round(rawWindowSize) : 100;
+
     result.learning = {
       enabled: config.learning.enabled,
       feedbackSignals: config.learning.feedbackSignals,
       metaReview: {
         enabled: config.learning.metaReview?.enabled ?? true,
-        interval: config.learning.metaReview?.interval ?? 5,
-        minFindingsForReview: config.learning.metaReview?.minFindingsForReview ?? 3,
+        interval,
+        minFindingsForReview: minFindings,
       },
       patternDiscovery: {
         enabled: config.learning.patternDiscovery?.enabled ?? true,
-        minFrequency: config.learning.patternDiscovery?.minFrequency ?? 3,
-        windowSize: config.learning.patternDiscovery?.windowSize ?? 100,
+        minFrequency,
+        windowSize,
       },
     };
   }

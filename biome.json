@@ -37,6 +37,13 @@
     }
   },
   "files": {
-    "ignore": ["dist", "action/lib", "lib/tests/*.js", "lib/tests/*.d.ts", "lib/vitest.config.js"]
+    "ignore": [
+      "dist",
+      "action/lib",
+      "lib/tests/*.js",
+      "lib/tests/*.d.ts",
+      "lib/tests/.test-*",
+      "lib/vitest.config.js"
+    ]
   }
 }

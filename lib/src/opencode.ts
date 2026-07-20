@@ -256,6 +256,8 @@ export async function runOpenCode(
     'RUNNER_TOOL_CACHE',
     'NODE_PATH',
     'DATABASE_URL',
+    'GIT_ASKPASS',
+    'OPENCODE_CREDENTIAL_TOKEN',
   ];
   for (const key of WHITELISTED_KEYS) {
     const val = process.env[key];

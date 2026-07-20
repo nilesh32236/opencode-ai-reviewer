@@ -22,4 +22,6 @@ npm-debug.log*
 .opencode/learning.db
 .opencode/learning.db-wal
 .opencode/learning.db-shm
+lib/tests/.test-*
+:memory:
 
