@@ -94,20 +94,32 @@ export class EventBus {
       health.lastEventTimestamp = Date.now();
     }
 
+    const abortController = new AbortController();
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const subscriberWork = () => sub.handle(event);
+    let timedOut = false;
 
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        timeoutHandle = setTimeout(
-          () =>
-            reject(new Error(`Subscriber ${sub.name} timed out after ${SUBSCRIBER_TIMEOUT_MS}ms`)),
-          SUBSCRIBER_TIMEOUT_MS,
-        );
+    timeoutHandle = setTimeout(() => {
+      timedOut = true;
+      abortController.abort();
+      this.logger.warn(`Subscriber ${sub.name} timed out after ${SUBSCRIBER_TIMEOUT_MS}ms`, {
+        prNumber: event.prNumber,
+        repo: event.repo,
       });
+    }, SUBSCRIBER_TIMEOUT_MS);
+
+    try {
+      const subscriberWork = async () => {
+        if (abortController.signal.aborted) return;
+        await sub.handle(event);
+      };
 
       const work = cb ? () => cb.call(subscriberWork) : subscriberWork;
-      await Promise.race([work(), timeoutPromise]);
+      await work();
+
+      if (timedOut) {
+        const err = new Error(`Subscriber ${sub.name} timed out after ${SUBSCRIBER_TIMEOUT_MS}ms`);
+        throw err;
+      }
 
       if (health) {
         health.failedCalls = 0;

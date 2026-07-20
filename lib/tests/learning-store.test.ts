@@ -199,6 +199,12 @@ describe('LearningStore', () => {
     const tsLessons = await store.getRelevantLessons(['src/component.ts']);
     expect(tsLessons).toContain('Always check return types');
     expect(tsLessons).toContain('Be thorough with TypeScript types');
+
+    await store.addPromptOverride('.rb', 'Check Ruby-specific patterns', 0.2);
+    const rbLessons = await store.getRelevantLessons(['lib/helper.rb']);
+    expect(rbLessons).toContain('Always check return types');
+    expect(rbLessons).toContain('Check Ruby-specific patterns');
+    expect(rbLessons).not.toContain('Be thorough with TypeScript types');
   });
 
   it('declineRule sets rule status to declined', async () => {
