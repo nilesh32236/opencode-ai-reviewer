@@ -170,8 +170,6 @@ async function run(): Promise<void> {
     } finally {
       await engine.cleanup();
     }
-
-    process.exit(process.exitCode || 0);
   } catch (error) {
     const mode = core.getInput('mode') || 'unknown';
     const prNumber =
@@ -181,11 +179,11 @@ async function run(): Promise<void> {
     core.setFailed(
       `Action failed (mode: ${mode}, pr/issue: ${prNumber}): ${sanitize(error instanceof Error ? error.message : String(error))}`,
     );
-    process.exit(1);
+    process.exitCode = 1;
   }
 }
 
 run().catch((err) => {
   core.setFailed(sanitize(err instanceof Error ? err.message : String(err)));
-  process.exit(1);
+  process.exitCode = 1;
 });
