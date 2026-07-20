@@ -171,6 +171,16 @@ describe('MCPManager', () => {
       expect(mockConnect).not.toHaveBeenCalled();
       expect(mockStdioTransportCtor).not.toHaveBeenCalled();
     });
+
+    it('skips local server with undefined command', async () => {
+      const manager = new MCPManager([
+        makeConfig({ command: undefined as unknown as [string, ...string[]] }),
+      ]);
+      await manager.connect();
+
+      expect(mockStdioTransportCtor).not.toHaveBeenCalled();
+      expect(mockConnect).not.toHaveBeenCalled();
+    });
   });
 
   // ─── disconnect() ────────────────────────────────────────────────────────
@@ -185,6 +195,9 @@ describe('MCPManager', () => {
 
       expect(mockClose).toHaveBeenCalledTimes(1);
       expect(mockTransportClose).toHaveBeenCalledTimes(1);
+
+      const result = await manager.queryContext('anything');
+      expect(result).toEqual({ entries: [], totalTokens: 0 });
     });
 
     it('handles transport close failure', async () => {
