@@ -41,7 +41,7 @@ export function mergeConfigWithInputs(
   };
 }
 
-function validateConfig(config: PromptConfig): PromptConfig {
+export function validateConfig(config: PromptConfig): PromptConfig {
   const result: PromptConfig = {};
 
   if (config.review) {

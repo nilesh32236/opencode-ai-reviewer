@@ -79,6 +79,8 @@ export interface DatabaseInstance {
   close(): Promise<void>;
 }
 
+type SqlHandlerResult = { changes?: number; rows?: unknown[]; row?: unknown };
+
 export class JsonDatabase implements DatabaseInstance {
   public data: {
     findings: FindingRow[];
@@ -92,6 +94,7 @@ export class JsonDatabase implements DatabaseInstance {
   private filePath: string;
   private inTransaction = false;
   private writeTimeout: ReturnType<typeof setTimeout> | null = null;
+  private handlers: Array<{ match: string; handler: (params: unknown[], cleanSql: string) => SqlHandlerResult }>;
 
   constructor(filePath: string) {
     this.filePath = filePath.endsWith('.db') ? filePath.replace(/\.db$/, '.json') : filePath;
@@ -104,11 +107,337 @@ export class JsonDatabase implements DatabaseInstance {
       prompt_overrides: [],
       meta_review_counter: [],
     };
+    this.handlers = this.initHandlers();
     this.load();
     if (this.data.meta_review_counter.length === 0) {
       this.data.meta_review_counter.push({ id: 1, count: 0 });
       this.save();
     }
+  }
+
+  private initHandlers(): Array<{ match: string; handler: (params: unknown[], cleanSql: string) => SqlHandlerResult }> {
+    const self = this;
+    return [
+      { match: 'INSERT OR REPLACE INTO findings', handler: (p) => self.handleInsertOrReplaceFindings(p) },
+      { match: 'INSERT INTO findings', handler: (p) => self.handleInsertFindings(p) },
+      { match: 'INSERT INTO feedback', handler: (p) => self.handleInsertFeedback(p) },
+      { match: 'INSERT INTO review_quality', handler: (p) => self.handleInsertReviewQuality(p) },
+      { match: 'INSERT INTO prompt_overrides', handler: (p) => self.handleInsertPromptOverride(p) },
+      { match: 'INSERT INTO custom_rules', handler: (p) => self.handleInsertCustomRule(p) },
+      { match: 'INSERT INTO patterns', handler: (p) => self.handleInsertPattern(p) },
+      { match: 'INSERT INTO meta_review_counter (id, count) VALUES (1, 0)', handler: () => self.handleInsertMetaReviewCounter() },
+      { match: 'DELETE FROM feedback WHERE pr_number = ?', handler: (p) => self.handleDeleteFeedbackByPr(p) },
+      { match: 'DELETE FROM findings WHERE pr_number = ?', handler: (p) => self.handleDeleteFindingsByPr(p) },
+      { match: 'UPDATE meta_review_counter SET count = ? WHERE id = 1', handler: (p) => self.handleUpdateMetaReviewCounter(p) },
+      { match: 'UPDATE meta_review_counter SET count = 0 WHERE id = 1', handler: () => self.handleResetMetaReviewCounter() },
+      { match: "UPDATE custom_rules SET status = 'active', approved_at", handler: (p) => self.handleApproveCustomRule(p) },
+      { match: "UPDATE custom_rules SET status = 'declined' WHERE id = ?", handler: (p) => self.handleDeclineCustomRule(p) },
+      { match: 'UPDATE patterns SET frequency', handler: (p) => self.handleUpdatePattern(p) },
+      { match: 'SELECT count FROM meta_review_counter WHERE id = 1', handler: () => self.handleGetMetaReviewCounter() },
+      { match: "SELECT COUNT(*) as count FROM feedback WHERE signal_type IN ('dismissed', 'disputed_comment')", handler: () => self.handleGetDisputedFeedbackCount() },
+      { match: 'SELECT COUNT(*) as count FROM feedback', handler: () => self.handleGetFeedbackCount() },
+      { match: 'SELECT id, frequency FROM patterns WHERE pattern_key = ?', handler: (p) => self.handleGetPatternByKey(p) },
+      { match: 'FROM findings WHERE type = ?', handler: (p) => self.handleGetFindingsByType(p) },
+      { match: 'FROM findings WHERE pr_number = ?', handler: (p) => self.handleGetFindingsByPr(p) },
+      { match: "FROM findings ORDER BY created_at DESC LIMIT ?", handler: (p) => self.handleGetAllFindingsLimited(p) },
+      { match: 'SELECT * FROM findings', handler: (p) => self.handleGetAllFindings(p) },
+      { match: "custom_rules WHERE status = 'active'", handler: () => self.handleGetActiveCustomRules() },
+      { match: "prompt_overrides WHERE category = 'general'", handler: () => self.handleGetPromptOverridesGeneral() },
+      { match: 'prompt_overrides WHERE category = ?', handler: (p) => self.handleGetPromptOverridesByCategory(p) },
+      { match: 'prompt_overrides WHERE category IN (', handler: (p) => self.handleGetPromptOverridesByCategories(p) },
+      { match: 'FROM review_quality', handler: (p) => self.handleGetReviewQuality(p) },
+      { match: 'FROM patterns WHERE frequency >= ?', handler: (p) => self.handleGetPatternsByFrequency(p) },
+      { match: "custom_rules WHERE status = 'pending'", handler: () => self.handleGetPendingCustomRules() },
+      { match: 'SELECT message, file FROM findings', handler: (p) => self.handleGetFindingMessages(p) },
+    ];
+  }
+
+  private findHandler(cleanSql: string): ((params: unknown[], cleanSql: string) => SqlHandlerResult) | null {
+    for (const { match, handler } of this.handlers) {
+      if (cleanSql.includes(match) || cleanSql.startsWith(match)) {
+        return handler;
+      }
+    }
+    return null;
+  }
+
+  private handleInsertOrReplaceFindings(params: unknown[]): SqlHandlerResult {
+    const rowSize = 8;
+    let changes = 0;
+    for (let i = 0; i < params.length; i += rowSize) {
+      const [id, pr_number, type, severity, file, line, message, suggestion] = params.slice(i, i + rowSize);
+      const idx = this.data.findings.findIndex((f) => f.id === id);
+      const entry = {
+        id: id as string,
+        pr_number: pr_number as number,
+        type: type as string,
+        severity: severity as string | undefined,
+        file: file as string | undefined,
+        line: line as number | undefined,
+        message: message as string,
+        suggestion: suggestion as string | undefined,
+        created_at: new Date().toISOString(),
+      };
+      if (idx >= 0) {
+        this.data.findings[idx] = entry;
+      } else {
+        this.data.findings.push(entry);
+      }
+      changes++;
+    }
+    return { changes };
+  }
+
+  private handleInsertFindings(params: unknown[]): SqlHandlerResult {
+    return this.handleInsertOrReplaceFindings(params);
+  }
+
+  private handleInsertFeedback(params: unknown[]): SqlHandlerResult {
+    const rowSize = 5;
+    let changes = 0;
+    for (let i = 0; i < params.length; i += rowSize) {
+      const [id, finding_id, signal_type, signal_value, pr_number] = params.slice(i, i + rowSize);
+      this.data.feedback.push({
+        id: id as string,
+        finding_id: finding_id as string,
+        signal_type: signal_type as string,
+        signal_value: signal_value as string | undefined,
+        pr_number: pr_number as number,
+        created_at: new Date().toISOString(),
+      });
+      changes++;
+    }
+    return { changes };
+  }
+
+  private handleInsertReviewQuality(params: unknown[]): SqlHandlerResult {
+    const [id, pr_number, actionability_score, accuracy_score, coverage_score, consistency_score] = params;
+    this.data.review_quality.push({
+      id: id as string,
+      pr_number: pr_number as number,
+      actionability_score: actionability_score as number,
+      accuracy_score: accuracy_score as number,
+      coverage_score: coverage_score as number,
+      consistency_score: consistency_score as number,
+      created_at: new Date().toISOString(),
+    });
+    return { changes: 1 };
+  }
+
+  private handleInsertPromptOverride(params: unknown[]): SqlHandlerResult {
+    const [id, category, override_text, false_positive_rate_before] = params;
+    this.data.prompt_overrides.push({
+      id: id as string,
+      category: category as string,
+      override_text: override_text as string,
+      false_positive_rate_before: false_positive_rate_before as number | undefined,
+      created_at: new Date().toISOString(),
+    });
+    return { changes: 1 };
+  }
+
+  private handleInsertCustomRule(params: unknown[]): SqlHandlerResult {
+    const [id, rule_text, source, status] = params;
+    this.data.custom_rules.push({
+      id: id as string,
+      rule_text: rule_text as string,
+      source: source as string,
+      status: status as string,
+    });
+    return { changes: 1 };
+  }
+
+  private handleInsertPattern(params: unknown[]): SqlHandlerResult {
+    const [id, pattern_key, message_cluster, frequency, file_types] = params;
+    this.data.patterns.push({
+      id: id as string,
+      pattern_key: pattern_key as string,
+      message_cluster: message_cluster as string,
+      frequency: frequency as number,
+      file_types: file_types as string | undefined,
+      first_seen: new Date().toISOString(),
+      last_seen: new Date().toISOString(),
+    });
+    return { changes: 1 };
+  }
+
+  private handleInsertMetaReviewCounter(): SqlHandlerResult {
+    const entry = this.data.meta_review_counter.find((x) => x.id === 1);
+    if (!entry) {
+      this.data.meta_review_counter.push({ id: 1, count: 0 });
+      return { changes: 1 };
+    }
+    return { changes: 0 };
+  }
+
+  private handleDeleteFeedbackByPr(params: unknown[]): SqlHandlerResult {
+    const prNumber = params[0] as number;
+    const initialLength = this.data.feedback.length;
+    this.data.feedback = this.data.feedback.filter((f) => f.pr_number !== prNumber);
+    return { changes: initialLength - this.data.feedback.length };
+  }
+
+  private handleDeleteFindingsByPr(params: unknown[]): SqlHandlerResult {
+    const prNumber = params[0] as number;
+    const initialLength = this.data.findings.length;
+    this.data.findings = this.data.findings.filter((f) => f.pr_number !== prNumber);
+    return { changes: initialLength - this.data.findings.length };
+  }
+
+  private handleUpdateMetaReviewCounter(params: unknown[]): SqlHandlerResult {
+    const count = params[0] as number;
+    const entry = this.data.meta_review_counter.find((x) => x.id === 1);
+    if (entry) {
+      entry.count = count;
+      return { changes: 1 };
+    }
+    return { changes: 0 };
+  }
+
+  private handleResetMetaReviewCounter(): SqlHandlerResult {
+    const entry = this.data.meta_review_counter.find((x) => x.id === 1);
+    if (entry) {
+      entry.count = 0;
+      return { changes: 1 };
+    }
+    return { changes: 0 };
+  }
+
+  private handleApproveCustomRule(params: unknown[]): SqlHandlerResult {
+    const id = params[0] as string;
+    const entry = this.data.custom_rules.find((x) => x.id === id);
+    if (entry) {
+      entry.status = 'active';
+      entry.approved_at = new Date().toISOString();
+      return { changes: 1 };
+    }
+    return { changes: 0 };
+  }
+
+  private handleDeclineCustomRule(params: unknown[]): SqlHandlerResult {
+    const id = params[0] as string;
+    const entry = this.data.custom_rules.find((x) => x.id === id);
+    if (entry) {
+      entry.status = 'declined';
+      return { changes: 1 };
+    }
+    return { changes: 0 };
+  }
+
+  private handleUpdatePattern(params: unknown[]): SqlHandlerResult {
+    const [frequency, file_types, pattern_key] = params;
+    const entry = this.data.patterns.find((x) => x.pattern_key === (pattern_key as string));
+    if (entry) {
+      entry.frequency = frequency as number;
+      entry.last_seen = new Date().toISOString();
+      entry.file_types = file_types as string | undefined;
+      return { changes: 1 };
+    }
+    return { changes: 0 };
+  }
+
+  private handleGetMetaReviewCounter(): SqlHandlerResult {
+    return { row: this.data.meta_review_counter.find((x) => x.id === 1) };
+  }
+
+  private handleGetFeedbackCount(): SqlHandlerResult {
+    return { row: { count: this.data.feedback.length } };
+  }
+
+  private handleGetDisputedFeedbackCount(): SqlHandlerResult {
+    const count = this.data.feedback.filter((f) =>
+      ['dismissed', 'disputed_comment'].includes(f.signal_type),
+    ).length;
+    return { row: { count } };
+  }
+
+  private handleGetPatternByKey(params: unknown[]): SqlHandlerResult {
+    const pattern_key = params[0] as string;
+    const found = this.data.patterns.find((x) => x.pattern_key === pattern_key);
+    return found ? { row: { id: found.id, frequency: found.frequency } } : { row: undefined };
+  }
+
+  private handleGetFindingsByType(params: unknown[]): SqlHandlerResult {
+    const [type, limit] = params;
+    return {
+      rows: this.data.findings
+        .filter((f) => f.type === (type as string))
+        .sort((a, b) => b.created_at.localeCompare(a.created_at))
+        .slice(0, limit as number | undefined),
+    };
+  }
+
+  private handleGetFindingsByPr(params: unknown[]): SqlHandlerResult {
+    const [prNumber, limit] = params;
+    return {
+      rows: this.data.findings
+        .filter((f) => f.pr_number === (prNumber as number))
+        .sort((a, b) => b.created_at.localeCompare(a.created_at))
+        .slice(0, limit as number | undefined),
+    };
+  }
+
+  private handleGetAllFindings(params: unknown[]): SqlHandlerResult {
+    const limit = params[0] as number | undefined;
+    return {
+      rows: this.data.findings
+        .sort((a, b) => b.created_at.localeCompare(a.created_at))
+        .slice(0, limit),
+    };
+  }
+
+  private handleGetAllFindingsLimited(params: unknown[]): SqlHandlerResult {
+    return this.handleGetAllFindings(params);
+  }
+
+  private handleGetActiveCustomRules(): SqlHandlerResult {
+    return { rows: this.data.custom_rules.filter((r) => r.status === 'active') };
+  }
+
+  private handleGetPromptOverridesGeneral(): SqlHandlerResult {
+    return { rows: this.data.prompt_overrides.filter((o) => o.category === 'general') };
+  }
+
+  private handleGetPromptOverridesByCategory(params: unknown[]): SqlHandlerResult {
+    const cat = params[0] as string;
+    return { rows: this.data.prompt_overrides.filter((o) => o.category === cat) };
+  }
+
+  private handleGetPromptOverridesByCategories(params: unknown[]): SqlHandlerResult {
+    const categories = params as string[];
+    return { rows: this.data.prompt_overrides.filter((o) => categories.includes(o.category)) };
+  }
+
+  private handleGetReviewQuality(params: unknown[]): SqlHandlerResult {
+    const limit = params[0] as number | undefined;
+    return {
+      rows: this.data.review_quality
+        .sort((a, b) => b.created_at.localeCompare(a.created_at))
+        .slice(0, limit),
+    };
+  }
+
+  private handleGetPatternsByFrequency(params: unknown[]): SqlHandlerResult {
+    const minFrequency = params[0] as number;
+    return {
+      rows: this.data.patterns
+        .filter((p) => p.frequency >= minFrequency)
+        .sort((a, b) => b.frequency - a.frequency),
+    };
+  }
+
+  private handleGetPendingCustomRules(): SqlHandlerResult {
+    return { rows: this.data.custom_rules.filter((r) => r.status === 'pending') };
+  }
+
+  private handleGetFindingMessages(params: unknown[]): SqlHandlerResult {
+    const limit = params[0] as number | undefined;
+    return {
+      rows: this.data.findings
+        .sort((a, b) => b.created_at.localeCompare(a.created_at))
+        .slice(0, limit)
+        .map((f) => ({ message: f.message, file: f.file })),
+    };
   }
 
   private load() {
@@ -144,9 +473,7 @@ export class JsonDatabase implements DatabaseInstance {
   pragma(_sql: string): void {}
 
   exec(sql: string): void {
-    // Migration helper
     if (sql.includes('CREATE TABLE IF NOT EXISTS')) {
-      // Tables are already initialized in constructor
       return;
     }
   }
@@ -198,258 +525,54 @@ export class JsonDatabase implements DatabaseInstance {
     }
   }
 
+  /** Dispatch a SQL operation to the matching handler. Returns { changes, rows, row }. */
+  handleSql(sql: string, params: unknown[] = []): { changes?: number; rows?: unknown[]; row?: unknown } {
+    const cleanSql = sql.trim().replace(/\s+/g, ' ');
+    const handler = this.findHandler(cleanSql);
+    if (handler) {
+      const result = handler(params, cleanSql);
+      if (result.changes !== undefined && result.changes > 0 && !this.inTransaction) {
+        this.save();
+      }
+      return result;
+    }
+    return { changes: 0, rows: [], row: undefined };
+  }
+
   prepare(sql: string): Statement {
     const self = this;
     const cleanSql = sql.trim().replace(/\s+/g, ' ');
 
     return {
       run(...params: unknown[]): { changes: number } {
-        let changes = 0;
-        if (
-          cleanSql.startsWith('INSERT OR REPLACE INTO findings') ||
-          cleanSql.startsWith('INSERT INTO findings')
-        ) {
-          const rowSize = 8;
-          for (let i = 0; i < params.length; i += rowSize) {
-            const [id, pr_number, type, severity, file, line, message, suggestion] = params.slice(
-              i,
-              i + rowSize,
-            );
-            const idx = self.data.findings.findIndex((f) => f.id === id);
-            const entry = {
-              id: id as string,
-              pr_number: pr_number as number,
-              type: type as string,
-              severity: severity as string | undefined,
-              file: file as string | undefined,
-              line: line as number | undefined,
-              message: message as string,
-              suggestion: suggestion as string | undefined,
-              created_at: new Date().toISOString(),
-            };
-            if (idx >= 0) {
-              self.data.findings[idx] = entry;
-            } else {
-              self.data.findings.push(entry);
-            }
-            changes++;
+        const handler = self.findHandler(cleanSql);
+        if (handler) {
+          const result = handler(params, cleanSql);
+          if (!self.inTransaction) {
+            self.save();
           }
-        } else if (cleanSql.startsWith('INSERT INTO feedback')) {
-          const rowSize = 5;
-          for (let i = 0; i < params.length; i += rowSize) {
-            const [id, finding_id, signal_type, signal_value, pr_number] = params.slice(
-              i,
-              i + rowSize,
-            );
-            self.data.feedback.push({
-              id: id as string,
-              finding_id: finding_id as string,
-              signal_type: signal_type as string,
-              signal_value: signal_value as string | undefined,
-              pr_number: pr_number as number,
-              created_at: new Date().toISOString(),
-            });
-            changes++;
-          }
-        } else if (cleanSql.startsWith('INSERT INTO review_quality')) {
-          const [
-            id,
-            pr_number,
-            actionability_score,
-            accuracy_score,
-            coverage_score,
-            consistency_score,
-          ] = params;
-          self.data.review_quality.push({
-            id: id as string,
-            pr_number: pr_number as number,
-            actionability_score: actionability_score as number,
-            accuracy_score: accuracy_score as number,
-            coverage_score: coverage_score as number,
-            consistency_score: consistency_score as number,
-            created_at: new Date().toISOString(),
-          });
-          changes = 1;
-        } else if (cleanSql.startsWith('INSERT INTO prompt_overrides')) {
-          const [id, category, override_text, false_positive_rate_before] = params;
-          self.data.prompt_overrides.push({
-            id: id as string,
-            category: category as string,
-            override_text: override_text as string,
-            false_positive_rate_before: false_positive_rate_before as number | undefined,
-            created_at: new Date().toISOString(),
-          });
-          changes = 1;
-        } else if (cleanSql.startsWith('INSERT INTO custom_rules')) {
-          const [id, rule_text, source, status] = params;
-          self.data.custom_rules.push({
-            id: id as string,
-            rule_text: rule_text as string,
-            source: source as string,
-            status: status as string,
-          });
-          changes = 1;
-        } else if (cleanSql.startsWith('DELETE FROM feedback WHERE pr_number = ?')) {
-          const prNumber = params[0] as number;
-          const initialLength = self.data.feedback.length;
-          self.data.feedback = self.data.feedback.filter((f) => f.pr_number !== prNumber);
-          changes = initialLength - self.data.feedback.length;
-        } else if (cleanSql.startsWith('DELETE FROM findings WHERE pr_number = ?')) {
-          const prNumber = params[0] as number;
-          const initialLength = self.data.findings.length;
-          self.data.findings = self.data.findings.filter((f) => f.pr_number !== prNumber);
-          changes = initialLength - self.data.findings.length;
-        } else if (cleanSql.startsWith('UPDATE meta_review_counter SET count = ? WHERE id = 1')) {
-          const count = params[0] as number;
-          const entry = self.data.meta_review_counter.find((x) => x.id === 1);
-          if (entry) {
-            entry.count = count;
-            changes = 1;
-          }
-        } else if (cleanSql.startsWith('UPDATE meta_review_counter SET count = 0 WHERE id = 1')) {
-          const entry = self.data.meta_review_counter.find((x) => x.id === 1);
-          if (entry) {
-            entry.count = 0;
-            changes = 1;
-          }
-        } else if (
-          cleanSql.startsWith("UPDATE custom_rules SET status = 'active', approved_at =") ||
-          cleanSql.includes("status = 'active', approved_at = datetime('now')")
-        ) {
-          const id = params[0] as string;
-          const entry = self.data.custom_rules.find((x) => x.id === id);
-          if (entry) {
-            entry.status = 'active';
-            entry.approved_at = new Date().toISOString();
-            changes = 1;
-          }
-        } else if (
-          cleanSql.startsWith("UPDATE custom_rules SET status = 'declined' WHERE id = ?")
-        ) {
-          const id = params[0] as string;
-          const entry = self.data.custom_rules.find((x) => x.id === id);
-          if (entry) {
-            entry.status = 'declined';
-            changes = 1;
-          }
-        } else if (
-          cleanSql.startsWith(
-            "UPDATE patterns SET frequency = ?, last_seen = datetime('now'), file_types = ? WHERE pattern_key = ?",
-          ) ||
-          cleanSql.includes('UPDATE patterns SET frequency = ?')
-        ) {
-          const [frequency, file_types, pattern_key] = params;
-          const entry = self.data.patterns.find((x) => x.pattern_key === (pattern_key as string));
-          if (entry) {
-            entry.frequency = frequency as number;
-            entry.last_seen = new Date().toISOString();
-            entry.file_types = file_types as string | undefined;
-            changes = 1;
-          }
-        } else if (cleanSql.startsWith('INSERT INTO patterns')) {
-          const [id, pattern_key, message_cluster, frequency, file_types] = params;
-          self.data.patterns.push({
-            id: id as string,
-            pattern_key: pattern_key as string,
-            message_cluster: message_cluster as string,
-            frequency: frequency as number,
-            file_types: file_types as string | undefined,
-            first_seen: new Date().toISOString(),
-            last_seen: new Date().toISOString(),
-          });
-          changes = 1;
-        } else if (
-          cleanSql.startsWith('INSERT INTO meta_review_counter (id, count) VALUES (1, 0)')
-        ) {
-          const entry = self.data.meta_review_counter.find((x) => x.id === 1);
-          if (!entry) {
-            self.data.meta_review_counter.push({ id: 1, count: 0 });
-            changes = 1;
-          }
+          return { changes: result.changes ?? 0 };
         }
-
         if (!self.inTransaction) {
           self.save();
         }
-        return { changes };
+        return { changes: 0 };
       },
 
       get(...params: unknown[]): unknown {
-        if (cleanSql.startsWith('SELECT count FROM meta_review_counter WHERE id = 1')) {
-          return self.data.meta_review_counter.find((x) => x.id === 1);
-        }
-        if (cleanSql.includes("feedback WHERE signal_type IN ('dismissed', 'disputed_comment')")) {
-          const count = self.data.feedback.filter((f) =>
-            ['dismissed', 'disputed_comment'].includes(f.signal_type),
-          ).length;
-          return { count };
-        }
-        if (
-          cleanSql.startsWith('SELECT COUNT(*) as count FROM feedback') ||
-          cleanSql.includes('COUNT(*) as count FROM feedback')
-        ) {
-          return { count: self.data.feedback.length };
-        }
-        if (
-          cleanSql.startsWith('SELECT id, frequency FROM patterns WHERE pattern_key = ?') ||
-          cleanSql.includes('patterns WHERE pattern_key = ?')
-        ) {
-          const pattern_key = params[0] as string;
-          const found = self.data.patterns.find((x) => x.pattern_key === pattern_key);
-          return found ? { id: found.id, frequency: found.frequency } : undefined;
+        const handler = self.findHandler(cleanSql);
+        if (handler) {
+          const result = handler(params, cleanSql);
+          return result.row !== undefined ? result.row : (result.rows?.[0]);
         }
         return undefined;
       },
 
       all(...params: unknown[]): unknown[] {
-        if (cleanSql.includes('FROM findings WHERE type = ?')) {
-          const [type, limit] = params;
-          return self.data.findings
-            .filter((f) => f.type === (type as string))
-            .sort((a, b) => b.created_at.localeCompare(a.created_at))
-            .slice(0, limit as number | undefined);
-        }
-        if (cleanSql.includes('FROM findings WHERE pr_number = ?')) {
-          const [prNumber, limit] = params;
-          return self.data.findings
-            .filter((f) => f.pr_number === (prNumber as number))
-            .sort((a, b) => b.created_at.localeCompare(a.created_at))
-            .slice(0, limit as number | undefined);
-        }
-        if (cleanSql.startsWith('SELECT * FROM findings') || cleanSql.includes('FROM findings')) {
-          const limit = params[0] as number | undefined;
-          return self.data.findings
-            .sort((a, b) => b.created_at.localeCompare(a.created_at))
-            .slice(0, limit);
-        }
-        if (cleanSql.includes("custom_rules WHERE status = 'active'")) {
-          return self.data.custom_rules.filter((r) => r.status === 'active');
-        }
-        if (cleanSql.includes("prompt_overrides WHERE category = 'general'")) {
-          return self.data.prompt_overrides.filter((o) => o.category === 'general');
-        }
-        if (cleanSql.includes('prompt_overrides WHERE category = ?')) {
-          const cat = params[0] as string;
-          return self.data.prompt_overrides.filter((o) => o.category === cat);
-        }
-        if (cleanSql.includes('prompt_overrides WHERE category IN (')) {
-          const categories = params as string[];
-          return self.data.prompt_overrides.filter((o) => categories.includes(o.category));
-        }
-        if (cleanSql.includes('FROM review_quality')) {
-          const limit = params[0] as number | undefined;
-          return self.data.review_quality
-            .sort((a, b) => b.created_at.localeCompare(a.created_at))
-            .slice(0, limit);
-        }
-        if (cleanSql.includes('FROM patterns WHERE frequency >= ?')) {
-          const minFrequency = params[0] as number;
-          return self.data.patterns
-            .filter((p) => p.frequency >= minFrequency)
-            .sort((a, b) => b.frequency - a.frequency);
-        }
-        if (cleanSql.includes("custom_rules WHERE status = 'pending'")) {
-          return self.data.custom_rules.filter((r) => r.status === 'pending');
+        const handler = self.findHandler(cleanSql);
+        if (handler) {
+          const result = handler(params, cleanSql);
+          return result.rows ?? [];
         }
         return [];
       },
