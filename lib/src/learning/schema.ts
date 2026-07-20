@@ -56,6 +56,10 @@ export async function applyMigrations(db: DbAdapter): Promise<void> {
         );
       `);
 
+      await db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_review_quality_created_at ON review_quality(created_at)`,
+      );
+
       await db.exec(`
         CREATE TABLE IF NOT EXISTS patterns (
           id TEXT PRIMARY KEY,
