@@ -239,20 +239,17 @@ export class JsonDbAdapter implements DbAdapter {
   }
 
   async run(sql: string, params: unknown[] = []): Promise<{ changes: number }> {
-    const result = this.db.handleSql(sql, params);
-    if (result.changes !== undefined && result.changes > 0) {
-      return { changes: result.changes };
-    }
-    return { changes: 0 };
+    const result = this.db.dispatch(sql, params);
+    return { changes: result.changes ?? 0 };
   }
 
   async all<T>(sql: string, params: unknown[] = []): Promise<T[]> {
-    const result = this.db.handleSql(sql, params);
+    const result = this.db.dispatch(sql, params);
     return (result.rows ?? []) as T[];
   }
 
   async get<T>(sql: string, params: unknown[] = []): Promise<T | undefined> {
-    const result = this.db.handleSql(sql, params);
+    const result = this.db.dispatch(sql, params);
     return (result.row ?? (result.rows as T[] | undefined)?.[0]) as T | undefined;
   }
 

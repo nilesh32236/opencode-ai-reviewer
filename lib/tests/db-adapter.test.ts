@@ -154,7 +154,7 @@ describe('JsonDatabase', () => {
     });
 
     it('resets meta_review_counter', () => {
-      jsonDb.handleSql('UPDATE meta_review_counter SET count = 5 WHERE id = 1', [5]);
+      jsonDb.handleSql('UPDATE meta_review_counter SET count = ? WHERE id = 1', [5]);
       jsonDb.handleSql('UPDATE meta_review_counter SET count = 0 WHERE id = 1');
       expect(jsonDb.data.meta_review_counter[0].count).toBe(0);
     });

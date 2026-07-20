@@ -95,7 +95,7 @@ export class JsonDatabase implements DatabaseInstance {
   private inTransaction = false;
   private writeTimeout: ReturnType<typeof setTimeout> | null = null;
   private handlers: Array<{
-    match: string;
+    regex: RegExp;
     handler: (params: unknown[], cleanSql: string) => SqlHandlerResult;
   }>;
 
@@ -119,100 +119,120 @@ export class JsonDatabase implements DatabaseInstance {
   }
 
   private initHandlers(): Array<{
-    match: string;
+    regex: RegExp;
     handler: (params: unknown[], cleanSql: string) => SqlHandlerResult;
   }> {
     return [
       {
-        match: 'INSERT OR REPLACE INTO findings',
+        regex: /^INSERT\s+OR\s+REPLACE\s+INTO\s+findings\b/i,
         handler: (p) => this.handleInsertOrReplaceFindings(p),
       },
-      { match: 'INSERT INTO findings', handler: (p) => this.handleInsertFindings(p) },
-      { match: 'INSERT INTO feedback', handler: (p) => this.handleInsertFeedback(p) },
-      { match: 'INSERT INTO review_quality', handler: (p) => this.handleInsertReviewQuality(p) },
-      { match: 'INSERT INTO prompt_overrides', handler: (p) => this.handleInsertPromptOverride(p) },
-      { match: 'INSERT INTO custom_rules', handler: (p) => this.handleInsertCustomRule(p) },
-      { match: 'INSERT INTO patterns', handler: (p) => this.handleInsertPattern(p) },
+      { regex: /^INSERT\s+INTO\s+findings\b/i, handler: (p) => this.handleInsertFindings(p) },
+      { regex: /^INSERT\s+INTO\s+feedback\b/i, handler: (p) => this.handleInsertFeedback(p) },
       {
-        match: 'INSERT INTO meta_review_counter (id, count) VALUES (1, 0)',
+        regex: /^INSERT\s+INTO\s+review_quality\b/i,
+        handler: (p) => this.handleInsertReviewQuality(p),
+      },
+      {
+        regex: /^INSERT\s+INTO\s+prompt_overrides\b/i,
+        handler: (p) => this.handleInsertPromptOverride(p),
+      },
+      { regex: /^INSERT\s+INTO\s+custom_rules\b/i, handler: (p) => this.handleInsertCustomRule(p) },
+      { regex: /^INSERT\s+INTO\s+patterns\b/i, handler: (p) => this.handleInsertPattern(p) },
+      {
+        regex:
+          /^INSERT\s+INTO\s+meta_review_counter\s*\(id\s*,\s*count\)\s*VALUES\s*\(1\s*,\s*0\)/i,
         handler: () => this.handleInsertMetaReviewCounter(),
       },
       {
-        match: 'DELETE FROM feedback WHERE pr_number = ?',
+        regex: /^DELETE\s+FROM\s+feedback\s+WHERE\s+pr_number\s*=\s*\?/i,
         handler: (p) => this.handleDeleteFeedbackByPr(p),
       },
       {
-        match: 'DELETE FROM findings WHERE pr_number = ?',
+        regex: /^DELETE\s+FROM\s+findings\s+WHERE\s+pr_number\s*=\s*\?/i,
         handler: (p) => this.handleDeleteFindingsByPr(p),
       },
       {
-        match: 'UPDATE meta_review_counter SET count = ? WHERE id = 1',
+        regex: /^UPDATE\s+meta_review_counter\s+SET\s+count\s*=\s*\?\s+WHERE\s+id\s*=\s*1/i,
         handler: (p) => this.handleUpdateMetaReviewCounter(p),
       },
       {
-        match: 'UPDATE meta_review_counter SET count = 0 WHERE id = 1',
+        regex: /^UPDATE\s+meta_review_counter\s+SET\s+count\s*=\s*0\s+WHERE\s+id\s*=\s*1/i,
         handler: () => this.handleResetMetaReviewCounter(),
       },
       {
-        match: "UPDATE custom_rules SET status = 'active', approved_at",
+        regex: /^UPDATE\s+custom_rules\s+SET\s+status\s*=\s*'active'\s*,\s*approved_at/i,
         handler: (p) => this.handleApproveCustomRule(p),
       },
       {
-        match: "UPDATE custom_rules SET status = 'declined' WHERE id = ?",
+        regex: /^UPDATE\s+custom_rules\s+SET\s+status\s*=\s*'declined'\s+WHERE\s+id\s*=\s*\?/i,
         handler: (p) => this.handleDeclineCustomRule(p),
       },
-      { match: 'UPDATE patterns SET frequency', handler: (p) => this.handleUpdatePattern(p) },
       {
-        match: 'SELECT count FROM meta_review_counter WHERE id = 1',
+        regex: /^UPDATE\s+patterns\s+SET\s+frequency\b/i,
+        handler: (p) => this.handleUpdatePattern(p),
+      },
+      {
+        regex: /^SELECT\s+count\s+FROM\s+meta_review_counter\s+WHERE\s+id\s*=\s*1/i,
         handler: () => this.handleGetMetaReviewCounter(),
       },
       {
-        match:
-          "SELECT COUNT(*) as count FROM feedback WHERE signal_type IN ('dismissed', 'disputed_comment')",
+        regex:
+          /^SELECT\s+COUNT\(\*\)\s+(?:as\s+)?count\s+FROM\s+feedback\s+WHERE\s+signal_type\s+IN\s*\(\s*'dismissed'\s*,\s*'disputed_comment'\s*\)/i,
         handler: () => this.handleGetDisputedFeedbackCount(),
       },
       {
-        match: 'SELECT COUNT(*) as count FROM feedback',
+        regex: /^SELECT\s+COUNT\(\*\)\s+(?:as\s+)?count\s+FROM\s+feedback\b/i,
         handler: () => this.handleGetFeedbackCount(),
       },
       {
-        match: 'SELECT id, frequency FROM patterns WHERE pattern_key = ?',
+        regex: /^SELECT\s+id\s*,\s*frequency\s+FROM\s+patterns\s+WHERE\s+pattern_key\s*=\s*\?/i,
         handler: (p) => this.handleGetPatternByKey(p),
       },
-      { match: 'FROM findings WHERE type = ?', handler: (p) => this.handleGetFindingsByType(p) },
-      { match: 'FROM findings WHERE pr_number = ?', handler: (p) => this.handleGetFindingsByPr(p) },
       {
-        match: 'FROM findings ORDER BY created_at DESC LIMIT ?',
+        regex: /\bFROM\s+findings\s+WHERE\s+id\s*=\s*\?/i,
+        handler: (p) => this.handleGetFindingById(p),
+      },
+      {
+        regex: /\bFROM\s+findings\s+WHERE\s+type\s*=\s*\?/i,
+        handler: (p) => this.handleGetFindingsByType(p),
+      },
+      {
+        regex: /\bFROM\s+findings\s+WHERE\s+pr_number\s*=\s*\?/i,
+        handler: (p) => this.handleGetFindingsByPr(p),
+      },
+      {
+        regex: /\bFROM\s+findings\s+ORDER\s+BY\s+created_at\s+DESC\s+LIMIT\s*\?/i,
         handler: (p) => this.handleGetAllFindingsLimited(p),
       },
-      { match: 'SELECT * FROM findings', handler: (p) => this.handleGetAllFindings(p) },
+      { regex: /^SELECT\s+\*\s+FROM\s+findings\b/i, handler: (p) => this.handleGetAllFindings(p) },
       {
-        match: "custom_rules WHERE status = 'active'",
+        regex: /\bFROM\s+custom_rules\s+WHERE\s+status\s*=\s*'active'/i,
         handler: () => this.handleGetActiveCustomRules(),
       },
       {
-        match: "prompt_overrides WHERE category = 'general'",
+        regex: /\bFROM\s+prompt_overrides\s+WHERE\s+category\s*=\s*'general'/i,
         handler: () => this.handleGetPromptOverridesGeneral(),
       },
       {
-        match: 'prompt_overrides WHERE category = ?',
+        regex: /\bFROM\s+prompt_overrides\s+WHERE\s+category\s*=\s*\?/i,
         handler: (p) => this.handleGetPromptOverridesByCategory(p),
       },
       {
-        match: 'prompt_overrides WHERE category IN (',
+        regex: /\bFROM\s+prompt_overrides\s+WHERE\s+category\s+IN\s*\(/i,
         handler: (p) => this.handleGetPromptOverridesByCategories(p),
       },
-      { match: 'FROM review_quality', handler: (p) => this.handleGetReviewQuality(p) },
+      { regex: /\bFROM\s+review_quality\b/i, handler: (p) => this.handleGetReviewQuality(p) },
       {
-        match: 'FROM patterns WHERE frequency >= ?',
+        regex: /\bFROM\s+patterns\s+WHERE\s+frequency\s*>=\s*\?/i,
         handler: (p) => this.handleGetPatternsByFrequency(p),
       },
       {
-        match: "custom_rules WHERE status = 'pending'",
+        regex: /\bFROM\s+custom_rules\s+WHERE\s+status\s*=\s*'pending'/i,
         handler: () => this.handleGetPendingCustomRules(),
       },
       {
-        match: 'SELECT message, file FROM findings',
+        regex: /^SELECT\s+message\s*,\s*file\s+FROM\s+findings\b/i,
         handler: (p) => this.handleGetFindingMessages(p),
       },
     ];
@@ -221,8 +241,8 @@ export class JsonDatabase implements DatabaseInstance {
   private findHandler(
     cleanSql: string,
   ): ((params: unknown[], cleanSql: string) => SqlHandlerResult) | null {
-    for (const { match, handler } of this.handlers) {
-      if (cleanSql.includes(match) || cleanSql.startsWith(match)) {
+    for (const { regex, handler } of this.handlers) {
+      if (regex.test(cleanSql)) {
         return handler;
       }
     }
@@ -429,6 +449,11 @@ export class JsonDatabase implements DatabaseInstance {
     return found ? { row: { id: found.id, frequency: found.frequency } } : { row: undefined };
   }
 
+  private handleGetFindingById(params: unknown[]): SqlHandlerResult {
+    const id = params[0] as string;
+    return { row: this.data.findings.find((f) => f.id === id) };
+  }
+
   private handleGetFindingsByType(params: unknown[]): SqlHandlerResult {
     const [type, limit] = params;
     return {
@@ -597,21 +622,33 @@ export class JsonDatabase implements DatabaseInstance {
     }
   }
 
-  /** Dispatch a SQL operation to the matching handler. Returns { changes, rows, row }. */
-  handleSql(
+  /**
+   * Execute a SQL operation via structured dispatch using regex-based
+   * handler matching. This is the primary public API for running SQL
+   * against the in-memory JSON store.
+   */
+  dispatch(
     sql: string,
     params: unknown[] = [],
   ): { changes?: number; rows?: unknown[]; row?: unknown } {
     const cleanSql = sql.trim().replace(/\s+/g, ' ');
     const handler = this.findHandler(cleanSql);
-    if (handler) {
-      const result = handler(params, cleanSql);
-      if (result.changes !== undefined && result.changes > 0 && !this.inTransaction) {
-        this.save();
-      }
-      return result;
+    if (!handler) {
+      throw new Error(`Unrecognized SQL statement: ${cleanSql.substring(0, 120)}`);
     }
-    return { changes: 0, rows: [], row: undefined };
+    const result = handler(params, cleanSql);
+    if (result.changes !== undefined && result.changes > 0 && !this.inTransaction) {
+      this.save();
+    }
+    return result;
+  }
+
+  /** @deprecated Use dispatch() instead. */
+  handleSql(
+    sql: string,
+    params: unknown[] = [],
+  ): { changes?: number; rows?: unknown[]; row?: unknown } {
+    return this.dispatch(sql, params);
   }
 
   prepare(sql: string): Statement {
@@ -621,35 +658,32 @@ export class JsonDatabase implements DatabaseInstance {
     return {
       run(...params: unknown[]): { changes: number } {
         const handler = self.findHandler(cleanSql);
-        if (handler) {
-          const result = handler(params, cleanSql);
-          if (!self.inTransaction) {
-            self.save();
-          }
-          return { changes: result.changes ?? 0 };
+        if (!handler) {
+          throw new Error(`Unrecognized SQL statement: ${cleanSql.substring(0, 120)}`);
         }
+        const result = handler(params, cleanSql);
         if (!self.inTransaction) {
           self.save();
         }
-        return { changes: 0 };
+        return { changes: result.changes ?? 0 };
       },
 
       get(...params: unknown[]): unknown {
         const handler = self.findHandler(cleanSql);
-        if (handler) {
-          const result = handler(params, cleanSql);
-          return result.row !== undefined ? result.row : result.rows?.[0];
+        if (!handler) {
+          throw new Error(`Unrecognized SQL statement: ${cleanSql.substring(0, 120)}`);
         }
-        return undefined;
+        const result = handler(params, cleanSql);
+        return result.row !== undefined ? result.row : result.rows?.[0];
       },
 
       all(...params: unknown[]): unknown[] {
         const handler = self.findHandler(cleanSql);
-        if (handler) {
-          const result = handler(params, cleanSql);
-          return result.rows ?? [];
+        if (!handler) {
+          throw new Error(`Unrecognized SQL statement: ${cleanSql.substring(0, 120)}`);
         }
-        return [];
+        const result = handler(params, cleanSql);
+        return result.rows ?? [];
       },
     };
   }
