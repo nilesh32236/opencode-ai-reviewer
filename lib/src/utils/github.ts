@@ -560,8 +560,10 @@ export class GitHubHelper {
             body: JSON.stringify({ state: 'closed' }),
           });
           core.info(`Closed auto-created PR #${pr.number} (${pr.head.ref})`);
-        } catch {
-          core.debug(`Could not close PR #${pr.number}`);
+        } catch (err) {
+          core.warning(
+            `Could not close PR #${pr.number}: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       }
     }
