@@ -45,13 +45,17 @@ export function parseChecksumFile(content: string, targetAssetName: string): str
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
 
-    const match = trimmed.match(/^([a-fA-F0-9]{64})\s+\*?(.+)$/);
-    if (match) {
-      const [, hash, filename] = match;
-      const cleanFilename = filename.replace(/^\.\//, '');
-      if (cleanFilename === targetAssetName) {
-        return hash.toLowerCase();
-      }
+    if (trimmed.length < 65) continue;
+
+    const hash = trimmed.slice(0, 64);
+    if (!/^[a-fA-F0-9]{64}$/.test(hash)) continue;
+
+    const rest = trimmed.slice(64).trimStart();
+    const filename = rest.startsWith('*') ? rest.slice(1).trimStart() : rest;
+    const cleanFilename = filename.replace(/^\.\//, '');
+
+    if (cleanFilename === targetAssetName) {
+      return hash.toLowerCase();
     }
   }
   return null;
