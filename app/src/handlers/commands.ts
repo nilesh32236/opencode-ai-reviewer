@@ -1,5 +1,5 @@
 import type { AgentConfig } from '@opencode-pr-agent/lib';
-import { GitHubHelper } from '@opencode-pr-agent/lib';
+import { GitHubHelper, Logger } from '@opencode-pr-agent/lib';
 import { handleAudit } from './audit.js';
 import { handleAutofixLoop } from './autofix.js';
 import { handlePRReview } from './pr-review.js';
@@ -11,6 +11,7 @@ export async function handleCommand(
   token: string,
   config: AgentConfig,
 ): Promise<void> {
+  const logger = new Logger('Command', { repo, prNumber: issueNumber });
   const gh = new GitHubHelper(token, repo);
 
   try {
@@ -27,7 +28,7 @@ export async function handleCommand(
         if (existingPR) {
           await handleAutofixLoop(existingPR, repo, token, config);
         } else {
-          await createAutofixPR(gh, issueNumber, repo, token, config);
+          await createAutofixPR(gh, issueNumber, repo);
         }
         break;
       }
@@ -38,7 +39,7 @@ export async function handleCommand(
       }
     }
   } catch (err) {
-    console.error(
+    logger.error(
       `Command ${command} failed for issue ${issueNumber} in ${repo}: ${err instanceof Error ? err.message : err}`,
     );
   }
@@ -48,35 +49,31 @@ async function findExistingAutofixPR(
   gh: GitHubHelper,
   issueNumber: number,
 ): Promise<number | null> {
+  const logger = new Logger('Command', { prNumber: issueNumber });
   try {
     const issue = await gh.getIssue(issueNumber);
     const prLink = issue.body?.match(/PR #(\d+)/)?.[1];
     if (prLink) return Number.parseInt(prLink, 10);
   } catch (err) {
-    console.debug(
+    logger.debug(
       `Failed to find existing autofix PR for issue ${issueNumber}: ${err instanceof Error ? err.message : err}`,
     );
   }
   return null;
 }
 
-async function createAutofixPR(
-  gh: GitHubHelper,
-  issueNumber: number,
-  _repo: string,
-  _token: string,
-  _config: AgentConfig,
-): Promise<void> {
-  console.log(`🔧 Fix triggered for issue #${issueNumber}`);
+async function createAutofixPR(gh: GitHubHelper, issueNumber: number, repo: string): Promise<void> {
+  const logger = new Logger('Command', { repo, prNumber: issueNumber });
+  logger.info(`Fix triggered for issue #${issueNumber}`);
 
   try {
     await gh.ensureLabels(['autofix', 'autofix-trigger', 'autofix:needs-fix']);
   } catch (err) {
-    console.warn(`Failed to ensure autofix labels: ${err instanceof Error ? err.message : err}`);
+    logger.warn(`Failed to ensure autofix labels: ${err instanceof Error ? err.message : err}`);
   }
   await gh.addLabels(issueNumber, ['autofix']);
 
-  console.log(
+  logger.info(
     `Fix flow initiated for issue #${issueNumber}. In production, this creates a branch, runs the fix, and opens a PR.`,
   );
 }

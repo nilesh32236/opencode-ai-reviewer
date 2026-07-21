@@ -10,6 +10,13 @@ interface PromptBuilderInputs {
   maxFixIterations?: number;
 }
 
+/**
+ * Build the review prompt string from inputs and PR context.
+ * @param inputs - Configuration inputs including optional custom prompt file, project context, etc.
+ * @param prContext - The PR context string describing the pull request.
+ * @param lessons - Optional array of learned lessons from previous reviews.
+ * @returns The assembled review prompt string.
+ */
 export function buildReviewPrompt(
   inputs: PromptBuilderInputs,
   prContext: string,

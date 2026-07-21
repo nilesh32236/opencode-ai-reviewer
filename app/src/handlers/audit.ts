@@ -1,7 +1,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import type { AgentConfig, ReviewResult } from '@opencode-pr-agent/lib';
-import { GitHubHelper, ReviewEngine } from '@opencode-pr-agent/lib';
+import { GitHubHelper, Logger, ReviewEngine } from '@opencode-pr-agent/lib';
 
 export async function handleAudit(
   repo: string,
@@ -10,7 +10,8 @@ export async function handleAudit(
   targetDir?: string,
   promptName?: string,
 ): Promise<void> {
-  console.log(`🔎 Starting audit for ${repo}${targetDir ? ` targeting ${targetDir}` : ''}`);
+  const logger = new Logger('Audit', { repo });
+  logger.info(`Starting audit for ${repo}${targetDir ? ` targeting ${targetDir}` : ''}`);
 
   const gh = new GitHubHelper(token, repo);
 
@@ -26,7 +27,7 @@ export async function handleAudit(
       'autofix:needs-fix',
     ]);
   } catch (err) {
-    console.warn(`Failed to ensure audit labels: ${err instanceof Error ? err.message : err}`);
+    logger.warn(`Failed to ensure audit labels: ${err instanceof Error ? err.message : err}`);
   }
 
   const promptsDir = config.audit.promptsDir;
@@ -38,7 +39,7 @@ export async function handleAudit(
     const mdFiles = prompts.filter((f) => f.endsWith('.md'));
 
     if (mdFiles.length === 0) {
-      console.log(`No prompt files found in ${promptsDir}`);
+      logger.info(`No prompt files found in ${promptsDir}`);
       return;
     }
 
@@ -46,7 +47,7 @@ export async function handleAudit(
       const safeName = path.basename(promptName).replace(/[^a-zA-Z0-9-]/g, '');
       const specific = path.join(promptsDir, `${safeName}.md`);
       if (!(await fs.stat(specific))) {
-        console.log(`Prompt '${promptName}' not found`);
+        logger.info(`Prompt '${promptName}' not found`);
         return;
       }
       selectedFile = specific;
@@ -57,7 +58,7 @@ export async function handleAudit(
       category = path.basename(mdFiles[rand], '.md');
     }
   } catch (err) {
-    console.error(`Error reading audit prompts: ${err instanceof Error ? err.message : err}`, err);
+    logger.error(`Error reading audit prompts: ${err instanceof Error ? err.message : err}`, err);
     return;
   }
 
@@ -70,7 +71,7 @@ export async function handleAudit(
   try {
     promptContent = await fs.readFile(selectedFile, 'utf-8');
   } catch (err) {
-    console.error(`Failed to read audit prompt file: ${err instanceof Error ? err.message : err}`);
+    logger.error(`Failed to read audit prompt file: ${err instanceof Error ? err.message : err}`);
     return;
   }
 
@@ -81,16 +82,16 @@ export async function handleAudit(
     try {
       result = await engine.runAudit(promptContent, auditTarget, category);
     } catch (err) {
-      console.error(`Audit engine failed: ${err instanceof Error ? err.message : err}`);
+      logger.error(`Audit engine failed: ${err instanceof Error ? err.message : err}`);
       return;
     }
 
     if (!result.summary && result.issues.length === 0) {
-      console.warn('Audit returned no meaningful content — skipping issue creation');
+      logger.warn('Audit returned no meaningful content — skipping issue creation');
       return;
     }
 
-    console.log(
+    logger.info(
       `Audit complete: ${result.stats.critical} critical, ${result.stats.important} important, ${result.stats.minor} minor`,
     );
 
@@ -105,19 +106,19 @@ export async function handleAudit(
       try {
         const issue = await gh.createIssue(title, issueBody, labels);
         if (issue) {
-          console.log(`Created issue #${issue.number}: ${issue.url}`);
+          logger.info(`Created issue #${issue.number}: ${issue.url}`);
         }
       } catch (err) {
-        console.error(`Failed to create audit issue: ${err instanceof Error ? err.message : err}`);
+        logger.error(`Failed to create audit issue: ${err instanceof Error ? err.message : err}`);
       }
     } else {
-      console.log('No critical or important issues found — skipping issue creation');
+      logger.info('No critical or important issues found — skipping issue creation');
     }
   } finally {
     try {
       await engine.cleanup();
     } catch (err) {
-      console.error(`Engine cleanup failed: ${err instanceof Error ? err.message : err}`);
+      logger.error(`Engine cleanup failed: ${err instanceof Error ? err.message : err}`);
     }
   }
 }

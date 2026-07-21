@@ -7,7 +7,7 @@ export function sanitizeDbError(err: unknown): string {
   return msg.replace(/([a-z][a-z0-9+.-]+:\/\/)[^@\s]+@/gi, '$1<redacted>@');
 }
 
-// @ts-ignore
+// Dynamic require() for optional DB drivers (pg, mysql2, better-sqlite3) that may not be installed
 const req =
   typeof require !== 'undefined'
     ? require

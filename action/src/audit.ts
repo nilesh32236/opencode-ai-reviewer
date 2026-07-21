@@ -9,8 +9,6 @@ export async function runAudit(
   config: AgentConfig,
   engine: ReviewEngine,
   gh: GitHubHelper,
-  _repo: string,
-  _token: string,
 ): Promise<void> {
   const promptsDirRaw = core.getInput('audit-prompts-dir');
   let promptsDir = promptsDirRaw || config.audit.promptsDir;

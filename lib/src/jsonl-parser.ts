@@ -15,6 +15,13 @@ import type {
 const VALID_TYPES: FindingType[] = ['summary', 'verdict', 'strength', 'issue'];
 const VALID_SEVERITIES: Severity[] = ['critical', 'important', 'minor'];
 
+/**
+ * Parse a JSONL file containing review findings and return a structured ReviewResult.
+ * The file is read line-by-line; invalid or unparseable lines are counted but skipped.
+ * Returns an empty result if the file does not exist.
+ * @param filePath - Path to the JSONL file to parse.
+ * @returns A Promise resolving to a ReviewResult with parsed findings.
+ */
 export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
   const absolutePath = path.resolve(filePath);
   if (!fs.existsSync(absolutePath)) {
