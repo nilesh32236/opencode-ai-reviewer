@@ -88,7 +88,7 @@ describe('FeedbackSubscriber', () => {
       type: 'comment.created',
       category: 'comment',
       payload: {
-        body: 'This is a false positive, not an issue',
+        comment: { body: 'This is a false positive, not an issue' },
         issue: { number: 1 },
       },
       timestamp: Date.now(),
@@ -110,7 +110,7 @@ describe('FeedbackSubscriber', () => {
       type: 'comment.created',
       category: 'comment',
       payload: {
-        body: 'Looks good to me!',
+        comment: { body: 'Looks good to me!' },
         issue: { number: 1 },
       },
       timestamp: Date.now(),
@@ -126,7 +126,7 @@ describe('FeedbackSubscriber', () => {
       type: 'comment.created',
       category: 'comment',
       payload: {
-        body: '',
+        comment: { body: '' },
         issue: { number: 1 },
       },
       timestamp: Date.now(),
@@ -166,7 +166,7 @@ describe('FeedbackSubscriber', () => {
       await sub.handle({
         type: 'comment.created',
         category: 'comment',
-        payload: { body: kw, issue: { number: 1 } },
+        payload: { comment: { body: kw }, issue: { number: 1 } },
         timestamp: Date.now(),
         prNumber: 1,
       });

@@ -26,12 +26,16 @@ export default (app: Probot): void => {
 
   const reviewSubscriber: Subscriber = {
     name: 'ReviewSubscriber',
-    subscribedEvents: ['pr.opened', 'pr.synchronize', 'comment.created'],
+    subscribedEvents: ['pr.opened', 'pr.synchronize', 'comment.created', 'review_comment.created'],
     async handle(event: GitHubEvent) {
       try {
-        if (event.type === 'comment.created') {
-          const payload = event.payload as { body?: string; issue?: { number: number } };
-          if (!payload.body?.includes('/review') && !payload.body?.includes('/oc')) return;
+        if (event.type === 'comment.created' || event.type === 'review_comment.created') {
+          const payload = event.payload as { comment?: { body?: string } };
+          if (
+            !payload.comment?.body?.includes('/review') &&
+            !payload.comment?.body?.includes('/oc')
+          )
+            return;
         }
 
         const payload = event.payload as {
@@ -50,7 +54,13 @@ export default (app: Probot): void => {
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;
 
-        const result = await handlePRReview(prNumber, event.repo || '', getToken(), config);
+        const result = await handlePRReview(
+          prNumber,
+          event.repo || '',
+          getToken(),
+          config,
+          learningStore,
+        );
         if (result) {
           try {
             await bus.publish({
@@ -83,17 +93,17 @@ export default (app: Probot): void => {
 
   const fixSubscriber: Subscriber = {
     name: 'FixSubscriber',
-    subscribedEvents: ['comment.created', 'issue.labeled'],
+    subscribedEvents: ['comment.created', 'review_comment.created', 'issue.labeled'],
     async handle(event: GitHubEvent) {
       try {
         const payload = event.payload as {
-          body?: string;
+          comment?: { body?: string };
           issue?: { number: number };
           labels?: Array<{ name: string }>;
         };
 
-        if (event.type === 'comment.created') {
-          if (!payload.body?.includes('/fix')) return;
+        if (event.type === 'comment.created' || event.type === 'review_comment.created') {
+          if (!payload.comment?.body?.includes('/fix')) return;
         }
 
         if (event.type === 'issue.labeled') {
@@ -118,11 +128,11 @@ export default (app: Probot): void => {
 
   const auditSubscriber: Subscriber = {
     name: 'AuditSubscriber',
-    subscribedEvents: ['comment.created'],
+    subscribedEvents: ['comment.created', 'review_comment.created'],
     async handle(event: GitHubEvent) {
       try {
-        const payload = event.payload as { body?: string };
-        if (!payload.body?.includes('/audit')) return;
+        const payload = event.payload as { comment?: { body?: string } };
+        if (!payload.comment?.body?.includes('/audit')) return;
         const config = buildConfig();
         await handleAudit(event.repo || '', getToken(), config);
       } catch (err) {

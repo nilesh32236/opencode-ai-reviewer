@@ -6,7 +6,12 @@ const DISPUTE_KEYWORDS = ['false positive', 'not an issue', 'wrong', 'incorrect'
 
 export class FeedbackSubscriber implements Subscriber {
   name = 'FeedbackSubscriber';
-  subscribedEvents = ['review.dismissed', 'review_comment.dismissed', 'comment.created'];
+  subscribedEvents = [
+    'review.dismissed',
+    'review_comment.dismissed',
+    'comment.created',
+    'review_comment.created',
+  ];
 
   constructor(private store: LearningStore) {}
 
@@ -20,6 +25,7 @@ export class FeedbackSubscriber implements Subscriber {
           await this.handleReviewCommentDismissed(event);
           break;
         case 'comment.created':
+        case 'review_comment.created':
           await this.handleCommentCreated(event);
           break;
       }
@@ -70,8 +76,8 @@ export class FeedbackSubscriber implements Subscriber {
   }
 
   private async handleCommentCreated(event: GitHubEvent): Promise<void> {
-    const payload = event.payload as { body?: string; issue?: { number?: number } };
-    const body = payload?.body || '';
+    const payload = event.payload as { comment?: { body?: string }; issue?: { number?: number } };
+    const body = payload?.comment?.body || '';
     const prNumber = payload?.issue?.number || event.prNumber || 0;
     if (!prNumber || !body) return;
 
