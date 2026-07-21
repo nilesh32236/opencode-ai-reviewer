@@ -9,6 +9,12 @@ const {
   mockExtractTar,
   mockExtractZip,
   mockCacheDir,
+  mockToolFind,
+  mockComputeSha256,
+  mockFindChecksumAsset,
+  mockGetKnownChecksum,
+  mockParseChecksumFile,
+  mockVerifyChecksum,
   mockFetch,
 } = vi.hoisted(() => {
   const _mockSpawn = vi.fn();
@@ -19,6 +25,12 @@ const {
   const _mockExtractTar = vi.fn().mockResolvedValue('/tmp/opencode-extracted');
   const _mockExtractZip = vi.fn().mockResolvedValue('/tmp/opencode-extracted');
   const _mockCacheDir = vi.fn().mockResolvedValue('/tmp/opencode-cached');
+  const _mockToolFind = vi.fn().mockReturnValue('');
+  const _mockComputeSha256 = vi.fn();
+  const _mockFindChecksumAsset = vi.fn().mockReturnValue(null);
+  const _mockGetKnownChecksum = vi.fn().mockReturnValue(null);
+  const _mockParseChecksumFile = vi.fn();
+  const _mockVerifyChecksum = vi.fn();
   const _mockFetch = vi.fn();
 
   return {
@@ -30,6 +42,12 @@ const {
     mockExtractTar: _mockExtractTar,
     mockExtractZip: _mockExtractZip,
     mockCacheDir: _mockCacheDir,
+    mockToolFind: _mockToolFind,
+    mockComputeSha256: _mockComputeSha256,
+    mockFindChecksumAsset: _mockFindChecksumAsset,
+    mockGetKnownChecksum: _mockGetKnownChecksum,
+    mockParseChecksumFile: _mockParseChecksumFile,
+    mockVerifyChecksum: _mockVerifyChecksum,
     mockFetch: _mockFetch,
   };
 });
@@ -60,10 +78,19 @@ vi.mock('@actions/tool-cache', () => ({
   extractTar: mockExtractTar,
   extractZip: mockExtractZip,
   cacheDir: mockCacheDir,
+  find: mockToolFind,
 }));
 
 vi.mock('../src/utils/retry.js', () => ({
   withRetry: vi.fn(async (fn: () => Promise<unknown>, _opts?: unknown) => fn()),
+}));
+
+vi.mock('../src/utils/checksum.js', () => ({
+  computeSha256: mockComputeSha256,
+  findChecksumAsset: mockFindChecksumAsset,
+  getKnownChecksum: mockGetKnownChecksum,
+  parseChecksumFile: mockParseChecksumFile,
+  verifyChecksum: mockVerifyChecksum,
 }));
 
 // Mock fs to allow chmodSync on our fake paths without throwing ENOENT
@@ -75,7 +102,7 @@ vi.mock('fs', async (importOriginal) => {
     existsSync: vi.fn().mockReturnValue(true),
     writeFileSync: vi.fn(),
     mkdtempSync: vi.fn().mockReturnValue('/tmp/opencode-askpass-xxx'),
-    readFileSync: vi.fn(),
+    readFileSync: vi.fn().mockReturnValue(''),
     promises: {
       ...actual.promises,
       readFile: vi.fn(),
@@ -313,6 +340,216 @@ describe('setupOpenCode()', () => {
     const result = await setupOpenCode();
 
     expect(result).toBe('/usr/local/bin/opencode');
+  });
+
+  it('uses cached binary when checksum matches', async () => {
+    mockIoWhich.mockResolvedValue(null);
+    mockToolFind.mockReturnValue('/cache/opencode/1.0.0/linux-x64');
+    mockComputeSha256.mockResolvedValue('abc123');
+
+    const fsModule = await import('fs');
+    (fsModule.existsSync as ReturnType<typeof vi.fn>).mockImplementation(
+      (p: string) => p.endsWith('.checksum') || p.endsWith('opencode'),
+    );
+    (fsModule.readFileSync as ReturnType<typeof vi.fn>).mockReturnValue('abc123\n');
+
+    const result = await setupOpenCode('v1.0.0');
+
+    expect(result).toBe('/cache/opencode/1.0.0/linux-x64/opencode');
+    expect(mockDownloadTool).not.toHaveBeenCalled();
+  });
+
+  it('re-downloads when cached binary checksum mismatches', async () => {
+    mockIoWhich.mockResolvedValue(null);
+    mockToolFind.mockReturnValue('/cache/opencode/1.0.0/linux-x64');
+    mockComputeSha256.mockResolvedValue('def456');
+
+    const fsModule = await import('fs');
+    (fsModule.existsSync as ReturnType<typeof vi.fn>).mockImplementation(
+      (p: string) => p.endsWith('.checksum') || p.endsWith('opencode'),
+    );
+    (fsModule.readFileSync as ReturnType<typeof vi.fn>).mockReturnValue('abc123\n');
+
+    mockFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          tag_name: 'v1.0.0',
+          assets: [
+            {
+              name: 'opencode-linux-x64.tar.gz',
+              browser_download_url: 'https://example.com/opencode-linux-x64.tar.gz',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    mockDownloadTool.mockResolvedValue('/tmp/opencode.tar.gz');
+    mockCacheDir.mockResolvedValue('/tmp/opencode-cached');
+
+    mockFindChecksumAsset.mockReturnValue(null);
+    mockGetKnownChecksum.mockReturnValue(null);
+    mockComputeSha256.mockResolvedValue('bin-checksum-123');
+
+    const result = await setupOpenCode('v1.0.0');
+
+    expect(result).toBe('/tmp/opencode-cached/opencode');
+    expect(mockDownloadTool).toHaveBeenCalled();
+  });
+
+  it('re-downloads when cached binary has no checksum file', async () => {
+    mockIoWhich.mockResolvedValue(null);
+    mockToolFind.mockReturnValue('/cache/opencode/1.0.0/linux-x64');
+
+    const fsModule = await import('fs');
+    (fsModule.existsSync as ReturnType<typeof vi.fn>).mockReturnValue(false);
+
+    mockFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          tag_name: 'v1.0.0',
+          assets: [
+            {
+              name: 'opencode-linux-x64.tar.gz',
+              browser_download_url: 'https://example.com/opencode-linux-x64.tar.gz',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    mockDownloadTool.mockResolvedValue('/tmp/opencode.tar.gz');
+    mockCacheDir.mockResolvedValue('/tmp/opencode-cached');
+    mockComputeSha256.mockResolvedValue('bin-checksum-123');
+
+    const result = await setupOpenCode('v1.0.0');
+
+    expect(result).toBe('/tmp/opencode-cached/opencode');
+    expect(mockDownloadTool).toHaveBeenCalled();
+  });
+
+  it('downloads and verifies with release checksum asset', async () => {
+    mockIoWhich.mockResolvedValue(null);
+    mockFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          tag_name: 'v1.0.0',
+          assets: [
+            {
+              name: 'opencode-linux-x64.tar.gz',
+              browser_download_url: 'https://example.com/opencode-linux-x64.tar.gz',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    mockDownloadTool.mockResolvedValueOnce('/tmp/opencode.tar.gz');
+    mockDownloadTool.mockResolvedValueOnce('/tmp/checksum.txt');
+    mockCacheDir.mockResolvedValue('/tmp/opencode-cached');
+
+    mockFindChecksumAsset.mockReturnValue({
+      name: 'opencode-linux-x64.tar.gz.sha256',
+      browser_download_url: 'https://example.com/checksum.sha256',
+    });
+    mockParseChecksumFile.mockReturnValue('abc123checksum');
+    mockVerifyChecksum.mockResolvedValue(true);
+    mockComputeSha256.mockResolvedValue('stored-checksum');
+
+    const result = await setupOpenCode('v1.0.0');
+
+    expect(result).toBe('/tmp/opencode-cached/opencode');
+    expect(mockDownloadTool).toHaveBeenCalledTimes(2);
+    expect(mockVerifyChecksum).toHaveBeenCalled();
+  });
+
+  it('throws when checksum does not match', async () => {
+    mockIoWhich.mockResolvedValue(null);
+    mockFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          tag_name: 'v1.0.0',
+          assets: [
+            {
+              name: 'opencode-linux-x64.tar.gz',
+              browser_download_url: 'https://example.com/opencode-linux-x64.tar.gz',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    mockDownloadTool.mockResolvedValue('/tmp/opencode.tar.gz');
+    mockCacheDir.mockResolvedValue('/tmp/opencode-cached');
+
+    mockFindChecksumAsset.mockReturnValue({
+      name: 'opencode-linux-x64.tar.gz.sha256',
+      browser_download_url: 'https://example.com/checksum.sha256',
+    });
+    mockParseChecksumFile.mockReturnValue('expected-hash-value');
+    mockVerifyChecksum.mockRejectedValue(new Error('Checksum mismatch'));
+
+    await expect(setupOpenCode('v1.0.0')).rejects.toThrow('Checksum mismatch');
+  });
+
+  it('falls back to known checksum when no release checksum asset', async () => {
+    mockIoWhich.mockResolvedValue(null);
+    mockFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          tag_name: 'v1.0.0',
+          assets: [
+            {
+              name: 'opencode-linux-x64.tar.gz',
+              browser_download_url: 'https://example.com/opencode-linux-x64.tar.gz',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    mockDownloadTool.mockResolvedValue('/tmp/opencode.tar.gz');
+    mockCacheDir.mockResolvedValue('/tmp/opencode-cached');
+
+    mockFindChecksumAsset.mockReturnValue(null);
+    mockGetKnownChecksum.mockReturnValue('known-good-hash');
+    mockVerifyChecksum.mockResolvedValue(true);
+    mockComputeSha256.mockResolvedValue('stored-checksum');
+
+    const result = await setupOpenCode('v1.0.0');
+
+    expect(result).toBe('/tmp/opencode-cached/opencode');
+    expect(mockGetKnownChecksum).toHaveBeenCalled();
+    expect(mockVerifyChecksum).toHaveBeenCalled();
+  });
+
+  it('continues with warning when no checksum is available', async () => {
+    mockIoWhich.mockResolvedValue(null);
+    mockFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          tag_name: 'v1.0.0',
+          assets: [
+            {
+              name: 'opencode-linux-x64.tar.gz',
+              browser_download_url: 'https://example.com/opencode-linux-x64.tar.gz',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    mockDownloadTool.mockResolvedValue('/tmp/opencode.tar.gz');
+    mockCacheDir.mockResolvedValue('/tmp/opencode-cached');
+
+    mockFindChecksumAsset.mockReturnValue(null);
+    mockGetKnownChecksum.mockReturnValue(null);
+    mockComputeSha256.mockResolvedValue('stored-checksum');
+
+    const result = await setupOpenCode('v1.0.0');
+
+    expect(result).toBe('/tmp/opencode-cached/opencode');
+    expect(mockDownloadTool).toHaveBeenCalled();
   });
 });
 
