@@ -59,8 +59,10 @@ jobs:
 
       - name: Set dry-run flag
         id: dry-run
+        env:
+          IS_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.dry_run }}" == "true" ]]; then
+          if [[ "$IS_DRY_RUN" == "true" ]]; then
             echo "dry_run=true" >> "$GITHUB_OUTPUT"
           else
             echo "dry_run=false" >> "$GITHUB_OUTPUT"
@@ -300,7 +302,7 @@ jobs:
 
           git add package.json lib/package.json action/package.json app/package.json CHANGELOG.md
 
-          git commit -m "chore: release ${NEW_TAG}
+          git commit -m "chore: release ${NEW_TAG} [skip ci]
 
           Auto-generated release commit for ${NEW_TAG}."
 
