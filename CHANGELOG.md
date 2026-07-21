@@ -7,16 +7,16 @@ All notable changes to this project are documented in this file.
 ## [v1.1.1] — 2026-07-21
 
 ### Fixed
-- Address issue #41
-- Address issue #40
-- Address issue #39
+- Address issue #41 (#63)
+- Address issue #40 (#62)
+- Address issue #39 (#61)
 
 ### Changed
-- [Autofix] [v1.4] Create automated release workflow
-- [Autofix] [v1.3] Add inline review suggestions mode
-- [Autofix] [v1.3] Ship built-in CI workflows
-- [Autofix] [v1.3] Add per-path and per-branch config overrides
-- [Autofix] [v1.3] Implement remote MCP server support
+- [Autofix] [v1.4] Create automated release workflow (#68)
+- [Autofix] [v1.3] Add inline review suggestions mode (#67)
+- [Autofix] [v1.3] Ship built-in CI workflows in .github/workflows/ (#66)
+- [Autofix] [v1.3] Add per-path and per-branch config overrides (#65)
+- [Autofix] [v1.3] Implement remote MCP server support (#64)
 
 [v1.1.1]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.1.0...v1.1.1
 
