@@ -19,9 +19,10 @@ export function validateRunChecksCommand(
   }
   const parts = trimmed.split(/\s+/);
   const program = parts[0];
-  if (!allowlist.includes(program)) {
+  const allowSet = new Set(allowlist);
+  if (!allowSet.has(program)) {
     throw new Error(
-      `Command "${program}" is not allowed. Allowed programs: ${allowlist.join(', ')}`,
+      `Command "${program}" is not allowed. Allowed programs: ${[...allowSet].join(', ')}`,
     );
   }
   for (const arg of parts.slice(1)) {

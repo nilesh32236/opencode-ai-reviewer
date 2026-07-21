@@ -162,12 +162,13 @@ export function validateConfig(config: PromptConfig): PromptConfig {
       result.fix.checkAllowlist = allowlist;
     }
     if (Array.isArray(config.fix.runChecks)) {
+      const allowedPrograms = result.fix.checkAllowlist;
       result.fix.runChecks = config.fix.runChecks.filter((c) => {
         if (typeof c !== 'string') return false;
         const program = c.trim().split(/\s+/)[0];
-        if (!result.fix?.checkAllowlist?.includes(program)) {
+        if (!allowedPrograms.includes(program)) {
           core.warning(
-            `Command "${c}" uses "${program}" which is not in the check allowlist [${(result.fix?.checkAllowlist ?? defaultAllowlist).join(', ')}]. Skipping.`,
+            `Command "${c}" uses "${program}" which is not in the check allowlist [${allowedPrograms.join(', ')}]. Skipping.`,
           );
           return false;
         }
