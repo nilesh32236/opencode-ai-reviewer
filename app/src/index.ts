@@ -4,6 +4,7 @@ import {
   EventRouter,
   FeedbackSubscriber,
   LearningStore,
+  Logger,
   MetaReviewEngine,
   MetaReviewSubscriber,
   getDefaultMCPServers,
@@ -13,6 +14,8 @@ import type { Probot } from 'probot';
 import { handleAudit } from './handlers/audit.js';
 import { handleCommand } from './handlers/commands.js';
 import { handlePRReview } from './handlers/pr-review.js';
+
+const logger = new Logger('App');
 
 export default (app: Probot): void => {
   const learningStore = new LearningStore();
@@ -67,13 +70,13 @@ export default (app: Probot): void => {
               prNumber: event.prNumber || 0,
             });
           } catch (err) {
-            console.error(
+            logger.error(
               `Failed to publish review.completed event: ${err instanceof Error ? err.message : err}`,
             );
           }
         }
       } catch (err) {
-        console.error(`ReviewSubscriber failed: ${err instanceof Error ? err.message : err}`);
+        logger.error(`ReviewSubscriber failed: ${err instanceof Error ? err.message : err}`);
       }
     },
   };
@@ -106,7 +109,7 @@ export default (app: Probot): void => {
 
         await handleCommand('fix', prNumber, event.repo || '', getToken(), config);
       } catch (err) {
-        console.error(
+        logger.error(
           `FixSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${err instanceof Error ? err.message : err}`,
         );
       }
@@ -123,7 +126,7 @@ export default (app: Probot): void => {
         const config = buildConfig();
         await handleAudit(event.repo || '', getToken(), config);
       } catch (err) {
-        console.error(
+        logger.error(
           `AuditSubscriber failed for repo ${event.repo}: ${err instanceof Error ? err.message : err}`,
         );
       }
@@ -149,7 +152,7 @@ export default (app: Probot): void => {
     try {
       await router.handle(context.name, context.payload);
     } catch (err) {
-      console.error(
+      logger.error(
         `Unhandled error in event router for ${context.name}: ${err instanceof Error ? err.message : err}`,
       );
     }
@@ -159,7 +162,7 @@ export default (app: Probot): void => {
     try {
       await learningStore.close();
     } catch (err) {
-      console.warn(
+      logger.warn(
         `LearningStore close failed during SIGTERM shutdown: ${
           err instanceof Error ? err.message : String(err)
         }`,
@@ -168,7 +171,7 @@ export default (app: Probot): void => {
     process.exit(0);
   });
 
-  console.log('✅ OpenCode PR Agent app loaded (self-improving)');
+  logger.info('OpenCode PR Agent app loaded (self-improving)');
 };
 
 function getToken(): string {

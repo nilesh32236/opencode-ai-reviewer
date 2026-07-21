@@ -7,7 +7,6 @@ export function sanitizeDbError(err: unknown): string {
   return msg.replace(/([a-z][a-z0-9+.-]+:\/\/)[^@\s]+@/gi, '$1<redacted>@');
 }
 
-// @ts-ignore
 const req =
   typeof require !== 'undefined'
     ? require

@@ -17,8 +17,6 @@ export async function runFix(
   config: AgentConfig,
   engine: ReviewEngine,
   gh: GitHubHelper,
-  _repo: string,
-  _token: string,
 ): Promise<void> {
   const prNumber = await resolvePrNumber();
   if (prNumber === null) {

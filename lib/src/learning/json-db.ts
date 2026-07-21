@@ -605,7 +605,7 @@ export class JsonDatabase implements DatabaseInstance {
         self.save();
         throw err;
       }
-    } as unknown as T;
+    } as T;
   }
 
   async close(): Promise<void> {

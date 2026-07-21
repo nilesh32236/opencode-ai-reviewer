@@ -1,11 +1,11 @@
-import { promises as fs, existsSync, readFileSync } from 'fs';
+import { promises as fs, existsSync } from 'fs';
 import * as cp from 'node:child_process';
 import * as path from 'path';
 import * as core from '@actions/core';
 import { emptyResult, parseJsonlFile } from './jsonl-parser.js';
 import type { LearningStore } from './learning/store.js';
 import { MCPManager } from './mcp/client.js';
-import { ensureOutputDir, getGitStatus, runOpenCode } from './opencode.js';
+import { getGitStatus, runOpenCode } from './opencode.js';
 import { buildAuditPrompt, buildFixPrompt, buildReviewPrompt } from './prompts/builder.js';
 import type {
   AgentConfig,

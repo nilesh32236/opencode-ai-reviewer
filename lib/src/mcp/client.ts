@@ -146,7 +146,6 @@ export class MCPManager {
    */
   async queryContext(query: string, maxTokens = 4000): Promise<MCPQueryResult> {
     const entries: MCPContextEntry[] = [];
-    let _totalTokens = 0;
 
     if (!this.initialized) {
       return { entries: [], totalTokens: 0 };
@@ -177,7 +176,6 @@ export class MCPManager {
               content: text,
               relevance: 0.8,
             });
-            _totalTokens += estimateTokens(text);
           }
         }
       }),

@@ -146,11 +146,11 @@ async function run(): Promise<void> {
           } else if (inputs.enableFix) {
             await runAutofixLoop(inputs, config, engine, gh, repo, token);
           } else {
-            await runFix(inputs, config, engine, gh, repo, token);
+            await runFix(inputs, config, engine, gh);
           }
           break;
         case 'audit':
-          await runAudit(inputs, config, engine, gh, repo, token);
+          await runAudit(inputs, config, engine, gh);
           break;
         case 'post':
           await runPost(inputs, gh, repo, token);
