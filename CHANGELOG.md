@@ -4,12 +4,37 @@ All notable changes to this project are documented in this file.
 
 ---
 
-## [Unreleased] — v1.1.0
+## [v1.1.0] — 2026-07-21
 
 ### Added
+- Full test suites for config loader (254 lines), MCP client (399 lines), DB adapter (639 lines), GitHub helpers (932 lines), engine (542 lines), and OpenCode client (369 lines)
 - CONTRIBUTING.md with dev setup, code conventions, and audit category guide
 - CHANGELOG.md for release tracking
+- Real `createAutofixPR` implementation in the GitHub App — creates branches, applies fixes, creates PRs via GitHub API, links PRs back to issues
+- `getDefaultBranch()` and `createPR()` helpers on `GitHubHelper`
+- Performance-efficiency audit auto-fixes: LRU prepared-statement cache (configurable), MCP tools caching, batched pattern recording, parallelized queries, missing index on `review_quality.created_at`
+- Code-quality-conventions audit auto-fixes: error sanitization, config validation, graceful degradation, consistent logging
+- Jaccard similarity optimization (~6x speedup) with zero-allocation set operations and hoisted regex constants
 - Changelog entry template added to release workflow
+
+### Fixed
+- MCP `connect()` re-initialization guard — prevents redundant transport processes in autofix loop
+- Branch existence check in autofix flow — resolves `origin/` remote ref instead of local branch name
+- Autofix label attachment to newly created PRs
+- JSON DB adapter fragility (addressing issue #34)
+- Config loader edge cases (addressing issue #35)
+- Address issue #54 across MCP client, learning store, schema, and pattern detector
+
+### Changed
+- `SqliteAdapter` cache size made configurable via constructor (`maxCacheSize` parameter)
+- Pattern recording uses batch inserts within a single transaction
+- `prepareStmt` uses LRU eviction instead of FIFO
+
+### Performance
+- Zero-allocation Jaccard similarity in `PatternDetector.clusterFindings` — no temporary Sets or Arrays
+- Regex constants hoisted to module scope in cluster.ts
+- MCP tool listing cached after first fetch per client
+- Parallel `COUNT(*)` queries in `getFalsePositiveRate`
 
 ---
 
@@ -78,7 +103,7 @@ All notable changes to this project are documented in this file.
 - Docker Compose for local development services
 - Comprehensive audit category prompts (code quality, security, error handling, performance)
 
-[Unreleased]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.0.4...HEAD
+[v1.1.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.0.4...v1.1.0
 [v1.0.4]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.0.3...v1.0.4
 [v1.0.3]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.0.2...v1.0.3
 [v1.0.2]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.0.1...v1.0.2

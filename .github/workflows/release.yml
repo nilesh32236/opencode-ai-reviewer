@@ -47,6 +47,13 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
+          # Skip if changelog already has this tag
+          if grep -q "^## \[${TAG}\]" CHANGELOG.md; then
+            echo "Changelog entry for ${TAG} already exists — skipping auto-generation."
+            exit 0
+          fi
+          PREV_TAG=$(git tag --sort=-version:refname | head -1 || echo "")
+          [ -z "$PREV_TAG" ] && PREV_TAG="v1.0.4"
           DATE=$(date -u +%Y-%m-%d)
           cat >> CHANGELOG.md <<-EOF
 
@@ -61,9 +68,9 @@ jobs:
           ### Changed
           - _(list refactors or dependency updates)_
 
-          [${TAG}]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.0.4...${TAG}
+          [${TAG}]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/${PREV_TAG}...${TAG}
           EOF
-          echo "Changelog placeholder generated for ${TAG}. Update CHANGELOG.md before committing."
+          echo "Changelog placeholder generated for ${TAG}."
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
