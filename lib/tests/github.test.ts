@@ -585,6 +585,13 @@ describe('GitHubHelper', () => {
       expect(result).not.toBeNull();
       expect(result!.number).toBe(42);
       expect(result!.url).toBe('https://github.com/owner/repo/pull/42');
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/pulls'),
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.stringContaining('"title":"Title"'),
+        }),
+      );
     });
 
     it('returns null on API failure', async () => {

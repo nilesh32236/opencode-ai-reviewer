@@ -412,7 +412,9 @@ export class GitHubHelper {
       });
       return { number: result.number, url: result.html_url };
     } catch (err) {
-      core.warning(`Failed to create PR: ${err instanceof Error ? err.message : err}`);
+      core.warning(
+        `Failed to create PR "${title}" (${head} → ${base}): ${err instanceof Error ? err.message : err}`,
+      );
       return null;
     }
   }
