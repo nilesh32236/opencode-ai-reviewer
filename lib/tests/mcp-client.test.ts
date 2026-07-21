@@ -10,8 +10,11 @@ const {
   mockCallTool,
   mockTransportClose,
   mockStdioTransportCtor,
+  mockSSEClientTransportCtor,
+  mockSSETransportClose,
   MockClient,
   MockStdioClientTransport,
+  MockSSEClientTransport,
 } = vi.hoisted(() => {
   const _connect = vi.fn();
   const _close = vi.fn();
@@ -34,6 +37,16 @@ const {
     }
   }
 
+  const _sseCtor = vi.fn();
+  const _sseClose = vi.fn();
+
+  class _MockSSEClientTransport {
+    close = _sseClose;
+    constructor(url: URL, opts?: Record<string, unknown>) {
+      _sseCtor(url, opts);
+    }
+  }
+
   return {
     mockConnect: _connect,
     mockClose: _close,
@@ -41,13 +54,20 @@ const {
     mockCallTool: _callTool,
     mockTransportClose: _transportClose,
     mockStdioTransportCtor: _stdioCtor,
+    mockSSEClientTransportCtor: _sseCtor,
+    mockSSETransportClose: _sseClose,
     MockClient: _MockClient,
     MockStdioClientTransport: _MockStdioTransport,
+    MockSSEClientTransport: _MockSSEClientTransport,
   };
 });
 
 vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
   Client: MockClient,
+}));
+
+vi.mock('@modelcontextprotocol/sdk/client/sse.js', () => ({
+  SSEClientTransport: MockSSEClientTransport,
 }));
 
 vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => ({
@@ -161,15 +181,75 @@ describe('MCPManager', () => {
       expect(opts).toMatchObject({ maxRetries: 3, baseDelayMs: 2000 });
     });
 
-    it('skips remote servers with a warning', async () => {
+    it('connects to remote servers via SSE transport', async () => {
+      mockConnect.mockResolvedValue(undefined);
+      mockListTools.mockResolvedValue({ tools: [{ name: 'search' }] });
+
       const manager = new MCPManager([
         makeConfig({ type: 'remote', url: 'http://localhost:3000', command: undefined }),
       ]);
       await manager.connect();
 
-      expect(mockConnect).not.toHaveBeenCalled();
-      expect(mockStdioTransportCtor).not.toHaveBeenCalled();
+      expect(mockSSEClientTransportCtor).toHaveBeenCalledWith(
+        new URL('http://localhost:3000'),
+        expect.objectContaining({ requestInit: expect.anything() }),
+      );
+      expect(mockConnect).toHaveBeenCalledTimes(1);
+      expect(mockListTools).toHaveBeenCalledTimes(1);
     });
+
+    it('passes environment vars as HTTP headers for remote servers', async () => {
+      mockConnect.mockResolvedValue(undefined);
+      mockListTools.mockResolvedValue({ tools: [{ name: 'search' }] });
+
+      const manager = new MCPManager([
+        makeConfig({
+          type: 'remote',
+          url: 'http://localhost:3000',
+          command: undefined,
+          environment: { Authorization: 'Bearer token123', 'X-API-Key': 'abc' },
+        }),
+      ]);
+      await manager.connect();
+
+      expect(mockSSEClientTransportCtor).toHaveBeenCalledWith(
+        new URL('http://localhost:3000'),
+        expect.objectContaining({
+          requestInit: { headers: { Authorization: 'Bearer token123', 'X-API-Key': 'abc' } },
+        }),
+      );
+    });
+
+    it('handles remote connection failure gracefully', async () => {
+      mockConnect.mockRejectedValue(new Error('Connection refused'));
+
+      const manager = new MCPManager([
+        makeConfig({ type: 'remote', url: 'http://localhost:3000', command: undefined }),
+      ]);
+      await manager.connect();
+
+      expect(mockConnect).toHaveBeenCalled();
+      expect(mockClose).not.toHaveBeenCalled();
+      expect(mockSSETransportClose).toHaveBeenCalled();
+    });
+
+    it('handles remote connection timeout', async () => {
+      mockConnect.mockImplementation(() => new Promise(() => {}));
+
+      const manager = new MCPManager([
+        makeConfig({
+          type: 'remote',
+          url: 'http://localhost:3000',
+          command: undefined,
+          timeoutMs: 50,
+        }),
+      ]);
+      await manager.connect();
+
+      expect(mockConnect).toHaveBeenCalled();
+      expect(mockClose).not.toHaveBeenCalled();
+      expect(mockSSETransportClose).toHaveBeenCalled();
+    }, 10000);
 
     it('skips local server with undefined command', async () => {
       const manager = new MCPManager([

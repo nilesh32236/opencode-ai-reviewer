@@ -9,13 +9,15 @@
  */
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { MCPContextEntry, MCPQueryResult, MCPServerConfig } from '../types/index.js';
 import { withRetry } from '../utils/retry.js';
 
 export class MCPManager {
-  private clients: Map<string, { client: Client; transport: StdioClientTransport }> = new Map();
+  private clients: Map<string, { client: Client; transport: Transport }> = new Map();
   private initialized = false;
   private toolsCache: Map<string, Tool[]> = new Map();
 
@@ -104,9 +106,78 @@ export class MCPManager {
             }
           }
         } else if (server.type === 'remote' && server.url) {
-          // For remote MCP servers, we'd use a different transport
-          // For now, log a warning
-          console.log(`  ${server.name}: Remote MCP not yet supported, skipping`);
+          const remoteUrl: string = server.url;
+          let mcpClient: Client | undefined;
+          let mcpTransport: SSEClientTransport | undefined;
+          try {
+            await withRetry(
+              async () => {
+                if (mcpTransport) {
+                  try {
+                    mcpTransport.close();
+                  } catch {
+                    /* ignore */
+                  }
+                }
+
+                const headers: Record<string, string> = {};
+                if (server.environment) {
+                  for (const [key, value] of Object.entries(server.environment)) {
+                    if (value) headers[key] = value;
+                  }
+                }
+
+                mcpTransport = new SSEClientTransport(new URL(remoteUrl), {
+                  requestInit: { headers },
+                });
+
+                const clientInstance = new Client({ name: 'opencode-pr-agent', version: '1.0.0' });
+
+                const connectionTimeout = server.timeoutMs ?? 5000;
+                let connectTimer: ReturnType<typeof setTimeout>;
+                await Promise.race([
+                  clientInstance.connect(mcpTransport),
+                  new Promise<never>((_, reject) => {
+                    connectTimer = setTimeout(
+                      () => reject(new Error(`Connection timed out after ${connectionTimeout}ms`)),
+                      connectionTimeout,
+                    );
+                  }),
+                ]).finally(() => clearTimeout(connectTimer));
+
+                mcpClient = clientInstance;
+                this.clients.set(server.name, { client: mcpClient, transport: mcpTransport });
+              },
+              {
+                maxRetries: 3,
+                baseDelayMs: 2000,
+              },
+            );
+
+            if (mcpClient) {
+              const tools = await withRetry(() => mcpClient!.listTools(), {
+                maxRetries: 3,
+                baseDelayMs: 2000,
+              });
+              console.log(`  ${server.name}: ${tools.tools.length} tools available`);
+              this.toolsCache.set(server.name, tools.tools);
+            }
+          } catch (err) {
+            console.log(
+              `  ${server.name}: Failed to connect — ${err instanceof Error ? err.message : err}`,
+            );
+            this.clients.delete(server.name);
+            if (mcpClient) {
+              try {
+                await mcpClient.close();
+              } catch {}
+            }
+            if (mcpTransport) {
+              try {
+                await mcpTransport.close();
+              } catch {}
+            }
+          }
         }
       } catch (err) {
         console.log(

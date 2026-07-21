@@ -45,6 +45,20 @@ export const githubMCPServer = (token: string): MCPServerConfig => ({
 });
 
 /**
+ * Example remote MCP server configuration.
+ * Connects to a remote MCP service via HTTP SSE transport.
+ * Use `environment` to pass authentication headers.
+ */
+export function exampleRemoteServer(url = 'https://mcp.example.com/sse'): MCPServerConfig {
+  return {
+    name: 'example-remote',
+    type: 'remote',
+    url,
+    timeoutMs: 10000,
+  };
+}
+
+/**
  * Default MCP configuration for typical use.
  * Includes Context7 for docs.
  */
