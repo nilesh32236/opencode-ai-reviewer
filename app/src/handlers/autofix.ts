@@ -16,7 +16,6 @@ interface IterationRecord {
 const REVIEW_MARKER = '<!-- autofix-review -->';
 const FIX_MARKER = '<!-- autofix-applied -->';
 
-
 function buildReviewBody(
   history: IterationRecord[],
   maxIterations: number,

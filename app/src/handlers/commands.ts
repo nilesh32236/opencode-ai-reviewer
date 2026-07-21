@@ -62,11 +62,7 @@ async function findExistingAutofixPR(
   return null;
 }
 
-async function createAutofixPR(
-  gh: GitHubHelper,
-  issueNumber: number,
-  repo: string,
-): Promise<void> {
+async function createAutofixPR(gh: GitHubHelper, issueNumber: number, repo: string): Promise<void> {
   const logger = new Logger('Command', { repo, prNumber: issueNumber });
   logger.info(`Fix triggered for issue #${issueNumber}`);
 

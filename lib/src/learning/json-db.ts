@@ -577,7 +577,7 @@ export class JsonDatabase implements DatabaseInstance {
 
   transaction<T extends (...args: unknown[]) => unknown>(fn: T): T {
     const self = this;
-    return function (this: unknown, ...args: unknown[]) {
+    const wrapper: (...args: unknown[]) => unknown = function (this: unknown, ...args: unknown[]) {
       const backup = JSON.stringify(self.data);
       self.inTransaction = true;
       try {
@@ -605,7 +605,8 @@ export class JsonDatabase implements DatabaseInstance {
         self.save();
         throw err;
       }
-    } as T;
+    };
+    return wrapper as T;
   }
 
   async close(): Promise<void> {
