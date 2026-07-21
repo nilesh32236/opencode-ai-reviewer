@@ -12,6 +12,8 @@ import type {
   FixResult,
   MCPContextEntry,
   PRContext,
+  PreviousFindingIteration,
+  ReviewIssue,
   ReviewResult,
 } from './types/index.js';
 import { GitHubHelper } from './utils/github.js';
@@ -62,6 +64,7 @@ export class ReviewEngine {
     reviewPromptFile?: string,
     reviewPromptExtra?: string,
     timeoutMinutes?: number,
+    previousFindings?: PreviousFindingIteration[],
   ): Promise<ReviewResult> {
     core.info(
       `Reviewing PR #${pr.number} (${pr.changedFiles.length} files)${iteration !== undefined ? ` (Iteration ${iteration + 1})` : ''}`,
@@ -89,7 +92,31 @@ export class ReviewEngine {
     }
 
     core.info('Building PR context string');
-    const contextMarkdown = this.buildPRContextString(pr);
+    let contextMarkdown = this.buildPRContextString(pr);
+
+    if (previousFindings && previousFindings.length > 0) {
+      const latest = previousFindings[previousFindings.length - 1];
+      if (latest.headSha && latest.headSha !== pr.headSha) {
+        try {
+          core.info(
+            `Computing diff since last review (${latest.headSha.slice(0, 7)}...${pr.headSha.slice(0, 7)})`,
+          );
+          const fixDiff = await this.github.getDiffSince(latest.headSha, pr.headSha);
+          if (fixDiff) {
+            const diffSection = '\n\n## Changes Since Last Review\n```diff\n' + fixDiff + '\n```';
+            if (contextMarkdown.length + diffSection.length < 50_000) {
+              contextMarkdown += diffSection;
+              core.info(`Added diff since last review (${fixDiff.length} bytes)`);
+            } else {
+              core.info('Diff too large to include in context — skipping');
+            }
+          }
+        } catch (err) {
+          core.warning(`Could not compute diff since last review: ${String(err)}`);
+        }
+      }
+    }
+
     const contextSize = Buffer.byteLength(contextMarkdown, 'utf-8');
     core.info(`PR context size: ${(contextSize / 1024).toFixed(1)} KB`);
 
@@ -136,6 +163,7 @@ export class ReviewEngine {
       },
       contextMarkdown + mcpSection,
       lessons,
+      previousFindings,
     );
 
     const promptSize = Buffer.byteLength(prompt, 'utf-8');
@@ -182,6 +210,7 @@ export class ReviewEngine {
     contextMarkdown: string,
     cachedPR?: PRContext,
     timeoutMinutes?: number,
+    issues?: ReviewIssue[],
   ): Promise<FixResult> {
     let mcpDocs = '';
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
@@ -208,6 +237,7 @@ export class ReviewEngine {
       },
       fixContext,
       iteration,
+      issues,
     );
 
     const fixRunResult = await runOpenCode(prompt, {

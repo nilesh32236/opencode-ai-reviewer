@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import type { PreviousFindingIteration, ReviewIssue } from '../types/index.js';
 
 interface PromptBuilderInputs {
   reviewPromptFile?: string;
@@ -21,6 +22,7 @@ export function buildReviewPrompt(
   inputs: PromptBuilderInputs,
   prContext: string,
   lessons?: string[],
+  previousFindings?: PreviousFindingIteration[],
 ): string {
   if (inputs.reviewPromptFile) {
     const customPrompt = loadPromptFile(inputs.reviewPromptFile);
@@ -102,6 +104,41 @@ export function buildReviewPrompt(
     }
   }
 
+  if (previousFindings && previousFindings.length > 0) {
+    sections.push('\n## Previous Review Iterations');
+    sections.push('');
+    sections.push(
+      'This is not the first review of this PR. Issues were previously found and fixes were applied. Review ONLY the current state and report only issues that are STILL present.',
+    );
+    sections.push('');
+    for (const pf of previousFindings) {
+      sections.push(`### Iteration ${pf.iteration}`);
+      sections.push('');
+      if (pf.fixSummary) {
+        sections.push(`Fix summary: ${pf.fixSummary}`);
+        sections.push('');
+      }
+      if (pf.filesChanged && pf.filesChanged.length > 0) {
+        sections.push(`Files changed: \`${pf.filesChanged.join('`, `')}\``);
+        sections.push('');
+      }
+      sections.push('Previously reported issues:');
+      for (const issue of pf.issues) {
+        const tag = issue.previouslyReported ? ' (previously reported — verify fixed)' : '';
+        sections.push(
+          `- **${issue.severity.toUpperCase()}:** ${issue.file}:${issue.line} — ${issue.message}${tag}`,
+        );
+        if (issue.suggestion) {
+          sections.push(`  > Suggestion: ${issue.suggestion}`);
+        }
+      }
+      sections.push('');
+    }
+    sections.push(
+      '**IMPORTANT:** Do NOT re-report issues that have already been fixed. Only flag issues that are still present in the current code. If an issue from a previous iteration persists, mark it with `"previouslyReported": true` in the JSONL output.',
+    );
+  }
+
   sections.push('\n## Critical Rules');
   sections.push('');
   sections.push('**DO:**');
@@ -134,24 +171,45 @@ export function buildFixPrompt(
   inputs: PromptBuilderInputs,
   context: string,
   iteration: number,
+  issues?: ReviewIssue[],
 ): string {
   const projectContext = inputs.projectContext || getDefaultProjectContext();
   const maxIterations = inputs.maxFixIterations ?? 3;
 
-  return `You are a Senior Code Fixer. Fix the issues found during code review.
+  let issuesBlock = '';
+  if (issues && issues.length > 0) {
+    const sorted = [...issues].sort((a, b) => {
+      const order: Record<string, number> = { critical: 0, important: 1, minor: 2 };
+      return (order[a.severity] ?? 3) - (order[b.severity] ?? 3);
+    });
+    issuesBlock = '\n## Issues to Fix (Iteration ' + (iteration + 1) + ')\n\n';
+    for (let idx = 0; idx < sorted.length; idx++) {
+      const issue = sorted[idx];
+      issuesBlock += `${idx + 1}. [${issue.severity.toUpperCase()}] ${issue.file}:${issue.line} — ${issue.message}\n`;
+      if (issue.suggestion) {
+        issuesBlock += `   Suggestion: ${issue.suggestion}\n`;
+      }
+    }
+  }
+
+  const contextBlock = issuesBlock ? context + '\n\n---\n' + issuesBlock : context;
+
+  const instructions =
+    issues && issues.length > 0
+      ? 'Fix the issues listed below in order of severity. Skip any that are already resolved.'
+      : 'Read ALL the review comments above carefully. Focus on:\n1. Issues marked as CRITICAL — these must be fixed\n2. Issues marked as IMPORTANT — these should be fixed\n3. Issues marked as MINOR — fix these if straightforward';
+
+  const prompt = `You are a Senior Code Fixer. Fix the issues found during code review.
 
 ## Full Context (Issue + PR + Review Comments)
 
-${context}
+${contextBlock}
 
 ---
 
 ## Fix Iteration: ${iteration} of ${maxIterations}
 
-Read ALL the review comments above carefully. Focus on:
-1. Issues marked as CRITICAL — these must be fixed
-2. Issues marked as IMPORTANT — these should be fixed
-3. Issues marked as MINOR — fix these if straightforward
+${instructions}
 
 ## Project Context
 ${projectContext}
@@ -172,6 +230,8 @@ ${projectContext}
 - Do not add features or change unrelated code
 - If a fix requires significant refactoring outside scope, skip it
 - Verify every change compiles before finishing`;
+
+  return prompt;
 }
 
 export function buildAuditPrompt(

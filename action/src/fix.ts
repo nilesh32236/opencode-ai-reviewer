@@ -6,6 +6,7 @@ import type {
   FixResult,
   GitHubHelper,
   IssueComment,
+  PreviousFindingIteration,
   ReviewEngine,
   ReviewResult,
 } from '@opencode-pr-agent/lib';
@@ -402,6 +403,7 @@ export async function runAutofixLoop(
   }
 
   const history: IterationRecord[] = [];
+  const previousFindings: PreviousFindingIteration[] = [];
   let approved = false;
   let exitReason: 'approved' | 'no-changes' | 'git-failure' | 'timeout' | 'exhausted' = 'exhausted';
 
@@ -426,12 +428,14 @@ export async function runAutofixLoop(
     core.info(`=== Autofix iteration ${i + 1}/${config.maxIterations} ===`);
 
     const pr = await gh.getPR(prNumber);
+    const prHeadSha = pr.headSha;
     const result = await engine.reviewPR(
       pr,
       i,
       inputs.reviewPromptFile,
       inputs.reviewPromptExtra,
       iterTimeoutMinutes,
+      previousFindings,
     );
 
     if (
@@ -488,7 +492,14 @@ export async function runAutofixLoop(
     }
 
     const contextMarkdown = await gh.gatherContext({ prNumber });
-    const fixResult = await engine.runFix(prNumber, i, contextMarkdown, pr, iterTimeoutMinutes);
+    const fixResult = await engine.runFix(
+      prNumber,
+      i,
+      contextMarkdown,
+      pr,
+      iterTimeoutMinutes,
+      result.issues,
+    );
 
     if (!fixResult.changesMade) {
       core.info('Fix agent made no changes — stopping loop');
@@ -520,6 +531,14 @@ export async function runAutofixLoop(
       await exec.exec('git', ['commit', '-m', commitMsg]);
       await exec.exec('git', ['push', 'origin', pr.headRef]);
       currentEntry.commitMessage = commitMsg;
+
+      previousFindings.push({
+        iteration: i + 1,
+        issues: result.issues,
+        fixSummary: fixResult.summary,
+        filesChanged: fixResult.filesChanged,
+        headSha: prHeadSha,
+      });
     } catch (err) {
       core.warning(
         `Git operations failed in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
