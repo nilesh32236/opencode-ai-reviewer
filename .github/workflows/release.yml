@@ -2,15 +2,34 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version override (e.g., 1.2.3). Leave empty for auto-detection from conventional commits.'
+        required: false
+        type: string
+      dry_run:
+        description: 'Dry-run mode — skip commit, tag, and GitHub Release'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
+env:
+  DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == 'true' && 'true' || 'false' }}
+  VERSION_OVERRIDE: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
+
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.compute-version.outputs.version }}
+      tag: ${{ steps.compute-version.outputs.tag }}
+      dry_run: ${{ steps.compute-version.outputs.dry_run }}
+
     steps:
       - uses: actions/checkout@v6
         with:
@@ -43,38 +62,243 @@ jobs:
           test -f action/lib/index.js || { echo "action/lib/index.js missing!"; exit 1; }
           echo "Build artifacts verified."
 
-      - name: Generate changelog entry
+      - name: Compute next version
+        id: compute-version
         env:
-          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Skip if changelog already has this tag
-          if grep -q "^## \[${TAG}\]" CHANGELOG.md; then
-            echo "Changelog entry for ${TAG} already exists — skipping auto-generation."
+          set -euo pipefail
+
+          DRY_RUN="${DRY_RUN:-false}"
+          VERSION_OVERRIDE="${VERSION_OVERRIDE:-}"
+
+          # ── Determine the latest tag ──
+          LATEST_TAG=$(git tag --sort=-version:refname | grep -v '^latest$' | head -1 || echo "")
+          if [ -z "$LATEST_TAG" ]; then
+            echo "No existing tags found — starting at v1.0.0"
+            CURRENT_VERSION="1.0.0"
+          else
+            CURRENT_VERSION="${LATEST_TAG#v}"
+            echo "Latest tag: ${LATEST_TAG} (version ${CURRENT_VERSION})"
+          fi
+
+          # ── Version override ──
+          if [ -n "$VERSION_OVERRIDE" ]; then
+            NEW_VERSION="$VERSION_OVERRIDE"
+            echo "Using version override: ${NEW_VERSION}"
+          else
+            # ── Conventional commit detection since last tag ──
+            if [ -z "$LATEST_TAG" ]; then
+              COMMITS=$(git log --oneline HEAD 2>/dev/null || echo "")
+            else
+              COMMITS=$(git log --oneline "${LATEST_TAG}..HEAD" 2>/dev/null || echo "")
+            fi
+
+            MAJOR=0
+            MINOR=0
+            PATCH=0
+
+            while IFS= read -r line; do
+              case "$line" in
+                *"breaking:"*|*"!"*)
+                  MAJOR=1
+                  ;;
+                *"feat:"*)
+                  MINOR=1
+                  ;;
+                *"fix:"*)
+                  PATCH=1
+                  ;;
+              esac
+            done <<< "$COMMITS"
+
+            IFS='.' read -r MAJOR_VER MINOR_VER PATCH_VER <<< "$CURRENT_VERSION"
+
+            if [ "$MAJOR" = "1" ]; then
+              NEW_VERSION="$((MAJOR_VER + 1)).0.0"
+            elif [ "$MINOR" = "1" ]; then
+              NEW_VERSION="${MAJOR_VER}.$((MINOR_VER + 1)).0"
+            elif [ "$PATCH" = "1" ]; then
+              NEW_VERSION="${MAJOR_VER}.${MINOR_VER}.$((PATCH_VER + 1))"
+            else
+              echo "No conventional commits found (fix:/feat:/breaking:). No release needed."
+              echo "version=" >> "$GITHUB_OUTPUT"
+              echo "tag=" >> "$GITHUB_OUTPUT"
+              echo "dry_run=${DRY_RUN}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          NEW_TAG="v${NEW_VERSION}"
+
+          # Check if tag already exists
+          if git rev-parse "${NEW_TAG}" >/dev/null 2>&1; then
+            echo "Tag ${NEW_TAG} already exists. Skipping release."
+            echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
+            echo "dry_run=${DRY_RUN}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          PREV_TAG=$(git tag --sort=-version:refname | head -1 || echo "")
-          [ -z "$PREV_TAG" ] && PREV_TAG="v1.0.4"
+
+          echo "Computed next version: ${NEW_VERSION} (tag: ${NEW_TAG})"
+          echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
+          echo "dry_run=${DRY_RUN}" >> "$GITHUB_OUTPUT"
+
+      - name: Determine if release is needed
+        id: check-release
+        run: |
+          VERSION="${{ steps.compute-version.outputs.version }}"
+          if [ -z "$VERSION" ]; then
+            echo "No version computed — skipping release."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update version in package.json files
+        if: steps.check-release.outputs.skip == 'false'
+        run: |
+          set -euo pipefail
+          NEW_VERSION="${{ steps.compute-version.outputs.version }}"
+
+          # Update root package.json
+          # Using node to parse and write JSON safely
+          for f in package.json lib/package.json action/package.json app/package.json; do
+            node -e "
+              const pkg = require('./${f}');
+              pkg.version = '${NEW_VERSION}';
+              require('fs').writeFileSync('./${f}', JSON.stringify(pkg, null, 2) + '\n');
+            "
+            echo "Updated ${f} → version ${NEW_VERSION}"
+          done
+
+      - name: Update CHANGELOG.md
+        if: steps.check-release.outputs.skip == 'false'
+        env:
+          NEW_VERSION: ${{ steps.compute-version.outputs.version }}
+          NEW_TAG: ${{ steps.compute-version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          LATEST_TAG=$(git tag --sort=-version:refname | grep -v '^latest$' | head -1 || echo "")
           DATE=$(date -u +%Y-%m-%d)
-          cat >> CHANGELOG.md <<-EOF
 
-          ## [${TAG}] — ${DATE}
+          # ── Categorize commits since last tag ──
+          if [ -z "$LATEST_TAG" ]; then
+            COMMITS=$(git log --oneline --no-decorate HEAD 2>/dev/null || echo "")
+            COMPARE_URL=""
+          else
+            COMMITS=$(git log --oneline --no-decorate "${LATEST_TAG}..HEAD" 2>/dev/null || echo "")
+            COMPARE_URL="https://github.com/nilesh32236/opencode-ai-reviewer/compare/${LATEST_TAG}...${NEW_TAG}"
+          fi
 
-          ### Added
-          - _(list new features)_
+          ADDED=""
+          FIXED=""
+          CHANGED=""
+          PERFORMANCE=""
+          SECURITY=""
 
-          ### Fixed
-          - _(list bug fixes)_
+          while IFS= read -r line; do
+            SHA=$(echo "$line" | awk '{print $1}')
+            MSG=$(echo "$line" | cut -d' ' -f2-)
 
-          ### Changed
-          - _(list refactors or dependency updates)_
+            # Extract PR number
+            PR=""
+            if echo "$MSG" | grep -qE '\(#[0-9]+\)'; then
+              PR=$(echo "$MSG" | grep -oE '#[0-9]+')
+            fi
 
-          [${TAG}]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/${PREV_TAG}...${TAG}
-          EOF
-          echo "Changelog placeholder generated for ${TAG}."
+            if echo "$MSG" | grep -qiE '^(breaking|feat|fix|perf|security):'; then
+              PREFIX=$(echo "$MSG" | grep -oE '^(breaking|feat|fix|perf|security)' | tr '[:upper:]' '[:lower:]')
+              BODY=$(echo "$MSG" | sed -E 's/^(breaking|feat|fix|perf|security): *//')
+            else
+              PREFIX="other"
+              BODY="$MSG"
+            fi
+
+            [ -n "$PR" ] && ENTRY="- ${BODY} (${PR})" || ENTRY="- ${BODY}"
+
+            case "$PREFIX" in
+              "feat")     ADDED="${ADDED}\n${ENTRY}" ;;
+              "fix")      FIXED="${FIXED}\n${ENTRY}" ;;
+              "breaking") CHANGED="${CHANGED}\n${ENTRY}" ;;
+              "perf")     PERFORMANCE="${PERFORMANCE}\n${ENTRY}" ;;
+              "security") SECURITY="${SECURITY}\n${ENTRY}" ;;
+              *)          CHANGED="${CHANGED}\n${ENTRY}" ;;
+            esac
+          done <<< "$COMMITS"
+
+          # ── Build changelog entry ──
+          ENTRY="\n## [${NEW_TAG}] — ${DATE}\n"
+
+          if [ -n "$ADDED" ]; then
+            ENTRY="${ENTRY}\n### Added\n$(echo -e "$ADDED")"
+          fi
+          if [ -n "$FIXED" ]; then
+            ENTRY="${ENTRY}\n\n### Fixed\n$(echo -e "$FIXED")"
+          fi
+          if [ -n "$CHANGED" ]; then
+            ENTRY="${ENTRY}\n\n### Changed\n$(echo -e "$CHANGED")"
+          fi
+          if [ -n "$PERFORMANCE" ]; then
+            ENTRY="${ENTRY}\n\n### Performance\n$(echo -e "$PERFORMANCE")"
+          fi
+          if [ -n "$SECURITY" ]; then
+            ENTRY="${ENTRY}\n\n### Security\n$(echo -e "$SECURITY")"
+          fi
+          if [ -z "$ADDED$FIXED$CHANGED$PERFORMANCE$SECURITY" ]; then
+            ENTRY="${ENTRY}\n### Added\n- No significant changes"
+          fi
+
+          if [ -n "$COMPARE_URL" ]; then
+            ENTRY="${ENTRY}\n\n[${NEW_TAG}]: ${COMPARE_URL}"
+          fi
+
+          # ── Insert after the header ──
+          HEADER_LINE=$(grep -n '^---' CHANGELOG.md | head -1 | cut -d: -f1)
+          if [ -z "$HEADER_LINE" ]; then
+            HEADER_LINE=2
+          fi
+
+          # Insert after the header (line $HEADER_LINE)
+          {
+            head -n "$HEADER_LINE" CHANGELOG.md
+            echo -e "$ENTRY"
+            tail -n +$((HEADER_LINE + 1)) CHANGELOG.md
+          } > CHANGELOG.md.new
+          mv CHANGELOG.md.new CHANGELOG.md
+
+          echo "CHANGELOG.md updated with release notes for ${NEW_TAG}."
+
+      - name: Commit and tag
+        if: steps.check-release.outputs.skip == 'false' && env.DRY_RUN == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW_TAG: ${{ steps.compute-version.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add package.json lib/package.json action/package.json app/package.json CHANGELOG.md
+
+          git commit -m "chore: release ${NEW_TAG}
+
+          Auto-generated release commit for ${NEW_TAG}."
+
+          git tag -a "${NEW_TAG}" -m "Release ${NEW_TAG}"
+
+          git push origin HEAD:main
+          git push origin "${NEW_TAG}"
+
+          echo "Committed and pushed tag ${NEW_TAG}"
 
       - name: Create GitHub Release
+        if: steps.check-release.outputs.skip == 'false' && env.DRY_RUN == 'false'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.compute-version.outputs.tag }}
           generate_release_notes: true
           files: |
             action/lib/index.js
@@ -83,15 +307,29 @@ jobs:
             README.md
             LICENSE
           draft: false
-          prerelease: ${{ contains(github.ref, 'rc') || contains(github.ref, 'beta') }}
+          prerelease: ${{ contains(steps.compute-version.outputs.tag, 'rc') || contains(steps.compute-version.outputs.tag, 'beta') }}
 
       - name: Tag as latest
-        # Only update `latest` for stable releases — not rc/beta pre-releases.
-        # Force-push so the `latest` tag always points to the newest stable commit.
-        if: ${{ !contains(github.ref, 'rc') && !contains(github.ref, 'beta') }}
+        if: steps.check-release.outputs.skip == 'false' && env.DRY_RUN == 'false' && !contains(steps.compute-version.outputs.tag, 'rc') && !contains(steps.compute-version.outputs.tag, 'beta')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git tag --force latest
           git push origin latest --force
-          echo "✅ 'latest' tag updated → $(git rev-parse HEAD)"
+          echo "'latest' tag updated → $(git rev-parse HEAD)"
+
+      - name: Dry-run summary
+        if: steps.check-release.outputs.skip == 'false' && env.DRY_RUN == 'true'
+        run: |
+          echo "═══════════════════════════════════════════════"
+          echo "  DRY RUN COMPLETE"
+          echo "  Version: ${{ steps.compute-version.outputs.version }}"
+          echo "  Tag: ${{ steps.compute-version.outputs.tag }}"
+          echo "  Changes would have been committed and released."
+          echo "═══════════════════════════════════════════════"
+
+      - name: No-release summary
+        if: steps.check-release.outputs.skip == 'true'
+        run: |
+          echo "No conventional commits (fix:/feat:/breaking:) detected since last tag."
+          echo "No release needed."
