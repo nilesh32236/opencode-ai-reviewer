@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.1.2] — 2026-07-21
+
+
+### Fixed
+
+- address issue #71 (#72) (#71
+#72)
+
+### Changed
+
+- [Autofix] [v1.4] Verify integrity of downloaded OpenCode CLI (#70) (#70)
+- [Autofix] [v1.4] Add configurable command allowlist for post-fix checks (#69) (#69)
+
+[v1.1.2]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.1.1...v1.1.2
+
 ## [v1.1.1] — 2026-07-21
 
 ### Fixed
