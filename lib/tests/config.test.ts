@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { loadConfig, mergeConfigWithInputs, validateConfig } from '../src/config.js';
+import { loadConfig, mergeConfigWithInputs, resolveConfig, validateConfig } from '../src/config.js';
 import { DEFAULT_CONFIG } from '../src/types/index.js';
 import { AgentConfigSchema } from '../src/types/schemas.js';
 
@@ -224,6 +224,231 @@ fix:
     it('returns empty object for empty config', () => {
       const result = validateConfig({});
       expect(result).toEqual({});
+    });
+  });
+
+  describe('resolveConfig', () => {
+    const baseConfig = {
+      review: { customRules: ['base-rule'] },
+      fix: { maxIterations: 3 },
+      audit: { categories: ['security'] },
+    };
+
+    it('returns config unchanged when no overrides exist', () => {
+      const result = resolveConfig(baseConfig, { paths: ['src/main.ts'] });
+      expect(result.review?.customRules).toEqual(['base-rule']);
+      expect(result.fix?.maxIterations).toBe(3);
+    });
+
+    it('returns config unchanged when overrides is empty array', () => {
+      const result = resolveConfig({ ...baseConfig, overrides: [] }, { paths: ['src/main.ts'] });
+      expect(result.review?.customRules).toEqual(['base-rule']);
+    });
+
+    it('applies override on exact path match', () => {
+      const config = {
+        ...baseConfig,
+        overrides: [
+          {
+            path: 'src/main.ts',
+            review: { customRules: ['path-specific'] },
+          },
+        ],
+      };
+      const result = resolveConfig(config, { paths: ['src/main.ts'] });
+      expect(result.review?.customRules).toContain('path-specific');
+      expect(result.review?.customRules).toContain('base-rule');
+    });
+
+    it('applies override on glob path match', () => {
+      const config = {
+        ...baseConfig,
+        overrides: [
+          {
+            path: 'packages/frontend/**',
+            review: { customRules: ['react-rule'] },
+          },
+        ],
+      };
+      const result = resolveConfig(config, {
+        paths: ['packages/frontend/src/Button.tsx', 'packages/frontend/src/App.tsx'],
+      });
+      expect(result.review?.customRules).toContain('react-rule');
+    });
+
+    it('applies override on branch match', () => {
+      const config = {
+        ...baseConfig,
+        overrides: [
+          {
+            branch: 'feature/*',
+            fix: { maxIterations: 5 },
+          },
+        ],
+      };
+      const result = resolveConfig(config, {
+        branch: 'feature/add-login',
+        paths: [],
+      });
+      expect(result.fix?.maxIterations).toBe(5);
+    });
+
+    it('does not apply override when branch does not match', () => {
+      const config = {
+        ...baseConfig,
+        overrides: [
+          {
+            branch: 'feature/*',
+            fix: { maxIterations: 5 },
+          },
+        ],
+      };
+      const result = resolveConfig(config, {
+        branch: 'main',
+        paths: [],
+      });
+      expect(result.fix?.maxIterations).toBe(3);
+    });
+
+    it('does not apply override when path does not match', () => {
+      const config = {
+        ...baseConfig,
+        overrides: [
+          {
+            path: 'packages/api/**',
+            review: { customRules: ['api-rule'] },
+          },
+        ],
+      };
+      const result = resolveConfig(config, {
+        paths: ['packages/frontend/src/App.tsx'],
+      });
+      expect(result.review?.customRules).toEqual(['base-rule']);
+    });
+
+    it('returns base config when no paths or branch provided', () => {
+      const config = {
+        ...baseConfig,
+        overrides: [
+          {
+            path: 'src/**',
+            review: { customRules: ['should-not-apply'] },
+          },
+        ],
+      };
+      const result = resolveConfig(config, {});
+      expect(result.review?.customRules).toEqual(['base-rule']);
+    });
+
+    it('merges multiple matching overrides', () => {
+      const config = {
+        ...baseConfig,
+        overrides: [
+          {
+            path: 'packages/frontend/**',
+            review: { customRules: ['react-rule'] },
+            fix: { maxIterations: 5 },
+          },
+          {
+            path: 'packages/frontend/**',
+            audit: { categories: ['ui-ux-accessibility'] },
+          },
+        ],
+      };
+      const result = resolveConfig(config, {
+        paths: ['packages/frontend/src/Button.tsx'],
+      });
+      expect(result.review?.customRules).toContain('react-rule');
+      expect(result.review?.customRules).toContain('base-rule');
+      expect(result.fix?.maxIterations).toBe(5);
+      expect(result.audit?.categories).toEqual(['ui-ux-accessibility']);
+    });
+
+    it('applies path and branch overrides together', () => {
+      const config = {
+        ...baseConfig,
+        overrides: [
+          {
+            path: 'packages/frontend/**',
+            review: { customRules: ['react-rule'] },
+          },
+          {
+            branch: 'feature/*',
+            fix: { maxIterations: 7 },
+          },
+        ],
+      };
+      const result = resolveConfig(config, {
+        paths: ['packages/frontend/src/Button.tsx'],
+        branch: 'feature/add-login',
+      });
+      expect(result.review?.customRules).toContain('react-rule');
+      expect(result.fix?.maxIterations).toBe(7);
+    });
+
+    it('override audit categories replace base categories', () => {
+      const config = {
+        ...baseConfig,
+        overrides: [
+          {
+            path: 'packages/frontend/**',
+            audit: { categories: ['ui-ux-accessibility', 'performance'] },
+          },
+        ],
+      };
+      const result = resolveConfig(config, {
+        paths: ['packages/frontend/src/App.tsx'],
+      });
+      expect(result.audit?.categories).toEqual(['ui-ux-accessibility', 'performance']);
+    });
+  });
+
+  describe('validateConfig overrides', () => {
+    it('passes through valid overrides', () => {
+      const result = validateConfig({
+        overrides: [
+          {
+            path: 'packages/frontend/**',
+            review: { customRules: ['react-rule'] },
+            fix: { maxIterations: 7 },
+            audit: { categories: ['ui-ux'] },
+          },
+        ],
+      } as never);
+      expect(result.overrides).toHaveLength(1);
+      expect(result.overrides![0].path).toBe('packages/frontend/**');
+      expect(result.overrides![0].review?.customRules).toEqual(['react-rule']);
+      expect(result.overrides![0].fix?.maxIterations).toBe(7);
+      expect(result.overrides![0].audit?.categories).toEqual(['ui-ux']);
+    });
+
+    it('clamps maxIterations in overrides', () => {
+      const result = validateConfig({
+        overrides: [{ fix: { maxIterations: 100 } }],
+      } as never);
+      expect(result.overrides![0].fix?.maxIterations).toBe(10);
+    });
+
+    it('filters non-string override custom rules', () => {
+      const result = validateConfig({
+        overrides: [{ review: { customRules: ['valid', null, 123] } }],
+      } as never);
+      expect(result.overrides![0].review?.customRules).toEqual(['valid']);
+    });
+
+    it('filters non-string override audit categories', () => {
+      const result = validateConfig({
+        overrides: [{ audit: { categories: ['security', null, 42] } }],
+      } as never);
+      expect(result.overrides![0].audit?.categories).toEqual(['security']);
+    });
+
+    it('skips invalid override entries', () => {
+      const result = validateConfig({
+        overrides: [null, undefined, 'string', { path: 'src/' }],
+      } as never);
+      expect(result.overrides).toHaveLength(1);
+      expect(result.overrides![0].path).toBe('src/');
     });
   });
 

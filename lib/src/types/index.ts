@@ -322,6 +322,23 @@ export interface ReviewPayload {
   comments: ReviewPostComment[];
 }
 
+// ─── Config Override ──────────────────────────────────────
+export interface ConfigOverride {
+  /** Glob pattern for file paths (e.g. "packages/frontend/**") */
+  path?: string;
+  /** Glob pattern for branch names (e.g. "feature/*") */
+  branch?: string;
+  review?: {
+    customRules?: string[];
+  };
+  fix?: {
+    maxIterations?: number;
+  };
+  audit?: {
+    categories?: string[];
+  };
+}
+
 // ─── Prompt Config ────────────────────────────────────────
 export interface PromptConfig {
   review?: {
@@ -361,6 +378,8 @@ export interface PromptConfig {
     conventions?: string[];
     commandReference?: Record<string, string>;
   };
+  /** Per-path and per-branch config overrides */
+  overrides?: ConfigOverride[];
 }
 
 // ─── Defaults ─────────────────────────────────────────────
