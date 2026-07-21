@@ -3,22 +3,26 @@ import type { ActionMode } from '@opencode-pr-agent/lib';
 
 const VALID_MODES: ActionMode[] = ['review', 'fix', 'audit', 'post'];
 
-const SAFE_RUN_PROGRAMS = new Set(['pnpm', 'npm', 'yarn', 'node']);
+const DEFAULT_ALLOWLIST = ['pnpm', 'npm', 'yarn', 'node'];
 
 /**
  * Validate a run-checks command against an allowlist to prevent shell injection.
  * Returns the program and args for use with array-form exec (no shell string).
  */
-export function validateRunChecksCommand(command: string): { program: string; args: string[] } {
+export function validateRunChecksCommand(
+  command: string,
+  allowlist: string[] = DEFAULT_ALLOWLIST,
+): { program: string; args: string[] } {
   const trimmed = command.trim();
   if (!trimmed) {
     throw new Error('run_checks_after_fix must not be empty');
   }
   const parts = trimmed.split(/\s+/);
   const program = parts[0];
-  if (!SAFE_RUN_PROGRAMS.has(program)) {
+  const allowSet = new Set(allowlist);
+  if (!allowSet.has(program)) {
     throw new Error(
-      `Command "${program}" is not allowed. Allowed programs: ${[...SAFE_RUN_PROGRAMS].join(', ')}`,
+      `Command "${program}" is not allowed. Allowed programs: ${[...allowSet].join(', ')}`,
     );
   }
   for (const arg of parts.slice(1)) {
@@ -60,6 +64,7 @@ export interface ActionInputs {
   includeStrengths: boolean;
   reviewCommentSummary: boolean;
   runChecksAfterFix?: string;
+  checkAllowlist: string[];
   auditPromptFile?: string;
   auditCreateIssues: boolean;
   auditAutoFix: boolean;
@@ -130,6 +135,7 @@ export function parseInputs(): ActionInputs {
     includeStrengths: core.getInput('include_strengths') !== 'false',
     reviewCommentSummary: core.getInput('review_comment_summary') !== 'false',
     runChecksAfterFix: core.getInput('run_checks_after_fix') || undefined,
+    checkAllowlist: DEFAULT_ALLOWLIST,
     auditPromptFile: core.getInput('audit_prompt_file') || undefined,
     auditCreateIssues: core.getInput('audit_create_issues') !== 'false',
     auditAutoFix: core.getInput('audit_auto_fix') === 'true',

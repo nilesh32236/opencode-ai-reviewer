@@ -64,7 +64,10 @@ export async function runFix(
   if (inputs.runChecksAfterFix && changesMade) {
     core.info('Running verification commands...');
     try {
-      const { program, args } = validateRunChecksCommand(inputs.runChecksAfterFix);
+      const { program, args } = validateRunChecksCommand(
+        inputs.runChecksAfterFix,
+        inputs.checkAllowlist,
+      );
       await exec.exec(program, args);
     } catch (error) {
       core.warning(`Verification command failed: ${inputs.runChecksAfterFix} — ${String(error)}`);
@@ -545,7 +548,10 @@ export async function runAutofixLoop(
     if (inputs.runChecksAfterFix) {
       core.info('Running verification commands...');
       try {
-        const { program, args } = validateRunChecksCommand(inputs.runChecksAfterFix);
+        const { program, args } = validateRunChecksCommand(
+          inputs.runChecksAfterFix,
+          inputs.checkAllowlist,
+        );
         await exec.exec(program, args);
       } catch (error) {
         core.warning(`Verification command failed: ${inputs.runChecksAfterFix} — ${String(error)}`);

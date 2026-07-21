@@ -32,6 +32,10 @@ async function run(): Promise<void> {
     const inputs = parseInputs();
     const loadedConfig = loadConfig();
 
+    if (loadedConfig?.fix?.checkAllowlist?.length) {
+      inputs.checkAllowlist = loadedConfig.fix.checkAllowlist;
+    }
+
     const repo =
       core.getInput('repo') || `${github.context.repo.owner}/${github.context.repo.repo}`;
     const token = inputs.githubToken;
