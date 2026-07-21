@@ -7,6 +7,8 @@ import {
   Logger,
   MetaReviewEngine,
   MetaReviewSubscriber,
+  PatternDetector,
+  RuleApprovalSubscriber,
   getDefaultMCPServers,
 } from '@opencode-pr-agent/lib';
 import type { AgentConfig, GitHubEvent, Subscriber } from '@opencode-pr-agent/lib';
@@ -148,13 +150,17 @@ export default (app: Probot): void => {
   const feedbackSub = new FeedbackSubscriber(learningStore);
   subscribers.push(feedbackSub);
 
-  const metaReviewEngine = new MetaReviewEngine(learningStore);
+  const patternDetector = new PatternDetector(learningStore);
+  const metaReviewEngine = new MetaReviewEngine(learningStore, patternDetector);
   const metaReviewSub = new MetaReviewSubscriber(
     metaReviewEngine,
     learningStore,
     DEFAULT_CONFIG.learning.metaReview.interval,
   );
   subscribers.push(metaReviewSub);
+
+  const ruleApprovalSub = new RuleApprovalSubscriber(learningStore);
+  subscribers.push(ruleApprovalSub);
 
   bus.registerAll(subscribers);
 

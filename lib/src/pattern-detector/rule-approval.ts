@@ -5,13 +5,13 @@ const APPROVE_RULE_RE = /^\/approve-rule\s+(\S+)/;
 
 export class RuleApprovalSubscriber implements Subscriber {
   name = 'RuleApprovalSubscriber';
-  subscribedEvents = ['comment.created'];
+  subscribedEvents = ['comment.created', 'review_comment.created'];
 
   constructor(private store: LearningStore) {}
 
   async handle(event: GitHubEvent): Promise<void> {
-    const payload = event.payload as { body?: string };
-    const body = payload?.body || '';
+    const payload = event.payload as { comment?: { body?: string } };
+    const body = payload?.comment?.body || '';
     if (!body) return;
 
     const match = body.match(APPROVE_RULE_RE);
