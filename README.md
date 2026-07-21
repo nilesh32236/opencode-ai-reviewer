@@ -21,7 +21,35 @@ For details on the agent's internal architecture, execution loops, and prompt de
 
 ## Quick Start — GitHub Action
 
-Create `.github/workflows/pr-review.yml`:
+### Option A: Shipped Reusable Workflow (Recommended)
+
+No files to copy. Create `.github/workflows/ai-review.yml` with a single job that calls the shipped reusable workflow:
+
+```yaml
+name: AI Code Review
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  review:
+    uses: nilesh32236/opencode-ai-reviewer/.github/workflows/review.yml@v1
+    secrets: inherit
+```
+
+The following reusable workflows are shipped with the action:
+
+| Workflow | Description | Usage |
+|----------|-------------|-------|
+| `review.yml` | AI-powered PR review | `uses: nilesh32236/opencode-ai-reviewer/.github/workflows/review.yml@v1` |
+| `audit.yml` | Full codebase audit | `uses: nilesh32236/opencode-ai-reviewer/.github/workflows/audit.yml@v1` |
+| `autofix.yml` | Review → fix → auto-merge loop | `uses: nilesh32236/opencode-ai-reviewer/.github/workflows/autofix.yml@v1` |
+
+All shipped workflows are production-ready with timeouts, concurrency guards, and zero-config defaults. See [examples/basic/review.yml](examples/basic/review.yml) and [examples/advanced/ai-suite.yml](examples/advanced/ai-suite.yml) for ready-to-copy templates that compose these reusable workflows.
+
+### Option B: Direct Action Usage
+
+Create `.github/workflows/pr-review.yml` for full control over every input:
 
 ```yaml
 name: OpenCode PR Review

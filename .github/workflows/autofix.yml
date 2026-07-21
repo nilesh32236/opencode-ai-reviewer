@@ -73,7 +73,7 @@ jobs:
 
       - name: AI Review
         id: ai-review
-        uses: ./action
+        uses: nilesh32236/opencode-ai-reviewer@v1
         with:
           mode: review
           model: ${{ inputs.model }}
@@ -97,7 +97,7 @@ jobs:
 
       - name: AI Fix
         id: ai-fix
-        uses: ./action
+        uses: nilesh32236/opencode-ai-reviewer@v1
         with:
           mode: fix
           model: ${{ inputs.model }}

@@ -1,5 +1,12 @@
 # Basic Example — Single Project
-# Copy this file to your repo: .github/workflows/ai-review.yml
+#
+# SHIPPED: Use the reusable workflow (no copy needed):
+#   jobs:
+#     review:
+#       uses: nilesh32236/opencode-ai-reviewer/.github/workflows/review.yml@v1
+#       secrets: inherit
+#
+# CUSTOM: Copy this file to your repo: .github/workflows/ai-review.yml
 
 name: AI Code Review
 
