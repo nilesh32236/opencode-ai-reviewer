@@ -19,16 +19,11 @@ permissions:
   contents: write
 
 env:
-  DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == 'true' && 'true' || 'false' }}
   VERSION_OVERRIDE: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
 
 jobs:
   release:
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.compute-version.outputs.version }}
-      tag: ${{ steps.compute-version.outputs.tag }}
-      dry_run: ${{ steps.compute-version.outputs.dry_run }}
 
     steps:
       - uses: actions/checkout@v6
@@ -62,14 +57,23 @@ jobs:
           test -f action/lib/index.js || { echo "action/lib/index.js missing!"; exit 1; }
           echo "Build artifacts verified."
 
+      - name: Set dry-run flag
+        id: dry-run
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.dry_run }}" == "true" ]]; then
+            echo "dry_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "dry_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Compute next version
         id: compute-version
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ steps.dry-run.outputs.dry_run }}
         run: |
           set -euo pipefail
 
-          DRY_RUN="${DRY_RUN:-false}"
           VERSION_OVERRIDE="${VERSION_OVERRIDE:-}"
 
           # ── Determine the latest tag ──
@@ -99,8 +103,10 @@ jobs:
             PATCH=0
 
             while IFS= read -r line; do
+              # Skip release commits to avoid influencing the next version
+              [[ "$line" == *"chore: release"* ]] && continue
               case "$line" in
-                *"breaking:"*|*"!"*)
+                *"breaking:"*|*!:*)
                   MAJOR=1
                   ;;
                 *"feat:"*)
@@ -112,7 +118,9 @@ jobs:
               esac
             done <<< "$COMMITS"
 
-            IFS='.' read -r MAJOR_VER MINOR_VER PATCH_VER <<< "$CURRENT_VERSION"
+            # Strip pre-release suffix (e.g., 1.0.4-alpha.1 → 1.0.4)
+            BASE_VERSION="${CURRENT_VERSION%%-*}"
+            IFS='.' read -r MAJOR_VER MINOR_VER PATCH_VER <<< "$BASE_VERSION"
 
             if [ "$MAJOR" = "1" ]; then
               NEW_VERSION="$((MAJOR_VER + 1)).0.0"
@@ -162,8 +170,13 @@ jobs:
           set -euo pipefail
           NEW_VERSION="${{ steps.compute-version.outputs.version }}"
 
+          # Validate version is strict semver
+          if ! [[ "$NEW_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: Invalid version format: ${NEW_VERSION}"
+            exit 1
+          fi
+
           # Update root package.json
-          # Using node to parse and write JSON safely
           for f in package.json lib/package.json action/package.json app/package.json; do
             node -e "
               const pkg = require('./${f}');
@@ -189,7 +202,7 @@ jobs:
             COMPARE_URL=""
           else
             COMMITS=$(git log --oneline --no-decorate "${LATEST_TAG}..HEAD" 2>/dev/null || echo "")
-            COMPARE_URL="https://github.com/nilesh32236/opencode-ai-reviewer/compare/${LATEST_TAG}...${NEW_TAG}"
+            COMPARE_URL="https://github.com/${{ github.repository }}/compare/${LATEST_TAG}...${NEW_TAG}"
           fi
 
           ADDED=""
@@ -198,8 +211,7 @@ jobs:
           PERFORMANCE=""
           SECURITY=""
 
-          while IFS= read -r line; do
-            SHA=$(echo "$line" | awk '{print $1}')
+            while IFS= read -r line; do
             MSG=$(echo "$line" | cut -d' ' -f2-)
 
             # Extract PR number
@@ -271,7 +283,7 @@ jobs:
           echo "CHANGELOG.md updated with release notes for ${NEW_TAG}."
 
       - name: Commit and tag
-        if: steps.check-release.outputs.skip == 'false' && env.DRY_RUN == 'false'
+        if: steps.check-release.outputs.skip == 'false' && steps.dry-run.outputs.dry_run == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEW_TAG: ${{ steps.compute-version.outputs.tag }}
@@ -289,13 +301,13 @@ jobs:
 
           git tag -a "${NEW_TAG}" -m "Release ${NEW_TAG}"
 
-          git push origin HEAD:main
+          git push origin HEAD:main --force-with-lease
           git push origin "${NEW_TAG}"
 
           echo "Committed and pushed tag ${NEW_TAG}"
 
       - name: Create GitHub Release
-        if: steps.check-release.outputs.skip == 'false' && env.DRY_RUN == 'false'
+        if: steps.check-release.outputs.skip == 'false' && steps.dry-run.outputs.dry_run == 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.compute-version.outputs.tag }}
@@ -310,7 +322,7 @@ jobs:
           prerelease: ${{ contains(steps.compute-version.outputs.tag, 'rc') || contains(steps.compute-version.outputs.tag, 'beta') }}
 
       - name: Tag as latest
-        if: steps.check-release.outputs.skip == 'false' && env.DRY_RUN == 'false' && !contains(steps.compute-version.outputs.tag, 'rc') && !contains(steps.compute-version.outputs.tag, 'beta')
+        if: steps.check-release.outputs.skip == 'false' && steps.dry-run.outputs.dry_run == 'false' && !contains(steps.compute-version.outputs.tag, 'rc') && !contains(steps.compute-version.outputs.tag, 'beta')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -319,7 +331,7 @@ jobs:
           echo "'latest' tag updated → $(git rev-parse HEAD)"
 
       - name: Dry-run summary
-        if: steps.check-release.outputs.skip == 'false' && env.DRY_RUN == 'true'
+        if: steps.check-release.outputs.skip == 'false' && steps.dry-run.outputs.dry_run == 'true'
         run: |
           echo "═══════════════════════════════════════════════"
           echo "  DRY RUN COMPLETE"
