@@ -207,7 +207,6 @@ export class LearningStore {
     ]);
     if (!total || total.count === 0) return 0;
     if (!disputed) return 0;
-
     return disputed.count / total.count;
   }
 
@@ -352,7 +351,6 @@ export class LearningStore {
           'SELECT id, frequency FROM patterns WHERE pattern_key = ?',
           [pattern.patternKey],
         );
-
         if (existing) {
           await db.run(
             `UPDATE patterns SET frequency = ?, last_seen = CURRENT_TIMESTAMP, file_types = ? WHERE pattern_key = ?`,

@@ -17,8 +17,7 @@ import { withRetry } from '../utils/retry.js';
 export class MCPManager {
   private clients: Map<string, { client: Client; transport: StdioClientTransport }> = new Map();
   private initialized = false;
-  private toolsCache = new Map<string, Tool[]>();
-  private toolsCachePromise = new Map<string, Promise<Tool[]>>();
+  private toolsCache: Map<string, Tool[]> = new Map();
 
   constructor(private servers: MCPServerConfig[]) {}
 
@@ -86,6 +85,7 @@ export class MCPManager {
                 baseDelayMs: 2000,
               });
               console.log(`  ${server.name}: ${tools.tools.length} tools available`);
+              this.toolsCache.set(server.name, tools.tools);
             }
           } catch (err) {
             console.log(
@@ -119,28 +119,6 @@ export class MCPManager {
     console.log('::endgroup::');
   }
 
-  private async getCachedTools(clientName: string, client: Client): Promise<Tool[]> {
-    const cached = this.toolsCache.get(clientName);
-    if (cached) return cached;
-
-    const pending = this.toolsCachePromise.get(clientName);
-    if (pending) return pending;
-
-    const promise = (async () => {
-      const { tools } = await client.listTools();
-      this.toolsCache.set(clientName, tools);
-      return tools;
-    })();
-
-    this.toolsCachePromise.set(clientName, promise);
-    try {
-      const tools = await promise;
-      return tools;
-    } finally {
-      this.toolsCachePromise.delete(clientName);
-    }
-  }
-
   /**
    * Query all MCP servers for context relevant to the given query.
    */
@@ -153,8 +131,13 @@ export class MCPManager {
 
     const results = await Promise.allSettled(
       [...this.clients].map(async ([name, { client }]) => {
-        const tools = await this.getCachedTools(name, client);
-        const searchTool = tools.find(
+        let toolsList = this.toolsCache.get(name);
+        if (!toolsList) {
+          const tools = await client.listTools();
+          toolsList = tools.tools;
+          this.toolsCache.set(name, toolsList);
+        }
+        const searchTool = toolsList.find(
           (t) =>
             t.name.includes('search') || t.name.includes('resolve') || t.name.includes('context'),
         );
@@ -204,8 +187,13 @@ export class MCPManager {
 
     const results = await Promise.allSettled(
       libraries.map(async (lib) => {
-        const tools = await this.getCachedTools('context7', context7Client.client);
-        const resolveTool = tools.find((t) => t.name.includes('resolve'));
+        let toolsList = this.toolsCache.get('context7');
+        if (!toolsList) {
+          const tools = await context7Client.client.listTools();
+          toolsList = tools.tools;
+          this.toolsCache.set('context7', toolsList);
+        }
+        const resolveTool = toolsList.find((t) => t.name.includes('resolve'));
 
         if (resolveTool) {
           const result = await withRetry(
@@ -270,7 +258,6 @@ export class MCPManager {
     }
     this.clients.clear();
     this.toolsCache.clear();
-    this.toolsCachePromise.clear();
     this.initialized = false;
   }
 }
