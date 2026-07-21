@@ -37,34 +37,27 @@ export class MCPManager {
     console.log(`::group::MCP: Connecting to ${this.servers.length} server(s)`);
 
     for (const server of this.servers) {
-      try {
-        if (server.type === 'local' && server.command) {
-          const cmd = server.command;
-          await this.connectServer(
-            server,
-            () =>
-              new StdioClientTransport({
-                command: cmd[0],
-                args: cmd.slice(1),
-                env: { ...process.env, ...server.environment } as Record<string, string>,
-              }),
-          );
-        } else if (server.type === 'remote' && server.url) {
-          const url = server.url;
-          const headers: Record<string, string> = {};
-          if (server.environment) {
-            for (const [key, value] of Object.entries(server.environment)) {
-              if (value !== undefined) headers[key] = value;
-            }
+      if (server.type === 'local' && server.command) {
+        const cmd = server.command;
+        await this.connectServer(
+          server,
+          () =>
+            new StdioClientTransport({
+              command: cmd[0],
+              args: cmd.slice(1),
+              env: { ...process.env, ...server.environment } as Record<string, string>,
+            }),
+        );
+      } else if (server.type === 'remote' && server.url) {
+        const headers: Record<string, string> = {};
+        if (server.environment) {
+          for (const [key, value] of Object.entries(server.environment)) {
+            if (value !== undefined) headers[key] = value;
           }
-          await this.connectServer(
-            server,
-            () => new SSEClientTransport(new URL(url), { requestInit: { headers } }),
-          );
         }
-      } catch (err) {
-        console.log(
-          `  ${server.name}: Failed to connect — ${err instanceof Error ? err.message : err}`,
+        await this.connectServer(
+          server,
+          () => new SSEClientTransport(new URL(server.url!), { requestInit: { headers } }),
         );
       }
     }
@@ -98,11 +91,13 @@ export class MCPManager {
           const connectionTimeout = server.timeoutMs ?? 5000;
           let timedOut = false;
           let connectTimer: ReturnType<typeof setTimeout>;
+          const connectPromise = clientInstance.connect(transport);
           await Promise.race([
-            clientInstance.connect(transport),
+            connectPromise,
             new Promise<never>((_, reject) => {
               connectTimer = setTimeout(() => {
                 timedOut = true;
+                connectPromise.catch(() => {});
                 reject(new Error(`Connection timed out after ${connectionTimeout}ms`));
               }, connectionTimeout);
             }),
