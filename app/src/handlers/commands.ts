@@ -103,7 +103,7 @@ async function createAutofixPR(
 
     let branchExists = false;
     try {
-      execFileSync('git', ['rev-parse', '--verify', branchName], { stdio: 'pipe' });
+      execFileSync('git', ['rev-parse', '--verify', `origin/${branchName}`], { stdio: 'pipe' });
       branchExists = true;
     } catch {
       branchExists = false;
@@ -112,7 +112,7 @@ async function createAutofixPR(
     const defaultBranch = await gh.getDefaultBranch();
 
     if (branchExists) {
-      execFileSync('git', ['checkout', branchName]);
+      execFileSync('git', ['checkout', '-B', branchName, `origin/${branchName}`]);
       logger.info(`Checked out existing branch ${branchName}`);
       execFileSync('git', ['pull', '--rebase', 'origin', defaultBranch], { stdio: 'pipe' });
     } else {
@@ -168,6 +168,13 @@ async function createAutofixPR(
     const pr = await gh.createPR(prTitle, prBody, branchName, defaultBranch);
     if (pr) {
       logger.info(`Created PR #${pr.number}: ${pr.url}`);
+      try {
+        await gh.addLabels(pr.number, ['autofix']);
+      } catch (err) {
+        logger.warn(
+          `Failed to label autofix PR #${pr.number}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
       try {
         await gh.postOrUpdateComment(
           issueNumber,

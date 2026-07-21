@@ -250,12 +250,11 @@ describe('MCPManager', () => {
 
     it('discovers and calls a search tool', async () => {
       const manager = await createConnectedManager();
-      mockListTools.mockResolvedValue({ tools: [{ name: 'search' }] });
       mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'result content' }] });
 
       const result = await manager.queryContext('find something');
 
-      expect(mockListTools).toHaveBeenCalledTimes(1);
+      expect(mockListTools).toHaveBeenCalledTimes(0);
       expect(mockCallTool).toHaveBeenCalledWith(
         expect.objectContaining({
           name: 'search',
@@ -268,8 +267,9 @@ describe('MCPManager', () => {
     });
 
     it('calls a resolve tool', async () => {
-      const manager = await createConnectedManager();
-      mockListTools.mockResolvedValue({ tools: [{ name: 'resolve-issue' }] });
+      const manager = await createConnectedManager([makeConfig()], () => {
+        mockListTools.mockResolvedValue({ tools: [{ name: 'resolve-issue' }] });
+      });
       mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'resolved' }] });
 
       const result = await manager.queryContext('resolve');
@@ -279,8 +279,9 @@ describe('MCPManager', () => {
     });
 
     it('calls a context tool', async () => {
-      const manager = await createConnectedManager();
-      mockListTools.mockResolvedValue({ tools: [{ name: 'get-context' }] });
+      const manager = await createConnectedManager([makeConfig()], () => {
+        mockListTools.mockResolvedValue({ tools: [{ name: 'get-context' }] });
+      });
       mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'context data' }] });
 
       const result = await manager.queryContext('context');
@@ -290,8 +291,9 @@ describe('MCPManager', () => {
     });
 
     it('returns empty entries when no matching tool found', async () => {
-      const manager = await createConnectedManager();
-      mockListTools.mockResolvedValue({ tools: [{ name: 'other-tool' }] });
+      const manager = await createConnectedManager([makeConfig()], () => {
+        mockListTools.mockResolvedValue({ tools: [{ name: 'other-tool' }] });
+      });
 
       const result = await manager.queryContext('test');
 
@@ -301,7 +303,6 @@ describe('MCPManager', () => {
 
     it('trims entries to token budget', async () => {
       const manager = await createConnectedManager();
-      mockListTools.mockResolvedValue({ tools: [{ name: 'search' }] });
       mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'a'.repeat(10_000) }] });
 
       // 10,000 chars ≈ 2500 tokens, with maxTokens=500 the remaining=500 > 100, so entry is added (trimmed)
@@ -314,7 +315,6 @@ describe('MCPManager', () => {
 
     it('handles callTool rejection gracefully', async () => {
       const manager = await createConnectedManager();
-      mockListTools.mockResolvedValue({ tools: [{ name: 'search' }] });
       mockCallTool.mockRejectedValue(new Error('Query failed'));
 
       const result = await manager.queryContext('test');
@@ -335,10 +335,12 @@ describe('MCPManager', () => {
     });
 
     it('resolves a single library', async () => {
-      const manager = await createConnectedManager([
-        makeConfig({ name: 'context7', command: ['node', 'c7.mjs'] }),
-      ]);
-      mockListTools.mockResolvedValue({ tools: [{ name: 'resolve' }] });
+      const manager = await createConnectedManager(
+        [makeConfig({ name: 'context7', command: ['node', 'c7.mjs'] })],
+        () => {
+          mockListTools.mockResolvedValue({ tools: [{ name: 'resolve' }] });
+        },
+      );
       mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'React 19 docs' }] });
 
       const result = await manager.getLibraryDocs(['react']);
@@ -348,10 +350,12 @@ describe('MCPManager', () => {
     });
 
     it('resolves multiple libraries', async () => {
-      const manager = await createConnectedManager([
-        makeConfig({ name: 'context7', command: ['node', 'c7.mjs'] }),
-      ]);
-      mockListTools.mockResolvedValue({ tools: [{ name: 'resolve' }] });
+      const manager = await createConnectedManager(
+        [makeConfig({ name: 'context7', command: ['node', 'c7.mjs'] })],
+        () => {
+          mockListTools.mockResolvedValue({ tools: [{ name: 'resolve' }] });
+        },
+      );
       mockCallTool
         .mockResolvedValueOnce({ content: [{ type: 'text', text: 'React docs' }] })
         .mockResolvedValueOnce({ content: [{ type: 'text', text: 'Vue docs' }] });
@@ -365,10 +369,12 @@ describe('MCPManager', () => {
     });
 
     it('returns empty when resolve tool not found', async () => {
-      const manager = await createConnectedManager([
-        makeConfig({ name: 'context7', command: ['node', 'c7.mjs'] }),
-      ]);
-      mockListTools.mockResolvedValue({ tools: [{ name: 'other-tool' }] });
+      const manager = await createConnectedManager(
+        [makeConfig({ name: 'context7', command: ['node', 'c7.mjs'] })],
+        () => {
+          mockListTools.mockResolvedValue({ tools: [{ name: 'other-tool' }] });
+        },
+      );
 
       const result = await manager.getLibraryDocs(['react']);
 
@@ -377,10 +383,12 @@ describe('MCPManager', () => {
     });
 
     it('handles resolution failure gracefully', async () => {
-      const manager = await createConnectedManager([
-        makeConfig({ name: 'context7', command: ['node', 'c7.mjs'] }),
-      ]);
-      mockListTools.mockResolvedValue({ tools: [{ name: 'resolve' }] });
+      const manager = await createConnectedManager(
+        [makeConfig({ name: 'context7', command: ['node', 'c7.mjs'] })],
+        () => {
+          mockListTools.mockResolvedValue({ tools: [{ name: 'resolve' }] });
+        },
+      );
       mockCallTool.mockRejectedValue(new Error('Resolution failed'));
 
       const result = await manager.getLibraryDocs(['react']);
