@@ -186,7 +186,7 @@ describe('RuleApprovalSubscriber', () => {
       type: 'comment.created',
       category: 'comment',
       payload: {
-        body: `/approve-rule ${ruleId}`,
+        comment: { body: `/approve-rule ${ruleId}` },
         issue: { number: 1 },
       },
       timestamp: Date.now(),
@@ -197,12 +197,34 @@ describe('RuleApprovalSubscriber', () => {
     expect(pending).toHaveLength(0);
   });
 
+  it('handles /approve-rule via review_comment.created', async () => {
+    const ruleId = await store.addCustomRule('Test rule for review comment', 'auto');
+
+    await sub.handle({
+      type: 'review_comment.created',
+      category: 'comment',
+      payload: {
+        comment: { body: `/approve-rule ${ruleId}` },
+        issue: { number: 2 },
+      },
+      timestamp: Date.now(),
+      prNumber: 2,
+    });
+
+    const pending = await store.getPendingRules();
+    expect(pending).toHaveLength(0);
+  });
+
+  it('has correct subscribed events', () => {
+    expect(sub.subscribedEvents).toEqual(['comment.created', 'review_comment.created']);
+  });
+
   it('ignores non-approval comments', async () => {
     await sub.handle({
       type: 'comment.created',
       category: 'comment',
       payload: {
-        body: 'Looks good to me',
+        comment: { body: 'Looks good to me' },
         issue: { number: 1 },
       },
       timestamp: Date.now(),

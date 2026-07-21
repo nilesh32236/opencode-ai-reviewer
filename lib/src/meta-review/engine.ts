@@ -2,11 +2,15 @@ import { promises as fs } from 'fs';
 import * as core from '@actions/core';
 import type { LearningStore } from '../learning/store.js';
 import { runOpenCode } from '../opencode.js';
+import type { PatternDetector } from '../pattern-detector/engine.js';
 import type { GitHubEvent, Subscriber } from '../types/index.js';
 import { buildMetaReviewPrompt } from './prompts.js';
 
 export class MetaReviewEngine {
-  constructor(private store: LearningStore) {}
+  constructor(
+    private store: LearningStore,
+    private patternDetector?: PatternDetector,
+  ) {}
 
   async runMetaReview(context: {
     prNumber: number;
@@ -72,6 +76,33 @@ export class MetaReviewEngine {
       await this.store.recordQuality(quality);
     } catch {
       console.warn('Failed to record quality scores');
+    }
+
+    const avgScore =
+      (quality.actionabilityScore +
+        quality.accuracyScore +
+        quality.coverageScore +
+        quality.consistencyScore) /
+      4;
+    if (this.patternDetector && avgScore >= 70) {
+      try {
+        const patterns = await this.patternDetector.discover(3);
+        for (const p of patterns) {
+          await this.store.addCustomRule(
+            `Pattern: ${p.patternKey}\nMessages: ${p.messages.slice(0, 3).join(', ')}`,
+            'auto',
+          );
+        }
+        if (patterns.length > 0) {
+          console.info(
+            `Meta-review: discovered ${patterns.length} high-quality pattern(s), added as pending rules`,
+          );
+        }
+      } catch (err) {
+        console.warn(
+          `Failed to discover patterns after meta-review: ${err instanceof Error ? err.message : err}`,
+        );
+      }
     }
 
     if (fpRate > 0.3) {
