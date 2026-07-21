@@ -49,13 +49,16 @@ export function mergeConfigWithInputs(
   };
 }
 
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function matchesGlob(pattern: string, value: string): boolean {
-  const regexStr = pattern
-    .replace(/\./g, '\\.')
-    .replace(/\*\*/g, '___GLOBSTAR___')
-    .replace(/\*/g, '[^/]*')
+  const regexStr = escapeRegex(pattern)
+    .replace(/\\\*\\\*/g, '___GLOBSTAR___')
+    .replace(/\\\*/g, '[^/]*')
     .replace(/___GLOBSTAR___/g, '.*')
-    .replace(/\?/g, '.');
+    .replace(/\\\?/g, '.');
   return new RegExp(`^${regexStr}$`).test(value);
 }
 
