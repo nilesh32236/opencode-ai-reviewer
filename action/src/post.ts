@@ -21,7 +21,10 @@ export async function runPost(
   if (inputs.runChecksAfterFix) {
     core.info('Running verification commands after fix...');
     try {
-      const { program, args } = validateRunChecksCommand(inputs.runChecksAfterFix);
+      const { program, args } = validateRunChecksCommand(
+        inputs.runChecksAfterFix,
+        inputs.checkAllowlist,
+      );
       await exec.exec(program, args);
     } catch (error) {
       core.warning(`Verification command failed: ${inputs.runChecksAfterFix} — ${String(error)}`);

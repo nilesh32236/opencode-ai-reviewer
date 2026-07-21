@@ -27,6 +27,9 @@ fix:
     - "pnpm build"
     - "pnpm typecheck"
     - "pnpm lint"
+  checkAllowlist:
+    - pnpm
+    - node
 
 audit:
   promptsDir: ".audit-prompts"

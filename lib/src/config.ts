@@ -152,8 +152,27 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     if (typeof config.fix.maxIterations === 'number') {
       result.fix.maxIterations = Math.min(Math.max(config.fix.maxIterations, 1), 10);
     }
+    const defaultAllowlist = ['pnpm', 'npm', 'yarn', 'node'];
+    const allowlist = Array.isArray(config.fix.checkAllowlist)
+      ? config.fix.checkAllowlist.filter((c) => typeof c === 'string')
+      : defaultAllowlist;
+    if (allowlist.length === 0) {
+      result.fix.checkAllowlist = defaultAllowlist;
+    } else {
+      result.fix.checkAllowlist = allowlist;
+    }
     if (Array.isArray(config.fix.runChecks)) {
-      result.fix.runChecks = config.fix.runChecks.filter((c) => typeof c === 'string');
+      result.fix.runChecks = config.fix.runChecks.filter((c) => {
+        if (typeof c !== 'string') return false;
+        const program = c.trim().split(/\s+/)[0];
+        if (!result.fix?.checkAllowlist?.includes(program)) {
+          core.warning(
+            `Command "${c}" uses "${program}" which is not in the check allowlist [${(result.fix?.checkAllowlist ?? defaultAllowlist).join(', ')}]. Skipping.`,
+          );
+          return false;
+        }
+        return true;
+      });
     }
   }
 

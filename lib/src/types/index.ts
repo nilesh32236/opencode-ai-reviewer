@@ -353,6 +353,8 @@ export interface PromptConfig {
     systemPrompt?: string;
     maxIterations?: number;
     runChecks?: string[];
+    /** Allowlisted commands that can appear in runChecks. Default: ['pnpm', 'npm', 'yarn', 'node'] */
+    checkAllowlist?: string[];
   };
   audit?: {
     promptsDir?: string;

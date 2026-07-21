@@ -103,6 +103,7 @@ The Action runs `review` mode by default. Other modes: `fix`, `audit`, `post`, `
 | `review_comment_summary` | `true`                               | Post a summary comment on the PR               |
 | `review_inline`          | `true`                               | Post findings as inline review comments on the PR diff (set to `false` for summary-only)
 | `run_checks_after_fix`   | —                                    | Commands to run after fix (e.g. `npm run lint`) |
+> **Security:** Commands are validated against an allowlist (`fix.checkAllowlist` in `.opencode-reviewer.yml`, default `[pnpm, npm, yarn, node]`) to prevent shell injection. Add only trusted programs to the allowlist.
 | `audit_prompt_file`      | —                                    | Path to custom audit prompt file               |
 | `audit_create_issues`    | `true`                               | Create GitHub issues for audit findings        |
 | `audit_auto_fix`         | `false`                              | Auto-trigger fixes for audit findings          |
@@ -137,6 +138,25 @@ overrides:
     review:
       inline: false    # summary-only for legacy code
 ```
+
+### Fix Configuration
+
+Configure auto-fix behavior and verification commands:
+
+```yaml
+fix:
+  maxIterations: 3
+  runChecks:
+    - "pnpm typecheck"
+    - "pnpm lint"
+  checkAllowlist:
+    - pnpm
+    - node
+    - cargo
+    - make
+```
+
+The `checkAllowlist` option controls which programs are allowed in `runChecks`. Commands using programs outside the allowlist are skipped with a warning. Default: `[pnpm, npm, yarn, node]`. This prevents shell injection from untrusted configuration sources — only add programs you trust.
 
 ---
 

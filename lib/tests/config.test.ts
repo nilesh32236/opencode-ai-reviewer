@@ -252,6 +252,43 @@ fix:
       const result = validateConfig({});
       expect(result).toEqual({});
     });
+
+    it('uses default allowlist when checkAllowlist not set', () => {
+      const result = validateConfig({ fix: { runChecks: ['pnpm build'] } } as never);
+      expect(result.fix?.checkAllowlist).toEqual(['pnpm', 'npm', 'yarn', 'node']);
+    });
+
+    it('accepts custom checkAllowlist', () => {
+      const result = validateConfig({
+        fix: { checkAllowlist: ['cargo', 'make'], runChecks: ['cargo build'] },
+      } as never);
+      expect(result.fix?.checkAllowlist).toEqual(['cargo', 'make']);
+      expect(result.fix?.runChecks).toEqual(['cargo build']);
+    });
+
+    it('filters non-string entries from checkAllowlist', () => {
+      const result = validateConfig({
+        fix: { checkAllowlist: ['cargo', null, 42] as never },
+      } as never);
+      expect(result.fix?.checkAllowlist).toEqual(['cargo']);
+    });
+
+    it('falls back to default allowlist when checkAllowlist is empty', () => {
+      const result = validateConfig({
+        fix: { checkAllowlist: [] },
+      } as never);
+      expect(result.fix?.checkAllowlist).toEqual(['pnpm', 'npm', 'yarn', 'node']);
+    });
+
+    it('skips runChecks with program not in checkAllowlist', () => {
+      const result = validateConfig({
+        fix: {
+          checkAllowlist: ['pnpm', 'npm'],
+          runChecks: ['pnpm build', 'cargo test', 'npm lint'],
+        },
+      } as never);
+      expect(result.fix?.runChecks).toEqual(['pnpm build', 'npm lint']);
+    });
   });
 
   describe('resolveConfig', () => {
