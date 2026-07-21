@@ -66,10 +66,10 @@ export class MetaReviewEngine {
 
     const quality = {
       prNumber: context.prNumber,
-      actionabilityScore: (result.actionabilityScore as number) ?? 70,
-      accuracyScore: (result.accuracyScore as number) ?? Math.max(0, 100 - fpRate * 100),
-      coverageScore: (result.coverageScore as number) ?? 70,
-      consistencyScore: (result.consistencyScore as number) ?? 70,
+      actionabilityScore: Number(result.actionabilityScore) || 70,
+      accuracyScore: Number(result.accuracyScore) || Math.max(0, 100 - fpRate * 100),
+      coverageScore: Number(result.coverageScore) || 70,
+      consistencyScore: Number(result.consistencyScore) || 70,
     };
 
     try {
@@ -119,7 +119,7 @@ export class MetaReviewEngine {
 
     return {
       ...quality,
-      suggestions: (result.suggestions as string[]) || [],
+      suggestions: Array.isArray(result.suggestions) ? (result.suggestions as string[]) : [],
     };
   }
 }

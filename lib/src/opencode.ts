@@ -262,6 +262,19 @@ function buildCIConfig(): string {
   return cachedCIConfig;
 }
 
+/**
+ * Execute the OpenCode CLI with a given prompt.
+ * Spawns the binary as a child process with configurable timeout and environment.
+ * Only forwards the API key required for the selected model (least-privilege).
+ * Uses OPENCODE_CONFIG_CONTENT to inject CI-safe defaults without modifying project files.
+ * @param prompt - The prompt string to pass to OpenCode.
+ * @param options.model - Model identifier (e.g., 'opencode/deepseek-v4-flash-free').
+ * @param options.workingDirectory - Working directory for the subprocess (defaults to cwd).
+ * @param options.timeoutMinutes - Timeout in minutes (default 20). After timeout, sends SIGTERM then SIGKILL.
+ * @param options.env - Additional environment variables to forward.
+ * @returns Object with success flag, output string, and execution duration in ms.
+ *          On timeout or error, success is false.
+ */
 export async function runOpenCode(
   prompt: string,
   options: {
@@ -425,6 +438,15 @@ export async function runOpenCode(
   }
 }
 
+/**
+ * Configure git user name, email, and authentication for the CI environment.
+ * Uses GIT_ASKPASS for credential injection (avoids leaking the token in git config).
+ * Cleans up any existing http.extraheader entries to prevent duplicate auth headers.
+ * @param userName - Git user name (defaults to GITHUB_ACTOR or 'opencode-ai-reviewer[bot]').
+ * @param userEmail - Git user email (defaults to userName@users.noreply.github.com).
+ * @param token - GitHub token for authentication. Sets GIT_ASKPASS to avoid git config exposure.
+ *                Clears existing credential helpers and http.extraheader entries.
+ */
 export function configureGit(userName?: string, userEmail?: string, token?: string): void {
   const name = userName || process.env.GITHUB_ACTOR || 'opencode-ai-reviewer[bot]';
   const email = userEmail || `${name}@users.noreply.github.com`;
@@ -507,6 +529,10 @@ export function configureGit(userName?: string, userEmail?: string, token?: stri
   core.info(`Git configured: ${name} <${email}>`);
 }
 
+/**
+ * Get the current git working tree status.
+ * @returns Porcelain git status string, or empty string on error (e.g., not a git repo).
+ */
 export function getGitStatus(): string {
   try {
     return cp.execFileSync('git', ['status', '--porcelain'], { encoding: 'utf-8' });
@@ -515,6 +541,12 @@ export function getGitStatus(): string {
   }
 }
 
+/**
+ * Detect the workspace package manager and install dependencies if node_modules is missing.
+ * Supports pnpm, yarn, and npm. Installs the package manager globally if not found.
+ * Skips if no package.json exists in the workspace root.
+ * @param cwd - Workspace root directory to check and install in.
+ */
 export async function setupWorkspaceDependencies(cwd: string): Promise<void> {
   core.info('Checking workspace package manager and dependencies...');
 
@@ -589,6 +621,10 @@ export async function setupWorkspaceDependencies(cwd: string): Promise<void> {
   }
 }
 
+/**
+ * Ensure the parent directory of a file path exists, creating it recursively if needed.
+ * @param outputFile - File path whose parent directory should be created.
+ */
 export function ensureOutputDir(outputFile: string): void {
   const dir = path.dirname(path.resolve(outputFile));
   if (!fs.existsSync(dir)) {

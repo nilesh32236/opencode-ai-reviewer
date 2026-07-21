@@ -18,6 +18,12 @@ const CONFIG_FILENAMES = [
   '.github/opencode-reviewer.yaml',
 ];
 
+/**
+ * Load configuration from one of the known config file paths.
+ * Searches for .opencode-reviewer.yml/yaml and .github/opencode-reviewer.yml/yaml.
+ * @param workingDir - Directory to search from (defaults to current working directory).
+ * @returns Parsed and validated PromptConfig, or null if no config file exists or parsing fails.
+ */
 export function loadConfig(workingDir = '.'): PromptConfig | null {
   for (const filename of CONFIG_FILENAMES) {
     const fullPath = path.resolve(workingDir, filename);
@@ -37,6 +43,13 @@ export function loadConfig(workingDir = '.'): PromptConfig | null {
   return null;
 }
 
+/**
+ * Merge a loaded PromptConfig with raw action inputs.
+ * Config values serve as defaults; inputs take precedence.
+ * @param config - Optional loaded config (null if no config file found).
+ * @param inputs - Raw action input key-value pairs.
+ * @returns Merged flat record of config defaults overlaid with inputs.
+ */
 export function mergeConfigWithInputs(
   config: PromptConfig | null,
   inputs: Record<string, unknown>,
@@ -80,6 +93,13 @@ function matchesGlob(pattern: string, value: string): boolean {
   return new RegExp(`^${result.join('')}$`).test(value);
 }
 
+/**
+ * Resolve a PromptConfig with path- and branch-based overrides.
+ * Overrides matching the given file paths or branch are merged into the base config.
+ * @param config - The base PromptConfig (must be validated first).
+ * @param options - ResolveConfigOptions containing paths (files being reviewed) and/or branch name.
+ * @returns A new PromptConfig with applicable overrides applied.
+ */
 export function resolveConfig(config: PromptConfig, options: ResolveConfigOptions): PromptConfig {
   if (!config.overrides?.length) return config;
 
@@ -128,6 +148,12 @@ export function resolveConfig(config: PromptConfig, options: ResolveConfigOption
   return result;
 }
 
+/**
+ * Validate and sanitize a PromptConfig, clamping numeric values and filtering arrays.
+ * Warns on invalid check allowlist entries. Applies bounds to fix iterations (1-10).
+ * @param config - Raw config parsed from YAML.
+ * @returns Sanitized PromptConfig with only valid fields preserved.
+ */
 export function validateConfig(config: PromptConfig): PromptConfig {
   const result: PromptConfig = {};
 

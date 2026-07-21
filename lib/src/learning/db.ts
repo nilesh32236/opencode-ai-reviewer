@@ -8,7 +8,9 @@ export function sanitizeDbError(err: unknown): string {
 }
 
 // Dynamic require() for optional DB drivers (pg, mysql2, better-sqlite3) that may not be installed
-const req =
+// biome-ignore lint/complexity/useLiteralKeys: Dynamic require needed for CJS/ESM compatibility
+// biome-ignore lint/suspicious/noExplicitAny: Driver modules (pg, mysql2, better-sqlite3) have different export shapes, so a precise type is impractical.
+const req: (id: string) => any =
   typeof require !== 'undefined'
     ? require
     : (moduleName: string) => {

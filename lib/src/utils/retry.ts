@@ -46,6 +46,24 @@ function isRetryable(status: number, retryableStatuses: number[]): boolean {
   return retryableStatuses.includes(status);
 }
 
+/**
+ * Retry an async function with exponential backoff and jitter.
+ * Retries on HTTP statuses in retryableStatuses (default: 429, 500, 502, 503, 504).
+ * Unknown/unstatused errors (status 0) are retried only when retryUnknownStatus is true.
+ * Supports cancellation via AbortSignal.
+ *
+ * Backoff strategy: baseDelayMs * 2^(attempt-1) capped at maxDelayMs, plus 0-30% jitter.
+ * @param fn - Async function to execute and potentially retry.
+ * @param options.maxRetries - Total attempts including the first (default 3).
+ * @param options.baseDelayMs - Initial delay in ms (default 1000).
+ * @param options.maxDelayMs - Maximum delay in ms (default 30000).
+ * @param options.retryableStatuses - HTTP status codes that trigger a retry.
+ * @param options.signal - Optional AbortSignal to cancel the retry loop.
+ * @param options.operationName - Optional name for log messages.
+ * @param options.retryUnknownStatus - Whether to retry errors without a status code (default true).
+ * @returns The result of fn.
+ * @throws The last error encountered if all retries are exhausted, or AbortError if cancelled.
+ */
 export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions = {}): Promise<T> {
   const {
     maxRetries,
@@ -97,6 +115,16 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
   throw lastError;
 }
 
+/**
+ * Execute an async function with a per-attempt timeout and retry support.
+ * Each attempt gets its own AbortSignal that is aborted after timeoutMs.
+ * Useful for network calls where individual requests can hang.
+ * @param fn - Async function accepting an AbortSignal for per-attempt cancellation.
+ * @param timeoutMs - Timeout in milliseconds for each individual attempt.
+ * @param options - Standard RetryOptions (see withRetry).
+ * @returns The result of fn.
+ * @throws The last error if all retries are exhausted, or AbortError on timeout/cancellation.
+ */
 export async function withRetryAndTimeout<T>(
   fn: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number,

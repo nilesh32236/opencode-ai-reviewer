@@ -2,9 +2,19 @@ import type { LearningFeedback, LearningQuality } from '../types/index.js';
 import { type DbAdapter, connectDb, sanitizeDbError } from './db.js';
 import { applyMigrations, generateId, getDbPath } from './schema.js';
 
+/**
+ * Persistent store for review findings, feedback, quality metrics, patterns, and custom rules.
+ * Wraps a DbAdapter (SQLite/Postgres/MySQL/JSON) with retry logic and migration support.
+ * All public methods are async and propagate DB errors unless otherwise noted.
+ */
 export class LearningStore {
   private dbPromise: Promise<DbAdapter>;
 
+  /**
+   * @param dbPathOrUrl - Database path or connection URL. Falls back to DATABASE_URL env var or default path.
+   *                      Supports SQLite (file path), Postgres (postgres://), and MySQL (mysql://).
+   *                      Retries connection up to 3 times with 1s backoff.
+   */
   constructor(dbPathOrUrl?: string) {
     this.dbPromise = (async () => {
       const target = process.env.DATABASE_URL || dbPathOrUrl || getDbPath();
@@ -38,11 +48,19 @@ export class LearningStore {
     })();
   }
 
+  /**
+   * Close the underlying database connection.
+   */
   async close(): Promise<void> {
     const db = await this.dbPromise;
     await db.close();
   }
 
+  /**
+   * Record a single review finding.
+   * @param finding - Finding data (id is auto-generated if not provided).
+   * @returns The generated or provided finding ID.
+   */
   async recordFinding(finding: {
     id?: string;
     prNumber: number;
@@ -52,31 +70,31 @@ export class LearningStore {
     line?: number;
     message: string;
     suggestion?: string;
-  }): Promise<string | null> {
-    try {
-      const db = await this.dbPromise;
-      const id = finding.id || generateId();
-      await db.run(
-        `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          id,
-          finding.prNumber,
-          finding.type,
-          finding.severity || null,
-          finding.file || null,
-          finding.line || null,
-          finding.message,
-          finding.suggestion || null,
-        ],
-      );
-      return id;
-    } catch (err) {
-      console.warn(`Failed to record finding: ${err instanceof Error ? err.message : err}`);
-      return null;
-    }
+  }): Promise<string> {
+    const db = await this.dbPromise;
+    const id = finding.id || generateId();
+    await db.run(
+      `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        finding.prNumber,
+        finding.type,
+        finding.severity || null,
+        finding.file || null,
+        finding.line || null,
+        finding.message,
+        finding.suggestion || null,
+      ],
+    );
+    return id;
   }
 
+  /**
+   * Record multiple findings in a single transaction.
+   * @param findings - Array of finding data objects.
+   * @returns Array of generated IDs (one per finding).
+   */
   async recordFindings(
     findings: Array<{
       prNumber: number;
@@ -111,6 +129,11 @@ export class LearningStore {
     });
   }
 
+  /**
+   * Delete all findings and their feedback for a given PR.
+   * @param prNumber - The PR number to delete findings for.
+   * @returns The number of deleted finding rows.
+   */
   async deleteFindings(prNumber: number): Promise<number> {
     const db = await this.dbPromise;
     return db.transaction(async () => {
@@ -120,6 +143,11 @@ export class LearningStore {
     });
   }
 
+  /**
+   * Retrieve findings filtered by type, ordered by creation date descending.
+   * @param type - The finding type to filter by.
+   * @param limit - Maximum number of results (default 50).
+   */
   async getFindingsByType(type: string, limit = 50): Promise<Array<Record<string, unknown>>> {
     const db = await this.dbPromise;
     return db.all('SELECT * FROM findings WHERE type = ? ORDER BY created_at DESC LIMIT ?', [
@@ -128,6 +156,11 @@ export class LearningStore {
     ]);
   }
 
+  /**
+   * Retrieve findings, optionally filtered by PR number.
+   * @param prNumber - Optional PR number to filter by.
+   * @param limit - Maximum number of results (default 100).
+   */
   async getFindings(prNumber?: number, limit = 100): Promise<Array<Record<string, unknown>>> {
     const db = await this.dbPromise;
     if (prNumber) {
@@ -139,6 +172,11 @@ export class LearningStore {
     return db.all('SELECT * FROM findings ORDER BY created_at DESC LIMIT ?', [limit]);
   }
 
+  /**
+   * Record a single feedback signal for a finding.
+   * Errors are logged internally and silently swallowed.
+   * @param feedback - Feedback data including findingId and signalType.
+   */
   async recordFeedback(feedback: {
     findingId: string;
     signalType: LearningFeedback['signalType'];
@@ -163,6 +201,10 @@ export class LearningStore {
     }
   }
 
+  /**
+   * Record multiple feedback signals in a single transaction.
+   * @param feedbacks - Array of feedback data objects.
+   */
   async recordFeedbackBatch(
     feedbacks: Array<{
       findingId: string;
@@ -189,6 +231,10 @@ export class LearningStore {
     });
   }
 
+  /**
+   * Retrieve finding messages with optional file paths, ordered by creation date descending.
+   * @param limit - Maximum number of results (default 100).
+   */
   async getFindingMessages(limit = 100): Promise<Array<{ message: string; file?: string }>> {
     const db = await this.dbPromise;
     return db.all<{ message: string; file: string }>(
@@ -197,6 +243,10 @@ export class LearningStore {
     );
   }
 
+  /**
+   * Calculate the false positive rate based on dismissed/disputed feedback signals.
+   * @returns Ratio of dismissed+disputed feedback to total feedback (0-1). Returns 0 if no feedback exists.
+   */
   async getFalsePositiveRate(): Promise<number> {
     const db = await this.dbPromise;
     const [total, disputed] = await Promise.all([
@@ -210,6 +260,12 @@ export class LearningStore {
     return disputed.count / total.count;
   }
 
+  /**
+   * Fetch relevant review lessons (active custom rules and prompt overrides) for given file paths.
+   * Matches overrides by file extension. Errors are silently logged and return an empty array.
+   * @param filePaths - File paths to find relevant lessons for.
+   * @returns Array of lesson text strings.
+   */
   async getRelevantLessons(filePaths: string[]): Promise<string[]> {
     try {
       const db = await this.dbPromise;
@@ -261,6 +317,11 @@ export class LearningStore {
     }
   }
 
+  /**
+   * Record review quality scores for a PR.
+   * Errors are logged internally and silently swallowed.
+   * @param quality - Quality scores (actionability, accuracy, coverage, consistency).
+   */
   async recordQuality(quality: LearningQuality): Promise<void> {
     try {
       const db = await this.dbPromise;
@@ -281,11 +342,20 @@ export class LearningStore {
     }
   }
 
+  /**
+   * Retrieve recent quality score records.
+   * @param limit - Maximum number of records to return (default 20).
+   */
   async getQualityTrends(limit = 20): Promise<Array<Record<string, unknown>>> {
     const db = await this.dbPromise;
     return db.all('SELECT * FROM review_quality ORDER BY created_at DESC LIMIT ?', [limit]);
   }
 
+  /**
+   * Increment the meta-review counter and check if it's time to run a meta-review.
+   * @param interval - The interval to check against (e.g., 5 = every 5 reviews).
+   * @returns True if a meta-review should be triggered.
+   */
   async incrementAndCheckMetaReviewInterval(interval: number): Promise<boolean> {
     const db = await this.dbPromise;
     return db.transaction(async () => {
@@ -301,6 +371,11 @@ export class LearningStore {
     });
   }
 
+  /**
+   * Record or update a single recurring pattern.
+   * If the pattern_key already exists, increments frequency and updates last_seen.
+   * @param pattern - Pattern data including key, message cluster, and frequency.
+   */
   async recordPattern(pattern: {
     patternKey: string;
     messageCluster: string[];
@@ -335,6 +410,10 @@ export class LearningStore {
     });
   }
 
+  /**
+   * Record or update multiple patterns in a single transaction.
+   * @param patterns - Array of pattern data objects.
+   */
   async recordPatterns(
     patterns: Array<{
       patternKey: string;
@@ -373,6 +452,10 @@ export class LearningStore {
     });
   }
 
+  /**
+   * Retrieve patterns with frequency above the minimum threshold.
+   * @param minFrequency - Minimum frequency threshold (default 3).
+   */
   async getPatterns(minFrequency = 3): Promise<Array<Record<string, unknown>>> {
     const db = await this.dbPromise;
     return db.all('SELECT * FROM patterns WHERE frequency >= ? ORDER BY frequency DESC', [
@@ -380,6 +463,12 @@ export class LearningStore {
     ]);
   }
 
+  /**
+   * Add a new custom rule (initially in 'pending' status).
+   * @param ruleText - The rule text/content.
+   * @param source - Source of the rule ('auto' for discovered patterns, 'manual' for user-added).
+   * @returns The generated rule ID.
+   */
   async addCustomRule(ruleText: string, source: 'auto' | 'manual'): Promise<string> {
     const db = await this.dbPromise;
     const id = generateId();
@@ -392,11 +481,18 @@ export class LearningStore {
     return id;
   }
 
+  /**
+   * Retrieve all pending (unreviewed) custom rules.
+   */
   async getPendingRules(): Promise<Array<Record<string, unknown>>> {
     const db = await this.dbPromise;
     return db.all("SELECT * FROM custom_rules WHERE status = 'pending'");
   }
 
+  /**
+   * Approve a pending custom rule, setting its status to 'active'.
+   * @param ruleId - The rule ID to approve.
+   */
   async approveRule(ruleId: string): Promise<void> {
     const db = await this.dbPromise;
     await db.run(
@@ -405,11 +501,22 @@ export class LearningStore {
     );
   }
 
+  /**
+   * Decline a pending custom rule, setting its status to 'declined'.
+   * @param ruleId - The rule ID to decline.
+   */
   async declineRule(ruleId: string): Promise<void> {
     const db = await this.dbPromise;
     await db.run("UPDATE custom_rules SET status = 'declined' WHERE id = ?", [ruleId]);
   }
 
+  /**
+   * Add a prompt override for a given category (e.g., to reduce false positives).
+   * Errors are logged internally and silently swallowed.
+   * @param category - Override category (e.g., 'general', or a file extension).
+   * @param overrideText - The override instruction text.
+   * @param fpRateBefore - The false positive rate that triggered this override.
+   */
   async addPromptOverride(
     category: string,
     overrideText: string,
@@ -427,6 +534,9 @@ export class LearningStore {
     }
   }
 
+  /**
+   * Reset the meta-review counter to 0.
+   */
   async resetCounter(): Promise<void> {
     const db = await this.dbPromise;
     await db.run('UPDATE meta_review_counter SET count = 0 WHERE id = 1');
