@@ -35,7 +35,7 @@ export class EventRouter {
       typeof payload === 'object' && payload !== null
         ? (payload as { repository?: { full_name?: string } }).repository?.full_name
         : undefined;
-    const prNumber = extractPRNumber(rawEvent, payload);
+    const prNumber = extractPRNumber(payload);
 
     const event: GitHubEvent = {
       type,
@@ -54,7 +54,7 @@ export class EventRouter {
   }
 }
 
-function extractPRNumber(_rawEvent: string, payload: unknown): number | undefined {
+function extractPRNumber(payload: unknown): number | undefined {
   if (typeof payload !== 'object' || payload === null) return undefined;
   const p = payload as Record<string, unknown>;
   if (p.pull_request && typeof p.pull_request === 'object') {

@@ -5,6 +5,7 @@ import {
   DEFAULT_CONFIG,
   GitHubHelper,
   type MCPServerConfig,
+  MCPServerConfigSchema,
   ReviewEngine,
   configureGit,
   getDefaultMCPServers,
@@ -55,7 +56,13 @@ async function run(): Promise<void> {
       const mcpServersJson = core.getInput('mcp-servers');
       if (mcpServersJson) {
         try {
-          mcpServers = JSON.parse(mcpServersJson);
+          const parsed = JSON.parse(mcpServersJson);
+          const result = MCPServerConfigSchema.array().safeParse(parsed);
+          if (result.success) {
+            mcpServers = result.data;
+          } else {
+            core.warning(`Invalid MCP servers config: ${result.error.message}`);
+          }
         } catch {
           core.warning('Invalid MCP servers JSON, using defaults');
         }

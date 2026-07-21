@@ -296,7 +296,7 @@ function extractTextFromResult(result: unknown): string {
   if (Array.isArray(r.content)) {
     return r.content
       .filter((c) => c.type === 'text' && c.text)
-      .map((c) => c.text!)
+      .map((c) => c.text ?? '')
       .join('\n');
   }
   return '';

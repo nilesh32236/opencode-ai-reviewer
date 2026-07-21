@@ -46,6 +46,25 @@ function isRetryable(status: number, retryableStatuses: number[]): boolean {
   return retryableStatuses.includes(status);
 }
 
+/**
+ * Retry an async function with exponential backoff and jitter.
+ *
+ * The retry strategy:
+ * - Delay = min(baseDelayMs * 2^(attempt-1), maxDelayMs) + random 0-30% jitter
+ * - Only retries on status codes in `retryableStatuses` (default: 429, 500, 502, 503, 504)
+ * - For status=0 (network/unknown errors), retry is controlled by `retryUnknownStatus`
+ * - Supports cancellation via AbortSignal
+ *
+ * @param fn - Async function to retry.
+ * @param options.maxRetries - Total attempts including the first call (default: 3).
+ * @param options.baseDelayMs - Base delay in ms before first retry (default: 1000).
+ * @param options.maxDelayMs - Maximum delay cap in ms (default: 30000).
+ * @param options.retryableStatuses - HTTP status codes that trigger a retry.
+ * @param options.signal - Optional AbortSignal to cancel the retry loop.
+ * @param options.operationName - Optional label for log messages.
+ * @param options.retryUnknownStatus - Whether to retry on status=0 errors (default: true).
+ * @throws The last error encountered once all retries are exhausted.
+ */
 export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions = {}): Promise<T> {
   const {
     maxRetries,
@@ -97,6 +116,16 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
   throw lastError;
 }
 
+/**
+ * Retry an async function with a per-attempt timeout.
+ * Wraps `withRetry` and creates a new AbortController for each attempt
+ * that fires after `timeoutMs` milliseconds.
+ *
+ * @param fn - Async function that receives an AbortSignal for the per-attempt timeout.
+ * @param timeoutMs - Per-attempt timeout in milliseconds.
+ * @param options - Standard retry options forwarded to `withRetry`.
+ * @throws The last error encountered once all retries are exhausted, or TimeoutError.
+ */
 export async function withRetryAndTimeout<T>(
   fn: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number,

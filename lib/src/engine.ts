@@ -16,6 +16,10 @@ import type {
 } from './types/index.js';
 import { GitHubHelper } from './utils/github.js';
 
+/**
+ * Orchestrates PR review, auto-fix, and audit workflows.
+ * Wraps MCP context enrichment, learning-store queries, and OpenCode CLI invocation.
+ */
 export class ReviewEngine {
   private mcp: MCPManager;
   private github: GitHubHelper;
@@ -23,6 +27,12 @@ export class ReviewEngine {
   private lessonsCache: { lessons: string[]; timestamp: number } | null = null;
   private static readonly LESSONS_CACHE_TTL = 60_000;
 
+  /**
+   * @param config - Agent configuration (models, batch size, MCP servers, etc.).
+   * @param githubToken - GitHub API token for PR/issue operations.
+   * @param repo - Repository in "owner/name" format.
+   * @param learningStore - Optional learning store for recording/querying past findings.
+   */
   constructor(
     config: AgentConfig,
     githubToken: string,
@@ -34,6 +44,18 @@ export class ReviewEngine {
     this.mcp = new MCPManager(config.mcpServers);
   }
 
+  /**
+   * Run a code review on a pull request.
+   * Enriches context with MCP library docs and learning-store lessons,
+   * builds a review prompt, runs OpenCode CLI, and parses the output.
+   *
+   * @param pr - Pull request context (files, diff, metadata).
+   * @param iteration - Optional iteration number for auto-fix cycles.
+   * @param reviewPromptFile - Optional path to a custom review prompt file.
+   * @param reviewPromptExtra - Optional extra text appended to the review prompt.
+   * @param timeoutMinutes - Optional timeout override (defaults to config.timeoutMinutes).
+   * @returns Parsed review result with verdict, issues, and strengths.
+   */
   async reviewPR(
     pr: PRContext,
     iteration?: number,
@@ -142,6 +164,18 @@ export class ReviewEngine {
     }
   }
 
+  /**
+   * Run the auto-fix workflow on a PR.
+   * Builds a fix prompt enriched with MCP library docs, runs OpenCode CLI,
+   * and reads results (git status, stuck marker, fix summary) from disk.
+   *
+   * @param prNumber - PR number being fixed.
+   * @param iteration - Current fix iteration (0-indexed).
+   * @param contextMarkdown - PR context as markdown string.
+   * @param cachedPR - Optional pre-fetched PR context to avoid redundant API calls.
+   * @param timeoutMinutes - Optional timeout override (defaults to config.timeoutMinutes).
+   * @returns Fix result indicating whether changes were made, files changed, and stuck/summary info.
+   */
   async runFix(
     prNumber: number,
     iteration: number,
@@ -234,6 +268,17 @@ export class ReviewEngine {
     return { changesMade, filesChanged, stuck, stuckReason, summary };
   }
 
+  /**
+   * Run a codebase audit for a specific category.
+   * Builds an audit prompt with MCP enrichment, runs OpenCode CLI,
+   * and parses the output JSONL file.
+   *
+   * @param promptContent - Base audit prompt content.
+   * @param targetDir - Directory to audit.
+   * @param category - Audit category name (used for output file naming).
+   * @param timeoutMinutes - Optional timeout override (defaults to config.timeoutMinutes).
+   * @returns Parsed audit result with issues and verdict.
+   */
   async runAudit(
     promptContent: string,
     targetDir: string,
@@ -288,6 +333,11 @@ export class ReviewEngine {
     }
   }
 
+  /**
+   * Gracefully shut down MCP connections and learning store.
+   * Has a hard timeout of 15 seconds — remaining resources are left to clean up
+   * in the background if the deadline is exceeded.
+   */
   async cleanup(): Promise<void> {
     const timeoutMs = 15_000;
     const start = Date.now();

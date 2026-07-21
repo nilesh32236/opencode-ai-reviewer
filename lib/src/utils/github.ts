@@ -17,7 +17,24 @@ export interface PaginatedResult<T> {
   totalCount: number;
 }
 
+/**
+ * Helper for GitHub REST API interactions (PRs, issues, reviews, comments, labels).
+ * Handles authentication, rate-limit warnings, pagination, and automatic retry
+ * with exponential backoff for transient errors.
+ *
+ * Rate-limit handling:
+ * - Logs a warning when remaining calls drop below 50.
+ * - Automatically retries on 429 (rate-limited) after reading Retry-After header.
+ *
+ * Pagination:
+ * - Uses `paginate` to fetch multi-page results with configurable per-page and max-pages.
+ */
 export class GitHubHelper {
+  /**
+   * @param token - GitHub personal access token (classic or fine-grained).
+   * @param repo - Repository in "owner/name" format.
+   * @param apiUrl - GitHub API base URL (default: https://api.github.com).
+   */
   constructor(
     private token: string,
     private repo: string,
@@ -129,6 +146,14 @@ export class GitHubHelper {
 
   // ─── PR Operations ──────────────────────────────────────
 
+  /**
+   * Fetch a pull request's metadata and changed files.
+   * Also extracts linked issue numbers from the PR body (Fixes/Closes/Resolves).
+   *
+   * @param number - PR number.
+   * @returns PR context including title, body, branches, author, labels, and changed files.
+   * @throws If the PR does not exist or the API call fails.
+   */
   async getPR(number: number): Promise<PRContext> {
     const [prResult, filesResult] = await Promise.allSettled([
       this.api<{
@@ -179,6 +204,12 @@ export class GitHubHelper {
     };
   }
 
+  /**
+   * Check whether a given issue/PR number refers to a pull request.
+   *
+   * @param number - Issue/PR number.
+   * @returns True if the number corresponds to a pull request.
+   */
   async isPR(number: number): Promise<boolean> {
     try {
       await this.api(`/pulls/${number}`, { method: 'HEAD' });
@@ -188,6 +219,11 @@ export class GitHubHelper {
     }
   }
 
+  /**
+   * Get the repository's default branch name.
+   *
+   * @returns Default branch name (e.g. "main" or "master").
+   */
   async getDefaultBranch(): Promise<string> {
     const repo = await this.api<{ default_branch: string }>('');
     return repo.default_branch;
@@ -195,6 +231,13 @@ export class GitHubHelper {
 
   // ─── Issue Operations ───────────────────────────────────
 
+  /**
+   * Fetch an issue's metadata and its comments (paginated).
+   *
+   * @param number - Issue number.
+   * @returns Issue context with title, body, labels, and comments.
+   * @throws If the issue does not exist.
+   */
   async getIssue(number: number): Promise<IssueContext> {
     const [issueResult, commentsResult] = await Promise.allSettled([
       this.api<{
@@ -228,6 +271,12 @@ export class GitHubHelper {
     };
   }
 
+  /**
+   * Fetch all comments on an issue (paginated, up to 1000 comments).
+   *
+   * @param number - Issue number.
+   * @returns Array of issue comments with author, date, and body.
+   */
   async getIssueComments(number: number): Promise<IssueComment[]> {
     const comments = await this.paginate<{
       user: { login: string };
@@ -244,6 +293,13 @@ export class GitHubHelper {
 
   // ─── Diff Operations ────────────────────────────────────
 
+  /**
+   * Fetch the raw diff for a PR and parse it into a set of "file:line" strings
+   * representing lines added/modified in the diff. Used for inline comment validation.
+   *
+   * @param prNumber - PR number.
+   * @returns Set of "file:line" strings for lines in the diff.
+   */
   async getDiffLines(prNumber: number): Promise<Set<string>> {
     try {
       const diffText = await this.api<string>(
@@ -281,6 +337,16 @@ export class GitHubHelper {
 
   // ─── Review Operations ──────────────────────────────────
 
+  /**
+   * Post a review on a pull request with optional inline comments.
+   * Falls back to body-only review if inline comments are rejected (422).
+   *
+   * @param prNumber - PR number.
+   * @param commitSha - SHA of the commit to attach the review to.
+   * @param result - Review result with issues and summary.
+   * @param postInlineComments - Whether to attempt inline comments (default: true).
+   * @returns Object indicating success and which posting method was used.
+   */
   async postReview(
     prNumber: number,
     commitSha: string,
@@ -342,6 +408,15 @@ export class GitHubHelper {
 
   // ─── Comment Operations ─────────────────────────────────
 
+  /**
+   * Post a new comment or update an existing one identified by a marker prefix.
+   * Used for posting status updates that should not duplicate.
+   *
+   * @param issueNumber - Issue/PR number to comment on.
+   * @param marker - Unique prefix string to identify the comment.
+   * @param body - Comment body text.
+   * @returns Action taken ('created' or 'updated') and the comment ID.
+   */
   async postOrUpdateComment(
     issueNumber: number,
     marker: string,
@@ -380,6 +455,13 @@ export class GitHubHelper {
     }
   }
 
+  /**
+   * Create a new comment on an issue or PR.
+   *
+   * @param issueNumber - Issue/PR number.
+   * @param body - Comment body.
+   * @returns The created comment ID.
+   */
   async createComment(issueNumber: number, body: string): Promise<{ id: number }> {
     const created = await this.api<{ id: number }>(`/issues/${issueNumber}/comments`, {
       method: 'POST',
@@ -389,6 +471,14 @@ export class GitHubHelper {
     return { id: created.id };
   }
 
+  /**
+   * Create a new issue in the repository.
+   *
+   * @param title - Issue title.
+   * @param body - Issue body markdown.
+   * @param labels - Labels to apply.
+   * @returns Object with issue number and URL, or null on failure.
+   */
   async createIssue(
     title: string,
     body: string,
@@ -407,6 +497,15 @@ export class GitHubHelper {
     }
   }
 
+  /**
+   * Create a pull request.
+   *
+   * @param title - PR title.
+   * @param body - PR body markdown.
+   * @param head - Head branch name.
+   * @param base - Base branch name.
+   * @returns Object with PR number and URL, or null on failure.
+   */
   async createPR(
     title: string,
     body: string,
@@ -430,6 +529,12 @@ export class GitHubHelper {
 
   // ─── Label Operations ───────────────────────────────────
 
+  /**
+   * Add labels to an issue or PR (idempotent — duplicate labels are ignored).
+   *
+   * @param issueNumber - Issue/PR number.
+   * @param labels - Labels to add.
+   */
   async addLabels(issueNumber: number, labels: string[]): Promise<void> {
     await this.api(`/issues/${issueNumber}/labels`, {
       method: 'POST',
@@ -438,6 +543,12 @@ export class GitHubHelper {
     });
   }
 
+  /**
+   * Remove a label from an issue or PR. No-op if the label does not exist.
+   *
+   * @param issueNumber - Issue/PR number.
+   * @param label - Label name to remove.
+   */
   async removeLabel(issueNumber: number, label: string): Promise<void> {
     try {
       await this.api(`/issues/${issueNumber}/labels/${label}`, { method: 'DELETE' });
@@ -446,6 +557,13 @@ export class GitHubHelper {
     }
   }
 
+  /**
+   * Atomically add and remove labels in batches of 5 concurrent operations.
+   *
+   * @param issueNumber - Issue/PR number.
+   * @param add - Labels to add.
+   * @param remove - Labels to remove.
+   */
   async setLabels(issueNumber: number, add: string[], remove: string[]): Promise<void> {
     const operations = [
       ...add.map((l) => () => this.addLabels(issueNumber, [l])),
@@ -456,6 +574,12 @@ export class GitHubHelper {
     }
   }
 
+  /**
+   * Ensure a set of labels exist in the repository, creating them if missing.
+   * Label colors are deterministically generated from the label name.
+   *
+   * @param labels - Label names to create.
+   */
   async ensureLabels(labels: string[]): Promise<void> {
     const concurrency = 3;
     for (let i = 0; i < labels.length; i += concurrency) {
@@ -479,6 +603,14 @@ export class GitHubHelper {
 
   // ─── Context ────────────────────────────────────────────
 
+  /**
+   * Gather a rich markdown context string from an issue or PR, including
+   * comments, reviews, and inline review comments (paginated).
+   *
+   * @param options.issueNumber - Optional issue number to include.
+   * @param options.prNumber - Optional PR number to include.
+   * @returns Markdown string with issue/PR details, comments, and reviews.
+   */
   async gatherContext(options: {
     issueNumber?: number;
     prNumber?: number;
@@ -563,6 +695,12 @@ export class GitHubHelper {
     return parts.join('\n');
   }
 
+  /**
+   * Close all open PRs with head refs starting with "opencode/",
+   * optionally filtering to those created after a given timestamp.
+   *
+   * @param since - ISO timestamp; only close PRs created at or after this time.
+   */
   async closeOpenCodePRs(since?: string): Promise<void> {
     type PRSummary = { number: number; head: { ref: string }; created_at: string };
     const prs = await this.paginate<PRSummary>('/pulls?state=open', { perPage: 100 });
@@ -594,6 +732,12 @@ export class GitHubHelper {
 
   // ─── PR Merge ───────────────────────────────────────────
 
+  /**
+   * Merge a PR using the squash method.
+   *
+   * @param prNumber - PR number to merge.
+   * @returns True if the merge succeeded.
+   */
   async mergePR(prNumber: number): Promise<boolean> {
     try {
       await this.api(`/pulls/${prNumber}/merge`, {
@@ -610,6 +754,12 @@ export class GitHubHelper {
     }
   }
 
+  /**
+   * Enable auto-merge on a PR using squash method.
+   *
+   * @param prNumber - PR number.
+   * @returns True if auto-merge was enabled successfully.
+   */
   async enableAutoMerge(prNumber: number): Promise<boolean> {
     try {
       await this.api(`/pulls/${prNumber}/merge`, {
@@ -623,6 +773,12 @@ export class GitHubHelper {
     }
   }
 
+  /**
+   * Close an issue, optionally posting a closing comment.
+   *
+   * @param issueNumber - Issue number to close.
+   * @param comment - Optional closing comment body.
+   */
   async closeIssue(issueNumber: number, comment?: string): Promise<void> {
     try {
       await this.api(`/issues/${issueNumber}`, {

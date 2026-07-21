@@ -7,8 +7,8 @@ export function sanitizeDbError(err: unknown): string {
   return msg.replace(/([a-z][a-z0-9+.-]+:\/\/)[^@\s]+@/gi, '$1<redacted>@');
 }
 
-// Dynamic require() for optional DB drivers (pg, mysql2, better-sqlite3) that may not be installed
-const req =
+// biome-ignore lint/suspicious/noExplicitAny: Dynamic require() for optional DB drivers (pg, mysql2, better-sqlite3) that may not be installed. In ESM contexts this throws unconditionally.
+const req: ((moduleName: string) => any) | ((moduleName: string) => never) =
   typeof require !== 'undefined'
     ? require
     : (moduleName: string) => {

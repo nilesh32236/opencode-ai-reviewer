@@ -262,6 +262,18 @@ function buildCIConfig(): string {
   return cachedCIConfig;
 }
 
+/**
+ * Execute the OpenCode CLI with a given prompt.
+ * Spawns the binary with a sandboxed environment (only whitelisted env vars are forwarded)
+ * and enforces a timeout via SIGTERM/SIGKILL.
+ *
+ * @param prompt - The prompt text to pass to OpenCode.
+ * @param options.model - Model identifier (e.g. "gpt-4", "claude-3-opus").
+ * @param options.workingDirectory - Working directory for the subprocess (default: cwd).
+ * @param options.timeoutMinutes - Max runtime before forced termination (default: 20).
+ * @param options.env - Additional environment variables to forward.
+ * @returns Object indicating success, output text, and wall-clock duration in ms.
+ */
 export async function runOpenCode(
   prompt: string,
   options: {
@@ -425,6 +437,16 @@ export async function runOpenCode(
   }
 }
 
+/**
+ * Configure git user name, email, and authentication for the CI environment.
+ * Strips any existing http.extraheader entries to avoid duplicate auth headers,
+ * and sets up GIT_ASKPASS for token-based authentication without leaking
+ * credentials into git config.
+ *
+ * @param userName - Git user name (defaults to GITHUB_ACTOR or "opencode-ai-reviewer[bot]").
+ * @param userEmail - Git user email (defaults to user name @ users.noreply.github.com).
+ * @param token - GitHub token for authentication via GIT_ASKPASS.
+ */
 export function configureGit(userName?: string, userEmail?: string, token?: string): void {
   const name = userName || process.env.GITHUB_ACTOR || 'opencode-ai-reviewer[bot]';
   const email = userEmail || `${name}@users.noreply.github.com`;
@@ -507,6 +529,11 @@ export function configureGit(userName?: string, userEmail?: string, token?: stri
   core.info(`Git configured: ${name} <${email}>`);
 }
 
+/**
+ * Get the current git working-tree status as a porcelain string.
+ *
+ * @returns Porcelain git status output, or empty string if git is not available.
+ */
 export function getGitStatus(): string {
   try {
     return cp.execFileSync('git', ['status', '--porcelain'], { encoding: 'utf-8' });
@@ -515,6 +542,12 @@ export function getGitStatus(): string {
   }
 }
 
+/**
+ * Detect the workspace package manager (pnpm/yarn/npm) and install dependencies
+ * if node_modules is missing. Installs the package manager binary itself if not found.
+ *
+ * @param cwd - Workspace root directory.
+ */
 export async function setupWorkspaceDependencies(cwd: string): Promise<void> {
   core.info('Checking workspace package manager and dependencies...');
 
@@ -589,6 +622,11 @@ export async function setupWorkspaceDependencies(cwd: string): Promise<void> {
   }
 }
 
+/**
+ * Ensure the parent directory of a file path exists, creating it recursively if needed.
+ *
+ * @param outputFile - Path to a file whose parent directory should exist.
+ */
 export function ensureOutputDir(outputFile: string): void {
   const dir = path.dirname(path.resolve(outputFile));
   if (!fs.existsSync(dir)) {
