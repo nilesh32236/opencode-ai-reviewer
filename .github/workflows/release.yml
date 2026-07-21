@@ -112,7 +112,7 @@ jobs:
                 *"feat:"*)
                   MINOR=1
                   ;;
-                *"fix:"*)
+                *"fix:"*|*"perf:"*|*"security:"*)
                   PATCH=1
                   ;;
               esac
@@ -142,7 +142,7 @@ jobs:
           # Check if tag already exists
           if git rev-parse "${NEW_TAG}" >/dev/null 2>&1; then
             echo "Tag ${NEW_TAG} already exists. Skipping release."
-            echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "version=" >> "$GITHUB_OUTPUT"
             echo "tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
             echo "dry_run=${DRY_RUN}" >> "$GITHUB_OUTPUT"
             exit 0
@@ -211,7 +211,7 @@ jobs:
           PERFORMANCE=""
           SECURITY=""
 
-            while IFS= read -r line; do
+          while IFS= read -r line; do
             MSG=$(echo "$line" | cut -d' ' -f2-)
 
             # Extract PR number
@@ -301,7 +301,7 @@ jobs:
 
           git tag -a "${NEW_TAG}" -m "Release ${NEW_TAG}"
 
-          git push origin HEAD:main --force-with-lease
+          git push origin HEAD:main
           git push origin "${NEW_TAG}"
 
           echo "Committed and pushed tag ${NEW_TAG}"
