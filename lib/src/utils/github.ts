@@ -291,10 +291,13 @@ export class GitHubHelper {
       ? buildInlineComments(result, await this.getDiffLines(prNumber))
       : [];
 
+    const placedInlineKeys = new Set(inlineComments.map((c) => `${c.path}:${c.line}`));
     const issuesForBody = postInlineComments
-      ? result.issues.filter((i) => !i.inline)
+      ? result.issues.filter(
+          (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
+        )
       : result.issues;
-    const body = this.buildReviewBody({ ...result, issues: issuesForBody });
+    let body = this.buildReviewBody({ ...result, issues: issuesForBody });
 
     if (inlineComments.length > 0) {
       try {
@@ -312,6 +315,7 @@ export class GitHubHelper {
       } catch (err) {
         if (err instanceof Error && (err as Error & { status: number }).status === 422) {
           core.warning('Inline comments rejected (lines not in diff). Retrying body-only.');
+          body = this.buildReviewBody(result);
         } else {
           core.warning(`Review API failed: ${err}`);
           return { success: false, method: 'failed' };
