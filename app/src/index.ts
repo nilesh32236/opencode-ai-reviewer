@@ -219,6 +219,10 @@ function buildConfig(): AgentConfig {
         : [],
       lintCommands: process.env.LINT_COMMANDS ? process.env.LINT_COMMANDS.split(',') : [],
     },
+    review: {
+      ...DEFAULT_CONFIG.review,
+      inline: process.env.REVIEW_INLINE !== 'false',
+    },
     learning: {
       enabled: true,
       feedbackSignals: ['dismissed', 'reaction', 'disputed_comment'],

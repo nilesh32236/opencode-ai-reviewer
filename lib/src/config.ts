@@ -99,10 +99,14 @@ export function resolveConfig(config: PromptConfig, options: ResolveConfigOption
 
     if (!matches) continue;
 
-    if (override.review?.customRules) {
+    if (override.review?.customRules || override.review?.inline !== undefined) {
+      const existingRules = result.review?.customRules || [];
       result.review = {
         ...result.review,
-        customRules: [...(result.review?.customRules || []), ...override.review.customRules],
+        ...(override.review.customRules
+          ? { customRules: [...existingRules, ...override.review.customRules] }
+          : {}),
+        ...(override.review.inline !== undefined ? { inline: override.review.inline } : {}),
       };
     }
 
@@ -137,6 +141,9 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     }
     if (Array.isArray(config.review.customRules)) {
       result.review.customRules = config.review.customRules.filter((r) => typeof r === 'string');
+    }
+    if (typeof config.review.inline === 'boolean') {
+      result.review.inline = config.review.inline;
     }
   }
 
@@ -220,10 +227,19 @@ export function validateConfig(config: PromptConfig): PromptConfig {
       const validated: Record<string, unknown> = {};
       if (typeof o.path === 'string') validated.path = o.path;
       if (typeof o.branch === 'string') validated.branch = o.branch;
-      if (o.review && Array.isArray(o.review.customRules)) {
-        validated.review = {
-          customRules: o.review.customRules.filter((r: unknown) => typeof r === 'string'),
-        };
+      if (
+        o.review &&
+        (Array.isArray(o.review.customRules) || typeof o.review.inline === 'boolean')
+      ) {
+        validated.review = {};
+        if (Array.isArray(o.review.customRules)) {
+          (validated.review as Record<string, unknown>).customRules = o.review.customRules.filter(
+            (r: unknown) => typeof r === 'string',
+          );
+        }
+        if (typeof o.review.inline === 'boolean') {
+          (validated.review as Record<string, unknown>).inline = o.review.inline;
+        }
       }
       if (o.fix && typeof o.fix.maxIterations === 'number') {
         validated.fix = {
@@ -250,6 +266,9 @@ function extractDefaultsFromConfig(config: PromptConfig): Record<string, unknown
   }
   if (config.review?.extraContext) {
     defaults.review_prompt_extra = config.review.extraContext;
+  }
+  if (config.review?.inline !== undefined) {
+    defaults.review_inline = String(config.review.inline);
   }
   if (config.fix?.maxIterations) {
     defaults.max_fix_iterations = String(config.fix.maxIterations);

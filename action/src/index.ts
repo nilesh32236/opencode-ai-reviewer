@@ -81,6 +81,7 @@ async function run(): Promise<void> {
       },
       review: {
         ...DEFAULT_CONFIG.review,
+        inline: loadedConfig?.review?.inline ?? inputs.reviewInline,
       },
       audit: {
         ...DEFAULT_CONFIG.audit,

@@ -66,6 +66,7 @@ export interface ActionInputs {
   auditLabels: string[];
   opencodeVersion: string;
   timeoutMinutes: number;
+  reviewInline: boolean;
 }
 
 export function parseInputs(): ActionInputs {
@@ -135,5 +136,6 @@ export function parseInputs(): ActionInputs {
     auditLabels,
     opencodeVersion,
     timeoutMinutes: parseTimeoutMinutes(core.getInput('timeout_minutes')),
+    reviewInline: core.getInput('review_inline') !== 'false',
   };
 }

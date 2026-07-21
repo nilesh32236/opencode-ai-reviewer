@@ -314,10 +314,17 @@ export function buildReviewBody(result: ReviewResult): string {
   return parts.join('\n');
 }
 
+export interface InlineComment {
+  path: string;
+  line: number;
+  side: string;
+  body: string;
+}
+
 export function buildInlineComments(
   result: ReviewResult,
   diffLines?: Set<string>,
-): Array<{ path: string; line: number; side: string; body: string }> {
+): InlineComment[] {
   return result.issues
     .filter((issue) => {
       if (issue.inline !== true || !issue.line || issue.line < 1) return false;
@@ -327,10 +334,23 @@ export function buildInlineComments(
       }
       return true;
     })
-    .map((issue) => ({
-      path: issue.file.replace(/^\//, ''),
-      line: issue.line,
-      side: 'RIGHT' as const,
-      body: `**${issue.severity.toUpperCase()}**: ${issue.message}${issue.suggestion ? `\n\n> ${issue.suggestion}` : ''}`,
-    }));
+    .map((issue) => {
+      let body = `**${issue.severity.toUpperCase()}**: ${issue.message}`;
+      if (issue.suggestion?.includes('\n')) {
+        const diffSuggestion = issue.suggestion
+          .split('\n')
+          .filter((l) => l.trim())
+          .map((l) => (l.startsWith('+') || l.startsWith('-') ? l : ` ${l}`))
+          .join('\n');
+        body += `\n\n\`\`\`suggestion\n${diffSuggestion}\n\`\`\``;
+      } else if (issue.suggestion) {
+        body += `\n\n> Suggestion: ${issue.suggestion}`;
+      }
+      return {
+        path: issue.file.replace(/^\//, ''),
+        line: issue.line,
+        side: 'RIGHT' as const,
+        body,
+      };
+    });
 }

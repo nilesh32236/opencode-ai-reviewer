@@ -136,8 +136,8 @@ export interface ReviewConfig {
   skipLabels: string[];
   /** Skip review for these actors */
   skipActors: string[];
-  /** Whether to post inline comments */
-  postInlineComments: boolean;
+  /** Whether to post findings as inline review comments on the PR diff */
+  inline: boolean;
   /** Whether to require a verdict */
   requireVerdict: boolean;
   /** Command triggers (e.g., /oc, /review) */
@@ -330,6 +330,7 @@ export interface ConfigOverride {
   branch?: string;
   review?: {
     customRules?: string[];
+    inline?: boolean;
   };
   fix?: {
     maxIterations?: number;
@@ -345,6 +346,8 @@ export interface PromptConfig {
     systemPrompt?: string;
     extraContext?: string;
     customRules?: string[];
+    /** Post findings as inline review comments (default: true) */
+    inline?: boolean;
   };
   fix?: {
     systemPrompt?: string;
@@ -400,7 +403,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   review: {
     skipLabels: ['autofix', 'autofix:approved', 'autofix:merged'],
     skipActors: ['github-actions[bot]'],
-    postInlineComments: true,
+    inline: true,
     requireVerdict: true,
     commandTriggers: ['/oc', '/review'],
   },
