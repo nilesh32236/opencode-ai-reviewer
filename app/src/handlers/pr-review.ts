@@ -47,7 +47,12 @@ export async function handlePRReview(
 
     let reviewResult: { success: boolean; method: string };
     try {
-      reviewResult = await gh.postReview(prNumber, pr.headSha, result);
+      reviewResult = await gh.postReview(
+        prNumber,
+        pr.headSha,
+        result,
+        config.review.postInlineComments,
+      );
     } catch (err) {
       logger.error(
         `Failed to post review for PR #${prNumber}: ${err instanceof Error ? err.message : err}`,

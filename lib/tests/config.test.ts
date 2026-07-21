@@ -116,6 +116,18 @@ fix:
       expect(result.review_prompt_extra).toBe('some context');
     });
 
+    it('extracts review.inline as review_inline string', () => {
+      const config = { review: { inline: true } as never };
+      const result = mergeConfigWithInputs(config, {});
+      expect(result.review_inline).toBe('true');
+    });
+
+    it('extracts review.inline false as review_inline string', () => {
+      const config = { review: { inline: false } as never };
+      const result = mergeConfigWithInputs(config, {});
+      expect(result.review_inline).toBe('false');
+    });
+
     it('extracts fix maxIterations as string', () => {
       const config = { fix: { maxIterations: 7 } };
       const result = mergeConfigWithInputs(config, {});
@@ -221,6 +233,21 @@ fix:
       expect(result.learning?.patternDiscovery?.windowSize).toBe(200);
     });
 
+    it('passes through review.inline boolean', () => {
+      const result = validateConfig({ review: { inline: false } } as never);
+      expect(result.review?.inline).toBe(false);
+    });
+
+    it('passes through review.inline true', () => {
+      const result = validateConfig({ review: { inline: true } } as never);
+      expect(result.review?.inline).toBe(true);
+    });
+
+    it('skips review.inline when not a boolean', () => {
+      const result = validateConfig({ review: { inline: 'yes' } } as never);
+      expect(result.review?.inline).toBeUndefined();
+    });
+
     it('returns empty object for empty config', () => {
       const result = validateConfig({});
       expect(result).toEqual({});
@@ -324,6 +351,38 @@ fix:
         paths: ['packages/frontend/src/App.tsx'],
       });
       expect(result.review?.customRules).toEqual(['base-rule']);
+    });
+
+    it('applies inline override from review config', () => {
+      const config = {
+        ...baseConfig,
+        overrides: [
+          {
+            path: 'packages/frontend/**',
+            review: { inline: false },
+          },
+        ],
+      };
+      const result = resolveConfig(config, {
+        paths: ['packages/frontend/src/Button.tsx'],
+      });
+      expect(result.review?.inline).toBe(false);
+    });
+
+    it('does not apply inline override when path does not match', () => {
+      const config = {
+        ...baseConfig,
+        overrides: [
+          {
+            path: 'packages/api/**',
+            review: { inline: false },
+          },
+        ],
+      };
+      const result = resolveConfig(config, {
+        paths: ['packages/frontend/src/App.tsx'],
+      });
+      expect(result.review?.inline).toBeUndefined();
     });
 
     it('returns base config when no paths or branch provided', () => {
@@ -441,6 +500,20 @@ fix:
         overrides: [{ audit: { categories: ['security', null, 42] } }],
       } as never);
       expect(result.overrides![0].audit?.categories).toEqual(['security']);
+    });
+
+    it('passes through override review.inline boolean', () => {
+      const result = validateConfig({
+        overrides: [{ path: 'src/', review: { inline: false } }],
+      } as never);
+      expect(result.overrides![0].review?.inline).toBe(false);
+    });
+
+    it('skips override review.inline when not a boolean', () => {
+      const result = validateConfig({
+        overrides: [{ path: 'src/', review: { inline: 'maybe' } }],
+      } as never);
+      expect(result.overrides![0].review?.inline).toBeUndefined();
     });
 
     it('skips invalid override entries', () => {

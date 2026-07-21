@@ -285,9 +285,10 @@ export class GitHubHelper {
     prNumber: number,
     commitSha: string,
     result: ReviewResult,
+    postInlineComments = true,
   ): Promise<{ success: boolean; method: 'full' | 'body-only' | 'failed' }> {
     const diffLines = await this.getDiffLines(prNumber);
-    const inlineComments = buildInlineComments(result, diffLines);
+    const inlineComments = postInlineComments ? buildInlineComments(result, diffLines) : [];
 
     const body = this.buildReviewBody(result);
 

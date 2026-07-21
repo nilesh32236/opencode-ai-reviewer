@@ -101,6 +101,7 @@ The Action runs `review` mode by default. Other modes: `fix`, `audit`, `post`, `
 | `enable_mcp`             | `true`                               | Enable MCP servers for context enrichment      |
 | `include_strengths`      | `true`                               | Include positive feedback in output            |
 | `review_comment_summary` | `true`                               | Post a summary comment on the PR               |
+| `review_inline`          | `true`                               | Post findings as inline review comments on the PR diff (set to `false` for summary-only)
 | `run_checks_after_fix`   | —                                    | Commands to run after fix (e.g. `npm run lint`) |
 | `audit_prompt_file`      | —                                    | Path to custom audit prompt file               |
 | `audit_create_issues`    | `true`                               | Create GitHub issues for audit findings        |
@@ -108,6 +109,34 @@ The Action runs `review` mode by default. Other modes: `fix`, `audit`, `post`, `
 | `audit_labels`           | `audit`                              | Comma-separated labels for audit issues        |
 
 **Outputs:** `review_summary`, `verdict`, `critical_count`, `important_count`, `minor_count`, `changes_made`.
+
+### Inline Review Mode
+
+By default (`review_inline: true`), the reviewer posts findings as inline comments on the specific lines of the PR diff. Each inline comment includes:
+
+- The issue severity label (`CRITICAL`, `IMPORTANT`, or `MINOR`)
+- The issue message
+- A suggestion (if provided), with a ````suggestion```` diff block for multi-line fixes
+
+Findings that cannot be mapped to a diff line (e.g., global issues, file-level findings without a specific line) are included in the summary comment.
+
+Set `review_inline: false` in your workflow inputs or `.opencode-reviewer.yml` (`review.inline: false`) to disable inline comments and post all findings as a single summary comment instead.
+
+#### Config via `.opencode-reviewer.yml`
+
+```yaml
+review:
+  inline: true    # or false for summary-only
+```
+
+#### Per-path overrides
+
+```yaml
+overrides:
+  - path: "packages/legacy/**"
+    review:
+      inline: false    # summary-only for legacy code
+```
 
 ---
 

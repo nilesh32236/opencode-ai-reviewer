@@ -14,7 +14,9 @@ export {
   parseJsonlFile,
   parseJsonlString,
   buildReviewBody,
+  buildInlineComments,
 } from './jsonl-parser.js';
+export type { InlineComment } from './jsonl-parser.js';
 export { loadConfig, mergeConfigWithInputs, resolveConfig, validateConfig } from './config.js';
 export type { ResolveConfigOptions } from './config.js';
 export { MCPManager } from './mcp/client.js';

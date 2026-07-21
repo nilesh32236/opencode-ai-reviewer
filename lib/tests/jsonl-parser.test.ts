@@ -264,5 +264,168 @@ describe('jsonl-parser', () => {
       expect(comments).toHaveLength(1);
       expect(comments[0].line).toBe(10);
     });
+
+    it('handles leading slash in file paths for diff matching', () => {
+      const result: ReviewResult = {
+        summary: '',
+        verdict: { ready: false, reasoning: '' },
+        strengths: [],
+        issues: [
+          {
+            type: 'issue',
+            severity: 'important',
+            file: '/src/a.ts',
+            line: 42,
+            message: 'Leading slash.',
+            inline: true,
+          },
+        ],
+        stats: { total: 1, critical: 0, important: 1, minor: 0 },
+        rawLines: [],
+        failedLines: 0,
+      };
+
+      const diffLines = new Set(['src/a.ts:42']);
+      const comments = buildInlineComments(result, diffLines);
+      expect(comments).toHaveLength(1);
+      expect(comments[0].path).toBe('src/a.ts');
+    });
+
+    it('includes suggestion as plain text when suggestion is a single line', () => {
+      const result: ReviewResult = {
+        summary: '',
+        verdict: { ready: false, reasoning: '' },
+        strengths: [],
+        issues: [
+          {
+            type: 'issue',
+            severity: 'minor',
+            file: 'src/a.ts',
+            line: 5,
+            message: 'Typo.',
+            suggestion: 'Change "teh" to "the"',
+            inline: true,
+          },
+        ],
+        stats: { total: 1, critical: 0, important: 0, minor: 1 },
+        rawLines: [],
+        failedLines: 0,
+      };
+
+      const comments = buildInlineComments(result);
+      expect(comments).toHaveLength(1);
+      expect(comments[0].body).toContain('Suggestion:');
+      expect(comments[0].body).toContain('Change "teh" to "the"');
+    });
+
+    it('adds suggestion diff block when suggestion contains multiple lines', () => {
+      const result: ReviewResult = {
+        summary: '',
+        verdict: { ready: false, reasoning: '' },
+        strengths: [],
+        issues: [
+          {
+            type: 'issue',
+            severity: 'critical',
+            file: 'src/a.ts',
+            line: 10,
+            message: 'Missing null check.',
+            suggestion: `-if (x) {
++if (x !== null) {`,
+            inline: true,
+          },
+        ],
+        stats: { total: 1, critical: 1, important: 0, minor: 0 },
+        rawLines: [],
+        failedLines: 0,
+      };
+
+      const comments = buildInlineComments(result);
+      expect(comments).toHaveLength(1);
+      expect(comments[0].body).toContain('```suggestion');
+      expect(comments[0].body).toContain('-if (x) {');
+      expect(comments[0].body).toContain('+if (x !== null) {');
+      expect(comments[0].body).toContain('```');
+    });
+
+    it('returns empty array when no issues have inline=true', () => {
+      const result: ReviewResult = {
+        summary: '',
+        verdict: { ready: false, reasoning: '' },
+        strengths: [],
+        issues: [
+          {
+            type: 'issue',
+            severity: 'minor',
+            file: 'src/a.ts',
+            line: 5,
+            message: 'Nit.',
+            inline: false,
+          },
+        ],
+        stats: { total: 1, critical: 0, important: 0, minor: 1 },
+        rawLines: [],
+        failedLines: 0,
+      };
+
+      const comments = buildInlineComments(result);
+      expect(comments).toHaveLength(0);
+    });
+
+    it('includes all inline issues when diff set is empty (no diff info available)', () => {
+      const result: ReviewResult = {
+        summary: '',
+        verdict: { ready: false, reasoning: '' },
+        strengths: [],
+        issues: [
+          {
+            type: 'issue',
+            severity: 'critical',
+            file: 'src/a.ts',
+            line: 10,
+            message: 'Not in empty diff.',
+            inline: true,
+          },
+        ],
+        stats: { total: 1, critical: 1, important: 0, minor: 0 },
+        rawLines: [],
+        failedLines: 0,
+      };
+
+      const comments = buildInlineComments(result, new Set());
+      expect(comments).toHaveLength(1);
+    });
+
+    it('includes all inline=true issues when diffLines is not provided', () => {
+      const result: ReviewResult = {
+        summary: '',
+        verdict: { ready: false, reasoning: '' },
+        strengths: [],
+        issues: [
+          {
+            type: 'issue',
+            severity: 'critical',
+            file: 'src/a.ts',
+            line: 1,
+            message: 'Issue 1.',
+            inline: true,
+          },
+          {
+            type: 'issue',
+            severity: 'important',
+            file: 'src/b.ts',
+            line: 2,
+            message: 'Issue 2.',
+            inline: true,
+          },
+        ],
+        stats: { total: 2, critical: 1, important: 1, minor: 0 },
+        rawLines: [],
+        failedLines: 0,
+      };
+
+      const comments = buildInlineComments(result);
+      expect(comments).toHaveLength(2);
+    });
   });
 });

@@ -102,6 +102,11 @@ inputs:
     required: false
     default: 'true'
 
+  review_inline:
+    description: 'Post findings as inline review comments on the PR diff (false = summary comment only)'
+    required: false
+    default: 'true'
+
   review_comment_summary:
     description: 'Include a summary comment on the PR'
     required: false

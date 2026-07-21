@@ -37,5 +37,6 @@ export interface ActionInputs {
     auditLabels: string[];
     opencodeVersion: string;
     timeoutMinutes: number;
+    reviewInline: boolean;
 }
 export declare function parseInputs(): ActionInputs;

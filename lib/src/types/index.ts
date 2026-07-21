@@ -136,7 +136,7 @@ export interface ReviewConfig {
   skipLabels: string[];
   /** Skip review for these actors */
   skipActors: string[];
-  /** Whether to post inline comments */
+  /** Whether to post inline comments (review.inline in YAML config) */
   postInlineComments: boolean;
   /** Whether to require a verdict */
   requireVerdict: boolean;
@@ -330,6 +330,7 @@ export interface ConfigOverride {
   branch?: string;
   review?: {
     customRules?: string[];
+    inline?: boolean;
   };
   fix?: {
     maxIterations?: number;
@@ -345,6 +346,8 @@ export interface PromptConfig {
     systemPrompt?: string;
     extraContext?: string;
     customRules?: string[];
+    /** Post findings as inline review comments (default: true) */
+    inline?: boolean;
   };
   fix?: {
     systemPrompt?: string;

@@ -64,7 +64,12 @@ export async function runReview(
     return;
   }
 
-  const reviewResult = await gh.postReview(prNumber, pr.headSha, result);
+  const reviewResult = await gh.postReview(
+    prNumber,
+    pr.headSha,
+    result,
+    config.review.postInlineComments,
+  );
 
   if (!reviewResult.success) {
     core.warning('Failed to post review to GitHub');

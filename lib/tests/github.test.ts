@@ -486,6 +486,27 @@ describe('GitHubHelper', () => {
       expect(result.success).toBe(true);
       expect(result.method).toBe('body-only');
     });
+
+    it('forces body-only when postInlineComments is false even with inline issues', async () => {
+      const diffText = `@@ -42,1 +42,1 @@`;
+
+      fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+        if (url.includes('/pulls/42') && !url.includes('/reviews') && !url.includes('/files')) {
+          return mockResponse({ text: vi.fn().mockResolvedValue(diffText) });
+        }
+        if (url.includes('/pulls/42/reviews')) {
+          const reqBody = options?.body ? JSON.parse(options.body as string) : {};
+          expect(reqBody.comments).toBeUndefined();
+          return mockResponse({ body: { id: 1 } });
+        }
+        return mockResponse({ body: [] });
+      });
+
+      const result = await helper.postReview(42, 'sha123', sampleReviewResult(), false);
+
+      expect(result.success).toBe(true);
+      expect(result.method).toBe('body-only');
+    });
   });
 
   describe('postOrUpdateComment', () => {
