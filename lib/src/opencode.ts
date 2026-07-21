@@ -6,6 +6,13 @@ import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as io from '@actions/io';
 import * as tc from '@actions/tool-cache';
+import {
+  computeSha256,
+  findChecksumAsset,
+  getKnownChecksum,
+  parseChecksumFile,
+  verifyChecksum,
+} from './utils/checksum.js';
 import { withRetry } from './utils/retry.js';
 
 let opencodePath: string | null = null;
@@ -92,9 +99,32 @@ export async function setupOpenCode(version = 'latest'): Promise<string> {
     assets: Array<{ name: string; browser_download_url: string }>;
   };
 
+  const semver = (release.tag_name || version).replace(/^v/, '');
   const platform = os.platform();
   const extension = platform === 'win32' ? 'zip' : 'tar.gz';
   const assetName = `opencode-${arch}.${extension}`;
+
+  const cachedToolDir = tc.find('opencode', semver);
+  if (cachedToolDir) {
+    const binName = platform === 'win32' ? 'opencode.exe' : 'opencode';
+    const cachedBinPath = path.join(cachedToolDir, binName);
+    const checksumFile = path.join(cachedToolDir, '.checksum');
+    if (fs.existsSync(cachedBinPath) && fs.existsSync(checksumFile)) {
+      const storedChecksum = fs.readFileSync(checksumFile, 'utf-8').trim();
+      const actualChecksum = await computeSha256(cachedBinPath);
+      if (actualChecksum === storedChecksum) {
+        core.info(`Using cached OpenCode ${semver} from ${cachedBinPath}`);
+        if (platform !== 'win32') fs.chmodSync(cachedBinPath, 0o755);
+        core.addPath(cachedToolDir);
+        opencodePath = cachedBinPath;
+        return cachedBinPath;
+      }
+      core.info('Cached binary checksum mismatch, re-downloading...');
+    } else {
+      core.info('Cached binary lacks checksum verification file, re-downloading...');
+    }
+  }
+
   const asset = release.assets.find((a) => a.name === assetName);
   if (!asset) {
     throw new Error(
@@ -115,13 +145,21 @@ export async function setupOpenCode(version = 'latest'): Promise<string> {
           );
         }),
       ]).finally(() => downloadTimeoutHandle !== undefined && clearTimeout(downloadTimeoutHandle));
+
+      await verifyDownloadedArchive(
+        dlPath,
+        release.assets,
+        assetName,
+        release.tag_name || version,
+        arch,
+      );
+
       let extPath: string;
       if (extension === 'zip') {
         extPath = await tc.extractZip(dlPath);
       } else {
         extPath = await tc.extractTar(dlPath);
       }
-      const semver = (release.tag_name || version).replace(/^v/, '');
       const cachePath = await tc.cacheDir(extPath, 'opencode', semver);
       return { cachedPath: cachePath };
     },
@@ -135,6 +173,9 @@ export async function setupOpenCode(version = 'latest'): Promise<string> {
     fs.chmodSync(binPath, 0o755);
   }
 
+  const binChecksum = await computeSha256(binPath);
+  fs.writeFileSync(path.join(cachedPath, '.checksum'), `${binChecksum}\n`, 'utf-8');
+
   core.addPath(cachedPath);
 
   try {
@@ -146,6 +187,41 @@ export async function setupOpenCode(version = 'latest'): Promise<string> {
 
   opencodePath = binPath;
   return binPath;
+}
+
+async function verifyDownloadedArchive(
+  dlPath: string,
+  assets: Array<{ name: string; browser_download_url: string }>,
+  assetName: string,
+  version: string,
+  arch: string,
+): Promise<void> {
+  const checksumAsset = findChecksumAsset(assets, assetName);
+
+  if (checksumAsset) {
+    core.info(`Downloading checksum file: ${checksumAsset.name}`);
+    const checksumPath = await tc.downloadTool(checksumAsset.browser_download_url);
+    const checksumContent = fs.readFileSync(checksumPath, 'utf-8');
+    const expectedHash = parseChecksumFile(checksumContent, assetName);
+
+    if (expectedHash) {
+      await verifyChecksum(dlPath, expectedHash);
+      core.info(`Checksum verified for ${assetName}`);
+      return;
+    }
+    core.warning(`Could not extract checksum for ${assetName} from ${checksumAsset.name}`);
+  }
+
+  const knownChecksum = getKnownChecksum(version, arch);
+  if (knownChecksum) {
+    await verifyChecksum(dlPath, knownChecksum);
+    core.info(`Checksum verified using known-good checksum for ${version}`);
+    return;
+  }
+
+  core.warning(
+    `No checksum file found for ${assetName}. Skipping integrity verification — this could be a security concern.`,
+  );
 }
 
 /**

@@ -40,6 +40,13 @@ export { CircuitBreaker } from './utils/circuit-breaker.js';
 export type { CircuitState, CircuitBreakerOptions } from './utils/circuit-breaker.js';
 export { Logger } from './utils/logger.js';
 export type { LogLevel, LogContext } from './utils/logger.js';
+export {
+  computeSha256,
+  findChecksumAsset,
+  getKnownChecksum,
+  parseChecksumFile,
+  verifyChecksum,
+} from './utils/checksum.js';
 export { FeedbackSubscriber } from './learning/feedback-subscriber.js';
 export { MetaReviewEngine, MetaReviewSubscriber } from './meta-review/engine.js';
 export { buildMetaReviewPrompt } from './meta-review/prompts.js';
