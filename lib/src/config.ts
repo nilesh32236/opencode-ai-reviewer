@@ -2,7 +2,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as core from '@actions/core';
 import yaml from 'js-yaml';
-import type { PromptConfig } from './types/index.js';
+import type { ConfigOverride, PromptConfig } from './types/index.js';
+
+export interface ResolveConfigOptions {
+  /** File paths being reviewed (for path-based overrides) */
+  paths?: string[];
+  /** Current branch name (for branch-based overrides) */
+  branch?: string;
+}
 
 const CONFIG_FILENAMES = [
   '.opencode-reviewer.yml',
@@ -40,6 +47,81 @@ export function mergeConfigWithInputs(
     ...extractDefaultsFromConfig(config),
     ...inputs,
   };
+}
+
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function matchesGlob(pattern: string, value: string): boolean {
+  const result: string[] = [];
+  let i = 0;
+  while (i < pattern.length) {
+    const ch = pattern[i];
+    if (ch === '\\' && i + 1 < pattern.length) {
+      result.push(escapeRegex(pattern[i + 1]));
+      i += 2;
+    } else if (ch === '*') {
+      if (i + 1 < pattern.length && pattern[i + 1] === '*') {
+        result.push('.*');
+        i += 2;
+      } else {
+        result.push('[^/]*');
+        i += 1;
+      }
+    } else if (ch === '?') {
+      result.push('.');
+      i += 1;
+    } else {
+      result.push(escapeRegex(ch));
+      i += 1;
+    }
+  }
+  return new RegExp(`^${result.join('')}$`).test(value);
+}
+
+export function resolveConfig(config: PromptConfig, options: ResolveConfigOptions): PromptConfig {
+  if (!config.overrides?.length) return config;
+
+  const { paths = [], branch } = options;
+  const result: PromptConfig = { ...config, overrides: undefined };
+
+  for (const override of config.overrides) {
+    let matches = false;
+
+    if (override.path && paths.length > 0) {
+      matches = paths.some((p) => matchesGlob(override.path!, p));
+    }
+
+    if (!matches && override.branch && branch) {
+      matches = matchesGlob(override.branch, branch);
+    }
+
+    if (!matches) continue;
+
+    if (override.review?.customRules) {
+      result.review = {
+        ...result.review,
+        customRules: [...(result.review?.customRules || []), ...override.review.customRules],
+      };
+    }
+
+    if (override.fix?.maxIterations !== undefined) {
+      result.fix = {
+        ...result.fix,
+        maxIterations: override.fix.maxIterations,
+      };
+    }
+
+    if (override.audit?.categories) {
+      result.audit = {
+        ...result.audit,
+        categories: override.audit.categories,
+      };
+    }
+  }
+
+  return result;
 }
 
 export function validateConfig(config: PromptConfig): PromptConfig {
@@ -128,6 +210,32 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     }
     if (config.project.commandReference && typeof config.project.commandReference === 'object') {
       result.project.commandReference = { ...config.project.commandReference };
+    }
+  }
+
+  if (Array.isArray(config.overrides)) {
+    result.overrides = [];
+    for (const o of config.overrides) {
+      if (!o || typeof o !== 'object') continue;
+      const validated: Record<string, unknown> = {};
+      if (typeof o.path === 'string') validated.path = o.path;
+      if (typeof o.branch === 'string') validated.branch = o.branch;
+      if (o.review && Array.isArray(o.review.customRules)) {
+        validated.review = {
+          customRules: o.review.customRules.filter((r: unknown) => typeof r === 'string'),
+        };
+      }
+      if (o.fix && typeof o.fix.maxIterations === 'number') {
+        validated.fix = {
+          maxIterations: Math.min(Math.max(o.fix.maxIterations, 1), 10),
+        };
+      }
+      if (o.audit && Array.isArray(o.audit.categories)) {
+        validated.audit = {
+          categories: o.audit.categories.filter((c: unknown) => typeof c === 'string'),
+        };
+      }
+      result.overrides.push(validated as ConfigOverride);
     }
   }
 
