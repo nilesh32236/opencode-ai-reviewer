@@ -1,4 +1,4 @@
-import type { AgentConfig, PRContext, ReviewResult } from '@opencode-pr-agent/lib';
+import type { AgentConfig, LearningStore, PRContext, ReviewResult } from '@opencode-pr-agent/lib';
 import { GitHubHelper, Logger, ReviewEngine } from '@opencode-pr-agent/lib';
 
 export async function handlePRReview(
@@ -6,6 +6,7 @@ export async function handlePRReview(
   repo: string,
   token: string,
   config: AgentConfig,
+  learningStore?: LearningStore,
 ): Promise<ReviewResult | null> {
   const logger = new Logger('PRReview', { prNumber, repo });
   logger.info(`Starting review for PR #${prNumber}`);
@@ -74,6 +75,46 @@ export async function handlePRReview(
       } catch (err) {
         logger.error(
           `Autofix loop failed for PR #${prNumber}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    }
+
+    if (learningStore) {
+      try {
+        const findingsToStore: Array<{
+          prNumber: number;
+          type: string;
+          severity?: string;
+          file?: string;
+          line?: number;
+          message: string;
+          suggestion?: string;
+        }> = [
+          ...result.issues.map((i) => ({
+            prNumber,
+            type: 'issue' as const,
+            severity: i.severity,
+            file: i.file,
+            line: i.line,
+            message: i.message,
+            suggestion: i.suggestion,
+          })),
+          ...result.strengths.map((s) => ({
+            prNumber,
+            type: 'strength' as const,
+            file: s.file,
+            message: s.message,
+          })),
+        ];
+        if (findingsToStore.length > 0) {
+          await learningStore.recordFindings(findingsToStore);
+          logger.info(
+            `Stored ${findingsToStore.length} findings in LearningStore for PR #${prNumber}`,
+          );
+        }
+      } catch (err) {
+        logger.error(
+          `Failed to store findings in LearningStore: ${err instanceof Error ? err.message : err}`,
         );
       }
     }
