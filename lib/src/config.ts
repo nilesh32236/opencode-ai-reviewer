@@ -54,12 +54,30 @@ function escapeRegex(str: string): string {
 }
 
 function matchesGlob(pattern: string, value: string): boolean {
-  const regexStr = escapeRegex(pattern)
-    .replace(/\\\*\\\*/g, '___GLOBSTAR___')
-    .replace(/\\\*/g, '[^/]*')
-    .replace(/___GLOBSTAR___/g, '.*')
-    .replace(/\\\?/g, '.');
-  return new RegExp(`^${regexStr}$`).test(value);
+  const result: string[] = [];
+  let i = 0;
+  while (i < pattern.length) {
+    const ch = pattern[i];
+    if (ch === '\\' && i + 1 < pattern.length) {
+      result.push(escapeRegex(pattern[i + 1]));
+      i += 2;
+    } else if (ch === '*') {
+      if (i + 1 < pattern.length && pattern[i + 1] === '*') {
+        result.push('.*');
+        i += 2;
+      } else {
+        result.push('[^/]*');
+        i += 1;
+      }
+    } else if (ch === '?') {
+      result.push('.');
+      i += 1;
+    } else {
+      result.push(escapeRegex(ch));
+      i += 1;
+    }
+  }
+  return new RegExp(`^${result.join('')}$`).test(value);
 }
 
 export function resolveConfig(config: PromptConfig, options: ResolveConfigOptions): PromptConfig {
