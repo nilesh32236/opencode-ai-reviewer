@@ -1,5 +1,11 @@
 # Advanced Example — Full Suite
-# Copy to your repo: .github/workflows/ai-suite.yml
+#
+# SHIPPED: Use reusable workflows (no copy needed):
+#   review  → nilesh32236/opencode-ai-reviewer/.github/workflows/review.yml@v1
+#   audit   → nilesh32236/opencode-ai-reviewer/.github/workflows/audit.yml@v1
+#   autofix → nilesh32236/opencode-ai-reviewer/.github/workflows/autofix.yml@v1
+#
+# CUSTOM: Copy this file to your repo: .github/workflows/ai-suite.yml
 
 name: AI Code Quality Suite
 

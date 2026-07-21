@@ -1,6 +1,16 @@
 # Monorepo Example — Next.js + Express
-# Copy this file to your repo: .github/workflows/ai-review.yml
-# Also copy the .opencode-reviewer.yml config from this directory.
+#
+# SHIPPED: Use the reusable workflow (no copy needed):
+#   jobs:
+#     review:
+#       uses: nilesh32236/opencode-ai-reviewer/.github/workflows/review.yml@v1
+#       with:
+#         max_files_per_batch: 3
+#         include_strengths: true
+#       secrets: inherit
+#
+# CUSTOM: Copy this file to your repo: .github/workflows/ai-review.yml
+#       Also copy the .opencode-reviewer.yml config from this directory.
 
 name: AI Code Review
 
