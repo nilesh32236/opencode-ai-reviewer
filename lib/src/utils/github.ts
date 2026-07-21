@@ -335,6 +335,32 @@ export class GitHubHelper {
     }
   }
 
+  /**
+   * Fetch the raw diff between two commit SHAs on the same repository.
+   * Uses the GitHub compare API (diff format).
+   *
+   * @param fromSha - Base commit SHA.
+   * @param toSha - Head commit SHA.
+   * @returns Raw diff text, or empty string on failure.
+   */
+  async getDiffSince(fromSha: string, toSha: string): Promise<string> {
+    try {
+      const diffText = await this.api<string>(
+        `/compare/${fromSha}...${toSha}`,
+        {
+          headers: { Accept: 'application/vnd.github.v3.diff' },
+        },
+        'text',
+      );
+      return diffText;
+    } catch (err) {
+      core.warning(
+        `Could not fetch diff between ${fromSha.slice(0, 7)} and ${toSha.slice(0, 7)}: ${String(err)}`,
+      );
+      return '';
+    }
+  }
+
   // ─── Review Operations ──────────────────────────────────
 
   /**

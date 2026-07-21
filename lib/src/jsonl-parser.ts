@@ -105,6 +105,7 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
       message: i.message,
       suggestion: i.suggestion,
       inline: i.inline,
+      previouslyReported: i.previouslyReported,
     })),
     stats: {
       total: issues.length,
@@ -185,6 +186,7 @@ export function parseJsonlString(content: string): ReviewResult {
       message: i.message,
       suggestion: i.suggestion,
       inline: i.inline,
+      previouslyReported: i.previouslyReported,
     })),
     stats: {
       total: issues.length,
@@ -194,6 +196,18 @@ export function parseJsonlString(content: string): ReviewResult {
     },
     rawLines,
     failedLines,
+  };
+}
+
+export function emptyResult(): ReviewResult {
+  return {
+    summary: '',
+    verdict: { ready: false, reasoning: '', autoFixable: false, confidence: 'low' },
+    strengths: [],
+    issues: [],
+    stats: { total: 0, critical: 0, important: 0, minor: 0 },
+    rawLines: [],
+    failedLines: 0,
   };
 }
 
@@ -256,24 +270,14 @@ function validateAndNormalize(obj: Record<string, unknown>): Finding {
         message: typeof obj.message === 'string' ? obj.message : '',
         suggestion: typeof obj.suggestion === 'string' ? obj.suggestion : undefined,
         inline: typeof obj.inline === 'boolean' ? obj.inline : false,
+        previouslyReported:
+          typeof obj.previouslyReported === 'boolean' ? obj.previouslyReported : undefined,
       } as IssueFinding;
     }
 
     default:
       throw new Error(`Unhandled finding type: ${obj.type}`);
   }
-}
-
-export function emptyResult(): ReviewResult {
-  return {
-    summary: '',
-    verdict: { ready: false, reasoning: '', autoFixable: false, confidence: 'low' },
-    strengths: [],
-    issues: [],
-    stats: { total: 0, critical: 0, important: 0, minor: 0 },
-    rawLines: [],
-    failedLines: 0,
-  };
 }
 
 export function buildReviewBody(result: ReviewResult): string {

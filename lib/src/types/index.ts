@@ -33,6 +33,15 @@ export interface ReviewIssue {
   message: string;
   suggestion?: string;
   inline?: boolean;
+  previouslyReported?: boolean;
+}
+
+export interface PreviousFindingIteration {
+  iteration: number;
+  issues: ReviewIssue[];
+  fixSummary?: string;
+  filesChanged?: string[];
+  headSha?: string;
 }
 
 export type ReviewEntry = ReviewSummary | ReviewVerdict | ReviewStrength | ReviewIssue;
@@ -229,6 +238,7 @@ export interface IssueFinding extends BaseFinding {
   message: string;
   suggestion?: string;
   inline?: boolean;
+  previouslyReported?: boolean;
 }
 
 export type Finding = SummaryFinding | VerdictFinding | StrengthFinding | IssueFinding;
