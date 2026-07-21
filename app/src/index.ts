@@ -221,7 +221,7 @@ function buildConfig(): AgentConfig {
     },
     review: {
       ...DEFAULT_CONFIG.review,
-      postInlineComments: process.env.REVIEW_INLINE !== 'false',
+      inline: process.env.REVIEW_INLINE !== 'false',
     },
     learning: {
       enabled: true,

@@ -136,8 +136,8 @@ export interface ReviewConfig {
   skipLabels: string[];
   /** Skip review for these actors */
   skipActors: string[];
-  /** Whether to post inline comments (review.inline in YAML config) */
-  postInlineComments: boolean;
+  /** Whether to post findings as inline review comments on the PR diff */
+  inline: boolean;
   /** Whether to require a verdict */
   requireVerdict: boolean;
   /** Command triggers (e.g., /oc, /review) */
@@ -403,7 +403,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   review: {
     skipLabels: ['autofix', 'autofix:approved', 'autofix:merged'],
     skipActors: ['github-actions[bot]'],
-    postInlineComments: true,
+    inline: true,
     requireVerdict: true,
     commandTriggers: ['/oc', '/review'],
   },

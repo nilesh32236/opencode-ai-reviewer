@@ -66,7 +66,7 @@ export const ProjectContextConfigSchema = z.object({
 export const ReviewConfigSchema = z.object({
   skipLabels: z.array(z.string()).default(['autofix', 'autofix:approved', 'autofix:merged']),
   skipActors: z.array(z.string()).default(['github-actions[bot]']),
-  postInlineComments: z.boolean().default(true),
+  inline: z.boolean().default(true),
   requireVerdict: z.boolean().default(true),
   commandTriggers: z.array(z.string()).default(['/oc', '/review']),
 });

@@ -13,7 +13,6 @@ export {
   emptyResult,
   parseJsonlFile,
   parseJsonlString,
-  buildReviewBody,
   buildInlineComments,
 } from './jsonl-parser.js';
 export type { InlineComment } from './jsonl-parser.js';
