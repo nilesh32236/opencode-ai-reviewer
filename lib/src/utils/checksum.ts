@@ -45,7 +45,7 @@ export function parseChecksumFile(content: string, targetAssetName: string): str
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
 
-    const match = trimmed.match(/^([a-fA-F0-9]{64})\s+[ *]?(.+)$/);
+    const match = trimmed.match(/^([a-fA-F0-9]{64})\s+\*?(.+)$/);
     if (match) {
       const [, hash, filename] = match;
       const cleanFilename = filename.replace(/^\.\//, '');
