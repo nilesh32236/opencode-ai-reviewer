@@ -48,7 +48,7 @@ on:
       important_count:
         value: ${{ jobs.audit.outputs.important_count }}
     secrets:
-      GITHUB_TOKEN:
+      repo_token:
         description: 'GitHub token with issues:write, pull-requests:write'
         required: true
 
@@ -84,7 +84,7 @@ jobs:
           audit_target_dir: ${{ inputs.target_dir }}
           audit_create_issues: ${{ inputs.create_issues }}
           audit_auto_fix: ${{ inputs.auto_fix }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.repo_token }}
           openai_api_key: ${{ inputs.openai_api_key }}
           anthropic_api_key: ${{ inputs.anthropic_api_key }}
           gemini_api_key: ${{ inputs.gemini_api_key }}
