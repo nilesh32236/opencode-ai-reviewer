@@ -52,6 +52,7 @@ export const MCPServerConfigSchema = z.object({
   command: z.array(z.string()).optional(),
   url: z.string().url().optional(),
   environment: z.record(z.string()).optional(),
+  timeoutMs: z.number().int().positive().optional(),
 });
 
 export const ProjectContextConfigSchema = z.object({

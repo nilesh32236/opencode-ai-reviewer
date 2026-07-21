@@ -83,6 +83,41 @@ The Action runs `review` mode by default. Other modes: `fix`, `audit`, `post`, `
 
 ---
 
+## MCP Server Configuration
+
+The reviewer uses MCP (Model Context Protocol) servers for context enrichment. Both local (stdio) and remote (HTTP SSE) servers are supported.
+
+### Local Servers
+
+```yaml
+# .opencode-reviewer.yml
+mcpServers:
+  - name: context7
+    type: local
+    command: ['npx', '-y', '--quiet', '@upstash/context7-mcp']
+    environment:
+      CONTEXT7_API_KEY: ${CONTEXT7_API_KEY}
+    timeoutMs: 5000    # optional, default 5000ms
+```
+
+### Remote Servers
+
+```yaml
+# .opencode-reviewer.yml
+mcpServers:
+  - name: my-remote-mcp
+    type: remote
+    url: https://mcp.example.com/sse
+    environment:
+      Authorization: Bearer ${MCP_AUTH_TOKEN}
+      X-API-Key: ${MCP_API_KEY}
+    timeoutMs: 10000   # optional, default 5000ms
+```
+
+Remote servers use SSE transport. Environment variables are passed as HTTP headers for authentication. See `lib/src/mcp/servers.ts` for pre-configured server definitions.
+
+---
+
 ## GitHub App (Probot)
 
 The App listens for webhooks and works like the Action but runs as a hosted service.
