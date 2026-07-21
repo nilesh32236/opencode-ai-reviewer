@@ -1,6 +1,12 @@
 import { execFileSync } from 'child_process';
 import type { AgentConfig, PRContext } from '@opencode-pr-agent/lib';
-import { GitHubHelper, Logger, ReviewEngine, configureGit } from '@opencode-pr-agent/lib';
+import {
+  GitHubHelper,
+  Logger,
+  ReviewEngine,
+  configureGit,
+  sanitizeError,
+} from '@opencode-pr-agent/lib';
 import { handleAudit } from './audit.js';
 import { handleAutofixLoop } from './autofix.js';
 import { handlePRReview } from './pr-review.js';
@@ -155,7 +161,7 @@ async function createAutofixPR(
       await gh.postOrUpdateComment(
         issueNumber,
         '<!-- autofix-error -->',
-        `❌ Autofix push failed: ${err instanceof Error ? err.message : String(err)}`,
+        `❌ Autofix push failed: ${sanitizeError(err)}`,
       );
       return null;
     }
