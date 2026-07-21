@@ -1,18 +1,31 @@
+const NON_ALPHANUMERIC_REGEX = /[^a-z0-9\s]/g;
+const WHITESPACE_REGEX = /\s+/;
+
 function tokenize(message: string): Set<string> {
   return new Set(
     message
       .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, '')
-      .split(/\s+/)
+      .replace(NON_ALPHANUMERIC_REGEX, '')
+      .split(WHITESPACE_REGEX)
       .filter((t) => t.length > 2),
   );
 }
 
 function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
-  const intersection = new Set([...a].filter((x) => b.has(x)));
-  const union = new Set([...a, ...b]);
-  if (union.size === 0) return 0;
-  return intersection.size / union.size;
+  if (a.size === 0 && b.size === 0) return 0;
+
+  let intersectionSize = 0;
+  const smallerSet = a.size < b.size ? a : b;
+  const largerSet = a.size < b.size ? b : a;
+
+  for (const item of smallerSet) {
+    if (largerSet.has(item)) intersectionSize++;
+  }
+
+  const unionSize = a.size + b.size - intersectionSize;
+  if (unionSize === 0) return 0;
+
+  return intersectionSize / unionSize;
 }
 
 export function clusterFindings(
