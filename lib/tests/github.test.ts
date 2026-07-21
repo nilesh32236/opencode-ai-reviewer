@@ -224,6 +224,21 @@ describe('GitHubHelper', () => {
     });
   });
 
+  describe('getDefaultBranch', () => {
+    it('returns default branch from repo API', async () => {
+      fetchMock.mockResolvedValue(mockResponse({ body: { default_branch: 'main' } }));
+
+      const branch = await helper.getDefaultBranch();
+      expect(branch).toBe('main');
+    });
+
+    it('throws on API failure', async () => {
+      fetchMock.mockResolvedValue(mockErrorResponse(404));
+
+      await expect(helper.getDefaultBranch()).rejects.toThrow('GitHub API 404');
+    });
+  });
+
   describe('getIssue', () => {
     const issueData = {
       number: 1,
@@ -553,6 +568,36 @@ describe('GitHubHelper', () => {
       fetchMock.mockResolvedValue(mockErrorResponse(422));
 
       const result = await helper.createIssue('Bad', 'body', []);
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('createPR', () => {
+    it('creates PR and returns number and url', async () => {
+      fetchMock.mockResolvedValue(
+        mockResponse({
+          body: { number: 42, html_url: 'https://github.com/owner/repo/pull/42' },
+        }),
+      );
+
+      const result = await helper.createPR('Title', 'Body', 'feature-branch', 'main');
+
+      expect(result).not.toBeNull();
+      expect(result!.number).toBe(42);
+      expect(result!.url).toBe('https://github.com/owner/repo/pull/42');
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/pulls'),
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.stringContaining('"title":"Title"'),
+        }),
+      );
+    });
+
+    it('returns null on API failure', async () => {
+      fetchMock.mockResolvedValue(mockErrorResponse(422));
+
+      const result = await helper.createPR('Title', 'Body', 'head', 'base');
       expect(result).toBeNull();
     });
   });

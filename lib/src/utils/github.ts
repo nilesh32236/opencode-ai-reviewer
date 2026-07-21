@@ -188,6 +188,11 @@ export class GitHubHelper {
     }
   }
 
+  async getDefaultBranch(): Promise<string> {
+    const repo = await this.api<{ default_branch: string }>('');
+    return repo.default_branch;
+  }
+
   // ─── Issue Operations ───────────────────────────────────
 
   async getIssue(number: number): Promise<IssueContext> {
@@ -389,6 +394,27 @@ export class GitHubHelper {
       return { number: result.number, url: result.html_url };
     } catch (err) {
       core.warning(`Failed to create issue: ${err instanceof Error ? err.message : err}`);
+      return null;
+    }
+  }
+
+  async createPR(
+    title: string,
+    body: string,
+    head: string,
+    base: string,
+  ): Promise<{ number: number; url: string } | null> {
+    try {
+      const result = await this.api<{ number: number; html_url: string }>('/pulls', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, body, head, base }),
+      });
+      return { number: result.number, url: result.html_url };
+    } catch (err) {
+      core.warning(
+        `Failed to create PR "${title}" (${head} → ${base}): ${err instanceof Error ? err.message : err}`,
+      );
       return null;
     }
   }
