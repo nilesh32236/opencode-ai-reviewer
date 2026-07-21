@@ -88,6 +88,10 @@ jobs:
 
           # ── Version override ──
           if [ -n "$VERSION_OVERRIDE" ]; then
+            if ! printf '%s' "$VERSION_OVERRIDE" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+              echo "Invalid version override: '${VERSION_OVERRIDE}'" >&2
+              exit 1
+            fi
             NEW_VERSION="$VERSION_OVERRIDE"
             echo "Using version override: ${NEW_VERSION}"
           else
@@ -143,7 +147,7 @@ jobs:
           if git rev-parse "${NEW_TAG}" >/dev/null 2>&1; then
             echo "Tag ${NEW_TAG} already exists. Skipping release."
             echo "version=" >> "$GITHUB_OUTPUT"
-            echo "tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
+            echo "tag=" >> "$GITHUB_OUTPUT"
             echo "dry_run=${DRY_RUN}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -166,9 +170,10 @@ jobs:
 
       - name: Update version in package.json files
         if: steps.check-release.outputs.skip == 'false'
+        env:
+          NEW_VERSION: ${{ steps.compute-version.outputs.version }}
         run: |
           set -euo pipefail
-          NEW_VERSION="${{ steps.compute-version.outputs.version }}"
 
           # Validate version is strict semver
           if ! [[ "$NEW_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -180,7 +185,7 @@ jobs:
           for f in package.json lib/package.json action/package.json app/package.json; do
             node -e "
               const pkg = require('./${f}');
-              pkg.version = '${NEW_VERSION}';
+              pkg.version = process.env.NEW_VERSION;
               require('fs').writeFileSync('./${f}', JSON.stringify(pkg, null, 2) + '\n');
             "
             echo "Updated ${f} → version ${NEW_VERSION}"
@@ -301,7 +306,22 @@ jobs:
 
           git tag -a "${NEW_TAG}" -m "Release ${NEW_TAG}"
 
-          git push origin HEAD:main
+          # Push with rebase for concurrent merge safety
+          MAX_RETRIES=3
+          for i in $(seq 1 $MAX_RETRIES); do
+            git fetch origin main 2>/dev/null
+            if git rebase origin/main 2>/dev/null; then
+              if git push origin HEAD:main 2>/dev/null; then
+                echo "Successfully pushed to main"
+                break
+              fi
+            fi
+            if [ "$i" -eq "$MAX_RETRIES" ]; then
+              echo "ERROR: Failed to push after ${MAX_RETRIES} retries" >&2
+              exit 1
+            fi
+            sleep 5
+          done
           git push origin "${NEW_TAG}"
 
           echo "Committed and pushed tag ${NEW_TAG}"
