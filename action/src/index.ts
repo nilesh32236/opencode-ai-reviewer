@@ -81,12 +81,7 @@ async function run(): Promise<void> {
       },
       review: {
         ...DEFAULT_CONFIG.review,
-        postInlineComments:
-          inputs.reviewInline !== undefined
-            ? inputs.reviewInline
-            : loadedConfig?.review?.inline !== undefined
-              ? loadedConfig.review.inline
-              : DEFAULT_CONFIG.review.postInlineComments,
+        postInlineComments: loadedConfig?.review?.inline ?? inputs.reviewInline,
       },
       audit: {
         ...DEFAULT_CONFIG.audit,

@@ -336,9 +336,6 @@ export function buildInlineComments(
     })
     .map((issue) => {
       let body = `**${issue.severity.toUpperCase()}**: ${issue.message}`;
-      if (issue.suggestion) {
-        body += `\n\n> Suggestion: ${issue.suggestion}`;
-      }
       if (issue.suggestion?.includes('\n')) {
         const diffSuggestion = issue.suggestion
           .split('\n')
@@ -346,6 +343,8 @@ export function buildInlineComments(
           .map((l) => (l.startsWith('+') || l.startsWith('-') ? l : ` ${l}`))
           .join('\n');
         body += `\n\n\`\`\`suggestion\n${diffSuggestion}\n\`\`\``;
+      } else if (issue.suggestion) {
+        body += `\n\n> Suggestion: ${issue.suggestion}`;
       }
       return {
         path: issue.file.replace(/^\//, ''),
