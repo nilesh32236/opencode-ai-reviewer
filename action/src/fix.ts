@@ -90,7 +90,7 @@ export async function runFix(
           iteration,
           freshContextMarkdown,
           freshPr,
-          undefined,
+          inputs.timeoutMinutes,
           undefined,
           checkOutput,
         );
