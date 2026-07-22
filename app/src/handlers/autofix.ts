@@ -283,7 +283,7 @@ export async function handleAutofixLoop(
 
       history[history.length - 1].status = 'fix-applied';
       history[history.length - 1].filesChanged = fixResult.filesChanged;
-      history[history.length - 1].commitMessage = fixResult.commitMessage;
+      history[history.length - 1].commitMessage = `fix: address review feedback (iteration ${i + 1})`;
 
       try {
         execFileSync('git', ['add', '-A']);
@@ -318,7 +318,7 @@ export async function handleAutofixLoop(
               encoding: 'utf-8',
               stdio: 'pipe',
               timeout: 300_000,
-            }).toString();
+            });
             checkOutput += stdout;
             logger.info('Verification passed');
             break;

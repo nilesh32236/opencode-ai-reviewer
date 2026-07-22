@@ -69,47 +69,44 @@ export async function runFix(
       inputs.checkAllowlist,
     );
 
-    let checkOutput = '';
-    const execOptions = {
-      listeners: {
-        stdout: (data: Buffer) => {
-          checkOutput += data.toString();
-        },
-        stderr: (data: Buffer) => {
-          checkOutput += data.toString();
-        },
-      },
-      ignoreReturnCode: true,
-    };
-    const exitCode = await exec.exec(program, args, execOptions);
+    const maxVerificationRetries = 1;
+    for (let v = 0; v <= maxVerificationRetries; v++) {
+      const { exitCode, output: checkOutput } = await runVerification(program, args);
 
-    if (exitCode !== 0) {
+      if (exitCode === 0) {
+        core.info('Verification passed');
+        break;
+      }
+
       core.warning(
         `Verification command failed (exit code ${exitCode}). Retrying fix with error output...`,
       );
-      const retryResult = await engine.runFix(
-        prNumber,
-        iteration,
-        contextMarkdown,
-        pr,
-        undefined,
-        undefined,
-        checkOutput,
-      );
 
-      if (retryResult?.changesMade) {
-        try {
-          await exec.exec('git', ['add', '-u']);
-          await exec.exec('git', [
-            'commit',
-            '-m',
-            `fix: verification errors (iteration ${iteration + 1})`,
-          ]);
-          await exec.exec('git', ['push', 'origin', pr.headRef]);
-        } catch (err) {
-          core.warning(
-            `Git operations during verification retry failed: ${err instanceof Error ? err.message : err}`,
-          );
+      if (v < maxVerificationRetries) {
+        const retryResult = await engine.runFix(
+          prNumber,
+          iteration,
+          contextMarkdown,
+          pr,
+          undefined,
+          undefined,
+          checkOutput,
+        );
+
+        if (retryResult?.changesMade) {
+          try {
+            await exec.exec('git', ['add', '-u']);
+            await exec.exec('git', [
+              'commit',
+              '-m',
+              `fix: verification errors (iteration ${iteration + 1})`,
+            ]);
+            await exec.exec('git', ['push', 'origin', pr.headRef]);
+          } catch (err) {
+            core.warning(
+              `Git operations during verification retry failed: ${err instanceof Error ? err.message : err}`,
+            );
+          }
         }
       }
     }
@@ -613,19 +610,7 @@ export async function runAutofixLoop(
 
       const maxVerificationRetries = 2;
       for (let v = 0; v <= maxVerificationRetries; v++) {
-        let checkOutput = '';
-        const execOptions = {
-          listeners: {
-            stdout: (data: Buffer) => {
-              checkOutput += data.toString();
-            },
-            stderr: (data: Buffer) => {
-              checkOutput += data.toString();
-            },
-          },
-          ignoreReturnCode: true,
-        };
-        const exitCode = await exec.exec(program, args, execOptions);
+        const { exitCode, output: checkOutput } = await runVerification(program, args);
 
         if (exitCode === 0) {
           core.info('Verification passed');
@@ -641,10 +626,11 @@ export async function runAutofixLoop(
             `Feeding verification error to fix engine (retry ${v + 1}/${maxVerificationRetries})...`,
           );
           const prAgain = await gh.getPR(prNumber);
+          const freshContextMarkdown = await gh.gatherContext({ prNumber });
           const retryResult = await engine.runFix(
             prNumber,
             i,
-            contextMarkdown,
+            freshContextMarkdown,
             prAgain,
             iterTimeoutMinutes,
             result.issues,
@@ -700,6 +686,26 @@ export async function runAutofixLoop(
   }
 
   core.setOutput('approved', String(approved));
+}
+
+async function runVerification(
+  program: string,
+  args: string[],
+): Promise<{ exitCode: number; output: string }> {
+  let output = '';
+  const execOptions = {
+    listeners: {
+      stdout: (data: Buffer) => {
+        output += data.toString();
+      },
+      stderr: (data: Buffer) => {
+        output += data.toString();
+      },
+    },
+    ignoreReturnCode: true,
+  };
+  const exitCode = await exec.exec(program, args, execOptions);
+  return { exitCode, output };
 }
 
 async function handleTimeoutGracefully(
