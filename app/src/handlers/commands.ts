@@ -1,4 +1,7 @@
 import { execFileSync } from 'child_process';
+import { mkdtempSync, rmSync } from 'fs';
+import os from 'os';
+import path from 'path';
 import type { AgentConfig, PRContext } from '@opencode-pr-agent/lib';
 import {
   GitHubHelper,
@@ -22,7 +25,18 @@ export async function handleCommand(
   const logger = new Logger('Command', { repo, prNumber: issueNumber });
   const gh = new GitHubHelper(token, repo);
 
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), 'opencode-workspace-'));
+  const prevCwd = process.cwd();
+
   try {
+    execFileSync(
+      'git',
+      ['clone', `https://x-access-token:${token}@github.com/${repo}.git`, tempDir],
+      { stdio: 'pipe' },
+    );
+
+    process.chdir(tempDir);
+
     switch (command) {
       case 'review': {
         if (await gh.isPR(issueNumber)) {
@@ -53,6 +67,9 @@ export async function handleCommand(
     logger.error(
       `Command ${command} failed for issue ${issueNumber} in ${repo}: ${err instanceof Error ? err.message : err}`,
     );
+  } finally {
+    process.chdir(prevCwd);
+    rmSync(tempDir, { recursive: true, force: true });
   }
 }
 
