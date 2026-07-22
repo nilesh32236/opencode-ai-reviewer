@@ -380,23 +380,37 @@ export async function runOpenCode(
     cwd,
     stdio: 'inherit',
     env: safeEnv,
+    detached: true,
   });
 
   let timedOut = false;
   let childExited = false;
   let forceKillHandle: ReturnType<typeof setTimeout> | undefined;
 
+  function killProcessGroup(signal: 'SIGTERM' | 'SIGKILL'): void {
+    if (!childProcess.pid) return;
+    try {
+      if (os.platform() === 'win32') {
+        cp.execSync(`taskkill /PID ${childProcess.pid} /T /F`, { stdio: 'ignore' });
+      } else {
+        process.kill(-childProcess.pid, signal);
+      }
+    } catch (err) {
+      core.debug(`Failed to send ${signal} to process group: ${err}`);
+    }
+  }
+
   const timeoutHandle = setTimeout(() => {
     timedOut = true;
     core.warning(
       `OpenCode timeout of ${options.timeoutMinutes ?? 20}m exceeded — sending SIGTERM.`,
     );
-    childProcess.kill('SIGTERM');
+    killProcessGroup('SIGTERM');
     // If SIGTERM is ignored or too slow, force-kill after 5 seconds
     forceKillHandle = setTimeout(() => {
       if (!childExited) {
         core.warning('OpenCode did not exit after SIGTERM — sending SIGKILL.');
-        childProcess.kill('SIGKILL');
+        killProcessGroup('SIGKILL');
       }
     }, 5_000);
   }, timeoutMs);
