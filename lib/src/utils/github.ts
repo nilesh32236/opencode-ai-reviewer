@@ -365,7 +365,10 @@ export class GitHubHelper {
 
   /**
    * Post a review on a pull request with optional inline comments.
-   * Falls back to body-only review if inline comments are rejected (422).
+   * Posts the body first, then each inline comment individually so that
+   * a single out-of-diff comment does not fail the entire review.
+   * Inline comments rejected with 422 are gracefully downgraded to
+   * general issue comments with a file:line reference.
    *
    * @param prNumber - PR number.
    * @param commitSha - SHA of the commit to attach the review to.
@@ -378,7 +381,7 @@ export class GitHubHelper {
     commitSha: string,
     result: ReviewResult,
     postInlineComments = true,
-  ): Promise<{ success: boolean; method: 'full' | 'body-only' | 'failed' }> {
+  ): Promise<{ success: boolean; method: 'full' | 'partial' | 'body-only' | 'failed' }> {
     const inlineComments = postInlineComments
       ? buildInlineComments(result, await this.getDiffLines(prNumber))
       : [];
@@ -389,32 +392,9 @@ export class GitHubHelper {
           (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
         )
       : result.issues;
-    let body = this.buildReviewBody({ ...result, issues: issuesForBody });
+    const body = this.buildReviewBody({ ...result, issues: issuesForBody });
 
-    if (inlineComments.length > 0) {
-      try {
-        await this.api(`/pulls/${prNumber}/reviews`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            commit_id: commitSha,
-            event: 'COMMENT',
-            body,
-            comments: inlineComments,
-          }),
-        });
-        return { success: true, method: 'full' };
-      } catch (err) {
-        if (err instanceof Error && (err as Error & { status: number }).status === 422) {
-          core.warning('Inline comments rejected (lines not in diff). Retrying body-only.');
-          body = this.buildReviewBody(result);
-        } else {
-          core.warning(`Review API failed: ${err}`);
-          return { success: false, method: 'failed' };
-        }
-      }
-    }
-
+    // Post the review body first (without inline comments)
     try {
       await this.api(`/pulls/${prNumber}/reviews`, {
         method: 'POST',
@@ -425,11 +405,54 @@ export class GitHubHelper {
           body,
         }),
       });
-      return { success: true, method: 'body-only' };
     } catch (err) {
       core.warning(`Body-only review failed: ${err}`);
       return { success: false, method: 'failed' };
     }
+
+    if (inlineComments.length === 0) {
+      return { success: true, method: 'body-only' };
+    }
+
+    // Post each inline comment individually with fallback for out-of-diff comments
+    let allSucceeded = true;
+
+    for (const comment of inlineComments) {
+      try {
+        await this.api(`/pulls/${prNumber}/comments`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            commit_id: commitSha,
+            path: comment.path,
+            line: comment.line,
+            side: comment.side,
+            body: comment.body,
+          }),
+        });
+      } catch (err) {
+        allSucceeded = false;
+        if (err instanceof Error && (err as Error & { status: number }).status === 422) {
+          // Fallback: post as a general issue comment with file:line reference
+          const fallbackBody = `**Inline comment (${comment.path}:${comment.line})**\n\n${comment.body}`;
+          try {
+            await this.api(`/issues/${prNumber}/comments`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ body: fallbackBody }),
+            });
+          } catch (fallbackErr) {
+            core.warning(
+              `Fallback comment for ${comment.path}:${comment.line} also failed: ${fallbackErr}`,
+            );
+          }
+        } else {
+          core.warning(`Inline comment for ${comment.path}:${comment.line} failed: ${err}`);
+        }
+      }
+    }
+
+    return { success: true, method: allSucceeded ? 'full' : 'partial' };
   }
 
   // ─── Comment Operations ─────────────────────────────────
