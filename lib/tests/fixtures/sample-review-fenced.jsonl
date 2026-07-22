@@ -1,0 +1,5 @@
+```jsonl
+{"type":"summary","text":"The PR implements JWT authentication middleware."}
+{"type":"verdict","ready":false,"reasoning":"Found issues."}
+{"type":"issue","severity":"critical","file":"src/auth/jwt.ts","line":28,"message":"JWT secret hardcoded","inline":true}
+```

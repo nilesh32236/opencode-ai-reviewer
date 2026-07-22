@@ -4,6 +4,7 @@ import {
   buildReviewBody,
   parseJsonlFile,
   parseJsonlString,
+  stripMarkdownFences,
 } from '../src/jsonl-parser.js';
 import type { ReviewResult } from '../src/types/index.js';
 
@@ -121,12 +122,78 @@ describe('jsonl-parser', () => {
     });
   });
 
+  describe('stripMarkdownFences', () => {
+    it('removes ```jsonl fences', () => {
+      const input = '```jsonl\n{"type":"summary","text":"Hello"}\n```';
+      expect(stripMarkdownFences(input)).toBe('{"type":"summary","text":"Hello"}');
+    });
+
+    it('removes ```json fences', () => {
+      const input = '```json\n{"type":"summary","text":"Hello"}\n```';
+      expect(stripMarkdownFences(input)).toBe('{"type":"summary","text":"Hello"}');
+    });
+
+    it('removes fences without language specifier', () => {
+      const input = '```\n{"type":"summary","text":"Hello"}\n```';
+      expect(stripMarkdownFences(input)).toBe('{"type":"summary","text":"Hello"}');
+    });
+
+    it('handles content without fences', () => {
+      const input = '{"type":"summary","text":"Hello"}';
+      expect(stripMarkdownFences(input)).toBe('{"type":"summary","text":"Hello"}');
+    });
+  });
+
+  describe('parseJsonlString with markdown fences', () => {
+    it('parses JSONL wrapped in ```jsonl fences', () => {
+      const input =
+        '```jsonl\n{"type":"summary","text":"Good."}\n{"type":"verdict","ready":true,"reasoning":"OK"}\n```';
+      const result = parseJsonlString(input);
+      expect(result.summary).toBe('Good.');
+      expect(result.verdict.ready).toBe(true);
+      expect(result.failedLines).toBe(0);
+    });
+
+    it('parses JSONL wrapped in ``` fences', () => {
+      const input =
+        '```\n{"type":"summary","text":"Good."}\n{"type":"verdict","ready":true,"reasoning":"OK"}\n```';
+      const result = parseJsonlString(input);
+      expect(result.summary).toBe('Good.');
+      expect(result.verdict.ready).toBe(true);
+      expect(result.failedLines).toBe(0);
+    });
+
+    it('parses JSONL wrapped in ```json fences', () => {
+      const input =
+        '```json\n{"type":"summary","text":"Good."}\n{"type":"verdict","ready":true,"reasoning":"OK"}\n```';
+      const result = parseJsonlString(input);
+      expect(result.summary).toBe('Good.');
+      expect(result.verdict.ready).toBe(true);
+      expect(result.failedLines).toBe(0);
+    });
+
+    it('handles fences on same line as content', () => {
+      const input = '```jsonl {"type":"summary","text":"Good."}';
+      const result = parseJsonlString(input);
+      expect(result.summary).toBe('Good.');
+      expect(result.failedLines).toBe(0);
+    });
+  });
+
   describe('parseJsonlFile', () => {
     it('reads and parses a file', async () => {
       const fixturePath = path.join(__dirname, 'fixtures/sample-review-output.jsonl');
       const result = await parseJsonlFile(fixturePath);
       expect(result.summary).toContain('JWT authentication');
       expect(result.verdict.ready).toBe(false);
+    });
+
+    it('reads and parses a file wrapped in markdown fences', async () => {
+      const fixturePath = path.join(__dirname, 'fixtures/sample-review-fenced.jsonl');
+      const result = await parseJsonlFile(fixturePath);
+      expect(result.summary).toContain('JWT authentication');
+      expect(result.issues).toHaveLength(1);
+      expect(result.failedLines).toBe(0);
     });
 
     it('returns empty result for non-existent file', async () => {
