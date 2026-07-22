@@ -723,20 +723,25 @@ async function runVerification(
   timeoutMs?: number,
 ): Promise<{ exitCode: number; output: string }> {
   let output = '';
-  const execOptions: exec.ExecOptions = {
-    listeners: {
-      stdout: (data: Buffer) => {
-        output += data.toString();
+  try {
+    const execOptions: exec.ExecOptions = {
+      listeners: {
+        stdout: (data: Buffer) => {
+          output += data.toString();
+        },
+        stderr: (data: Buffer) => {
+          output += data.toString();
+        },
       },
-      stderr: (data: Buffer) => {
-        output += data.toString();
-      },
-    },
-    ignoreReturnCode: true,
-    ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}),
-  };
-  const exitCode = await exec.exec(program, args, execOptions);
-  return { exitCode, output };
+      ignoreReturnCode: true,
+      ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}),
+    };
+    const exitCode = await exec.exec(program, args, execOptions);
+    return { exitCode, output };
+  } catch (err) {
+    output += `\n[ERROR] Verification failed: ${err instanceof Error ? err.message : String(err)}`;
+    return { exitCode: -1, output };
+  }
 }
 
 async function handleTimeoutGracefully(
