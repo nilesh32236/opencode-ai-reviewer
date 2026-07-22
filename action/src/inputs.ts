@@ -72,6 +72,8 @@ export interface ActionInputs {
   opencodeVersion: string;
   timeoutMinutes: number;
   reviewInline: boolean;
+  enableStateCache: boolean;
+  stateCacheKey: string;
 }
 
 export function parseInputs(): ActionInputs {
@@ -143,5 +145,7 @@ export function parseInputs(): ActionInputs {
     opencodeVersion,
     timeoutMinutes: parseTimeoutMinutes(core.getInput('timeout_minutes')),
     reviewInline: core.getInput('review_inline') !== 'false',
+    enableStateCache: core.getInput('enable_state_cache') !== 'false',
+    stateCacheKey: core.getInput('state_cache_key') || 'opencode-learning-state',
   };
 }

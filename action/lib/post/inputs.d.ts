@@ -39,5 +39,7 @@ export interface ActionInputs {
     opencodeVersion: string;
     timeoutMinutes: number;
     reviewInline: boolean;
+    enableStateCache: boolean;
+    stateCacheKey: string;
 }
 export declare function parseInputs(): ActionInputs;
