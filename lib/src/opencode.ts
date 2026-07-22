@@ -501,7 +501,7 @@ export function configureGit(
             '  *Password*) echo "${OPENCODE_CREDENTIAL_TOKEN}" ;;',
             'esac',
           ].join('\n'),
-          'utf-8',
+          { encoding: 'utf-8', mode: 0o700, flag: 'wx' },
         );
         fs.chmodSync(askPassPath, 0o755);
         const gitEnv: Record<string, string> = {
