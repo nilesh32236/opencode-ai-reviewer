@@ -546,7 +546,7 @@ export class ReviewEngine {
     );
     if (totalDiffLines > maxLines && maxLines > 0) {
       parts.push(
-        `> Total diff: ~${totalDiffLines} lines across ${pr.changedFiles.length} files. For large changes, read each file individually using the \`read\` tool and dispatch sub-agents to review batches of files.`,
+        `> Total diff: ~${totalDiffLines} lines across ${pr.changedFiles.length} files. For large changes, read each file individually using the \`read\` tool.`,
       );
     }
 
