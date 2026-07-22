@@ -568,18 +568,16 @@ describe('configureGit()', () => {
 
     configureGit('test-user', 'test@example.com');
 
-    expect(mockExecFileSync).toHaveBeenCalledWith('git', [
-      'config',
-      '--local',
-      'user.name',
-      'test-user',
-    ], {});
-    expect(mockExecFileSync).toHaveBeenCalledWith('git', [
-      'config',
-      '--local',
-      'user.email',
-      'test@example.com',
-    ], {});
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      'git',
+      ['config', '--local', 'user.name', 'test-user'],
+      {},
+    );
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      'git',
+      ['config', '--local', 'user.email', 'test@example.com'],
+      {},
+    );
   });
 });
 
