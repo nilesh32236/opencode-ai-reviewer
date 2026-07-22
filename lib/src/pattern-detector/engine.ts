@@ -1,5 +1,6 @@
 import * as core from '@actions/core';
 import type { LearningStore } from '../learning/store.js';
+import { Logger } from '../utils/logger.js';
 import { clusterFindings } from './cluster.js';
 
 export interface DiscoveredPattern {
@@ -17,7 +18,8 @@ export class PatternDetector {
     try {
       findings = await this.store.getFindingMessages(100);
     } catch (err) {
-      console.warn(`Failed to get finding messages: ${err instanceof Error ? err.message : err}`);
+      const logger = new Logger('PatternDetector');
+      logger.warn('Failed to get finding messages', err);
       return [];
     }
     if (findings.length === 0) return [];

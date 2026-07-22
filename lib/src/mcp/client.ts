@@ -14,6 +14,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { MCPContextEntry, MCPQueryResult, MCPServerConfig } from '../types/index.js';
+import { Logger } from '../utils/logger.js';
 import { withRetry } from '../utils/retry.js';
 
 export class MCPManager {
@@ -127,9 +128,8 @@ export class MCPManager {
         this.toolsCache.set(server.name, tools.tools);
       }
     } catch (err) {
-      console.log(
-        `  ${server.name}: Failed to connect — ${err instanceof Error ? err.message : err}`,
-      );
+      const logger = new Logger('MCPManager');
+      logger.warn(`Failed to connect to ${server.name}`, err);
       this.clients.delete(server.name);
       if (mcpClient) {
         try {
@@ -191,9 +191,8 @@ export class MCPManager {
 
     for (const result of results) {
       if (result.status === 'rejected') {
-        console.log(
-          `::warning::MCP query failed: ${result.reason instanceof Error ? result.reason.message : result.reason}`,
-        );
+        const logger = new Logger('MCPManager');
+        logger.warn('MCP query failed', result.reason);
       }
     }
 
@@ -276,9 +275,8 @@ export class MCPManager {
         try {
           await transport.close();
         } catch {}
-        console.log(
-          `MCP disconnect error for ${name}: ${err instanceof Error ? err.message : err}`,
-        );
+        const logger = new Logger('MCPManager');
+        logger.warn(`MCP disconnect error for ${name}`, err);
       }
     }
     this.clients.clear();

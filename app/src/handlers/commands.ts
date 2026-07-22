@@ -6,6 +6,7 @@ import {
   ReviewEngine,
   configureGit,
   sanitizeError,
+  sanitizeErrorMessage,
 } from '@opencode-pr-agent/lib';
 import { handleAudit } from './audit.js';
 import { handleAutofixLoop } from './autofix.js';
@@ -161,7 +162,7 @@ async function createAutofixPR(
       await gh.postOrUpdateComment(
         issueNumber,
         '<!-- autofix-error -->',
-        `❌ Autofix push failed: ${sanitizeError(err)}`,
+        `❌ Autofix push failed: ${sanitizeErrorMessage(err)}`,
       );
       return null;
     }

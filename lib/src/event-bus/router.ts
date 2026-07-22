@@ -1,4 +1,5 @@
 import type { EventCategory, GitHubEvent } from '../types/index.js';
+import { Logger } from '../utils/logger.js';
 import type { EventBus } from './bus.js';
 
 const EVENT_CATEGORY_MAP: Record<string, EventCategory> = {
@@ -49,7 +50,8 @@ export class EventRouter {
     try {
       await this.bus.publish(event);
     } catch (err) {
-      console.error(`Failed to publish event ${type}: ${err instanceof Error ? err.message : err}`);
+      const logger = new Logger('EventRouter', { eventType: type, repo });
+      logger.error(`Failed to publish event ${type}`, err);
     }
   }
 }

@@ -10,7 +10,23 @@ export function sanitizeError(error: unknown): string {
         ? error
         : String(error);
 
-  return errorStr
+  return sanitizeString(errorStr);
+}
+
+/**
+ * Sanitize an error for public-facing output (e.g., PR comments).
+ * Uses only the error message, never the stack trace, to avoid
+ * disclosing internal paths and call frames.
+ */
+export function sanitizeErrorMessage(error: unknown): string {
+  const msg =
+    error instanceof Error ? error.message : typeof error === 'string' ? error : String(error);
+
+  return sanitizeString(msg);
+}
+
+function sanitizeString(input: string): string {
+  return input
     .replace(/(ghp|github_pat|gho|ghs|ghu)_[a-zA-Z0-9_-]{36,}/g, '[REDACTED_GITHUB_TOKEN]')
     .replace(/sk-[a-zA-Z0-9-]{48,}/g, '[REDACTED_OPENAI_KEY]')
     .replace(/sk-ant-[a-zA-Z0-9_-]{40,}/g, '[REDACTED_ANTHROPIC_KEY]')
