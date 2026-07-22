@@ -4,6 +4,7 @@ import type { LearningStore } from '../learning/store.js';
 import { runOpenCode } from '../opencode.js';
 import type { PatternDetector } from '../pattern-detector/engine.js';
 import type { GitHubEvent, Subscriber } from '../types/index.js';
+import { Logger } from '../utils/logger.js';
 import { buildMetaReviewPrompt } from './prompts.js';
 
 export class MetaReviewEngine {
@@ -31,7 +32,7 @@ export class MetaReviewEngine {
     try {
       fpRate = await this.store.getFalsePositiveRate();
     } catch {
-      console.warn('Failed to get false positive rate, defaulting to 0');
+      new Logger('MetaReviewEngine').warn('Failed to get false positive rate, defaulting to 0');
     }
     const prompt = buildMetaReviewPrompt(context);
 
@@ -39,7 +40,9 @@ export class MetaReviewEngine {
       model: 'opencode/deepseek-v4-flash-free',
     });
     if (!metaRunResult.success) {
-      console.warn('OpenCode meta-review execution failed, using default scores');
+      new Logger('MetaReviewEngine').warn(
+        'OpenCode meta-review execution failed, using default scores',
+      );
       return {
         actionabilityScore: 70,
         accuracyScore: Math.max(0, 100 - fpRate * 100),
@@ -75,7 +78,7 @@ export class MetaReviewEngine {
     try {
       await this.store.recordQuality(quality);
     } catch {
-      console.warn('Failed to record quality scores');
+      new Logger('MetaReviewEngine').warn('Failed to record quality scores');
     }
 
     const avgScore =
@@ -99,9 +102,7 @@ export class MetaReviewEngine {
           );
         }
       } catch (err) {
-        console.warn(
-          `Failed to discover patterns after meta-review: ${err instanceof Error ? err.message : err}`,
-        );
+        new Logger('MetaReviewEngine').warn('Failed to discover patterns after meta-review', err);
       }
     }
 
@@ -113,7 +114,7 @@ export class MetaReviewEngine {
           fpRate,
         );
       } catch {
-        console.warn('Failed to add prompt override');
+        new Logger('MetaReviewEngine').warn('Failed to add prompt override');
       }
     }
 
@@ -139,7 +140,7 @@ export class MetaReviewSubscriber implements Subscriber {
       const shouldRun = await this.store.incrementAndCheckMetaReviewInterval(this.interval);
       if (!shouldRun) return;
     } catch {
-      console.warn('Failed to check meta-review interval');
+      new Logger('MetaReviewEngine').warn('Failed to check meta-review interval');
       return;
     }
 

@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { Logger } from '../utils/logger.js';
 import { JsonDatabase } from './json-db.js';
 
 export function sanitizeDbError(err: unknown): string {
@@ -326,7 +327,8 @@ export async function connectDb(dbPathOrUrl: string): Promise<DbAdapter> {
     if (!isMissingDriver) {
       throw e;
     }
-    console.warn(
+    const logger = new Logger('LearningStore');
+    logger.warn(
       `better-sqlite3 not available: ${sanitizeDbError(e)}. Falling back to JSON database`,
     );
     const jsonPath = dbPathOrUrl.endsWith('.db')

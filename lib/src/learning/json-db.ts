@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as fsPromises from 'node:fs/promises';
 import * as path from 'path';
 import * as core from '@actions/core';
+import { Logger } from '../utils/logger.js';
 
 interface FindingRow {
   id: string;
@@ -563,7 +564,8 @@ export class JsonDatabase implements DatabaseInstance {
       await fsPromises.mkdir(dir, { recursive: true });
       await fsPromises.writeFile(this.filePath, JSON.stringify(this.data), 'utf-8');
     } catch (err) {
-      console.warn(`Failed to save JSON database: ${err instanceof Error ? err.message : err}`);
+      const logger = new Logger('JsonDatabase');
+      logger.warn(`Failed to save JSON database`, err);
     }
   }
 
@@ -619,7 +621,8 @@ export class JsonDatabase implements DatabaseInstance {
       await fsPromises.mkdir(dir, { recursive: true });
       await fsPromises.writeFile(this.filePath, JSON.stringify(this.data), 'utf-8');
     } catch (err) {
-      console.warn(`Failed to save JSON database: ${err instanceof Error ? err.message : err}`);
+      const logger = new Logger('JsonDatabase');
+      logger.warn(`Failed to flush JSON database`, err);
     }
   }
 

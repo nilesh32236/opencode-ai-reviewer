@@ -1,4 +1,5 @@
 import type { LearningFeedback, LearningQuality } from '../types/index.js';
+import { Logger } from '../utils/logger.js';
 import { type DbAdapter, connectDb, sanitizeDbError } from './db.js';
 import { applyMigrations, generateId, getDbPath } from './schema.js';
 
@@ -40,7 +41,8 @@ export class LearningStore {
             db = undefined;
           }
           if (attempt === maxRetries) throw err;
-          console.warn(
+          const connLogger = new Logger('LearningStore');
+          connLogger.warn(
             `DB connection attempt ${attempt} failed, retrying: ${sanitizeDbError(err)}`,
           );
           await new Promise((r) => setTimeout(r, 1000 * attempt));
@@ -209,7 +211,8 @@ export class LearningStore {
         ],
       );
     } catch (err) {
-      console.warn(`Failed to record feedback: ${err instanceof Error ? err.message : err}`);
+      const logger = new Logger('LearningStore');
+      logger.warn('Failed to record feedback', err);
     }
   }
 
@@ -357,7 +360,8 @@ export class LearningStore {
         ],
       );
     } catch (err) {
-      console.warn(`Failed to record quality: ${err instanceof Error ? err.message : err}`);
+      const logger = new Logger('LearningStore');
+      logger.warn('Failed to record quality', err);
     }
   }
 
@@ -564,7 +568,8 @@ export class LearningStore {
         [generateId(), category, overrideText, fpRateBefore],
       );
     } catch (err) {
-      console.warn(`Failed to add prompt override: ${err instanceof Error ? err.message : err}`);
+      const logger = new Logger('LearningStore');
+      logger.warn('Failed to add prompt override', err);
     }
   }
 
