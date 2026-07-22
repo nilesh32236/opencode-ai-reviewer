@@ -41,5 +41,6 @@ export interface ActionInputs {
     reviewInline: boolean;
     enableStateCache: boolean;
     stateCacheKey: string;
+    stateCacheDir: string;
 }
 export declare function parseInputs(): ActionInputs;

@@ -162,6 +162,11 @@ inputs:
     required: false
     default: 'opencode-learning-state'
 
+  state_cache_dir:
+    description: 'Path to the learning state directory (relative to workspace)'
+    required: false
+    default: '.opencode'
+
 outputs:
   review_summary:
     description: 'Summary of the review'

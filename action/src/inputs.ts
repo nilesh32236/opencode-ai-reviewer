@@ -74,6 +74,7 @@ export interface ActionInputs {
   reviewInline: boolean;
   enableStateCache: boolean;
   stateCacheKey: string;
+  stateCacheDir: string;
 }
 
 export function parseInputs(): ActionInputs {
@@ -147,5 +148,6 @@ export function parseInputs(): ActionInputs {
     reviewInline: core.getInput('review_inline') !== 'false',
     enableStateCache: core.getInput('enable_state_cache') !== 'false',
     stateCacheKey: core.getInput('state_cache_key') || 'opencode-learning-state',
+    stateCacheDir: core.getInput('state_cache_dir') || '.opencode',
   };
 }
