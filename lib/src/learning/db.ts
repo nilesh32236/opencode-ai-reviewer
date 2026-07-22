@@ -210,10 +210,53 @@ export abstract class SqlAdapter implements LearningRepository {
     });
   }
 
-  async getFindingMessages(limit = 100): Promise<Array<{ message: string; file?: string }>> {
+  async getFindingMessages(
+    limit = 100,
+    sinceDays?: number,
+  ): Promise<Array<{ message: string; file?: string }>> {
+    if (sinceDays) {
+      return this.all<{ message: string; file: string }>(
+        "SELECT message, file FROM findings WHERE created_at >= datetime('now', ?) ORDER BY created_at DESC LIMIT ?",
+        [`-${sinceDays} days`, limit],
+      );
+    }
     return this.all<{ message: string; file: string }>(
       'SELECT message, file FROM findings ORDER BY created_at DESC LIMIT ?',
       [limit],
+    );
+  }
+
+  async getDistinctFindingMessages(
+    limit = 100,
+    sinceDays?: number,
+  ): Promise<Array<{ message: string; file?: string }>> {
+    if (sinceDays) {
+      return this.all<{ message: string; file: string }>(
+        "SELECT message, file FROM findings WHERE created_at >= datetime('now', ?) GROUP BY message ORDER BY MAX(created_at) DESC LIMIT ?",
+        [`-${sinceDays} days`, limit],
+      );
+    }
+    return this.all<{ message: string; file: string }>(
+      'SELECT message, file FROM findings GROUP BY message ORDER BY MAX(created_at) DESC LIMIT ?',
+      [limit],
+    );
+  }
+
+  async getFindingMessagesByFileType(
+    fileType: string,
+    limit = 100,
+    sinceDays?: number,
+  ): Promise<Array<{ message: string; file?: string }>> {
+    const filePattern = `%${fileType}`;
+    if (sinceDays) {
+      return this.all<{ message: string; file: string }>(
+        "SELECT message, file FROM findings WHERE file LIKE ? AND created_at >= datetime('now', ?) ORDER BY created_at DESC LIMIT ?",
+        [filePattern, `-${sinceDays} days`, limit],
+      );
+    }
+    return this.all<{ message: string; file: string }>(
+      'SELECT message, file FROM findings WHERE file LIKE ? ORDER BY created_at DESC LIMIT ?',
+      [filePattern, limit],
     );
   }
 
@@ -659,10 +702,48 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     });
   }
 
-  async getFindingMessages(limit = 100): Promise<Array<{ message: string; file?: string }>> {
+  async getFindingMessages(
+    limit = 100,
+    sinceDays?: number,
+  ): Promise<Array<{ message: string; file?: string }>> {
+    if (sinceDays) {
+      return this.prepareStmt(
+        "SELECT message, file FROM findings WHERE created_at >= datetime('now', ?) ORDER BY created_at DESC LIMIT ?",
+      ).all(`-${sinceDays} days`, limit) as Array<{ message: string; file: string }>;
+    }
     return this.prepareStmt(
       'SELECT message, file FROM findings ORDER BY created_at DESC LIMIT ?',
     ).all(limit) as Array<{ message: string; file: string }>;
+  }
+
+  async getDistinctFindingMessages(
+    limit = 100,
+    sinceDays?: number,
+  ): Promise<Array<{ message: string; file?: string }>> {
+    if (sinceDays) {
+      return this.prepareStmt(
+        "SELECT message, file FROM findings WHERE created_at >= datetime('now', ?) GROUP BY message ORDER BY MAX(created_at) DESC LIMIT ?",
+      ).all(`-${sinceDays} days`, limit) as Array<{ message: string; file: string }>;
+    }
+    return this.prepareStmt(
+      'SELECT message, file FROM findings GROUP BY message ORDER BY MAX(created_at) DESC LIMIT ?',
+    ).all(limit) as Array<{ message: string; file: string }>;
+  }
+
+  async getFindingMessagesByFileType(
+    fileType: string,
+    limit = 100,
+    sinceDays?: number,
+  ): Promise<Array<{ message: string; file?: string }>> {
+    const filePattern = `%${fileType}`;
+    if (sinceDays) {
+      return this.prepareStmt(
+        "SELECT message, file FROM findings WHERE file LIKE ? AND created_at >= datetime('now', ?) ORDER BY created_at DESC LIMIT ?",
+      ).all(filePattern, `-${sinceDays} days`, limit) as Array<{ message: string; file: string }>;
+    }
+    return this.prepareStmt(
+      'SELECT message, file FROM findings WHERE file LIKE ? ORDER BY created_at DESC LIMIT ?',
+    ).all(filePattern, limit) as Array<{ message: string; file: string }>;
   }
 
   async getFalsePositiveRate(): Promise<number> {
@@ -921,8 +1002,26 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
     return this.db.recordFeedbackBatch(feedbacks);
   }
 
-  async getFindingMessages(limit = 100): Promise<Array<{ message: string; file?: string }>> {
-    return this.db.getFindingMessages(limit);
+  async getFindingMessages(
+    limit = 100,
+    sinceDays?: number,
+  ): Promise<Array<{ message: string; file?: string }>> {
+    return this.db.getFindingMessages(limit, sinceDays);
+  }
+
+  async getDistinctFindingMessages(
+    limit = 100,
+    sinceDays?: number,
+  ): Promise<Array<{ message: string; file?: string }>> {
+    return this.db.getDistinctFindingMessages(limit, sinceDays);
+  }
+
+  async getFindingMessagesByFileType(
+    fileType: string,
+    limit = 100,
+    sinceDays?: number,
+  ): Promise<Array<{ message: string; file?: string }>> {
+    return this.db.getFindingMessagesByFileType(fileType, limit, sinceDays);
   }
 
   async getFalsePositiveRate(): Promise<number> {

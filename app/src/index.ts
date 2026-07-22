@@ -150,7 +150,9 @@ export default (app: Probot): void => {
   const feedbackSub = new FeedbackSubscriber(learningStore);
   subscribers.push(feedbackSub);
 
-  const patternDetector = new PatternDetector(learningStore);
+  const patternDetector = new PatternDetector(learningStore, {
+    windowSize: DEFAULT_CONFIG.learning.patternDiscovery.windowSize,
+  });
   const metaReviewEngine = new MetaReviewEngine(learningStore, patternDetector);
   const metaReviewSub = new MetaReviewSubscriber(
     metaReviewEngine,
