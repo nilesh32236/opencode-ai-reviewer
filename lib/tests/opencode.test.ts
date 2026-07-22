@@ -119,6 +119,7 @@ import { configureGit, getGitStatus, runOpenCode, setupOpenCode } from '../src/o
 function makeMockProcess() {
   const listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
   return {
+    pid: 12345,
     kill: vi.fn(),
     on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
       if (!listeners[event]) listeners[event] = [];
@@ -206,6 +207,7 @@ describe('runOpenCode()', () => {
 
   it('handles timeout by sending SIGTERM then SIGKILL', async () => {
     vi.useFakeTimers();
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
     try {
       const proc = makeMockProcess();
       mockSpawn.mockReturnValue(proc);
@@ -224,21 +226,23 @@ describe('runOpenCode()', () => {
       }
 
       await vi.advanceTimersByTimeAsync(100);
-      expect(proc.kill).toHaveBeenCalledWith('SIGTERM');
+      expect(killSpy).toHaveBeenCalledWith(-12345, 'SIGTERM');
 
       await vi.advanceTimersByTimeAsync(5_000);
-      expect(proc.kill).toHaveBeenCalledWith('SIGKILL');
+      expect(killSpy).toHaveBeenCalledWith(-12345, 'SIGKILL');
 
       proc.emitExit(null);
       const result = await resultPromise;
       expect(result.success).toBe(false);
     } finally {
+      killSpy.mockRestore();
       vi.useRealTimers();
     }
   }, 20000);
 
   it('does not send SIGKILL if process exits after SIGTERM', async () => {
     vi.useFakeTimers();
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
     try {
       const proc = makeMockProcess();
       mockSpawn.mockReturnValue(proc);
@@ -257,15 +261,16 @@ describe('runOpenCode()', () => {
       }
 
       await vi.advanceTimersByTimeAsync(100);
-      expect(proc.kill).toHaveBeenCalledWith('SIGTERM');
+      expect(killSpy).toHaveBeenCalledWith(-12345, 'SIGTERM');
 
       proc.emitExit(0);
       await vi.advanceTimersByTimeAsync(5_000);
 
       const result = await resultPromise;
       expect(result.success).toBe(true);
-      expect(proc.kill).not.toHaveBeenCalledWith('SIGKILL');
+      expect(killSpy).not.toHaveBeenCalledWith(-12345, 'SIGKILL');
     } finally {
+      killSpy.mockRestore();
       vi.useRealTimers();
     }
   }, 20000);
