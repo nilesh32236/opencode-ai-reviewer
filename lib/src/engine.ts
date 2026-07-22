@@ -56,6 +56,7 @@ export class ReviewEngine {
    * @param reviewPromptFile - Optional path to a custom review prompt file.
    * @param reviewPromptExtra - Optional extra text appended to the review prompt.
    * @param timeoutMinutes - Optional timeout override (defaults to config.timeoutMinutes).
+   * @param workingDirectory - Optional working directory for cloned repo (tempDir).
    * @returns Parsed review result with verdict, issues, and strengths.
    */
   async reviewPR(
@@ -65,6 +66,7 @@ export class ReviewEngine {
     reviewPromptExtra?: string,
     timeoutMinutes?: number,
     previousFindings?: PreviousFindingIteration[],
+    workingDirectory?: string,
   ): Promise<ReviewResult> {
     core.info(
       `Reviewing PR #${pr.number} (${pr.changedFiles.length} files)${iteration !== undefined ? ` (Iteration ${iteration + 1})` : ''}`,
@@ -172,6 +174,7 @@ export class ReviewEngine {
     const runResult = await runOpenCode(prompt, {
       model: this.config.reviewModel,
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+      workingDirectory,
     });
     if (!runResult.success) {
       core.warning('OpenCode review execution failed, returning fallback result');
@@ -182,7 +185,10 @@ export class ReviewEngine {
 
     core.info('Parsing review output');
     try {
-      return await parseJsonlFile('.opencode/review-output.jsonl');
+      const reviewOutputPath = workingDirectory
+        ? path.join(workingDirectory, '.opencode/review-output.jsonl')
+        : '.opencode/review-output.jsonl';
+      return await parseJsonlFile(reviewOutputPath);
     } catch {
       core.warning('Failed to parse review output, returning empty result');
       const r = emptyResult();
@@ -201,6 +207,7 @@ export class ReviewEngine {
    * @param contextMarkdown - PR context as markdown string.
    * @param cachedPR - Optional pre-fetched PR context to avoid redundant API calls.
    * @param timeoutMinutes - Optional timeout override (defaults to config.timeoutMinutes).
+   * @param workingDirectory - Optional working directory for cloned repo (tempDir).
    * @returns Fix result indicating whether changes were made, files changed, and stuck/summary info.
    */
   async runFix(
@@ -211,6 +218,7 @@ export class ReviewEngine {
     timeoutMinutes?: number,
     issues?: ReviewIssue[],
     verificationError?: string,
+    workingDirectory?: string,
   ): Promise<FixResult> {
     let mcpDocs = '';
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
@@ -244,6 +252,7 @@ export class ReviewEngine {
     const fixRunResult = await runOpenCode(prompt, {
       model: this.config.fixModel,
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+      workingDirectory,
     });
     if (!fixRunResult.success) {
       core.warning(
@@ -253,6 +262,8 @@ export class ReviewEngine {
       await new Promise((r) => setTimeout(r, 500));
     }
 
+    const workDir = workingDirectory || process.cwd();
+
     let changesMade = false;
     let filesChanged: string[] = [];
     let stuck = false;
@@ -260,21 +271,21 @@ export class ReviewEngine {
     let summary: string | undefined;
 
     try {
-      const status = getGitStatus();
+      const status = getGitStatus(workDir);
       changesMade = status.trim().length > 0;
 
       try {
-        const stuckContent = await fs.readFile('.fix-stuck.md', 'utf-8');
+        const stuckContent = await fs.readFile(path.join(workDir, '.fix-stuck.md'), 'utf-8');
         stuck = stuckContent.trim().length > 0;
         stuckReason = stuckContent;
-        await fs.unlink('.fix-stuck.md');
+        await fs.unlink(path.join(workDir, '.fix-stuck.md'));
       } catch {
         core.debug('No .fix-stuck.md — proceeding normally');
       }
 
       try {
-        summary = await fs.readFile('.fix-summary.md', 'utf-8');
-        await fs.unlink('.fix-summary.md');
+        summary = await fs.readFile(path.join(workDir, '.fix-summary.md'), 'utf-8');
+        await fs.unlink(path.join(workDir, '.fix-summary.md'));
       } catch {
         core.debug('No .fix-summary.md — proceeding normally');
       }
@@ -282,7 +293,10 @@ export class ReviewEngine {
       if (changesMade) {
         try {
           const raw = cp
-            .execFileSync('git', ['diff', '--name-only', 'HEAD'], { encoding: 'utf-8' })
+            .execFileSync('git', ['diff', '--name-only', 'HEAD'], {
+              encoding: 'utf-8',
+              cwd: workDir,
+            })
             .toString()
             .trim();
           filesChanged = raw ? raw.split('\n') : [];
@@ -308,6 +322,7 @@ export class ReviewEngine {
    * @param targetDir - Directory to audit.
    * @param category - Audit category name (used for output file naming).
    * @param timeoutMinutes - Optional timeout override (defaults to config.timeoutMinutes).
+   * @param workingDirectory - Optional working directory for cloned repo (tempDir).
    * @returns Parsed audit result with issues and verdict.
    */
   async runAudit(
@@ -315,12 +330,13 @@ export class ReviewEngine {
     targetDir: string,
     category: string,
     timeoutMinutes?: number,
+    workingDirectory?: string,
   ): Promise<ReviewResult> {
     let mcpDocs = '';
     if (this.config.enableMCP) {
       try {
         await this.mcp.connect();
-        const libraries = detectLibrariesFromDir(targetDir);
+        const libraries = detectLibrariesFromDir(targetDir, workingDirectory);
         if (libraries.length > 0) {
           mcpDocs = await this.mcp.getLibraryDocs(libraries);
         }
@@ -345,6 +361,7 @@ export class ReviewEngine {
     const auditRunResult = await runOpenCode(prompt, {
       model: this.config.reviewModel,
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+      workingDirectory,
     });
     if (!auditRunResult.success) {
       core.warning('OpenCode audit execution failed, returning fallback empty result');
@@ -353,7 +370,8 @@ export class ReviewEngine {
       return r;
     }
 
-    const outputPath = `.opencode/audit-${category}.jsonl`;
+    const auditDir = workingDirectory || process.cwd();
+    const outputPath = path.join(auditDir, `.opencode/audit-${category}.jsonl`);
     try {
       return await parseJsonlFile(outputPath);
     } catch {
@@ -531,7 +549,7 @@ function detectLibraries(files: string[]): string[] {
   return [...libraries];
 }
 
-function detectLibrariesFromDir(dir: string): string[] {
+function detectLibrariesFromDir(dir: string, rootDir?: string): string[] {
   const libs = new Set<string>();
 
   // PHP-only directories in WordPress plugins — no JS libraries apply.
@@ -552,8 +570,9 @@ function detectLibrariesFromDir(dir: string): string[] {
   // since `src` is also used by WordPress plugins for React admin UI.
   if (dir === 'src' || dir.endsWith('/src')) {
     // Check for package.json to confirm it's a JS project before adding Node libs.
-    const hasPackageJson = existsSync(path.join(process.cwd(), 'package.json'));
-    const hasComposerJson = existsSync(path.join(process.cwd(), 'composer.json'));
+    const projectRoot = rootDir || process.cwd();
+    const hasPackageJson = existsSync(path.join(projectRoot, 'package.json'));
+    const hasComposerJson = existsSync(path.join(projectRoot, 'composer.json'));
 
     if (hasPackageJson) {
       libs.add('react');

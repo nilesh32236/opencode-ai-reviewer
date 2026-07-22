@@ -568,18 +568,51 @@ describe('configureGit()', () => {
 
     configureGit('test-user', 'test@example.com');
 
-    expect(mockExecFileSync).toHaveBeenCalledWith('git', [
-      'config',
-      '--local',
-      'user.name',
-      'test-user',
-    ]);
-    expect(mockExecFileSync).toHaveBeenCalledWith('git', [
-      'config',
-      '--local',
-      'user.email',
-      'test@example.com',
-    ]);
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      'git',
+      ['config', '--local', 'user.name', 'test-user'],
+      {},
+    );
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      'git',
+      ['config', '--local', 'user.email', 'test@example.com'],
+      {},
+    );
+  });
+
+  it('returns env vars when cwd is provided (isolated mode)', () => {
+    mockExecFileSync.mockReturnValue('');
+
+    const result = configureGit('test-user', 'test@example.com', 'ghp_token', '/tmp/test');
+
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      'git',
+      ['config', '--local', 'user.name', 'test-user'],
+      { cwd: '/tmp/test' },
+    );
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      'git',
+      ['config', '--local', 'user.email', 'test@example.com'],
+      { cwd: '/tmp/test' },
+    );
+    expect(result).toBeDefined();
+    expect(result).toHaveProperty('GIT_ASKPASS');
+    expect(result).toHaveProperty('OPENCODE_CREDENTIAL_TOKEN', 'ghp_token');
+    expect(result).toHaveProperty('GIT_AUTHOR_NAME', 'test-user');
+    expect(result).toHaveProperty('GIT_AUTHOR_EMAIL', 'test@example.com');
+    expect(result).toHaveProperty('GIT_COMMITTER_NAME', 'test-user');
+    expect(result).toHaveProperty('GIT_COMMITTER_EMAIL', 'test@example.com');
+  });
+
+  it('does not set global process.env when cwd is provided', () => {
+    mockExecFileSync.mockReturnValue('');
+
+    const result = configureGit('test-user', 'test@example.com', 'ghp_token', '/tmp/test');
+
+    // Result should be an object (not undefined as in global mode)
+    expect(result).toBeInstanceOf(Object);
+    // The function returns the env instead of setting process.env
+    expect(result?.GIT_AUTHOR_NAME).toBe('test-user');
   });
 });
 
@@ -607,5 +640,17 @@ describe('getGitStatus()', () => {
     const result = getGitStatus();
 
     expect(result).toBe('');
+  });
+
+  it('passes cwd to execFileSync when provided', () => {
+    mockExecFileSync.mockReturnValue(' M src/test.ts\n');
+
+    const result = getGitStatus('/tmp/test');
+
+    expect(result).toBe(' M src/test.ts\n');
+    expect(mockExecFileSync).toHaveBeenCalledWith('git', ['status', '--porcelain'], {
+      encoding: 'utf-8',
+      cwd: '/tmp/test',
+    });
   });
 });

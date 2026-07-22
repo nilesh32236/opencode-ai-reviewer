@@ -1,4 +1,5 @@
 import { execFileSync, execSync } from 'child_process';
+import type { ExecFileSyncOptions } from 'child_process';
 import type { AgentConfig, FixResult, PRContext, ReviewResult } from '@opencode-pr-agent/lib';
 import { GitHubHelper, Logger, ReviewEngine, configureGit } from '@opencode-pr-agent/lib';
 
@@ -146,6 +147,8 @@ export async function handleAutofixLoop(
   token: string,
   config: AgentConfig,
   runChecksAfterFix?: string,
+  tempDir?: string,
+  initialGitEnv?: Record<string, string>,
 ): Promise<void> {
   const logger = new Logger('Autofix', { prNumber, repo });
   logger.info(`Starting autofix loop for PR #${prNumber} in ${repo}`);
@@ -155,7 +158,21 @@ export async function handleAutofixLoop(
   const history: IterationRecord[] = [];
   let approved = false;
 
-  configureGit('opencode-pr-agent[bot]', 'opencode-pr-agent[bot]@users.noreply.github.com', token);
+  let gitEnv = initialGitEnv;
+  if (!gitEnv && tempDir) {
+    gitEnv = configureGit(
+      'opencode-pr-agent[bot]',
+      'opencode-pr-agent[bot]@users.noreply.github.com',
+      token,
+      tempDir,
+    );
+  } else if (!gitEnv) {
+    configureGit(
+      'opencode-pr-agent[bot]',
+      'opencode-pr-agent[bot]@users.noreply.github.com',
+      token,
+    );
+  }
   try {
     for (let i = 0; i < config.maxIterations; i++) {
       logger.info(`=== Autofix iteration ${i + 1}/${config.maxIterations} ===`);
@@ -170,9 +187,18 @@ export async function handleAutofixLoop(
         break;
       }
 
+      const reviewWorkingDir = tempDir || process.cwd();
       let result: ReviewResult;
       try {
-        result = await engine.reviewPR(pr, i);
+        result = await engine.reviewPR(
+          pr,
+          i,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          reviewWorkingDir,
+        );
       } catch (err) {
         logger.error(
           `Review engine failed in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
@@ -254,9 +280,21 @@ export async function handleAutofixLoop(
         contextMd += '\n';
       }
 
+      const gitOpts: ExecFileSyncOptions = tempDir
+        ? { cwd: tempDir, ...(gitEnv ? { env: { ...process.env, ...gitEnv } } : {}) }
+        : {};
       let fixResult: FixResult | undefined;
       try {
-        fixResult = await engine.runFix(prNumber, i, contextMd, pr);
+        fixResult = await engine.runFix(
+          prNumber,
+          i,
+          contextMd,
+          pr,
+          undefined,
+          undefined,
+          undefined,
+          reviewWorkingDir,
+        );
       } catch (err) {
         logger.error(
           `Fix engine failed in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
@@ -287,9 +325,13 @@ export async function handleAutofixLoop(
         `fix: address review feedback (iteration ${i + 1})`;
 
       try {
-        execFileSync('git', ['add', '-A']);
-        execFileSync('git', ['commit', '-m', `fix: address review feedback (iteration ${i + 1})`]);
-        execFileSync('git', ['push', 'origin', pr.headRef]);
+        execFileSync('git', ['add', '-A'], gitOpts);
+        execFileSync(
+          'git',
+          ['commit', '-m', `fix: address review feedback (iteration ${i + 1})`],
+          gitOpts,
+        );
+        execFileSync('git', ['push', 'origin', pr.headRef], gitOpts);
       } catch (err) {
         logger.error(
           `Git operations failed in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
@@ -314,12 +356,14 @@ export async function handleAutofixLoop(
         for (let v = 0; v <= maxVerificationRetries; v++) {
           let checkOutput = '';
           const checkCmd = runChecksAfterFix;
+          const execOpts = {
+            encoding: 'utf-8' as const,
+            stdio: 'pipe' as const,
+            timeout: 300_000,
+            ...(tempDir ? { cwd: tempDir } : {}),
+          };
           try {
-            const stdout = execSync(checkCmd, {
-              encoding: 'utf-8',
-              stdio: 'pipe',
-              timeout: 300_000,
-            });
+            const stdout = execSync(checkCmd, execOpts);
             checkOutput += stdout;
             logger.info('Verification passed');
             break;
@@ -345,16 +389,17 @@ export async function handleAutofixLoop(
                   undefined,
                   result.issues,
                   checkOutput,
+                  reviewWorkingDir,
                 );
 
                 if (retryResult?.changesMade) {
-                  execFileSync('git', ['add', '-A']);
-                  execFileSync('git', [
-                    'commit',
-                    '-m',
-                    `fix: verification errors (attempt ${v + 1})`,
-                  ]);
-                  execFileSync('git', ['push', 'origin', pr.headRef]);
+                  execFileSync('git', ['add', '-A'], gitOpts);
+                  execFileSync(
+                    'git',
+                    ['commit', '-m', `fix: verification errors (attempt ${v + 1})`],
+                    gitOpts,
+                  );
+                  execFileSync('git', ['push', 'origin', pr.headRef], gitOpts);
                 } else {
                   logger.info('Fix agent made no changes to address verification errors');
                   break;

@@ -7,6 +7,7 @@ export async function handlePRReview(
   token: string,
   config: AgentConfig,
   learningStore?: LearningStore,
+  tempDir?: string,
 ): Promise<ReviewResult | null> {
   const logger = new Logger('PRReview', { prNumber, repo });
   logger.info(`Starting review for PR #${prNumber}`);
@@ -30,9 +31,18 @@ export async function handlePRReview(
   const engine = new ReviewEngine(config, token, repo);
 
   try {
+    const reviewWorkingDir = tempDir || process.cwd();
     let result: ReviewResult;
     try {
-      result = await engine.reviewPR(pr);
+      result = await engine.reviewPR(
+        pr,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        reviewWorkingDir,
+      );
     } catch (err) {
       logger.error(
         `Review engine failed for PR #${prNumber}: ${err instanceof Error ? err.message : err}`,
@@ -71,7 +81,7 @@ export async function handlePRReview(
       );
       try {
         const { handleAutofixLoop } = await import('./autofix.js');
-        await handleAutofixLoop(prNumber, repo, token, config);
+        await handleAutofixLoop(prNumber, repo, token, config, undefined, tempDir);
       } catch (err) {
         logger.error(
           `Autofix loop failed for PR #${prNumber}: ${err instanceof Error ? err.message : err}`,
