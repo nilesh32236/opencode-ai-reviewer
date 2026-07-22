@@ -183,6 +183,9 @@ export class MCPManager {
               relevance: 0.8,
             });
           }
+        } else {
+          const logger = new Logger('MCPManager');
+          logger.warn(`No allowed tool found for server ${name}. Allowed patterns: ${allowedPatterns.join(', ')}`);
         }
       }),
     );
@@ -233,6 +236,9 @@ export class MCPManager {
           if (text) {
             return `### ${lib}\n${text}`;
           }
+        } else {
+          const logger = new Logger('MCPManager');
+          logger.warn(`No allowed tool found for server context7. Allowed patterns: ${allowedPatterns.join(', ')}`);
         }
         return '';
       }),
