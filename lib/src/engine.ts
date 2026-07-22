@@ -1,4 +1,4 @@
-import { promises as fs, existsSync } from 'fs';
+import { promises as fs, existsSync, readFileSync } from 'fs';
 import * as cp from 'node:child_process';
 import * as path from 'path';
 import * as core from '@actions/core';
@@ -76,7 +76,10 @@ export class ReviewEngine {
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
       try {
         await this.mcp.connect();
-        const libraries = detectLibraries(pr.changedFiles.map((f) => f.path));
+        const libraries = detectLibraries(
+          pr.changedFiles.map((f) => f.path),
+          workingDirectory,
+        );
         if (libraries.length > 0) {
           core.info(`Fetching MCP docs for: ${libraries.join(', ')}`);
           const docs = await this.mcp.getLibraryDocs(libraries);
@@ -225,7 +228,10 @@ export class ReviewEngine {
       try {
         await this.mcp.connect();
         const pr = cachedPR ?? (await this.github.getPR(prNumber));
-        const libraries = detectLibraries(pr.changedFiles.map((f) => f.path));
+        const libraries = detectLibraries(
+          pr.changedFiles.map((f) => f.path),
+          workingDirectory,
+        );
         if (libraries.length > 0) {
           mcpDocs = await this.mcp.getLibraryDocs(libraries);
         }
@@ -458,7 +464,148 @@ export class ReviewEngine {
   }
 }
 
-function detectLibraries(files: string[]): string[] {
+// ---- Manifest-based library detection helpers ----
+
+const PACKAGE_JSON_MAP: Record<string, string> = {
+  next: 'next.js',
+  react: 'react',
+  '@tanstack/react-query': '@tanstack/react-query',
+  express: 'express',
+  prisma: 'prisma',
+  zod: 'zod',
+  tailwindcss: 'tailwindcss',
+  vue: 'vue',
+  svelte: 'svelte',
+  '@nestjs/core': 'express',
+  vitest: 'vitest',
+  graphql: 'graphql',
+};
+
+function detectLibrariesFromDeps(
+  deps: Record<string, string>,
+  map: Record<string, string>,
+): string[] {
+  const libs: string[] = [];
+  for (const [pkgName, libName] of Object.entries(map)) {
+    if (pkgName in deps) {
+      libs.push(libName);
+    }
+  }
+  return libs;
+}
+
+function detectLibrariesFromManifests(rootDir: string): string[] | null {
+  const libs = new Set<string>();
+
+  // package.json — JS/TS
+  try {
+    const pkgPath = path.join(rootDir, 'package.json');
+    if (existsSync(pkgPath)) {
+      const content = readFileSync(pkgPath, 'utf-8');
+      const pkg = JSON.parse(content);
+      const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+      for (const lib of detectLibrariesFromDeps(deps, PACKAGE_JSON_MAP)) {
+        libs.add(lib);
+      }
+    }
+  } catch {
+    // fall through
+  }
+
+  // composer.json — PHP
+  try {
+    const composerPath = path.join(rootDir, 'composer.json');
+    if (existsSync(composerPath)) {
+      const content = readFileSync(composerPath, 'utf-8');
+      const composer = JSON.parse(content);
+      const deps = { ...(composer.require || {}), ...(composer['require-dev'] || {}) };
+      if ('laravel/framework' in deps) libs.add('laravel');
+      if ('symfony/symfony' in deps) libs.add('symfony');
+      if ('symfony/framework-bundle' in deps) libs.add('symfony');
+      if ('illuminate/support' in deps) libs.add('laravel');
+    }
+  } catch {
+    // fall through
+  }
+
+  // Cargo.toml — Rust
+  try {
+    const cargoPath = path.join(rootDir, 'Cargo.toml');
+    if (existsSync(cargoPath)) {
+      const content = readFileSync(cargoPath, 'utf-8');
+      const depMatch = content.match(/\[dependencies\]([^[]*)/);
+      if (depMatch) {
+        const depsText = depMatch[1];
+        for (const line of depsText.split('\n')) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('[')) continue;
+          const depName = trimmed.split('=')[0]?.trim().replace(/["']/g, '');
+          if (depName === 'actix-web') libs.add('actix-web');
+          if (depName === 'axum') libs.add('axum');
+          if (depName === 'rocket') libs.add('rocket');
+          if (depName === 'tokio') libs.add('tokio');
+          if (depName === 'serde') libs.add('serde');
+          if (depName === 'diesel') libs.add('diesel');
+          if (depName === 'sqlx') libs.add('sqlx');
+        }
+      }
+    }
+  } catch {
+    // fall through
+  }
+
+  // go.mod — Go
+  try {
+    const goModPath = path.join(rootDir, 'go.mod');
+    if (existsSync(goModPath)) {
+      const content = readFileSync(goModPath, 'utf-8');
+      const lines = content.split('\n');
+      let inRequireBlock = false;
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('require (') || trimmed.startsWith('require\t')) {
+          inRequireBlock = trimmed.endsWith('(');
+          continue;
+        }
+        if (inRequireBlock) {
+          if (trimmed === ')') {
+            inRequireBlock = false;
+            continue;
+          }
+        } else if (!trimmed.startsWith('require')) {
+          continue;
+        }
+        const parts = trimmed.split(/\s+/);
+        const pkg = parts[0];
+        if (pkg === 'github.com/gin-gonic/gin') libs.add('gin');
+        if (pkg === 'github.com/labstack/echo' || pkg === 'github.com/labstack/echo/v4')
+          libs.add('echo');
+        if (pkg === 'github.com/gorilla/mux') libs.add('gorilla/mux');
+        if (pkg === 'github.com/jackc/pgx') libs.add('pgx');
+        if (pkg === 'github.com/jmoiron/sqlx') libs.add('sqlx');
+      }
+    }
+  } catch {
+    // fall through
+  }
+
+  return libs.size > 0 ? [...libs] : null;
+}
+
+/**
+ * Detect libraries from a list of changed files.
+ * First tries manifest-based detection (package.json, composer.json, etc.)
+ * if rootDir is provided. Falls back to path/file-extension heuristics.
+ */
+function detectLibraries(files: string[], rootDir?: string): string[] {
+  // Prefer manifest-based detection when rootDir is available
+  if (rootDir) {
+    const manifestLibs = detectLibrariesFromManifests(rootDir);
+    if (manifestLibs) {
+      return manifestLibs;
+    }
+  }
+
   const libraries = new Set<string>();
 
   for (const file of files) {
@@ -549,11 +696,23 @@ function detectLibraries(files: string[]): string[] {
   return [...libraries];
 }
 
+/**
+ * Detect libraries from a target directory.
+ * First tries manifest-based detection if rootDir is provided.
+ * Falls back to directory-name heuristics.
+ */
 function detectLibrariesFromDir(dir: string, rootDir?: string): string[] {
+  // Prefer manifest-based detection when rootDir is available
+  if (rootDir) {
+    const manifestLibs = detectLibrariesFromManifests(rootDir);
+    if (manifestLibs) {
+      return manifestLibs;
+    }
+  }
+
   const libs = new Set<string>();
 
   // PHP-only directories in WordPress plugins — no JS libraries apply.
-  // Returning an empty set avoids injecting irrelevant MCP docs for express/prisma.
   const phpOnlyPatterns = ['includes', 'templates', 'vendor', 'admin', 'languages'];
   if (phpOnlyPatterns.some((p) => dir.includes(p))) {
     return [];
@@ -566,10 +725,8 @@ function detectLibrariesFromDir(dir: string, rootDir?: string): string[] {
     libs.add('@tanstack/react-query');
   }
 
-  // Generic `src` directory — only add Node.js libs if no composer.json at root,
-  // since `src` is also used by WordPress plugins for React admin UI.
+  // Generic `src` directory
   if (dir === 'src' || dir.endsWith('/src')) {
-    // Check for package.json to confirm it's a JS project before adding Node libs.
     const projectRoot = rootDir || process.cwd();
     const hasPackageJson = existsSync(path.join(projectRoot, 'package.json'));
     const hasComposerJson = existsSync(path.join(projectRoot, 'composer.json'));
@@ -577,7 +734,6 @@ function detectLibrariesFromDir(dir: string, rootDir?: string): string[] {
     if (hasPackageJson) {
       libs.add('react');
     }
-    // If this is a hybrid (WP plugin with both composer + package.json), skip server-side libs.
     if (!hasComposerJson) {
       libs.add('express');
       libs.add('prisma');
@@ -585,7 +741,7 @@ function detectLibrariesFromDir(dir: string, rootDir?: string): string[] {
     }
   }
 
-  // Pure backend directories (no ambiguity)
+  // Pure backend directories
   if (dir.includes('backend') || dir.includes('api') || dir.includes('server')) {
     libs.add('express');
     libs.add('prisma');
