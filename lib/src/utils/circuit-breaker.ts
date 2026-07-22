@@ -7,9 +7,23 @@ export interface CircuitBreakerOptions {
   successThreshold?: number;
   cooldownMs?: number;
   name?: string;
+  /** Called when circuit transitions from CLOSED or HALF_OPEN to OPEN */
+  onOpen?: (metrics: { failureCount: number; successCount: number }) => void;
+  /** Called when circuit transitions from OPEN or HALF_OPEN to CLOSED */
+  onClose?: (metrics: { failureCount: number; successCount: number }) => void;
+  /** Called when circuit transitions from OPEN to HALF_OPEN after cooldown */
+  onHalfOpen?: (metrics: { failureCount: number; successCount: number }) => void;
 }
 
-const DEFAULT_OPTIONS: Required<CircuitBreakerOptions> = {
+type RequiredCircuitBreakerOptions = Required<
+  Omit<CircuitBreakerOptions, 'onOpen' | 'onClose' | 'onHalfOpen'>
+> & {
+  onOpen?: (metrics: { failureCount: number; successCount: number }) => void;
+  onClose?: (metrics: { failureCount: number; successCount: number }) => void;
+  onHalfOpen?: (metrics: { failureCount: number; successCount: number }) => void;
+};
+
+const DEFAULT_OPTIONS: RequiredCircuitBreakerOptions = {
   failureThreshold: 5,
   successThreshold: 2,
   cooldownMs: 30000,
@@ -21,7 +35,7 @@ export class CircuitBreaker {
   private failureCount = 0;
   private successCount = 0;
   private lastFailureTime = 0;
-  private options: Required<CircuitBreakerOptions>;
+  private options: RequiredCircuitBreakerOptions;
   private inFlightProbe = false;
 
   constructor(options: CircuitBreakerOptions = {}) {
@@ -32,6 +46,7 @@ export class CircuitBreaker {
     if (this.state === 'OPEN' && Date.now() - this.lastFailureTime >= this.options.cooldownMs) {
       this.state = 'HALF_OPEN';
       core.info(`[${this.options.name}] Circuit transitioning OPEN -> HALF_OPEN after cooldown`);
+      this.options.onHalfOpen?.(this.getMetrics());
     }
   }
 
@@ -73,10 +88,13 @@ export class CircuitBreaker {
       this.successCount++;
       if (this.successCount >= this.options.successThreshold) {
         const count = this.successCount;
-        this.reset();
+        this.state = 'CLOSED';
+        this.failureCount = 0;
+        this.successCount = 0;
         core.info(
           `[${this.options.name}] Circuit HALF_OPEN -> CLOSED after ${count} consecutive successes`,
         );
+        this.options.onClose?.(this.getMetrics());
       }
     } else {
       this.reset();
@@ -93,12 +111,14 @@ export class CircuitBreaker {
       core.warning(
         `[${this.options.name}] Circuit HALF_OPEN -> OPEN after failure in half-open state`,
       );
+      this.options.onOpen?.(this.getMetrics());
     } else if (this.state === 'CLOSED' && this.failureCount >= this.options.failureThreshold) {
       this.state = 'OPEN';
       this.successCount = 0;
       core.warning(
         `[${this.options.name}] Circuit CLOSED -> OPEN after ${this.failureCount} consecutive failures`,
       );
+      this.options.onOpen?.(this.getMetrics());
     }
   }
 
