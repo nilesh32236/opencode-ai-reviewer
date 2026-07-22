@@ -39,39 +39,33 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
   const stream = fs.createReadStream(absolutePath, 'utf-8');
   const rl = readline.createInterface({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
 
-  await new Promise<void>((resolve, reject) => {
-    stream.on('error', reject);
+  for await (const line of rl) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    rawLines.push(trimmed);
 
-    rl.on('line', (line) => {
-      const trimmed = line.trim();
-      if (trimmed.length === 0) return;
-      rawLines.push(trimmed);
+    try {
+      const parsed = JSON.parse(trimmed);
+      const finding = validateAndNormalize(parsed);
 
-      try {
-        const parsed = JSON.parse(trimmed);
-        const finding = validateAndNormalize(parsed);
-
-        switch (finding.type) {
-          case 'summary':
-            summary = finding as SummaryFinding;
-            break;
-          case 'verdict':
-            verdict = finding as VerdictFinding;
-            break;
-          case 'strength':
-            strengths.push(finding as StrengthFinding);
-            break;
-          case 'issue':
-            issues.push(finding as IssueFinding);
-            break;
-        }
-      } catch {
-        failedLines++;
+      switch (finding.type) {
+        case 'summary':
+          summary = finding as SummaryFinding;
+          break;
+        case 'verdict':
+          verdict = finding as VerdictFinding;
+          break;
+        case 'strength':
+          strengths.push(finding as StrengthFinding);
+          break;
+        case 'issue':
+          issues.push(finding as IssueFinding);
+          break;
       }
-    });
-
-    rl.on('close', resolve);
-  });
+    } catch {
+      failedLines++;
+    }
+  }
 
   const counts = issues.reduce(
     (acc, i) => {
@@ -84,17 +78,17 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
   );
 
   return {
-    summary: (summary as SummaryFinding | null)?.text || '',
+    summary: summary?.text ?? '',
     verdict: {
-      ready: (verdict as VerdictFinding | null)?.ready ?? false,
-      reasoning: (verdict as VerdictFinding | null)?.reasoning || '',
-      autoFixable: (verdict as VerdictFinding | null)?.autoFixable ?? false,
-      confidence: (verdict as VerdictFinding | null)?.confidence || 'low',
+      ready: verdict?.ready ?? false,
+      reasoning: verdict?.reasoning ?? '',
+      autoFixable: verdict?.autoFixable ?? false,
+      confidence: verdict?.confidence ?? 'low',
     },
     strengths: strengths.map((s) => ({
       type: 'strength' as const,
-      file: s.file || '',
-      line: s.line || 0,
+      file: s.file ?? '',
+      line: s.line ?? 0,
       message: s.message,
     })),
     issues: issues.map((i) => ({

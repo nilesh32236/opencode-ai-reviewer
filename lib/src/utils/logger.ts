@@ -134,7 +134,15 @@ export class Logger {
     if (typeof data === 'string') return data;
     if (data instanceof Error) return data.stack || data.message;
     try {
-      return JSON.stringify(data);
+      const seen = new WeakSet<object>();
+      return JSON.stringify(data, (_key: string, value: unknown) => {
+        if (typeof value === 'object' && value !== null) {
+          if (seen.has(value)) return '[Circular]';
+          seen.add(value);
+          if (value instanceof Error) return value.stack || value.message;
+        }
+        return value;
+      });
     } catch {
       return String(data);
     }

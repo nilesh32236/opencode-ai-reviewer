@@ -2,7 +2,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as core from '@actions/core';
 import yaml from 'js-yaml';
+import { minimatch } from 'minimatch';
 import type { ConfigOverride, PromptConfig } from './types/index.js';
+import { PromptConfigSchema } from './types/schemas.js';
 
 export interface ResolveConfigOptions {
   /** File paths being reviewed (for path-based overrides) */
@@ -32,8 +34,7 @@ export function loadConfig(workingDir = '.'): PromptConfig | null {
       core.info(`Loading config from ${filename}`);
       try {
         const content = fs.readFileSync(fullPath, 'utf-8');
-        const config = yaml.load(content) as PromptConfig;
-        if (!config) return null;
+        const config = PromptConfigSchema.parse(yaml.load(content));
         return validateConfig(config);
       } catch (error) {
         core.warning(`Failed to parse ${filename}: ${String(error)}`);
@@ -64,35 +65,8 @@ export function mergeConfigWithInputs(
   };
 }
 
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 function matchesGlob(pattern: string, value: string): boolean {
-  const result: string[] = [];
-  let i = 0;
-  while (i < pattern.length) {
-    const ch = pattern[i];
-    if (ch === '\\' && i + 1 < pattern.length) {
-      result.push(escapeRegex(pattern[i + 1]));
-      i += 2;
-    } else if (ch === '*') {
-      if (i + 1 < pattern.length && pattern[i + 1] === '*') {
-        result.push('.*');
-        i += 2;
-      } else {
-        result.push('[^/]*');
-        i += 1;
-      }
-    } else if (ch === '?') {
-      result.push('.');
-      i += 1;
-    } else {
-      result.push(escapeRegex(ch));
-      i += 1;
-    }
-  }
-  return new RegExp(`^${result.join('')}$`).test(value);
+  return minimatch(value, pattern);
 }
 
 /**
@@ -309,6 +283,15 @@ export function validateConfig(config: PromptConfig): PromptConfig {
   return result;
 }
 
+/**
+ * Extract default values from a PromptConfig and map them to GitHub Action input names.
+ * This bridges the config file's naming convention (camelCase) with the action's
+ * input naming convention (snake_case). For example, `config.review.systemPrompt`
+ * maps to the action input `review_prompt`.
+ *
+ * @param config - Parsed PromptConfig with optional sections.
+ * @returns Flat record of action input key-value pairs derived from the config.
+ */
 function extractDefaultsFromConfig(config: PromptConfig): Record<string, unknown> {
   const defaults: Record<string, unknown> = {};
 

@@ -88,7 +88,7 @@ export async function runFixIssue(
   repo: string,
   token: string,
 ): Promise<void> {
-  const issueNumber = github.context.payload.issue?.number;
+  const issueNumber = await resolvePrNumber();
   if (!issueNumber) {
     core.setFailed('Could not determine issue number');
     return;
