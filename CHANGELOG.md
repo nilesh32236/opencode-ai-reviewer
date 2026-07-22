@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.1.8] — 2026-07-22
+
+
+### Fixed
+
+- address issue #93 (#105) (#93
+#105)
+
+### Changed
+
+- [Autofix] Issue 8: Workspace Isolation for Concurrent Probot Webhook Events (#104) (#104)
+- [Autofix] Issue 7: Implement Compiler/Test Error Feedback Loop in Autofix Mode (#103) (#103)
+
+[v1.1.8]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.1.7...v1.1.8
+
 ## [v1.1.7] — 2026-07-22
 
 
