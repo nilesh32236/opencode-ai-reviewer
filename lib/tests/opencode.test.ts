@@ -565,13 +565,13 @@ describe('configureGit()', () => {
 
     expect(mockExecFileSync).toHaveBeenCalledWith('git', [
       'config',
-      '--global',
+      '--local',
       'user.name',
       'test-user',
     ]);
     expect(mockExecFileSync).toHaveBeenCalledWith('git', [
       'config',
-      '--global',
+      '--local',
       'user.email',
       'test@example.com',
     ]);
