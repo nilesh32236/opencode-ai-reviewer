@@ -34,6 +34,7 @@ export type { SubscriberHealth } from './event-bus/bus.js';
 export { EventRouter } from './event-bus/router.js';
 export { LearningStore } from './learning/store.js';
 export { connectDb } from './learning/db.js';
+export type { LearningRepository } from './learning/types.js';
 export { getDbPath } from './learning/schema.js';
 export { withRetry, withRetryAndTimeout } from './utils/retry.js';
 export { CircuitBreaker } from './utils/circuit-breaker.js';
