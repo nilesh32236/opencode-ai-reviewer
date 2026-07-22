@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.1.9] — 2026-07-22
+
+
+### Fixed
+
+- address issue #95 (#107) (#95
+#107)
+
+### Changed
+
+- [Autofix] Issue 10: Implement Application-Layer Concurrent Batch Processing and Synthesis (#106) (#106)
+
+[v1.1.9]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.1.8...v1.1.9
+
 ## [v1.1.8] — 2026-07-22
 
 
