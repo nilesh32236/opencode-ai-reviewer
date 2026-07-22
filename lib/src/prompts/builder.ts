@@ -270,7 +270,7 @@ After writing the file, you MUST verify that the JSONL file exists, is valid JSO
 }
 
 export function loadPromptFile(filePath: string): string | null {
-  const workspace = process.cwd();
+  const workspace = fs.realpathSync(process.cwd());
   const resolved = path.resolve(workspace, filePath);
   const relative = path.relative(workspace, resolved);
   if (relative.startsWith('..')) return null;
