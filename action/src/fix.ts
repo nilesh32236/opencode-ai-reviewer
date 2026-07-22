@@ -78,11 +78,11 @@ export async function runFix(
         break;
       }
 
-      core.warning(
-        `Verification command failed (exit code ${exitCode}). Retrying fix with error output...`,
-      );
-
       if (v < maxVerificationRetries) {
+        core.warning(
+          `Verification command failed (exit code ${exitCode}). Retrying fix with error output...`,
+        );
+
         const freshPr = await gh.getPR(prNumber);
         const freshContextMarkdown = await gh.gatherContext({ prNumber });
         const retryResult = await engine.runFix(
@@ -98,11 +98,7 @@ export async function runFix(
         if (retryResult?.changesMade) {
           try {
             await exec.exec('git', ['add', '-u']);
-            await exec.exec('git', [
-              'commit',
-              '-m',
-              `fix: verification errors (iteration ${iteration + 1})`,
-            ]);
+            await exec.exec('git', ['commit', '-m', `fix: verification errors (attempt ${v + 1})`]);
             await exec.exec('git', ['push', 'origin', pr.headRef]);
           } catch (err) {
             core.warning(
@@ -110,6 +106,10 @@ export async function runFix(
             );
           }
         }
+      } else {
+        core.warning(
+          `Verification command failed (exit code ${exitCode}) after all retries — giving up.`,
+        );
       }
     }
   }

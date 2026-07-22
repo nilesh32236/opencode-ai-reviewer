@@ -2,6 +2,25 @@ import { execFileSync, execSync } from 'child_process';
 import type { AgentConfig, FixResult, PRContext, ReviewResult } from '@opencode-pr-agent/lib';
 import { GitHubHelper, Logger, ReviewEngine, configureGit } from '@opencode-pr-agent/lib';
 
+const COMMAND_ALLOWLIST = ['pnpm', 'npm', 'yarn', 'node'];
+
+function validateCommand(command: string): void {
+  const trimmed = command.trim();
+  if (!trimmed) throw new Error('run_checks_after_fix must not be empty');
+  const parts = trimmed.split(/\s+/);
+  const program = parts[0];
+  if (!COMMAND_ALLOWLIST.includes(program)) {
+    throw new Error(
+      `Command "${program}" is not allowed. Allowed programs: ${COMMAND_ALLOWLIST.join(', ')}`,
+    );
+  }
+  for (const arg of parts.slice(1)) {
+    if (/[;&|`$(){}<>\n\r]/.test(arg)) {
+      throw new Error(`Argument "${arg}" contains unsafe shell characters`);
+    }
+  }
+}
+
 interface IterationRecord {
   iteration: number;
   status: 'approved' | 'fix-applied' | 'needs-fix' | 'no-changes';
@@ -310,10 +329,18 @@ export async function handleAutofixLoop(
 
       if (runChecksAfterFix) {
         logger.info('Running verification commands...');
+        const checkCmd = runChecksAfterFix;
+        try {
+          validateCommand(checkCmd);
+        } catch (validationErr) {
+          logger.error(
+            `Invalid verification command: ${validationErr instanceof Error ? validationErr.message : validationErr}`,
+          );
+          break;
+        }
         const maxVerificationRetries = 2;
         for (let v = 0; v <= maxVerificationRetries; v++) {
           let checkOutput = '';
-          const checkCmd = runChecksAfterFix;
           try {
             const stdout = execSync(checkCmd, {
               encoding: 'utf-8',
@@ -337,10 +364,11 @@ export async function handleAutofixLoop(
               );
               try {
                 const freshPr = await gh.getPR(prNumber);
+                const freshContextMd = await gh.gatherContext({ prNumber });
                 const retryResult = await engine.runFix(
                   prNumber,
                   i,
-                  contextMd,
+                  freshContextMd,
                   freshPr,
                   undefined,
                   result.issues,
