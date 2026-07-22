@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as core from '@actions/core';
 import type { PreviousFindingIteration, ReviewIssue } from '../types/index.js';
 
 interface PromptBuilderInputs {
@@ -274,6 +275,11 @@ export function loadPromptFile(filePath: string): string | null {
   const relative = path.relative(workspace, resolved);
   if (relative.startsWith('..')) return null;
   try {
+    const stat = fs.lstatSync(resolved);
+    if (stat.isSymbolicLink()) {
+      core.warning(`Rejected prompt file load: ${filePath} is a symbolic link.`);
+      return null;
+    }
     return fs.readFileSync(resolved, 'utf-8');
   } catch {
     return null;
@@ -288,7 +294,14 @@ export function loadAuditCategoryPrompt(category: string, promptsDir?: string): 
   for (const dir of dirs) {
     const filePath = path.join(dir, `${category}.md`);
     if (fs.existsSync(filePath)) {
-      return fs.readFileSync(filePath, 'utf-8');
+      try {
+        const stat = fs.lstatSync(filePath);
+        if (stat.isSymbolicLink()) {
+          core.warning(`Rejected audit category prompt load: ${filePath} is a symbolic link.`);
+          continue;
+        }
+        return fs.readFileSync(filePath, 'utf-8');
+      } catch {}
     }
   }
 
