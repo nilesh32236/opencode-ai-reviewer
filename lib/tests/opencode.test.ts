@@ -573,13 +573,13 @@ describe('configureGit()', () => {
       '--local',
       'user.name',
       'test-user',
-    ]);
+    ], {});
     expect(mockExecFileSync).toHaveBeenCalledWith('git', [
       'config',
       '--local',
       'user.email',
       'test@example.com',
-    ]);
+    ], {});
   });
 });
 

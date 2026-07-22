@@ -9,6 +9,7 @@ export async function handleAudit(
   config: AgentConfig,
   targetDir?: string,
   promptName?: string,
+  tempDir?: string,
 ): Promise<void> {
   const logger = new Logger('Audit', { repo });
   logger.info(`Starting audit for ${repo}${targetDir ? ` targeting ${targetDir}` : ''}`);
@@ -80,9 +81,16 @@ export async function handleAudit(
   const engine = new ReviewEngine(config, token, repo);
 
   try {
+    const auditWorkingDir = tempDir || process.cwd();
     let result: ReviewResult;
     try {
-      result = await engine.runAudit(promptContent, auditTarget, category);
+      result = await engine.runAudit(
+        promptContent,
+        auditTarget,
+        category,
+        undefined,
+        auditWorkingDir,
+      );
     } catch (err) {
       logger.error(`Audit engine failed: ${err instanceof Error ? err.message : err}`);
       return;

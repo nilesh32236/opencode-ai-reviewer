@@ -1,5 +1,5 @@
-import { execFileSync } from 'child_process';
-import { mkdtempSync, rmSync } from 'fs';
+import { execFileSync, execSync } from 'child_process';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import type { AgentConfig, PRContext } from '@opencode-pr-agent/lib';
@@ -26,21 +26,39 @@ export async function handleCommand(
   const gh = new GitHubHelper(token, repo);
 
   const tempDir = mkdtempSync(path.join(os.tmpdir(), 'opencode-workspace-'));
-  const prevCwd = process.cwd();
 
   try {
-    execFileSync(
-      'git',
-      ['clone', `https://x-access-token:${token}@github.com/${repo}.git`, tempDir],
-      { stdio: 'pipe' },
+    const askPassScript = path.join(tempDir, '.git-askpass.sh');
+    writeFileSync(
+      askPassScript,
+      [
+        '#!/bin/sh',
+        'case "$1" in',
+        '  *Username*) echo "x-access-token" ;;',
+        '  *Password*) echo "${OPENCODE_CREDENTIAL_TOKEN}" ;;',
+        'esac',
+      ].join('\n'),
+      'utf-8',
     );
+    chmodSync(askPassScript, 0o755);
 
-    process.chdir(tempDir);
+    execFileSync('git', ['clone', `https://github.com/${repo}.git`, tempDir], {
+      stdio: 'pipe',
+      timeout: 120_000,
+      env: { ...process.env, GIT_ASKPASS: askPassScript, OPENCODE_CREDENTIAL_TOKEN: token },
+    });
+
+    configureGit(
+      'opencode-pr-agent[bot]',
+      'opencode-pr-agent[bot]@users.noreply.github.com',
+      token,
+      tempDir,
+    );
 
     switch (command) {
       case 'review': {
         if (await gh.isPR(issueNumber)) {
-          await handlePRReview(issueNumber, repo, token, config);
+          await handlePRReview(issueNumber, repo, token, config, undefined, tempDir);
         }
         break;
       }
@@ -48,18 +66,18 @@ export async function handleCommand(
       case 'fix': {
         const existingPR = await findExistingAutofixPR(gh, issueNumber);
         if (existingPR) {
-          await handleAutofixLoop(existingPR, repo, token, config);
+          await handleAutofixLoop(existingPR, repo, token, config, undefined, tempDir);
         } else {
-          const newPR = await createAutofixPR(gh, issueNumber, repo, token, config);
+          const newPR = await createAutofixPR(gh, issueNumber, repo, token, config, tempDir);
           if (newPR) {
-            await handleAutofixLoop(newPR, repo, token, config);
+            await handleAutofixLoop(newPR, repo, token, config, undefined, tempDir);
           }
         }
         break;
       }
 
       case 'audit': {
-        await handleAudit(repo, token, config);
+        await handleAudit(repo, token, config, undefined, undefined, tempDir);
         break;
       }
     }
@@ -68,7 +86,6 @@ export async function handleCommand(
       `Command ${command} failed for issue ${issueNumber} in ${repo}: ${err instanceof Error ? err.message : err}`,
     );
   } finally {
-    process.chdir(prevCwd);
     rmSync(tempDir, { recursive: true, force: true });
   }
 }
@@ -107,18 +124,18 @@ async function createAutofixPR(
   repo: string,
   token: string,
   config: AgentConfig,
+  tempDir: string,
 ): Promise<number | null> {
   const logger = new Logger('Command', { repo, prNumber: issueNumber });
   logger.info(`Fix triggered for issue #${issueNumber}`);
 
-  configureGit('opencode-pr-agent[bot]', 'opencode-pr-agent[bot]@users.noreply.github.com', token);
-
+  const gitOpts = { stdio: 'pipe' as const, cwd: tempDir };
   const engine = new ReviewEngine(config, token, repo);
   const branchName = `autofix/issue-${issueNumber}`;
 
   try {
     try {
-      execFileSync('git', ['fetch', 'origin'], { stdio: 'pipe' });
+      execFileSync('git', ['fetch', 'origin'], gitOpts);
     } catch (err) {
       logger.warn(
         `Git fetch failed: ${err instanceof Error ? err.message : String(err)} — continuing with local state`,
@@ -127,7 +144,7 @@ async function createAutofixPR(
 
     let branchExists = false;
     try {
-      execFileSync('git', ['rev-parse', '--verify', `origin/${branchName}`], { stdio: 'pipe' });
+      execFileSync('git', ['rev-parse', '--verify', `origin/${branchName}`], gitOpts);
       branchExists = true;
     } catch {
       branchExists = false;
@@ -136,11 +153,11 @@ async function createAutofixPR(
     const defaultBranch = await gh.getDefaultBranch();
 
     if (branchExists) {
-      execFileSync('git', ['checkout', '-B', branchName, `origin/${branchName}`]);
+      execFileSync('git', ['checkout', '-B', branchName, `origin/${branchName}`], gitOpts);
       logger.info(`Checked out existing branch ${branchName}`);
-      execFileSync('git', ['pull', '--rebase', 'origin', defaultBranch], { stdio: 'pipe' });
+      execFileSync('git', ['pull', '--rebase', 'origin', defaultBranch], gitOpts);
     } else {
-      execFileSync('git', ['checkout', '-b', branchName, `origin/${defaultBranch}`]);
+      execFileSync('git', ['checkout', '-b', branchName, `origin/${defaultBranch}`], gitOpts);
       logger.info(`Created branch ${branchName} from ${defaultBranch}`);
     }
 
@@ -157,7 +174,16 @@ async function createAutofixPR(
       labels: [],
       changedFiles: [],
     };
-    const fixResult = await engine.runFix(issueNumber, 0, issueContext, stubPR);
+    const fixResult = await engine.runFix(
+      issueNumber,
+      0,
+      issueContext,
+      stubPR,
+      undefined,
+      undefined,
+      undefined,
+      tempDir,
+    );
 
     if (!fixResult?.changesMade) {
       logger.info('No changes made by fix agent');
@@ -169,11 +195,11 @@ async function createAutofixPR(
       return null;
     }
 
-    execFileSync('git', ['add', '-A']);
-    execFileSync('git', ['commit', '-m', `fix: address issue #${issueNumber}`]);
+    execFileSync('git', ['add', '-A'], gitOpts);
+    execFileSync('git', ['commit', '-m', `fix: address issue #${issueNumber}`], gitOpts);
 
     try {
-      execFileSync('git', ['push', 'origin', branchName, '--force']);
+      execFileSync('git', ['push', 'origin', branchName, '--force'], gitOpts);
     } catch (err) {
       logger.error(`Git push failed: ${err instanceof Error ? err.message : err}`);
       await gh.postOrUpdateComment(

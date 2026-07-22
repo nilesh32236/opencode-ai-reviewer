@@ -465,13 +465,20 @@ export async function runOpenCode(
  * @param userEmail - Git user email (defaults to user name @ users.noreply.github.com).
  * @param token - GitHub token for authentication via GIT_ASKPASS.
  */
-export function configureGit(userName?: string, userEmail?: string, token?: string): void {
+export function configureGit(
+  userName?: string,
+  userEmail?: string,
+  token?: string,
+  cwd?: string,
+): void {
   const name = userName || process.env.GITHUB_ACTOR || 'opencode-ai-reviewer[bot]';
   const email = userEmail || `${name}@users.noreply.github.com`;
 
+  const execOptions: cp.ExecFileSyncOptions = cwd ? { cwd } : {};
+
   try {
-    cp.execFileSync('git', ['config', '--local', 'user.name', name]);
-    cp.execFileSync('git', ['config', '--local', 'user.email', email]);
+    cp.execFileSync('git', ['config', '--local', 'user.name', name], execOptions);
+    cp.execFileSync('git', ['config', '--local', 'user.email', email], execOptions);
 
     process.env.GIT_AUTHOR_NAME = name;
     process.env.GIT_AUTHOR_EMAIL = email;
@@ -485,11 +492,13 @@ export function configureGit(userName?: string, userEmail?: string, token?: stri
       let origins = '';
       try {
         origins = cp.execFileSync('git', ['config', '--list', '--show-origin'], {
+          ...execOptions,
           encoding: 'utf-8',
         });
       } catch {
         /* git config --list failed entirely */
       }
+      const cwdForCheck = cwd || process.cwd();
       for (const line of origins.split('\n')) {
         if (!line.includes('http.') || !line.includes('.extraheader')) continue;
         const tabIdx = line.indexOf('\t');
@@ -499,7 +508,7 @@ export function configureGit(userName?: string, userEmail?: string, token?: stri
         const cfg = prefix.substring(5);
         const resolvedCfg = path.resolve(cfg);
         // Only modify config files in trusted locations
-        if (!resolvedCfg.startsWith(os.homedir()) && !resolvedCfg.startsWith(process.cwd())) {
+        if (!resolvedCfg.startsWith(os.homedir()) && !resolvedCfg.startsWith(cwdForCheck)) {
           continue;
         }
         try {
@@ -519,12 +528,11 @@ export function configureGit(userName?: string, userEmail?: string, token?: stri
       // is never embedded in git config output (visible via git config --list).
       // The token is read from an env var by the askpass script at credential time.
       try {
-        cp.execFileSync('git', [
-          'config',
-          '--local',
-          '--unset-all',
-          'credential.https://github.com/.helper',
-        ]);
+        cp.execFileSync(
+          'git',
+          ['config', '--local', '--unset-all', 'credential.https://github.com/.helper'],
+          execOptions,
+        );
       } catch {
         /* no previous helper to clear */
       }
@@ -557,9 +565,12 @@ export function configureGit(userName?: string, userEmail?: string, token?: stri
  *
  * @returns Porcelain git status output, or empty string if git is not available.
  */
-export function getGitStatus(): string {
+export function getGitStatus(cwd?: string): string {
   try {
-    return cp.execFileSync('git', ['status', '--porcelain'], { encoding: 'utf-8' });
+    return cp.execFileSync('git', ['status', '--porcelain'], {
+      encoding: 'utf-8',
+      ...(cwd ? { cwd } : {}),
+    });
   } catch {
     return '';
   }
