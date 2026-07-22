@@ -24,6 +24,11 @@ const req: ((moduleName: string) => unknown) | ((moduleName: string) => never) =
         throw new Error(`Dynamic require not supported for ${moduleName}`);
       };
 
+/**
+ * @deprecated Use `LearningRepository` instead. This interface will be removed
+ * in a future release. Callers should migrate to `LearningRepository` methods
+ * directly. Tracked in #123.
+ */
 export interface DbAdapter {
   exec(sql: string): Promise<void>;
   run(sql: string, params?: unknown[]): Promise<{ changes: number }>;
@@ -286,7 +291,7 @@ export class PostgresAdapter implements DbAdapter, LearningRepository {
       );
     }
 
-    const results = await Promise.all(queries.map((q) => q.catch(() => [])));
+    const results = await Promise.all(queries);
     const lessons: string[] = [];
     for (const result of results) {
       for (const item of result as Array<{ rule_text?: string; override_text?: string }>) {
@@ -299,7 +304,7 @@ export class PostgresAdapter implements DbAdapter, LearningRepository {
   async recordQuality(quality: LearningQuality): Promise<void> {
     await this.run(
       `INSERT INTO review_quality (id, pr_number, actionability_score, accuracy_score, coverage_score, consistency_score)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?)`,
       [
         generateId(),
         quality.prNumber,
@@ -629,7 +634,7 @@ export class MysqlAdapter implements DbAdapter, LearningRepository {
       );
     }
 
-    const results = await Promise.all(queries.map((q) => q.catch(() => [])));
+    const results = await Promise.all(queries);
     const lessons: string[] = [];
     for (const result of results) {
       for (const item of result as Array<{ rule_text?: string; override_text?: string }>) {
@@ -985,7 +990,7 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
       );
     }
 
-    const results = await Promise.all(queries.map((q) => q.catch(() => [])));
+    const results = await Promise.all(queries);
     const lessons: string[] = [];
     for (const result of results) {
       for (const item of result as Array<{ rule_text?: string; override_text?: string }>) {
@@ -1127,6 +1132,11 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 }
 
+/**
+ * Adapter that wraps `JsonDatabase` behind the `DbAdapter` and `LearningRepository`
+ * interfaces. Prefer using `LearningRepository` methods directly; the `DbAdapter`
+ * (`run`/`all`/`get` via regex-based SQL dispatch) is deprecated.
+ */
 export class JsonDbAdapter implements DbAdapter, LearningRepository {
   private db: JsonDatabase;
 

@@ -1,7 +1,6 @@
 import * as fs from 'fs';
 import * as fsPromises from 'node:fs/promises';
 import * as path from 'path';
-import * as core from '@actions/core';
 import type { LearningQuality } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
 import { generateId } from './schema.js';
@@ -547,7 +546,8 @@ export class JsonDatabase implements DatabaseInstance, LearningRepository {
         const content = fs.readFileSync(this.filePath, 'utf-8');
         this.data = JSON.parse(content);
       } catch {
-        core.warning('Failed to parse JSON database, starting with empty data');
+        const logger = new Logger('JsonDatabase');
+        logger.warn('Failed to parse JSON database, starting with empty data');
       }
     }
   }
