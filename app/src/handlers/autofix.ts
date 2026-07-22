@@ -1,4 +1,4 @@
-import { execFileSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import type { AgentConfig, FixResult, PRContext, ReviewResult } from '@opencode-pr-agent/lib';
 import { GitHubHelper, Logger, ReviewEngine, configureGit } from '@opencode-pr-agent/lib';
 
@@ -145,6 +145,7 @@ export async function handleAutofixLoop(
   repo: string,
   token: string,
   config: AgentConfig,
+  runChecksAfterFix?: string,
 ): Promise<void> {
   const logger = new Logger('Autofix', { prNumber, repo });
   logger.info(`Starting autofix loop for PR #${prNumber} in ${repo}`);
@@ -304,6 +305,68 @@ export async function handleAutofixLoop(
           );
         }
         break;
+      }
+
+      if (runChecksAfterFix) {
+        logger.info('Running verification commands...');
+        const maxVerificationRetries = 2;
+        for (let v = 0; v <= maxVerificationRetries; v++) {
+          let checkOutput = '';
+          const checkCmd = runChecksAfterFix;
+          try {
+            const stdout = execSync(checkCmd, {
+              encoding: 'utf-8',
+              stdio: 'pipe',
+              timeout: 300_000,
+            }).toString();
+            checkOutput += stdout;
+            logger.info('Verification passed');
+            break;
+          } catch (err) {
+            const stderr = (err as { stderr?: Buffer })?.stderr?.toString() ?? '';
+            const message = err instanceof Error ? err.message : String(err);
+            checkOutput += message + '\n' + stderr;
+            logger.warn(
+              `Verification failed (attempt ${v + 1}/${maxVerificationRetries + 1}): ${message}`,
+            );
+
+            if (v < maxVerificationRetries) {
+              logger.info(
+                `Feeding verification error to fix engine (retry ${v + 1}/${maxVerificationRetries})...`,
+              );
+              try {
+                const freshPr = await gh.getPR(prNumber);
+                const retryResult = await engine.runFix(
+                  prNumber,
+                  i,
+                  contextMd,
+                  freshPr,
+                  undefined,
+                  result.issues,
+                  checkOutput,
+                );
+
+                if (retryResult?.changesMade) {
+                  execFileSync('git', ['add', '-A']);
+                  execFileSync('git', [
+                    'commit',
+                    '-m',
+                    `fix: verification errors (attempt ${v + 1})`,
+                  ]);
+                  execFileSync('git', ['push', 'origin', pr.headRef]);
+                } else {
+                  logger.info('Fix agent made no changes to address verification errors');
+                  break;
+                }
+              } catch (innerErr) {
+                logger.error(
+                  `Verification retry failed: ${innerErr instanceof Error ? innerErr.message : innerErr}`,
+                );
+                break;
+              }
+            }
+          }
+        }
       }
 
       try {
