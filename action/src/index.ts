@@ -94,6 +94,7 @@ async function saveStateCache(cacheKeyPrefix: string, stateDir: string): Promise
 async function run(): Promise<void> {
   let inputs: ActionInputs | undefined;
   let engine: ReviewEngine | undefined;
+  let stateDir = '';
 
   try {
     inputs = parseInputs();
@@ -106,7 +107,7 @@ async function run(): Promise<void> {
     const repo =
       core.getInput('repo') || `${github.context.repo.owner}/${github.context.repo.repo}`;
     const token = inputs.githubToken;
-    const stateDir = path.resolve(process.cwd(), inputs.stateCacheDir || '.opencode');
+    stateDir = path.resolve(process.cwd(), inputs.stateCacheDir);
 
     if (inputs.enableStateCache) {
       await restoreStateCache(inputs.stateCacheKey, stateDir);
@@ -258,7 +259,6 @@ async function run(): Promise<void> {
     process.exitCode = 1;
   } finally {
     if (inputs?.enableStateCache) {
-      const stateDir = path.resolve(process.cwd(), inputs.stateCacheDir || '.opencode');
       await saveStateCache(inputs.stateCacheKey, stateDir);
     }
   }
