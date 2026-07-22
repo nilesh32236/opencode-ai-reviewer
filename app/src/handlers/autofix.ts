@@ -148,6 +148,7 @@ export async function handleAutofixLoop(
   config: AgentConfig,
   runChecksAfterFix?: string,
   tempDir?: string,
+  initialGitEnv?: Record<string, string>,
 ): Promise<void> {
   const logger = new Logger('Autofix', { prNumber, repo });
   logger.info(`Starting autofix loop for PR #${prNumber} in ${repo}`);
@@ -157,15 +158,15 @@ export async function handleAutofixLoop(
   const history: IterationRecord[] = [];
   let approved = false;
 
-  let gitEnv: Record<string, string> | undefined;
-  if (tempDir) {
+  let gitEnv = initialGitEnv;
+  if (!gitEnv && tempDir) {
     gitEnv = configureGit(
       'opencode-pr-agent[bot]',
       'opencode-pr-agent[bot]@users.noreply.github.com',
       token,
       tempDir,
     );
-  } else {
+  } else if (!gitEnv) {
     configureGit(
       'opencode-pr-agent[bot]',
       'opencode-pr-agent[bot]@users.noreply.github.com',

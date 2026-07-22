@@ -1,6 +1,6 @@
-import { execFileSync, execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import type { ExecFileSyncOptions } from 'child_process';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import type { AgentConfig, PRContext } from '@opencode-pr-agent/lib';
@@ -29,25 +29,14 @@ export async function handleCommand(
   const tempDir = mkdtempSync(path.join(os.tmpdir(), 'opencode-workspace-'));
 
   try {
-    const askPassScript = path.join(tempDir, '.git-askpass.sh');
-    writeFileSync(
-      askPassScript,
-      [
-        '#!/bin/sh',
-        'case "$1" in',
-        '  *Username*) echo "x-access-token" ;;',
-        '  *Password*) echo "${OPENCODE_CREDENTIAL_TOKEN}" ;;',
-        'esac',
-      ].join('\n'),
-      'utf-8',
+    execFileSync(
+      'git',
+      ['clone', `https://x-access-token:${token}@github.com/${repo}.git`, tempDir],
+      {
+        stdio: 'pipe',
+        timeout: 120_000,
+      },
     );
-    chmodSync(askPassScript, 0o755);
-
-    execFileSync('git', ['clone', `https://github.com/${repo}.git`, tempDir], {
-      stdio: 'pipe',
-      timeout: 120_000,
-      env: { ...process.env, GIT_ASKPASS: askPassScript, OPENCODE_CREDENTIAL_TOKEN: token },
-    });
 
     const gitEnv = configureGit(
       'opencode-pr-agent[bot]',
@@ -67,7 +56,7 @@ export async function handleCommand(
       case 'fix': {
         const existingPR = await findExistingAutofixPR(gh, issueNumber);
         if (existingPR) {
-          await handleAutofixLoop(existingPR, repo, token, config, undefined, tempDir);
+          await handleAutofixLoop(existingPR, repo, token, config, undefined, tempDir, gitEnv);
         } else {
           const newPR = await createAutofixPR(
             gh,
@@ -79,7 +68,7 @@ export async function handleCommand(
             gitEnv,
           );
           if (newPR) {
-            await handleAutofixLoop(newPR, repo, token, config, undefined, tempDir);
+            await handleAutofixLoop(newPR, repo, token, config, undefined, tempDir, gitEnv);
           }
         }
         break;
