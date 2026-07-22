@@ -4,6 +4,26 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.1.6] — 2026-07-22
+
+
+### Fixed
+
+- address issue #89 (#101) (#89
+#101)
+- address issue #88 (#100) (#88
+#100)
+
+### Changed
+
+- [Autofix] Issue 3: Implement Client-Side MCP Tool Whitelisting and Verification (#99) (#99)
+- [Autofix] Issue 2: Implement State Persistence and Sync for the Learning Store in CI (#98) (#98)
+- [Autofix] Issue 1: Refactor` JsonDatabase` to Avoid Regex-Based SQL Parsing (#97) (#97)
+- Optimize pattern finding file type extraction in PatternDetector (#84) (#84)
+- [Self-Improvement] Autonomous Codebase Enhancement (#83) (#83)
+
+[v1.1.6]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.1.5...v1.1.6
+
 ## [v1.1.5] — 2026-07-22
 
 
