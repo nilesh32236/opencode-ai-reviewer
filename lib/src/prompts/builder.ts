@@ -32,7 +32,6 @@ export function buildReviewPrompt(
   }
 
   const projectContext = inputs.projectContext || getDefaultProjectContext();
-  const batchSize = inputs.maxFilesPerBatch ?? 3;
   const sections: string[] = [];
 
   sections.push(
@@ -50,23 +49,14 @@ export function buildReviewPrompt(
   sections.push('\n## Context Window Management');
   sections.push('');
   sections.push(
-    'This repository may be too large to review in one pass. To prevent context overflow:',
+    'This repository may be too large to review in one pass. Your review is focused on a specific subset of files from a larger PR.',
   );
   sections.push('');
-  sections.push('1. Review the list of changed files and their diff statistics.');
   sections.push(
-    '2. Use the `read` tool to view each changed file directly (do NOT include full diffs in the prompt).',
+    '1. Use the `read` tool to view each changed file directly (do NOT include full diffs in the prompt).',
   );
-  sections.push('3. Determine which project(s) the PR touches based on file paths.');
-  sections.push(
-    `4. If more than ${batchSize} files changed or total diff exceeds ~500 lines, dispatch sub-agents:`,
-  );
-  sections.push(`   - Group files into batches of at most ${batchSize} files.`);
-  sections.push(
-    '   - For each batch, use the `task` tool with `subagent_type: "general"` to review that batch.',
-  );
-  sections.push('   - Pass the list of file paths and PR context to each sub-agent.');
-  sections.push(`5. Collect all results, deduplicate, and write the final output.`);
+  sections.push('2. Review the provided file list thoroughly.');
+  sections.push('3. If any single file exceeds 300 lines, read and review it separately.');
 
   sections.push('\n' + buildWhatToCheck());
 

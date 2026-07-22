@@ -221,28 +221,14 @@ export class ReviewEngine {
 
     if (!synthesisResult.success) {
       core.warning('Synthesis pass failed, falling back to merged batch results');
-      return {
-        summary:
-          allIssues.length > 0
-            ? `Found ${allIssues.length} issues across ${fileBatches.length} batches`
-            : 'No issues found',
-        verdict: {
-          ready: allIssues.length === 0,
-          reasoning: allIssues.length > 0 ? `Found ${allIssues.length} issues` : 'No issues found',
-          autoFixable: false,
-          confidence: 'medium' as const,
-        },
-        strengths: allStrengths,
-        issues: allIssues,
-        stats: {
-          total: allIssues.length,
-          critical: allIssues.filter((i) => i.severity === 'critical').length,
-          important: allIssues.filter((i) => i.severity === 'important').length,
-          minor: allIssues.filter((i) => i.severity === 'minor').length,
-        },
-        rawLines: allRawLines,
-        failedLines: totalFailedLines,
-      };
+      return this.buildFallbackResult(
+        allIssues,
+        allStrengths,
+        allRawLines,
+        totalFailedLines,
+        fileBatches,
+        'Synthesis failed, using merged batch results',
+      );
     }
 
     const finalOutputPath = path.join(workDir, '.opencode', 'review-output.jsonl');
@@ -250,25 +236,14 @@ export class ReviewEngine {
       return await parseJsonlFile(finalOutputPath);
     } catch {
       core.warning('Synthesis output parse failed, falling back to merged batch results');
-      return {
-        summary: allIssues.length > 0 ? `Found ${allIssues.length} issues` : 'No issues found',
-        verdict: {
-          ready: allIssues.length === 0,
-          reasoning: 'Synthesis failed, using merged batch results',
-          autoFixable: false,
-          confidence: 'medium' as const,
-        },
-        strengths: allStrengths,
-        issues: allIssues,
-        stats: {
-          total: allIssues.length,
-          critical: allIssues.filter((i) => i.severity === 'critical').length,
-          important: allIssues.filter((i) => i.severity === 'important').length,
-          minor: allIssues.filter((i) => i.severity === 'minor').length,
-        },
-        rawLines: allRawLines,
-        failedLines: totalFailedLines,
-      };
+      return this.buildFallbackResult(
+        allIssues,
+        allStrengths,
+        allRawLines,
+        totalFailedLines,
+        fileBatches,
+        'Synthesis output parse failed, using merged batch results',
+      );
     }
   }
 
@@ -504,6 +479,38 @@ export class ReviewEngine {
     const lessons = await this.learningStore.getRelevantLessons(filePaths);
     this.lessonsCache = { lessons, timestamp: now };
     return lessons;
+  }
+
+  private buildFallbackResult(
+    allIssues: ReviewIssue[],
+    allStrengths: ReviewStrength[],
+    allRawLines: string[],
+    totalFailedLines: number,
+    fileBatches: Array<PRContext['changedFiles']>,
+    reasoning: string,
+  ): ReviewResult {
+    return {
+      summary:
+        allIssues.length > 0
+          ? `Found ${allIssues.length} issues across ${fileBatches.length} batches`
+          : 'No issues found',
+      verdict: {
+        ready: allIssues.length === 0,
+        reasoning,
+        autoFixable: false,
+        confidence: 'medium' as const,
+      },
+      strengths: allStrengths,
+      issues: allIssues,
+      stats: {
+        total: allIssues.length,
+        critical: allIssues.filter((i) => i.severity === 'critical').length,
+        important: allIssues.filter((i) => i.severity === 'important').length,
+        minor: allIssues.filter((i) => i.severity === 'minor').length,
+      },
+      rawLines: allRawLines,
+      failedLines: totalFailedLines,
+    };
   }
 
   private buildPRContextString(pr: PRContext): string {

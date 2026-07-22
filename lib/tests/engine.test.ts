@@ -13,6 +13,7 @@ const {
   mockBuildReviewPrompt,
   mockBuildFixPrompt,
   mockBuildAuditPrompt,
+  mockBuildSynthesisPrompt,
   MockMCPManager,
   MockGitHubHelper,
 } = vi.hoisted(() => {
@@ -34,6 +35,7 @@ const {
   const _mockBuildReviewPrompt = vi.fn(() => 'review prompt');
   const _mockBuildFixPrompt = vi.fn(() => 'fix prompt');
   const _mockBuildAuditPrompt = vi.fn(() => 'audit prompt');
+  const _mockBuildSynthesisPrompt = vi.fn(() => 'synthesis prompt');
 
   class _MockMCPManager {
     connect = _mockMCPConnect;
@@ -56,6 +58,7 @@ const {
     mockBuildReviewPrompt: _mockBuildReviewPrompt,
     mockBuildFixPrompt: _mockBuildFixPrompt,
     mockBuildAuditPrompt: _mockBuildAuditPrompt,
+    mockBuildSynthesisPrompt: _mockBuildSynthesisPrompt,
     MockMCPManager: _MockMCPManager,
     MockGitHubHelper: _MockGitHubHelper,
   };
@@ -88,6 +91,7 @@ vi.mock('../src/prompts/builder.js', () => ({
   buildReviewPrompt: mockBuildReviewPrompt,
   buildFixPrompt: mockBuildFixPrompt,
   buildAuditPrompt: mockBuildAuditPrompt,
+  buildSynthesisPrompt: mockBuildSynthesisPrompt,
 }));
 
 vi.mock('@actions/core', () => ({
@@ -281,6 +285,116 @@ describe('ReviewEngine', () => {
       );
 
       expect(mockMCPGetLibraryDocs).not.toHaveBeenCalled();
+    });
+
+    describe('concurrent batch processing', () => {
+      const batchPr = makePRContext({
+        changedFiles: [
+          { path: 'src/a.ts', status: 'modified', additions: 10, deletions: 0 },
+          { path: 'src/b.ts', status: 'modified', additions: 10, deletions: 0 },
+          { path: 'src/c.ts', status: 'modified', additions: 10, deletions: 0 },
+          { path: 'src/d.ts', status: 'modified', additions: 10, deletions: 0 },
+        ],
+      });
+
+      function makeBatchResult(prefix: string): ReviewResult {
+        return {
+          summary: `Batch ${prefix} summary`,
+          verdict: {
+            ready: false,
+            reasoning: 'issues found',
+            autoFixable: false,
+            confidence: 'medium',
+          },
+          strengths: [{ type: 'strength', file: `${prefix}.ts`, line: 1, message: 'Nice' }],
+          issues: [
+            {
+              type: 'issue',
+              severity: 'critical',
+              file: `${prefix}.ts`,
+              line: 5,
+              message: `Issue in ${prefix}`,
+            },
+          ],
+          stats: { total: 1, critical: 1, important: 0, minor: 0 },
+          rawLines: [
+            `{"type":"summary","text":"Batch ${prefix} summary"}`,
+            `{"type":"issue","severity":"critical","file":"${prefix}.ts","line":5,"message":"Issue in ${prefix}"}`,
+          ],
+          failedLines: 1,
+        };
+      }
+
+      it('splits files into batches and runs concurrent reviews', async () => {
+        mockMCPConnect.mockResolvedValue(undefined);
+        mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
+        mockParseJsonlFile
+          .mockResolvedValueOnce(makeBatchResult('batch0'))
+          .mockResolvedValueOnce(makeBatchResult('batch1'))
+          .mockResolvedValueOnce(makeBatchResult('final'));
+
+        const result = await engine.reviewPR(batchPr);
+
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(3);
+        expect(mockBuildSynthesisPrompt).toHaveBeenCalledOnce();
+        expect(result).toEqual(makeBatchResult('final'));
+      });
+
+      it('returns merged fallback when synthesis fails', async () => {
+        mockMCPConnect.mockResolvedValue(undefined);
+        mockRunOpenCode
+          .mockResolvedValueOnce({ success: true, output: '', durationMs: 1000 })
+          .mockResolvedValueOnce({ success: true, output: '', durationMs: 1000 })
+          .mockResolvedValueOnce({ success: false, output: '', durationMs: 500 });
+
+        mockParseJsonlFile
+          .mockResolvedValueOnce(makeBatchResult('batch0'))
+          .mockResolvedValueOnce(makeBatchResult('batch1'));
+
+        const result = await engine.reviewPR(batchPr);
+
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(3);
+        expect(result.verdict.reasoning).toBe('Synthesis failed, using merged batch results');
+        expect(result.issues).toHaveLength(2);
+        expect(result.stats.total).toBe(2);
+      });
+
+      it('returns merged fallback when synthesis output parse fails', async () => {
+        mockMCPConnect.mockResolvedValue(undefined);
+        mockRunOpenCode
+          .mockResolvedValueOnce({ success: true, output: '', durationMs: 1000 })
+          .mockResolvedValueOnce({ success: true, output: '', durationMs: 1000 })
+          .mockResolvedValueOnce({ success: true, output: '', durationMs: 1000 });
+
+        mockParseJsonlFile
+          .mockResolvedValueOnce(makeBatchResult('batch0'))
+          .mockResolvedValueOnce(makeBatchResult('batch1'))
+          .mockRejectedValueOnce(new Error('Parse error'));
+
+        const result = await engine.reviewPR(batchPr);
+
+        expect(result.verdict.reasoning).toBe(
+          'Synthesis output parse failed, using merged batch results',
+        );
+        expect(result.issues).toHaveLength(2);
+      });
+
+      it('handles individual batch failures gracefully', async () => {
+        mockMCPConnect.mockResolvedValue(undefined);
+        mockRunOpenCode
+          .mockResolvedValueOnce({ success: true, output: '', durationMs: 1000 })
+          .mockResolvedValueOnce({ success: false, output: '', durationMs: 500 })
+          .mockResolvedValueOnce({ success: true, output: '', durationMs: 1000 });
+
+        mockParseJsonlFile
+          .mockResolvedValueOnce(makeBatchResult('batch0'))
+          .mockResolvedValueOnce(makeBatchResult('final'));
+
+        const result = await engine.reviewPR(batchPr);
+
+        expect(result.issues).toHaveLength(1);
+        expect(result.stats.total).toBe(1);
+      });
     });
   });
 
