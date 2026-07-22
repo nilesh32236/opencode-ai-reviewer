@@ -283,7 +283,8 @@ export async function handleAutofixLoop(
 
       history[history.length - 1].status = 'fix-applied';
       history[history.length - 1].filesChanged = fixResult.filesChanged;
-      history[history.length - 1].commitMessage = `fix: address review feedback (iteration ${i + 1})`;
+      history[history.length - 1].commitMessage =
+        `fix: address review feedback (iteration ${i + 1})`;
 
       try {
         execFileSync('git', ['add', '-A']);

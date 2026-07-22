@@ -69,7 +69,7 @@ export async function runFix(
       inputs.checkAllowlist,
     );
 
-    const maxVerificationRetries = 1;
+    const maxVerificationRetries = 2;
     for (let v = 0; v <= maxVerificationRetries; v++) {
       const { exitCode, output: checkOutput } = await runVerification(program, args);
 
@@ -83,11 +83,13 @@ export async function runFix(
       );
 
       if (v < maxVerificationRetries) {
+        const freshPr = await gh.getPR(prNumber);
+        const freshContextMarkdown = await gh.gatherContext({ prNumber });
         const retryResult = await engine.runFix(
           prNumber,
           iteration,
-          contextMarkdown,
-          pr,
+          freshContextMarkdown,
+          freshPr,
           undefined,
           undefined,
           checkOutput,
