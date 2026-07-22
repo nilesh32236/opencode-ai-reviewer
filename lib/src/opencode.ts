@@ -351,6 +351,10 @@ export async function runOpenCode(
     'NODE_PATH',
     'DATABASE_URL',
     'GIT_ASKPASS',
+    'GIT_AUTHOR_NAME',
+    'GIT_AUTHOR_EMAIL',
+    'GIT_COMMITTER_NAME',
+    'GIT_COMMITTER_EMAIL',
     'OPENCODE_CREDENTIAL_TOKEN',
   ];
   for (const key of WHITELISTED_KEYS) {
@@ -452,8 +456,13 @@ export function configureGit(userName?: string, userEmail?: string, token?: stri
   const email = userEmail || `${name}@users.noreply.github.com`;
 
   try {
-    cp.execFileSync('git', ['config', '--global', 'user.name', name]);
-    cp.execFileSync('git', ['config', '--global', 'user.email', email]);
+    cp.execFileSync('git', ['config', '--local', 'user.name', name]);
+    cp.execFileSync('git', ['config', '--local', 'user.email', email]);
+
+    process.env.GIT_AUTHOR_NAME = name;
+    process.env.GIT_AUTHOR_EMAIL = email;
+    process.env.GIT_COMMITTER_NAME = name;
+    process.env.GIT_COMMITTER_EMAIL = email;
 
     if (token) {
       // Remove ALL http.extraheader entries from every git config file
