@@ -2,19 +2,24 @@ import { promises as fs, existsSync, readFileSync } from 'fs';
 import * as cp from 'node:child_process';
 import * as path from 'path';
 import * as core from '@actions/core';
-import { emptyResult, parseJsonlFile, parseJsonlString } from './jsonl-parser.js';
+import { emptyResult, parseJsonlFile } from './jsonl-parser.js';
 import type { LearningStore } from './learning/store.js';
 import { MCPManager } from './mcp/client.js';
 import { getGitStatus, runOpenCode } from './opencode.js';
-import { buildAuditPrompt, buildFixPrompt, buildReviewPrompt, buildSynthesisPrompt } from './prompts/builder.js';
+import {
+  buildAuditPrompt,
+  buildFixPrompt,
+  buildReviewPrompt,
+  buildSynthesisPrompt,
+} from './prompts/builder.js';
 import type {
   AgentConfig,
   FixResult,
-  MCPContextEntry,
   PRContext,
   PreviousFindingIteration,
   ReviewIssue,
   ReviewResult,
+  ReviewStrength,
 } from './types/index.js';
 import { GitHubHelper } from './utils/github.js';
 
@@ -46,25 +51,226 @@ export class ReviewEngine {
     this.mcp = new MCPManager(config.mcpServers);
   }
 
-import { promises as fs, existsSync, readFileSync } from 'fs';
-import * as cp from 'node:child_process';
-import * as path from 'path';
-import * as core from '@actions/core';
-import { emptyResult, parseJsonlFile, parseJsonlString } from './jsonl-parser.js';
-import type { LearningStore } from './learning/store.js';
-import { MCPManager } from './mcp/client.js';
-import { getGitStatus, runOpenCode } from './opencode.js';
-import { buildAuditPrompt, buildFixPrompt, buildReviewPrompt, buildSynthesisPrompt } from './prompts/builder.js';
-import type {
-  AgentConfig,
-  FixResult,
-  MCPContextEntry,
-  PRContext,
-  PreviousFindingIteration,
-  ReviewIssue,
-  ReviewResult,
-} from './types/index.js';
-import { GitHubHelper } from './utils/github.js';
+  /**
+   * Review a pull request by splitting changed files into batches and running
+   * concurrent sub-agent reviews with a final synthesis pass.
+   *
+   * @param pr - Pull request context with changed files.
+   * @param iteration - Optional fix iteration index (0-indexed).
+   * @param promptFile - Optional custom review prompt file path.
+   * @param promptExtra - Optional extra instructions appended to the review prompt.
+   * @param timeoutMinutes - Optional timeout override per run.
+   * @param previousFindings - Optional findings from previous fix iterations.
+   * @param workingDirectory - Optional working directory for cloned repo (tempDir).
+   * @returns Consolidated ReviewResult with deduplicated findings.
+   */
+  async reviewPR(
+    pr: PRContext,
+    _iteration?: number,
+    promptFile?: string,
+    promptExtra?: string,
+    timeoutMinutes?: number,
+    previousFindings?: PreviousFindingIteration[],
+    workingDirectory?: string,
+  ): Promise<ReviewResult> {
+    let mcpDocs = '';
+    if (this.config.enableMCP && this.config.mcpServers.length > 0) {
+      try {
+        await this.mcp.connect();
+        const libraries = detectLibraries(
+          pr.changedFiles.map((f) => f.path),
+          workingDirectory,
+        );
+        if (libraries.length > 0) {
+          mcpDocs = await this.mcp.getLibraryDocs(libraries);
+        }
+      } catch (err) {
+        core.warning(`MCP enrichment skipped: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    const workDir = workingDirectory || process.cwd();
+    const batchSize = this.config.batchSize || 3;
+    const files = pr.changedFiles;
+    const prContext = this.buildPRContextString(pr);
+    const baseContext = mcpDocs
+      ? prContext + '\n\n## Library Documentation\n' + mcpDocs
+      : prContext;
+
+    // Get relevant lessons from learning store (with caching)
+    let lessons: string[] | undefined;
+    if (this.learningStore) {
+      try {
+        lessons = await this.getRelevantLessons(pr.changedFiles.map((f) => f.path));
+      } catch (err) {
+        core.warning(
+          `Failed to get learning store lessons: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    // If PR is small enough for a single batch, skip concurrent processing
+    if (files.length <= batchSize) {
+      const prompt = buildReviewPrompt(
+        {
+          projectContext: this.config.projectContext.description || undefined,
+          reviewPromptFile: promptFile,
+          reviewPromptExtra: promptExtra,
+        },
+        baseContext,
+        lessons,
+        previousFindings,
+      );
+
+      const runResult = await runOpenCode(prompt, {
+        model: this.config.reviewModel,
+        timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+        workingDirectory: workDir,
+      });
+
+      if (!runResult.success) {
+        core.warning('OpenCode review execution failed, returning fallback empty result');
+        const r = emptyResult();
+        r.verdict.reasoning = 'Review execution failed';
+        return r;
+      }
+
+      const outputPath = path.join(workDir, '.opencode', 'review-output.jsonl');
+      try {
+        return await parseJsonlFile(outputPath);
+      } catch {
+        core.warning(`Failed to parse review output at ${outputPath}, returning empty result`);
+        const r = emptyResult();
+        r.verdict.reasoning = 'Failed to parse review output';
+        return r;
+      }
+    }
+
+    // Split files into batches for concurrent processing
+    const fileBatches: Array<(typeof files)[number][]> = [];
+    for (let i = 0; i < files.length; i += batchSize) {
+      fileBatches.push(files.slice(i, i + batchSize));
+    }
+
+    const batchPromises = fileBatches.map(async (batch, idx) => {
+      const batchDir = path.join(workDir, `.opencode`, `batch-${idx}`);
+      const batchPR = { ...pr, changedFiles: batch };
+      const batchContext = this.buildPRContextString(batchPR);
+      const context = mcpDocs
+        ? batchContext + '\n\n## Library Documentation\n' + mcpDocs
+        : batchContext;
+
+      const prompt = buildReviewPrompt(
+        {
+          projectContext: this.config.projectContext.description || undefined,
+          reviewPromptFile: promptFile,
+          reviewPromptExtra: promptExtra,
+        },
+        context,
+        lessons,
+        previousFindings,
+      );
+
+      const runResult = await runOpenCode(prompt, {
+        model: this.config.reviewModel,
+        timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+        workingDirectory: batchDir,
+      });
+
+      if (!runResult.success) {
+        core.warning(`Batch ${idx} review execution failed, returning empty result`);
+        return emptyResult();
+      }
+
+      const outputPath = path.join(batchDir, '.opencode', 'review-output.jsonl');
+      try {
+        return await parseJsonlFile(outputPath);
+      } catch {
+        core.warning(`Failed to parse batch ${idx} review output, returning empty result`);
+        return emptyResult();
+      }
+    });
+
+    const batchResults = await Promise.all(batchPromises);
+
+    // Collate findings from all batches
+    const allIssues: ReviewIssue[] = [];
+    const allStrengths: ReviewStrength[] = [];
+    const allRawLines: string[] = [];
+    let totalFailedLines = 0;
+
+    for (const br of batchResults) {
+      allIssues.push(...br.issues);
+      allStrengths.push(...br.strengths);
+      if (br.rawLines) allRawLines.push(...br.rawLines);
+      totalFailedLines += br.failedLines || 0;
+    }
+
+    // Build synthesis payload from collated batch raw lines
+    const findingsJsonl = allRawLines.join('\n');
+    const synthesisPrompt = buildSynthesisPrompt(
+      { projectContext: this.config.projectContext.description || undefined },
+      findingsJsonl,
+    );
+
+    const synthesisResult = await runOpenCode(synthesisPrompt, {
+      model: this.config.reviewModel,
+      timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+      workingDirectory: workDir,
+    });
+
+    if (!synthesisResult.success) {
+      core.warning('Synthesis pass failed, falling back to merged batch results');
+      return {
+        summary:
+          allIssues.length > 0
+            ? `Found ${allIssues.length} issues across ${fileBatches.length} batches`
+            : 'No issues found',
+        verdict: {
+          ready: allIssues.length === 0,
+          reasoning: allIssues.length > 0 ? `Found ${allIssues.length} issues` : 'No issues found',
+          autoFixable: false,
+          confidence: 'medium' as const,
+        },
+        strengths: allStrengths,
+        issues: allIssues,
+        stats: {
+          total: allIssues.length,
+          critical: allIssues.filter((i) => i.severity === 'critical').length,
+          important: allIssues.filter((i) => i.severity === 'important').length,
+          minor: allIssues.filter((i) => i.severity === 'minor').length,
+        },
+        rawLines: allRawLines,
+        failedLines: totalFailedLines,
+      };
+    }
+
+    const finalOutputPath = path.join(workDir, '.opencode', 'review-output.jsonl');
+    try {
+      return await parseJsonlFile(finalOutputPath);
+    } catch {
+      core.warning('Synthesis output parse failed, falling back to merged batch results');
+      return {
+        summary: allIssues.length > 0 ? `Found ${allIssues.length} issues` : 'No issues found',
+        verdict: {
+          ready: allIssues.length === 0,
+          reasoning: 'Synthesis failed, using merged batch results',
+          autoFixable: false,
+          confidence: 'medium' as const,
+        },
+        strengths: allStrengths,
+        issues: allIssues,
+        stats: {
+          total: allIssues.length,
+          critical: allIssues.filter((i) => i.severity === 'critical').length,
+          important: allIssues.filter((i) => i.severity === 'important').length,
+          minor: allIssues.filter((i) => i.severity === 'minor').length,
+        },
+        rawLines: allRawLines,
+        failedLines: totalFailedLines,
+      };
+    }
+  }
 
   /**
    * Run the auto-fix workflow on a PR.
@@ -287,6 +493,17 @@ import { GitHubHelper } from './utils/github.js';
         `Cleanup did not finish within ${timeoutMs}ms (took ${elapsed}ms) — MCP/learning store may still be shutting down in background`,
       );
     }
+  }
+
+  private async getRelevantLessons(filePaths: string[]): Promise<string[]> {
+    const now = Date.now();
+    if (this.lessonsCache && now - this.lessonsCache.timestamp < ReviewEngine.LESSONS_CACHE_TTL) {
+      return this.lessonsCache.lessons;
+    }
+    if (!this.learningStore) return [];
+    const lessons = await this.learningStore.getRelevantLessons(filePaths);
+    this.lessonsCache = { lessons, timestamp: now };
+    return lessons;
   }
 
   private buildPRContextString(pr: PRContext): string {

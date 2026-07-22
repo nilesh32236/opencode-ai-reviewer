@@ -385,6 +385,44 @@ function buildOutputFormat(): string {
 - Do NOT wrap in an array, do NOT add commas between lines`;
 }
 
+/**
+ * Build a synthesis prompt to consolidate findings from parallel batch reviews.
+ * Instructs the LLM to deduplicate, merge, and produce a coherent final result.
+ *
+ * @param inputs - Configuration inputs including project context.
+ * @param findingsJsonl - JSONL text containing all batch findings to synthesize.
+ * @returns The assembled synthesis prompt string.
+ */
+export function buildSynthesisPrompt(inputs: PromptBuilderInputs, findingsJsonl: string): string {
+  const projectContext = inputs.projectContext || getDefaultProjectContext();
+
+  return `You are a Senior Code Reviewer tasked with synthesizing batch review results into a final consolidated report.
+
+## Project Context
+${projectContext}
+
+## Batch Review Findings
+The following are findings from parallel batch reviews of different files in a pull request. Your task is to:
+
+1. **Deduplicate** identical or overlapping findings across batches
+2. **Consolidate** findings into a coherent overall summary and verdict
+3. Ensure the output strictly conforms to the JSON Lines schema
+
+### Batch Findings (JSONL):
+${findingsJsonl}
+
+## Instructions
+- Review all findings and remove any duplicates (same file, line, and message)
+- Merge related findings into single, well-written issues
+- Write exactly ONE \`summary\` line with a brief overall assessment
+- Write exactly ONE \`verdict\` line with the final decision
+- Write zero or more \`strength\` and \`issue\` lines
+- Maintain severity categorization (critical, important, minor)
+
+## Output Format: JSON Lines
+${buildOutputFormat()}`;
+}
+
 function getDefaultProjectContext(): string {
   return `Configure project context via the \`project_context\` input or a \`.opencode-reviewer.yml\` config file.
 
