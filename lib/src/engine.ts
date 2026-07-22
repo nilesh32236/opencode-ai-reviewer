@@ -2,11 +2,11 @@ import { promises as fs, existsSync, readFileSync } from 'fs';
 import * as cp from 'node:child_process';
 import * as path from 'path';
 import * as core from '@actions/core';
-import { emptyResult, parseJsonlFile } from './jsonl-parser.js';
+import { emptyResult, parseJsonlFile, parseJsonlString } from './jsonl-parser.js';
 import type { LearningStore } from './learning/store.js';
 import { MCPManager } from './mcp/client.js';
 import { getGitStatus, runOpenCode } from './opencode.js';
-import { buildAuditPrompt, buildFixPrompt, buildReviewPrompt } from './prompts/builder.js';
+import { buildAuditPrompt, buildFixPrompt, buildReviewPrompt, buildSynthesisPrompt } from './prompts/builder.js';
 import type {
   AgentConfig,
   FixResult,
@@ -46,159 +46,25 @@ export class ReviewEngine {
     this.mcp = new MCPManager(config.mcpServers);
   }
 
-  /**
-   * Run a code review on a pull request.
-   * Enriches context with MCP library docs and learning-store lessons,
-   * builds a review prompt, runs OpenCode CLI, and parses the output.
-   *
-   * @param pr - Pull request context (files, diff, metadata).
-   * @param iteration - Optional iteration number for auto-fix cycles.
-   * @param reviewPromptFile - Optional path to a custom review prompt file.
-   * @param reviewPromptExtra - Optional extra text appended to the review prompt.
-   * @param timeoutMinutes - Optional timeout override (defaults to config.timeoutMinutes).
-   * @param workingDirectory - Optional working directory for cloned repo (tempDir).
-   * @returns Parsed review result with verdict, issues, and strengths.
-   */
-  async reviewPR(
-    pr: PRContext,
-    iteration?: number,
-    reviewPromptFile?: string,
-    reviewPromptExtra?: string,
-    timeoutMinutes?: number,
-    previousFindings?: PreviousFindingIteration[],
-    workingDirectory?: string,
-  ): Promise<ReviewResult> {
-    core.info(
-      `Reviewing PR #${pr.number} (${pr.changedFiles.length} files)${iteration !== undefined ? ` (Iteration ${iteration + 1})` : ''}`,
-    );
-
-    const mcpContext: MCPContextEntry[] = [];
-    if (this.config.enableMCP && this.config.mcpServers.length > 0) {
-      try {
-        await this.mcp.connect();
-        const libraries = detectLibraries(
-          pr.changedFiles.map((f) => f.path),
-          workingDirectory,
-        );
-        if (libraries.length > 0) {
-          core.info(`Fetching MCP docs for: ${libraries.join(', ')}`);
-          const docs = await this.mcp.getLibraryDocs(libraries);
-          if (docs) {
-            mcpContext.push({
-              source: 'context7',
-              content: docs,
-              relevance: 0.9,
-            });
-          }
-        }
-      } catch (err) {
-        core.warning(`MCP enrichment skipped: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-
-    core.info('Building PR context string');
-    let contextMarkdown = this.buildPRContextString(pr);
-
-    if (previousFindings && previousFindings.length > 0) {
-      const latest = previousFindings[previousFindings.length - 1];
-      if (latest.headSha && latest.headSha !== pr.headSha) {
-        try {
-          core.info(
-            `Computing diff since last review (${latest.headSha.slice(0, 7)}...${pr.headSha.slice(0, 7)})`,
-          );
-          const fixDiff = await this.github.getDiffSince(latest.headSha, pr.headSha);
-          if (fixDiff) {
-            const diffSection = '\n\n## Changes Since Last Review\n```diff\n' + fixDiff + '\n```';
-            if (contextMarkdown.length + diffSection.length < 50_000) {
-              contextMarkdown += diffSection;
-              core.info(`Added diff since last review (${fixDiff.length} bytes)`);
-            } else {
-              core.info('Diff too large to include in context — skipping');
-            }
-          }
-        } catch (err) {
-          core.warning(`Could not compute diff since last review: ${String(err)}`);
-        }
-      }
-    }
-
-    const contextSize = Buffer.byteLength(contextMarkdown, 'utf-8');
-    core.info(`PR context size: ${(contextSize / 1024).toFixed(1)} KB`);
-
-    const mcpSection =
-      mcpContext.length > 0
-        ? '\n\n## Library Context\n' + mcpContext.map((e) => e.content).join('\n')
-        : '';
-
-    const store = this.learningStore;
-    const lessons = store
-      ? await (async () => {
-          try {
-            const now = Date.now();
-            if (
-              this.lessonsCache &&
-              now - this.lessonsCache.timestamp < ReviewEngine.LESSONS_CACHE_TTL
-            ) {
-              return this.lessonsCache.lessons;
-            }
-            const result = await store.getRelevantLessons(pr.changedFiles.map((f) => f.path));
-            this.lessonsCache = { lessons: result, timestamp: now };
-            return result;
-          } catch {
-            core.warning('Failed to fetch relevant lessons, defaulting to empty array');
-            return [];
-          }
-        })()
-      : [];
-
-    const autoFixExtra =
-      iteration !== undefined
-        ? `This is review iteration ${iteration + 1} of autofix. If this is the final check, verify carefully that no regressions or new bugs were introduced, and that the code compiles/passes all checks. Only set "ready" to true if you are confident it is production-ready.`
-        : undefined;
-    const combinedExtra =
-      [reviewPromptExtra, autoFixExtra].filter(Boolean).join('\n\n') || undefined;
-
-    const prompt = buildReviewPrompt(
-      {
-        projectContext: this.config.projectContext.description || undefined,
-        maxFilesPerBatch: this.config.batchSize,
-        reviewPromptFile,
-        reviewPromptExtra: combinedExtra,
-      },
-      contextMarkdown + mcpSection,
-      lessons,
-      previousFindings,
-    );
-
-    const promptSize = Buffer.byteLength(prompt, 'utf-8');
-    core.info(`Total prompt size: ${(promptSize / 1024).toFixed(1)} KB`);
-
-    core.info(`Running OpenCode review (model: ${this.config.reviewModel})`);
-    const runResult = await runOpenCode(prompt, {
-      model: this.config.reviewModel,
-      timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
-      workingDirectory,
-    });
-    if (!runResult.success) {
-      core.warning('OpenCode review execution failed, returning fallback result');
-      const r = emptyResult();
-      r.verdict.reasoning = 'Review execution failed';
-      return r;
-    }
-
-    core.info('Parsing review output');
-    try {
-      const reviewOutputPath = workingDirectory
-        ? path.join(workingDirectory, '.opencode/review-output.jsonl')
-        : '.opencode/review-output.jsonl';
-      return await parseJsonlFile(reviewOutputPath);
-    } catch {
-      core.warning('Failed to parse review output, returning empty result');
-      const r = emptyResult();
-      r.verdict.reasoning = 'Failed to parse review output';
-      return r;
-    }
-  }
+import { promises as fs, existsSync, readFileSync } from 'fs';
+import * as cp from 'node:child_process';
+import * as path from 'path';
+import * as core from '@actions/core';
+import { emptyResult, parseJsonlFile, parseJsonlString } from './jsonl-parser.js';
+import type { LearningStore } from './learning/store.js';
+import { MCPManager } from './mcp/client.js';
+import { getGitStatus, runOpenCode } from './opencode.js';
+import { buildAuditPrompt, buildFixPrompt, buildReviewPrompt, buildSynthesisPrompt } from './prompts/builder.js';
+import type {
+  AgentConfig,
+  FixResult,
+  MCPContextEntry,
+  PRContext,
+  PreviousFindingIteration,
+  ReviewIssue,
+  ReviewResult,
+} from './types/index.js';
+import { GitHubHelper } from './utils/github.js';
 
   /**
    * Run the auto-fix workflow on a PR.
