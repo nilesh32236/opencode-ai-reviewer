@@ -389,11 +389,19 @@ describe('GitHubHelper', () => {
       const diffText = `@@ -42,1 +42,1 @@`;
 
       fetchMock.mockImplementation(async (url: string, _options?: RequestInit) => {
-        if (url.includes('/pulls/42') && !url.includes('/reviews') && !url.includes('/files')) {
+        if (
+          url.includes('/pulls/42') &&
+          !url.includes('/reviews') &&
+          !url.includes('/comments') &&
+          !url.includes('/files')
+        ) {
           return mockResponse({ text: vi.fn().mockResolvedValue(diffText) });
         }
         if (url.includes('/pulls/42/reviews')) {
           return mockResponse({ body: { id: 1 } });
+        }
+        if (url.includes('/pulls/42/comments')) {
+          return mockResponse({ body: { id: 2 } });
         }
         return mockResponse({ body: [] });
       });
@@ -404,24 +412,30 @@ describe('GitHubHelper', () => {
       expect(result.method).toBe('full');
     });
 
-    it('falls back to body-only when inline comments fail with 422', async () => {
+    it('falls back to issue comment when inline comment fails with 422', async () => {
       const diffText = `@@ -42,1 +42,1 @@`;
-      let reviewsCallCount = 0;
 
       fetchMock.mockImplementation(async (url: string, _options?: RequestInit) => {
-        if (url.includes('/pulls/42') && !url.includes('/reviews')) {
+        if (
+          url.includes('/pulls/42') &&
+          !url.includes('/reviews') &&
+          !url.includes('/comments') &&
+          !url.includes('/files')
+        ) {
           return mockResponse({ text: vi.fn().mockResolvedValue(diffText) });
         }
         if (url.includes('/pulls/42/reviews')) {
-          reviewsCallCount++;
-          if (reviewsCallCount === 1) {
-            const err = new Error('GitHub API 422 on /pulls/42/reviews: Unprocessable') as Error & {
-              status: number;
-            };
-            err.status = 422;
-            throw err;
-          }
           return mockResponse({ body: { id: 1 } });
+        }
+        if (url.includes('/pulls/42/comments')) {
+          const err = new Error('GitHub API 422 on /pulls/42/comments: Unprocessable') as Error & {
+            status: number;
+          };
+          err.status = 422;
+          throw err;
+        }
+        if (url.includes('/issues/42/comments')) {
+          return mockResponse({ body: { id: 999 } });
         }
         return mockResponse({ body: [] });
       });
@@ -429,14 +443,14 @@ describe('GitHubHelper', () => {
       const result = await helper.postReview(42, 'sha123', sampleReviewResult());
 
       expect(result.success).toBe(true);
-      expect(result.method).toBe('body-only');
+      expect(result.method).toBe('partial');
     });
 
     it('returns failed when review API fails with non-422 error', async () => {
       const diffText = `@@ -42,1 +42,1 @@`;
 
       fetchMock.mockImplementation(async (url: string) => {
-        if (url.includes('/pulls/42') && !url.includes('/reviews')) {
+        if (url.includes('/pulls/42') && !url.includes('/reviews') && !url.includes('/comments')) {
           return mockResponse({ text: vi.fn().mockResolvedValue(diffText) });
         }
         if (url.includes('/pulls/42/reviews')) {
@@ -472,7 +486,7 @@ describe('GitHubHelper', () => {
       };
 
       fetchMock.mockImplementation(async (url: string) => {
-        if (url.includes('/pulls/42') && !url.includes('/reviews')) {
+        if (url.includes('/pulls/42') && !url.includes('/reviews') && !url.includes('/comments')) {
           return mockResponse({ text: vi.fn().mockResolvedValue(diffText) });
         }
         if (url.includes('/pulls/42/reviews')) {
@@ -491,7 +505,12 @@ describe('GitHubHelper', () => {
       const diffText = `@@ -42,1 +42,1 @@`;
 
       fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
-        if (url.includes('/pulls/42') && !url.includes('/reviews') && !url.includes('/files')) {
+        if (
+          url.includes('/pulls/42') &&
+          !url.includes('/reviews') &&
+          !url.includes('/comments') &&
+          !url.includes('/files')
+        ) {
           return mockResponse({ text: vi.fn().mockResolvedValue(diffText) });
         }
         if (url.includes('/pulls/42/reviews')) {
