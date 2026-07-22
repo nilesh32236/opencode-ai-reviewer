@@ -788,8 +788,46 @@ export class JsonDatabase implements DatabaseInstance, LearningRepository {
     this.save();
   }
 
-  async getFindingMessages(limit = 100): Promise<Array<{ message: string; file?: string }>> {
+  async getFindingMessages(
+    limit = 100,
+    sinceDays?: number,
+  ): Promise<Array<{ message: string; file?: string }>> {
+    const cutoff = sinceDays ? Date.now() - sinceDays * 24 * 60 * 60 * 1000 : 0;
     return [...this.data.findings]
+      .filter((f) => !cutoff || new Date(f.created_at).getTime() >= cutoff)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .slice(0, limit)
+      .map((f) => ({ message: f.message, file: f.file }));
+  }
+
+  async getDistinctFindingMessages(
+    limit = 100,
+    sinceDays?: number,
+  ): Promise<Array<{ message: string; file?: string }>> {
+    const cutoff = sinceDays ? Date.now() - sinceDays * 24 * 60 * 60 * 1000 : 0;
+    const seen = new Set<string>();
+    return [...this.data.findings]
+      .filter((f) => !cutoff || new Date(f.created_at).getTime() >= cutoff)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .filter((f) => {
+        if (seen.has(f.message)) return false;
+        seen.add(f.message);
+        return true;
+      })
+      .slice(0, limit)
+      .map((f) => ({ message: f.message, file: f.file }));
+  }
+
+  async getFindingMessagesByFileType(
+    fileType: string,
+    limit = 100,
+    sinceDays?: number,
+  ): Promise<Array<{ message: string; file?: string }>> {
+    const cutoff = sinceDays ? Date.now() - sinceDays * 24 * 60 * 60 * 1000 : 0;
+    const ext = fileType.startsWith('.') ? fileType : `.${fileType}`;
+    return [...this.data.findings]
+      .filter((f) => f.file?.endsWith(ext))
+      .filter((f) => !cutoff || new Date(f.created_at).getTime() >= cutoff)
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
       .slice(0, limit)
       .map((f) => ({ message: f.message, file: f.file }));

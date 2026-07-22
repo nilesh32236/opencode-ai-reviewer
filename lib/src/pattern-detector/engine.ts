@@ -12,13 +12,30 @@ export interface DiscoveredPattern {
   fileTypes: string[];
 }
 
+export interface PatternDetectorOptions {
+  windowSize?: number;
+  sinceDays?: number;
+}
+
 export class PatternDetector {
-  constructor(private store: LearningStore) {}
+  private options: PatternDetectorOptions;
+
+  constructor(
+    private store: LearningStore,
+    options: PatternDetectorOptions = {},
+  ) {
+    this.options = {
+      windowSize: options.windowSize ?? 100,
+      sinceDays: options.sinceDays,
+    };
+  }
 
   async discover(minFrequency: number): Promise<DiscoveredPattern[]> {
+    const { windowSize, sinceDays } = this.options;
+
     let findings: { message: string; file?: string }[];
     try {
-      findings = await this.store.getFindingMessages(100);
+      findings = await this.store.getFindingMessages(windowSize, sinceDays);
     } catch (err) {
       const logger = new Logger('PatternDetector');
       logger.warn('Failed to get finding messages', err);
@@ -26,13 +43,35 @@ export class PatternDetector {
     }
     if (findings.length === 0) return [];
 
-    const messages = findings.map((f) => f.message).filter(Boolean);
-    const clusters = clusterFindings(messages, 0.3);
+    // Count actual frequencies from raw findings
+    const freqMap = new Map<string, number>();
+    for (const f of findings) {
+      if (f.message) freqMap.set(f.message, (freqMap.get(f.message) || 0) + 1);
+    }
+
+    // Deduplicate messages for clustering to reduce O(N^2) complexity
+    const uniqueMessages = [...new Set(findings.map((f) => f.message).filter(Boolean))];
+    if (uniqueMessages.length === 0) return [];
+
+    const clusters = clusterFindings(uniqueMessages, 0.3);
+
+    // Handle frequent messages that didn't cluster (single-message patterns)
+    const clusteredMsgs = new Set(clusters.flatMap((c) => c.messages));
+    for (const msg of uniqueMessages) {
+      if (!clusteredMsgs.has(msg) && (freqMap.get(msg) || 0) >= minFrequency) {
+        clusters.push({ centroid: msg, messages: [msg] });
+      }
+    }
 
     const patterns: DiscoveredPattern[] = [];
 
     for (const cluster of clusters) {
-      if (cluster.messages.length < minFrequency) continue;
+      // Count total frequency across all messages in the cluster
+      let totalFrequency = 0;
+      for (const msg of cluster.messages) {
+        totalFrequency += freqMap.get(msg) || 0;
+      }
+      if (totalFrequency < minFrequency) continue;
 
       const messageSet = new Set(cluster.messages);
       const relatedFindings = findings.filter((f) => messageSet.has(f.message));
@@ -53,7 +92,7 @@ export class PatternDetector {
       patterns.push({
         patternKey,
         messages: cluster.messages,
-        frequency: cluster.messages.length,
+        frequency: totalFrequency,
         fileTypes,
       });
     }

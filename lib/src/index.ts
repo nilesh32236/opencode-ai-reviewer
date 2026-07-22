@@ -51,6 +51,6 @@ export {
 export { FeedbackSubscriber } from './learning/feedback-subscriber.js';
 export { MetaReviewEngine, MetaReviewSubscriber } from './meta-review/engine.js';
 export { buildMetaReviewPrompt } from './meta-review/prompts.js';
-export { PatternDetector } from './pattern-detector/engine.js';
+export { PatternDetector, PatternDetectorOptions } from './pattern-detector/engine.js';
 export { clusterFindings } from './pattern-detector/cluster.js';
 export { RuleApprovalSubscriber } from './pattern-detector/rule-approval.js';

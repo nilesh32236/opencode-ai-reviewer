@@ -36,7 +36,19 @@ export interface LearningRepository {
   getFindings(prNumber?: number, limit?: number): Promise<Array<Record<string, unknown>>>;
   recordFeedback(feedback: FeedbackInput): Promise<void>;
   recordFeedbackBatch(feedbacks: FeedbackInput[]): Promise<void>;
-  getFindingMessages(limit?: number): Promise<Array<{ message: string; file?: string }>>;
+  getFindingMessages(
+    limit?: number,
+    sinceDays?: number,
+  ): Promise<Array<{ message: string; file?: string }>>;
+  getDistinctFindingMessages(
+    limit?: number,
+    sinceDays?: number,
+  ): Promise<Array<{ message: string; file?: string }>>;
+  getFindingMessagesByFileType(
+    fileType: string,
+    limit?: number,
+    sinceDays?: number,
+  ): Promise<Array<{ message: string; file?: string }>>;
   getFalsePositiveRate(): Promise<number>;
   getRelevantLessons(filePaths: string[]): Promise<string[]>;
   recordQuality(quality: LearningQuality): Promise<void>;

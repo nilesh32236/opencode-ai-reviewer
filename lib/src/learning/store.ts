@@ -174,11 +174,48 @@ export class LearningStore {
    * Retrieve recent finding messages (for pattern discovery or display).
    *
    * @param limit - Maximum number of messages (default: 100).
+   * @param sinceDays - Optional filter to only include findings from the last N days.
    * @returns Array of objects with message text and optional file path.
    */
-  async getFindingMessages(limit = 100): Promise<Array<{ message: string; file?: string }>> {
+  async getFindingMessages(
+    limit = 100,
+    sinceDays?: number,
+  ): Promise<Array<{ message: string; file?: string }>> {
     const repo = await this.repoPromise;
-    return repo.getFindingMessages(limit);
+    return repo.getFindingMessages(limit, sinceDays);
+  }
+
+  /**
+   * Retrieve deduplicated finding messages grouped by message text.
+   * Reduces input size for O(N^2) clustering algorithms.
+   *
+   * @param limit - Maximum number of unique messages (default: 100).
+   * @param sinceDays - Optional filter to only include findings from the last N days.
+   * @returns Array of objects with message text and optional file path.
+   */
+  async getDistinctFindingMessages(
+    limit = 100,
+    sinceDays?: number,
+  ): Promise<Array<{ message: string; file?: string }>> {
+    const repo = await this.repoPromise;
+    return repo.getDistinctFindingMessages(limit, sinceDays);
+  }
+
+  /**
+   * Retrieve finding messages filtered by file extension.
+   *
+   * @param fileType - File extension to filter by (e.g. '.ts', '.py').
+   * @param limit - Maximum number of messages (default: 100).
+   * @param sinceDays - Optional filter to only include findings from the last N days.
+   * @returns Array of objects with message text and optional file path.
+   */
+  async getFindingMessagesByFileType(
+    fileType: string,
+    limit = 100,
+    sinceDays?: number,
+  ): Promise<Array<{ message: string; file?: string }>> {
+    const repo = await this.repoPromise;
+    return repo.getFindingMessagesByFileType(fileType, limit, sinceDays);
   }
 
   /**
