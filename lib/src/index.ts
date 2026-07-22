@@ -38,7 +38,7 @@ export { getDbPath } from './learning/schema.js';
 export { withRetry, withRetryAndTimeout } from './utils/retry.js';
 export { CircuitBreaker } from './utils/circuit-breaker.js';
 export type { CircuitState, CircuitBreakerOptions } from './utils/circuit-breaker.js';
-export { Logger } from './utils/logger.js';
+export { Logger, sanitizeError } from './utils/logger.js';
 export type { LogLevel, LogContext } from './utils/logger.js';
 export {
   computeSha256,
