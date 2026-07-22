@@ -3,6 +3,8 @@ import type { LearningStore } from '../learning/store.js';
 import { Logger } from '../utils/logger.js';
 import { clusterFindings } from './cluster.js';
 
+const NON_ALPHANUMERIC_REGEX = /[^a-z0-9]+/g;
+
 export interface DiscoveredPattern {
   patternKey: string;
   messages: string[];
@@ -32,24 +34,20 @@ export class PatternDetector {
     for (const cluster of clusters) {
       if (cluster.messages.length < minFrequency) continue;
 
-      const relatedFindings = findings.filter((f) => cluster.messages.some((m) => m === f.message));
+      const messageSet = new Set(cluster.messages);
+      const relatedFindings = findings.filter((f) => messageSet.has(f.message));
 
-      const fileTypes = [
-        ...new Set(
-          relatedFindings
-            .map((f) => {
-              const file = f.file;
-              if (!file) return '';
-              const ext = file.split('.').pop();
-              return ext ? `.${ext}` : '';
-            })
-            .filter(Boolean),
-        ),
-      ];
+      const fileTypeSet = new Set<string>();
+      for (const f of relatedFindings) {
+        if (!f.file) continue;
+        const ext = f.file.split('.').pop();
+        if (ext) fileTypeSet.add(`.${ext}`);
+      }
+      const fileTypes = Array.from(fileTypeSet);
 
       const patternKey = cluster.centroid
         .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
+        .replace(NON_ALPHANUMERIC_REGEX, '-')
         .slice(0, 60);
 
       patterns.push({
