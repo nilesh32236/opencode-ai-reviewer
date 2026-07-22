@@ -271,3 +271,51 @@ describe('LearningStore', () => {
     expect(fpRate).toBeGreaterThan(0);
   });
 });
+
+describe('LearningStore JSON Fallback Smoke Test', () => {
+  let jsonStore: LearningStore;
+  let jsonDbPath: string;
+
+  beforeEach(() => {
+    jsonDbPath = path.join(__dirname, `.test-fallback-${Date.now()}.json`);
+    jsonStore = new LearningStore(jsonDbPath);
+  });
+
+  afterEach(async () => {
+    await jsonStore.close();
+    try {
+      fs.unlinkSync(jsonDbPath);
+    } catch {
+      /* ok */
+    }
+  });
+
+  it('runs full CRUD operations on JSON database fallback', async () => {
+    const id = await jsonStore.recordFinding({
+      prNumber: 42,
+      type: 'issue',
+      severity: 'critical',
+      file: 'src/main.ts',
+      line: 15,
+      message: 'JSON fallback smoke test finding',
+    });
+
+    const findings = await jsonStore.getFindings(42);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].id).toBe(id);
+
+    await jsonStore.recordFeedback({
+      findingId: id,
+      signalType: 'dismissed',
+      signalValue: 'false_positive',
+      prNumber: 42,
+    });
+
+    const fpRate = await jsonStore.getFalsePositiveRate();
+    expect(fpRate).toBe(1);
+
+    const deleted = await jsonStore.deleteFindings(42);
+    expect(deleted).toBe(1);
+    expect(await jsonStore.getFindings(42)).toHaveLength(0);
+  });
+});

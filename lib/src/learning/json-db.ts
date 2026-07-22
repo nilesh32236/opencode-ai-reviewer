@@ -747,7 +747,7 @@ export class JsonDatabase implements DatabaseInstance, LearningRepository {
   }
 
   async getFindingsByType(type: string, limit = 50): Promise<Array<Record<string, unknown>>> {
-    return this.data.findings
+    return [...this.data.findings]
       .filter((f) => f.type === type)
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
       .slice(0, limit) as unknown as Array<Record<string, unknown>>;

@@ -90,10 +90,12 @@ function translateQuery(sql: string, dialect: 'postgres' | 'mysql' | 'sqlite'): 
         return `INSERT INTO ${table} (${columnsStr}) ON CONFLICT (id) DO UPDATE SET ${updateSet}`;
       },
     );
-    cleanSql = cleanSql.replace(
-      /INSERT\s+OR\s+IGNORE\s+INTO\s+(\w+\s*\([^)]+\)\s*VALUES\s*\([^)]+\))\s*;?\s*$/i,
-      (_match, restClause: string) => `INSERT INTO ${restClause} ON CONFLICT DO NOTHING`,
-    );
+    if (/INSERT\s+OR\s+IGNORE\s+INTO/i.test(cleanSql)) {
+      cleanSql = cleanSql.replace(/INSERT\s+OR\s+IGNORE\s+INTO/i, 'INSERT INTO');
+      if (!/ON\s+CONFLICT/i.test(cleanSql)) {
+        cleanSql = `${cleanSql.replace(/;?\s*$/, '')} ON CONFLICT DO NOTHING`;
+      }
+    }
   } else if (dialect === 'mysql') {
     cleanSql = cleanSql.replace(/datetime\('now'\)/g, 'CURRENT_TIMESTAMP');
     cleanSql = cleanSql.replace(/INSERT\s+OR\s+IGNORE\s+INTO/i, 'INSERT IGNORE INTO');
