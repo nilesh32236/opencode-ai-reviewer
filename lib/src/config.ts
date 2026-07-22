@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as core from '@actions/core';
 import yaml from 'js-yaml';
+import { minimatch } from 'minimatch';
 import type { ConfigOverride, PromptConfig } from './types/index.js';
 import { PromptConfigSchema } from './types/schemas.js';
 
@@ -34,7 +35,6 @@ export function loadConfig(workingDir = '.'): PromptConfig | null {
       try {
         const content = fs.readFileSync(fullPath, 'utf-8');
         const config = PromptConfigSchema.parse(yaml.load(content));
-        if (!config) return null;
         return validateConfig(config);
       } catch (error) {
         core.warning(`Failed to parse ${filename}: ${String(error)}`);
@@ -65,42 +65,8 @@ export function mergeConfigWithInputs(
   };
 }
 
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/**
- * Simple glob matching with `*`, `**`, and `?` support.
- * Known limitations:
- * - `**` matches everything (including `/`) — does NOT restrict to directory boundary only.
- * - No support for `{a,b}` alternation or `[abc]` character classes.
- * - For complex patterns, consider using `minimatch` instead.
- */
 function matchesGlob(pattern: string, value: string): boolean {
-  const result: string[] = [];
-  let i = 0;
-  while (i < pattern.length) {
-    const ch = pattern[i];
-    if (ch === '\\' && i + 1 < pattern.length) {
-      result.push(escapeRegex(pattern[i + 1]));
-      i += 2;
-    } else if (ch === '*') {
-      if (i + 1 < pattern.length && pattern[i + 1] === '*') {
-        result.push('.*');
-        i += 2;
-      } else {
-        result.push('[^/]*');
-        i += 1;
-      }
-    } else if (ch === '?') {
-      result.push('.');
-      i += 1;
-    } else {
-      result.push(escapeRegex(ch));
-      i += 1;
-    }
-  }
-  return new RegExp(`^${result.join('')}$`).test(value);
+  return minimatch(value, pattern);
 }
 
 /**
