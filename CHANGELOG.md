@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.1.5] — 2026-07-22
+
+
+### Fixed
+
+- address issue #81 (#82) (#81
+#82)
+
+### Changed
+
+- [Autofix] [Audit:code-quality-conventions] 3 critical, 7 important, 7 minor (#80) (#80)
+- 🛡️ Sentinel Guard: Redact tokens from logs and PR comments (#78) (#78)
+
+[v1.1.5]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.1.4...v1.1.5
+
 ## [v1.1.4] — 2026-07-21
 
 
