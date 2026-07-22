@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as core from '@actions/core';
 import type { PreviousFindingIteration, ReviewIssue } from '../types/index.js';
 
 interface PromptBuilderInputs {
@@ -269,44 +270,71 @@ After writing the file, you MUST verify that the JSONL file exists, is valid JSO
 }
 
 export function loadPromptFile(filePath: string): string | null {
-  const workspace = process.cwd();
+  const workspace = fs.realpathSync(process.cwd());
   const resolved = path.resolve(workspace, filePath);
   const relative = path.relative(workspace, resolved);
   if (relative.startsWith('..')) return null;
   try {
-    return fs.readFileSync(resolved, 'utf-8');
+    const realPath = fs.realpathSync(resolved);
+    const realRelative = path.relative(workspace, realPath);
+    if (realRelative.startsWith('..') || path.isAbsolute(realRelative)) {
+      core.warning(`Rejected prompt file load: ${filePath} resolves outside workspace.`);
+      return null;
+    }
+    return fs.readFileSync(realPath, 'utf-8');
   } catch {
     return null;
   }
 }
 
 export function loadAuditCategoryPrompt(category: string, promptsDir?: string): string | null {
+  const workspace = fs.realpathSync(process.cwd());
   const dirs = promptsDir
     ? [promptsDir]
     : [path.resolve('.audit-prompts'), path.resolve('prompts/audit-categories')];
 
   for (const dir of dirs) {
-    const filePath = path.join(dir, `${category}.md`);
-    if (fs.existsSync(filePath)) {
-      return fs.readFileSync(filePath, 'utf-8');
-    }
+    const filePath = path.resolve(dir, `${category}.md`);
+    try {
+      const stat = fs.lstatSync(filePath);
+      if (stat.isSymbolicLink()) {
+        core.warning(`Rejected audit category prompt load: ${filePath} is a symbolic link.`);
+        continue;
+      }
+      const realPath = fs.realpathSync(filePath);
+      const relative = path.relative(workspace, realPath);
+      if (relative.startsWith('..') || path.isAbsolute(relative)) {
+        core.warning(
+          `Rejected audit category prompt load: ${filePath} resolves outside workspace.`,
+        );
+        continue;
+      }
+      return fs.readFileSync(realPath, 'utf-8');
+    } catch {}
   }
 
   return null;
 }
 
 export function listAuditCategories(promptsDir?: string): string[] {
+  const workspace = fs.realpathSync(process.cwd());
   const dirs = promptsDir
     ? [promptsDir]
     : [path.resolve('.audit-prompts'), path.resolve('prompts/audit-categories')];
 
   const categories: Set<string> = new Set();
   for (const dir of dirs) {
-    if (!fs.existsSync(dir)) continue;
-    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.md'));
-    for (const file of files) {
-      categories.add(path.basename(file, '.md'));
-    }
+    try {
+      const dirStat = fs.lstatSync(dir);
+      if (!dirStat.isDirectory() || dirStat.isSymbolicLink()) continue;
+      const realDir = fs.realpathSync(dir);
+      const relative = path.relative(workspace, realDir);
+      if (relative.startsWith('..') || path.isAbsolute(relative)) continue;
+      const files = fs.readdirSync(realDir).filter((f) => f.endsWith('.md'));
+      for (const file of files) {
+        categories.add(path.basename(file, '.md'));
+      }
+    } catch {}
   }
   return Array.from(categories).sort();
 }
