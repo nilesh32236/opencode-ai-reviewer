@@ -126,4 +126,108 @@ describe('CircuitBreaker', () => {
     cb.reset();
     expect(cb.getState()).toBe('CLOSED');
   });
+
+  describe('event hooks', () => {
+    it('calls onOpen when circuit transitions CLOSED -> OPEN', async () => {
+      const onOpen = vi.fn();
+      const cb = new CircuitBreaker({
+        failureThreshold: 2,
+        successThreshold: 1,
+        cooldownMs: 1000,
+        name: 'test-hooks',
+        onOpen,
+      });
+      const failFn = vi.fn().mockRejectedValue(new Error('fail'));
+
+      await expect(cb.call(failFn)).rejects.toThrow('fail');
+      expect(onOpen).not.toHaveBeenCalled();
+
+      await expect(cb.call(failFn)).rejects.toThrow('fail');
+      expect(onOpen).toHaveBeenCalledTimes(1);
+      expect(onOpen).toHaveBeenCalledWith({ state: 'OPEN', failureCount: 2, successCount: 0 });
+    });
+
+    it('calls onOpen when circuit transitions HALF_OPEN -> OPEN', async () => {
+      const onOpen = vi.fn();
+      const cb = new CircuitBreaker({
+        failureThreshold: 1,
+        successThreshold: 1,
+        cooldownMs: 10,
+        name: 'test-hooks',
+        onOpen,
+      });
+
+      const failFn = vi.fn().mockRejectedValue(new Error('fail'));
+      await expect(cb.call(failFn)).rejects.toThrow('fail');
+      expect(onOpen).toHaveBeenCalledTimes(1);
+
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      await expect(cb.call(failFn)).rejects.toThrow('fail');
+      expect(onOpen).toHaveBeenCalledTimes(2);
+    });
+
+    it('calls onClose when circuit transitions HALF_OPEN -> CLOSED', async () => {
+      const onClose = vi.fn();
+      const cb = new CircuitBreaker({
+        failureThreshold: 1,
+        successThreshold: 2,
+        cooldownMs: 10,
+        name: 'test-hooks',
+        onClose,
+      });
+
+      const failFn = vi.fn().mockRejectedValue(new Error('fail'));
+      await expect(cb.call(failFn)).rejects.toThrow('fail');
+
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      const successFn = vi.fn().mockResolvedValue('ok');
+      await cb.call(successFn);
+      expect(onClose).not.toHaveBeenCalled();
+
+      await cb.call(successFn);
+      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(cb.getState()).toBe('CLOSED');
+    });
+
+    it('calls onClose when reset transitions OPEN -> CLOSED', async () => {
+      const onClose = vi.fn();
+      const cb = new CircuitBreaker({
+        failureThreshold: 1,
+        name: 'test-hooks',
+        onClose,
+      });
+
+      // Trigger OPEN state
+      const failFn = vi.fn().mockRejectedValue(new Error('fail'));
+      await expect(cb.call(failFn)).rejects.toThrow('fail');
+      expect(cb.getState()).toBe('OPEN');
+
+      cb.reset();
+      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(cb.getState()).toBe('CLOSED');
+    });
+
+    it('calls onHalfOpen when circuit transitions OPEN -> HALF_OPEN', async () => {
+      const onHalfOpen = vi.fn();
+      const cb = new CircuitBreaker({
+        failureThreshold: 1,
+        successThreshold: 1,
+        cooldownMs: 10,
+        name: 'test-hooks',
+        onHalfOpen,
+      });
+
+      const failFn = vi.fn().mockRejectedValue(new Error('fail'));
+      await expect(cb.call(failFn)).rejects.toThrow('fail');
+      expect(onHalfOpen).not.toHaveBeenCalled();
+
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      const successFn = vi.fn().mockResolvedValue('ok');
+      await cb.call(successFn);
+      expect(onHalfOpen).toHaveBeenCalledTimes(1);
+    });
+  });
 });

@@ -6,14 +6,15 @@ Welcome! When working in this repository, please adhere to the following rules, 
 
 This repository is a `pnpm` monorepo containing three core packages:
 
-1. **[lib/](file:///home/nilesh/Documents/projects/github-action/lib/)**: Shared core logic (types, config parsing, OpenCode API interaction, Probot/GitHub helpers, and sub-agent loop engine).
-2. **[action/](file:///home/nilesh/Documents/projects/github-action/action/)**: The GitHub Action wrapper that consumes `lib` and runs in GitHub workflows.
-3. **[app/](file:///home/nilesh/Documents/projects/github-action/app/)**: The Probot GitHub App wrapper that listens to PR/issue events and interacts with users via PR comments.
+1. **[lib/](../lib/)**: Shared core logic (types, config parsing, OpenCode API interaction, Probot/GitHub helpers, sub-agent loop engine, event bus, learning store, MCP client, meta-review, pattern detector).
+2. **[action/](../action/)**: The GitHub Action wrapper that consumes `lib` and runs in GitHub workflows.
+3. **[app/](../app/)**: The Probot GitHub App wrapper that listens to PR/issue events and interacts with users via PR comments.
 
 Other directories:
-- **[prompts/](file:///home/nilesh/Documents/projects/github-action/prompts/)**: Built-in prompts for audit categories.
-- **[examples/](file:///home/nilesh/Documents/projects/github-action/examples/)**: Configuration examples (basic, monorepo, advanced).
-- **[docker/](file:///home/nilesh/Documents/projects/github-action/docker/)**: Docker Compose configs for running local servers/services.
+- **[.audit-prompts/](../.audit-prompts/)**: Audit prompt templates used by the review engine for code quality, security, error handling, and performance audits.
+- **[prompts/](../prompts/)**: Built-in prompts for audit categories.
+- **[examples/](../examples/)**: Configuration examples (basic, monorepo, advanced).
+- **[docker/](../docker/)**: Docker Compose configs for running local servers/services.
 
 ---
 
@@ -31,6 +32,17 @@ When writing or reviewing code in this repository, follow these patterns:
 
 1. **Use `withRetry()` for external API calls**: Import from `lib/src/utils/retry.ts`. All GitHub API calls should use this utility for exponential backoff and retry on transient errors (429, 5xx). Supports optional `AbortSignal` via the `signal` option for cancellation.
 2. **Use `CircuitBreaker` for repeated API calls**: Import from `lib/src/utils/circuit-breaker.ts`. Wrap external API calls that should stop being attempted after repeated failures. The circuit trips OPEN after `failureThreshold` failures, re-tries after `cooldownMs`, and requires `successThreshold` consecutive successes in HALF_OPEN to reset.
+
+   **Event hooks**: The `CircuitBreakerOptions` supports `onOpen`, `onClose`, and `onHalfOpen` callbacks that fire on state transitions. Use these for metrics collection, alerting, or integration with monitoring:
+   ```ts
+   const cb = new CircuitBreaker({
+     failureThreshold: 3,
+     onOpen: (metrics) => metricsClient.incCounter('circuit_open'),
+     onClose: () => metricsClient.incCounter('circuit_closed'),
+     onHalfOpen: () => logger.warn('Circuit half-open, probing...'),
+   });
+   ```
+   The callbacks receive the current `failureCount` and `successCount` from `getMetrics()`.
 3. **Wrap SQLite read-then-write in transactions**: Use `db.transaction()` from `better-sqlite3` for operations that read a value, compute, and then write (e.g., `recordPattern`, `incrementAndCheckMetaReviewInterval`). The `LearningStore.deleteFindings()` automatically uses a transaction to cascade-delete related feedback rows.
 4. **Graceful degradation**: Non-critical subsystems (MCP, learning store) should fail independently. Catch and log (debug/warning level) rather than silently swallowing errors, so degraded operation remains observable.
 5. **Timeouts for long-running operations**: Always pass a timeout to long-running operations, especially OpenCode CLI execution. Use `withRetryAndTimeout()` from `lib/src/utils/retry.ts` for operations that need both timeout and retry.
