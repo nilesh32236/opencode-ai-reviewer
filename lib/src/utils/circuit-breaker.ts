@@ -8,19 +8,25 @@ export interface CircuitBreakerOptions {
   cooldownMs?: number;
   name?: string;
   /** Called when circuit transitions from CLOSED or HALF_OPEN to OPEN */
-  onOpen?: (metrics: { failureCount: number; successCount: number }) => void;
+  onOpen?: (metrics: { state: CircuitState; failureCount: number; successCount: number }) => void;
   /** Called when circuit transitions from OPEN or HALF_OPEN to CLOSED */
-  onClose?: (metrics: { failureCount: number; successCount: number }) => void;
+  onClose?: (metrics: { state: CircuitState; failureCount: number; successCount: number }) => void;
   /** Called when circuit transitions from OPEN to HALF_OPEN after cooldown */
-  onHalfOpen?: (metrics: { failureCount: number; successCount: number }) => void;
+  onHalfOpen?: (metrics: {
+    state: CircuitState;
+    failureCount: number;
+    successCount: number;
+  }) => void;
 }
+
+type CircuitBreakerMetrics = { state: CircuitState; failureCount: number; successCount: number };
 
 type RequiredCircuitBreakerOptions = Required<
   Omit<CircuitBreakerOptions, 'onOpen' | 'onClose' | 'onHalfOpen'>
 > & {
-  onOpen?: (metrics: { failureCount: number; successCount: number }) => void;
-  onClose?: (metrics: { failureCount: number; successCount: number }) => void;
-  onHalfOpen?: (metrics: { failureCount: number; successCount: number }) => void;
+  onOpen?: (metrics: CircuitBreakerMetrics) => void;
+  onClose?: (metrics: CircuitBreakerMetrics) => void;
+  onHalfOpen?: (metrics: CircuitBreakerMetrics) => void;
 };
 
 const DEFAULT_OPTIONS: RequiredCircuitBreakerOptions = {
@@ -42,11 +48,25 @@ export class CircuitBreaker {
     this.options = { ...DEFAULT_OPTIONS, ...options };
   }
 
+  private safeInvokeHook(
+    hook: ((metrics: CircuitBreakerMetrics) => void) | undefined,
+    metrics: CircuitBreakerMetrics,
+  ): void {
+    if (!hook) return;
+    try {
+      hook(metrics);
+    } catch (err) {
+      core.warning(
+        `[${this.options.name}] Lifecycle hook error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   private transitionState(): void {
     if (this.state === 'OPEN' && Date.now() - this.lastFailureTime >= this.options.cooldownMs) {
       this.state = 'HALF_OPEN';
       core.info(`[${this.options.name}] Circuit transitioning OPEN -> HALF_OPEN after cooldown`);
-      this.options.onHalfOpen?.(this.getMetrics());
+      this.safeInvokeHook(this.options.onHalfOpen, this.getMetrics());
     }
   }
 
@@ -89,12 +109,13 @@ export class CircuitBreaker {
       if (this.successCount >= this.options.successThreshold) {
         const count = this.successCount;
         this.state = 'CLOSED';
+        const metrics = this.getMetrics();
         this.failureCount = 0;
         this.successCount = 0;
         core.info(
           `[${this.options.name}] Circuit HALF_OPEN -> CLOSED after ${count} consecutive successes`,
         );
-        this.options.onClose?.(this.getMetrics());
+        this.safeInvokeHook(this.options.onClose, metrics);
       }
     } else {
       this.reset();
@@ -111,21 +132,25 @@ export class CircuitBreaker {
       core.warning(
         `[${this.options.name}] Circuit HALF_OPEN -> OPEN after failure in half-open state`,
       );
-      this.options.onOpen?.(this.getMetrics());
+      this.safeInvokeHook(this.options.onOpen, this.getMetrics());
     } else if (this.state === 'CLOSED' && this.failureCount >= this.options.failureThreshold) {
       this.state = 'OPEN';
       this.successCount = 0;
       core.warning(
         `[${this.options.name}] Circuit CLOSED -> OPEN after ${this.failureCount} consecutive failures`,
       );
-      this.options.onOpen?.(this.getMetrics());
+      this.safeInvokeHook(this.options.onOpen, this.getMetrics());
     }
   }
 
   reset(): void {
+    const priorState = this.state;
     this.state = 'CLOSED';
     this.failureCount = 0;
     this.successCount = 0;
+    if (priorState === 'OPEN' || priorState === 'HALF_OPEN') {
+      this.safeInvokeHook(this.options.onClose, this.getMetrics());
+    }
   }
 
   getMetrics(): { state: CircuitState; failureCount: number; successCount: number } {

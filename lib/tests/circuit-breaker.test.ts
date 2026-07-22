@@ -191,6 +191,24 @@ describe('CircuitBreaker', () => {
       expect(cb.getState()).toBe('CLOSED');
     });
 
+    it('calls onClose when reset transitions OPEN -> CLOSED', async () => {
+      const onClose = vi.fn();
+      const cb = new CircuitBreaker({
+        failureThreshold: 1,
+        name: 'test-hooks',
+        onClose,
+      });
+
+      // Trigger OPEN state
+      const failFn = vi.fn().mockRejectedValue(new Error('fail'));
+      await expect(cb.call(failFn)).rejects.toThrow('fail');
+      expect(cb.getState()).toBe('OPEN');
+
+      cb.reset();
+      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(cb.getState()).toBe('CLOSED');
+    });
+
     it('calls onHalfOpen when circuit transitions OPEN -> HALF_OPEN', async () => {
       const onHalfOpen = vi.fn();
       const cb = new CircuitBreaker({

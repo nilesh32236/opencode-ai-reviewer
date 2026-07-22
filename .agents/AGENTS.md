@@ -6,15 +6,15 @@ Welcome! When working in this repository, please adhere to the following rules, 
 
 This repository is a `pnpm` monorepo containing three core packages:
 
-1. **[lib/](./lib/)**: Shared core logic (types, config parsing, OpenCode API interaction, Probot/GitHub helpers, sub-agent loop engine, event bus, learning store, MCP client, meta-review, pattern detector).
-2. **[action/](./action/)**: The GitHub Action wrapper that consumes `lib` and runs in GitHub workflows.
-3. **[app/](./app/)**: The Probot GitHub App wrapper that listens to PR/issue events and interacts with users via PR comments.
+1. **[lib/](../lib/)**: Shared core logic (types, config parsing, OpenCode API interaction, Probot/GitHub helpers, sub-agent loop engine, event bus, learning store, MCP client, meta-review, pattern detector).
+2. **[action/](../action/)**: The GitHub Action wrapper that consumes `lib` and runs in GitHub workflows.
+3. **[app/](../app/)**: The Probot GitHub App wrapper that listens to PR/issue events and interacts with users via PR comments.
 
 Other directories:
-- **[.audit-prompts/](./.audit-prompts/)**: Audit prompt templates used by the review engine for code quality, security, error handling, and performance audits.
-- **[prompts/](./prompts/)**: Built-in prompts for audit categories.
-- **[examples/](./examples/)**: Configuration examples (basic, monorepo, advanced).
-- **[docker/](./docker/)**: Docker Compose configs for running local servers/services.
+- **[.audit-prompts/](../.audit-prompts/)**: Audit prompt templates used by the review engine for code quality, security, error handling, and performance audits.
+- **[prompts/](../prompts/)**: Built-in prompts for audit categories.
+- **[examples/](../examples/)**: Configuration examples (basic, monorepo, advanced).
+- **[docker/](../docker/)**: Docker Compose configs for running local servers/services.
 
 ---
 
