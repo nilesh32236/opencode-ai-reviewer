@@ -578,14 +578,7 @@ export class JsonDatabase implements DatabaseInstance, LearningRepository {
 
   pragma(_sql: string): void {}
 
-  exec(sql: string): Promise<void> {
-    if (
-      sql.includes('CREATE TABLE IF NOT EXISTS') ||
-      sql.includes('CREATE INDEX') ||
-      sql.includes('INSERT OR IGNORE')
-    ) {
-      return Promise.resolve();
-    }
+  exec(_sql: string): Promise<void> {
     return Promise.resolve();
   }
 
@@ -761,7 +754,7 @@ export class JsonDatabase implements DatabaseInstance, LearningRepository {
   }
 
   async getFindings(prNumber?: number, limit = 100): Promise<Array<Record<string, unknown>>> {
-    let results = this.data.findings.sort((a, b) => b.created_at.localeCompare(a.created_at));
+    let results = [...this.data.findings].sort((a, b) => b.created_at.localeCompare(a.created_at));
     if (prNumber) {
       results = results.filter((f) => f.pr_number === prNumber);
     }
@@ -796,7 +789,7 @@ export class JsonDatabase implements DatabaseInstance, LearningRepository {
   }
 
   async getFindingMessages(limit = 100): Promise<Array<{ message: string; file?: string }>> {
-    return this.data.findings
+    return [...this.data.findings]
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
       .slice(0, limit)
       .map((f) => ({ message: f.message, file: f.file }));
@@ -856,7 +849,7 @@ export class JsonDatabase implements DatabaseInstance, LearningRepository {
   }
 
   async getQualityTrends(limit = 20): Promise<Array<Record<string, unknown>>> {
-    return this.data.review_quality
+    return [...this.data.review_quality]
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
       .slice(0, limit) as unknown as Array<Record<string, unknown>>;
   }
@@ -913,7 +906,7 @@ export class JsonDatabase implements DatabaseInstance, LearningRepository {
   }
 
   async getPatterns(minFrequency = 3): Promise<Array<Record<string, unknown>>> {
-    return this.data.patterns
+    return [...this.data.patterns]
       .filter((p) => p.frequency >= minFrequency)
       .sort((a, b) => b.frequency - a.frequency) as unknown as Array<Record<string, unknown>>;
   }

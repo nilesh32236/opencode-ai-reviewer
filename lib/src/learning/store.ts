@@ -1,6 +1,7 @@
 import type { LearningFeedback, LearningQuality } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
-import { connectDb, sanitizeDbError } from './db.js';
+import { withRetry } from '../utils/retry.js';
+import { connectDb } from './db.js';
 import { applyMigrations, getDbPath } from './schema.js';
 import type { LearningRepository } from './types.js';
 
@@ -22,34 +23,23 @@ export class LearningStore {
   constructor(dbPathOrUrl?: string) {
     this.repoPromise = (async () => {
       const target = process.env.DATABASE_URL || dbPathOrUrl || getDbPath();
-      const maxRetries = 3;
-      let repo: LearningRepository | undefined;
-      const errors: string[] = [];
-      for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-          repo = await connectDb(target);
-          await applyMigrations(repo);
-          return repo;
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          errors.push(msg);
-          if (repo) {
-            try {
-              await repo.close();
-            } catch {
-              /* cleanup best-effort */
-            }
-            repo = undefined;
+      return withRetry(
+        async () => {
+          const repo = await connectDb(target);
+          try {
+            await applyMigrations(repo);
+            return repo;
+          } catch (err) {
+            await repo.close().catch(() => {});
+            throw err;
           }
-          if (attempt === maxRetries) throw err;
-          const connLogger = new Logger('LearningStore');
-          connLogger.warn(
-            `DB connection attempt ${attempt} failed, retrying: ${sanitizeDbError(err)}`,
-          );
-          await new Promise((r) => setTimeout(r, 1000 * attempt));
-        }
-      }
-      throw new Error('Failed to connect to database after retries: ' + errors.join('; '));
+        },
+        {
+          maxRetries: 3,
+          baseDelayMs: 1000,
+          operationName: 'LearningStore',
+        },
+      );
     })();
   }
 
@@ -91,6 +81,7 @@ export class LearningStore {
    */
   async recordFindings(
     findings: Array<{
+      id?: string;
       prNumber: number;
       type: string;
       severity?: string;
