@@ -269,7 +269,6 @@ export interface ReviewResult {
 export interface FixResult {
   changesMade: boolean;
   filesChanged: string[];
-  commitMessage?: string;
   stuck?: boolean;
   stuckReason?: string;
   summary?: string;

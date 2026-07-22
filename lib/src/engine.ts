@@ -210,6 +210,7 @@ export class ReviewEngine {
     cachedPR?: PRContext,
     timeoutMinutes?: number,
     issues?: ReviewIssue[],
+    verificationError?: string,
   ): Promise<FixResult> {
     let mcpDocs = '';
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
@@ -237,6 +238,7 @@ export class ReviewEngine {
       fixContext,
       iteration,
       issues,
+      verificationError,
     );
 
     const fixRunResult = await runOpenCode(prompt, {

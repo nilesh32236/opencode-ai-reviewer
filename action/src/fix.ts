@@ -64,14 +64,53 @@ export async function runFix(
 
   if (inputs.runChecksAfterFix && changesMade) {
     core.info('Running verification commands...');
-    try {
-      const { program, args } = validateRunChecksCommand(
-        inputs.runChecksAfterFix,
-        inputs.checkAllowlist,
+    const { program, args } = validateRunChecksCommand(
+      inputs.runChecksAfterFix,
+      inputs.checkAllowlist,
+    );
+
+    const maxVerificationRetries = 2;
+    for (let v = 0; v <= maxVerificationRetries; v++) {
+      const { exitCode, output: checkOutput } = await runVerification(program, args);
+
+      if (exitCode === 0) {
+        core.info('Verification passed');
+        break;
+      }
+
+      core.warning(
+        `Verification command failed (exit code ${exitCode}). Retrying fix with error output...`,
       );
-      await exec.exec(program, args);
-    } catch (error) {
-      core.warning(`Verification command failed: ${inputs.runChecksAfterFix} — ${String(error)}`);
+
+      if (v < maxVerificationRetries) {
+        const freshPr = await gh.getPR(prNumber);
+        const freshContextMarkdown = await gh.gatherContext({ prNumber });
+        const retryResult = await engine.runFix(
+          prNumber,
+          iteration,
+          freshContextMarkdown,
+          freshPr,
+          undefined,
+          undefined,
+          checkOutput,
+        );
+
+        if (retryResult?.changesMade) {
+          try {
+            await exec.exec('git', ['add', '-u']);
+            await exec.exec('git', [
+              'commit',
+              '-m',
+              `fix: verification errors (iteration ${iteration + 1})`,
+            ]);
+            await exec.exec('git', ['push', 'origin', pr.headRef]);
+          } catch (err) {
+            core.warning(
+              `Git operations during verification retry failed: ${err instanceof Error ? err.message : err}`,
+            );
+          }
+        }
+      }
     }
   }
 
@@ -566,14 +605,56 @@ export async function runAutofixLoop(
 
     if (inputs.runChecksAfterFix) {
       core.info('Running verification commands...');
-      try {
-        const { program, args } = validateRunChecksCommand(
-          inputs.runChecksAfterFix,
-          inputs.checkAllowlist,
+      const { program, args } = validateRunChecksCommand(
+        inputs.runChecksAfterFix,
+        inputs.checkAllowlist,
+      );
+
+      const maxVerificationRetries = 2;
+      for (let v = 0; v <= maxVerificationRetries; v++) {
+        const { exitCode, output: checkOutput } = await runVerification(program, args);
+
+        if (exitCode === 0) {
+          core.info('Verification passed');
+          break;
+        }
+
+        core.warning(
+          `Verification failed (exit code ${exitCode}) in attempt ${v + 1}/${maxVerificationRetries + 1}. Output length: ${checkOutput.length} bytes`,
         );
-        await exec.exec(program, args);
-      } catch (error) {
-        core.warning(`Verification command failed: ${inputs.runChecksAfterFix} — ${String(error)}`);
+
+        if (v < maxVerificationRetries) {
+          core.info(
+            `Feeding verification error to fix engine (retry ${v + 1}/${maxVerificationRetries})...`,
+          );
+          const prAgain = await gh.getPR(prNumber);
+          const freshContextMarkdown = await gh.gatherContext({ prNumber });
+          const retryResult = await engine.runFix(
+            prNumber,
+            i,
+            freshContextMarkdown,
+            prAgain,
+            iterTimeoutMinutes,
+            result.issues,
+            checkOutput,
+          );
+
+          if (!retryResult.changesMade) {
+            core.info('Fix agent made no changes to address verification errors');
+            break;
+          }
+
+          try {
+            await exec.exec('git', ['add', '-u']);
+            await exec.exec('git', ['commit', '-m', `fix: verification errors (attempt ${v + 1})`]);
+            await exec.exec('git', ['push', 'origin', pr.headRef]);
+          } catch (err) {
+            core.warning(
+              `Git operations failed during verification retry: ${err instanceof Error ? err.message : err}`,
+            );
+            break;
+          }
+        }
       }
     }
   }
@@ -607,6 +688,26 @@ export async function runAutofixLoop(
   }
 
   core.setOutput('approved', String(approved));
+}
+
+async function runVerification(
+  program: string,
+  args: string[],
+): Promise<{ exitCode: number; output: string }> {
+  let output = '';
+  const execOptions = {
+    listeners: {
+      stdout: (data: Buffer) => {
+        output += data.toString();
+      },
+      stderr: (data: Buffer) => {
+        output += data.toString();
+      },
+    },
+    ignoreReturnCode: true,
+  };
+  const exitCode = await exec.exec(program, args, execOptions);
+  return { exitCode, output };
 }
 
 async function handleTimeoutGracefully(
