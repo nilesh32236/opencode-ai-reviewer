@@ -125,7 +125,8 @@ export class ReviewEngine {
         ? '\n\n## Library Context\n' + mcpContext.map((e) => e.content).join('\n')
         : '';
 
-    const lessons = this.learningStore
+    const store = this.learningStore;
+    const lessons = store
       ? await (async () => {
           try {
             const now = Date.now();
@@ -135,9 +136,7 @@ export class ReviewEngine {
             ) {
               return this.lessonsCache.lessons;
             }
-            const result = await this.learningStore!.getRelevantLessons(
-              pr.changedFiles.map((f) => f.path),
-            );
+            const result = await store.getRelevantLessons(pr.changedFiles.map((f) => f.path));
             this.lessonsCache = { lessons: result, timestamp: now };
             return result;
           } catch {

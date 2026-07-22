@@ -7,8 +7,13 @@ export function sanitizeDbError(err: unknown): string {
   return msg.replace(/([a-z][a-z0-9+.-]+:\/\/)[^@\s]+@/gi, '$1<redacted>@');
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: Dynamic require() for optional DB drivers (pg, mysql2, better-sqlite3) that may not be installed. In ESM contexts this throws unconditionally.
-const req: ((moduleName: string) => any) | ((moduleName: string) => never) =
+/**
+ * Dynamic require() for optional DB drivers (pg, mysql2, better-sqlite3) that may not be installed.
+ * Uses `unknown` to force callers to cast the return value appropriately at the call site,
+ * which is safer than `any` because it requires explicit type assertion.
+ * In ESM contexts this throws unconditionally.
+ */
+const req: ((moduleName: string) => unknown) | ((moduleName: string) => never) =
   typeof require !== 'undefined'
     ? require
     : (moduleName: string) => {
@@ -25,6 +30,7 @@ export interface DbAdapter {
 }
 
 interface PostgresClient {
+  connect(): Promise<void>;
   query(sql: string, params?: unknown[]): Promise<{ rowCount: number | null; rows: unknown[] }>;
   end(): Promise<void>;
 }
@@ -39,6 +45,7 @@ interface MysqlConnection {
 
 interface SqliteDatabase {
   exec(sql: string): void;
+  pragma(sql: string): unknown;
   prepare(sql: string): {
     run(...params: unknown[]): { changes: number };
     all(...params: unknown[]): unknown[];
@@ -47,28 +54,33 @@ interface SqliteDatabase {
   close(): void;
 }
 
-// Translate SQLite query to Postgres/MySQL if needed
+/**
+ * Translate SQLite query to Postgres/MySQL if needed.
+ * Converts positional `?` placeholders to Postgres `$N` style,
+ * normalizes datetime functions, and converts INSERT OR REPLACE
+ * to INSERT ... ON CONFLICT DO UPDATE for Postgres.
+ *
+ * @param sql - Original SQLite SQL statement.
+ * @param dialect - Target SQL dialect.
+ * @returns Translated SQL string.
+ */
 function translateQuery(sql: string, dialect: 'postgres' | 'mysql' | 'sqlite'): string {
   let cleanSql = sql.trim().replace(/\s+/g, ' ');
   if (dialect === 'postgres') {
     let index = 1;
     cleanSql = cleanSql.replace(/\?/g, () => `$${index++}`);
     cleanSql = cleanSql.replace(/datetime\('now'\)/g, 'CURRENT_TIMESTAMP');
-    if (
-      cleanSql.startsWith('INSERT OR REPLACE INTO findings') ||
-      cleanSql.startsWith('INSERT INTO findings')
-    ) {
-      cleanSql = `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion)
-                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                  ON CONFLICT (id) DO UPDATE SET
-                    pr_number = EXCLUDED.pr_number,
-                    type = EXCLUDED.type,
-                    severity = EXCLUDED.severity,
-                    file = EXCLUDED.file,
-                    line = EXCLUDED.line,
-                    message = EXCLUDED.message,
-                    suggestion = EXCLUDED.suggestion`;
-    }
+    cleanSql = cleanSql.replace(
+      /INSERT\s+OR\s+REPLACE\s+INTO\s+(\w+)\s*\(([^)]+)\)/gi,
+      (_match, table: string, columnsStr: string) => {
+        const cols = columnsStr.split(',').map((c: string) => c.trim());
+        const updateSet = cols
+          .filter((c: string) => c !== 'id')
+          .map((c: string) => `${c} = EXCLUDED.${c}`)
+          .join(', ');
+        return `INSERT INTO ${table} (${columnsStr}) ON CONFLICT (id) DO UPDATE SET ${updateSet}`;
+      },
+    );
   } else if (dialect === 'mysql') {
     cleanSql = cleanSql.replace(/datetime\('now'\)/g, 'CURRENT_TIMESTAMP');
   }
@@ -270,7 +282,9 @@ export class JsonDbAdapter implements DbAdapter {
 export async function connectDb(dbPathOrUrl: string): Promise<DbAdapter> {
   if (dbPathOrUrl.startsWith('postgres://') || dbPathOrUrl.startsWith('postgresql://')) {
     try {
-      const { Client } = req('pg');
+      const { Client } = req('pg') as {
+        Client: new (config: { connectionString: string }) => PostgresClient;
+      };
       const client = new Client({ connectionString: dbPathOrUrl });
       await client.connect();
       return new PostgresAdapter(client);
@@ -281,7 +295,9 @@ export async function connectDb(dbPathOrUrl: string): Promise<DbAdapter> {
 
   if (dbPathOrUrl.startsWith('mysql://')) {
     try {
-      const mysql = req('mysql2/promise');
+      const mysql = req('mysql2/promise') as {
+        createConnection: (url: string) => Promise<MysqlConnection>;
+      };
       const connection = await mysql.createConnection(dbPathOrUrl);
       return new MysqlAdapter(connection);
     } catch (e) {
@@ -291,7 +307,7 @@ export async function connectDb(dbPathOrUrl: string): Promise<DbAdapter> {
 
   // Fallback to SQLite or JSON
   try {
-    const Database = req('better-sqlite3');
+    const Database = req('better-sqlite3') as new (path: string) => SqliteDatabase;
     const dir = path.dirname(dbPathOrUrl);
     if (dir !== '.' && !fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });

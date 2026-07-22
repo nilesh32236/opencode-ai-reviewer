@@ -70,28 +70,27 @@ export class MCPManager {
     server: MCPServerConfig,
     createTransport: () => Transport,
   ): Promise<void> {
-    let mcpClient: Client | undefined;
-    let mcpTransport: Transport | undefined;
+    const result: { client?: Client; transport?: Transport } = {};
     try {
       await withRetry(
         async () => {
-          if (mcpTransport) {
+          if (result.transport) {
             try {
-              await mcpTransport.close();
+              await result.transport.close();
             } catch {
               /* ignore */
             }
           }
 
-          const transport = createTransport();
-          mcpTransport = transport;
+          const newTransport = createTransport();
+          result.transport = newTransport;
 
           const clientInstance = new Client({ name: 'opencode-pr-agent', version: '1.0.0' });
 
           const connectionTimeout = server.timeoutMs ?? 5000;
           let timedOut = false;
           let connectTimer: ReturnType<typeof setTimeout>;
-          const connectPromise = clientInstance.connect(transport);
+          const connectPromise = clientInstance.connect(newTransport);
           await Promise.race([
             connectPromise,
             new Promise<never>((_, reject) => {
@@ -104,12 +103,12 @@ export class MCPManager {
           ]).finally(() => {
             clearTimeout(connectTimer);
             if (timedOut) {
-              transport.close().catch(() => {});
+              newTransport.close().catch(() => {});
             }
           });
 
-          mcpClient = clientInstance;
-          this.clients.set(server.name, { client: mcpClient, transport: mcpTransport });
+          result.client = clientInstance;
+          this.clients.set(server.name, { client: clientInstance, transport: newTransport });
         },
         {
           maxRetries: 3,
@@ -117,9 +116,9 @@ export class MCPManager {
         },
       );
 
-      if (mcpClient) {
-        const client = mcpClient;
-        const tools = await withRetry(() => client.listTools(), {
+      const rc = result.client;
+      if (rc) {
+        const tools = await withRetry(() => rc.listTools(), {
           maxRetries: 3,
           baseDelayMs: 2000,
         });
@@ -131,14 +130,14 @@ export class MCPManager {
         `  ${server.name}: Failed to connect — ${err instanceof Error ? err.message : err}`,
       );
       this.clients.delete(server.name);
-      if (mcpClient) {
+      if (result.client) {
         try {
-          await mcpClient.close();
+          await result.client.close();
         } catch {}
       }
-      if (mcpTransport) {
+      if (result.transport) {
         try {
-          await mcpTransport.close();
+          await result.transport.close();
         } catch {}
       }
     }

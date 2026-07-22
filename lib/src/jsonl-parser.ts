@@ -84,17 +84,17 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
   );
 
   return {
-    summary: (summary as SummaryFinding | null)?.text || '',
+    summary: (summary as SummaryFinding | null)?.text ?? '',
     verdict: {
       ready: (verdict as VerdictFinding | null)?.ready ?? false,
-      reasoning: (verdict as VerdictFinding | null)?.reasoning || '',
+      reasoning: (verdict as VerdictFinding | null)?.reasoning ?? '',
       autoFixable: (verdict as VerdictFinding | null)?.autoFixable ?? false,
-      confidence: (verdict as VerdictFinding | null)?.confidence || 'low',
+      confidence: (verdict as VerdictFinding | null)?.confidence ?? 'low',
     },
     strengths: strengths.map((s) => ({
       type: 'strength' as const,
-      file: s.file || '',
-      line: s.line || 0,
+      file: s.file ?? '',
+      line: s.line ?? 0,
       message: s.message,
     })),
     issues: issues.map((i) => ({

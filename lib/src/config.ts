@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as core from '@actions/core';
 import yaml from 'js-yaml';
 import type { ConfigOverride, PromptConfig } from './types/index.js';
+import { PromptConfigSchema } from './types/schemas.js';
 
 export interface ResolveConfigOptions {
   /** File paths being reviewed (for path-based overrides) */
@@ -32,7 +33,7 @@ export function loadConfig(workingDir = '.'): PromptConfig | null {
       core.info(`Loading config from ${filename}`);
       try {
         const content = fs.readFileSync(fullPath, 'utf-8');
-        const config = yaml.load(content) as PromptConfig;
+        const config = PromptConfigSchema.parse(yaml.load(content));
         if (!config) return null;
         return validateConfig(config);
       } catch (error) {
@@ -68,6 +69,13 @@ function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * Simple glob matching with `*`, `**`, and `?` support.
+ * Known limitations:
+ * - `**` matches everything (including `/`) — does NOT restrict to directory boundary only.
+ * - No support for `{a,b}` alternation or `[abc]` character classes.
+ * - For complex patterns, consider using `minimatch` instead.
+ */
 function matchesGlob(pattern: string, value: string): boolean {
   const result: string[] = [];
   let i = 0;
@@ -309,6 +317,15 @@ export function validateConfig(config: PromptConfig): PromptConfig {
   return result;
 }
 
+/**
+ * Extract default values from a PromptConfig and map them to GitHub Action input names.
+ * This bridges the config file's naming convention (camelCase) with the action's
+ * input naming convention (snake_case). For example, `config.review.systemPrompt`
+ * maps to the action input `review_prompt`.
+ *
+ * @param config - Parsed PromptConfig with optional sections.
+ * @returns Flat record of action input key-value pairs derived from the config.
+ */
 function extractDefaultsFromConfig(config: PromptConfig): Record<string, unknown> {
   const defaults: Record<string, unknown> = {};
 

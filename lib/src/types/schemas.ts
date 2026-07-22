@@ -165,6 +165,85 @@ export function parseReviewOutput(jsonlContent: string): ParsedReviewOutput {
   return result;
 }
 
+// ─── Prompt Config Schema (YAML config file) ──────────────
+export const ConfigOverrideSchema = z.object({
+  path: z.string().optional(),
+  branch: z.string().optional(),
+  review: z
+    .object({
+      customRules: z.array(z.string()).optional(),
+      inline: z.boolean().optional(),
+    })
+    .optional(),
+  fix: z
+    .object({
+      maxIterations: z.number().int().min(1).max(10).optional(),
+    })
+    .optional(),
+  audit: z
+    .object({
+      categories: z.array(z.string()).optional(),
+    })
+    .optional(),
+});
+
+export const PromptConfigSchema = z.object({
+  review: z
+    .object({
+      systemPrompt: z.string().optional(),
+      extraContext: z.string().optional(),
+      customRules: z.array(z.string()).optional(),
+      inline: z.boolean().optional(),
+    })
+    .optional(),
+  fix: z
+    .object({
+      systemPrompt: z.string().optional(),
+      maxIterations: z.number().int().min(1).max(10).optional(),
+      runChecks: z.array(z.string()).optional(),
+      checkAllowlist: z.array(z.string()).optional(),
+    })
+    .optional(),
+  audit: z
+    .object({
+      promptsDir: z.string().optional(),
+      categories: z.array(z.string()).optional(),
+      targetDirs: z.array(z.string()).optional(),
+      createIssues: z.boolean().optional(),
+      autoFix: z.boolean().optional(),
+    })
+    .optional(),
+  learning: z
+    .object({
+      enabled: z.boolean().optional(),
+      feedbackSignals: z.array(z.string()).optional(),
+      metaReview: z
+        .object({
+          enabled: z.boolean().optional(),
+          interval: z.number().int().min(1).optional(),
+          minFindingsForReview: z.number().int().min(0).optional(),
+        })
+        .optional(),
+      patternDiscovery: z
+        .object({
+          enabled: z.boolean().optional(),
+          minFrequency: z.number().int().min(1).optional(),
+          windowSize: z.number().int().min(1).optional(),
+        })
+        .optional(),
+    })
+    .optional(),
+  project: z
+    .object({
+      name: z.string().optional(),
+      description: z.string().optional(),
+      conventions: z.array(z.string()).optional(),
+      commandReference: z.record(z.string()).optional(),
+    })
+    .optional(),
+  overrides: z.array(ConfigOverrideSchema).optional(),
+});
+
 /**
  * Validate and merge user config with defaults.
  */

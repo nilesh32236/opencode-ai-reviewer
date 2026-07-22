@@ -644,7 +644,7 @@ export class JsonDatabase implements DatabaseInstance {
     return result;
   }
 
-  /** @deprecated Use dispatch() instead. Will be removed in v2.0.0. */
+  /** @deprecated Use dispatch() instead. Will be removed in v2.0.0. Tracked in #123. */
   handleSql(
     sql: string,
     params: unknown[] = [],
