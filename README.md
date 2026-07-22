@@ -204,7 +204,7 @@ Remote servers use SSE transport. Environment variables are passed as HTTP heade
 When running as a GitHub Action, the learning database (`.opencode/learning.db`) lives on an ephemeral runner and is lost after each workflow run. To preserve learnings across runs, the action automatically saves and restores the `.opencode/` directory using the [GitHub Actions Cache](https://github.com/actions/cache).
 
 - **Cache scope:** per-branch (keyed by `{state_cache_key}-{owner}/{repo}-{branch}`)
-- **Fallback restore:** if no exact branch match, the most recent cache entry for the repository is used
+- **Fallback restore:** if no exact branch match exists, the most recently created cache entry across all branches in this repository will be used as a warm start
 - **Disabled by:** setting `enable_state_cache: false` in your workflow inputs
 
 ### Remote Database (Distributed Environments)

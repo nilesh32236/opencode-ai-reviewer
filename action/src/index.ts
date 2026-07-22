@@ -7,6 +7,7 @@ import {
   type AgentConfig,
   DEFAULT_CONFIG,
   GitHubHelper,
+  LearningStore,
   type MCPServerConfig,
   MCPServerConfigSchema,
   ReviewEngine,
@@ -31,27 +32,45 @@ const sanitize = (message: string): string => {
     .replace(/(xox[bpras]-\d+-)[a-zA-Z0-9-]+/g, '$1***');
 };
 
-function getLearningDbMtime(stateDir: string): number {
-  const dbPath = path.join(stateDir, 'learning.db');
-  try {
-    return fs.statSync(dbPath).mtimeMs;
-  } catch {
-    return 0;
-  }
-}
-
-let learningDbMtimeMs = 0;
-
-async function restoreStateCache(cacheKeyPrefix: string, stateDir: string): Promise<void> {
+function buildCacheKey(prefix: string): string {
   const repoNwo = `${github.context.repo.owner}/${github.context.repo.repo}`;
   const branch = github.context.ref.replace('refs/heads/', '');
-  const primaryKey = `${cacheKeyPrefix}-${repoNwo}-${branch}`;
-  const restoreKeys = [`${cacheKeyPrefix}-${repoNwo}-`];
+  return `${prefix}-${repoNwo}-${branch}`;
+}
 
-  if (!fs.existsSync(stateDir)) {
-    core.info(`Restoring learning state from cache...`);
+class StateCacheManager {
+  private learningDbMtimeMs = 0;
+  private readonly stateDir: string;
+  private readonly cacheKeyPrefix: string;
+
+  constructor(cacheKeyPrefix: string) {
+    this.cacheKeyPrefix = cacheKeyPrefix;
+    this.stateDir = path.resolve(process.cwd(), '.opencode');
+  }
+
+  private getLearningDbMtime(): number {
+    const dbPath = path.join(this.stateDir, 'learning.db');
     try {
-      const cacheKey = await restoreCache([stateDir], primaryKey, restoreKeys);
+      return fs.statSync(dbPath).mtimeMs;
+    } catch {
+      return 0;
+    }
+  }
+
+  async restore(): Promise<void> {
+    if (fs.existsSync(this.stateDir)) {
+      core.info('.opencode/ directory already exists — skipping cache restore');
+      this.learningDbMtimeMs = this.getLearningDbMtime();
+      return;
+    }
+
+    core.info('Restoring learning state from cache...');
+    const primaryKey = buildCacheKey(this.cacheKeyPrefix);
+    const restoreKeys = [
+      `${this.cacheKeyPrefix}-${github.context.repo.owner}/${github.context.repo.repo}-`,
+    ];
+    try {
+      const cacheKey = await restoreCache([this.stateDir], primaryKey, restoreKeys);
       if (cacheKey) {
         core.info(`Restored learning state from cache key: ${cacheKey}`);
       } else {
@@ -60,45 +79,45 @@ async function restoreStateCache(cacheKeyPrefix: string, stateDir: string): Prom
     } catch (error) {
       core.warning(`Failed to restore learning state cache: ${error}`);
     }
-  } else {
-    core.info('.opencode/ directory already exists — skipping cache restore');
+
+    this.learningDbMtimeMs = this.getLearningDbMtime();
   }
 
-  learningDbMtimeMs = getLearningDbMtime(stateDir);
-}
+  async save(): Promise<void> {
+    if (!fs.existsSync(this.stateDir)) {
+      core.info('No learning state directory found — skipping cache save');
+      return;
+    }
 
-async function saveStateCache(cacheKeyPrefix: string, stateDir: string): Promise<void> {
-  if (!fs.existsSync(stateDir)) {
-    core.info('No learning state directory found — skipping cache save');
-    return;
-  }
+    const dbPath = path.join(this.stateDir, 'learning.db');
+    if (!fs.existsSync(dbPath)) {
+      core.info('No learning.db found — skipping cache save');
+      return;
+    }
 
-  const currentMtime = getLearningDbMtime(stateDir);
-  if (currentMtime > 0 && currentMtime === learningDbMtimeMs) {
-    core.info('Learning state unchanged — skipping cache save');
-    return;
-  }
+    const currentMtime = this.getLearningDbMtime();
+    if (currentMtime > 0 && currentMtime === this.learningDbMtimeMs) {
+      core.info('Learning state unchanged — skipping cache save');
+      return;
+    }
 
-  const repoNwo = `${github.context.repo.owner}/${github.context.repo.repo}`;
-  const branch = github.context.ref.replace('refs/heads/', '');
-  const cacheKey = `${cacheKeyPrefix}-${repoNwo}-${branch}`;
-
-  try {
-    await saveCache([stateDir], cacheKey);
-    core.info(`Saved learning state to cache key: ${cacheKey}`);
-  } catch (error) {
-    core.warning(`Failed to save learning state cache: ${error}`);
+    const cacheKey = buildCacheKey(this.cacheKeyPrefix);
+    try {
+      await saveCache([this.stateDir], cacheKey);
+      core.info(`Saved learning state to cache key: ${cacheKey}`);
+    } catch (error) {
+      core.warning(`Failed to save learning state cache: ${error}`);
+    }
   }
 }
 
 async function run(): Promise<void> {
   let inputs: ActionInputs | undefined;
   let engine: ReviewEngine | undefined;
-  let stateDir = '';
+  let cacheManager: StateCacheManager | undefined;
 
   try {
     inputs = parseInputs();
-    stateDir = path.resolve(process.cwd(), inputs.stateCacheDir);
     const loadedConfig = loadConfig();
 
     if (loadedConfig?.fix?.checkAllowlist?.length) {
@@ -110,7 +129,8 @@ async function run(): Promise<void> {
     const token = inputs.githubToken;
 
     if (inputs.enableStateCache) {
-      await restoreStateCache(inputs.stateCacheKey, stateDir);
+      cacheManager = new StateCacheManager(inputs.stateCacheKey);
+      await cacheManager.restore();
     }
 
     await setupOpenCode(inputs.opencodeVersion);
@@ -211,7 +231,8 @@ async function run(): Promise<void> {
         : DEFAULT_CONFIG.learning,
     };
 
-    engine = new ReviewEngine(config, token, repo);
+    const learningStore = new LearningStore();
+    engine = new ReviewEngine(config, token, repo, learningStore);
     const gh = new GitHubHelper(token, repo);
 
     try {
@@ -246,6 +267,7 @@ async function run(): Promise<void> {
       if (engine) {
         await engine.cleanup();
       }
+      await learningStore.close().catch(() => {});
     }
   } catch (error) {
     const mode = core.getInput('mode') || 'unknown';
@@ -256,10 +278,9 @@ async function run(): Promise<void> {
     core.setFailed(
       `Action failed (mode: ${mode}, pr/issue: ${prNumber}): ${sanitize(error instanceof Error ? error.message : String(error))}`,
     );
-    process.exitCode = 1;
   } finally {
-    if (inputs?.enableStateCache) {
-      await saveStateCache(inputs.stateCacheKey, stateDir);
+    if (inputs?.enableStateCache && cacheManager) {
+      await cacheManager.save();
     }
   }
 }
