@@ -108,6 +108,8 @@ The Action runs `review` mode by default. Other modes: `fix`, `audit`, `post`, `
 | `audit_create_issues`    | `true`                               | Create GitHub issues for audit findings        |
 | `audit_auto_fix`         | `false`                              | Auto-trigger fixes for audit findings          |
 | `audit_labels`           | `audit`                              | Comma-separated labels for audit issues        |
+| `enable_state_cache`     | `true`                               | Persist the learning database across runs using GitHub Actions Cache |
+| `state_cache_key`        | `opencode-learning-state`            | Custom key prefix for the learning state cache |
 
 **Outputs:** `review_summary`, `verdict`, `critical_count`, `important_count`, `minor_count`, `changes_made`.
 
@@ -192,6 +194,42 @@ mcpServers:
 ```
 
 Remote servers use SSE transport. Environment variables are passed as HTTP headers for authentication. See `lib/src/mcp/servers.ts` for pre-configured server definitions.
+
+---
+
+## State Persistence & Remote Database
+
+### Learning State Cache (GitHub Actions)
+
+When running as a GitHub Action, the learning database (`.opencode/learning.db`) lives on an ephemeral runner and is lost after each workflow run. To preserve learnings across runs, the action automatically saves and restores the `.opencode/` directory using the [GitHub Actions Cache](https://github.com/actions/cache).
+
+- **Cache scope:** per-repository (keyed by `{state_cache_key}-{owner}/{repo}-{sha}`)
+- **Fallback restore:** if no exact SHA match, the most recent cache entry for the repository is used
+- **Disabled by:** setting `enable_state_cache: false` in your workflow inputs
+
+### Remote Database (Distributed Environments)
+
+For environments where caching is not viable — or when running across multiple runners — you can supply a persistent database connection string via the `DATABASE_URL` environment variable:
+
+```yaml
+- uses: nilesh32236/opencode-ai-reviewer@v1
+  with:
+    mode: review
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+  env:
+    DATABASE_URL: postgresql://user:password@host:5432/opencode_reviews
+```
+
+Supported database backends (in priority order):
+
+| Scheme | Driver | Notes |
+|--------|--------|-------|
+| `postgres://` / `postgresql://` | `pg` | Full-featured SQL |
+| `mysql://` | `mysql2` | Full-featured SQL |
+| File path (e.g. `/data/learning.db`) | `better-sqlite3` | Default; uses cache for persistence |
+| (no URL / missing driver) | JSON file fallback | Graceful degradation |
+
+When `DATABASE_URL` is set, the learning store connects directly to the remote database, bypassing the file-based cache entirely. This is the recommended approach for production deployments that require durable learning across distributed workflows.
 
 ---
 

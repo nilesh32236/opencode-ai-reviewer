@@ -1,3 +1,6 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { restoreCache, saveCache } from '@actions/cache';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import {
@@ -20,6 +23,8 @@ import { parseInputs } from './inputs.js';
 import { runPost } from './post.js';
 import { runReview } from './review.js';
 
+const STATE_DIR = path.join(process.cwd(), '.opencode');
+
 const sanitize = (message: string): string => {
   return message
     .replace(/(Bearer\s+)[a-zA-Z0-9._\-+/]+/gi, '$1***')
@@ -27,6 +32,45 @@ const sanitize = (message: string): string => {
     .replace(/(sk-[a-zA-Z0-9]{20,})/g, 'sk-***')
     .replace(/(xox[bpras]-\d+-)[a-zA-Z0-9-]+/g, '$1***');
 };
+
+async function restoreStateCache(cacheKeyPrefix: string): Promise<void> {
+  const repoNwo = `${github.context.repo.owner}/${github.context.repo.repo}`;
+  const primaryKey = `${cacheKeyPrefix}-${repoNwo}-${github.context.sha}`;
+  const restoreKeys = [`${cacheKeyPrefix}-${repoNwo}-`];
+
+  if (!fs.existsSync(STATE_DIR)) {
+    core.info(`Restoring learning state from cache...`);
+    try {
+      const cacheKey = await restoreCache([STATE_DIR], primaryKey, restoreKeys);
+      if (cacheKey) {
+        core.info(`Restored learning state from cache key: ${cacheKey}`);
+      } else {
+        core.info('No cached learning state found — starting fresh');
+      }
+    } catch (error) {
+      core.warning(`Failed to restore learning state cache: ${error}`);
+    }
+  } else {
+    core.info('.opencode/ directory already exists — skipping cache restore');
+  }
+}
+
+async function saveStateCache(cacheKeyPrefix: string): Promise<void> {
+  if (!fs.existsSync(STATE_DIR)) {
+    core.info('No .opencode/ directory found — skipping cache save');
+    return;
+  }
+
+  const repoNwo = `${github.context.repo.owner}/${github.context.repo.repo}`;
+  const cacheKey = `${cacheKeyPrefix}-${repoNwo}-${github.context.sha}`;
+
+  try {
+    await saveCache([STATE_DIR], cacheKey);
+    core.info(`Saved learning state to cache key: ${cacheKey}`);
+  } catch (error) {
+    core.warning(`Failed to save learning state cache: ${error}`);
+  }
+}
 
 async function run(): Promise<void> {
   try {
@@ -40,6 +84,10 @@ async function run(): Promise<void> {
     const repo =
       core.getInput('repo') || `${github.context.repo.owner}/${github.context.repo.repo}`;
     const token = inputs.githubToken;
+
+    if (inputs.enableStateCache) {
+      await restoreStateCache(inputs.stateCacheKey);
+    }
 
     await setupOpenCode(inputs.opencodeVersion);
     await setupWorkspaceDependencies(process.cwd());
@@ -171,6 +219,9 @@ async function run(): Promise<void> {
           core.setFailed(`Unknown mode: ${inputs.mode}`);
       }
     } finally {
+      if (inputs.enableStateCache) {
+        await saveStateCache(inputs.stateCacheKey);
+      }
       await engine.cleanup();
     }
     process.exit(process.exitCode || 0);
