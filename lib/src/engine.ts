@@ -56,6 +56,7 @@ export class ReviewEngine {
    * @param reviewPromptFile - Optional path to a custom review prompt file.
    * @param reviewPromptExtra - Optional extra text appended to the review prompt.
    * @param timeoutMinutes - Optional timeout override (defaults to config.timeoutMinutes).
+   * @param workingDirectory - Optional working directory for cloned repo (tempDir).
    * @returns Parsed review result with verdict, issues, and strengths.
    */
   async reviewPR(
@@ -206,6 +207,7 @@ export class ReviewEngine {
    * @param contextMarkdown - PR context as markdown string.
    * @param cachedPR - Optional pre-fetched PR context to avoid redundant API calls.
    * @param timeoutMinutes - Optional timeout override (defaults to config.timeoutMinutes).
+   * @param workingDirectory - Optional working directory for cloned repo (tempDir).
    * @returns Fix result indicating whether changes were made, files changed, and stuck/summary info.
    */
   async runFix(
@@ -320,6 +322,7 @@ export class ReviewEngine {
    * @param targetDir - Directory to audit.
    * @param category - Audit category name (used for output file naming).
    * @param timeoutMinutes - Optional timeout override (defaults to config.timeoutMinutes).
+   * @param workingDirectory - Optional working directory for cloned repo (tempDir).
    * @returns Parsed audit result with issues and verdict.
    */
   async runAudit(
@@ -333,7 +336,7 @@ export class ReviewEngine {
     if (this.config.enableMCP) {
       try {
         await this.mcp.connect();
-        const libraries = detectLibrariesFromDir(targetDir);
+        const libraries = detectLibrariesFromDir(targetDir, workingDirectory);
         if (libraries.length > 0) {
           mcpDocs = await this.mcp.getLibraryDocs(libraries);
         }
@@ -546,7 +549,7 @@ function detectLibraries(files: string[]): string[] {
   return [...libraries];
 }
 
-function detectLibrariesFromDir(dir: string): string[] {
+function detectLibrariesFromDir(dir: string, rootDir?: string): string[] {
   const libs = new Set<string>();
 
   // PHP-only directories in WordPress plugins — no JS libraries apply.
@@ -567,8 +570,9 @@ function detectLibrariesFromDir(dir: string): string[] {
   // since `src` is also used by WordPress plugins for React admin UI.
   if (dir === 'src' || dir.endsWith('/src')) {
     // Check for package.json to confirm it's a JS project before adding Node libs.
-    const hasPackageJson = existsSync(path.join(process.cwd(), 'package.json'));
-    const hasComposerJson = existsSync(path.join(process.cwd(), 'composer.json'));
+    const projectRoot = rootDir || process.cwd();
+    const hasPackageJson = existsSync(path.join(projectRoot, 'package.json'));
+    const hasComposerJson = existsSync(path.join(projectRoot, 'composer.json'));
 
     if (hasPackageJson) {
       libs.add('react');

@@ -1,4 +1,5 @@
 import { execFileSync, execSync } from 'child_process';
+import type { ExecFileSyncOptions } from 'child_process';
 import type { AgentConfig, FixResult, PRContext, ReviewResult } from '@opencode-pr-agent/lib';
 import { GitHubHelper, Logger, ReviewEngine, configureGit } from '@opencode-pr-agent/lib';
 
@@ -156,8 +157,9 @@ export async function handleAutofixLoop(
   const history: IterationRecord[] = [];
   let approved = false;
 
+  let gitEnv: Record<string, string> | undefined;
   if (tempDir) {
-    configureGit(
+    gitEnv = configureGit(
       'opencode-pr-agent[bot]',
       'opencode-pr-agent[bot]@users.noreply.github.com',
       token,
@@ -277,7 +279,9 @@ export async function handleAutofixLoop(
         contextMd += '\n';
       }
 
-      const gitOpts = tempDir ? { cwd: tempDir } : {};
+      const gitOpts: ExecFileSyncOptions = tempDir
+        ? { cwd: tempDir, ...(gitEnv ? { env: { ...process.env, ...gitEnv } } : {}) }
+        : {};
       let fixResult: FixResult | undefined;
       try {
         fixResult = await engine.runFix(

@@ -461,16 +461,22 @@ export async function runOpenCode(
  * and sets up GIT_ASKPASS for token-based authentication without leaking
  * credentials into git config.
  *
+ * When `cwd` is provided (app tempDir context), env vars are returned instead of
+ * setting global process.env, avoiding cross-contamination between concurrent
+ * webhook events. The caller should pass the returned env to execFileSync.
+ *
  * @param userName - Git user name (defaults to GITHUB_ACTOR or "opencode-ai-reviewer[bot]").
  * @param userEmail - Git user email (defaults to user name @ users.noreply.github.com).
  * @param token - GitHub token for authentication via GIT_ASKPASS.
+ * @param cwd - Optional working directory. When set, env vars are returned (not set globally).
+ * @returns Process env vars when cwd is provided; undefined otherwise (legacy global mode).
  */
 export function configureGit(
   userName?: string,
   userEmail?: string,
   token?: string,
   cwd?: string,
-): void {
+): Record<string, string> | undefined {
   const name = userName || process.env.GITHUB_ACTOR || 'opencode-ai-reviewer[bot]';
   const email = userEmail || `${name}@users.noreply.github.com`;
 
@@ -480,6 +486,45 @@ export function configureGit(
     cp.execFileSync('git', ['config', '--local', 'user.name', name], execOptions);
     cp.execFileSync('git', ['config', '--local', 'user.email', email], execOptions);
 
+    if (cwd) {
+      // Isolation mode: return env vars for the caller to pass explicitly,
+      // avoiding global process.env mutation that would conflict between
+      // concurrent webhook events.
+      if (token) {
+        const askPassPath = path.join(cwd, '.git-askpass.sh');
+        fs.writeFileSync(
+          askPassPath,
+          [
+            '#!/bin/sh',
+            'case "$1" in',
+            '  *Username*) echo "x-access-token" ;;',
+            '  *Password*) echo "${OPENCODE_CREDENTIAL_TOKEN}" ;;',
+            'esac',
+          ].join('\n'),
+          'utf-8',
+        );
+        fs.chmodSync(askPassPath, 0o755);
+        const gitEnv: Record<string, string> = {
+          GIT_ASKPASS: askPassPath,
+          OPENCODE_CREDENTIAL_TOKEN: token,
+          GIT_AUTHOR_NAME: name,
+          GIT_AUTHOR_EMAIL: email,
+          GIT_COMMITTER_NAME: name,
+          GIT_COMMITTER_EMAIL: email,
+        };
+        core.info(`Git configured (isolated): ${name} <${email}>`);
+        return gitEnv;
+      }
+      core.info(`Git configured (isolated): ${name} <${email}>`);
+      return {
+        GIT_AUTHOR_NAME: name,
+        GIT_AUTHOR_EMAIL: email,
+        GIT_COMMITTER_NAME: name,
+        GIT_COMMITTER_EMAIL: email,
+      };
+    }
+
+    // Legacy global mode (action package, no cwd)
     process.env.GIT_AUTHOR_NAME = name;
     process.env.GIT_AUTHOR_EMAIL = email;
     process.env.GIT_COMMITTER_NAME = name;
@@ -555,14 +600,17 @@ export function configureGit(
     }
   } catch (err) {
     core.warning(`configureGit failed: ${String(err)}`);
+    return undefined;
   }
 
   core.info(`Git configured: ${name} <${email}>`);
+  return undefined;
 }
 
 /**
  * Get the current git working-tree status as a porcelain string.
  *
+ * @param cwd - Optional working directory to run git status in.
  * @returns Porcelain git status output, or empty string if git is not available.
  */
 export function getGitStatus(cwd?: string): string {

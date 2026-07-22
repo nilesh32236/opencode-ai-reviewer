@@ -1,4 +1,5 @@
 import { execFileSync, execSync } from 'child_process';
+import type { ExecFileSyncOptions } from 'child_process';
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
@@ -48,7 +49,7 @@ export async function handleCommand(
       env: { ...process.env, GIT_ASKPASS: askPassScript, OPENCODE_CREDENTIAL_TOKEN: token },
     });
 
-    configureGit(
+    const gitEnv = configureGit(
       'opencode-pr-agent[bot]',
       'opencode-pr-agent[bot]@users.noreply.github.com',
       token,
@@ -68,7 +69,15 @@ export async function handleCommand(
         if (existingPR) {
           await handleAutofixLoop(existingPR, repo, token, config, undefined, tempDir);
         } else {
-          const newPR = await createAutofixPR(gh, issueNumber, repo, token, config, tempDir);
+          const newPR = await createAutofixPR(
+            gh,
+            issueNumber,
+            repo,
+            token,
+            config,
+            tempDir,
+            gitEnv,
+          );
           if (newPR) {
             await handleAutofixLoop(newPR, repo, token, config, undefined, tempDir);
           }
@@ -125,11 +134,16 @@ async function createAutofixPR(
   token: string,
   config: AgentConfig,
   tempDir: string,
+  gitEnv?: Record<string, string>,
 ): Promise<number | null> {
   const logger = new Logger('Command', { repo, prNumber: issueNumber });
   logger.info(`Fix triggered for issue #${issueNumber}`);
 
-  const gitOpts = { stdio: 'pipe' as const, cwd: tempDir };
+  const gitOpts: ExecFileSyncOptions = {
+    stdio: 'pipe',
+    cwd: tempDir,
+    ...(gitEnv ? { env: { ...process.env, ...gitEnv } } : {}),
+  };
   const engine = new ReviewEngine(config, token, repo);
   const branchName = `autofix/issue-${issueNumber}`;
 
