@@ -304,7 +304,7 @@ export class PostgresAdapter implements DbAdapter, LearningRepository {
   async recordQuality(quality: LearningQuality): Promise<void> {
     await this.run(
       `INSERT INTO review_quality (id, pr_number, actionability_score, accuracy_score, coverage_score, consistency_score)
-       VALUES (?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?)`,
       [
         generateId(),
         quality.prNumber,

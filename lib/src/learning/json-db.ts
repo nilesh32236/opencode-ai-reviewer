@@ -246,6 +246,10 @@ export class JsonDatabase implements DatabaseInstance, LearningRepository {
   ): ((params: unknown[], cleanSql: string) => SqlHandlerResult) | null {
     for (const { regex, handler } of this.handlers) {
       if (regex.test(cleanSql)) {
+        const logger = new Logger('JsonDatabase');
+        logger.warn(
+          `Deprecated regex SQL dispatch matched: "${cleanSql.substring(0, 80)}". Use LearningRepository methods instead.`,
+        );
         return handler;
       }
     }
