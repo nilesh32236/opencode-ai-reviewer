@@ -6,15 +6,20 @@ import { emptyResult, parseJsonlFile } from './jsonl-parser.js';
 import type { LearningStore } from './learning/store.js';
 import { MCPManager } from './mcp/client.js';
 import { getGitStatus, runOpenCode } from './opencode.js';
-import { buildAuditPrompt, buildFixPrompt, buildReviewPrompt } from './prompts/builder.js';
+import {
+  buildAuditPrompt,
+  buildFixPrompt,
+  buildReviewPrompt,
+  buildSynthesisPrompt,
+} from './prompts/builder.js';
 import type {
   AgentConfig,
   FixResult,
-  MCPContextEntry,
   PRContext,
   PreviousFindingIteration,
   ReviewIssue,
   ReviewResult,
+  ReviewStrength,
 } from './types/index.js';
 import { GitHubHelper } from './utils/github.js';
 
@@ -47,32 +52,28 @@ export class ReviewEngine {
   }
 
   /**
-   * Run a code review on a pull request.
-   * Enriches context with MCP library docs and learning-store lessons,
-   * builds a review prompt, runs OpenCode CLI, and parses the output.
+   * Review a pull request by splitting changed files into batches and running
+   * concurrent sub-agent reviews with a final synthesis pass.
    *
-   * @param pr - Pull request context (files, diff, metadata).
-   * @param iteration - Optional iteration number for auto-fix cycles.
-   * @param reviewPromptFile - Optional path to a custom review prompt file.
-   * @param reviewPromptExtra - Optional extra text appended to the review prompt.
-   * @param timeoutMinutes - Optional timeout override (defaults to config.timeoutMinutes).
+   * @param pr - Pull request context with changed files.
+   * @param iteration - Optional fix iteration index (0-indexed).
+   * @param promptFile - Optional custom review prompt file path.
+   * @param promptExtra - Optional extra instructions appended to the review prompt.
+   * @param timeoutMinutes - Optional timeout override per run.
+   * @param previousFindings - Optional findings from previous fix iterations.
    * @param workingDirectory - Optional working directory for cloned repo (tempDir).
-   * @returns Parsed review result with verdict, issues, and strengths.
+   * @returns Consolidated ReviewResult with deduplicated findings.
    */
   async reviewPR(
     pr: PRContext,
-    iteration?: number,
-    reviewPromptFile?: string,
-    reviewPromptExtra?: string,
+    _iteration?: number,
+    promptFile?: string,
+    promptExtra?: string,
     timeoutMinutes?: number,
     previousFindings?: PreviousFindingIteration[],
     workingDirectory?: string,
   ): Promise<ReviewResult> {
-    core.info(
-      `Reviewing PR #${pr.number} (${pr.changedFiles.length} files)${iteration !== undefined ? ` (Iteration ${iteration + 1})` : ''}`,
-    );
-
-    const mcpContext: MCPContextEntry[] = [];
+    let mcpDocs = '';
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
       try {
         await this.mcp.connect();
@@ -81,122 +82,168 @@ export class ReviewEngine {
           workingDirectory,
         );
         if (libraries.length > 0) {
-          core.info(`Fetching MCP docs for: ${libraries.join(', ')}`);
-          const docs = await this.mcp.getLibraryDocs(libraries);
-          if (docs) {
-            mcpContext.push({
-              source: 'context7',
-              content: docs,
-              relevance: 0.9,
-            });
-          }
+          mcpDocs = await this.mcp.getLibraryDocs(libraries);
         }
       } catch (err) {
         core.warning(`MCP enrichment skipped: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
-    core.info('Building PR context string');
-    let contextMarkdown = this.buildPRContextString(pr);
+    const workDir = workingDirectory || process.cwd();
+    const batchSize = this.config.batchSize || 3;
+    const files = pr.changedFiles;
+    const prContext = this.buildPRContextString(pr);
+    const baseContext = mcpDocs
+      ? prContext + '\n\n## Library Documentation\n' + mcpDocs
+      : prContext;
 
-    if (previousFindings && previousFindings.length > 0) {
-      const latest = previousFindings[previousFindings.length - 1];
-      if (latest.headSha && latest.headSha !== pr.headSha) {
-        try {
-          core.info(
-            `Computing diff since last review (${latest.headSha.slice(0, 7)}...${pr.headSha.slice(0, 7)})`,
-          );
-          const fixDiff = await this.github.getDiffSince(latest.headSha, pr.headSha);
-          if (fixDiff) {
-            const diffSection = '\n\n## Changes Since Last Review\n```diff\n' + fixDiff + '\n```';
-            if (contextMarkdown.length + diffSection.length < 50_000) {
-              contextMarkdown += diffSection;
-              core.info(`Added diff since last review (${fixDiff.length} bytes)`);
-            } else {
-              core.info('Diff too large to include in context — skipping');
-            }
-          }
-        } catch (err) {
-          core.warning(`Could not compute diff since last review: ${String(err)}`);
-        }
+    // Get relevant lessons from learning store (with caching)
+    let lessons: string[] | undefined;
+    if (this.learningStore) {
+      try {
+        lessons = await this.getRelevantLessons(pr.changedFiles.map((f) => f.path));
+      } catch (err) {
+        core.warning(
+          `Failed to get learning store lessons: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
 
-    const contextSize = Buffer.byteLength(contextMarkdown, 'utf-8');
-    core.info(`PR context size: ${(contextSize / 1024).toFixed(1)} KB`);
+    // If PR is small enough for a single batch, skip concurrent processing
+    if (files.length <= batchSize) {
+      const prompt = buildReviewPrompt(
+        {
+          projectContext: this.config.projectContext.description || undefined,
+          reviewPromptFile: promptFile,
+          reviewPromptExtra: promptExtra,
+        },
+        baseContext,
+        lessons,
+        previousFindings,
+      );
 
-    const mcpSection =
-      mcpContext.length > 0
-        ? '\n\n## Library Context\n' + mcpContext.map((e) => e.content).join('\n')
-        : '';
+      const runResult = await runOpenCode(prompt, {
+        model: this.config.reviewModel,
+        timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+        workingDirectory: workDir,
+      });
 
-    const store = this.learningStore;
-    const lessons = store
-      ? await (async () => {
-          try {
-            const now = Date.now();
-            if (
-              this.lessonsCache &&
-              now - this.lessonsCache.timestamp < ReviewEngine.LESSONS_CACHE_TTL
-            ) {
-              return this.lessonsCache.lessons;
-            }
-            const result = await store.getRelevantLessons(pr.changedFiles.map((f) => f.path));
-            this.lessonsCache = { lessons: result, timestamp: now };
-            return result;
-          } catch {
-            core.warning('Failed to fetch relevant lessons, defaulting to empty array');
-            return [];
-          }
-        })()
-      : [];
+      if (!runResult.success) {
+        core.warning('OpenCode review execution failed, returning fallback empty result');
+        const r = emptyResult();
+        r.verdict.reasoning = 'Review execution failed';
+        return r;
+      }
 
-    const autoFixExtra =
-      iteration !== undefined
-        ? `This is review iteration ${iteration + 1} of autofix. If this is the final check, verify carefully that no regressions or new bugs were introduced, and that the code compiles/passes all checks. Only set "ready" to true if you are confident it is production-ready.`
-        : undefined;
-    const combinedExtra =
-      [reviewPromptExtra, autoFixExtra].filter(Boolean).join('\n\n') || undefined;
-
-    const prompt = buildReviewPrompt(
-      {
-        projectContext: this.config.projectContext.description || undefined,
-        maxFilesPerBatch: this.config.batchSize,
-        reviewPromptFile,
-        reviewPromptExtra: combinedExtra,
-      },
-      contextMarkdown + mcpSection,
-      lessons,
-      previousFindings,
-    );
-
-    const promptSize = Buffer.byteLength(prompt, 'utf-8');
-    core.info(`Total prompt size: ${(promptSize / 1024).toFixed(1)} KB`);
-
-    core.info(`Running OpenCode review (model: ${this.config.reviewModel})`);
-    const runResult = await runOpenCode(prompt, {
-      model: this.config.reviewModel,
-      timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
-      workingDirectory,
-    });
-    if (!runResult.success) {
-      core.warning('OpenCode review execution failed, returning fallback result');
-      const r = emptyResult();
-      r.verdict.reasoning = 'Review execution failed';
-      return r;
+      const outputPath = path.join(workDir, '.opencode', 'review-output.jsonl');
+      try {
+        return await parseJsonlFile(outputPath);
+      } catch {
+        core.warning(`Failed to parse review output at ${outputPath}, returning empty result`);
+        const r = emptyResult();
+        r.verdict.reasoning = 'Failed to parse review output';
+        return r;
+      }
     }
 
-    core.info('Parsing review output');
+    // Split files into batches for concurrent processing
+    const fileBatches: Array<(typeof files)[number][]> = [];
+    for (let i = 0; i < files.length; i += batchSize) {
+      fileBatches.push(files.slice(i, i + batchSize));
+    }
+
+    const batchPromises = fileBatches.map(async (batch, idx) => {
+      const batchDir = path.join(workDir, `.opencode`, `batch-${idx}`);
+      const batchPR = { ...pr, changedFiles: batch };
+      const batchContext = this.buildPRContextString(batchPR);
+      const context = mcpDocs
+        ? batchContext + '\n\n## Library Documentation\n' + mcpDocs
+        : batchContext;
+
+      const prompt = buildReviewPrompt(
+        {
+          projectContext: this.config.projectContext.description || undefined,
+          reviewPromptFile: promptFile,
+          reviewPromptExtra: promptExtra,
+        },
+        context,
+        lessons,
+        previousFindings,
+      );
+
+      const runResult = await runOpenCode(prompt, {
+        model: this.config.reviewModel,
+        timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+        workingDirectory: batchDir,
+      });
+
+      if (!runResult.success) {
+        core.warning(`Batch ${idx} review execution failed, returning empty result`);
+        return emptyResult();
+      }
+
+      const outputPath = path.join(batchDir, '.opencode', 'review-output.jsonl');
+      try {
+        return await parseJsonlFile(outputPath);
+      } catch {
+        core.warning(`Failed to parse batch ${idx} review output, returning empty result`);
+        return emptyResult();
+      }
+    });
+
+    const batchResults = await Promise.all(batchPromises);
+
+    // Collate findings from all batches
+    const allIssues: ReviewIssue[] = [];
+    const allStrengths: ReviewStrength[] = [];
+    const allRawLines: string[] = [];
+    let totalFailedLines = 0;
+
+    for (const br of batchResults) {
+      allIssues.push(...br.issues);
+      allStrengths.push(...br.strengths);
+      if (br.rawLines) allRawLines.push(...br.rawLines);
+      totalFailedLines += br.failedLines || 0;
+    }
+
+    // Build synthesis payload from collated batch raw lines
+    const findingsJsonl = allRawLines.join('\n');
+    const synthesisPrompt = buildSynthesisPrompt(
+      { projectContext: this.config.projectContext.description || undefined },
+      findingsJsonl,
+    );
+
+    const synthesisResult = await runOpenCode(synthesisPrompt, {
+      model: this.config.reviewModel,
+      timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+      workingDirectory: workDir,
+    });
+
+    if (!synthesisResult.success) {
+      core.warning('Synthesis pass failed, falling back to merged batch results');
+      return this.buildFallbackResult(
+        allIssues,
+        allStrengths,
+        allRawLines,
+        totalFailedLines,
+        fileBatches,
+        'Synthesis failed, using merged batch results',
+      );
+    }
+
+    const finalOutputPath = path.join(workDir, '.opencode', 'review-output.jsonl');
     try {
-      const reviewOutputPath = workingDirectory
-        ? path.join(workingDirectory, '.opencode/review-output.jsonl')
-        : '.opencode/review-output.jsonl';
-      return await parseJsonlFile(reviewOutputPath);
+      return await parseJsonlFile(finalOutputPath);
     } catch {
-      core.warning('Failed to parse review output, returning empty result');
-      const r = emptyResult();
-      r.verdict.reasoning = 'Failed to parse review output';
-      return r;
+      core.warning('Synthesis output parse failed, falling back to merged batch results');
+      return this.buildFallbackResult(
+        allIssues,
+        allStrengths,
+        allRawLines,
+        totalFailedLines,
+        fileBatches,
+        'Synthesis output parse failed, using merged batch results',
+      );
     }
   }
 
@@ -423,6 +470,49 @@ export class ReviewEngine {
     }
   }
 
+  private async getRelevantLessons(filePaths: string[]): Promise<string[]> {
+    const now = Date.now();
+    if (this.lessonsCache && now - this.lessonsCache.timestamp < ReviewEngine.LESSONS_CACHE_TTL) {
+      return this.lessonsCache.lessons;
+    }
+    if (!this.learningStore) return [];
+    const lessons = await this.learningStore.getRelevantLessons(filePaths);
+    this.lessonsCache = { lessons, timestamp: now };
+    return lessons;
+  }
+
+  private buildFallbackResult(
+    allIssues: ReviewIssue[],
+    allStrengths: ReviewStrength[],
+    allRawLines: string[],
+    totalFailedLines: number,
+    fileBatches: Array<PRContext['changedFiles']>,
+    reasoning: string,
+  ): ReviewResult {
+    return {
+      summary:
+        allIssues.length > 0
+          ? `Found ${allIssues.length} issues across ${fileBatches.length} batches`
+          : 'No issues found',
+      verdict: {
+        ready: allIssues.length === 0,
+        reasoning,
+        autoFixable: false,
+        confidence: 'medium' as const,
+      },
+      strengths: allStrengths,
+      issues: allIssues,
+      stats: {
+        total: allIssues.length,
+        critical: allIssues.filter((i) => i.severity === 'critical').length,
+        important: allIssues.filter((i) => i.severity === 'important').length,
+        minor: allIssues.filter((i) => i.severity === 'minor').length,
+      },
+      rawLines: allRawLines,
+      failedLines: totalFailedLines,
+    };
+  }
+
   private buildPRContextString(pr: PRContext): string {
     const parts: string[] = [];
     const maxLines = this.config.maxLinesPerFile;
@@ -456,7 +546,7 @@ export class ReviewEngine {
     );
     if (totalDiffLines > maxLines && maxLines > 0) {
       parts.push(
-        `> Total diff: ~${totalDiffLines} lines across ${pr.changedFiles.length} files. For large changes, read each file individually using the \`read\` tool and dispatch sub-agents to review batches of files.`,
+        `> Total diff: ~${totalDiffLines} lines across ${pr.changedFiles.length} files. For large changes, read each file individually using the \`read\` tool.`,
       );
     }
 
