@@ -358,10 +358,13 @@ describe('MCPManager', () => {
       expect(result.entries).toHaveLength(1);
     });
 
-    it('calls a context tool', async () => {
-      const manager = await createConnectedManager([makeConfig()], () => {
-        mockListTools.mockResolvedValue({ tools: [{ name: 'get-context' }] });
-      });
+    it('calls a context tool when allowedTools includes context', async () => {
+      const manager = await createConnectedManager(
+        [makeConfig({ allowedTools: ['resolve', 'search', 'context'] })],
+        () => {
+          mockListTools.mockResolvedValue({ tools: [{ name: 'get-context' }] });
+        },
+      );
       mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'context data' }] });
 
       const result = await manager.queryContext('context');
@@ -399,6 +402,55 @@ describe('MCPManager', () => {
 
       const result = await manager.queryContext('test');
 
+      expect(result.entries).toHaveLength(0);
+    });
+
+    // ─── Tool Whitelisting ──────────────────────────────────
+
+    it('respects allowedTools config allowing the tool', async () => {
+      const manager = await createConnectedManager([
+        makeConfig({ allowedTools: ['search', 'resolve'] }),
+      ]);
+      mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'allowed' }] });
+
+      const result = await manager.queryContext('find');
+
+      expect(mockCallTool).toHaveBeenCalled();
+      expect(result.entries).toHaveLength(1);
+    });
+
+    it('blocks tool not in allowedTools config', async () => {
+      const manager = await createConnectedManager([
+        makeConfig({ allowedTools: ['resolve-only'] }),
+      ]);
+      mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'should not run' }] });
+
+      const result = await manager.queryContext('find');
+
+      expect(mockCallTool).not.toHaveBeenCalled();
+      expect(result.entries).toHaveLength(0);
+    });
+
+    it('defaults to safe set (resolve, search) when allowedTools is unset', async () => {
+      const manager = await createConnectedManager([makeConfig()], () => {
+        mockListTools.mockResolvedValue({ tools: [{ name: 'resolve' }] });
+      });
+      mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'default allowed' }] });
+
+      const result = await manager.queryContext('find');
+
+      expect(mockCallTool).toHaveBeenCalled();
+      expect(result.entries).toHaveLength(1);
+    });
+
+    it('blocks "context" tool by default when allowedTools is unset', async () => {
+      const manager = await createConnectedManager([makeConfig()], () => {
+        mockListTools.mockResolvedValue({ tools: [{ name: 'get-context' }] });
+      });
+
+      const result = await manager.queryContext('find');
+
+      expect(mockCallTool).not.toHaveBeenCalled();
       expect(result.entries).toHaveLength(0);
     });
   });
@@ -474,6 +526,46 @@ describe('MCPManager', () => {
       const result = await manager.getLibraryDocs(['react']);
 
       expect(result).toBe('');
+    });
+
+    it('respects allowedTools in getLibraryDocs allowing the tool', async () => {
+      const manager = await createConnectedManager(
+        [
+          makeConfig({
+            name: 'context7',
+            command: ['node', 'c7.mjs'],
+            allowedTools: ['resolve'],
+          }),
+        ],
+        () => {
+          mockListTools.mockResolvedValue({ tools: [{ name: 'resolve' }] });
+        },
+      );
+      mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'React docs' }] });
+
+      const result = await manager.getLibraryDocs(['react']);
+
+      expect(result).toContain('React docs');
+    });
+
+    it('blocks tool not in allowedTools in getLibraryDocs', async () => {
+      const manager = await createConnectedManager(
+        [
+          makeConfig({
+            name: 'context7',
+            command: ['node', 'c7.mjs'],
+            allowedTools: ['search-only'],
+          }),
+        ],
+        () => {
+          mockListTools.mockResolvedValue({ tools: [{ name: 'resolve' }] });
+        },
+      );
+
+      const result = await manager.getLibraryDocs(['react']);
+
+      expect(result).toBe('');
+      expect(mockCallTool).not.toHaveBeenCalled();
     });
   });
 });
