@@ -161,10 +161,9 @@ export class MCPManager {
           toolsList = tools.tools;
           this.toolsCache.set(name, toolsList);
         }
-        const searchTool = toolsList.find(
-          (t) =>
-            t.name.includes('search') || t.name.includes('resolve') || t.name.includes('context'),
-        );
+        const serverConfig = this.servers.find((s) => s.name === name);
+        const allowedPatterns = serverConfig?.allowedTools ?? ['resolve', 'search'];
+        const searchTool = toolsList.find((t) => allowedPatterns.some((p) => t.name.includes(p)));
 
         if (searchTool) {
           const result = await withRetry(
@@ -216,7 +215,9 @@ export class MCPManager {
           toolsList = tools.tools;
           this.toolsCache.set('context7', toolsList);
         }
-        const resolveTool = toolsList.find((t) => t.name.includes('resolve'));
+        const serverConfig = this.servers.find((s) => s.name === 'context7');
+        const allowedPatterns = serverConfig?.allowedTools ?? ['resolve', 'search'];
+        const resolveTool = toolsList.find((t) => allowedPatterns.some((p) => t.name.includes(p)));
 
         if (resolveTool) {
           const result = await withRetry(

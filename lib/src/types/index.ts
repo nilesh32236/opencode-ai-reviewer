@@ -125,6 +125,8 @@ export interface MCPServerConfig {
   environment?: Record<string, string>;
   /** Connection timeout in milliseconds (default: 5000) */
   timeoutMs?: number;
+  /** Whitelist of allowed tool name patterns. Defaults to ['resolve', 'search'] if unset */
+  allowedTools?: string[];
 }
 
 export interface ProjectContextConfig {
