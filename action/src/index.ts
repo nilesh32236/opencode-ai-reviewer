@@ -98,6 +98,7 @@ async function run(): Promise<void> {
 
   try {
     inputs = parseInputs();
+    stateDir = path.resolve(process.cwd(), inputs.stateCacheDir);
     const loadedConfig = loadConfig();
 
     if (loadedConfig?.fix?.checkAllowlist?.length) {
@@ -107,7 +108,6 @@ async function run(): Promise<void> {
     const repo =
       core.getInput('repo') || `${github.context.repo.owner}/${github.context.repo.repo}`;
     const token = inputs.githubToken;
-    stateDir = path.resolve(process.cwd(), inputs.stateCacheDir);
 
     if (inputs.enableStateCache) {
       await restoreStateCache(inputs.stateCacheKey, stateDir);
@@ -264,8 +264,4 @@ async function run(): Promise<void> {
   }
 }
 
-run().catch((err) => {
-  core.setFailed(sanitize(err instanceof Error ? err.message : String(err)));
-  process.exitCode = 1;
-  process.exit(1);
-});
+run();
