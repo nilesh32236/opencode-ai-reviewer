@@ -567,6 +567,17 @@ describe('PostgresAdapter', () => {
     const rows = await adapter.all<{ id: string }>('SELECT id FROM findings');
     expect(rows).toHaveLength(2);
   });
+
+  it('exec translates INSERT OR IGNORE INTO to ON CONFLICT DO NOTHING for Postgres', async () => {
+    const mockQuery = vi.fn().mockResolvedValue({ rowCount: 0, rows: [] });
+    const client = { query: mockQuery, end: vi.fn().mockResolvedValue(undefined) };
+    const adapter = new PostgresAdapter(client);
+
+    await adapter.exec('INSERT OR IGNORE INTO meta_review_counter (id, count) VALUES (1, 0)');
+    expect(mockQuery).toHaveBeenCalledWith(
+      'INSERT INTO meta_review_counter (id, count) VALUES (1, 0) ON CONFLICT DO NOTHING',
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -1,8 +1,10 @@
 import * as fs from 'fs';
 import * as fsPromises from 'node:fs/promises';
 import * as path from 'path';
-import * as core from '@actions/core';
+import type { LearningQuality } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
+import { generateId } from './schema.js';
+import type { FeedbackInput, FindingInput, LearningRepository, PatternInput } from './types.js';
 
 interface FindingRow {
   id: string;
@@ -82,7 +84,7 @@ export interface DatabaseInstance {
 
 type SqlHandlerResult = { changes?: number; rows?: unknown[]; row?: unknown };
 
-export class JsonDatabase implements DatabaseInstance {
+export class JsonDatabase implements DatabaseInstance, LearningRepository {
   public data: {
     findings: FindingRow[];
     feedback: FeedbackRow[];
@@ -244,6 +246,10 @@ export class JsonDatabase implements DatabaseInstance {
   ): ((params: unknown[], cleanSql: string) => SqlHandlerResult) | null {
     for (const { regex, handler } of this.handlers) {
       if (regex.test(cleanSql)) {
+        const logger = new Logger('JsonDatabase');
+        logger.warn(
+          `Deprecated regex SQL dispatch matched: "${cleanSql.substring(0, 80)}". Use LearningRepository methods instead.`,
+        );
         return handler;
       }
     }
@@ -544,7 +550,8 @@ export class JsonDatabase implements DatabaseInstance {
         const content = fs.readFileSync(this.filePath, 'utf-8');
         this.data = JSON.parse(content);
       } catch {
-        core.warning('Failed to parse JSON database, starting with empty data');
+        const logger = new Logger('JsonDatabase');
+        logger.warn('Failed to parse JSON database, starting with empty data');
       }
     }
   }
@@ -571,10 +578,8 @@ export class JsonDatabase implements DatabaseInstance {
 
   pragma(_sql: string): void {}
 
-  exec(sql: string): void {
-    if (sql.includes('CREATE TABLE IF NOT EXISTS')) {
-      return;
-    }
+  exec(_sql: string): Promise<void> {
+    return Promise.resolve();
   }
 
   transaction<T extends (...args: unknown[]) => unknown>(fn: T): T {
@@ -690,5 +695,277 @@ export class JsonDatabase implements DatabaseInstance {
         return result.rows ?? [];
       },
     };
+  }
+
+  // ─── LearningRepository implementation ───────────────────
+
+  async recordFinding(finding: FindingInput): Promise<string> {
+    const id = finding.id || generateId();
+    this.data.findings.push({
+      id,
+      pr_number: finding.prNumber,
+      type: finding.type,
+      severity: finding.severity,
+      file: finding.file,
+      line: finding.line,
+      message: finding.message,
+      suggestion: finding.suggestion,
+      created_at: new Date().toISOString(),
+    });
+    this.save();
+    return id;
+  }
+
+  async recordFindings(findings: FindingInput[]): Promise<string[]> {
+    if (findings.length === 0) return [];
+    const ids = findings.map(() => generateId());
+    for (let i = 0; i < findings.length; i++) {
+      const f = findings[i];
+      this.data.findings.push({
+        id: ids[i],
+        pr_number: f.prNumber,
+        type: f.type,
+        severity: f.severity,
+        file: f.file,
+        line: f.line,
+        message: f.message,
+        suggestion: f.suggestion,
+        created_at: new Date().toISOString(),
+      });
+    }
+    this.save();
+    return ids;
+  }
+
+  async deleteFindings(prNumber: number): Promise<number> {
+    this.data.feedback = this.data.feedback.filter((f) => f.pr_number !== prNumber);
+    const fBefore = this.data.findings.length;
+    this.data.findings = this.data.findings.filter((f) => f.pr_number !== prNumber);
+    const fChanges = fBefore - this.data.findings.length;
+    this.save();
+    return fChanges;
+  }
+
+  async getFindingsByType(type: string, limit = 50): Promise<Array<Record<string, unknown>>> {
+    return [...this.data.findings]
+      .filter((f) => f.type === type)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .slice(0, limit) as unknown as Array<Record<string, unknown>>;
+  }
+
+  async getFindings(prNumber?: number, limit = 100): Promise<Array<Record<string, unknown>>> {
+    let results = [...this.data.findings].sort((a, b) => b.created_at.localeCompare(a.created_at));
+    if (prNumber) {
+      results = results.filter((f) => f.pr_number === prNumber);
+    }
+    return results.slice(0, limit) as unknown as Array<Record<string, unknown>>;
+  }
+
+  async recordFeedback(feedback: FeedbackInput): Promise<void> {
+    this.data.feedback.push({
+      id: generateId(),
+      finding_id: feedback.findingId,
+      signal_type: feedback.signalType,
+      signal_value: feedback.signalValue,
+      pr_number: feedback.prNumber,
+      created_at: new Date().toISOString(),
+    });
+    this.save();
+  }
+
+  async recordFeedbackBatch(feedbacks: FeedbackInput[]): Promise<void> {
+    if (feedbacks.length === 0) return;
+    for (const fb of feedbacks) {
+      this.data.feedback.push({
+        id: generateId(),
+        finding_id: fb.findingId,
+        signal_type: fb.signalType,
+        signal_value: fb.signalValue,
+        pr_number: fb.prNumber,
+        created_at: new Date().toISOString(),
+      });
+    }
+    this.save();
+  }
+
+  async getFindingMessages(limit = 100): Promise<Array<{ message: string; file?: string }>> {
+    return [...this.data.findings]
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .slice(0, limit)
+      .map((f) => ({ message: f.message, file: f.file }));
+  }
+
+  async getFalsePositiveRate(): Promise<number> {
+    const total = this.data.feedback.length;
+    if (total === 0) return 0;
+    const disputed = this.data.feedback.filter((f) =>
+      ['dismissed', 'disputed_comment'].includes(f.signal_type),
+    ).length;
+    return disputed / total;
+  }
+
+  async getRelevantLessons(filePaths: string[]): Promise<string[]> {
+    const extensions = [
+      ...new Set(
+        filePaths.map((f) => {
+          const ext = f.split('.').pop();
+          return ext ? `.${ext}` : '';
+        }),
+      ),
+    ].filter(Boolean);
+
+    const lessons: string[] = [];
+    for (const rule of this.data.custom_rules) {
+      if (rule.status === 'active') {
+        lessons.push(rule.rule_text);
+      }
+    }
+    for (const po of this.data.prompt_overrides) {
+      if (po.category === 'general') {
+        lessons.push(po.override_text);
+      }
+    }
+    if (extensions.length > 0) {
+      for (const po of this.data.prompt_overrides) {
+        if (extensions.includes(po.category)) {
+          lessons.push(po.override_text);
+        }
+      }
+    }
+    return lessons;
+  }
+
+  async recordQuality(quality: LearningQuality): Promise<void> {
+    this.data.review_quality.push({
+      id: generateId(),
+      pr_number: quality.prNumber,
+      actionability_score: quality.actionabilityScore,
+      accuracy_score: quality.accuracyScore,
+      coverage_score: quality.coverageScore,
+      consistency_score: quality.consistencyScore,
+      created_at: new Date().toISOString(),
+    });
+    this.save();
+  }
+
+  async getQualityTrends(limit = 20): Promise<Array<Record<string, unknown>>> {
+    return [...this.data.review_quality]
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .slice(0, limit) as unknown as Array<Record<string, unknown>>;
+  }
+
+  async incrementAndCheckMetaReviewInterval(interval: number): Promise<boolean> {
+    const entry = this.data.meta_review_counter.find((x) => x.id === 1);
+    if (!entry) return false;
+    entry.count += 1;
+    this.save();
+    return entry.count % interval === 0;
+  }
+
+  async recordPattern(pattern: PatternInput): Promise<void> {
+    const existing = this.data.patterns.find((p) => p.pattern_key === pattern.patternKey);
+    if (existing) {
+      existing.frequency += 1;
+      existing.last_seen = new Date().toISOString();
+      existing.file_types = pattern.fileTypes.join(',');
+    } else {
+      this.data.patterns.push({
+        id: generateId(),
+        pattern_key: pattern.patternKey,
+        message_cluster: JSON.stringify(pattern.messageCluster),
+        frequency: pattern.frequency,
+        file_types: pattern.fileTypes.join(','),
+        first_seen: new Date().toISOString(),
+        last_seen: new Date().toISOString(),
+      });
+    }
+    this.save();
+  }
+
+  async recordPatterns(patterns: PatternInput[]): Promise<void> {
+    if (patterns.length === 0) return;
+    for (const pattern of patterns) {
+      const existing = this.data.patterns.find((p) => p.pattern_key === pattern.patternKey);
+      if (existing) {
+        existing.frequency += 1;
+        existing.last_seen = new Date().toISOString();
+        existing.file_types = pattern.fileTypes.join(',');
+      } else {
+        this.data.patterns.push({
+          id: generateId(),
+          pattern_key: pattern.patternKey,
+          message_cluster: JSON.stringify(pattern.messageCluster),
+          frequency: pattern.frequency,
+          file_types: pattern.fileTypes.join(','),
+          first_seen: new Date().toISOString(),
+          last_seen: new Date().toISOString(),
+        });
+      }
+    }
+    this.save();
+  }
+
+  async getPatterns(minFrequency = 3): Promise<Array<Record<string, unknown>>> {
+    return [...this.data.patterns]
+      .filter((p) => p.frequency >= minFrequency)
+      .sort((a, b) => b.frequency - a.frequency) as unknown as Array<Record<string, unknown>>;
+  }
+
+  async addCustomRule(ruleText: string, source: 'auto' | 'manual'): Promise<string> {
+    const id = generateId();
+    this.data.custom_rules.push({
+      id,
+      rule_text: ruleText,
+      source,
+      status: 'pending',
+    });
+    this.save();
+    return id;
+  }
+
+  async getPendingRules(): Promise<Array<Record<string, unknown>>> {
+    return this.data.custom_rules.filter((r) => r.status === 'pending') as unknown as Array<
+      Record<string, unknown>
+    >;
+  }
+
+  async approveRule(ruleId: string): Promise<void> {
+    const entry = this.data.custom_rules.find((x) => x.id === ruleId);
+    if (entry) {
+      entry.status = 'active';
+      entry.approved_at = new Date().toISOString();
+      this.save();
+    }
+  }
+
+  async declineRule(ruleId: string): Promise<void> {
+    const entry = this.data.custom_rules.find((x) => x.id === ruleId);
+    if (entry) {
+      entry.status = 'declined';
+      this.save();
+    }
+  }
+
+  async addPromptOverride(
+    category: string,
+    overrideText: string,
+    fpRateBefore: number,
+  ): Promise<void> {
+    this.data.prompt_overrides.push({
+      id: generateId(),
+      category,
+      override_text: overrideText,
+      false_positive_rate_before: fpRateBefore,
+      created_at: new Date().toISOString(),
+    });
+    this.save();
+  }
+
+  async resetCounter(): Promise<void> {
+    const entry = this.data.meta_review_counter.find((x) => x.id === 1);
+    if (entry) {
+      entry.count = 0;
+      this.save();
+    }
   }
 }

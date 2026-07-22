@@ -1,7 +1,9 @@
 import type { LearningFeedback, LearningQuality } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
-import { type DbAdapter, connectDb, sanitizeDbError } from './db.js';
-import { applyMigrations, generateId, getDbPath } from './schema.js';
+import { withRetry } from '../utils/retry.js';
+import { connectDb } from './db.js';
+import { applyMigrations, getDbPath } from './schema.js';
+import type { LearningRepository } from './types.js';
 
 /**
  * Persistent storage for review findings, feedback signals, quality metrics,
@@ -11,7 +13,7 @@ import { applyMigrations, generateId, getDbPath } from './schema.js';
  * Connection is established lazily on the first operation.
  */
 export class LearningStore {
-  private dbPromise: Promise<DbAdapter>;
+  private repoPromise: Promise<LearningRepository>;
 
   /**
    * @param dbPathOrUrl - Database path or connection URL.
@@ -19,36 +21,25 @@ export class LearningStore {
    *                      Retries connection up to 3 times with 1s backoff between attempts.
    */
   constructor(dbPathOrUrl?: string) {
-    this.dbPromise = (async () => {
+    this.repoPromise = (async () => {
       const target = process.env.DATABASE_URL || dbPathOrUrl || getDbPath();
-      const maxRetries = 3;
-      let db: DbAdapter | undefined;
-      const errors: string[] = [];
-      for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-          db = await connectDb(target);
-          await applyMigrations(db);
-          return db;
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          errors.push(msg);
-          if (db) {
-            try {
-              await db.close();
-            } catch {
-              /* cleanup best-effort */
-            }
-            db = undefined;
+      return withRetry(
+        async () => {
+          const repo = await connectDb(target);
+          try {
+            await applyMigrations(repo);
+            return repo;
+          } catch (err) {
+            await repo.close().catch(() => {});
+            throw err;
           }
-          if (attempt === maxRetries) throw err;
-          const connLogger = new Logger('LearningStore');
-          connLogger.warn(
-            `DB connection attempt ${attempt} failed, retrying: ${sanitizeDbError(err)}`,
-          );
-          await new Promise((r) => setTimeout(r, 1000 * attempt));
-        }
-      }
-      throw new Error('Failed to connect to database after retries: ' + errors.join('; '));
+        },
+        {
+          maxRetries: 3,
+          baseDelayMs: 1000,
+          operationName: 'LearningStore',
+        },
+      );
     })();
   }
 
@@ -56,8 +47,8 @@ export class LearningStore {
    * Close the database connection.
    */
   async close(): Promise<void> {
-    const db = await this.dbPromise;
-    await db.close();
+    const repo = await this.repoPromise;
+    await repo.close();
   }
 
   /**
@@ -77,23 +68,8 @@ export class LearningStore {
     message: string;
     suggestion?: string;
   }): Promise<string> {
-    const db = await this.dbPromise;
-    const id = finding.id || generateId();
-    await db.run(
-      `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        id,
-        finding.prNumber,
-        finding.type,
-        finding.severity || null,
-        finding.file || null,
-        finding.line || null,
-        finding.message,
-        finding.suggestion || null,
-      ],
-    );
-    return id;
+    const repo = await this.repoPromise;
+    return repo.recordFinding(finding);
   }
 
   /**
@@ -105,6 +81,7 @@ export class LearningStore {
    */
   async recordFindings(
     findings: Array<{
+      id?: string;
       prNumber: number;
       type: string;
       severity?: string;
@@ -115,26 +92,8 @@ export class LearningStore {
     }>,
   ): Promise<string[]> {
     if (findings.length === 0) return [];
-    const db = await this.dbPromise;
-    return db.transaction(async () => {
-      const ids = findings.map(() => generateId());
-      const placeholders = findings.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
-      const values = findings.flatMap((f, i) => [
-        ids[i],
-        f.prNumber,
-        f.type,
-        f.severity || null,
-        f.file || null,
-        f.line || null,
-        f.message,
-        f.suggestion || null,
-      ]);
-      await db.run(
-        `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion) VALUES ${placeholders}`,
-        values,
-      );
-      return ids;
-    });
+    const repo = await this.repoPromise;
+    return repo.recordFindings(findings);
   }
 
   /**
@@ -144,12 +103,8 @@ export class LearningStore {
    * @returns Number of deleted finding rows.
    */
   async deleteFindings(prNumber: number): Promise<number> {
-    const db = await this.dbPromise;
-    return db.transaction(async () => {
-      await db.run('DELETE FROM feedback WHERE pr_number = ?', [prNumber]);
-      const result = await db.run('DELETE FROM findings WHERE pr_number = ?', [prNumber]);
-      return result.changes;
-    });
+    const repo = await this.repoPromise;
+    return repo.deleteFindings(prNumber);
   }
 
   /**
@@ -160,11 +115,8 @@ export class LearningStore {
    * @returns Array of finding rows.
    */
   async getFindingsByType(type: string, limit = 50): Promise<Array<Record<string, unknown>>> {
-    const db = await this.dbPromise;
-    return db.all('SELECT * FROM findings WHERE type = ? ORDER BY created_at DESC LIMIT ?', [
-      type,
-      limit,
-    ]);
+    const repo = await this.repoPromise;
+    return repo.getFindingsByType(type, limit);
   }
 
   /**
@@ -175,14 +127,8 @@ export class LearningStore {
    * @returns Array of finding rows.
    */
   async getFindings(prNumber?: number, limit = 100): Promise<Array<Record<string, unknown>>> {
-    const db = await this.dbPromise;
-    if (prNumber) {
-      return db.all('SELECT * FROM findings WHERE pr_number = ? ORDER BY created_at DESC LIMIT ?', [
-        prNumber,
-        limit,
-      ]);
-    }
-    return db.all('SELECT * FROM findings ORDER BY created_at DESC LIMIT ?', [limit]);
+    const repo = await this.repoPromise;
+    return repo.getFindings(prNumber, limit);
   }
 
   /**
@@ -198,18 +144,8 @@ export class LearningStore {
     prNumber: number;
   }): Promise<void> {
     try {
-      const db = await this.dbPromise;
-      await db.run(
-        `INSERT INTO feedback (id, finding_id, signal_type, signal_value, pr_number)
-         VALUES (?, ?, ?, ?, ?)`,
-        [
-          generateId(),
-          feedback.findingId,
-          feedback.signalType,
-          feedback.signalValue,
-          feedback.prNumber,
-        ],
-      );
+      const repo = await this.repoPromise;
+      await repo.recordFeedback(feedback);
     } catch (err) {
       const logger = new Logger('LearningStore');
       logger.warn('Failed to record feedback', err);
@@ -230,21 +166,8 @@ export class LearningStore {
     }>,
   ): Promise<void> {
     if (feedbacks.length === 0) return;
-    const db = await this.dbPromise;
-    await db.transaction(async () => {
-      const placeholders = feedbacks.map(() => '(?, ?, ?, ?, ?)').join(', ');
-      const values = feedbacks.flatMap((fb) => [
-        generateId(),
-        fb.findingId,
-        fb.signalType,
-        fb.signalValue,
-        fb.prNumber,
-      ]);
-      await db.run(
-        `INSERT INTO feedback (id, finding_id, signal_type, signal_value, pr_number) VALUES ${placeholders}`,
-        values,
-      );
-    });
+    const repo = await this.repoPromise;
+    await repo.recordFeedbackBatch(feedbacks);
   }
 
   /**
@@ -254,11 +177,8 @@ export class LearningStore {
    * @returns Array of objects with message text and optional file path.
    */
   async getFindingMessages(limit = 100): Promise<Array<{ message: string; file?: string }>> {
-    const db = await this.dbPromise;
-    return db.all<{ message: string; file: string }>(
-      'SELECT message, file FROM findings ORDER BY created_at DESC LIMIT ?',
-      [limit],
-    );
+    const repo = await this.repoPromise;
+    return repo.getFindingMessages(limit);
   }
 
   /**
@@ -268,16 +188,8 @@ export class LearningStore {
    * @returns A number between 0 and 1 representing the FP rate.
    */
   async getFalsePositiveRate(): Promise<number> {
-    const db = await this.dbPromise;
-    const [total, disputed] = await Promise.all([
-      db.get<{ count: number }>('SELECT COUNT(*) as count FROM feedback'),
-      db.get<{ count: number }>(
-        "SELECT COUNT(*) as count FROM feedback WHERE signal_type IN ('dismissed', 'disputed_comment')",
-      ),
-    ]);
-    if (!total || total.count === 0) return 0;
-    if (!disputed) return 0;
-    return disputed.count / total.count;
+    const repo = await this.repoPromise;
+    return repo.getFalsePositiveRate();
   }
 
   /**
@@ -289,50 +201,8 @@ export class LearningStore {
    */
   async getRelevantLessons(filePaths: string[]): Promise<string[]> {
     try {
-      const db = await this.dbPromise;
-
-      const extensions = [
-        ...new Set(
-          filePaths.map((f) => {
-            const ext = f.split('.').pop();
-            return ext ? `.${ext}` : '';
-          }),
-        ),
-      ].filter(Boolean);
-
-      const queries: Promise<unknown[]>[] = [
-        db
-          .all<{ rule_text: string }>("SELECT rule_text FROM custom_rules WHERE status = 'active'")
-          .catch(() => []),
-        db
-          .all<{ override_text: string }>(
-            "SELECT override_text FROM prompt_overrides WHERE category = 'general'",
-          )
-          .catch(() => []),
-      ];
-
-      if (extensions.length > 0) {
-        const placeholders = extensions.map(() => '?').join(',');
-        queries.push(
-          db
-            .all<{ override_text: string }>(
-              `SELECT override_text FROM prompt_overrides WHERE category IN (${placeholders})`,
-              extensions,
-            )
-            .catch(() => []),
-        );
-      }
-
-      const results = await Promise.all(queries.map((q) => q.catch(() => [])));
-
-      const lessons: string[] = [];
-      for (const result of results) {
-        for (const item of result as Array<{ rule_text?: string; override_text?: string }>) {
-          lessons.push(item.rule_text || item.override_text || '');
-        }
-      }
-
-      return lessons.filter(Boolean);
+      const repo = await this.repoPromise;
+      return repo.getRelevantLessons(filePaths);
     } catch {
       return [];
     }
@@ -346,19 +216,8 @@ export class LearningStore {
    */
   async recordQuality(quality: LearningQuality): Promise<void> {
     try {
-      const db = await this.dbPromise;
-      await db.run(
-        `INSERT INTO review_quality (id, pr_number, actionability_score, accuracy_score, coverage_score, consistency_score)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [
-          generateId(),
-          quality.prNumber,
-          quality.actionabilityScore,
-          quality.accuracyScore,
-          quality.coverageScore,
-          quality.consistencyScore,
-        ],
-      );
+      const repo = await this.repoPromise;
+      await repo.recordQuality(quality);
     } catch (err) {
       const logger = new Logger('LearningStore');
       logger.warn('Failed to record quality', err);
@@ -372,8 +231,8 @@ export class LearningStore {
    * @returns Array of review_quality rows.
    */
   async getQualityTrends(limit = 20): Promise<Array<Record<string, unknown>>> {
-    const db = await this.dbPromise;
-    return db.all('SELECT * FROM review_quality ORDER BY created_at DESC LIMIT ?', [limit]);
+    const repo = await this.repoPromise;
+    return repo.getQualityTrends(limit);
   }
 
   /**
@@ -383,18 +242,8 @@ export class LearningStore {
    * @returns True if a meta-review should be run.
    */
   async incrementAndCheckMetaReviewInterval(interval: number): Promise<boolean> {
-    const db = await this.dbPromise;
-    return db.transaction(async () => {
-      const row = await db.get<{ count: number }>(
-        'SELECT count FROM meta_review_counter WHERE id = 1',
-      );
-      if (!row) return false;
-
-      const newCount = row.count + 1;
-      await db.run('UPDATE meta_review_counter SET count = ? WHERE id = 1', [newCount]);
-
-      return newCount % interval === 0;
-    });
+    const repo = await this.repoPromise;
+    return repo.incrementAndCheckMetaReviewInterval(interval);
   }
 
   /**
@@ -411,32 +260,8 @@ export class LearningStore {
     frequency: number;
     fileTypes: string[];
   }): Promise<void> {
-    const db = await this.dbPromise;
-    await db.transaction(async () => {
-      const existing = await db.get<{ id: string; frequency: number }>(
-        'SELECT id, frequency FROM patterns WHERE pattern_key = ?',
-        [pattern.patternKey],
-      );
-
-      if (existing) {
-        await db.run(
-          `UPDATE patterns SET frequency = ?, last_seen = CURRENT_TIMESTAMP, file_types = ? WHERE pattern_key = ?`,
-          [existing.frequency + 1, pattern.fileTypes.join(','), pattern.patternKey],
-        );
-      } else {
-        await db.run(
-          `INSERT INTO patterns (id, pattern_key, message_cluster, frequency, file_types, first_seen, last_seen)
-           VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-          [
-            generateId(),
-            pattern.patternKey,
-            JSON.stringify(pattern.messageCluster),
-            pattern.frequency,
-            pattern.fileTypes.join(','),
-          ],
-        );
-      }
-    });
+    const repo = await this.repoPromise;
+    await repo.recordPattern(pattern);
   }
 
   /**
@@ -453,33 +278,8 @@ export class LearningStore {
     }>,
   ): Promise<void> {
     if (patterns.length === 0) return;
-    const db = await this.dbPromise;
-    await db.transaction(async () => {
-      for (const pattern of patterns) {
-        const existing = await db.get<{ id: string; frequency: number }>(
-          'SELECT id, frequency FROM patterns WHERE pattern_key = ?',
-          [pattern.patternKey],
-        );
-        if (existing) {
-          await db.run(
-            `UPDATE patterns SET frequency = ?, last_seen = CURRENT_TIMESTAMP, file_types = ? WHERE pattern_key = ?`,
-            [existing.frequency + 1, pattern.fileTypes.join(','), pattern.patternKey],
-          );
-        } else {
-          await db.run(
-            `INSERT INTO patterns (id, pattern_key, message_cluster, frequency, file_types, first_seen, last_seen)
-             VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-            [
-              generateId(),
-              pattern.patternKey,
-              JSON.stringify(pattern.messageCluster),
-              pattern.frequency,
-              pattern.fileTypes.join(','),
-            ],
-          );
-        }
-      }
-    });
+    const repo = await this.repoPromise;
+    await repo.recordPatterns(patterns);
   }
 
   /**
@@ -489,10 +289,8 @@ export class LearningStore {
    * @returns Array of pattern rows.
    */
   async getPatterns(minFrequency = 3): Promise<Array<Record<string, unknown>>> {
-    const db = await this.dbPromise;
-    return db.all('SELECT * FROM patterns WHERE frequency >= ? ORDER BY frequency DESC', [
-      minFrequency,
-    ]);
+    const repo = await this.repoPromise;
+    return repo.getPatterns(minFrequency);
   }
 
   /**
@@ -503,15 +301,8 @@ export class LearningStore {
    * @returns The generated rule ID.
    */
   async addCustomRule(ruleText: string, source: 'auto' | 'manual'): Promise<string> {
-    const db = await this.dbPromise;
-    const id = generateId();
-    await db.run('INSERT INTO custom_rules (id, rule_text, source, status) VALUES (?, ?, ?, ?)', [
-      id,
-      ruleText,
-      source,
-      'pending',
-    ]);
-    return id;
+    const repo = await this.repoPromise;
+    return repo.addCustomRule(ruleText, source);
   }
 
   /**
@@ -520,8 +311,8 @@ export class LearningStore {
    * @returns Array of pending rule rows.
    */
   async getPendingRules(): Promise<Array<Record<string, unknown>>> {
-    const db = await this.dbPromise;
-    return db.all("SELECT * FROM custom_rules WHERE status = 'pending'");
+    const repo = await this.repoPromise;
+    return repo.getPendingRules();
   }
 
   /**
@@ -530,11 +321,8 @@ export class LearningStore {
    * @param ruleId - ID of the rule to approve.
    */
   async approveRule(ruleId: string): Promise<void> {
-    const db = await this.dbPromise;
-    await db.run(
-      "UPDATE custom_rules SET status = 'active', approved_at = CURRENT_TIMESTAMP WHERE id = ?",
-      [ruleId],
-    );
+    const repo = await this.repoPromise;
+    await repo.approveRule(ruleId);
   }
 
   /**
@@ -543,8 +331,8 @@ export class LearningStore {
    * @param ruleId - ID of the rule to decline.
    */
   async declineRule(ruleId: string): Promise<void> {
-    const db = await this.dbPromise;
-    await db.run("UPDATE custom_rules SET status = 'declined' WHERE id = ?", [ruleId]);
+    const repo = await this.repoPromise;
+    await repo.declineRule(ruleId);
   }
 
   /**
@@ -561,12 +349,8 @@ export class LearningStore {
     fpRateBefore: number,
   ): Promise<void> {
     try {
-      const db = await this.dbPromise;
-      await db.run(
-        `INSERT INTO prompt_overrides (id, category, override_text, false_positive_rate_before)
-         VALUES (?, ?, ?, ?)`,
-        [generateId(), category, overrideText, fpRateBefore],
-      );
+      const repo = await this.repoPromise;
+      await repo.addPromptOverride(category, overrideText, fpRateBefore);
     } catch (err) {
       const logger = new Logger('LearningStore');
       logger.warn('Failed to add prompt override', err);
@@ -577,7 +361,7 @@ export class LearningStore {
    * Reset the meta-review counter to 0.
    */
   async resetCounter(): Promise<void> {
-    const db = await this.dbPromise;
-    await db.run('UPDATE meta_review_counter SET count = 0 WHERE id = 1');
+    const repo = await this.repoPromise;
+    await repo.resetCounter();
   }
 }
