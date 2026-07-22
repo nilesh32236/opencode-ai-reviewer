@@ -364,13 +364,29 @@ export async function handleAutofixLoop(
                 );
 
                 if (retryResult?.changesMade) {
-                  execFileSync('git', ['add', '-A']);
-                  execFileSync('git', [
-                    'commit',
-                    '-m',
-                    `fix: verification errors (attempt ${v + 1})`,
-                  ]);
-                  execFileSync('git', ['push', 'origin', freshPr.headRef]);
+                  const retryCommitMsg = `fix: verification errors (attempt ${v + 1})`;
+                  try {
+                    execFileSync('git', ['add', '-A']);
+                    execFileSync('git', ['commit', '-m', retryCommitMsg]);
+                    execFileSync('git', ['push', 'origin', freshPr.headRef]);
+                    history[history.length - 1].commitMessage = retryCommitMsg;
+                    if (retryResult.filesChanged) {
+                      history[history.length - 1].filesChanged = [
+                        ...(history[history.length - 1].filesChanged ?? []),
+                        ...retryResult.filesChanged.filter(
+                          (f) => !(history[history.length - 1].filesChanged ?? []).includes(f),
+                        ),
+                      ];
+                    }
+                    history[history.length - 1].summary =
+                      (history[history.length - 1].summary ?? '') +
+                      `\n### Verification Retry ${v + 1}\n${retryResult.summary ?? 'Fixed build/verification errors.'}`;
+                  } catch (gitErr) {
+                    logger.warn(
+                      `Git operations failed during verification retry: ${gitErr instanceof Error ? gitErr.message : gitErr}`,
+                    );
+                    break;
+                  }
                 } else {
                   logger.info('Fix agent made no changes to address verification errors');
                   break;
