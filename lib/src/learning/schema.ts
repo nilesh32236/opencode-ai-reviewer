@@ -1,4 +1,5 @@
 import path from 'path';
+import { Logger } from '../utils/logger.js';
 import type { DbAdapter } from './db.js';
 
 const DB_PATH = path.join(process.cwd(), '.opencode', 'learning.db');
@@ -117,7 +118,8 @@ export async function applyMigrations(db: DbAdapter): Promise<void> {
       }
     });
   } catch (err) {
-    console.error(`Migration failed: ${err instanceof Error ? err.message : err}`);
+    const logger = new Logger('LearningStore');
+    logger.error('Migration failed', err);
     throw err;
   }
 }

@@ -1,5 +1,6 @@
 import * as core from '@actions/core';
 import type { GitHubEvent, Subscriber } from '../types/index.js';
+import { Logger } from '../utils/logger.js';
 import type { LearningStore } from './store.js';
 
 const DISPUTE_KEYWORDS = ['false positive', 'not an issue', 'wrong', 'incorrect', 'false alarm'];
@@ -48,9 +49,8 @@ export class FeedbackSubscriber implements Subscriber {
     try {
       findings = await this.store.getFindings(prNumber);
     } catch (err) {
-      console.error(
-        `Failed to get findings for pr ${prNumber}: ${err instanceof Error ? err.message : err}`,
-      );
+      const logger = new Logger('FeedbackSubscriber', { prNumber });
+      logger.error(`Failed to get findings for pr ${prNumber}`, err);
       return;
     }
     if (findings.length === 0) return;
@@ -64,9 +64,8 @@ export class FeedbackSubscriber implements Subscriber {
         })),
       );
     } catch (err) {
-      console.error(
-        `Failed to record feedback batch for pr ${prNumber}: ${err instanceof Error ? err.message : err}`,
-      );
+      const logger = new Logger('FeedbackSubscriber', { prNumber });
+      logger.error(`Failed to record feedback batch for pr ${prNumber}`, err);
     }
   }
 

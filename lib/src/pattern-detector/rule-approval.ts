@@ -1,5 +1,6 @@
 import type { LearningStore } from '../learning/store.js';
 import type { GitHubEvent, Subscriber } from '../types/index.js';
+import { Logger } from '../utils/logger.js';
 
 const APPROVE_RULE_RE = /^\/approve-rule\s+(\S+)/;
 
@@ -21,9 +22,8 @@ export class RuleApprovalSubscriber implements Subscriber {
     try {
       await this.store.approveRule(ruleId);
     } catch (err) {
-      console.error(
-        `Failed to approve rule ${ruleId}: ${err instanceof Error ? err.message : err}`,
-      );
+      const logger = new Logger('RuleApprovalSubscriber');
+      logger.error(`Failed to approve rule ${ruleId}`, err);
     }
   }
 }

@@ -2,6 +2,41 @@ import * as core from '@actions/core';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
+export function sanitizeError(error: unknown): string {
+  const errorStr =
+    error instanceof Error
+      ? error.stack || error.message
+      : typeof error === 'string'
+        ? error
+        : String(error);
+
+  return sanitizeString(errorStr);
+}
+
+/**
+ * Sanitize an error for public-facing output (e.g., PR comments).
+ * Uses only the error message, never the stack trace, to avoid
+ * disclosing internal paths and call frames.
+ */
+export function sanitizeErrorMessage(error: unknown): string {
+  const msg =
+    error instanceof Error ? error.message : typeof error === 'string' ? error : String(error);
+
+  return sanitizeString(msg);
+}
+
+function sanitizeString(input: string): string {
+  return input
+    .replace(/(ghp|github_pat|gho|ghs|ghu)_[a-zA-Z0-9_-]{36,}/g, '[REDACTED_GITHUB_TOKEN]')
+    .replace(/sk-[a-zA-Z0-9-]{48,}/g, '[REDACTED_OPENAI_KEY]')
+    .replace(/sk-ant-[a-zA-Z0-9_-]{40,}/g, '[REDACTED_ANTHROPIC_KEY]')
+    .replace(/x-access-token:[^@]+@/g, 'x-access-token:[REDACTED]@')
+    .replace(
+      /(OPENAI_API_KEY|ANTHROPIC_API_KEY|GEMINI_API_KEY|GITHUB_TOKEN)[=":]+[^&\s'"]+/gi,
+      '$1=[REDACTED]',
+    );
+}
+
 export interface LogContext {
   prNumber?: number;
   repo?: string;
@@ -53,9 +88,11 @@ export class Logger {
     if (LOG_LEVEL_PRIORITY[level] < LOG_LEVEL_PRIORITY[Logger.defaultLevel]) return;
 
     const prefix = this.buildPrefix(level);
-    const fullMessage = data
+    const rawMessage = data
       ? `${prefix} ${message} ${this.formatData(data)}`
       : `${prefix} ${message}`;
+
+    const fullMessage = sanitizeError(rawMessage);
 
     switch (level) {
       case 'debug':

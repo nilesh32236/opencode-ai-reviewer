@@ -9,6 +9,7 @@
  */
 
 import type { MCPServerConfig } from '../types/index.js';
+import { Logger } from '../utils/logger.js';
 
 /**
  * Context7 MCP server — resolves latest library documentation.
@@ -19,7 +20,7 @@ import type { MCPServerConfig } from '../types/index.js';
 export function context7Server(): MCPServerConfig {
   const apiKey = process.env.CONTEXT7_API_KEY || '';
   if (!apiKey) {
-    console.warn('CONTEXT7_API_KEY is empty — MCP server may fail');
+    new Logger('MCPManager').warn('CONTEXT7_API_KEY is empty — MCP server may fail');
   }
   return {
     name: 'context7',
