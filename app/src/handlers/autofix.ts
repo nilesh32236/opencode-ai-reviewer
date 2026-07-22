@@ -1,25 +1,12 @@
-import { execFileSync, execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import type { AgentConfig, FixResult, PRContext, ReviewResult } from '@opencode-pr-agent/lib';
-import { GitHubHelper, Logger, ReviewEngine, configureGit } from '@opencode-pr-agent/lib';
-
-const COMMAND_ALLOWLIST = ['pnpm', 'npm', 'yarn', 'node'];
-
-function validateCommand(command: string): void {
-  const trimmed = command.trim();
-  if (!trimmed) throw new Error('run_checks_after_fix must not be empty');
-  const parts = trimmed.split(/\s+/);
-  const program = parts[0];
-  if (!COMMAND_ALLOWLIST.includes(program)) {
-    throw new Error(
-      `Command "${program}" is not allowed. Allowed programs: ${COMMAND_ALLOWLIST.join(', ')}`,
-    );
-  }
-  for (const arg of parts.slice(1)) {
-    if (/[;&|`$(){}<>\n\r]/.test(arg)) {
-      throw new Error(`Argument "${arg}" contains unsafe shell characters`);
-    }
-  }
-}
+import {
+  GitHubHelper,
+  Logger,
+  ReviewEngine,
+  configureGit,
+  validateRunChecksCommand,
+} from '@opencode-pr-agent/lib';
 
 interface IterationRecord {
   iteration: number;
@@ -329,23 +316,24 @@ export async function handleAutofixLoop(
 
       if (runChecksAfterFix) {
         logger.info('Running verification commands...');
-        const checkCmd = runChecksAfterFix;
+        let parsedCmd: { program: string; args: string[] };
         try {
-          validateCommand(checkCmd);
+          parsedCmd = validateRunChecksCommand(runChecksAfterFix);
         } catch (validationErr) {
           logger.error(
             `Invalid verification command: ${validationErr instanceof Error ? validationErr.message : validationErr}`,
           );
           break;
         }
-        const maxVerificationRetries = 2;
-        for (let v = 0; v <= maxVerificationRetries; v++) {
+        const verificationTimeoutMs = (config.timeoutMinutes ?? 20) * 60 * 1000;
+        const maxVerificationAttempts = 3;
+        for (let v = 0; v < maxVerificationAttempts; v++) {
           let checkOutput = '';
           try {
-            const stdout = execSync(checkCmd, {
+            const stdout = execFileSync(parsedCmd.program, parsedCmd.args, {
               encoding: 'utf-8',
               stdio: 'pipe',
-              timeout: 300_000,
+              timeout: verificationTimeoutMs,
             });
             checkOutput += stdout;
             logger.info('Verification passed');
@@ -355,12 +343,12 @@ export async function handleAutofixLoop(
             const message = err instanceof Error ? err.message : String(err);
             checkOutput += message + '\n' + stderr;
             logger.warn(
-              `Verification failed (attempt ${v + 1}/${maxVerificationRetries + 1}): ${message}`,
+              `Verification failed (attempt ${v + 1}/${maxVerificationAttempts}): ${message}`,
             );
 
-            if (v < maxVerificationRetries) {
+            if (v < maxVerificationAttempts - 1) {
               logger.info(
-                `Feeding verification error to fix engine (retry ${v + 1}/${maxVerificationRetries})...`,
+                `Feeding verification error to fix engine (retry ${v + 1}/${maxVerificationAttempts - 1})...`,
               );
               try {
                 const freshPr = await gh.getPR(prNumber);
@@ -382,7 +370,7 @@ export async function handleAutofixLoop(
                     '-m',
                     `fix: verification errors (attempt ${v + 1})`,
                   ]);
-                  execFileSync('git', ['push', 'origin', pr.headRef]);
+                  execFileSync('git', ['push', 'origin', freshPr.headRef]);
                 } else {
                   logger.info('Fix agent made no changes to address verification errors');
                   break;

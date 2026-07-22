@@ -201,7 +201,7 @@ export function buildFixPrompt(
       : 'Read ALL the review comments above carefully. Focus on:\n1. Issues marked as CRITICAL — these must be fixed\n2. Issues marked as IMPORTANT — these should be fixed\n3. Issues marked as MINOR — fix these if straightforward';
 
   const verificationSection = verificationError
-    ? `\n\n## Verification Error (Previous Attempt Failed)\n\nThe previous fix attempt produced errors during build/check verification. The raw output was:\n\n\`\`\`\n${verificationError}\n\`\`\`\n\nPlease fix these compilation/lint errors in your current attempt. Ensure the code compiles and passes all checks before finishing.\n`
+    ? `\n\n## Verification Error (Previous Attempt Failed)\n\nThe previous fix attempt produced errors during build/check verification. The raw output was:\n\n\`\`\`\n${verificationError}\n\`\`\`\n\nPlease fix these compilation/lint errors in your current attempt. Ensure the code compiles and passes all checks before finishing.`
     : '';
 
   const prompt = `You are a Senior Code Fixer. Fix the issues found during code review.

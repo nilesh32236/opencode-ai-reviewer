@@ -10,7 +10,7 @@ import type {
   ReviewEngine,
   ReviewResult,
 } from '@opencode-pr-agent/lib';
-import { validateRunChecksCommand } from './inputs.js';
+import { validateRunChecksCommand } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 
 export async function runFix(
@@ -62,6 +62,7 @@ export async function runFix(
     changesMade = true;
   }
 
+  let verificationPassed = false;
   if (inputs.runChecksAfterFix && changesMade) {
     core.info('Running verification commands...');
     const { program, args } = validateRunChecksCommand(
@@ -69,16 +70,22 @@ export async function runFix(
       inputs.checkAllowlist,
     );
 
-    const maxVerificationRetries = 2;
-    for (let v = 0; v <= maxVerificationRetries; v++) {
-      const { exitCode, output: checkOutput } = await runVerification(program, args);
+    const verificationTimeoutMs = (inputs.timeoutMinutes ?? 20) * 60 * 1000;
+    const maxVerificationAttempts = 3;
+    for (let v = 0; v < maxVerificationAttempts; v++) {
+      const { exitCode, output: checkOutput } = await runVerification(
+        program,
+        args,
+        verificationTimeoutMs,
+      );
 
       if (exitCode === 0) {
         core.info('Verification passed');
+        verificationPassed = true;
         break;
       }
 
-      if (v < maxVerificationRetries) {
+      if (v < maxVerificationAttempts - 1) {
         core.warning(
           `Verification command failed (exit code ${exitCode}). Retrying fix with error output...`,
         );
@@ -99,7 +106,7 @@ export async function runFix(
           try {
             await exec.exec('git', ['add', '-u']);
             await exec.exec('git', ['commit', '-m', `fix: verification errors (attempt ${v + 1})`]);
-            await exec.exec('git', ['push', 'origin', pr.headRef]);
+            await exec.exec('git', ['push', 'origin', freshPr.headRef]);
           } catch (err) {
             core.warning(
               `Git operations during verification retry failed: ${err instanceof Error ? err.message : err}`,
@@ -108,13 +115,15 @@ export async function runFix(
         }
       } else {
         core.warning(
-          `Verification command failed (exit code ${exitCode}) after all retries — giving up.`,
+          `Verification command failed (exit code ${exitCode}) after all attempts — giving up.`,
         );
       }
     }
   }
 
-  await gh.removeLabel(prNumber, 'autofix:needs-fix');
+  if (!inputs.runChecksAfterFix || verificationPassed) {
+    await gh.removeLabel(prNumber, 'autofix:needs-fix');
+  }
 
   core.setOutput('changes_made', String(changesMade ?? false));
 }
@@ -597,12 +606,6 @@ export async function runAutofixLoop(
       break;
     }
 
-    try {
-      await gh.postOrUpdateComment(prNumber, FIX_MARKER, buildFixBody(history));
-    } catch (err) {
-      core.warning(`Failed to post fix comment: ${err instanceof Error ? err.message : err}`);
-    }
-
     if (inputs.runChecksAfterFix) {
       core.info('Running verification commands...');
       const { program, args } = validateRunChecksCommand(
@@ -610,9 +613,14 @@ export async function runAutofixLoop(
         inputs.checkAllowlist,
       );
 
-      const maxVerificationRetries = 2;
-      for (let v = 0; v <= maxVerificationRetries; v++) {
-        const { exitCode, output: checkOutput } = await runVerification(program, args);
+      const verificationTimeoutMs = (config.timeoutMinutes ?? 20) * 60 * 1000;
+      const maxVerificationAttempts = 3;
+      for (let v = 0; v < maxVerificationAttempts; v++) {
+        const { exitCode, output: checkOutput } = await runVerification(
+          program,
+          args,
+          verificationTimeoutMs,
+        );
 
         if (exitCode === 0) {
           core.info('Verification passed');
@@ -620,12 +628,12 @@ export async function runAutofixLoop(
         }
 
         core.warning(
-          `Verification failed (exit code ${exitCode}) in attempt ${v + 1}/${maxVerificationRetries + 1}. Output length: ${checkOutput.length} bytes`,
+          `Verification failed (exit code ${exitCode}) in attempt ${v + 1}/${maxVerificationAttempts}. Output length: ${checkOutput.length} bytes`,
         );
 
-        if (v < maxVerificationRetries) {
+        if (v < maxVerificationAttempts - 1) {
           core.info(
-            `Feeding verification error to fix engine (retry ${v + 1}/${maxVerificationRetries})...`,
+            `Feeding verification error to fix engine (retry ${v + 1}/${maxVerificationAttempts - 1})...`,
           );
           const prAgain = await gh.getPR(prNumber);
           const freshContextMarkdown = await gh.gatherContext({ prNumber });
@@ -644,10 +652,23 @@ export async function runAutofixLoop(
             break;
           }
 
+          const retryCommitMsg = `fix: verification errors (attempt ${v + 1})`;
           try {
             await exec.exec('git', ['add', '-u']);
-            await exec.exec('git', ['commit', '-m', `fix: verification errors (attempt ${v + 1})`]);
-            await exec.exec('git', ['push', 'origin', pr.headRef]);
+            await exec.exec('git', ['commit', '-m', retryCommitMsg]);
+            await exec.exec('git', ['push', 'origin', prAgain.headRef]);
+            currentEntry.commitMessage = retryCommitMsg;
+            if (retryResult.filesChanged) {
+              currentEntry.filesChanged = [
+                ...(currentEntry.filesChanged ?? []),
+                ...retryResult.filesChanged.filter(
+                  (f) => !(currentEntry.filesChanged ?? []).includes(f),
+                ),
+              ];
+            }
+            currentEntry.fixSummary =
+              (currentEntry.fixSummary ?? '') +
+              `\n### Verification Retry ${v + 1}\n${retryResult.summary ?? 'Fixed build/verification errors.'}`;
           } catch (err) {
             core.warning(
               `Git operations failed during verification retry: ${err instanceof Error ? err.message : err}`,
@@ -656,6 +677,12 @@ export async function runAutofixLoop(
           }
         }
       }
+    }
+
+    try {
+      await gh.postOrUpdateComment(prNumber, FIX_MARKER, buildFixBody(history));
+    } catch (err) {
+      core.warning(`Failed to post fix comment: ${err instanceof Error ? err.message : err}`);
     }
   }
 
@@ -693,9 +720,10 @@ export async function runAutofixLoop(
 async function runVerification(
   program: string,
   args: string[],
+  timeoutMs?: number,
 ): Promise<{ exitCode: number; output: string }> {
   let output = '';
-  const execOptions = {
+  const execOptions: exec.ExecOptions = {
     listeners: {
       stdout: (data: Buffer) => {
         output += data.toString();
@@ -705,6 +733,7 @@ async function runVerification(
       },
     },
     ignoreReturnCode: true,
+    ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}),
   };
   const exitCode = await exec.exec(program, args, execOptions);
   return { exitCode, output };
