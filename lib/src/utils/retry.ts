@@ -1,10 +1,14 @@
 import * as core from '@actions/core';
 
+/** Options for configuring retry behavior in withRetry and withRetryAndTimeout. */
 export interface RetryOptions {
-  /** Total number of attempts (including the first call). E.g. maxRetries: 2 permits 2 total calls and 1 retry. */
+  /** Total number of attempts (including the first call). Default: 3. */
   maxRetries?: number;
+  /** Base delay in ms before first retry. Default: 1000. */
   baseDelayMs?: number;
+  /** Maximum delay cap in ms. Default: 30000. */
   maxDelayMs?: number;
+  /** HTTP status codes that trigger a retry. Default: [429, 500, 502, 503, 504]. */
   retryableStatuses?: number[];
   /** Optional AbortSignal to cancel retry loop mid-flight */
   signal?: AbortSignal;
@@ -56,13 +60,8 @@ function isRetryable(status: number, retryableStatuses: number[]): boolean {
  * - Supports cancellation via AbortSignal
  *
  * @param fn - Async function to retry.
- * @param options.maxRetries - Total attempts including the first call (default: 3).
- * @param options.baseDelayMs - Base delay in ms before first retry (default: 1000).
- * @param options.maxDelayMs - Maximum delay cap in ms (default: 30000).
- * @param options.retryableStatuses - HTTP status codes that trigger a retry.
- * @param options.signal - Optional AbortSignal to cancel the retry loop.
- * @param options.operationName - Optional label for log messages.
- * @param options.retryUnknownStatus - Whether to retry on status=0 errors (default: true).
+ * @param options - Retry configuration (maxRetries, delays, retryable statuses, etc.).
+ * @returns The result of the function on success.
  * @throws The last error encountered once all retries are exhausted.
  */
 export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions = {}): Promise<T> {
@@ -124,7 +123,8 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
  * @param fn - Async function that receives an AbortSignal for the per-attempt timeout.
  * @param timeoutMs - Per-attempt timeout in milliseconds.
  * @param options - Standard retry options forwarded to `withRetry`.
- * @throws The last error encountered once all retries are exhausted, or TimeoutError.
+ * @returns The result of the function on success.
+ * @throws The last error encountered once all retries are exhausted, or a TimeoutError (DOMException).
  */
 export async function withRetryAndTimeout<T>(
   fn: (signal: AbortSignal) => Promise<T>,
