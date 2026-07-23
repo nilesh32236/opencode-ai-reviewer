@@ -444,6 +444,49 @@ export interface AuditResult {
   issueCreated?: number;
 }
 
+// ─── Analyze Result ────────────────────────────────────────
+/** Structured analysis plan for implementing a fix from an issue. */
+export interface AnalysisPlan {
+  /** Issue number being analyzed */
+  issueNumber: number;
+  /** Issue title */
+  issueTitle: string;
+  /** Priority of the fix */
+  priority: 'critical' | 'high' | 'medium' | 'low';
+  /** Brief summary of the analysis */
+  summary: string;
+  /** Files that need to be modified */
+  affectedFiles: string[];
+  /** Step-by-step implementation steps */
+  implementationPlan: string[];
+  /** Optional suggestions or alternatives */
+  suggestions?: string[];
+  /** Questions for the maintainer */
+  questionsForMaintainer?: string[];
+}
+
+/** Result of an issue analysis. */
+export interface AnalyzeResult {
+  /** Issue number */
+  issueNumber: number;
+  /** Issue title */
+  issueTitle: string;
+  /** Priority of the fix */
+  priority: 'critical' | 'high' | 'medium' | 'low';
+  /** Summary of the analysis */
+  summary: string;
+  /** Files that need to be modified */
+  affectedFiles: string[];
+  /** Step-by-step implementation plan */
+  implementationPlan: string[];
+  /** Optional suggestions or alternatives */
+  suggestions?: string[];
+  /** Questions for the maintainer */
+  questionsForMaintainer?: string[];
+  /** Raw markdown of the analysis report */
+  rawMarkdown: string;
+}
+
 // ─── Prompt Template ──────────────────────────────────────
 /** A named prompt template for review/audit generation. */
 export interface PromptTemplate {
@@ -477,7 +520,7 @@ export interface PromptContext {
 
 // ─── Action Mode ──────────────────────────────────────────
 /** Operating mode of the action/app. */
-export type ActionMode = 'review' | 'fix' | 'audit' | 'post';
+export type ActionMode = 'review' | 'fix' | 'audit' | 'post' | 'analyze';
 
 // ─── Issue Details ────────────────────────────────────────
 /** Details of a GitHub issue. */

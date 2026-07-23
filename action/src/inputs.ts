@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import type { ActionMode } from '@opencode-pr-agent/lib';
 
-const VALID_MODES: ActionMode[] = ['review', 'fix', 'audit', 'post'];
+const VALID_MODES: ActionMode[] = ['review', 'fix', 'audit', 'post', 'analyze'];
 
 const DEFAULT_ALLOWLIST = ['pnpm', 'npm', 'yarn', 'node'];
 
