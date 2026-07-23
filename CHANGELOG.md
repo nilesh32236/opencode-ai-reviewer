@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.1.10] — 2026-07-23
+
+
+### Fixed
+
+- address issue #119 (#127) (#119
+#127)
+
+### Changed
+
+- [Autofix] Set Up Automated Docstring Coverage Checker and Enforce 80% Threshold in CI (#122) (#122)
+- [Autofix] [Audit:error-handling-resilience] 1 critical, 7 important, 5 minor (#110) (#110)
+- [Autofix] Issue 12: Add Symbolic Link Guard and Path Traversal Verification to Prompt Loader (#108) (#108)
+
+[v1.1.10]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.1.9...v1.1.10
+
 ## [v1.1.9] — 2026-07-22
 
 
