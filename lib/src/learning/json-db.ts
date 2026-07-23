@@ -68,12 +68,14 @@ interface MetaReviewCounterRow {
   count: number;
 }
 
+/** Prepared statement interface for in-memory JSON operations. */
 export interface Statement {
   run(...params: unknown[]): { changes: number };
   get(...params: unknown[]): unknown;
   all(...params: unknown[]): unknown[];
 }
 
+/** In-memory JSON database instance interface. */
 export interface DatabaseInstance {
   pragma(sql: string): void;
   exec(sql: string): void;
@@ -84,6 +86,14 @@ export interface DatabaseInstance {
 
 type SqlHandlerResult = { changes?: number; rows?: unknown[]; row?: unknown };
 
+/**
+ * In-memory JSON-backed database implementing the LearningRepository interface.
+ * Persists data to disk as JSON. Uses regex-based SQL dispatch for DbAdapter
+ * compatibility and direct method calls for the LearningRepository interface.
+ *
+ * Data is written to disk with a debounced save (100ms) and flushed synchronously
+ * on process exit.
+ */
 export class JsonDatabase implements DatabaseInstance, LearningRepository {
   public data: {
     findings: FindingRow[];

@@ -7,12 +7,23 @@ import type { GitHubEvent, Subscriber } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
 import { buildMetaReviewPrompt } from './prompts.js';
 
+/**
+ * Evaluates the quality of AI code reviews by running a meta-review.
+ * Scores actionability, accuracy, coverage, and consistency, and
+ * optionally triggers pattern discovery and prompt overrides based
+ * on false-positive rates.
+ */
 export class MetaReviewEngine {
   constructor(
     private store: LearningStore,
     private patternDetector?: PatternDetector,
   ) {}
 
+  /**
+   * Execute a meta-review: build the prompt, run the LLM, parse results,
+   * record quality scores, and optionally discover patterns or add prompt
+   * overrides based on false-positive rate.
+   */
   async runMetaReview(context: {
     prNumber: number;
     reviewSummary: string;
@@ -125,6 +136,11 @@ export class MetaReviewEngine {
   }
 }
 
+/**
+ * Subscriber that triggers a meta-review after each review completion.
+ * Uses a configurable interval (every N reviews) to avoid running
+ * meta-review too frequently.
+ */
 export class MetaReviewSubscriber implements Subscriber {
   name = 'MetaReviewSubscriber';
   subscribedEvents = ['review.completed'];
@@ -135,6 +151,10 @@ export class MetaReviewSubscriber implements Subscriber {
     private interval: number,
   ) {}
 
+  /**
+   * Handle the review.completed event — checks the meta-review interval
+   * and triggers runMetaReview if needed.
+   */
   async handle(event: GitHubEvent): Promise<void> {
     try {
       const shouldRun = await this.store.incrementAndCheckMetaReviewInterval(this.interval);

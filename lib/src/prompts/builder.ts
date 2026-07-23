@@ -158,6 +158,18 @@ export function buildReviewPrompt(
   return sections.join('\n');
 }
 
+/**
+ * Build the fix prompt for automated code fixing.
+ * Includes issues to fix sorted by severity, verification errors,
+ * and iteration context for the fix loop.
+ *
+ * @param inputs - Configuration inputs.
+ * @param context - Full context (issue + PR + review comments).
+ * @param iteration - Current fix iteration (0-indexed).
+ * @param issues - Issues to fix, sorted by severity.
+ * @param verificationError - Optional verification error from previous attempt.
+ * @returns The assembled fix prompt string.
+ */
 export function buildFixPrompt(
   inputs: PromptBuilderInputs,
   context: string,
@@ -231,6 +243,16 @@ ${projectContext}
   return prompt;
 }
 
+/**
+ * Build the audit prompt for a specific audit category.
+ * Instructs the LLM to audit a target directory against a category-specific prompt.
+ *
+ * @param inputs - Configuration inputs including project context.
+ * @param categoryPrompt - The category-specific audit prompt text.
+ * @param targetDir - Directory path to audit.
+ * @param category - Audit category name (used for output filename).
+ * @returns The assembled audit prompt string.
+ */
 export function buildAuditPrompt(
   inputs: PromptBuilderInputs,
   categoryPrompt: string,
@@ -269,6 +291,13 @@ After writing the file, you MUST verify that the JSONL file exists, is valid JSO
 {"type":"issue","severity":"critical|important|minor","file":"path","line":N,"message":"what's wrong","suggestion":"how to fix","inline":false}`;
 }
 
+/**
+ * Load a custom prompt file from the workspace directory.
+ * Validates that the file path resolves within the workspace for security.
+ *
+ * @param filePath - Path relative to the workspace root.
+ * @returns The file content, or null if the path is invalid or the file is unreadable.
+ */
 export function loadPromptFile(filePath: string): string | null {
   const workspace = fs.realpathSync(process.cwd());
   const resolved = path.resolve(workspace, filePath);
@@ -287,6 +316,15 @@ export function loadPromptFile(filePath: string): string | null {
   }
 }
 
+/**
+ * Load an audit category prompt from the configured prompts directory.
+ * Searches `.audit-prompts/` and `prompts/audit-categories/` by default.
+ * Rejects symbolic links and paths outside the workspace for security.
+ *
+ * @param category - Category name (corresponds to a `.md` file).
+ * @param promptsDir - Optional custom prompts directory.
+ * @returns The prompt text, or null if not found.
+ */
 export function loadAuditCategoryPrompt(category: string, promptsDir?: string): string | null {
   const workspace = fs.realpathSync(process.cwd());
   const dirs = promptsDir
@@ -316,6 +354,12 @@ export function loadAuditCategoryPrompt(category: string, promptsDir?: string): 
   return null;
 }
 
+/**
+ * List available audit categories by scanning prompts directories for `.md` files.
+ *
+ * @param promptsDir - Optional custom prompts directory.
+ * @returns Sorted array of category names (without `.md` extension).
+ */
 export function listAuditCategories(promptsDir?: string): string[] {
   const workspace = fs.realpathSync(process.cwd());
   const dirs = promptsDir

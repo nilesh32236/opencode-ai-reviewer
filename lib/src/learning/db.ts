@@ -6,6 +6,10 @@ import { JsonDatabase } from './json-db.js';
 import { generateId } from './schema.js';
 import type { FeedbackInput, FindingInput, LearningRepository, PatternInput } from './types.js';
 
+/**
+ * Sanitize connection strings in error messages to avoid leaking credentials.
+ * Replaces credentials in URLs with `<redacted>`.
+ */
 export function sanitizeDbError(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
   return msg.replace(/([a-z][a-z0-9+.-]+:\/\/)[^@\s]+@/gi, '$1<redacted>@');
@@ -108,6 +112,11 @@ function translateQuery(sql: string, dialect: 'postgres' | 'mysql' | 'sqlite'): 
   return cleanSql;
 }
 
+/**
+ * Abstract SQL adapter implementing the LearningRepository interface.
+ * Subclasses provide the concrete SQL execution primitives (exec, run, all, get, transaction)
+ * while this class implements all the domain logic for findings, feedback, patterns, etc.
+ */
 export abstract class SqlAdapter implements LearningRepository {
   abstract exec(sql: string): Promise<void>;
   abstract run(sql: string, params?: unknown[]): Promise<{ changes: number }>;
@@ -116,6 +125,10 @@ export abstract class SqlAdapter implements LearningRepository {
   abstract transaction<T>(fn: () => Promise<T>): Promise<T>;
   abstract close(): Promise<void>;
 
+  /**
+   * Record a single review finding.
+   * @returns The generated finding ID.
+   */
   async recordFinding(finding: FindingInput): Promise<string> {
     const id = finding.id || generateId();
     await this.run(
@@ -135,6 +148,10 @@ export abstract class SqlAdapter implements LearningRepository {
     return id;
   }
 
+  /**
+   * Record multiple findings in a single transaction.
+   * @returns Array of generated finding IDs.
+   */
   async recordFindings(findings: FindingInput[]): Promise<string[]> {
     if (findings.length === 0) return [];
     return this.transaction(async () => {
@@ -158,6 +175,10 @@ export abstract class SqlAdapter implements LearningRepository {
     });
   }
 
+  /**
+   * Delete all findings and associated feedback for a given PR.
+   * @returns Number of deleted finding rows.
+   */
   async deleteFindings(prNumber: number): Promise<number> {
     return this.transaction(async () => {
       await this.run('DELETE FROM feedback WHERE pr_number = ?', [prNumber]);
@@ -166,6 +187,9 @@ export abstract class SqlAdapter implements LearningRepository {
     });
   }
 
+  /**
+   * Retrieve findings filtered by type, ordered by created_at DESC.
+   */
   async getFindingsByType(type: string, limit = 50): Promise<Array<Record<string, unknown>>> {
     return this.all('SELECT * FROM findings WHERE type = ? ORDER BY created_at DESC LIMIT ?', [
       type,
@@ -173,6 +197,9 @@ export abstract class SqlAdapter implements LearningRepository {
     ]);
   }
 
+  /**
+   * Retrieve findings, optionally filtered by PR number.
+   */
   async getFindings(prNumber?: number, limit = 100): Promise<Array<Record<string, unknown>>> {
     if (prNumber) {
       return this.all(
@@ -183,6 +210,9 @@ export abstract class SqlAdapter implements LearningRepository {
     return this.all('SELECT * FROM findings ORDER BY created_at DESC LIMIT ?', [limit]);
   }
 
+  /**
+   * Record a feedback signal for a finding.
+   */
   async recordFeedback(feedback: FeedbackInput): Promise<void> {
     await this.run(
       `INSERT INTO feedback (id, finding_id, signal_type, signal_value, pr_number)
@@ -197,6 +227,9 @@ export abstract class SqlAdapter implements LearningRepository {
     );
   }
 
+  /**
+   * Record multiple feedback signals in a single transaction.
+   */
   async recordFeedbackBatch(feedbacks: FeedbackInput[]): Promise<void> {
     if (feedbacks.length === 0) return;
     await this.transaction(async () => {
@@ -215,6 +248,9 @@ export abstract class SqlAdapter implements LearningRepository {
     });
   }
 
+  /**
+   * Retrieve recent finding messages for pattern discovery.
+   */
   async getFindingMessages(
     limit = 100,
     sinceDays?: number,
@@ -231,6 +267,9 @@ export abstract class SqlAdapter implements LearningRepository {
     );
   }
 
+  /**
+   * Retrieve deduplicated finding messages for O(N^2) clustering.
+   */
   async getDistinctFindingMessages(
     limit = 100,
     sinceDays?: number,
@@ -247,6 +286,9 @@ export abstract class SqlAdapter implements LearningRepository {
     );
   }
 
+  /**
+   * Retrieve finding messages filtered by file extension.
+   */
   async getFindingMessagesByFileType(
     fileType: string,
     limit = 100,
@@ -265,6 +307,10 @@ export abstract class SqlAdapter implements LearningRepository {
     );
   }
 
+  /**
+   * Calculate false-positive rate as ratio of disputed/dismissed feedback
+   * signals to all feedback signals.
+   */
   async getFalsePositiveRate(): Promise<number> {
     const [total, disputed] = await Promise.all([
       this.get<{ count: number }>('SELECT COUNT(*) as count FROM feedback'),
@@ -277,6 +323,9 @@ export abstract class SqlAdapter implements LearningRepository {
     return disputed.count / total.count;
   }
 
+  /**
+   * Get active custom rules and prompt overrides relevant to the given file paths.
+   */
   async getRelevantLessons(filePaths: string[]): Promise<string[]> {
     const extensions = [
       ...new Set(
@@ -316,6 +365,9 @@ export abstract class SqlAdapter implements LearningRepository {
     return lessons.filter(Boolean);
   }
 
+  /**
+   * Record a review quality assessment.
+   */
   async recordQuality(quality: LearningQuality): Promise<void> {
     await this.run(
       `INSERT INTO review_quality (id, pr_number, actionability_score, accuracy_score, coverage_score, consistency_score)
@@ -331,10 +383,17 @@ export abstract class SqlAdapter implements LearningRepository {
     );
   }
 
+  /**
+   * Retrieve recent review quality scores, ordered by created_at DESC.
+   */
   async getQualityTrends(limit = 20): Promise<Array<Record<string, unknown>>> {
     return this.all('SELECT * FROM review_quality ORDER BY created_at DESC LIMIT ?', [limit]);
   }
 
+  /**
+   * Increment the meta-review counter and check whether it's time to run a meta-review.
+   * @returns True if a meta-review should be triggered.
+   */
   async incrementAndCheckMetaReviewInterval(interval: number): Promise<boolean> {
     return this.transaction(async () => {
       const row = await this.get<{ count: number }>(
@@ -348,6 +407,9 @@ export abstract class SqlAdapter implements LearningRepository {
     });
   }
 
+  /**
+   * Record or update a pattern (upsert by patternKey).
+   */
   async recordPattern(pattern: PatternInput): Promise<void> {
     await this.transaction(async () => {
       const existing = await this.get<{ id: string; frequency: number }>(
@@ -376,6 +438,9 @@ export abstract class SqlAdapter implements LearningRepository {
     });
   }
 
+  /**
+   * Record multiple patterns, each upserted by patternKey.
+   */
   async recordPatterns(patterns: PatternInput[]): Promise<void> {
     if (patterns.length === 0) return;
     await this.transaction(async () => {
@@ -406,12 +471,19 @@ export abstract class SqlAdapter implements LearningRepository {
     });
   }
 
+  /**
+   * Retrieve patterns with frequency above a threshold, ordered by frequency DESC.
+   */
   async getPatterns(minFrequency = 3): Promise<Array<Record<string, unknown>>> {
     return this.all('SELECT * FROM patterns WHERE frequency >= ? ORDER BY frequency DESC', [
       minFrequency,
     ]);
   }
 
+  /**
+   * Add a new custom rule as pending approval.
+   * @returns The generated rule ID.
+   */
   async addCustomRule(ruleText: string, source: 'auto' | 'manual'): Promise<string> {
     const id = generateId();
     await this.run('INSERT INTO custom_rules (id, rule_text, source, status) VALUES (?, ?, ?, ?)', [
@@ -423,10 +495,16 @@ export abstract class SqlAdapter implements LearningRepository {
     return id;
   }
 
+  /**
+   * Get all custom rules with status 'pending'.
+   */
   async getPendingRules(): Promise<Array<Record<string, unknown>>> {
     return this.all("SELECT * FROM custom_rules WHERE status = 'pending'");
   }
 
+  /**
+   * Approve a pending custom rule, marking it as active.
+   */
   async approveRule(ruleId: string): Promise<void> {
     await this.run(
       "UPDATE custom_rules SET status = 'active', approved_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -434,10 +512,16 @@ export abstract class SqlAdapter implements LearningRepository {
     );
   }
 
+  /**
+   * Decline a pending custom rule.
+   */
   async declineRule(ruleId: string): Promise<void> {
     await this.run("UPDATE custom_rules SET status = 'declined' WHERE id = ?", [ruleId]);
   }
 
+  /**
+   * Add a prompt override to influence future review prompts.
+   */
   async addPromptOverride(
     category: string,
     overrideText: string,
@@ -450,11 +534,18 @@ export abstract class SqlAdapter implements LearningRepository {
     );
   }
 
+  /**
+   * Reset the meta-review counter to 0.
+   */
   async resetCounter(): Promise<void> {
     await this.run('UPDATE meta_review_counter SET count = 0 WHERE id = 1');
   }
 }
 
+/**
+ * PostgreSQL adapter — translates SQLite SQL dialect to Postgres-compatible
+ * syntax (positional $N parameters, INSERT ... ON CONFLICT, etc.).
+ */
 export class PostgresAdapter extends SqlAdapter implements DbAdapter {
   private client: PostgresClient;
 
@@ -503,6 +594,9 @@ export class PostgresAdapter extends SqlAdapter implements DbAdapter {
   }
 }
 
+/**
+ * MySQL adapter — translates SQLite SQL dialect to MySQL-compatible syntax.
+ */
 export class MysqlAdapter extends SqlAdapter implements DbAdapter {
   private connection: MysqlConnection;
 
@@ -552,6 +646,10 @@ export class MysqlAdapter extends SqlAdapter implements DbAdapter {
   }
 }
 
+/**
+ * SQLite adapter using better-sqlite3.
+ * Wraps prepared statements with an LRU cache for performance.
+ */
 export class SqliteAdapter implements DbAdapter, LearningRepository {
   private db: SqliteDatabase;
   private stmtCache = new Map<string, ReturnType<SqliteDatabase['prepare']>>();
@@ -1090,6 +1188,15 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
   }
 }
 
+/**
+ * Connect to a database by URL/connection string.
+ * Supports PostgreSQL (pg), MySQL (mysql2), SQLite (better-sqlite3),
+ * and falls back to a JSON file database if no SQL driver is available.
+ * The connection string prefix determines the driver:
+ * - `postgres://` or `postgresql://` → PostgreSQL
+ * - `mysql://` → MySQL
+ * - Anything else → SQLite (then JSON fallback)
+ */
 export async function connectDb(dbPathOrUrl: string): Promise<LearningRepository & DbAdapter> {
   if (dbPathOrUrl.startsWith('postgres://') || dbPathOrUrl.startsWith('postgresql://')) {
     try {

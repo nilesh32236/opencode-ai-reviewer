@@ -4,6 +4,10 @@ import { Logger } from '../utils/logger.js';
 
 const APPROVE_RULE_RE = /^\/approve-rule\s+(\S+)/;
 
+/**
+ * Subscriber that handles `/approve-rule <ruleId>` commands in comments.
+ * Approves a pending custom rule, marking it as active for future reviews.
+ */
 export class RuleApprovalSubscriber implements Subscriber {
   name = 'RuleApprovalSubscriber';
   subscribedEvents = ['comment.created', 'review_comment.created'];

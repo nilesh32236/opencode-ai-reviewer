@@ -3,6 +3,9 @@ import { Logger } from '../utils/logger.js';
 
 const DB_PATH = path.join(process.cwd(), '.opencode', 'learning.db');
 
+/**
+ * Get the default SQLite database path under `.opencode/learning.db`.
+ */
 export function getDbPath(): string {
   return DB_PATH;
 }
@@ -11,6 +14,12 @@ export interface MigrationRunner {
   exec(sql: string): Promise<void>;
 }
 
+/**
+ * Apply all schema migrations to create the required tables and indexes
+ * (findings, feedback, review_quality, patterns, custom_rules,
+ * prompt_overrides, meta_review_counter). Idempotent — safe to run
+ * on every startup.
+ */
 export async function applyMigrations(runner: MigrationRunner): Promise<void> {
   try {
     await runner.exec(`
@@ -122,6 +131,10 @@ export async function applyMigrations(runner: MigrationRunner): Promise<void> {
   }
 }
 
+/**
+ * Generate a unique ID string for database records.
+ * Format: `f_<timestamp>_<random>`.
+ */
 export function generateId(): string {
   return `f_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }

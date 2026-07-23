@@ -5,6 +5,7 @@ import { clusterFindings } from './cluster.js';
 
 const NON_ALPHANUMERIC_REGEX = /[^a-z0-9]+/g;
 
+/** A discovered pattern with its messages, frequency, and associated file types. */
 export interface DiscoveredPattern {
   patternKey: string;
   messages: string[];
@@ -12,11 +13,17 @@ export interface DiscoveredPattern {
   fileTypes: string[];
 }
 
+/** Options for configuring PatternDetector behavior. */
 export interface PatternDetectorOptions {
   windowSize?: number;
   sinceDays?: number;
 }
 
+/**
+ * Discovers recurring patterns in review findings using token clustering.
+ * Patterns with sufficient frequency are persisted as custom rules for
+ * future review guidance.
+ */
 export class PatternDetector {
   private options: PatternDetectorOptions;
 
@@ -30,6 +37,12 @@ export class PatternDetector {
     };
   }
 
+  /**
+   * Discover patterns from recent finding messages.
+   * Uses Jaccard token clustering to group similar messages,
+   * then records patterns that meet the minimum frequency threshold.
+   * @param minFrequency - Minimum occurrences for a pattern to be reported.
+   */
   async discover(minFrequency: number): Promise<DiscoveredPattern[]> {
     const { windowSize, sinceDays } = this.options;
 
