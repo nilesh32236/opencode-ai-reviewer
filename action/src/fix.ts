@@ -12,6 +12,7 @@ import type {
 } from '@opencode-pr-agent/lib';
 import { validateRunChecksCommand } from './inputs.js';
 import type { ActionInputs } from './inputs.js';
+import { sanitize } from './utils.js';
 
 /**
  * Run a single fix iteration on a PR: resolve PR, gather context, apply
@@ -34,9 +35,7 @@ export async function runFix(
   }
 
   const comments = await gh.getIssueComments(prNumber);
-  const iteration = comments.filter((c: IssueComment) =>
-    c.body.includes('<!-- autofix-review -->'),
-  ).length;
+  const iteration = comments.filter((c: IssueComment) => c.body.includes(REVIEW_MARKER)).length;
 
   if (iteration >= config.maxIterations) {
     const errorMsg = `Max iterations reached (${config.maxIterations}). Needs manual review.`;
@@ -57,7 +56,7 @@ export async function runFix(
   let changesMade = false;
   if (fixResult?.changesMade) {
     try {
-      await exec.exec('git', ['add', '-u']);
+      await exec.exec('git', ['add', '-A']);
       await exec.exec('git', [
         'commit',
         '-m',
@@ -65,7 +64,7 @@ export async function runFix(
       ]);
       await exec.exec('git', ['push', 'origin', pr.headRef]);
     } catch (err) {
-      core.warning(`Git operations failed: ${err instanceof Error ? err.message : err}`);
+      core.warning(sanitize(`Git operations failed: ${err instanceof Error ? err.message : err}`));
     }
     changesMade = true;
   }
@@ -87,7 +86,9 @@ export async function runFix(
       }
 
       core.warning(
-        `Verification command failed (exit code ${exitCode}). Retrying fix with error output...`,
+        sanitize(
+          `Verification command failed (exit code ${exitCode}). Retrying fix with error output...`,
+        ),
       );
 
       if (v < maxVerificationRetries) {
@@ -105,7 +106,7 @@ export async function runFix(
 
         if (retryResult?.changesMade) {
           try {
-            await exec.exec('git', ['add', '-u']);
+            await exec.exec('git', ['add', '-A']);
             await exec.exec('git', [
               'commit',
               '-m',
@@ -114,7 +115,9 @@ export async function runFix(
             await exec.exec('git', ['push', 'origin', pr.headRef]);
           } catch (err) {
             core.warning(
-              `Git operations during verification retry failed: ${err instanceof Error ? err.message : err}`,
+              sanitize(
+                `Git operations during verification retry failed: ${err instanceof Error ? err.message : err}`,
+              ),
             );
           }
         }
@@ -193,7 +196,7 @@ export async function runFixIssue(
     const elapsedMin = (elapsedMs / 60_000).toFixed(1);
     const budgetMin = (configTimeoutMs / 60_000).toFixed(0);
     const msg = `Insufficient time remaining to run fix (elapsed: ${elapsedMin}m / budget: ${budgetMin}m, remaining: ${Math.round(timeLeftMs / 1000)}s < ${Math.round(minRequiredMs / 1000)}s required). The job likely waited in the queue too long. Re-trigger the fix with /fix.`;
-    core.warning(msg);
+    core.warning(sanitize(msg));
     try {
       await gh.postOrUpdateComment(
         issueNumber,
@@ -202,10 +205,12 @@ export async function runFixIssue(
       );
     } catch (commentErr) {
       core.warning(
-        `Failed to post timeout notice: ${commentErr instanceof Error ? commentErr.message : commentErr}`,
+        sanitize(
+          `Failed to post timeout notice: ${commentErr instanceof Error ? commentErr.message : commentErr}`,
+        ),
       );
     }
-    core.setFailed(msg);
+    core.setFailed(sanitize(msg));
     return;
   }
 
@@ -241,8 +246,8 @@ export async function runFixIssue(
   try {
     await exec.exec('git', ['push', 'origin', branchName, '--force']);
   } catch (err) {
-    core.warning(`Git push failed: ${err instanceof Error ? err.message : err}`);
-    core.setFailed(`Git push failed: ${err instanceof Error ? err.message : err}`);
+    core.warning(sanitize(`Git push failed: ${err instanceof Error ? err.message : err}`));
+    core.setFailed(sanitize(`Git push failed: ${err instanceof Error ? err.message : err}`));
   }
 
   const issue = await gh.getIssue(issueNumber);
@@ -280,7 +285,7 @@ export async function runFixIssue(
     )
     .then((r) => r.stdout.trim())
     .catch((err) => {
-      core.warning(`Failed to create PR: ${err instanceof Error ? err.message : err}`);
+      core.warning(sanitize(`Failed to create PR: ${err instanceof Error ? err.message : err}`));
       return '';
     });
 
@@ -294,7 +299,9 @@ export async function runFixIssue(
         `🔧 Autofix PR: ${prUrl}`,
       );
     } catch (err) {
-      core.warning(`Failed to post autofix comment: ${err instanceof Error ? err.message : err}`);
+      core.warning(
+        sanitize(`Failed to post autofix comment: ${err instanceof Error ? err.message : err}`),
+      );
     }
   }
 
@@ -494,7 +501,9 @@ export async function runAutofixLoop(
 
     if (timeLeftMs <= gracePeriodMs) {
       core.warning(
-        `Autofix timeout approaching (remaining: ${Math.round(timeLeftMs / 1000)}s) — shutting down gracefully.`,
+        sanitize(
+          `Autofix timeout approaching (remaining: ${Math.round(timeLeftMs / 1000)}s) — shutting down gracefully.`,
+        ),
       );
       await handleTimeoutGracefully(prNumber, history, i, config, gh);
       return;
@@ -519,7 +528,7 @@ export async function runAutofixLoop(
       !result ||
       (!result.summary && result.issues.length === 0 && result.strengths.length === 0)
     ) {
-      core.warning(`Review result empty in iteration ${i + 1} — treating as failure`);
+      core.warning(sanitize(`Review result empty in iteration ${i + 1} — treating as failure`));
       const entry: IterationRecord = {
         iteration: i + 1,
         status: 'needs-fix',
@@ -565,7 +574,9 @@ export async function runAutofixLoop(
         buildReviewBody(history, config.maxIterations, 'reviewing', result),
       );
     } catch (err) {
-      core.warning(`Failed to post review comment: ${err instanceof Error ? err.message : err}`);
+      core.warning(
+        sanitize(`Failed to post review comment: ${err instanceof Error ? err.message : err}`),
+      );
     }
 
     const contextMarkdown = await gh.gatherContext({ prNumber });
@@ -591,7 +602,9 @@ export async function runAutofixLoop(
         );
       } catch (err) {
         core.warning(
-          `Failed to post no-changes comment: ${err instanceof Error ? err.message : err}`,
+          sanitize(
+            `Failed to post no-changes comment: ${err instanceof Error ? err.message : err}`,
+          ),
         );
       }
       break;
@@ -604,7 +617,7 @@ export async function runAutofixLoop(
 
     const commitMsg = `fix: autofix iteration ${i + 1}`;
     try {
-      await exec.exec('git', ['add', '-u']);
+      await exec.exec('git', ['add', '-A']);
       await exec.exec('git', ['commit', '-m', commitMsg]);
       await exec.exec('git', ['push', 'origin', pr.headRef]);
       currentEntry.commitMessage = commitMsg;
@@ -618,7 +631,9 @@ export async function runAutofixLoop(
       });
     } catch (err) {
       core.warning(
-        `Git operations failed in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
+        sanitize(
+          `Git operations failed in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
+        ),
       );
       exitReason = 'git-failure';
       try {
@@ -629,7 +644,9 @@ export async function runAutofixLoop(
         );
       } catch (postErr) {
         core.warning(
-          `Failed to post recovery comment: ${postErr instanceof Error ? postErr.message : postErr}`,
+          sanitize(
+            `Failed to post recovery comment: ${postErr instanceof Error ? postErr.message : postErr}`,
+          ),
         );
       }
       break;
@@ -638,7 +655,9 @@ export async function runAutofixLoop(
     try {
       await gh.postOrUpdateComment(prNumber, FIX_MARKER, buildFixBody(history));
     } catch (err) {
-      core.warning(`Failed to post fix comment: ${err instanceof Error ? err.message : err}`);
+      core.warning(
+        sanitize(`Failed to post fix comment: ${err instanceof Error ? err.message : err}`),
+      );
     }
 
     if (inputs.runChecksAfterFix) {
@@ -658,7 +677,9 @@ export async function runAutofixLoop(
         }
 
         core.warning(
-          `Verification failed (exit code ${exitCode}) in attempt ${v + 1}/${maxVerificationRetries + 1}. Output length: ${checkOutput.length} bytes`,
+          sanitize(
+            `Verification failed (exit code ${exitCode}) in attempt ${v + 1}/${maxVerificationRetries + 1}. Output length: ${checkOutput.length} bytes`,
+          ),
         );
 
         if (v < maxVerificationRetries) {
@@ -683,12 +704,14 @@ export async function runAutofixLoop(
           }
 
           try {
-            await exec.exec('git', ['add', '-u']);
+            await exec.exec('git', ['add', '-A']);
             await exec.exec('git', ['commit', '-m', `fix: verification errors (attempt ${v + 1})`]);
             await exec.exec('git', ['push', 'origin', pr.headRef]);
           } catch (err) {
             core.warning(
-              `Git operations failed during verification retry: ${err instanceof Error ? err.message : err}`,
+              sanitize(
+                `Git operations failed during verification retry: ${err instanceof Error ? err.message : err}`,
+              ),
             );
             break;
           }
@@ -710,7 +733,9 @@ export async function runAutofixLoop(
         );
       } catch (err) {
         core.warning(
-          `Failed to post max-iterations comment: ${err instanceof Error ? err.message : err}`,
+          sanitize(
+            `Failed to post max-iterations comment: ${err instanceof Error ? err.message : err}`,
+          ),
         );
       }
     }
@@ -722,7 +747,7 @@ export async function runAutofixLoop(
           ? 'Git operations failed during fix application.'
           : `Max iterations reached (${config.maxIterations}) or agent not approved.`;
     const errorMsg = `${reasonMsg} Needs manual review.`;
-    core.setFailed(errorMsg);
+    core.setFailed(sanitize(errorMsg));
   }
 
   core.setOutput('approved', String(approved));
@@ -767,7 +792,7 @@ async function handleTimeoutGracefully(
       filesChanged = raw.stdout.trim().split('\n').filter(Boolean);
 
       commitMessage = `fix: address review feedback (partial changes due to timeout iteration ${iteration + 1})`;
-      await exec.exec('git', ['add', '-u']);
+      await exec.exec('git', ['add', '-A']);
       await exec.exec('git', ['commit', '-m', commitMessage]);
 
       const pr = await gh.getPR(prNumber);
@@ -775,7 +800,7 @@ async function handleTimeoutGracefully(
       core.info('Successfully pushed partial changes.');
     } catch (err) {
       core.warning(
-        `Git push of partial changes failed: ${err instanceof Error ? err.message : err}`,
+        sanitize(`Git push of partial changes failed: ${err instanceof Error ? err.message : err}`),
       );
     }
   }
@@ -803,16 +828,22 @@ Please run the workflow again to continue applying fixes.`;
   try {
     await gh.postOrUpdateComment(prNumber, '<!-- autofix-timeout -->', commentBody);
   } catch (err) {
-    core.warning(`Failed to post timeout comment: ${err instanceof Error ? err.message : err}`);
+    core.warning(
+      sanitize(`Failed to post timeout comment: ${err instanceof Error ? err.message : err}`),
+    );
   }
 
-  core.setFailed(`Autofix execution timed out after ${config.timeoutMinutes} minutes.`);
+  core.setFailed(sanitize(`Autofix execution timed out after ${config.timeoutMinutes} minutes.`));
 }
 
 async function resolvePrNumber(): Promise<number | null> {
   const prNumberInput = core.getInput('pr-number');
   if (prNumberInput) {
-    return Number.parseInt(prNumberInput, 10);
+    const prNumber = Number.parseInt(prNumberInput, 10);
+    if (Number.isNaN(prNumber)) {
+      throw new Error(`Invalid pr-number: ${prNumberInput}`);
+    }
+    return prNumber;
   }
   const fromIssue = github.context.payload.issue?.number;
   const fromPR = github.context.payload.pull_request?.number;

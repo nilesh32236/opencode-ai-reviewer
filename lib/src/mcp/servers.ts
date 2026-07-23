@@ -15,7 +15,7 @@ import { Logger } from '../utils/logger.js';
  * Context7 MCP server — resolves latest library documentation.
  * Reduces false positives in reviews by providing current API info.
  *
- * Setup: npm install -g @context7/mcp-server
+ * Setup: npm install -g @upstash/context7-mcp
  */
 export function context7Server(): MCPServerConfig {
   const apiKey = process.env.CONTEXT7_API_KEY || '';

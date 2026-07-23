@@ -24,14 +24,7 @@ import { runAutofixLoop, runFix, runFixIssue } from './fix.js';
 import { type ActionInputs, parseInputs } from './inputs.js';
 import { runPost } from './post.js';
 import { runReview } from './review.js';
-
-const sanitize = (message: string): string => {
-  return message
-    .replace(/(Bearer\s+)[a-zA-Z0-9._\-+/]+/gi, '$1***')
-    .replace(/(ghp_|gho_|ghu_|ghs_|ghr_)[a-zA-Z0-9_]+/g, '***')
-    .replace(/(sk-[a-zA-Z0-9]{20,})/g, 'sk-***')
-    .replace(/(xox[bpras]-\d+-)[a-zA-Z0-9-]+/g, '$1***');
-};
+import { sanitize } from './utils.js';
 
 function buildCacheKey(prefix: string): string {
   const repoNwo = `${github.context.repo.owner}/${github.context.repo.repo}`;
