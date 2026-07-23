@@ -16,6 +16,16 @@ import { handleAudit } from './audit.js';
 import { handleAutofixLoop } from './autofix.js';
 import { handlePRReview } from './pr-review.js';
 
+/**
+ * Handle a slash command (fix/review/audit): clone the repo, execute the
+ * appropriate handler (PR review, autofix loop, or audit) in a temp
+ * workspace, and clean up.
+ * @param command - The command to execute.
+ * @param issueNumber - The issue or PR number.
+ * @param repo - Repository string (owner/repo).
+ * @param token - GitHub authentication token.
+ * @param config - Agent configuration.
+ */
 export async function handleCommand(
   command: 'fix' | 'review' | 'audit',
   issueNumber: number,

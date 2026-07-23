@@ -19,6 +19,11 @@ import { handlePRReview } from './handlers/pr-review.js';
 
 const logger = new Logger('App');
 
+/**
+ * Initialize the Probot app with event subscribers for review, fix, and audit.
+ * Registers all subscribers with the event bus and handles SIGTERM cleanup.
+ * @param app - The Probot application instance.
+ */
 export default (app: Probot): void => {
   const learningStore = new LearningStore();
   const bus = new EventBus();
@@ -32,22 +37,19 @@ export default (app: Probot): void => {
     async handle(event: GitHubEvent) {
       try {
         if (event.type === 'comment.created' || event.type === 'review_comment.created') {
-          const payload = event.payload as { comment?: { body?: string } };
-          if (
-            !payload.comment?.body?.includes('/review') &&
-            !payload.comment?.body?.includes('/oc')
-          )
-            return;
+          const evPayload = event.payload as Record<string, unknown>;
+          const commentBody = (evPayload.comment as Record<string, string> | undefined)?.body;
+          if (!commentBody?.includes('/review') && !commentBody?.includes('/oc')) return;
         }
 
-        const payload = event.payload as {
-          pull_request?: { user?: { login: string }; labels?: Array<{ name: string }> };
-          issue?: { number: number };
-        };
+        const evPayload = event.payload as Record<string, unknown>;
+        const pullRequest = evPayload.pull_request as Record<string, unknown> | undefined;
+        const prUser = pullRequest?.user as Record<string, string> | undefined;
+        const prLabels = pullRequest?.labels as Array<Record<string, string>> | undefined;
 
         if (event.type === 'pr.opened' || event.type === 'pr.synchronize') {
-          if (payload.pull_request?.user?.login === 'github-actions[bot]') return;
-          const labels = payload.pull_request?.labels?.map((l) => l.name) || [];
+          if (prUser?.login === 'github-actions[bot]') return;
+          const labels = prLabels?.map((l) => l.name) || [];
           if (labels.some((l) => ['autofix', 'autofix:approved', 'autofix:merged'].includes(l)))
             return;
         }
@@ -98,21 +100,19 @@ export default (app: Probot): void => {
     subscribedEvents: ['comment.created', 'review_comment.created', 'issue.labeled'],
     async handle(event: GitHubEvent) {
       try {
-        const payload = event.payload as {
-          comment?: { body?: string };
-          issue?: { number: number };
-          labels?: Array<{ name: string }>;
-        };
+        const fixPayload = event.payload as Record<string, unknown>;
+        const fixComment = fixPayload.comment as Record<string, string> | undefined;
+        const fixIssue = fixPayload.issue as Record<string, unknown> | undefined;
+        const fixLabels = fixPayload.labels as Array<Record<string, string>> | undefined;
 
         if (event.type === 'comment.created' || event.type === 'review_comment.created') {
-          if (!payload.comment?.body?.includes('/fix')) return;
+          if (!fixComment?.body?.includes('/fix')) return;
         }
 
         if (event.type === 'issue.labeled') {
-          const labels = payload.labels?.map((l) => l.name) || [];
+          const labels = fixLabels?.map((l) => l.name) || [];
           if (!labels.includes('autofix-trigger')) return;
-          const issuePayload = event.payload as { issue?: { pull_request?: unknown } };
-          if (issuePayload.issue?.pull_request) return;
+          if (fixIssue?.pull_request) return;
         }
 
         const config = buildConfig();
@@ -133,8 +133,9 @@ export default (app: Probot): void => {
     subscribedEvents: ['comment.created', 'review_comment.created'],
     async handle(event: GitHubEvent) {
       try {
-        const payload = event.payload as { comment?: { body?: string } };
-        if (!payload.comment?.body?.includes('/audit')) return;
+        const auditPayload = event.payload as Record<string, unknown>;
+        const auditComment = auditPayload.comment as Record<string, string> | undefined;
+        if (!auditComment?.body?.includes('/audit')) return;
         const config = buildConfig();
         await handleAudit(event.repo || '', getToken(), config);
       } catch (err) {
@@ -192,6 +193,10 @@ export default (app: Probot): void => {
   logger.info('OpenCode PR Agent app loaded (self-improving)');
 };
 
+/**
+ * Get the GitHub token from the environment.
+ * @returns The GitHub token string.
+ */
 function getToken(): string {
   const token = process.env.GITHUB_TOKEN || '';
   if (!token) {
@@ -200,6 +205,10 @@ function getToken(): string {
   return token;
 }
 
+/**
+ * Build the agent configuration from environment variables and defaults.
+ * @returns A fully populated AgentConfig object.
+ */
 function buildConfig(): AgentConfig {
   return {
     ...DEFAULT_CONFIG,

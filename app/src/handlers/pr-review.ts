@@ -1,6 +1,18 @@
 import type { AgentConfig, LearningStore, PRContext, ReviewResult } from '@opencode-pr-agent/lib';
 import { GitHubHelper, Logger, ReviewEngine } from '@opencode-pr-agent/lib';
 
+/**
+ * Handle a PR review: fetch the PR, check skip conditions, run the review
+ * engine, post the review to GitHub, optionally trigger autofix, and
+ * store findings in the learning store.
+ * @param prNumber - The PR number.
+ * @param repo - Repository string (owner/repo).
+ * @param token - GitHub authentication token.
+ * @param config - Agent configuration.
+ * @param learningStore - Optional learning store for recording findings.
+ * @param tempDir - Optional temporary working directory.
+ * @returns The review result or null if review was skipped or failed.
+ */
 export async function handlePRReview(
   prNumber: number,
   repo: string,
@@ -55,7 +67,7 @@ export async function handlePRReview(
       return null;
     }
 
-    let reviewResult: { success: boolean; method: string };
+    let reviewResult: Awaited<ReturnType<typeof gh.postReview>>;
     try {
       reviewResult = await gh.postReview(prNumber, pr.headSha, result, config.review.inline);
     } catch (err) {
@@ -91,15 +103,7 @@ export async function handlePRReview(
 
     if (learningStore) {
       try {
-        const findingsToStore: Array<{
-          prNumber: number;
-          type: string;
-          severity?: string;
-          file?: string;
-          line?: number;
-          message: string;
-          suggestion?: string;
-        }> = [
+        const findingsToStore = [
           ...result.issues.map((i) => ({
             prNumber,
             type: 'issue' as const,
