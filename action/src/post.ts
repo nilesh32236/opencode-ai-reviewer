@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as github from '@actions/github';
 import type { GitHubHelper } from '@opencode-pr-agent/lib';
-import { validateRunChecksCommand } from './inputs.js';
+import { validateRunChecksCommand } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 
 /**
