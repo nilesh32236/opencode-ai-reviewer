@@ -224,7 +224,16 @@ async function createAutofixPR(
     }
 
     const issue = await gh.getIssue(issueNumber);
-    const issueContext = await gh.gatherContext({ issueNumber });
+    let issueContext = await gh.gatherContext({ issueNumber });
+
+    // Auto-analyze if no implementation plan exists yet
+    if (!issueContext.includes('<!-- issue-analysis-plan -->')) {
+      logger.info('No implementation plan found — running analyze first');
+      const planMarkdown = await engine.runAnalyze(issueNumber, issueContext, undefined, tempDir);
+      await gh.postOrUpdateComment(issueNumber, '<!-- issue-analysis-plan -->', planMarkdown);
+      issueContext = await gh.gatherContext({ issueNumber });
+    }
+
     const stubPR: PRContext = {
       number: issueNumber,
       title: issue.title,

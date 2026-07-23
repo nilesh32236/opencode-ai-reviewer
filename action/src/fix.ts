@@ -176,7 +176,15 @@ export async function runFixIssue(
     await exec.exec('git', ['checkout', '-b', branchName]);
   }
 
-  const issueContext = await gh.gatherContext({ issueNumber });
+  let issueContext = await gh.gatherContext({ issueNumber });
+
+  // Auto-analyze if no implementation plan exists yet
+  if (!issueContext.includes('<!-- issue-analysis-plan -->')) {
+    core.info('No implementation plan found — running analyze first');
+    const planMarkdown = await engine.runAnalyze(issueNumber, issueContext);
+    await gh.postOrUpdateComment(issueNumber, '<!-- issue-analysis-plan -->', planMarkdown);
+    issueContext = await gh.gatherContext({ issueNumber });
+  }
 
   // Check remaining time budget just before calling OpenCode, after setup steps.
   const elapsedMs = Date.now() - runStartedAt;
