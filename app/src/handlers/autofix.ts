@@ -141,6 +141,18 @@ function buildReadyBody(history: IterationRecord[], prNumber: number): string {
   return lines.join('\n');
 }
 
+/**
+ * Run the complete review-fix loop on a PR from the Probot app context.
+ * Iterates up to config.maxIterations: reviews, applies fixes, runs
+ * optional verification commands, and posts status comments.
+ * @param prNumber - The PR number.
+ * @param repo - Repository string (owner/repo).
+ * @param token - GitHub authentication token.
+ * @param config - Agent configuration.
+ * @param runChecksAfterFix - Optional verification command to run after each fix.
+ * @param tempDir - Optional temporary working directory with cloned repo.
+ * @param initialGitEnv - Optional Git environment variables (for auth).
+ */
 export async function handleAutofixLoop(
   prNumber: number,
   repo: string,
@@ -368,7 +380,7 @@ export async function handleAutofixLoop(
             logger.info('Verification passed');
             break;
           } catch (err) {
-            const stderr = (err as { stderr?: Buffer })?.stderr?.toString() ?? '';
+            const stderr = (err as Record<string, unknown>)?.stderr?.toString() ?? '';
             const message = err instanceof Error ? err.message : String(err);
             checkOutput += message + '\n' + stderr;
             logger.warn(

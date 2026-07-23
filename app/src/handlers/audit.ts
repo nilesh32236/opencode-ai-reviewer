@@ -3,6 +3,16 @@ import path from 'path';
 import type { AgentConfig, ReviewResult } from '@opencode-pr-agent/lib';
 import { GitHubHelper, Logger, ReviewEngine } from '@opencode-pr-agent/lib';
 
+/**
+ * Handle an audit command: read a prompt file, run the audit engine against
+ * a target directory, and create a GitHub issue with the findings.
+ * @param repo - Repository string (owner/repo).
+ * @param token - GitHub authentication token.
+ * @param config - Agent configuration.
+ * @param targetDir - Optional specific directory to audit.
+ * @param promptName - Optional specific audit prompt name (without .md).
+ * @param tempDir - Optional temporary working directory.
+ */
 export async function handleAudit(
   repo: string,
   token: string,
