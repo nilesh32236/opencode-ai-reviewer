@@ -39,6 +39,7 @@
   "files": {
     "ignore": [
       "dist",
+      "eslint.config.mjs",
       "action/lib",
       "lib/tests/*.js",
       "lib/tests/*.d.ts",
