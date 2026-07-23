@@ -18,22 +18,71 @@ export default [
         {
           publicOnly: true,
           require: {
+            ArrowFunctionExpression: true,
             FunctionDeclaration: true,
+            FunctionExpression: true,
             MethodDefinition: true,
             ClassDeclaration: true,
+            ClassExpression: true,
           },
           contexts: [
             'TSInterfaceDeclaration',
             'TSTypeAliasDeclaration',
-            'TSMethodDefinition',
-            'TSPropertyDefinition',
+            'TSMethodSignature',
+            'TSPropertySignature',
+            'MethodDefinition',
+            'PropertyDefinition',
           ],
         },
       ],
-      'jsdoc/require-param': 'error',
-      'jsdoc/require-param-description': 'error',
-      'jsdoc/require-returns': 'error',
-      'jsdoc/require-returns-description': 'error',
+      'jsdoc/require-param': [
+        'error',
+        {
+          contexts: [
+            'ArrowFunctionExpression',
+            'FunctionDeclaration',
+            'FunctionExpression',
+            'MethodDefinition',
+            'TSMethodSignature',
+          ],
+        },
+      ],
+      'jsdoc/require-param-description': [
+        'error',
+        {
+          contexts: [
+            'ArrowFunctionExpression',
+            'FunctionDeclaration',
+            'FunctionExpression',
+            'MethodDefinition',
+            'TSMethodSignature',
+          ],
+        },
+      ],
+      'jsdoc/require-returns': [
+        'error',
+        {
+          contexts: [
+            'ArrowFunctionExpression',
+            'FunctionDeclaration',
+            'FunctionExpression',
+            'MethodDefinition',
+            'TSMethodSignature',
+          ],
+        },
+      ],
+      'jsdoc/require-returns-description': [
+        'error',
+        {
+          contexts: [
+            'ArrowFunctionExpression',
+            'FunctionDeclaration',
+            'FunctionExpression',
+            'MethodDefinition',
+            'TSMethodSignature',
+          ],
+        },
+      ],
     },
   },
 ];
