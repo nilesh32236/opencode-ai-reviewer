@@ -618,7 +618,6 @@ describe('ReviewEngine', () => {
 
       const result = await engWithMCP.runAnalyze(123, issueContextMarkdown);
 
-      expect(mockMCPConnect).toHaveBeenCalled();
       expect(mockBuildAnalyzePrompt).toHaveBeenCalledWith(
         { projectContext: DEFAULT_CONFIG.projectContext.description || undefined },
         issueContextMarkdown,
@@ -652,7 +651,6 @@ describe('ReviewEngine', () => {
     });
 
     it('handles MCP connection failure gracefully', async () => {
-      mockMCPConnect.mockRejectedValue(new Error('MCP failed'));
       mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
 
       const fsPromises = fs.promises;
@@ -664,7 +662,7 @@ describe('ReviewEngine', () => {
       expect(result).toBe('# Plan');
     });
 
-    it('skips MCP when enableMCP is false', async () => {
+    it('works with custom config', async () => {
       const eng = new ReviewEngine(
         makeConfig({ enableMCP: false, mcpServers: [] }),
         'fake-token',
@@ -678,7 +676,6 @@ describe('ReviewEngine', () => {
 
       const result = await eng.runAnalyze(123, issueContextMarkdown);
 
-      expect(mockMCPConnect).not.toHaveBeenCalled();
       expect(result).toBe('# Plan');
     });
   });

@@ -446,20 +446,12 @@ export class ReviewEngine {
    * @returns Markdown content of the generated implementation plan.
    */
   async runAnalyze(
-    issueNumber: number,
+    _issueNumber: number,
     issueContextMarkdown: string,
     timeoutMinutes?: number,
     workingDirectory?: string,
   ): Promise<string> {
     const workDir = workingDirectory || process.cwd();
-
-    if (this.config.enableMCP && this.config.mcpServers.length > 0) {
-      try {
-        await this.mcp.connect();
-      } catch (err) {
-        core.warning(`MCP connection skipped in analyze: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
 
     const prompt = buildAnalyzePrompt(
       { projectContext: this.config.projectContext.description || undefined },
