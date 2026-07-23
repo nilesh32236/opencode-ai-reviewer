@@ -1,11 +1,17 @@
 import * as core from '@actions/core';
 
+/** State of the circuit breaker: CLOSED (normal), OPEN (failing), HALF_OPEN (probing). */
 export type CircuitState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
 
+/** Options for configuring a CircuitBreaker instance. */
 export interface CircuitBreakerOptions {
+  /** Number of consecutive failures to trip the circuit (default: 5) */
   failureThreshold?: number;
+  /** Number of consecutive successes in half-open state to close the circuit (default: 2) */
   successThreshold?: number;
+  /** Cooldown period in ms before transitioning from OPEN to HALF_OPEN (default: 30000) */
   cooldownMs?: number;
+  /** Name for this circuit breaker, used in log messages (default: "CircuitBreaker") */
   name?: string;
   /** Called when circuit transitions from CLOSED or HALF_OPEN to OPEN */
   onOpen?: (metrics: { state: CircuitState; failureCount: number; successCount: number }) => void;
@@ -36,6 +42,11 @@ const DEFAULT_OPTIONS: RequiredCircuitBreakerOptions = {
   name: 'CircuitBreaker',
 };
 
+/**
+ * Circuit breaker that protects external API calls from cascading failures.
+ * Tracks consecutive failures and short-circuits requests when the threshold is exceeded,
+ * then periodically probes to recover.
+ */
 export class CircuitBreaker {
   private state: CircuitState = 'CLOSED';
   private failureCount = 0;
@@ -44,6 +55,11 @@ export class CircuitBreaker {
   private options: RequiredCircuitBreakerOptions;
   private inFlightProbe = false;
 
+  /**
+   * Create a new CircuitBreaker.
+   *
+   * @param options - Configuration options for failure/success thresholds, cooldown, and lifecycle hooks.
+   */
   constructor(options: CircuitBreakerOptions = {}) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
   }
@@ -70,10 +86,24 @@ export class CircuitBreaker {
     }
   }
 
+  /**
+   * Get the current circuit breaker state.
+   *
+   * @returns The current CircuitState (CLOSED, OPEN, or HALF_OPEN).
+   */
   getState(): CircuitState {
     return this.state;
   }
 
+  /**
+   * Execute a function through the circuit breaker.
+   * If the circuit is OPEN, the function is not called and an error is thrown immediately.
+   * If HALF_OPEN, only one probe request is allowed at a time.
+   *
+   * @param fn - Async function to execute.
+   * @returns The result of the function.
+   * @throws Error if the circuit is OPEN or if the function itself throws.
+   */
   async call<T>(fn: () => Promise<T>): Promise<T> {
     this.transitionState();
     if (this.state === 'OPEN') {
@@ -143,6 +173,10 @@ export class CircuitBreaker {
     }
   }
 
+  /**
+   * Manually reset the circuit breaker to CLOSED state, clearing failure and success counts.
+   * Fires the onClose hook if the circuit was previously OPEN or HALF_OPEN.
+   */
   reset(): void {
     const priorState = this.state;
     this.state = 'CLOSED';
@@ -153,6 +187,11 @@ export class CircuitBreaker {
     }
   }
 
+  /**
+   * Get current circuit breaker metrics.
+   *
+   * @returns Object containing the current state, failure count, and success count.
+   */
   getMetrics(): { state: CircuitState; failureCount: number; successCount: number } {
     return {
       state: this.state,
