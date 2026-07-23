@@ -477,7 +477,7 @@ export interface PromptContext {
 
 // ─── Action Mode ──────────────────────────────────────────
 /** Operating mode of the action/app. */
-export type ActionMode = 'review' | 'fix' | 'audit' | 'post';
+export type ActionMode = 'review' | 'fix' | 'audit' | 'post' | 'analyze';
 
 // ─── Issue Details ────────────────────────────────────────
 /** Details of a GitHub issue. */
