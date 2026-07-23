@@ -1,6 +1,6 @@
 {
   "name": "@opencode-pr-agent/app",
-  "version": "1.1.10",
+  "version": "1.1.11",
   "description": "GitHub App for AI-powered PR review, auto-fix, and audit using OpenCode",
   "main": "dist/index.js",
   "scripts": {
