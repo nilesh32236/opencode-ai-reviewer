@@ -38,6 +38,9 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      - name: Verify Docstring Coverage
+        run: pnpm doc:check
+
       - name: Unit tests
         run: pnpm test
 
