@@ -95,7 +95,7 @@ export class GitHubHelper {
           }
         },
         {
-          retryableStatuses: isIdempotent ? [429, 500, 502, 503, 504] : [429, 502, 503, 504],
+          retryableStatuses: isIdempotent ? [429, 500, 502, 503, 504] : [429],
           retryUnknownStatus: isIdempotent,
         },
       ),
@@ -612,7 +612,11 @@ export class GitHubHelper {
     try {
       await this.api(`/issues/${issueNumber}/labels/${label}`, { method: 'DELETE' });
     } catch (err) {
-      core.debug(
+      const status = err instanceof Error ? (err as Error & { status: number }).status : undefined;
+      if (status === 404) {
+        return;
+      }
+      core.warning(
         `Failed to remove label "${label}" on #${issueNumber}: ${err instanceof Error ? err.message : err}`,
       );
     }
@@ -634,7 +638,7 @@ export class GitHubHelper {
       const results = await Promise.allSettled(operations.slice(i, i + 5).map((fn) => fn()));
       for (const result of results) {
         if (result.status === 'rejected') {
-          core.debug(
+          core.warning(
             `Label operation failed: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
           );
         }

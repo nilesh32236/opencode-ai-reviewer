@@ -232,10 +232,11 @@ async function run(): Promise<void> {
     };
 
     const learningStore = new LearningStore();
-    engine = new ReviewEngine(config, token, repo, learningStore);
-    const gh = new GitHubHelper(token, repo);
 
     try {
+      engine = new ReviewEngine(config, token, repo, learningStore);
+      const gh = new GitHubHelper(token, repo);
+
       switch (inputs.mode) {
         case 'review':
           await runReview(inputs, config, engine, gh, repo);

@@ -22,6 +22,7 @@ export class MCPManager {
   private clients: Map<string, { client: Client; transport: Transport }> = new Map();
   private initialized = false;
   private toolsCache: Map<string, Tool[]> = new Map();
+  private logger = new Logger('MCPManager');
 
   constructor(private servers: MCPServerConfig[]) {}
 
@@ -124,12 +125,11 @@ export class MCPManager {
           maxRetries: 3,
           baseDelayMs: 2000,
         });
-        core.info(`  ${server.name}: ${tools.tools.length} tools available`);
+        this.logger.info(`${server.name}: ${tools.tools.length} tools available`);
         this.toolsCache.set(server.name, tools.tools);
       }
     } catch (err) {
-      const logger = new Logger('MCPManager');
-      logger.warn(`Failed to connect to ${server.name}`, err);
+      this.logger.warn(`Failed to connect to ${server.name}`, err);
       this.clients.delete(server.name);
       if (result.client) {
         try {
@@ -185,8 +185,7 @@ export class MCPManager {
             });
           }
         } else {
-          const logger = new Logger('MCPManager');
-          logger.warn(
+          this.logger.warn(
             `No allowed tool found for server ${name}. Allowed patterns: ${allowedPatterns.join(', ')}`,
           );
         }
@@ -195,8 +194,7 @@ export class MCPManager {
 
     for (const result of results) {
       if (result.status === 'rejected') {
-        const logger = new Logger('MCPManager');
-        logger.warn('MCP query failed', result.reason);
+        this.logger.warn('MCP query failed', result.reason);
       }
     }
 
@@ -240,8 +238,7 @@ export class MCPManager {
             return `### ${lib}\n${text}`;
           }
         } else {
-          const logger = new Logger('MCPManager');
-          logger.warn(
+          this.logger.warn(
             `No allowed tool found for server context7. Allowed patterns: ${allowedPatterns.join(', ')}`,
           );
         }
@@ -281,13 +278,12 @@ export class MCPManager {
             );
           }),
         ]).finally(() => clearTimeout(disconnectTimer!));
-        core.info(`MCP: Disconnected from ${name}`);
+        this.logger.info(`Disconnected from ${name}`);
       } catch (err) {
         try {
           await transport.close();
         } catch {}
-        const logger = new Logger('MCPManager');
-        logger.warn(`MCP disconnect error for ${name}`, err);
+        this.logger.warn(`MCP disconnect error for ${name}`, err);
       }
     }
     this.clients.clear();

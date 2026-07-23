@@ -120,17 +120,7 @@ export class JsonDatabase implements DatabaseInstance, LearningRepository {
       this.save();
     }
     process.on('beforeExit', () => {
-      if (this.writeTimeout) {
-        clearTimeout(this.writeTimeout);
-        this.writeTimeout = null;
-      }
-      try {
-        const dir = path.dirname(this.filePath);
-        fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(this.filePath, JSON.stringify(this.data), 'utf-8');
-      } catch {
-        // best-effort flush on exit
-      }
+      this.flushSync();
     });
   }
 
@@ -629,19 +619,23 @@ export class JsonDatabase implements DatabaseInstance, LearningRepository {
     return wrapper as T;
   }
 
-  async close(): Promise<void> {
+  private flushSync(): void {
     if (this.writeTimeout) {
       clearTimeout(this.writeTimeout);
       this.writeTimeout = null;
     }
     try {
       const dir = path.dirname(this.filePath);
-      await fsPromises.mkdir(dir, { recursive: true });
-      await fsPromises.writeFile(this.filePath, JSON.stringify(this.data), 'utf-8');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(this.filePath, JSON.stringify(this.data), 'utf-8');
     } catch (err) {
       const logger = new Logger('JsonDatabase');
-      logger.warn(`Failed to flush JSON database`, err);
+      logger.warn(`Failed to flush JSON database on exit`, err);
     }
+  }
+
+  async close(): Promise<void> {
+    this.flushSync();
   }
 
   /**
