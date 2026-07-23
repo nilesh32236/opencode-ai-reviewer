@@ -8,6 +8,7 @@
  * - Custom local/remote MCP servers
  */
 
+import * as core from '@actions/core';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -21,6 +22,7 @@ export class MCPManager {
   private clients: Map<string, { client: Client; transport: Transport }> = new Map();
   private initialized = false;
   private toolsCache: Map<string, Tool[]> = new Map();
+  private logger = new Logger('MCPManager');
 
   constructor(private servers: MCPServerConfig[]) {}
 
@@ -30,12 +32,12 @@ export class MCPManager {
   async connect(): Promise<void> {
     if (this.initialized) return;
     if (this.servers.length === 0) {
-      console.log('::group::MCP: No servers configured, skipping');
-      console.log('::endgroup::');
+      core.startGroup('MCP: No servers configured, skipping');
+      core.endGroup();
       return;
     }
 
-    console.log(`::group::MCP: Connecting to ${this.servers.length} server(s)`);
+    core.startGroup(`MCP: Connecting to ${this.servers.length} server(s)`);
 
     for (const server of this.servers) {
       if (server.type === 'local' && server.command) {
@@ -64,7 +66,7 @@ export class MCPManager {
     }
 
     this.initialized = true;
-    console.log('::endgroup::');
+    core.endGroup();
   }
 
   private async connectServer(
@@ -123,12 +125,11 @@ export class MCPManager {
           maxRetries: 3,
           baseDelayMs: 2000,
         });
-        console.log(`  ${server.name}: ${tools.tools.length} tools available`);
+        this.logger.info(`${server.name}: ${tools.tools.length} tools available`);
         this.toolsCache.set(server.name, tools.tools);
       }
     } catch (err) {
-      const logger = new Logger('MCPManager');
-      logger.warn(`Failed to connect to ${server.name}`, err);
+      this.logger.warn(`Failed to connect to ${server.name}`, err);
       this.clients.delete(server.name);
       if (result.client) {
         try {
@@ -184,8 +185,7 @@ export class MCPManager {
             });
           }
         } else {
-          const logger = new Logger('MCPManager');
-          logger.warn(
+          this.logger.warn(
             `No allowed tool found for server ${name}. Allowed patterns: ${allowedPatterns.join(', ')}`,
           );
         }
@@ -194,8 +194,7 @@ export class MCPManager {
 
     for (const result of results) {
       if (result.status === 'rejected') {
-        const logger = new Logger('MCPManager');
-        logger.warn('MCP query failed', result.reason);
+        this.logger.warn('MCP query failed', result.reason);
       }
     }
 
@@ -239,8 +238,7 @@ export class MCPManager {
             return `### ${lib}\n${text}`;
           }
         } else {
-          const logger = new Logger('MCPManager');
-          logger.warn(
+          this.logger.warn(
             `No allowed tool found for server context7. Allowed patterns: ${allowedPatterns.join(', ')}`,
           );
         }
@@ -280,13 +278,12 @@ export class MCPManager {
             );
           }),
         ]).finally(() => clearTimeout(disconnectTimer!));
-        console.log(`MCP: Disconnected from ${name}`);
+        this.logger.info(`Disconnected from ${name}`);
       } catch (err) {
         try {
           await transport.close();
         } catch {}
-        const logger = new Logger('MCPManager');
-        logger.warn(`MCP disconnect error for ${name}`, err);
+        this.logger.warn(`MCP disconnect error for ${name}`, err);
       }
     }
     this.clients.clear();

@@ -97,7 +97,7 @@ export class MetaReviewEngine {
           );
         }
         if (patterns.length > 0) {
-          console.info(
+          new Logger('MetaReviewEngine').info(
             `Meta-review: discovered ${patterns.length} high-quality pattern(s), added as pending rules`,
           );
         }

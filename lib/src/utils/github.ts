@@ -10,6 +10,7 @@ import type {
   ReviewResult,
   ReviewStrength,
 } from '../types/index.js';
+import { CircuitBreaker } from './circuit-breaker.js';
 import { withRetry, withRetryAndTimeout } from './retry.js';
 
 export interface PaginatedResult<T> {
@@ -35,6 +36,13 @@ export class GitHubHelper {
    * @param repo - Repository in "owner/name" format.
    * @param apiUrl - GitHub API base URL (default: https://api.github.com).
    */
+  private circuitBreaker = new CircuitBreaker({
+    failureThreshold: 5,
+    successThreshold: 2,
+    cooldownMs: 30000,
+    name: 'GitHubHelper',
+  });
+
   constructor(
     private token: string,
     private repo: string,
@@ -53,42 +61,44 @@ export class GitHubHelper {
     const isIdempotent =
       method === 'GET' || method === 'HEAD' || method === 'PUT' || method === 'DELETE';
 
-    return withRetry(
-      async () => {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 30_000);
-        try {
-          const res = await fetch(url, {
-            ...options,
-            signal: controller.signal,
-            headers: {
-              Authorization: `Bearer ${this.token}`,
-              Accept: 'application/vnd.github+json',
-              'X-GitHub-Api-Version': '2022-11-28',
-              ...options.headers,
-            },
-          });
+    return this.circuitBreaker.call(() =>
+      withRetry(
+        async () => {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 30_000);
+          try {
+            const res = await fetch(url, {
+              ...options,
+              signal: controller.signal,
+              headers: {
+                Authorization: `Bearer ${this.token}`,
+                Accept: 'application/vnd.github+json',
+                'X-GitHub-Api-Version': '2022-11-28',
+                ...options.headers,
+              },
+            });
 
-          this.checkRateLimit(res);
+            this.checkRateLimit(res);
 
-          if (!res.ok) {
-            const body = await res.text();
-            const truncatedBody = body.length > 500 ? body.slice(0, 500) + '...' : body;
-            const err = new Error(`GitHub API ${res.status} on ${path}: ${truncatedBody}`);
-            (err as Error & { status: number }).status = res.status;
-            throw err;
+            if (!res.ok) {
+              const body = await res.text();
+              const truncatedBody = body.length > 500 ? body.slice(0, 500) + '...' : body;
+              const err = new Error(`GitHub API ${res.status} on ${path}: ${truncatedBody}`);
+              (err as Error & { status: number }).status = res.status;
+              throw err;
+            }
+
+            if (res.status === 204) return undefined as T;
+            return responseType === 'text' ? (res.text() as T) : res.json();
+          } finally {
+            clearTimeout(timeout);
           }
-
-          if (res.status === 204) return undefined as T;
-          return responseType === 'text' ? (res.text() as T) : res.json();
-        } finally {
-          clearTimeout(timeout);
-        }
-      },
-      {
-        retryableStatuses: isIdempotent ? [429, 500, 502, 503, 504] : [429],
-        retryUnknownStatus: isIdempotent,
-      },
+        },
+        {
+          retryableStatuses: isIdempotent ? [429, 500, 502, 503, 504] : [429],
+          retryUnknownStatus: isIdempotent,
+        },
+      ),
     );
   }
 
@@ -601,8 +611,14 @@ export class GitHubHelper {
   async removeLabel(issueNumber: number, label: string): Promise<void> {
     try {
       await this.api(`/issues/${issueNumber}/labels/${label}`, { method: 'DELETE' });
-    } catch {
-      // Label may not exist
+    } catch (err) {
+      const status = err instanceof Error ? (err as Error & { status: number }).status : undefined;
+      if (status === 404) {
+        return;
+      }
+      core.warning(
+        `Failed to remove label "${label}" on #${issueNumber}: ${err instanceof Error ? err.message : err}`,
+      );
     }
   }
 
@@ -619,7 +635,14 @@ export class GitHubHelper {
       ...remove.map((l) => () => this.removeLabel(issueNumber, l)),
     ];
     for (let i = 0; i < operations.length; i += 5) {
-      await Promise.all(operations.slice(i, i + 5).map((fn) => fn()));
+      const results = await Promise.allSettled(operations.slice(i, i + 5).map((fn) => fn()));
+      for (const result of results) {
+        if (result.status === 'rejected') {
+          core.warning(
+            `Label operation failed: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+          );
+        }
+      }
     }
   }
 
