@@ -7,6 +7,7 @@ import type { LearningStore } from './learning/store.js';
 import { MCPManager } from './mcp/client.js';
 import { getGitStatus, runOpenCode } from './opencode.js';
 import {
+  buildAnalyzePrompt,
   buildAuditPrompt,
   buildFixPrompt,
   buildReviewPrompt,
@@ -432,6 +433,58 @@ export class ReviewEngine {
       const r = emptyResult();
       r.verdict.reasoning = 'Failed to parse audit output';
       return r;
+    }
+  }
+
+  /**
+   * Analyze a GitHub Issue against the codebase and generate an Implementation Plan.
+   *
+   * @param issueNumber - Issue number being analyzed.
+   * @param issueContextMarkdown - Issue details (Title, body, labels, comments).
+   * @param timeoutMinutes - Execution timeout in minutes.
+   * @param workingDirectory - Optional working directory (tempDir).
+   * @returns Markdown content of the generated implementation plan.
+   */
+  async runAnalyze(
+    issueNumber: number,
+    issueContextMarkdown: string,
+    timeoutMinutes?: number,
+    workingDirectory?: string,
+  ): Promise<string> {
+    const workDir = workingDirectory || process.cwd();
+
+    if (this.config.enableMCP && this.config.mcpServers.length > 0) {
+      try {
+        await this.mcp.connect();
+      } catch (err) {
+        core.warning(`MCP connection skipped in analyze: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    const prompt = buildAnalyzePrompt(
+      { projectContext: this.config.projectContext.description || undefined },
+      issueContextMarkdown,
+    );
+
+    const runResult = await runOpenCode(prompt, {
+      model: this.config.reviewModel,
+      timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+      workingDirectory: workDir,
+    });
+
+    if (!runResult.success) {
+      core.warning('OpenCode analyze execution failed or timed out.');
+      return '⚠️ **Analysis Failed**: OpenCode CLI was unable to complete the codebase analysis.';
+    }
+
+    const planPath = path.join(workDir, '.opencode', 'analysis-plan.md');
+    try {
+      const planMarkdown = await fs.readFile(planPath, 'utf-8');
+      await fs.unlink(planPath).catch(() => {});
+      return planMarkdown.trim();
+    } catch (err) {
+      core.warning(`Could not read analysis plan from ${planPath}: ${String(err)}`);
+      return '⚠️ **Analysis Error**: Could not read generated `.opencode/analysis-plan.md` file.';
     }
   }
 
