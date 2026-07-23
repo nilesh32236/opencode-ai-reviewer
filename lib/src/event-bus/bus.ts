@@ -6,6 +6,7 @@ import { withRetry } from '../utils/retry.js';
 const SUBSCRIBER_CONCURRENCY = 10;
 const SUBSCRIBER_TIMEOUT_MS = 120_000;
 
+/** Health metrics for a single event subscriber. */
 export interface SubscriberHealth {
   name: string;
   totalCalls: number;
@@ -15,6 +16,11 @@ export interface SubscriberHealth {
   lastEventTimestamp: number | null;
 }
 
+/**
+ * Central event bus for publishing and subscribing to GitHub events.
+ * Manages subscriber registration, circuit breaker health, and
+ * concurrent execution of subscribers with timeout protection.
+ */
 export class EventBus {
   private subscribers: Map<string, Subscriber[]> = new Map();
   private history: GitHubEvent[] = [];
@@ -23,6 +29,10 @@ export class EventBus {
   private circuitBreakers: Map<string, CircuitBreaker> = new Map();
   private logger = new Logger('EventBus');
 
+  /**
+   * Register a subscriber for its subscribed event types.
+   * Also initializes health tracking and a circuit breaker for the subscriber.
+   */
   register(subscriber: Subscriber): void {
     for (const eventType of subscriber.subscribedEvents) {
       const existing = this.subscribers.get(eventType) || [];
@@ -54,12 +64,20 @@ export class EventBus {
     }
   }
 
+  /**
+   * Register multiple subscribers at once.
+   */
   registerAll(subscribers: Subscriber[]): void {
     for (const sub of subscribers) {
       this.register(sub);
     }
   }
 
+  /**
+   * Publish an event to all matching subscribers.
+   * Subscribers are executed in batches with configurable concurrency.
+   * Also matches wildcard ('*') subscribers.
+   */
   async publish(event: GitHubEvent): Promise<void> {
     this.history.push(event);
     if (this.history.length > this.maxHistory) {
@@ -76,6 +94,10 @@ export class EventBus {
     }
   }
 
+  /**
+   * Execute a single subscriber for an event, with timeout and circuit breaker protection.
+   * Tracks health metrics and logs failures for observability.
+   */
   private async executeSubscriber(sub: Subscriber, event: GitHubEvent): Promise<void> {
     const health = this.subscriberHealth.get(sub.name);
     const cb = this.circuitBreakers.get(sub.name);
@@ -148,14 +170,25 @@ export class EventBus {
     }
   }
 
+  /**
+   * Get a copy of the event history log.
+   */
   getHistory(): GitHubEvent[] {
     return [...this.history];
   }
 
+  /**
+   * Get the number of registered event types (not individual subscribers).
+   */
   subscriberCount(): number {
     return this.subscribers.size;
   }
 
+  /**
+   * Unregister a subscriber by name, removing it from all event type mappings.
+   * Also cleans up health and circuit breaker tracking.
+   * @returns true if the subscriber was found and removed.
+   */
   unregister(subscriberName: string): boolean {
     let removed = false;
     for (const [eventType, subs] of this.subscribers.entries()) {
@@ -174,16 +207,25 @@ export class EventBus {
     return removed;
   }
 
+  /**
+   * Get health metrics for all registered subscribers.
+   */
   getSubscriberHealth(): SubscriberHealth[] {
     return Array.from(this.subscriberHealth.values()).map((h) => ({ ...h }));
   }
 
+  /**
+   * Get health metrics for subscribers that have recorded failures.
+   */
   getFailedSubscribers(): SubscriberHealth[] {
     return Array.from(this.subscriberHealth.values())
       .filter((h) => h.failedCalls > 0)
       .map((h) => ({ ...h }));
   }
 
+  /**
+   * Reset health metrics and circuit breaker for a given subscriber.
+   */
   resetHealth(subscriberName: string): void {
     const health = this.subscriberHealth.get(subscriberName);
     if (health) {

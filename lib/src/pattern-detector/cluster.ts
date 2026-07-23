@@ -1,6 +1,9 @@
 const NON_ALPHANUMERIC_REGEX = /[^a-z0-9\s]/g;
 const WHITESPACE_REGEX = /\s+/;
 
+/**
+ * Tokenize a message into a set of lowercase alphanumeric tokens (length > 2).
+ */
 function tokenize(message: string): Set<string> {
   return new Set(
     message
@@ -11,6 +14,10 @@ function tokenize(message: string): Set<string> {
   );
 }
 
+/**
+ * Compute Jaccard similarity between two sets: |intersection| / |union|.
+ * Optimized to iterate over the smaller set.
+ */
 function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
   if (a.size === 0 && b.size === 0) return 0;
 
@@ -28,6 +35,17 @@ function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
   return intersectionSize / unionSize;
 }
 
+/**
+ * Cluster finding messages by Jaccard token similarity.
+ * Messages with similarity >= threshold are grouped together.
+ * Uses a greedy single-pass algorithm: each unassigned message becomes
+ * a cluster centroid and collects all similar unassigned messages.
+ * Only clusters with 2+ messages are returned.
+ *
+ * @param messages - Array of finding message strings.
+ * @param threshold - Jaccard similarity threshold (default 0.3).
+ * @returns Array of clusters, each with a centroid and member messages.
+ */
 export function clusterFindings(
   messages: string[],
   threshold = 0.3,

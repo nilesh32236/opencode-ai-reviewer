@@ -5,6 +5,11 @@ import type { LearningStore } from './store.js';
 
 const DISPUTE_KEYWORDS = ['false positive', 'not an issue', 'wrong', 'incorrect', 'false alarm'];
 
+/**
+ * Subscribes to review dismissal and comment events to record feedback signals.
+ * Maps user actions (dismissals, dispute comments) to feedback entries for
+ * false-positive rate calculation and learning.
+ */
 export class FeedbackSubscriber implements Subscriber {
   name = 'FeedbackSubscriber';
   subscribedEvents = [
@@ -16,6 +21,9 @@ export class FeedbackSubscriber implements Subscriber {
 
   constructor(private store: LearningStore) {}
 
+  /**
+   * Route an event to the appropriate handler based on event type.
+   */
   async handle(event: GitHubEvent): Promise<void> {
     try {
       switch (event.type) {
@@ -37,6 +45,9 @@ export class FeedbackSubscriber implements Subscriber {
     }
   }
 
+  /**
+   * Handle a review dismissal event — marks all findings for that PR as dismissed.
+   */
   private async handleReviewDismissed(event: GitHubEvent): Promise<void> {
     const payload = event.payload as {
       review?: { id?: number };
@@ -69,11 +80,18 @@ export class FeedbackSubscriber implements Subscriber {
     }
   }
 
+  /**
+   * Handle a review comment dismissal event.
+   * Currently a no-op — requires linking review_comment IDs to findings.
+   */
   private async handleReviewCommentDismissed(_event: GitHubEvent): Promise<void> {
     // No reliable way to map a dismissed comment to a finding without
     // linking review_comment IDs in the findings table
   }
 
+  /**
+   * Handle a comment created event — checks for dispute keywords and records feedback.
+   */
   private async handleCommentCreated(event: GitHubEvent): Promise<void> {
     const payload = event.payload as { comment?: { body?: string }; issue?: { number?: number } };
     const body = payload?.comment?.body || '';

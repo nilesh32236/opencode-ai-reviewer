@@ -18,6 +18,11 @@ import type { MCPContextEntry, MCPQueryResult, MCPServerConfig } from '../types/
 import { Logger } from '../utils/logger.js';
 import { withRetry } from '../utils/retry.js';
 
+/**
+ * Manages connections to MCP (Model Context Protocol) servers.
+ * Supports local (stdio) and remote (SSE) transports and provides
+ * unified methods for querying context and library documentation.
+ */
 export class MCPManager {
   private clients: Map<string, { client: Client; transport: Transport }> = new Map();
   private initialized = false;
@@ -69,6 +74,10 @@ export class MCPManager {
     core.endGroup();
   }
 
+  /**
+   * Connect to a single MCP server with retry and timeout support.
+   * Creates the transport, initializes the client, and caches available tools.
+   */
   private async connectServer(
     server: MCPServerConfig,
     createTransport: () => Transport,
@@ -294,6 +303,10 @@ export class MCPManager {
 
 // ─── Helpers ──────────────────────────────────────────────
 
+/**
+ * Extract text content from an MCP tool call result.
+ * Filters for content items with type 'text'.
+ */
 function extractTextFromResult(result: unknown): string {
   if (!result) return '';
   // MCP tool results have a `content` array
@@ -307,11 +320,19 @@ function extractTextFromResult(result: unknown): string {
   return '';
 }
 
+/**
+ * Rough token estimate for a string (~4 chars per token).
+ */
 function estimateTokens(text: string): number {
   // Rough estimate: ~4 chars per token
   return Math.ceil(text.length / 4);
 }
 
+/**
+ * Trim context entries to fit within a token budget.
+ * Entries are processed in order (highest relevance first)
+ * and truncated if needed to stay within budget.
+ */
 function trimToTokenBudget(entries: MCPContextEntry[], maxTokens: number): MCPQueryResult {
   let total = 0;
   const trimmed: MCPContextEntry[] = [];

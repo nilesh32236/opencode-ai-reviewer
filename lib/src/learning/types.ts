@@ -1,5 +1,6 @@
 import type { LearningFeedback, LearningQuality } from '../types/index.js';
 
+/** Input data for recording a single review finding. */
 export interface FindingInput {
   id?: string;
   prNumber: number;
@@ -11,6 +12,7 @@ export interface FindingInput {
   suggestion?: string;
 }
 
+/** Input data for recording a feedback signal on a finding. */
 export interface FeedbackInput {
   findingId: string;
   signalType: LearningFeedback['signalType'];
@@ -18,6 +20,7 @@ export interface FeedbackInput {
   prNumber: number;
 }
 
+/** Input data for recording a detected pattern. */
 export interface PatternInput {
   patternKey: string;
   messageCluster: string[];
@@ -25,6 +28,11 @@ export interface PatternInput {
   fileTypes: string[];
 }
 
+/**
+ * Repository interface for the learning store.
+ * Implementations can back this with SQLite, PostgreSQL, MySQL, or JSON.
+ * All methods are async and should handle connection failures gracefully.
+ */
 export interface LearningRepository {
   close(): Promise<void>;
   exec(sql: string): Promise<void>;

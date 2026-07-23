@@ -26,9 +26,20 @@ const EVENT_TYPE_MAP: Record<string, string> = {
   'issues.labeled': 'issue.labeled',
 };
 
+/**
+ * Routes incoming GitHub webhook events to the EventBus.
+ * Maps raw GitHub event names to internal event types and categories,
+ * extracts PR context (repo, PR number) from the payload, and
+ * publishes structured events for subscriber consumption.
+ */
 export class EventRouter {
   constructor(private bus: EventBus) {}
 
+  /**
+   * Handle an incoming raw GitHub event: map it to an internal type,
+   * extract PR context, and publish to the event bus.
+   * Errors are logged but not re-thrown to prevent webhook retries.
+   */
   async handle(rawEvent: string, payload: unknown): Promise<void> {
     const category = EVENT_CATEGORY_MAP[rawEvent] || 'internal';
     const type = EVENT_TYPE_MAP[rawEvent] || rawEvent;
@@ -56,6 +67,10 @@ export class EventRouter {
   }
 }
 
+/**
+ * Extract PR number from a webhook payload.
+ * Checks pull_request, issue, and top-level number fields.
+ */
 function extractPRNumber(payload: unknown): number | undefined {
   if (typeof payload !== 'object' || payload === null) return undefined;
   const p = payload as Record<string, unknown>;
