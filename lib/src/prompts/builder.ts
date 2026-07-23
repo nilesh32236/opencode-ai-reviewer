@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as core from '@actions/core';
 import type { PreviousFindingIteration, ReviewIssue } from '../types/index.js';
 
-interface PromptBuilderInputs {
+export interface PromptBuilderInputs {
   reviewPromptFile?: string;
   reviewPromptExtra?: string;
   maxFilesPerBatch?: number;
@@ -289,6 +289,89 @@ After writing the file, you MUST verify that the JSONL file exists, is valid JSO
 
 {"type":"summary","text":"overall assessment"}
 {"type":"issue","severity":"critical|important|minor","file":"path","line":N,"message":"what's wrong","suggestion":"how to fix","inline":false}`;
+}
+
+/**
+ * Build the analyze prompt for analyzing a GitHub Issue against the codebase.
+ * Instructs the LLM to investigate the issue, determine priority, and formulate
+ * a step-by-step implementation plan before any code is modified.
+ *
+ * @param inputs - Configuration inputs including project context.
+ * @param issueContext - The issue context string (title, body, labels, etc.).
+ * @param projectContextStr - Optional project context override.
+ * @returns The assembled analyze prompt string.
+ */
+export function buildAnalyzePrompt(
+  inputs: PromptBuilderInputs,
+  issueContext: string,
+  projectContextStr?: string,
+): string {
+  const projContext = projectContextStr || inputs.projectContext || getDefaultProjectContext();
+
+  return `You are a Principal Software Architect and Lead Developer. Your task is to analyze a GitHub Issue against the codebase and formulate a precise, actionable Implementation Plan before any code is modified.
+
+## Issue & Repository Context
+
+${issueContext}
+
+## Project Context
+${projContext}
+
+## Instructions
+
+1. **Investigate the Codebase**:
+   - Use your available tools (like \`read\`, \`glob\`, \`grep\`) to inspect the files related to the issue title and description.
+   - Trace function calls, entry points, imports, and test files to locate the exact cause or affected components.
+
+2. **Evaluate Priority & Impact**:
+   - Assign a priority: **Critical** (security vulnerability/data loss/blocking crash), **High** (major bug/broken core feature), **Medium** (minor bug/feature request), or **Low** (code quality/typo/cosmetic).
+
+3. **Formulate an Implementation Plan**:
+   - Break down the fix into concrete, minimal, step-by-step code modifications.
+   - List specific file paths and line numbers/functions that need editing.
+
+4. **Identify Options & Trade-offs (If applicable)**:
+   - If there are multiple ways to fix the problem (e.g. quick bugfix vs. refactoring), outline the suggestions clearly as Options (Option A, Option B) so the maintainer can choose.
+
+5. **Highlight Questions for the Maintainer**:
+   - If any business logic or requirement is ambiguous, list explicit questions for the maintainer.
+
+## Output Format
+
+Write your analysis in clean Markdown format to the file \`.opencode/analysis-plan.md\`.
+
+Required Markdown Structure:
+
+\`\`\`markdown
+# 🔍 Issue Analysis & Implementation Plan
+
+## 📊 Summary & Priority
+- **Issue Title:** <Insert Issue Title>
+- **Priority:** <Critical | High | Medium | Low>
+- **Impact:** <Brief description of impact>
+- **Root Cause / Problem:** <Technical explanation of why the issue exists>
+
+## 📁 Affected Files
+- \`path/to/file1.ts\` (Lines X-Y: functionName)
+- \`path/to/file2.ts\`
+
+## 🛠️ Step-by-Step Implementation Plan
+1. **[file1.ts]**: Update \`functionName()\` to handle null inputs...
+2. **[file2.ts]**: Pass down option to handler...
+3. **[tests/file1.test.ts]**: Add unit test covering the edge case...
+
+## 💡 Suggestions & Alternatives (Optional)
+- **Option A (Recommended)**: Minimal fix in file1.ts.
+- **Option B**: Refactor helper function across files.
+
+## ❓ Questions / Decisions Needed from Maintainer
+- <Question 1 or "None - ready to proceed with /fix">
+\`\`\`
+
+**CRITICAL RULES:**
+- Do NOT run \`git commit\`, \`git push\`, or modify any source code files — this is a read-only analysis phase.
+- Write the final markdown report to \`.opencode/analysis-plan.md\`.
+- Ensure all file paths referenced actually exist in the codebase.`;
 }
 
 /**
