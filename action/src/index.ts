@@ -18,6 +18,7 @@ import {
   setupOpenCode,
   setupWorkspaceDependencies,
 } from '@opencode-pr-agent/lib';
+import { runAnalyze } from './analyze.js';
 import { runAudit } from './audit.js';
 import { runAutofixLoop, runFix, runFixIssue } from './fix.js';
 import { type ActionInputs, parseInputs } from './inputs.js';
@@ -238,6 +239,9 @@ async function run(): Promise<void> {
       const gh = new GitHubHelper(token, repo);
 
       switch (inputs.mode) {
+        case 'analyze':
+          await runAnalyze(inputs, config, engine, gh, repo, token);
+          break;
         case 'review':
           await runReview(inputs, config, engine, gh, repo);
           break;

@@ -17,9 +17,9 @@ import { handleAutofixLoop } from './autofix.js';
 import { handlePRReview } from './pr-review.js';
 
 /**
- * Handle a slash command (fix/review/audit): clone the repo, execute the
- * appropriate handler (PR review, autofix loop, or audit) in a temp
- * workspace, and clean up.
+ * Handle a slash command (fix/review/audit/analyze): clone the repo, execute
+ * the appropriate handler (PR review, autofix loop, audit, or analyze) in a
+ * temp workspace, and clean up.
  * @param command - The command to execute.
  * @param issueNumber - The issue or PR number.
  * @param repo - Repository string (owner/repo).
@@ -27,7 +27,7 @@ import { handlePRReview } from './pr-review.js';
  * @param config - Agent configuration.
  */
 export async function handleCommand(
-  command: 'fix' | 'review' | 'audit',
+  command: 'fix' | 'review' | 'audit' | 'analyze',
   issueNumber: number,
   repo: string,
   token: string,
@@ -56,6 +56,11 @@ export async function handleCommand(
     );
 
     switch (command) {
+      case 'analyze': {
+        await handleAnalyzeCommand(issueNumber, repo, token, config, tempDir);
+        break;
+      }
+
       case 'review': {
         if (await gh.isPR(issueNumber)) {
           await handlePRReview(issueNumber, repo, token, config, undefined, tempDir);
@@ -95,6 +100,50 @@ export async function handleCommand(
     );
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Handle an analyze command: gather issue context, run the analysis engine,
+ * and post the implementation plan as a comment on the issue.
+ * @param issueNumber - The issue number to analyze.
+ * @param repo - Repository string (owner/repo).
+ * @param token - GitHub authentication token.
+ * @param config - Agent configuration.
+ * @param tempDir - Temporary working directory.
+ */
+export async function handleAnalyzeCommand(
+  issueNumber: number,
+  repo: string,
+  token: string,
+  config: AgentConfig,
+  tempDir: string,
+): Promise<void> {
+  const logger = new Logger('Command:Analyze', { repo, prNumber: issueNumber });
+  logger.info(`Analyzing issue #${issueNumber}`);
+
+  const gh = new GitHubHelper(token, repo);
+  const engine = new ReviewEngine(config, token, repo);
+
+  try {
+    const issueContext = await gh.gatherContext({ issueNumber });
+
+    const planMarkdown = await engine.runAnalyze(issueNumber, issueContext, undefined, tempDir);
+
+    await gh.postOrUpdateComment(issueNumber, '<!-- issue-analysis-plan -->', planMarkdown);
+
+    logger.info(`Posted analysis plan for issue #${issueNumber}`);
+  } catch (err) {
+    logger.error(
+      `Failed to analyze issue #${issueNumber}: ${err instanceof Error ? err.message : err}`,
+    );
+    await gh.postOrUpdateComment(
+      issueNumber,
+      '<!-- issue-analysis-error -->',
+      `❌ **Analysis Failed**: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  } finally {
+    await engine.cleanup();
   }
 }
 
