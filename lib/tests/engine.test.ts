@@ -609,7 +609,6 @@ describe('ReviewEngine', () => {
         'fake-token',
         'owner/repo',
       );
-      mockMCPConnect.mockResolvedValue(undefined);
       mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
 
       const fsPromises = fs.promises;
@@ -630,7 +629,6 @@ describe('ReviewEngine', () => {
     });
 
     it('returns error markdown when runOpenCode fails', async () => {
-      mockMCPConnect.mockResolvedValue(undefined);
       mockRunOpenCode.mockResolvedValue({ success: false, output: '', durationMs: 500 });
 
       const result = await engine.runAnalyze(123, issueContextMarkdown);
@@ -641,7 +639,6 @@ describe('ReviewEngine', () => {
     });
 
     it('returns error markdown when analysis-plan.md cannot be read', async () => {
-      mockMCPConnect.mockResolvedValue(undefined);
       mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
 
       const fsPromises = fs.promises;
