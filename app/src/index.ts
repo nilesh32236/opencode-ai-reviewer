@@ -146,7 +146,31 @@ export default (app: Probot): void => {
     },
   };
 
-  subscribers.push(reviewSubscriber, fixSubscriber, auditSubscriber);
+  const analyzeSubscriber: Subscriber = {
+    name: 'AnalyzeSubscriber',
+    subscribedEvents: ['comment.created', 'review_comment.created'],
+    async handle(event: GitHubEvent) {
+      try {
+        const analyzePayload = event.payload as Record<string, unknown>;
+        const analyzeComment = analyzePayload.comment as Record<string, string> | undefined;
+        if (
+          !analyzeComment?.body?.includes('/analyze') &&
+          !analyzeComment?.body?.includes('/analyse')
+        )
+          return;
+        const config = buildConfig();
+        const issueNumber = event.prNumber || 0;
+        if (!issueNumber) return;
+        await handleCommand('analyze', issueNumber, event.repo || '', getToken(), config);
+      } catch (err) {
+        logger.error(
+          `AnalyzeSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    },
+  };
+
+  subscribers.push(reviewSubscriber, fixSubscriber, auditSubscriber, analyzeSubscriber);
 
   const feedbackSub = new FeedbackSubscriber(learningStore);
   subscribers.push(feedbackSub);
