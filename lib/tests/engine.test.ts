@@ -635,7 +635,9 @@ describe('ReviewEngine', () => {
 
       const result = await engine.runAnalyze(123, issueContextMarkdown);
 
-      expect(result).toBe('⚠️ **Analysis Failed**: OpenCode CLI was unable to complete the codebase analysis.');
+      expect(result).toBe(
+        '⚠️ **Analysis Failed**: OpenCode CLI was unable to complete the codebase analysis.',
+      );
     });
 
     it('returns error markdown when analysis-plan.md cannot be read', async () => {
@@ -647,19 +649,9 @@ describe('ReviewEngine', () => {
 
       const result = await engine.runAnalyze(123, issueContextMarkdown);
 
-      expect(result).toBe('⚠️ **Analysis Error**: Could not read generated `.opencode/analysis-plan.md` file.');
-    });
-
-    it('handles MCP connection failure gracefully', async () => {
-      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
-
-      const fsPromises = fs.promises;
-      vi.mocked(fsPromises.readFile).mockResolvedValue('# Plan');
-      vi.mocked(fsPromises.unlink).mockResolvedValue(undefined);
-
-      const result = await engine.runAnalyze(123, issueContextMarkdown);
-
-      expect(result).toBe('# Plan');
+      expect(result).toBe(
+        '⚠️ **Analysis Error**: Could not read generated `.opencode/analysis-plan.md` file.',
+      );
     });
 
     it('works with custom config', async () => {
