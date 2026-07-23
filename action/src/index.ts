@@ -266,8 +266,9 @@ async function run(): Promise<void> {
     } finally {
       if (engine) {
         await engine.cleanup();
+      } else {
+        await learningStore.close().catch(() => {});
       }
-      await learningStore.close().catch(() => {});
     }
   } catch (error) {
     const mode = core.getInput('mode') || 'unknown';

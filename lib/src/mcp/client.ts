@@ -8,6 +8,7 @@
  * - Custom local/remote MCP servers
  */
 
+import * as core from '@actions/core';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -30,12 +31,12 @@ export class MCPManager {
   async connect(): Promise<void> {
     if (this.initialized) return;
     if (this.servers.length === 0) {
-      console.log('::group::MCP: No servers configured, skipping');
-      console.log('::endgroup::');
+      core.startGroup('MCP: No servers configured, skipping');
+      core.endGroup();
       return;
     }
 
-    console.log(`::group::MCP: Connecting to ${this.servers.length} server(s)`);
+    core.startGroup(`MCP: Connecting to ${this.servers.length} server(s)`);
 
     for (const server of this.servers) {
       if (server.type === 'local' && server.command) {
@@ -64,7 +65,7 @@ export class MCPManager {
     }
 
     this.initialized = true;
-    console.log('::endgroup::');
+    core.endGroup();
   }
 
   private async connectServer(
@@ -123,7 +124,7 @@ export class MCPManager {
           maxRetries: 3,
           baseDelayMs: 2000,
         });
-        console.log(`  ${server.name}: ${tools.tools.length} tools available`);
+        core.info(`  ${server.name}: ${tools.tools.length} tools available`);
         this.toolsCache.set(server.name, tools.tools);
       }
     } catch (err) {
@@ -280,7 +281,7 @@ export class MCPManager {
             );
           }),
         ]).finally(() => clearTimeout(disconnectTimer!));
-        console.log(`MCP: Disconnected from ${name}`);
+        core.info(`MCP: Disconnected from ${name}`);
       } catch (err) {
         try {
           await transport.close();

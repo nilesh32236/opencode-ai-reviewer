@@ -84,15 +84,27 @@ export class FeedbackSubscriber implements Subscriber {
     const isDispute = DISPUTE_KEYWORDS.some((kw) => lower.includes(kw));
     if (!isDispute) return;
 
-    const findings = await this.store.getFindings(prNumber, 5);
+    let findings: Array<Record<string, unknown>>;
+    try {
+      findings = await this.store.getFindings(prNumber, 5);
+    } catch (err) {
+      const logger = new Logger('FeedbackSubscriber', { prNumber });
+      logger.error(`Failed to get findings for pr ${prNumber}`, err);
+      return;
+    }
     if (findings.length === 0) return;
-    await this.store.recordFeedbackBatch(
-      findings.map((f) => ({
-        findingId: f.id as string,
-        signalType: 'disputed_comment' as const,
-        signalValue: body.slice(0, 200),
-        prNumber,
-      })),
-    );
+    try {
+      await this.store.recordFeedbackBatch(
+        findings.map((f) => ({
+          findingId: f.id as string,
+          signalType: 'disputed_comment' as const,
+          signalValue: body.slice(0, 200),
+          prNumber,
+        })),
+      );
+    } catch (err) {
+      const logger = new Logger('FeedbackSubscriber', { prNumber });
+      logger.warn(`Failed to record feedback batch for pr ${prNumber}`, err);
+    }
   }
 }

@@ -117,8 +117,11 @@ export class EventBus {
       await work();
 
       if (timedOut) {
-        const err = new Error(`Subscriber ${sub.name} timed out after ${SUBSCRIBER_TIMEOUT_MS}ms`);
-        throw err;
+        this.logger.warn(
+          `Subscriber ${sub.name} completed after timeout (${SUBSCRIBER_TIMEOUT_MS}ms)`,
+          { prNumber: event.prNumber, repo: event.repo },
+        );
+        return;
       }
 
       if (health) {

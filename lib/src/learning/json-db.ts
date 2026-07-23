@@ -119,6 +119,19 @@ export class JsonDatabase implements DatabaseInstance, LearningRepository {
       this.data.meta_review_counter.push({ id: 1, count: 0 });
       this.save();
     }
+    process.on('beforeExit', () => {
+      if (this.writeTimeout) {
+        clearTimeout(this.writeTimeout);
+        this.writeTimeout = null;
+      }
+      try {
+        const dir = path.dirname(this.filePath);
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(this.filePath, JSON.stringify(this.data), 'utf-8');
+      } catch {
+        // best-effort flush on exit
+      }
+    });
   }
 
   private initHandlers(): Array<{

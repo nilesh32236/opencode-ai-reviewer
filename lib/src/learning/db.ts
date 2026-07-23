@@ -17,11 +17,16 @@ export function sanitizeDbError(err: unknown): string {
  * which is safer than `any` because it requires explicit type assertion.
  * In ESM contexts this throws unconditionally.
  */
+/**
+ * Dynamic require() for optional DB drivers (pg, mysql2, better-sqlite3) that may not be installed.
+ * Compiled to CommonJS so `require` is available at runtime.
+ * In native ESM contexts, the function throws ERR_REQUIRE_ESM.
+ */
 const req: ((moduleName: string) => unknown) | ((moduleName: string) => never) =
   typeof require !== 'undefined'
     ? require
     : (moduleName: string) => {
-        throw new Error(`Dynamic require not supported for ${moduleName}`);
+        throw new Error(`ERR_REQUIRE_ESM: Dynamic require not supported for ${moduleName}`);
       };
 
 /**
@@ -1120,6 +1125,7 @@ export async function connectDb(dbPathOrUrl: string): Promise<LearningRepository
     }
     const db = new Database(dbPathOrUrl);
     db.pragma('journal_mode = WAL');
+    db.pragma('busy_timeout = 5000');
     return new SqliteAdapter(db);
   } catch (e) {
     const errMsg = e instanceof Error ? e.message : String(e);
@@ -1128,7 +1134,7 @@ export async function connectDb(dbPathOrUrl: string): Promise<LearningRepository
       errMsg.includes('Module not found') ||
       errMsg.includes('Could not locate the bindings file') ||
       errMsg.includes('Cannot locate the bindings file') ||
-      errMsg.includes('require');
+      errMsg.includes('ERR_REQUIRE_ESM');
     if (!isMissingDriver) {
       throw e;
     }
