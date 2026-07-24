@@ -304,24 +304,13 @@ export async function runOpenCode(
     `Running OpenCode (model: ${options.model}, timeout: ${options.timeoutMinutes ?? 20}m)...`,
   );
 
-  // Only forward the API key required for the active model, not all keys unconditionally.
-  // This limits the blast radius if a subprocess is compromised.
+  // Forward configured API keys to OpenCode process environment.
   const githubToken = process.env.GITHUB_TOKEN || process.env.INPUT_GITHUB_TOKEN || '';
-
-  const model = options.model.toLowerCase();
-  const openaiApiKey =
-    model.startsWith('gpt') ||
-    model.startsWith('o1') ||
-    model.startsWith('o3') ||
-    model.startsWith('o-')
-      ? process.env.OPENAI_API_KEY || process.env.INPUT_OPENAI_API_KEY || ''
-      : '';
-  const anthropicApiKey = model.startsWith('claude')
-    ? process.env.ANTHROPIC_API_KEY || process.env.INPUT_ANTHROPIC_API_KEY || ''
-    : '';
-  const geminiApiKey = model.startsWith('gemini')
-    ? process.env.GEMINI_API_KEY || process.env.INPUT_GEMINI_API_KEY || ''
-    : '';
+  const openaiApiKey = process.env.OPENAI_API_KEY || process.env.INPUT_OPENAI_API_KEY || '';
+  const anthropicApiKey =
+    process.env.ANTHROPIC_API_KEY || process.env.INPUT_ANTHROPIC_API_KEY || '';
+  const geminiApiKey = process.env.GEMINI_API_KEY || process.env.INPUT_GEMINI_API_KEY || '';
+  const opencodeApiKey = process.env.OPENCODE_API_KEY || process.env.INPUT_OPENCODE_API_KEY || '';
 
   const safeEnv: Record<string, string> = {};
   const WHITELISTED_KEYS = [
@@ -366,6 +355,7 @@ export async function runOpenCode(
   if (openaiApiKey) safeEnv.OPENAI_API_KEY = openaiApiKey;
   if (anthropicApiKey) safeEnv.ANTHROPIC_API_KEY = anthropicApiKey;
   if (geminiApiKey) safeEnv.GEMINI_API_KEY = geminiApiKey;
+  if (opencodeApiKey) safeEnv.OPENCODE_API_KEY = opencodeApiKey;
   if (options.env) {
     for (const [key, value] of Object.entries(options.env)) {
       if (value !== undefined && key !== 'OPENCODE_CONFIG_CONTENT') {

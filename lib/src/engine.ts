@@ -5,7 +5,7 @@ import * as core from '@actions/core';
 import { emptyResult, parseJsonlFile } from './jsonl-parser.js';
 import type { LearningStore } from './learning/store.js';
 import { MCPManager } from './mcp/client.js';
-import { getGitStatus, runOpenCode } from './opencode.js';
+import { ensureOutputDir, getGitStatus, runOpenCode } from './opencode.js';
 import {
   buildAnalyzePrompt,
   buildAuditPrompt,
@@ -452,6 +452,8 @@ export class ReviewEngine {
     workingDirectory?: string,
   ): Promise<string> {
     const workDir = workingDirectory || process.cwd();
+    const planPath = path.join(workDir, '.opencode', 'analysis-plan.md');
+    ensureOutputDir(planPath);
 
     const prompt = buildAnalyzePrompt(
       { projectContext: this.config.projectContext.description || undefined },
@@ -469,12 +471,14 @@ export class ReviewEngine {
       return '⚠️ **Analysis Failed**: OpenCode CLI was unable to complete the codebase analysis.';
     }
 
-    const planPath = path.join(workDir, '.opencode', 'analysis-plan.md');
     try {
       const planMarkdown = await fs.readFile(planPath, 'utf-8');
       await fs.unlink(planPath).catch(() => {});
       return planMarkdown.trim();
     } catch (err) {
+      if (runResult.output && runResult.output.trim().length > 0) {
+        return runResult.output.trim();
+      }
       core.warning(`Could not read analysis plan from ${planPath}: ${String(err)}`);
       return '⚠️ **Analysis Error**: Could not read generated `.opencode/analysis-plan.md` file.';
     }
