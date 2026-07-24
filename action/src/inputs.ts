@@ -1,11 +1,13 @@
 import * as core from '@actions/core';
-import type { ActionMode } from '@opencode-pr-agent/lib';
+import {
+  type ActionMode,
+  DEFAULT_ALLOWLIST,
+  validateRunChecksCommand,
+} from '@opencode-pr-agent/lib';
 
 const VALID_MODES: ActionMode[] = ['review', 'fix', 'audit', 'post', 'analyze'];
 
-export { validateRunChecksCommand } from '@opencode-pr-agent/lib';
-
-const DEFAULT_ALLOWLIST = ['pnpm', 'npm', 'yarn', 'node'];
+export { DEFAULT_ALLOWLIST, validateRunChecksCommand };
 
 /**
  * Parse and validate a timeout value from a raw string.

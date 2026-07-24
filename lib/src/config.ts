@@ -5,6 +5,7 @@ import yaml from 'js-yaml';
 import { minimatch } from 'minimatch';
 import type { ConfigOverride, PromptConfig } from './types/index.js';
 import { PromptConfigSchema } from './types/schemas.js';
+import { DEFAULT_ALLOWLIST } from './utils/command.js';
 
 export interface ResolveConfigOptions {
   /** File paths being reviewed (for path-based overrides) */
@@ -154,12 +155,11 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     if (typeof config.fix.maxIterations === 'number') {
       result.fix.maxIterations = Math.min(Math.max(config.fix.maxIterations, 1), 10);
     }
-    const defaultAllowlist = ['pnpm', 'npm', 'yarn', 'node'];
     const allowlist = Array.isArray(config.fix.checkAllowlist)
       ? config.fix.checkAllowlist.filter((c) => typeof c === 'string')
-      : defaultAllowlist;
+      : DEFAULT_ALLOWLIST;
     if (allowlist.length === 0) {
-      result.fix.checkAllowlist = defaultAllowlist;
+      result.fix.checkAllowlist = DEFAULT_ALLOWLIST;
     } else {
       result.fix.checkAllowlist = allowlist;
     }

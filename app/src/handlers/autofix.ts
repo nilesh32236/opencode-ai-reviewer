@@ -5,6 +5,7 @@ import os from 'os';
 import path from 'path';
 import type { AgentConfig, FixResult, PRContext, ReviewResult } from '@opencode-pr-agent/lib';
 import {
+  DEFAULT_ALLOWLIST,
   GitHubHelper,
   Logger,
   ReviewEngine,
@@ -384,7 +385,7 @@ export async function handleAutofixLoop(
         try {
           const validated = validateRunChecksCommand(
             runChecksAfterFix,
-            checkAllowlist ?? ['pnpm', 'npm', 'yarn', 'node'],
+            checkAllowlist ?? DEFAULT_ALLOWLIST,
           );
           program = validated.program;
           args = validated.args;
@@ -412,7 +413,14 @@ export async function handleAutofixLoop(
               logger.info('Verification passed');
               break;
             } catch (err) {
-              const stderr = (err as Record<string, unknown>)?.stderr?.toString() ?? '';
+              const errWithStderr =
+                typeof err === 'object' && err !== null
+                  ? (err as { stderr?: Buffer | string })
+                  : null;
+              const stderr =
+                typeof errWithStderr?.stderr === 'string' || Buffer.isBuffer(errWithStderr?.stderr)
+                  ? errWithStderr.stderr.toString()
+                  : '';
               const message = err instanceof Error ? err.message : String(err);
               checkOutput += message + '\n' + stderr;
               logger.warn(

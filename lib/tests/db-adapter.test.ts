@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   type DbAdapter,
   JsonDbAdapter,
@@ -11,6 +11,7 @@ import {
   connectDb,
 } from '../src/learning/db.js';
 import { JsonDatabase } from '../src/learning/json-db.js';
+import { applyMigrations } from '../src/learning/schema.js';
 import type { LearningRepository } from '../src/learning/types.js';
 
 // ---------------------------------------------------------------------------
@@ -442,6 +443,7 @@ describe('SqliteAdapter', () => {
   beforeEach(async () => {
     dbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sqlite-adapter-test-')), 'test.db');
     adapter = (await connectDb(dbPath)) as DbAdapter & LearningRepository;
+    await applyMigrations(adapter);
   });
 
   afterEach(async () => {

@@ -1,8 +1,10 @@
-import { describe, expect, it } from 'vitest';
-
-import { validateRunChecksCommand } from '../src/utils/command.js';
+import { DEFAULT_ALLOWLIST, validateRunChecksCommand } from '../src/utils/command.js';
 
 describe('validateRunChecksCommand()', () => {
+  it('exports DEFAULT_ALLOWLIST', () => {
+    expect(DEFAULT_ALLOWLIST).toEqual(['pnpm', 'npm', 'yarn', 'node']);
+  });
+
   it('accepts allowed commands with no args', () => {
     const result = validateRunChecksCommand('pnpm');
     expect(result).toEqual({ program: 'pnpm', args: [] });
@@ -33,6 +35,27 @@ describe('validateRunChecksCommand()', () => {
   it('rejects commands not in default allowlist', () => {
     expect(() => validateRunChecksCommand('bash -c "rm -rf /"')).toThrow(
       'Command "bash" is not allowed',
+    );
+  });
+
+  it('rejects node eval flags', () => {
+    expect(() => validateRunChecksCommand('node -e "console.log(1)"')).toThrow(
+      'Dangerous flag "-e" is not allowed for node',
+    );
+    expect(() => validateRunChecksCommand('node --eval "console.log(1)"')).toThrow(
+      'Dangerous flag "--eval" is not allowed for node',
+    );
+  });
+
+  it('rejects dangerous runner subcommands', () => {
+    expect(() => validateRunChecksCommand('npm exec foo')).toThrow(
+      'Subcommand "exec" is not allowed for npm',
+    );
+    expect(() => validateRunChecksCommand('yarn dlx foo')).toThrow(
+      'Subcommand "dlx" is not allowed for yarn',
+    );
+    expect(() => validateRunChecksCommand('pnpm dlx foo')).toThrow(
+      'Subcommand "dlx" is not allowed for pnpm',
     );
   });
 

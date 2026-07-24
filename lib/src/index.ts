@@ -37,7 +37,7 @@ export { connectDb } from './learning/db.js';
 export type { LearningRepository } from './learning/types.js';
 export { getDbPath } from './learning/schema.js';
 export { withRetry, withRetryAndTimeout } from './utils/retry.js';
-export { validateRunChecksCommand } from './utils/command.js';
+export { DEFAULT_ALLOWLIST, validateRunChecksCommand } from './utils/command.js';
 export { CircuitBreaker } from './utils/circuit-breaker.js';
 export type { CircuitState, CircuitBreakerOptions } from './utils/circuit-breaker.js';
 export { Logger, sanitizeError, sanitizeErrorMessage } from './utils/logger.js';
