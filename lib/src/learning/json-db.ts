@@ -360,7 +360,8 @@ export class JsonDatabase implements LearningRepository {
     const extensions = [
       ...new Set(
         filePaths.map((f) => {
-          const ext = f.split('.').pop();
+          const parts = f.split('.');
+          const ext = parts.length > 1 ? parts.pop() : '';
           return ext ? `.${ext}` : '';
         }),
       ),

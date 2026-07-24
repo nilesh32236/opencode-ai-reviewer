@@ -107,12 +107,15 @@ export class MetaReviewEngine {
     if (this.patternDetector && avgScore >= 70) {
       try {
         const patterns = await this.patternDetector.discover(3);
-        for (const p of patterns) {
-          await this.store.addCustomRule(
-            `Pattern: ${p.patternKey}\nMessages: ${p.messages.slice(0, 3).join(', ')}`,
-            'auto',
-          );
-        }
+        // Optimize: process independent custom rule additions concurrently to reduce execution time
+        await Promise.all(
+          patterns.map((p) =>
+            this.store.addCustomRule(
+              `Pattern: ${p.patternKey}\nMessages: ${p.messages.slice(0, 3).join(', ')}`,
+              'auto',
+            ),
+          ),
+        );
         if (patterns.length > 0) {
           new Logger('MetaReviewEngine').info(
             `Meta-review: discovered ${patterns.length} high-quality pattern(s), added as pending rules`,
