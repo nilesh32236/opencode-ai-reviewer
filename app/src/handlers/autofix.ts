@@ -1,5 +1,8 @@
 import { execFileSync } from 'child_process';
 import type { ExecFileSyncOptions } from 'child_process';
+import { mkdtempSync, rmSync } from 'fs';
+import os from 'os';
+import path from 'path';
 import type { AgentConfig, FixResult, PRContext, ReviewResult } from '@opencode-pr-agent/lib';
 import {
   GitHubHelper,
@@ -177,18 +180,23 @@ export async function handleAutofixLoop(
   let approved = false;
 
   let gitEnv = initialGitEnv;
-  if (!gitEnv && tempDir) {
+  let ownTempDir: string | undefined;
+  let workingDir = tempDir;
+  if (!gitEnv && workingDir) {
     gitEnv = configureGit(
       'opencode-pr-agent[bot]',
       'opencode-pr-agent[bot]@users.noreply.github.com',
       token,
-      tempDir,
+      workingDir,
     );
   } else if (!gitEnv) {
-    configureGit(
+    ownTempDir = mkdtempSync(path.join(os.tmpdir(), 'opencode-autofix-'));
+    workingDir = ownTempDir;
+    gitEnv = configureGit(
       'opencode-pr-agent[bot]',
       'opencode-pr-agent[bot]@users.noreply.github.com',
       token,
+      workingDir,
     );
   }
   try {
@@ -205,7 +213,7 @@ export async function handleAutofixLoop(
         break;
       }
 
-      const reviewWorkingDir = tempDir || process.cwd();
+      const reviewWorkingDir = workingDir || process.cwd();
       let result: ReviewResult;
       try {
         result = await engine.reviewPR(
@@ -298,8 +306,8 @@ export async function handleAutofixLoop(
         contextMd += '\n';
       }
 
-      const gitOpts: ExecFileSyncOptions = tempDir
-        ? { cwd: tempDir, ...(gitEnv ? { env: { ...process.env, ...gitEnv } } : {}) }
+      const gitOpts: ExecFileSyncOptions = workingDir
+        ? { cwd: workingDir, ...(gitEnv ? { env: { ...process.env, ...gitEnv } } : {}) }
         : {};
       let fixResult: FixResult | undefined;
       try {
@@ -390,7 +398,7 @@ export async function handleAutofixLoop(
             encoding: 'utf-8' as const,
             stdio: 'pipe' as const,
             timeout: 300_000,
-            ...(tempDir ? { cwd: tempDir } : {}),
+            ...(workingDir ? { cwd: workingDir } : {}),
           };
           try {
             const stdout = execFileSync(checkCmdProgram, checkCmdArgs, execOpts);
@@ -481,5 +489,12 @@ export async function handleAutofixLoop(
     }
   } finally {
     await engine.cleanup();
+    if (ownTempDir) {
+      try {
+        rmSync(ownTempDir, { recursive: true, force: true });
+      } catch {
+        /* ignore cleanup errors */
+      }
+    }
   }
 }

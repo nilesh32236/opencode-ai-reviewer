@@ -1,0 +1,8 @@
+services:
+  opencode-reviewer:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}

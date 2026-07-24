@@ -1,4 +1,8 @@
 packages:
-  - 'lib'
-  - 'action'
-  - 'app'
+  - lib
+  - action
+  - app
+
+onlyBuiltDependencies:
+  - '@biomejs/biome'
+  - better-sqlite3

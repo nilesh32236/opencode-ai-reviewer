@@ -13,6 +13,7 @@ const {
   mockBuildReviewPrompt,
   mockBuildFixPrompt,
   mockBuildAuditPrompt,
+  mockBuildAnalyzePrompt,
   mockBuildSynthesisPrompt,
   MockMCPManager,
   MockGitHubHelper,
@@ -35,6 +36,7 @@ const {
   const _mockBuildReviewPrompt = vi.fn(() => 'review prompt');
   const _mockBuildFixPrompt = vi.fn(() => 'fix prompt');
   const _mockBuildAuditPrompt = vi.fn(() => 'audit prompt');
+  const _mockBuildAnalyzePrompt = vi.fn(() => 'analyze prompt');
   const _mockBuildSynthesisPrompt = vi.fn(() => 'synthesis prompt');
 
   class _MockMCPManager {
@@ -58,6 +60,7 @@ const {
     mockBuildReviewPrompt: _mockBuildReviewPrompt,
     mockBuildFixPrompt: _mockBuildFixPrompt,
     mockBuildAuditPrompt: _mockBuildAuditPrompt,
+    mockBuildAnalyzePrompt: _mockBuildAnalyzePrompt,
     mockBuildSynthesisPrompt: _mockBuildSynthesisPrompt,
     MockMCPManager: _MockMCPManager,
     MockGitHubHelper: _MockGitHubHelper,
@@ -91,6 +94,7 @@ vi.mock('../src/prompts/builder.js', () => ({
   buildReviewPrompt: mockBuildReviewPrompt,
   buildFixPrompt: mockBuildFixPrompt,
   buildAuditPrompt: mockBuildAuditPrompt,
+  buildAnalyzePrompt: mockBuildAnalyzePrompt,
   buildSynthesisPrompt: mockBuildSynthesisPrompt,
 }));
 
@@ -217,7 +221,8 @@ describe('ReviewEngine', () => {
 
       const result = await engine.reviewPR(pr);
 
-      expect(result).toBeDefined();
+      expect(result.verdict).toBeDefined();
+      expect(result.summary).toBeDefined();
     });
 
     it('handles learning store failure gracefully', async () => {
@@ -236,7 +241,8 @@ describe('ReviewEngine', () => {
       mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
 
       const result = await eng.reviewPR(pr);
-      expect(result).toBeDefined();
+      expect(result.verdict).toBeDefined();
+      expect(result.issues).toBeDefined();
     });
 
     it('uses cached lessons within TTL', async () => {
@@ -575,7 +581,8 @@ describe('ReviewEngine', () => {
 
       const result = await engine.runAudit('audit prompt', './src', 'security');
 
-      expect(result).toBeDefined();
+      expect(result.verdict).toBeDefined();
+      expect(result.summary).toBeDefined();
     });
 
     it('skips MCP when enableMCP is false', async () => {
@@ -591,6 +598,77 @@ describe('ReviewEngine', () => {
 
       expect(mockMCPConnect).not.toHaveBeenCalled();
       expect(result).toBeDefined();
+    });
+  });
+
+  describe('runAnalyze()', () => {
+    const issueContextMarkdown = '## Issue #123\nSome description';
+
+    it('returns analysis plan markdown on success', async () => {
+      const engWithMCP = new ReviewEngine(
+        makeConfig({
+          mcpServers: [{ name: 'context7', type: 'local', command: ['node', 'server.js'] }],
+        }),
+        'fake-token',
+        'owner/repo',
+      );
+      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
+
+      const fsPromises = fs.promises;
+      vi.mocked(fsPromises.readFile).mockResolvedValue('# Implementation Plan\n\n1. Fix the bug');
+      vi.mocked(fsPromises.unlink).mockResolvedValue(undefined);
+
+      const result = await engWithMCP.runAnalyze(123, issueContextMarkdown);
+
+      expect(mockBuildAnalyzePrompt).toHaveBeenCalledWith(
+        { projectContext: DEFAULT_CONFIG.projectContext.description || undefined },
+        issueContextMarkdown,
+      );
+      expect(mockRunOpenCode).toHaveBeenCalledWith(
+        'analyze prompt',
+        expect.objectContaining({ model: DEFAULT_CONFIG.reviewModel, timeoutMinutes: 10 }),
+      );
+      expect(result).toBe('# Implementation Plan\n\n1. Fix the bug');
+    });
+
+    it('returns error markdown when runOpenCode fails', async () => {
+      mockRunOpenCode.mockResolvedValue({ success: false, output: '', durationMs: 500 });
+
+      const result = await engine.runAnalyze(123, issueContextMarkdown);
+
+      expect(result).toBe(
+        '⚠️ **Analysis Failed**: OpenCode CLI was unable to complete the codebase analysis.',
+      );
+    });
+
+    it('returns error markdown when analysis-plan.md cannot be read', async () => {
+      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
+
+      const fsPromises = fs.promises;
+      vi.mocked(fsPromises.readFile).mockRejectedValue(new Error('ENOENT'));
+
+      const result = await engine.runAnalyze(123, issueContextMarkdown);
+
+      expect(result).toBe(
+        '⚠️ **Analysis Error**: Could not read generated `.opencode/analysis-plan.md` file.',
+      );
+    });
+
+    it('works with custom config', async () => {
+      const eng = new ReviewEngine(
+        makeConfig({ enableMCP: false, mcpServers: [] }),
+        'fake-token',
+        'owner/repo',
+      );
+      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
+
+      const fsPromises = fs.promises;
+      vi.mocked(fsPromises.readFile).mockResolvedValue('# Plan');
+      vi.mocked(fsPromises.unlink).mockResolvedValue(undefined);
+
+      const result = await eng.runAnalyze(123, issueContextMarkdown);
+
+      expect(result).toBe('# Plan');
     });
   });
 

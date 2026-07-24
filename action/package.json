@@ -1,6 +1,6 @@
 {
   "name": "@opencode-pr-agent/action",
-  "version": "1.1.12",
+  "version": "1.1.14",
   "private": true,
   "main": "lib/index.js",
   "scripts": {
@@ -19,7 +19,7 @@
     "@opencode-pr-agent/lib": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
+    "@types/node": "^22.0.0",
     "@vercel/ncc": "^0.38.3"
   }
 }

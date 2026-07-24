@@ -127,9 +127,14 @@ export function parseInputs(): ActionInputs {
 
   const globalModel = core.getInput('model');
 
+  const githubToken = core.getInput('github_token', { required: true });
+  if (!githubToken) {
+    throw new Error('github_token input is required but was empty');
+  }
+
   return {
     mode: modeStr as ActionMode,
-    githubToken: core.getInput('github_token', { required: true }),
+    githubToken,
     openAiKey: core.getInput('openai_api_key') || undefined,
     anthropicKey: core.getInput('anthropic_api_key') || undefined,
     geminiKey: core.getInput('gemini_api_key') || undefined,
