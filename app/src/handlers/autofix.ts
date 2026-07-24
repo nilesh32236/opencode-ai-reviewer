@@ -1,10 +1,16 @@
-import { execFileSync, execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import type { ExecFileSyncOptions } from 'child_process';
 import { mkdtempSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import type { AgentConfig, FixResult, PRContext, ReviewResult } from '@opencode-pr-agent/lib';
-import { GitHubHelper, Logger, ReviewEngine, configureGit } from '@opencode-pr-agent/lib';
+import {
+  GitHubHelper,
+  Logger,
+  ReviewEngine,
+  configureGit,
+  validateRunChecksCommand,
+} from '@opencode-pr-agent/lib';
 
 interface IterationRecord {
   iteration: number;
@@ -372,10 +378,22 @@ export async function handleAutofixLoop(
 
       if (runChecksAfterFix) {
         logger.info('Running verification commands...');
+        let checkCmdProgram: string;
+        let checkCmdArgs: string[];
+        try {
+          const parsed = validateRunChecksCommand(runChecksAfterFix);
+          checkCmdProgram = parsed.program;
+          checkCmdArgs = parsed.args;
+        } catch (err) {
+          logger.error(
+            `Invalid runChecksAfterFix command: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          break; // Stop running checks if validation fails
+        }
+
         const maxVerificationRetries = 2;
         for (let v = 0; v <= maxVerificationRetries; v++) {
           let checkOutput = '';
-          const checkCmd = runChecksAfterFix;
           const execOpts = {
             encoding: 'utf-8' as const,
             stdio: 'pipe' as const,
@@ -383,7 +401,7 @@ export async function handleAutofixLoop(
             ...(workingDir ? { cwd: workingDir } : {}),
           };
           try {
-            const stdout = execSync(checkCmd, execOpts);
+            const stdout = execFileSync(checkCmdProgram, checkCmdArgs, execOpts);
             checkOutput += stdout;
             logger.info('Verification passed');
             break;
