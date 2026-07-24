@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.1.16] — 2026-07-24
+
+
+### Fixed
+
+- ensure API keys are forwarded to OpenCode CLI and output directory exists in analyze mode
+
+### Changed
+
+- ⚡ Bolt: Use Promise.all for pattern rule creation (#139) (#139)
+
+[v1.1.16]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.1.15...v1.1.16
+
 ## [v1.1.15] — 2026-07-24
 
 
