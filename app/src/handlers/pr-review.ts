@@ -40,7 +40,7 @@ export async function handlePRReview(
     return null;
   }
 
-  const engine = new ReviewEngine(config, token, repo);
+  const engine = new ReviewEngine(config, token, repo, learningStore);
 
   try {
     const reviewWorkingDir = tempDir || process.cwd();

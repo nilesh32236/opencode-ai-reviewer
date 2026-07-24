@@ -25,6 +25,10 @@ const logger = new Logger('App');
  * @param app - The Probot application instance.
  */
 export default (app: Probot): void => {
+  if (!process.env.GITHUB_TOKEN && !process.env.APP_ID) {
+    throw new Error('GITHUB_TOKEN or APP_ID must be set for the GitHub App to start');
+  }
+
   const learningStore = new LearningStore();
   const bus = new EventBus();
   const router = new EventRouter(bus);
@@ -39,7 +43,7 @@ export default (app: Probot): void => {
         if (event.type === 'comment.created' || event.type === 'review_comment.created') {
           const evPayload = event.payload as Record<string, unknown>;
           const commentBody = (evPayload.comment as Record<string, string> | undefined)?.body;
-          if (!commentBody?.includes('/review') && !commentBody?.includes('/oc')) return;
+          if (!commentBody?.includes('/review') && !commentBody?.includes('/oc review')) return;
         }
 
         const evPayload = event.payload as Record<string, unknown>;
@@ -233,14 +237,19 @@ function getToken(): string {
  * Build the agent configuration from environment variables and defaults.
  * @returns A fully populated AgentConfig object.
  */
+function parseEnvInt(envVar: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(envVar || String(fallback), 10);
+  return Number.isNaN(parsed) ? fallback : parsed;
+}
+
 function buildConfig(): AgentConfig {
   return {
     ...DEFAULT_CONFIG,
     reviewModel: process.env.REVIEW_MODEL || DEFAULT_CONFIG.reviewModel,
     fixModel: process.env.FIX_MODEL || DEFAULT_CONFIG.fixModel,
-    batchSize: Number.parseInt(process.env.BATCH_SIZE || '3', 10),
-    maxLinesPerFile: Number.parseInt(process.env.MAX_LINES_PER_FILE || '200', 10),
-    maxIterations: Number.parseInt(process.env.MAX_ITERATIONS || '3', 10),
+    batchSize: parseEnvInt(process.env.BATCH_SIZE, 3),
+    maxLinesPerFile: parseEnvInt(process.env.MAX_LINES_PER_FILE, 200),
+    maxIterations: parseEnvInt(process.env.MAX_ITERATIONS, 3),
     enableMCP: process.env.ENABLE_MCP !== 'false',
     mcpServers:
       process.env.ENABLE_MCP !== 'false'
@@ -259,6 +268,7 @@ function buildConfig(): AgentConfig {
       inline: process.env.REVIEW_INLINE !== 'false',
     },
     learning: {
+      ...DEFAULT_CONFIG.learning,
       enabled: true,
       feedbackSignals: ['dismissed', 'reaction', 'disputed_comment'],
       metaReview: { enabled: true, interval: 5, minFindingsForReview: 3 },

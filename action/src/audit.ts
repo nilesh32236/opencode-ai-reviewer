@@ -1,8 +1,9 @@
-import * as fs from 'fs';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import * as core from '@actions/core';
 import type { AgentConfig, GitHubHelper, ReviewEngine } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
+import { sanitize } from './utils.js';
 
 /**
  * Execute a codebase audit: select a random (or named) audit prompt,
@@ -36,14 +37,14 @@ export async function runAudit(
       'autofix:needs-fix',
     ]);
   } catch (err) {
-    core.warning(`Failed to ensure labels: ${err instanceof Error ? err.message : err}`);
+    core.warning(sanitize(`Failed to ensure labels: ${err instanceof Error ? err.message : err}`));
   }
 
   if (!fs.existsSync(promptsDir)) {
     if (promptsDir === '.audit-prompts' && fs.existsSync('prompts/audit-categories')) {
       promptsDir = 'prompts/audit-categories';
     } else {
-      core.setFailed(`Audit prompts directory not found: ${promptsDir}`);
+      core.setFailed(sanitize(`Audit prompts directory not found: ${promptsDir}`));
       return;
     }
   }
@@ -57,13 +58,15 @@ export async function runAudit(
     }
   } catch (err) {
     core.setFailed(
-      `Failed to read audit prompts directory ${promptsDir}: ${err instanceof Error ? err.message : err}`,
+      sanitize(
+        `Failed to read audit prompts directory ${promptsDir}: ${err instanceof Error ? err.message : err}`,
+      ),
     );
     return;
   }
 
   if (prompts.length === 0) {
-    core.setFailed(`No prompt files found in ${promptsDir}`);
+    core.setFailed(sanitize(`No prompt files found in ${promptsDir}`));
     return;
   }
 
@@ -73,7 +76,7 @@ export async function runAudit(
   if (promptName) {
     const filename = `${promptName}.md`;
     if (!prompts.includes(filename)) {
-      core.setFailed(`Prompt '${promptName}' not found in ${promptsDir}`);
+      core.setFailed(sanitize(`Prompt '${promptName}' not found in ${promptsDir}`));
       return;
     }
     selectedPrompt = path.join(promptsDir, filename);
@@ -125,7 +128,7 @@ export async function runAudit(
         core.info(`Created issue #${issue.number}: ${issue.url}`);
       }
     } catch (error) {
-      core.warning(`Failed to create audit issue: ${String(error)}`);
+      core.warning(sanitize(`Failed to create audit issue: ${String(error)}`));
     }
   } else {
     core.info('No critical or important issues found — skipping issue creation');

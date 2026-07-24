@@ -47,8 +47,12 @@ export class LearningStore {
    * Close the database connection.
    */
   async close(): Promise<void> {
-    const repo = await this.repoPromise;
-    await repo.close();
+    try {
+      const repo = await this.repoPromise;
+      await repo.close();
+    } catch {
+      // Connection never established, nothing to close
+    }
   }
 
   /**

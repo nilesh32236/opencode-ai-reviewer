@@ -569,6 +569,29 @@ export class JsonDatabase implements DatabaseInstance, LearningRepository {
     }
   }
 
+  public async flush(): Promise<void> {
+    if (this.writeTimeout) {
+      clearTimeout(this.writeTimeout);
+      this.writeTimeout = null;
+    }
+    await this.writeToDisk();
+  }
+
+  public flushSync(): void {
+    if (this.writeTimeout) {
+      clearTimeout(this.writeTimeout);
+      this.writeTimeout = null;
+    }
+    try {
+      const dir = path.dirname(this.filePath);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(this.filePath, JSON.stringify(this.data), 'utf-8');
+    } catch (err) {
+      const logger = new Logger('JsonDatabase');
+      logger.warn(`Failed to flush JSON database`, err);
+    }
+  }
+
   public save() {
     if (this.inTransaction) return;
     if (this.writeTimeout) clearTimeout(this.writeTimeout);
@@ -627,21 +650,6 @@ export class JsonDatabase implements DatabaseInstance, LearningRepository {
       }
     };
     return wrapper as T;
-  }
-
-  private flushSync(): void {
-    if (this.writeTimeout) {
-      clearTimeout(this.writeTimeout);
-      this.writeTimeout = null;
-    }
-    try {
-      const dir = path.dirname(this.filePath);
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(this.filePath, JSON.stringify(this.data), 'utf-8');
-    } catch (err) {
-      const logger = new Logger('JsonDatabase');
-      logger.warn(`Failed to flush JSON database on exit`, err);
-    }
   }
 
   async close(): Promise<void> {
@@ -751,6 +759,7 @@ export class JsonDatabase implements DatabaseInstance, LearningRepository {
       });
     }
     this.save();
+    this.flushSync();
     return ids;
   }
 

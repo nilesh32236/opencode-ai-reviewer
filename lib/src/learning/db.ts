@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { createRequire } from 'node:module';
 import * as path from 'path';
 import type { LearningFeedback, LearningQuality } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
@@ -15,23 +16,7 @@ export function sanitizeDbError(err: unknown): string {
   return msg.replace(/([a-z][a-z0-9+.-]+:\/\/)[^@\s]+@/gi, '$1<redacted>@');
 }
 
-/**
- * Dynamic require() for optional DB drivers (pg, mysql2, better-sqlite3) that may not be installed.
- * Uses `unknown` to force callers to cast the return value appropriately at the call site,
- * which is safer than `any` because it requires explicit type assertion.
- * In ESM contexts this throws unconditionally.
- */
-/**
- * Dynamic require() for optional DB drivers (pg, mysql2, better-sqlite3) that may not be installed.
- * Compiled to CommonJS so `require` is available at runtime.
- * In native ESM contexts, the function throws ERR_REQUIRE_ESM.
- */
-const req: ((moduleName: string) => unknown) | ((moduleName: string) => never) =
-  typeof require !== 'undefined'
-    ? require
-    : (moduleName: string) => {
-        throw new Error(`ERR_REQUIRE_ESM: Dynamic require not supported for ${moduleName}`);
-      };
+const req = createRequire(__filename);
 
 /**
  * @deprecated Use `LearningRepository` instead. This interface will be removed
