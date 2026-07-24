@@ -1024,8 +1024,9 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
 
 /**
  * Adapter that wraps `JsonDatabase` behind the `DbAdapter` and `LearningRepository`
- * interfaces. Prefer using `LearningRepository` methods directly; the `DbAdapter`
- * (`run`/`all`/`get` via regex-based SQL dispatch) is deprecated.
+ * interfaces. `LearningRepository` methods delegate directly to `JsonDatabase`.
+ * `DbAdapter` SQL methods (`run`/`all`/`get`) throw an error since SQL operations
+ * are not supported in JSON fallback mode.
  */
 export class JsonDbAdapter implements DbAdapter, LearningRepository {
   private db: JsonDatabase;
@@ -1038,19 +1039,22 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
     this.db.exec(sql);
   }
 
-  async run(sql: string, params: unknown[] = []): Promise<{ changes: number }> {
-    const result = this.db.dispatch(sql, params);
-    return { changes: result.changes ?? 0 };
+  async run(_sql: string, _params: unknown[] = []): Promise<{ changes: number }> {
+    throw new Error(
+      'SQL operations are not supported in JSON fallback mode. Use LearningRepository methods instead.',
+    );
   }
 
-  async all<T>(sql: string, params: unknown[] = []): Promise<T[]> {
-    const result = this.db.dispatch(sql, params);
-    return (result.rows ?? []) as T[];
+  async all<T>(_sql: string, _params: unknown[] = []): Promise<T[]> {
+    throw new Error(
+      'SQL operations are not supported in JSON fallback mode. Use LearningRepository methods instead.',
+    );
   }
 
-  async get<T>(sql: string, params: unknown[] = []): Promise<T | undefined> {
-    const result = this.db.dispatch(sql, params);
-    return (result.row ?? (result.rows as T[] | undefined)?.[0]) as T | undefined;
+  async get<T>(_sql: string, _params: unknown[] = []): Promise<T | undefined> {
+    throw new Error(
+      'SQL operations are not supported in JSON fallback mode. Use LearningRepository methods instead.',
+    );
   }
 
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
