@@ -1,4 +1,5 @@
 import { promises as fs } from 'fs';
+import * as path from 'path';
 import * as core from '@actions/core';
 import type { LearningStore } from '../learning/store.js';
 import { runOpenCode } from '../opencode.js';
@@ -32,6 +33,7 @@ export class MetaReviewEngine {
     strengthsCount: number;
     hasVerdict: boolean;
     fileCount: number;
+    workingDir?: string;
   }): Promise<{
     actionabilityScore: number;
     accuracyScore: number;
@@ -65,7 +67,11 @@ export class MetaReviewEngine {
 
     let result: Record<string, unknown> = {};
     try {
-      const content = await fs.readFile('.opencode/meta-review-output.jsonl', 'utf-8');
+      const workingDir = context.workingDir || process.cwd();
+      const content = await fs.readFile(
+        path.join(workingDir, '.opencode', 'meta-review-output.jsonl'),
+        'utf-8',
+      );
       const parsed = JSON.parse(content.trim().split('\n').pop() || '{}');
       result = parsed;
     } catch {

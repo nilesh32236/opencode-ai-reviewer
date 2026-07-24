@@ -21,6 +21,10 @@ permissions:
 env:
   VERSION_OVERRIDE: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
 
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest

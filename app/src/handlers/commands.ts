@@ -9,7 +9,6 @@ import {
   Logger,
   ReviewEngine,
   configureGit,
-  sanitizeError,
   sanitizeErrorMessage,
 } from '@opencode-pr-agent/lib';
 import { handleAudit } from './audit.js';
@@ -39,21 +38,19 @@ export async function handleCommand(
   const tempDir = mkdtempSync(path.join(os.tmpdir(), 'opencode-workspace-'));
 
   try {
-    execFileSync(
-      'git',
-      ['clone', `https://x-access-token:${token}@github.com/${repo}.git`, tempDir],
-      {
-        stdio: 'pipe',
-        timeout: 120_000,
-      },
-    );
-
     const gitEnv = configureGit(
       'opencode-pr-agent[bot]',
       'opencode-pr-agent[bot]@users.noreply.github.com',
       token,
       tempDir,
     );
+
+    const cloneOpts: ExecFileSyncOptions = {
+      stdio: 'pipe',
+      timeout: 120_000,
+      ...(gitEnv ? { env: { ...process.env, ...gitEnv } } : {}),
+    };
+    execFileSync('git', ['clone', `https://github.com/${repo}.git`, tempDir], cloneOpts);
 
     switch (command) {
       case 'analyze': {

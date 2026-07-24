@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import type { AgentConfig, GitHubHelper, ReviewEngine } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
+import { sanitize } from './utils.js';
 
 /**
  * Execute an issue analysis: gather issue context, run the analysis engine,
@@ -40,7 +41,7 @@ export async function runAnalyze(
     core.info(`Posted analysis plan for issue #${issueNumber}`);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    core.setFailed(`Analysis failed for issue #${issueNumber}: ${message}`);
+    core.setFailed(sanitize(`Analysis failed for issue #${issueNumber}: ${message}`));
     await gh.postOrUpdateComment(
       issueNumber,
       '<!-- issue-analysis-error -->',

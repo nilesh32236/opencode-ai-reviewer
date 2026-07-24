@@ -65,9 +65,11 @@ export class FeedbackSubscriber implements Subscriber {
       return;
     }
     if (findings.length === 0) return;
+    const validFindings = findings.filter((f) => f.id && typeof f.id === 'string');
+    if (validFindings.length === 0) return;
     try {
       await this.store.recordFeedbackBatch(
-        findings.map((f) => ({
+        validFindings.map((f) => ({
           findingId: f.id as string,
           signalType: 'dismissed' as const,
           signalValue: 'review_dismissed',
@@ -111,9 +113,11 @@ export class FeedbackSubscriber implements Subscriber {
       return;
     }
     if (findings.length === 0) return;
+    const validFindings = findings.filter((f) => f.id && typeof f.id === 'string');
+    if (validFindings.length === 0) return;
     try {
       await this.store.recordFeedbackBatch(
-        findings.map((f) => ({
+        validFindings.map((f) => ({
           findingId: f.id as string,
           signalType: 'disputed_comment' as const,
           signalValue: body.slice(0, 200),

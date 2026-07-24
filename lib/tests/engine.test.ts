@@ -221,7 +221,8 @@ describe('ReviewEngine', () => {
 
       const result = await engine.reviewPR(pr);
 
-      expect(result).toBeDefined();
+      expect(result.verdict).toBeDefined();
+      expect(result.summary).toBeDefined();
     });
 
     it('handles learning store failure gracefully', async () => {
@@ -240,7 +241,8 @@ describe('ReviewEngine', () => {
       mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
 
       const result = await eng.reviewPR(pr);
-      expect(result).toBeDefined();
+      expect(result.verdict).toBeDefined();
+      expect(result.issues).toBeDefined();
     });
 
     it('uses cached lessons within TTL', async () => {
@@ -579,7 +581,8 @@ describe('ReviewEngine', () => {
 
       const result = await engine.runAudit('audit prompt', './src', 'security');
 
-      expect(result).toBeDefined();
+      expect(result.verdict).toBeDefined();
+      expect(result.summary).toBeDefined();
     });
 
     it('skips MCP when enableMCP is false', async () => {

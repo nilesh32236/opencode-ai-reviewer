@@ -1,7 +1,17 @@
-import { execFileSync, execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import type { ExecFileSyncOptions } from 'child_process';
+import { mkdtempSync, rmSync } from 'fs';
+import os from 'os';
+import path from 'path';
 import type { AgentConfig, FixResult, PRContext, ReviewResult } from '@opencode-pr-agent/lib';
-import { GitHubHelper, Logger, ReviewEngine, configureGit } from '@opencode-pr-agent/lib';
+import {
+  DEFAULT_ALLOWLIST,
+  GitHubHelper,
+  Logger,
+  ReviewEngine,
+  configureGit,
+  validateRunChecksCommand,
+} from '@opencode-pr-agent/lib';
 
 interface IterationRecord {
   iteration: number;
@@ -161,6 +171,7 @@ export async function handleAutofixLoop(
   runChecksAfterFix?: string,
   tempDir?: string,
   initialGitEnv?: Record<string, string>,
+  checkAllowlist?: string[],
 ): Promise<void> {
   const logger = new Logger('Autofix', { prNumber, repo });
   logger.info(`Starting autofix loop for PR #${prNumber} in ${repo}`);
@@ -171,18 +182,23 @@ export async function handleAutofixLoop(
   let approved = false;
 
   let gitEnv = initialGitEnv;
-  if (!gitEnv && tempDir) {
+  let ownTempDir: string | undefined;
+  let workingDir = tempDir;
+  if (!gitEnv && workingDir) {
     gitEnv = configureGit(
       'opencode-pr-agent[bot]',
       'opencode-pr-agent[bot]@users.noreply.github.com',
       token,
-      tempDir,
+      workingDir,
     );
   } else if (!gitEnv) {
-    configureGit(
+    ownTempDir = mkdtempSync(path.join(os.tmpdir(), 'opencode-autofix-'));
+    workingDir = ownTempDir;
+    gitEnv = configureGit(
       'opencode-pr-agent[bot]',
       'opencode-pr-agent[bot]@users.noreply.github.com',
       token,
+      workingDir,
     );
   }
   try {
@@ -199,7 +215,7 @@ export async function handleAutofixLoop(
         break;
       }
 
-      const reviewWorkingDir = tempDir || process.cwd();
+      const reviewWorkingDir = workingDir || process.cwd();
       let result: ReviewResult;
       try {
         result = await engine.reviewPR(
@@ -292,8 +308,8 @@ export async function handleAutofixLoop(
         contextMd += '\n';
       }
 
-      const gitOpts: ExecFileSyncOptions = tempDir
-        ? { cwd: tempDir, ...(gitEnv ? { env: { ...process.env, ...gitEnv } } : {}) }
+      const gitOpts: ExecFileSyncOptions = workingDir
+        ? { cwd: workingDir, ...(gitEnv ? { env: { ...process.env, ...gitEnv } } : {}) }
         : {};
       let fixResult: FixResult | undefined;
       try {
@@ -364,63 +380,88 @@ export async function handleAutofixLoop(
 
       if (runChecksAfterFix) {
         logger.info('Running verification commands...');
-        const maxVerificationRetries = 2;
-        for (let v = 0; v <= maxVerificationRetries; v++) {
-          let checkOutput = '';
-          const checkCmd = runChecksAfterFix;
-          const execOpts = {
-            encoding: 'utf-8' as const,
-            stdio: 'pipe' as const,
-            timeout: 300_000,
-            ...(tempDir ? { cwd: tempDir } : {}),
-          };
-          try {
-            const stdout = execSync(checkCmd, execOpts);
-            checkOutput += stdout;
-            logger.info('Verification passed');
-            break;
-          } catch (err) {
-            const stderr = (err as Record<string, unknown>)?.stderr?.toString() ?? '';
-            const message = err instanceof Error ? err.message : String(err);
-            checkOutput += message + '\n' + stderr;
-            logger.warn(
-              `Verification failed (attempt ${v + 1}/${maxVerificationRetries + 1}): ${message}`,
-            );
+        let program: string;
+        let args: string[];
+        try {
+          const validated = validateRunChecksCommand(
+            runChecksAfterFix,
+            checkAllowlist ?? DEFAULT_ALLOWLIST,
+          );
+          program = validated.program;
+          args = validated.args;
+        } catch (err) {
+          logger.warn(
+            `Verification command rejected: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          program = '';
+          args = [];
+        }
 
-            if (v < maxVerificationRetries) {
-              logger.info(
-                `Feeding verification error to fix engine (retry ${v + 1}/${maxVerificationRetries})...`,
+        if (program) {
+          const maxVerificationRetries = 2;
+          for (let v = 0; v <= maxVerificationRetries; v++) {
+            let checkOutput = '';
+            const execOpts = {
+              encoding: 'utf-8' as const,
+              stdio: 'pipe' as const,
+              timeout: 300_000,
+              ...(workingDir ? { cwd: workingDir } : {}),
+            };
+            try {
+              const stdout = execFileSync(program, args, execOpts);
+              checkOutput += stdout;
+              logger.info('Verification passed');
+              break;
+            } catch (err) {
+              const errWithStderr =
+                typeof err === 'object' && err !== null
+                  ? (err as { stderr?: Buffer | string })
+                  : null;
+              const stderr =
+                typeof errWithStderr?.stderr === 'string' || Buffer.isBuffer(errWithStderr?.stderr)
+                  ? errWithStderr.stderr.toString()
+                  : '';
+              const message = err instanceof Error ? err.message : String(err);
+              checkOutput += message + '\n' + stderr;
+              logger.warn(
+                `Verification failed (attempt ${v + 1}/${maxVerificationRetries + 1}): ${message}`,
               );
-              try {
-                const freshPr = await gh.getPR(prNumber);
-                const retryResult = await engine.runFix(
-                  prNumber,
-                  i,
-                  contextMd,
-                  freshPr,
-                  undefined,
-                  result.issues,
-                  checkOutput,
-                  reviewWorkingDir,
-                );
 
-                if (retryResult?.changesMade) {
-                  execFileSync('git', ['add', '-A'], gitOpts);
-                  execFileSync(
-                    'git',
-                    ['commit', '-m', `fix: verification errors (attempt ${v + 1})`],
-                    gitOpts,
+              if (v < maxVerificationRetries) {
+                logger.info(
+                  `Feeding verification error to fix engine (retry ${v + 1}/${maxVerificationRetries})...`,
+                );
+                try {
+                  const freshPr = await gh.getPR(prNumber);
+                  const retryResult = await engine.runFix(
+                    prNumber,
+                    i,
+                    contextMd,
+                    freshPr,
+                    undefined,
+                    result.issues,
+                    checkOutput,
+                    reviewWorkingDir,
                   );
-                  execFileSync('git', ['push', 'origin', pr.headRef], gitOpts);
-                } else {
-                  logger.info('Fix agent made no changes to address verification errors');
+
+                  if (retryResult?.changesMade) {
+                    execFileSync('git', ['add', '-A'], gitOpts);
+                    execFileSync(
+                      'git',
+                      ['commit', '-m', `fix: verification errors (attempt ${v + 1})`],
+                      gitOpts,
+                    );
+                    execFileSync('git', ['push', 'origin', pr.headRef], gitOpts);
+                  } else {
+                    logger.info('Fix agent made no changes to address verification errors');
+                    break;
+                  }
+                } catch (innerErr) {
+                  logger.error(
+                    `Verification retry failed: ${innerErr instanceof Error ? innerErr.message : innerErr}`,
+                  );
                   break;
                 }
-              } catch (innerErr) {
-                logger.error(
-                  `Verification retry failed: ${innerErr instanceof Error ? innerErr.message : innerErr}`,
-                );
-                break;
               }
             }
           }
@@ -463,5 +504,12 @@ export async function handleAutofixLoop(
     }
   } finally {
     await engine.cleanup();
+    if (ownTempDir) {
+      try {
+        rmSync(ownTempDir, { recursive: true, force: true });
+      } catch {
+        /* ignore cleanup errors */
+      }
+    }
   }
 }

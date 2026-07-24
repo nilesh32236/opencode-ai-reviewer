@@ -2,7 +2,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   computeSha256,
@@ -12,9 +12,18 @@ import {
   verifyChecksum,
 } from '../src/utils/checksum.js';
 
+const tempDirs: string[] = [];
+afterEach(() => {
+  for (const dir of tempDirs) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  tempDirs.length = 0;
+});
+
 describe('computeSha256()', () => {
   it('computes SHA256 of a file', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'checksum-test-'));
+    tempDirs.push(tmpDir);
     const filePath = path.join(tmpDir, 'test.bin');
     const content = 'hello world\n';
     fs.writeFileSync(filePath, content, 'utf-8');
@@ -22,20 +31,17 @@ describe('computeSha256()', () => {
     const hash = await computeSha256(filePath);
     const expected = crypto.createHash('sha256').update(content).digest('hex');
     expect(hash).toBe(expected);
-
-    fs.rmSync(tmpDir, { recursive: true });
   });
 
   it('handles empty file', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'checksum-test-'));
+    tempDirs.push(tmpDir);
     const filePath = path.join(tmpDir, 'empty.bin');
     fs.writeFileSync(filePath, '');
 
     const hash = await computeSha256(filePath);
     const expected = crypto.createHash('sha256').update('').digest('hex');
     expect(hash).toBe(expected);
-
-    fs.rmSync(tmpDir, { recursive: true });
   });
 
   it('rejects on non-existent file', async () => {
@@ -144,6 +150,7 @@ describe('parseChecksumFile()', () => {
 describe('verifyChecksum()', () => {
   it('passes when checksum matches', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'checksum-test-'));
+    tempDirs.push(tmpDir);
     const filePath = path.join(tmpDir, 'test.bin');
     const content = 'verify me\n';
     fs.writeFileSync(filePath, content, 'utf-8');
@@ -151,23 +158,21 @@ describe('verifyChecksum()', () => {
     const expectedHash = crypto.createHash('sha256').update(content).digest('hex');
     const result = await verifyChecksum(filePath, expectedHash);
     expect(result).toBe(true);
-
-    fs.rmSync(tmpDir, { recursive: true });
   });
 
   it('throws when checksum does not match', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'checksum-test-'));
+    tempDirs.push(tmpDir);
     const filePath = path.join(tmpDir, 'test.bin');
     fs.writeFileSync(filePath, 'content a', 'utf-8');
 
     const wrongHash = crypto.createHash('sha256').update('content b').digest('hex');
     await expect(verifyChecksum(filePath, wrongHash)).rejects.toThrow('Checksum mismatch');
-
-    fs.rmSync(tmpDir, { recursive: true });
   });
 
   it('is case-insensitive for expected checksum', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'checksum-test-'));
+    tempDirs.push(tmpDir);
     const filePath = path.join(tmpDir, 'test.bin');
     const content = 'case test\n';
     fs.writeFileSync(filePath, content, 'utf-8');
@@ -175,8 +180,6 @@ describe('verifyChecksum()', () => {
     const expectedHash = crypto.createHash('sha256').update(content).digest('hex');
     const result = await verifyChecksum(filePath, expectedHash.toUpperCase());
     expect(result).toBe(true);
-
-    fs.rmSync(tmpDir, { recursive: true });
   });
 });
 

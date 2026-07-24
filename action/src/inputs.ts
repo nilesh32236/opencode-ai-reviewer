@@ -1,41 +1,13 @@
 import * as core from '@actions/core';
-import type { ActionMode } from '@opencode-pr-agent/lib';
+import {
+  type ActionMode,
+  DEFAULT_ALLOWLIST,
+  validateRunChecksCommand,
+} from '@opencode-pr-agent/lib';
 
 const VALID_MODES: ActionMode[] = ['review', 'fix', 'audit', 'post', 'analyze'];
 
-const DEFAULT_ALLOWLIST = ['pnpm', 'npm', 'yarn', 'node'];
-
-/**
- * Validate a run-checks command against an allowlist to prevent shell injection.
- * Returns the program and args for use with array-form exec (no shell string).
- * @param command - The command string to validate and parse.
- * @param allowlist - List of allowed program names (defaults to common package managers).
- * @returns An object containing the program name and its arguments.
- */
-export function validateRunChecksCommand(
-  command: string,
-  allowlist: string[] = DEFAULT_ALLOWLIST,
-): { program: string; args: string[] } {
-  const trimmed = command.trim();
-  if (!trimmed) {
-    throw new Error('run_checks_after_fix must not be empty');
-  }
-  const parts = trimmed.split(/\s+/);
-  const program = parts[0];
-  const allowSet = new Set(allowlist);
-  if (!allowSet.has(program)) {
-    throw new Error(
-      `Command "${program}" is not allowed. Allowed programs: ${[...allowSet].join(', ')}`,
-    );
-  }
-  for (const arg of parts.slice(1)) {
-    if (/[;&|`$(){}<>\n\r]/.test(arg)) {
-      throw new Error(`Argument "${arg}" contains unsafe shell characters`);
-    }
-  }
-  return { program, args: parts.slice(1) };
-}
-
+export { DEFAULT_ALLOWLIST, validateRunChecksCommand };
 /**
  * Parse and validate a timeout value from a raw string.
  * @param raw - The raw timeout string (e.g. "30"). Defaults to "20" if empty.
@@ -159,9 +131,14 @@ export function parseInputs(): ActionInputs {
 
   const globalModel = core.getInput('model');
 
+  const githubToken = core.getInput('github_token', { required: true });
+  if (!githubToken) {
+    throw new Error('github_token input is required but was empty');
+  }
+
   return {
     mode: modeStr as ActionMode,
-    githubToken: core.getInput('github_token', { required: true }),
+    githubToken,
     openAiKey: core.getInput('openai_api_key') || undefined,
     anthropicKey: core.getInput('anthropic_api_key') || undefined,
     geminiKey: core.getInput('gemini_api_key') || undefined,
