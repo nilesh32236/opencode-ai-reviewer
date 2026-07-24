@@ -171,40 +171,76 @@ export function buildReviewPrompt(
  * @returns The assembled fix prompt string.
  */
 export function buildFixPrompt(
-  _inputs: PromptBuilderInputs,
+  inputs: PromptBuilderInputs,
   context: string,
-  _iteration: number,
-  _issues?: ReviewIssue[],
+  iteration: number,
+  issues?: ReviewIssue[],
   verificationError?: string,
 ): string {
-  return `You are an Expert Software Engineer tasked with implementing a code fix for a GitHub Issue.
+  const projectContext = inputs.projectContext || getDefaultProjectContext();
+  const maxIterations = inputs.maxFixIterations ?? 3;
 
-## Issue & Thread Context (Includes Title, Body, Comments, and Implementation Plan)
+  let issuesBlock = '';
+  if (issues && issues.length > 0) {
+    const sorted = [...issues].sort((a, b) => {
+      const order: Record<string, number> = { critical: 0, important: 1, minor: 2 };
+      return (order[a.severity] ?? 3) - (order[b.severity] ?? 3);
+    });
+    issuesBlock = '\n## Issues to Fix (Iteration ' + (iteration + 1) + ')\n\n';
+    for (let idx = 0; idx < sorted.length; idx++) {
+      const issue = sorted[idx];
+      issuesBlock += `${idx + 1}. [${issue.severity.toUpperCase()}] ${issue.file}:${issue.line} — ${issue.message}\n`;
+      if (issue.suggestion) {
+        issuesBlock += `   Suggestion: ${issue.suggestion}\n`;
+      }
+    }
+  }
 
-${context}
+  const contextBlock = issuesBlock ? context + '\n\n---\n' + issuesBlock : context;
 
-${verificationError ? `\n## Verification Errors from Previous Attempt\n\`\`\`\n${verificationError}\n\`\`\`\n` : ''}
+  const instructions =
+    issues && issues.length > 0
+      ? 'Fix the issues listed below in order of severity. Skip any that are already resolved.'
+      : 'Read ALL the review comments above carefully. Focus on:\n1. Issues marked as CRITICAL — these must be fixed\n2. Issues marked as IMPORTANT — these should be fixed\n3. Issues marked as MINOR — fix these if straightforward';
 
-## Step-by-Step Execution Instructions
+  const verificationSection = verificationError
+    ? `\n\n## Verification Error (Previous Attempt Failed)\n\nThe previous fix attempt produced errors during build/check verification. The raw output was:\n\n\`\`\`\n${verificationError}\n\`\`\`\n\nPlease fix these compilation/lint errors in your current attempt. Ensure the code compiles and passes all checks before finishing.\n`
+    : '';
 
-1. **Review the Context**:
-   - Read the **Issue Title**, **Description**, and any **Implementation Plan** (\`<!-- issue-analysis-plan -->\`) in the thread.
-   - Pay special attention to **Human Feedback / Maintainer Instructions** posted in the issue comments (e.g. choice between Option A vs Option B).
+  const prompt = `You are a Senior Code Fixer. Fix the issues found during code review.
 
-2. **Execute Code Changes**:
-   - Open and inspect the affected files.
-   - Apply minimal, clean, robust fixes following the approved plan and maintainer decisions.
+## Full Context (Issue + PR + Review Comments)
 
-3. **Verify**:
-   - Run configured verification commands (e.g. lint/test) to ensure no regressions.
+${contextBlock}
 
-4. **Summarize Fix**:
-   - Write a clear summary of files changed and decisions applied to \`.fix-summary.md\`.
+${verificationSection}
+---
+
+## Fix Iteration: ${iteration} of ${maxIterations}
+
+${instructions}
+
+## Project Context
+${projectContext}
+
+## Steps
+1. Read and understand each issue from the review feedback above
+2. For each issue, open the referenced file at the reported line
+3. Apply a minimal, correct fix
+4. After fixing, run verification commands${inputs.runChecksAfterFix ? ': ' + inputs.runChecksAfterFix : ' (if configured)'}
+5. Fix any errors introduced by your changes
+6. Write a detailed summary of what you fixed and what you skipped (if anything) in markdown format to the file \`.fix-summary.md\`.
 
 ## CRITICAL RULES
-- Do NOT run \`git commit\`, \`git push\`, or \`gh pr create\`.
-- Strictly follow any explicit instructions provided by human maintainers in the comment thread.
-- Keep fixes minimal and target only the issue described.`;
+- Do NOT run \`git push\`, \`git commit\`, or create any pull requests
+- Do NOT run any git commands at all — the workflow handles git operations
+- Fix ONLY the issues from the review feedback — nothing more
+- Prefer minimal, targeted fixes over rewrites
+- Do not add features or change unrelated code
+- If a fix requires significant refactoring outside scope, skip it
+- Verify every change compiles before finishing`;
+
+  return prompt;
 }
 
 /**

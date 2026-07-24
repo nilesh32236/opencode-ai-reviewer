@@ -2,6 +2,7 @@ node_modules
 .git
 *.md
 dist
+lib/lib
 action/lib
 app/dist
 .github

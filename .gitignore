@@ -23,9 +23,5 @@ npm-debug.log*
 .opencode/learning.db-wal
 .opencode/learning.db-shm
 lib/tests/.test-*
-# Compiled test artifacts
-lib/tests/*.test.js
-lib/tests/*.test.d.ts
-lib/vitest.config.js
-lib/vitest.config.d.ts
+:memory:
 

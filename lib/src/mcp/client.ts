@@ -97,7 +97,7 @@ export class MCPManager {
           const newTransport = createTransport();
           result.transport = newTransport;
 
-          const clientInstance = new Client({ name: 'opencode-ai-reviewer', version: '1.0.0' });
+          const clientInstance = new Client({ name: 'opencode-pr-agent', version: '1.0.0' });
 
           const connectionTimeout = server.timeoutMs ?? 5000;
           let timedOut = false;

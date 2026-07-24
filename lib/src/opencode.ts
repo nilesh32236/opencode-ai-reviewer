@@ -366,15 +366,15 @@ export async function runOpenCode(
   if (openaiApiKey) safeEnv.OPENAI_API_KEY = openaiApiKey;
   if (anthropicApiKey) safeEnv.ANTHROPIC_API_KEY = anthropicApiKey;
   if (geminiApiKey) safeEnv.GEMINI_API_KEY = geminiApiKey;
+  safeEnv.OPENCODE_CONFIG_CONTENT = buildCIConfig();
+  safeEnv.OPENCODE_DISABLE_AUTOUPDATE = 'true';
   if (options.env) {
     for (const [key, value] of Object.entries(options.env)) {
-      if (value !== undefined && key !== 'OPENCODE_CONFIG_CONTENT') {
+      if (value !== undefined) {
         safeEnv[key] = value;
       }
     }
   }
-  safeEnv.OPENCODE_CONFIG_CONTENT = buildCIConfig();
-  safeEnv.OPENCODE_DISABLE_AUTOUPDATE = 'true';
 
   const childProcess = cp.spawn(binaryPath, args, {
     cwd,

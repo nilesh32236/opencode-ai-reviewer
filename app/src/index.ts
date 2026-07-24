@@ -25,10 +25,6 @@ const logger = new Logger('App');
  * @param app - The Probot application instance.
  */
 export default (app: Probot): void => {
-  if (!process.env.GITHUB_TOKEN && !process.env.APP_ID) {
-    throw new Error('GITHUB_TOKEN or APP_ID must be set for the GitHub App to start');
-  }
-
   const learningStore = new LearningStore();
   const bus = new EventBus();
   const router = new EventRouter(bus);
@@ -43,7 +39,7 @@ export default (app: Probot): void => {
         if (event.type === 'comment.created' || event.type === 'review_comment.created') {
           const evPayload = event.payload as Record<string, unknown>;
           const commentBody = (evPayload.comment as Record<string, string> | undefined)?.body;
-          if (!commentBody?.includes('/review') && !commentBody?.includes('/oc review')) return;
+          if (!commentBody?.includes('/review') && !commentBody?.includes('/oc')) return;
         }
 
         const evPayload = event.payload as Record<string, unknown>;
@@ -150,31 +146,7 @@ export default (app: Probot): void => {
     },
   };
 
-  const analyzeSubscriber: Subscriber = {
-    name: 'AnalyzeSubscriber',
-    subscribedEvents: ['comment.created', 'review_comment.created'],
-    async handle(event: GitHubEvent) {
-      try {
-        const analyzePayload = event.payload as Record<string, unknown>;
-        const analyzeComment = analyzePayload.comment as Record<string, string> | undefined;
-        if (
-          !analyzeComment?.body?.includes('/analyze') &&
-          !analyzeComment?.body?.includes('/analyse')
-        )
-          return;
-        const config = buildConfig();
-        const issueNumber = event.prNumber || 0;
-        if (!issueNumber) return;
-        await handleCommand('analyze', issueNumber, event.repo || '', getToken(), config);
-      } catch (err) {
-        logger.error(
-          `AnalyzeSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${err instanceof Error ? err.message : err}`,
-        );
-      }
-    },
-  };
-
-  subscribers.push(reviewSubscriber, fixSubscriber, auditSubscriber, analyzeSubscriber);
+  subscribers.push(reviewSubscriber, fixSubscriber, auditSubscriber);
 
   const feedbackSub = new FeedbackSubscriber(learningStore);
   subscribers.push(feedbackSub);
@@ -237,19 +209,14 @@ function getToken(): string {
  * Build the agent configuration from environment variables and defaults.
  * @returns A fully populated AgentConfig object.
  */
-function parseEnvInt(envVar: string | undefined, fallback: number): number {
-  const parsed = Number.parseInt(envVar || String(fallback), 10);
-  return Number.isNaN(parsed) ? fallback : parsed;
-}
-
 function buildConfig(): AgentConfig {
   return {
     ...DEFAULT_CONFIG,
     reviewModel: process.env.REVIEW_MODEL || DEFAULT_CONFIG.reviewModel,
     fixModel: process.env.FIX_MODEL || DEFAULT_CONFIG.fixModel,
-    batchSize: parseEnvInt(process.env.BATCH_SIZE, 3),
-    maxLinesPerFile: parseEnvInt(process.env.MAX_LINES_PER_FILE, 200),
-    maxIterations: parseEnvInt(process.env.MAX_ITERATIONS, 3),
+    batchSize: Number.parseInt(process.env.BATCH_SIZE || '3', 10),
+    maxLinesPerFile: Number.parseInt(process.env.MAX_LINES_PER_FILE || '200', 10),
+    maxIterations: Number.parseInt(process.env.MAX_ITERATIONS || '3', 10),
     enableMCP: process.env.ENABLE_MCP !== 'false',
     mcpServers:
       process.env.ENABLE_MCP !== 'false'
@@ -268,7 +235,6 @@ function buildConfig(): AgentConfig {
       inline: process.env.REVIEW_INLINE !== 'false',
     },
     learning: {
-      ...DEFAULT_CONFIG.learning,
       enabled: true,
       feedbackSignals: ['dismissed', 'reaction', 'disputed_comment'],
       metaReview: { enabled: true, interval: 5, minFindingsForReview: 3 },

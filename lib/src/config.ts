@@ -96,12 +96,15 @@ export function resolveConfig(config: PromptConfig, options: ResolveConfigOption
 
     if (!matches) continue;
 
-    if (override.review) {
+    if (override.review?.customRules || override.review?.inline !== undefined) {
       const existingRules = result.review?.customRules || [];
-      result.review = { ...result.review, ...override.review };
-      if (override.review.customRules) {
-        result.review.customRules = [...existingRules, ...override.review.customRules];
-      }
+      result.review = {
+        ...result.review,
+        ...(override.review.customRules
+          ? { customRules: [...existingRules, ...override.review.customRules] }
+          : {}),
+        ...(override.review.inline !== undefined ? { inline: override.review.inline } : {}),
+      };
     }
 
     if (override.fix?.maxIterations !== undefined) {

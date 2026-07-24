@@ -18,13 +18,19 @@ import {
   setupOpenCode,
   setupWorkspaceDependencies,
 } from '@opencode-pr-agent/lib';
-import { runAnalyze } from './analyze.js';
 import { runAudit } from './audit.js';
 import { runAutofixLoop, runFix, runFixIssue } from './fix.js';
 import { type ActionInputs, parseInputs } from './inputs.js';
 import { runPost } from './post.js';
 import { runReview } from './review.js';
-import { sanitize } from './utils.js';
+
+const sanitize = (message: string): string => {
+  return message
+    .replace(/(Bearer\s+)[a-zA-Z0-9._\-+/]+/gi, '$1***')
+    .replace(/(ghp_|gho_|ghu_|ghs_|ghr_)[a-zA-Z0-9_]+/g, '***')
+    .replace(/(sk-[a-zA-Z0-9]{20,})/g, 'sk-***')
+    .replace(/(xox[bpras]-\d+-)[a-zA-Z0-9-]+/g, '$1***');
+};
 
 function buildCacheKey(prefix: string): string {
   const repoNwo = `${github.context.repo.owner}/${github.context.repo.repo}`;
@@ -232,9 +238,6 @@ async function run(): Promise<void> {
       const gh = new GitHubHelper(token, repo);
 
       switch (inputs.mode) {
-        case 'analyze':
-          await runAnalyze(inputs, config, engine, gh, repo, token);
-          break;
         case 'review':
           await runReview(inputs, config, engine, gh, repo);
           break;

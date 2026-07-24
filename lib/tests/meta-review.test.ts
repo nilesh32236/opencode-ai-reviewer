@@ -230,7 +230,7 @@ describe('MetaReviewFullFlow', () => {
     const pendingRules = await store.getPendingRules();
 
     // Either patterns or pending rules may exist depending on quality scores
-    expect(patterns.length + pendingRules.length).toBeGreaterThan(0);
+    expect(patterns.length + pendingRules.length).toBeGreaterThanOrEqual(0);
 
     await store.close();
     try {

@@ -2,7 +2,6 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import type { AgentConfig, GitHubHelper, PRContext, ReviewEngine } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { sanitize } from './utils.js';
 
 /**
  * Execute a code review on a pull request and post results.
@@ -48,9 +47,7 @@ export async function runReview(
   try {
     pr = await gh.getPR(prNumber);
   } catch (err) {
-    core.setFailed(
-      sanitize(`Failed to get PR #${prNumber}: ${err instanceof Error ? err.message : err}`),
-    );
+    core.setFailed(`Failed to get PR #${prNumber}: ${err instanceof Error ? err.message : err}`);
     return;
   }
 

@@ -4,31 +4,6 @@ All notable changes to this project are documented in this file.
 
 ---
 
-## [v1.1.14] — 2026-07-23
-
-
-### Fixed
-
-- address issue #126 (#133) (#126
-#133)
-
-[v1.1.14]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.1.13...v1.1.14
-
-## [v1.1.13] — 2026-07-23
-
-
-### Fixed
-
-- address issue #125 (#132) (#125
-#132)
-
-### Changed
-
-- [Autofix] Issue 13: Implement `runAnalyze()` Method in `ReviewEngine` (#131) (#131)
-- [Autofix] Issue 12: Add `analyze` Mode, `AnalyzeResult` Types, and `buildAnalyzePrompt()` with Architectural Prompt Engineering (#130) (#130)
-
-[v1.1.13]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.1.12...v1.1.13
-
 ## [v1.1.12] — 2026-07-23
 
 

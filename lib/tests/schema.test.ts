@@ -1,5 +1,3 @@
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import { parseReviewOutput } from '../src/types/schemas.js';
 
 describe('parseReviewOutput', () => {
@@ -53,6 +51,8 @@ describe('parseReviewOutput', () => {
   });
 
   it('parses sample fixture file correctly', () => {
+    const fs = require('fs');
+    const path = require('path');
     const fixturePath = path.join(__dirname, 'fixtures/sample-review-output.jsonl');
     const content = fs.readFileSync(fixturePath, 'utf-8');
 

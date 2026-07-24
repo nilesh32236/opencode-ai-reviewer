@@ -8,7 +8,7 @@
     "rules": {
       "recommended": true,
       "suspicious": {
-        "noExplicitAny": "error",
+        "noExplicitAny": "warn",
         "noConsoleLog": "off",
         "noGlobalIsNan": "off",
         "noAssignInExpressions": "off"

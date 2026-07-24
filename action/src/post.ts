@@ -4,7 +4,6 @@ import * as github from '@actions/github';
 import type { GitHubHelper } from '@opencode-pr-agent/lib';
 import { validateRunChecksCommand } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { sanitize } from './utils.js';
 
 /**
  * Run post-processing after a review/fix action: optionally run a
@@ -36,9 +35,7 @@ export async function runPost(
       );
       await exec.exec(program, args);
     } catch (error) {
-      core.warning(
-        sanitize(`Verification command failed: ${inputs.runChecksAfterFix} — ${String(error)}`),
-      );
+      core.warning(`Verification command failed: ${inputs.runChecksAfterFix} — ${String(error)}`);
     }
   }
 
@@ -53,9 +50,7 @@ export async function runPost(
       core.info('Posted review summary comment');
     } catch (err) {
       core.warning(
-        sanitize(
-          `Failed to post review summary comment: ${err instanceof Error ? err.message : err}`,
-        ),
+        `Failed to post review summary comment: ${err instanceof Error ? err.message : err}`,
       );
     }
   }

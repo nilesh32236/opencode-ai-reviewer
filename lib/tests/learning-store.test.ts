@@ -1,10 +1,9 @@
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { LearningStore } from '../src/learning/store.js';
 
-const TEST_DB = path.join(os.tmpdir(), `.test-learning-${Date.now()}.db`);
+const TEST_DB = path.join(__dirname, '.test-learning.db');
 
 describe('LearningStore', () => {
   let store: LearningStore;
