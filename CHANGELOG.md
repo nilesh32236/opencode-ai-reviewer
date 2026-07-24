@@ -4,6 +4,24 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.1.15] — 2026-07-24
+
+
+### Fixed
+
+- address issue #112
+- address issue #111 (#135) (#111
+#135)
+- comprehensive code audit — 35+ critical and important fixes (#137) (#137)
+
+### Changed
+
+- Merge branch 'main' into autofix/issue-112
+- refactor: centralize command allowlist and add database migration testing support
+- 🛡️ Sentinel Daily Guard: Prevent command injection in autofix handler (#134) (#134)
+
+[v1.1.15]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.1.14...v1.1.15
+
 ## [v1.1.14] — 2026-07-23
 
 
