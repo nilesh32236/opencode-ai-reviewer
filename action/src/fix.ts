@@ -10,7 +10,7 @@ import type {
   ReviewEngine,
   ReviewResult,
 } from '@opencode-pr-agent/lib';
-import { validateRunChecksCommand } from './inputs.js';
+import { validateRunChecksCommand } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { sanitize } from './utils.js';
 

@@ -8,7 +8,6 @@ import {
 const VALID_MODES: ActionMode[] = ['review', 'fix', 'audit', 'post', 'analyze'];
 
 export { DEFAULT_ALLOWLIST, validateRunChecksCommand };
-
 /**
  * Parse and validate a timeout value from a raw string.
  * @param raw - The raw timeout string (e.g. "30"). Defaults to "20" if empty.

@@ -55,3 +55,4 @@ export { buildMetaReviewPrompt } from './meta-review/prompts.js';
 export { PatternDetector, PatternDetectorOptions } from './pattern-detector/engine.js';
 export { clusterFindings } from './pattern-detector/cluster.js';
 export { RuleApprovalSubscriber } from './pattern-detector/rule-approval.js';
+export * from './utils/validation.js';
