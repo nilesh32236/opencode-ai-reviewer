@@ -457,7 +457,10 @@ export abstract class SqlAdapter implements LearningRepository {
    * Retrieve recent review quality scores, ordered by created_at DESC.
    */
   async getQualityTrends(limit = 20): Promise<Array<Record<string, unknown>>> {
-    return this.all('SELECT * FROM review_quality ORDER BY created_at DESC LIMIT ?', [limit]);
+    return this.all(
+      'SELECT * FROM review_quality WHERE actionability_score > 0 OR accuracy_score > 0 OR coverage_score > 0 OR consistency_score > 0 ORDER BY created_at DESC LIMIT ?',
+      [limit],
+    );
   }
 
   /**
@@ -1072,9 +1075,9 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   async getQualityTrends(limit = 20): Promise<Array<Record<string, unknown>>> {
-    return this.prepareStmt('SELECT * FROM review_quality ORDER BY created_at DESC LIMIT ?').all(
-      limit,
-    ) as Array<Record<string, unknown>>;
+    return this.prepareStmt(
+      'SELECT * FROM review_quality WHERE actionability_score > 0 OR accuracy_score > 0 OR coverage_score > 0 OR consistency_score > 0 ORDER BY created_at DESC LIMIT ?',
+    ).all(limit) as Array<Record<string, unknown>>;
   }
 
   async incrementAndCheckMetaReviewInterval(interval: number): Promise<boolean> {

@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as github from '@actions/github';
-import type { GitHubHelper, TelemetryStats } from '@opencode-pr-agent/lib';
+import type { GitHubHelper } from '@opencode-pr-agent/lib';
 import { LearningStore, validateRunChecksCommand } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { sanitize } from './utils.js';

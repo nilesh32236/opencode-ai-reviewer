@@ -267,11 +267,11 @@ function buildCIConfig(): string {
  * Looks for common LLM token patterns. Returns 0 if no pattern matches.
  */
 function parseTokenUsage(output: string): number {
+  // Prioritize total_tokens patterns to avoid matching prompt_tokens or completion_tokens
   const patterns = [
-    /total_tokens["\s]*[:=]\s*(\d+)/i,
-    /tokens["\s]*[:=]\s*(\d+)/i,
-    /Total tokens["\s]*[:=]\s*(\d+)/i,
     /"total_tokens"\s*:\s*(\d+)/i,
+    /total_tokens["\s]*[:=]\s*(\d+)/i,
+    /\btotal\s+tokens["\s]*[:=]\s*(\d+)/i,
   ];
   for (const pattern of patterns) {
     const match = output.match(pattern);

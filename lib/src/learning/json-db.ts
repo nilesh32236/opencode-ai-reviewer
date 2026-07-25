@@ -467,6 +467,13 @@ export class JsonDatabase implements LearningRepository {
 
   async getQualityTrends(limit = 20): Promise<Array<Record<string, unknown>>> {
     return [...this.data.review_quality]
+      .filter(
+        (r) =>
+          r.actionability_score > 0 ||
+          r.accuracy_score > 0 ||
+          r.coverage_score > 0 ||
+          r.consistency_score > 0,
+      )
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
       .slice(0, limit) as unknown as Array<Record<string, unknown>>;
   }
