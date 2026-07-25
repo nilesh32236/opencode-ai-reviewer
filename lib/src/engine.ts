@@ -183,6 +183,9 @@ export class ReviewEngine {
         deltaContext,
       );
 
+      const outputPath = path.join(workDir, '.opencode', 'review-output.jsonl');
+      ensureOutputDir(outputPath);
+
       const runResult = await runOpenCode(prompt, {
         model: this.config.reviewModel,
         timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
@@ -196,7 +199,6 @@ export class ReviewEngine {
         return r;
       }
 
-      const outputPath = path.join(workDir, '.opencode', 'review-output.jsonl');
       try {
         const parsed = await parseJsonlFile(outputPath);
         return await this.verifyReviewResult(parsed, baseContext, workDir, timeoutMinutes);
@@ -238,6 +240,9 @@ export class ReviewEngine {
         deltaContext,
       );
 
+      const outputPath = path.join(batchDir, '.opencode', 'review-output.jsonl');
+      ensureOutputDir(outputPath);
+
       const runResult = await runOpenCode(prompt, {
         model: this.config.reviewModel,
         timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
@@ -249,7 +254,6 @@ export class ReviewEngine {
         return emptyResult();
       }
 
-      const outputPath = path.join(batchDir, '.opencode', 'review-output.jsonl');
       try {
         return await parseJsonlFile(outputPath);
       } catch {
@@ -280,6 +284,9 @@ export class ReviewEngine {
       findingsJsonl,
     );
 
+    const finalOutputPath = path.join(workDir, '.opencode', 'review-output.jsonl');
+    ensureOutputDir(finalOutputPath);
+
     const synthesisResult = await runOpenCode(synthesisPrompt, {
       model: this.config.reviewModel,
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
@@ -299,7 +306,6 @@ export class ReviewEngine {
       return await this.verifyReviewResult(fallback, baseContext, workDir, timeoutMinutes);
     }
 
-    const finalOutputPath = path.join(workDir, '.opencode', 'review-output.jsonl');
     try {
       const parsed = await parseJsonlFile(finalOutputPath);
       return await this.verifyReviewResult(parsed, baseContext, workDir, timeoutMinutes);

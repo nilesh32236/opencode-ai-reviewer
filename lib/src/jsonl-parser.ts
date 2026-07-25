@@ -36,11 +36,24 @@ export function stripMarkdownFences(content: string): string {
  */
 export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
   const absolutePath = path.resolve(filePath);
-  if (!fs.existsSync(absolutePath)) {
-    return emptyResult();
+  let targetPath = absolutePath;
+
+  if (!fs.existsSync(targetPath)) {
+    const parentDirFallback = path.join(
+      path.dirname(path.dirname(absolutePath)),
+      'review-output.jsonl',
+    );
+    const directFallback = path.join(path.dirname(absolutePath), 'review-output.jsonl');
+    if (fs.existsSync(parentDirFallback)) {
+      targetPath = parentDirFallback;
+    } else if (fs.existsSync(directFallback)) {
+      targetPath = directFallback;
+    } else {
+      return emptyResult();
+    }
   }
 
-  const content = fs.readFileSync(absolutePath, 'utf-8');
+  const content = fs.readFileSync(targetPath, 'utf-8');
   return parseJsonlString(content);
 }
 

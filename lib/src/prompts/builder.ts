@@ -162,6 +162,9 @@ export function buildReviewPrompt(
   sections.push('**DO:**');
   sections.push('- Reference specific file:line for every issue');
   sections.push('- Use the `read` tool to view file contents instead of relying on diff snippets');
+  sections.push(
+    '- When reading TypeScript source files, note that relative imports ending in `.js` (e.g. `./conversation.js`) map to `.ts` files on disk (`./conversation.ts`). Always use the `.ts` extension when opening source files',
+  );
   sections.push('- Explain WHY each issue matters');
   sections.push('- Categorize by actual severity');
   sections.push('- Acknowledge strengths before issues');
