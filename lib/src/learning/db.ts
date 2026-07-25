@@ -117,8 +117,8 @@ export abstract class SqlAdapter implements LearningRepository {
   async recordFinding(finding: FindingInput): Promise<string> {
     const id = finding.id || generateId();
     await this.run(
-      `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion, duration_ms, tokens_used)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         finding.prNumber,
@@ -128,6 +128,8 @@ export abstract class SqlAdapter implements LearningRepository {
         finding.line || null,
         finding.message,
         finding.suggestion || null,
+        finding.durationMs || null,
+        finding.tokensUsed || null,
       ],
     );
     return id;
@@ -141,7 +143,7 @@ export abstract class SqlAdapter implements LearningRepository {
     if (findings.length === 0) return [];
     return this.transaction(async () => {
       const ids = findings.map(() => generateId());
-      const placeholders = findings.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+      const placeholders = findings.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
       const values = findings.flatMap((f, i) => [
         ids[i],
         f.prNumber,
@@ -151,9 +153,11 @@ export abstract class SqlAdapter implements LearningRepository {
         f.line || null,
         f.message,
         f.suggestion || null,
+        f.durationMs || null,
+        f.tokensUsed || null,
       ]);
       await this.run(
-        `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion) VALUES ${placeholders}`,
+        `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion, duration_ms, tokens_used) VALUES ${placeholders}`,
         values,
       );
       return ids;
@@ -402,8 +406,8 @@ export abstract class SqlAdapter implements LearningRepository {
    */
   async recordQuality(quality: LearningQuality): Promise<void> {
     await this.run(
-      `INSERT INTO review_quality (id, pr_number, actionability_score, accuracy_score, coverage_score, consistency_score)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO review_quality (id, pr_number, actionability_score, accuracy_score, coverage_score, consistency_score, duration_ms, tokens_used)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         generateId(),
         quality.prNumber,
@@ -411,8 +415,44 @@ export abstract class SqlAdapter implements LearningRepository {
         quality.accuracyScore,
         quality.coverageScore,
         quality.consistencyScore,
+        quality.durationMs || null,
+        quality.tokensUsed || null,
       ],
     );
+  }
+
+  async getTelemetryStats(sinceDays?: number): Promise<{
+    avgDurationMs: number;
+    totalReviews: number;
+    totalTokensUsed: number;
+    avgTokensPerReview: number;
+  }> {
+    const dateFilter = sinceDays
+      ? `AND created_at >= datetime('now', '-${sinceDays} days')`
+      : '';
+    const row = await this.get<{
+      avg_duration: number | null;
+      total_reviews: number;
+      total_tokens: number | null;
+    }>(
+      `SELECT
+        AVG(duration_ms) as avg_duration,
+        COUNT(*) as total_reviews,
+        SUM(tokens_used) as total_tokens
+       FROM review_quality
+       WHERE duration_ms IS NOT NULL ${dateFilter}`,
+    );
+    if (!row || row.total_reviews === 0) {
+      return { avgDurationMs: 0, totalReviews: 0, totalTokensUsed: 0, avgTokensPerReview: 0 };
+    }
+    const avgDuration = row.avg_duration ?? 0;
+    const totalTokens = row.total_tokens ?? 0;
+    return {
+      avgDurationMs: Math.round(avgDuration),
+      totalReviews: row.total_reviews,
+      totalTokensUsed: totalTokens,
+      avgTokensPerReview: row.total_reviews > 0 ? Math.round(totalTokens / row.total_reviews) : 0,
+    };
   }
 
   /**
@@ -745,8 +785,8 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   async recordFinding(finding: FindingInput): Promise<string> {
     const id = finding.id || generateId();
     this.prepareStmt(
-      `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion, duration_ms, tokens_used)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       id,
       finding.prNumber,
@@ -756,6 +796,8 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
       finding.line || null,
       finding.message,
       finding.suggestion || null,
+      finding.durationMs || null,
+      finding.tokensUsed || null,
     );
     return id;
   }
@@ -764,7 +806,7 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     if (findings.length === 0) return [];
     return this.transaction(async () => {
       const ids = findings.map(() => generateId());
-      const placeholders = findings.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+      const placeholders = findings.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
       const values = findings.flatMap((f, i) => [
         ids[i],
         f.prNumber,
@@ -774,9 +816,11 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
         f.line || null,
         f.message,
         f.suggestion || null,
+        f.durationMs || null,
+        f.tokensUsed || null,
       ]);
       this.prepareStmt(
-        `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion) VALUES ${placeholders}`,
+        `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion, duration_ms, tokens_used) VALUES ${placeholders}`,
       ).run(...values);
       return ids;
     });
@@ -985,8 +1029,8 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
 
   async recordQuality(quality: LearningQuality): Promise<void> {
     this.prepareStmt(
-      `INSERT INTO review_quality (id, pr_number, actionability_score, accuracy_score, coverage_score, consistency_score)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO review_quality (id, pr_number, actionability_score, accuracy_score, coverage_score, consistency_score, duration_ms, tokens_used)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       generateId(),
       quality.prNumber,
@@ -994,7 +1038,39 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
       quality.accuracyScore,
       quality.coverageScore,
       quality.consistencyScore,
+      quality.durationMs || null,
+      quality.tokensUsed || null,
     );
+  }
+
+  async getTelemetryStats(sinceDays?: number): Promise<{
+    avgDurationMs: number;
+    totalReviews: number;
+    totalTokensUsed: number;
+    avgTokensPerReview: number;
+  }> {
+    const dateFilter = sinceDays
+      ? `AND created_at >= datetime('now', '-${sinceDays} days')`
+      : '';
+    const row = this.prepareStmt(
+      `SELECT
+        AVG(duration_ms) as avg_duration,
+        COUNT(*) as total_reviews,
+        SUM(tokens_used) as total_tokens
+       FROM review_quality
+       WHERE duration_ms IS NOT NULL ${dateFilter}`,
+    ).get() as { avg_duration: number | null; total_reviews: number; total_tokens: number | null } | undefined;
+    if (!row || row.total_reviews === 0) {
+      return { avgDurationMs: 0, totalReviews: 0, totalTokensUsed: 0, avgTokensPerReview: 0 };
+    }
+    const avgDuration = row.avg_duration ?? 0;
+    const totalTokens = row.total_tokens ?? 0;
+    return {
+      avgDurationMs: Math.round(avgDuration),
+      totalReviews: row.total_reviews,
+      totalTokensUsed: totalTokens,
+      avgTokensPerReview: row.total_reviews > 0 ? Math.round(totalTokens / row.total_reviews) : 0,
+    };
   }
 
   async getQualityTrends(limit = 20): Promise<Array<Record<string, unknown>>> {
@@ -1267,6 +1343,15 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
     fpRateBefore: number,
   ): Promise<void> {
     return this.db.addPromptOverride(category, overrideText, fpRateBefore);
+  }
+
+  async getTelemetryStats(sinceDays?: number): Promise<{
+    avgDurationMs: number;
+    totalReviews: number;
+    totalTokensUsed: number;
+    avgTokensPerReview: number;
+  }> {
+    return this.db.getTelemetryStats(sinceDays);
   }
 
   async resetCounter(): Promise<void> {
