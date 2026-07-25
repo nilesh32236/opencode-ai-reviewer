@@ -3,7 +3,7 @@ import { Logger } from '../utils/logger.js';
 import { withRetry } from '../utils/retry.js';
 import { connectDb } from './db.js';
 import { applyMigrations, getDbPath } from './schema.js';
-import type { LearningRepository, TelemetryStats } from './types.js';
+import type { FindingInput, LearningRepository, TelemetryStats } from './types.js';
 
 /**
  * Persistent storage for review findings, feedback signals, quality metrics,
@@ -62,16 +62,7 @@ export class LearningStore {
    * @returns The generated finding ID.
    * @throws If the database operation fails.
    */
-  async recordFinding(finding: {
-    id?: string;
-    prNumber: number;
-    type: string;
-    severity?: string;
-    file?: string;
-    line?: number;
-    message: string;
-    suggestion?: string;
-  }): Promise<string> {
+  async recordFinding(finding: FindingInput): Promise<string> {
     const repo = await this.repoPromise;
     return repo.recordFinding(finding);
   }
@@ -83,18 +74,7 @@ export class LearningStore {
    * @returns Array of generated finding IDs.
    * @throws If the database operation fails.
    */
-  async recordFindings(
-    findings: Array<{
-      id?: string;
-      prNumber: number;
-      type: string;
-      severity?: string;
-      file?: string;
-      line?: number;
-      message: string;
-      suggestion?: string;
-    }>,
-  ): Promise<string[]> {
+  async recordFindings(findings: FindingInput[]): Promise<string[]> {
     if (findings.length === 0) return [];
     const repo = await this.repoPromise;
     return repo.recordFindings(findings);
@@ -290,8 +270,12 @@ export class LearningStore {
    * @returns TelemetryStats with average duration, total reviews, and token usage.
    */
   async getTelemetryStats(sinceDays?: number): Promise<TelemetryStats> {
-    const repo = await this.repoPromise;
-    return repo.getTelemetryStats(sinceDays);
+    try {
+      const repo = await this.repoPromise;
+      return repo.getTelemetryStats(sinceDays);
+    } catch {
+      return { avgDurationMs: 0, totalReviews: 0, totalTokensUsed: 0, avgTokensPerReview: 0 };
+    }
   }
 
   /**

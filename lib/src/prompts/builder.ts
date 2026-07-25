@@ -636,7 +636,7 @@ function buildOutputFormat(): string {
 \`\`\`
 
 **Rules for the JSONL file:**
-- You MUST write the JSONL content directly to the file \`.opencode/review-output.jsonl\`.
+- You MUST write the JSONL content directly to the file \`review-output.jsonl\` in the current working directory.
 - After writing the file, you MUST verify that the JSONL file exists, is valid JSONL, and conforms strictly to the specified schema and rules (e.g. having exactly one summary, exactly one verdict, and correct fields).
 - Write exactly ONE \`executive_summary\` line with purpose, riskLevel ("low"/"medium"/"high"), riskRationale, and breakingChanges (array of strings)
 - Write exactly ONE \`summary\` line and exactly ONE \`verdict\` line

@@ -277,7 +277,7 @@ function parseTokenUsage(output: string): number {
     const match = output.match(pattern);
     if (match) {
       const parsed = Number.parseInt(match[1], 10);
-      if (!isNaN(parsed) && parsed > 0) return parsed;
+      if (!isNaN(parsed) && parsed >= 0) return parsed;
     }
   }
   return 0;

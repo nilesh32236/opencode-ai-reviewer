@@ -183,7 +183,7 @@ export class ReviewEngine {
         deltaContext,
       );
 
-      const outputPath = path.join(workDir, '.opencode', 'review-output.jsonl');
+      const outputPath = path.join(workDir, 'review-output.jsonl');
       ensureOutputDir(outputPath);
 
       const runResult = await runOpenCode(prompt, {
@@ -248,7 +248,7 @@ export class ReviewEngine {
             deltaContext,
           );
 
-          const outputPath = path.join(batchDir, '.opencode', 'review-output.jsonl');
+          const outputPath = path.join(batchDir, 'review-output.jsonl');
           ensureOutputDir(outputPath);
 
           const runResult = await runOpenCode(prompt, {
@@ -295,7 +295,7 @@ export class ReviewEngine {
       findingsJsonl,
     );
 
-    const finalOutputPath = path.join(workDir, '.opencode', 'review-output.jsonl');
+    const finalOutputPath = path.join(workDir, 'review-output.jsonl');
     ensureOutputDir(finalOutputPath);
 
     const synthesisResult = await runOpenCode(synthesisPrompt, {
