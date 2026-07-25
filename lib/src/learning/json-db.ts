@@ -359,11 +359,13 @@ export class JsonDatabase implements LearningRepository {
   async getRelevantLessons(filePaths: string[]): Promise<string[]> {
     const extensions = [
       ...new Set(
-        filePaths.map((f) => {
-          const parts = f.split('.');
-          const ext = parts.length > 1 ? parts.pop() : '';
-          return ext ? `.${ext}` : '';
-        }),
+        (filePaths || [])
+          .filter((f): f is string => typeof f === 'string' && Boolean(f))
+          .map((f) => {
+            const parts = f.split('.');
+            const ext = parts.length > 1 ? parts.pop() : '';
+            return ext ? `.${ext}` : '';
+          }),
       ),
     ].filter(Boolean);
 
@@ -391,11 +393,13 @@ export class JsonDatabase implements LearningRepository {
   async getFalsePositiveRules(filePaths: string[], limit = 20): Promise<string[]> {
     const extensions = [
       ...new Set(
-        filePaths.map((f) => {
-          const parts = f.split('.');
-          const ext = parts.length > 1 ? parts.pop() : '';
-          return ext ? `.${ext}` : '';
-        }),
+        (filePaths || [])
+          .filter((f): f is string => typeof f === 'string' && Boolean(f))
+          .map((f) => {
+            const parts = f.split('.');
+            const ext = parts.length > 1 ? parts.pop() : '';
+            return ext ? `.${ext}` : '';
+          }),
       ),
     ].filter(Boolean);
 

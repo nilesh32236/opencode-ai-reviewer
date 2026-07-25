@@ -91,7 +91,9 @@ export class ReviewEngine {
       try {
         await this.mcp.connect();
         const libraries = detectLibraries(
-          pr.changedFiles.map((f) => f.path),
+          pr.changedFiles
+            .map((f) => f?.path)
+            .filter((p): p is string => typeof p === 'string' && Boolean(p)),
           workingDirectory,
         );
         if (libraries.length > 0) {
@@ -122,6 +124,7 @@ export class ReviewEngine {
     const files =
       excludePatterns.length > 0
         ? pr.changedFiles.filter((f) => {
+            if (!f?.path) return false;
             return !excludePatterns.some((pattern: string) => minimatch(f.path, pattern));
           })
         : pr.changedFiles;
@@ -146,7 +149,9 @@ export class ReviewEngine {
     let lessons: string[] | undefined;
     let falsePositiveRules: string[] | undefined;
     if (this.learningStore) {
-      const filePaths = pr.changedFiles.map((f) => f.path);
+      const filePaths = pr.changedFiles
+        .map((f) => f?.path)
+        .filter((p): p is string => typeof p === 'string' && Boolean(p));
       try {
         lessons = await this.getRelevantLessons(filePaths);
       } catch (err) {
@@ -996,6 +1001,7 @@ function detectLibraries(files: string[], rootDir?: string): string[] {
   const libraries = new Set<string>();
 
   for (const file of files) {
+    if (!file || typeof file !== 'string') continue;
     if (file.includes('package.json') || file.endsWith('.lock')) continue;
 
     // React / Next.js detection
