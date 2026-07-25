@@ -370,6 +370,7 @@ export async function runOpenCode(
   }
   safeEnv.OPENCODE_CONFIG_CONTENT = buildCIConfig();
   safeEnv.OPENCODE_DISABLE_AUTOUPDATE = 'true';
+  safeEnv.XDG_DATA_HOME = path.join(cwd, '.opencode-data');
 
   const childProcess = cp.spawn(binaryPath, args, {
     cwd,

@@ -134,10 +134,10 @@ fix:
       expect(result.max_fix_iterations).toBe('7');
     });
 
-    it('extracts first runCheck', () => {
+    it('chains multiple runChecks with &&', () => {
       const config = { fix: { runChecks: ['npm test', 'npm run lint'] } };
       const result = mergeConfigWithInputs(config, {});
-      expect(result.run_checks_after_fix).toBe('npm test');
+      expect(result.run_checks_after_fix).toBe('npm test && npm run lint');
     });
 
     it('extracts audit config', () => {

@@ -216,53 +216,60 @@ export class ReviewEngine {
       fileBatches.push(files.slice(i, i + batchSize));
     }
 
-    const batchPromises = fileBatches.map(async (batch, idx) => {
-      const batchDir = path.join(workDir, `.opencode`, `batch-${idx}`);
-      if (!existsSync(batchDir)) {
-        mkdirSync(batchDir, { recursive: true });
-      }
-      const batchPR = { ...pr, changedFiles: batch };
-      const batchContext = this.buildPRContextString(batchPR);
-      const context = mcpDocs
-        ? batchContext + '\n\n## Library Documentation\n' + mcpDocs
-        : batchContext;
+    const concurrencyLimit = 3;
+    const batchResults: ReviewResult[] = [];
+    for (let i = 0; i < fileBatches.length; i += concurrencyLimit) {
+      const chunk = fileBatches.slice(i, i + concurrencyLimit);
+      const chunkResults = await Promise.all(
+        chunk.map(async (batch, chunkIdx) => {
+          const idx = i + chunkIdx;
+          const batchDir = path.join(workDir, `.opencode`, `batch-${idx}`);
+          if (!existsSync(batchDir)) {
+            mkdirSync(batchDir, { recursive: true });
+          }
+          const batchPR = { ...pr, changedFiles: batch };
+          const batchContext = this.buildPRContextString(batchPR);
+          const context = mcpDocs
+            ? batchContext + '\n\n## Library Documentation\n' + mcpDocs
+            : batchContext;
 
-      const prompt = buildReviewPrompt(
-        {
-          projectContext: this.config.projectContext.description || undefined,
-          reviewPromptFile: promptFile,
-          reviewPromptExtra: promptExtra,
-        },
-        context,
-        lessons,
-        previousFindings,
-        falsePositiveRules,
-        deltaContext,
+          const prompt = buildReviewPrompt(
+            {
+              projectContext: this.config.projectContext.description || undefined,
+              reviewPromptFile: promptFile,
+              reviewPromptExtra: promptExtra,
+            },
+            context,
+            lessons,
+            previousFindings,
+            falsePositiveRules,
+            deltaContext,
+          );
+
+          const outputPath = path.join(batchDir, '.opencode', 'review-output.jsonl');
+          ensureOutputDir(outputPath);
+
+          const runResult = await runOpenCode(prompt, {
+            model: this.config.reviewModel,
+            timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+            workingDirectory: batchDir,
+          });
+
+          if (!runResult.success) {
+            core.warning(`Batch ${idx} review execution failed, returning empty result`);
+            return emptyResult();
+          }
+
+          try {
+            return await parseJsonlFile(outputPath);
+          } catch {
+            core.warning(`Failed to parse batch ${idx} review output, returning empty result`);
+            return emptyResult();
+          }
+        }),
       );
-
-      const outputPath = path.join(batchDir, '.opencode', 'review-output.jsonl');
-      ensureOutputDir(outputPath);
-
-      const runResult = await runOpenCode(prompt, {
-        model: this.config.reviewModel,
-        timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
-        workingDirectory: batchDir,
-      });
-
-      if (!runResult.success) {
-        core.warning(`Batch ${idx} review execution failed, returning empty result`);
-        return emptyResult();
-      }
-
-      try {
-        return await parseJsonlFile(outputPath);
-      } catch {
-        core.warning(`Failed to parse batch ${idx} review output, returning empty result`);
-        return emptyResult();
-      }
-    });
-
-    const batchResults = await Promise.all(batchPromises);
+      batchResults.push(...chunkResults);
+    }
 
     // Collate findings from all batches
     const allIssues: ReviewIssue[] = [];
