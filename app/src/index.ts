@@ -16,6 +16,7 @@ import type { Probot } from 'probot';
 import { handleAudit } from './handlers/audit.js';
 import { handleCommand } from './handlers/commands.js';
 import { handlePRReview } from './handlers/pr-review.js';
+import { handleReply } from './handlers/reply.js';
 
 const logger = new Logger('App');
 
@@ -178,7 +179,49 @@ export default (app: Probot): void => {
     },
   };
 
-  subscribers.push(reviewSubscriber, fixSubscriber, auditSubscriber, analyzeSubscriber);
+  const replySubscriber: Subscriber = {
+    name: 'ReplySubscriber',
+    subscribedEvents: ['review_comment.created'],
+    async handle(event: GitHubEvent, signal?: AbortSignal) {
+      if (signal?.aborted) return;
+      try {
+        const payload = event.payload as Record<string, unknown>;
+        const comment = payload.comment as Record<string, unknown> | undefined;
+        if (!comment) return;
+
+        // Skip bot-generated comments
+        const user = comment.user as Record<string, unknown> | undefined;
+        if (user?.type === 'Bot') return;
+
+        // Must be a reply in a thread (not a top-level comment)
+        const parentId = comment.in_reply_to_id as number | undefined;
+        if (!parentId) return;
+
+        const prNumber = event.prNumber || 0;
+        if (!prNumber) return;
+
+        const config = buildConfig();
+        await handleReply(
+          prNumber,
+          event.repo || '',
+          getToken(),
+          config,
+          parentId,
+          comment.body as string,
+        );
+      } catch (err) {
+        logger.error(`ReplySubscriber failed: ${err instanceof Error ? err.message : err}`);
+      }
+    },
+  };
+
+  subscribers.push(
+    reviewSubscriber,
+    fixSubscriber,
+    auditSubscriber,
+    analyzeSubscriber,
+    replySubscriber,
+  );
 
   const feedbackSub = new FeedbackSubscriber(learningStore);
   subscribers.push(feedbackSub);
