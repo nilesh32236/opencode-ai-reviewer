@@ -179,6 +179,8 @@ export interface AgentConfig {
   audit: AuditConfig;
   /** Learning behavior */
   learning: LearningConfig;
+  /** Conversation / @mention behavior */
+  conversation: ConversationConfig;
 }
 
 /** Configuration for an MCP server used for context enrichment. */
@@ -225,6 +227,46 @@ export interface ReviewConfig {
   requireVerdict: boolean;
   /** Command triggers (e.g., /oc, /review) */
   commandTriggers: string[];
+  /** Glob patterns for files to exclude from review (e.g., lockfiles, generated code) */
+  excludePatterns: string[];
+  /** Whether to run a meta-verification pass that drops low-confidence findings */
+  enableMetaVerification: boolean;
+}
+
+// ─── Conversation / @mention ─────────────────────────────
+/** Configuration for the interactive conversation / @mention feature. */
+export interface ConversationConfig {
+  /** The mention handle to trigger on (without @) */
+  mentionHandle: string;
+  /** Whether to enable conversation mode */
+  enabled: boolean;
+}
+
+/** Intent of a conversation interaction. */
+export type ConversationIntent = 'explain' | 'fix' | 'general';
+
+/** A single message in a conversation thread. */
+export interface ConversationMessage {
+  /** Role of the message author */
+  role: 'user' | 'assistant';
+  /** The message body (markdown) */
+  body: string;
+  /** GitHub username of the author */
+  author?: string;
+}
+
+/** Context for an interactive conversation on a PR comment. */
+export interface ConversationContext {
+  /** File path the comment is attached to (for review comments) */
+  filePath?: string;
+  /** Diff hunk context around the comment */
+  diffHunk?: string;
+  /** Full conversation thread */
+  thread: ConversationMessage[];
+  /** PR context for understanding the broader change */
+  prContext: PRContext;
+  /** Detected intent of the user's request */
+  intent: ConversationIntent;
 }
 
 /** Configuration for audit behavior. */
@@ -405,6 +447,17 @@ export interface ReviewResult {
   rawLines?: string[];
   /** Number of lines that failed to parse */
   failedLines?: number;
+  /** Optional executive summary with risk assessment */
+  executiveSummary?: {
+    /** 1-2 sentence description of the PR's core purpose */
+    purpose: string;
+    /** Risk level assessment */
+    riskLevel: 'low' | 'medium' | 'high';
+    /** Reasoning for the risk level */
+    riskRationale: string;
+    /** List of breaking changes (empty if none) */
+    breakingChanges: string[];
+  };
 }
 
 /** Result of an auto-fix operation. */
@@ -602,6 +655,8 @@ export interface PromptConfig {
     customRules?: string[];
     /** Post findings as inline review comments (default: true) */
     inline?: boolean;
+    /** Patterns to exclude from review */
+    excludePatterns?: string[];
   };
   /** Fix prompt configuration */
   fix?: {
@@ -688,6 +743,19 @@ export const DEFAULT_CONFIG: AgentConfig = {
     inline: true,
     requireVerdict: true,
     commandTriggers: ['/oc', '/review'],
+    excludePatterns: [
+      '**/pnpm-lock.yaml',
+      '**/package-lock.json',
+      '**/yarn.lock',
+      '**/*.min.js',
+      '**/*.min.css',
+      '**/*.generated.ts',
+      '**/*.generated.js',
+      '**/dist/**',
+      '**/build/**',
+      '**/.next/**',
+    ],
+    enableMetaVerification: false,
   },
   audit: {
     promptsDir: '.audit-prompts',
@@ -709,6 +777,10 @@ export const DEFAULT_CONFIG: AgentConfig = {
       minFrequency: 3,
       windowSize: 100,
     },
+  },
+  conversation: {
+    mentionHandle: 'opencode-reviewer',
+    enabled: true,
   },
 };
 

@@ -148,6 +148,11 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     if (typeof config.review.inline === 'boolean') {
       result.review.inline = config.review.inline;
     }
+    if (Array.isArray(config.review.excludePatterns)) {
+      result.review.excludePatterns = config.review.excludePatterns.filter(
+        (p) => typeof p === 'string',
+      );
+    }
   }
 
   if (config.fix) {

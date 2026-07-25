@@ -2,6 +2,7 @@ import { promises as fs, existsSync, readFileSync } from 'fs';
 import * as cp from 'node:child_process';
 import * as path from 'path';
 import * as core from '@actions/core';
+import { minimatch } from 'minimatch';
 import { emptyResult, parseJsonlFile } from './jsonl-parser.js';
 import type { LearningStore } from './learning/store.js';
 import { MCPManager } from './mcp/client.js';
@@ -9,12 +10,16 @@ import { ensureOutputDir, getGitStatus, runOpenCode } from './opencode.js';
 import {
   buildAnalyzePrompt,
   buildAuditPrompt,
+  buildExplainPrompt,
   buildFixPrompt,
   buildReviewPrompt,
   buildSynthesisPrompt,
 } from './prompts/builder.js';
+import { buildConversationPrompt } from './prompts/conversation.js';
+import { buildVerificationPrompt } from './prompts/verify.js';
 import type {
   AgentConfig,
+  ConversationContext,
   FixResult,
   PRContext,
   PreviousFindingIteration,
@@ -79,6 +84,7 @@ export class ReviewEngine {
     timeoutMinutes?: number,
     previousFindings?: PreviousFindingIteration[],
     workingDirectory?: string,
+    previousHeadSha?: string,
   ): Promise<ReviewResult> {
     let mcpDocs = '';
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
@@ -98,20 +104,61 @@ export class ReviewEngine {
 
     const workDir = workingDirectory || process.cwd();
     const batchSize = this.config.batchSize || 3;
-    const files = pr.changedFiles;
+
+    // Fetch delta context if previousHeadSha is provided
+    let deltaContext: string | undefined;
+    if (previousHeadSha && previousHeadSha !== pr.headSha) {
+      try {
+        deltaContext = await this.github.getDiffSince(previousHeadSha, pr.headSha || pr.headRef);
+      } catch (err) {
+        core.warning(
+          `Failed to fetch delta diff since ${previousHeadSha}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    // Filter out excluded files (lockfiles, generated code, dist/, etc.)
+    const excludePatterns = this.config.review.excludePatterns || [];
+    const files =
+      excludePatterns.length > 0
+        ? pr.changedFiles.filter((f) => {
+            return !excludePatterns.some((pattern: string) => minimatch(f.path, pattern));
+          })
+        : pr.changedFiles;
+
+    if (files.length === 0 && pr.changedFiles.length > 0) {
+      core.info(
+        `All ${pr.changedFiles.length} changed file(s) matched exclude patterns — skipping review`,
+      );
+      return emptyResult();
+    }
+    if (files.length < pr.changedFiles.length) {
+      core.info(
+        `Excluded ${pr.changedFiles.length - files.length} file(s) from review by exclude patterns`,
+      );
+    }
     const prContext = this.buildPRContextString(pr);
     const baseContext = mcpDocs
       ? prContext + '\n\n## Library Documentation\n' + mcpDocs
       : prContext;
 
-    // Get relevant lessons from learning store (with caching)
+    // Get relevant lessons and false-positive suppression rules from learning store (with caching)
     let lessons: string[] | undefined;
+    let falsePositiveRules: string[] | undefined;
     if (this.learningStore) {
+      const filePaths = pr.changedFiles.map((f) => f.path);
       try {
-        lessons = await this.getRelevantLessons(pr.changedFiles.map((f) => f.path));
+        lessons = await this.getRelevantLessons(filePaths);
       } catch (err) {
         core.warning(
           `Failed to get learning store lessons: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      try {
+        falsePositiveRules = await this.learningStore.getFalsePositiveRules(filePaths);
+      } catch (err) {
+        core.warning(
+          `Failed to get false-positive rules: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }
@@ -127,6 +174,8 @@ export class ReviewEngine {
         baseContext,
         lessons,
         previousFindings,
+        falsePositiveRules,
+        deltaContext,
       );
 
       const runResult = await runOpenCode(prompt, {
@@ -144,7 +193,8 @@ export class ReviewEngine {
 
       const outputPath = path.join(workDir, '.opencode', 'review-output.jsonl');
       try {
-        return await parseJsonlFile(outputPath);
+        const parsed = await parseJsonlFile(outputPath);
+        return await this.verifyReviewResult(parsed, baseContext, workDir, timeoutMinutes);
       } catch {
         core.warning(`Failed to parse review output at ${outputPath}, returning empty result`);
         const r = emptyResult();
@@ -176,6 +226,8 @@ export class ReviewEngine {
         context,
         lessons,
         previousFindings,
+        falsePositiveRules,
+        deltaContext,
       );
 
       const runResult = await runOpenCode(prompt, {
@@ -228,7 +280,7 @@ export class ReviewEngine {
 
     if (!synthesisResult.success) {
       core.warning('Synthesis pass failed, falling back to merged batch results');
-      return this.buildFallbackResult(
+      const fallback = this.buildFallbackResult(
         allIssues,
         allStrengths,
         allRawLines,
@@ -236,14 +288,16 @@ export class ReviewEngine {
         fileBatches,
         'Synthesis failed, using merged batch results',
       );
+      return await this.verifyReviewResult(fallback, baseContext, workDir, timeoutMinutes);
     }
 
     const finalOutputPath = path.join(workDir, '.opencode', 'review-output.jsonl');
     try {
-      return await parseJsonlFile(finalOutputPath);
+      const parsed = await parseJsonlFile(finalOutputPath);
+      return await this.verifyReviewResult(parsed, baseContext, workDir, timeoutMinutes);
     } catch {
       core.warning('Synthesis output parse failed, falling back to merged batch results');
-      return this.buildFallbackResult(
+      const fallback = this.buildFallbackResult(
         allIssues,
         allStrengths,
         allRawLines,
@@ -251,6 +305,7 @@ export class ReviewEngine {
         fileBatches,
         'Synthesis output parse failed, using merged batch results',
       );
+      return await this.verifyReviewResult(fallback, baseContext, workDir, timeoutMinutes);
     }
   }
 
@@ -488,6 +543,181 @@ export class ReviewEngine {
       core.warning(`Could not read analysis plan from ${planPath}: ${String(err)}`);
       return '⚠️ **Analysis Error**: Could not read generated `.opencode/analysis-plan.md` file.';
     }
+  }
+
+  /**
+   * Explain a PR in plain English for the team.
+   *
+   * @param pr - The PR context object.
+   * @param workingDirectory - Optional working directory (tempDir).
+   * @param timeoutMinutes - Optional timeout override.
+   * @returns Markdown content of the PR explanation.
+   */
+  async runExplain(
+    pr: PRContext,
+    workingDirectory?: string,
+    timeoutMinutes?: number,
+  ): Promise<string> {
+    const workDir = workingDirectory || process.cwd();
+    await ensureOutputDir(workDir);
+
+    const prContext = this.buildPRContextString(pr);
+    const prompt = buildExplainPrompt(
+      { projectContext: this.config.projectContext.description || undefined },
+      prContext,
+    );
+
+    const runResult = await runOpenCode(prompt, {
+      model: this.config.reviewModel,
+      timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+      workingDirectory: workDir,
+    });
+
+    if (!runResult.success) {
+      return '⚠️ **Explanation Failed**: OpenCode CLI was unable to generate the PR explanation.';
+    }
+
+    if (runResult.output && runResult.output.trim().length > 0) {
+      return runResult.output.trim();
+    }
+
+    const outputPath = path.join(workDir, '.opencode', 'explain-output.md');
+    try {
+      const content = await fs.readFile(outputPath, 'utf-8');
+      return content.trim();
+    } catch {
+      return 'I have generated the explanation. Please check the PR context.';
+    }
+  }
+
+  /**
+   * Perform an optional meta-verification pass to filter out false positives.
+   * If enableMetaVerification is enabled, runs an LLM verification pass over
+   * proposed issues and drops findings marked invalid.
+   */
+  private async verifyReviewResult(
+    result: ReviewResult,
+    prContext: string,
+    workDir: string,
+    timeoutMinutes?: number,
+  ): Promise<ReviewResult> {
+    if (!this.config.review.enableMetaVerification || result.issues.length === 0) {
+      return result;
+    }
+
+    try {
+      const prompt = buildVerificationPrompt(
+        { projectContext: this.config.projectContext.description || undefined },
+        prContext,
+        result.issues,
+      );
+
+      const runResult = await runOpenCode(prompt, {
+        model: this.config.reviewModel,
+        timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+        workingDirectory: workDir,
+      });
+
+      if (!runResult.success) {
+        core.warning('Meta-verification pass failed, returning original result');
+        return result;
+      }
+
+      const outputPath = path.join(workDir, '.opencode', 'verification-output.jsonl');
+      if (!existsSync(outputPath)) return result;
+
+      const content = await fs.readFile(outputPath, 'utf-8');
+      const lines = content.split('\n').filter((l) => l.trim());
+
+      const validIndices = new Set<number>();
+      for (const line of lines) {
+        try {
+          const parsed = JSON.parse(line.trim());
+          if (parsed.type === 'verification' && typeof parsed.issueIndex === 'number') {
+            if (parsed.valid === true) {
+              validIndices.add(parsed.issueIndex);
+            }
+          }
+        } catch {
+          // ignore malformed verification lines
+        }
+      }
+
+      const verifiedIssues = result.issues.filter((_, idx) => validIndices.has(idx));
+      const droppedCount = result.issues.length - verifiedIssues.length;
+
+      if (droppedCount > 0) {
+        core.info(
+          `Meta-verification dropped ${droppedCount} false-positive finding(s) (kept ${verifiedIssues.length})`,
+        );
+      }
+
+      const counts = verifiedIssues.reduce(
+        (acc, i) => {
+          if (i.severity === 'critical') acc.critical++;
+          else if (i.severity === 'important') acc.important++;
+          else if (i.severity === 'minor') acc.minor++;
+          return acc;
+        },
+        { critical: 0, important: 0, minor: 0 },
+      );
+
+      return {
+        ...result,
+        issues: verifiedIssues,
+        stats: {
+          total: verifiedIssues.length,
+          critical: counts.critical,
+          important: counts.important,
+          minor: counts.minor,
+        },
+      };
+    } catch (err) {
+      core.warning(`Meta-verification failed: ${err instanceof Error ? err.message : String(err)}`);
+      return result;
+    }
+  }
+
+  /**
+   * Run an interactive conversation in response to an @mention in a PR comment.
+   * Builds a conversation prompt from the provided context and runs it through OpenCode CLI.
+   *
+   * @param context - Full conversation context (thread, file, diff, intent).
+   * @param timeoutMinutes - Optional timeout override.
+   * @param workingDirectory - Optional working directory for OpenCode execution.
+   * @returns The raw response text for posting as a GitHub comment.
+   */
+  async runConversation(
+    context: ConversationContext,
+    timeoutMinutes?: number,
+    workingDirectory?: string,
+  ): Promise<string> {
+    const prompt = buildConversationPrompt(context);
+    const workDir = workingDirectory || process.cwd();
+
+    await ensureOutputDir(workDir);
+
+    const runResult = await runOpenCode(prompt, {
+      model: this.config.reviewModel,
+      timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+      workingDirectory: workDir,
+    });
+
+    if (!runResult.success) {
+      return 'I encountered an error processing your request. Please try again or rephrase your question.';
+    }
+
+    // Try to read the response from the output file
+    const outputPath = path.join(workDir, '.opencode', 'conversation-output.txt');
+    try {
+      const output = await fs.readFile(outputPath, 'utf-8');
+      if (output.trim()) return output.trim();
+    } catch {
+      // Output file not available — fall through to raw response
+    }
+
+    // If no specific output file, return a generic acknowledgement
+    return "I've processed your request. The response should appear in the OpenCode output.";
   }
 
   /**

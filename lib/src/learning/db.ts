@@ -352,6 +352,48 @@ export abstract class SqlAdapter implements LearningRepository {
   }
 
   /**
+   * Get false-positive suppression rules from dismissed/disputed feedback.
+   */
+  async getFalsePositiveRules(filePaths: string[], limit = 20): Promise<string[]> {
+    const extensions = [
+      ...new Set(
+        filePaths.map((f) => {
+          const parts = f.split('.');
+          const ext = parts.length > 1 ? parts.pop() : '';
+          return ext ? `.${ext}` : '';
+        }),
+      ),
+    ].filter(Boolean);
+
+    let extFilter = '';
+    const params: unknown[] = [limit];
+    if (extensions.length > 0) {
+      extFilter = `AND (f.file IS NULL OR ${extensions.map(() => `f.file LIKE ?`).join(' OR ')})`;
+      params.unshift(...extensions.map((e) => `%${e}`));
+    }
+
+    try {
+      const rows = await this.all<{ message: string; file: string | null; signal_count: number }>(
+        `SELECT f.message, f.file, COUNT(fb.id) as signal_count
+         FROM findings f
+         INNER JOIN feedback fb ON fb.finding_id = f.id
+         WHERE fb.signal_type IN ('dismissed', 'disputed_comment')
+         ${extFilter}
+         GROUP BY f.message, f.file
+         ORDER BY signal_count DESC
+         LIMIT ?`,
+        params,
+      );
+      return rows.map((r) => {
+        const fileHint = r.file ? ` (in ${r.file.split('/').pop()})` : '';
+        return `DO NOT flag: "${r.message.slice(0, 150)}"${fileHint} — user feedback indicates this is intentional (dismissed ${r.signal_count} time(s))`;
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * Record a review quality assessment.
    */
   async recordQuality(quality: LearningQuality): Promise<void> {
@@ -892,6 +934,47 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     return lessons.filter(Boolean);
   }
 
+  async getFalsePositiveRules(filePaths: string[], limit = 20): Promise<string[]> {
+    const extensions = [
+      ...new Set(
+        filePaths.map((f) => {
+          const parts = f.split('.');
+          const ext = parts.length > 1 ? parts.pop() : '';
+          return ext ? `.${ext}` : '';
+        }),
+      ),
+    ].filter(Boolean);
+
+    try {
+      let extFilter = '';
+      const params: unknown[] = [];
+      if (extensions.length > 0) {
+        const conditions = extensions.map(() => `f.file LIKE ?`);
+        extFilter = `AND (f.file IS NULL OR ${conditions.join(' OR ')})`;
+        params.push(...extensions.map((e) => `%${e}`));
+      }
+      params.push(limit);
+
+      const rows = this.prepareStmt(
+        `SELECT f.message, f.file, COUNT(fb.id) as signal_count
+         FROM findings f
+         INNER JOIN feedback fb ON fb.finding_id = f.id
+         WHERE fb.signal_type IN ('dismissed', 'disputed_comment')
+         ${extFilter}
+         GROUP BY f.message, f.file
+         ORDER BY signal_count DESC
+         LIMIT ?`,
+      ).all(...params) as Array<{ message: string; file: string | null; signal_count: number }>;
+
+      return rows.map((r) => {
+        const fileHint = r.file ? ` (in ${r.file.split('/').pop()})` : '';
+        return `DO NOT flag: "${r.message.slice(0, 150)}"${fileHint} — user feedback indicates this is intentional (dismissed ${r.signal_count} time(s))`;
+      });
+    } catch {
+      return [];
+    }
+  }
+
   async recordQuality(quality: LearningQuality): Promise<void> {
     this.prepareStmt(
       `INSERT INTO review_quality (id, pr_number, actionability_score, accuracy_score, coverage_score, consistency_score)
@@ -1124,6 +1207,10 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
 
   async getRelevantLessons(filePaths: string[]): Promise<string[]> {
     return this.db.getRelevantLessons(filePaths);
+  }
+
+  async getFalsePositiveRules(filePaths: string[], limit = 20): Promise<string[]> {
+    return this.db.getFalsePositiveRules(filePaths, limit);
   }
 
   async recordQuality(quality: LearningQuality): Promise<void> {

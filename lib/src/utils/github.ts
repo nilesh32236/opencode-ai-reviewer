@@ -371,6 +371,57 @@ export class GitHubHelper {
     }
   }
 
+  // ─── Comment Listing & Replies ──────────────────────────
+
+  /**
+   * List all review comments on a pull request (paginated).
+   *
+   * @param prNumber - PR number.
+   * @returns Array of raw review comment objects.
+   */
+  async listReviewComments(prNumber: number): Promise<Array<Record<string, unknown>>> {
+    return this.paginate<Record<string, unknown>>(`/pulls/${prNumber}/comments`);
+  }
+
+  /**
+   * Create a reply to an existing review comment thread.
+   *
+   * @param prNumber - PR number.
+   * @param commentId - ID of the review comment to reply to.
+   * @param body - Reply body text.
+   */
+  async createReviewCommentReply(prNumber: number, commentId: number, body: string): Promise<void> {
+    await this.api(`/pulls/${prNumber}/comments/${commentId}/replies`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body }),
+    });
+  }
+
+  /**
+   * List all issue comments on a PR or issue (paginated).
+   *
+   * @param issueNumber - PR/issue number.
+   * @returns Array of raw issue comment objects.
+   */
+  async listComments(issueNumber: number): Promise<Array<Record<string, unknown>>> {
+    return this.paginate<Record<string, unknown>>(`/issues/${issueNumber}/comments`);
+  }
+
+  /**
+   * Post a new comment on an issue or PR.
+   *
+   * @param issueNumber - PR/issue number.
+   * @param body - Comment body text.
+   */
+  async postComment(issueNumber: number, body: string): Promise<void> {
+    await this.api(`/issues/${issueNumber}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body }),
+    });
+  }
+
   // ─── Review Operations ──────────────────────────────────
 
   /**
@@ -999,7 +1050,30 @@ export class GitHubHelper {
   // ─── Private Helpers ────────────────────────────────────
 
   private buildReviewBody(result: ReviewResult): string {
-    const lines: string[] = [
+    const lines: string[] = [];
+
+    // Executive Summary (if present)
+    if (result.executiveSummary) {
+      const es = result.executiveSummary;
+      const riskEmoji = es.riskLevel === 'high' ? '🔴' : es.riskLevel === 'medium' ? '🟡' : '🟢';
+      lines.push('## Executive Summary');
+      lines.push('');
+      lines.push(`**Purpose:** ${es.purpose}`);
+      lines.push('');
+      lines.push(`**Risk:** ${riskEmoji} ${es.riskLevel.toUpperCase()} — ${es.riskRationale}`);
+      if (es.breakingChanges.length > 0) {
+        lines.push('');
+        lines.push('**Breaking Changes:**');
+        for (const bc of es.breakingChanges) {
+          lines.push(`- ⚠️ ${bc}`);
+        }
+      }
+      lines.push('');
+      lines.push('---');
+      lines.push('');
+    }
+
+    lines.push(
       '## PR Review Summary',
       '',
       result.summary,
@@ -1008,7 +1082,7 @@ export class GitHubHelper {
       '',
       `**Reasoning:** ${result.verdict.reasoning}`,
       '',
-    ];
+    );
 
     if (result.strengths.length > 0) {
       lines.push('### Strengths');

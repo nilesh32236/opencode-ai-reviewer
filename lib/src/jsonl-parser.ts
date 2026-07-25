@@ -11,7 +11,13 @@ import type {
   VerdictFinding,
 } from './types/index.js';
 
-const VALID_TYPES: FindingType[] = ['summary', 'verdict', 'strength', 'issue'];
+const VALID_TYPES: (FindingType | 'executive_summary')[] = [
+  'summary',
+  'verdict',
+  'strength',
+  'issue',
+  'executive_summary',
+];
 const VALID_SEVERITIES: Severity[] = ['critical', 'important', 'minor'];
 
 export function stripMarkdownFences(content: string): string {
@@ -49,11 +55,38 @@ export function parseJsonlString(content: string): ReviewResult {
   const strengths: StrengthFinding[] = [];
   const issues: IssueFinding[] = [];
 
+  let executiveSummary:
+    | {
+        purpose: string;
+        riskLevel: 'low' | 'medium' | 'high';
+        riskRationale: string;
+        breakingChanges: string[];
+      }
+    | undefined;
+
   for (const line of lines) {
     rawLines.push(line);
 
     try {
       const parsed = JSON.parse(line);
+
+      // Handle executive_summary separately since it's not a standard FindingType
+      if (parsed.type === 'executive_summary') {
+        executiveSummary = {
+          purpose: typeof parsed.purpose === 'string' ? parsed.purpose : '',
+          riskLevel:
+            typeof parsed.riskLevel === 'string' &&
+            ['low', 'medium', 'high'].includes(parsed.riskLevel)
+              ? (parsed.riskLevel as 'low' | 'medium' | 'high')
+              : 'low',
+          riskRationale: typeof parsed.riskRationale === 'string' ? parsed.riskRationale : '',
+          breakingChanges: Array.isArray(parsed.breakingChanges)
+            ? parsed.breakingChanges.filter((c: unknown) => typeof c === 'string')
+            : [],
+        };
+        continue;
+      }
+
       const finding = validateAndNormalize(parsed);
 
       switch (finding.type) {
@@ -117,6 +150,7 @@ export function parseJsonlString(content: string): ReviewResult {
     },
     rawLines,
     failedLines,
+    executiveSummary,
   };
 }
 
@@ -261,15 +295,29 @@ export function buildInlineComments(
     })
     .map((issue) => {
       let body = `**${issue.severity.toUpperCase()}**: ${issue.message}`;
-      if (issue.suggestion?.includes('\n')) {
-        const diffSuggestion = issue.suggestion
-          .split('\n')
-          .filter((l) => l.trim())
-          .map((l) => (l.startsWith('+') || l.startsWith('-') ? l : ` ${l}`))
-          .join('\n');
-        body += `\n\n\`\`\`suggestion\n${diffSuggestion}\n\`\`\``;
-      } else if (issue.suggestion) {
-        body += `\n\n> Suggestion: ${issue.suggestion}`;
+      if (issue.suggestion) {
+        const suggestion = issue.suggestion.trim();
+        if (suggestion.includes('\n')) {
+          // Multi-line suggestion: check if it has diff-style +/- prefixes
+          const lines = suggestion.split('\n').filter((l) => l.trim());
+          const hasDiffPrefixes = lines.some((l) => l.startsWith('+') || l.startsWith('-'));
+          if (hasDiffPrefixes) {
+            // Keep diff-style formatting for multi-line diffs
+            const diffSuggestion = lines
+              .map((l) => (l.startsWith('+') || l.startsWith('-') ? l : ` ${l}`))
+              .join('\n');
+            body += `\n\n\`\`\`suggestion\n${diffSuggestion}\n\`\`\``;
+          } else {
+            // Multi-line code replacement — wrap as suggestion block
+            body += `\n\n\`\`\`suggestion\n${suggestion}\n\`\`\``;
+          }
+        } else if (looksLikeCode(suggestion)) {
+          // Single-line code suggestion — use native GitHub suggestion block
+          body += `\n\n\`\`\`suggestion\n${suggestion}\n\`\`\``;
+        } else {
+          // Descriptive suggestion — use blockquote
+          body += `\n\n> Suggestion: ${suggestion}`;
+        }
       }
       return {
         path: issue.file.replace(/^\//, ''),
@@ -278,4 +326,22 @@ export function buildInlineComments(
         body,
       };
     });
+}
+
+/**
+ * Heuristic to determine if a suggestion string looks like code rather than
+ * a natural language description. Checks for common code patterns.
+ */
+function looksLikeCode(suggestion: string): boolean {
+  // Common code indicators
+  const codePatterns = [
+    /[{};()=]/, // Syntax characters
+    /^(const|let|var|import|export|return|if|else|for|while|async|await|function|class)\s/,
+    /^\s*\/\//, // Comments
+    /\.\w+\(/, // Method calls
+    /=>\s*/, // Arrow functions
+    /\?\.\w+/, // Optional chaining
+    /\?\?\s/, // Nullish coalescing
+  ];
+  return codePatterns.some((p) => p.test(suggestion));
 }

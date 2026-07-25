@@ -26,7 +26,7 @@ import { handlePRReview } from './pr-review.js';
  * @param config - Agent configuration.
  */
 export async function handleCommand(
-  command: 'fix' | 'review' | 'audit' | 'analyze',
+  command: 'fix' | 'review' | 'audit' | 'analyze' | 'explain',
   issueNumber: number,
   repo: string,
   token: string,
@@ -58,6 +58,11 @@ export async function handleCommand(
     switch (command) {
       case 'analyze': {
         await handleAnalyzeCommand(issueNumber, repo, token, config, tempDir);
+        break;
+      }
+
+      case 'explain': {
+        await handleExplainCommand(issueNumber, repo, token, config, tempDir);
         break;
       }
 
@@ -163,6 +168,49 @@ export async function handleAnalyzeCommand(
       issueNumber,
       '<!-- issue-analysis-error -->',
       `❌ **Analysis Failed**: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  } finally {
+    await engine.cleanup();
+  }
+}
+
+/**
+ * Handle an explain command: gather PR context, run the explain engine,
+ * and post the PR explanation as a comment on the PR.
+ * @param issueNumber - The PR number to explain.
+ * @param repo - Repository string (owner/repo).
+ * @param token - GitHub authentication token.
+ * @param config - Agent configuration.
+ * @param tempDir - Temporary working directory.
+ */
+export async function handleExplainCommand(
+  issueNumber: number,
+  repo: string,
+  token: string,
+  config: AgentConfig,
+  tempDir: string,
+): Promise<void> {
+  const logger = new Logger('Command:Explain', { repo, prNumber: issueNumber });
+  logger.info(`Explaining PR #${issueNumber}`);
+
+  const gh = new GitHubHelper(token, repo);
+  const engine = new ReviewEngine(config, token, repo);
+
+  try {
+    const pr = await gh.getPR(issueNumber);
+    const explanation = await engine.runExplain(pr, tempDir);
+
+    await gh.postOrUpdateComment(issueNumber, '<!-- pr-explanation -->', explanation);
+
+    logger.info(`Posted explanation for PR #${issueNumber}`);
+  } catch (err) {
+    logger.error(
+      `Failed to explain PR #${issueNumber}: ${err instanceof Error ? err.message : err}`,
+    );
+    await gh.postOrUpdateComment(
+      issueNumber,
+      '<!-- pr-explanation-error -->',
+      `❌ **Explanation Failed**: ${err instanceof Error ? err.message : String(err)}`,
     );
   } finally {
     await engine.cleanup();

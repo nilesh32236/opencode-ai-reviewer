@@ -25,6 +25,7 @@ export {
   buildFixPrompt,
   buildAuditPrompt,
   buildReplyPrompt,
+  buildExplainPrompt,
   loadPromptFile,
   loadAuditCategoryPrompt,
   listAuditCategories,
@@ -57,3 +58,5 @@ export { PatternDetector, PatternDetectorOptions } from './pattern-detector/engi
 export { clusterFindings } from './pattern-detector/cluster.js';
 export { RuleApprovalSubscriber } from './pattern-detector/rule-approval.js';
 export * from './utils/validation.js';
+export { buildConversationPrompt, detectIntent } from './prompts/conversation.js';
+export { buildVerificationPrompt } from './prompts/verify.js';

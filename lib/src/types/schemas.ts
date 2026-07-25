@@ -79,6 +79,20 @@ export const ReviewConfigSchema = z.object({
   inline: z.boolean().default(true),
   requireVerdict: z.boolean().default(true),
   commandTriggers: z.array(z.string()).default(['/oc', '/review']),
+  excludePatterns: z
+    .array(z.string())
+    .default([
+      '**/pnpm-lock.yaml',
+      '**/package-lock.json',
+      '**/yarn.lock',
+      '**/*.min.js',
+      '**/*.min.css',
+      '**/*.generated.ts',
+      '**/*.generated.js',
+      '**/dist/**',
+      '**/build/**',
+      '**/.next/**',
+    ]),
 });
 
 /** Zod schema validating audit configuration. */
@@ -219,6 +233,7 @@ export const PromptConfigSchema = z.object({
       extraContext: z.string().optional(),
       customRules: z.array(z.string()).optional(),
       inline: z.boolean().optional(),
+      excludePatterns: z.array(z.string()).optional(),
     })
     .optional(),
   fix: z
