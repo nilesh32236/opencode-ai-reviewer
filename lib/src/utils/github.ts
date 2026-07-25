@@ -175,7 +175,7 @@ export class GitHubHelper {
         user: { login: string };
         labels: Array<{ name: string }>;
       }>(`/pulls/${number}`),
-      this.api<ChangedFile[]>(`/pulls/${number}/files`),
+      this.api<Array<ChangedFile & { filename?: string }>>(`/pulls/${number}/files`),
     ]);
 
     if (prResult.status === 'rejected') {
@@ -204,7 +204,7 @@ export class GitHubHelper {
       author: pr.user.login,
       labels: pr.labels.map((l) => l.name),
       changedFiles: files.map((f) => ({
-        path: f.path,
+        path: f.filename || f.path || '',
         status: f.status,
         additions: f.additions,
         deletions: f.deletions,

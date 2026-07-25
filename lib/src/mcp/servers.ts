@@ -39,7 +39,7 @@ export function context7Server(): MCPServerConfig {
 export const githubMCPServer = (token: string): MCPServerConfig => ({
   name: 'github',
   type: 'local',
-  command: ['npx', '-y', '--quiet', '@github/github-mcp-server'],
+  command: ['npx', '-y', '--quiet', '@modelcontextprotocol/server-github'],
   environment: {
     GITHUB_TOKEN: token,
   },

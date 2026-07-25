@@ -132,6 +132,25 @@ describe('GitHubHelper', () => {
       expect(pr.linkedIssue).toBe(123);
     });
 
+    it('maps filename from GitHub REST API to path in PRContext', async () => {
+      const gitHubApiFiles = [
+        {
+          filename: 'src/app.ts',
+          status: 'modified',
+          additions: 10,
+          deletions: 0,
+          patch: '@@ -1 +1 @@',
+        },
+      ];
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes('/files')) return mockResponse({ body: gitHubApiFiles });
+        return mockResponse({ body: prData });
+      });
+
+      const pr = await helper.getPR(42);
+      expect(pr.changedFiles[0].path).toBe('src/app.ts');
+    });
+
     it('handles PR body without linked issue keyword', async () => {
       const noLinkPR = { ...prData, body: 'No references here' };
       fetchMock.mockImplementation(async (url: string) => {
