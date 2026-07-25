@@ -118,15 +118,23 @@ import { configureGit, getGitStatus, runOpenCode, setupOpenCode } from '../src/o
 
 function makeMockProcess() {
   const listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
+  const makeStdio = () => ({
+    on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
+      if (!listeners[`_stdio_${event}`]) listeners[`_stdio_${event}`] = [];
+      listeners[`_stdio_${event}`].push(handler);
+    }),
+  });
   return {
     pid: 12345,
     kill: vi.fn(),
+    stdout: makeStdio(),
+    stderr: makeStdio(),
     on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
       if (!listeners[event]) listeners[event] = [];
       listeners[event].push(handler);
     }),
-    emitExit: (code: number | null) => {
-      const handlers = listeners.exit || [];
+    emitClose: (code: number | null) => {
+      const handlers = listeners.close || [];
       for (const h of handlers) h(code);
     },
     emitError: (err: Error) => {
@@ -167,7 +175,7 @@ describe('runOpenCode()', () => {
     });
 
     await new Promise((resolve) => setImmediate(resolve));
-    proc.emitExit(0);
+    proc.emitClose(0);
     const result = await resultPromise;
 
     expect(result.success).toBe(true);
@@ -175,7 +183,7 @@ describe('runOpenCode()', () => {
     expect(mockSpawn).toHaveBeenCalledWith(
       expect.any(String),
       expect.arrayContaining(['run', '--auto', '--model', 'claude-sonnet-4', 'review this PR']),
-      expect.objectContaining({ stdio: 'inherit' }),
+      expect.objectContaining({ stdio: ['ignore', 'pipe', 'pipe'] }),
     );
   });
 
@@ -186,7 +194,7 @@ describe('runOpenCode()', () => {
     const resultPromise = runOpenCode('test prompt', { model: 'gpt-4' });
 
     await new Promise((resolve) => setImmediate(resolve));
-    proc.emitExit(1);
+    proc.emitClose(1);
     const result = await resultPromise;
 
     expect(result.success).toBe(false);
@@ -231,7 +239,7 @@ describe('runOpenCode()', () => {
       await vi.advanceTimersByTimeAsync(5_000);
       expect(killSpy).toHaveBeenCalledWith(-12345, 'SIGKILL');
 
-      proc.emitExit(null);
+      proc.emitClose(null);
       const result = await resultPromise;
       expect(result.success).toBe(false);
     } finally {
@@ -263,7 +271,7 @@ describe('runOpenCode()', () => {
       await vi.advanceTimersByTimeAsync(100);
       expect(killSpy).toHaveBeenCalledWith(-12345, 'SIGTERM');
 
-      proc.emitExit(0);
+      proc.emitClose(0);
       await vi.advanceTimersByTimeAsync(5_000);
 
       const result = await resultPromise;
@@ -293,7 +301,7 @@ describe('runOpenCode()', () => {
     });
 
     await new Promise((resolve) => setImmediate(resolve));
-    proc.emitExit(0);
+    proc.emitClose(0);
     const result = await resultPromise;
 
     expect(result.success).toBe(true);
@@ -309,7 +317,7 @@ describe('runOpenCode()', () => {
     const resultPromise = runOpenCode('test', { model: 'gpt-4' });
 
     await new Promise((resolve) => setImmediate(resolve));
-    proc.emitExit(0);
+    proc.emitClose(0);
     await resultPromise;
 
     const spawnCall = mockSpawn.mock.calls[0];
@@ -325,7 +333,7 @@ describe('runOpenCode()', () => {
     const resultPromise = runOpenCode('test', { model: 'gpt-4' });
 
     await new Promise((resolve) => setImmediate(resolve));
-    proc.emitExit(0);
+    proc.emitClose(0);
     await resultPromise;
 
     const spawnCall = mockSpawn.mock.calls[0];

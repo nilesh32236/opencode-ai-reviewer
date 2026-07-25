@@ -89,7 +89,9 @@ export async function runPost(
     }
   } catch (err) {
     core.warning(
-      sanitize(`Failed to post telemetry summary: ${err instanceof Error ? err.message : String(err)}`),
+      sanitize(
+        `Failed to post telemetry summary: ${err instanceof Error ? err.message : String(err)}`,
+      ),
     );
   }
 }

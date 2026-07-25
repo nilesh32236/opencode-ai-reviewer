@@ -276,7 +276,7 @@ function parseTokenUsage(output: string): number {
   for (const pattern of patterns) {
     const match = output.match(pattern);
     if (match) {
-      const parsed = parseInt(match[1], 10);
+      const parsed = Number.parseInt(match[1], 10);
       if (!isNaN(parsed) && parsed > 0) return parsed;
     }
   }
@@ -461,7 +461,7 @@ export async function runOpenCode(
 
   try {
     await new Promise<void>((resolve) => {
-      childProcess.on('exit', (code) => {
+      childProcess.on('close', (code) => {
         childExited = true;
         exitCode = code;
         resolve();
@@ -477,17 +477,32 @@ export async function runOpenCode(
 
     if (exitCode === 0 && !processError) {
       core.info(`OpenCode finished in ${(durationMs / 1000).toFixed(1)}s`);
-      return { success: true, output: capturedOutput, durationMs, tokensUsed: parseTokenUsage(capturedOutput) };
+      return {
+        success: true,
+        output: capturedOutput,
+        durationMs,
+        tokensUsed: parseTokenUsage(capturedOutput),
+      };
     }
 
     core.warning(
       `OpenCode did not complete successfully (timedOut: ${timedOut}, exitCode: ${exitCode}, error: ${processError ?? 'none'})`,
     );
-    return { success: false, output: capturedOutput, durationMs, tokensUsed: parseTokenUsage(capturedOutput) };
+    return {
+      success: false,
+      output: capturedOutput,
+      durationMs,
+      tokensUsed: parseTokenUsage(capturedOutput),
+    };
   } catch (err) {
     const durationMs = Date.now() - startTime;
     core.error(`OpenCode execution failed: ${String(err)}`);
-    return { success: false, output: capturedOutput, durationMs, tokensUsed: parseTokenUsage(capturedOutput) };
+    return {
+      success: false,
+      output: capturedOutput,
+      durationMs,
+      tokensUsed: parseTokenUsage(capturedOutput),
+    };
   } finally {
     clearTimeout(timeoutHandle);
     if (forceKillHandle !== undefined) {

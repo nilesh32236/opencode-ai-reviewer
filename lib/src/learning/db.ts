@@ -427,9 +427,7 @@ export abstract class SqlAdapter implements LearningRepository {
     totalTokensUsed: number;
     avgTokensPerReview: number;
   }> {
-    const dateFilter = sinceDays
-      ? `AND created_at >= datetime('now', '-${sinceDays} days')`
-      : '';
+    const dateFilter = sinceDays ? `AND created_at >= datetime('now', '-${sinceDays} days')` : '';
     const row = await this.get<{
       avg_duration: number | null;
       total_reviews: number;
@@ -1049,9 +1047,7 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     totalTokensUsed: number;
     avgTokensPerReview: number;
   }> {
-    const dateFilter = sinceDays
-      ? `AND created_at >= datetime('now', '-${sinceDays} days')`
-      : '';
+    const dateFilter = sinceDays ? `AND created_at >= datetime('now', '-${sinceDays} days')` : '';
     const row = this.prepareStmt(
       `SELECT
         AVG(duration_ms) as avg_duration,
@@ -1059,7 +1055,9 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
         SUM(tokens_used) as total_tokens
        FROM review_quality
        WHERE duration_ms IS NOT NULL ${dateFilter}`,
-    ).get() as { avg_duration: number | null; total_reviews: number; total_tokens: number | null } | undefined;
+    ).get() as
+      | { avg_duration: number | null; total_reviews: number; total_tokens: number | null }
+      | undefined;
     if (!row || row.total_reviews === 0) {
       return { avgDurationMs: 0, totalReviews: 0, totalTokensUsed: 0, avgTokensPerReview: 0 };
     }
