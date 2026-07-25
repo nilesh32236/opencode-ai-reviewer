@@ -1,5 +1,8 @@
 import { existsSync, readFileSync, readdirSync } from 'fs';
 import * as path from 'path';
+import { Logger } from './logger.js';
+
+const logger = new Logger('manifest-detector');
 
 const PYTHON_PACKAGE_MAP: Record<string, string> = {
   django: 'django',
@@ -20,6 +23,12 @@ function matchPythonPackage(depName: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Detect Python libraries from pyproject.toml and requirements.txt in the given directory.
+ *
+ * @param rootDir - Path to the project root directory to scan for manifest files.
+ * @returns Array of canonical library identifiers found in the manifests.
+ */
 export function detectPythonLibraries(rootDir: string): string[] {
   const libs = new Set<string>();
 
@@ -29,34 +38,92 @@ export function detectPythonLibraries(rootDir: string): string[] {
     if (existsSync(pyprojectPath)) {
       const content = readFileSync(pyprojectPath, 'utf-8');
       const lines = content.split('\n');
-      let inDepsSection = false;
+      let inPoetryDeps = false;
+      let inProjectSection = false;
+      let inProjectDepsArray = false;
+      let inOptDepsSection = false;
+
       for (const line of lines) {
         const trimmed = line.trim();
-        if (
-          trimmed.startsWith('[tool.poetry.dependencies') ||
-          trimmed.startsWith('[tool.poetry.dev-dependencies') ||
-          trimmed.startsWith('[project.dependencies') ||
-          trimmed.startsWith('[project.optional-dependencies')
-        ) {
-          inDepsSection = true;
+
+        // Track section headers
+        if (trimmed.startsWith('[')) {
+          inProjectDepsArray = false;
+
+          if (
+            trimmed.startsWith('[tool.poetry.dependencies]') ||
+            trimmed.startsWith('[tool.poetry.dev-dependencies]')
+          ) {
+            inPoetryDeps = true;
+            inProjectSection = false;
+            inOptDepsSection = false;
+            continue;
+          }
+          if (trimmed.startsWith('[project]')) {
+            inProjectSection = true;
+            inPoetryDeps = false;
+            inOptDepsSection = false;
+            continue;
+          }
+          if (trimmed.startsWith('[project.optional-dependencies]')) {
+            inOptDepsSection = true;
+            inProjectSection = false;
+            inPoetryDeps = false;
+            continue;
+          }
+          // Any other section ends current context
+          inPoetryDeps = false;
+          inProjectSection = false;
+          inOptDepsSection = false;
           continue;
         }
-        if (trimmed.startsWith('[') && inDepsSection) {
-          inDepsSection = false;
+
+        // Continue multi-line array (PEP 621 dependencies)
+        if (inProjectDepsArray) {
+          if (trimmed.includes(']')) {
+            inProjectDepsArray = false;
+          }
+          extractArrayPackages(trimmed, libs);
           continue;
         }
-        if (inDepsSection) {
+
+        // Poetry: key = "version" style
+        if (inPoetryDeps) {
           const eqIdx = trimmed.indexOf('=');
           if (eqIdx > 0) {
             const pkgName = trimmed.substring(0, eqIdx).trim().replace(/["']/g, '');
             const lib = matchPythonPackage(pkgName);
             if (lib) libs.add(lib);
           }
+          continue;
+        }
+
+        // PEP 621 [project]: dependencies = ["pkg>=1.0", ...]
+        if (inProjectSection) {
+          const depsMatch = trimmed.match(/^dependencies\s*=\s*\[(.*)/);
+          if (depsMatch) {
+            inProjectDepsArray = true;
+            const rest = depsMatch[1];
+            extractArrayPackages(rest, libs);
+            if (rest.includes(']')) {
+              inProjectDepsArray = false;
+            }
+          }
+          continue;
+        }
+
+        // PEP 621 [project.optional-dependencies]: extra = ["pkg>=1.0", ...]
+        if (inOptDepsSection) {
+          const optDepsMatch = trimmed.match(/^[a-zA-Z0-9_-]+\s*=\s*\[(.*)/);
+          if (optDepsMatch) {
+            const rest = optDepsMatch[1];
+            extractArrayPackages(rest, libs);
+          }
         }
       }
     }
-  } catch {
-    // fall through
+  } catch (error) {
+    logger.warn('Failed to parse pyproject.toml', { error: sanitizeErrorForLog(error) });
   }
 
   // requirements.txt
@@ -78,11 +145,29 @@ export function detectPythonLibraries(rootDir: string): string[] {
         }
       }
     }
-  } catch {
-    // fall through
+  } catch (error) {
+    logger.warn('Failed to parse requirements.txt', { error: sanitizeErrorForLog(error) });
   }
 
   return [...libs];
+}
+
+/** Extract package names from a TOML array string fragment like '"fastapi>=0.100", "sqlalchemy"'. */
+function extractArrayPackages(fragment: string, libs: Set<string>): void {
+  const pkgMatches = fragment.matchAll(/["']([^"']+)["']/g);
+  for (const match of pkgMatches) {
+    const depSpec = match[1];
+    // PEP 508: extract package name before any version specifier or extras
+    const pkgName = depSpec.split(/[;><=~!\[]/)[0]?.trim();
+    if (pkgName) {
+      const lib = matchPythonPackage(pkgName);
+      if (lib) libs.add(lib);
+    }
+  }
+}
+
+function sanitizeErrorForLog(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 const JAVA_ARTIFACT_MAP: Record<string, string> = {
@@ -94,6 +179,12 @@ const JAVA_ARTIFACT_MAP: Record<string, string> = {
   'micronaut-inject': 'micronaut',
 };
 
+/**
+ * Detect Java/Kotlin libraries from pom.xml and build.gradle files in the given directory.
+ *
+ * @param rootDir - Path to the project root directory to scan for manifest files.
+ * @returns Array of canonical library identifiers found in the manifests.
+ */
 export function detectJavaLibraries(rootDir: string): string[] {
   const libs = new Set<string>();
 
@@ -116,8 +207,8 @@ export function detectJavaLibraries(rootDir: string): string[] {
         }
       }
     }
-  } catch {
-    // fall through
+  } catch (error) {
+    logger.warn('Failed to parse pom.xml', { error: sanitizeErrorForLog(error) });
   }
 
   // build.gradle / build.gradle.kts
@@ -161,8 +252,8 @@ export function detectJavaLibraries(rootDir: string): string[] {
         }
       }
     }
-  } catch {
-    // fall through
+  } catch (error) {
+    logger.warn('Failed to parse build.gradle files', { error: sanitizeErrorForLog(error) });
   }
 
   return [...libs];
@@ -175,6 +266,12 @@ const RUBY_GEM_MAP: Record<string, string> = {
   'rspec-rails': 'rspec',
 };
 
+/**
+ * Detect Ruby libraries from Gemfile in the given directory.
+ *
+ * @param rootDir - Path to the project root directory to scan for manifest files.
+ * @returns Array of canonical library identifiers found in the Gemfile.
+ */
 export function detectRubyLibraries(rootDir: string): string[] {
   const libs = new Set<string>();
 
@@ -192,8 +289,8 @@ export function detectRubyLibraries(rootDir: string): string[] {
         }
       }
     }
-  } catch {
-    // fall through
+  } catch (error) {
+    logger.warn('Failed to parse Gemfile', { error: sanitizeErrorForLog(error) });
   }
 
   return [...libs];
@@ -205,6 +302,12 @@ const DOTNET_PACKAGE_MAP: Record<string, string> = {
   'Microsoft.EntityFrameworkCore': 'EntityFramework',
 };
 
+/**
+ * Detect .NET libraries from .csproj files in the given directory (recursively).
+ *
+ * @param rootDir - Path to the project root directory to scan for .csproj files.
+ * @returns Array of canonical library identifiers found in project references.
+ */
 export function detectDotnetLibraries(rootDir: string): string[] {
   const libs = new Set<string>();
 
@@ -215,22 +318,32 @@ export function detectDotnetLibraries(rootDir: string): string[] {
     for (const entry of entries) {
       if (entry.isFile() && entry.name.endsWith('.csproj')) {
         const csprojPath = path.join(entry.parentPath, entry.name);
-        const content = readFileSync(csprojPath, 'utf-8');
-        const packageMatches = content.matchAll(
-          /<PackageReference\s+Include\s*=\s*['"]([^'"]+)['"]/g,
-        );
-        for (const match of packageMatches) {
-          const pkgName = match[1].trim();
-          for (const [pattern, lib] of Object.entries(DOTNET_PACKAGE_MAP)) {
-            if (pkgName === pattern || pkgName.startsWith(pattern + '.')) {
-              libs.add(lib);
+        try {
+          const content = readFileSync(csprojPath, 'utf-8');
+          const packageMatches = content.matchAll(
+            /<PackageReference\s+Include\s*=\s*['"]([^'"]+)['"]/g,
+          );
+          for (const match of packageMatches) {
+            const pkgName = match[1].trim();
+            for (const [pattern, lib] of Object.entries(DOTNET_PACKAGE_MAP)) {
+              if (pkgName === pattern || pkgName.startsWith(pattern + '.')) {
+                libs.add(lib);
+              }
             }
           }
+        } catch (error) {
+          logger.warn('Failed to parse .csproj file', {
+            file: csprojPath,
+            error: sanitizeErrorForLog(error),
+          });
         }
       }
     }
-  } catch {
-    // fall through
+  } catch (error) {
+    logger.warn('Failed to scan directory for .csproj files', {
+      dir: rootDir,
+      error: sanitizeErrorForLog(error),
+    });
   }
 
   return [...libs];

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { mockExistsSync, mockReadFileSync, mockReaddirSync } = vi.hoisted(() => ({
   mockExistsSync: vi.fn(),
@@ -10,6 +10,18 @@ vi.mock('fs', () => ({
   existsSync: mockExistsSync,
   readFileSync: mockReadFileSync,
   readdirSync: mockReaddirSync,
+}));
+
+vi.mock('./logger.js', () => ({
+  Logger: class MockLogger {
+    debug() {}
+    info() {}
+    warn() {}
+    error() {}
+    child() {
+      return this;
+    }
+  },
 }));
 
 import {
@@ -25,7 +37,7 @@ describe('manifest-detector', () => {
   });
 
   describe('detectPythonLibraries', () => {
-    it('detects frameworks from pyproject.toml [project.dependencies]', () => {
+    it('detects frameworks from pyproject.toml PEP 621 dependencies array', () => {
       mockExistsSync.mockImplementation((filePath: string) => filePath.endsWith('pyproject.toml'));
       mockReadFileSync.mockImplementation((filePath: string) => {
         if (filePath.endsWith('pyproject.toml')) {
@@ -33,11 +45,12 @@ describe('manifest-detector', () => {
 name = "myapp"
 version = "0.1.0"
 
-[project.dependencies]
-fastapi = ">=0.100.0"
-sqlalchemy = "^2.0"
-pydantic = "^2.0"
-pytest = "^8.0"
+dependencies = [
+    "fastapi>=0.100.0",
+    "sqlalchemy>=2.0",
+    "pydantic>=2.0",
+    "pytest>=8.0",
+]
 `;
         }
         return '';
@@ -50,6 +63,33 @@ pytest = "^8.0"
       expect(result).toContain('pydantic');
       expect(result).toContain('pytest');
       expect(result).toHaveLength(4);
+    });
+
+    it('detects frameworks from pyproject.toml optional-dependencies', () => {
+      mockExistsSync.mockImplementation((filePath: string) => filePath.endsWith('pyproject.toml'));
+      mockReadFileSync.mockImplementation((filePath: string) => {
+        if (filePath.endsWith('pyproject.toml')) {
+          return `[project]
+name = "myapp"
+version = "0.1.0"
+
+dependencies = [
+    "fastapi>=0.100.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "django>=5.0"]
+`;
+        }
+        return '';
+      });
+
+      const result = detectPythonLibraries('/test');
+
+      expect(result).toContain('fastapi');
+      expect(result).toContain('pytest');
+      expect(result).toContain('django');
+      expect(result).toHaveLength(3);
     });
 
     it('detects frameworks from pyproject.toml poetry dependencies', () => {
