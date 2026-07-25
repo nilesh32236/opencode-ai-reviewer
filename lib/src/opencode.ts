@@ -269,13 +269,24 @@ function buildCIConfig(): string {
 function parseTokenUsage(output: string): number {
   // Prioritize total_tokens patterns to avoid matching prompt_tokens or completion_tokens.
   // Use word-bounded key matches so suffixes like prompt_total_tokens are not accepted.
-  const patterns = [/\btotal_tokens\b["\s]*[:=]\s*(\d+)/i, /\btotal\s+tokens\b["\s]*[:=]\s*(\d+)/i];
-  for (const pattern of patterns) {
+  const totalPatterns = [
+    /\btotal_tokens\b["\s]*[:=]\s*(\d+)/i,
+    /\btotal\s+tokens\b["\s]*[:=]\s*(\d+)/i,
+  ];
+  for (const pattern of totalPatterns) {
     const match = output.match(pattern);
     if (match) {
       const parsed = Number.parseInt(match[1], 10);
       if (Number.isSafeInteger(parsed) && parsed >= 0) return parsed;
     }
+  }
+  // Fallback: sum input_tokens + output_tokens (used by Anthropic, Gemini)
+  const inputMatch = output.match(/\binput_tokens\b["\s]*[:=]\s*(\d+)/i);
+  const outputMatch = output.match(/\boutput_tokens\b["\s]*[:=]\s*(\d+)/i);
+  const inputTokens = inputMatch ? Number.parseInt(inputMatch[1], 10) : 0;
+  const outputTokens = outputMatch ? Number.parseInt(outputMatch[1], 10) : 0;
+  if (Number.isSafeInteger(inputTokens) && Number.isSafeInteger(outputTokens)) {
+    return inputTokens + outputTokens;
   }
   return 0;
 }

@@ -5,7 +5,13 @@ import type { LearningFeedback, LearningQuality } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
 import { JsonDatabase } from './json-db.js';
 import { deriveFileExtensions, generateId } from './schema.js';
-import type { FeedbackInput, FindingInput, LearningRepository, PatternInput } from './types.js';
+import type {
+  FeedbackInput,
+  FindingInput,
+  LearningRepository,
+  PatternInput,
+  TelemetryStats,
+} from './types.js';
 
 /**
  * Sanitize connection strings in error messages to avoid leaking credentials.
@@ -123,13 +129,13 @@ export abstract class SqlAdapter implements LearningRepository {
         id,
         finding.prNumber,
         finding.type,
-        finding.severity || null,
-        finding.file || null,
-        finding.line || null,
+        finding.severity ?? null,
+        finding.file ?? null,
+        finding.line ?? null,
         finding.message,
-        finding.suggestion || null,
-        finding.durationMs || null,
-        finding.tokensUsed || null,
+        finding.suggestion ?? null,
+        finding.durationMs ?? null,
+        finding.tokensUsed ?? null,
       ],
     );
     return id;
@@ -148,13 +154,13 @@ export abstract class SqlAdapter implements LearningRepository {
         ids[i],
         f.prNumber,
         f.type,
-        f.severity || null,
-        f.file || null,
-        f.line || null,
+        f.severity ?? null,
+        f.file ?? null,
+        f.line ?? null,
         f.message,
-        f.suggestion || null,
-        f.durationMs || null,
-        f.tokensUsed || null,
+        f.suggestion ?? null,
+        f.durationMs ?? null,
+        f.tokensUsed ?? null,
       ]);
       await this.run(
         `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion, duration_ms, tokens_used) VALUES ${placeholders}`,
@@ -415,8 +421,8 @@ export abstract class SqlAdapter implements LearningRepository {
         quality.accuracyScore,
         quality.coverageScore,
         quality.consistencyScore,
-        quality.durationMs || null,
-        quality.tokensUsed || null,
+        quality.durationMs ?? null,
+        quality.tokensUsed ?? null,
       ],
     );
   }
@@ -427,13 +433,12 @@ export abstract class SqlAdapter implements LearningRepository {
    * @param sinceDays - Optional filter to only include reviews from the last N days.
    * @returns TelemetryStats with average duration, total reviews, and token usage.
    */
-  async getTelemetryStats(sinceDays?: number): Promise<{
-    avgDurationMs: number;
-    totalReviews: number;
-    totalTokensUsed: number;
-    avgTokensPerReview: number;
-  }> {
-    const dateFilter = sinceDays ? `AND created_at >= datetime('now', '-${sinceDays} days')` : '';
+  async getTelemetryStats(sinceDays?: number): Promise<TelemetryStats> {
+    const cutoffDate = sinceDays
+      ? new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000).toISOString()
+      : null;
+    const dateFilter = cutoffDate ? 'AND created_at >= ?' : '';
+    const params: unknown[] = cutoffDate ? [cutoffDate] : [];
     const row = await this.get<{
       avg_duration: number | null;
       total_reviews: number;
@@ -445,6 +450,7 @@ export abstract class SqlAdapter implements LearningRepository {
         SUM(tokens_used) as total_tokens
        FROM review_quality
        WHERE duration_ms IS NOT NULL ${dateFilter}`,
+      params,
     );
     if (!row || row.total_reviews === 0) {
       return { avgDurationMs: 0, totalReviews: 0, totalTokensUsed: 0, avgTokensPerReview: 0 };
@@ -798,13 +804,13 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
       id,
       finding.prNumber,
       finding.type,
-      finding.severity || null,
-      finding.file || null,
-      finding.line || null,
+      finding.severity ?? null,
+      finding.file ?? null,
+      finding.line ?? null,
       finding.message,
-      finding.suggestion || null,
-      finding.durationMs || null,
-      finding.tokensUsed || null,
+      finding.suggestion ?? null,
+      finding.durationMs ?? null,
+      finding.tokensUsed ?? null,
     );
     return id;
   }
@@ -818,13 +824,13 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
         ids[i],
         f.prNumber,
         f.type,
-        f.severity || null,
-        f.file || null,
-        f.line || null,
+        f.severity ?? null,
+        f.file ?? null,
+        f.line ?? null,
         f.message,
-        f.suggestion || null,
-        f.durationMs || null,
-        f.tokensUsed || null,
+        f.suggestion ?? null,
+        f.durationMs ?? null,
+        f.tokensUsed ?? null,
       ]);
       this.prepareStmt(
         `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion, duration_ms, tokens_used) VALUES ${placeholders}`,
@@ -1045,8 +1051,8 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
       quality.accuracyScore,
       quality.coverageScore,
       quality.consistencyScore,
-      quality.durationMs || null,
-      quality.tokensUsed || null,
+      quality.durationMs ?? null,
+      quality.tokensUsed ?? null,
     );
   }
 
@@ -1056,13 +1062,12 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
    * @param sinceDays - Optional filter to only include reviews from the last N days.
    * @returns TelemetryStats with average duration, total reviews, and token usage.
    */
-  async getTelemetryStats(sinceDays?: number): Promise<{
-    avgDurationMs: number;
-    totalReviews: number;
-    totalTokensUsed: number;
-    avgTokensPerReview: number;
-  }> {
-    const dateFilter = sinceDays ? `AND created_at >= datetime('now', '-${sinceDays} days')` : '';
+  async getTelemetryStats(sinceDays?: number): Promise<TelemetryStats> {
+    const cutoffDate = sinceDays
+      ? new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000).toISOString()
+      : null;
+    const dateFilter = cutoffDate ? 'AND created_at >= ?' : '';
+    const params: unknown[] = cutoffDate ? [cutoffDate] : [];
     const row = this.prepareStmt(
       `SELECT
         AVG(duration_ms) as avg_duration,
@@ -1070,7 +1075,7 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
         SUM(tokens_used) as total_tokens
        FROM review_quality
        WHERE duration_ms IS NOT NULL ${dateFilter}`,
-    ).get() as
+    ).get(...params) as
       | { avg_duration: number | null; total_reviews: number; total_tokens: number | null }
       | undefined;
     if (!row || row.total_reviews === 0) {
