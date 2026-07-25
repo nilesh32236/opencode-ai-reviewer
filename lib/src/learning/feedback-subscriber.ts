@@ -92,19 +92,27 @@ export class FeedbackSubscriber implements Subscriber {
    */
   private async handleReviewCommentDismissed(event: GitHubEvent): Promise<void> {
     const payload = event.payload as {
-      comment?: { body?: string; user?: { login?: string } };
+      comment?: {
+        body?: string;
+        path?: string;
+        line?: number;
+        original_line?: number;
+        user?: { login?: string; type?: string };
+      };
       pull_request?: { number?: number };
     };
     const prNumber = payload?.pull_request?.number || event.prNumber || 0;
     if (!prNumber) return;
 
     // Only process dismissals of bot comments
-    const commentUser = payload?.comment?.user?.login || '';
-    if (
-      !commentUser.includes('[bot]') &&
-      !commentUser.includes('opencode') &&
-      !commentUser.includes('github-actions')
-    ) {
+    const user = payload?.comment?.user;
+    const commentUser = user?.login || '';
+    const isBot =
+      user?.type === 'Bot' ||
+      commentUser.endsWith('[bot]') ||
+      commentUser.toLowerCase().includes('opencode');
+
+    if (!isBot) {
       return;
     }
 
@@ -117,12 +125,27 @@ export class FeedbackSubscriber implements Subscriber {
       return;
     }
     if (findings.length === 0) return;
-    const validFindings = findings.filter((f) => f.id && typeof f.id === 'string');
-    if (validFindings.length === 0) return;
+
+    const commentPath = payload.comment?.path;
+    const commentLine = payload.comment?.line || payload.comment?.original_line;
+
+    // Correlate findings with dismissed comment location metadata
+    const matchedFindings = findings.filter((f) => {
+      if (!f.id || typeof f.id !== 'string') return false;
+      if (commentPath && typeof f.file === 'string' && f.file !== commentPath) {
+        return false;
+      }
+      if (commentLine && typeof f.line === 'number' && f.line !== commentLine) {
+        return false;
+      }
+      return true;
+    });
+
+    if (matchedFindings.length === 0) return;
 
     try {
       await this.store.recordFeedbackBatch(
-        validFindings.map((f) => ({
+        matchedFindings.map((f) => ({
           findingId: f.id as string,
           signalType: 'dismissed' as const,
           signalValue:

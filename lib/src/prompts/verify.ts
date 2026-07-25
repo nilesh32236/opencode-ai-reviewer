@@ -1,6 +1,8 @@
 import type { ReviewIssue } from '../types/index.js';
 
+/** Configuration inputs for building the verification prompt. */
 export interface VerificationPromptInputs {
+  /** Optional description of the project context and conventions. */
   projectContext?: string;
 }
 

@@ -135,6 +135,12 @@ interface IssueCommentThread {
 /**
  * Gather the full review comment thread for a given comment.
  * Fetches all review comments on the PR and filters by thread.
+ *
+ * @param gh - GitHub API helper instance.
+ * @param prNumber - PR number.
+ * @param commentId - Triggering review comment ID.
+ * @param mentionHandle - Bot mention handle.
+ * @returns Object containing conversation messages, file path, and diff hunk.
  */
 async function gatherReviewCommentThread(
   gh: GitHubHelper,
@@ -189,6 +195,12 @@ async function gatherReviewCommentThread(
 /**
  * Gather the issue comment thread for a given comment.
  * Fetches recent issue comments on the PR.
+ *
+ * @param gh - GitHub API helper instance.
+ * @param prNumber - PR number.
+ * @param commentId - Triggering issue comment ID.
+ * @param mentionHandle - Bot mention handle.
+ * @returns Object containing context conversation messages.
  */
 async function gatherIssueCommentThread(
   gh: GitHubHelper,
@@ -232,6 +244,11 @@ async function gatherIssueCommentThread(
 
 /**
  * Post a reply to a review comment thread.
+ *
+ * @param gh - GitHub API helper instance.
+ * @param prNumber - PR number.
+ * @param commentId - Comment ID to reply to.
+ * @param body - Message body of the reply.
  */
 async function postReviewCommentReply(
   gh: GitHubHelper,
@@ -244,6 +261,10 @@ async function postReviewCommentReply(
 
 /**
  * Post a reply as an issue comment on the PR.
+ *
+ * @param gh - GitHub API helper instance.
+ * @param prNumber - PR number.
+ * @param body - Message body of the comment.
  */
 async function postIssueCommentReply(
   gh: GitHubHelper,
@@ -257,21 +278,32 @@ async function postIssueCommentReply(
 
 /**
  * Check if a comment author is the bot.
+ *
+ * @param login - Author login string.
+ * @param mentionHandle - Bot mention handle.
+ * @returns True if author is recognized as bot, false otherwise.
  */
 function isBotComment(login: string | undefined, mentionHandle: string): boolean {
   if (!login) return false;
+  const cleanHandle = mentionHandle.replace(/^@/, '').toLowerCase();
+  const lowerLogin = login.toLowerCase();
   return (
-    login.includes('[bot]') ||
-    login.includes('github-actions') ||
-    login.toLowerCase().includes(mentionHandle.toLowerCase())
+    lowerLogin.endsWith('[bot]') ||
+    lowerLogin === cleanHandle ||
+    lowerLogin === `${cleanHandle}[bot]`
   );
 }
 
 /**
  * Strip the @mention handle from a comment body.
+ *
+ * @param body - Text content of comment.
+ * @param mentionHandle - Mention handle to strip.
+ * @returns Text with mention handle removed.
  */
 function stripMention(body: string, mentionHandle: string): string {
-  // Remove @mentionHandle (case-insensitive) from the beginning of the comment
-  const regex = new RegExp(`@${mentionHandle}\\s*`, 'gi');
+  const cleanHandle = mentionHandle.replace(/^@/, '');
+  const escaped = cleanHandle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const regex = new RegExp(`@${escaped}\\s*`, 'gi');
   return body.replace(regex, '').trim();
 }

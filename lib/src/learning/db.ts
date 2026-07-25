@@ -4,7 +4,7 @@ import * as path from 'path';
 import type { LearningFeedback, LearningQuality } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
 import { JsonDatabase } from './json-db.js';
-import { generateId } from './schema.js';
+import { deriveFileExtensions, generateId } from './schema.js';
 import type { FeedbackInput, FindingInput, LearningRepository, PatternInput } from './types.js';
 
 /**

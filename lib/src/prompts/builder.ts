@@ -12,21 +12,45 @@ export interface PromptBuilderInputs {
   maxFixIterations?: number;
 }
 
+export interface ReviewPromptOptions {
+  lessons?: string[];
+  previousFindings?: PreviousFindingIteration[];
+  falsePositiveRules?: string[];
+  deltaContext?: string;
+}
+
 /**
  * Build the review prompt string from inputs and PR context.
  * @param inputs - Configuration inputs including optional custom prompt file, project context, etc.
  * @param prContext - The PR context string describing the pull request.
- * @param lessons - Optional array of learned lessons from previous reviews.
+ * @param optionsOrLessons - Optional ReviewPromptOptions object or lessons array.
+ * @param previousFindings - Optional findings from previous fix iterations.
+ * @param falsePositiveRules - Optional false positive suppression rules.
+ * @param deltaContext - Optional delta diff string for incremental reviews.
  * @returns The assembled review prompt string.
  */
 export function buildReviewPrompt(
   inputs: PromptBuilderInputs,
   prContext: string,
-  lessons?: string[],
+  optionsOrLessons?: ReviewPromptOptions | string[],
   previousFindings?: PreviousFindingIteration[],
   falsePositiveRules?: string[],
   deltaContext?: string,
 ): string {
+  const options: ReviewPromptOptions = Array.isArray(optionsOrLessons)
+    ? {
+        lessons: optionsOrLessons,
+        previousFindings,
+        falsePositiveRules,
+        deltaContext,
+      }
+    : optionsOrLessons || {};
+
+  const lessons = options.lessons;
+  const prevFindings = options.previousFindings;
+  const fpRules = options.falsePositiveRules;
+  const deltaCtx = options.deltaContext;
+
   if (inputs.reviewPromptFile) {
     const customPrompt = loadPromptFile(inputs.reviewPromptFile);
     if (customPrompt) {
@@ -45,16 +69,22 @@ export function buildReviewPrompt(
   sections.push('');
   sections.push(prContext);
 
-  if (deltaContext) {
+  if (deltaCtx) {
     sections.push('\n## Incremental Review (Delta Changes)');
     sections.push('');
     sections.push('This is a follow-up review for new commits pushed since the last review pass.');
     sections.push('Focus primarily on evaluating the new changes shown in this delta diff:');
     sections.push('');
     sections.push('```diff');
-    sections.push(
-      deltaContext.length > 5000 ? `${deltaContext.slice(0, 5000)}\n... (truncated)` : deltaContext,
-    );
+    let truncatedDelta = deltaCtx;
+    if (deltaCtx.length > 5000) {
+      const slice = deltaCtx.slice(0, 5000);
+      const lastHunk = slice.lastIndexOf('\n@@');
+      const lastNewline = slice.lastIndexOf('\n');
+      const boundary = lastHunk > 0 ? lastHunk : lastNewline > 0 ? lastNewline : 5000;
+      truncatedDelta = `${slice.slice(0, boundary)}\n... (truncated)`;
+    }
+    sections.push(truncatedDelta);
     sections.push('```');
   }
 
@@ -100,14 +130,14 @@ export function buildReviewPrompt(
   sections.push('');
   sections.push(buildOutputFormat());
 
-  if (falsePositiveRules && falsePositiveRules.length > 0) {
+  if (fpRules && fpRules.length > 0) {
     sections.push('\n## False Positive Suppression Rules');
     sections.push('');
     sections.push(
       'The following patterns were previously flagged but dismissed by human reviewers as intentional or not actual issues. DO NOT flag these patterns again:',
     );
     sections.push('');
-    for (const rule of falsePositiveRules) {
+    for (const rule of fpRules) {
       sections.push(`- ${rule}`);
     }
   }
@@ -122,14 +152,14 @@ export function buildReviewPrompt(
     }
   }
 
-  if (previousFindings && previousFindings.length > 0) {
+  if (prevFindings && prevFindings.length > 0) {
     sections.push('\n## Previous Review Iterations');
     sections.push('');
     sections.push(
       'This is not the first review of this PR. Issues were previously found and fixes were applied. Review ONLY the current state and report only issues that are STILL present.',
     );
     sections.push('');
-    for (const pf of previousFindings) {
+    for (const pf of prevFindings) {
       sections.push(`### Iteration ${pf.iteration}`);
       sections.push('');
       if (pf.fixSummary) {
@@ -651,6 +681,7 @@ ${findingsJsonl}
 ## Instructions
 - Review all findings and remove any duplicates (same file, line, and message)
 - Merge related findings into single, well-written issues
+- Write exactly ONE \`executive_summary\` line with purpose, riskLevel ("low"/"medium"/"high"), riskRationale, and breakingChanges (array of strings)
 - Write exactly ONE \`summary\` line with a brief overall assessment
 - Write exactly ONE \`verdict\` line with the final decision
 - Write zero or more \`strength\` and \`issue\` lines
@@ -717,6 +748,6 @@ Rate the risk level (Low / Medium / High) and explain:
 Does this PR affect the overall architecture? If so, explain how.
 
 ## Output Format
-Write your response as a single markdown document suitable for posting as a GitHub PR comment.
+Write your response as a single markdown document directly to \`.opencode/explain-output.md\`.
 Do NOT wrap in JSON. Be concise but thorough.`;
 }

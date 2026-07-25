@@ -115,13 +115,13 @@ export function parseInputs(): ActionInputs {
   }
 
   const auditLabelsStr = core.getInput('audit_labels') || 'audit';
-  const auditLabels = (auditLabelsStr || '')
+  const auditLabels = auditLabelsStr
     .split(',')
     .map((l) => l.trim())
     .filter(Boolean);
 
   const auditTargetDirsStr = core.getInput('audit_target_dirs') || '';
-  const auditTargetDirs = (auditTargetDirsStr || '')
+  const auditTargetDirs = auditTargetDirsStr
     .split(',')
     .map((d) => d.trim())
     .filter(Boolean);

@@ -36,24 +36,11 @@ export function stripMarkdownFences(content: string): string {
  */
 export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
   const absolutePath = path.resolve(filePath);
-  let targetPath = absolutePath;
-
-  if (!fs.existsSync(targetPath)) {
-    const parentDirFallback = path.join(
-      path.dirname(path.dirname(absolutePath)),
-      'review-output.jsonl',
-    );
-    const directFallback = path.join(path.dirname(absolutePath), 'review-output.jsonl');
-    if (fs.existsSync(parentDirFallback)) {
-      targetPath = parentDirFallback;
-    } else if (fs.existsSync(directFallback)) {
-      targetPath = directFallback;
-    } else {
-      return emptyResult();
-    }
+  if (!fs.existsSync(absolutePath)) {
+    return emptyResult();
   }
 
-  const content = fs.readFileSync(targetPath, 'utf-8');
+  const content = fs.readFileSync(absolutePath, 'utf-8');
   return parseJsonlString(content);
 }
 
@@ -176,6 +163,12 @@ export function emptyResult(): ReviewResult {
     stats: { total: 0, critical: 0, important: 0, minor: 0 },
     rawLines: [],
     failedLines: 0,
+    executiveSummary: {
+      purpose: '',
+      riskLevel: 'low',
+      riskRationale: '',
+      breakingChanges: [],
+    },
   };
 }
 
@@ -185,6 +178,20 @@ function validateAndNormalize(obj: Record<string, unknown>): Finding {
   }
 
   switch (obj.type) {
+    case 'executive_summary':
+      return {
+        type: 'executive_summary',
+        purpose: typeof obj.purpose === 'string' ? obj.purpose : '',
+        riskLevel:
+          typeof obj.riskLevel === 'string' && ['low', 'medium', 'high'].includes(obj.riskLevel)
+            ? obj.riskLevel
+            : 'low',
+        riskRationale: typeof obj.riskRationale === 'string' ? obj.riskRationale : '',
+        breakingChanges: Array.isArray(obj.breakingChanges)
+          ? obj.breakingChanges.filter((c: unknown) => typeof c === 'string')
+          : [],
+      } as unknown as Finding;
+
     case 'summary':
       if (typeof obj.text !== 'string' || obj.text.trim().length === 0) {
         throw new Error('Summary finding must have a non-empty "text" field');
@@ -315,14 +322,17 @@ export function buildInlineComments(
           const lines = suggestion.split('\n').filter((l) => l.trim());
           const hasDiffPrefixes = lines.some((l) => l.startsWith('+') || l.startsWith('-'));
           if (hasDiffPrefixes) {
-            // Keep diff-style formatting for multi-line diffs
+            // Render diff-shaped content in a diff fence
             const diffSuggestion = lines
               .map((l) => (l.startsWith('+') || l.startsWith('-') ? l : ` ${l}`))
               .join('\n');
-            body += `\n\n\`\`\`suggestion\n${diffSuggestion}\n\`\`\``;
-          } else {
+            body += `\n\n\`\`\`diff\n${diffSuggestion}\n\`\`\``;
+          } else if (looksLikeCode(suggestion)) {
             // Multi-line code replacement — wrap as suggestion block
             body += `\n\n\`\`\`suggestion\n${suggestion}\n\`\`\``;
+          } else {
+            // Non-code multiline suggestion — use blockquote
+            body += `\n\n> Suggestion:\n> ${suggestion.replace(/\n/g, '\n> ')}`;
           }
         } else if (looksLikeCode(suggestion)) {
           // Single-line code suggestion — use native GitHub suggestion block

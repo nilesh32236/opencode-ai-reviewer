@@ -53,17 +53,19 @@ export function detectIntent(message: string): 'explain' | 'fix' | 'general' {
   const lower = message.toLowerCase();
 
   // Check fix intent first (stronger signal — user wants action)
-  const hasFixKeyword = FIX_KEYWORDS.some(
-    (kw) =>
-      lower.includes(kw) &&
-      // Ensure it's not just mentioning the word in a question context
-      !lower.startsWith('why') &&
-      !lower.startsWith('what'),
-  );
+  const hasFixKeyword = FIX_KEYWORDS.some((kw) => {
+    const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`\\b${escaped}\\b`, 'i');
+    return regex.test(lower) && !lower.startsWith('why') && !lower.startsWith('what');
+  });
   if (hasFixKeyword) return 'fix';
 
   // Check explain intent
-  const hasExplainKeyword = EXPLAIN_KEYWORDS.some((kw) => lower.includes(kw));
+  const hasExplainKeyword = EXPLAIN_KEYWORDS.some((kw) => {
+    const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`\\b${escaped}\\b`, 'i');
+    return regex.test(lower);
+  });
   if (hasExplainKeyword) return 'explain';
 
   return 'general';
@@ -142,11 +144,11 @@ export function buildConversationPrompt(context: ConversationContext): string {
         '2. Provide the fix as a GitHub suggestion block so they can commit it directly:',
       );
       sections.push('');
-      sections.push('```');
+      sections.push('~~~markdown');
       sections.push('```suggestion');
       sections.push('// replacement code here');
       sections.push('```');
-      sections.push('```');
+      sections.push('~~~');
       sections.push('');
       sections.push('3. Briefly explain what the change does and why it addresses their request.');
       sections.push(
@@ -179,7 +181,7 @@ export function buildConversationPrompt(context: ConversationContext): string {
   sections.push('');
   sections.push('## Output Format');
   sections.push('');
-  sections.push('Respond with a single markdown message suitable for posting as a GitHub comment.');
+  sections.push('Write your response message directly to `.opencode/conversation-output.txt`.');
   sections.push('Do NOT wrap your response in JSON or any other structure.');
   sections.push('Do NOT include greeting lines like "Hi!" or sign-off lines.');
   sections.push('Be direct, technical, and helpful.');

@@ -580,7 +580,8 @@ export class ReviewEngine {
     timeoutMinutes?: number,
   ): Promise<string> {
     const workDir = workingDirectory || process.cwd();
-    await ensureOutputDir(workDir);
+    const outputPath = path.join(workDir, '.opencode', 'explain-output.md');
+    ensureOutputDir(outputPath);
 
     const prContext = this.buildPRContextString(pr);
     const prompt = buildExplainPrompt(
@@ -598,16 +599,11 @@ export class ReviewEngine {
       return '⚠️ **Explanation Failed**: OpenCode CLI was unable to generate the PR explanation.';
     }
 
-    if (runResult.output && runResult.output.trim().length > 0) {
-      return runResult.output.trim();
-    }
-
-    const outputPath = path.join(workDir, '.opencode', 'explain-output.md');
     try {
       const content = await fs.readFile(outputPath, 'utf-8');
       return content.trim();
     } catch {
-      return 'I have generated the explanation. Please check the PR context.';
+      return '⚠️ **Explanation Failed**: Could not read explanation from `.opencode/explain-output.md`.';
     }
   }
 
@@ -615,6 +611,12 @@ export class ReviewEngine {
    * Perform an optional meta-verification pass to filter out false positives.
    * If enableMetaVerification is enabled, runs an LLM verification pass over
    * proposed issues and drops findings marked invalid.
+   *
+   * @param result - Review result containing candidate issues.
+   * @param prContext - Assembled PR context string.
+   * @param workDir - Working directory for the workspace.
+   * @param timeoutMinutes - Optional timeout in minutes for verification.
+   * @returns Filtered ReviewResult with verified issues.
    */
   private async verifyReviewResult(
     result: ReviewResult,
@@ -654,7 +656,13 @@ export class ReviewEngine {
       for (const line of lines) {
         try {
           const parsed = JSON.parse(line.trim());
-          if (parsed.type === 'verification' && typeof parsed.issueIndex === 'number') {
+          if (
+            parsed.type === 'verification' &&
+            typeof parsed.issueIndex === 'number' &&
+            Number.isInteger(parsed.issueIndex) &&
+            parsed.issueIndex >= 0 &&
+            parsed.issueIndex < result.issues.length
+          ) {
             if (parsed.valid === true) {
               validIndices.add(parsed.issueIndex);
             }
@@ -662,6 +670,13 @@ export class ReviewEngine {
         } catch {
           // ignore malformed verification lines
         }
+      }
+
+      if (validIndices.size === 0) {
+        core.info(
+          'Meta-verification produced no valid verification entries — retaining original result',
+        );
+        return result;
       }
 
       const verifiedIssues = result.issues.filter((_, idx) => validIndices.has(idx));
@@ -713,10 +728,11 @@ export class ReviewEngine {
     timeoutMinutes?: number,
     workingDirectory?: string,
   ): Promise<string> {
-    const prompt = buildConversationPrompt(context);
     const workDir = workingDirectory || process.cwd();
+    const outputPath = path.join(workDir, '.opencode', 'conversation-output.txt');
+    ensureOutputDir(outputPath);
 
-    await ensureOutputDir(workDir);
+    const prompt = buildConversationPrompt(context);
 
     const runResult = await runOpenCode(prompt, {
       model: this.config.reviewModel,
@@ -728,17 +744,14 @@ export class ReviewEngine {
       return 'I encountered an error processing your request. Please try again or rephrase your question.';
     }
 
-    // Try to read the response from the output file
-    const outputPath = path.join(workDir, '.opencode', 'conversation-output.txt');
+    // Read the response from the output file
     try {
       const output = await fs.readFile(outputPath, 'utf-8');
       if (output.trim()) return output.trim();
+      return 'I encountered an error generating the conversation response (output was empty).';
     } catch {
-      // Output file not available — fall through to raw response
+      return 'I encountered an error reading the conversation reply from `.opencode/conversation-output.txt`.';
     }
-
-    // If no specific output file, return a generic acknowledgement
-    return "I've processed your request. The response should appear in the OpenCode output.";
   }
 
   /**

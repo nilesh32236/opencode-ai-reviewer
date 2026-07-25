@@ -413,9 +413,21 @@ export interface IssueFinding extends BaseFinding {
 export type Finding = SummaryFinding | VerdictFinding | StrengthFinding | IssueFinding;
 
 // ─── Results ──────────────────────────────────────────────
-/** Aggregated result of a completed review. */
+/** Executive summary with risk assessment for a PR. */
+export interface ExecutiveSummary {
+  /** 1-2 sentence description of the PR's core purpose */
+  purpose: string;
+  /** Risk level assessment */
+  riskLevel: 'low' | 'medium' | 'high';
+  /** Reasoning for the risk level */
+  riskRationale: string;
+  /** List of breaking changes (empty if none) */
+  breakingChanges: string[];
+}
+
+/** Result of a pull request code review pass. */
 export interface ReviewResult {
-  /** Markdown summary text */
+  /** Summary of the review pass */
   summary: string;
   /** Verdict with readiness decision */
   verdict: {
@@ -448,16 +460,7 @@ export interface ReviewResult {
   /** Number of lines that failed to parse */
   failedLines?: number;
   /** Optional executive summary with risk assessment */
-  executiveSummary?: {
-    /** 1-2 sentence description of the PR's core purpose */
-    purpose: string;
-    /** Risk level assessment */
-    riskLevel: 'low' | 'medium' | 'high';
-    /** Reasoning for the risk level */
-    riskRationale: string;
-    /** List of breaking changes (empty if none) */
-    breakingChanges: string[];
-  };
+  executiveSummary?: ExecutiveSummary;
 }
 
 /** Result of an auto-fix operation. */
