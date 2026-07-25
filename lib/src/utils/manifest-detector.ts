@@ -13,7 +13,7 @@ const PYTHON_PACKAGE_MAP: Record<string, string> = {
 function matchPythonPackage(depName: string): string | undefined {
   const normalized = depName.trim().toLowerCase().replace(/[_-]/g, '');
   for (const [pkg, lib] of Object.entries(PYTHON_PACKAGE_MAP)) {
-    if (normalized === pkg || normalized === pkg.replace(/[_-]/g, '')) {
+    if (normalized === pkg) {
       return lib;
     }
   }
@@ -33,10 +33,10 @@ export function detectPythonLibraries(rootDir: string): string[] {
       for (const line of lines) {
         const trimmed = line.trim();
         if (
-          trimmed.startsWith('[tool.poetry.dependencies]') ||
-          trimmed.startsWith('[tool.poetry.dev-dependencies]') ||
-          trimmed.startsWith('[project.dependencies]') ||
-          trimmed.startsWith('[project.optional-dependencies]')
+          trimmed.startsWith('[tool.poetry.dependencies') ||
+          trimmed.startsWith('[tool.poetry.dev-dependencies') ||
+          trimmed.startsWith('[project.dependencies') ||
+          trimmed.startsWith('[project.optional-dependencies')
         ) {
           inDepsSection = true;
           continue;
@@ -128,7 +128,9 @@ export function detectJavaLibraries(rootDir: string): string[] {
       if (existsSync(gradlePath)) {
         const content = readFileSync(gradlePath, 'utf-8');
         // Gradle Groovy DSL: implementation 'group:artifact:version'
-        const groovyMatches = content.matchAll(/implementation\s+['"]([^:'"]+):([^:'"]+)/g);
+        const groovyMatches = content.matchAll(
+          /(?:implementation|api|compileOnly|runtimeOnly|testImplementation)\s+['"]([^:'"]+):([^:'"]+)/g,
+        );
         for (const match of groovyMatches) {
           const artifactId = match[2].trim();
           for (const [pattern, lib] of Object.entries(JAVA_ARTIFACT_MAP)) {
@@ -142,7 +144,9 @@ export function detectJavaLibraries(rootDir: string): string[] {
           }
         }
         // Gradle Kotlin DSL: implementation("group:artifact:version")
-        const kotlinMatches = content.matchAll(/implementation\s*\(\s*['"]([^:'"]+):([^:'"]+)/g);
+        const kotlinMatches = content.matchAll(
+          /(?:implementation|api|compileOnly|runtimeOnly|testImplementation)\s*\([\s\S]*?['"]([^:'"]+):([^:'"]+)/g,
+        );
         for (const match of kotlinMatches) {
           const artifactId = match[2].trim();
           for (const [pattern, lib] of Object.entries(JAVA_ARTIFACT_MAP)) {
@@ -204,11 +208,13 @@ const DOTNET_PACKAGE_MAP: Record<string, string> = {
 export function detectDotnetLibraries(rootDir: string): string[] {
   const libs = new Set<string>();
 
+  if (!existsSync(rootDir)) return [];
+
   try {
-    const entries = readdirSync(rootDir);
+    const entries = readdirSync(rootDir, { recursive: true, withFileTypes: true });
     for (const entry of entries) {
-      if (entry.endsWith('.csproj')) {
-        const csprojPath = path.join(rootDir, entry);
+      if (entry.isFile() && entry.name.endsWith('.csproj')) {
+        const csprojPath = path.join(entry.parentPath, entry.name);
         const content = readFileSync(csprojPath, 'utf-8');
         const packageMatches = content.matchAll(
           /<PackageReference\s+Include\s*=\s*['"]([^'"]+)['"]/g,

@@ -135,6 +135,31 @@ django>5.0
       expect(result).toContain('hibernate');
     });
 
+    it('returns empty array from pom.xml with no matching artifacts', () => {
+      mockExistsSync.mockImplementation((filePath: string) => filePath.endsWith('pom.xml'));
+      mockReadFileSync.mockImplementation((filePath: string) => {
+        if (filePath.endsWith('pom.xml')) {
+          return `<project>
+  <dependencies>
+    <dependency>
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-lang3</artifactId>
+    </dependency>
+  </dependencies>
+</project>`;
+        }
+        return '';
+      });
+
+      const result = detectJavaLibraries('/test');
+
+      expect(result).toEqual([]);
+    });
+
     it('detects Quarkus and Micronaut from pom.xml', () => {
       mockExistsSync.mockImplementation((filePath: string) => filePath.endsWith('pom.xml'));
       mockReadFileSync.mockImplementation((filePath: string) => {
@@ -245,9 +270,13 @@ gem "pg", ">= 1.5"
   });
 
   describe('detectDotnetLibraries', () => {
+    function mockDirent(name: string, parentPath = '/test') {
+      return { name, parentPath, isFile: () => true, isDirectory: () => false };
+    }
+
     it('detects ASP.NET Core and Entity Framework from .csproj', () => {
-      mockExistsSync.mockReturnValue(false);
-      mockReaddirSync.mockReturnValue(['MyApp.csproj']);
+      mockExistsSync.mockReturnValue(true);
+      mockReaddirSync.mockReturnValue([mockDirent('MyApp.csproj')]);
       mockReadFileSync.mockImplementation((filePath: string) => {
         if (filePath.endsWith('.csproj')) {
           return `<Project Sdk="Microsoft.NET.Sdk.Web">
@@ -267,7 +296,28 @@ gem "pg", ">= 1.5"
     });
 
     it('returns empty array when no .csproj files exist', () => {
-      mockReaddirSync.mockReturnValue(['README.md', 'Program.cs']);
+      mockExistsSync.mockReturnValue(true);
+      mockReaddirSync.mockReturnValue([mockDirent('README.md'), mockDirent('Program.cs')]);
+
+      const result = detectDotnetLibraries('/test');
+
+      expect(result).toEqual([]);
+    });
+
+    it('returns empty array from .csproj with no matching packages', () => {
+      mockExistsSync.mockReturnValue(true);
+      mockReaddirSync.mockReturnValue([mockDirent('MyApp.csproj')]);
+      mockReadFileSync.mockImplementation((filePath: string) => {
+        if (filePath.endsWith('.csproj')) {
+          return `<Project Sdk="Microsoft.NET.Sdk.Web">
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="Serilog" Version="3.0.0" />
+  </ItemGroup>
+</Project>`;
+        }
+        return '';
+      });
 
       const result = detectDotnetLibraries('/test');
 
