@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.2.0] — 2026-07-25
+
+### Added
+
+- Enhanced learning feedback, interactive agent, delta reviews, and meta-verification (#145) (#145)
+
+[v1.2.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.1.19...v1.2.0
+
 ## [v1.1.19] — 2026-07-25
 
 
