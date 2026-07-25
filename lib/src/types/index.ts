@@ -876,6 +876,10 @@ export interface LearningQuality {
   coverageScore: number;
   /** Consistency score (0-1) */
   consistencyScore: number;
+  /** Duration of the review in milliseconds */
+  durationMs?: number;
+  /** Number of tokens used during the review */
+  tokensUsed?: number;
 }
 
 /** A discovered pattern from review history. */

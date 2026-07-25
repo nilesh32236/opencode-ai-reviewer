@@ -10,6 +10,16 @@ export interface FindingInput {
   line?: number;
   message: string;
   suggestion?: string;
+  durationMs?: number;
+  tokensUsed?: number;
+}
+
+/** Aggregated telemetry statistics for review executions. */
+export interface TelemetryStats {
+  avgDurationMs: number;
+  totalReviews: number;
+  totalTokensUsed: number;
+  avgTokensPerReview: number;
 }
 
 /** Input data for recording a feedback signal on a finding. */
@@ -69,6 +79,7 @@ export interface LearningRepository {
    */
   getFalsePositiveRules(filePaths: string[], limit?: number): Promise<string[]>;
   recordQuality(quality: LearningQuality): Promise<void>;
+  getTelemetryStats(sinceDays?: number): Promise<TelemetryStats>;
   getQualityTrends(limit?: number): Promise<Array<Record<string, unknown>>>;
   incrementAndCheckMetaReviewInterval(interval: number): Promise<boolean>;
   recordPattern(pattern: PatternInput): Promise<void>;
