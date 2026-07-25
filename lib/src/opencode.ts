@@ -266,7 +266,7 @@ function buildCIConfig(): string {
  * Parse token usage from OpenCode CLI output.
  * Looks for common LLM token patterns. Returns 0 if no pattern matches.
  */
-function parseTokenUsage(output: string): number {
+export function parseTokenUsage(output: string): number {
   // Prioritize total_tokens patterns to avoid matching prompt_tokens or completion_tokens.
   // Use word-bounded key matches so suffixes like prompt_total_tokens are not accepted.
   const totalPatterns = [
@@ -285,8 +285,10 @@ function parseTokenUsage(output: string): number {
   const outputMatch = output.match(/\boutput_tokens\b["\s]*[:=]\s*(\d+)/i);
   const inputTokens = inputMatch ? Number.parseInt(inputMatch[1], 10) : 0;
   const outputTokens = outputMatch ? Number.parseInt(outputMatch[1], 10) : 0;
-  if (Number.isSafeInteger(inputTokens) && Number.isSafeInteger(outputTokens)) {
-    return inputTokens + outputTokens;
+  const hasInput = inputMatch !== null && Number.isSafeInteger(inputTokens) && inputTokens >= 0;
+  const hasOutput = outputMatch !== null && Number.isSafeInteger(outputTokens) && outputTokens >= 0;
+  if (hasInput || hasOutput) {
+    return (hasInput ? inputTokens : 0) + (hasOutput ? outputTokens : 0);
   }
   return 0;
 }
@@ -473,12 +475,20 @@ export async function runOpenCode(
   childProcess.stdout?.on('data', (data: Buffer) => {
     const text = data.toString();
     appendCaptured(text);
-    process.stdout.write(data);
+    try {
+      process.stdout.write(data);
+    } catch {
+      // Stream closed
+    }
   });
   childProcess.stderr?.on('data', (data: Buffer) => {
     const text = data.toString();
     appendCaptured(text);
-    process.stderr.write(data);
+    try {
+      process.stderr.write(data);
+    } catch {
+      // Stream closed
+    }
   });
 
   let exitCode: number | null = null;
@@ -499,6 +509,7 @@ export async function runOpenCode(
     });
 
     const durationMs = Date.now() - startTime;
+    const finalTokens = parseTokenUsage(capturedOutput) || tokenUsageResult;
 
     if (exitCode === 0 && !processError) {
       core.info(`OpenCode finished in ${(durationMs / 1000).toFixed(1)}s`);
@@ -506,7 +517,7 @@ export async function runOpenCode(
         success: true,
         output: capturedOutput,
         durationMs,
-        tokensUsed: tokenUsageResult,
+        tokensUsed: finalTokens,
       };
     }
 
@@ -517,16 +528,17 @@ export async function runOpenCode(
       success: false,
       output: capturedOutput,
       durationMs,
-      tokensUsed: tokenUsageResult,
+      tokensUsed: finalTokens,
     };
   } catch (err) {
     const durationMs = Date.now() - startTime;
+    const finalTokens = parseTokenUsage(capturedOutput) || tokenUsageResult;
     core.error(`OpenCode execution failed: ${String(err)}`);
     return {
       success: false,
       output: capturedOutput,
       durationMs,
-      tokensUsed: tokenUsageResult,
+      tokensUsed: finalTokens,
     };
   } finally {
     clearTimeout(timeoutHandle);

@@ -437,7 +437,10 @@ export abstract class SqlAdapter implements LearningRepository {
    */
   async getTelemetryStats(sinceDays?: number): Promise<TelemetryStats> {
     const cutoffDate = sinceDays
-      ? new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000).toISOString()
+      ? new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000)
+          .toISOString()
+          .replace('T', ' ')
+          .slice(0, 19)
       : null;
     const dateFilter = cutoffDate ? 'AND created_at >= ?' : '';
     const params: unknown[] = cutoffDate ? [cutoffDate] : [];
@@ -1068,7 +1071,10 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
    */
   async getTelemetryStats(sinceDays?: number): Promise<TelemetryStats> {
     const cutoffDate = sinceDays
-      ? new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000).toISOString()
+      ? new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000)
+          .toISOString()
+          .replace('T', ' ')
+          .slice(0, 19)
       : null;
     const dateFilter = cutoffDate ? 'AND datetime(created_at) >= datetime(?)' : '';
     const params: unknown[] = cutoffDate ? [cutoffDate] : [];
@@ -1373,12 +1379,7 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
    * @param sinceDays - Optional filter to only include reviews from the last N days.
    * @returns TelemetryStats with average duration, total reviews, and token usage.
    */
-  async getTelemetryStats(sinceDays?: number): Promise<{
-    avgDurationMs: number;
-    totalReviews: number;
-    totalTokensUsed: number;
-    avgTokensPerReview: number;
-  }> {
+  async getTelemetryStats(sinceDays?: number): Promise<TelemetryStats> {
     return this.db.getTelemetryStats(sinceDays);
   }
 

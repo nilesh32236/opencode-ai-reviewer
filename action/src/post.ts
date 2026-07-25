@@ -72,20 +72,23 @@ export async function runPost(
     const learningEnabled = core.getInput('learning_enabled') !== 'false';
     if (learningEnabled) {
       const store = new LearningStore();
-      const stats = await store.getTelemetryStats(30);
-      if (stats.totalReviews > 0) {
-        await core.summary
-          .addHeading('Execution Telemetry', 2)
-          .addList([
-            `Total Reviews: ${stats.totalReviews}`,
-            `Average Duration: ${(stats.avgDurationMs / 1000).toFixed(1)}s`,
-            `Total Tokens Used: ${stats.totalTokensUsed.toLocaleString()}`,
-            `Avg Tokens/Review: ${stats.avgTokensPerReview.toLocaleString()}`,
-          ])
-          .write();
-        core.info('Posted telemetry summary');
+      try {
+        const stats = await store.getTelemetryStats(30);
+        if (stats.totalReviews > 0) {
+          await core.summary
+            .addHeading('Execution Telemetry', 2)
+            .addList([
+              `Total Reviews: ${stats.totalReviews}`,
+              `Average Duration: ${(stats.avgDurationMs / 1000).toFixed(1)}s`,
+              `Total Tokens Used: ${stats.totalTokensUsed.toLocaleString()}`,
+              `Avg Tokens/Review: ${stats.avgTokensPerReview.toLocaleString()}`,
+            ])
+            .write();
+          core.info('Posted telemetry summary');
+        }
+      } finally {
+        await store.close();
       }
-      await store.close();
     }
   } catch (err) {
     core.warning(

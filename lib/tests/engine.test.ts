@@ -170,7 +170,12 @@ describe('ReviewEngine', () => {
       );
       mockMCPConnect.mockResolvedValue(undefined);
       mockMCPGetLibraryDocs.mockResolvedValue('docs content');
-      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 500,
+      });
 
       const expectedResult: ReviewResult = {
         summary: 'Good PR',
@@ -205,7 +210,12 @@ describe('ReviewEngine', () => {
 
     it('returns empty result when parseJsonlFile fails', async () => {
       mockMCPConnect.mockResolvedValue(undefined);
-      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 500,
+      });
       mockParseJsonlFile.mockRejectedValue(new Error('Parse error'));
 
       const result = await engine.reviewPR(pr);
@@ -216,7 +226,12 @@ describe('ReviewEngine', () => {
 
     it('handles MCP connection failure gracefully', async () => {
       mockMCPConnect.mockRejectedValue(new Error('MCP failed'));
-      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 500,
+      });
       mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
 
       const result = await engine.reviewPR(pr);

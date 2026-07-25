@@ -67,7 +67,7 @@ export async function runReview(
   }
 
   let previousComments:
-    | Array<{ file: string; line: number; body: string; commentId: number }>
+    | Array<{ file: string; line: number | null; body: string; commentId: number }>
     | undefined;
   try {
     const threads = await gh.getBotReviewThreads(prNumber);

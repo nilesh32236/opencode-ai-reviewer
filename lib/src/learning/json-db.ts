@@ -4,7 +4,13 @@ import * as path from 'path';
 import type { LearningQuality } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
 import { generateId } from './schema.js';
-import type { FeedbackInput, FindingInput, LearningRepository, PatternInput } from './types.js';
+import type {
+  FeedbackInput,
+  FindingInput,
+  LearningRepository,
+  PatternInput,
+  TelemetryStats,
+} from './types.js';
 
 interface FindingRow {
   id: string;
@@ -600,12 +606,7 @@ export class JsonDatabase implements LearningRepository {
    * @param sinceDays - Optional filter to only include reviews from the last N days.
    * @returns TelemetryStats with average duration, total reviews, and token usage.
    */
-  async getTelemetryStats(sinceDays?: number): Promise<{
-    avgDurationMs: number;
-    totalReviews: number;
-    totalTokensUsed: number;
-    avgTokensPerReview: number;
-  }> {
+  async getTelemetryStats(sinceDays?: number): Promise<TelemetryStats> {
     const cutoff = sinceDays ? Date.now() - sinceDays * 24 * 60 * 60 * 1000 : 0;
     const reviews = this.data.review_quality.filter(
       (r) => r.duration_ms != null && (!cutoff || new Date(r.created_at).getTime() >= cutoff),

@@ -90,7 +90,7 @@ export class ReviewEngine {
     previousHeadSha?: string,
     previousBotComments?: Array<{
       file: string;
-      line: number;
+      line: number | null;
       body: string;
       commentId: number;
     }>,
@@ -228,11 +228,13 @@ export class ReviewEngine {
       fileBatches.push(files.slice(i, i + batchSize));
     }
 
+    let accumulatedDurationMs = 0;
+    let accumulatedTokensUsed = 0;
     const concurrencyLimit = 3;
     const batchResults: ReviewResult[] = [];
     for (let i = 0; i < fileBatches.length; i += concurrencyLimit) {
       const chunk = fileBatches.slice(i, i + concurrencyLimit);
-      const chunkResults = await Promise.all(
+      const chunkOutputs = await Promise.all(
         chunk.map(async (batch, chunkIdx) => {
           const idx = i + chunkIdx;
           const batchDir = path.join(workDir, `.opencode`, `batch-${idx}`);
@@ -270,20 +272,35 @@ export class ReviewEngine {
 
           if (!runResult.success) {
             core.warning(`Batch ${idx} review execution failed, returning empty result`);
-            return emptyResult();
+            return {
+              durationMs: runResult.durationMs,
+              tokensUsed: runResult.tokensUsed,
+              result: emptyResult(),
+            };
           }
 
-          await this.recordTelemetry(pr.number, runResult.durationMs, runResult.tokensUsed);
-
           try {
-            return await parseJsonlFile(outputPath);
+            const parsed = await parseJsonlFile(outputPath);
+            return {
+              durationMs: runResult.durationMs,
+              tokensUsed: runResult.tokensUsed,
+              result: parsed,
+            };
           } catch {
             core.warning(`Failed to parse batch ${idx} review output, returning empty result`);
-            return emptyResult();
+            return {
+              durationMs: runResult.durationMs,
+              tokensUsed: runResult.tokensUsed,
+              result: emptyResult(),
+            };
           }
         }),
       );
-      batchResults.push(...chunkResults);
+      for (const item of chunkOutputs) {
+        accumulatedDurationMs += item.durationMs;
+        accumulatedTokensUsed += item.tokensUsed;
+        batchResults.push(item.result);
+      }
     }
 
     // Collate findings from all batches
@@ -315,6 +332,11 @@ export class ReviewEngine {
       workingDirectory: workDir,
     });
 
+    accumulatedDurationMs += synthesisResult.durationMs;
+    accumulatedTokensUsed += synthesisResult.tokensUsed;
+
+    await this.recordTelemetry(pr.number, accumulatedDurationMs, accumulatedTokensUsed);
+
     if (!synthesisResult.success) {
       core.warning('Synthesis pass failed, falling back to merged batch results');
       const fallback = this.buildFallbackResult(
@@ -327,8 +349,6 @@ export class ReviewEngine {
       );
       return await this.verifyReviewResult(fallback, baseContext, workDir, timeoutMinutes);
     }
-
-    await this.recordTelemetry(pr.number, synthesisResult.durationMs, synthesisResult.tokensUsed);
 
     try {
       const parsed = await parseJsonlFile(finalOutputPath);
@@ -813,15 +833,17 @@ export class ReviewEngine {
   ): Promise<void> {
     if (!this.learningStore) return;
     try {
-      await this.learningStore.recordQuality({
-        prNumber,
-        actionabilityScore: 0,
-        accuracyScore: 0,
-        coverageScore: 0,
-        consistencyScore: 0,
-        durationMs,
-        tokensUsed,
-      });
+      if (typeof this.learningStore.recordQuality === 'function') {
+        await this.learningStore.recordQuality({
+          prNumber,
+          actionabilityScore: 0,
+          accuracyScore: 0,
+          coverageScore: 0,
+          consistencyScore: 0,
+          durationMs,
+          tokensUsed,
+        });
+      }
     } catch (err) {
       new Logger('ReviewEngine').warn('Failed to record telemetry', err);
     }

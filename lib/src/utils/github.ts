@@ -31,7 +31,8 @@ interface ReviewThreadNode {
       databaseId: number;
       body: string;
       path: string;
-      line: number;
+      line: number | null;
+      originalLine?: number | null;
       author: { login: string };
       createdAt: string;
     }>;
@@ -65,8 +66,8 @@ export interface ReviewThreadInfo {
     body: string;
     /** File path the comment is on. */
     filePath: string;
-    /** Line number the comment is on. */
-    lineNumber: number;
+    /** Line number the comment is on (or null if outdated/unassigned). */
+    lineNumber: number | null;
     /** GitHub login of the comment author. */
     author: string;
     /** ISO 8601 creation timestamp. */
@@ -1146,30 +1147,37 @@ export class GitHubHelper {
 
   private async graphql<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
     const execute = async (): Promise<T> => {
-      const response = await fetch(this.graphqlUrl, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ query, variables }),
-      });
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30_000);
+      try {
+        const response = await fetch(this.graphqlUrl, {
+          method: 'POST',
+          signal: controller.signal,
+          headers: {
+            Authorization: `Bearer ${this.token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ query, variables }),
+        });
 
-      if (!response.ok) {
-        const body = await response.text();
-        const err = new Error(`GitHub GraphQL API ${response.status}: ${body}`);
-        (err as Error & { status: number }).status = response.status;
-        throw err;
-      }
+        if (!response.ok) {
+          const body = await response.text();
+          const err = new Error(`GitHub GraphQL API ${response.status}: ${body}`);
+          (err as Error & { status: number }).status = response.status;
+          throw err;
+        }
 
-      const result = (await response.json()) as {
-        data?: T;
-        errors?: Array<{ message: string }>;
-      };
-      if (result.errors) {
-        throw new Error(`GraphQL error: ${result.errors.map((e) => e.message).join(', ')}`);
+        const result = (await response.json()) as {
+          data?: T;
+          errors?: Array<{ message: string }>;
+        };
+        if (result.errors) {
+          throw new Error(`GraphQL error: ${result.errors.map((e) => e.message).join(', ')}`);
+        }
+        return result.data as T;
+      } finally {
+        clearTimeout(timeout);
       }
-      return result.data as T;
     };
 
     return this.circuitBreaker.call(() =>
@@ -1184,19 +1192,53 @@ export class GitHubHelper {
 
   private async getCurrentUser(): Promise<string> {
     if (this.currentUserLogin) return this.currentUserLogin;
-    const url = `${this.apiUrl}/user`;
-    const response = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-    });
-    if (!response.ok) {
-      throw new Error(`Failed to get current user: ${response.status}`);
+    if (process.env.GITHUB_ACTOR) {
+      this.currentUserLogin = process.env.GITHUB_ACTOR;
+      return this.currentUserLogin;
     }
-    const user = (await response.json()) as { login: string };
-    this.currentUserLogin = user.login;
+
+    const executeUser = async (): Promise<string> => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10_000);
+      try {
+        const userUrl = `${this.apiUrl}/user`;
+        const userRes = await fetch(userUrl, {
+          signal: controller.signal,
+          headers: {
+            Authorization: `Bearer ${this.token}`,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+          },
+        });
+        if (userRes.ok) {
+          const user = (await userRes.json()) as { login: string };
+          return user.login;
+        }
+        if (userRes.status === 401 || userRes.status === 403) {
+          const appUrl = `${this.apiUrl}/app`;
+          const appRes = await fetch(appUrl, {
+            signal: controller.signal,
+            headers: {
+              Authorization: `Bearer ${this.token}`,
+              Accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+            },
+          });
+          if (appRes.ok) {
+            const app = (await appRes.json()) as { slug?: string; name?: string };
+            const slug = app.slug || app.name?.toLowerCase().replace(/\s+/g, '-');
+            if (slug) return `${slug}[bot]`;
+          }
+        }
+        throw new Error(`Failed to resolve user/app identity: ${userRes.status}`);
+      } finally {
+        clearTimeout(timeout);
+      }
+    };
+
+    this.currentUserLogin = await this.circuitBreaker.call(() =>
+      withRetry(executeUser, { retryableStatuses: [429, 500, 502, 503, 504] }),
+    );
     return this.currentUserLogin;
   }
 
@@ -1215,8 +1257,11 @@ export class GitHubHelper {
     const threads: ReviewThreadInfo[] = [];
     let cursor: string | null = null;
     let hasNextPage = true;
+    let pageCount = 0;
+    const maxPages = 50;
 
-    while (hasNextPage) {
+    while (hasNextPage && pageCount < maxPages) {
+      pageCount++;
       const data = (await this.graphql(
         `
         query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
@@ -1234,6 +1279,7 @@ export class GitHubHelper {
                       body
                       path
                       line
+                      originalLine
                       author { login }
                       createdAt
                     }
@@ -1259,7 +1305,7 @@ export class GitHubHelper {
             databaseId: comment.databaseId,
             body: comment.body,
             filePath: comment.path,
-            lineNumber: comment.line,
+            lineNumber: comment.line ?? comment.originalLine ?? null,
             author: comment.author.login,
             createdAt: comment.createdAt,
           },
@@ -1322,9 +1368,13 @@ export class GitHubHelper {
    * @returns Array of review thread info objects authored by the bot.
    */
   async getBotReviewThreads(prNumber: number): Promise<ReviewThreadInfo[]> {
-    const botLogin = await this.getCurrentUser();
+    const rawBotLogin = await this.getCurrentUser();
+    const botLogin = rawBotLogin.toLowerCase().replace(/\[bot\]$/, '');
     const allThreads = await this.getReviewThreads(prNumber);
-    return allThreads.filter((t) => t.firstComment.author === botLogin);
+    return allThreads.filter((t) => {
+      const author = t.firstComment.author.toLowerCase().replace(/\[bot\]$/, '');
+      return author === botLogin;
+    });
   }
 
   // ─── Private Helpers ────────────────────────────────────

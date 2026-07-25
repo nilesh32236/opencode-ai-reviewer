@@ -271,6 +271,45 @@ describe('LearningStore', () => {
     const fpRate = await store.getFalsePositiveRate();
     expect(fpRate).toBeGreaterThan(0);
   });
+
+  it('records quality telemetry and returns aggregated stats with date filtering', async () => {
+    expect(await store.getTelemetryStats()).toEqual({
+      avgDurationMs: 0,
+      totalReviews: 0,
+      totalTokensUsed: 0,
+      avgTokensPerReview: 0,
+    });
+
+    await store.recordQuality({
+      prNumber: 100,
+      actionabilityScore: 0,
+      accuracyScore: 0,
+      coverageScore: 0,
+      consistencyScore: 0,
+      durationMs: 4000,
+      tokensUsed: 1000,
+    });
+
+    await store.recordQuality({
+      prNumber: 101,
+      actionabilityScore: 0,
+      accuracyScore: 0,
+      coverageScore: 0,
+      consistencyScore: 0,
+      durationMs: 6000,
+      tokensUsed: 2000,
+    });
+
+    const statsAll = await store.getTelemetryStats();
+    expect(statsAll.totalReviews).toBe(2);
+    expect(statsAll.avgDurationMs).toBe(5000);
+    expect(statsAll.totalTokensUsed).toBe(3000);
+    expect(statsAll.avgTokensPerReview).toBe(1500);
+
+    const statsRecent = await store.getTelemetryStats(30);
+    expect(statsRecent.totalReviews).toBe(2);
+    expect(statsRecent.avgDurationMs).toBe(5000);
+  });
 });
 
 describe('LearningStore JSON Fallback Smoke Test', () => {

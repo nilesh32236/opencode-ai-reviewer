@@ -19,7 +19,7 @@ export interface ReviewPromptOptions {
   deltaContext?: string;
   previousBotComments?: Array<{
     file: string;
-    line: number;
+    line: number | null;
     body: string;
     commentId: number;
   }>;
@@ -45,7 +45,7 @@ export function buildReviewPrompt(
   deltaContext?: string,
   previousBotComments?: Array<{
     file: string;
-    line: number;
+    line: number | null;
     body: string;
     commentId: number;
   }>,
@@ -209,9 +209,8 @@ export function buildReviewPrompt(
     );
     sections.push('');
     for (const comment of prevBotComments) {
-      sections.push(
-        `- **${comment.file}:${comment.line}** — ${comment.body.split('\n')[0].substring(0, 200)}`,
-      );
+      const location = comment.line != null ? `${comment.file}:${comment.line}` : comment.file;
+      sections.push(`- **${location}** — ${comment.body.split('\n')[0].substring(0, 200)}`);
     }
     sections.push('');
     sections.push(
