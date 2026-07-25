@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.1.19] — 2026-07-25
+
+
+### Fixed
+
+- address issue #115 (#143) (#115
+#143)
+
+### Changed
+
+- [Autofix] Issue 4: Expand Manifest-Based Library Detection for Python, Java, Ruby, and .NET (#142) (#142)
+
+[v1.1.19]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.1.18...v1.1.19
+
 ## [v1.1.18] — 2026-07-25
 
 
