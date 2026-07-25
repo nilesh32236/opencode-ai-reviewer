@@ -23,6 +23,12 @@ import type {
   ReviewStrength,
 } from './types/index.js';
 import { GitHubHelper } from './utils/github.js';
+import {
+  detectDotnetLibraries,
+  detectJavaLibraries,
+  detectPythonLibraries,
+  detectRubyLibraries,
+} from './utils/manifest-detector.js';
 
 /**
  * Orchestrates PR review, auto-fix, and audit workflows.
@@ -727,6 +733,18 @@ function detectLibrariesFromManifests(rootDir: string): string[] | null {
   } catch {
     // fall through
   }
+
+  // Python
+  for (const lib of detectPythonLibraries(rootDir)) libs.add(lib);
+
+  // Java/Kotlin
+  for (const lib of detectJavaLibraries(rootDir)) libs.add(lib);
+
+  // Ruby
+  for (const lib of detectRubyLibraries(rootDir)) libs.add(lib);
+
+  // C#
+  for (const lib of detectDotnetLibraries(rootDir)) libs.add(lib);
 
   return libs.size > 0 ? [...libs] : null;
 }
