@@ -1,4 +1,4 @@
-import { promises as fs, existsSync, readFileSync } from 'fs';
+import { promises as fs, existsSync, mkdirSync, readFileSync } from 'fs';
 import * as cp from 'node:child_process';
 import * as path from 'path';
 import * as core from '@actions/core';
@@ -216,6 +216,9 @@ export class ReviewEngine {
 
     const batchPromises = fileBatches.map(async (batch, idx) => {
       const batchDir = path.join(workDir, `.opencode`, `batch-${idx}`);
+      if (!existsSync(batchDir)) {
+        mkdirSync(batchDir, { recursive: true });
+      }
       const batchPR = { ...pr, changedFiles: batch };
       const batchContext = this.buildPRContextString(batchPR);
       const context = mcpDocs

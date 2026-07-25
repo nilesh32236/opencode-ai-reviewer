@@ -289,6 +289,9 @@ export async function runOpenCode(
   const binaryPath = opencodePath || (await setupOpenCode());
   const startTime = Date.now();
   const cwd = options.workingDirectory || process.cwd();
+  if (!fs.existsSync(cwd)) {
+    fs.mkdirSync(cwd, { recursive: true });
+  }
   const timeoutMs = (options.timeoutMinutes ?? 20) * 60 * 1000;
 
   // --auto  → auto-approves any permission that is not explicitly "deny".
