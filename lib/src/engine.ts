@@ -199,6 +199,8 @@ export class ReviewEngine {
         return r;
       }
 
+      await this.recordTelemetry(pr.number, runResult.durationMs, runResult.tokensUsed);
+
       try {
         const parsed = await parseJsonlFile(outputPath);
         return await this.verifyReviewResult(parsed, baseContext, workDir, timeoutMinutes);
@@ -260,6 +262,8 @@ export class ReviewEngine {
             return emptyResult();
           }
 
+          await this.recordTelemetry(pr.number, runResult.durationMs, runResult.tokensUsed);
+
           try {
             return await parseJsonlFile(outputPath);
           } catch {
@@ -312,6 +316,8 @@ export class ReviewEngine {
       );
       return await this.verifyReviewResult(fallback, baseContext, workDir, timeoutMinutes);
     }
+
+    await this.recordTelemetry(pr.number, synthesisResult.durationMs, synthesisResult.tokensUsed);
 
     try {
       const parsed = await parseJsonlFile(finalOutputPath);
@@ -785,6 +791,29 @@ export class ReviewEngine {
       const elapsed = Date.now() - start;
       core.warning(
         `Cleanup did not finish within ${timeoutMs}ms (took ${elapsed}ms) — MCP/learning store may still be shutting down in background`,
+      );
+    }
+  }
+
+  private async recordTelemetry(
+    prNumber: number,
+    durationMs: number,
+    tokensUsed: number,
+  ): Promise<void> {
+    if (!this.learningStore) return;
+    try {
+      await this.learningStore.recordQuality({
+        prNumber,
+        actionabilityScore: 0,
+        accuracyScore: 0,
+        coverageScore: 0,
+        consistencyScore: 0,
+        durationMs,
+        tokensUsed,
+      });
+    } catch (err) {
+      core.warning(
+        `Failed to record telemetry: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
