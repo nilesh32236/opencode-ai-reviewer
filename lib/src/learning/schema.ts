@@ -124,6 +124,21 @@ export async function applyMigrations(runner: MigrationRunner): Promise<void> {
     `);
 
     await runner.exec('INSERT OR IGNORE INTO meta_review_counter (id, count) VALUES (1, 0)');
+
+    // Telemetry columns — idempotent migration guards
+    const telemetryColumns = [
+      'ALTER TABLE findings ADD COLUMN duration_ms INTEGER',
+      'ALTER TABLE findings ADD COLUMN tokens_used INTEGER',
+      'ALTER TABLE review_quality ADD COLUMN duration_ms INTEGER',
+      'ALTER TABLE review_quality ADD COLUMN tokens_used INTEGER',
+    ];
+    for (const sql of telemetryColumns) {
+      try {
+        await runner.exec(sql);
+      } catch {
+        // Column already exists — safe to ignore
+      }
+    }
   } catch (err) {
     const logger = new Logger('LearningStore');
     logger.error('Migration failed', err);
