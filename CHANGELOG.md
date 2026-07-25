@@ -4,6 +4,31 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.3.0] — 2026-07-25
+
+### Added
+
+- add telemetry summary to action post-processing
+- export TelemetryStats type from lib
+- pass telemetry from runOpenCode to LearningStore in ReviewEngine
+- add getTelemetryStats to LearningStore
+- update JSON database for telemetry fields and add getTelemetryStats
+- update SQL adapters for telemetry columns and add getTelemetryStats
+- capture stdout/stderr and parse token usage in runOpenCode
+- add TelemetryStats type and telemetry fields to LearningQuality and FindingInput
+- add telemetry columns to findings and review_quality tables
+
+### Fixed
+
+- address review findings — filter telemetry from quality trends, remove unused import, improve token regex
+
+### Changed
+
+- test: update opencode tests for piped stdio and close event
+- docs: add telemetry learningstore design spec for #116
+
+[v1.3.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.2.0...v1.3.0
+
 ## [v1.2.0] — 2026-07-25
 
 ### Added
