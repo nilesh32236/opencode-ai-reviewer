@@ -3,7 +3,7 @@ import { Logger } from '../utils/logger.js';
 import { withRetry } from '../utils/retry.js';
 import { connectDb } from './db.js';
 import { applyMigrations, getDbPath } from './schema.js';
-import type { LearningRepository } from './types.js';
+import type { LearningRepository, TelemetryStats } from './types.js';
 
 /**
  * Persistent storage for review findings, feedback signals, quality metrics,
@@ -281,6 +281,17 @@ export class LearningStore {
       const logger = new Logger('LearningStore');
       logger.warn('Failed to record quality', err);
     }
+  }
+
+  /**
+   * Retrieve aggregated telemetry statistics for review executions.
+   *
+   * @param sinceDays - Optional filter to only include reviews from the last N days.
+   * @returns TelemetryStats with average duration, total reviews, and token usage.
+   */
+  async getTelemetryStats(sinceDays?: number): Promise<TelemetryStats> {
+    const repo = await this.repoPromise;
+    return repo.getTelemetryStats(sinceDays);
   }
 
   /**
