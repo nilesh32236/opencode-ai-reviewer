@@ -531,6 +531,119 @@ export class GitHubHelper {
   }
 
   /**
+   * Reply to an existing pull request review comment (threaded reply).
+   * Uses POST /repos/{owner}/{repo}/pulls/{prNumber}/comments/{commentId}/replies.
+   *
+   * @param prNumber - PR number.
+   * @param commentId - ID of the comment to reply to.
+   * @param body - Reply body markdown.
+   * @returns The created reply comment ID.
+   */
+  async replyToReviewComment(
+    prNumber: number,
+    commentId: number,
+    body: string,
+  ): Promise<{ id: number }> {
+    const result = await this.api<{ id: number }>(
+      `/pulls/${prNumber}/comments/${commentId}/replies`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body }),
+      },
+    );
+    return { id: result.id };
+  }
+
+  /**
+   * Fetch a single pull request review comment by ID.
+   * Uses GET /repos/{owner}/{repo}/pulls/comments/{commentId}.
+   *
+   * @param commentId - Review comment ID.
+   * @returns The review comment details.
+   */
+  async getReviewComment(commentId: number): Promise<{
+    id: number;
+    body: string;
+    user: { login: string; type: string };
+    path?: string;
+    line?: number;
+    in_reply_to_id?: number;
+    pull_request_review_id?: number;
+  }> {
+    return this.api<{
+      id: number;
+      body: string;
+      user: { login: string; type: string };
+      path?: string;
+      line?: number;
+      in_reply_to_id?: number;
+      pull_request_review_id?: number;
+    }>(`/pulls/comments/${commentId}`);
+  }
+
+  /**
+   * Fetch the full thread for a review comment by walking the in_reply_to_id chain.
+   * Collects all ancestor comments from root to the given comment.
+   *
+   * @param commentId - The leaf comment ID to walk the thread from.
+   * @returns Thread info including ordered comments, root comment, file path, and line number.
+   */
+  async getReviewCommentThread(commentId: number): Promise<{
+    comments: Array<{
+      id: number;
+      author: string;
+      body: string;
+      isBot: boolean;
+    }>;
+    rootComment: { id: number; author: string; body: string; isBot: boolean };
+    filePath: string;
+    lineNumber?: number;
+  }> {
+    const comments: Array<{
+      id: number;
+      author: string;
+      body: string;
+      isBot: boolean;
+    }> = [];
+
+    let currentId: number | undefined = commentId;
+    let root:
+      | {
+          id: number;
+          author: string;
+          body: string;
+          isBot: boolean;
+        }
+      | undefined;
+    let filePath = '';
+    let lineNumber: number | undefined;
+
+    while (currentId) {
+      const comment = await this.getReviewComment(currentId);
+      const entry = {
+        id: comment.id,
+        author: comment.user.login,
+        body: comment.body,
+        isBot: comment.user.type === 'Bot',
+      };
+      comments.unshift(entry);
+
+      if (comment.path) filePath = comment.path;
+      if (comment.line !== undefined) lineNumber = comment.line;
+
+      root = entry;
+      currentId = comment.in_reply_to_id;
+    }
+
+    if (!root) {
+      throw new Error(`Comment ${commentId} not found — cannot build thread`);
+    }
+
+    return { comments, rootComment: root, filePath, lineNumber };
+  }
+
+  /**
    * Create a new issue in the repository.
    *
    * @param title - Issue title.

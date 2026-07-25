@@ -575,6 +575,159 @@ describe('GitHubHelper', () => {
     });
   });
 
+  describe('replyToReviewComment', () => {
+    it('posts a reply and returns the comment id', async () => {
+      fetchMock.mockResolvedValue(mockResponse({ body: { id: 789 } }));
+
+      const result = await helper.replyToReviewComment(42, 100, 'Good question!');
+
+      expect(result.id).toBe(789);
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/pulls/42/comments/100/replies'),
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.stringContaining('Good question!'),
+        }),
+      );
+    });
+
+    it('throws on API failure', async () => {
+      fetchMock.mockResolvedValue(mockErrorResponse(422));
+
+      await expect(helper.replyToReviewComment(42, 100, 'body')).rejects.toThrow('GitHub API 422');
+    });
+  });
+
+  describe('getReviewComment', () => {
+    it('returns a review comment by id', async () => {
+      fetchMock.mockResolvedValue(
+        mockResponse({
+          body: {
+            id: 123,
+            body: 'This is a review comment',
+            user: { login: 'opencode-bot', type: 'Bot' },
+            path: 'src/index.ts',
+            line: 42,
+            in_reply_to_id: null,
+            pull_request_review_id: 1,
+          },
+        }),
+      );
+
+      const comment = await helper.getReviewComment(123);
+
+      expect(comment.id).toBe(123);
+      expect(comment.body).toBe('This is a review comment');
+      expect(comment.user.type).toBe('Bot');
+      expect(comment.path).toBe('src/index.ts');
+      expect(comment.line).toBe(42);
+      expect(comment.in_reply_to_id).toBeNull();
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/pulls/comments/123'),
+        expect.any(Object),
+      );
+    });
+
+    it('throws on API failure', async () => {
+      fetchMock.mockResolvedValue(mockErrorResponse(404));
+
+      await expect(helper.getReviewComment(999)).rejects.toThrow('GitHub API 404');
+    });
+  });
+
+  describe('getReviewCommentThread', () => {
+    it('walks in_reply_to_id chain to build thread', async () => {
+      // Leaf comment replies to comment 2, which replies to comment 1 (root)
+      const leafComment = {
+        id: 3,
+        body: 'Why is this critical?',
+        user: { login: 'developer', type: 'User' },
+        path: 'src/index.ts',
+        line: 42,
+        in_reply_to_id: 2,
+        pull_request_review_id: 1,
+      };
+      const middleComment = {
+        id: 2,
+        body: 'Please fix this',
+        user: { login: 'opencode-bot', type: 'Bot' },
+        path: 'src/index.ts',
+        line: 42,
+        in_reply_to_id: 1,
+        pull_request_review_id: 1,
+      };
+      const rootComment = {
+        id: 1,
+        body: 'This line has a bug',
+        user: { login: 'opencode-bot', type: 'Bot' },
+        path: 'src/index.ts',
+        line: 42,
+        in_reply_to_id: null,
+        pull_request_review_id: 1,
+      };
+
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes('/pulls/comments/3')) return mockResponse({ body: leafComment });
+        if (url.includes('/pulls/comments/2')) return mockResponse({ body: middleComment });
+        if (url.includes('/pulls/comments/1')) return mockResponse({ body: rootComment });
+        return mockResponse({ body: {} });
+      });
+
+      const thread = await helper.getReviewCommentThread(3);
+
+      expect(thread.comments).toHaveLength(3);
+      expect(thread.comments[0].id).toBe(1);
+      expect(thread.comments[0].author).toBe('opencode-bot');
+      expect(thread.comments[1].id).toBe(2);
+      expect(thread.comments[2].id).toBe(3);
+      expect(thread.comments[2].author).toBe('developer');
+      expect(thread.rootComment.id).toBe(1);
+      expect(thread.rootComment.isBot).toBe(true);
+      expect(thread.filePath).toBe('src/index.ts');
+      expect(thread.lineNumber).toBe(42);
+    });
+
+    it('handles single comment thread (no replies)', async () => {
+      const comment = {
+        id: 1,
+        body: 'Issue here',
+        user: { login: 'opencode-bot', type: 'Bot' },
+        path: 'src/app.ts',
+        line: 10,
+        in_reply_to_id: null,
+        pull_request_review_id: 1,
+      };
+
+      fetchMock.mockResolvedValue(mockResponse({ body: comment }));
+
+      const thread = await helper.getReviewCommentThread(1);
+
+      expect(thread.comments).toHaveLength(1);
+      expect(thread.rootComment.id).toBe(1);
+      expect(thread.filePath).toBe('src/app.ts');
+      expect(thread.lineNumber).toBe(10);
+    });
+
+    it('throws when root comment has no file path', async () => {
+      const comment = {
+        id: 1,
+        body: 'General comment',
+        user: { login: 'opencode-bot', type: 'Bot' },
+        path: undefined,
+        line: undefined,
+        in_reply_to_id: null,
+        pull_request_review_id: 1,
+      };
+
+      fetchMock.mockResolvedValue(mockResponse({ body: comment }));
+
+      // Should resolve with empty filePath
+      const thread = await helper.getReviewCommentThread(1);
+      expect(thread.filePath).toBe('');
+      expect(thread.lineNumber).toBeUndefined();
+    });
+  });
+
   describe('createComment', () => {
     it('creates a comment and returns its id', async () => {
       fetchMock.mockResolvedValue(mockResponse({ body: { id: 456 } }));

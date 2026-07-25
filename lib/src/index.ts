@@ -24,6 +24,7 @@ export {
   buildReviewPrompt,
   buildFixPrompt,
   buildAuditPrompt,
+  buildReplyPrompt,
   loadPromptFile,
   loadAuditCategoryPrompt,
   listAuditCategories,

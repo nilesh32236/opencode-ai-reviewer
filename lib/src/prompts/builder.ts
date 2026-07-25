@@ -274,6 +274,84 @@ After writing the file, you MUST verify that the JSONL file exists, is valid JSO
 }
 
 /**
+ * Build a conversational reply prompt for answering a developer's follow-up
+ * question on an AI review comment thread.
+ *
+ * @param filePath - The file path the original comment was on.
+ * @param lineNumber - Optional line number the original comment referred to.
+ * @param codeSnippet - The code snippet/diff context around the comment.
+ * @param originalComment - The original AI review comment body.
+ * @param threadHistory - Ordered array of prior replies in the thread (oldest first).
+ * @param userQuestion - The developer's latest question/reply.
+ * @returns The assembled reply prompt string.
+ */
+export function buildReplyPrompt(
+  filePath: string,
+  lineNumber: number | undefined,
+  codeSnippet: string,
+  originalComment: string,
+  threadHistory: Array<{ author: string; body: string }>,
+  userQuestion: string,
+): string {
+  const sections: string[] = [];
+
+  sections.push(
+    'You are a Senior Code Reviewer having a conversation with a developer about a review comment you made. Help them understand your reasoning and provide helpful clarification.',
+  );
+  sections.push('');
+
+  sections.push('## Code Context');
+  sections.push('');
+  sections.push(
+    `**File:** \`${filePath}\`${lineNumber !== undefined ? `, line ${lineNumber}` : ''}`,
+  );
+  sections.push('');
+  sections.push('```');
+  sections.push(codeSnippet || '(No code snippet available)');
+  sections.push('```');
+  sections.push('');
+
+  sections.push('## Original Review Comment');
+  sections.push('');
+  sections.push(originalComment);
+  sections.push('');
+
+  if (threadHistory.length > 1) {
+    sections.push('## Thread History');
+    sections.push('');
+    for (const entry of threadHistory.slice(0, -1)) {
+      sections.push(`**@${entry.author}:** ${entry.body}`);
+      sections.push('');
+    }
+  }
+
+  sections.push("## Developer's Question");
+  sections.push('');
+  sections.push(userQuestion);
+  sections.push('');
+
+  sections.push('## Instructions');
+  sections.push('');
+  sections.push('- Answer concisely and directly — 2-5 sentences unless more detail is needed.');
+  sections.push(
+    '- Be helpful and constructive. The developer is asking for clarification, not challenging you.',
+  );
+  sections.push('- Reference specific code lines if relevant to your explanation.');
+  sections.push(
+    '- If you made an error in your original review, acknowledge it gracefully and correct it.',
+  );
+  sections.push(
+    '- If the question is a simple acknowledgment (e.g., "Thanks", "Got it", "LGTM"), respond with a brief polite acknowledgment and move on.',
+  );
+  sections.push('- Do NOT suggest creating new issues, PRs, or running additional commands.');
+  sections.push(
+    '- Do NOT ask the developer to mark anything as resolved or take any GitHub actions.',
+  );
+
+  return sections.join('\n');
+}
+
+/**
  * Build the analyze prompt for analyzing a GitHub Issue against the codebase.
  * Instructs the LLM to investigate the issue, determine priority, and formulate
  * a step-by-step implementation plan before any code is modified.

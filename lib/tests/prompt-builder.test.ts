@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildAnalyzePrompt, buildFixPrompt, buildReviewPrompt } from '../src/prompts/builder.js';
+import {
+  buildAnalyzePrompt,
+  buildFixPrompt,
+  buildReplyPrompt,
+  buildReviewPrompt,
+} from '../src/prompts/builder.js';
 
 describe('prompt-builder', () => {
   it('buildReviewPrompt returns a non-empty string', () => {
@@ -101,6 +106,89 @@ describe('prompt-builder', () => {
       expect(prompt).toContain('Do NOT run');
       expect(prompt).toContain('git commit');
       expect(prompt).toContain('read-only analysis');
+    });
+  });
+
+  describe('buildReplyPrompt', () => {
+    it('returns a non-empty string', () => {
+      const prompt = buildReplyPrompt(
+        'src/index.ts',
+        42,
+        'function foo() { return 1; }',
+        'This line has a bug',
+        [],
+        'Why is this critical?',
+      );
+      expect(prompt).toBeTruthy();
+      expect(typeof prompt).toBe('string');
+      expect(prompt.length).toBeGreaterThan(50);
+    });
+
+    it('includes code context and file path', () => {
+      const prompt = buildReplyPrompt(
+        'src/app.ts',
+        10,
+        'const x = 1;',
+        'Consider renaming this variable',
+        [],
+        'What would you suggest instead?',
+      );
+      expect(prompt).toContain('src/app.ts');
+      expect(prompt).toContain('line 10');
+      expect(prompt).toContain('const x = 1;');
+    });
+
+    it('includes original review comment', () => {
+      const prompt = buildReplyPrompt(
+        'src/index.ts',
+        undefined,
+        'code',
+        'This is a security issue',
+        [],
+        'Why?',
+      );
+      expect(prompt).toContain('This is a security issue');
+      expect(prompt).toContain('## Original Review Comment');
+    });
+
+    it('includes thread history when available', () => {
+      const threadHistory = [
+        { author: 'opencode-bot', body: 'This line has a bug' },
+        { author: 'developer', body: 'Why do you think so?' },
+      ];
+      const prompt = buildReplyPrompt(
+        'src/index.ts',
+        5,
+        'code snippet',
+        'This line has a bug',
+        threadHistory,
+        'Can you explain more?',
+      );
+      expect(prompt).toContain('## Thread History');
+      expect(prompt).toContain('@opencode-bot');
+      // The user's own reply (last entry) is shown in Developer's Question instead
+      expect(prompt).not.toContain('@developer');
+      expect(prompt).toContain('This line has a bug');
+    });
+
+    it('includes developers question', () => {
+      const prompt = buildReplyPrompt(
+        'src/index.ts',
+        undefined,
+        'code',
+        'Nit: use a constant',
+        [],
+        'Where should I define it?',
+      );
+      expect(prompt).toContain("Developer's Question");
+      expect(prompt).toContain('Where should I define it?');
+    });
+
+    it('includes instructions section', () => {
+      const prompt = buildReplyPrompt('src/index.ts', undefined, 'code', 'comment', [], 'question');
+      expect(prompt).toContain('## Instructions');
+      expect(prompt).toContain('Answer concisely');
+      expect(prompt).toContain('acknowledge it gracefully');
     });
   });
 });
