@@ -24,7 +24,8 @@ export class FeedbackSubscriber implements Subscriber {
   /**
    * Route an event to the appropriate handler based on event type.
    */
-  async handle(event: GitHubEvent): Promise<void> {
+  async handle(event: GitHubEvent, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return;
     try {
       switch (event.type) {
         case 'review.dismissed':

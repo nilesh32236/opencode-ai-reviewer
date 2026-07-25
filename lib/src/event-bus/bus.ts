@@ -4,7 +4,7 @@ import { Logger } from '../utils/logger.js';
 import { withRetry } from '../utils/retry.js';
 
 const SUBSCRIBER_CONCURRENCY = 10;
-const SUBSCRIBER_TIMEOUT_MS = 120_000;
+const SUBSCRIBER_TIMEOUT_MS = 600_000;
 
 /** Health metrics for a single event subscriber. */
 export interface SubscriberHealth {
@@ -132,7 +132,7 @@ export class EventBus {
     try {
       const subscriberWork = async () => {
         if (abortController.signal.aborted) return;
-        await sub.handle(event);
+        await sub.handle(event, abortController.signal);
       };
 
       const work = cb ? () => cb.call(subscriberWork) : subscriberWork;

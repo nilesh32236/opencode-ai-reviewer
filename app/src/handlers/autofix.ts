@@ -172,7 +172,9 @@ export async function handleAutofixLoop(
   tempDir?: string,
   initialGitEnv?: Record<string, string>,
   checkAllowlist?: string[],
+  signal?: AbortSignal,
 ): Promise<void> {
+  if (signal?.aborted) return;
   const logger = new Logger('Autofix', { prNumber, repo });
   logger.info(`Starting autofix loop for PR #${prNumber} in ${repo}`);
 

@@ -38,7 +38,8 @@ export default (app: Probot): void => {
   const reviewSubscriber: Subscriber = {
     name: 'ReviewSubscriber',
     subscribedEvents: ['pr.opened', 'pr.synchronize', 'comment.created', 'review_comment.created'],
-    async handle(event: GitHubEvent) {
+    async handle(event: GitHubEvent, signal?: AbortSignal) {
+      if (signal?.aborted) return;
       try {
         if (event.type === 'comment.created' || event.type === 'review_comment.created') {
           const evPayload = event.payload as Record<string, unknown>;
@@ -102,7 +103,8 @@ export default (app: Probot): void => {
   const fixSubscriber: Subscriber = {
     name: 'FixSubscriber',
     subscribedEvents: ['comment.created', 'review_comment.created', 'issue.labeled'],
-    async handle(event: GitHubEvent) {
+    async handle(event: GitHubEvent, signal?: AbortSignal) {
+      if (signal?.aborted) return;
       try {
         const fixPayload = event.payload as Record<string, unknown>;
         const fixComment = fixPayload.comment as Record<string, string> | undefined;
@@ -123,7 +125,7 @@ export default (app: Probot): void => {
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;
 
-        await handleCommand('fix', prNumber, event.repo || '', getToken(), config);
+        await handleCommand('fix', prNumber, event.repo || '', getToken(), config, signal);
       } catch (err) {
         logger.error(
           `FixSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${err instanceof Error ? err.message : err}`,
@@ -135,7 +137,8 @@ export default (app: Probot): void => {
   const auditSubscriber: Subscriber = {
     name: 'AuditSubscriber',
     subscribedEvents: ['comment.created', 'review_comment.created'],
-    async handle(event: GitHubEvent) {
+    async handle(event: GitHubEvent, signal?: AbortSignal) {
+      if (signal?.aborted) return;
       try {
         const auditPayload = event.payload as Record<string, unknown>;
         const auditComment = auditPayload.comment as Record<string, string> | undefined;
@@ -153,7 +156,8 @@ export default (app: Probot): void => {
   const analyzeSubscriber: Subscriber = {
     name: 'AnalyzeSubscriber',
     subscribedEvents: ['comment.created', 'review_comment.created'],
-    async handle(event: GitHubEvent) {
+    async handle(event: GitHubEvent, signal?: AbortSignal) {
+      if (signal?.aborted) return;
       try {
         const analyzePayload = event.payload as Record<string, unknown>;
         const analyzeComment = analyzePayload.comment as Record<string, string> | undefined;

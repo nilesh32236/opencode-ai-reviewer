@@ -14,7 +14,8 @@ export class RuleApprovalSubscriber implements Subscriber {
 
   constructor(private store: LearningStore) {}
 
-  async handle(event: GitHubEvent): Promise<void> {
+  async handle(event: GitHubEvent, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return;
     const payload = event.payload as { comment?: { body?: string } };
     const body = payload?.comment?.body || '';
     if (!body) return;

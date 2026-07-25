@@ -164,7 +164,8 @@ export class MetaReviewSubscriber implements Subscriber {
    * Handle the review.completed event — checks the meta-review interval
    * and triggers runMetaReview if needed.
    */
-  async handle(event: GitHubEvent): Promise<void> {
+  async handle(event: GitHubEvent, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return;
     try {
       const shouldRun = await this.store.incrementAndCheckMetaReviewInterval(this.interval);
       if (!shouldRun) return;

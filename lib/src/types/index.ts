@@ -742,9 +742,10 @@ export interface Subscriber {
    * Event handler function.
    *
    * @param event - The GitHub event to process.
+   * @param signal - Optional AbortSignal for timeout cancellation.
    * @returns Promise that resolves when handling is complete.
    */
-  handle(event: GitHubEvent): Promise<void>;
+  handle(event: GitHubEvent, signal?: AbortSignal): Promise<void>;
 }
 
 // ─── Learning Store ──────────────────────────────────────

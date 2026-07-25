@@ -171,20 +171,36 @@ export function buildReviewPrompt(
  * @returns The assembled fix prompt string.
  */
 export function buildFixPrompt(
-  _inputs: PromptBuilderInputs,
+  inputs: PromptBuilderInputs,
   context: string,
-  _iteration: number,
-  _issues?: ReviewIssue[],
+  iteration: number,
+  issues?: ReviewIssue[],
   verificationError?: string,
 ): string {
+  const projectContext = inputs.projectContext || getDefaultProjectContext();
+  const fixIterations = inputs.maxFixIterations ?? 3;
+
+  let issuesSection = '';
+  if (issues && issues.length > 0) {
+    issuesSection = `\n## Issues to Fix (Iteration ${iteration + 1}/${fixIterations})\n\n`;
+    for (const issue of issues) {
+      issuesSection += `- **${issue.severity.toUpperCase()}:** ${issue.file}:${issue.line} — ${issue.message}\n`;
+      if (issue.suggestion) {
+        issuesSection += `  > Suggestion: ${issue.suggestion}\n`;
+      }
+    }
+  }
+
   return `You are an Expert Software Engineer tasked with implementing a code fix for a GitHub Issue.
 
 ## Issue & Thread Context (Includes Title, Body, Comments, and Implementation Plan)
 
 ${context}
+${issuesSection}
+## Project Context
 
+${projectContext}
 ${verificationError ? `\n## Verification Errors from Previous Attempt\n\`\`\`\n${verificationError}\n\`\`\`\n` : ''}
-
 ## Step-by-Step Execution Instructions
 
 1. **Review the Context**:
@@ -194,6 +210,7 @@ ${verificationError ? `\n## Verification Errors from Previous Attempt\n\`\`\`\n$
 2. **Execute Code Changes**:
    - Open and inspect the affected files.
    - Apply minimal, clean, robust fixes following the approved plan and maintainer decisions.
+   - After making changes, verify the fix addresses all listed issues.
 
 3. **Verify**:
    - Run configured verification commands (e.g. lint/test) to ensure no regressions.
@@ -204,7 +221,8 @@ ${verificationError ? `\n## Verification Errors from Previous Attempt\n\`\`\`\n$
 ## CRITICAL RULES
 - Do NOT run \`git commit\`, \`git push\`, or \`gh pr create\`.
 - Strictly follow any explicit instructions provided by human maintainers in the comment thread.
-- Keep fixes minimal and target only the issue described.`;
+- Keep fixes minimal and target only the issue described.
+- If you cannot complete the fix, write the reason to \`.fix-stuck.md\` and stop.`;
 }
 
 /**
