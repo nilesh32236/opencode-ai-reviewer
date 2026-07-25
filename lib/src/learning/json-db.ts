@@ -465,6 +465,12 @@ export class JsonDatabase implements LearningRepository {
     this.save();
   }
 
+  /**
+   * Retrieve recent review quality scores, excluding telemetry-only rows.
+   *
+   * @param limit - Maximum number of results (default: 20).
+   * @returns Array of review_quality rows with at least one non-zero score.
+   */
   async getQualityTrends(limit = 20): Promise<Array<Record<string, unknown>>> {
     return [...this.data.review_quality]
       .filter(
@@ -585,6 +591,12 @@ export class JsonDatabase implements LearningRepository {
     this.save();
   }
 
+  /**
+   * Retrieve aggregated telemetry statistics for review executions.
+   *
+   * @param sinceDays - Optional filter to only include reviews from the last N days.
+   * @returns TelemetryStats with average duration, total reviews, and token usage.
+   */
   async getTelemetryStats(sinceDays?: number): Promise<{
     avgDurationMs: number;
     totalReviews: number;

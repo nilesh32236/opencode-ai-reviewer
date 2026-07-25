@@ -79,6 +79,12 @@ export interface LearningRepository {
    */
   getFalsePositiveRules(filePaths: string[], limit?: number): Promise<string[]>;
   recordQuality(quality: LearningQuality): Promise<void>;
+  /**
+   * Retrieve aggregated telemetry statistics for review executions.
+   *
+   * @param sinceDays - Optional filter to only include reviews from the last N days.
+   * @returns TelemetryStats with average duration, total reviews, and token usage.
+   */
   getTelemetryStats(sinceDays?: number): Promise<TelemetryStats>;
   getQualityTrends(limit?: number): Promise<Array<Record<string, unknown>>>;
   incrementAndCheckMetaReviewInterval(interval: number): Promise<boolean>;

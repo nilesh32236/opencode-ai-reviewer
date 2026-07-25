@@ -273,7 +273,8 @@ export class LearningStore {
     try {
       const repo = await this.repoPromise;
       return repo.getTelemetryStats(sinceDays);
-    } catch {
+    } catch (err) {
+      new Logger('LearningStore').warn('Failed to get telemetry stats', err);
       return { avgDurationMs: 0, totalReviews: 0, totalTokensUsed: 0, avgTokensPerReview: 0 };
     }
   }

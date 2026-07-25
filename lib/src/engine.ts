@@ -28,6 +28,7 @@ import type {
   ReviewStrength,
 } from './types/index.js';
 import { GitHubHelper } from './utils/github.js';
+import { Logger } from './utils/logger.js';
 import {
   detectDotnetLibraries,
   detectJavaLibraries,
@@ -812,9 +813,7 @@ export class ReviewEngine {
         tokensUsed,
       });
     } catch (err) {
-      core.warning(
-        `Failed to record telemetry: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      new Logger('ReviewEngine').warn('Failed to record telemetry', err);
     }
   }
 

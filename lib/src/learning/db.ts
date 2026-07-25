@@ -421,6 +421,12 @@ export abstract class SqlAdapter implements LearningRepository {
     );
   }
 
+  /**
+   * Retrieve aggregated telemetry statistics for review executions.
+   *
+   * @param sinceDays - Optional filter to only include reviews from the last N days.
+   * @returns TelemetryStats with average duration, total reviews, and token usage.
+   */
   async getTelemetryStats(sinceDays?: number): Promise<{
     avgDurationMs: number;
     totalReviews: number;
@@ -1044,6 +1050,12 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     );
   }
 
+  /**
+   * Retrieve aggregated telemetry statistics for review executions.
+   *
+   * @param sinceDays - Optional filter to only include reviews from the last N days.
+   * @returns TelemetryStats with average duration, total reviews, and token usage.
+   */
   async getTelemetryStats(sinceDays?: number): Promise<{
     avgDurationMs: number;
     totalReviews: number;
@@ -1346,6 +1358,12 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
     return this.db.addPromptOverride(category, overrideText, fpRateBefore);
   }
 
+  /**
+   * Retrieve aggregated telemetry statistics for review executions.
+   *
+   * @param sinceDays - Optional filter to only include reviews from the last N days.
+   * @returns TelemetryStats with average duration, total reviews, and token usage.
+   */
   async getTelemetryStats(sinceDays?: number): Promise<{
     avgDurationMs: number;
     totalReviews: number;

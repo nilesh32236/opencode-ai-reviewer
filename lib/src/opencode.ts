@@ -267,17 +267,14 @@ function buildCIConfig(): string {
  * Looks for common LLM token patterns. Returns 0 if no pattern matches.
  */
 function parseTokenUsage(output: string): number {
-  // Prioritize total_tokens patterns to avoid matching prompt_tokens or completion_tokens
-  const patterns = [
-    /"total_tokens"\s*:\s*(\d+)/i,
-    /total_tokens["\s]*[:=]\s*(\d+)/i,
-    /\btotal\s+tokens["\s]*[:=]\s*(\d+)/i,
-  ];
+  // Prioritize total_tokens patterns to avoid matching prompt_tokens or completion_tokens.
+  // Use word-bounded key matches so suffixes like prompt_total_tokens are not accepted.
+  const patterns = [/\btotal_tokens\b["\s]*[:=]\s*(\d+)/i, /\btotal\s+tokens\b["\s]*[:=]\s*(\d+)/i];
   for (const pattern of patterns) {
     const match = output.match(pattern);
     if (match) {
       const parsed = Number.parseInt(match[1], 10);
-      if (!isNaN(parsed) && parsed >= 0) return parsed;
+      if (Number.isSafeInteger(parsed) && parsed >= 0) return parsed;
     }
   }
   return 0;
@@ -399,7 +396,19 @@ export async function runOpenCode(
     detached: true,
   });
 
+  // Cap retained output to prevent memory exhaustion on verbose or stuck runs.
+  // We keep only the last 50 KB which is sufficient for token parsing while
+  // still forwarding all output to CI logs.
+  const MAX_CAPTURED_BYTES = 50 * 1024;
   let capturedOutput = '';
+
+  function appendCaptured(text: string): void {
+    capturedOutput += text;
+    if (capturedOutput.length > MAX_CAPTURED_BYTES) {
+      capturedOutput = capturedOutput.slice(-MAX_CAPTURED_BYTES);
+    }
+  }
+
   let timedOut = false;
   let childExited = false;
   let forceKillHandle: ReturnType<typeof setTimeout> | undefined;
@@ -447,12 +456,12 @@ export async function runOpenCode(
 
   childProcess.stdout?.on('data', (data: Buffer) => {
     const text = data.toString();
-    capturedOutput += text;
+    appendCaptured(text);
     process.stdout.write(data);
   });
   childProcess.stderr?.on('data', (data: Buffer) => {
     const text = data.toString();
-    capturedOutput += text;
+    appendCaptured(text);
     process.stderr.write(data);
   });
 
