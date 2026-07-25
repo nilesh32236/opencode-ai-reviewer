@@ -1,7 +1,8 @@
-import { promises as fs, existsSync, readFileSync } from 'fs';
+import { promises as fs, existsSync, mkdirSync, readFileSync } from 'fs';
 import * as cp from 'node:child_process';
 import * as path from 'path';
 import * as core from '@actions/core';
+import { minimatch } from 'minimatch';
 import { emptyResult, parseJsonlFile } from './jsonl-parser.js';
 import type { LearningStore } from './learning/store.js';
 import { MCPManager } from './mcp/client.js';
@@ -9,12 +10,16 @@ import { ensureOutputDir, getGitStatus, runOpenCode } from './opencode.js';
 import {
   buildAnalyzePrompt,
   buildAuditPrompt,
+  buildExplainPrompt,
   buildFixPrompt,
   buildReviewPrompt,
   buildSynthesisPrompt,
 } from './prompts/builder.js';
+import { buildConversationPrompt } from './prompts/conversation.js';
+import { buildVerificationPrompt } from './prompts/verify.js';
 import type {
   AgentConfig,
+  ConversationContext,
   FixResult,
   PRContext,
   PreviousFindingIteration,
@@ -79,13 +84,16 @@ export class ReviewEngine {
     timeoutMinutes?: number,
     previousFindings?: PreviousFindingIteration[],
     workingDirectory?: string,
+    previousHeadSha?: string,
   ): Promise<ReviewResult> {
     let mcpDocs = '';
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
       try {
         await this.mcp.connect();
         const libraries = detectLibraries(
-          pr.changedFiles.map((f) => f.path),
+          pr.changedFiles
+            .map((f) => f?.path)
+            .filter((p): p is string => typeof p === 'string' && Boolean(p)),
           workingDirectory,
         );
         if (libraries.length > 0) {
@@ -98,20 +106,64 @@ export class ReviewEngine {
 
     const workDir = workingDirectory || process.cwd();
     const batchSize = this.config.batchSize || 3;
-    const files = pr.changedFiles;
+
+    // Fetch delta context if previousHeadSha is provided
+    let deltaContext: string | undefined;
+    if (previousHeadSha && previousHeadSha !== pr.headSha) {
+      try {
+        deltaContext = await this.github.getDiffSince(previousHeadSha, pr.headSha || pr.headRef);
+      } catch (err) {
+        core.warning(
+          `Failed to fetch delta diff since ${previousHeadSha}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    // Filter out excluded files (lockfiles, generated code, dist/, etc.)
+    const excludePatterns = this.config.review.excludePatterns || [];
+    const files =
+      excludePatterns.length > 0
+        ? pr.changedFiles.filter((f) => {
+            if (!f?.path) return false;
+            return !excludePatterns.some((pattern: string) => minimatch(f.path, pattern));
+          })
+        : pr.changedFiles;
+
+    if (files.length === 0 && pr.changedFiles.length > 0) {
+      core.info(
+        `All ${pr.changedFiles.length} changed file(s) matched exclude patterns — skipping review`,
+      );
+      return emptyResult();
+    }
+    if (files.length < pr.changedFiles.length) {
+      core.info(
+        `Excluded ${pr.changedFiles.length - files.length} file(s) from review by exclude patterns`,
+      );
+    }
     const prContext = this.buildPRContextString(pr);
     const baseContext = mcpDocs
       ? prContext + '\n\n## Library Documentation\n' + mcpDocs
       : prContext;
 
-    // Get relevant lessons from learning store (with caching)
+    // Get relevant lessons and false-positive suppression rules from learning store (with caching)
     let lessons: string[] | undefined;
+    let falsePositiveRules: string[] | undefined;
     if (this.learningStore) {
+      const filePaths = pr.changedFiles
+        .map((f) => f?.path)
+        .filter((p): p is string => typeof p === 'string' && Boolean(p));
       try {
-        lessons = await this.getRelevantLessons(pr.changedFiles.map((f) => f.path));
+        lessons = await this.getRelevantLessons(filePaths);
       } catch (err) {
         core.warning(
           `Failed to get learning store lessons: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      try {
+        falsePositiveRules = await this.learningStore.getFalsePositiveRules(filePaths);
+      } catch (err) {
+        core.warning(
+          `Failed to get false-positive rules: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }
@@ -127,7 +179,12 @@ export class ReviewEngine {
         baseContext,
         lessons,
         previousFindings,
+        falsePositiveRules,
+        deltaContext,
       );
+
+      const outputPath = path.join(workDir, '.opencode', 'review-output.jsonl');
+      ensureOutputDir(outputPath);
 
       const runResult = await runOpenCode(prompt, {
         model: this.config.reviewModel,
@@ -142,9 +199,9 @@ export class ReviewEngine {
         return r;
       }
 
-      const outputPath = path.join(workDir, '.opencode', 'review-output.jsonl');
       try {
-        return await parseJsonlFile(outputPath);
+        const parsed = await parseJsonlFile(outputPath);
+        return await this.verifyReviewResult(parsed, baseContext, workDir, timeoutMinutes);
       } catch {
         core.warning(`Failed to parse review output at ${outputPath}, returning empty result`);
         const r = emptyResult();
@@ -159,46 +216,60 @@ export class ReviewEngine {
       fileBatches.push(files.slice(i, i + batchSize));
     }
 
-    const batchPromises = fileBatches.map(async (batch, idx) => {
-      const batchDir = path.join(workDir, `.opencode`, `batch-${idx}`);
-      const batchPR = { ...pr, changedFiles: batch };
-      const batchContext = this.buildPRContextString(batchPR);
-      const context = mcpDocs
-        ? batchContext + '\n\n## Library Documentation\n' + mcpDocs
-        : batchContext;
+    const concurrencyLimit = 3;
+    const batchResults: ReviewResult[] = [];
+    for (let i = 0; i < fileBatches.length; i += concurrencyLimit) {
+      const chunk = fileBatches.slice(i, i + concurrencyLimit);
+      const chunkResults = await Promise.all(
+        chunk.map(async (batch, chunkIdx) => {
+          const idx = i + chunkIdx;
+          const batchDir = path.join(workDir, `.opencode`, `batch-${idx}`);
+          if (!existsSync(batchDir)) {
+            mkdirSync(batchDir, { recursive: true });
+          }
+          const batchPR = { ...pr, changedFiles: batch };
+          const batchContext = this.buildPRContextString(batchPR);
+          const context = mcpDocs
+            ? batchContext + '\n\n## Library Documentation\n' + mcpDocs
+            : batchContext;
 
-      const prompt = buildReviewPrompt(
-        {
-          projectContext: this.config.projectContext.description || undefined,
-          reviewPromptFile: promptFile,
-          reviewPromptExtra: promptExtra,
-        },
-        context,
-        lessons,
-        previousFindings,
+          const prompt = buildReviewPrompt(
+            {
+              projectContext: this.config.projectContext.description || undefined,
+              reviewPromptFile: promptFile,
+              reviewPromptExtra: promptExtra,
+            },
+            context,
+            lessons,
+            previousFindings,
+            falsePositiveRules,
+            deltaContext,
+          );
+
+          const outputPath = path.join(batchDir, '.opencode', 'review-output.jsonl');
+          ensureOutputDir(outputPath);
+
+          const runResult = await runOpenCode(prompt, {
+            model: this.config.reviewModel,
+            timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+            workingDirectory: batchDir,
+          });
+
+          if (!runResult.success) {
+            core.warning(`Batch ${idx} review execution failed, returning empty result`);
+            return emptyResult();
+          }
+
+          try {
+            return await parseJsonlFile(outputPath);
+          } catch {
+            core.warning(`Failed to parse batch ${idx} review output, returning empty result`);
+            return emptyResult();
+          }
+        }),
       );
-
-      const runResult = await runOpenCode(prompt, {
-        model: this.config.reviewModel,
-        timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
-        workingDirectory: batchDir,
-      });
-
-      if (!runResult.success) {
-        core.warning(`Batch ${idx} review execution failed, returning empty result`);
-        return emptyResult();
-      }
-
-      const outputPath = path.join(batchDir, '.opencode', 'review-output.jsonl');
-      try {
-        return await parseJsonlFile(outputPath);
-      } catch {
-        core.warning(`Failed to parse batch ${idx} review output, returning empty result`);
-        return emptyResult();
-      }
-    });
-
-    const batchResults = await Promise.all(batchPromises);
+      batchResults.push(...chunkResults);
+    }
 
     // Collate findings from all batches
     const allIssues: ReviewIssue[] = [];
@@ -220,6 +291,9 @@ export class ReviewEngine {
       findingsJsonl,
     );
 
+    const finalOutputPath = path.join(workDir, '.opencode', 'review-output.jsonl');
+    ensureOutputDir(finalOutputPath);
+
     const synthesisResult = await runOpenCode(synthesisPrompt, {
       model: this.config.reviewModel,
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
@@ -228,7 +302,7 @@ export class ReviewEngine {
 
     if (!synthesisResult.success) {
       core.warning('Synthesis pass failed, falling back to merged batch results');
-      return this.buildFallbackResult(
+      const fallback = this.buildFallbackResult(
         allIssues,
         allStrengths,
         allRawLines,
@@ -236,14 +310,15 @@ export class ReviewEngine {
         fileBatches,
         'Synthesis failed, using merged batch results',
       );
+      return await this.verifyReviewResult(fallback, baseContext, workDir, timeoutMinutes);
     }
 
-    const finalOutputPath = path.join(workDir, '.opencode', 'review-output.jsonl');
     try {
-      return await parseJsonlFile(finalOutputPath);
+      const parsed = await parseJsonlFile(finalOutputPath);
+      return await this.verifyReviewResult(parsed, baseContext, workDir, timeoutMinutes);
     } catch {
       core.warning('Synthesis output parse failed, falling back to merged batch results');
-      return this.buildFallbackResult(
+      const fallback = this.buildFallbackResult(
         allIssues,
         allStrengths,
         allRawLines,
@@ -251,6 +326,7 @@ export class ReviewEngine {
         fileBatches,
         'Synthesis output parse failed, using merged batch results',
       );
+      return await this.verifyReviewResult(fallback, baseContext, workDir, timeoutMinutes);
     }
   }
 
@@ -487,6 +563,194 @@ export class ReviewEngine {
       }
       core.warning(`Could not read analysis plan from ${planPath}: ${String(err)}`);
       return '⚠️ **Analysis Error**: Could not read generated `.opencode/analysis-plan.md` file.';
+    }
+  }
+
+  /**
+   * Explain a PR in plain English for the team.
+   *
+   * @param pr - The PR context object.
+   * @param workingDirectory - Optional working directory (tempDir).
+   * @param timeoutMinutes - Optional timeout override.
+   * @returns Markdown content of the PR explanation.
+   */
+  async runExplain(
+    pr: PRContext,
+    workingDirectory?: string,
+    timeoutMinutes?: number,
+  ): Promise<string> {
+    const workDir = workingDirectory || process.cwd();
+    const outputPath = path.join(workDir, '.opencode', 'explain-output.md');
+    ensureOutputDir(outputPath);
+
+    const prContext = this.buildPRContextString(pr);
+    const prompt = buildExplainPrompt(
+      { projectContext: this.config.projectContext.description || undefined },
+      prContext,
+    );
+
+    const runResult = await runOpenCode(prompt, {
+      model: this.config.reviewModel,
+      timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+      workingDirectory: workDir,
+    });
+
+    if (!runResult.success) {
+      return '⚠️ **Explanation Failed**: OpenCode CLI was unable to generate the PR explanation.';
+    }
+
+    try {
+      const content = await fs.readFile(outputPath, 'utf-8');
+      return content.trim();
+    } catch {
+      return '⚠️ **Explanation Failed**: Could not read explanation from `.opencode/explain-output.md`.';
+    }
+  }
+
+  /**
+   * Perform an optional meta-verification pass to filter out false positives.
+   * If enableMetaVerification is enabled, runs an LLM verification pass over
+   * proposed issues and drops findings marked invalid.
+   *
+   * @param result - Review result containing candidate issues.
+   * @param prContext - Assembled PR context string.
+   * @param workDir - Working directory for the workspace.
+   * @param timeoutMinutes - Optional timeout in minutes for verification.
+   * @returns Filtered ReviewResult with verified issues.
+   */
+  private async verifyReviewResult(
+    result: ReviewResult,
+    prContext: string,
+    workDir: string,
+    timeoutMinutes?: number,
+  ): Promise<ReviewResult> {
+    if (!this.config.review.enableMetaVerification || result.issues.length === 0) {
+      return result;
+    }
+
+    try {
+      const prompt = buildVerificationPrompt(
+        { projectContext: this.config.projectContext.description || undefined },
+        prContext,
+        result.issues,
+      );
+
+      const runResult = await runOpenCode(prompt, {
+        model: this.config.reviewModel,
+        timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+        workingDirectory: workDir,
+      });
+
+      if (!runResult.success) {
+        core.warning('Meta-verification pass failed, returning original result');
+        return result;
+      }
+
+      const outputPath = path.join(workDir, '.opencode', 'verification-output.jsonl');
+      if (!existsSync(outputPath)) return result;
+
+      const content = await fs.readFile(outputPath, 'utf-8');
+      const lines = content.split('\n').filter((l) => l.trim());
+
+      const validIndices = new Set<number>();
+      for (const line of lines) {
+        try {
+          const parsed = JSON.parse(line.trim());
+          if (
+            parsed.type === 'verification' &&
+            typeof parsed.issueIndex === 'number' &&
+            Number.isInteger(parsed.issueIndex) &&
+            parsed.issueIndex >= 0 &&
+            parsed.issueIndex < result.issues.length
+          ) {
+            if (parsed.valid === true) {
+              validIndices.add(parsed.issueIndex);
+            }
+          }
+        } catch {
+          // ignore malformed verification lines
+        }
+      }
+
+      if (validIndices.size === 0) {
+        core.info(
+          'Meta-verification produced no valid verification entries — retaining original result',
+        );
+        return result;
+      }
+
+      const verifiedIssues = result.issues.filter((_, idx) => validIndices.has(idx));
+      const droppedCount = result.issues.length - verifiedIssues.length;
+
+      if (droppedCount > 0) {
+        core.info(
+          `Meta-verification dropped ${droppedCount} false-positive finding(s) (kept ${verifiedIssues.length})`,
+        );
+      }
+
+      const counts = verifiedIssues.reduce(
+        (acc, i) => {
+          if (i.severity === 'critical') acc.critical++;
+          else if (i.severity === 'important') acc.important++;
+          else if (i.severity === 'minor') acc.minor++;
+          return acc;
+        },
+        { critical: 0, important: 0, minor: 0 },
+      );
+
+      return {
+        ...result,
+        issues: verifiedIssues,
+        stats: {
+          total: verifiedIssues.length,
+          critical: counts.critical,
+          important: counts.important,
+          minor: counts.minor,
+        },
+      };
+    } catch (err) {
+      core.warning(`Meta-verification failed: ${err instanceof Error ? err.message : String(err)}`);
+      return result;
+    }
+  }
+
+  /**
+   * Run an interactive conversation in response to an @mention in a PR comment.
+   * Builds a conversation prompt from the provided context and runs it through OpenCode CLI.
+   *
+   * @param context - Full conversation context (thread, file, diff, intent).
+   * @param timeoutMinutes - Optional timeout override.
+   * @param workingDirectory - Optional working directory for OpenCode execution.
+   * @returns The raw response text for posting as a GitHub comment.
+   */
+  async runConversation(
+    context: ConversationContext,
+    timeoutMinutes?: number,
+    workingDirectory?: string,
+  ): Promise<string> {
+    const workDir = workingDirectory || process.cwd();
+    const outputPath = path.join(workDir, '.opencode', 'conversation-output.txt');
+    ensureOutputDir(outputPath);
+
+    const prompt = buildConversationPrompt(context);
+
+    const runResult = await runOpenCode(prompt, {
+      model: this.config.reviewModel,
+      timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+      workingDirectory: workDir,
+    });
+
+    if (!runResult.success) {
+      return 'I encountered an error processing your request. Please try again or rephrase your question.';
+    }
+
+    // Read the response from the output file
+    try {
+      const output = await fs.readFile(outputPath, 'utf-8');
+      if (output.trim()) return output.trim();
+      return 'I encountered an error generating the conversation response (output was empty).';
+    } catch {
+      return 'I encountered an error reading the conversation reply from `.opencode/conversation-output.txt`.';
     }
   }
 
@@ -766,6 +1030,7 @@ function detectLibraries(files: string[], rootDir?: string): string[] {
   const libraries = new Set<string>();
 
   for (const file of files) {
+    if (!file || typeof file !== 'string') continue;
     if (file.includes('package.json') || file.endsWith('.lock')) continue;
 
     // React / Next.js detection

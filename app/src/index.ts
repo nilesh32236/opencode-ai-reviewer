@@ -15,6 +15,7 @@ import type { AgentConfig, GitHubEvent, Subscriber } from '@opencode-pr-agent/li
 import type { Probot } from 'probot';
 import { handleAudit } from './handlers/audit.js';
 import { handleCommand } from './handlers/commands.js';
+import { handleConversation } from './handlers/conversation.js';
 import { handlePRReview } from './handlers/pr-review.js';
 import { handleReply } from './handlers/reply.js';
 
@@ -64,12 +65,20 @@ export default (app: Probot): void => {
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;
 
+        const previousHeadSha =
+          event.type === 'pr.synchronize'
+            ? (evPayload.before as string) ||
+              ((evPayload.pull_request as Record<string, unknown> | undefined)?.before as string)
+            : undefined;
+
         const result = await handlePRReview(
           prNumber,
           event.repo || '',
           getToken(),
           config,
           learningStore,
+          undefined,
+          previousHeadSha,
         );
         if (result) {
           try {
@@ -201,6 +210,7 @@ export default (app: Probot): void => {
         if (!prNumber) return;
 
         const config = buildConfig();
+        const { handleReply } = await import('./handlers/reply.js');
         await handleReply(
           prNumber,
           event.repo || '',
@@ -215,12 +225,89 @@ export default (app: Probot): void => {
     },
   };
 
+  const explainSubscriber: Subscriber = {
+    name: 'ExplainSubscriber',
+    subscribedEvents: ['comment.created', 'review_comment.created'],
+    async handle(event: GitHubEvent, signal?: AbortSignal) {
+      if (signal?.aborted) return;
+      try {
+        const payload = event.payload as Record<string, unknown>;
+        const comment = payload.comment as Record<string, string> | undefined;
+        if (!comment?.body?.includes('/explain') && !comment?.body?.includes('/oc explain')) return;
+        const config = buildConfig();
+        const issueNumber = event.prNumber || 0;
+        if (!issueNumber) return;
+        await handleCommand('explain', issueNumber, event.repo || '', getToken(), config);
+      } catch (err) {
+        logger.error(
+          `ExplainSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    },
+  };
+
+  const conversationSubscriber: Subscriber = {
+    name: 'ConversationSubscriber',
+    subscribedEvents: ['comment.created', 'review_comment.created'],
+    async handle(event: GitHubEvent, signal?: AbortSignal) {
+      if (signal?.aborted) return;
+      try {
+        const convPayload = event.payload as Record<string, unknown>;
+        const convComment = convPayload.comment as Record<string, unknown> | undefined;
+        const convBody = (convComment?.body as string) || '';
+        const convUser = (convComment?.user as Record<string, string>)?.login || '';
+
+        const config = buildConfig();
+        const mentionHandle = config.conversation.mentionHandle;
+
+        // Check if comment mentions our handle
+        if (!convBody.toLowerCase().includes(`@${mentionHandle.toLowerCase()}`)) return;
+
+        // Prevent infinite loops — don't respond to our own comments
+        if (
+          convUser.includes('[bot]') ||
+          convUser.includes('github-actions') ||
+          convUser.toLowerCase().includes(mentionHandle.toLowerCase())
+        ) {
+          return;
+        }
+
+        if (!config.conversation.enabled) return;
+
+        const prNumber = event.prNumber || 0;
+        if (!prNumber) return;
+
+        const commentId = (convComment?.id as number) || 0;
+        if (!commentId) return;
+
+        const isReviewComment = event.type === 'review_comment.created';
+
+        await handleConversation(
+          commentId,
+          prNumber,
+          event.repo || '',
+          getToken(),
+          config,
+          isReviewComment,
+          learningStore,
+          signal,
+        );
+      } catch (err) {
+        logger.error(
+          `ConversationSubscriber failed for repo ${event.repo}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    },
+  };
+
   subscribers.push(
     reviewSubscriber,
     fixSubscriber,
     auditSubscriber,
     analyzeSubscriber,
     replySubscriber,
+    explainSubscriber,
+    conversationSubscriber,
   );
 
   const feedbackSub = new FeedbackSubscriber(learningStore);

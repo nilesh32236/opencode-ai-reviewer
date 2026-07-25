@@ -20,9 +20,12 @@ export async function handlePRReview(
   config: AgentConfig,
   learningStore?: LearningStore,
   tempDir?: string,
+  previousHeadSha?: string,
 ): Promise<ReviewResult | null> {
   const logger = new Logger('PRReview', { prNumber, repo });
-  logger.info(`Starting review for PR #${prNumber}`);
+  logger.info(
+    `Starting review for PR #${prNumber}${previousHeadSha ? ` (delta from ${previousHeadSha.slice(0, 7)})` : ''}`,
+  );
 
   const gh = new GitHubHelper(token, repo);
 
@@ -54,6 +57,7 @@ export async function handlePRReview(
         undefined,
         undefined,
         reviewWorkingDir,
+        previousHeadSha,
       );
     } catch (err) {
       logger.error(

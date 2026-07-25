@@ -59,6 +59,15 @@ export interface LearningRepository {
   ): Promise<Array<{ message: string; file?: string }>>;
   getFalsePositiveRate(): Promise<number>;
   getRelevantLessons(filePaths: string[]): Promise<string[]>;
+  /**
+   * Retrieve false-positive suppression rules derived from user feedback (dismissed/disputed findings).
+   * Returns rules formatted for direct injection into review prompts to prevent re-flagging known false positives.
+   *
+   * @param filePaths - File paths being reviewed (used for extension-based filtering).
+   * @param limit - Maximum number of rules to return (default: 20).
+   * @returns Array of rule text strings describing patterns the reviewer should NOT flag.
+   */
+  getFalsePositiveRules(filePaths: string[], limit?: number): Promise<string[]>;
   recordQuality(quality: LearningQuality): Promise<void>;
   getQualityTrends(limit?: number): Promise<Array<Record<string, unknown>>>;
   incrementAndCheckMetaReviewInterval(interval: number): Promise<boolean>;

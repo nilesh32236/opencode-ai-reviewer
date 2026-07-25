@@ -250,6 +250,24 @@ export class LearningStore {
   }
 
   /**
+   * Retrieve false-positive suppression rules from past dismissed/disputed findings.
+   * Returns formatted rule strings for direct injection into review prompts.
+   * Errors are caught and an empty array is returned (graceful degradation).
+   *
+   * @param filePaths - File paths being reviewed (used for extension-based filtering).
+   * @param limit - Maximum number of rules to return (default: 20).
+   * @returns Array of formatted suppression rule strings.
+   */
+  async getFalsePositiveRules(filePaths: string[], limit = 20): Promise<string[]> {
+    try {
+      const repo = await this.repoPromise;
+      return repo.getFalsePositiveRules(filePaths, limit);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * Record a review quality assessment.
    * Errors are logged but not thrown.
    *

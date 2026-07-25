@@ -12,19 +12,45 @@ export interface PromptBuilderInputs {
   maxFixIterations?: number;
 }
 
+export interface ReviewPromptOptions {
+  lessons?: string[];
+  previousFindings?: PreviousFindingIteration[];
+  falsePositiveRules?: string[];
+  deltaContext?: string;
+}
+
 /**
  * Build the review prompt string from inputs and PR context.
  * @param inputs - Configuration inputs including optional custom prompt file, project context, etc.
  * @param prContext - The PR context string describing the pull request.
- * @param lessons - Optional array of learned lessons from previous reviews.
+ * @param optionsOrLessons - Optional ReviewPromptOptions object or lessons array.
+ * @param previousFindings - Optional findings from previous fix iterations.
+ * @param falsePositiveRules - Optional false positive suppression rules.
+ * @param deltaContext - Optional delta diff string for incremental reviews.
  * @returns The assembled review prompt string.
  */
 export function buildReviewPrompt(
   inputs: PromptBuilderInputs,
   prContext: string,
-  lessons?: string[],
+  optionsOrLessons?: ReviewPromptOptions | string[],
   previousFindings?: PreviousFindingIteration[],
+  falsePositiveRules?: string[],
+  deltaContext?: string,
 ): string {
+  const options: ReviewPromptOptions = Array.isArray(optionsOrLessons)
+    ? {
+        lessons: optionsOrLessons,
+        previousFindings,
+        falsePositiveRules,
+        deltaContext,
+      }
+    : optionsOrLessons || {};
+
+  const lessons = options.lessons;
+  const prevFindings = options.previousFindings;
+  const fpRules = options.falsePositiveRules;
+  const deltaCtx = options.deltaContext;
+
   if (inputs.reviewPromptFile) {
     const customPrompt = loadPromptFile(inputs.reviewPromptFile);
     if (customPrompt) {
@@ -42,6 +68,25 @@ export function buildReviewPrompt(
   sections.push('\n## PR & Issue Context');
   sections.push('');
   sections.push(prContext);
+
+  if (deltaCtx) {
+    sections.push('\n## Incremental Review (Delta Changes)');
+    sections.push('');
+    sections.push('This is a follow-up review for new commits pushed since the last review pass.');
+    sections.push('Focus primarily on evaluating the new changes shown in this delta diff:');
+    sections.push('');
+    sections.push('```diff');
+    let truncatedDelta = deltaCtx;
+    if (deltaCtx.length > 5000) {
+      const slice = deltaCtx.slice(0, 5000);
+      const lastHunk = slice.lastIndexOf('\n@@');
+      const lastNewline = slice.lastIndexOf('\n');
+      const boundary = lastHunk > 0 ? lastHunk : lastNewline > 0 ? lastNewline : 5000;
+      truncatedDelta = `${slice.slice(0, boundary)}\n... (truncated)`;
+    }
+    sections.push(truncatedDelta);
+    sections.push('```');
+  }
 
   sections.push('\n## Project Context');
   sections.push('');
@@ -85,6 +130,18 @@ export function buildReviewPrompt(
   sections.push('');
   sections.push(buildOutputFormat());
 
+  if (fpRules && fpRules.length > 0) {
+    sections.push('\n## False Positive Suppression Rules');
+    sections.push('');
+    sections.push(
+      'The following patterns were previously flagged but dismissed by human reviewers as intentional or not actual issues. DO NOT flag these patterns again:',
+    );
+    sections.push('');
+    for (const rule of fpRules) {
+      sections.push(`- ${rule}`);
+    }
+  }
+
   if (lessons && lessons.length > 0) {
     sections.push('\n## Historical Lessons');
     sections.push('');
@@ -95,14 +152,14 @@ export function buildReviewPrompt(
     }
   }
 
-  if (previousFindings && previousFindings.length > 0) {
+  if (prevFindings && prevFindings.length > 0) {
     sections.push('\n## Previous Review Iterations');
     sections.push('');
     sections.push(
       'This is not the first review of this PR. Issues were previously found and fixes were applied. Review ONLY the current state and report only issues that are STILL present.',
     );
     sections.push('');
-    for (const pf of previousFindings) {
+    for (const pf of prevFindings) {
       sections.push(`### Iteration ${pf.iteration}`);
       sections.push('');
       if (pf.fixSummary) {
@@ -135,6 +192,9 @@ export function buildReviewPrompt(
   sections.push('**DO:**');
   sections.push('- Reference specific file:line for every issue');
   sections.push('- Use the `read` tool to view file contents instead of relying on diff snippets');
+  sections.push(
+    '- When reading TypeScript source files, note that relative imports ending in `.js` (e.g. `./conversation.js`) map to `.ts` files on disk (`./conversation.ts`). Always use the `.ts` extension when opening source files',
+  );
   sections.push('- Explain WHY each issue matters');
   sections.push('- Categorize by actual severity');
   sections.push('- Acknowledge strengths before issues');
@@ -568,15 +628,17 @@ function buildWhatToCheck(): string {
 
 function buildOutputFormat(): string {
   return `\`\`\`
+{"type":"executive_summary","purpose":"1-2 sentence description of what this PR does.","riskLevel":"low","riskRationale":"Why this risk level.","breakingChanges":[]}
 {"type":"summary","text":"Brief overall assessment of the PR. 2-3 sentences."}
 {"type":"verdict","ready":false,"reasoning":"1-2 sentence technical assessment.","autoFixable":true,"confidence":"high"}
 {"type":"strength","file":"src/example.ts","line":10,"message":"What's well done and why."}
-{"type":"issue","severity":"critical","file":"src/example.ts","line":42,"message":"What's wrong.","suggestion":"How to fix it.","inline":true}
+{"type":"issue","severity":"critical","file":"src/example.ts","line":42,"message":"What's wrong.","suggestion":"const user = data?.user ?? null;","inline":true}
 \`\`\`
 
 **Rules for the JSONL file:**
 - You MUST write the JSONL content directly to the file \`.opencode/review-output.jsonl\`.
 - After writing the file, you MUST verify that the JSONL file exists, is valid JSONL, and conforms strictly to the specified schema and rules (e.g. having exactly one summary, exactly one verdict, and correct fields).
+- Write exactly ONE \`executive_summary\` line with purpose, riskLevel ("low"/"medium"/"high"), riskRationale, and breakingChanges (array of strings)
 - Write exactly ONE \`summary\` line and exactly ONE \`verdict\` line
 - In the \`verdict\` line, you MUST also provide the following fields if \`ready\` is false:
   - \`autoFixable\` (boolean): Set to true only if ALL remaining critical and important issues are straightforward and safe for an automated agent to fix.
@@ -584,7 +646,7 @@ function buildOutputFormat(): string {
 - Write zero or more \`strength\` and \`issue\` lines
 - \`severity\` must be exactly "critical", "important", or "minor"
 - Every issue MUST include file and line
-- Suggestion is optional but recommended
+- When providing a \`suggestion\`, write the EXACT replacement code (not a description). For single-line fixes, write just the replacement line. This enables GitHub's native "Commit suggestion" button.
 - \`"inline": true\` ONLY if the line is in the PR diff
 - If you find zero issues, write a verdict with \`"ready": true\`, \`"autoFixable": false\`, and \`"confidence": "high"\`
 - Do NOT wrap in an array, do NOT add commas between lines`;
@@ -619,6 +681,7 @@ ${findingsJsonl}
 ## Instructions
 - Review all findings and remove any duplicates (same file, line, and message)
 - Merge related findings into single, well-written issues
+- Write exactly ONE \`executive_summary\` line with purpose, riskLevel ("low"/"medium"/"high"), riskRationale, and breakingChanges (array of strings)
 - Write exactly ONE \`summary\` line with a brief overall assessment
 - Write exactly ONE \`verdict\` line with the final decision
 - Write zero or more \`strength\` and \`issue\` lines
@@ -637,4 +700,54 @@ Default checks apply:
 - Error handling
 - Dead code
 - Architecture and separation of concerns`;
+}
+
+/**
+ * Build an explain prompt for the /explain command.
+ * Instructs the LLM to produce a plain-language explanation of the PR changes,
+ * including purpose, risk assessment, and architecture impact.
+ *
+ * @param inputs - Configuration inputs including project context.
+ * @param prContext - The PR context string describing the pull request.
+ * @returns The assembled explain prompt string.
+ */
+export function buildExplainPrompt(inputs: PromptBuilderInputs, prContext: string): string {
+  const projectContext = inputs.projectContext || getDefaultProjectContext();
+
+  return `You are a Senior Software Engineer explaining a pull request to a team.
+
+## PR & Issue Context
+
+${prContext}
+
+## Project Context
+${projectContext}
+
+## Instructions
+
+Provide a clear, plain-English explanation of this PR for the development team. Structure your response as:
+
+### 🎯 Purpose
+What does this PR accomplish? (1-2 sentences)
+
+### 📝 Changes Overview
+Summarize the key changes made, grouped by component or feature area.
+For each change, explain:
+- **What** was changed
+- **Why** it was changed
+- Any **tradeoffs** or design decisions
+
+### ⚠️ Risk Assessment
+Rate the risk level (Low / Medium / High) and explain:
+- What could break?
+- Are there any breaking API changes?
+- Database migration concerns?
+- Performance implications?
+
+### 🏗️ Architecture Impact
+Does this PR affect the overall architecture? If so, explain how.
+
+## Output Format
+Write your response as a single markdown document directly to \`.opencode/explain-output.md\`.
+Do NOT wrap in JSON. Be concise but thorough.`;
 }

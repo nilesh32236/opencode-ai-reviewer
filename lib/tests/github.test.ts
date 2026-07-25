@@ -132,6 +132,25 @@ describe('GitHubHelper', () => {
       expect(pr.linkedIssue).toBe(123);
     });
 
+    it('maps filename from GitHub REST API to path in PRContext', async () => {
+      const gitHubApiFiles = [
+        {
+          filename: 'src/app.ts',
+          status: 'modified',
+          additions: 10,
+          deletions: 0,
+          patch: '@@ -1 +1 @@',
+        },
+      ];
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes('/files')) return mockResponse({ body: gitHubApiFiles });
+        return mockResponse({ body: prData });
+      });
+
+      const pr = await helper.getPR(42);
+      expect(pr.changedFiles[0].path).toBe('src/app.ts');
+    });
+
     it('handles PR body without linked issue keyword', async () => {
       const noLinkPR = { ...prData, body: 'No references here' };
       fetchMock.mockImplementation(async (url: string) => {
@@ -202,6 +221,18 @@ describe('GitHubHelper', () => {
   describe('isPR', () => {
     it('returns true when PR exists', async () => {
       fetchMock.mockImplementation(async (_url: string, _options?: RequestInit) => {
+        return mockResponse({ body: {} });
+      });
+
+      const result = await helper.isPR(42);
+      expect(result).toBe(true);
+    });
+
+    it('returns true when HEAD request succeeds with empty response body', async () => {
+      fetchMock.mockImplementation(async (_url: string, options?: RequestInit) => {
+        if (options?.method === 'HEAD') {
+          return new Response(null, { status: 200 });
+        }
         return mockResponse({ body: {} });
       });
 

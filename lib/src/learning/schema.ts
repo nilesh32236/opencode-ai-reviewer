@@ -138,3 +138,21 @@ export async function applyMigrations(runner: MigrationRunner): Promise<void> {
 export function generateId(): string {
   return `f_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
+
+/**
+ * Extract unique, non-empty dot-prefixed file extensions from a list of file paths.
+ * Returns an array of unique extensions like `['.ts', '.js']`.
+ */
+export function deriveFileExtensions(filePaths: string[]): string[] {
+  return [
+    ...new Set(
+      (filePaths || [])
+        .filter((f): f is string => typeof f === 'string' && Boolean(f))
+        .map((f) => {
+          const parts = f.split('.');
+          const ext = parts.length > 1 ? parts.pop() : '';
+          return ext ? `.${ext}` : '';
+        }),
+    ),
+  ].filter(Boolean);
+}

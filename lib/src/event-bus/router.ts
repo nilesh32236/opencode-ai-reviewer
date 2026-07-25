@@ -10,6 +10,7 @@ const EVENT_CATEGORY_MAP: Record<string, EventCategory> = {
   'pull_request_review.dismissed': 'review',
   'pull_request_review_comment.dismissed': 'review',
   'pull_request_review_comment.created': 'comment',
+  'pull_request_review_comment.deleted': 'comment',
   'issue_comment.created': 'comment',
   'issues.labeled': 'issue',
 };
@@ -22,6 +23,7 @@ const EVENT_TYPE_MAP: Record<string, string> = {
   'pull_request_review.dismissed': 'review.dismissed',
   'pull_request_review_comment.dismissed': 'review_comment.dismissed',
   'pull_request_review_comment.created': 'review_comment.created',
+  'pull_request_review_comment.deleted': 'review_comment.deleted',
   'issue_comment.created': 'comment.created',
   'issues.labeled': 'issue.labeled',
 };

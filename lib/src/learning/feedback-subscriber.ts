@@ -15,6 +15,7 @@ export class FeedbackSubscriber implements Subscriber {
   subscribedEvents = [
     'review.dismissed',
     'review_comment.dismissed',
+    'review_comment.deleted',
     'comment.created',
     'review_comment.created',
   ];
@@ -32,6 +33,7 @@ export class FeedbackSubscriber implements Subscriber {
           await this.handleReviewDismissed(event);
           break;
         case 'review_comment.dismissed':
+        case 'review_comment.deleted':
           await this.handleReviewCommentDismissed(event);
           break;
         case 'comment.created':
@@ -84,12 +86,77 @@ export class FeedbackSubscriber implements Subscriber {
   }
 
   /**
-   * Handle a review comment dismissal event.
-   * Currently a no-op — requires linking review_comment IDs to findings.
+   * Handle a review comment dismissal or deletion event.
+   * Maps the dismissed comment body to the most recent findings for that PR
+   * and records a 'dismissed' feedback signal.
    */
-  private async handleReviewCommentDismissed(_event: GitHubEvent): Promise<void> {
-    // No reliable way to map a dismissed comment to a finding without
-    // linking review_comment IDs in the findings table
+  private async handleReviewCommentDismissed(event: GitHubEvent): Promise<void> {
+    const payload = event.payload as {
+      comment?: {
+        body?: string;
+        path?: string;
+        line?: number;
+        original_line?: number;
+        user?: { login?: string; type?: string };
+      };
+      pull_request?: { number?: number };
+    };
+    const prNumber = payload?.pull_request?.number || event.prNumber || 0;
+    if (!prNumber) return;
+
+    // Only process dismissals of bot comments
+    const user = payload?.comment?.user;
+    const commentUser = user?.login || '';
+    const isBot =
+      user?.type === 'Bot' ||
+      commentUser.endsWith('[bot]') ||
+      commentUser.toLowerCase().includes('opencode');
+
+    if (!isBot) {
+      return;
+    }
+
+    let findings: Array<Record<string, unknown>>;
+    try {
+      findings = await this.store.getFindings(prNumber, 10);
+    } catch (err) {
+      const logger = new Logger('FeedbackSubscriber', { prNumber });
+      logger.error(`Failed to get findings for pr ${prNumber}`, err);
+      return;
+    }
+    if (findings.length === 0) return;
+
+    const commentPath = payload.comment?.path;
+    const commentLine = payload.comment?.line || payload.comment?.original_line;
+
+    // Correlate findings with dismissed comment location metadata
+    const matchedFindings = findings.filter((f) => {
+      if (!f.id || typeof f.id !== 'string') return false;
+      if (commentPath && typeof f.file === 'string' && f.file !== commentPath) {
+        return false;
+      }
+      if (commentLine && typeof f.line === 'number' && f.line !== commentLine) {
+        return false;
+      }
+      return true;
+    });
+
+    if (matchedFindings.length === 0) return;
+
+    try {
+      await this.store.recordFeedbackBatch(
+        matchedFindings.map((f) => ({
+          findingId: f.id as string,
+          signalType: 'dismissed' as const,
+          signalValue:
+            event.type === 'review_comment.deleted' ? 'comment_deleted' : 'comment_dismissed',
+          prNumber,
+        })),
+      );
+    } catch (err) {
+      const logger = new Logger('FeedbackSubscriber', { prNumber });
+      logger.warn(`Failed to record feedback for dismissed comment on pr ${prNumber}`, err);
+    }
   }
 
   /**

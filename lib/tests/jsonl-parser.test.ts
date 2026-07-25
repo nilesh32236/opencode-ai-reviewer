@@ -409,7 +409,7 @@ describe('jsonl-parser', () => {
 
       const comments = buildInlineComments(result);
       expect(comments).toHaveLength(1);
-      expect(comments[0].body).toContain('```suggestion');
+      expect(comments[0].body).toContain('```diff');
       expect(comments[0].body).toContain('-if (x) {');
       expect(comments[0].body).toContain('+if (x !== null) {');
       expect(comments[0].body).toContain('```');

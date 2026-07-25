@@ -359,11 +359,13 @@ export class JsonDatabase implements LearningRepository {
   async getRelevantLessons(filePaths: string[]): Promise<string[]> {
     const extensions = [
       ...new Set(
-        filePaths.map((f) => {
-          const parts = f.split('.');
-          const ext = parts.length > 1 ? parts.pop() : '';
-          return ext ? `.${ext}` : '';
-        }),
+        (filePaths || [])
+          .filter((f): f is string => typeof f === 'string' && Boolean(f))
+          .map((f) => {
+            const parts = f.split('.');
+            const ext = parts.length > 1 ? parts.pop() : '';
+            return ext ? `.${ext}` : '';
+          }),
       ),
     ].filter(Boolean);
 
@@ -386,6 +388,58 @@ export class JsonDatabase implements LearningRepository {
       }
     }
     return lessons;
+  }
+
+  async getFalsePositiveRules(filePaths: string[], limit = 20): Promise<string[]> {
+    const extensions = [
+      ...new Set(
+        (filePaths || [])
+          .filter((f): f is string => typeof f === 'string' && Boolean(f))
+          .map((f) => {
+            const parts = f.split('.');
+            const ext = parts.length > 1 ? parts.pop() : '';
+            return ext ? `.${ext}` : '';
+          }),
+      ),
+    ].filter(Boolean);
+
+    // Build a set of finding IDs that have dismissed/disputed feedback
+    const disputedFindingIds = new Set<string>();
+    for (const fb of this.data.feedback) {
+      if (fb.signal_type === 'dismissed' || fb.signal_type === 'disputed_comment') {
+        disputedFindingIds.add(fb.finding_id);
+      }
+    }
+
+    if (disputedFindingIds.size === 0) return [];
+
+    // Group findings with disputed feedback by message + file
+    const grouped = new Map<string, { message: string; file?: string; count: number }>();
+    for (const finding of this.data.findings) {
+      if (!disputedFindingIds.has(finding.id)) continue;
+      if (
+        extensions.length > 0 &&
+        finding.file &&
+        !extensions.some((ext) => finding.file?.endsWith(ext))
+      ) {
+        continue;
+      }
+      const key = `${finding.message}::${finding.file || ''}`;
+      const existing = grouped.get(key);
+      if (existing) {
+        existing.count++;
+      } else {
+        grouped.set(key, { message: finding.message, file: finding.file, count: 1 });
+      }
+    }
+
+    return [...grouped.values()]
+      .sort((a, b) => b.count - a.count)
+      .slice(0, limit)
+      .map((r) => {
+        const fileHint = r.file ? ` (in ${r.file.split('/').pop()})` : '';
+        return `DO NOT flag: "${r.message.slice(0, 150)}"${fileHint} — user feedback indicates this is intentional (dismissed ${r.count} time(s))`;
+      });
   }
 
   async recordQuality(quality: LearningQuality): Promise<void> {
