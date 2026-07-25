@@ -281,6 +281,8 @@ export async function runOpenCode(
     workingDirectory?: string;
     /** Timeout in minutes before killing OpenCode. Default: 10. */
     timeoutMinutes?: number;
+    /** Optional AbortSignal to cancel the OpenCode process externally. */
+    signal?: AbortSignal;
     env?: Record<string, string>;
   },
 ): Promise<{ success: boolean; output: string; durationMs: number }> {
@@ -388,6 +390,19 @@ export async function runOpenCode(
     } catch (err) {
       core.debug(`Failed to send ${signal} to process group: ${err}`);
     }
+  }
+
+  // Listen for external abort signal (e.g. from EventBus subscriber timeout)
+  if (options.signal) {
+    options.signal.addEventListener(
+      'abort',
+      () => {
+        if (!childExited) {
+          killProcessGroup('SIGTERM');
+        }
+      },
+      { once: true },
+    );
   }
 
   const timeoutHandle = setTimeout(() => {

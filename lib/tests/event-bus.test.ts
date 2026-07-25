@@ -126,6 +126,50 @@ describe('EventBus', () => {
     expect(bus.unregister('nonexistent')).toBe(false);
   });
 
+  it('passes AbortSignal to subscriber handle method', async () => {
+    const bus = new EventBus();
+    let receivedSignal: AbortSignal | undefined;
+
+    const sub: Subscriber = {
+      name: 'signal-catcher',
+      subscribedEvents: ['test.event'],
+      async handle(_event: GitHubEvent, signal?: AbortSignal) {
+        receivedSignal = signal;
+      },
+    };
+
+    bus.register(sub);
+    await bus.publish({ type: 'test.event', category: 'internal', payload: {}, timestamp: 1 });
+
+    expect(receivedSignal).toBeDefined();
+    expect(receivedSignal instanceof AbortSignal).toBe(true);
+    expect(receivedSignal!.aborted).toBe(false);
+  });
+
+  it('subscriber exits early when signal is aborted', async () => {
+    let iterations = 0;
+
+    const sub: Subscriber = {
+      name: 'abort-check',
+      subscribedEvents: ['*'],
+      async handle(_event: GitHubEvent, signal?: AbortSignal) {
+        for (let i = 0; i < 1000; i++) {
+          if (signal?.aborted) return;
+          iterations++;
+        }
+      },
+    };
+
+    const controller = new AbortController();
+    controller.abort();
+    await sub.handle(
+      { type: 'test', category: 'internal', payload: {}, timestamp: 1 },
+      controller.signal,
+    );
+
+    expect(iterations).toBe(0);
+  });
+
   it('unregister cleans up health tracking', () => {
     const bus = new EventBus();
     bus.register({

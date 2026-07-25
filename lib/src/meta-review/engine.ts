@@ -25,16 +25,19 @@ export class MetaReviewEngine {
    * record quality scores, and optionally discover patterns or add prompt
    * overrides based on false-positive rate.
    */
-  async runMetaReview(context: {
-    prNumber: number;
-    reviewSummary: string;
-    findingsCount: number;
-    issuesCount: number;
-    strengthsCount: number;
-    hasVerdict: boolean;
-    fileCount: number;
-    workingDir?: string;
-  }): Promise<{
+  async runMetaReview(
+    context: {
+      prNumber: number;
+      reviewSummary: string;
+      findingsCount: number;
+      issuesCount: number;
+      strengthsCount: number;
+      hasVerdict: boolean;
+      fileCount: number;
+      workingDir?: string;
+    },
+    signal?: AbortSignal,
+  ): Promise<{
     actionabilityScore: number;
     accuracyScore: number;
     coverageScore: number;
@@ -51,6 +54,7 @@ export class MetaReviewEngine {
 
     const metaRunResult = await runOpenCode(prompt, {
       model: 'opencode/deepseek-v4-flash-free',
+      signal,
     });
     if (!metaRunResult.success) {
       new Logger('MetaReviewEngine').warn(
@@ -185,15 +189,18 @@ export class MetaReviewSubscriber implements Subscriber {
     };
 
     try {
-      await this.engine.runMetaReview({
-        prNumber: payload.prNumber || event.prNumber || 0,
-        reviewSummary: payload.reviewSummary || '',
-        findingsCount: payload.findingsCount || 0,
-        issuesCount: payload.issuesCount || 0,
-        strengthsCount: payload.strengthsCount || 0,
-        hasVerdict: payload.hasVerdict || false,
-        fileCount: payload.fileCount || 0,
-      });
+      await this.engine.runMetaReview(
+        {
+          prNumber: payload.prNumber || event.prNumber || 0,
+          reviewSummary: payload.reviewSummary || '',
+          findingsCount: payload.findingsCount || 0,
+          issuesCount: payload.issuesCount || 0,
+          strengthsCount: payload.strengthsCount || 0,
+          hasVerdict: payload.hasVerdict || false,
+          fileCount: payload.fileCount || 0,
+        },
+        signal,
+      );
     } catch (err) {
       core.warning(
         `Meta-review failed for PR #${event.prNumber}: ${err instanceof Error ? err.message : err}`,
