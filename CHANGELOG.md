@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.1.17] — 2026-07-25
+
+
+### Fixed
+
+- pass AbortSignal to EventBus subscribers, increase timeout, improve fix prompt with project context
+
+[v1.1.17]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.1.16...v1.1.17
+
 ## [v1.1.16] — 2026-07-24
 
 
