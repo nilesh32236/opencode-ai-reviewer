@@ -88,7 +88,7 @@ export class GitHubHelper {
               throw err;
             }
 
-            if (res.status === 204) return undefined as T;
+            if (res.status === 204 || method === 'HEAD') return undefined as T;
             return responseType === 'text' ? (res.text() as T) : res.json();
           } finally {
             clearTimeout(timeout);

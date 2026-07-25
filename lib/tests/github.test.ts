@@ -209,6 +209,18 @@ describe('GitHubHelper', () => {
       expect(result).toBe(true);
     });
 
+    it('returns true when HEAD request succeeds with empty response body', async () => {
+      fetchMock.mockImplementation(async (_url: string, options?: RequestInit) => {
+        if (options?.method === 'HEAD') {
+          return new Response(null, { status: 200 });
+        }
+        return mockResponse({ body: {} });
+      });
+
+      const result = await helper.isPR(42);
+      expect(result).toBe(true);
+    });
+
     it('returns false on 404', async () => {
       fetchMock.mockResolvedValue(mockErrorResponse(404));
 
