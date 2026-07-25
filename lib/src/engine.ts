@@ -75,6 +75,8 @@ export class ReviewEngine {
    * @param timeoutMinutes - Optional timeout override per run.
    * @param previousFindings - Optional findings from previous fix iterations.
    * @param workingDirectory - Optional working directory for cloned repo (tempDir).
+   * @param previousHeadSha - Optional previous head SHA for delta diff.
+   * @param previousBotComments - Optional previous bot review comments for context awareness.
    * @returns Consolidated ReviewResult with deduplicated findings.
    */
   async reviewPR(
@@ -86,6 +88,12 @@ export class ReviewEngine {
     previousFindings?: PreviousFindingIteration[],
     workingDirectory?: string,
     previousHeadSha?: string,
+    previousBotComments?: Array<{
+      file: string;
+      line: number;
+      body: string;
+      commentId: number;
+    }>,
   ): Promise<ReviewResult> {
     let mcpDocs = '';
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
@@ -182,6 +190,7 @@ export class ReviewEngine {
         previousFindings,
         falsePositiveRules,
         deltaContext,
+        previousBotComments,
       );
 
       const outputPath = path.join(workDir, 'review-output.jsonl');
@@ -247,6 +256,7 @@ export class ReviewEngine {
             previousFindings,
             falsePositiveRules,
             deltaContext,
+            previousBotComments,
           );
 
           const outputPath = path.join(batchDir, 'review-output.jsonl');

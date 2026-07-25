@@ -17,6 +17,12 @@ export interface ReviewPromptOptions {
   previousFindings?: PreviousFindingIteration[];
   falsePositiveRules?: string[];
   deltaContext?: string;
+  previousBotComments?: Array<{
+    file: string;
+    line: number;
+    body: string;
+    commentId: number;
+  }>;
 }
 
 /**
@@ -27,6 +33,7 @@ export interface ReviewPromptOptions {
  * @param previousFindings - Optional findings from previous fix iterations.
  * @param falsePositiveRules - Optional false positive suppression rules.
  * @param deltaContext - Optional delta diff string for incremental reviews.
+ * @param previousBotComments - Optional previous bot review comments to avoid re-reporting.
  * @returns The assembled review prompt string.
  */
 export function buildReviewPrompt(
@@ -36,6 +43,12 @@ export function buildReviewPrompt(
   previousFindings?: PreviousFindingIteration[],
   falsePositiveRules?: string[],
   deltaContext?: string,
+  previousBotComments?: Array<{
+    file: string;
+    line: number;
+    body: string;
+    commentId: number;
+  }>,
 ): string {
   const options: ReviewPromptOptions = Array.isArray(optionsOrLessons)
     ? {
@@ -50,6 +63,7 @@ export function buildReviewPrompt(
   const prevFindings = options.previousFindings;
   const fpRules = options.falsePositiveRules;
   const deltaCtx = options.deltaContext;
+  const prevBotComments = options.previousBotComments ?? previousBotComments;
 
   if (inputs.reviewPromptFile) {
     const customPrompt = loadPromptFile(inputs.reviewPromptFile);
@@ -184,6 +198,24 @@ export function buildReviewPrompt(
     }
     sections.push(
       '**IMPORTANT:** Do NOT re-report issues that have already been fixed. Only flag issues that are still present in the current code. If an issue from a previous iteration persists, mark it with `"previouslyReported": true` in the JSONL output.',
+    );
+  }
+
+  if (prevBotComments && prevBotComments.length > 0) {
+    sections.push('\n## Previously Reported Issues (Auto-Tracking)');
+    sections.push('');
+    sections.push(
+      'The following issues were reported in previous reviews on this PR. Do NOT re-report issues that have been fixed:',
+    );
+    sections.push('');
+    for (const comment of prevBotComments) {
+      sections.push(
+        `- **${comment.file}:${comment.line}** — ${comment.body.split('\n')[0].substring(0, 200)}`,
+      );
+    }
+    sections.push('');
+    sections.push(
+      '**IMPORTANT:** If an issue from the list above has been fixed, do NOT report it again. Only report NEW issues or issues that persist.',
     );
   }
 

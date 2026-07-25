@@ -123,8 +123,8 @@ export abstract class SqlAdapter implements LearningRepository {
   async recordFinding(finding: FindingInput): Promise<string> {
     const id = finding.id || generateId();
     await this.run(
-      `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion, duration_ms, tokens_used)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion, duration_ms, tokens_used, comment_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         finding.prNumber,
@@ -136,6 +136,7 @@ export abstract class SqlAdapter implements LearningRepository {
         finding.suggestion ?? null,
         finding.durationMs ?? null,
         finding.tokensUsed ?? null,
+        finding.commentId ?? null,
       ],
     );
     return id;
@@ -149,7 +150,7 @@ export abstract class SqlAdapter implements LearningRepository {
     if (findings.length === 0) return [];
     return this.transaction(async () => {
       const ids = findings.map(() => generateId());
-      const placeholders = findings.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+      const placeholders = findings.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
       const values = findings.flatMap((f, i) => [
         ids[i],
         f.prNumber,
@@ -161,9 +162,10 @@ export abstract class SqlAdapter implements LearningRepository {
         f.suggestion ?? null,
         f.durationMs ?? null,
         f.tokensUsed ?? null,
+        f.commentId ?? null,
       ]);
       await this.run(
-        `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion, duration_ms, tokens_used) VALUES ${placeholders}`,
+        `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion, duration_ms, tokens_used, comment_id) VALUES ${placeholders}`,
         values,
       );
       return ids;
@@ -798,8 +800,8 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   async recordFinding(finding: FindingInput): Promise<string> {
     const id = finding.id || generateId();
     this.prepareStmt(
-      `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion, duration_ms, tokens_used)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion, duration_ms, tokens_used, comment_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       id,
       finding.prNumber,
@@ -811,6 +813,7 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
       finding.suggestion ?? null,
       finding.durationMs ?? null,
       finding.tokensUsed ?? null,
+      finding.commentId ?? null,
     );
     return id;
   }
@@ -819,7 +822,7 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     if (findings.length === 0) return [];
     return this.transaction(async () => {
       const ids = findings.map(() => generateId());
-      const placeholders = findings.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+      const placeholders = findings.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
       const values = findings.flatMap((f, i) => [
         ids[i],
         f.prNumber,
@@ -831,9 +834,10 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
         f.suggestion ?? null,
         f.durationMs ?? null,
         f.tokensUsed ?? null,
+        f.commentId ?? null,
       ]);
       this.prepareStmt(
-        `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion, duration_ms, tokens_used) VALUES ${placeholders}`,
+        `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion, duration_ms, tokens_used, comment_id) VALUES ${placeholders}`,
       ).run(...values);
       return ids;
     });
@@ -1066,7 +1070,7 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     const cutoffDate = sinceDays
       ? new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000).toISOString()
       : null;
-    const dateFilter = cutoffDate ? 'AND created_at >= ?' : '';
+    const dateFilter = cutoffDate ? 'AND datetime(created_at) >= datetime(?)' : '';
     const params: unknown[] = cutoffDate ? [cutoffDate] : [];
     const row = this.prepareStmt(
       `SELECT

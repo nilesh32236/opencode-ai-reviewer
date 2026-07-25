@@ -58,6 +58,8 @@ export interface ReviewIssue {
   inline?: boolean;
   /** Whether this issue was reported in a previous iteration */
   previouslyReported?: boolean;
+  /** GitHub comment ID after posting */
+  commentId?: number;
 }
 
 /** Previous fix iteration data for tracking progress across fix cycles. */
@@ -72,6 +74,13 @@ export interface PreviousFindingIteration {
   filesChanged?: string[];
   /** Head SHA after the fix */
   headSha?: string;
+  /** GitHub comment IDs posted for this iteration */
+  commentIds?: Array<{
+    file: string;
+    line: number;
+    commentId: number;
+    nodeId?: string;
+  }>;
 }
 
 /** Union type of all possible review entry types in JSONL output. */

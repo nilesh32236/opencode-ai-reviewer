@@ -139,6 +139,12 @@ export async function applyMigrations(runner: MigrationRunner): Promise<void> {
         // Column already exists — safe to ignore
       }
     }
+    // Add comment_id column to findings table
+    try {
+      await runner.exec('ALTER TABLE findings ADD COLUMN comment_id INTEGER');
+    } catch {
+      // Column already exists — safe to ignore
+    }
   } catch (err) {
     const logger = new Logger('LearningStore');
     logger.error('Migration failed', err);

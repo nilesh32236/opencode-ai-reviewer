@@ -66,11 +66,33 @@ export async function runReview(
     return;
   }
 
+  let previousComments:
+    | Array<{ file: string; line: number; body: string; commentId: number }>
+    | undefined;
+  try {
+    const threads = await gh.getBotReviewThreads(prNumber);
+    previousComments = threads
+      .filter((t) => t.firstComment)
+      .map((t) => ({
+        file: t.firstComment!.filePath,
+        line: t.firstComment!.lineNumber,
+        body: t.firstComment!.body,
+        commentId: t.firstComment!.databaseId,
+      }));
+  } catch (err) {
+    core.warning(`Failed to fetch previous review comments: ${err}`);
+  }
+
   const result = await engine.reviewPR(
     pr,
     undefined,
     inputs.reviewPromptFile,
     inputs.reviewPromptExtra,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    previousComments,
   );
 
   if (!result || (!result.summary && result.issues.length === 0 && result.strengths.length === 0)) {
@@ -82,6 +104,18 @@ export async function runReview(
 
   if (!reviewResult.success) {
     core.warning('Failed to post review to GitHub');
+  }
+
+  // Attach comment IDs to issues for future tracking
+  if (reviewResult.commentIds) {
+    for (const issue of result.issues) {
+      const comment = reviewResult.commentIds.find(
+        (c) => c.file === issue.file && c.line === issue.line,
+      );
+      if (comment) {
+        issue.commentId = comment.commentId;
+      }
+    }
   }
 
   core.setOutput('review_summary', result.summary);

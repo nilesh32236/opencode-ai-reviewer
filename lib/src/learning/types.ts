@@ -12,6 +12,7 @@ export interface FindingInput {
   suggestion?: string;
   durationMs?: number;
   tokensUsed?: number;
+  commentId?: number; // GitHub comment ID
 }
 
 /** Aggregated telemetry statistics for review executions. */

@@ -17,6 +17,7 @@ interface FindingRow {
   suggestion?: string;
   duration_ms?: number;
   tokens_used?: number;
+  comment_id?: number;
   created_at: string;
 }
 
@@ -229,6 +230,7 @@ export class JsonDatabase implements LearningRepository {
       suggestion: finding.suggestion,
       duration_ms: finding.durationMs,
       tokens_used: finding.tokensUsed,
+      comment_id: finding.commentId,
       created_at: new Date().toISOString(),
     });
     this.save();
@@ -251,6 +253,7 @@ export class JsonDatabase implements LearningRepository {
         suggestion: f.suggestion,
         duration_ms: f.durationMs,
         tokens_used: f.tokensUsed,
+        comment_id: f.commentId,
         created_at: new Date().toISOString(),
       });
     }

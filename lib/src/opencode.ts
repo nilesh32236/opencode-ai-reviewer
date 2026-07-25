@@ -412,11 +412,16 @@ export async function runOpenCode(
   // still forwarding all output to CI logs.
   const MAX_CAPTURED_BYTES = 50 * 1024;
   let capturedOutput = '';
+  let tokenUsageResult = 0;
 
   function appendCaptured(text: string): void {
     capturedOutput += text;
     if (capturedOutput.length > MAX_CAPTURED_BYTES) {
       capturedOutput = capturedOutput.slice(-MAX_CAPTURED_BYTES);
+    }
+    const parsed = parseTokenUsage(text);
+    if (parsed > 0) {
+      tokenUsageResult = parsed;
     }
   }
 
@@ -501,7 +506,7 @@ export async function runOpenCode(
         success: true,
         output: capturedOutput,
         durationMs,
-        tokensUsed: parseTokenUsage(capturedOutput),
+        tokensUsed: tokenUsageResult,
       };
     }
 
@@ -512,7 +517,7 @@ export async function runOpenCode(
       success: false,
       output: capturedOutput,
       durationMs,
-      tokensUsed: parseTokenUsage(capturedOutput),
+      tokensUsed: tokenUsageResult,
     };
   } catch (err) {
     const durationMs = Date.now() - startTime;
@@ -521,7 +526,7 @@ export async function runOpenCode(
       success: false,
       output: capturedOutput,
       durationMs,
-      tokensUsed: parseTokenUsage(capturedOutput),
+      tokensUsed: tokenUsageResult,
     };
   } finally {
     clearTimeout(timeoutHandle);
