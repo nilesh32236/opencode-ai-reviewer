@@ -197,11 +197,9 @@ export function buildReadyBody(history: IterationRecord[], prNumber: number): st
   );
   if (history.length > 0) {
     lines.push('', '### Summary');
-    for (const h of history) {
-      if (h.summary) {
-        lines.push('', h.summary);
-        break;
-      }
+    const last = history[history.length - 1];
+    if (last.summary) {
+      lines.push('', last.summary);
     }
   }
   return lines.join('\n');

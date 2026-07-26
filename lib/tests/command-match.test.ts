@@ -21,7 +21,7 @@ describe('parseCommand', () => {
     const res = parseCommand('/fix --force --dry-run --reason="testing fix"');
     expect(res?.command).toBe('fix');
     expect(res?.flags.force).toBe(true);
-    expect(res?.flags.dryRun).toBe(true);
+    expect(res?.flags['dry-run']).toBe(true);
     expect(res?.flags.reason).toBe('testing fix');
   });
 
@@ -29,6 +29,14 @@ describe('parseCommand', () => {
     const res = parseCommand('/audit security lib/src');
     expect(res?.command).toBe('audit');
     expect(res?.args).toEqual(['security', 'lib/src']);
+  });
+
+  it('parses --force flag as boolean true', () => {
+    expect(parseCommand('/fix --force')?.flags.force).toBe(true);
+  });
+
+  it('parses --force-with-lease flag correctly', () => {
+    expect(parseCommand('/fix --force-with-lease')?.flags['force-with-lease']).toBe(true);
   });
 
   it('rejects commands that are not at line start', () => {

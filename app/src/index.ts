@@ -321,6 +321,14 @@ export default (app: Probot): void => {
         if (!issueNumber) return;
 
         const config = buildConfig();
+        const issueLabels =
+          (issue.labels as Array<Record<string, string>>)?.map((l) => l.name) || [];
+        const skipLabels = ['wontfix', 'duplicate', 'invalid', 'spam'];
+        if (skipLabels.some((l) => issueLabels.includes(l))) return;
+
+        const needsAnalysis = issueLabels.includes('needs-analysis');
+        if (!needsAnalysis) return;
+
         await handleCommand('analyze', issueNumber, event.repo || '', getToken(), config, signal);
       } catch (err) {
         logger.error(`AutoAnalyzeSubscriber failed: ${err instanceof Error ? err.message : err}`);
@@ -350,6 +358,16 @@ export default (app: Probot): void => {
         if (!issueNumber) return;
 
         const gh = new GitHubHelper(getToken(), event.repo || '');
+
+        const issueComments = await gh.getIssueComments(issueNumber);
+        const questionsComment = issueComments.find((c) =>
+          c.body.startsWith('<!-- issue-analysis-questions -->'),
+        );
+        if (!questionsComment || parentId !== questionsComment.id) return;
+
+        const issueAuthor = (issue.user as Record<string, string> | undefined)?.login;
+        const actor = comment.user as Record<string, string> | undefined;
+        if (actor?.login && actor.login !== issueAuthor) return;
 
         await gh.setLabels(issueNumber, ['analysis:ready'], ['analysis:needs-input']);
         await gh.postOrUpdateComment(
@@ -408,8 +426,9 @@ export default (app: Probot): void => {
         if (!issueNumber) return;
         if (!learningStore) return;
 
+        const DISCOVER_WINDOW_DEFAULT = 2;
         const detector = new PatternDetector(learningStore);
-        const patterns = await detector.discover(2);
+        const patterns = await detector.discover(DISCOVER_WINDOW_DEFAULT);
 
         const gh = new GitHubHelper(getToken(), event.repo || '');
 

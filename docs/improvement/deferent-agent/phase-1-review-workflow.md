@@ -46,7 +46,7 @@ The LLM is not deterministic. On iteration N it might report `src/auth.ts:42 —
 
 The user's complaint — "we resolve it not only resolve it using outdated if it really resolve then collapse issue comment" — maps exactly to this bug.
 
-### 1.3 The never-called `resolveReviewThread()`
+### 1.3 `resolveReviewThread()` — Called but only in the autofix loop
 
 `lib/src/utils/github.ts:1343-1354` defines:
 
@@ -63,7 +63,9 @@ async resolveReviewThread(threadId: string): Promise<void> {
 }
 ```
 
-Grep confirms zero callers. This mutation is what GitHub uses to show a "Resolved" badge on a thread — the correct UI for "the maintainer (or bot) considers this addressed." The codebase has the tool, never uses it.
+`resolveReviewThread` IS called via `resolveFixedComments` at `lib/src/utils/autofix-body.ts:245`, which is triggered in the autofix loop (both Action and App paths). However, it is NOT called during standalone review runs or when the fix loop does not re-enter. The coverage gap is in the non-autofix review path, not in the mutation being dead code.
+
+This mutation is what GitHub uses to show a "Resolved" badge on a thread — the correct UI for "the maintainer (or bot) considers this addressed." The codebase uses the tool, but only within the autofix loop context.
 
 ### 1.4 The `previouslyReported` flag that goes nowhere
 

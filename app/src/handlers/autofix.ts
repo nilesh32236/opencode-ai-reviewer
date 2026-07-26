@@ -61,6 +61,7 @@ export async function handleAutofixLoop(
   const history: IterationRecord[] = [];
   const previousFindings: PreviousFindingIteration[] = [];
   let approved = false;
+  let verificationPassed = false;
 
   let gitEnv = initialGitEnv;
   let ownTempDir: string | undefined;
@@ -189,17 +190,6 @@ export async function handleAutofixLoop(
             `Failed to post ready-to-merge comment: ${err instanceof Error ? err.message : err}`,
           );
         }
-        if (pr.linkedIssue) {
-          try {
-            await gh.closeIssue(
-              pr.linkedIssue,
-              `✅ Resolved by PR #${prNumber} — all review items verified fixed.\n\n*Auto-closed by opencode-ai-reviewer*`,
-            );
-            logger.info(`Closed linked issue #${pr.linkedIssue}`);
-          } catch (err) {
-            logger.warn(`Could not close linked issue #${pr.linkedIssue}: ${err}`);
-          }
-        }
         logger.info('Posted ready-to-merge notification');
         break;
       }
@@ -323,12 +313,12 @@ export async function handleAutofixLoop(
         if (fixResult.summary) {
           try {
             const updatedBody = buildAutofixPRBody({
-              issueNumber: pr.linkedIssue ?? prNumber,
+              issueNumber: pr.linkedIssue ?? undefined,
               issueTitle: pr.title,
               fixSummary: fixResult.summary,
               filesChanged: fixResult.filesChanged ?? [],
               branchName: pr.headRef,
-              hasTests: !!config.projectContext.typecheckCommands.length,
+              hasTests: verificationPassed,
             });
             await gh.updatePR(prNumber, { body: updatedBody });
             logger.info(`Updated PR #${prNumber} description with latest fix summary`);
@@ -386,6 +376,7 @@ export async function handleAutofixLoop(
             try {
               const stdout = execFileSync(program, args, execOpts);
               checkOutput += stdout;
+              verificationPassed = true;
               logger.info('Verification passed');
               break;
             } catch (err) {

@@ -1,19 +1,23 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import type { AgentConfig, GitHubHelper, ReviewEngine } from '@opencode-pr-agent/lib';
-import { parseAnalysisPlan } from '@opencode-pr-agent/lib';
+import {
+  markAnalysisReady,
+  parseAnalysisPlan,
+  postBlockingQuestions,
+} from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { sanitize } from './utils.js';
 
 /**
  * Execute an issue analysis: gather issue context, run the analysis engine,
  * parse blocking questions, apply appropriate labels, and post the plan.
- * @param _inputs - Parsed action inputs.
- * @param _config - Full agent configuration.
+ * @param _inputs - Parsed action inputs (unused, retained for interface compatibility).
+ * @param _config - Full agent configuration (unused, retained for interface compatibility).
  * @param engine - Review engine instance.
  * @param gh - GitHub API helper.
- * @param _repo - Repository string (owner/repo).
- * @param _token - GitHub authentication token.
+ * @param _repo - Repository string (owner/repo, unused).
+ * @param _token - GitHub authentication token (unused).
  */
 export async function runAnalyze(
   _inputs: ActionInputs,
@@ -41,25 +45,9 @@ export async function runAnalyze(
     await gh.postOrUpdateComment(issueNumber, '<!-- issue-analysis-plan -->', planMarkdown);
 
     if (parsed.hasBlockingQuestions) {
-      const questionsBody = [
-        '## ❓ Questions Before Proceeding',
-        '',
-        'I have analyzed this issue but need clarification before starting implementation.',
-        'Please answer the following questions by replying to this comment:',
-        '',
-        ...parsed.blockingQuestions.map((q: string, i: number) => `**Q${i + 1}:** ${q}`),
-        '',
-        '---',
-        '*Once these are answered, comment `/fix` to start the implementation.*',
-      ].join('\n');
-
-      await gh.postOrUpdateComment(issueNumber, '<!-- issue-analysis-questions -->', questionsBody);
-
-      await gh.ensureLabels(['analysis:needs-input']);
-      await gh.addLabels(issueNumber, ['analysis:needs-input']);
+      await postBlockingQuestions(gh, issueNumber, parsed);
     } else {
-      await gh.ensureLabels(['analysis:ready']);
-      await gh.addLabels(issueNumber, ['analysis:ready']);
+      await markAnalysisReady(gh, issueNumber);
     }
 
     core.setOutput('has_blocking_questions', String(parsed.hasBlockingQuestions));

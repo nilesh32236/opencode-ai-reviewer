@@ -10,7 +10,9 @@ import {
   ReviewEngine,
   buildAutofixPRBody,
   configureGit,
+  markAnalysisReady,
   parseAnalysisPlan,
+  postBlockingQuestions,
   sanitizeErrorMessage,
 } from '@opencode-pr-agent/lib';
 import { handleAudit } from './audit.js';
@@ -179,25 +181,9 @@ export async function handleAnalyzeCommand(
     await gh.postOrUpdateComment(issueNumber, '<!-- issue-analysis-plan -->', planMarkdown);
 
     if (parsed.hasBlockingQuestions) {
-      const questionsBody = [
-        '## ❓ Questions Before Proceeding',
-        '',
-        'I have analyzed this issue but need clarification before starting implementation.',
-        'Please answer the following questions by replying to this comment:',
-        '',
-        ...parsed.blockingQuestions.map((q, i) => `**Q${i + 1}:** ${q}`),
-        '',
-        '---',
-        '*Once these are answered, comment `/fix` to start the implementation.*',
-      ].join('\n');
-
-      await gh.postOrUpdateComment(issueNumber, '<!-- issue-analysis-questions -->', questionsBody);
-
-      await gh.ensureLabels(['analysis:needs-input']);
-      await gh.addLabels(issueNumber, ['analysis:needs-input']);
+      await postBlockingQuestions(gh, issueNumber, parsed);
     } else {
-      await gh.ensureLabels(['analysis:ready']);
-      await gh.addLabels(issueNumber, ['analysis:ready']);
+      await markAnalysisReady(gh, issueNumber);
     }
 
     logger.info(`Posted analysis plan for issue #${issueNumber}`);
@@ -310,6 +296,7 @@ async function createAutofixPR(
   const gitOpts: ExecFileSyncOptions = {
     stdio: 'pipe',
     cwd: tempDir,
+    timeout: 120_000,
     ...(gitEnv ? { env: { ...process.env, ...gitEnv } } : {}),
   };
   const engine = new ReviewEngine(config, token, repo);
@@ -358,29 +345,9 @@ async function createAutofixPR(
       await gh.postOrUpdateComment(issueNumber, '<!-- issue-analysis-plan -->', planMarkdown);
 
       if (parsed.hasBlockingQuestions) {
-        const questionsBody = [
-          '## ❓ Questions Before Proceeding',
-          '',
-          'I have analyzed this issue but need clarification before starting implementation.',
-          'Please answer the following questions by replying to this comment:',
-          '',
-          ...parsed.blockingQuestions.map((q, i) => `**Q${i + 1}:** ${q}`),
-          '',
-          '---',
-          '*Once these are answered, comment `/fix` to start the implementation.*',
-        ].join('\n');
-
-        await gh.postOrUpdateComment(
-          issueNumber,
-          '<!-- issue-analysis-questions -->',
-          questionsBody,
-        );
-
-        await gh.ensureLabels(['analysis:needs-input']);
-        await gh.addLabels(issueNumber, ['analysis:needs-input']);
+        await postBlockingQuestions(gh, issueNumber, parsed);
       } else {
-        await gh.ensureLabels(['analysis:ready']);
-        await gh.addLabels(issueNumber, ['analysis:ready']);
+        await markAnalysisReady(gh, issueNumber);
       }
 
       issueContext = await gh.gatherContext({ issueNumber });
@@ -447,7 +414,7 @@ async function createAutofixPR(
     execFileSync('git', ['commit', '-m', `fix: address issue #${issueNumber}`], gitOpts);
 
     try {
-      execFileSync('git', ['push', 'origin', branchName, '--force'], gitOpts);
+      execFileSync('git', ['push', 'origin', branchName, '--force-with-lease'], gitOpts);
     } catch (err) {
       logger.error(`Git push failed: ${err instanceof Error ? err.message : err}`);
       await gh.postOrUpdateComment(
@@ -536,8 +503,11 @@ async function checkForUnansweredQuestions(
       .filter((c) => !c.author.includes('[bot]'));
 
     return repliesAfter.length === 0;
-  } catch {
-    return false;
+  } catch (err) {
+    new Logger('Command').warn(
+      `Failed to check unanswered questions for #${issueNumber}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return true;
   }
 }
 

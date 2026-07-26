@@ -1,5 +1,6 @@
 import type { AgentConfig, LearningStore, PRContext, ReviewResult } from '@opencode-pr-agent/lib';
 import { GitHubHelper, Logger, ReviewEngine } from '@opencode-pr-agent/lib';
+import { handleAutofixLoop } from './autofix.js';
 
 /**
  * Handle a PR review: fetch the PR, check skip conditions, run the review
@@ -115,7 +116,6 @@ export async function handlePRReview(
         `Review agent confirmed issues are auto-fixable with high confidence. Launching handleAutofixLoop...`,
       );
       try {
-        const { handleAutofixLoop } = await import('./autofix.js');
         await handleAutofixLoop(prNumber, repo, token, config, undefined, tempDir);
       } catch (err) {
         logger.error(

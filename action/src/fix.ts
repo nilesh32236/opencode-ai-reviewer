@@ -8,7 +8,6 @@ import type {
   IssueComment,
   PreviousFindingIteration,
   ReviewEngine,
-  ReviewResult,
 } from '@opencode-pr-agent/lib';
 import {
   FIX_MARKER,
@@ -18,7 +17,9 @@ import {
   buildFixBody,
   buildReadyBody,
   buildReviewBody,
+  markAnalysisReady,
   parseAnalysisPlan,
+  postBlockingQuestions,
   resolveFixedComments,
   validateRunChecksCommand,
 } from '@opencode-pr-agent/lib';
@@ -59,10 +60,6 @@ export async function runFix(
   const contextMarkdown = await gh.gatherContext({ prNumber });
 
   const fixResult = await engine.runFix(prNumber, iteration, contextMarkdown, pr);
-
-  if (!fixResult) {
-    core.warning('Fix engine returned no result - treating as no changes');
-  }
 
   let changesMade = false;
   if (fixResult?.changesMade) {
@@ -180,14 +177,17 @@ export async function runFixIssue(
 
   const branchName = `autofix/issue-${issueNumber}`;
 
+  const defaultBranch = await gh.getDefaultBranch();
   const existingRef = await exec
-    .getExecOutput('git', ['rev-parse', '--verify', branchName], { ignoreReturnCode: true })
+    .getExecOutput('git', ['rev-parse', '--verify', `origin/${branchName}`], {
+      ignoreReturnCode: true,
+    })
     .catch(() => ({ exitCode: 1, stdout: '', stderr: '' }));
 
   if (existingRef.exitCode === 0) {
-    await exec.exec('git', ['checkout', branchName]);
+    await exec.exec('git', ['checkout', '-B', branchName, `origin/${branchName}`]);
   } else {
-    await exec.exec('git', ['checkout', '-b', branchName]);
+    await exec.exec('git', ['checkout', '-b', branchName, `origin/${defaultBranch}`]);
   }
 
   let issueContext = await gh.gatherContext({ issueNumber });
@@ -200,25 +200,9 @@ export async function runFixIssue(
     await gh.postOrUpdateComment(issueNumber, '<!-- issue-analysis-plan -->', planMarkdown);
 
     if (parsed.hasBlockingQuestions) {
-      const questionsBody = [
-        '## ❓ Questions Before Proceeding',
-        '',
-        'I have analyzed this issue but need clarification before starting implementation.',
-        'Please answer the following questions by replying to this comment:',
-        '',
-        ...parsed.blockingQuestions.map((q: string, i: number) => `**Q${i + 1}:** ${q}`),
-        '',
-        '---',
-        '*Once these are answered, comment `/fix` to start the implementation.*',
-      ].join('\n');
-
-      await gh.postOrUpdateComment(issueNumber, '<!-- issue-analysis-questions -->', questionsBody);
-
-      await gh.ensureLabels(['analysis:needs-input']);
-      await gh.addLabels(issueNumber, ['analysis:needs-input']);
+      await postBlockingQuestions(gh, issueNumber, parsed);
     } else {
-      await gh.ensureLabels(['analysis:ready']);
-      await gh.addLabels(issueNumber, ['analysis:ready']);
+      await markAnalysisReady(gh, issueNumber);
     }
 
     issueContext = await gh.gatherContext({ issueNumber });
@@ -295,7 +279,7 @@ export async function runFixIssue(
   await exec.exec('git', ['add', '-A']);
   await exec.exec('git', ['commit', '-m', `fix: address issue #${issueNumber}`]);
   try {
-    await exec.exec('git', ['push', 'origin', branchName, '--force']);
+    await exec.exec('git', ['push', 'origin', branchName, '--force-with-lease']);
   } catch (err) {
     core.warning(sanitize(`Git push failed: ${err instanceof Error ? err.message : err}`));
     core.setFailed(sanitize(`Git push failed: ${err instanceof Error ? err.message : err}`));
@@ -418,6 +402,24 @@ export async function runAutofixLoop(
 
     const pr = await gh.getPR(prNumber);
     const prHeadSha = pr.headSha;
+
+    let previousBotComments:
+      | Array<{ file: string; line: number | null; body: string; commentId: number }>
+      | undefined;
+    try {
+      const botThreads = await gh.getBotReviewThreads(prNumber);
+      previousBotComments = botThreads
+        .filter((t) => !t.isResolved && t.firstComment)
+        .map((t) => ({
+          file: t.firstComment.filePath,
+          line: t.firstComment.lineNumber,
+          body: t.firstComment.body,
+          commentId: t.firstComment.databaseId,
+        }));
+    } catch {
+      /* ignore */
+    }
+
     const result = await engine.reviewPR(
       pr,
       i,
@@ -425,6 +427,9 @@ export async function runAutofixLoop(
       inputs.reviewPromptExtra,
       iterTimeoutMinutes,
       previousFindings,
+      undefined,
+      undefined,
+      previousBotComments,
     );
 
     if (

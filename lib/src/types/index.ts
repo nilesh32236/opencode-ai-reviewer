@@ -143,6 +143,8 @@ export interface IssueContext {
 
 /** A comment on a GitHub issue. */
 export interface IssueComment {
+  /** GitHub API database ID of the comment */
+  id: number;
   /** GitHub username of the comment author */
   author: string;
   /** ISO 8601 timestamp when the comment was created */

@@ -1,7 +1,7 @@
 /** Configuration options for constructing automated fix pull request descriptions. */
 export interface PRBodyOptions {
-  /** Issue number being fixed. */
-  issueNumber: number;
+  /** Issue number being fixed (undefined when no linked issue exists). */
+  issueNumber?: number;
   /** Title of the issue being fixed. */
   issueTitle: string;
   /** Summary of changes written to .fix-summary.md by the fix agent. */
@@ -26,8 +26,10 @@ export interface PRBodyOptions {
 export function buildAutofixPRBody(opts: PRBodyOptions): string {
   const lines: string[] = [];
 
-  lines.push(`## Fixes #${opts.issueNumber}`);
-  lines.push('');
+  if (opts.issueNumber) {
+    lines.push(`## Fixes #${opts.issueNumber}`);
+    lines.push('');
+  }
 
   lines.push('## What Was Changed');
   lines.push('');

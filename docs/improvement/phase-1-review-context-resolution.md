@@ -32,7 +32,7 @@ await gh.minimizeReviewComment(prevComment.nodeId, 'OUTDATED');
 ```
 This marks the comment as minimized with the `OUTDATED` classifier. It does **not** resolve the thread. The comment just gets visually hidden — but it is not verified that the underlying issue was actually fixed.
 
-The `resolveReviewThread` GraphQL mutation already exists in `github.ts` but is never called from the review/fix loop.
+The `resolveReviewThread` GraphQL mutation exists in `github.ts` and is called via `resolveFixedComments` in the autofix loop, but is not invoked during standalone review runs.
 
 **Where it happens:**  
 `action/src/fix.ts` (lines ~340–360) — the autofix loop's post-review pass  
