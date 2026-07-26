@@ -16,9 +16,8 @@ import { buildMetaReviewPrompt } from './prompts.js';
  */
 export class MetaReviewEngine {
   /**
-   *
-   * @param store
-   * @param patternDetector
+   * @param store - Learning store for recording quality metrics and retrieving patterns
+   * @param patternDetector - Optional pattern detector for discovering high-quality patterns after meta-review
    */
   constructor(
     private store: LearningStore,
@@ -29,16 +28,17 @@ export class MetaReviewEngine {
    * Execute a meta-review: build the prompt, run the LLM, parse results,
    * record quality scores, and optionally discover patterns or add prompt
    * overrides based on false-positive rate.
-   * @param context
-   * @param context.prNumber
-   * @param context.reviewSummary
-   * @param context.findingsCount
-   * @param context.issuesCount
-   * @param context.strengthsCount
-   * @param context.hasVerdict
-   * @param context.fileCount
-   * @param context.workingDir
-   * @param signal
+   * @param context - Review context containing PR details and review summary
+   * @param context.prNumber - Pull request number
+   * @param context.reviewSummary - Summary text of the code review
+   * @param context.findingsCount - Total number of findings in the review
+   * @param context.issuesCount - Number of issues identified
+   * @param context.strengthsCount - Number of strengths identified
+   * @param context.hasVerdict - Whether the review includes a verdict
+   * @param context.fileCount - Number of files changed in the PR
+   * @param context.workingDir - Optional working directory for output file
+   * @param signal - Optional abort signal to cancel execution
+   * @returns Quality scores (actionability, accuracy, coverage, consistency) and suggestions
    */
   async runMetaReview(
     context: {
@@ -172,20 +172,15 @@ export class MetaReviewEngine {
  * meta-review too frequently.
  */
 export class MetaReviewSubscriber implements Subscriber {
-  /**
-   *
-   */
+  /** Subscriber identifier */
   name = 'MetaReviewSubscriber';
-  /**
-   *
-   */
+  /** Events this subscriber listens to */
   subscribedEvents = ['review.completed'];
 
   /**
-   *
-   * @param engine
-   * @param store
-   * @param interval
+   * @param engine - The meta-review engine instance
+   * @param store - Learning store for checking meta-review interval
+   * @param interval - Number of reviews between meta-review runs
    */
   constructor(
     private engine: MetaReviewEngine,
@@ -196,8 +191,8 @@ export class MetaReviewSubscriber implements Subscriber {
   /**
    * Handle the review.completed event — checks the meta-review interval
    * and triggers runMetaReview if needed.
-   * @param event
-   * @param signal
+   * @param event - GitHub event containing review payload data
+   * @param signal - Optional abort signal to cancel execution
    */
   async handle(event: GitHubEvent, signal?: AbortSignal): Promise<void> {
     if (signal?.aborted) return;

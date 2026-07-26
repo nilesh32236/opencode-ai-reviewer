@@ -2,7 +2,7 @@ import type { AgentConfig, GitHubHelper, ReviewEngine } from '@opencode-pr-agent
 import type { ActionInputs } from './inputs.js';
 /**
  * Execute an issue analysis: gather issue context, run the analysis engine,
- * and post the implementation plan as a comment on the issue.
+ * parse blocking questions, apply appropriate labels, and post the plan.
  * @param _inputs - Parsed action inputs.
  * @param _config - Full agent configuration.
  * @param engine - Review engine instance.

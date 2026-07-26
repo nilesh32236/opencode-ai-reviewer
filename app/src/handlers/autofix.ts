@@ -3,153 +3,29 @@ import type { ExecFileSyncOptions } from 'child_process';
 import { mkdtempSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
-import type { AgentConfig, FixResult, PRContext, ReviewResult } from '@opencode-pr-agent/lib';
+import type {
+  AgentConfig,
+  FixResult,
+  PRContext,
+  PreviousFindingIteration,
+  ReviewResult,
+} from '@opencode-pr-agent/lib';
 import {
   DEFAULT_ALLOWLIST,
+  FIX_MARKER,
   GitHubHelper,
+  type IterationRecord,
   Logger,
+  REVIEW_MARKER,
   ReviewEngine,
+  buildAutofixPRBody,
+  buildFixBody,
+  buildReadyBody,
+  buildReviewBody,
   configureGit,
+  resolveFixedComments,
   validateRunChecksCommand,
 } from '@opencode-pr-agent/lib';
-
-interface IterationRecord {
-  iteration: number;
-  status: 'approved' | 'fix-applied' | 'needs-fix' | 'no-changes';
-  summary: string;
-  critical: number;
-  important: number;
-  minor: number;
-  filesChanged?: string[];
-  commitMessage?: string;
-}
-
-const REVIEW_MARKER = '<!-- autofix-review -->';
-const FIX_MARKER = '<!-- autofix-applied -->';
-
-function buildReviewBody(
-  history: IterationRecord[],
-  maxIterations: number,
-  phase: 'reviewing' | 'approved' | 'no-changes' | 'max-iterations',
-  current?: ReviewResult,
-): string {
-  const lines: string[] = ['## 🤖 Autofix Review', ''];
-  const currentIter = history.length;
-
-  switch (phase) {
-    case 'reviewing':
-      lines.push(`**Status:** 🔍 Reviewing (iteration ${currentIter}/${maxIterations})`);
-      break;
-    case 'approved':
-      lines.push('**Status:** ✅ Approved — all issues resolved');
-      break;
-    case 'no-changes':
-      lines.push(
-        `**Status:** ℹ️ Fix agent made no changes (iteration ${currentIter}/${maxIterations})`,
-      );
-      break;
-    case 'max-iterations':
-      lines.push('**Status:** ⚠️ Manual review required');
-      break;
-  }
-
-  if (current) {
-    if (current.summary) lines.push('', '### Summary', '', current.summary);
-    if (current.issues.length > 0) {
-      lines.push('', '### Issues Found');
-      for (const i of current.issues) {
-        lines.push(`- **${i.severity.toUpperCase()}:** ${i.file}:${i.line} — ${i.message}`);
-        if (i.suggestion) lines.push(`  > ${i.suggestion}`);
-      }
-    }
-    if (current.strengths.length > 0) {
-      lines.push('', '### Strengths');
-      for (const s of current.strengths) {
-        lines.push(`- ✅ **${s.file}:${s.line}** — ${s.message}`);
-      }
-    }
-  }
-
-  if (history.length > 0) {
-    lines.push('', '### Iteration History');
-    for (const h of history) {
-      let icon: string;
-      let detail: string;
-      switch (h.status) {
-        case 'approved':
-          icon = '✅';
-          detail = 'All issues resolved';
-          break;
-        case 'fix-applied':
-          icon = '🔧';
-          detail = `Fix applied — ${h.critical} critical, ${h.important} important`;
-          break;
-        case 'needs-fix':
-          icon = '❌';
-          detail = `${h.critical} critical, ${h.important} important remaining`;
-          break;
-        case 'no-changes':
-          icon = 'ℹ️';
-          detail = 'No changes made';
-          break;
-      }
-      lines.push(`- ${icon} **Iteration ${h.iteration}:** ${detail}`);
-    }
-  }
-
-  switch (phase) {
-    case 'approved':
-      lines.push('', '✅ **Ready to merge!**');
-      break;
-    case 'max-iterations':
-      lines.push(
-        '',
-        `⚠️ **Max iterations reached (${maxIterations}).** This PR needs manual review.`,
-      );
-      break;
-  }
-
-  return lines.join('\n');
-}
-
-function buildFixBody(history: IterationRecord[]): string {
-  const last = history[history.length - 1];
-  const lines: string[] = ['## 🔧 Autofix Applied', ''];
-  if (last) {
-    lines.push(`**Iteration:** ${last.iteration}`);
-    lines.push(`**Files changed:** ${last.filesChanged?.length ?? 0}`);
-    if (last.commitMessage) lines.push(`**Commit:** \`${last.commitMessage}\``);
-    if (last.filesChanged && last.filesChanged.length > 0) {
-      lines.push('', '### Changed Files');
-      for (const f of last.filesChanged) lines.push(`- \`${f}\``);
-    }
-  }
-  lines.push(
-    '',
-    '---',
-    '',
-    '🤖 The fix agent has applied changes. The PR will be reviewed again on the next iteration.',
-  );
-  return lines.join('\n');
-}
-
-function buildReadyBody(history: IterationRecord[], prNumber: number): string {
-  const lines: string[] = ['## ✅ Ready to Merge', ''];
-  lines.push(`All issues have been resolved in PR #${prNumber}.`);
-  lines.push(
-    '',
-    'The review agent has approved this PR. A maintainer can merge it at their discretion.',
-  );
-  if (history.length > 0) {
-    for (const h of history) {
-      if (h.summary) {
-        lines.push('', '### Summary', '', h.summary);
-        break;
-      }
-    }
-  }
-  return lines.join('\n');
-}
 
 /**
  * Run the complete review-fix loop on a PR from the Probot app context.
@@ -183,6 +59,7 @@ export async function handleAutofixLoop(
   const gh = new GitHubHelper(token, repo);
   const engine = new ReviewEngine(config, token, repo);
   const history: IterationRecord[] = [];
+  const previousFindings: PreviousFindingIteration[] = [];
   let approved = false;
 
   let gitEnv = initialGitEnv;
@@ -219,6 +96,23 @@ export async function handleAutofixLoop(
         break;
       }
 
+      let previousBotComments:
+        | Array<{ file: string; line: number | null; body: string; commentId: number }>
+        | undefined;
+      try {
+        const botThreads = await gh.getBotReviewThreads(prNumber);
+        previousBotComments = botThreads
+          .filter((t) => !t.isResolved && t.firstComment)
+          .map((t) => ({
+            file: t.firstComment.filePath,
+            line: t.firstComment.lineNumber,
+            body: t.firstComment.body,
+            commentId: t.firstComment.databaseId,
+          }));
+      } catch (err) {
+        logger.warn(`Could not fetch previous bot comments: ${err}`);
+      }
+
       const reviewWorkingDir = workingDir || process.cwd();
       let result: ReviewResult;
       try {
@@ -228,8 +122,10 @@ export async function handleAutofixLoop(
           undefined,
           undefined,
           undefined,
-          undefined,
+          previousFindings,
           reviewWorkingDir,
+          undefined,
+          previousBotComments,
         );
       } catch (err) {
         logger.error(
@@ -244,6 +140,27 @@ export async function handleAutofixLoop(
       ) {
         logger.error(`Review returned empty result in iteration ${i + 1}`);
         break;
+      }
+
+      if (i > 0 && previousFindings.length > 0) {
+        await resolveFixedComments(gh, prNumber, previousFindings, result.issues, logger);
+      }
+
+      let currentCommentIds:
+        | Array<{ file: string; line: number; commentId: number; nodeId?: string }>
+        | undefined;
+      try {
+        const reviewResult = await gh.postReview(
+          prNumber,
+          pr.headSha,
+          result,
+          config.review.inline,
+        );
+        if (reviewResult.commentIds) {
+          currentCommentIds = reviewResult.commentIds;
+        }
+      } catch (err) {
+        logger.warn(`Failed to post review comments: ${err instanceof Error ? err.message : err}`);
       }
 
       const entry: IterationRecord = {
@@ -274,6 +191,17 @@ export async function handleAutofixLoop(
           logger.error(
             `Failed to post ready-to-merge comment: ${err instanceof Error ? err.message : err}`,
           );
+        }
+        if (pr.linkedIssue) {
+          try {
+            await gh.closeIssue(
+              pr.linkedIssue,
+              `✅ Resolved by PR #${prNumber} — all review items verified fixed.\n\n*Auto-closed by opencode-ai-reviewer*`,
+            );
+            logger.info(`Closed linked issue #${pr.linkedIssue}`);
+          } catch (err) {
+            logger.warn(`Could not close linked issue #${pr.linkedIssue}: ${err}`);
+          }
         }
         logger.info('Posted ready-to-merge notification');
         break;
@@ -334,6 +262,24 @@ export async function handleAutofixLoop(
         break;
       }
 
+      if (fixResult?.stuck) {
+        const stuckBody = [
+          '🛑 **Fix Agent Stuck**',
+          '',
+          fixResult.stuckReason ||
+            'The fix agent could not determine how to address the remaining issues.',
+          '',
+          'Please provide additional context or manually apply the fix for the items listed above.',
+        ].join('\n');
+        try {
+          await gh.postOrUpdateComment(prNumber, '<!-- autofix-stuck -->', stuckBody);
+        } catch {
+          /* ignore */
+        }
+        logger.info(`Fix agent reported stuck — stopping loop for PR #${prNumber}`);
+        break;
+      }
+
       if (!fixResult || !fixResult.changesMade) {
         history[history.length - 1].status = 'no-changes';
         try {
@@ -364,6 +310,35 @@ export async function handleAutofixLoop(
           gitOpts,
         );
         execFileSync('git', ['push', 'origin', pr.headRef], gitOpts);
+        previousFindings.push({
+          iteration: i + 1,
+          issues: result.issues,
+          fixSummary: fixResult.summary,
+          filesChanged: fixResult.filesChanged,
+          headSha: pr.headSha,
+          commentIds: currentCommentIds?.map((c) => ({
+            file: c.file,
+            line: c.line,
+            commentId: c.commentId,
+            nodeId: c.nodeId,
+          })),
+        });
+        if (fixResult.summary) {
+          try {
+            const updatedBody = buildAutofixPRBody({
+              issueNumber: pr.linkedIssue ?? prNumber,
+              issueTitle: pr.title,
+              fixSummary: fixResult.summary,
+              filesChanged: fixResult.filesChanged ?? [],
+              branchName: pr.headRef,
+              hasTests: !!config.projectContext.typecheckCommands.length,
+            });
+            await gh.updatePR(prNumber, { body: updatedBody });
+            logger.info(`Updated PR #${prNumber} description with latest fix summary`);
+          } catch (updateErr) {
+            logger.warn(`Could not update PR description: ${updateErr}`);
+          }
+        }
       } catch (err) {
         logger.error(
           `Git operations failed in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,

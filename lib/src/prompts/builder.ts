@@ -53,6 +53,9 @@ export interface ReviewPromptOptions {
    *
    */
   deltaContext?: string;
+  /**
+   *
+   */
   previousBotComments?: Array<{
     file: string;
     line: number | null;
@@ -342,8 +345,13 @@ ${verificationError ? `\n## Verification Errors from Previous Attempt\n\`\`\`\n$
 3. **Verify**:
    - Run configured verification commands (e.g. lint/test) to ensure no regressions.
 
-4. **Summarize Fix**:
-   - Write a clear summary of files changed and decisions applied to \`.fix-summary.md\`.
+4. **Summarize Fix (REQUIRED)**:
+   - Write a clear, comprehensive summary of your changes to \`.fix-summary.md\`.
+   - This file becomes the pull request description — write it for a human reviewer, NOT as a copy of the issue.
+   - Include sections:
+     - **### What Was Done**: 1-3 sentences describing what changed and why.
+     - **### Approach**: Technical explanation of your solution.
+     - **### Key Changes**: Bullet points of files modified and the reason for each.
 
 ## CRITICAL RULES
 - Do NOT run \`git commit\`, \`git push\`, or \`gh pr create\`.
@@ -520,8 +528,9 @@ ${projContext}
 4. **Identify Options & Trade-offs (If applicable)**:
    - If there are multiple ways to fix the problem (e.g. quick bugfix vs. refactoring), outline the suggestions clearly as Options (Option A, Option B) so the maintainer can choose.
 
-5. **Highlight Questions for the Maintainer**:
-   - If any business logic or requirement is ambiguous, list explicit questions for the maintainer.
+5. **Identify Blocking Questions**:
+   - Only ask questions if the issue is genuinely ambiguous or has multiple valid approaches requiring human decision.
+   - If the fix is clear-cut and obvious from inspecting the codebase, do NOT force questions. Write "None — ready to proceed with /fix".
 
 ## Output Format
 
@@ -551,8 +560,11 @@ Required Markdown Structure:
 - **Option A (Recommended)**: Minimal fix in file1.ts.
 - **Option B**: Refactor helper function across files.
 
-## ❓ Questions / Decisions Needed from Maintainer
-- <Question 1 or "None - ready to proceed with /fix">
+### Blocking Questions
+- **Q1:** <Question text or "None — implementation can proceed immediately.">
+
+### Confidence Level
+HIGH
 \`\`\`
 
 **CRITICAL RULES:**
@@ -699,7 +711,7 @@ function buildOutputFormat(): string {
 {"type":"summary","text":"Brief overall assessment of the PR. 2-3 sentences."}
 {"type":"verdict","ready":false,"reasoning":"1-2 sentence technical assessment.","autoFixable":true,"confidence":"high"}
 {"type":"strength","file":"src/example.ts","line":10,"message":"What's well done and why."}
-{"type":"issue","severity":"critical","file":"src/example.ts","line":42,"message":"What's wrong.","suggestion":"const user = data?.user ?? null;","inline":true}
+{"type":"issue","severity":"critical","file":"src/example.ts","line":42,"message":"What's wrong.","suggestion":"Add a null guard before iterating over data.user","suggestionCode":"const user = data?.user ?? null;","inline":true}
 \`\`\`
 
 **Rules for the JSONL file:**
@@ -713,7 +725,8 @@ function buildOutputFormat(): string {
 - Write zero or more \`strength\` and \`issue\` lines
 - \`severity\` must be exactly "critical", "important", or "minor"
 - Every issue MUST include file and line
-- When providing a \`suggestion\`, write the EXACT replacement code (not a description). For single-line fixes, write just the replacement line. This enables GitHub's native "Commit suggestion" button.
+- For EVERY issue raised, you MUST include a \`suggestion\` field explaining how to fix it (actionable, concise guidance).
+- For \`critical\` and \`important\` issues, if the fix is a code change of ≤ 10 lines, ALSO provide a \`suggestionCode\` field containing the exact raw replacement code snippet. This renders as GitHub's 1-click "Apply suggestion" button.
 - \`"inline": true\` ONLY if the line is in the PR diff
 - If you find zero issues, write a verdict with \`"ready": true\`, \`"autoFixable": false\`, and \`"confidence": "high"\`
 - Do NOT wrap in an array, do NOT add commas between lines`;

@@ -8,7 +8,9 @@ import {
   GitHubHelper,
   Logger,
   ReviewEngine,
+  buildAutofixPRBody,
   configureGit,
+  parseAnalysisPlan,
   sanitizeErrorMessage,
 } from '@opencode-pr-agent/lib';
 import { handleAudit } from './audit.js';
@@ -76,10 +78,10 @@ export async function handleCommand(
 
       case 'fix': {
         if (signal?.aborted) return;
-        const existingPR = await findExistingAutofixPR(gh, issueNumber);
-        if (existingPR) {
+        const isPR = await gh.isPR(issueNumber);
+        if (isPR) {
           await handleAutofixLoop(
-            existingPR,
+            issueNumber,
             repo,
             token,
             config,
@@ -90,19 +92,10 @@ export async function handleCommand(
             signal,
           );
         } else {
-          const newPR = await createAutofixPR(
-            gh,
-            issueNumber,
-            repo,
-            token,
-            config,
-            tempDir,
-            gitEnv,
-            signal,
-          );
-          if (newPR) {
+          const existingPR = await findExistingAutofixPR(gh, issueNumber);
+          if (existingPR) {
             await handleAutofixLoop(
-              newPR,
+              existingPR,
               repo,
               token,
               config,
@@ -112,6 +105,30 @@ export async function handleCommand(
               undefined,
               signal,
             );
+          } else {
+            const newPR = await createAutofixPR(
+              gh,
+              issueNumber,
+              repo,
+              token,
+              config,
+              tempDir,
+              gitEnv,
+              signal,
+            );
+            if (newPR) {
+              await handleAutofixLoop(
+                newPR,
+                repo,
+                token,
+                config,
+                undefined,
+                tempDir,
+                gitEnv,
+                undefined,
+                signal,
+              );
+            }
           }
         }
         break;
@@ -157,8 +174,31 @@ export async function handleAnalyzeCommand(
     const issueContext = await gh.gatherContext({ issueNumber });
 
     const planMarkdown = await engine.runAnalyze(issueNumber, issueContext, undefined, tempDir);
+    const parsed = parseAnalysisPlan(planMarkdown);
 
     await gh.postOrUpdateComment(issueNumber, '<!-- issue-analysis-plan -->', planMarkdown);
+
+    if (parsed.hasBlockingQuestions) {
+      const questionsBody = [
+        '## ❓ Questions Before Proceeding',
+        '',
+        'I have analyzed this issue but need clarification before starting implementation.',
+        'Please answer the following questions by replying to this comment:',
+        '',
+        ...parsed.blockingQuestions.map((q, i) => `**Q${i + 1}:** ${q}`),
+        '',
+        '---',
+        '*Once these are answered, comment `/fix` to start the implementation.*',
+      ].join('\n');
+
+      await gh.postOrUpdateComment(issueNumber, '<!-- issue-analysis-questions -->', questionsBody);
+
+      await gh.ensureLabels(['analysis:needs-input']);
+      await gh.addLabels(issueNumber, ['analysis:needs-input']);
+    } else {
+      await gh.ensureLabels(['analysis:ready']);
+      await gh.addLabels(issueNumber, ['analysis:ready']);
+    }
 
     logger.info(`Posted analysis plan for issue #${issueNumber}`);
   } catch (err) {
@@ -314,11 +354,60 @@ async function createAutofixPR(
     if (!issueContext.includes('<!-- issue-analysis-plan -->')) {
       logger.info('No implementation plan found — running analyze first');
       const planMarkdown = await engine.runAnalyze(issueNumber, issueContext, undefined, tempDir);
+      const parsed = parseAnalysisPlan(planMarkdown);
       await gh.postOrUpdateComment(issueNumber, '<!-- issue-analysis-plan -->', planMarkdown);
+
+      if (parsed.hasBlockingQuestions) {
+        const questionsBody = [
+          '## ❓ Questions Before Proceeding',
+          '',
+          'I have analyzed this issue but need clarification before starting implementation.',
+          'Please answer the following questions by replying to this comment:',
+          '',
+          ...parsed.blockingQuestions.map((q, i) => `**Q${i + 1}:** ${q}`),
+          '',
+          '---',
+          '*Once these are answered, comment `/fix` to start the implementation.*',
+        ].join('\n');
+
+        await gh.postOrUpdateComment(
+          issueNumber,
+          '<!-- issue-analysis-questions -->',
+          questionsBody,
+        );
+
+        await gh.ensureLabels(['analysis:needs-input']);
+        await gh.addLabels(issueNumber, ['analysis:needs-input']);
+      } else {
+        await gh.ensureLabels(['analysis:ready']);
+        await gh.addLabels(issueNumber, ['analysis:ready']);
+      }
+
       issueContext = await gh.gatherContext({ issueNumber });
     }
 
     if (signal?.aborted) return null;
+
+    const hasQuestionsPending = await checkForUnansweredQuestions(gh, issueNumber, issueContext);
+    if (hasQuestionsPending) {
+      logger.info(`Issue #${issueNumber} has unanswered blocking questions — fix deferred`);
+      await gh.postOrUpdateComment(
+        issueNumber,
+        '<!-- autofix-deferred -->',
+        [
+          '⏸️ **Fix Deferred — Questions Pending**',
+          '',
+          'I cannot start the fix yet because there are unanswered questions in the analysis.',
+          'Please answer the questions above, then comment `/fix` again.',
+        ].join('\n'),
+      );
+      return null;
+    }
+
+    const qa = buildQAContext(issue.comments);
+    if (qa) {
+      issueContext += '\n\n' + qa;
+    }
 
     const stubPR: PRContext = {
       number: issueNumber,
@@ -372,7 +461,14 @@ async function createAutofixPR(
     if (signal?.aborted) return null;
 
     const prTitle = `[Autofix] ${issue.title}`;
-    const prBody = `## Fixes #${issueNumber}\n\n${issue.body}\n\n---\n*Auto-generated by opencode-ai-reviewer*`;
+    const prBody = buildAutofixPRBody({
+      issueNumber,
+      issueTitle: issue.title,
+      fixSummary: fixResult.summary,
+      filesChanged: fixResult.filesChanged ?? [],
+      branchName,
+      hasTests: false,
+    });
 
     await gh.ensureLabels(['autofix']);
 
@@ -415,4 +511,49 @@ async function createAutofixPR(
   } finally {
     await engine.cleanup();
   }
+}
+
+async function checkForUnansweredQuestions(
+  gh: GitHubHelper,
+  issueNumber: number,
+  issueContext: string,
+): Promise<boolean> {
+  if (!issueContext.includes('<!-- issue-analysis-questions -->')) {
+    return false;
+  }
+  try {
+    const issue = await gh.getIssue(issueNumber);
+    if (!issue.labels.includes('analysis:needs-input')) {
+      return false;
+    }
+    const questionsCommentIdx = issue.comments.findIndex((c) =>
+      c.body.startsWith('<!-- issue-analysis-questions -->'),
+    );
+    if (questionsCommentIdx === -1) return true;
+
+    const repliesAfter = issue.comments
+      .slice(questionsCommentIdx + 1)
+      .filter((c) => !c.author.includes('[bot]'));
+
+    return repliesAfter.length === 0;
+  } catch {
+    return false;
+  }
+}
+
+function buildQAContext(comments: Array<{ author: string; body: string }>): string {
+  const questionsIdx = comments.findIndex((c) =>
+    c.body.startsWith('<!-- issue-analysis-questions -->'),
+  );
+  if (questionsIdx === -1) return '';
+
+  const answers = comments.slice(questionsIdx + 1).filter((c) => !c.author.includes('[bot]'));
+  if (answers.length === 0) return '';
+
+  const lines = ['### Q&A Context (from issue discussion)'];
+  for (const answer of answers) {
+    lines.push(`**@${answer.author}:** ${answer.body}`);
+    lines.push('');
+  }
+  return lines.join('\n');
 }

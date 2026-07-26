@@ -46,9 +46,8 @@ export class PatternDetector {
   private options: PatternDetectorOptions;
 
   /**
-   *
-   * @param store
-   * @param options
+   * @param store - The learning store for persisting and retrieving patterns.
+   * @param options - Configuration options for the pattern detector.
    */
   constructor(
     private store: LearningStore,
@@ -65,6 +64,7 @@ export class PatternDetector {
    * Uses Jaccard token clustering to group similar messages,
    * then records patterns that meet the minimum frequency threshold.
    * @param minFrequency - Minimum occurrences for a pattern to be reported.
+   * @returns An array of discovered patterns.
    */
   async discover(minFrequency: number): Promise<DiscoveredPattern[]> {
     const { windowSize, sinceDays } = this.options;

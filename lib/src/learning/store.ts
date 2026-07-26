@@ -59,14 +59,14 @@ export class LearningStore {
    * Record a single review finding.
    *
    * @param finding - Finding data including PR number, type, severity, file, and message.
-   * @param finding.id
-   * @param finding.prNumber
-   * @param finding.type
-   * @param finding.severity
-   * @param finding.file
-   * @param finding.line
-   * @param finding.message
-   * @param finding.suggestion
+   * @param finding.id - Optional custom ID for the finding. A new ID is generated if omitted.
+   * @param finding.prNumber - PR number associated with the finding.
+   * @param finding.type - Type/category of the finding.
+   * @param finding.severity - Severity level of the finding.
+   * @param finding.file - File path where the finding was made.
+   * @param finding.line - Line number where the finding was made.
+   * @param finding.message - Description of the finding.
+   * @param finding.suggestion - Optional suggestion for fixing the finding.
    * @returns The generated finding ID.
    * @throws If the database operation fails.
    */
@@ -128,10 +128,10 @@ export class LearningStore {
    * Errors are logged but not thrown (degraded gracefully).
    *
    * @param feedback - Feedback data including finding ID, signal type, and value.
-   * @param feedback.findingId
-   * @param feedback.signalType
-   * @param feedback.signalValue
-   * @param feedback.prNumber
+   * @param feedback.findingId - ID of the finding being fed back on.
+   * @param feedback.signalType - Type of feedback signal (e.g. 'dismissed', 'disputed_comment').
+   * @param feedback.signalValue - Value or detail of the feedback signal.
+   * @param feedback.prNumber - PR number associated with the feedback.
    */
   async recordFeedback(feedback: {
     findingId: string;
@@ -317,7 +317,7 @@ export class LearningStore {
   /**
    * Record or update a pattern (upsert by patternKey).
    *
-   * @param pattern
+   * @param pattern - Pattern data with key, message cluster, frequency, and file types.
    * @param pattern.patternKey - Unique key identifying the pattern.
    * @param pattern.messageCluster - Example messages matching this pattern.
    * @param pattern.frequency - Observed frequency count.

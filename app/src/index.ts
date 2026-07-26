@@ -3,6 +3,7 @@ import {
   EventBus,
   EventRouter,
   FeedbackSubscriber,
+  GitHubHelper,
   LearningStore,
   Logger,
   MetaReviewEngine,
@@ -10,6 +11,7 @@ import {
   PatternDetector,
   RuleApprovalSubscriber,
   getDefaultMCPServers,
+  parseCommand,
 } from '@opencode-pr-agent/lib';
 import type { AgentConfig, GitHubEvent, Subscriber } from '@opencode-pr-agent/lib';
 import type { Probot } from 'probot';
@@ -46,7 +48,8 @@ export default (app: Probot): void => {
         if (event.type === 'comment.created' || event.type === 'review_comment.created') {
           const evPayload = event.payload as Record<string, unknown>;
           const commentBody = (evPayload.comment as Record<string, string> | undefined)?.body;
-          if (!commentBody?.includes('/review') && !commentBody?.includes('/oc review')) return;
+          const parsed = commentBody ? parseCommand(commentBody) : null;
+          if (!parsed || parsed.command !== 'review') return;
         }
 
         const evPayload = event.payload as Record<string, unknown>;
@@ -122,7 +125,8 @@ export default (app: Probot): void => {
         const fixLabels = fixPayload.labels as Array<Record<string, string>> | undefined;
 
         if (event.type === 'comment.created' || event.type === 'review_comment.created') {
-          if (!fixComment?.body?.includes('/fix')) return;
+          const parsed = fixComment?.body ? parseCommand(fixComment.body) : null;
+          if (!parsed || parsed.command !== 'fix') return;
         }
 
         if (event.type === 'issue.labeled') {
@@ -152,7 +156,8 @@ export default (app: Probot): void => {
       try {
         const auditPayload = event.payload as Record<string, unknown>;
         const auditComment = auditPayload.comment as Record<string, string> | undefined;
-        if (!auditComment?.body?.includes('/audit')) return;
+        const parsed = auditComment?.body ? parseCommand(auditComment.body) : null;
+        if (!parsed || parsed.command !== 'audit') return;
         const config = buildConfig();
         await handleAudit(event.repo || '', getToken(), config);
       } catch (err) {
@@ -171,11 +176,8 @@ export default (app: Probot): void => {
       try {
         const analyzePayload = event.payload as Record<string, unknown>;
         const analyzeComment = analyzePayload.comment as Record<string, string> | undefined;
-        if (
-          !analyzeComment?.body?.includes('/analyze') &&
-          !analyzeComment?.body?.includes('/analyse')
-        )
-          return;
+        const parsed = analyzeComment?.body ? parseCommand(analyzeComment.body) : null;
+        if (!parsed || parsed.command !== 'analyze') return;
         const config = buildConfig();
         const issueNumber = event.prNumber || 0;
         if (!issueNumber) return;
@@ -233,7 +235,8 @@ export default (app: Probot): void => {
       try {
         const payload = event.payload as Record<string, unknown>;
         const comment = payload.comment as Record<string, string> | undefined;
-        if (!comment?.body?.includes('/explain') && !comment?.body?.includes('/oc explain')) return;
+        const parsed = comment?.body ? parseCommand(comment.body) : null;
+        if (!parsed || parsed.command !== 'explain') return;
         const config = buildConfig();
         const issueNumber = event.prNumber || 0;
         if (!issueNumber) return;
@@ -300,11 +303,78 @@ export default (app: Probot): void => {
     },
   };
 
+  const autoAnalyzeSubscriber: Subscriber = {
+    name: 'AutoAnalyzeSubscriber',
+    subscribedEvents: ['issue.opened'],
+    async handle(event: GitHubEvent, signal?: AbortSignal) {
+      if (signal?.aborted) return;
+      try {
+        const payload = event.payload as Record<string, unknown>;
+        const issue = payload.issue as Record<string, unknown> | undefined;
+        if (!issue) return;
+        if (issue.pull_request) return;
+
+        const user = issue.user as Record<string, string> | undefined;
+        if (user?.type === 'Bot') return;
+
+        const issueNumber = (issue.number as number) || 0;
+        if (!issueNumber) return;
+
+        const config = buildConfig();
+        await handleCommand('analyze', issueNumber, event.repo || '', getToken(), config, signal);
+      } catch (err) {
+        logger.error(`AutoAnalyzeSubscriber failed: ${err instanceof Error ? err.message : err}`);
+      }
+    },
+  };
+
+  const questionAnsweredSubscriber: Subscriber = {
+    name: 'QuestionAnsweredSubscriber',
+    subscribedEvents: ['comment.created'],
+    async handle(event: GitHubEvent, signal?: AbortSignal) {
+      if (signal?.aborted) return;
+      try {
+        const payload = event.payload as Record<string, unknown>;
+        const comment = payload.comment as Record<string, unknown> | undefined;
+        const issue = payload.issue as Record<string, unknown> | undefined;
+
+        if (!comment || !issue) return;
+        if (issue.pull_request) return;
+        const user = comment.user as Record<string, string> | undefined;
+        if (user?.type === 'Bot') return;
+
+        const labels = (issue.labels as Array<Record<string, string>>)?.map((l) => l.name) ?? [];
+        if (!labels.includes('analysis:needs-input')) return;
+
+        const issueNumber = (issue.number as number) || 0;
+        if (!issueNumber) return;
+
+        const _config = buildConfig();
+        const gh = new GitHubHelper(getToken(), event.repo || '');
+
+        await gh.setLabels(issueNumber, ['analysis:ready'], ['analysis:needs-input']);
+        await gh.postOrUpdateComment(
+          issueNumber,
+          '<!-- analysis-answers-received -->',
+          '✅ **Answers received.** You can now comment `/fix` to start the implementation.',
+        );
+
+        logger.info(`Received answers for issue #${issueNumber} — marked as analysis:ready`);
+      } catch (err) {
+        logger.error(
+          `QuestionAnsweredSubscriber failed: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    },
+  };
+
   subscribers.push(
     reviewSubscriber,
     fixSubscriber,
     auditSubscriber,
     analyzeSubscriber,
+    autoAnalyzeSubscriber,
+    questionAnsweredSubscriber,
     replySubscriber,
     explainSubscriber,
     conversationSubscriber,
@@ -324,8 +394,43 @@ export default (app: Probot): void => {
   );
   subscribers.push(metaReviewSub);
 
-  const ruleApprovalSub = new RuleApprovalSubscriber(learningStore);
-  subscribers.push(ruleApprovalSub);
+  const discoverSubscriber: Subscriber = {
+    name: 'DiscoverSubscriber',
+    subscribedEvents: ['comment.created', 'review_comment.created'],
+    async handle(event: GitHubEvent, signal?: AbortSignal) {
+      if (signal?.aborted) return;
+      try {
+        const payload = event.payload as Record<string, unknown>;
+        const comment = payload.comment as Record<string, string> | undefined;
+        const parsed = comment?.body ? parseCommand(comment.body) : null;
+        if (!parsed || parsed.command !== 'discover') return;
+
+        const issueNumber = event.prNumber || 0;
+        if (!issueNumber) return;
+        if (!learningStore) return;
+
+        const detector = new PatternDetector(learningStore);
+        const patterns = await detector.discover(2);
+
+        const gh = new GitHubHelper(getToken(), event.repo || '');
+
+        let body = '## 🔍 Discovered Patterns\n\n';
+        if (patterns.length === 0) {
+          body += 'No recurring patterns found in recent reviews.';
+        } else {
+          body += 'The following recurring review patterns were discovered:\n\n';
+          for (const p of patterns) {
+            body += `- **Pattern:** ${p.patternKey}\n  - Frequency: ${p.frequency}\n  - File types: ${p.fileTypes.join(', ')}\n\n`;
+          }
+        }
+
+        await gh.postOrUpdateComment(issueNumber, '<!-- discovered-patterns -->', body);
+      } catch (err) {
+        logger.error(`DiscoverSubscriber failed: ${err instanceof Error ? err.message : err}`);
+      }
+    },
+  };
+  subscribers.push(discoverSubscriber);
 
   bus.registerAll(subscribers);
 
@@ -369,9 +474,9 @@ function getToken(): string {
 
 /**
  * Build the agent configuration from environment variables and defaults.
- * @param envVar
- * @param fallback
- * @returns A fully populated AgentConfig object.
+ * @param envVar - Environment variable value (may be undefined).
+ * @param fallback - Default value if envVar is not set or not a valid integer.
+ * @returns The parsed integer or the fallback value.
  */
 function parseEnvInt(envVar: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(envVar || String(fallback), 10);

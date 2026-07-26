@@ -40,6 +40,7 @@ export const ReviewIssueSchema = z.object({
   line: z.number().int().positive(),
   message: z.string().min(5, 'Issue message must be at least 5 characters'),
   suggestion: z.string().optional(),
+  suggestionCode: z.string().optional(),
   inline: z.boolean().optional().default(false),
 });
 

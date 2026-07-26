@@ -54,6 +54,8 @@ export interface ReviewIssue {
   message: string;
   /** Suggested fix for the issue */
   suggestion?: string;
+  /** Raw replacement code for GitHub suggestion diff block */
+  suggestionCode?: string;
   /** Whether this should be posted as an inline review comment */
   inline?: boolean;
   /** Whether this issue was reported in a previous iteration */
@@ -412,6 +414,8 @@ export interface IssueFinding extends BaseFinding {
   message: string;
   /** Suggested fix */
   suggestion?: string;
+  /** Raw replacement code for GitHub suggestion diff block */
+  suggestionCode?: string;
   /** Whether to post inline */
   inline?: boolean;
   /** Whether previously reported */

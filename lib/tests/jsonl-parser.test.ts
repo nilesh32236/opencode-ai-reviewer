@@ -381,7 +381,7 @@ describe('jsonl-parser', () => {
 
       const comments = buildInlineComments(result);
       expect(comments).toHaveLength(1);
-      expect(comments[0].body).toContain('Suggestion:');
+      expect(comments[0].body).toContain('How to fix:');
       expect(comments[0].body).toContain('Change "teh" to "the"');
     });
 

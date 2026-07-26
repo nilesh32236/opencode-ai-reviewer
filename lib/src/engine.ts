@@ -70,7 +70,7 @@ export class ReviewEngine {
    *
    * @param pr - Pull request context with changed files.
    * @param iteration - Optional fix iteration index (0-indexed).
-   * @param _iteration
+   * @param _iteration - Optional fix iteration index (0-indexed).
    * @param promptFile - Optional custom review prompt file path.
    * @param promptExtra - Optional extra instructions appended to the review prompt.
    * @param timeoutMinutes - Optional timeout override per run.
@@ -151,9 +151,20 @@ export class ReviewEngine {
       );
     }
     const prContext = this.buildPRContextString(pr);
-    const baseContext = mcpDocs
-      ? prContext + '\n\n## Library Documentation\n' + mcpDocs
-      : prContext;
+    let openThreadsContext = '';
+    try {
+      openThreadsContext = await this.github.getOpenHumanThreads(pr.number);
+    } catch (err) {
+      core.warning(
+        `Failed to fetch open human threads: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    let baseContext = mcpDocs ? prContext + '\n\n## Library Documentation\n' + mcpDocs : prContext;
+
+    if (openThreadsContext) {
+      baseContext += '\n\n' + openThreadsContext;
+    }
 
     // Get relevant lessons and false-positive suppression rules from learning store (with caching)
     let lessons: string[] | undefined;
@@ -240,6 +251,9 @@ export class ReviewEngine {
     const concurrencyLimit = 3;
     const batchResults: ReviewResult[] = [];
     for (let i = 0; i < fileBatches.length; i += concurrencyLimit) {
+      if (i > 0) {
+        await new Promise((r) => setTimeout(r, 150));
+      }
       const chunk = fileBatches.slice(i, i + concurrencyLimit);
       const chunkOutputs = await Promise.all(
         chunk.map(async (batch, chunkIdx) => {
@@ -390,8 +404,8 @@ export class ReviewEngine {
    * @param contextMarkdown - PR context as markdown string.
    * @param cachedPR - Optional pre-fetched PR context to avoid redundant API calls.
    * @param timeoutMinutes - Optional timeout override (defaults to config.timeoutMinutes).
-   * @param issues
-   * @param verificationError
+   * @param issues - Optional review issues from previous fix iteration for context.
+   * @param verificationError - Optional verification error message from previous iteration.
    * @param workingDirectory - Optional working directory for cloned repo (tempDir).
    * @returns Fix result indicating whether changes were made, files changed, and stuck/summary info.
    */
@@ -576,7 +590,7 @@ export class ReviewEngine {
    * Analyze a GitHub Issue against the codebase and generate an Implementation Plan.
    *
    * @param issueNumber - Issue number being analyzed.
-   * @param _issueNumber
+   * @param _issueNumber - Issue number being analyzed.
    * @param issueContextMarkdown - Issue details (Title, body, labels, comments).
    * @param timeoutMinutes - Execution timeout in minutes.
    * @param workingDirectory - Optional working directory (tempDir).
@@ -673,6 +687,7 @@ export class ReviewEngine {
    * @param prContext - Assembled PR context string.
    * @param workDir - Working directory for the workspace.
    * @param timeoutMinutes - Optional timeout in minutes for verification.
+   * @param prNumber - Optional PR number for logging context.
    * @returns Filtered ReviewResult with verified issues.
    */
   private async verifyReviewResult(
@@ -925,7 +940,10 @@ export class ReviewEngine {
 
     parts.push(`## PR #${pr.number}: ${pr.title}`);
     parts.push('');
-    parts.push(`**Author:** ${pr.author}`);
+    const authorStr = pr.author.endsWith('[bot]')
+      ? `${pr.author} (automated/bot PR)`
+      : `@${pr.author}`;
+    parts.push(`**Author:** ${authorStr}`);
     parts.push(`**Branch:** \`${pr.headRef}\` → \`${pr.baseRef}\``);
     if (pr.labels.length > 0) {
       parts.push(`**Labels:** ${pr.labels.join(', ')}`);
@@ -1104,8 +1122,9 @@ function detectLibrariesFromManifests(rootDir: string): string[] | null {
  * Detect libraries from a list of changed files.
  * First tries manifest-based detection (package.json, composer.json, etc.)
  * if rootDir is provided. Falls back to path/file-extension heuristics.
- * @param files
- * @param rootDir
+ * @param files - List of changed file paths.
+ * @param rootDir - Optional root directory for manifest-based detection.
+ * @returns Array of detected library names.
  */
 function detectLibraries(files: string[], rootDir?: string): string[] {
   // Prefer manifest-based detection when rootDir is available
@@ -1211,8 +1230,9 @@ function detectLibraries(files: string[], rootDir?: string): string[] {
  * Detect libraries from a target directory.
  * First tries manifest-based detection if rootDir is provided.
  * Falls back to directory-name heuristics.
- * @param dir
- * @param rootDir
+ * @param dir - Target directory path.
+ * @param rootDir - Optional root directory for manifest-based detection.
+ * @returns Array of detected library names.
  */
 function detectLibrariesFromDir(dir: string, rootDir?: string): string[] {
   // Prefer manifest-based detection when rootDir is available
