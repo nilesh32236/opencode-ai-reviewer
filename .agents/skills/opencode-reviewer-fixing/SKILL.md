@@ -13,7 +13,7 @@ Use this skill to guide the agent when fixing codebase bugs, responding to issue
 
 When addressing audit findings or issues:
 - **Reference specific paths and lines**: Locate the exact file and line numbers specified in the audit log or issue description.
-- **Understand the underlying rule**: Review `.audit-prompts/` markdown templates to understand why a finding is flagged as a violation (e.g. strict type safety, shell escapes, DB lock handling).
+- **Understand the underlying rule**: Review `prompts/audit-categories/` markdown templates to understand why a finding is flagged as a violation (e.g. strict type safety, shell escapes, DB lock handling).
 
 ---
 

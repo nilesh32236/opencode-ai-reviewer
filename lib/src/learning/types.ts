@@ -34,6 +34,17 @@ export interface FindingInput {
    *
    */
   suggestion?: string;
+  durationMs?: number;
+  tokensUsed?: number;
+  commentId?: number; // GitHub comment ID
+}
+
+/** Aggregated telemetry statistics for review executions. */
+export interface TelemetryStats {
+  avgDurationMs: number;
+  totalReviews: number;
+  totalTokensUsed: number;
+  avgTokensPerReview: number;
 }
 
 /** Input data for recording a feedback signal on a finding. */
@@ -182,9 +193,12 @@ export interface LearningRepository {
    */
   recordQuality(quality: LearningQuality): Promise<void>;
   /**
+   * Retrieve aggregated telemetry statistics for review executions.
    *
-   * @param limit
+   * @param sinceDays - Optional filter to only include reviews from the last N days.
+   * @returns TelemetryStats with average duration, total reviews, and token usage.
    */
+  getTelemetryStats(sinceDays?: number): Promise<TelemetryStats>;
   getQualityTrends(limit?: number): Promise<Array<Record<string, unknown>>>;
   /**
    *

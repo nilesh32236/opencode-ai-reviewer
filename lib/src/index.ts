@@ -36,7 +36,7 @@ export type { SubscriberHealth } from './event-bus/bus.js';
 export { EventRouter } from './event-bus/router.js';
 export { LearningStore } from './learning/store.js';
 export { connectDb } from './learning/db.js';
-export type { LearningRepository } from './learning/types.js';
+export type { LearningRepository, TelemetryStats } from './learning/types.js';
 export { getDbPath } from './learning/schema.js';
 export { withRetry, withRetryAndTimeout } from './utils/retry.js';
 export { DEFAULT_ALLOWLIST, validateRunChecksCommand } from './utils/command.js';

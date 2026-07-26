@@ -4,7 +4,13 @@ import * as path from 'path';
 import type { LearningQuality } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
 import { generateId } from './schema.js';
-import type { FeedbackInput, FindingInput, LearningRepository, PatternInput } from './types.js';
+import type {
+  FeedbackInput,
+  FindingInput,
+  LearningRepository,
+  PatternInput,
+  TelemetryStats,
+} from './types.js';
 
 interface FindingRow {
   id: string;
@@ -15,6 +21,9 @@ interface FindingRow {
   line?: number;
   message: string;
   suggestion?: string;
+  duration_ms?: number;
+  tokens_used?: number;
+  comment_id?: number;
   created_at: string;
 }
 
@@ -34,6 +43,8 @@ interface ReviewQualityRow {
   accuracy_score: number;
   coverage_score: number;
   consistency_score: number;
+  duration_ms?: number;
+  tokens_used?: number;
   created_at: string;
 }
 
@@ -258,6 +269,9 @@ export class JsonDatabase implements LearningRepository {
       line: finding.line,
       message: finding.message,
       suggestion: finding.suggestion,
+      duration_ms: finding.durationMs,
+      tokens_used: finding.tokensUsed,
+      comment_id: finding.commentId,
       created_at: new Date().toISOString(),
     });
     this.save();
@@ -282,6 +296,9 @@ export class JsonDatabase implements LearningRepository {
         line: f.line,
         message: f.message,
         suggestion: f.suggestion,
+        duration_ms: f.durationMs,
+        tokens_used: f.tokensUsed,
+        comment_id: f.commentId,
         created_at: new Date().toISOString(),
       });
     }
@@ -543,17 +560,28 @@ export class JsonDatabase implements LearningRepository {
       accuracy_score: quality.accuracyScore,
       coverage_score: quality.coverageScore,
       consistency_score: quality.consistencyScore,
+      duration_ms: quality.durationMs,
+      tokens_used: quality.tokensUsed,
       created_at: new Date().toISOString(),
     });
     this.save();
   }
 
   /**
+   * Retrieve recent review quality scores, excluding telemetry-only rows.
    *
-   * @param limit
+   * @param limit - Maximum number of results (default: 20).
+   * @returns Array of review_quality rows with at least one non-zero score.
    */
   async getQualityTrends(limit = 20): Promise<Array<Record<string, unknown>>> {
     return [...this.data.review_quality]
+      .filter(
+        (r) =>
+          r.actionability_score > 0 ||
+          r.accuracy_score > 0 ||
+          r.coverage_score > 0 ||
+          r.consistency_score > 0,
+      )
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
       .slice(0, limit) as unknown as Array<Record<string, unknown>>;
   }
@@ -704,8 +732,30 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
+   * Retrieve aggregated telemetry statistics for review executions.
    *
+   * @param sinceDays - Optional filter to only include reviews from the last N days.
+   * @returns TelemetryStats with average duration, total reviews, and token usage.
    */
+  async getTelemetryStats(sinceDays?: number): Promise<TelemetryStats> {
+    const cutoff = sinceDays ? Date.now() - sinceDays * 24 * 60 * 60 * 1000 : 0;
+    const reviews = this.data.review_quality.filter(
+      (r) => r.duration_ms != null && (!cutoff || new Date(r.created_at).getTime() >= cutoff),
+    );
+    if (reviews.length === 0) {
+      return { avgDurationMs: 0, totalReviews: 0, totalTokensUsed: 0, avgTokensPerReview: 0 };
+    }
+    const totalDuration = reviews.reduce((sum, r) => sum + (r.duration_ms ?? 0), 0);
+    const totalTokens = reviews.reduce((sum, r) => sum + (r.tokens_used ?? 0), 0);
+    return {
+      avgDurationMs: Math.round(totalDuration / reviews.length),
+      totalReviews: reviews.length,
+      totalTokensUsed: totalTokens,
+      avgTokensPerReview: Math.round(totalTokens / reviews.length),
+    };
+  }
+
+>>>>>>> origin/main
   async resetCounter(): Promise<void> {
     const entry = this.data.meta_review_counter.find((x) => x.id === 1);
     if (entry) {

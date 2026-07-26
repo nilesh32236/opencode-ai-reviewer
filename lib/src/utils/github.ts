@@ -28,6 +28,63 @@ export interface PaginatedResult<T> {
 }
 
 /**
+ * Information about a single review comment thread on a PR.
+ */
+/** Raw GraphQL response shape for a review thread node. */
+interface ReviewThreadNode {
+  id: string;
+  isResolved: boolean;
+  comments: {
+    nodes: Array<{
+      id: string;
+      databaseId: number;
+      body: string;
+      path: string;
+      line: number | null;
+      originalLine?: number | null;
+      author: { login: string };
+      createdAt: string;
+    }>;
+  };
+}
+
+/** Raw GraphQL response for the getReviewThreads query. */
+interface ReviewThreadsQueryResponse {
+  repository: {
+    pullRequest: {
+      reviewThreads: {
+        pageInfo: { hasNextPage: boolean; endCursor: string | null };
+        nodes: ReviewThreadNode[];
+      };
+    };
+  };
+}
+
+export interface ReviewThreadInfo {
+  /** GraphQL node ID of the thread (used for resolve mutation). */
+  threadId: string;
+  /** Whether the thread is resolved. */
+  isResolved: boolean;
+  /** The first (root) comment in the thread. */
+  firstComment: {
+    /** GraphQL node ID of the comment (used for minimize mutation). */
+    commentId: string;
+    /** REST API database ID of the comment. */
+    databaseId: number;
+    /** Comment body markdown. */
+    body: string;
+    /** File path the comment is on. */
+    filePath: string;
+    /** Line number the comment is on (or null if outdated/unassigned). */
+    lineNumber: number | null;
+    /** GitHub login of the comment author. */
+    author: string;
+    /** ISO 8601 creation timestamp. */
+    createdAt: string;
+  };
+}
+
+/**
  * Helper for GitHub REST API interactions (PRs, issues, reviews, comments, labels).
  * Handles authentication, rate-limit warnings, pagination, and automatic retry
  * with exponential backoff for transient errors.
@@ -457,7 +514,18 @@ export class GitHubHelper {
     commitSha: string,
     result: ReviewResult,
     postInlineComments = true,
-  ): Promise<{ success: boolean; method: 'full' | 'partial' | 'body-only' | 'failed' }> {
+  ): Promise<{
+    success: boolean;
+    method: 'full' | 'partial' | 'body-only' | 'failed';
+    reviewId?: number;
+    commentIds?: Array<{
+      file: string;
+      line: number;
+      commentId: number;
+      nodeId?: string;
+      side?: string;
+    }>;
+  }> {
     const inlineComments = postInlineComments
       ? buildInlineComments(result, await this.getDiffLines(prNumber))
       : [];
@@ -470,9 +538,18 @@ export class GitHubHelper {
       : result.issues;
     const body = this.buildReviewBody({ ...result, issues: issuesForBody });
 
+    const commentIds: Array<{
+      file: string;
+      line: number;
+      commentId: number;
+      nodeId?: string;
+      side?: string;
+    }> = [];
+
     // Post the review body first (without inline comments)
+    let reviewId: number | undefined;
     try {
-      await this.api(`/pulls/${prNumber}/reviews`, {
+      const reviewResponse = await this.api<{ id: number }>(`/pulls/${prNumber}/reviews`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -481,13 +558,14 @@ export class GitHubHelper {
           body,
         }),
       });
+      reviewId = reviewResponse.id;
     } catch (err) {
       core.warning(`Body-only review failed: ${err}`);
       return { success: false, method: 'failed' };
     }
 
     if (inlineComments.length === 0) {
-      return { success: true, method: 'body-only' };
+      return { success: true, method: 'body-only', reviewId };
     }
 
     // Post each inline comment individually with fallback for out-of-diff comments
@@ -495,16 +573,26 @@ export class GitHubHelper {
 
     for (const comment of inlineComments) {
       try {
-        await this.api(`/pulls/${prNumber}/comments`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            commit_id: commitSha,
-            path: comment.path,
-            line: comment.line,
-            side: comment.side,
-            body: comment.body,
-          }),
+        const commentResponse = await this.api<{ id: number; node_id: string }>(
+          `/pulls/${prNumber}/comments`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              commit_id: commitSha,
+              path: comment.path,
+              line: comment.line,
+              side: comment.side,
+              body: comment.body,
+            }),
+          },
+        );
+        commentIds.push({
+          file: comment.path,
+          line: comment.line,
+          commentId: commentResponse.id,
+          nodeId: commentResponse.node_id,
+          side: comment.side,
         });
       } catch (err) {
         allSucceeded = false;
@@ -528,7 +616,7 @@ export class GitHubHelper {
       }
     }
 
-    return { success: true, method: allSucceeded ? 'full' : 'partial' };
+    return { success: true, method: allSucceeded ? 'full' : 'partial', reviewId, commentIds };
   }
 
   // ─── Comment Operations ─────────────────────────────────
@@ -1061,6 +1149,248 @@ export class GitHubHelper {
         );
       }
     }
+  }
+
+  // ─── GraphQL Operations ─────────────────────────────────
+
+  private get graphqlUrl(): string {
+    if (this.apiUrl.includes('api.github.com')) {
+      return 'https://api.github.com/graphql';
+    }
+    const url = new URL(this.apiUrl);
+    return `${url.origin}/api/graphql`;
+  }
+
+  private async graphql<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
+    const execute = async (): Promise<T> => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30_000);
+      try {
+        const response = await fetch(this.graphqlUrl, {
+          method: 'POST',
+          signal: controller.signal,
+          headers: {
+            Authorization: `Bearer ${this.token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ query, variables }),
+        });
+
+        if (!response.ok) {
+          const body = await response.text();
+          const err = new Error(`GitHub GraphQL API ${response.status}: ${body}`);
+          (err as Error & { status: number }).status = response.status;
+          throw err;
+        }
+
+        const result = (await response.json()) as {
+          data?: T;
+          errors?: Array<{ message: string }>;
+        };
+        if (result.errors) {
+          throw new Error(`GraphQL error: ${result.errors.map((e) => e.message).join(', ')}`);
+        }
+        return result.data as T;
+      } finally {
+        clearTimeout(timeout);
+      }
+    };
+
+    return this.circuitBreaker.call(() =>
+      withRetry(execute, {
+        retryableStatuses: [429, 500, 502, 503, 504],
+        retryUnknownStatus: true,
+      }),
+    );
+  }
+
+  private currentUserLogin: string | null = null;
+
+  private async getCurrentUser(): Promise<string> {
+    if (this.currentUserLogin) return this.currentUserLogin;
+    if (process.env.GITHUB_ACTOR) {
+      this.currentUserLogin = process.env.GITHUB_ACTOR;
+      return this.currentUserLogin;
+    }
+
+    const executeUser = async (): Promise<string> => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10_000);
+      try {
+        const userUrl = `${this.apiUrl}/user`;
+        const userRes = await fetch(userUrl, {
+          signal: controller.signal,
+          headers: {
+            Authorization: `Bearer ${this.token}`,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+          },
+        });
+        if (userRes.ok) {
+          const user = (await userRes.json()) as { login: string };
+          return user.login;
+        }
+        if (userRes.status === 401 || userRes.status === 403) {
+          const appUrl = `${this.apiUrl}/app`;
+          const appRes = await fetch(appUrl, {
+            signal: controller.signal,
+            headers: {
+              Authorization: `Bearer ${this.token}`,
+              Accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+            },
+          });
+          if (appRes.ok) {
+            const app = (await appRes.json()) as { slug?: string; name?: string };
+            const slug = app.slug || app.name?.toLowerCase().replace(/\s+/g, '-');
+            if (slug) return `${slug}[bot]`;
+          }
+        }
+        throw new Error(`Failed to resolve user/app identity: ${userRes.status}`);
+      } finally {
+        clearTimeout(timeout);
+      }
+    };
+
+    this.currentUserLogin = await this.circuitBreaker.call(() =>
+      withRetry(executeUser, { retryableStatuses: [429, 500, 502, 503, 504] }),
+    );
+    return this.currentUserLogin;
+  }
+
+  /**
+   * Fetch all review comment threads on a PR, including thread IDs needed
+   * for GraphQL resolve mutations.
+   *
+   * Uses the GraphQL API since thread IDs are not available via REST.
+   * Handles pagination automatically.
+   *
+   * @param prNumber - PR number.
+   * @returns Array of review thread info objects.
+   */
+  async getReviewThreads(prNumber: number): Promise<ReviewThreadInfo[]> {
+    const [owner, repo] = this.repo.split('/') as [string, string];
+    const threads: ReviewThreadInfo[] = [];
+    let cursor: string | null = null;
+    let hasNextPage = true;
+    let pageCount = 0;
+    const maxPages = 50;
+
+    while (hasNextPage && pageCount < maxPages) {
+      pageCount++;
+      const data = (await this.graphql(
+        `
+        query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+          repository(owner: $owner, name: $repo) {
+            pullRequest(number: $number) {
+              reviewThreads(first: 100, after: $cursor) {
+                pageInfo { hasNextPage, endCursor }
+                nodes {
+                  id
+                  isResolved
+                  comments(first: 1) {
+                    nodes {
+                      id
+                      databaseId
+                      body
+                      path
+                      line
+                      originalLine
+                      author { login }
+                      createdAt
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        `,
+        { owner, repo, number: prNumber, cursor },
+      )) as ReviewThreadsQueryResponse;
+
+      const threadsData = data.repository.pullRequest.reviewThreads;
+      for (const node of threadsData.nodes) {
+        const comment = node.comments.nodes[0];
+        if (!comment) continue;
+        threads.push({
+          threadId: node.id,
+          isResolved: node.isResolved,
+          firstComment: {
+            commentId: comment.id,
+            databaseId: comment.databaseId,
+            body: comment.body,
+            filePath: comment.path,
+            lineNumber: comment.line ?? comment.originalLine ?? null,
+            author: comment.author.login,
+            createdAt: comment.createdAt,
+          },
+        });
+      }
+
+      hasNextPage = threadsData.pageInfo.hasNextPage;
+      cursor = threadsData.pageInfo.endCursor;
+    }
+
+    return threads;
+  }
+
+  /**
+   * Resolve a review comment thread using a GraphQL mutation.
+   *
+   * @param threadId - The GraphQL node ID of the thread to resolve.
+   */
+  async resolveReviewThread(threadId: string): Promise<void> {
+    await this.graphql(
+      `
+      mutation($threadId: ID!) {
+        resolveReviewThread(input: { threadId: $threadId }) {
+          thread { isResolved }
+        }
+      }
+      `,
+      { threadId },
+    );
+  }
+
+  /**
+   * Minimize (hide) a review comment using a GraphQL mutation.
+   * The comment is set as minimized with the given classifier reason.
+   *
+   * @param commentId - The GraphQL node ID of the comment to minimize.
+   * @param classifier - Reason classifier (SPAM, ABUSE, OFF_TOPIC, OUTDATED, RESOLVED, DUPLICATE).
+   */
+  async minimizeReviewComment(
+    commentId: string,
+    classifier: 'SPAM' | 'ABUSE' | 'OFF_TOPIC' | 'OUTDATED' | 'RESOLVED' | 'DUPLICATE',
+  ): Promise<void> {
+    await this.graphql(
+      `
+      mutation($commentId: ID!, $classifier: ReportedContentClassifiers!) {
+        minimizeComment(input: { subjectId: $commentId, classifier: $classifier }) {
+          minimizedComment { isMinimized }
+        }
+      }
+      `,
+      { commentId, classifier },
+    );
+  }
+
+  /**
+   * Fetch only review threads where the first comment is from the bot user
+   * (the authenticated user of this GitHubHelper instance).
+   *
+   * @param prNumber - PR number.
+   * @returns Array of review thread info objects authored by the bot.
+   */
+  async getBotReviewThreads(prNumber: number): Promise<ReviewThreadInfo[]> {
+    const rawBotLogin = await this.getCurrentUser();
+    const botLogin = rawBotLogin.toLowerCase().replace(/\[bot\]$/, '');
+    const allThreads = await this.getReviewThreads(prNumber);
+    return allThreads.filter((t) => {
+      const author = t.firstComment.author.toLowerCase().replace(/\[bot\]$/, '');
+      return author === botLogin;
+    });
   }
 
   // ─── Private Helpers ────────────────────────────────────
