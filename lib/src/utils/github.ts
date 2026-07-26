@@ -911,10 +911,13 @@ export class GitHubHelper {
    * @param remove - Labels to remove.
    */
   async setLabels(issueNumber: number, add: string[], remove: string[]): Promise<void> {
-    const operations = [
-      ...add.map((l) => () => this.addLabels(issueNumber, [l])),
-      ...remove.map((l) => () => this.removeLabel(issueNumber, l)),
-    ];
+    const operations: Array<() => Promise<void>> = [];
+    if (add.length > 0) {
+      operations.push(() => this.addLabels(issueNumber, add));
+    }
+    for (const l of remove) {
+      operations.push(() => this.removeLabel(issueNumber, l));
+    }
     for (let i = 0; i < operations.length; i += 5) {
       const results = await Promise.allSettled(operations.slice(i, i + 5).map((fn) => fn()));
       for (const result of results) {

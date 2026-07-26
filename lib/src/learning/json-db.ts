@@ -307,7 +307,6 @@ export class JsonDatabase implements LearningRepository {
       });
     }
     this.save();
-    this.flushSync();
     return ids;
   }
 
@@ -645,7 +644,7 @@ export class JsonDatabase implements LearningRepository {
     for (const pattern of patterns) {
       const existing = this.data.patterns.find((p) => p.pattern_key === pattern.patternKey);
       if (existing) {
-        existing.frequency += 1;
+        existing.frequency += pattern.frequency;
         existing.last_seen = new Date().toISOString();
         existing.file_types = pattern.fileTypes.join(',');
       } else {

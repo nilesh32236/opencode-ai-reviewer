@@ -61,6 +61,9 @@ export async function applyMigrations(runner: MigrationRunner): Promise<void> {
     await runner.exec(`CREATE INDEX IF NOT EXISTS idx_findings_pr_number ON findings(pr_number)`);
     await runner.exec(`CREATE INDEX IF NOT EXISTS idx_findings_type ON findings(type)`);
     await runner.exec(`CREATE INDEX IF NOT EXISTS idx_findings_created_at ON findings(created_at)`);
+    await runner.exec(
+      `CREATE INDEX IF NOT EXISTS idx_findings_pr_created ON findings(pr_number, created_at DESC)`,
+    );
 
     await runner.exec(`CREATE INDEX IF NOT EXISTS idx_feedback_finding_id ON feedback(finding_id)`);
     await runner.exec(`CREATE INDEX IF NOT EXISTS idx_feedback_pr_number ON feedback(pr_number)`);

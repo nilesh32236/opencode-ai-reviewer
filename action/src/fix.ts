@@ -712,19 +712,20 @@ async function runVerification(
   program: string,
   args: string[],
 ): Promise<{ exitCode: number; output: string }> {
-  let output = '';
+  const chunks: Buffer[] = [];
   const execOptions = {
     listeners: {
       stdout: (data: Buffer) => {
-        output += data.toString();
+        chunks.push(data);
       },
       stderr: (data: Buffer) => {
-        output += data.toString();
+        chunks.push(data);
       },
     },
     ignoreReturnCode: true,
   };
   const exitCode = await exec.exec(program, args, execOptions);
+  const output = Buffer.concat(chunks).toString('utf-8');
   return { exitCode, output };
 }
 

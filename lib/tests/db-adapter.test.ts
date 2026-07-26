@@ -194,6 +194,82 @@ describe('JsonDatabase', () => {
       });
       expect(jsonDb.data.patterns[0].frequency).toBe(2);
     });
+
+    it('recordPatterns with new patterns sets correct frequency', async () => {
+      await jsonDb.recordPatterns([
+        {
+          patternKey: 'key-a',
+          messageCluster: ['msg a'],
+          frequency: 5,
+          fileTypes: ['.ts'],
+        },
+        {
+          patternKey: 'key-b',
+          messageCluster: ['msg b'],
+          frequency: 3,
+          fileTypes: ['.js'],
+        },
+      ]);
+      expect(jsonDb.data.patterns).toHaveLength(3);
+      const patternA = jsonDb.data.patterns.find((p) => p.pattern_key === 'key-a');
+      const patternB = jsonDb.data.patterns.find((p) => p.pattern_key === 'key-b');
+      expect(patternA?.frequency).toBe(5);
+      expect(patternB?.frequency).toBe(3);
+    });
+
+    it('recordPatterns increments frequency on existing patterns', async () => {
+      await jsonDb.recordPattern({
+        patternKey: 'freq-key',
+        messageCluster: ['msg'],
+        frequency: 2,
+        fileTypes: ['.ts'],
+      });
+      const before = jsonDb.data.patterns.find((p) => p.pattern_key === 'freq-key');
+      expect(before?.frequency).toBe(2);
+      await jsonDb.recordPatterns([
+        {
+          patternKey: 'freq-key',
+          messageCluster: ['msg'],
+          frequency: 3,
+          fileTypes: ['.ts'],
+        },
+      ]);
+      const after = jsonDb.data.patterns.find((p) => p.pattern_key === 'freq-key');
+      expect(after?.frequency).toBe(5);
+    });
+
+    it('recordPatterns handles mixed new and existing patterns', async () => {
+      await jsonDb.recordPattern({
+        patternKey: 'existing-key',
+        messageCluster: ['msg'],
+        frequency: 10,
+        fileTypes: ['.ts'],
+      });
+      await jsonDb.recordPatterns([
+        {
+          patternKey: 'existing-key',
+          messageCluster: ['msg'],
+          frequency: 5,
+          fileTypes: ['.ts'],
+        },
+        {
+          patternKey: 'new-key',
+          messageCluster: ['msg new'],
+          frequency: 7,
+          fileTypes: ['.py'],
+        },
+      ]);
+      expect(jsonDb.data.patterns).toHaveLength(3);
+      const existing = jsonDb.data.patterns.find((p) => p.pattern_key === 'existing-key');
+      const newPattern = jsonDb.data.patterns.find((p) => p.pattern_key === 'new-key');
+      expect(existing?.frequency).toBe(15);
+      expect(newPattern?.frequency).toBe(7);
+    });
+
+    it('recordPatterns with empty array does nothing', async () => {
+      await jsonDb.recordPatterns([]);
+      expect(jsonDb.data.patterns).toHaveLength(1);
+    });
   });
 
   describe('get (single items)', () => {
@@ -504,6 +580,90 @@ describe('SqliteAdapter', () => {
 
     const findings = await adapter.getFindings();
     expect(findings).toHaveLength(0);
+  });
+
+  it('recordPatterns with new patterns sets correct frequency', async () => {
+    await adapter.recordPatterns([
+      {
+        patternKey: 'key-a',
+        messageCluster: ['msg a'],
+        frequency: 5,
+        fileTypes: ['.ts'],
+      },
+      {
+        patternKey: 'key-b',
+        messageCluster: ['msg b'],
+        frequency: 3,
+        fileTypes: ['.js'],
+      },
+    ]);
+    expect(await adapter.getPatterns(0)).toHaveLength(2);
+  });
+
+  it('recordPatterns increments frequency on existing patterns', async () => {
+    await adapter.recordPatterns([
+      {
+        patternKey: 'freq-key',
+        messageCluster: ['msg'],
+        frequency: 2,
+        fileTypes: ['.ts'],
+      },
+    ]);
+    const patterns1 = await adapter.getPatterns(0);
+    expect(
+      patterns1.find((p: Record<string, unknown>) => p.pattern_key === 'freq-key')?.frequency,
+    ).toBe(2);
+
+    await adapter.recordPatterns([
+      {
+        patternKey: 'freq-key',
+        messageCluster: ['msg'],
+        frequency: 3,
+        fileTypes: ['.ts'],
+      },
+    ]);
+    const patterns2 = await adapter.getPatterns(0);
+    expect(
+      patterns2.find((p: Record<string, unknown>) => p.pattern_key === 'freq-key')?.frequency,
+    ).toBe(5);
+  });
+
+  it('recordPatterns handles mixed new and existing patterns', async () => {
+    await adapter.recordPatterns([
+      {
+        patternKey: 'existing-key',
+        messageCluster: ['msg'],
+        frequency: 10,
+        fileTypes: ['.ts'],
+      },
+    ]);
+    await adapter.recordPatterns([
+      {
+        patternKey: 'existing-key',
+        messageCluster: ['msg'],
+        frequency: 5,
+        fileTypes: ['.ts'],
+      },
+      {
+        patternKey: 'new-key',
+        messageCluster: ['msg new'],
+        frequency: 7,
+        fileTypes: ['.py'],
+      },
+    ]);
+    const patterns = await adapter.getPatterns(0);
+    expect(patterns).toHaveLength(2);
+    const existing = patterns.find(
+      (p: Record<string, unknown>) => p.pattern_key === 'existing-key',
+    );
+    const newPattern = patterns.find((p: Record<string, unknown>) => p.pattern_key === 'new-key');
+    expect(existing?.frequency).toBe(15);
+    expect(newPattern?.frequency).toBe(7);
+  });
+
+  it('recordPatterns with empty array does nothing', async () => {
+    await adapter.recordPatterns([]);
+    expect(await adapter.getPatterns(0)).toHaveLength(0);
   });
 });
 
