@@ -15,6 +15,11 @@ import { buildMetaReviewPrompt } from './prompts.js';
  * on false-positive rates.
  */
 export class MetaReviewEngine {
+  /**
+   *
+   * @param store
+   * @param patternDetector
+   */
   constructor(
     private store: LearningStore,
     private patternDetector?: PatternDetector,
@@ -24,6 +29,16 @@ export class MetaReviewEngine {
    * Execute a meta-review: build the prompt, run the LLM, parse results,
    * record quality scores, and optionally discover patterns or add prompt
    * overrides based on false-positive rate.
+   * @param context
+   * @param context.prNumber
+   * @param context.reviewSummary
+   * @param context.findingsCount
+   * @param context.issuesCount
+   * @param context.strengthsCount
+   * @param context.hasVerdict
+   * @param context.fileCount
+   * @param context.workingDir
+   * @param signal
    */
   async runMetaReview(
     context: {
@@ -155,9 +170,21 @@ export class MetaReviewEngine {
  * meta-review too frequently.
  */
 export class MetaReviewSubscriber implements Subscriber {
+  /**
+   *
+   */
   name = 'MetaReviewSubscriber';
+  /**
+   *
+   */
   subscribedEvents = ['review.completed'];
 
+  /**
+   *
+   * @param engine
+   * @param store
+   * @param interval
+   */
   constructor(
     private engine: MetaReviewEngine,
     private store: LearningStore,
@@ -167,6 +194,8 @@ export class MetaReviewSubscriber implements Subscriber {
   /**
    * Handle the review.completed event — checks the meta-review interval
    * and triggers runMetaReview if needed.
+   * @param event
+   * @param signal
    */
   async handle(event: GitHubEvent, signal?: AbortSignal): Promise<void> {
     if (signal?.aborted) return;

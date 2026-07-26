@@ -35,6 +35,7 @@ export function context7Server(): MCPServerConfig {
 /**
  * GitHub MCP server — provides repository-aware context.
  * Reads files, searches code, understands PR structure.
+ * @param token
  */
 export const githubMCPServer = (token: string): MCPServerConfig => ({
   name: 'github',
@@ -49,6 +50,7 @@ export const githubMCPServer = (token: string): MCPServerConfig => ({
  * Example remote MCP server configuration.
  * Connects to a remote MCP service via HTTP SSE transport.
  * Use `environment` to pass authentication headers.
+ * @param url
  */
 export function exampleRemoteServer(url = 'https://mcp.example.com/sse'): MCPServerConfig {
   return {
@@ -62,6 +64,7 @@ export function exampleRemoteServer(url = 'https://mcp.example.com/sse'): MCPSer
 /**
  * Default MCP configuration for typical use.
  * Includes Context7 for docs.
+ * @param githubToken
  */
 export function getDefaultMCPServers(githubToken: string): MCPServerConfig[] {
   const servers: MCPServerConfig[] = [context7Server()];

@@ -369,6 +369,8 @@ function getToken(): string {
 
 /**
  * Build the agent configuration from environment variables and defaults.
+ * @param envVar
+ * @param fallback
  * @returns A fully populated AgentConfig object.
  */
 function parseEnvInt(envVar: string | undefined, fallback: number): number {

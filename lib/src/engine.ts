@@ -69,11 +69,13 @@ export class ReviewEngine {
    *
    * @param pr - Pull request context with changed files.
    * @param iteration - Optional fix iteration index (0-indexed).
+   * @param _iteration
    * @param promptFile - Optional custom review prompt file path.
    * @param promptExtra - Optional extra instructions appended to the review prompt.
    * @param timeoutMinutes - Optional timeout override per run.
    * @param previousFindings - Optional findings from previous fix iterations.
    * @param workingDirectory - Optional working directory for cloned repo (tempDir).
+   * @param previousHeadSha
    * @returns Consolidated ReviewResult with deduplicated findings.
    */
   async reviewPR(
@@ -340,6 +342,8 @@ export class ReviewEngine {
    * @param contextMarkdown - PR context as markdown string.
    * @param cachedPR - Optional pre-fetched PR context to avoid redundant API calls.
    * @param timeoutMinutes - Optional timeout override (defaults to config.timeoutMinutes).
+   * @param issues
+   * @param verificationError
    * @param workingDirectory - Optional working directory for cloned repo (tempDir).
    * @returns Fix result indicating whether changes were made, files changed, and stuck/summary info.
    */
@@ -522,6 +526,7 @@ export class ReviewEngine {
    * Analyze a GitHub Issue against the codebase and generate an Implementation Plan.
    *
    * @param issueNumber - Issue number being analyzed.
+   * @param _issueNumber
    * @param issueContextMarkdown - Issue details (Title, body, labels, comments).
    * @param timeoutMinutes - Execution timeout in minutes.
    * @param workingDirectory - Optional working directory (tempDir).
@@ -1017,6 +1022,8 @@ function detectLibrariesFromManifests(rootDir: string): string[] | null {
  * Detect libraries from a list of changed files.
  * First tries manifest-based detection (package.json, composer.json, etc.)
  * if rootDir is provided. Falls back to path/file-extension heuristics.
+ * @param files
+ * @param rootDir
  */
 function detectLibraries(files: string[], rootDir?: string): string[] {
   // Prefer manifest-based detection when rootDir is available
@@ -1122,6 +1129,8 @@ function detectLibraries(files: string[], rootDir?: string): string[] {
  * Detect libraries from a target directory.
  * First tries manifest-based detection if rootDir is provided.
  * Falls back to directory-name heuristics.
+ * @param dir
+ * @param rootDir
  */
 function detectLibrariesFromDir(dir: string, rootDir?: string): string[] {
   // Prefer manifest-based detection when rootDir is available

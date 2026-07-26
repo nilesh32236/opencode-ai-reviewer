@@ -20,6 +20,10 @@ const VALID_TYPES: (FindingType | 'executive_summary')[] = [
 ];
 const VALID_SEVERITIES: Severity[] = ['critical', 'important', 'minor'];
 
+/**
+ *
+ * @param content
+ */
 export function stripMarkdownFences(content: string): string {
   return content
     .replace(/```[a-zA-Z0-9-]*\n?/g, '')
@@ -44,6 +48,10 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
   return parseJsonlString(content);
 }
 
+/**
+ *
+ * @param content
+ */
 export function parseJsonlString(content: string): ReviewResult {
   const sanitized = stripMarkdownFences(content);
   const lines = sanitized.split('\n').filter((line) => line.trim().length > 0);
@@ -57,9 +65,21 @@ export function parseJsonlString(content: string): ReviewResult {
 
   let executiveSummary:
     | {
+        /**
+         *
+         */
         purpose: string;
+        /**
+         *
+         */
         riskLevel: 'low' | 'medium' | 'high';
+        /**
+         *
+         */
         riskRationale: string;
+        /**
+         *
+         */
         breakingChanges: string[];
       }
     | undefined;
@@ -154,6 +174,9 @@ export function parseJsonlString(content: string): ReviewResult {
   };
 }
 
+/**
+ *
+ */
 export function emptyResult(): ReviewResult {
   return {
     summary: '',
@@ -255,6 +278,10 @@ function validateAndNormalize(obj: Record<string, unknown>): Finding {
   }
 }
 
+/**
+ *
+ * @param result
+ */
 export function buildReviewBody(result: ReviewResult): string {
   const parts: string[] = [];
 
@@ -293,13 +320,33 @@ export function buildReviewBody(result: ReviewResult): string {
   return parts.join('\n');
 }
 
+/**
+ *
+ */
 export interface InlineComment {
+  /**
+   *
+   */
   path: string;
+  /**
+   *
+   */
   line: number;
+  /**
+   *
+   */
   side: string;
+  /**
+   *
+   */
   body: string;
 }
 
+/**
+ *
+ * @param result
+ * @param diffLines
+ */
 export function buildInlineComments(
   result: ReviewResult,
   diffLines?: Set<string>,
@@ -354,6 +401,7 @@ export function buildInlineComments(
 /**
  * Heuristic to determine if a suggestion string looks like code rather than
  * a natural language description. Checks for common code patterns.
+ * @param suggestion
  */
 function looksLikeCode(suggestion: string): boolean {
   // Common code indicators

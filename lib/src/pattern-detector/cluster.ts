@@ -3,6 +3,7 @@ const WHITESPACE_REGEX = /\s+/;
 
 /**
  * Tokenize a message into a set of lowercase alphanumeric tokens (length > 2).
+ * @param message
  */
 function tokenize(message: string): Set<string> {
   return new Set(
@@ -17,6 +18,8 @@ function tokenize(message: string): Set<string> {
 /**
  * Compute Jaccard similarity between two sets: |intersection| / |union|.
  * Optimized to iterate over the smaller set.
+ * @param a
+ * @param b
  */
 function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
   if (a.size === 0 && b.size === 0) return 0;

@@ -77,6 +77,9 @@ interface MetaReviewCounterRow {
  * on process exit.
  */
 export class JsonDatabase implements LearningRepository {
+  /**
+   *
+   */
   public data: {
     findings: FindingRow[];
     feedback: FeedbackRow[];
@@ -90,6 +93,10 @@ export class JsonDatabase implements LearningRepository {
   private inTransaction = false;
   private writeTimeout: ReturnType<typeof setTimeout> | null = null;
 
+  /**
+   *
+   * @param filePath
+   */
   constructor(filePath: string) {
     this.filePath = filePath.endsWith('.db') ? filePath.replace(/\.db$/, '.json') : filePath;
     this.data = {
@@ -123,6 +130,9 @@ export class JsonDatabase implements LearningRepository {
     }
   }
 
+  /**
+   *
+   */
   public async flush(): Promise<void> {
     if (this.writeTimeout) {
       clearTimeout(this.writeTimeout);
@@ -131,6 +141,9 @@ export class JsonDatabase implements LearningRepository {
     await this.writeToDisk();
   }
 
+  /**
+   *
+   */
   public flushSync(): void {
     if (this.writeTimeout) {
       clearTimeout(this.writeTimeout);
@@ -146,6 +159,9 @@ export class JsonDatabase implements LearningRepository {
     }
   }
 
+  /**
+   *
+   */
   public save() {
     if (this.inTransaction) return;
     if (this.writeTimeout) clearTimeout(this.writeTimeout);
@@ -166,12 +182,24 @@ export class JsonDatabase implements LearningRepository {
     }
   }
 
+  /**
+   *
+   * @param _sql
+   */
   pragma(_sql: string): void {}
 
+  /**
+   *
+   * @param _sql
+   */
   exec(_sql: string): Promise<void> {
     return Promise.resolve();
   }
 
+  /**
+   *
+   * @param fn
+   */
   transaction<T extends (...args: unknown[]) => unknown>(fn: T): T {
     const self = this;
     const wrapper: (...args: unknown[]) => unknown = function (this: unknown, ...args: unknown[]) {
@@ -206,12 +234,19 @@ export class JsonDatabase implements LearningRepository {
     return wrapper as T;
   }
 
+  /**
+   *
+   */
   async close(): Promise<void> {
     this.flushSync();
   }
 
   // ─── LearningRepository implementation ───────────────────
 
+  /**
+   *
+   * @param finding
+   */
   async recordFinding(finding: FindingInput): Promise<string> {
     const id = finding.id || generateId();
     this.data.findings.push({
@@ -229,6 +264,10 @@ export class JsonDatabase implements LearningRepository {
     return id;
   }
 
+  /**
+   *
+   * @param findings
+   */
   async recordFindings(findings: FindingInput[]): Promise<string[]> {
     if (findings.length === 0) return [];
     const ids = findings.map(() => generateId());
@@ -251,6 +290,10 @@ export class JsonDatabase implements LearningRepository {
     return ids;
   }
 
+  /**
+   *
+   * @param prNumber
+   */
   async deleteFindings(prNumber: number): Promise<number> {
     this.data.feedback = this.data.feedback.filter((f) => f.pr_number !== prNumber);
     const fBefore = this.data.findings.length;
@@ -260,6 +303,11 @@ export class JsonDatabase implements LearningRepository {
     return fChanges;
   }
 
+  /**
+   *
+   * @param type
+   * @param limit
+   */
   async getFindingsByType(type: string, limit = 50): Promise<Array<Record<string, unknown>>> {
     return [...this.data.findings]
       .filter((f) => f.type === type)
@@ -267,6 +315,11 @@ export class JsonDatabase implements LearningRepository {
       .slice(0, limit) as unknown as Array<Record<string, unknown>>;
   }
 
+  /**
+   *
+   * @param prNumber
+   * @param limit
+   */
   async getFindings(prNumber?: number, limit = 100): Promise<Array<Record<string, unknown>>> {
     let results = [...this.data.findings].sort((a, b) => b.created_at.localeCompare(a.created_at));
     if (prNumber) {
@@ -275,6 +328,10 @@ export class JsonDatabase implements LearningRepository {
     return results.slice(0, limit) as unknown as Array<Record<string, unknown>>;
   }
 
+  /**
+   *
+   * @param feedback
+   */
   async recordFeedback(feedback: FeedbackInput): Promise<void> {
     this.data.feedback.push({
       id: generateId(),
@@ -287,6 +344,10 @@ export class JsonDatabase implements LearningRepository {
     this.save();
   }
 
+  /**
+   *
+   * @param feedbacks
+   */
   async recordFeedbackBatch(feedbacks: FeedbackInput[]): Promise<void> {
     if (feedbacks.length === 0) return;
     for (const fb of feedbacks) {
@@ -302,6 +363,11 @@ export class JsonDatabase implements LearningRepository {
     this.save();
   }
 
+  /**
+   *
+   * @param limit
+   * @param sinceDays
+   */
   async getFindingMessages(
     limit = 100,
     sinceDays?: number,
@@ -314,6 +380,11 @@ export class JsonDatabase implements LearningRepository {
       .map((f) => ({ message: f.message, file: f.file }));
   }
 
+  /**
+   *
+   * @param limit
+   * @param sinceDays
+   */
   async getDistinctFindingMessages(
     limit = 100,
     sinceDays?: number,
@@ -332,6 +403,12 @@ export class JsonDatabase implements LearningRepository {
       .map((f) => ({ message: f.message, file: f.file }));
   }
 
+  /**
+   *
+   * @param fileType
+   * @param limit
+   * @param sinceDays
+   */
   async getFindingMessagesByFileType(
     fileType: string,
     limit = 100,
@@ -347,6 +424,9 @@ export class JsonDatabase implements LearningRepository {
       .map((f) => ({ message: f.message, file: f.file }));
   }
 
+  /**
+   *
+   */
   async getFalsePositiveRate(): Promise<number> {
     const total = this.data.feedback.length;
     if (total === 0) return 0;
@@ -356,6 +436,10 @@ export class JsonDatabase implements LearningRepository {
     return disputed / total;
   }
 
+  /**
+   *
+   * @param filePaths
+   */
   async getRelevantLessons(filePaths: string[]): Promise<string[]> {
     const extensions = [
       ...new Set(
@@ -390,6 +474,11 @@ export class JsonDatabase implements LearningRepository {
     return lessons;
   }
 
+  /**
+   *
+   * @param filePaths
+   * @param limit
+   */
   async getFalsePositiveRules(filePaths: string[], limit = 20): Promise<string[]> {
     const extensions = [
       ...new Set(
@@ -442,6 +531,10 @@ export class JsonDatabase implements LearningRepository {
       });
   }
 
+  /**
+   *
+   * @param quality
+   */
   async recordQuality(quality: LearningQuality): Promise<void> {
     this.data.review_quality.push({
       id: generateId(),
@@ -455,12 +548,20 @@ export class JsonDatabase implements LearningRepository {
     this.save();
   }
 
+  /**
+   *
+   * @param limit
+   */
   async getQualityTrends(limit = 20): Promise<Array<Record<string, unknown>>> {
     return [...this.data.review_quality]
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
       .slice(0, limit) as unknown as Array<Record<string, unknown>>;
   }
 
+  /**
+   *
+   * @param interval
+   */
   async incrementAndCheckMetaReviewInterval(interval: number): Promise<boolean> {
     const entry = this.data.meta_review_counter.find((x) => x.id === 1);
     if (!entry) return false;
@@ -469,6 +570,10 @@ export class JsonDatabase implements LearningRepository {
     return entry.count % interval === 0;
   }
 
+  /**
+   *
+   * @param pattern
+   */
   async recordPattern(pattern: PatternInput): Promise<void> {
     const existing = this.data.patterns.find((p) => p.pattern_key === pattern.patternKey);
     if (existing) {
@@ -489,6 +594,10 @@ export class JsonDatabase implements LearningRepository {
     this.save();
   }
 
+  /**
+   *
+   * @param patterns
+   */
   async recordPatterns(patterns: PatternInput[]): Promise<void> {
     if (patterns.length === 0) return;
     for (const pattern of patterns) {
@@ -512,12 +621,21 @@ export class JsonDatabase implements LearningRepository {
     this.save();
   }
 
+  /**
+   *
+   * @param minFrequency
+   */
   async getPatterns(minFrequency = 3): Promise<Array<Record<string, unknown>>> {
     return [...this.data.patterns]
       .filter((p) => p.frequency >= minFrequency)
       .sort((a, b) => b.frequency - a.frequency) as unknown as Array<Record<string, unknown>>;
   }
 
+  /**
+   *
+   * @param ruleText
+   * @param source
+   */
   async addCustomRule(ruleText: string, source: 'auto' | 'manual'): Promise<string> {
     const id = generateId();
     this.data.custom_rules.push({
@@ -530,12 +648,19 @@ export class JsonDatabase implements LearningRepository {
     return id;
   }
 
+  /**
+   *
+   */
   async getPendingRules(): Promise<Array<Record<string, unknown>>> {
     return this.data.custom_rules.filter((r) => r.status === 'pending') as unknown as Array<
       Record<string, unknown>
     >;
   }
 
+  /**
+   *
+   * @param ruleId
+   */
   async approveRule(ruleId: string): Promise<void> {
     const entry = this.data.custom_rules.find((x) => x.id === ruleId);
     if (entry) {
@@ -545,6 +670,10 @@ export class JsonDatabase implements LearningRepository {
     }
   }
 
+  /**
+   *
+   * @param ruleId
+   */
   async declineRule(ruleId: string): Promise<void> {
     const entry = this.data.custom_rules.find((x) => x.id === ruleId);
     if (entry) {
@@ -553,6 +682,12 @@ export class JsonDatabase implements LearningRepository {
     }
   }
 
+  /**
+   *
+   * @param category
+   * @param overrideText
+   * @param fpRateBefore
+   */
   async addPromptOverride(
     category: string,
     overrideText: string,
@@ -568,6 +703,9 @@ export class JsonDatabase implements LearningRepository {
     this.save();
   }
 
+  /**
+   *
+   */
   async resetCounter(): Promise<void> {
     const entry = this.data.meta_review_counter.find((x) => x.id === 1);
     if (entry) {

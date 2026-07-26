@@ -162,6 +162,8 @@ function buildReadyBody(history: IterationRecord[], prNumber: number): string {
  * @param runChecksAfterFix - Optional verification command to run after each fix.
  * @param tempDir - Optional temporary working directory with cloned repo.
  * @param initialGitEnv - Optional Git environment variables (for auth).
+ * @param checkAllowlist - Optional list of allowed check commands.
+ * @param signal - Optional abort signal
  */
 export async function handleAutofixLoop(
   prNumber: number,

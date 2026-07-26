@@ -29,6 +29,10 @@ export class MCPManager {
   private toolsCache: Map<string, Tool[]> = new Map();
   private logger = new Logger('MCPManager');
 
+  /**
+   *
+   * @param servers
+   */
   constructor(private servers: MCPServerConfig[]) {}
 
   /**
@@ -77,6 +81,8 @@ export class MCPManager {
   /**
    * Connect to a single MCP server with retry and timeout support.
    * Creates the transport, initializes the client, and caches available tools.
+   * @param server
+   * @param createTransport
    */
   private async connectServer(
     server: MCPServerConfig,
@@ -155,6 +161,8 @@ export class MCPManager {
 
   /**
    * Query all MCP servers for context relevant to the given query.
+   * @param query
+   * @param maxTokens
    */
   async queryContext(query: string, maxTokens = 4000): Promise<MCPQueryResult> {
     const entries: MCPContextEntry[] = [];
@@ -215,6 +223,7 @@ export class MCPManager {
   /**
    * Get context specifically for library documentation.
    * Useful for resolving false positives caused by API changes.
+   * @param libraries
    */
   async getLibraryDocs(libraries: string[]): Promise<string> {
     const context7Client = this.clients.get('context7');
@@ -306,6 +315,7 @@ export class MCPManager {
 /**
  * Extract text content from an MCP tool call result.
  * Filters for content items with type 'text'.
+ * @param result
  */
 function extractTextFromResult(result: unknown): string {
   if (!result) return '';
@@ -322,6 +332,7 @@ function extractTextFromResult(result: unknown): string {
 
 /**
  * Rough token estimate for a string (~4 chars per token).
+ * @param text
  */
 function estimateTokens(text: string): number {
   // Rough estimate: ~4 chars per token
@@ -332,6 +343,8 @@ function estimateTokens(text: string): number {
  * Trim context entries to fit within a token budget.
  * Entries are processed in order (highest relevance first)
  * and truncated if needed to stay within budget.
+ * @param entries
+ * @param maxTokens
  */
 function trimToTokenBudget(entries: MCPContextEntry[], maxTokens: number): MCPQueryResult {
   let total = 0;

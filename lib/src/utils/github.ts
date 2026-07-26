@@ -13,8 +13,17 @@ import type {
 import { CircuitBreaker } from './circuit-breaker.js';
 import { withRetry, withRetryAndTimeout } from './retry.js';
 
+/**
+ *
+ */
 export interface PaginatedResult<T> {
+  /**
+   *
+   */
   items: T[];
+  /**
+   *
+   */
   totalCount: number;
 }
 
@@ -43,6 +52,12 @@ export class GitHubHelper {
     name: 'GitHubHelper',
   });
 
+  /**
+   *
+   * @param token
+   * @param repo
+   * @param apiUrl
+   */
   constructor(
     private token: string,
     private repo: string,
@@ -843,6 +858,7 @@ export class GitHubHelper {
    * Gather a rich markdown context string from an issue or PR, including
    * comments, reviews, and inline review comments (paginated).
    *
+   * @param options
    * @param options.issueNumber - Optional issue number to include.
    * @param options.prNumber - Optional PR number to include.
    * @returns Markdown string with issue/PR details, comments, and reviews.

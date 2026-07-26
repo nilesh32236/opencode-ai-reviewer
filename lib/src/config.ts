@@ -7,6 +7,9 @@ import type { ConfigOverride, PromptConfig } from './types/index.js';
 import { PromptConfigSchema } from './types/schemas.js';
 import { DEFAULT_ALLOWLIST } from './utils/command.js';
 
+/**
+ *
+ */
 export interface ResolveConfigOptions {
   /** File paths being reviewed (for path-based overrides) */
   paths?: string[];

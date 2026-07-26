@@ -24,6 +24,7 @@ import { handlePRReview } from './pr-review.js';
  * @param repo - Repository string (owner/repo).
  * @param token - GitHub authentication token.
  * @param config - Agent configuration.
+ * @param signal - Optional abort signal
  */
 export async function handleCommand(
   command: 'fix' | 'review' | 'audit' | 'analyze' | 'explain',

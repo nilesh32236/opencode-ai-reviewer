@@ -1,3 +1,8 @@
+/**
+ * Sanitizes a message to prevent exposing secrets like Bearer tokens or API keys.
+ * @param message - The raw message string.
+ * @returns The sanitized string.
+ */
 export const sanitize = (message: string): string => {
   return message
     .replace(/(Bearer\s+)[a-zA-Z0-9._\-+/]+/gi, '$1***')

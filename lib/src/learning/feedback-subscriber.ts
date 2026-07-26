@@ -11,7 +11,13 @@ const DISPUTE_KEYWORDS = ['false positive', 'not an issue', 'wrong', 'incorrect'
  * false-positive rate calculation and learning.
  */
 export class FeedbackSubscriber implements Subscriber {
+  /**
+   *
+   */
   name = 'FeedbackSubscriber';
+  /**
+   *
+   */
   subscribedEvents = [
     'review.dismissed',
     'review_comment.dismissed',
@@ -20,10 +26,16 @@ export class FeedbackSubscriber implements Subscriber {
     'review_comment.created',
   ];
 
+  /**
+   *
+   * @param store
+   */
   constructor(private store: LearningStore) {}
 
   /**
    * Route an event to the appropriate handler based on event type.
+   * @param event
+   * @param signal
    */
   async handle(event: GitHubEvent, signal?: AbortSignal): Promise<void> {
     if (signal?.aborted) return;
@@ -50,6 +62,7 @@ export class FeedbackSubscriber implements Subscriber {
 
   /**
    * Handle a review dismissal event — marks all findings for that PR as dismissed.
+   * @param event
    */
   private async handleReviewDismissed(event: GitHubEvent): Promise<void> {
     const payload = event.payload as {
@@ -89,6 +102,7 @@ export class FeedbackSubscriber implements Subscriber {
    * Handle a review comment dismissal or deletion event.
    * Maps the dismissed comment body to the most recent findings for that PR
    * and records a 'dismissed' feedback signal.
+   * @param event
    */
   private async handleReviewCommentDismissed(event: GitHubEvent): Promise<void> {
     const payload = event.payload as {
@@ -161,6 +175,7 @@ export class FeedbackSubscriber implements Subscriber {
 
   /**
    * Handle a comment created event — checks for dispute keywords and records feedback.
+   * @param event
    */
   private async handleCommentCreated(event: GitHubEvent): Promise<void> {
     const payload = event.payload as { comment?: { body?: string }; issue?: { number?: number } };
