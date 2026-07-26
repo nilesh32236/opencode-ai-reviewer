@@ -34,7 +34,7 @@ The decision rule is: **"if a previously-posted comment's `file:line` key is not
 - Verification that the underlying code change actually addresses the issue.
 - Distinction between "fixed", "outdated", "moved to a new line", and "dropped by the LLM".
 - Re-evaluation of comments minimized in earlier iterations.
-- Use of GitHub's "Resolve thread" UI affordance — the `resolveReviewThread()` mutation at `lib/src/utils/github.ts:1343-1354` is defined but never called.
+- Use of GitHub's "Resolve thread" UI affordance — the `resolveReviewThread()` mutation at `lib/src/utils/github.ts` is called via `resolveFixedComments()` in `lib/src/utils/autofix-body.ts` during review resolution passes.
 
 ### 1.2 Why this is a problem
 

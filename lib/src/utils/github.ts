@@ -1522,12 +1522,12 @@ export class GitHubHelper {
           lines.push(`  > 💡 **How to fix:** ${i.suggestion}`);
         }
         if (i.suggestionCode) {
-          lines.push('  <details><summary>Show suggested fix</summary>');
+          lines.push('<details><summary>Show suggested fix</summary>');
           lines.push('');
-          lines.push('  ```suggestion');
-          lines.push(`  ${i.suggestionCode}`);
-          lines.push('  ```');
-          lines.push('  </details>');
+          lines.push('```suggestion');
+          lines.push(i.suggestionCode.trim());
+          lines.push('```');
+          lines.push('</details>');
         }
       }
     }

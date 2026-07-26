@@ -590,7 +590,6 @@ export class ReviewEngine {
    * Analyze a GitHub Issue against the codebase and generate an Implementation Plan.
    *
    * @param issueNumber - Issue number being analyzed.
-   * @param _issueNumber - Issue number being analyzed.
    * @param issueContextMarkdown - Issue details (Title, body, labels, comments).
    * @param timeoutMinutes - Execution timeout in minutes.
    * @param workingDirectory - Optional working directory (tempDir).

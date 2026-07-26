@@ -10,14 +10,7 @@ This phase addresses **Findings F-3, F-4** from the master plan and lays the fou
 
 ### 1.1 No auto-analyze on issue open
 
-The event router at `lib/src/event-bus/router.ts:5-29` maps these issue events:
-
-```ts
-case 'issues.labeled': return 'issue.labeled';
-// ... no mapping for issues.opened
-```
-
-The App's subscriber list in `app/src/index.ts:303-311` registers nine subscribers, none of which subscribe to an `issue.opened` event. Opening a new GitHub issue triggers **nothing**. The only way to get an implementation plan is to manually comment `/analyze` (or `/fix`, which lazily generates a plan first).
+The event router at `lib/src/event-bus/router.ts` maps `issues.opened` -> `issue.opened`. The `AutoAnalyzeSubscriber` in `app/src/index.ts` handles `issue.opened` to auto-analyze newly opened issues, alongside manual `/analyze` command triggers.
 
 The user's request: *"when the issue is open it should automatically anylize issue and create an implimeentation plan and rais questions if it has any make it automatically and also make it manual so we can run it using /anylize comment on issue"* — maps exactly to this gap.
 

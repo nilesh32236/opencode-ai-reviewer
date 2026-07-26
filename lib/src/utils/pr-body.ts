@@ -1,6 +1,4 @@
-/**
- *
- */
+/** Configuration options for constructing automated fix pull request descriptions. */
 export interface PRBodyOptions {
   /** Issue number being fixed. */
   issueNumber: number;

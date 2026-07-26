@@ -349,7 +349,6 @@ export default (app: Probot): void => {
         const issueNumber = (issue.number as number) || 0;
         if (!issueNumber) return;
 
-        const _config = buildConfig();
         const gh = new GitHubHelper(getToken(), event.repo || '');
 
         await gh.setLabels(issueNumber, ['analysis:ready'], ['analysis:needs-input']);

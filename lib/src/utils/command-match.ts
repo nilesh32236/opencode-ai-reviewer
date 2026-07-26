@@ -55,7 +55,6 @@ export function parseCommand(body: string): ParsedCommand | null {
       const flagName = m[1];
       const camelName = flagName.replace(/-([a-z])/g, (_, g1) => g1.toUpperCase());
       const flagVal = m[2] ?? m[3] ?? m[4] ?? true;
-      flags[flagName] = flagVal;
       flags[camelName] = flagVal;
       m = FLAG_PATTERN.exec(rest);
     }

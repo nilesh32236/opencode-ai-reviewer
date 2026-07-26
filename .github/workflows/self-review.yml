@@ -336,7 +336,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
-          LINKED=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json body --jq '.body' | grep -oP '(?<=Fixes #)\d+' | head -1 || true)
+          LINKED=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json body --jq '.body' | grep -oP '(?:Fixes|Closes|Resolves)\s+#\K\d+' | head -1 || true)
           if [ -n "$LINKED" ]; then
             echo "Closing linked issue #${LINKED}..."
             gh issue close "$LINKED" \

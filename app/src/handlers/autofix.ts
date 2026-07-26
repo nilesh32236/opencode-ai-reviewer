@@ -104,10 +104,10 @@ export async function handleAutofixLoop(
         previousBotComments = botThreads
           .filter((t) => !t.isResolved && t.firstComment)
           .map((t) => ({
-            file: t.firstComment.filePath,
-            line: t.firstComment.lineNumber,
-            body: t.firstComment.body,
-            commentId: t.firstComment.databaseId,
+            file: t.firstComment!.filePath,
+            line: t.firstComment!.lineNumber,
+            body: t.firstComment!.body,
+            commentId: t.firstComment!.databaseId,
           }));
       } catch (err) {
         logger.warn(`Could not fetch previous bot comments: ${err}`);
@@ -134,10 +134,7 @@ export async function handleAutofixLoop(
         break;
       }
 
-      if (
-        !result ||
-        (!result.summary && result.issues.length === 0 && result.strengths.length === 0)
-      ) {
+      if (!result.summary && result.issues.length === 0 && result.strengths.length === 0) {
         logger.error(`Review returned empty result in iteration ${i + 1}`);
         break;
       }

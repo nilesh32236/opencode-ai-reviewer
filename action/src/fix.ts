@@ -145,16 +145,16 @@ export async function runFix(
  * Run a fix triggered from an issue (non-PR): create a branch, apply the fix,
  * commit, push, and open a new PR.
  * Includes wall-clock timeout guarding against queue wait time.
- * @param _inputs - Parsed action inputs (unused, retained for interface compat).
- * @param _config - Agent config (provides timeoutMinutes).
+ * @param inputs - Action inputs.
+ * @param config - Agent config (provides timeoutMinutes).
  * @param engine - Review engine instance.
  * @param gh - GitHub API helper.
  * @param repo - Repository string (owner/repo).
  * @param token - GitHub authentication token.
  */
 export async function runFixIssue(
-  _inputs: ActionInputs,
-  _config: AgentConfig,
+  inputs: ActionInputs,
+  config: AgentConfig,
   engine: ReviewEngine,
   gh: GitHubHelper,
   repo: string,
@@ -170,7 +170,7 @@ export async function runFixIssue(
   // GITHUB_RUN_STARTED_AT is set by GitHub Actions to the ISO timestamp when the
   // workflow run was queued — not when this job started. This lets us account for
   // time spent waiting in the queue or in earlier job steps.
-  const configTimeoutMs = (_config.timeoutMinutes ?? 20) * 60 * 1000;
+  const configTimeoutMs = (config.timeoutMinutes ?? 20) * 60 * 1000;
   const runStartedAt = process.env.GITHUB_RUN_STARTED_AT
     ? new Date(process.env.GITHUB_RUN_STARTED_AT).getTime()
     : Date.now();
@@ -308,7 +308,7 @@ export async function runFixIssue(
     fixSummary: fixResult.summary,
     filesChanged: fixResult.filesChanged ?? [],
     branchName,
-    hasTests: !!_inputs.runChecksAfterFix,
+    hasTests: !!inputs.runChecksAfterFix,
   });
 
   // Ensure the autofix label exists in the repository before referencing it in pr create
