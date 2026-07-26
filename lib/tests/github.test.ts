@@ -870,11 +870,9 @@ describe('GitHubHelper', () => {
 
       await helper.setLabels(1, addLabels, removeLabels);
 
-      // Total calls: 8 add + 2 remove = 10 label operations
-      // Batched: 5 + 5 => 2 batches for adds + 1 batch for removes = 2 Promise.all calls
-      // Actually each individual addLabels/removeLabel call is a single API call
-      // Operations are partitioned: [a,b,c,d,e] in first Promise.all, [f,g,h,x,y] in second
-      expect(callCount).toBe(10);
+      // All adds are batched into a single addLabels call; removes are individual calls.
+      // Total: 1 addLabels call (all 8) + 2 removeLabel calls = 3 API calls
+      expect(callCount).toBe(3);
     });
 
     it('handles empty add and remove arrays', async () => {

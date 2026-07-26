@@ -110,7 +110,7 @@ export class ReviewEngine {
           workingDirectory,
         );
         if (libraries.length > 0) {
-          mcpDocs = await this.mcp.getLibraryDocs(libraries);
+          mcpDocs = await this.getCachedMcpDocs(libraries);
         }
       } catch (err) {
         core.warning(`MCP enrichment skipped: ${err instanceof Error ? err.message : String(err)}`);
@@ -251,7 +251,7 @@ export class ReviewEngine {
 
     let accumulatedDurationMs = 0;
     let accumulatedTokensUsed = 0;
-    const concurrencyLimit = Math.min(os.cpus().length || 4, fileBatches.length);
+    const concurrencyLimit = Math.min(os.cpus().length || 4, fileBatches.length, 8);
     const batchResults: ReviewResult[] = [];
     for (let i = 0; i < fileBatches.length; i += concurrencyLimit) {
       if (i > 0) {

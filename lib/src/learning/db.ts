@@ -133,8 +133,9 @@ function translateQuery(sql: string, dialect: 'postgres' | 'mysql' | 'sqlite'): 
   } else if (dialect === 'mysql') {
     cleanSql = cleanSql.replace(/datetime\('now'\)/g, 'CURRENT_TIMESTAMP');
     cleanSql = cleanSql.replace(/INSERT\s+OR\s+IGNORE\s+INTO/i, 'INSERT IGNORE INTO');
+    cleanSql = cleanSql.replace(/;\s*$/, '');
     cleanSql = cleanSql.replace(
-      /ON CONFLICT\s*\([^)]+\)\s*DO\s+UPDATE\s+SET\s+([\s\S]+?)(?=;?\s*$)/gi,
+      /ON CONFLICT\s*\([^)]+\)\s*DO\s+UPDATE\s+SET\s+([\s\S]+?)$/gi,
       (_match, setClause: string) => {
         const convertedSet = setClause.replace(/excluded\.(\w+)/g, 'VALUES($1)');
         return `ON DUPLICATE KEY UPDATE ${convertedSet}`;
@@ -617,7 +618,7 @@ export abstract class SqlAdapter implements LearningRepository {
   async recordPatterns(patterns: PatternInput[]): Promise<void> {
     if (patterns.length === 0) return;
     const placeholders = patterns
-      .map(() => '(?, ?, ?, 1, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)')
+      .map(() => '(?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)')
       .join(', ');
     const values: unknown[] = [];
     for (const pattern of patterns) {
@@ -625,6 +626,7 @@ export abstract class SqlAdapter implements LearningRepository {
         generateId(),
         pattern.patternKey,
         JSON.stringify(pattern.messageCluster),
+        pattern.frequency,
         pattern.fileTypes.join(','),
       );
     }
@@ -632,7 +634,7 @@ export abstract class SqlAdapter implements LearningRepository {
       `INSERT INTO patterns (id, pattern_key, message_cluster, frequency, file_types, first_seen, last_seen)
        VALUES ${placeholders}
        ON CONFLICT (pattern_key) DO UPDATE SET
-         frequency = frequency + 1,
+         frequency = frequency + excluded.frequency,
          last_seen = CURRENT_TIMESTAMP,
          file_types = excluded.file_types`,
       values,
@@ -1439,7 +1441,7 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   async recordPatterns(patterns: PatternInput[]): Promise<void> {
     if (patterns.length === 0) return;
     const placeholders = patterns
-      .map(() => '(?, ?, ?, 1, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)')
+      .map(() => '(?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)')
       .join(', ');
     const values: unknown[] = [];
     for (const pattern of patterns) {
@@ -1447,6 +1449,7 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
         generateId(),
         pattern.patternKey,
         JSON.stringify(pattern.messageCluster),
+        pattern.frequency,
         pattern.fileTypes.join(','),
       );
     }
@@ -1454,7 +1457,7 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
       `INSERT INTO patterns (id, pattern_key, message_cluster, frequency, file_types, first_seen, last_seen)
        VALUES ${placeholders}
        ON CONFLICT (pattern_key) DO UPDATE SET
-         frequency = frequency + 1,
+         frequency = frequency + excluded.frequency,
          last_seen = CURRENT_TIMESTAMP,
          file_types = excluded.file_types`,
     ).run(...values);
