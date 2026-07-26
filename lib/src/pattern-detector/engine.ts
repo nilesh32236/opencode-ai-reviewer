@@ -7,15 +7,33 @@ const NON_ALPHANUMERIC_REGEX = /[^a-z0-9]+/g;
 
 /** A discovered pattern with its messages, frequency, and associated file types. */
 export interface DiscoveredPattern {
+  /**
+   *
+   */
   patternKey: string;
+  /**
+   *
+   */
   messages: string[];
+  /**
+   *
+   */
   frequency: number;
+  /**
+   *
+   */
   fileTypes: string[];
 }
 
 /** Options for configuring PatternDetector behavior. */
 export interface PatternDetectorOptions {
+  /**
+   *
+   */
   windowSize?: number;
+  /**
+   *
+   */
   sinceDays?: number;
 }
 
@@ -27,6 +45,11 @@ export interface PatternDetectorOptions {
 export class PatternDetector {
   private options: PatternDetectorOptions;
 
+  /**
+   *
+   * @param store
+   * @param options
+   */
   constructor(
     private store: LearningStore,
     options: PatternDetectorOptions = {},

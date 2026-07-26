@@ -152,7 +152,11 @@ export function detectPythonLibraries(rootDir: string): string[] {
   return [...libs];
 }
 
-/** Extract package names from a TOML array string fragment like '"fastapi>=0.100", "sqlalchemy"'. */
+/**
+ * Extract package names from a TOML array string fragment like '"fastapi>=0.100", "sqlalchemy"'.
+ * @param fragment
+ * @param libs
+ */
 function extractArrayPackages(fragment: string, libs: Set<string>): void {
   const pkgMatches = fragment.matchAll(/["']([^"']+)["']/g);
   for (const match of pkgMatches) {

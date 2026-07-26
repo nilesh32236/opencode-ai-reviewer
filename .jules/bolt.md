@@ -7,3 +7,6 @@
 ## 2024-07-24 - Use Promise.all for concurrent async operations
 **Learning:** Found sequential `await` loops inside `MetaReviewEngine.runMetaReview` when adding custom rules. Sequential awaits add unnecessary latency, especially since each DB/API insert operation is independent and can be safely batched.
 **Action:** Replace `for (const item of items) { await asyncOp(item) }` with `await Promise.all(items.map(asyncOp))` for independent asynchronous tasks to reduce execution time.
+## 2024-07-26 - Optimize RegExp in conversation detectIntent
+**Learning:** Found that recreating regular expressions inside a `.some()` loop dynamically from constants causes unnecessary allocation and compile time upon every `detectIntent` execution.
+**Action:** Always hoist and pre-compile regular expressions from static data arrays outside of functions executing on the hot path.

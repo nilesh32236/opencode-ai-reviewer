@@ -43,6 +43,17 @@ const EXPLAIN_KEYWORDS = [
   'help me understand',
 ];
 
+// ⚡ Bolt: Pre-compile regexes outside of detectIntent loop for better performance
+const FIX_REGEXES = FIX_KEYWORDS.map((kw) => {
+  const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b${escaped}\\b`, 'i');
+});
+
+const EXPLAIN_REGEXES = EXPLAIN_KEYWORDS.map((kw) => {
+  const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b${escaped}\\b`, 'i');
+});
+
 /**
  * Detect the intent of a user's message based on keyword matching.
  *
@@ -53,19 +64,13 @@ export function detectIntent(message: string): 'explain' | 'fix' | 'general' {
   const lower = message.toLowerCase();
 
   // Check fix intent first (stronger signal — user wants action)
-  const hasFixKeyword = FIX_KEYWORDS.some((kw) => {
-    const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const regex = new RegExp(`\\b${escaped}\\b`, 'i');
-    return regex.test(lower) && !lower.startsWith('why') && !lower.startsWith('what');
-  });
+  const hasFixKeyword = FIX_REGEXES.some(
+    (regex) => regex.test(lower) && !lower.startsWith('why') && !lower.startsWith('what'),
+  );
   if (hasFixKeyword) return 'fix';
 
   // Check explain intent
-  const hasExplainKeyword = EXPLAIN_KEYWORDS.some((kw) => {
-    const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const regex = new RegExp(`\\b${escaped}\\b`, 'i');
-    return regex.test(lower);
-  });
+  const hasExplainKeyword = EXPLAIN_REGEXES.some((regex) => regex.test(lower));
   if (hasExplainKeyword) return 'explain';
 
   return 'general';

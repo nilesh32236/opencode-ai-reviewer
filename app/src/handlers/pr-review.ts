@@ -11,6 +11,7 @@ import { GitHubHelper, Logger, ReviewEngine } from '@opencode-pr-agent/lib';
  * @param config - Agent configuration.
  * @param learningStore - Optional learning store for recording findings.
  * @param tempDir - Optional temporary working directory.
+ * @param previousHeadSha - Optional previous HEAD sha
  * @returns The review result or null if review was skipped or failed.
  */
 export async function handlePRReview(

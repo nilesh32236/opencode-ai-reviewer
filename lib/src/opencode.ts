@@ -299,9 +299,11 @@ export function parseTokenUsage(output: string): number {
  * and enforces a timeout via SIGTERM/SIGKILL.
  *
  * @param prompt - The prompt text to pass to OpenCode.
+ * @param options
  * @param options.model - Model identifier (e.g. "gpt-4", "claude-3-opus").
  * @param options.workingDirectory - Working directory for the subprocess (default: cwd).
  * @param options.timeoutMinutes - Max runtime before forced termination (default: 20).
+ * @param options.signal
  * @param options.env - Additional environment variables to forward.
  * @returns Object indicating success, output text, wall-clock duration in ms, and tokens used.
  */

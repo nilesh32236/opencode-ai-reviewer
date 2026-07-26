@@ -10,7 +10,14 @@ export function getDbPath(): string {
   return DB_PATH;
 }
 
+/**
+ *
+ */
 export interface MigrationRunner {
+  /**
+   *
+   * @param sql
+   */
   exec(sql: string): Promise<void>;
 }
 
@@ -19,6 +26,7 @@ export interface MigrationRunner {
  * (findings, feedback, review_quality, patterns, custom_rules,
  * prompt_overrides, meta_review_counter). Idempotent — safe to run
  * on every startup.
+ * @param runner
  */
 export async function applyMigrations(runner: MigrationRunner): Promise<void> {
   try {
@@ -169,6 +177,7 @@ export function generateId(): string {
 /**
  * Extract unique, non-empty dot-prefixed file extensions from a list of file paths.
  * Returns an array of unique extensions like `['.ts', '.js']`.
+ * @param filePaths
  */
 export function deriveFileExtensions(filePaths: string[]): string[] {
   return [

@@ -8,11 +8,29 @@ const SUBSCRIBER_TIMEOUT_MS = 600_000;
 
 /** Health metrics for a single event subscriber. */
 export interface SubscriberHealth {
+  /**
+   *
+   */
   name: string;
+  /**
+   *
+   */
   totalCalls: number;
+  /**
+   *
+   */
   failedCalls: number;
+  /**
+   *
+   */
   lastError: string | null;
+  /**
+   *
+   */
   lastEvent: string | null;
+  /**
+   *
+   */
   lastEventTimestamp: number | null;
 }
 
@@ -32,6 +50,7 @@ export class EventBus {
   /**
    * Register a subscriber for its subscribed event types.
    * Also initializes health tracking and a circuit breaker for the subscriber.
+   * @param subscriber
    */
   register(subscriber: Subscriber): void {
     for (const eventType of subscriber.subscribedEvents) {
@@ -66,6 +85,7 @@ export class EventBus {
 
   /**
    * Register multiple subscribers at once.
+   * @param subscribers
    */
   registerAll(subscribers: Subscriber[]): void {
     for (const sub of subscribers) {
@@ -77,6 +97,7 @@ export class EventBus {
    * Publish an event to all matching subscribers.
    * Subscribers are executed in batches with configurable concurrency.
    * Also matches wildcard ('*') subscribers.
+   * @param event
    */
   async publish(event: GitHubEvent): Promise<void> {
     this.history.push(event);
@@ -97,6 +118,8 @@ export class EventBus {
   /**
    * Execute a single subscriber for an event, with timeout and circuit breaker protection.
    * Tracks health metrics and logs failures for observability.
+   * @param sub
+   * @param event
    */
   private async executeSubscriber(sub: Subscriber, event: GitHubEvent): Promise<void> {
     const health = this.subscriberHealth.get(sub.name);
@@ -187,6 +210,7 @@ export class EventBus {
   /**
    * Unregister a subscriber by name, removing it from all event type mappings.
    * Also cleans up health and circuit breaker tracking.
+   * @param subscriberName
    * @returns true if the subscriber was found and removed.
    */
   unregister(subscriberName: string): boolean {
@@ -225,6 +249,7 @@ export class EventBus {
 
   /**
    * Reset health metrics and circuit breaker for a given subscriber.
+   * @param subscriberName
    */
   resetHealth(subscriberName: string): void {
     const health = this.subscriberHealth.get(subscriberName);

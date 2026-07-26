@@ -16,6 +16,7 @@ import type {
 /**
  * Sanitize connection strings in error messages to avoid leaking credentials.
  * Replaces credentials in URLs with `<redacted>`.
+ * @param err
  */
 export function sanitizeDbError(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
@@ -30,11 +31,37 @@ const req = createRequire(__filename);
  * directly. Tracked in #123.
  */
 export interface DbAdapter {
+  /**
+   *
+   * @param sql
+   */
   exec(sql: string): Promise<void>;
+  /**
+   *
+   * @param sql
+   * @param params
+   */
   run(sql: string, params?: unknown[]): Promise<{ changes: number }>;
+  /**
+   *
+   * @param sql
+   * @param params
+   */
   all<T>(sql: string, params?: unknown[]): Promise<T[]>;
+  /**
+   *
+   * @param sql
+   * @param params
+   */
   get<T>(sql: string, params?: unknown[]): Promise<T | undefined>;
+  /**
+   *
+   * @param fn
+   */
   transaction<T>(fn: () => Promise<T>): Promise<T>;
+  /**
+   *
+   */
   close(): Promise<void>;
 }
 
@@ -118,6 +145,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Record a single review finding.
+   * @param finding
    * @returns The generated finding ID.
    */
   async recordFinding(finding: FindingInput): Promise<string> {
@@ -144,6 +172,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Record multiple findings in a single transaction.
+   * @param findings
    * @returns Array of generated finding IDs.
    */
   async recordFindings(findings: FindingInput[]): Promise<string[]> {
@@ -174,6 +203,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Delete all findings and associated feedback for a given PR.
+   * @param prNumber
    * @returns Number of deleted finding rows.
    */
   async deleteFindings(prNumber: number): Promise<number> {
@@ -186,6 +216,8 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Retrieve findings filtered by type, ordered by created_at DESC.
+   * @param type
+   * @param limit
    */
   async getFindingsByType(type: string, limit = 50): Promise<Array<Record<string, unknown>>> {
     return this.all('SELECT * FROM findings WHERE type = ? ORDER BY created_at DESC LIMIT ?', [
@@ -196,6 +228,8 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Retrieve findings, optionally filtered by PR number.
+   * @param prNumber
+   * @param limit
    */
   async getFindings(prNumber?: number, limit = 100): Promise<Array<Record<string, unknown>>> {
     if (prNumber) {
@@ -209,6 +243,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Record a feedback signal for a finding.
+   * @param feedback
    */
   async recordFeedback(feedback: FeedbackInput): Promise<void> {
     await this.run(
@@ -226,6 +261,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Record multiple feedback signals in a single transaction.
+   * @param feedbacks
    */
   async recordFeedbackBatch(feedbacks: FeedbackInput[]): Promise<void> {
     if (feedbacks.length === 0) return;
@@ -247,6 +283,8 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Retrieve recent finding messages for pattern discovery.
+   * @param limit
+   * @param sinceDays
    */
   async getFindingMessages(
     limit = 100,
@@ -266,6 +304,8 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Retrieve deduplicated finding messages for O(N^2) clustering.
+   * @param limit
+   * @param sinceDays
    */
   async getDistinctFindingMessages(
     limit = 100,
@@ -285,6 +325,9 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Retrieve finding messages filtered by file extension.
+   * @param fileType
+   * @param limit
+   * @param sinceDays
    */
   async getFindingMessagesByFileType(
     fileType: string,
@@ -322,6 +365,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Get active custom rules and prompt overrides relevant to the given file paths.
+   * @param filePaths
    */
   async getRelevantLessons(filePaths: string[]): Promise<string[]> {
     const extensions = [
@@ -367,6 +411,8 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Get false-positive suppression rules from dismissed/disputed feedback.
+   * @param filePaths
+   * @param limit
    */
   async getFalsePositiveRules(filePaths: string[], limit = 20): Promise<string[]> {
     const extensions = [
@@ -411,6 +457,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Record a review quality assessment.
+   * @param quality
    */
   async recordQuality(quality: LearningQuality): Promise<void> {
     await this.run(
@@ -472,6 +519,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Retrieve recent review quality scores, ordered by created_at DESC.
+   * @param limit
    */
   async getQualityTrends(limit = 20): Promise<Array<Record<string, unknown>>> {
     return this.all(
@@ -482,6 +530,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Increment the meta-review counter and check whether it's time to run a meta-review.
+   * @param interval
    * @returns True if a meta-review should be triggered.
    */
   async incrementAndCheckMetaReviewInterval(interval: number): Promise<boolean> {
@@ -499,6 +548,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Record or update a pattern (upsert by patternKey).
+   * @param pattern
    */
   async recordPattern(pattern: PatternInput): Promise<void> {
     await this.transaction(async () => {
@@ -530,6 +580,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Record multiple patterns, each upserted by patternKey.
+   * @param patterns
    */
   async recordPatterns(patterns: PatternInput[]): Promise<void> {
     if (patterns.length === 0) return;
@@ -563,6 +614,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Retrieve patterns with frequency above a threshold, ordered by frequency DESC.
+   * @param minFrequency
    */
   async getPatterns(minFrequency = 3): Promise<Array<Record<string, unknown>>> {
     return this.all('SELECT * FROM patterns WHERE frequency >= ? ORDER BY frequency DESC', [
@@ -572,6 +624,8 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Add a new custom rule as pending approval.
+   * @param ruleText
+   * @param source
    * @returns The generated rule ID.
    */
   async addCustomRule(ruleText: string, source: 'auto' | 'manual'): Promise<string> {
@@ -594,6 +648,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Approve a pending custom rule, marking it as active.
+   * @param ruleId
    */
   async approveRule(ruleId: string): Promise<void> {
     await this.run(
@@ -604,6 +659,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Decline a pending custom rule.
+   * @param ruleId
    */
   async declineRule(ruleId: string): Promise<void> {
     await this.run("UPDATE custom_rules SET status = 'declined' WHERE id = ?", [ruleId]);
@@ -611,6 +667,9 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Add a prompt override to influence future review prompts.
+   * @param category
+   * @param overrideText
+   * @param fpRateBefore
    */
   async addPromptOverride(
     category: string,
@@ -639,34 +698,61 @@ export abstract class SqlAdapter implements LearningRepository {
 export class PostgresAdapter extends SqlAdapter implements DbAdapter {
   private client: PostgresClient;
 
+  /**
+   *
+   * @param client
+   */
   constructor(client: PostgresClient) {
     super();
     this.client = client;
   }
 
+  /**
+   *
+   * @param sql
+   */
   async exec(sql: string): Promise<void> {
     const pgSql = translateQuery(sql, 'postgres');
     await this.client.query(pgSql);
   }
 
+  /**
+   *
+   * @param sql
+   * @param params
+   */
   async run(sql: string, params: unknown[] = []): Promise<{ changes: number }> {
     const pgSql = translateQuery(sql, 'postgres');
     const res = await this.client.query(pgSql, params);
     return { changes: res.rowCount ?? 0 };
   }
 
+  /**
+   *
+   * @param sql
+   * @param params
+   */
   async all<T>(sql: string, params: unknown[] = []): Promise<T[]> {
     const pgSql = translateQuery(sql, 'postgres');
     const res = await this.client.query(pgSql, params);
     return res.rows as T[];
   }
 
+  /**
+   *
+   * @param sql
+   * @param params
+   */
   async get<T>(sql: string, params: unknown[] = []): Promise<T | undefined> {
     const pgSql = translateQuery(sql, 'postgres');
     const res = await this.client.query(pgSql, params);
     return res.rows[0] as T | undefined;
   }
 
+  /**
+   *
+   * @param fn
+   */
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
     await this.client.query('BEGIN');
     try {
@@ -679,6 +765,9 @@ export class PostgresAdapter extends SqlAdapter implements DbAdapter {
     }
   }
 
+  /**
+   *
+   */
   async close(): Promise<void> {
     await this.client.end();
   }
@@ -690,16 +779,29 @@ export class PostgresAdapter extends SqlAdapter implements DbAdapter {
 export class MysqlAdapter extends SqlAdapter implements DbAdapter {
   private connection: MysqlConnection;
 
+  /**
+   *
+   * @param connection
+   */
   constructor(connection: MysqlConnection) {
     super();
     this.connection = connection;
   }
 
+  /**
+   *
+   * @param sql
+   */
   async exec(sql: string): Promise<void> {
     const mysqlSql = translateQuery(sql, 'mysql');
     await this.connection.execute(mysqlSql);
   }
 
+  /**
+   *
+   * @param sql
+   * @param params
+   */
   async run(sql: string, params: unknown[] = []): Promise<{ changes: number }> {
     const mysqlSql = translateQuery(sql, 'mysql');
     const [result] = await this.connection.execute(mysqlSql, params);
@@ -707,18 +809,32 @@ export class MysqlAdapter extends SqlAdapter implements DbAdapter {
     return { changes: affectedRows };
   }
 
+  /**
+   *
+   * @param sql
+   * @param params
+   */
   async all<T>(sql: string, params: unknown[] = []): Promise<T[]> {
     const mysqlSql = translateQuery(sql, 'mysql');
     const [rows] = await this.connection.execute(mysqlSql, params);
     return rows as T[];
   }
 
+  /**
+   *
+   * @param sql
+   * @param params
+   */
   async get<T>(sql: string, params: unknown[] = []): Promise<T | undefined> {
     const mysqlSql = translateQuery(sql, 'mysql');
     const [rows] = await this.connection.execute(mysqlSql, params);
     return (rows as T[])[0];
   }
 
+  /**
+   *
+   * @param fn
+   */
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
     await this.connection.beginTransaction();
     try {
@@ -731,6 +847,9 @@ export class MysqlAdapter extends SqlAdapter implements DbAdapter {
     }
   }
 
+  /**
+   *
+   */
   async close(): Promise<void> {
     await this.connection.end();
   }
@@ -745,6 +864,11 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   private stmtCache = new Map<string, ReturnType<SqliteDatabase['prepare']>>();
   private readonly maxCacheSize: number;
 
+  /**
+   *
+   * @param db
+   * @param maxCacheSize
+   */
   constructor(db: SqliteDatabase, maxCacheSize = 100) {
     this.db = db;
     this.maxCacheSize = maxCacheSize;
@@ -767,23 +891,46 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     return stmt;
   }
 
+  /**
+   *
+   * @param sql
+   */
   async exec(sql: string): Promise<void> {
     this.db.exec(sql);
   }
 
+  /**
+   *
+   * @param sql
+   * @param params
+   */
   async run(sql: string, params: unknown[] = []): Promise<{ changes: number }> {
     const res = this.prepareStmt(sql).run(...params);
     return { changes: res.changes };
   }
 
+  /**
+   *
+   * @param sql
+   * @param params
+   */
   async all<T>(sql: string, params: unknown[] = []): Promise<T[]> {
     return this.prepareStmt(sql).all(...params) as T[];
   }
 
+  /**
+   *
+   * @param sql
+   * @param params
+   */
   async get<T>(sql: string, params: unknown[] = []): Promise<T | undefined> {
     return this.prepareStmt(sql).get(...params) as T | undefined;
   }
 
+  /**
+   *
+   * @param fn
+   */
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
     this.db.exec('BEGIN TRANSACTION');
     try {
@@ -796,10 +943,17 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     }
   }
 
+  /**
+   *
+   */
   async close(): Promise<void> {
     this.db.close();
   }
 
+  /**
+   *
+   * @param finding
+   */
   async recordFinding(finding: FindingInput): Promise<string> {
     const id = finding.id || generateId();
     this.prepareStmt(
@@ -821,6 +975,10 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     return id;
   }
 
+  /**
+   *
+   * @param findings
+   */
   async recordFindings(findings: FindingInput[]): Promise<string[]> {
     if (findings.length === 0) return [];
     return this.transaction(async () => {
@@ -846,6 +1004,10 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     });
   }
 
+  /**
+   *
+   * @param prNumber
+   */
   async deleteFindings(prNumber: number): Promise<number> {
     return this.transaction(async () => {
       this.prepareStmt('DELETE FROM feedback WHERE pr_number = ?').run(prNumber);
@@ -854,12 +1016,22 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     });
   }
 
+  /**
+   *
+   * @param type
+   * @param limit
+   */
   async getFindingsByType(type: string, limit = 50): Promise<Array<Record<string, unknown>>> {
     return this.prepareStmt(
       'SELECT * FROM findings WHERE type = ? ORDER BY created_at DESC LIMIT ?',
     ).all(type, limit) as Array<Record<string, unknown>>;
   }
 
+  /**
+   *
+   * @param prNumber
+   * @param limit
+   */
   async getFindings(prNumber?: number, limit = 100): Promise<Array<Record<string, unknown>>> {
     if (prNumber) {
       return this.prepareStmt(
@@ -871,6 +1043,10 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     ) as Array<Record<string, unknown>>;
   }
 
+  /**
+   *
+   * @param feedback
+   */
   async recordFeedback(feedback: FeedbackInput): Promise<void> {
     this.prepareStmt(
       `INSERT INTO feedback (id, finding_id, signal_type, signal_value, pr_number)
@@ -884,6 +1060,10 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     );
   }
 
+  /**
+   *
+   * @param feedbacks
+   */
   async recordFeedbackBatch(feedbacks: FeedbackInput[]): Promise<void> {
     if (feedbacks.length === 0) return;
     await this.transaction(async () => {
@@ -901,6 +1081,11 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     });
   }
 
+  /**
+   *
+   * @param limit
+   * @param sinceDays
+   */
   async getFindingMessages(
     limit = 100,
     sinceDays?: number,
@@ -915,6 +1100,11 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     ).all(limit) as Array<{ message: string; file: string }>;
   }
 
+  /**
+   *
+   * @param limit
+   * @param sinceDays
+   */
   async getDistinctFindingMessages(
     limit = 100,
     sinceDays?: number,
@@ -929,6 +1119,12 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     ).all(limit) as Array<{ message: string; file: string }>;
   }
 
+  /**
+   *
+   * @param fileType
+   * @param limit
+   * @param sinceDays
+   */
   async getFindingMessagesByFileType(
     fileType: string,
     limit = 100,
@@ -945,6 +1141,9 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     ).all(filePattern, limit) as Array<{ message: string; file: string }>;
   }
 
+  /**
+   *
+   */
   async getFalsePositiveRate(): Promise<number> {
     const total = this.prepareStmt('SELECT COUNT(*) as count FROM feedback').get() as
       | { count: number }
@@ -957,6 +1156,10 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     return disputed.count / total.count;
   }
 
+  /**
+   *
+   * @param filePaths
+   */
   async getRelevantLessons(filePaths: string[]): Promise<string[]> {
     const extensions = [
       ...new Set(
@@ -1004,6 +1207,11 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     return lessons.filter(Boolean);
   }
 
+  /**
+   *
+   * @param filePaths
+   * @param limit
+   */
   async getFalsePositiveRules(filePaths: string[], limit = 20): Promise<string[]> {
     const extensions = [
       ...new Set(
@@ -1047,6 +1255,10 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     }
   }
 
+  /**
+   *
+   * @param quality
+   */
   async recordQuality(quality: LearningQuality): Promise<void> {
     this.prepareStmt(
       `INSERT INTO review_quality (id, pr_number, actionability_score, accuracy_score, coverage_score, consistency_score, duration_ms, tokens_used)
@@ -1107,6 +1319,10 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     ).all(limit) as Array<Record<string, unknown>>;
   }
 
+  /**
+   *
+   * @param interval
+   */
   async incrementAndCheckMetaReviewInterval(interval: number): Promise<boolean> {
     return this.transaction(async () => {
       const row = this.prepareStmt('SELECT count FROM meta_review_counter WHERE id = 1').get() as
@@ -1120,6 +1336,10 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     });
   }
 
+  /**
+   *
+   * @param pattern
+   */
   async recordPattern(pattern: PatternInput): Promise<void> {
     await this.transaction(async () => {
       const existing = this.prepareStmt(
@@ -1145,6 +1365,10 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     });
   }
 
+  /**
+   *
+   * @param patterns
+   */
   async recordPatterns(patterns: PatternInput[]): Promise<void> {
     if (patterns.length === 0) return;
     await this.transaction(async () => {
@@ -1173,12 +1397,21 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     });
   }
 
+  /**
+   *
+   * @param minFrequency
+   */
   async getPatterns(minFrequency = 3): Promise<Array<Record<string, unknown>>> {
     return this.prepareStmt(
       'SELECT * FROM patterns WHERE frequency >= ? ORDER BY frequency DESC',
     ).all(minFrequency) as Array<Record<string, unknown>>;
   }
 
+  /**
+   *
+   * @param ruleText
+   * @param source
+   */
   async addCustomRule(ruleText: string, source: 'auto' | 'manual'): Promise<string> {
     const id = generateId();
     this.prepareStmt(
@@ -1187,22 +1420,39 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     return id;
   }
 
+  /**
+   *
+   */
   async getPendingRules(): Promise<Array<Record<string, unknown>>> {
     return this.prepareStmt("SELECT * FROM custom_rules WHERE status = 'pending'").all() as Array<
       Record<string, unknown>
     >;
   }
 
+  /**
+   *
+   * @param ruleId
+   */
   async approveRule(ruleId: string): Promise<void> {
     this.prepareStmt(
       "UPDATE custom_rules SET status = 'active', approved_at = CURRENT_TIMESTAMP WHERE id = ?",
     ).run(ruleId);
   }
 
+  /**
+   *
+   * @param ruleId
+   */
   async declineRule(ruleId: string): Promise<void> {
     this.prepareStmt("UPDATE custom_rules SET status = 'declined' WHERE id = ?").run(ruleId);
   }
 
+  /**
+   *
+   * @param category
+   * @param overrideText
+   * @param fpRateBefore
+   */
   async addPromptOverride(
     category: string,
     overrideText: string,
@@ -1214,6 +1464,9 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     ).run(generateId(), category, overrideText, fpRateBefore);
   }
 
+  /**
+   *
+   */
   async resetCounter(): Promise<void> {
     this.prepareStmt('UPDATE meta_review_counter SET count = 0 WHERE id = 1').run();
   }
@@ -1228,69 +1481,134 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
 export class JsonDbAdapter implements DbAdapter, LearningRepository {
   private db: JsonDatabase;
 
+  /**
+   *
+   * @param db
+   */
   constructor(db: JsonDatabase) {
     this.db = db;
   }
 
+  /**
+   *
+   * @param sql
+   */
   async exec(sql: string): Promise<void> {
     this.db.exec(sql);
   }
 
+  /**
+   *
+   * @param _sql
+   * @param _params
+   */
   async run(_sql: string, _params: unknown[] = []): Promise<{ changes: number }> {
     throw new Error(
       'SQL operations are not supported in JSON fallback mode. Use LearningRepository methods instead.',
     );
   }
 
+  /**
+   *
+   * @param _sql
+   * @param _params
+   */
   async all<T>(_sql: string, _params: unknown[] = []): Promise<T[]> {
     throw new Error(
       'SQL operations are not supported in JSON fallback mode. Use LearningRepository methods instead.',
     );
   }
 
+  /**
+   *
+   * @param _sql
+   * @param _params
+   */
   async get<T>(_sql: string, _params: unknown[] = []): Promise<T | undefined> {
     throw new Error(
       'SQL operations are not supported in JSON fallback mode. Use LearningRepository methods instead.',
     );
   }
 
+  /**
+   *
+   * @param fn
+   */
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
     const txn = this.db.transaction(fn);
     return txn();
   }
 
+  /**
+   *
+   */
   async close(): Promise<void> {
     this.db.close();
   }
 
+  /**
+   *
+   * @param finding
+   */
   async recordFinding(finding: FindingInput): Promise<string> {
     return this.db.recordFinding(finding);
   }
 
+  /**
+   *
+   * @param findings
+   */
   async recordFindings(findings: FindingInput[]): Promise<string[]> {
     return this.db.recordFindings(findings);
   }
 
+  /**
+   *
+   * @param prNumber
+   */
   async deleteFindings(prNumber: number): Promise<number> {
     return this.db.deleteFindings(prNumber);
   }
 
+  /**
+   *
+   * @param type
+   * @param limit
+   */
   async getFindingsByType(type: string, limit = 50): Promise<Array<Record<string, unknown>>> {
     return this.db.getFindingsByType(type, limit);
   }
 
+  /**
+   *
+   * @param prNumber
+   * @param limit
+   */
   async getFindings(prNumber?: number, limit = 100): Promise<Array<Record<string, unknown>>> {
     return this.db.getFindings(prNumber, limit);
   }
 
+  /**
+   *
+   * @param feedback
+   */
   async recordFeedback(feedback: FeedbackInput): Promise<void> {
     return this.db.recordFeedback(feedback);
   }
 
+  /**
+   *
+   * @param feedbacks
+   */
   async recordFeedbackBatch(feedbacks: FeedbackInput[]): Promise<void> {
     return this.db.recordFeedbackBatch(feedbacks);
   }
 
+  /**
+   *
+   * @param limit
+   * @param sinceDays
+   */
   async getFindingMessages(
     limit = 100,
     sinceDays?: number,
@@ -1298,6 +1616,11 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
     return this.db.getFindingMessages(limit, sinceDays);
   }
 
+  /**
+   *
+   * @param limit
+   * @param sinceDays
+   */
   async getDistinctFindingMessages(
     limit = 100,
     sinceDays?: number,
@@ -1305,6 +1628,12 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
     return this.db.getDistinctFindingMessages(limit, sinceDays);
   }
 
+  /**
+   *
+   * @param fileType
+   * @param limit
+   * @param sinceDays
+   */
   async getFindingMessagesByFileType(
     fileType: string,
     limit = 100,
@@ -1313,58 +1642,116 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
     return this.db.getFindingMessagesByFileType(fileType, limit, sinceDays);
   }
 
+  /**
+   *
+   */
   async getFalsePositiveRate(): Promise<number> {
     return this.db.getFalsePositiveRate();
   }
 
+  /**
+   *
+   * @param filePaths
+   */
   async getRelevantLessons(filePaths: string[]): Promise<string[]> {
     return this.db.getRelevantLessons(filePaths);
   }
 
+  /**
+   *
+   * @param filePaths
+   * @param limit
+   */
   async getFalsePositiveRules(filePaths: string[], limit = 20): Promise<string[]> {
     return this.db.getFalsePositiveRules(filePaths, limit);
   }
 
+  /**
+   *
+   * @param quality
+   */
   async recordQuality(quality: LearningQuality): Promise<void> {
     return this.db.recordQuality(quality);
   }
 
+  /**
+   *
+   * @param limit
+   */
   async getQualityTrends(limit = 20): Promise<Array<Record<string, unknown>>> {
     return this.db.getQualityTrends(limit);
   }
 
+  /**
+   *
+   * @param interval
+   */
   async incrementAndCheckMetaReviewInterval(interval: number): Promise<boolean> {
     return this.db.incrementAndCheckMetaReviewInterval(interval);
   }
 
+  /**
+   *
+   * @param pattern
+   */
   async recordPattern(pattern: PatternInput): Promise<void> {
     return this.db.recordPattern(pattern);
   }
 
+  /**
+   *
+   * @param patterns
+   */
   async recordPatterns(patterns: PatternInput[]): Promise<void> {
     return this.db.recordPatterns(patterns);
   }
 
+  /**
+   *
+   * @param minFrequency
+   */
   async getPatterns(minFrequency = 3): Promise<Array<Record<string, unknown>>> {
     return this.db.getPatterns(minFrequency);
   }
 
+  /**
+   *
+   * @param ruleText
+   * @param source
+   */
   async addCustomRule(ruleText: string, source: 'auto' | 'manual'): Promise<string> {
     return this.db.addCustomRule(ruleText, source);
   }
 
+  /**
+   *
+   */
   async getPendingRules(): Promise<Array<Record<string, unknown>>> {
     return this.db.getPendingRules();
   }
 
+  /**
+   *
+   * @param ruleId
+   */
   async approveRule(ruleId: string): Promise<void> {
     return this.db.approveRule(ruleId);
   }
 
+  /**
+   *
+   * @param ruleId
+   */
   async declineRule(ruleId: string): Promise<void> {
     return this.db.declineRule(ruleId);
   }
 
+  /**
+   *
+   * @param category
+   * @param overrideText
+   * @param fpRateBefore
+   */
   async addPromptOverride(
     category: string,
     overrideText: string,
@@ -1382,7 +1769,6 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
   async getTelemetryStats(sinceDays?: number): Promise<TelemetryStats> {
     return this.db.getTelemetryStats(sinceDays);
   }
-
   async resetCounter(): Promise<void> {
     return this.db.resetCounter();
   }
@@ -1396,6 +1782,7 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
  * - `postgres://` or `postgresql://` → PostgreSQL
  * - `mysql://` → MySQL
  * - Anything else → SQLite (then JSON fallback)
+ * @param dbPathOrUrl
  */
 export async function connectDb(dbPathOrUrl: string): Promise<LearningRepository & DbAdapter> {
   if (dbPathOrUrl.startsWith('postgres://') || dbPathOrUrl.startsWith('postgresql://')) {

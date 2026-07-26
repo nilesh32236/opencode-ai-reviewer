@@ -3,19 +3,55 @@ import * as path from 'path';
 import * as core from '@actions/core';
 import type { PreviousFindingIteration, ReviewIssue } from '../types/index.js';
 
+/**
+ *
+ */
 export interface PromptBuilderInputs {
+  /**
+   *
+   */
   reviewPromptFile?: string;
+  /**
+   *
+   */
   reviewPromptExtra?: string;
+  /**
+   *
+   */
   maxFilesPerBatch?: number;
+  /**
+   *
+   */
   projectContext?: string;
+  /**
+   *
+   */
   runChecksAfterFix?: string;
+  /**
+   *
+   */
   maxFixIterations?: number;
 }
 
+/**
+ *
+ */
 export interface ReviewPromptOptions {
+  /**
+   *
+   */
   lessons?: string[];
+  /**
+   *
+   */
   previousFindings?: PreviousFindingIteration[];
+  /**
+   *
+   */
   falsePositiveRules?: string[];
+  /**
+   *
+   */
   deltaContext?: string;
   previousBotComments?: Array<{
     file: string;
