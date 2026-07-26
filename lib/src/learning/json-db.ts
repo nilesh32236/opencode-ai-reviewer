@@ -755,7 +755,6 @@ export class JsonDatabase implements LearningRepository {
     };
   }
 
->>>>>>> origin/main
   async resetCounter(): Promise<void> {
     const entry = this.data.meta_review_counter.find((x) => x.id === 1);
     if (entry) {

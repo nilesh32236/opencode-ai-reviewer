@@ -1313,7 +1313,6 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     };
   }
 
->>>>>>> origin/main
   async getQualityTrends(limit = 20): Promise<Array<Record<string, unknown>>> {
     return this.prepareStmt(
       'SELECT * FROM review_quality WHERE actionability_score > 0 OR accuracy_score > 0 OR coverage_score > 0 OR consistency_score > 0 ORDER BY created_at DESC LIMIT ?',
