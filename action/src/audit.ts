@@ -119,16 +119,48 @@ export async function runAudit(
     }
 
     const issueBody = buildAuditIssueBody(category, auditTarget, result);
-    const title = `[Audit:${category}] ${result.stats.critical} critical, ${result.stats.important} important, ${result.stats.minor} minor`;
+    const titlePrefix = `[Audit:${category}]`;
+    const title = `${titlePrefix} ${result.stats.critical} critical, ${result.stats.important} important, ${result.stats.minor} minor`;
 
+    let existingIssueNumber: number | undefined;
     try {
-      const issue = await gh.createIssue(title, issueBody, labels);
-      if (issue) {
-        core.setOutput('issue-number', String(issue.number));
-        core.info(`Created issue #${issue.number}: ${issue.url}`);
+      const openAuditIssues = (await gh.paginate(
+        `/issues?state=open&labels=audit:${category}&per_page=100`,
+      )) as Array<{ number: number; title: string }>;
+      const match = openAuditIssues.find((issue: { number: number; title: string }) =>
+        issue.title.startsWith(titlePrefix),
+      );
+      if (match) {
+        existingIssueNumber = match.number;
       }
-    } catch (error) {
-      core.warning(sanitize(`Failed to create audit issue: ${String(error)}`));
+    } catch {
+      /* ignore search failure */
+    }
+
+    if (existingIssueNumber) {
+      core.info(
+        `Audit category ${category} already has open issue #${existingIssueNumber} — updating existing issue`,
+      );
+      try {
+        await gh.postOrUpdateComment(
+          existingIssueNumber,
+          `<!-- audit-update-${category} -->`,
+          issueBody,
+        );
+        core.setOutput('issue-number', String(existingIssueNumber));
+      } catch (err) {
+        core.warning(sanitize(`Failed to update existing audit issue: ${String(err)}`));
+      }
+    } else {
+      try {
+        const issue = await gh.createIssue(title, issueBody, labels);
+        if (issue) {
+          core.setOutput('issue-number', String(issue.number));
+          core.info(`Created issue #${issue.number}: ${issue.url}`);
+        }
+      } catch (error) {
+        core.warning(sanitize(`Failed to create audit issue: ${String(error)}`));
+      }
     }
   } else {
     core.info('No critical or important issues found — skipping issue creation');

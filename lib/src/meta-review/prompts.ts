@@ -2,13 +2,14 @@
  * Build the prompt for meta-review evaluation.
  * Instructs the LLM to assess a code review on actionability, coverage,
  * consistency, and accuracy, and output a JSON object with scores.
- * @param context
- * @param context.reviewSummary
- * @param context.findingsCount
- * @param context.issuesCount
- * @param context.strengthsCount
- * @param context.hasVerdict
- * @param context.fileCount
+ * @param context - Review context used to inject data into the prompt
+ * @param context.reviewSummary - Summary text of the code review (truncated to 500 chars)
+ * @param context.findingsCount - Total number of findings in the review
+ * @param context.issuesCount - Number of issues identified
+ * @param context.strengthsCount - Number of strengths identified
+ * @param context.hasVerdict - Whether the review includes a verdict
+ * @param context.fileCount - Number of files changed in the PR
+ * @returns A formatted prompt string instructing the LLM to perform meta-review
  */
 export function buildMetaReviewPrompt(context: {
   reviewSummary: string;

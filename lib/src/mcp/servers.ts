@@ -16,6 +16,8 @@ import { Logger } from '../utils/logger.js';
  * Reduces false positives in reviews by providing current API info.
  *
  * Setup: npm install -g @upstash/context7-mcp
+ *
+ * @returns MCPServerConfig for the Context7 documentation server
  */
 export function context7Server(): MCPServerConfig {
   const apiKey = process.env.CONTEXT7_API_KEY || '';
@@ -35,7 +37,8 @@ export function context7Server(): MCPServerConfig {
 /**
  * GitHub MCP server — provides repository-aware context.
  * Reads files, searches code, understands PR structure.
- * @param token
+ * @param token - GitHub personal access token for authentication
+ * @returns MCPServerConfig for the GitHub MCP server
  */
 export const githubMCPServer = (token: string): MCPServerConfig => ({
   name: 'github',
@@ -50,7 +53,8 @@ export const githubMCPServer = (token: string): MCPServerConfig => ({
  * Example remote MCP server configuration.
  * Connects to a remote MCP service via HTTP SSE transport.
  * Use `environment` to pass authentication headers.
- * @param url
+ * @param url - URL of the remote MCP server SSE endpoint
+ * @returns MCPServerConfig for a remote MCP server
  */
 export function exampleRemoteServer(url = 'https://mcp.example.com/sse'): MCPServerConfig {
   return {
@@ -64,7 +68,8 @@ export function exampleRemoteServer(url = 'https://mcp.example.com/sse'): MCPSer
 /**
  * Default MCP configuration for typical use.
  * Includes Context7 for docs.
- * @param githubToken
+ * @param githubToken - GitHub personal access token (may be empty if not available)
+ * @returns Array of default MCP server configurations
  */
 export function getDefaultMCPServers(githubToken: string): MCPServerConfig[] {
   const servers: MCPServerConfig[] = [context7Server()];

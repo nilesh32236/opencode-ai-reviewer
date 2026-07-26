@@ -243,6 +243,7 @@ async function verifyDownloadedArchive(
  * We inject this as OPENCODE_CONFIG_CONTENT (highest-precedence env var,
  * overrides even a project-level opencode.json) so no file needs to be written
  * and the config can never be overridden by a repo's own config.
+ * @returns A JSON string of the CI config.
  */
 function buildCIConfig(): string {
   if (cachedCIConfig) return cachedCIConfig;
@@ -265,6 +266,8 @@ function buildCIConfig(): string {
 /**
  * Parse token usage from OpenCode CLI output.
  * Looks for common LLM token patterns. Returns 0 if no pattern matches.
+ * @param output - The CLI output string to parse for token usage.
+ * @returns The number of tokens used, or 0 if no pattern matches.
  */
 export function parseTokenUsage(output: string): number {
   // Prioritize total_tokens patterns to avoid matching prompt_tokens or completion_tokens.
@@ -299,11 +302,11 @@ export function parseTokenUsage(output: string): number {
  * and enforces a timeout via SIGTERM/SIGKILL.
  *
  * @param prompt - The prompt text to pass to OpenCode.
- * @param options
+ * @param options - Execution options for the OpenCode process.
  * @param options.model - Model identifier (e.g. "gpt-4", "claude-3-opus").
  * @param options.workingDirectory - Working directory for the subprocess (default: cwd).
  * @param options.timeoutMinutes - Max runtime before forced termination (default: 20).
- * @param options.signal
+ * @param options.signal - Optional AbortSignal to cancel the OpenCode process externally.
  * @param options.env - Additional environment variables to forward.
  * @returns Object indicating success, output text, wall-clock duration in ms, and tokens used.
  */

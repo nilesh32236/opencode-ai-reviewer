@@ -60,6 +60,9 @@ interface ReviewThreadsQueryResponse {
   };
 }
 
+/**
+ *
+ */
 export interface ReviewThreadInfo {
   /** GraphQL node ID of the thread (used for resolve mutation). */
   threadId: string;
@@ -110,10 +113,9 @@ export class GitHubHelper {
   });
 
   /**
-   *
-   * @param token
-   * @param repo
-   * @param apiUrl
+   * @param token - GitHub personal access token.
+   * @param repo - Repository in "owner/name" format.
+   * @param apiUrl - GitHub API base URL (default: https://api.github.com).
    */
   constructor(
     private token: string,
@@ -197,18 +199,26 @@ export class GitHubHelper {
     }
   }
 
-  private async paginate<T>(
-    path: string,
-    params: { perPage?: number; maxPages?: number } = {},
+  /**
+   * Fetch paginated results from a GitHub API endpoint.
+   * @param endpoint - API endpoint path (e.g. "/issues/1/comments").
+   * @param options - Pagination options.
+   * @param options.perPage - Items per page (default: 100).
+   * @param options.maxPages - Maximum pages to fetch (default: 10).
+   * @returns Array of items from all pages.
+   */
+  public async paginate<T>(
+    endpoint: string,
+    options?: { perPage?: number; maxPages?: number },
   ): Promise<T[]> {
-    const perPage = params.perPage ?? 100;
-    const maxPages = params.maxPages ?? 10;
+    const perPage = options?.perPage ?? 100;
+    const maxPages = options?.maxPages ?? 10;
     const allItems: T[] = [];
     let page = 1;
 
     while (page <= maxPages) {
-      const separator = path.includes('?') ? '&' : '?';
-      const pagePath = `${path}${separator}per_page=${perPage}&page=${page}`;
+      const separator = endpoint.includes('?') ? '&' : '?';
+      const pagePath = `${endpoint}${separator}per_page=${perPage}&page=${page}`;
       try {
         const items = await this.api<T[]>(pagePath);
         allItems.push(...items);
@@ -216,7 +226,7 @@ export class GitHubHelper {
         if (items.length < perPage) break;
       } catch (err) {
         core.warning(
-          `Failed to fetch page ${page} for ${path}: ${err instanceof Error ? err.message : err}`,
+          `Failed to fetch page ${page} for ${endpoint}: ${err instanceof Error ? err.message : err}`,
         );
         break;
       }
@@ -329,6 +339,7 @@ export class GitHubHelper {
         labels: Array<{ name: string }>;
       }>(`/issues/${number}`),
       this.paginate<{
+        id: number;
         user: { login: string };
         created_at: string;
         body: string;
@@ -346,6 +357,7 @@ export class GitHubHelper {
       body: issue.body || '',
       labels: issue.labels.map((l) => l.name),
       comments: comments.map((c) => ({
+        id: c.id,
         author: c.user.login,
         createdAt: c.created_at,
         body: c.body,
@@ -361,12 +373,14 @@ export class GitHubHelper {
    */
   async getIssueComments(number: number): Promise<IssueComment[]> {
     const comments = await this.paginate<{
+      id: number;
       user: { login: string };
       created_at: string;
       body: string;
     }>(`/issues/${number}/comments`);
 
     return comments.map((c) => ({
+      id: c.id,
       author: c.user.login,
       createdAt: c.created_at,
       body: c.body,
@@ -946,7 +960,7 @@ export class GitHubHelper {
    * Gather a rich markdown context string from an issue or PR, including
    * comments, reviews, and inline review comments (paginated).
    *
-   * @param options
+   * @param options - Context gathering options.
    * @param options.issueNumber - Optional issue number to include.
    * @param options.prNumber - Optional PR number to include.
    * @returns Markdown string with issue/PR details, comments, and reviews.
@@ -976,12 +990,28 @@ export class GitHubHelper {
       parts.push('');
 
       if (issue.comments.length > 0) {
-        parts.push('### Comments');
+        parts.push('### Comments & Discussion');
         parts.push('');
         for (const c of issue.comments) {
-          parts.push(`**@${c.author}** (${c.createdAt}):`);
-          parts.push(c.body || '');
-          parts.push('');
+          if (c.body.startsWith('<!-- issue-analysis-plan -->')) {
+            const planBody = c.body.replace('<!-- issue-analysis-plan -->\n\n', '').trim();
+            parts.push('### Implementation Plan (from analysis)');
+            parts.push('');
+            parts.push(planBody);
+            parts.push('');
+          } else if (c.body.startsWith('<!-- issue-analysis-questions -->')) {
+            const questionsBody = c.body
+              .replace('<!-- issue-analysis-questions -->\n\n', '')
+              .trim();
+            parts.push('### Analysis Questions Posed');
+            parts.push('');
+            parts.push(questionsBody);
+            parts.push('');
+          } else if (!c.body.startsWith('<!--')) {
+            parts.push(`**@${c.author}** (${c.createdAt}):`);
+            parts.push(c.body || '');
+            parts.push('');
+          }
         }
       }
     }
@@ -1393,6 +1423,54 @@ export class GitHubHelper {
     });
   }
 
+  /**
+   * Fetch open (unresolved) review threads authored by human reviewers.
+   * Formats the threads into a markdown string for review prompt context.
+   *
+   * @param prNumber - PR number.
+   * @returns Markdown formatted summary of open human review threads, or empty string.
+   */
+  async getOpenHumanThreads(prNumber: number): Promise<string> {
+    const threads = await this.getReviewThreads(prNumber);
+    const botLogin = await this.getCurrentUser();
+    const botBase = botLogin.toLowerCase().replace(/\[bot\]$/, '');
+
+    const openHumanThreads = threads.filter((t) => {
+      if (t.isResolved) return false;
+      const author = t.firstComment.author.toLowerCase().replace(/\[bot\]$/, '');
+      return author !== botBase;
+    });
+
+    if (openHumanThreads.length === 0) return '';
+
+    const lines: string[] = ['## Open Review Threads (Unresolved)', ''];
+    for (const thread of openHumanThreads) {
+      const fc = thread.firstComment;
+      lines.push(`### Thread on \`${fc.filePath}:${fc.lineNumber ?? '?'}\``);
+      lines.push(`**Author:** @${fc.author}  |  **Created:** ${fc.createdAt}`);
+      lines.push('');
+      lines.push(fc.body);
+      lines.push('');
+    }
+    return lines.join('\n');
+  }
+
+  /**
+   * Update pull request metadata (title or body).
+   *
+   * @param prNumber - PR number.
+   * @param updates - Object containing optional title and body updates.
+   * @param updates.title - Optional new PR title.
+   * @param updates.body - Optional new PR body.
+   */
+  async updatePR(prNumber: number, updates: { title?: string; body?: string }): Promise<void> {
+    await this.api(`/pulls/${prNumber}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    });
+  }
+
   // ─── Private Helpers ────────────────────────────────────
 
   private buildReviewBody(result: ReviewResult): string {
@@ -1443,8 +1521,18 @@ export class GitHubHelper {
       lines.push('### Issues');
       lines.push('');
       for (const i of result.issues) {
-        const line = `- **${i.severity.toUpperCase()}:** ${i.file}:${i.line} — ${i.message}`;
-        lines.push(i.suggestion ? `${line}\n  > ${i.suggestion}` : line);
+        lines.push(`- **${i.severity.toUpperCase()}:** \`${i.file}:${i.line}\` — ${i.message}`);
+        if (i.suggestion) {
+          lines.push(`  > 💡 **How to fix:** ${i.suggestion}`);
+        }
+        if (i.suggestionCode) {
+          lines.push('<details><summary>Show suggested fix</summary>');
+          lines.push('');
+          lines.push('```suggestion');
+          lines.push(i.suggestionCode.trim());
+          lines.push('```');
+          lines.push('</details>');
+        }
       }
     }
 

@@ -28,14 +28,14 @@ export class FeedbackSubscriber implements Subscriber {
 
   /**
    *
-   * @param store
+   * @param store - The learning store instance used to record feedback signals.
    */
   constructor(private store: LearningStore) {}
 
   /**
    * Route an event to the appropriate handler based on event type.
-   * @param event
-   * @param signal
+   * @param event - The GitHub webhook event data.
+   * @param signal - Optional abort signal to cancel handling.
    */
   async handle(event: GitHubEvent, signal?: AbortSignal): Promise<void> {
     if (signal?.aborted) return;
@@ -62,7 +62,7 @@ export class FeedbackSubscriber implements Subscriber {
 
   /**
    * Handle a review dismissal event — marks all findings for that PR as dismissed.
-   * @param event
+   * @param event - The GitHub webhook event data for the dismissal.
    */
   private async handleReviewDismissed(event: GitHubEvent): Promise<void> {
     const payload = event.payload as {
@@ -102,7 +102,7 @@ export class FeedbackSubscriber implements Subscriber {
    * Handle a review comment dismissal or deletion event.
    * Maps the dismissed comment body to the most recent findings for that PR
    * and records a 'dismissed' feedback signal.
-   * @param event
+   * @param event - The GitHub webhook event data for the comment dismissal.
    */
   private async handleReviewCommentDismissed(event: GitHubEvent): Promise<void> {
     const payload = event.payload as {
@@ -175,7 +175,7 @@ export class FeedbackSubscriber implements Subscriber {
 
   /**
    * Handle a comment created event — checks for dispute keywords and records feedback.
-   * @param event
+   * @param event - The GitHub webhook event data for the created comment.
    */
   private async handleCommentCreated(event: GitHubEvent): Promise<void> {
     const payload = event.payload as { comment?: { body?: string }; issue?: { number?: number } };

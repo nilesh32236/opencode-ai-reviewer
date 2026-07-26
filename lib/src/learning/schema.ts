@@ -5,6 +5,7 @@ const DB_PATH = path.join(process.cwd(), '.opencode', 'learning.db');
 
 /**
  * Get the default SQLite database path under `.opencode/learning.db`.
+ * @returns The absolute path to the default database file.
  */
 export function getDbPath(): string {
   return DB_PATH;
@@ -16,7 +17,8 @@ export function getDbPath(): string {
 export interface MigrationRunner {
   /**
    *
-   * @param sql
+   * @param sql - SQL statement to execute.
+   * @returns Promise that resolves when execution completes.
    */
   exec(sql: string): Promise<void>;
 }
@@ -26,7 +28,7 @@ export interface MigrationRunner {
  * (findings, feedback, review_quality, patterns, custom_rules,
  * prompt_overrides, meta_review_counter). Idempotent — safe to run
  * on every startup.
- * @param runner
+ * @param runner - Database migration runner for executing SQL statements.
  */
 export async function applyMigrations(runner: MigrationRunner): Promise<void> {
   try {
@@ -169,6 +171,7 @@ export async function applyMigrations(runner: MigrationRunner): Promise<void> {
 /**
  * Generate a unique ID string for database records.
  * Format: `f_<timestamp>_<random>`.
+ * @returns A unique ID string in the format `f_<timestamp>_<random>`.
  */
 export function generateId(): string {
   return `f_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -176,8 +179,8 @@ export function generateId(): string {
 
 /**
  * Extract unique, non-empty dot-prefixed file extensions from a list of file paths.
- * Returns an array of unique extensions like `['.ts', '.js']`.
- * @param filePaths
+ * @param filePaths - Array of file paths to extract extensions from.
+ * @returns An array of unique file extensions like `['.ts', '.js']`.
  */
 export function deriveFileExtensions(filePaths: string[]): string[] {
   return [

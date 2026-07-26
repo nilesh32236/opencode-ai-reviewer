@@ -50,7 +50,7 @@ export class EventBus {
   /**
    * Register a subscriber for its subscribed event types.
    * Also initializes health tracking and a circuit breaker for the subscriber.
-   * @param subscriber
+   * @param subscriber The subscriber to register
    */
   register(subscriber: Subscriber): void {
     for (const eventType of subscriber.subscribedEvents) {
@@ -85,7 +85,7 @@ export class EventBus {
 
   /**
    * Register multiple subscribers at once.
-   * @param subscribers
+   * @param subscribers Array of subscribers to register
    */
   registerAll(subscribers: Subscriber[]): void {
     for (const sub of subscribers) {
@@ -97,7 +97,7 @@ export class EventBus {
    * Publish an event to all matching subscribers.
    * Subscribers are executed in batches with configurable concurrency.
    * Also matches wildcard ('*') subscribers.
-   * @param event
+   * @param event The event to publish
    */
   async publish(event: GitHubEvent): Promise<void> {
     this.history.push(event);
@@ -118,8 +118,8 @@ export class EventBus {
   /**
    * Execute a single subscriber for an event, with timeout and circuit breaker protection.
    * Tracks health metrics and logs failures for observability.
-   * @param sub
-   * @param event
+   * @param sub The subscriber to execute
+   * @param event The event to deliver to the subscriber
    */
   private async executeSubscriber(sub: Subscriber, event: GitHubEvent): Promise<void> {
     const health = this.subscriberHealth.get(sub.name);
@@ -195,6 +195,7 @@ export class EventBus {
 
   /**
    * Get a copy of the event history log.
+   * @returns A copy of the event history array
    */
   getHistory(): GitHubEvent[] {
     return [...this.history];
@@ -202,6 +203,7 @@ export class EventBus {
 
   /**
    * Get the number of registered event types (not individual subscribers).
+   * @returns The number of registered event types
    */
   subscriberCount(): number {
     return this.subscribers.size;
@@ -210,8 +212,8 @@ export class EventBus {
   /**
    * Unregister a subscriber by name, removing it from all event type mappings.
    * Also cleans up health and circuit breaker tracking.
-   * @param subscriberName
-   * @returns true if the subscriber was found and removed.
+   * @param subscriberName Name of the subscriber to unregister
+   * @returns true if the subscriber was found and removed
    */
   unregister(subscriberName: string): boolean {
     let removed = false;
@@ -233,6 +235,7 @@ export class EventBus {
 
   /**
    * Get health metrics for all registered subscribers.
+   * @returns Array of subscriber health metrics
    */
   getSubscriberHealth(): SubscriberHealth[] {
     return Array.from(this.subscriberHealth.values()).map((h) => ({ ...h }));
@@ -240,6 +243,7 @@ export class EventBus {
 
   /**
    * Get health metrics for subscribers that have recorded failures.
+   * @returns Array of health metrics for failed subscribers
    */
   getFailedSubscribers(): SubscriberHealth[] {
     return Array.from(this.subscriberHealth.values())
@@ -249,7 +253,7 @@ export class EventBus {
 
   /**
    * Reset health metrics and circuit breaker for a given subscriber.
-   * @param subscriberName
+   * @param subscriberName Name of the subscriber to reset
    */
   resetHealth(subscriberName: string): void {
     const health = this.subscriberHealth.get(subscriberName);

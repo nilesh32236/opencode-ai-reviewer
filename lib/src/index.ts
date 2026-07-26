@@ -60,3 +60,22 @@ export { RuleApprovalSubscriber } from './pattern-detector/rule-approval.js';
 export * from './utils/validation.js';
 export { buildConversationPrompt, detectIntent } from './prompts/conversation.js';
 export { buildVerificationPrompt } from './prompts/verify.js';
+export {
+  IterationRecord,
+  REVIEW_MARKER,
+  FIX_MARKER,
+  buildReviewBody,
+  buildFixBody,
+  buildReadyBody,
+} from './utils/autofix-body.js';
+export { resolveFixedComments } from './utils/autofix-body.js';
+export {
+  parseAnalysisPlan,
+  postBlockingQuestions,
+  markAnalysisReady,
+} from './utils/analyze-parser.js';
+export type { AnalysisPlanResult } from './utils/analyze-parser.js';
+export { buildAutofixPRBody } from './utils/pr-body.js';
+export type { PRBodyOptions } from './utils/pr-body.js';
+export { parseCommand } from './utils/command-match.js';
+export type { ParsedCommand } from './utils/command-match.js';

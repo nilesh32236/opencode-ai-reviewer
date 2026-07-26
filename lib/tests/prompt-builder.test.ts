@@ -83,7 +83,7 @@ describe('prompt-builder', () => {
       expect(prompt).toContain('## 📊 Summary & Priority');
       expect(prompt).toContain('## 📁 Affected Files');
       expect(prompt).toContain('## 🛠️ Step-by-Step Implementation Plan');
-      expect(prompt).toContain('## ❓ Questions / Decisions Needed from Maintainer');
+      expect(prompt).toContain('### Blocking Questions');
     });
 
     it('uses provided project context', () => {

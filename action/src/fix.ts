@@ -8,9 +8,21 @@ import type {
   IssueComment,
   PreviousFindingIteration,
   ReviewEngine,
-  ReviewResult,
 } from '@opencode-pr-agent/lib';
-import { validateRunChecksCommand } from '@opencode-pr-agent/lib';
+import {
+  FIX_MARKER,
+  type IterationRecord,
+  REVIEW_MARKER,
+  buildAutofixPRBody,
+  buildFixBody,
+  buildReadyBody,
+  buildReviewBody,
+  markAnalysisReady,
+  parseAnalysisPlan,
+  postBlockingQuestions,
+  resolveFixedComments,
+  validateRunChecksCommand,
+} from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { sanitize } from './utils.js';
 
@@ -48,10 +60,6 @@ export async function runFix(
   const contextMarkdown = await gh.gatherContext({ prNumber });
 
   const fixResult = await engine.runFix(prNumber, iteration, contextMarkdown, pr);
-
-  if (!fixResult) {
-    core.warning('Fix engine returned no result - treating as no changes');
-  }
 
   let changesMade = false;
   if (fixResult?.changesMade) {
@@ -134,16 +142,16 @@ export async function runFix(
  * Run a fix triggered from an issue (non-PR): create a branch, apply the fix,
  * commit, push, and open a new PR.
  * Includes wall-clock timeout guarding against queue wait time.
- * @param _inputs - Parsed action inputs (unused, retained for interface compat).
- * @param _config - Agent config (provides timeoutMinutes).
+ * @param inputs - Action inputs.
+ * @param config - Agent config (provides timeoutMinutes).
  * @param engine - Review engine instance.
  * @param gh - GitHub API helper.
  * @param repo - Repository string (owner/repo).
  * @param token - GitHub authentication token.
  */
 export async function runFixIssue(
-  _inputs: ActionInputs,
-  _config: AgentConfig,
+  inputs: ActionInputs,
+  config: AgentConfig,
   engine: ReviewEngine,
   gh: GitHubHelper,
   repo: string,
@@ -159,7 +167,7 @@ export async function runFixIssue(
   // GITHUB_RUN_STARTED_AT is set by GitHub Actions to the ISO timestamp when the
   // workflow run was queued — not when this job started. This lets us account for
   // time spent waiting in the queue or in earlier job steps.
-  const configTimeoutMs = (_config.timeoutMinutes ?? 20) * 60 * 1000;
+  const configTimeoutMs = (config.timeoutMinutes ?? 20) * 60 * 1000;
   const runStartedAt = process.env.GITHUB_RUN_STARTED_AT
     ? new Date(process.env.GITHUB_RUN_STARTED_AT).getTime()
     : Date.now();
@@ -169,14 +177,17 @@ export async function runFixIssue(
 
   const branchName = `autofix/issue-${issueNumber}`;
 
+  const defaultBranch = await gh.getDefaultBranch();
   const existingRef = await exec
-    .getExecOutput('git', ['rev-parse', '--verify', branchName], { ignoreReturnCode: true })
+    .getExecOutput('git', ['rev-parse', '--verify', `origin/${branchName}`], {
+      ignoreReturnCode: true,
+    })
     .catch(() => ({ exitCode: 1, stdout: '', stderr: '' }));
 
   if (existingRef.exitCode === 0) {
-    await exec.exec('git', ['checkout', branchName]);
+    await exec.exec('git', ['checkout', '-B', branchName, `origin/${branchName}`]);
   } else {
-    await exec.exec('git', ['checkout', '-b', branchName]);
+    await exec.exec('git', ['checkout', '-b', branchName, `origin/${defaultBranch}`]);
   }
 
   let issueContext = await gh.gatherContext({ issueNumber });
@@ -185,8 +196,32 @@ export async function runFixIssue(
   if (!issueContext.includes('<!-- issue-analysis-plan -->')) {
     core.info('No implementation plan found — running analyze first');
     const planMarkdown = await engine.runAnalyze(issueNumber, issueContext);
+    const parsed = parseAnalysisPlan(planMarkdown);
     await gh.postOrUpdateComment(issueNumber, '<!-- issue-analysis-plan -->', planMarkdown);
+
+    if (parsed.hasBlockingQuestions) {
+      await postBlockingQuestions(gh, issueNumber, parsed);
+    } else {
+      await markAnalysisReady(gh, issueNumber);
+    }
+
     issueContext = await gh.gatherContext({ issueNumber });
+  }
+
+  const issue = await gh.getIssue(issueNumber);
+  const hasUnansweredQuestions =
+    issueContext.includes('<!-- issue-analysis-questions -->') &&
+    issue.labels.includes('analysis:needs-input');
+
+  if (hasUnansweredQuestions) {
+    core.info('Issue has unanswered blocking questions — skipping fix');
+    await gh.postOrUpdateComment(
+      issueNumber,
+      '<!-- autofix-deferred -->',
+      '⏸️ **Fix Deferred** — Please answer the analysis questions first, then re-trigger `/fix`.',
+    );
+    core.setOutput('changes_made', 'false');
+    return;
   }
 
   // Check remaining time budget just before calling OpenCode, after setup steps.
@@ -244,16 +279,21 @@ export async function runFixIssue(
   await exec.exec('git', ['add', '-A']);
   await exec.exec('git', ['commit', '-m', `fix: address issue #${issueNumber}`]);
   try {
-    await exec.exec('git', ['push', 'origin', branchName, '--force']);
+    await exec.exec('git', ['push', 'origin', branchName, '--force-with-lease']);
   } catch (err) {
     core.warning(sanitize(`Git push failed: ${err instanceof Error ? err.message : err}`));
     core.setFailed(sanitize(`Git push failed: ${err instanceof Error ? err.message : err}`));
   }
 
-  const issue = await gh.getIssue(issueNumber);
   const prTitle = `[Autofix] ${issue.title}`;
-
-  const prBody = `## Fixes #${issueNumber}\n\n${issue.body}\n\n---\n*Auto-generated by opencode-ai-reviewer*`;
+  const prBody = buildAutofixPRBody({
+    issueNumber,
+    issueTitle: issue.title,
+    fixSummary: fixResult.summary,
+    filesChanged: fixResult.filesChanged ?? [],
+    branchName,
+    hasTests: !!inputs.runChecksAfterFix,
+  });
 
   // Ensure the autofix label exists in the repository before referencing it in pr create
   await gh.ensureLabels(['autofix']);
@@ -306,159 +346,6 @@ export async function runFixIssue(
   }
 
   core.setOutput('changes_made', 'true');
-}
-
-interface IterationRecord {
-  iteration: number;
-  status: 'approved' | 'fix-applied' | 'needs-fix' | 'no-changes' | 'timeout';
-  summary: string;
-  critical: number;
-  important: number;
-  minor: number;
-  filesChanged?: string[];
-  commitMessage?: string;
-  fixSummary?: string;
-}
-
-const REVIEW_MARKER = '<!-- autofix-review -->';
-const FIX_MARKER = '<!-- autofix-applied -->';
-
-function buildReviewBody(
-  history: IterationRecord[],
-  maxIterations: number,
-  phase: 'reviewing' | 'approved' | 'no-changes' | 'max-iterations',
-  current?: ReviewResult,
-): string {
-  const lines: string[] = ['## 🤖 Autofix Review', ''];
-  const currentIter = history.length;
-
-  switch (phase) {
-    case 'reviewing':
-      lines.push(`**Status:** 🔍 Reviewing (iteration ${currentIter}/${maxIterations})`);
-      break;
-    case 'approved':
-      lines.push('**Status:** ✅ Approved — all issues resolved');
-      break;
-    case 'no-changes':
-      lines.push(
-        `**Status:** ℹ️ Fix agent made no changes (iteration ${currentIter}/${maxIterations})`,
-      );
-      break;
-    case 'max-iterations':
-      lines.push('**Status:** ⚠️ Manual review required');
-      break;
-  }
-
-  if (current) {
-    if (current.summary) {
-      lines.push('', '### Summary', '', current.summary);
-    }
-    if (current.issues.length > 0) {
-      lines.push('', '### Issues Found');
-      for (const i of current.issues) {
-        lines.push(`- **${i.severity.toUpperCase()}:** ${i.file}:${i.line} — ${i.message}`);
-        if (i.suggestion) lines.push(`  > ${i.suggestion}`);
-      }
-    }
-    if (current.strengths.length > 0) {
-      lines.push('', '### Strengths');
-      for (const s of current.strengths) {
-        lines.push(`- ✅ **${s.file}:${s.line}** — ${s.message}`);
-      }
-    }
-  }
-
-  if (history.length > 0) {
-    lines.push('', '### Iteration History');
-    for (const h of history) {
-      let icon: string;
-      let detail: string;
-      switch (h.status) {
-        case 'approved':
-          icon = '✅';
-          detail = 'All issues resolved';
-          break;
-        case 'fix-applied':
-          icon = '🔧';
-          detail = `Fix applied — ${h.critical} critical, ${h.important} important`;
-          break;
-        case 'needs-fix':
-          icon = '❌';
-          detail = `${h.critical} critical, ${h.important} important remaining`;
-          break;
-        case 'no-changes':
-          icon = 'ℹ️';
-          detail = 'No changes made';
-          break;
-        case 'timeout':
-          icon = '⚠️';
-          detail = 'Timed out — changes partially applied';
-          break;
-      }
-      lines.push(`- ${icon} **Iteration ${h.iteration}:** ${detail}`);
-    }
-  }
-
-  switch (phase) {
-    case 'approved':
-      lines.push('', '✅ **Ready to merge!**');
-      break;
-    case 'max-iterations':
-      lines.push(
-        '',
-        `⚠️ **Max iterations reached (${maxIterations}).** This PR needs manual review.`,
-      );
-      break;
-  }
-
-  return lines.join('\n');
-}
-
-function buildFixBody(history: IterationRecord[]): string {
-  const last = history[history.length - 1];
-  const lines: string[] = ['## 🔧 Autofix Applied', ''];
-
-  if (last) {
-    lines.push(`**Iteration:** ${last.iteration}`);
-    lines.push(`**Files changed:** ${last.filesChanged?.length ?? 0}`);
-    if (last.commitMessage) lines.push(`**Commit:** \`${last.commitMessage}\``);
-    if (last.filesChanged && last.filesChanged.length > 0) {
-      lines.push('', '### Changed Files');
-      for (const f of last.filesChanged) {
-        lines.push(`- \`${f}\``);
-      }
-    }
-    if (last.fixSummary) {
-      lines.push('', '### Fix Details', '', last.fixSummary);
-    }
-  }
-
-  lines.push(
-    '',
-    '---',
-    '',
-    '🤖 The fix agent has applied changes. The PR will be reviewed again on the next iteration.',
-  );
-  return lines.join('\n');
-}
-
-function buildReadyBody(history: IterationRecord[], prNumber: number): string {
-  const lines: string[] = ['## ✅ Ready to Merge', ''];
-  lines.push(`All issues have been resolved in PR #${prNumber}.`);
-  lines.push(
-    '',
-    'The review agent has approved this PR. A maintainer can merge it at their discretion.',
-  );
-  if (history.length > 0) {
-    lines.push('', '### Summary');
-    for (const h of history) {
-      if (h.summary) {
-        lines.push('', h.summary);
-        break;
-      }
-    }
-  }
-  return lines.join('\n');
 }
 
 /**
@@ -515,6 +402,24 @@ export async function runAutofixLoop(
 
     const pr = await gh.getPR(prNumber);
     const prHeadSha = pr.headSha;
+
+    let previousBotComments:
+      | Array<{ file: string; line: number | null; body: string; commentId: number }>
+      | undefined;
+    try {
+      const botThreads = await gh.getBotReviewThreads(prNumber);
+      previousBotComments = botThreads
+        .filter((t) => !t.isResolved && t.firstComment)
+        .map((t) => ({
+          file: t.firstComment.filePath,
+          line: t.firstComment.lineNumber,
+          body: t.firstComment.body,
+          commentId: t.firstComment.databaseId,
+        }));
+    } catch {
+      /* ignore */
+    }
+
     const result = await engine.reviewPR(
       pr,
       i,
@@ -522,6 +427,9 @@ export async function runAutofixLoop(
       inputs.reviewPromptExtra,
       iterTimeoutMinutes,
       previousFindings,
+      undefined,
+      undefined,
+      previousBotComments,
     );
 
     if (
@@ -547,29 +455,10 @@ export async function runAutofixLoop(
       | undefined;
 
     if (i > 0 && previousFindings.length > 0) {
-      const prevIteration = previousFindings[previousFindings.length - 1];
-      if (prevIteration.commentIds) {
-        const currentIssueKeys = new Set(
-          result.issues.map((issue) => `${issue.file}:${issue.line}`),
-        );
-        for (const prevComment of prevIteration.commentIds) {
-          const key = `${prevComment.file}:${prevComment.line}`;
-          if (!currentIssueKeys.has(key) && prevComment.nodeId) {
-            try {
-              await gh.minimizeReviewComment(prevComment.nodeId, 'OUTDATED');
-              core.info(
-                `Auto-resolved comment for ${prevComment.file}:${prevComment.line} (issue fixed)`,
-              );
-            } catch (err) {
-              core.warning(
-                sanitize(
-                  `Failed to auto-resolve comment ${prevComment.commentId}: ${err instanceof Error ? err.message : err}`,
-                ),
-              );
-            }
-          }
-        }
-      }
+      await resolveFixedComments(gh, prNumber, previousFindings, result.issues, {
+        info: (msg: string) => core.info(msg),
+        warn: (msg: string) => core.warning(sanitize(msg)),
+      });
     }
 
     try {
@@ -627,6 +516,27 @@ export async function runAutofixLoop(
       iterTimeoutMinutes,
       result.issues,
     );
+
+    if (fixResult.stuck) {
+      const stuckBody = [
+        '🛑 **Fix Agent Stuck**',
+        '',
+        fixResult.stuckReason ||
+          'The fix agent could not determine how to address the remaining issues.',
+        '',
+        'Please provide additional context or manually apply the fix for the items listed above.',
+      ].join('\n');
+      try {
+        await gh.postOrUpdateComment(prNumber, '<!-- autofix-stuck -->', stuckBody);
+      } catch {
+        /* ignore */
+      }
+      core.info('Fix agent reported stuck — stopping loop');
+      const currentEntry = history[history.length - 1];
+      currentEntry.status = 'no-changes';
+      exitReason = 'no-changes';
+      break;
+    }
 
     if (!fixResult.changesMade) {
       core.info('Fix agent made no changes — stopping loop');

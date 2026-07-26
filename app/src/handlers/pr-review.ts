@@ -1,5 +1,6 @@
 import type { AgentConfig, LearningStore, PRContext, ReviewResult } from '@opencode-pr-agent/lib';
 import { GitHubHelper, Logger, ReviewEngine } from '@opencode-pr-agent/lib';
+import { handleAutofixLoop } from './autofix.js';
 
 /**
  * Handle a PR review: fetch the PR, check skip conditions, run the review
@@ -48,6 +49,23 @@ export async function handlePRReview(
 
   try {
     const reviewWorkingDir = tempDir || process.cwd();
+    let previousBotComments:
+      | Array<{ file: string; line: number | null; body: string; commentId: number }>
+      | undefined;
+    try {
+      const threads = await gh.getBotReviewThreads(prNumber);
+      previousBotComments = threads
+        .filter((t) => t.firstComment)
+        .map((t) => ({
+          file: t.firstComment!.filePath,
+          line: t.firstComment!.lineNumber,
+          body: t.firstComment!.body,
+          commentId: t.firstComment!.databaseId,
+        }));
+    } catch (err) {
+      logger.warn(`Failed to fetch previous bot comments: ${err}`);
+    }
+
     let result: ReviewResult;
     try {
       result = await engine.reviewPR(
@@ -59,6 +77,7 @@ export async function handlePRReview(
         undefined,
         reviewWorkingDir,
         previousHeadSha,
+        previousBotComments,
       );
     } catch (err) {
       logger.error(
@@ -97,7 +116,6 @@ export async function handlePRReview(
         `Review agent confirmed issues are auto-fixable with high confidence. Launching handleAutofixLoop...`,
       );
       try {
-        const { handleAutofixLoop } = await import('./autofix.js');
         await handleAutofixLoop(prNumber, repo, token, config, undefined, tempDir);
       } catch (err) {
         logger.error(

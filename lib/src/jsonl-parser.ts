@@ -21,8 +21,9 @@ const VALID_TYPES: (FindingType | 'executive_summary')[] = [
 const VALID_SEVERITIES: Severity[] = ['critical', 'important', 'minor'];
 
 /**
- *
- * @param content
+ * Strip markdown code fences from a string.
+ * @param content - The string to strip fences from.
+ * @returns The string with markdown fences removed.
  */
 export function stripMarkdownFences(content: string): string {
   return content
@@ -49,8 +50,9 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
 }
 
 /**
- *
- * @param content
+ * Parse a JSONL string containing review findings and return a structured ReviewResult.
+ * @param content - The JSONL string to parse.
+ * @returns A ReviewResult with parsed findings.
  */
 export function parseJsonlString(content: string): ReviewResult {
   const sanitized = stripMarkdownFences(content);
@@ -159,6 +161,7 @@ export function parseJsonlString(content: string): ReviewResult {
       line: i.line,
       message: i.message,
       suggestion: i.suggestion,
+      suggestionCode: i.suggestionCode,
       inline: i.inline,
       previouslyReported: i.previouslyReported,
     })),
@@ -175,7 +178,8 @@ export function parseJsonlString(content: string): ReviewResult {
 }
 
 /**
- *
+ * Return an empty ReviewResult with default values.
+ * @returns An empty ReviewResult.
  */
 export function emptyResult(): ReviewResult {
   return {
@@ -267,6 +271,7 @@ function validateAndNormalize(obj: Record<string, unknown>): Finding {
         line: obj.line,
         message: typeof obj.message === 'string' ? obj.message : '',
         suggestion: typeof obj.suggestion === 'string' ? obj.suggestion : undefined,
+        suggestionCode: typeof obj.suggestionCode === 'string' ? obj.suggestionCode : undefined,
         inline: typeof obj.inline === 'boolean' ? obj.inline : false,
         previouslyReported:
           typeof obj.previouslyReported === 'boolean' ? obj.previouslyReported : undefined,
@@ -279,8 +284,9 @@ function validateAndNormalize(obj: Record<string, unknown>): Finding {
 }
 
 /**
- *
- * @param result
+ * Build a markdown review body from a ReviewResult.
+ * @param result - The review result to format.
+ * @returns A markdown string with the review summary, strengths, and issues.
  */
 export function buildReviewBody(result: ReviewResult): string {
   const parts: string[] = [];
@@ -343,9 +349,10 @@ export interface InlineComment {
 }
 
 /**
- *
- * @param result
- * @param diffLines
+ * Build inline review comments from issues in a ReviewResult, filtered to lines present in the diff.
+ * @param result - The review result containing issues.
+ * @param diffLines - Optional set of "file:line" strings to filter inline comments to diff lines.
+ * @returns An array of inline comment objects.
  */
 export function buildInlineComments(
   result: ReviewResult,
@@ -363,6 +370,11 @@ export function buildInlineComments(
     .map((issue) => {
       let body = `**${issue.severity.toUpperCase()}**: ${issue.message}`;
       if (issue.suggestion) {
+        body += `\n\n> 💡 **How to fix:** ${issue.suggestion}`;
+      }
+      if (issue.suggestionCode) {
+        body += `\n\n\`\`\`suggestion\n${issue.suggestionCode.trim()}\n\`\`\``;
+      } else if (issue.suggestion) {
         const suggestion = issue.suggestion.trim();
         if (suggestion.includes('\n')) {
           // Multi-line suggestion: check if it has diff-style +/- prefixes
@@ -377,16 +389,10 @@ export function buildInlineComments(
           } else if (looksLikeCode(suggestion)) {
             // Multi-line code replacement — wrap as suggestion block
             body += `\n\n\`\`\`suggestion\n${suggestion}\n\`\`\``;
-          } else {
-            // Non-code multiline suggestion — use blockquote
-            body += `\n\n> Suggestion:\n> ${suggestion.replace(/\n/g, '\n> ')}`;
           }
         } else if (looksLikeCode(suggestion)) {
           // Single-line code suggestion — use native GitHub suggestion block
           body += `\n\n\`\`\`suggestion\n${suggestion}\n\`\`\``;
-        } else {
-          // Descriptive suggestion — use blockquote
-          body += `\n\n> Suggestion: ${suggestion}`;
         }
       }
       return {
@@ -401,7 +407,8 @@ export function buildInlineComments(
 /**
  * Heuristic to determine if a suggestion string looks like code rather than
  * a natural language description. Checks for common code patterns.
- * @param suggestion
+ * @param suggestion - The suggestion string to evaluate.
+ * @returns True if the suggestion contains code-like patterns.
  */
 function looksLikeCode(suggestion: string): boolean {
   // Common code indicators

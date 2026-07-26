@@ -13,6 +13,7 @@ const EVENT_CATEGORY_MAP: Record<string, EventCategory> = {
   'pull_request_review_comment.deleted': 'comment',
   'issue_comment.created': 'comment',
   'issues.labeled': 'issue',
+  'issues.opened': 'issue',
 };
 
 const EVENT_TYPE_MAP: Record<string, string> = {
@@ -26,6 +27,7 @@ const EVENT_TYPE_MAP: Record<string, string> = {
   'pull_request_review_comment.deleted': 'review_comment.deleted',
   'issue_comment.created': 'comment.created',
   'issues.labeled': 'issue.labeled',
+  'issues.opened': 'issue.opened',
 };
 
 /**
@@ -36,8 +38,7 @@ const EVENT_TYPE_MAP: Record<string, string> = {
  */
 export class EventRouter {
   /**
-   *
-   * @param bus
+   * @param bus The event bus instance to publish events to
    */
   constructor(private bus: EventBus) {}
 
@@ -45,8 +46,8 @@ export class EventRouter {
    * Handle an incoming raw GitHub event: map it to an internal type,
    * extract PR context, and publish to the event bus.
    * Errors are logged but not re-thrown to prevent webhook retries.
-   * @param rawEvent
-   * @param payload
+   * @param rawEvent The raw GitHub webhook event name
+   * @param payload The raw webhook payload
    */
   async handle(rawEvent: string, payload: unknown): Promise<void> {
     const category = EVENT_CATEGORY_MAP[rawEvent] || 'internal';
@@ -78,7 +79,8 @@ export class EventRouter {
 /**
  * Extract PR number from a webhook payload.
  * Checks pull_request, issue, and top-level number fields.
- * @param payload
+ * @param payload The raw webhook payload
+ * @returns The PR number if found, otherwise undefined
  */
 function extractPRNumber(payload: unknown): number | undefined {
   if (typeof payload !== 'object' || payload === null) return undefined;

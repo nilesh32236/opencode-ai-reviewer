@@ -106,7 +106,7 @@ export class JsonDatabase implements LearningRepository {
 
   /**
    *
-   * @param filePath
+   * @param filePath - Path to the JSON file for data persistence.
    */
   constructor(filePath: string) {
     this.filePath = filePath.endsWith('.db') ? filePath.replace(/\.db$/, '.json') : filePath;
@@ -194,22 +194,24 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   *
-   * @param _sql
+   * Set a pragma on the database (no-op in JSON-backed implementation).
+   * @param _sql - SQL pragma statement (ignored).
    */
   pragma(_sql: string): void {}
 
   /**
-   *
-   * @param _sql
+   * Execute an SQL statement (no-op in JSON-backed implementation).
+   * @param _sql - SQL statement (ignored).
+   * @returns A resolved promise.
    */
   exec(_sql: string): Promise<void> {
     return Promise.resolve();
   }
 
   /**
-   *
-   * @param fn
+   * Execute a function within a transaction with automatic rollback on error.
+   * @param fn - The function to execute within the transaction.
+   * @returns The wrapped function with transaction support.
    */
   transaction<T extends (...args: unknown[]) => unknown>(fn: T): T {
     const self = this;
@@ -255,8 +257,9 @@ export class JsonDatabase implements LearningRepository {
   // ─── LearningRepository implementation ───────────────────
 
   /**
-   *
-   * @param finding
+   * Record a single finding.
+   * @param finding - The finding input data.
+   * @returns The generated or provided finding ID.
    */
   async recordFinding(finding: FindingInput): Promise<string> {
     const id = finding.id || generateId();
@@ -279,8 +282,9 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   *
-   * @param findings
+   * Record multiple findings.
+   * @param findings - Array of finding input data.
+   * @returns Array of generated finding IDs.
    */
   async recordFindings(findings: FindingInput[]): Promise<string[]> {
     if (findings.length === 0) return [];
@@ -308,8 +312,9 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   *
-   * @param prNumber
+   * Delete all findings and their feedback for a given PR number.
+   * @param prNumber - The PR number to delete findings for.
+   * @returns The number of deleted findings.
    */
   async deleteFindings(prNumber: number): Promise<number> {
     this.data.feedback = this.data.feedback.filter((f) => f.pr_number !== prNumber);
@@ -321,9 +326,10 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   *
-   * @param type
-   * @param limit
+   * Retrieve findings filtered by type.
+   * @param type - The finding type to filter by.
+   * @param limit - Maximum number of results (default: 50).
+   * @returns Array of matching findings.
    */
   async getFindingsByType(type: string, limit = 50): Promise<Array<Record<string, unknown>>> {
     return [...this.data.findings]
@@ -333,9 +339,10 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   *
-   * @param prNumber
-   * @param limit
+   * Retrieve findings, optionally filtered by PR number.
+   * @param prNumber - Optional PR number to filter by.
+   * @param limit - Maximum number of results (default: 100).
+   * @returns Array of matching findings.
    */
   async getFindings(prNumber?: number, limit = 100): Promise<Array<Record<string, unknown>>> {
     let results = [...this.data.findings].sort((a, b) => b.created_at.localeCompare(a.created_at));
@@ -346,8 +353,8 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   *
-   * @param feedback
+   * Record a single feedback entry.
+   * @param feedback - The feedback input data.
    */
   async recordFeedback(feedback: FeedbackInput): Promise<void> {
     this.data.feedback.push({
@@ -362,8 +369,8 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   *
-   * @param feedbacks
+   * Record multiple feedback entries in a batch.
+   * @param feedbacks - Array of feedback input data.
    */
   async recordFeedbackBatch(feedbacks: FeedbackInput[]): Promise<void> {
     if (feedbacks.length === 0) return;
@@ -381,9 +388,10 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   *
-   * @param limit
-   * @param sinceDays
+   * Retrieve recent finding messages.
+   * @param limit - Maximum number of messages to return (default: 100).
+   * @param sinceDays - Optional filter to only include findings from the last N days.
+   * @returns Array of finding messages with optional file paths.
    */
   async getFindingMessages(
     limit = 100,
@@ -398,9 +406,10 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   *
-   * @param limit
-   * @param sinceDays
+   * Retrieve distinct (deduplicated) finding messages.
+   * @param limit - Maximum number of messages to return (default: 100).
+   * @param sinceDays - Optional filter to only include findings from the last N days.
+   * @returns Array of unique finding messages with optional file paths.
    */
   async getDistinctFindingMessages(
     limit = 100,
@@ -421,10 +430,11 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   *
-   * @param fileType
-   * @param limit
-   * @param sinceDays
+   * Retrieve finding messages filtered by file type extension.
+   * @param fileType - The file type extension to filter by (e.g. ".ts").
+   * @param limit - Maximum number of messages to return (default: 100).
+   * @param sinceDays - Optional filter to only include findings from the last N days.
+   * @returns Array of matching finding messages with optional file paths.
    */
   async getFindingMessagesByFileType(
     fileType: string,
@@ -442,7 +452,8 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   *
+   * Calculate the false positive rate from user feedback.
+   * @returns The ratio of dismissed/disputed feedback to total feedback.
    */
   async getFalsePositiveRate(): Promise<number> {
     const total = this.data.feedback.length;
@@ -454,8 +465,9 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   *
-   * @param filePaths
+   * Retrieve relevant lessons based on the file paths being reviewed.
+   * @param filePaths - Array of file paths to derive relevant lessons from.
+   * @returns Array of lesson text strings.
    */
   async getRelevantLessons(filePaths: string[]): Promise<string[]> {
     const extensions = [
@@ -492,9 +504,10 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   *
-   * @param filePaths
-   * @param limit
+   * Retrieve rules derived from false positive feedback for the given file paths.
+   * @param filePaths - Array of file paths to scope the rules to.
+   * @param limit - Maximum number of rules to return (default: 20).
+   * @returns Array of rule strings describing patterns to avoid flagging.
    */
   async getFalsePositiveRules(filePaths: string[], limit = 20): Promise<string[]> {
     const extensions = [
@@ -549,8 +562,8 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   *
-   * @param quality
+   * Record a review quality score entry.
+   * @param quality - The learning quality data to record.
    */
   async recordQuality(quality: LearningQuality): Promise<void> {
     this.data.review_quality.push({
@@ -587,8 +600,9 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   *
-   * @param interval
+   * Increment the meta review counter and check if the interval has been reached.
+   * @param interval - The interval to check against.
+   * @returns True if the counter is a multiple of the interval.
    */
   async incrementAndCheckMetaReviewInterval(interval: number): Promise<boolean> {
     const entry = this.data.meta_review_counter.find((x) => x.id === 1);
@@ -599,8 +613,8 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   *
-   * @param pattern
+   * Record a single pattern, incrementing frequency if it already exists.
+   * @param pattern - The pattern input data.
    */
   async recordPattern(pattern: PatternInput): Promise<void> {
     const existing = this.data.patterns.find((p) => p.pattern_key === pattern.patternKey);
@@ -623,8 +637,8 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   *
-   * @param patterns
+   * Record multiple patterns.
+   * @param patterns - Array of pattern input data.
    */
   async recordPatterns(patterns: PatternInput[]): Promise<void> {
     if (patterns.length === 0) return;
@@ -650,8 +664,9 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   *
-   * @param minFrequency
+   * Retrieve patterns with a frequency at or above the minimum threshold.
+   * @param minFrequency - Minimum frequency threshold (default: 3).
+   * @returns Array of matching patterns sorted by frequency descending.
    */
   async getPatterns(minFrequency = 3): Promise<Array<Record<string, unknown>>> {
     return [...this.data.patterns]
@@ -660,9 +675,10 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   *
-   * @param ruleText
-   * @param source
+   * Add a custom rule with pending status.
+   * @param ruleText - The text/content of the rule.
+   * @param source - The source of the rule ('auto' or 'manual').
+   * @returns The generated rule ID.
    */
   async addCustomRule(ruleText: string, source: 'auto' | 'manual'): Promise<string> {
     const id = generateId();
@@ -677,7 +693,8 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   *
+   * Retrieve all custom rules with pending status.
+   * @returns Array of pending custom rules.
    */
   async getPendingRules(): Promise<Array<Record<string, unknown>>> {
     return this.data.custom_rules.filter((r) => r.status === 'pending') as unknown as Array<
@@ -686,8 +703,8 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   *
-   * @param ruleId
+   * Approve a custom rule by setting its status to active.
+   * @param ruleId - The ID of the rule to approve.
    */
   async approveRule(ruleId: string): Promise<void> {
     const entry = this.data.custom_rules.find((x) => x.id === ruleId);
@@ -699,8 +716,8 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   *
-   * @param ruleId
+   * Decline a custom rule by setting its status to declined.
+   * @param ruleId - The ID of the rule to decline.
    */
   async declineRule(ruleId: string): Promise<void> {
     const entry = this.data.custom_rules.find((x) => x.id === ruleId);
@@ -711,10 +728,10 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   *
-   * @param category
-   * @param overrideText
-   * @param fpRateBefore
+   * Add a prompt override entry.
+   * @param category - The category for the override.
+   * @param overrideText - The override text content.
+   * @param fpRateBefore - The false positive rate before this override.
    */
   async addPromptOverride(
     category: string,
@@ -755,6 +772,9 @@ export class JsonDatabase implements LearningRepository {
     };
   }
 
+  /**
+   *
+   */
   async resetCounter(): Promise<void> {
     const entry = this.data.meta_review_counter.find((x) => x.id === 1);
     if (entry) {

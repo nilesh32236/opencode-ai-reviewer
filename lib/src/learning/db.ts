@@ -16,7 +16,8 @@ import type {
 /**
  * Sanitize connection strings in error messages to avoid leaking credentials.
  * Replaces credentials in URLs with `<redacted>`.
- * @param err
+ * @param err - The error object or message to sanitize.
+ * @returns The sanitized error message string with credentials redacted.
  */
 export function sanitizeDbError(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
@@ -32,35 +33,41 @@ const req = createRequire(__filename);
  */
 export interface DbAdapter {
   /**
-   *
-   * @param sql
+   * Execute a raw SQL statement.
+   * @param sql - SQL statement to execute.
+   * @returns A promise that resolves when execution completes.
    */
   exec(sql: string): Promise<void>;
   /**
-   *
-   * @param sql
-   * @param params
+   * Execute a SQL statement and return the number of affected rows.
+   * @param sql - SQL statement to execute.
+   * @param params - Optional parameters for the SQL statement.
+   * @returns Object with the number of changed rows.
    */
   run(sql: string, params?: unknown[]): Promise<{ changes: number }>;
   /**
-   *
-   * @param sql
-   * @param params
+   * Execute a SQL query and return all matching rows.
+   * @param sql - SQL statement to execute.
+   * @param params - Optional parameters for the SQL statement.
+   * @returns Array of result rows.
    */
   all<T>(sql: string, params?: unknown[]): Promise<T[]>;
   /**
-   *
-   * @param sql
-   * @param params
+   * Execute a SQL query and return the first matching row.
+   * @param sql - SQL statement to execute.
+   * @param params - Optional parameters for the SQL statement.
+   * @returns The first result row, or undefined if no match.
    */
   get<T>(sql: string, params?: unknown[]): Promise<T | undefined>;
   /**
-   *
-   * @param fn
+   * Execute operations within a transaction.
+   * @param fn - Async function containing transactional operations.
+   * @returns The return value of the transaction function.
    */
   transaction<T>(fn: () => Promise<T>): Promise<T>;
   /**
-   *
+   * Close the database connection.
+   * @returns A promise that resolves when the connection is closed.
    */
   close(): Promise<void>;
 }
@@ -145,7 +152,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Record a single review finding.
-   * @param finding
+   * @param finding - Finding data to record.
    * @returns The generated finding ID.
    */
   async recordFinding(finding: FindingInput): Promise<string> {
@@ -172,7 +179,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Record multiple findings in a single transaction.
-   * @param findings
+   * @param findings - Array of finding data to record.
    * @returns Array of generated finding IDs.
    */
   async recordFindings(findings: FindingInput[]): Promise<string[]> {
@@ -203,7 +210,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Delete all findings and associated feedback for a given PR.
-   * @param prNumber
+   * @param prNumber - PR number to delete data for.
    * @returns Number of deleted finding rows.
    */
   async deleteFindings(prNumber: number): Promise<number> {
@@ -216,8 +223,9 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Retrieve findings filtered by type, ordered by created_at DESC.
-   * @param type
-   * @param limit
+   * @param type - Finding type to filter by.
+   * @param limit - Maximum number of results (default: 50).
+   * @returns Array of finding rows.
    */
   async getFindingsByType(type: string, limit = 50): Promise<Array<Record<string, unknown>>> {
     return this.all('SELECT * FROM findings WHERE type = ? ORDER BY created_at DESC LIMIT ?', [
@@ -228,8 +236,9 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Retrieve findings, optionally filtered by PR number.
-   * @param prNumber
-   * @param limit
+   * @param prNumber - Optional PR number to filter by.
+   * @param limit - Maximum number of results (default: 100).
+   * @returns Array of finding rows.
    */
   async getFindings(prNumber?: number, limit = 100): Promise<Array<Record<string, unknown>>> {
     if (prNumber) {
@@ -243,7 +252,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Record a feedback signal for a finding.
-   * @param feedback
+   * @param feedback - Feedback data including finding ID and signal type.
    */
   async recordFeedback(feedback: FeedbackInput): Promise<void> {
     await this.run(
@@ -261,7 +270,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Record multiple feedback signals in a single transaction.
-   * @param feedbacks
+   * @param feedbacks - Array of feedback data to record.
    */
   async recordFeedbackBatch(feedbacks: FeedbackInput[]): Promise<void> {
     if (feedbacks.length === 0) return;
@@ -283,8 +292,9 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Retrieve recent finding messages for pattern discovery.
-   * @param limit
-   * @param sinceDays
+   * @param limit - Maximum number of messages (default: 100).
+   * @param sinceDays - Optional filter to only include findings from the last N days.
+   * @returns Array of objects with message text and optional file path.
    */
   async getFindingMessages(
     limit = 100,
@@ -304,8 +314,9 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Retrieve deduplicated finding messages for O(N^2) clustering.
-   * @param limit
-   * @param sinceDays
+   * @param limit - Maximum number of results (default: 100).
+   * @param sinceDays - Optional filter to only include findings from the last N days.
+   * @returns Array of deduplicated objects with message text and optional file path.
    */
   async getDistinctFindingMessages(
     limit = 100,
@@ -325,9 +336,10 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Retrieve finding messages filtered by file extension.
-   * @param fileType
-   * @param limit
-   * @param sinceDays
+   * @param fileType - File extension filter (e.g. '.ts').
+   * @param limit - Maximum number of results (default: 100).
+   * @param sinceDays - Optional filter to only include findings from the last N days.
+   * @returns Array of objects with message text and optional file path.
    */
   async getFindingMessagesByFileType(
     fileType: string,
@@ -350,6 +362,7 @@ export abstract class SqlAdapter implements LearningRepository {
   /**
    * Calculate false-positive rate as ratio of disputed/dismissed feedback
    * signals to all feedback signals.
+   * @returns The false-positive rate as a number between 0 and 1.
    */
   async getFalsePositiveRate(): Promise<number> {
     const [total, disputed] = await Promise.all([
@@ -365,7 +378,8 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Get active custom rules and prompt overrides relevant to the given file paths.
-   * @param filePaths
+   * @param filePaths - File paths to derive relevant extensions.
+   * @returns Array of relevant rule texts and prompt override texts.
    */
   async getRelevantLessons(filePaths: string[]): Promise<string[]> {
     const extensions = [
@@ -411,8 +425,9 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Get false-positive suppression rules from dismissed/disputed feedback.
-   * @param filePaths
-   * @param limit
+   * @param filePaths - File paths to derive relevant extensions.
+   * @param limit - Maximum number of suppression rules (default: 20).
+   * @returns Array of suppression rule strings.
    */
   async getFalsePositiveRules(filePaths: string[], limit = 20): Promise<string[]> {
     const extensions = [
@@ -457,7 +472,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Record a review quality assessment.
-   * @param quality
+   * @param quality - Quality assessment data to record.
    */
   async recordQuality(quality: LearningQuality): Promise<void> {
     await this.run(
@@ -519,7 +534,8 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Retrieve recent review quality scores, ordered by created_at DESC.
-   * @param limit
+   * @param limit - Maximum number of results (default: 20).
+   * @returns Array of quality trend records.
    */
   async getQualityTrends(limit = 20): Promise<Array<Record<string, unknown>>> {
     return this.all(
@@ -530,7 +546,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Increment the meta-review counter and check whether it's time to run a meta-review.
-   * @param interval
+   * @param interval - Review interval threshold.
    * @returns True if a meta-review should be triggered.
    */
   async incrementAndCheckMetaReviewInterval(interval: number): Promise<boolean> {
@@ -548,7 +564,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Record or update a pattern (upsert by patternKey).
-   * @param pattern
+   * @param pattern - Pattern data to upsert.
    */
   async recordPattern(pattern: PatternInput): Promise<void> {
     await this.transaction(async () => {
@@ -580,7 +596,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Record multiple patterns, each upserted by patternKey.
-   * @param patterns
+   * @param patterns - Array of pattern data to upsert.
    */
   async recordPatterns(patterns: PatternInput[]): Promise<void> {
     if (patterns.length === 0) return;
@@ -614,7 +630,8 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Retrieve patterns with frequency above a threshold, ordered by frequency DESC.
-   * @param minFrequency
+   * @param minFrequency - Minimum frequency threshold (default: 3).
+   * @returns Array of pattern records.
    */
   async getPatterns(minFrequency = 3): Promise<Array<Record<string, unknown>>> {
     return this.all('SELECT * FROM patterns WHERE frequency >= ? ORDER BY frequency DESC', [
@@ -624,8 +641,8 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Add a new custom rule as pending approval.
-   * @param ruleText
-   * @param source
+   * @param ruleText - Rule text content.
+   * @param source - Rule source type ('auto' or 'manual').
    * @returns The generated rule ID.
    */
   async addCustomRule(ruleText: string, source: 'auto' | 'manual'): Promise<string> {
@@ -641,6 +658,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Get all custom rules with status 'pending'.
+   * @returns Array of pending rule records.
    */
   async getPendingRules(): Promise<Array<Record<string, unknown>>> {
     return this.all("SELECT * FROM custom_rules WHERE status = 'pending'");
@@ -648,7 +666,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Approve a pending custom rule, marking it as active.
-   * @param ruleId
+   * @param ruleId - Rule ID to approve.
    */
   async approveRule(ruleId: string): Promise<void> {
     await this.run(
@@ -659,7 +677,7 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Decline a pending custom rule.
-   * @param ruleId
+   * @param ruleId - Rule ID to decline.
    */
   async declineRule(ruleId: string): Promise<void> {
     await this.run("UPDATE custom_rules SET status = 'declined' WHERE id = ?", [ruleId]);
@@ -667,9 +685,9 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Add a prompt override to influence future review prompts.
-   * @param category
-   * @param overrideText
-   * @param fpRateBefore
+   * @param category - Override category.
+   * @param overrideText - Override text content.
+   * @param fpRateBefore - False-positive rate before override.
    */
   async addPromptOverride(
     category: string,
@@ -699,8 +717,8 @@ export class PostgresAdapter extends SqlAdapter implements DbAdapter {
   private client: PostgresClient;
 
   /**
-   *
-   * @param client
+   * Create a new PostgresAdapter.
+   * @param client - Postgres client instance.
    */
   constructor(client: PostgresClient) {
     super();
@@ -708,8 +726,8 @@ export class PostgresAdapter extends SqlAdapter implements DbAdapter {
   }
 
   /**
-   *
-   * @param sql
+   * Execute a raw SQL statement.
+   * @param sql - SQL statement to execute.
    */
   async exec(sql: string): Promise<void> {
     const pgSql = translateQuery(sql, 'postgres');
@@ -717,9 +735,10 @@ export class PostgresAdapter extends SqlAdapter implements DbAdapter {
   }
 
   /**
-   *
-   * @param sql
-   * @param params
+   * Execute a SQL statement and return the number of affected rows.
+   * @param sql - SQL statement to execute.
+   * @param params - Query parameters.
+   * @returns Object with the number of changed rows.
    */
   async run(sql: string, params: unknown[] = []): Promise<{ changes: number }> {
     const pgSql = translateQuery(sql, 'postgres');
@@ -728,9 +747,10 @@ export class PostgresAdapter extends SqlAdapter implements DbAdapter {
   }
 
   /**
-   *
-   * @param sql
-   * @param params
+   * Execute a SQL query and return all matching rows.
+   * @param sql - SQL statement to execute.
+   * @param params - Query parameters.
+   * @returns Array of result rows.
    */
   async all<T>(sql: string, params: unknown[] = []): Promise<T[]> {
     const pgSql = translateQuery(sql, 'postgres');
@@ -739,9 +759,10 @@ export class PostgresAdapter extends SqlAdapter implements DbAdapter {
   }
 
   /**
-   *
-   * @param sql
-   * @param params
+   * Execute a SQL query and return the first matching row.
+   * @param sql - SQL statement to execute.
+   * @param params - Query parameters.
+   * @returns The first result row, or undefined if no match.
    */
   async get<T>(sql: string, params: unknown[] = []): Promise<T | undefined> {
     const pgSql = translateQuery(sql, 'postgres');
@@ -750,8 +771,9 @@ export class PostgresAdapter extends SqlAdapter implements DbAdapter {
   }
 
   /**
-   *
-   * @param fn
+   * Execute operations within a transaction.
+   * @param fn - Async function containing transactional operations.
+   * @returns The return value of the transaction function.
    */
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
     await this.client.query('BEGIN');
@@ -766,7 +788,7 @@ export class PostgresAdapter extends SqlAdapter implements DbAdapter {
   }
 
   /**
-   *
+   * Close the database connection.
    */
   async close(): Promise<void> {
     await this.client.end();
@@ -780,8 +802,8 @@ export class MysqlAdapter extends SqlAdapter implements DbAdapter {
   private connection: MysqlConnection;
 
   /**
-   *
-   * @param connection
+   * Create a new MysqlAdapter.
+   * @param connection - MySQL connection instance.
    */
   constructor(connection: MysqlConnection) {
     super();
@@ -789,8 +811,8 @@ export class MysqlAdapter extends SqlAdapter implements DbAdapter {
   }
 
   /**
-   *
-   * @param sql
+   * Execute a raw SQL statement.
+   * @param sql - SQL statement to execute.
    */
   async exec(sql: string): Promise<void> {
     const mysqlSql = translateQuery(sql, 'mysql');
@@ -798,9 +820,10 @@ export class MysqlAdapter extends SqlAdapter implements DbAdapter {
   }
 
   /**
-   *
-   * @param sql
-   * @param params
+   * Execute a SQL statement and return the number of affected rows.
+   * @param sql - SQL statement to execute.
+   * @param params - Query parameters.
+   * @returns Object with the number of changed rows.
    */
   async run(sql: string, params: unknown[] = []): Promise<{ changes: number }> {
     const mysqlSql = translateQuery(sql, 'mysql');
@@ -810,9 +833,10 @@ export class MysqlAdapter extends SqlAdapter implements DbAdapter {
   }
 
   /**
-   *
-   * @param sql
-   * @param params
+   * Execute a SQL query and return all matching rows.
+   * @param sql - SQL statement to execute.
+   * @param params - Query parameters.
+   * @returns Array of result rows.
    */
   async all<T>(sql: string, params: unknown[] = []): Promise<T[]> {
     const mysqlSql = translateQuery(sql, 'mysql');
@@ -821,9 +845,10 @@ export class MysqlAdapter extends SqlAdapter implements DbAdapter {
   }
 
   /**
-   *
-   * @param sql
-   * @param params
+   * Execute a SQL query and return the first matching row.
+   * @param sql - SQL statement to execute.
+   * @param params - Query parameters.
+   * @returns The first result row, or undefined if no match.
    */
   async get<T>(sql: string, params: unknown[] = []): Promise<T | undefined> {
     const mysqlSql = translateQuery(sql, 'mysql');
@@ -832,8 +857,9 @@ export class MysqlAdapter extends SqlAdapter implements DbAdapter {
   }
 
   /**
-   *
-   * @param fn
+   * Execute operations within a transaction.
+   * @param fn - Async function containing transactional operations.
+   * @returns The return value of the transaction function.
    */
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
     await this.connection.beginTransaction();
@@ -848,7 +874,7 @@ export class MysqlAdapter extends SqlAdapter implements DbAdapter {
   }
 
   /**
-   *
+   * Close the database connection.
    */
   async close(): Promise<void> {
     await this.connection.end();
@@ -865,9 +891,9 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   private readonly maxCacheSize: number;
 
   /**
-   *
-   * @param db
-   * @param maxCacheSize
+   * Create a new SqliteAdapter.
+   * @param db - SQLite database instance.
+   * @param maxCacheSize - Maximum prepared statement cache size (default: 100).
    */
   constructor(db: SqliteDatabase, maxCacheSize = 100) {
     this.db = db;
@@ -892,17 +918,18 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param sql
+   * Execute a raw SQL statement.
+   * @param sql - SQL statement to execute.
    */
   async exec(sql: string): Promise<void> {
     this.db.exec(sql);
   }
 
   /**
-   *
-   * @param sql
-   * @param params
+   * Execute a SQL statement and return the number of affected rows.
+   * @param sql - SQL statement to execute.
+   * @param params - Query parameters.
+   * @returns Object with the number of changed rows.
    */
   async run(sql: string, params: unknown[] = []): Promise<{ changes: number }> {
     const res = this.prepareStmt(sql).run(...params);
@@ -910,26 +937,29 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param sql
-   * @param params
+   * Execute a SQL query and return all matching rows.
+   * @param sql - SQL statement to execute.
+   * @param params - Query parameters.
+   * @returns Array of result rows.
    */
   async all<T>(sql: string, params: unknown[] = []): Promise<T[]> {
     return this.prepareStmt(sql).all(...params) as T[];
   }
 
   /**
-   *
-   * @param sql
-   * @param params
+   * Execute a SQL query and return the first matching row.
+   * @param sql - SQL statement to execute.
+   * @param params - Query parameters.
+   * @returns The first result row, or undefined if no match.
    */
   async get<T>(sql: string, params: unknown[] = []): Promise<T | undefined> {
     return this.prepareStmt(sql).get(...params) as T | undefined;
   }
 
   /**
-   *
-   * @param fn
+   * Execute operations within a transaction.
+   * @param fn - Async function containing transactional operations.
+   * @returns The return value of the transaction function.
    */
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
     this.db.exec('BEGIN TRANSACTION');
@@ -944,15 +974,16 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
+   * Close the database connection.
    */
   async close(): Promise<void> {
     this.db.close();
   }
 
   /**
-   *
-   * @param finding
+   * Record a single review finding.
+   * @param finding - Finding data to record.
+   * @returns The generated finding ID.
    */
   async recordFinding(finding: FindingInput): Promise<string> {
     const id = finding.id || generateId();
@@ -976,8 +1007,9 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param findings
+   * Record multiple findings in a single transaction.
+   * @param findings - Array of finding data to record.
+   * @returns Array of generated finding IDs.
    */
   async recordFindings(findings: FindingInput[]): Promise<string[]> {
     if (findings.length === 0) return [];
@@ -1005,8 +1037,9 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param prNumber
+   * Delete all findings and associated feedback for a given PR.
+   * @param prNumber - PR number to delete data for.
+   * @returns Number of deleted finding rows.
    */
   async deleteFindings(prNumber: number): Promise<number> {
     return this.transaction(async () => {
@@ -1017,9 +1050,10 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param type
-   * @param limit
+   * Retrieve findings filtered by type, ordered by created_at DESC.
+   * @param type - Finding type to filter by.
+   * @param limit - Maximum number of results (default: 50).
+   * @returns Array of finding rows.
    */
   async getFindingsByType(type: string, limit = 50): Promise<Array<Record<string, unknown>>> {
     return this.prepareStmt(
@@ -1028,9 +1062,10 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param prNumber
-   * @param limit
+   * Retrieve findings, optionally filtered by PR number.
+   * @param prNumber - Optional PR number to filter by.
+   * @param limit - Maximum number of results (default: 100).
+   * @returns Array of finding rows.
    */
   async getFindings(prNumber?: number, limit = 100): Promise<Array<Record<string, unknown>>> {
     if (prNumber) {
@@ -1044,8 +1079,8 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param feedback
+   * Record a feedback signal for a finding.
+   * @param feedback - Feedback data including finding ID and signal type.
    */
   async recordFeedback(feedback: FeedbackInput): Promise<void> {
     this.prepareStmt(
@@ -1061,8 +1096,8 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param feedbacks
+   * Record multiple feedback signals in a single transaction.
+   * @param feedbacks - Array of feedback data to record.
    */
   async recordFeedbackBatch(feedbacks: FeedbackInput[]): Promise<void> {
     if (feedbacks.length === 0) return;
@@ -1082,9 +1117,10 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param limit
-   * @param sinceDays
+   * Retrieve recent finding messages for pattern discovery.
+   * @param limit - Maximum number of messages (default: 100).
+   * @param sinceDays - Optional filter to only include findings from the last N days.
+   * @returns Array of objects with message text and optional file path.
    */
   async getFindingMessages(
     limit = 100,
@@ -1101,9 +1137,10 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param limit
-   * @param sinceDays
+   * Retrieve deduplicated finding messages for O(N^2) clustering.
+   * @param limit - Maximum number of results (default: 100).
+   * @param sinceDays - Optional filter to only include findings from the last N days.
+   * @returns Array of deduplicated objects with message text and optional file path.
    */
   async getDistinctFindingMessages(
     limit = 100,
@@ -1120,10 +1157,11 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param fileType
-   * @param limit
-   * @param sinceDays
+   * Retrieve finding messages filtered by file extension.
+   * @param fileType - File extension filter (e.g. '.ts').
+   * @param limit - Maximum number of results (default: 100).
+   * @param sinceDays - Optional filter to only include findings from the last N days.
+   * @returns Array of objects with message text and optional file path.
    */
   async getFindingMessagesByFileType(
     fileType: string,
@@ -1142,7 +1180,9 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
+   * Calculate false-positive rate as ratio of disputed/dismissed feedback
+   * signals to all feedback signals.
+   * @returns The false-positive rate as a number between 0 and 1.
    */
   async getFalsePositiveRate(): Promise<number> {
     const total = this.prepareStmt('SELECT COUNT(*) as count FROM feedback').get() as
@@ -1157,8 +1197,9 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param filePaths
+   * Get active custom rules and prompt overrides relevant to the given file paths.
+   * @param filePaths - File paths to derive relevant extensions.
+   * @returns Array of relevant rule texts and prompt override texts.
    */
   async getRelevantLessons(filePaths: string[]): Promise<string[]> {
     const extensions = [
@@ -1208,9 +1249,10 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param filePaths
-   * @param limit
+   * Get false-positive suppression rules from dismissed/disputed feedback.
+   * @param filePaths - File paths to derive relevant extensions.
+   * @param limit - Maximum number of suppression rules (default: 20).
+   * @returns Array of suppression rule strings.
    */
   async getFalsePositiveRules(filePaths: string[], limit = 20): Promise<string[]> {
     const extensions = [
@@ -1256,8 +1298,8 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param quality
+   * Record a review quality assessment.
+   * @param quality - Quality assessment data to record.
    */
   async recordQuality(quality: LearningQuality): Promise<void> {
     this.prepareStmt(
@@ -1313,6 +1355,11 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     };
   }
 
+  /**
+   * Retrieve recent review quality scores, ordered by created_at DESC.
+   * @param limit - Maximum number of results (default: 20).
+   * @returns Array of quality trend records.
+   */
   async getQualityTrends(limit = 20): Promise<Array<Record<string, unknown>>> {
     return this.prepareStmt(
       'SELECT * FROM review_quality WHERE actionability_score > 0 OR accuracy_score > 0 OR coverage_score > 0 OR consistency_score > 0 ORDER BY created_at DESC LIMIT ?',
@@ -1320,8 +1367,9 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param interval
+   * Increment the meta-review counter and check whether it's time to run a meta-review.
+   * @param interval - Review interval threshold.
+   * @returns True if a meta-review should be triggered.
    */
   async incrementAndCheckMetaReviewInterval(interval: number): Promise<boolean> {
     return this.transaction(async () => {
@@ -1337,8 +1385,8 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param pattern
+   * Record or update a pattern (upsert by patternKey).
+   * @param pattern - Pattern data to upsert.
    */
   async recordPattern(pattern: PatternInput): Promise<void> {
     await this.transaction(async () => {
@@ -1366,8 +1414,8 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param patterns
+   * Record multiple patterns, each upserted by patternKey.
+   * @param patterns - Array of pattern data to upsert.
    */
   async recordPatterns(patterns: PatternInput[]): Promise<void> {
     if (patterns.length === 0) return;
@@ -1398,8 +1446,9 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param minFrequency
+   * Retrieve patterns with frequency above a threshold, ordered by frequency DESC.
+   * @param minFrequency - Minimum frequency threshold (default: 3).
+   * @returns Array of pattern records.
    */
   async getPatterns(minFrequency = 3): Promise<Array<Record<string, unknown>>> {
     return this.prepareStmt(
@@ -1408,9 +1457,10 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param ruleText
-   * @param source
+   * Add a new custom rule as pending approval.
+   * @param ruleText - Rule text content.
+   * @param source - Rule source type ('auto' or 'manual').
+   * @returns The generated rule ID.
    */
   async addCustomRule(ruleText: string, source: 'auto' | 'manual'): Promise<string> {
     const id = generateId();
@@ -1421,7 +1471,8 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
+   * Get all custom rules with status 'pending'.
+   * @returns Array of pending rule records.
    */
   async getPendingRules(): Promise<Array<Record<string, unknown>>> {
     return this.prepareStmt("SELECT * FROM custom_rules WHERE status = 'pending'").all() as Array<
@@ -1430,8 +1481,8 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param ruleId
+   * Approve a pending custom rule, marking it as active.
+   * @param ruleId - Rule ID to approve.
    */
   async approveRule(ruleId: string): Promise<void> {
     this.prepareStmt(
@@ -1440,18 +1491,18 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param ruleId
+   * Decline a pending custom rule.
+   * @param ruleId - Rule ID to decline.
    */
   async declineRule(ruleId: string): Promise<void> {
     this.prepareStmt("UPDATE custom_rules SET status = 'declined' WHERE id = ?").run(ruleId);
   }
 
   /**
-   *
-   * @param category
-   * @param overrideText
-   * @param fpRateBefore
+   * Add a prompt override to influence future review prompts.
+   * @param category - Override category.
+   * @param overrideText - Override text content.
+   * @param fpRateBefore - False-positive rate before override.
    */
   async addPromptOverride(
     category: string,
@@ -1465,7 +1516,7 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
+   * Reset the meta-review counter to 0.
    */
   async resetCounter(): Promise<void> {
     this.prepareStmt('UPDATE meta_review_counter SET count = 0 WHERE id = 1').run();
@@ -1482,25 +1533,25 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
   private db: JsonDatabase;
 
   /**
-   *
-   * @param db
+   * Create a new JsonDbAdapter.
+   * @param db - JsonDatabase instance.
    */
   constructor(db: JsonDatabase) {
     this.db = db;
   }
 
   /**
-   *
-   * @param sql
+   * Execute a raw SQL statement.
+   * @param sql - SQL statement to execute.
    */
   async exec(sql: string): Promise<void> {
     this.db.exec(sql);
   }
 
   /**
-   *
-   * @param _sql
-   * @param _params
+   * Execute a SQL statement and return the number of affected rows.
+   * @param _sql - SQL statement (unused).
+   * @param _params - Query parameters (unused).
    */
   async run(_sql: string, _params: unknown[] = []): Promise<{ changes: number }> {
     throw new Error(
@@ -1509,9 +1560,9 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param _sql
-   * @param _params
+   * Execute a SQL query and return all matching rows.
+   * @param _sql - SQL statement (unused).
+   * @param _params - Query parameters (unused).
    */
   async all<T>(_sql: string, _params: unknown[] = []): Promise<T[]> {
     throw new Error(
@@ -1520,9 +1571,9 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param _sql
-   * @param _params
+   * Execute a SQL query and return the first matching row.
+   * @param _sql - SQL statement (unused).
+   * @param _params - Query parameters (unused).
    */
   async get<T>(_sql: string, _params: unknown[] = []): Promise<T | undefined> {
     throw new Error(
@@ -1531,8 +1582,9 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param fn
+   * Execute operations within a transaction.
+   * @param fn - Async function containing transactional operations.
+   * @returns The return value of the transaction function.
    */
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
     const txn = this.db.transaction(fn);
@@ -1540,74 +1592,82 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
+   * Close the database connection.
    */
   async close(): Promise<void> {
     this.db.close();
   }
 
   /**
-   *
-   * @param finding
+   * Record a single review finding.
+   * @param finding - Finding data to record.
+   * @returns The generated finding ID.
    */
   async recordFinding(finding: FindingInput): Promise<string> {
     return this.db.recordFinding(finding);
   }
 
   /**
-   *
-   * @param findings
+   * Record multiple findings in a single transaction.
+   * @param findings - Array of finding data to record.
+   * @returns Array of generated finding IDs.
    */
   async recordFindings(findings: FindingInput[]): Promise<string[]> {
     return this.db.recordFindings(findings);
   }
 
   /**
-   *
-   * @param prNumber
+   * Delete all findings and associated feedback for a given PR.
+   * @param prNumber - PR number to delete data for.
+   * @returns Number of deleted finding rows.
    */
   async deleteFindings(prNumber: number): Promise<number> {
     return this.db.deleteFindings(prNumber);
   }
 
   /**
-   *
-   * @param type
-   * @param limit
+   * Retrieve findings filtered by type, ordered by created_at DESC.
+   * @param type - Finding type to filter by.
+   * @param limit - Maximum number of results (default: 50).
+   * @returns Array of finding rows.
    */
   async getFindingsByType(type: string, limit = 50): Promise<Array<Record<string, unknown>>> {
     return this.db.getFindingsByType(type, limit);
   }
 
   /**
-   *
-   * @param prNumber
-   * @param limit
+   * Retrieve findings, optionally filtered by PR number.
+   * @param prNumber - Optional PR number to filter by.
+   * @param limit - Maximum number of results (default: 100).
+   * @returns Array of finding rows.
    */
   async getFindings(prNumber?: number, limit = 100): Promise<Array<Record<string, unknown>>> {
     return this.db.getFindings(prNumber, limit);
   }
 
   /**
-   *
-   * @param feedback
+   * Record a feedback signal for a finding.
+   * @param feedback - Feedback data including finding ID and signal type.
+   * @returns A promise that resolves when the feedback is recorded.
    */
   async recordFeedback(feedback: FeedbackInput): Promise<void> {
     return this.db.recordFeedback(feedback);
   }
 
   /**
-   *
-   * @param feedbacks
+   * Record multiple feedback signals in a single transaction.
+   * @param feedbacks - Array of feedback data to record.
+   * @returns A promise that resolves when the feedbacks are recorded.
    */
   async recordFeedbackBatch(feedbacks: FeedbackInput[]): Promise<void> {
     return this.db.recordFeedbackBatch(feedbacks);
   }
 
   /**
-   *
-   * @param limit
-   * @param sinceDays
+   * Retrieve recent finding messages for pattern discovery.
+   * @param limit - Maximum number of messages (default: 100).
+   * @param sinceDays - Optional filter to only include findings from the last N days.
+   * @returns Array of objects with message text and optional file path.
    */
   async getFindingMessages(
     limit = 100,
@@ -1617,9 +1677,10 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param limit
-   * @param sinceDays
+   * Retrieve deduplicated finding messages for O(N^2) clustering.
+   * @param limit - Maximum number of results (default: 100).
+   * @param sinceDays - Optional filter to only include findings from the last N days.
+   * @returns Array of deduplicated objects with message text and optional file path.
    */
   async getDistinctFindingMessages(
     limit = 100,
@@ -1629,10 +1690,11 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
-   * @param fileType
-   * @param limit
-   * @param sinceDays
+   * Retrieve finding messages filtered by file extension.
+   * @param fileType - File extension filter (e.g. '.ts').
+   * @param limit - Maximum number of results (default: 100).
+   * @param sinceDays - Optional filter to only include findings from the last N days.
+   * @returns Array of objects with message text and optional file path.
    */
   async getFindingMessagesByFileType(
     fileType: string,
@@ -1643,114 +1705,129 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   *
+   * Calculate false-positive rate as ratio of disputed/dismissed feedback
+   * signals to all feedback signals.
+   * @returns The false-positive rate as a number between 0 and 1.
    */
   async getFalsePositiveRate(): Promise<number> {
     return this.db.getFalsePositiveRate();
   }
 
   /**
-   *
-   * @param filePaths
+   * Get active custom rules and prompt overrides relevant to the given file paths.
+   * @param filePaths - File paths to derive relevant extensions.
+   * @returns Array of relevant rule texts and prompt override texts.
    */
   async getRelevantLessons(filePaths: string[]): Promise<string[]> {
     return this.db.getRelevantLessons(filePaths);
   }
 
   /**
-   *
-   * @param filePaths
-   * @param limit
+   * Get false-positive suppression rules from dismissed/disputed feedback.
+   * @param filePaths - File paths to derive relevant extensions.
+   * @param limit - Maximum number of suppression rules (default: 20).
+   * @returns Array of suppression rule strings.
    */
   async getFalsePositiveRules(filePaths: string[], limit = 20): Promise<string[]> {
     return this.db.getFalsePositiveRules(filePaths, limit);
   }
 
   /**
-   *
-   * @param quality
+   * Record a review quality assessment.
+   * @param quality - Quality assessment data to record.
+   * @returns A promise that resolves when the quality is recorded.
    */
   async recordQuality(quality: LearningQuality): Promise<void> {
     return this.db.recordQuality(quality);
   }
 
   /**
-   *
-   * @param limit
+   * Retrieve recent review quality scores, ordered by created_at DESC.
+   * @param limit - Maximum number of results (default: 20).
+   * @returns Array of quality trend records.
    */
   async getQualityTrends(limit = 20): Promise<Array<Record<string, unknown>>> {
     return this.db.getQualityTrends(limit);
   }
 
   /**
-   *
-   * @param interval
+   * Increment the meta-review counter and check whether it's time to run a meta-review.
+   * @param interval - Review interval threshold.
+   * @returns True if a meta-review should be triggered.
    */
   async incrementAndCheckMetaReviewInterval(interval: number): Promise<boolean> {
     return this.db.incrementAndCheckMetaReviewInterval(interval);
   }
 
   /**
-   *
-   * @param pattern
+   * Record or update a pattern (upsert by patternKey).
+   * @param pattern - Pattern data to upsert.
+   * @returns A promise that resolves when the pattern is recorded.
    */
   async recordPattern(pattern: PatternInput): Promise<void> {
     return this.db.recordPattern(pattern);
   }
 
   /**
-   *
-   * @param patterns
+   * Record multiple patterns, each upserted by patternKey.
+   * @param patterns - Array of pattern data to upsert.
+   * @returns A promise that resolves when the patterns are recorded.
    */
   async recordPatterns(patterns: PatternInput[]): Promise<void> {
     return this.db.recordPatterns(patterns);
   }
 
   /**
-   *
-   * @param minFrequency
+   * Retrieve patterns with frequency above a threshold, ordered by frequency DESC.
+   * @param minFrequency - Minimum frequency threshold (default: 3).
+   * @returns Array of pattern records.
    */
   async getPatterns(minFrequency = 3): Promise<Array<Record<string, unknown>>> {
     return this.db.getPatterns(minFrequency);
   }
 
   /**
-   *
-   * @param ruleText
-   * @param source
+   * Add a new custom rule as pending approval.
+   * @param ruleText - Rule text content.
+   * @param source - Rule source type ('auto' or 'manual').
+   * @returns The generated rule ID.
    */
   async addCustomRule(ruleText: string, source: 'auto' | 'manual'): Promise<string> {
     return this.db.addCustomRule(ruleText, source);
   }
 
   /**
-   *
+   * Get all custom rules with status 'pending'.
+   * @returns Array of pending rule records.
    */
   async getPendingRules(): Promise<Array<Record<string, unknown>>> {
     return this.db.getPendingRules();
   }
 
   /**
-   *
-   * @param ruleId
+   * Approve a pending custom rule, marking it as active.
+   * @param ruleId - Rule ID to approve.
+   * @returns A promise that resolves when the rule is approved.
    */
   async approveRule(ruleId: string): Promise<void> {
     return this.db.approveRule(ruleId);
   }
 
   /**
-   *
-   * @param ruleId
+   * Decline a pending custom rule.
+   * @param ruleId - Rule ID to decline.
+   * @returns A promise that resolves when the rule is declined.
    */
   async declineRule(ruleId: string): Promise<void> {
     return this.db.declineRule(ruleId);
   }
 
   /**
-   *
-   * @param category
-   * @param overrideText
-   * @param fpRateBefore
+   * Add a prompt override to influence future review prompts.
+   * @param category - Override category.
+   * @param overrideText - Override text content.
+   * @param fpRateBefore - False-positive rate before override.
+   * @returns A promise that resolves when the override is added.
    */
   async addPromptOverride(
     category: string,
@@ -1769,6 +1846,10 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
   async getTelemetryStats(sinceDays?: number): Promise<TelemetryStats> {
     return this.db.getTelemetryStats(sinceDays);
   }
+  /**
+   * Reset the meta-review counter to 0.
+   * @returns A promise that resolves when the counter is reset.
+   */
   async resetCounter(): Promise<void> {
     return this.db.resetCounter();
   }
@@ -1782,7 +1863,8 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
  * - `postgres://` or `postgresql://` → PostgreSQL
  * - `mysql://` → MySQL
  * - Anything else → SQLite (then JSON fallback)
- * @param dbPathOrUrl
+ * @param dbPathOrUrl - Database connection string or file path.
+ * @returns A connected database adapter implementing both LearningRepository and DbAdapter.
  */
 export async function connectDb(dbPathOrUrl: string): Promise<LearningRepository & DbAdapter> {
   if (dbPathOrUrl.startsWith('postgres://') || dbPathOrUrl.startsWith('postgresql://')) {

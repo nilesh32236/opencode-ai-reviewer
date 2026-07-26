@@ -70,6 +70,7 @@ export async function handleReply(
  * @param prNumber - PR number
  * @param filePath - File path
  * @param _lineNumber - Line number
+ * @returns A diff snippet string, or a fallback message if unavailable.
  */
 async function fetchDiffSnippet(
   gh: GitHubHelper,
@@ -90,7 +91,8 @@ async function fetchDiffSnippet(
 /**
  * Remove any JSON-like code fences or artifacts from the OpenCode output,
  * returning the clean markdown reply body.
- * @param output
+ * @param output - Raw output string from OpenCode.
+ * @returns The trimmed reply body string.
  */
 function cleanReplyOutput(output: string): string {
   return output.trim();

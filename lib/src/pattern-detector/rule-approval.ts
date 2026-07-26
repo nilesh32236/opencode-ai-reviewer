@@ -19,15 +19,14 @@ export class RuleApprovalSubscriber implements Subscriber {
   subscribedEvents = ['comment.created', 'review_comment.created'];
 
   /**
-   *
-   * @param store
+   * @param store - The learning store for approving custom rules.
    */
   constructor(private store: LearningStore) {}
 
   /**
-   *
-   * @param event
-   * @param signal
+   * Handle a GitHub event to approve a rule via the `/approve-rule <ruleId>` command.
+   * @param event - The GitHub event payload.
+   * @param signal - Optional abort signal for cancellation.
    */
   async handle(event: GitHubEvent, signal?: AbortSignal): Promise<void> {
     if (signal?.aborted) return;

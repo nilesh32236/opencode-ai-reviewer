@@ -1,18 +1,23 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import type { AgentConfig, GitHubHelper, ReviewEngine } from '@opencode-pr-agent/lib';
+import {
+  markAnalysisReady,
+  parseAnalysisPlan,
+  postBlockingQuestions,
+} from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { sanitize } from './utils.js';
 
 /**
  * Execute an issue analysis: gather issue context, run the analysis engine,
- * and post the implementation plan as a comment on the issue.
- * @param _inputs - Parsed action inputs.
- * @param _config - Full agent configuration.
+ * parse blocking questions, apply appropriate labels, and post the plan.
+ * @param _inputs - Parsed action inputs (unused, retained for interface compatibility).
+ * @param _config - Full agent configuration (unused, retained for interface compatibility).
  * @param engine - Review engine instance.
  * @param gh - GitHub API helper.
- * @param _repo - Repository string (owner/repo).
- * @param _token - GitHub authentication token.
+ * @param _repo - Repository string (owner/repo, unused).
+ * @param _token - GitHub authentication token (unused).
  */
 export async function runAnalyze(
   _inputs: ActionInputs,
@@ -35,9 +40,18 @@ export async function runAnalyze(
     const issueContext = await gh.gatherContext({ issueNumber });
 
     const planMarkdown = await engine.runAnalyze(issueNumber, issueContext);
+    const parsed = parseAnalysisPlan(planMarkdown);
 
     await gh.postOrUpdateComment(issueNumber, '<!-- issue-analysis-plan -->', planMarkdown);
 
+    if (parsed.hasBlockingQuestions) {
+      await postBlockingQuestions(gh, issueNumber, parsed);
+    } else {
+      await markAnalysisReady(gh, issueNumber);
+    }
+
+    core.setOutput('has_blocking_questions', String(parsed.hasBlockingQuestions));
+    core.setOutput('confidence_level', parsed.confidenceLevel);
     core.info(`Posted analysis plan for issue #${issueNumber}`);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
