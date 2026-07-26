@@ -28,6 +28,7 @@ import type {
   ReviewStrength,
 } from './types/index.js';
 import { GitHubHelper } from './utils/github.js';
+import { Logger } from './utils/logger.js';
 import {
   detectDotnetLibraries,
   detectJavaLibraries,
@@ -74,6 +75,8 @@ export class ReviewEngine {
    * @param timeoutMinutes - Optional timeout override per run.
    * @param previousFindings - Optional findings from previous fix iterations.
    * @param workingDirectory - Optional working directory for cloned repo (tempDir).
+   * @param previousHeadSha - Optional previous head SHA for delta diff.
+   * @param previousBotComments - Optional previous bot review comments for context awareness.
    * @returns Consolidated ReviewResult with deduplicated findings.
    */
   async reviewPR(
@@ -85,6 +88,12 @@ export class ReviewEngine {
     previousFindings?: PreviousFindingIteration[],
     workingDirectory?: string,
     previousHeadSha?: string,
+    previousBotComments?: Array<{
+      file: string;
+      line: number | null;
+      body: string;
+      commentId: number;
+    }>,
   ): Promise<ReviewResult> {
     let mcpDocs = '';
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
@@ -181,9 +190,10 @@ export class ReviewEngine {
         previousFindings,
         falsePositiveRules,
         deltaContext,
+        previousBotComments,
       );
 
-      const outputPath = path.join(workDir, '.opencode', 'review-output.jsonl');
+      const outputPath = path.join(workDir, 'review-output.jsonl');
       ensureOutputDir(outputPath);
 
       const runResult = await runOpenCode(prompt, {
@@ -191,6 +201,8 @@ export class ReviewEngine {
         timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
         workingDirectory: workDir,
       });
+
+      await this.recordTelemetry(pr.number, runResult.durationMs, runResult.tokensUsed);
 
       if (!runResult.success) {
         core.warning('OpenCode review execution failed, returning fallback empty result');
@@ -201,7 +213,13 @@ export class ReviewEngine {
 
       try {
         const parsed = await parseJsonlFile(outputPath);
-        return await this.verifyReviewResult(parsed, baseContext, workDir, timeoutMinutes);
+        return await this.verifyReviewResult(
+          parsed,
+          baseContext,
+          workDir,
+          timeoutMinutes,
+          pr.number,
+        );
       } catch {
         core.warning(`Failed to parse review output at ${outputPath}, returning empty result`);
         const r = emptyResult();
@@ -216,11 +234,13 @@ export class ReviewEngine {
       fileBatches.push(files.slice(i, i + batchSize));
     }
 
+    let accumulatedDurationMs = 0;
+    let accumulatedTokensUsed = 0;
     const concurrencyLimit = 3;
     const batchResults: ReviewResult[] = [];
     for (let i = 0; i < fileBatches.length; i += concurrencyLimit) {
       const chunk = fileBatches.slice(i, i + concurrencyLimit);
-      const chunkResults = await Promise.all(
+      const chunkOutputs = await Promise.all(
         chunk.map(async (batch, chunkIdx) => {
           const idx = i + chunkIdx;
           const batchDir = path.join(workDir, `.opencode`, `batch-${idx}`);
@@ -244,9 +264,10 @@ export class ReviewEngine {
             previousFindings,
             falsePositiveRules,
             deltaContext,
+            previousBotComments,
           );
 
-          const outputPath = path.join(batchDir, '.opencode', 'review-output.jsonl');
+          const outputPath = path.join(batchDir, 'review-output.jsonl');
           ensureOutputDir(outputPath);
 
           const runResult = await runOpenCode(prompt, {
@@ -257,18 +278,35 @@ export class ReviewEngine {
 
           if (!runResult.success) {
             core.warning(`Batch ${idx} review execution failed, returning empty result`);
-            return emptyResult();
+            return {
+              durationMs: runResult.durationMs,
+              tokensUsed: runResult.tokensUsed,
+              result: emptyResult(),
+            };
           }
 
           try {
-            return await parseJsonlFile(outputPath);
+            const parsed = await parseJsonlFile(outputPath);
+            return {
+              durationMs: runResult.durationMs,
+              tokensUsed: runResult.tokensUsed,
+              result: parsed,
+            };
           } catch {
             core.warning(`Failed to parse batch ${idx} review output, returning empty result`);
-            return emptyResult();
+            return {
+              durationMs: runResult.durationMs,
+              tokensUsed: runResult.tokensUsed,
+              result: emptyResult(),
+            };
           }
         }),
       );
-      batchResults.push(...chunkResults);
+      for (const item of chunkOutputs) {
+        accumulatedDurationMs += item.durationMs;
+        accumulatedTokensUsed += item.tokensUsed;
+        batchResults.push(item.result);
+      }
     }
 
     // Collate findings from all batches
@@ -291,7 +329,7 @@ export class ReviewEngine {
       findingsJsonl,
     );
 
-    const finalOutputPath = path.join(workDir, '.opencode', 'review-output.jsonl');
+    const finalOutputPath = path.join(workDir, 'review-output.jsonl');
     ensureOutputDir(finalOutputPath);
 
     const synthesisResult = await runOpenCode(synthesisPrompt, {
@@ -299,6 +337,11 @@ export class ReviewEngine {
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory: workDir,
     });
+
+    accumulatedDurationMs += synthesisResult.durationMs;
+    accumulatedTokensUsed += synthesisResult.tokensUsed;
+
+    await this.recordTelemetry(pr.number, accumulatedDurationMs, accumulatedTokensUsed);
 
     if (!synthesisResult.success) {
       core.warning('Synthesis pass failed, falling back to merged batch results');
@@ -310,12 +353,18 @@ export class ReviewEngine {
         fileBatches,
         'Synthesis failed, using merged batch results',
       );
-      return await this.verifyReviewResult(fallback, baseContext, workDir, timeoutMinutes);
+      return await this.verifyReviewResult(
+        fallback,
+        baseContext,
+        workDir,
+        timeoutMinutes,
+        pr.number,
+      );
     }
 
     try {
       const parsed = await parseJsonlFile(finalOutputPath);
-      return await this.verifyReviewResult(parsed, baseContext, workDir, timeoutMinutes);
+      return await this.verifyReviewResult(parsed, baseContext, workDir, timeoutMinutes, pr.number);
     } catch {
       core.warning('Synthesis output parse failed, falling back to merged batch results');
       const fallback = this.buildFallbackResult(
@@ -390,6 +439,7 @@ export class ReviewEngine {
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory,
     });
+    await this.recordTelemetry(prNumber, fixRunResult.durationMs, fixRunResult.tokensUsed);
     if (!fixRunResult.success) {
       core.warning(
         'OpenCode fix execution failed or timed out. Checking for partial changes on disk...',
@@ -499,6 +549,7 @@ export class ReviewEngine {
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory,
     });
+    await this.recordTelemetry(0, auditRunResult.durationMs, auditRunResult.tokensUsed);
     if (!auditRunResult.success) {
       core.warning('OpenCode audit execution failed, returning fallback empty result');
       const r = emptyResult();
@@ -528,7 +579,7 @@ export class ReviewEngine {
    * @returns Markdown content of the generated implementation plan.
    */
   async runAnalyze(
-    _issueNumber: number,
+    issueNumber: number,
     issueContextMarkdown: string,
     timeoutMinutes?: number,
     workingDirectory?: string,
@@ -547,6 +598,7 @@ export class ReviewEngine {
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory: workDir,
     });
+    await this.recordTelemetry(issueNumber, runResult.durationMs, runResult.tokensUsed);
 
     if (!runResult.success) {
       core.warning('OpenCode analyze execution failed or timed out.');
@@ -594,6 +646,7 @@ export class ReviewEngine {
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory: workDir,
     });
+    await this.recordTelemetry(pr.number, runResult.durationMs, runResult.tokensUsed);
 
     if (!runResult.success) {
       return '⚠️ **Explanation Failed**: OpenCode CLI was unable to generate the PR explanation.';
@@ -623,6 +676,7 @@ export class ReviewEngine {
     prContext: string,
     workDir: string,
     timeoutMinutes?: number,
+    prNumber?: number,
   ): Promise<ReviewResult> {
     if (!this.config.review.enableMetaVerification || result.issues.length === 0) {
       return result;
@@ -640,6 +694,9 @@ export class ReviewEngine {
         timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
         workingDirectory: workDir,
       });
+      if (prNumber) {
+        await this.recordTelemetry(prNumber, runResult.durationMs, runResult.tokensUsed);
+      }
 
       if (!runResult.success) {
         core.warning('Meta-verification pass failed, returning original result');
@@ -739,6 +796,11 @@ export class ReviewEngine {
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory: workDir,
     });
+    await this.recordTelemetry(
+      context.prContext.number,
+      runResult.durationMs,
+      runResult.tokensUsed,
+    );
 
     if (!runResult.success) {
       return 'I encountered an error processing your request. Please try again or rephrase your question.';
@@ -786,6 +848,27 @@ export class ReviewEngine {
       core.warning(
         `Cleanup did not finish within ${timeoutMs}ms (took ${elapsed}ms) — MCP/learning store may still be shutting down in background`,
       );
+    }
+  }
+
+  private async recordTelemetry(
+    prNumber: number,
+    durationMs: number,
+    tokensUsed: number,
+  ): Promise<void> {
+    if (!this.learningStore) return;
+    try {
+      await this.learningStore.recordQuality({
+        prNumber,
+        actionabilityScore: 0,
+        accuracyScore: 0,
+        coverageScore: 0,
+        consistencyScore: 0,
+        durationMs,
+        tokensUsed,
+      });
+    } catch (err) {
+      new Logger('ReviewEngine').warn('Failed to record telemetry', err);
     }
   }
 

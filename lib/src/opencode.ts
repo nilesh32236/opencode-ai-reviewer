@@ -263,6 +263,37 @@ function buildCIConfig(): string {
 }
 
 /**
+ * Parse token usage from OpenCode CLI output.
+ * Looks for common LLM token patterns. Returns 0 if no pattern matches.
+ */
+export function parseTokenUsage(output: string): number {
+  // Prioritize total_tokens patterns to avoid matching prompt_tokens or completion_tokens.
+  // Use word-bounded key matches so suffixes like prompt_total_tokens are not accepted.
+  const totalPatterns = [
+    /\btotal_tokens\b["\s]*[:=]\s*(\d+)/i,
+    /\btotal\s+tokens\b["\s]*[:=]\s*(\d+)/i,
+  ];
+  for (const pattern of totalPatterns) {
+    const match = output.match(pattern);
+    if (match) {
+      const parsed = Number.parseInt(match[1], 10);
+      if (Number.isSafeInteger(parsed) && parsed >= 0) return parsed;
+    }
+  }
+  // Fallback: sum input_tokens + output_tokens (used by Anthropic, Gemini)
+  const inputMatch = output.match(/\binput_tokens\b["\s]*[:=]\s*(\d+)/i);
+  const outputMatch = output.match(/\boutput_tokens\b["\s]*[:=]\s*(\d+)/i);
+  const inputTokens = inputMatch ? Number.parseInt(inputMatch[1], 10) : 0;
+  const outputTokens = outputMatch ? Number.parseInt(outputMatch[1], 10) : 0;
+  const hasInput = inputMatch !== null && Number.isSafeInteger(inputTokens) && inputTokens >= 0;
+  const hasOutput = outputMatch !== null && Number.isSafeInteger(outputTokens) && outputTokens >= 0;
+  if (hasInput || hasOutput) {
+    return (hasInput ? inputTokens : 0) + (hasOutput ? outputTokens : 0);
+  }
+  return 0;
+}
+
+/**
  * Execute the OpenCode CLI with a given prompt.
  * Spawns the binary with a sandboxed environment (only whitelisted env vars are forwarded)
  * and enforces a timeout via SIGTERM/SIGKILL.
@@ -272,7 +303,7 @@ function buildCIConfig(): string {
  * @param options.workingDirectory - Working directory for the subprocess (default: cwd).
  * @param options.timeoutMinutes - Max runtime before forced termination (default: 20).
  * @param options.env - Additional environment variables to forward.
- * @returns Object indicating success, output text, and wall-clock duration in ms.
+ * @returns Object indicating success, output text, wall-clock duration in ms, and tokens used.
  */
 export async function runOpenCode(
   prompt: string,
@@ -285,7 +316,7 @@ export async function runOpenCode(
     signal?: AbortSignal;
     env?: Record<string, string>;
   },
-): Promise<{ success: boolean; output: string; durationMs: number }> {
+): Promise<{ success: boolean; output: string; durationMs: number; tokensUsed: number }> {
   const binaryPath = opencodePath || (await setupOpenCode());
   const startTime = Date.now();
   const cwd = options.workingDirectory || process.cwd();
@@ -373,10 +404,28 @@ export async function runOpenCode(
 
   const childProcess = cp.spawn(binaryPath, args, {
     cwd,
-    stdio: 'inherit',
+    stdio: ['ignore', 'pipe', 'pipe'],
     env: safeEnv,
     detached: true,
   });
+
+  // Cap retained output to prevent memory exhaustion on verbose or stuck runs.
+  // We keep only the last 50 KB which is sufficient for token parsing while
+  // still forwarding all output to CI logs.
+  const MAX_CAPTURED_BYTES = 50 * 1024;
+  let capturedOutput = '';
+  let tokenUsageResult = 0;
+
+  function appendCaptured(text: string): void {
+    capturedOutput += text;
+    if (capturedOutput.length > MAX_CAPTURED_BYTES) {
+      capturedOutput = capturedOutput.slice(-MAX_CAPTURED_BYTES);
+    }
+    const parsed = parseTokenUsage(text);
+    if (parsed > 0) {
+      tokenUsageResult = parsed;
+    }
+  }
 
   let timedOut = false;
   let childExited = false;
@@ -423,12 +472,31 @@ export async function runOpenCode(
     }, 5_000);
   }, timeoutMs);
 
+  childProcess.stdout?.on('data', (data: Buffer) => {
+    const text = data.toString();
+    appendCaptured(text);
+    try {
+      process.stdout.write(data);
+    } catch {
+      // Stream closed
+    }
+  });
+  childProcess.stderr?.on('data', (data: Buffer) => {
+    const text = data.toString();
+    appendCaptured(text);
+    try {
+      process.stderr.write(data);
+    } catch {
+      // Stream closed
+    }
+  });
+
   let exitCode: number | null = null;
   let processError: string | undefined;
 
   try {
     await new Promise<void>((resolve) => {
-      childProcess.on('exit', (code) => {
+      childProcess.on('close', (code) => {
         childExited = true;
         exitCode = code;
         resolve();
@@ -441,20 +509,37 @@ export async function runOpenCode(
     });
 
     const durationMs = Date.now() - startTime;
+    const finalTokens = parseTokenUsage(capturedOutput) || tokenUsageResult;
 
     if (exitCode === 0 && !processError) {
       core.info(`OpenCode finished in ${(durationMs / 1000).toFixed(1)}s`);
-      return { success: true, output: '', durationMs };
+      return {
+        success: true,
+        output: capturedOutput,
+        durationMs,
+        tokensUsed: finalTokens,
+      };
     }
 
     core.warning(
       `OpenCode did not complete successfully (timedOut: ${timedOut}, exitCode: ${exitCode}, error: ${processError ?? 'none'})`,
     );
-    return { success: false, output: '', durationMs };
+    return {
+      success: false,
+      output: capturedOutput,
+      durationMs,
+      tokensUsed: finalTokens,
+    };
   } catch (err) {
     const durationMs = Date.now() - startTime;
+    const finalTokens = parseTokenUsage(capturedOutput) || tokenUsageResult;
     core.error(`OpenCode execution failed: ${String(err)}`);
-    return { success: false, output: '', durationMs };
+    return {
+      success: false,
+      output: capturedOutput,
+      durationMs,
+      tokensUsed: finalTokens,
+    };
   } finally {
     clearTimeout(timeoutHandle);
     if (forceKillHandle !== undefined) {

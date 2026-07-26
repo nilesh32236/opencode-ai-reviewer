@@ -542,6 +542,45 @@ export async function runAutofixLoop(
       break;
     }
 
+    let currentCommentIds:
+      | Array<{ file: string; line: number; commentId: number; nodeId?: string }>
+      | undefined;
+
+    if (i > 0 && previousFindings.length > 0) {
+      const prevIteration = previousFindings[previousFindings.length - 1];
+      if (prevIteration.commentIds) {
+        const currentIssueKeys = new Set(
+          result.issues.map((issue) => `${issue.file}:${issue.line}`),
+        );
+        for (const prevComment of prevIteration.commentIds) {
+          const key = `${prevComment.file}:${prevComment.line}`;
+          if (!currentIssueKeys.has(key) && prevComment.nodeId) {
+            try {
+              await gh.minimizeReviewComment(prevComment.nodeId, 'OUTDATED');
+              core.info(
+                `Auto-resolved comment for ${prevComment.file}:${prevComment.line} (issue fixed)`,
+              );
+            } catch (err) {
+              core.warning(
+                sanitize(
+                  `Failed to auto-resolve comment ${prevComment.commentId}: ${err instanceof Error ? err.message : err}`,
+                ),
+              );
+            }
+          }
+        }
+      }
+    }
+
+    try {
+      const reviewResult = await gh.postReview(prNumber, prHeadSha, result, config.review.inline);
+      if (reviewResult.commentIds) {
+        currentCommentIds = reviewResult.commentIds;
+      }
+    } catch (err) {
+      core.warning(sanitize(`Failed to post review: ${err instanceof Error ? err.message : err}`));
+    }
+
     const entry: IterationRecord = {
       iteration: i + 1,
       status: 'approved',
@@ -628,6 +667,12 @@ export async function runAutofixLoop(
         fixSummary: fixResult.summary,
         filesChanged: fixResult.filesChanged,
         headSha: prHeadSha,
+        commentIds: currentCommentIds?.map((c) => ({
+          file: c.file,
+          line: c.line,
+          commentId: c.commentId,
+          nodeId: c.nodeId,
+        })),
       });
     } catch (err) {
       core.warning(

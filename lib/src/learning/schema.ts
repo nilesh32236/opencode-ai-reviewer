@@ -124,6 +124,33 @@ export async function applyMigrations(runner: MigrationRunner): Promise<void> {
     `);
 
     await runner.exec('INSERT OR IGNORE INTO meta_review_counter (id, count) VALUES (1, 0)');
+
+    // Telemetry columns — idempotent migration guards
+    const telemetryColumns = [
+      'ALTER TABLE findings ADD COLUMN duration_ms INTEGER',
+      'ALTER TABLE findings ADD COLUMN tokens_used INTEGER',
+      'ALTER TABLE review_quality ADD COLUMN duration_ms INTEGER',
+      'ALTER TABLE review_quality ADD COLUMN tokens_used INTEGER',
+    ];
+    for (const sql of telemetryColumns) {
+      try {
+        await runner.exec(sql);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!/duplicate column name|already exists/i.test(message)) {
+          throw err;
+        }
+      }
+    }
+    // Add comment_id column to findings table
+    try {
+      await runner.exec('ALTER TABLE findings ADD COLUMN comment_id INTEGER');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!/duplicate column name|already exists/i.test(message)) {
+        throw err;
+      }
+    }
   } catch (err) {
     const logger = new Logger('LearningStore');
     logger.error('Migration failed', err);

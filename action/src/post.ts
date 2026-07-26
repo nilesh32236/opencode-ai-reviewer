@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as github from '@actions/github';
 import type { GitHubHelper } from '@opencode-pr-agent/lib';
-import { validateRunChecksCommand } from '@opencode-pr-agent/lib';
+import { LearningStore, validateRunChecksCommand } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { sanitize } from './utils.js';
 
@@ -65,5 +65,36 @@ export async function runPost(
     core.info('PR is approved — no annotations needed');
   } else {
     core.warning('PR has unresolved issues — check review output');
+  }
+
+  // Post telemetry summary
+  try {
+    const learningEnabled = core.getInput('learning_enabled') !== 'false';
+    if (learningEnabled) {
+      const store = new LearningStore();
+      try {
+        const stats = await store.getTelemetryStats(30);
+        if (stats.totalReviews > 0) {
+          await core.summary
+            .addHeading('Execution Telemetry', 2)
+            .addList([
+              `Total Reviews: ${stats.totalReviews}`,
+              `Average Duration: ${(stats.avgDurationMs / 1000).toFixed(1)}s`,
+              `Total Tokens Used: ${stats.totalTokensUsed.toLocaleString()}`,
+              `Avg Tokens/Review: ${stats.avgTokensPerReview.toLocaleString()}`,
+            ])
+            .write();
+          core.info('Posted telemetry summary');
+        }
+      } finally {
+        await store.close();
+      }
+    }
+  } catch (err) {
+    core.warning(
+      sanitize(
+        `Failed to post telemetry summary: ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
   }
 }

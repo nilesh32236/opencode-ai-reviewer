@@ -94,6 +94,8 @@ export class MetaReviewEngine {
       accuracyScore: Number(result.accuracyScore) || Math.max(0, 100 - fpRate * 100),
       coverageScore: Number(result.coverageScore) || 70,
       consistencyScore: Number(result.consistencyScore) || 70,
+      durationMs: metaRunResult.durationMs,
+      tokensUsed: metaRunResult.tokensUsed,
     };
 
     try {
