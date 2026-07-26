@@ -717,6 +717,137 @@ describe('ReviewEngine', () => {
     });
   });
 
+  describe('buildPRContextString() patch truncation', () => {
+    it('truncates patch when exceeding maxLinesPerFile', async () => {
+      const lineCount = 1000;
+      const maxLines = 100;
+      const lines = Array.from({ length: lineCount }, (_, i) => `+line ${i + 1}`);
+      const patch = lines.join('\n');
+
+      const pr = makePRContext({
+        changedFiles: [
+          {
+            path: 'src/large.ts',
+            status: 'modified' as const,
+            additions: 200,
+            deletions: 800,
+            patch,
+          },
+        ],
+      });
+
+      const eng = new ReviewEngine(
+        makeConfig({ maxLinesPerFile: maxLines, enableMCP: false, mcpServers: [] }),
+        'fake-token',
+        'owner/repo',
+      );
+
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 100,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      await eng.reviewPR(pr);
+
+      const contextArg = mockBuildReviewPrompt.mock.calls[0][1];
+
+      expect(contextArg).toContain('### File Diffs');
+      expect(contextArg).toContain(
+        `[Patch truncated: ${lineCount - maxLines} remaining lines omitted. Use the 'read' tool to inspect the full file at src/large.ts]`,
+      );
+      expect(contextArg).toContain('+line 1');
+      expect(contextArg).toContain('+line 100');
+      expect(contextArg).not.toContain('+line 101');
+    });
+
+    it('does not truncate patches within maxLinesPerFile', async () => {
+      const patch = '+line 1\n+line 2\n+line 3';
+
+      const pr = makePRContext({
+        changedFiles: [
+          {
+            path: 'src/small.ts',
+            status: 'modified' as const,
+            additions: 3,
+            deletions: 0,
+            patch,
+          },
+        ],
+      });
+
+      const eng = new ReviewEngine(
+        makeConfig({ maxLinesPerFile: 100, enableMCP: false, mcpServers: [] }),
+        'fake-token',
+        'owner/repo',
+      );
+
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 100,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      await eng.reviewPR(pr);
+
+      const contextArg = mockBuildReviewPrompt.mock.calls[0][1];
+
+      expect(contextArg).toContain('+line 1');
+      expect(contextArg).toContain('+line 3');
+      expect(contextArg).not.toContain('[Patch truncated');
+    });
+
+    it('includes patches for all files even when some exceed maxLinesPerFile', async () => {
+      const largeLines = Array.from({ length: 200 }, (_, i) => `+large ${i + 1}`);
+      const largePatch = largeLines.join('\n');
+
+      const pr = makePRContext({
+        changedFiles: [
+          {
+            path: 'src/large.ts',
+            status: 'modified' as const,
+            additions: 100,
+            deletions: 100,
+            patch: largePatch,
+          },
+          {
+            path: 'src/small.ts',
+            status: 'added' as const,
+            additions: 2,
+            deletions: 0,
+            patch: '+new file\n+second line',
+          },
+        ],
+      });
+
+      const eng = new ReviewEngine(
+        makeConfig({ maxLinesPerFile: 50, enableMCP: false, mcpServers: [] }),
+        'fake-token',
+        'owner/repo',
+      );
+
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 100,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      await eng.reviewPR(pr);
+
+      const contextArg = mockBuildReviewPrompt.mock.calls[0][1];
+
+      expect(contextArg).toContain('[Patch truncated: 150 remaining lines omitted');
+      expect(contextArg).toContain('**src/small.ts** (2 lines):');
+      expect(contextArg).toContain('+new file');
+    });
+  });
+
   describe('cleanup()', () => {
     it('completes cleanup successfully', async () => {
       mockMCPDisconnect.mockResolvedValue(undefined);
