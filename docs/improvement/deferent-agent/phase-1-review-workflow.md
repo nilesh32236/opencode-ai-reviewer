@@ -34,7 +34,7 @@ The decision rule is: **"if a previously-posted comment's `file:line` key is not
 - Verification that the underlying code change actually addresses the issue.
 - Distinction between "fixed", "outdated", "moved to a new line", and "dropped by the LLM".
 - Re-evaluation of comments minimized in earlier iterations.
-- Use of GitHub's "Resolve thread" UI affordance — the `resolveReviewThread()` mutation at `lib/src/utils/github.ts:1343-1354` is defined but never called.
+- Use of GitHub's "Resolve thread" UI affordance — the `resolveReviewThread()` mutation at `lib/src/utils/github.ts:1343-1354` is called via `resolveFixedComments` at `lib/src/utils/autofix-body.ts:249`, but only in the autofix loop. It is not invoked during standalone review runs or in the Action path, so threads remain unresolved when the block does not re-enter the fix loop.
 
 ### 1.2 Why this is a problem
 

@@ -69,7 +69,11 @@ export {
   buildReadyBody,
 } from './utils/autofix-body.js';
 export { resolveFixedComments } from './utils/autofix-body.js';
-export { parseAnalysisPlan } from './utils/analyze-parser.js';
+export {
+  parseAnalysisPlan,
+  postBlockingQuestions,
+  markAnalysisReady,
+} from './utils/analyze-parser.js';
 export type { AnalysisPlanResult } from './utils/analyze-parser.js';
 export { buildAutofixPRBody } from './utils/pr-body.js';
 export type { PRBodyOptions } from './utils/pr-body.js';

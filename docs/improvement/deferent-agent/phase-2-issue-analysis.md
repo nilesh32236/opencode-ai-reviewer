@@ -14,7 +14,7 @@ The event router at `lib/src/event-bus/router.ts:5-29` maps these issue events:
 
 ```ts
 case 'issues.labeled': return 'issue.labeled';
-// ... no mapping for issues.opened
+case 'issues.opened': return 'issue.opened';  // mapping exists
 ```
 
 The App's subscriber list in `app/src/index.ts:303-311` registers nine subscribers, none of which subscribe to an `issue.opened` event. Opening a new GitHub issue triggers **nothing**. The only way to get an implementation plan is to manually comment `/analyze` (or `/fix`, which lazily generates a plan first).

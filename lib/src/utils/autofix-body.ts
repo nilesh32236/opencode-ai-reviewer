@@ -90,12 +90,10 @@ export function buildReviewBody(
           lines.push(`  > 💡 **How to fix:** ${i.suggestion}`);
         }
         if (i.suggestionCode) {
-          lines.push('  <details><summary>Show suggested fix</summary>');
           lines.push('');
           lines.push('  ```suggestion');
           lines.push(`  ${i.suggestionCode}`);
           lines.push('  ```');
-          lines.push('  </details>');
         }
       }
     }
@@ -197,11 +195,9 @@ export function buildReadyBody(history: IterationRecord[], prNumber: number): st
   );
   if (history.length > 0) {
     lines.push('', '### Summary');
-    for (const h of history) {
-      if (h.summary) {
-        lines.push('', h.summary);
-        break;
-      }
+    const last = history[history.length - 1];
+    if (last.summary) {
+      lines.push('', last.summary);
     }
   }
   return lines.join('\n');
@@ -258,8 +254,10 @@ export async function resolveFixedComments(
         if (prevComment.nodeId) {
           try {
             await gh.minimizeReviewComment(prevComment.nodeId, 'RESOLVED');
-          } catch {
-            /* ignore */
+          } catch (innerErr) {
+            logger?.warn(
+              `minimizeReviewComment also failed for comment ${prevComment.nodeId}: ${innerErr instanceof Error ? innerErr.message : String(innerErr)}`,
+            );
           }
         }
       }

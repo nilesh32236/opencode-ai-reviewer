@@ -20,8 +20,6 @@ const COMMAND_PATTERNS: Array<{ name: string; regex: RegExp }> = [
   { name: 'explain', regex: /^\s*\/(?:oc\s+)?explain\b/i },
   { name: 'discover', regex: /^\s*\/(?:oc\s+)?discover\b/i },
   { name: 'reconcile-comments', regex: /^\s*\/(?:oc\s+)?reconcile-comments\b/i },
-  { name: 'answer', regex: /^\s*\/(?:oc\s+)?answer\b/i },
-  { name: 'why', regex: /^\s*\/(?:oc\s+)?why\b/i },
   { name: 'help', regex: /^\s*\/(?:oc\s+)?help\b/i },
 ];
 
@@ -53,10 +51,9 @@ export function parseCommand(body: string): ParsedCommand | null {
         firstFlagIndex = m.index;
       }
       const flagName = m[1];
-      const camelName = flagName.replace(/-([a-z])/g, (_, g1) => g1.toUpperCase());
-      const flagVal = m[2] ?? m[3] ?? m[4] ?? true;
+      const rawVal = m[2] ?? m[3] ?? m[4];
+      const flagVal = rawVal === undefined ? true : rawVal === 'false' ? false : rawVal;
       flags[flagName] = flagVal;
-      flags[camelName] = flagVal;
       m = FLAG_PATTERN.exec(rest);
     }
 

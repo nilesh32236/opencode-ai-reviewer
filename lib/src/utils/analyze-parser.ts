@@ -1,3 +1,5 @@
+import type { GitHubHelper } from './github.js';
+
 /**
  *
  */
@@ -62,4 +64,44 @@ export function parseAnalysisPlan(markdown: string): AnalysisPlanResult {
     blockingQuestions,
     confidenceLevel,
   };
+}
+
+/**
+ * Post blocking questions as a comment and set the analysis:needs-input label.
+ * Shared across Action and App paths to avoid duplication.
+ * @param gh - GitHub helper instance.
+ * @param issueNumber - Issue number.
+ * @param parsed - Parsed analysis plan result.
+ */
+export async function postBlockingQuestions(
+  gh: GitHubHelper,
+  issueNumber: number,
+  parsed: AnalysisPlanResult,
+): Promise<void> {
+  const questionsBody = [
+    '## ❓ Questions Before Proceeding',
+    '',
+    'I have analyzed this issue but need clarification before starting implementation.',
+    'Please answer the following questions by replying to this comment:',
+    '',
+    ...parsed.blockingQuestions.map((q, i) => `**Q${i + 1}:** ${q}`),
+    '',
+    '---',
+    '*Once these are answered, comment `/fix` to start the implementation.*',
+  ].join('\n');
+
+  await gh.postOrUpdateComment(issueNumber, '<!-- issue-analysis-questions -->', questionsBody);
+  await gh.ensureLabels(['analysis:needs-input']);
+  await gh.addLabels(issueNumber, ['analysis:needs-input']);
+}
+
+/**
+ * Post the "analysis:ready" label when there are no blocking questions.
+ * Shared across Action and App paths.
+ * @param gh - GitHub helper instance.
+ * @param issueNumber - Issue number.
+ */
+export async function markAnalysisReady(gh: GitHubHelper, issueNumber: number): Promise<void> {
+  await gh.ensureLabels(['analysis:ready']);
+  await gh.addLabels(issueNumber, ['analysis:ready']);
 }

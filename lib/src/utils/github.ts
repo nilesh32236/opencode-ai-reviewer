@@ -339,6 +339,7 @@ export class GitHubHelper {
         labels: Array<{ name: string }>;
       }>(`/issues/${number}`),
       this.paginate<{
+        id: number;
         user: { login: string };
         created_at: string;
         body: string;
@@ -356,6 +357,7 @@ export class GitHubHelper {
       body: issue.body || '',
       labels: issue.labels.map((l) => l.name),
       comments: comments.map((c) => ({
+        id: c.id,
         author: c.user.login,
         createdAt: c.created_at,
         body: c.body,
@@ -371,12 +373,14 @@ export class GitHubHelper {
    */
   async getIssueComments(number: number): Promise<IssueComment[]> {
     const comments = await this.paginate<{
+      id: number;
       user: { login: string };
       created_at: string;
       body: string;
     }>(`/issues/${number}/comments`);
 
     return comments.map((c) => ({
+      id: c.id,
       author: c.user.login,
       createdAt: c.created_at,
       body: c.body,
