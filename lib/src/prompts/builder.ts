@@ -152,10 +152,16 @@ export function buildReviewPrompt(
   );
   sections.push('');
   sections.push(
-    '1. Use the `read` tool to view each changed file directly (do NOT include full diffs in the prompt).',
+    '1. Inline diffs are provided for each changed file, truncated at the configured `maxLinesPerFile` limit.',
   );
-  sections.push('2. Review the provided file list thoroughly.');
-  sections.push('3. If any single file exceeds 300 lines, read and review it separately.');
+  sections.push(
+    "2. If a file's diff has a `[Patch truncated]` notice, use the `read` tool to inspect the full file.",
+  );
+  sections.push(
+    '3. Use the `read` tool to view each changed file directly for additional context.',
+  );
+  sections.push('4. Review the provided file list thoroughly.');
+  sections.push('5. If any single file exceeds 300 lines, read and review it separately.');
 
   sections.push('\n' + buildWhatToCheck());
 

@@ -973,6 +973,33 @@ export class ReviewEngine {
       );
     }
 
+    parts.push('');
+    parts.push('### File Diffs');
+    parts.push('');
+    for (const f of pr.changedFiles) {
+      if (!f.patch) continue;
+      const patchLines = f.patch.split('\n');
+      if (maxLines > 0 && patchLines.length > maxLines) {
+        const truncated = patchLines.slice(0, maxLines).join('\n');
+        const remaining = patchLines.length - maxLines;
+        parts.push(`**${f.path}** (${patchLines.length} lines, showing first ${maxLines}):`);
+        parts.push('');
+        parts.push('```diff');
+        parts.push(truncated);
+        parts.push('```');
+        parts.push(
+          `> ... [Patch truncated: ${remaining} remaining lines omitted. Use the 'read' tool to inspect the full file at ${f.path}]`,
+        );
+      } else {
+        parts.push(`**${f.path}** (${patchLines.length} lines):`);
+        parts.push('');
+        parts.push('```diff');
+        parts.push(f.patch);
+        parts.push('```');
+      }
+      parts.push('');
+    }
+
     return parts.join('\n');
   }
 }
