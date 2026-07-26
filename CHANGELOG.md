@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.5.0] — 2026-07-26
+
+### Added
+
+- Review workflow, issue analysis, question gating & PR quality enhancements (#150) (#150)
+
+### Changed
+
+- ⚡ Bolt: Pre-compile regular expressions in detectIntent (#148) (#148)
+- [Self-Improvement] Autonomous Codebase Enhancement (#147) (#147)
+
+[v1.5.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.4.0...v1.5.0
+
 ## [v1.4.0] — 2026-07-26
 
 ### Added
