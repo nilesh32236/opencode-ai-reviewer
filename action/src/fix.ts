@@ -142,8 +142,8 @@ export async function runFix(
  * Run a fix triggered from an issue (non-PR): create a branch, apply the fix,
  * commit, push, and open a new PR.
  * Includes wall-clock timeout guarding against queue wait time.
- * @param _inputs - Parsed action inputs (unused, retained for interface compat).
- * @param _config - Agent config (provides timeoutMinutes).
+ * @param inputs - Parsed action inputs.
+ * @param config - Agent config (provides timeoutMinutes).
  * @param engine - Review engine instance.
  * @param gh - GitHub API helper.
  * @param repo - Repository string (owner/repo).

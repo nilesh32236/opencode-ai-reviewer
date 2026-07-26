@@ -30,7 +30,7 @@ export function parseAnalysisPlan(markdown: string): AnalysisPlanResult {
 
   const isNone =
     questionsSection.length === 0 ||
-    /none|ready to proceed|can proceed|no blocking questions/i.test(questionsSection);
+    /^\s*(?:none|ready to proceed|can proceed|no blocking questions)\b/i.test(questionsSection);
 
   const hasBlockingQuestions = !isNone;
 
@@ -41,7 +41,7 @@ export function parseAnalysisPlan(markdown: string): AnalysisPlanResult {
     );
     for (const match of matches) {
       const qText = match[1].trim();
-      if (qText && !/none|ready to proceed|can proceed/i.test(qText)) {
+      if (qText && !/^\s*(?:none|ready to proceed|can proceed)\b/i.test(qText)) {
         blockingQuestions.push(qText);
       }
     }

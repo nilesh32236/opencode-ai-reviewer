@@ -135,7 +135,7 @@ export async function handleAutofixLoop(
         break;
       }
 
-      if (!result.summary && result.issues.length === 0 && result.strengths.length === 0) {
+      if (!result.summary || (result.issues.length === 0 && result.strengths.length === 0)) {
         logger.error(`Review returned empty result in iteration ${i + 1}`);
         break;
       }
@@ -313,7 +313,7 @@ export async function handleAutofixLoop(
         if (fixResult.summary) {
           try {
             const updatedBody = buildAutofixPRBody({
-              issueNumber: pr.linkedIssue ?? prNumber,
+              issueNumber: pr.linkedIssue ?? undefined,
               issueTitle: pr.title,
               fixSummary: fixResult.summary,
               filesChanged: fixResult.filesChanged ?? [],

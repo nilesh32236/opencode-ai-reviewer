@@ -17,7 +17,7 @@ case 'issues.labeled': return 'issue.labeled';
 case 'issues.opened': return 'issue.opened';  // mapping exists
 ```
 
-The App's subscriber list in `app/src/index.ts:303-311` registers nine subscribers, none of which subscribe to an `issue.opened` event. Opening a new GitHub issue triggers **nothing**. The only way to get an implementation plan is to manually comment `/analyze` (or `/fix`, which lazily generates a plan first).
+The App's subscriber list in `app/src/index.ts:306-337` registers an `AutoAnalyzeSubscriber` for `issue.opened`, but this subscriber requires the `needs-analysis` label to be pre-applied to the issue. Without that label, opening a new GitHub issue triggers **nothing** from the App path. The only way to get an implementation plan is to manually comment `/analyze` (or `/fix`, which lazily generates a plan first).
 
 The user's request: *"when the issue is open it should automatically anylize issue and create an implimeentation plan and rais questions if it has any make it automatically and also make it manual so we can run it using /anylize comment on issue"* — maps exactly to this gap.
 
