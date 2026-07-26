@@ -40,7 +40,7 @@ In `lib/src/learning/schema.ts`, after the existing `review_quality` table creat
     await runner.exec(`ALTER TABLE review_quality ADD COLUMN tokens_used INTEGER`);
 ```
 
-These are placed after the table creation blocks. SQLite's `ALTER TABLE ADD COLUMN` is safe to run even if the column already exists in newer SQLite versions, but to be fully idempotent across all versions, we wrap them in a try-catch. Replace the four lines above with:
+These are placed after the table creation blocks. SQLite's `ALTER TABLE ADD COLUMN` throws an error if the column already exists, so we wrap them in a try-catch to provide idempotent rerun safety across versions. Replace the four lines above with:
 
 ```typescript
     // Telemetry columns — idempotent migration guards

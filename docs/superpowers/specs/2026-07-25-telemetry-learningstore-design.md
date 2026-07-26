@@ -96,7 +96,7 @@ Add a GitHub Step Summary section printing:
 
 ## Data Flow
 
-```
+```text
 runOpenCode() → { durationMs, tokensUsed }
     ↓
 ReviewEngine.reviewPR() → learningStore.recordQuality({ ..., durationMs, tokensUsed })

@@ -135,15 +135,21 @@ export async function applyMigrations(runner: MigrationRunner): Promise<void> {
     for (const sql of telemetryColumns) {
       try {
         await runner.exec(sql);
-      } catch {
-        // Column already exists — safe to ignore
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!/duplicate column name|already exists/i.test(message)) {
+          throw err;
+        }
       }
     }
     // Add comment_id column to findings table
     try {
       await runner.exec('ALTER TABLE findings ADD COLUMN comment_id INTEGER');
-    } catch {
-      // Column already exists — safe to ignore
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!/duplicate column name|already exists/i.test(message)) {
+        throw err;
+      }
     }
   } catch (err) {
     const logger = new Logger('LearningStore');

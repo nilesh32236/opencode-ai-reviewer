@@ -309,6 +309,17 @@ describe('LearningStore', () => {
     const statsRecent = await store.getTelemetryStats(30);
     expect(statsRecent.totalReviews).toBe(2);
     expect(statsRecent.avgDurationMs).toBe(5000);
+
+    // Update one record's created_at to 40 days ago to verify date filtering boundary
+    const repo = await (
+      store as unknown as { repoPromise: Promise<{ exec: (sql: string) => Promise<void> }> }
+    ).repoPromise;
+    await repo.exec(
+      "UPDATE review_quality SET created_at = '2000-01-01 00:00:00' WHERE pr_number = 100",
+    );
+    const statsFiltered = await store.getTelemetryStats(30);
+    expect(statsFiltered.totalReviews).toBe(1);
+    expect(statsFiltered.avgDurationMs).toBe(6000);
   });
 });
 
