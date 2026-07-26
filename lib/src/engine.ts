@@ -1,5 +1,6 @@
 import { promises as fs, existsSync, mkdirSync, readFileSync } from 'fs';
 import * as cp from 'node:child_process';
+import * as os from 'os';
 import * as path from 'path';
 import * as core from '@actions/core';
 import { minimatch } from 'minimatch';
@@ -45,7 +46,9 @@ export class ReviewEngine {
   private github: GitHubHelper;
   private config: AgentConfig;
   private lessonsCache: { lessons: string[]; timestamp: number } | null = null;
+  private mcpDocsCache: { docs: string; libraries: string; timestamp: number } | null = null;
   private static readonly LESSONS_CACHE_TTL = 60_000;
+  private static readonly MCP_DOCS_CACHE_TTL = 60_000;
 
   /**
    * @param config - Agent configuration (models, batch size, MCP servers, etc.).
@@ -248,7 +251,7 @@ export class ReviewEngine {
 
     let accumulatedDurationMs = 0;
     let accumulatedTokensUsed = 0;
-    const concurrencyLimit = 3;
+    const concurrencyLimit = Math.min(os.cpus().length || 4, fileBatches.length);
     const batchResults: ReviewResult[] = [];
     for (let i = 0; i < fileBatches.length; i += concurrencyLimit) {
       if (i > 0) {
@@ -429,7 +432,7 @@ export class ReviewEngine {
           workingDirectory,
         );
         if (libraries.length > 0) {
-          mcpDocs = await this.mcp.getLibraryDocs(libraries);
+          mcpDocs = await this.getCachedMcpDocs(libraries);
         }
       } catch (err) {
         core.warning(`MCP enrichment skipped: ${err instanceof Error ? err.message : String(err)}`);
@@ -541,7 +544,7 @@ export class ReviewEngine {
         await this.mcp.connect();
         const libraries = detectLibrariesFromDir(targetDir, workingDirectory);
         if (libraries.length > 0) {
-          mcpDocs = await this.mcp.getLibraryDocs(libraries);
+          mcpDocs = await this.getCachedMcpDocs(libraries);
         }
       } catch (err) {
         core.warning(`MCP enrichment skipped: ${err instanceof Error ? err.message : String(err)}`);
@@ -899,6 +902,21 @@ export class ReviewEngine {
     const lessons = await this.learningStore.getRelevantLessons(filePaths);
     this.lessonsCache = { lessons, timestamp: now };
     return lessons;
+  }
+
+  private async getCachedMcpDocs(libraries: string[]): Promise<string> {
+    const now = Date.now();
+    const key = [...new Set(libraries)].sort().join(',');
+    if (
+      this.mcpDocsCache &&
+      this.mcpDocsCache.libraries === key &&
+      now - this.mcpDocsCache.timestamp < ReviewEngine.MCP_DOCS_CACHE_TTL
+    ) {
+      return this.mcpDocsCache.docs;
+    }
+    const docs = await this.mcp.getLibraryDocs(libraries);
+    this.mcpDocsCache = { docs, libraries: key, timestamp: now };
+    return docs;
   }
 
   private buildFallbackResult(

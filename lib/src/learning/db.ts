@@ -133,6 +133,13 @@ function translateQuery(sql: string, dialect: 'postgres' | 'mysql' | 'sqlite'): 
   } else if (dialect === 'mysql') {
     cleanSql = cleanSql.replace(/datetime\('now'\)/g, 'CURRENT_TIMESTAMP');
     cleanSql = cleanSql.replace(/INSERT\s+OR\s+IGNORE\s+INTO/i, 'INSERT IGNORE INTO');
+    cleanSql = cleanSql.replace(
+      /ON CONFLICT\s*\([^)]+\)\s*DO\s+UPDATE\s+SET\s+([\s\S]+?)(?=;?\s*$)/gi,
+      (_match, setClause: string) => {
+        const convertedSet = setClause.replace(/excluded\.(\w+)/g, 'VALUES($1)');
+        return `ON DUPLICATE KEY UPDATE ${convertedSet}`;
+      },
+    );
   }
   return cleanSql;
 }
@@ -143,6 +150,9 @@ function translateQuery(sql: string, dialect: 'postgres' | 'mysql' | 'sqlite'): 
  * while this class implements all the domain logic for findings, feedback, patterns, etc.
  */
 export abstract class SqlAdapter implements LearningRepository {
+  protected fpRateCache: { rate: number; timestamp: number } | null = null;
+  private static readonly FP_RATE_CACHE_TTL = 600_000;
+
   abstract exec(sql: string): Promise<void>;
   abstract run(sql: string, params?: unknown[]): Promise<{ changes: number }>;
   abstract all<T>(sql: string, params?: unknown[]): Promise<T[]>;
@@ -365,6 +375,10 @@ export abstract class SqlAdapter implements LearningRepository {
    * @returns The false-positive rate as a number between 0 and 1.
    */
   async getFalsePositiveRate(): Promise<number> {
+    const now = Date.now();
+    if (this.fpRateCache && now - this.fpRateCache.timestamp < SqlAdapter.FP_RATE_CACHE_TTL) {
+      return this.fpRateCache.rate;
+    }
     const [total, disputed] = await Promise.all([
       this.get<{ count: number }>('SELECT COUNT(*) as count FROM feedback'),
       this.get<{ count: number }>(
@@ -373,7 +387,9 @@ export abstract class SqlAdapter implements LearningRepository {
     ]);
     if (!total || total.count === 0) return 0;
     if (!disputed) return 0;
-    return disputed.count / total.count;
+    const rate = disputed.count / total.count;
+    this.fpRateCache = { rate, timestamp: now };
+    return rate;
   }
 
   /**
@@ -600,32 +616,27 @@ export abstract class SqlAdapter implements LearningRepository {
    */
   async recordPatterns(patterns: PatternInput[]): Promise<void> {
     if (patterns.length === 0) return;
-    await this.transaction(async () => {
-      for (const pattern of patterns) {
-        const existing = await this.get<{ id: string; frequency: number }>(
-          'SELECT id, frequency FROM patterns WHERE pattern_key = ?',
-          [pattern.patternKey],
-        );
-        if (existing) {
-          await this.run(
-            `UPDATE patterns SET frequency = ?, last_seen = CURRENT_TIMESTAMP, file_types = ? WHERE pattern_key = ?`,
-            [existing.frequency + 1, pattern.fileTypes.join(','), pattern.patternKey],
-          );
-        } else {
-          await this.run(
-            `INSERT INTO patterns (id, pattern_key, message_cluster, frequency, file_types, first_seen, last_seen)
-             VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-            [
-              generateId(),
-              pattern.patternKey,
-              JSON.stringify(pattern.messageCluster),
-              pattern.frequency,
-              pattern.fileTypes.join(','),
-            ],
-          );
-        }
-      }
-    });
+    const placeholders = patterns
+      .map(() => '(?, ?, ?, 1, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)')
+      .join(', ');
+    const values: unknown[] = [];
+    for (const pattern of patterns) {
+      values.push(
+        generateId(),
+        pattern.patternKey,
+        JSON.stringify(pattern.messageCluster),
+        pattern.fileTypes.join(','),
+      );
+    }
+    await this.run(
+      `INSERT INTO patterns (id, pattern_key, message_cluster, frequency, file_types, first_seen, last_seen)
+       VALUES ${placeholders}
+       ON CONFLICT (pattern_key) DO UPDATE SET
+         frequency = frequency + 1,
+         last_seen = CURRENT_TIMESTAMP,
+         file_types = excluded.file_types`,
+      values,
+    );
   }
 
   /**
@@ -889,13 +900,15 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   private db: SqliteDatabase;
   private stmtCache = new Map<string, ReturnType<SqliteDatabase['prepare']>>();
   private readonly maxCacheSize: number;
+  private fpRateCache: { rate: number; timestamp: number } | null = null;
+  private static readonly FP_RATE_CACHE_TTL = 600_000;
 
   /**
    * Create a new SqliteAdapter.
    * @param db - SQLite database instance.
    * @param maxCacheSize - Maximum prepared statement cache size (default: 100).
    */
-  constructor(db: SqliteDatabase, maxCacheSize = 100) {
+  constructor(db: SqliteDatabase, maxCacheSize = 300) {
     this.db = db;
     this.maxCacheSize = maxCacheSize;
   }
@@ -1185,6 +1198,10 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
    * @returns The false-positive rate as a number between 0 and 1.
    */
   async getFalsePositiveRate(): Promise<number> {
+    const now = Date.now();
+    if (this.fpRateCache && now - this.fpRateCache.timestamp < SqliteAdapter.FP_RATE_CACHE_TTL) {
+      return this.fpRateCache.rate;
+    }
     const total = this.prepareStmt('SELECT COUNT(*) as count FROM feedback').get() as
       | { count: number }
       | undefined;
@@ -1193,7 +1210,9 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     ).get() as { count: number } | undefined;
     if (!total || total.count === 0) return 0;
     if (!disputed) return 0;
-    return disputed.count / total.count;
+    const rate = disputed.count / total.count;
+    this.fpRateCache = { rate, timestamp: now };
+    return rate;
   }
 
   /**
@@ -1419,30 +1438,26 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
    */
   async recordPatterns(patterns: PatternInput[]): Promise<void> {
     if (patterns.length === 0) return;
-    await this.transaction(async () => {
-      for (const pattern of patterns) {
-        const existing = this.prepareStmt(
-          'SELECT id, frequency FROM patterns WHERE pattern_key = ?',
-        ).get(pattern.patternKey) as { id: string; frequency: number } | undefined;
-
-        if (existing) {
-          this.prepareStmt(
-            `UPDATE patterns SET frequency = ?, last_seen = CURRENT_TIMESTAMP, file_types = ? WHERE pattern_key = ?`,
-          ).run(existing.frequency + 1, pattern.fileTypes.join(','), pattern.patternKey);
-        } else {
-          this.prepareStmt(
-            `INSERT INTO patterns (id, pattern_key, message_cluster, frequency, file_types, first_seen, last_seen)
-             VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-          ).run(
-            generateId(),
-            pattern.patternKey,
-            JSON.stringify(pattern.messageCluster),
-            pattern.frequency,
-            pattern.fileTypes.join(','),
-          );
-        }
-      }
-    });
+    const placeholders = patterns
+      .map(() => '(?, ?, ?, 1, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)')
+      .join(', ');
+    const values: unknown[] = [];
+    for (const pattern of patterns) {
+      values.push(
+        generateId(),
+        pattern.patternKey,
+        JSON.stringify(pattern.messageCluster),
+        pattern.fileTypes.join(','),
+      );
+    }
+    this.prepareStmt(
+      `INSERT INTO patterns (id, pattern_key, message_cluster, frequency, file_types, first_seen, last_seen)
+       VALUES ${placeholders}
+       ON CONFLICT (pattern_key) DO UPDATE SET
+         frequency = frequency + 1,
+         last_seen = CURRENT_TIMESTAMP,
+         file_types = excluded.file_types`,
+    ).run(...values);
   }
 
   /**

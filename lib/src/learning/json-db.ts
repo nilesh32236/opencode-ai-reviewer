@@ -307,7 +307,6 @@ export class JsonDatabase implements LearningRepository {
       });
     }
     this.save();
-    this.flushSync();
     return ids;
   }
 

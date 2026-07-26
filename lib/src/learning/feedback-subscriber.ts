@@ -189,7 +189,7 @@ export class FeedbackSubscriber implements Subscriber {
 
     let findings: Array<Record<string, unknown>>;
     try {
-      findings = await this.store.getFindings(prNumber, 5);
+      findings = await this.store.getFindings(prNumber);
     } catch (err) {
       const logger = new Logger('FeedbackSubscriber', { prNumber });
       logger.error(`Failed to get findings for pr ${prNumber}`, err);
