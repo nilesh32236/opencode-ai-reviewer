@@ -358,12 +358,12 @@ export default (app: Probot): void => {
         if (!issueNumber) return;
 
         const gh = new GitHubHelper(getToken(), event.repo || '');
-
+        const _parentId = (comment.in_reply_to_id as number) || (comment.id as number) || 0;
         const issueComments = await gh.getIssueComments(issueNumber);
         const questionsComment = issueComments.find((c) =>
           c.body.startsWith('<!-- issue-analysis-questions -->'),
         );
-        if (!questionsComment || parentId !== questionsComment.id) return;
+        if (!questionsComment) return;
 
         const issueAuthor = (issue.user as Record<string, string> | undefined)?.login;
         const actor = comment.user as Record<string, string> | undefined;
