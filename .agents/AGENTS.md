@@ -11,8 +11,8 @@ This repository is a `pnpm` monorepo containing three core packages:
 3. **[app/](../app/)**: The Probot GitHub App wrapper that listens to PR/issue events and interacts with users via PR comments.
 
 Other directories:
-- **[.audit-prompts/](../.audit-prompts/)**: Audit prompt templates used by the review engine for code quality, security, error handling, and performance audits.
-- **[prompts/](../prompts/)**: Built-in prompts for audit categories.
+- **[prompts/](../prompts/)**: Built-in prompts for audit categories, including `prompts/audit-categories/` (code quality, security, error handling, performance, API, auth, UI/UX).
+- **`.audit-prompts/`**: Optional custom audit prompt override directory (falls back to `prompts/audit-categories/` if absent).
 - **[examples/](../examples/)**: Configuration examples (basic, monorepo, advanced).
 - **[docker/](../docker/)**: Docker Compose configs for running local servers/services.
 

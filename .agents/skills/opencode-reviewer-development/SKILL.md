@@ -53,8 +53,9 @@ Execute these commands from the workspace root using `pnpm`:
 - Repository configuration resides in `.opencode-reviewer.yml` (e.g., custom review rules, max iterations, project context, audit target directories).
 - The action runner loads this file automatically on start using `loadConfig()`.
 
-### Codebase Audits (`.audit-prompts/`)
-- Audit categories are defined as markdown prompt templates under `.audit-prompts/` (e.g., `code-quality-conventions.md`, `security-privacy.md`, `error-handling-resilience.md`).
+### Codebase Audits (`prompts/audit-categories/`)
+- Built-in audit categories are defined as markdown prompt templates under `prompts/audit-categories/` (e.g., `code-quality-conventions.md`, `security-privacy.md`, `error-handling-resilience.md`, `performance-efficiency.md`).
 - To create a new audit category:
-  1. Add a new `.md` file to `.audit-prompts/` describing what to check.
+  1. Add a new `.md` file to `prompts/audit-categories/` describing what to check.
   2. Add the category name to the `audit.categories` list in `.opencode-reviewer.yml`.
+- Custom prompts placed under `.audit-prompts/` override built-in categories (engine falls back to `prompts/audit-categories/` if `.audit-prompts/` is absent).
