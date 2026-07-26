@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.4.0] — 2026-07-26
+
+### Added
+
+- capture and persist token usage & execution telemetry in LearningStore (#146) (#146)
+
+[v1.4.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.3.0...v1.4.0
+
 ## [v1.2.0] — 2026-07-25
 
 ### Added
