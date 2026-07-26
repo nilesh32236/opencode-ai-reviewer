@@ -31,9 +31,9 @@ This plan addresses all of the above plus a set of secondary improvements surfac
 | F-1 | PR body for autofix = copy-paste of issue body; `fixResult.summary` discarded | High | `app/src/handlers/commands.ts:375`; `action/src/fix.ts:254-256` |
 | F-2 | No question gating on `/fix` | High | `app/src/handlers/commands.ts:313-343`; `action/src/fix.ts:184-227` |
 | F-3 | Analysis plan stored only as markdown comment; structured `AnalyzeResult` never populated | High | `lib/src/engine.ts:585-623`; `lib/src/types/index.ts:534-553` |
-| F-4 | No auto-analyze on issue open (`issues.opened` not routed) | High | `lib/src/event-bus/router.ts:5-29`; `app/src/index.ts` |
+| F-4 | No auto-analyze on issue open (no subscriber for `issues.opened`; routing exists) | High | `lib/src/event-bus/router.ts:5-29`; `app/src/index.ts` |
 | F-5 | Resolved-vs-outdated distinction is purely positional and unverified | High | `action/src/fix.ts:549-573` |
-| F-6 | `resolveReviewThread()` defined but never called; comments only `minimize`d, never resolved | Medium | `lib/src/utils/github.ts:1343-1354` |
+| F-6 | `resolveReviewThread()` called in autofix loop via `resolveFixedComments` but not during standalone reviews | Medium | `lib/src/utils/github.ts:1343-1354`; `lib/src/utils/autofix-body.ts:218-265` |
 | F-7 | No re-opening of incorrectly-minimized comments | Medium | (missing — no `unminimize` call anywhere) |
 | F-8 | App review path does not pass `previousBotComments` → duplicates on every push | High | `app/src/handlers/pr-review.ts:52-62` |
 | F-9 | App autofix loop has no minimization / resolution at all | Medium | `app/src/handlers/autofix.ts` (entire file) |

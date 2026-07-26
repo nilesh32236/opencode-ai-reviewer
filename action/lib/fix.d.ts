@@ -29,7 +29,7 @@ export declare function runFixIssue(inputs: ActionInputs, config: AgentConfig, e
  * @param config - Full agent configuration.
  * @param engine - Review engine instance.
  * @param gh - GitHub API helper.
- * @param repo - Repository string (owner/repo).
- * @param token - GitHub authentication token.
+ * @param _repo - Repository string (owner/repo, unused).
+ * @param _token - GitHub authentication token (unused).
  */
-export declare function runAutofixLoop(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: GitHubHelper, repo: string, token: string): Promise<void>;
+export declare function runAutofixLoop(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: GitHubHelper, _repo: string, _token: string): Promise<void>;
