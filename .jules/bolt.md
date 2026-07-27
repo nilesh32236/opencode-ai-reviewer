@@ -10,3 +10,6 @@
 ## 2024-07-26 - Optimize RegExp in conversation detectIntent
 **Learning:** Found that recreating regular expressions inside a `.some()` loop dynamically from constants causes unnecessary allocation and compile time upon every `detectIntent` execution.
 **Action:** Always hoist and pre-compile regular expressions from static data arrays outside of functions executing on the hot path.
+## 2024-07-27 - Optimize JSONL parsing (Regex Hoisting & Async I/O)
+**Learning:** Found that `codePatterns` in `looksLikeCode` and markdown regexes in `stripMarkdownFences` were being recompiled and reallocated on every function call. Also found synchronous `fs.readFileSync` inside an async function (`parseJsonlFile`) which blocks the event loop on large files.
+**Action:** Always hoist regular expressions to module scope to avoid recompilation overhead. Always use asynchronous file I/O operations (`fs.promises.readFile`) inside async functions.
