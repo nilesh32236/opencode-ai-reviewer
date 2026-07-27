@@ -21,7 +21,7 @@ const VALID_TYPES: (FindingType | 'executive_summary')[] = [
 const VALID_SEVERITIES: Severity[] = ['critical', 'important', 'minor'];
 
 const MARKDOWN_FENCE_START_REGEX = /```[a-zA-Z0-9-]*\n?/g;
-const MARKDOWN_FENCE_END_REGEX = /```\s*$/g;
+const MARKDOWN_FENCE_END_REGEX = /```\s*$/;
 
 /**
  * Strip markdown code fences from a string.
