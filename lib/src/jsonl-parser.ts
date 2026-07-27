@@ -20,6 +20,9 @@ const VALID_TYPES: (FindingType | 'executive_summary')[] = [
 ];
 const VALID_SEVERITIES: Severity[] = ['critical', 'important', 'minor'];
 
+const MARKDOWN_FENCE_START_REGEX = /```[a-zA-Z0-9-]*\n?/g;
+const MARKDOWN_FENCE_END_REGEX = /```\s*$/g;
+
 /**
  * Strip markdown code fences from a string.
  * @param content - The string to strip fences from.
@@ -27,8 +30,8 @@ const VALID_SEVERITIES: Severity[] = ['critical', 'important', 'minor'];
  */
 export function stripMarkdownFences(content: string): string {
   return content
-    .replace(/```[a-zA-Z0-9-]*\n?/g, '')
-    .replace(/```\s*$/g, '')
+    .replace(MARKDOWN_FENCE_START_REGEX, '')
+    .replace(MARKDOWN_FENCE_END_REGEX, '')
     .trim();
 }
 
@@ -41,12 +44,16 @@ export function stripMarkdownFences(content: string): string {
  */
 export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
   const absolutePath = path.resolve(filePath);
-  if (!fs.existsSync(absolutePath)) {
-    return emptyResult();
-  }
 
-  const content = fs.readFileSync(absolutePath, 'utf-8');
-  return parseJsonlString(content);
+  try {
+    const content = await fs.promises.readFile(absolutePath, 'utf-8');
+    return parseJsonlString(content);
+  } catch (error: unknown) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+      return emptyResult();
+    }
+    throw error;
+  }
 }
 
 /**
@@ -404,6 +411,17 @@ export function buildInlineComments(
     });
 }
 
+// Common code indicators for heuristics
+const CODE_PATTERNS = [
+  /[{};()=]/, // Syntax characters
+  /^(const|let|var|import|export|return|if|else|for|while|async|await|function|class)\s/,
+  /^\s*\/\//, // Comments
+  /\.\w+\(/, // Method calls
+  /=>\s*/, // Arrow functions
+  /\?\.\w+/, // Optional chaining
+  /\?\?\s/, // Nullish coalescing
+];
+
 /**
  * Heuristic to determine if a suggestion string looks like code rather than
  * a natural language description. Checks for common code patterns.
@@ -411,15 +429,5 @@ export function buildInlineComments(
  * @returns True if the suggestion contains code-like patterns.
  */
 function looksLikeCode(suggestion: string): boolean {
-  // Common code indicators
-  const codePatterns = [
-    /[{};()=]/, // Syntax characters
-    /^(const|let|var|import|export|return|if|else|for|while|async|await|function|class)\s/,
-    /^\s*\/\//, // Comments
-    /\.\w+\(/, // Method calls
-    /=>\s*/, // Arrow functions
-    /\?\.\w+/, // Optional chaining
-    /\?\?\s/, // Nullish coalescing
-  ];
-  return codePatterns.some((p) => p.test(suggestion));
+  return CODE_PATTERNS.some((p) => p.test(suggestion));
 }
