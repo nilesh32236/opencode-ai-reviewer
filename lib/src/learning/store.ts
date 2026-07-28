@@ -3,7 +3,15 @@ import { Logger } from '../utils/logger.js';
 import { withRetry } from '../utils/retry.js';
 import { connectDb } from './db.js';
 import { applyMigrations, getDbPath } from './schema.js';
-import type { FindingInput, LearningRepository, TelemetryStats } from './types.js';
+import type {
+  CustomRuleRow,
+  FindingInput,
+  FindingRow,
+  LearningRepository,
+  PatternRow,
+  ReviewQualityRow,
+  TelemetryStats,
+} from './types.js';
 
 /**
  * Persistent storage for review findings, feedback signals, quality metrics,
@@ -106,7 +114,7 @@ export class LearningStore {
    * @param limit - Maximum number of results (default: 50).
    * @returns Array of finding rows.
    */
-  async getFindingsByType(type: string, limit = 50): Promise<Array<Record<string, unknown>>> {
+  async getFindingsByType(type: string, limit = 50): Promise<FindingRow[]> {
     const repo = await this.repoPromise;
     return repo.getFindingsByType(type, limit);
   }
@@ -118,7 +126,7 @@ export class LearningStore {
    * @param limit - Maximum number of results (default: 100).
    * @returns Array of finding rows.
    */
-  async getFindings(prNumber?: number, limit = 100): Promise<Array<Record<string, unknown>>> {
+  async getFindings(prNumber?: number, limit = 100): Promise<FindingRow[]> {
     const repo = await this.repoPromise;
     return repo.getFindings(prNumber, limit);
   }
@@ -298,7 +306,7 @@ export class LearningStore {
    * @param limit - Maximum number of results (default: 20).
    * @returns Array of review_quality rows.
    */
-  async getQualityTrends(limit = 20): Promise<Array<Record<string, unknown>>> {
+  async getQualityTrends(limit = 20): Promise<ReviewQualityRow[]> {
     const repo = await this.repoPromise;
     return repo.getQualityTrends(limit);
   }
@@ -357,7 +365,7 @@ export class LearningStore {
    * @param minFrequency - Minimum frequency threshold (default: 3).
    * @returns Array of pattern rows.
    */
-  async getPatterns(minFrequency = 3): Promise<Array<Record<string, unknown>>> {
+  async getPatterns(minFrequency = 3): Promise<PatternRow[]> {
     const repo = await this.repoPromise;
     return repo.getPatterns(minFrequency);
   }
@@ -379,7 +387,7 @@ export class LearningStore {
    *
    * @returns Array of pending rule rows.
    */
-  async getPendingRules(): Promise<Array<Record<string, unknown>>> {
+  async getPendingRules(): Promise<CustomRuleRow[]> {
     const repo = await this.repoPromise;
     return repo.getPendingRules();
   }

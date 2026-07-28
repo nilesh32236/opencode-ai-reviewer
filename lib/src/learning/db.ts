@@ -6,10 +6,14 @@ import { Logger } from '../utils/logger.js';
 import { JsonDatabase } from './json-db.js';
 import { deriveFileExtensions, generateId } from './schema.js';
 import type {
+  CustomRuleRow,
   FeedbackInput,
   FindingInput,
+  FindingRow,
   LearningRepository,
   PatternInput,
+  PatternRow,
+  ReviewQualityRow,
   TelemetryStats,
 } from './types.js';
 
@@ -238,11 +242,12 @@ export abstract class SqlAdapter implements LearningRepository {
    * @param limit - Maximum number of results (default: 50).
    * @returns Array of finding rows.
    */
-  async getFindingsByType(type: string, limit = 50): Promise<Array<Record<string, unknown>>> {
-    return this.all('SELECT * FROM findings WHERE type = ? ORDER BY created_at DESC LIMIT ?', [
-      type,
-      limit,
-    ]);
+  async getFindingsByType(type: string, limit = 50): Promise<FindingRow[]> {
+    const rows = await this.all(
+      'SELECT * FROM findings WHERE type = ? ORDER BY created_at DESC LIMIT ?',
+      [type, limit],
+    );
+    return rows as FindingRow[];
   }
 
   /**
@@ -251,14 +256,16 @@ export abstract class SqlAdapter implements LearningRepository {
    * @param limit - Maximum number of results (default: 100).
    * @returns Array of finding rows.
    */
-  async getFindings(prNumber?: number, limit = 100): Promise<Array<Record<string, unknown>>> {
+  async getFindings(prNumber?: number, limit = 100): Promise<FindingRow[]> {
     if (prNumber) {
-      return this.all(
+      const rows = await this.all(
         'SELECT * FROM findings WHERE pr_number = ? ORDER BY created_at DESC LIMIT ?',
         [prNumber, limit],
       );
+      return rows as FindingRow[];
     }
-    return this.all('SELECT * FROM findings ORDER BY created_at DESC LIMIT ?', [limit]);
+    const rows = await this.all('SELECT * FROM findings ORDER BY created_at DESC LIMIT ?', [limit]);
+    return rows as FindingRow[];
   }
 
   /**
@@ -554,11 +561,12 @@ export abstract class SqlAdapter implements LearningRepository {
    * @param limit - Maximum number of results (default: 20).
    * @returns Array of quality trend records.
    */
-  async getQualityTrends(limit = 20): Promise<Array<Record<string, unknown>>> {
-    return this.all(
+  async getQualityTrends(limit = 20): Promise<ReviewQualityRow[]> {
+    const rows = await this.all(
       'SELECT * FROM review_quality WHERE actionability_score > 0 OR accuracy_score > 0 OR coverage_score > 0 OR consistency_score > 0 ORDER BY created_at DESC LIMIT ?',
       [limit],
     );
+    return rows as ReviewQualityRow[];
   }
 
   /**
@@ -646,10 +654,12 @@ export abstract class SqlAdapter implements LearningRepository {
    * @param minFrequency - Minimum frequency threshold (default: 3).
    * @returns Array of pattern records.
    */
-  async getPatterns(minFrequency = 3): Promise<Array<Record<string, unknown>>> {
-    return this.all('SELECT * FROM patterns WHERE frequency >= ? ORDER BY frequency DESC', [
-      minFrequency,
-    ]);
+  async getPatterns(minFrequency = 3): Promise<PatternRow[]> {
+    const rows = await this.all(
+      'SELECT * FROM patterns WHERE frequency >= ? ORDER BY frequency DESC',
+      [minFrequency],
+    );
+    return rows as PatternRow[];
   }
 
   /**
@@ -673,8 +683,9 @@ export abstract class SqlAdapter implements LearningRepository {
    * Get all custom rules with status 'pending'.
    * @returns Array of pending rule records.
    */
-  async getPendingRules(): Promise<Array<Record<string, unknown>>> {
-    return this.all("SELECT * FROM custom_rules WHERE status = 'pending'");
+  async getPendingRules(): Promise<CustomRuleRow[]> {
+    const rows = await this.all("SELECT * FROM custom_rules WHERE status = 'pending'");
+    return rows as CustomRuleRow[];
   }
 
   /**
@@ -1070,10 +1081,10 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
    * @param limit - Maximum number of results (default: 50).
    * @returns Array of finding rows.
    */
-  async getFindingsByType(type: string, limit = 50): Promise<Array<Record<string, unknown>>> {
+  async getFindingsByType(type: string, limit = 50): Promise<FindingRow[]> {
     return this.prepareStmt(
       'SELECT * FROM findings WHERE type = ? ORDER BY created_at DESC LIMIT ?',
-    ).all(type, limit) as Array<Record<string, unknown>>;
+    ).all(type, limit) as FindingRow[];
   }
 
   /**
@@ -1082,15 +1093,15 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
    * @param limit - Maximum number of results (default: 100).
    * @returns Array of finding rows.
    */
-  async getFindings(prNumber?: number, limit = 100): Promise<Array<Record<string, unknown>>> {
+  async getFindings(prNumber?: number, limit = 100): Promise<FindingRow[]> {
     if (prNumber) {
       return this.prepareStmt(
         'SELECT * FROM findings WHERE pr_number = ? ORDER BY created_at DESC LIMIT ?',
-      ).all(prNumber, limit) as Array<Record<string, unknown>>;
+      ).all(prNumber, limit) as FindingRow[];
     }
     return this.prepareStmt('SELECT * FROM findings ORDER BY created_at DESC LIMIT ?').all(
       limit,
-    ) as Array<Record<string, unknown>>;
+    ) as FindingRow[];
   }
 
   /**
@@ -1381,10 +1392,10 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
    * @param limit - Maximum number of results (default: 20).
    * @returns Array of quality trend records.
    */
-  async getQualityTrends(limit = 20): Promise<Array<Record<string, unknown>>> {
+  async getQualityTrends(limit = 20): Promise<ReviewQualityRow[]> {
     return this.prepareStmt(
       'SELECT * FROM review_quality WHERE actionability_score > 0 OR accuracy_score > 0 OR coverage_score > 0 OR consistency_score > 0 ORDER BY created_at DESC LIMIT ?',
-    ).all(limit) as Array<Record<string, unknown>>;
+    ).all(limit) as ReviewQualityRow[];
   }
 
   /**
@@ -1468,10 +1479,10 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
    * @param minFrequency - Minimum frequency threshold (default: 3).
    * @returns Array of pattern records.
    */
-  async getPatterns(minFrequency = 3): Promise<Array<Record<string, unknown>>> {
+  async getPatterns(minFrequency = 3): Promise<PatternRow[]> {
     return this.prepareStmt(
       'SELECT * FROM patterns WHERE frequency >= ? ORDER BY frequency DESC',
-    ).all(minFrequency) as Array<Record<string, unknown>>;
+    ).all(minFrequency) as PatternRow[];
   }
 
   /**
@@ -1492,10 +1503,10 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
    * Get all custom rules with status 'pending'.
    * @returns Array of pending rule records.
    */
-  async getPendingRules(): Promise<Array<Record<string, unknown>>> {
-    return this.prepareStmt("SELECT * FROM custom_rules WHERE status = 'pending'").all() as Array<
-      Record<string, unknown>
-    >;
+  async getPendingRules(): Promise<CustomRuleRow[]> {
+    return this.prepareStmt(
+      "SELECT * FROM custom_rules WHERE status = 'pending'",
+    ).all() as CustomRuleRow[];
   }
 
   /**
@@ -1649,7 +1660,7 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
    * @param limit - Maximum number of results (default: 50).
    * @returns Array of finding rows.
    */
-  async getFindingsByType(type: string, limit = 50): Promise<Array<Record<string, unknown>>> {
+  async getFindingsByType(type: string, limit = 50): Promise<FindingRow[]> {
     return this.db.getFindingsByType(type, limit);
   }
 
@@ -1659,7 +1670,7 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
    * @param limit - Maximum number of results (default: 100).
    * @returns Array of finding rows.
    */
-  async getFindings(prNumber?: number, limit = 100): Promise<Array<Record<string, unknown>>> {
+  async getFindings(prNumber?: number, limit = 100): Promise<FindingRow[]> {
     return this.db.getFindings(prNumber, limit);
   }
 
@@ -1764,7 +1775,7 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
    * @param limit - Maximum number of results (default: 20).
    * @returns Array of quality trend records.
    */
-  async getQualityTrends(limit = 20): Promise<Array<Record<string, unknown>>> {
+  async getQualityTrends(limit = 20): Promise<ReviewQualityRow[]> {
     return this.db.getQualityTrends(limit);
   }
 
@@ -1800,7 +1811,7 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
    * @param minFrequency - Minimum frequency threshold (default: 3).
    * @returns Array of pattern records.
    */
-  async getPatterns(minFrequency = 3): Promise<Array<Record<string, unknown>>> {
+  async getPatterns(minFrequency = 3): Promise<PatternRow[]> {
     return this.db.getPatterns(minFrequency);
   }
 
@@ -1818,7 +1829,7 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
    * Get all custom rules with status 'pending'.
    * @returns Array of pending rule records.
    */
-  async getPendingRules(): Promise<Array<Record<string, unknown>>> {
+  async getPendingRules(): Promise<CustomRuleRow[]> {
     return this.db.getPendingRules();
   }
 

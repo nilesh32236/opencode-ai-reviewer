@@ -567,14 +567,14 @@ export async function runOpenCode(
  * @param userEmail - Git user email (defaults to user name @ users.noreply.github.com).
  * @param token - GitHub token for authentication via GIT_ASKPASS.
  * @param cwd - Optional working directory. When set, env vars are returned (not set globally).
- * @returns Process env vars when cwd is provided; undefined otherwise (legacy global mode).
+ * @returns Process env vars when cwd is provided; empty object otherwise.
  */
 export function configureGit(
   userName?: string,
   userEmail?: string,
   token?: string,
   cwd?: string,
-): Record<string, string> | undefined {
+): Record<string, string> {
   const name = userName || process.env.GITHUB_ACTOR || 'opencode-ai-reviewer[bot]';
   const email = userEmail || `${name}@users.noreply.github.com`;
 
@@ -698,11 +698,11 @@ export function configureGit(
     }
   } catch (err) {
     core.warning(`configureGit failed: ${String(err)}`);
-    return undefined;
+    return {};
   }
 
   core.info(`Git configured: ${name} <${email}>`);
-  return undefined;
+  return {};
 }
 
 /**

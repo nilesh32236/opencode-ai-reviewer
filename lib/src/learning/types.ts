@@ -1,110 +1,44 @@
 import type { LearningFeedback, LearningQuality } from '../types/index.js';
+import type { CustomRuleRow, FindingRow, PatternRow, ReviewQualityRow } from './json-db.js';
+
+export type { CustomRuleRow, FindingRow, PatternRow, ReviewQualityRow };
 
 /** Input data for recording a single review finding. */
 export interface FindingInput {
-  /**
-   *
-   */
   id?: string;
-  /**
-   *
-   */
   prNumber: number;
-  /**
-   *
-   */
   type: string;
-  /**
-   *
-   */
   severity?: string;
-  /**
-   *
-   */
   file?: string;
-  /**
-   *
-   */
   line?: number;
-  /**
-   *
-   */
   message: string;
-  /**
-   *
-   */
   suggestion?: string;
-  /**
-   *
-   */
   durationMs?: number;
-  /**
-   *
-   */
   tokensUsed?: number;
-  /**
-   *
-   */
   commentId?: number; // GitHub comment ID
 }
 
 /** Aggregated telemetry statistics for review executions. */
 export interface TelemetryStats {
-  /**
-   *
-   */
   avgDurationMs: number;
-  /**
-   *
-   */
   totalReviews: number;
-  /**
-   *
-   */
   totalTokensUsed: number;
-  /**
-   *
-   */
   avgTokensPerReview: number;
 }
 
 /** Input data for recording a feedback signal on a finding. */
 export interface FeedbackInput {
-  /**
-   *
-   */
   findingId: string;
-  /**
-   *
-   */
   signalType: LearningFeedback['signalType'];
-  /**
-   *
-   */
   signalValue: string;
-  /**
-   *
-   */
   prNumber: number;
 }
 
 /** Input data for recording a detected pattern. */
 export interface PatternInput {
-  /**
-   *
-   */
   patternKey: string;
-  /**
-   *
-   */
   messageCluster: string[];
-  /**
-   *
-   */
   frequency: number;
-  /**
-   *
-   */
   fileTypes: string[];
 }
 
@@ -150,14 +84,14 @@ export interface LearningRepository {
    * @param limit - Maximum number of results (default: 50).
    * @returns Array of finding rows.
    */
-  getFindingsByType(type: string, limit?: number): Promise<Array<Record<string, unknown>>>;
+  getFindingsByType(type: string, limit?: number): Promise<FindingRow[]>;
   /**
    * Retrieve findings, optionally filtered by PR number.
    * @param prNumber - Optional PR number to filter by.
    * @param limit - Maximum number of results (default: 100).
    * @returns Array of finding rows.
    */
-  getFindings(prNumber?: number, limit?: number): Promise<Array<Record<string, unknown>>>;
+  getFindings(prNumber?: number, limit?: number): Promise<FindingRow[]>;
   /**
    * Record a feedback signal for a finding.
    * @param feedback - Feedback data including finding ID and signal type.
@@ -240,7 +174,7 @@ export interface LearningRepository {
    * @param limit - Maximum number of results (default: 20).
    * @returns Array of review_quality rows.
    */
-  getQualityTrends(limit?: number): Promise<Array<Record<string, unknown>>>;
+  getQualityTrends(limit?: number): Promise<ReviewQualityRow[]>;
   /**
    * Increment the meta-review counter and check whether it's time to run a meta-review.
    * @param interval - Trigger meta-review every N reviews.
@@ -264,7 +198,7 @@ export interface LearningRepository {
    * @param minFrequency - Minimum frequency threshold (default: 3).
    * @returns Array of pattern rows.
    */
-  getPatterns(minFrequency?: number): Promise<Array<Record<string, unknown>>>;
+  getPatterns(minFrequency?: number): Promise<PatternRow[]>;
   /**
    * Add a new custom rule as pending approval.
    * @param ruleText - Rule description text.
@@ -276,7 +210,7 @@ export interface LearningRepository {
    * Retrieve all custom rules with status 'pending'.
    * @returns Array of pending rule rows.
    */
-  getPendingRules(): Promise<Array<Record<string, unknown>>>;
+  getPendingRules(): Promise<CustomRuleRow[]>;
   /**
    * Approve a pending custom rule, marking it as active.
    * @param ruleId - ID of the rule to approve.
