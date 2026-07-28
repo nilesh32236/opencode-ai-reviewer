@@ -51,9 +51,6 @@ interface ReviewThreadsQueryResponse {
   };
 }
 
-/**
- *
- */
 export interface ReviewThreadInfo {
   /** GraphQL node ID of the thread (used for resolve mutation). */
   threadId: string;

@@ -1,8 +1,8 @@
 import * as core from '@actions/core';
 import type { GitHubEvent, Subscriber } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
-import type { FindingRow } from './types.js';
 import type { LearningStore } from './store.js';
+import type { FindingRow } from './types.js';
 
 const DISPUTE_KEYWORDS = ['false positive', 'not an issue', 'wrong', 'incorrect', 'false alarm'];
 
@@ -87,7 +87,7 @@ export class FeedbackSubscriber implements Subscriber {
     try {
       await this.store.recordFeedbackBatch(
         validFindings.map((f) => ({
-          findingId: f.id as string,
+          findingId: f.id,
           signalType: 'dismissed' as const,
           signalValue: 'review_dismissed',
           prNumber,
@@ -161,7 +161,7 @@ export class FeedbackSubscriber implements Subscriber {
     try {
       await this.store.recordFeedbackBatch(
         matchedFindings.map((f) => ({
-          findingId: f.id as string,
+          findingId: f.id,
           signalType: 'dismissed' as const,
           signalValue:
             event.type === 'review_comment.deleted' ? 'comment_deleted' : 'comment_dismissed',
@@ -202,7 +202,7 @@ export class FeedbackSubscriber implements Subscriber {
     try {
       await this.store.recordFeedbackBatch(
         validFindings.map((f) => ({
-          findingId: f.id as string,
+          findingId: f.id,
           signalType: 'disputed_comment' as const,
           signalValue: body.slice(0, 200),
           prNumber,

@@ -1,7 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type {
-  ExecutiveSummaryFinding,
   Finding,
   FindingType,
   IssueFinding,
@@ -12,7 +11,7 @@ import type {
   VerdictFinding,
 } from './types/index.js';
 
-const VALID_TYPES: FindingType[] = ['summary', 'verdict', 'strength', 'issue', 'executive_summary'];
+const VALID_TYPES: FindingType[] = ['summary', 'verdict', 'strength', 'issue'];
 const VALID_SEVERITIES: Severity[] = ['critical', 'important', 'minor'];
 
 const MARKDOWN_FENCE_START_REGEX = /```[a-zA-Z0-9-]*\n?/g;
@@ -207,20 +206,6 @@ function validateAndNormalize(obj: Record<string, unknown>): Finding {
   }
 
   switch (obj.type) {
-    case 'executive_summary':
-      return {
-        type: 'executive_summary',
-        purpose: typeof obj.purpose === 'string' ? obj.purpose : '',
-        riskLevel:
-          typeof obj.riskLevel === 'string' && ['low', 'medium', 'high'].includes(obj.riskLevel)
-            ? obj.riskLevel
-            : 'low',
-        riskRationale: typeof obj.riskRationale === 'string' ? obj.riskRationale : '',
-        breakingChanges: Array.isArray(obj.breakingChanges)
-          ? obj.breakingChanges.filter((c: unknown) => typeof c === 'string')
-          : [],
-      } as ExecutiveSummaryFinding;
-
     case 'summary':
       if (typeof obj.text !== 'string' || obj.text.trim().length === 0) {
         throw new Error('Summary finding must have a non-empty "text" field');

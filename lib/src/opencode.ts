@@ -567,7 +567,7 @@ export async function runOpenCode(
  * @param userEmail - Git user email (defaults to user name @ users.noreply.github.com).
  * @param token - GitHub token for authentication via GIT_ASKPASS.
  * @param cwd - Optional working directory. When set, env vars are returned (not set globally).
- * @returns Process env vars when cwd is provided; undefined otherwise (legacy global mode).
+ * @returns Process env vars when cwd is provided; empty object otherwise.
  */
 export function configureGit(
   userName?: string,
