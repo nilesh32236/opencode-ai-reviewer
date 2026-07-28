@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as readline from 'node:readline';
 import * as path from 'path';
 import type {
   Finding,
@@ -40,14 +41,128 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
   const absolutePath = path.resolve(filePath);
 
   try {
-    const content = await fs.promises.readFile(absolutePath, 'utf-8');
-    return parseJsonlString(content);
+    await fs.promises.access(absolutePath);
   } catch (error: unknown) {
     if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
       return emptyResult();
     }
     throw error;
   }
+
+  const rl = readline.createInterface({
+    input: fs.createReadStream(absolutePath, 'utf-8'),
+    crlfDelay: Number.POSITIVE_INFINITY,
+  });
+
+  const rawLines: string[] = [];
+  let failedLines = 0;
+
+  let summary: SummaryFinding | null = null;
+  let verdict: VerdictFinding | null = null;
+  const strengths: StrengthFinding[] = [];
+  const issues: IssueFinding[] = [];
+
+  let executiveSummary:
+    | {
+        purpose: string;
+        riskLevel: 'low' | 'medium' | 'high';
+        riskRationale: string;
+        breakingChanges: string[];
+      }
+    | undefined;
+
+  for await (const line of rl) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith('```')) continue;
+
+    rawLines.push(trimmed);
+
+    try {
+      const parsed = JSON.parse(trimmed);
+
+      if (parsed.type === 'executive_summary') {
+        executiveSummary = {
+          purpose: typeof parsed.purpose === 'string' ? parsed.purpose : '',
+          riskLevel:
+            typeof parsed.riskLevel === 'string' &&
+            ['low', 'medium', 'high'].includes(parsed.riskLevel)
+              ? (parsed.riskLevel as 'low' | 'medium' | 'high')
+              : 'low',
+          riskRationale: typeof parsed.riskRationale === 'string' ? parsed.riskRationale : '',
+          breakingChanges: Array.isArray(parsed.breakingChanges)
+            ? parsed.breakingChanges.filter((c: unknown) => typeof c === 'string')
+            : [],
+        };
+        continue;
+      }
+
+      const finding = validateAndNormalize(parsed);
+
+      switch (finding.type) {
+        case 'summary':
+          summary = finding as SummaryFinding;
+          break;
+        case 'verdict':
+          verdict = finding as VerdictFinding;
+          break;
+        case 'strength':
+          strengths.push(finding as StrengthFinding);
+          break;
+        case 'issue':
+          issues.push(finding as IssueFinding);
+          break;
+      }
+    } catch {
+      failedLines++;
+    }
+  }
+
+  const counts = issues.reduce(
+    (acc, i) => {
+      if (i.severity === 'critical') acc.critical++;
+      else if (i.severity === 'important') acc.important++;
+      else if (i.severity === 'minor') acc.minor++;
+      return acc;
+    },
+    { critical: 0, important: 0, minor: 0 },
+  );
+
+  return {
+    summary: summary?.text || '',
+    verdict: {
+      ready: verdict?.ready ?? false,
+      reasoning: verdict?.reasoning || '',
+      autoFixable: verdict?.autoFixable ?? false,
+      confidence: verdict?.confidence || 'low',
+    },
+    strengths: strengths.map((s) => ({
+      type: 'strength' as const,
+      file: s.file || '',
+      line: s.line || 0,
+      message: s.message,
+    })),
+    issues: issues.map((i) => ({
+      type: 'issue' as const,
+      severity: i.severity,
+      file: i.file,
+      line: i.line,
+      message: i.message,
+      suggestion: i.suggestion,
+      suggestionCode: i.suggestionCode,
+      inline: i.inline,
+      previouslyReported: i.previouslyReported,
+    })),
+    stats: {
+      total: issues.length,
+      critical: counts.critical,
+      important: counts.important,
+      minor: counts.minor,
+    },
+    rawLines,
+    failedLines,
+    executiveSummary,
+  };
 }
 
 /**

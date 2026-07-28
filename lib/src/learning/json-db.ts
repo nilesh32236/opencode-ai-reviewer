@@ -3,7 +3,7 @@ import * as fsPromises from 'node:fs/promises';
 import * as path from 'path';
 import type { LearningQuality } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
-import { generateId } from './schema.js';
+import { deriveFileExtensions, generateId } from './schema.js';
 import type {
   FeedbackInput,
   FindingInput,
@@ -175,11 +175,11 @@ export class JsonDatabase implements LearningRepository {
    */
   public save() {
     if (this.inTransaction) return;
-    if (this.writeTimeout) clearTimeout(this.writeTimeout);
-    this.writeTimeout = setTimeout(() => {
+    if (this.writeTimeout) {
+      clearTimeout(this.writeTimeout);
       this.writeTimeout = null;
-      this.writeToDisk();
-    }, 100);
+    }
+    this.writeToDisk();
   }
 
   private async writeToDisk() {
@@ -469,17 +469,7 @@ export class JsonDatabase implements LearningRepository {
    * @returns Array of lesson text strings.
    */
   async getRelevantLessons(filePaths: string[]): Promise<string[]> {
-    const extensions = [
-      ...new Set(
-        (filePaths || [])
-          .filter((f): f is string => typeof f === 'string' && Boolean(f))
-          .map((f) => {
-            const parts = f.split('.');
-            const ext = parts.length > 1 ? parts.pop() : '';
-            return ext ? `.${ext}` : '';
-          }),
-      ),
-    ].filter(Boolean);
+    const extensions = deriveFileExtensions(filePaths);
 
     const lessons: string[] = [];
     for (const rule of this.data.custom_rules) {
@@ -509,17 +499,7 @@ export class JsonDatabase implements LearningRepository {
    * @returns Array of rule strings describing patterns to avoid flagging.
    */
   async getFalsePositiveRules(filePaths: string[], limit = 20): Promise<string[]> {
-    const extensions = [
-      ...new Set(
-        (filePaths || [])
-          .filter((f): f is string => typeof f === 'string' && Boolean(f))
-          .map((f) => {
-            const parts = f.split('.');
-            const ext = parts.length > 1 ? parts.pop() : '';
-            return ext ? `.${ext}` : '';
-          }),
-      ),
-    ].filter(Boolean);
+    const extensions = deriveFileExtensions(filePaths);
 
     // Build a set of finding IDs that have dismissed/disputed feedback
     const disputedFindingIds = new Set<string>();

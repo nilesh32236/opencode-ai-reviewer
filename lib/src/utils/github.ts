@@ -548,8 +548,33 @@ export class GitHubHelper {
       side?: string;
     }> = [];
 
-    // Post the review body first (without inline comments)
+    // Try batched review creation with inline comments included
     let reviewId: number | undefined;
+    if (inlineComments.length > 0) {
+      try {
+        const reviewResponse = await this.api<{ id: number }>(`/pulls/${prNumber}/reviews`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            commit_id: commitSha,
+            event: 'COMMENT',
+            body,
+            comments: inlineComments.map((c) => ({
+              path: c.path,
+              line: c.line,
+              side: c.side,
+              body: c.body,
+            })),
+          }),
+        });
+        return { success: true, method: 'full', reviewId: reviewResponse.id, commentIds };
+      } catch (err) {
+        core.warning(`Batched review with inline comments failed: ${err}`);
+        // Fall through to per-comment fallback
+      }
+    }
+
+    // Fallback: post body-only review, then inline comments individually
     try {
       const reviewResponse = await this.api<{ id: number }>(`/pulls/${prNumber}/reviews`, {
         method: 'POST',
@@ -570,7 +595,7 @@ export class GitHubHelper {
       return { success: true, method: 'body-only', reviewId };
     }
 
-    // Post each inline comment individually with fallback for out-of-diff comments
+    // Post each inline comment individually with fallback
     let allSucceeded = true;
 
     for (const comment of inlineComments) {
@@ -599,7 +624,6 @@ export class GitHubHelper {
       } catch (err) {
         allSucceeded = false;
         if (err instanceof Error && (err as Error & { status: number }).status === 422) {
-          // Fallback: post as a general issue comment with file:line reference
           const fallbackBody = `**Inline comment (${comment.path}:${comment.line})**\n\n${comment.body}`;
           try {
             await this.api(`/issues/${prNumber}/comments`, {
@@ -962,9 +986,24 @@ export class GitHubHelper {
   }): Promise<string> {
     const parts: string[] = [];
 
-    const [issue, pr] = await Promise.all([
+    // Fire all independent API fetches concurrently
+    const [issue, pr, reviewComments, reviews] = await Promise.all([
       options.issueNumber ? this.getIssue(options.issueNumber) : Promise.resolve(undefined),
       options.prNumber ? this.getPR(options.prNumber) : Promise.resolve(undefined),
+      options.prNumber
+        ? this.paginate<{
+            user: { login: string };
+            path: string;
+            line?: number;
+            original_line?: number;
+            body: string;
+          }>(`/pulls/${options.prNumber}/comments`)
+        : Promise.resolve([]),
+      options.prNumber
+        ? this.paginate<{ user: { login: string }; state: string; body: string }>(
+            `/pulls/${options.prNumber}/reviews`,
+          )
+        : Promise.resolve([]),
     ]);
 
     if (issue) {
@@ -1017,19 +1056,6 @@ export class GitHubHelper {
       parts.push('');
       parts.push(pr.body || 'No description.');
       parts.push('');
-
-      const [reviewComments, reviews] = await Promise.all([
-        this.paginate<{
-          user: { login: string };
-          path: string;
-          line?: number;
-          original_line?: number;
-          body: string;
-        }>(`/pulls/${options.prNumber}/comments`),
-        this.paginate<{ user: { login: string }; state: string; body: string }>(
-          `/pulls/${options.prNumber}/reviews`,
-        ),
-      ]);
 
       if (reviewComments.length > 0) {
         parts.push('### Inline Review Comments');

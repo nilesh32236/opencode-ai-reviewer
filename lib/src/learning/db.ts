@@ -387,15 +387,11 @@ export abstract class SqlAdapter implements LearningRepository {
     if (this.fpRateCache && now - this.fpRateCache.timestamp < SqlAdapter.FP_RATE_CACHE_TTL) {
       return this.fpRateCache.rate;
     }
-    const [total, disputed] = await Promise.all([
-      this.get<{ count: number }>('SELECT COUNT(*) as count FROM feedback'),
-      this.get<{ count: number }>(
-        "SELECT COUNT(*) as count FROM feedback WHERE signal_type IN ('dismissed', 'disputed_comment')",
-      ),
-    ]);
-    if (!total || total.count === 0) return 0;
-    if (!disputed) return 0;
-    const rate = disputed.count / total.count;
+    const row = await this.get<{ total: number; disputed: number }>(
+      "SELECT COUNT(*) as total, SUM(CASE WHEN signal_type IN ('dismissed', 'disputed_comment') THEN 1 ELSE 0 END) as disputed FROM feedback",
+    );
+    if (!row || row.total === 0) return 0;
+    const rate = row.disputed / row.total;
     this.fpRateCache = { rate, timestamp: now };
     return rate;
   }
@@ -406,17 +402,7 @@ export abstract class SqlAdapter implements LearningRepository {
    * @returns Array of relevant rule texts and prompt override texts.
    */
   async getRelevantLessons(filePaths: string[]): Promise<string[]> {
-    const extensions = [
-      ...new Set(
-        (filePaths || [])
-          .filter((f): f is string => typeof f === 'string' && Boolean(f))
-          .map((f) => {
-            const parts = f.split('.');
-            const ext = parts.length > 1 ? parts.pop() : '';
-            return ext ? `.${ext}` : '';
-          }),
-      ),
-    ].filter(Boolean);
+    const extensions = deriveFileExtensions(filePaths);
 
     const queries: Promise<unknown[]>[] = [
       this.all<{ rule_text: string }>(
@@ -454,17 +440,7 @@ export abstract class SqlAdapter implements LearningRepository {
    * @returns Array of suppression rule strings.
    */
   async getFalsePositiveRules(filePaths: string[], limit = 20): Promise<string[]> {
-    const extensions = [
-      ...new Set(
-        (filePaths || [])
-          .filter((f): f is string => typeof f === 'string' && Boolean(f))
-          .map((f) => {
-            const parts = f.split('.');
-            const ext = parts.length > 1 ? parts.pop() : '';
-            return ext ? `.${ext}` : '';
-          }),
-      ),
-    ].filter(Boolean);
+    const extensions = deriveFileExtensions(filePaths);
 
     let extFilter = '';
     const params: unknown[] = [limit];
@@ -739,6 +715,8 @@ export abstract class SqlAdapter implements LearningRepository {
  */
 export class PostgresAdapter extends SqlAdapter implements DbAdapter {
   private client: PostgresClient;
+  private translateCache = new Map<string, string>();
+  private static readonly MAX_TRANSLATE_CACHE = 100;
 
   /**
    * Create a new PostgresAdapter.
@@ -749,12 +727,25 @@ export class PostgresAdapter extends SqlAdapter implements DbAdapter {
     this.client = client;
   }
 
+  private cachedTranslate(sql: string): string {
+    let translated = this.translateCache.get(sql);
+    if (!translated) {
+      if (this.translateCache.size >= PostgresAdapter.MAX_TRANSLATE_CACHE) {
+        const firstKey = this.translateCache.keys().next().value;
+        if (firstKey) this.translateCache.delete(firstKey);
+      }
+      translated = translateQuery(sql, 'postgres');
+      this.translateCache.set(sql, translated);
+    }
+    return translated;
+  }
+
   /**
    * Execute a raw SQL statement.
    * @param sql - SQL statement to execute.
    */
   async exec(sql: string): Promise<void> {
-    const pgSql = translateQuery(sql, 'postgres');
+    const pgSql = this.cachedTranslate(sql);
     await this.client.query(pgSql);
   }
 
@@ -765,7 +756,7 @@ export class PostgresAdapter extends SqlAdapter implements DbAdapter {
    * @returns Object with the number of changed rows.
    */
   async run(sql: string, params: unknown[] = []): Promise<{ changes: number }> {
-    const pgSql = translateQuery(sql, 'postgres');
+    const pgSql = this.cachedTranslate(sql);
     const res = await this.client.query(pgSql, params);
     return { changes: res.rowCount ?? 0 };
   }
@@ -777,7 +768,7 @@ export class PostgresAdapter extends SqlAdapter implements DbAdapter {
    * @returns Array of result rows.
    */
   async all<T>(sql: string, params: unknown[] = []): Promise<T[]> {
-    const pgSql = translateQuery(sql, 'postgres');
+    const pgSql = this.cachedTranslate(sql);
     const res = await this.client.query(pgSql, params);
     return res.rows as T[];
   }
@@ -789,7 +780,7 @@ export class PostgresAdapter extends SqlAdapter implements DbAdapter {
    * @returns The first result row, or undefined if no match.
    */
   async get<T>(sql: string, params: unknown[] = []): Promise<T | undefined> {
-    const pgSql = translateQuery(sql, 'postgres');
+    const pgSql = this.cachedTranslate(sql);
     const res = await this.client.query(pgSql, params);
     return res.rows[0] as T | undefined;
   }
@@ -824,6 +815,8 @@ export class PostgresAdapter extends SqlAdapter implements DbAdapter {
  */
 export class MysqlAdapter extends SqlAdapter implements DbAdapter {
   private connection: MysqlConnection;
+  private translateCache = new Map<string, string>();
+  private static readonly MAX_TRANSLATE_CACHE = 100;
 
   /**
    * Create a new MysqlAdapter.
@@ -834,12 +827,25 @@ export class MysqlAdapter extends SqlAdapter implements DbAdapter {
     this.connection = connection;
   }
 
+  private cachedTranslate(sql: string): string {
+    let translated = this.translateCache.get(sql);
+    if (!translated) {
+      if (this.translateCache.size >= MysqlAdapter.MAX_TRANSLATE_CACHE) {
+        const firstKey = this.translateCache.keys().next().value;
+        if (firstKey) this.translateCache.delete(firstKey);
+      }
+      translated = translateQuery(sql, 'mysql');
+      this.translateCache.set(sql, translated);
+    }
+    return translated;
+  }
+
   /**
    * Execute a raw SQL statement.
    * @param sql - SQL statement to execute.
    */
   async exec(sql: string): Promise<void> {
-    const mysqlSql = translateQuery(sql, 'mysql');
+    const mysqlSql = this.cachedTranslate(sql);
     await this.connection.execute(mysqlSql);
   }
 
@@ -850,7 +856,7 @@ export class MysqlAdapter extends SqlAdapter implements DbAdapter {
    * @returns Object with the number of changed rows.
    */
   async run(sql: string, params: unknown[] = []): Promise<{ changes: number }> {
-    const mysqlSql = translateQuery(sql, 'mysql');
+    const mysqlSql = this.cachedTranslate(sql);
     const [result] = await this.connection.execute(mysqlSql, params);
     const affectedRows = (result as { affectedRows?: number })?.affectedRows ?? 0;
     return { changes: affectedRows };
@@ -863,7 +869,7 @@ export class MysqlAdapter extends SqlAdapter implements DbAdapter {
    * @returns Array of result rows.
    */
   async all<T>(sql: string, params: unknown[] = []): Promise<T[]> {
-    const mysqlSql = translateQuery(sql, 'mysql');
+    const mysqlSql = this.cachedTranslate(sql);
     const [rows] = await this.connection.execute(mysqlSql, params);
     return rows as T[];
   }
@@ -875,7 +881,7 @@ export class MysqlAdapter extends SqlAdapter implements DbAdapter {
    * @returns The first result row, or undefined if no match.
    */
   async get<T>(sql: string, params: unknown[] = []): Promise<T | undefined> {
-    const mysqlSql = translateQuery(sql, 'mysql');
+    const mysqlSql = this.cachedTranslate(sql);
     const [rows] = await this.connection.execute(mysqlSql, params);
     return (rows as T[])[0];
   }
@@ -927,12 +933,21 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   }
 
   private prepareStmt(sql: string): ReturnType<SqliteDatabase['prepare']> {
-    const normalized = sql.trim().replace(/\s+/g, ' ');
-    let stmt = this.stmtCache.get(normalized);
+    let stmt = this.stmtCache.get(sql);
     if (stmt) {
-      this.stmtCache.delete(normalized);
-      this.stmtCache.set(normalized, stmt);
+      this.stmtCache.delete(sql);
+      this.stmtCache.set(sql, stmt);
       return stmt;
+    }
+    const normalized = sql.trim().replace(/\s+/g, ' ');
+    if (normalized !== sql) {
+      stmt = this.stmtCache.get(normalized);
+      if (stmt) {
+        this.stmtCache.delete(normalized);
+        this.stmtCache.set(normalized, stmt);
+        this.stmtCache.set(sql, stmt);
+        return stmt;
+      }
     }
     if (this.stmtCache.size >= this.maxCacheSize) {
       const firstKey = this.stmtCache.keys().next().value;
@@ -940,6 +955,9 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     }
     stmt = this.db.prepare(normalized);
     this.stmtCache.set(normalized, stmt);
+    if (normalized !== sql) {
+      this.stmtCache.set(sql, stmt);
+    }
     return stmt;
   }
 
@@ -1215,15 +1233,11 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     if (this.fpRateCache && now - this.fpRateCache.timestamp < SqliteAdapter.FP_RATE_CACHE_TTL) {
       return this.fpRateCache.rate;
     }
-    const total = this.prepareStmt('SELECT COUNT(*) as count FROM feedback').get() as
-      | { count: number }
-      | undefined;
-    const disputed = this.prepareStmt(
-      "SELECT COUNT(*) as count FROM feedback WHERE signal_type IN ('dismissed', 'disputed_comment')",
-    ).get() as { count: number } | undefined;
-    if (!total || total.count === 0) return 0;
-    if (!disputed) return 0;
-    const rate = disputed.count / total.count;
+    const row = this.prepareStmt(
+      "SELECT COUNT(*) as total, SUM(CASE WHEN signal_type IN ('dismissed', 'disputed_comment') THEN 1 ELSE 0 END) as disputed FROM feedback",
+    ).get() as { total: number; disputed: number } | undefined;
+    if (!row || row.total === 0) return 0;
+    const rate = row.disputed / row.total;
     this.fpRateCache = { rate, timestamp: now };
     return rate;
   }
@@ -1234,17 +1248,7 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
    * @returns Array of relevant rule texts and prompt override texts.
    */
   async getRelevantLessons(filePaths: string[]): Promise<string[]> {
-    const extensions = [
-      ...new Set(
-        (filePaths || [])
-          .filter((f): f is string => typeof f === 'string' && Boolean(f))
-          .map((f) => {
-            const parts = f.split('.');
-            const ext = parts.length > 1 ? parts.pop() : '';
-            return ext ? `.${ext}` : '';
-          }),
-      ),
-    ].filter(Boolean);
+    const extensions = deriveFileExtensions(filePaths);
 
     const queries: Promise<unknown[]>[] = [
       Promise.resolve(
@@ -1287,17 +1291,7 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
    * @returns Array of suppression rule strings.
    */
   async getFalsePositiveRules(filePaths: string[], limit = 20): Promise<string[]> {
-    const extensions = [
-      ...new Set(
-        (filePaths || [])
-          .filter((f): f is string => typeof f === 'string' && Boolean(f))
-          .map((f) => {
-            const parts = f.split('.');
-            const ext = parts.length > 1 ? parts.pop() : '';
-            return ext ? `.${ext}` : '';
-          }),
-      ),
-    ].filter(Boolean);
+    const extensions = deriveFileExtensions(filePaths);
 
     try {
       let extFilter = '';

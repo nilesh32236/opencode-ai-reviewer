@@ -446,7 +446,7 @@ describe('GitHubHelper', () => {
     it('falls back to issue comment when inline comment fails with 422', async () => {
       const diffText = `@@ -42,1 +42,1 @@`;
 
-      fetchMock.mockImplementation(async (url: string, _options?: RequestInit) => {
+      fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
         if (
           url.includes('/pulls/42') &&
           !url.includes('/reviews') &&
@@ -455,7 +455,19 @@ describe('GitHubHelper', () => {
         ) {
           return mockResponse({ text: vi.fn().mockResolvedValue(diffText) });
         }
+        // First POST to /reviews is the batched request with inline comments — reject it
         if (url.includes('/pulls/42/reviews')) {
+          if (
+            options &&
+            typeof options.body === 'string' &&
+            options.body.includes('comments')
+          ) {
+            const err = new Error(
+              'GitHub API 422 on /pulls/42/reviews: Unprocessable',
+            ) as Error & { status: number };
+            err.status = 422;
+            throw err;
+          }
           return mockResponse({ body: { id: 1 } });
         }
         if (url.includes('/pulls/42/comments')) {
