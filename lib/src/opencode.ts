@@ -574,7 +574,7 @@ export function configureGit(
   userEmail?: string,
   token?: string,
   cwd?: string,
-): Record<string, string> | undefined {
+): Record<string, string> {
   const name = userName || process.env.GITHUB_ACTOR || 'opencode-ai-reviewer[bot]';
   const email = userEmail || `${name}@users.noreply.github.com`;
 
@@ -698,11 +698,11 @@ export function configureGit(
     }
   } catch (err) {
     core.warning(`configureGit failed: ${String(err)}`);
-    return undefined;
+    return {};
   }
 
   core.info(`Git configured: ${name} <${email}>`);
-  return undefined;
+  return {};
 }
 
 /**

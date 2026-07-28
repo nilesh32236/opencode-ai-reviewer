@@ -13,17 +13,8 @@ import type {
 import { CircuitBreaker } from './circuit-breaker.js';
 import { withRetry, withRetryAndTimeout } from './retry.js';
 
-/**
- *
- */
 export interface PaginatedResult<T> {
-  /**
-   *
-   */
   items: T[];
-  /**
-   *
-   */
   totalCount: number;
 }
 

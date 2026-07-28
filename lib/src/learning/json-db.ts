@@ -12,7 +12,7 @@ import type {
   TelemetryStats,
 } from './types.js';
 
-interface FindingRow {
+export interface FindingRow {
   id: string;
   pr_number: number;
   type: string;
@@ -36,7 +36,7 @@ interface FeedbackRow {
   created_at: string;
 }
 
-interface ReviewQualityRow {
+export interface ReviewQualityRow {
   id: string;
   pr_number: number;
   actionability_score: number;
@@ -48,7 +48,7 @@ interface ReviewQualityRow {
   created_at: string;
 }
 
-interface PatternRow {
+export interface PatternRow {
   id: string;
   pattern_key: string;
   message_cluster: string;
@@ -58,7 +58,7 @@ interface PatternRow {
   last_seen: string;
 }
 
-interface CustomRuleRow {
+export interface CustomRuleRow {
   id: string;
   rule_text: string;
   source: string;
@@ -330,11 +330,11 @@ export class JsonDatabase implements LearningRepository {
    * @param limit - Maximum number of results (default: 50).
    * @returns Array of matching findings.
    */
-  async getFindingsByType(type: string, limit = 50): Promise<Array<Record<string, unknown>>> {
+  async getFindingsByType(type: string, limit = 50): Promise<FindingRow[]> {
     return [...this.data.findings]
       .filter((f) => f.type === type)
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
-      .slice(0, limit) as unknown as Array<Record<string, unknown>>;
+      .slice(0, limit);
   }
 
   /**
@@ -343,12 +343,12 @@ export class JsonDatabase implements LearningRepository {
    * @param limit - Maximum number of results (default: 100).
    * @returns Array of matching findings.
    */
-  async getFindings(prNumber?: number, limit = 100): Promise<Array<Record<string, unknown>>> {
+  async getFindings(prNumber?: number, limit = 100): Promise<FindingRow[]> {
     let results = [...this.data.findings].sort((a, b) => b.created_at.localeCompare(a.created_at));
     if (prNumber) {
       results = results.filter((f) => f.pr_number === prNumber);
     }
-    return results.slice(0, limit) as unknown as Array<Record<string, unknown>>;
+    return results.slice(0, limit);
   }
 
   /**
@@ -585,7 +585,7 @@ export class JsonDatabase implements LearningRepository {
    * @param limit - Maximum number of results (default: 20).
    * @returns Array of review_quality rows with at least one non-zero score.
    */
-  async getQualityTrends(limit = 20): Promise<Array<Record<string, unknown>>> {
+  async getQualityTrends(limit = 20): Promise<ReviewQualityRow[]> {
     return [...this.data.review_quality]
       .filter(
         (r) =>
@@ -595,7 +595,7 @@ export class JsonDatabase implements LearningRepository {
           r.consistency_score > 0,
       )
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
-      .slice(0, limit) as unknown as Array<Record<string, unknown>>;
+      .slice(0, limit);
   }
 
   /**
@@ -667,10 +667,10 @@ export class JsonDatabase implements LearningRepository {
    * @param minFrequency - Minimum frequency threshold (default: 3).
    * @returns Array of matching patterns sorted by frequency descending.
    */
-  async getPatterns(minFrequency = 3): Promise<Array<Record<string, unknown>>> {
+  async getPatterns(minFrequency = 3): Promise<PatternRow[]> {
     return [...this.data.patterns]
       .filter((p) => p.frequency >= minFrequency)
-      .sort((a, b) => b.frequency - a.frequency) as unknown as Array<Record<string, unknown>>;
+      .sort((a, b) => b.frequency - a.frequency);
   }
 
   /**
@@ -695,10 +695,8 @@ export class JsonDatabase implements LearningRepository {
    * Retrieve all custom rules with pending status.
    * @returns Array of pending custom rules.
    */
-  async getPendingRules(): Promise<Array<Record<string, unknown>>> {
-    return this.data.custom_rules.filter((r) => r.status === 'pending') as unknown as Array<
-      Record<string, unknown>
-    >;
+  async getPendingRules(): Promise<CustomRuleRow[]> {
+    return this.data.custom_rules.filter((r) => r.status === 'pending');
   }
 
   /**

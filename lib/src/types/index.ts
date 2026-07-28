@@ -360,7 +360,7 @@ export interface AuditInput {
 
 // ─── JSONL Finding Types ──────────────────────────────────
 /** Discriminated type for JSONL review findings. */
-export type FindingType = 'summary' | 'verdict' | 'strength' | 'issue';
+export type FindingType = 'summary' | 'verdict' | 'strength' | 'issue' | 'executive_summary';
 
 /** Base interface for all finding types. */
 export interface BaseFinding {
@@ -424,8 +424,27 @@ export interface IssueFinding extends BaseFinding {
   previouslyReported?: boolean;
 }
 
+/** An executive summary finding in JSONL format. */
+export interface ExecutiveSummaryFinding extends BaseFinding {
+  /** Discriminator for executive summary finding */
+  type: 'executive_summary';
+  /** 1-2 sentence description of the PR's core purpose */
+  purpose: string;
+  /** Risk level assessment */
+  riskLevel: 'low' | 'medium' | 'high';
+  /** Reasoning for the risk level */
+  riskRationale: string;
+  /** List of breaking changes (empty if none) */
+  breakingChanges: string[];
+}
+
 /** Union type of all possible JSONL finding types. */
-export type Finding = SummaryFinding | VerdictFinding | StrengthFinding | IssueFinding;
+export type Finding =
+  | SummaryFinding
+  | VerdictFinding
+  | StrengthFinding
+  | IssueFinding
+  | ExecutiveSummaryFinding;
 
 // ─── Results ──────────────────────────────────────────────
 /** Executive summary with risk assessment for a PR. */
