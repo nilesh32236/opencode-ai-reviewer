@@ -264,10 +264,7 @@ export abstract class SqlAdapter implements LearningRepository {
       );
       return rows as FindingRow[];
     }
-    const rows = await this.all(
-      'SELECT * FROM findings ORDER BY created_at DESC LIMIT ?',
-      [limit],
-    );
+    const rows = await this.all('SELECT * FROM findings ORDER BY created_at DESC LIMIT ?', [limit]);
     return rows as FindingRow[];
   }
 
@@ -1507,7 +1504,9 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
    * @returns Array of pending rule records.
    */
   async getPendingRules(): Promise<CustomRuleRow[]> {
-    return this.prepareStmt("SELECT * FROM custom_rules WHERE status = 'pending'").all() as CustomRuleRow[];
+    return this.prepareStmt(
+      "SELECT * FROM custom_rules WHERE status = 'pending'",
+    ).all() as CustomRuleRow[];
   }
 
   /**
