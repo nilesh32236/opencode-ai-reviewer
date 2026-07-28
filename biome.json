@@ -38,6 +38,7 @@
   },
   "files": {
     "ignore": [
+      ".opencode",
       "dist",
       "eslint.config.mjs",
       "action/lib",
