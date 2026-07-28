@@ -129,7 +129,7 @@ export class MetaReviewEngine {
       try {
         const patterns = await this.patternDetector.discover(3);
         // Batch pattern additions with a concurrency limit to avoid DB lock contention
-        const concurrencyLimit = 5;
+        const concurrencyLimit = 3;
         for (let i = 0; i < patterns.length; i += concurrencyLimit) {
           const batch = patterns.slice(i, i + concurrencyLimit);
           await Promise.all(

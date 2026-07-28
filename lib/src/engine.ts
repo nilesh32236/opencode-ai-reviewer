@@ -906,12 +906,12 @@ export class ReviewEngine {
 
   private async getCachedMcpDocs(libraries: string[]): Promise<string> {
     const now = Date.now();
-    if (this.mcpDocsCache && now - this.mcpDocsCache.timestamp < ReviewEngine.MCP_DOCS_CACHE_TTL) {
-      return this.mcpDocsCache.docs;
-    }
     const key = [...new Set(libraries)].sort().join(',');
-    if (this.mcpDocsCache && this.mcpDocsCache.libraries === key) {
-      this.mcpDocsCache.timestamp = now;
+    if (
+      this.mcpDocsCache &&
+      this.mcpDocsCache.libraries === key &&
+      now - this.mcpDocsCache.timestamp < ReviewEngine.MCP_DOCS_CACHE_TTL
+    ) {
       return this.mcpDocsCache.docs;
     }
     const docs = await this.mcp.getLibraryDocs(libraries);

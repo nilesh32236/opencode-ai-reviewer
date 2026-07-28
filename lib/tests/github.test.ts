@@ -429,7 +429,12 @@ describe('GitHubHelper', () => {
           return mockResponse({ text: vi.fn().mockResolvedValue(diffText) });
         }
         if (url.includes('/pulls/42/reviews')) {
-          return mockResponse({ body: { id: 1 } });
+          return mockResponse({
+            body: {
+              id: 1,
+              comments: [{ id: 100, path: 'src/b.ts', line: 42 }],
+            },
+          });
         }
         if (url.includes('/pulls/42/comments')) {
           return mockResponse({ body: { id: 2 } });
@@ -441,6 +446,12 @@ describe('GitHubHelper', () => {
 
       expect(result.success).toBe(true);
       expect(result.method).toBe('full');
+      expect(result.commentIds).toHaveLength(1);
+      expect(result.commentIds![0]).toMatchObject({
+        file: 'src/b.ts',
+        line: 42,
+        commentId: 100,
+      });
     });
 
     it('falls back to issue comment when inline comment fails with 422', async () => {
@@ -457,14 +468,10 @@ describe('GitHubHelper', () => {
         }
         // First POST to /reviews is the batched request with inline comments — reject it
         if (url.includes('/pulls/42/reviews')) {
-          if (
-            options &&
-            typeof options.body === 'string' &&
-            options.body.includes('comments')
-          ) {
-            const err = new Error(
-              'GitHub API 422 on /pulls/42/reviews: Unprocessable',
-            ) as Error & { status: number };
+          if (options && typeof options.body === 'string' && options.body.includes('comments')) {
+            const err = new Error('GitHub API 422 on /pulls/42/reviews: Unprocessable') as Error & {
+              status: number;
+            };
             err.status = 422;
             throw err;
           }
@@ -487,6 +494,49 @@ describe('GitHubHelper', () => {
 
       expect(result.success).toBe(true);
       expect(result.method).toBe('partial');
+    });
+
+    it('falls back to individual comments when batched review fails with 422', async () => {
+      const diffText = `@@ -42,1 +42,1 @@`;
+
+      fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+        if (
+          url.includes('/pulls/42') &&
+          !url.includes('/reviews') &&
+          !url.includes('/comments') &&
+          !url.includes('/files')
+        ) {
+          return mockResponse({ text: vi.fn().mockResolvedValue(diffText) });
+        }
+        // First POST to /reviews is the batched request — reject with 422
+        if (url.includes('/pulls/42/reviews')) {
+          if (options && typeof options.body === 'string' && options.body.includes('comments')) {
+            const err = new Error('GitHub API 422 on /pulls/42/reviews: Unprocessable') as Error & {
+              status: number;
+            };
+            err.status = 422;
+            throw err;
+          }
+          return mockResponse({ body: { id: 1 } });
+        }
+        // Individual inline comment POST succeeds
+        if (url.includes('/pulls/42/comments')) {
+          return mockResponse({ body: { id: 200, node_id: 'node200' } });
+        }
+        return mockResponse({ body: [] });
+      });
+
+      const result = await helper.postReview(42, 'sha123', sampleReviewResult());
+
+      expect(result.success).toBe(true);
+      expect(result.method).toBe('partial');
+      expect(result.commentIds).toHaveLength(1);
+      expect(result.commentIds![0]).toMatchObject({
+        file: 'src/b.ts',
+        line: 42,
+        commentId: 200,
+      });
+      expect(result.reviewId).toBe(1);
     });
 
     it('returns failed when review API fails with non-422 error', async () => {

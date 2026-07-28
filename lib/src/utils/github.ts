@@ -552,7 +552,10 @@ export class GitHubHelper {
     let reviewId: number | undefined;
     if (inlineComments.length > 0) {
       try {
-        const reviewResponse = await this.api<{ id: number }>(`/pulls/${prNumber}/reviews`, {
+        const reviewResponse = await this.api<{
+          id: number;
+          comments?: Array<{ id: number; path: string; line?: number }>;
+        }>(`/pulls/${prNumber}/reviews`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -567,6 +570,20 @@ export class GitHubHelper {
             })),
           }),
         });
+        // Extract individual comment IDs from the batched response
+        if (reviewResponse.comments) {
+          for (const rc of reviewResponse.comments) {
+            const matched = inlineComments.find((c) => c.path === rc.path && c.line === rc.line);
+            if (matched) {
+              commentIds.push({
+                file: rc.path,
+                line: rc.line ?? matched.line,
+                commentId: rc.id,
+                side: matched.side,
+              });
+            }
+          }
+        }
         return { success: true, method: 'full', reviewId: reviewResponse.id, commentIds };
       } catch (err) {
         core.warning(`Batched review with inline comments failed: ${err}`);
@@ -596,8 +613,6 @@ export class GitHubHelper {
     }
 
     // Post each inline comment individually with fallback
-    let allSucceeded = true;
-
     for (const comment of inlineComments) {
       try {
         const commentResponse = await this.api<{ id: number; node_id: string }>(
@@ -622,7 +637,6 @@ export class GitHubHelper {
           side: comment.side,
         });
       } catch (err) {
-        allSucceeded = false;
         if (err instanceof Error && (err as Error & { status: number }).status === 422) {
           const fallbackBody = `**Inline comment (${comment.path}:${comment.line})**\n\n${comment.body}`;
           try {
@@ -642,7 +656,7 @@ export class GitHubHelper {
       }
     }
 
-    return { success: true, method: allSucceeded ? 'full' : 'partial', reviewId, commentIds };
+    return { success: true, method: 'partial', reviewId, commentIds };
   }
 
   // ─── Comment Operations ─────────────────────────────────

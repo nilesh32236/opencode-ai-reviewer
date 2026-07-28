@@ -179,7 +179,7 @@ export class JsonDatabase implements LearningRepository {
       clearTimeout(this.writeTimeout);
       this.writeTimeout = null;
     }
-    this.writeToDisk();
+    this.flushSync();
   }
 
   private async writeToDisk() {

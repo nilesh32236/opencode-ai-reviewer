@@ -729,14 +729,17 @@ export class PostgresAdapter extends SqlAdapter implements DbAdapter {
 
   private cachedTranslate(sql: string): string {
     let translated = this.translateCache.get(sql);
-    if (!translated) {
-      if (this.translateCache.size >= PostgresAdapter.MAX_TRANSLATE_CACHE) {
-        const firstKey = this.translateCache.keys().next().value;
-        if (firstKey) this.translateCache.delete(firstKey);
-      }
-      translated = translateQuery(sql, 'postgres');
+    if (translated) {
+      this.translateCache.delete(sql);
       this.translateCache.set(sql, translated);
+      return translated;
     }
+    if (this.translateCache.size >= PostgresAdapter.MAX_TRANSLATE_CACHE) {
+      const firstKey = this.translateCache.keys().next().value;
+      if (firstKey) this.translateCache.delete(firstKey);
+    }
+    translated = translateQuery(sql, 'postgres');
+    this.translateCache.set(sql, translated);
     return translated;
   }
 
@@ -829,14 +832,17 @@ export class MysqlAdapter extends SqlAdapter implements DbAdapter {
 
   private cachedTranslate(sql: string): string {
     let translated = this.translateCache.get(sql);
-    if (!translated) {
-      if (this.translateCache.size >= MysqlAdapter.MAX_TRANSLATE_CACHE) {
-        const firstKey = this.translateCache.keys().next().value;
-        if (firstKey) this.translateCache.delete(firstKey);
-      }
-      translated = translateQuery(sql, 'mysql');
+    if (translated) {
+      this.translateCache.delete(sql);
       this.translateCache.set(sql, translated);
+      return translated;
     }
+    if (this.translateCache.size >= MysqlAdapter.MAX_TRANSLATE_CACHE) {
+      const firstKey = this.translateCache.keys().next().value;
+      if (firstKey) this.translateCache.delete(firstKey);
+    }
+    translated = translateQuery(sql, 'mysql');
+    this.translateCache.set(sql, translated);
     return translated;
   }
 
@@ -949,9 +955,13 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
         return stmt;
       }
     }
+    // Count unique prepared statements (by object reference) for eviction
     if (this.stmtCache.size >= this.maxCacheSize) {
-      const firstKey = this.stmtCache.keys().next().value;
-      if (firstKey) this.stmtCache.delete(firstKey);
+      const uniqueStmts = new Set(this.stmtCache.values());
+      if (uniqueStmts.size >= this.maxCacheSize) {
+        const firstKey = this.stmtCache.keys().next().value;
+        if (firstKey) this.stmtCache.delete(firstKey);
+      }
     }
     stmt = this.db.prepare(normalized);
     this.stmtCache.set(normalized, stmt);
