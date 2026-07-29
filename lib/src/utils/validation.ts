@@ -1,4 +1,28 @@
+const VALID_REF_REGEX = /^[a-zA-Z0-9_./-]+$/;
+
 export const DEFAULT_ALLOWLIST = ['pnpm', 'npm', 'yarn', 'node'];
+
+/**
+ * Validates a git ref name (branch or tag) against a strict character allowlist.
+ *
+ * Only letters, digits, underscores, dots, slashes, and hyphens are permitted.
+ * This prevents injection attacks via colons, spaces, newlines, null bytes,
+ * shell metacharacters, or other special characters that could alter git
+ * behavior (e.g., refspec syntax like `:` for arbitrary branch pushes).
+ *
+ * @param ref - The ref name to validate.
+ * @throws {Error} If the ref is empty or contains invalid characters.
+ */
+export function validateRefName(ref: string): void {
+  if (!ref) {
+    throw new Error('Ref name must not be empty');
+  }
+  if (!VALID_REF_REGEX.test(ref)) {
+    throw new Error(
+      `Ref name "${ref}" contains invalid characters. Only letters, digits, underscores, dots, slashes, and hyphens are allowed.`,
+    );
+  }
+}
 
 /**
  * Validates a verification command string against an allowlist, dangerous flags, and shell safety rules.
