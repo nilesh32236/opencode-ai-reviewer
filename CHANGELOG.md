@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.5.3] — 2026-07-29
+
+
+### Fixed
+
+- resolve auto-analyze bullet parsing and enforce immediate fix deferral on questions (#158) (#158)
+
+[v1.5.3]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.5.2...v1.5.3
+
 ## [v1.5.1] — 2026-07-26
 
 
