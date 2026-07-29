@@ -305,4 +305,128 @@ export interface LearningRepository {
    * @returns Promise that resolves when the counter is reset.
    */
   resetCounter(): Promise<void>;
+
+  /**
+   * Retrieve per-PR finding statistics (avg, distribution).
+   * @param sinceDays - Optional filter to only include findings from the last N days.
+   * @returns PerPRStats with total PRs, avg findings, and percentile estimates.
+   */
+  getPerPRStats(sinceDays?: number): Promise<PerPRStats>;
+  /**
+   * Retrieve feedback counts grouped by signal_type and signal_value.
+   * @param sinceDays - Optional filter to only include feedback from the last N days.
+   * @returns FeedbackBreakdown with grouped feedback counts.
+   */
+  getFeedbackBreakdown(sinceDays?: number): Promise<FeedbackBreakdown>;
+  /**
+   * Retrieve review latency statistics (time from PR creation to review).
+   * @param sinceDays - Optional filter to only include reviews from the last N days.
+   * @returns LatencyStats with avg, min, max, and median latency.
+   */
+  getLatencyStats(sinceDays?: number): Promise<LatencyStats>;
+  /**
+   * Compute and insert a new aggregated metrics row into review_metrics.
+   * @param periodType - 'daily' or 'weekly'.
+   * @returns Promise that resolves when aggregation is complete.
+   */
+  aggregateMetrics(periodType: 'daily' | 'weekly'): Promise<void>;
+  /**
+   * Retrieve pre-computed review metrics rows.
+   * @param periodType - 'daily' or 'weekly'.
+   * @param limit - Maximum number of rows (default: 10).
+   * @returns Array of review_metrics rows.
+   */
+  getMetrics(periodType: 'daily' | 'weekly', limit?: number): Promise<ReviewMetricsRow[]>;
+  /**
+   * Get severity distribution of findings.
+   * @param sinceDays - Optional filter to only include findings from the last N days.
+   * @returns SeverityDistribution with counts per severity level.
+   */
+  getSeverityDistribution(sinceDays?: number): Promise<SeverityDistribution>;
+}
+
+/** Per-PR finding statistics. */
+export interface PerPRStats {
+  totalPrs: number;
+  totalFindings: number;
+  avgFindingsPerPr: number;
+  p50FindingsPerPr: number;
+  p90FindingsPerPr: number;
+  maxFindingsInPr: number;
+}
+
+/** Feedback breakdown by signal type and value. */
+export interface FeedbackBreakdown {
+  totalFeedback: number;
+  dismissedCount: number;
+  disputedCount: number;
+  acceptedCount: number;
+  bySignalType: Record<string, number>;
+}
+
+/** Review latency statistics. */
+export interface LatencyStats {
+  avgLatencyMs: number;
+  minLatencyMs: number;
+  maxLatencyMs: number;
+  medianLatencyMs: number;
+  totalReviews: number;
+}
+
+/** A row from the review_metrics summary table. */
+export interface ReviewMetricsRow {
+  id: string;
+  period_start: string;
+  period_end: string;
+  period_type: string;
+  total_prs: number;
+  total_findings: number;
+  avg_findings_per_pr: number | null;
+  total_feedback: number;
+  dismissed_count: number;
+  disputed_count: number;
+  false_positive_rate: number | null;
+  avg_review_duration_ms: number | null;
+  total_tokens_used: number | null;
+  avg_tokens_per_review: number | null;
+  avg_actionability_score: number | null;
+  avg_accuracy_score: number | null;
+  avg_coverage_score: number | null;
+  avg_consistency_score: number | null;
+  created_at: string;
+}
+
+/** Severity distribution of findings. */
+export interface SeverityDistribution {
+  critical: number;
+  important: number;
+  minor: number;
+  unknown: number;
+}
+
+/** Structured metrics report for display. */
+export interface ReviewMetricsReport {
+  periodType: 'daily' | 'weekly';
+  periodStart: string;
+  periodEnd: string;
+  overview: {
+    totalPrs: number;
+    totalFindings: number;
+    avgFindingsPerPr: number;
+  };
+  quality: {
+    truePositiveRate: number;
+    falsePositiveRate: number;
+    dismissalRate: number;
+    accuracyScore: number | null;
+    actionabilityScore: number | null;
+  };
+  performance: {
+    avgReviewLatencyMs: number;
+    avgReviewDurationMs: number;
+    totalTokensUsed: number;
+    avgTokensPerReview: number;
+  };
+  severityDistribution?: SeverityDistribution;
+  trends?: ReviewMetricsRow[];
 }

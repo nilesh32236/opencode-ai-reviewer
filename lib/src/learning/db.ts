@@ -7,13 +7,18 @@ import { JsonDatabase } from './json-db.js';
 import { deriveFileExtensions, generateId } from './schema.js';
 import type {
   CustomRuleRow,
+  FeedbackBreakdown,
   FeedbackInput,
   FindingInput,
   FindingRow,
+  LatencyStats,
   LearningRepository,
   PatternInput,
   PatternRow,
+  PerPRStats,
+  ReviewMetricsRow,
   ReviewQualityRow,
+  SeverityDistribution,
   TelemetryStats,
 } from './types.js';
 
@@ -706,6 +711,271 @@ export abstract class SqlAdapter implements LearningRepository {
    */
   async resetCounter(): Promise<void> {
     await this.run('UPDATE meta_review_counter SET count = 0 WHERE id = 1');
+  }
+
+  /**
+   * Retrieve per-PR finding statistics.
+   * @param sinceDays - Optional filter to only include findings from the last N days.
+   * @returns PerPRStats with total PRs, avg findings, and distribution estimates.
+   */
+  async getPerPRStats(sinceDays?: number): Promise<PerPRStats> {
+    const cutoffDate = sinceDays
+      ? new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000)
+          .toISOString()
+          .replace('T', ' ')
+          .slice(0, 19)
+      : null;
+    const dateFilter = cutoffDate ? 'WHERE created_at >= ?' : '';
+    const params: unknown[] = cutoffDate ? [cutoffDate] : [];
+
+    const perPr = await this.all<{ pr_number: number; cnt: number }>(
+      `SELECT pr_number, COUNT(*) as cnt FROM findings ${dateFilter} GROUP BY pr_number`,
+      params,
+    );
+
+    if (perPr.length === 0) {
+      return {
+        totalPrs: 0,
+        totalFindings: 0,
+        avgFindingsPerPr: 0,
+        p50FindingsPerPr: 0,
+        p90FindingsPerPr: 0,
+        maxFindingsInPr: 0,
+      };
+    }
+
+    const counts = perPr.map((r) => r.cnt).sort((a, b) => a - b);
+    const totalFindings = counts.reduce((sum, c) => sum + c, 0);
+    const avg = totalFindings / counts.length;
+    const p50 = counts[Math.floor(counts.length * 0.5)] || 0;
+    const p90 = counts[Math.floor(counts.length * 0.9)] || 0;
+
+    return {
+      totalPrs: counts.length,
+      totalFindings,
+      avgFindingsPerPr: Math.round(avg * 100) / 100,
+      p50FindingsPerPr: p50,
+      p90FindingsPerPr: p90,
+      maxFindingsInPr: counts[counts.length - 1] || 0,
+    };
+  }
+
+  /**
+   * Retrieve feedback counts grouped by signal_type and signal_value.
+   * @param sinceDays - Optional filter to only include feedback from the last N days.
+   * @returns FeedbackBreakdown with grouped feedback counts.
+   */
+  async getFeedbackBreakdown(sinceDays?: number): Promise<FeedbackBreakdown> {
+    const cutoffDate = sinceDays
+      ? new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000)
+          .toISOString()
+          .replace('T', ' ')
+          .slice(0, 19)
+      : null;
+    const dateFilter = cutoffDate ? 'WHERE created_at >= ?' : '';
+    const params: unknown[] = cutoffDate ? [cutoffDate] : [];
+
+    const rows = await this.all<{ signal_type: string; count: number }>(
+      `SELECT signal_type, COUNT(*) as count FROM feedback ${dateFilter} GROUP BY signal_type`,
+      params,
+    );
+
+    let totalFeedback = 0;
+    let dismissedCount = 0;
+    let disputedCount = 0;
+    const bySignalType: Record<string, number> = {};
+
+    for (const row of rows) {
+      bySignalType[row.signal_type] = row.count;
+      totalFeedback += row.count;
+      if (row.signal_type === 'dismissed') dismissedCount += row.count;
+      if (row.signal_type === 'disputed_comment') disputedCount += row.count;
+    }
+
+    return {
+      totalFeedback,
+      dismissedCount,
+      disputedCount,
+      acceptedCount: totalFeedback - dismissedCount - disputedCount,
+      bySignalType,
+    };
+  }
+
+  /**
+   * Retrieve review latency statistics from review_quality timestamps.
+   * @param sinceDays - Optional filter to only include reviews from the last N days.
+   * @returns LatencyStats with avg, min, max, and median latency.
+   */
+  async getLatencyStats(sinceDays?: number): Promise<LatencyStats> {
+    const cutoffDate = sinceDays
+      ? new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000)
+          .toISOString()
+          .replace('T', ' ')
+          .slice(0, 19)
+      : null;
+    const dateFilter = cutoffDate ? 'AND created_at >= ?' : '';
+    const params: unknown[] = cutoffDate ? [cutoffDate] : [];
+
+    const rows = await this.all<{ duration_ms: number | null }>(
+      `SELECT duration_ms FROM review_quality WHERE duration_ms IS NOT NULL ${dateFilter}`,
+      params,
+    );
+
+    if (rows.length === 0) {
+      return {
+        avgLatencyMs: 0,
+        minLatencyMs: 0,
+        maxLatencyMs: 0,
+        medianLatencyMs: 0,
+        totalReviews: 0,
+      };
+    }
+
+    const durations = rows.map((r) => r.duration_ms as number).sort((a, b) => a - b);
+    const total = durations.reduce((sum, d) => sum + d, 0);
+    const mid = Math.floor(durations.length / 2);
+    const median =
+      durations.length % 2 === 0
+        ? Math.round((durations[mid - 1] + durations[mid]) / 2)
+        : durations[mid];
+
+    return {
+      avgLatencyMs: Math.round(total / durations.length),
+      minLatencyMs: durations[0],
+      maxLatencyMs: durations[durations.length - 1],
+      medianLatencyMs: median,
+      totalReviews: durations.length,
+    };
+  }
+
+  /**
+   * Compute and insert a new aggregated metrics row into review_metrics.
+   * @param periodType - 'daily' or 'weekly'.
+   */
+  async aggregateMetrics(periodType: 'daily' | 'weekly'): Promise<void> {
+    const now = Date.now();
+    const dayMs = 24 * 60 * 60 * 1000;
+    let periodStart: Date;
+    let periodEnd: Date;
+
+    if (periodType === 'daily') {
+      periodEnd = new Date(now);
+      periodStart = new Date(now - dayMs);
+    } else {
+      periodEnd = new Date(now);
+      periodStart = new Date(now - 7 * dayMs);
+    }
+
+    const startStr = periodStart.toISOString();
+    const endStr = periodEnd.toISOString();
+    const cutoffStr = periodStart.toISOString().replace('T', ' ').slice(0, 19);
+
+    const perPRStats = await this.getPerPRStats(periodType === 'daily' ? 1 : 7);
+    const feedbackBreakdown = await this.getFeedbackBreakdown(periodType === 'daily' ? 1 : 7);
+    const latencyStats = await this.getLatencyStats(periodType === 'daily' ? 1 : 7);
+
+    const fpRate =
+      feedbackBreakdown.totalFeedback > 0
+        ? (feedbackBreakdown.dismissedCount + feedbackBreakdown.disputedCount) /
+          feedbackBreakdown.totalFeedback
+        : 0;
+
+    const qualityRow = await this.get<{
+      avg_actionability: number | null;
+      avg_accuracy: number | null;
+      avg_coverage: number | null;
+      avg_consistency: number | null;
+      avg_tokens: number | null;
+      total_tokens: number | null;
+    }>(
+      `SELECT
+        AVG(actionability_score) as avg_actionability,
+        AVG(accuracy_score) as avg_accuracy,
+        AVG(coverage_score) as avg_coverage,
+        AVG(consistency_score) as avg_consistency,
+        AVG(tokens_used) as avg_tokens,
+        SUM(tokens_used) as total_tokens
+       FROM review_quality
+       WHERE created_at >= ?`,
+      [cutoffStr],
+    );
+
+    const id = `m_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+    await this.run(
+      `INSERT INTO review_metrics
+       (id, period_start, period_end, period_type,
+        total_prs, total_findings, avg_findings_per_pr,
+        total_feedback, dismissed_count, disputed_count, false_positive_rate,
+        avg_review_duration_ms, total_tokens_used, avg_tokens_per_review,
+        avg_actionability_score, avg_accuracy_score, avg_coverage_score, avg_consistency_score)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        startStr,
+        endStr,
+        periodType,
+        perPRStats.totalPrs,
+        perPRStats.totalFindings,
+        perPRStats.avgFindingsPerPr,
+        feedbackBreakdown.totalFeedback,
+        feedbackBreakdown.dismissedCount,
+        feedbackBreakdown.disputedCount,
+        fpRate,
+        latencyStats.avgLatencyMs,
+        qualityRow?.total_tokens ?? 0,
+        qualityRow?.avg_tokens ? Math.round(qualityRow.avg_tokens) : 0,
+        qualityRow?.avg_actionability ?? null,
+        qualityRow?.avg_accuracy ?? null,
+        qualityRow?.avg_coverage ?? null,
+        qualityRow?.avg_consistency ?? null,
+      ],
+    );
+  }
+
+  /**
+   * Retrieve pre-computed review metrics rows.
+   * @param periodType - 'daily' or 'weekly'.
+   * @param limit - Maximum number of rows (default: 10).
+   * @returns Array of review_metrics rows.
+   */
+  async getMetrics(periodType: 'daily' | 'weekly', limit = 10): Promise<ReviewMetricsRow[]> {
+    const rows = await this.all(
+      'SELECT * FROM review_metrics WHERE period_type = ? ORDER BY period_start DESC LIMIT ?',
+      [periodType, limit],
+    );
+    return rows as ReviewMetricsRow[];
+  }
+
+  /**
+   * Get severity distribution of findings.
+   * @param sinceDays - Optional filter to only include findings from the last N days.
+   * @returns SeverityDistribution with counts per severity level.
+   */
+  async getSeverityDistribution(sinceDays?: number): Promise<SeverityDistribution> {
+    const cutoffDate = sinceDays
+      ? new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000)
+          .toISOString()
+          .replace('T', ' ')
+          .slice(0, 19)
+      : null;
+    const dateFilter = cutoffDate ? 'WHERE created_at >= ?' : '';
+    const params: unknown[] = cutoffDate ? [cutoffDate] : [];
+
+    const rows = await this.all<{ severity: string | null; cnt: number }>(
+      `SELECT severity, COUNT(*) as cnt FROM findings ${dateFilter} GROUP BY severity`,
+      params,
+    );
+
+    const dist: SeverityDistribution = { critical: 0, important: 0, minor: 0, unknown: 0 };
+    for (const row of rows) {
+      const sev = (row.severity || 'unknown').toLowerCase();
+      if (sev === 'critical') dist.critical = row.cnt;
+      else if (sev === 'important') dist.important = row.cnt;
+      else if (sev === 'minor') dist.minor = row.cnt;
+      else dist.unknown += row.cnt;
+    }
+    return dist;
   }
 }
 
@@ -1554,6 +1824,265 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
   async resetCounter(): Promise<void> {
     this.prepareStmt('UPDATE meta_review_counter SET count = 0 WHERE id = 1').run();
   }
+
+  /**
+   * Retrieve per-PR finding statistics.
+   * @param sinceDays - Optional filter to only include findings from the last N days.
+   * @returns PerPRStats with total PRs, avg findings, and distribution estimates.
+   */
+  async getPerPRStats(sinceDays?: number): Promise<PerPRStats> {
+    const cutoffDate = sinceDays
+      ? new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000)
+          .toISOString()
+          .replace('T', ' ')
+          .slice(0, 19)
+      : null;
+    const dateFilter = cutoffDate ? 'WHERE created_at >= ?' : '';
+    const params: unknown[] = cutoffDate ? [cutoffDate] : [];
+
+    const perPr = this.prepareStmt(
+      `SELECT pr_number, COUNT(*) as cnt FROM findings ${dateFilter} GROUP BY pr_number`,
+    ).all(...params) as Array<{ pr_number: number; cnt: number }>;
+
+    if (perPr.length === 0) {
+      return {
+        totalPrs: 0,
+        totalFindings: 0,
+        avgFindingsPerPr: 0,
+        p50FindingsPerPr: 0,
+        p90FindingsPerPr: 0,
+        maxFindingsInPr: 0,
+      };
+    }
+
+    const counts = perPr.map((r) => r.cnt).sort((a, b) => a - b);
+    const totalFindings = counts.reduce((sum, c) => sum + c, 0);
+    const avg = totalFindings / counts.length;
+    const p50 = counts[Math.floor(counts.length * 0.5)] || 0;
+    const p90 = counts[Math.floor(counts.length * 0.9)] || 0;
+
+    return {
+      totalPrs: counts.length,
+      totalFindings,
+      avgFindingsPerPr: Math.round(avg * 100) / 100,
+      p50FindingsPerPr: p50,
+      p90FindingsPerPr: p90,
+      maxFindingsInPr: counts[counts.length - 1] || 0,
+    };
+  }
+
+  /**
+   * Retrieve feedback counts grouped by signal_type and signal_value.
+   * @param sinceDays - Optional filter to only include feedback from the last N days.
+   * @returns FeedbackBreakdown with grouped feedback counts.
+   */
+  async getFeedbackBreakdown(sinceDays?: number): Promise<FeedbackBreakdown> {
+    const cutoffDate = sinceDays
+      ? new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000)
+          .toISOString()
+          .replace('T', ' ')
+          .slice(0, 19)
+      : null;
+    const dateFilter = cutoffDate ? 'WHERE created_at >= ?' : '';
+    const params: unknown[] = cutoffDate ? [cutoffDate] : [];
+
+    const rows = this.prepareStmt(
+      `SELECT signal_type, COUNT(*) as count FROM feedback ${dateFilter} GROUP BY signal_type`,
+    ).all(...params) as Array<{ signal_type: string; count: number }>;
+
+    let totalFeedback = 0;
+    let dismissedCount = 0;
+    let disputedCount = 0;
+    const bySignalType: Record<string, number> = {};
+
+    for (const row of rows) {
+      bySignalType[row.signal_type] = row.count;
+      totalFeedback += row.count;
+      if (row.signal_type === 'dismissed') dismissedCount += row.count;
+      if (row.signal_type === 'disputed_comment') disputedCount += row.count;
+    }
+
+    return {
+      totalFeedback,
+      dismissedCount,
+      disputedCount,
+      acceptedCount: totalFeedback - dismissedCount - disputedCount,
+      bySignalType,
+    };
+  }
+
+  /**
+   * Retrieve review latency statistics from review_quality timestamps.
+   * @param sinceDays - Optional filter to only include reviews from the last N days.
+   * @returns LatencyStats with avg, min, max, and median latency.
+   */
+  async getLatencyStats(sinceDays?: number): Promise<LatencyStats> {
+    const cutoffDate = sinceDays
+      ? new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000)
+          .toISOString()
+          .replace('T', ' ')
+          .slice(0, 19)
+      : null;
+    const dateFilter = cutoffDate ? 'AND created_at >= ?' : '';
+    const params: unknown[] = cutoffDate ? [cutoffDate] : [];
+
+    const rows = this.prepareStmt(
+      `SELECT duration_ms FROM review_quality WHERE duration_ms IS NOT NULL ${dateFilter}`,
+    ).all(...params) as Array<{ duration_ms: number | null }>;
+
+    if (rows.length === 0) {
+      return {
+        avgLatencyMs: 0,
+        minLatencyMs: 0,
+        maxLatencyMs: 0,
+        medianLatencyMs: 0,
+        totalReviews: 0,
+      };
+    }
+
+    const durations = rows.map((r) => r.duration_ms as number).sort((a, b) => a - b);
+    const total = durations.reduce((sum, d) => sum + d, 0);
+    const mid = Math.floor(durations.length / 2);
+    const median =
+      durations.length % 2 === 0
+        ? Math.round((durations[mid - 1] + durations[mid]) / 2)
+        : durations[mid];
+
+    return {
+      avgLatencyMs: Math.round(total / durations.length),
+      minLatencyMs: durations[0],
+      maxLatencyMs: durations[durations.length - 1],
+      medianLatencyMs: median,
+      totalReviews: durations.length,
+    };
+  }
+
+  /**
+   * Compute and insert a new aggregated metrics row into review_metrics.
+   * @param periodType - 'daily' or 'weekly'.
+   */
+  async aggregateMetrics(periodType: 'daily' | 'weekly'): Promise<void> {
+    const now = Date.now();
+    const dayMs = 24 * 60 * 60 * 1000;
+    let periodStart: Date;
+    let periodEnd: Date;
+
+    if (periodType === 'daily') {
+      periodEnd = new Date(now);
+      periodStart = new Date(now - dayMs);
+    } else {
+      periodEnd = new Date(now);
+      periodStart = new Date(now - 7 * dayMs);
+    }
+
+    const startStr = periodStart.toISOString();
+    const endStr = periodEnd.toISOString();
+    const cutoffStr = periodStart.toISOString().replace('T', ' ').slice(0, 19);
+
+    const perPRStats = await this.getPerPRStats(periodType === 'daily' ? 1 : 7);
+    const feedbackBreakdown = await this.getFeedbackBreakdown(periodType === 'daily' ? 1 : 7);
+    const latencyStats = await this.getLatencyStats(periodType === 'daily' ? 1 : 7);
+
+    const fpRate =
+      feedbackBreakdown.totalFeedback > 0
+        ? (feedbackBreakdown.dismissedCount + feedbackBreakdown.disputedCount) /
+          feedbackBreakdown.totalFeedback
+        : 0;
+
+    const qualityRow = this.prepareStmt(
+      `SELECT
+        AVG(actionability_score) as avg_actionability,
+        AVG(accuracy_score) as avg_accuracy,
+        AVG(coverage_score) as avg_coverage,
+        AVG(consistency_score) as avg_consistency,
+        AVG(tokens_used) as avg_tokens,
+        SUM(tokens_used) as total_tokens
+       FROM review_quality
+       WHERE created_at >= ?`,
+    ).get(cutoffStr) as
+      | {
+          avg_actionability: number | null;
+          avg_accuracy: number | null;
+          avg_coverage: number | null;
+          avg_consistency: number | null;
+          avg_tokens: number | null;
+          total_tokens: number | null;
+        }
+      | undefined;
+
+    const id = `m_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+    this.prepareStmt(
+      `INSERT INTO review_metrics
+       (id, period_start, period_end, period_type,
+        total_prs, total_findings, avg_findings_per_pr,
+        total_feedback, dismissed_count, disputed_count, false_positive_rate,
+        avg_review_duration_ms, total_tokens_used, avg_tokens_per_review,
+        avg_actionability_score, avg_accuracy_score, avg_coverage_score, avg_consistency_score)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      id,
+      startStr,
+      endStr,
+      periodType,
+      perPRStats.totalPrs,
+      perPRStats.totalFindings,
+      perPRStats.avgFindingsPerPr,
+      feedbackBreakdown.totalFeedback,
+      feedbackBreakdown.dismissedCount,
+      feedbackBreakdown.disputedCount,
+      fpRate,
+      latencyStats.avgLatencyMs,
+      qualityRow?.total_tokens ?? 0,
+      qualityRow?.avg_tokens ? Math.round(qualityRow.avg_tokens) : 0,
+      qualityRow?.avg_actionability ?? null,
+      qualityRow?.avg_accuracy ?? null,
+      qualityRow?.avg_coverage ?? null,
+      qualityRow?.avg_consistency ?? null,
+    );
+  }
+
+  /**
+   * Retrieve pre-computed review metrics rows.
+   * @param periodType - 'daily' or 'weekly'.
+   * @param limit - Maximum number of rows (default: 10).
+   * @returns Array of review_metrics rows.
+   */
+  async getMetrics(periodType: 'daily' | 'weekly', limit = 10): Promise<ReviewMetricsRow[]> {
+    return this.prepareStmt(
+      'SELECT * FROM review_metrics WHERE period_type = ? ORDER BY period_start DESC LIMIT ?',
+    ).all(periodType, limit) as ReviewMetricsRow[];
+  }
+
+  /**
+   * Get severity distribution of findings.
+   * @param sinceDays - Optional filter to only include findings from the last N days.
+   * @returns SeverityDistribution with counts per severity level.
+   */
+  async getSeverityDistribution(sinceDays?: number): Promise<SeverityDistribution> {
+    const cutoffDate = sinceDays
+      ? new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000)
+          .toISOString()
+          .replace('T', ' ')
+          .slice(0, 19)
+      : null;
+    const dateFilter = cutoffDate ? 'WHERE created_at >= ?' : '';
+    const params: unknown[] = cutoffDate ? [cutoffDate] : [];
+
+    const rows = this.prepareStmt(
+      `SELECT severity, COUNT(*) as cnt FROM findings ${dateFilter} GROUP BY severity`,
+    ).all(...params) as Array<{ severity: string | null; cnt: number }>;
+
+    const dist: SeverityDistribution = { critical: 0, important: 0, minor: 0, unknown: 0 };
+    for (const row of rows) {
+      const sev = (row.severity || 'unknown').toLowerCase();
+      if (sev === 'critical') dist.critical = row.cnt;
+      else if (sev === 'important') dist.important = row.cnt;
+      else if (sev === 'minor') dist.minor = row.cnt;
+      else dist.unknown += row.cnt;
+    }
+    return dist;
+  }
 }
 
 /**
@@ -1885,6 +2414,60 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
    */
   async resetCounter(): Promise<void> {
     return this.db.resetCounter();
+  }
+
+  /**
+   * Retrieve per-PR finding statistics.
+   * @param sinceDays - Optional filter to only include findings from the last N days.
+   * @returns PerPRStats with default values.
+   */
+  async getPerPRStats(sinceDays?: number): Promise<PerPRStats> {
+    return this.db.getPerPRStats(sinceDays);
+  }
+
+  /**
+   * Retrieve feedback counts grouped by signal_type and signal_value.
+   * @param sinceDays - Optional filter to only include feedback from the last N days.
+   * @returns FeedbackBreakdown with default values.
+   */
+  async getFeedbackBreakdown(sinceDays?: number): Promise<FeedbackBreakdown> {
+    return this.db.getFeedbackBreakdown(sinceDays);
+  }
+
+  /**
+   * Retrieve review latency statistics.
+   * @param sinceDays - Optional filter to only include reviews from the last N days.
+   * @returns LatencyStats with default values.
+   */
+  async getLatencyStats(sinceDays?: number): Promise<LatencyStats> {
+    return this.db.getLatencyStats(sinceDays);
+  }
+
+  /**
+   * Compute and insert a new aggregated metrics row.
+   * @param periodType - 'daily' or 'weekly'.
+   */
+  async aggregateMetrics(periodType: 'daily' | 'weekly'): Promise<void> {
+    return this.db.aggregateMetrics(periodType);
+  }
+
+  /**
+   * Retrieve pre-computed review metrics rows.
+   * @param periodType - 'daily' or 'weekly'.
+   * @param limit - Maximum number of rows (default: 10).
+   * @returns Array of review_metrics rows.
+   */
+  async getMetrics(periodType: 'daily' | 'weekly', limit = 10): Promise<ReviewMetricsRow[]> {
+    return this.db.getMetrics(periodType, limit);
+  }
+
+  /**
+   * Get severity distribution of findings.
+   * @param sinceDays - Optional filter to only include findings from the last N days.
+   * @returns SeverityDistribution with default values.
+   */
+  async getSeverityDistribution(sinceDays?: number): Promise<SeverityDistribution> {
+    return this.db.getSeverityDistribution(sinceDays);
   }
 }
 
