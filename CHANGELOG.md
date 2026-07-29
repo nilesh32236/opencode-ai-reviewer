@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.0] — 2026-07-29
+
+### Added
+
+- add self-healing CI and enhanced self-improvement workflows (fixes #165)
+
+### Fixed
+
+- address all PR review comments
+
+### Changed
+
+- feat(workflow): add Hourly Autonomous Orchestrator workflow (.github/workflows/hourly-orchestrator.yml)
+- fix(review): address review feedback on self-healing PR
+
+[v1.6.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.5.5...v1.6.0
+
 ## [v1.5.5] — 2026-07-29
 
 
