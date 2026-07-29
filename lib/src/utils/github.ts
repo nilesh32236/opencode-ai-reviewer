@@ -1058,7 +1058,10 @@ export class GitHubHelper {
             parts.push('');
             parts.push(planBody);
             parts.push('');
-          } else if (trimmed.startsWith('<!-- issue-analysis-questions -->')) {
+          } else if (
+            trimmed.startsWith('<!-- issue-analysis-questions -->') ||
+            trimmed.includes('<!-- issue-analysis-questions -->')
+          ) {
             const questionsBody = trimmed
               .replace(/^<!-- issue-analysis-questions -->\r?\n?\r?\n?/, '')
               .trim();

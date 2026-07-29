@@ -29,36 +29,30 @@ export function parseAnalysisPlan(markdown: string): AnalysisPlanResult {
       ?.trim() ?? '';
 
   const noneRegex =
-    /^\s*(?:[-*•]\s*|\d+\.\s*)?(?:\*\*|__|\*)?\s*(?:Q\d+:?|Question \d+:?|Q:?)?\s*(?:\*\*|__|\*)?\s*(?:none|n\/a|ready to proceed|can proceed|no blocking questions|no questions)\b/i;
+    /^\s*(?:[-*•]|\d+\.)?\s*(?:\*{2}|__|[*_])?\s*(?:Q\d+:?|Question \d+:?|Q:?)?\s*(?:\*{2}|__|[*_])?\s*(?:none|n\/a|ready to proceed|can proceed|no blocking questions|no questions)\b/i;
 
-  const singleQuestionNoneRegex =
-    /^\s*(?:\*\*|__|\*)?\s*(?:Q\d+:?|Question \d+:?|Q:?)?\s*(?:\*\*|__|\*)?\s*(?:none|n\/a|ready to proceed|can proceed|no blocking questions|no questions)\b/i;
-
-  const isNone = questionsSection.length === 0 || noneRegex.test(questionsSection);
-
-  let hasBlockingQuestions = !isNone;
+  const isNoneSection = questionsSection.length === 0 || noneRegex.test(questionsSection);
 
   const blockingQuestions: string[] = [];
-  if (hasBlockingQuestions) {
+  if (!isNoneSection) {
     const matches = questionsSection.matchAll(
       /(?:^|\n)\s*(?:-\s*)?(?:\*\*Q\d+:\*\*|\*\*Question \d+:\*\*|\d+\.|\*)\s*(.+?)(?=\n|$)/g,
     );
     for (const match of matches) {
       const qText = match[1]?.trim();
-      if (qText && !noneRegex.test(qText) && !singleQuestionNoneRegex.test(qText)) {
+      if (qText && !noneRegex.test(qText)) {
         blockingQuestions.push(qText);
       }
     }
     if (blockingQuestions.length === 0 && questionsSection.length > 0) {
       const cleaned = questionsSection.trim();
-      if (!noneRegex.test(cleaned) && !singleQuestionNoneRegex.test(cleaned)) {
+      if (!noneRegex.test(cleaned)) {
         blockingQuestions.push(cleaned);
       }
     }
-    if (blockingQuestions.length === 0) {
-      hasBlockingQuestions = false;
-    }
   }
+
+  const hasBlockingQuestions = blockingQuestions.length > 0;
 
   const confidenceMatch = markdown.match(
     /(?:###|##)\s*Confidence Level\s*\n*\s*(HIGH|MEDIUM|LOW)/i,
