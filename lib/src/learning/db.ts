@@ -747,7 +747,9 @@ export abstract class SqlAdapter implements LearningRepository {
     const counts = perPr.map((r) => r.cnt).sort((a, b) => a - b);
     const totalFindings = counts.reduce((sum, c) => sum + c, 0);
     const avg = totalFindings / counts.length;
-    const p50 = counts[Math.floor(counts.length * 0.5)] || 0;
+    const mid = Math.floor(counts.length / 2);
+    const p50 =
+      counts.length % 2 === 0 ? Math.round((counts[mid - 1] + counts[mid]) / 2) : counts[mid];
     const p90 = counts[Math.floor(counts.length * 0.9)] || 0;
 
     return {
@@ -900,7 +902,7 @@ export abstract class SqlAdapter implements LearningRepository {
       [cutoffStr],
     );
 
-    const id = `m_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const id = `f_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
     await this.run(
       `INSERT INTO review_metrics
@@ -1858,7 +1860,9 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     const counts = perPr.map((r) => r.cnt).sort((a, b) => a - b);
     const totalFindings = counts.reduce((sum, c) => sum + c, 0);
     const avg = totalFindings / counts.length;
-    const p50 = counts[Math.floor(counts.length * 0.5)] || 0;
+    const mid = Math.floor(counts.length / 2);
+    const p50 =
+      counts.length % 2 === 0 ? Math.round((counts[mid - 1] + counts[mid]) / 2) : counts[mid];
     const p90 = counts[Math.floor(counts.length * 0.9)] || 0;
 
     return {
@@ -2010,7 +2014,7 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
         }
       | undefined;
 
-    const id = `m_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const id = `f_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
     this.prepareStmt(
       `INSERT INTO review_metrics

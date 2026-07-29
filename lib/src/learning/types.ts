@@ -422,7 +422,6 @@ export interface ReviewMetricsReport {
     actionabilityScore: number | null;
   };
   performance: {
-    avgReviewLatencyMs: number;
     avgReviewDurationMs: number;
     totalTokensUsed: number;
     avgTokensPerReview: number;

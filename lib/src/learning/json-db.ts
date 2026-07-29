@@ -978,7 +978,10 @@ export class JsonDatabase implements LearningRepository {
       avgLatencyMs: Math.round(durations.reduce((s, d) => s + d, 0) / durations.length),
       minLatencyMs: durations[0],
       maxLatencyMs: durations[durations.length - 1],
-      medianLatencyMs: durations[Math.floor(durations.length / 2)],
+      medianLatencyMs:
+        durations.length % 2 === 0
+          ? Math.round((durations[durations.length / 2 - 1] + durations[durations.length / 2]) / 2)
+          : durations[Math.floor(durations.length / 2)],
       totalReviews: durations.length,
     };
   }
@@ -1028,7 +1031,7 @@ export class JsonDatabase implements LearningRepository {
     }
 
     const row: ReviewMetricsRow = {
-      id: `m_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      id: `f_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       period_start: periodStart.toISOString(),
       period_end: periodEnd.toISOString(),
       period_type: periodType,

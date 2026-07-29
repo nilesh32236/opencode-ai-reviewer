@@ -468,7 +468,8 @@ export default (app: Probot): void => {
         const gh = new GitHubHelper(getToken(), event.repo || '');
         const metricsService = new MetricsService(learningStore);
         const period = parsed.args[0] === 'weekly' ? 'weekly' : 'daily';
-        const report = await metricsService.getReport({ period, sinceDays: 90 });
+        const sinceDays = period === 'weekly' ? 7 : 1;
+        const report = await metricsService.getReport({ period, sinceDays });
         const markdown = metricsService.formatReport(report);
         await gh.postOrUpdateComment(prNumber, '<!-- metrics-report -->', markdown);
       } catch (err) {

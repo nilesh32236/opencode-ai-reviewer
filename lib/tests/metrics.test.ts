@@ -111,7 +111,6 @@ describe('MetricsService', () => {
         actionabilityScore: 0.75,
       },
       performance: {
-        avgReviewLatencyMs: 120000,
         avgReviewDurationMs: 120000,
         totalTokensUsed: 50000,
         avgTokensPerReview: 10000,
@@ -124,7 +123,7 @@ describe('MetricsService', () => {
     expect(markdown).toContain('Weekly Review Metrics');
     expect(markdown).toContain('Total PRs Reviewed');
     expect(markdown).toContain('True Positive Rate');
-    expect(markdown).toContain('Avg Review Latency');
+    expect(markdown).toContain('Avg Review Duration');
     expect(markdown).toContain('Critical');
   });
 
@@ -142,7 +141,6 @@ describe('MetricsService', () => {
         actionabilityScore: null,
       },
       performance: {
-        avgReviewLatencyMs: 0,
         avgReviewDurationMs: 0,
         totalTokensUsed: 0,
         avgTokensPerReview: 0,
@@ -171,7 +169,6 @@ describe('MetricsService', () => {
         actionabilityScore: 0.8,
       },
       performance: {
-        avgReviewLatencyMs: 100000,
         avgReviewDurationMs: 100000,
         totalTokensUsed: 100000,
         avgTokensPerReview: 10000,

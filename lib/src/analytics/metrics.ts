@@ -58,12 +58,12 @@ export class MetricsService {
 
     return {
       periodType: period,
-      periodStart: latestRow?.period_start || periodStart,
-      periodEnd: latestRow?.period_end || periodEnd,
+      periodStart,
+      periodEnd,
       overview: {
-        totalPrs: perPRStats.totalPrs || latestRow?.total_prs || 0,
-        totalFindings: perPRStats.totalFindings || latestRow?.total_findings || 0,
-        avgFindingsPerPr: perPRStats.avgFindingsPerPr || latestRow?.avg_findings_per_pr || 0,
+        totalPrs: perPRStats.totalPrs ?? latestRow?.total_prs ?? 0,
+        totalFindings: perPRStats.totalFindings ?? latestRow?.total_findings ?? 0,
+        avgFindingsPerPr: perPRStats.avgFindingsPerPr ?? latestRow?.avg_findings_per_pr ?? 0,
       },
       quality: {
         truePositiveRate: Math.round(tpRate * 10000) / 10000,
@@ -73,10 +73,9 @@ export class MetricsService {
         actionabilityScore: latestRow?.avg_actionability_score ?? null,
       },
       performance: {
-        avgReviewLatencyMs: latencyStats.avgLatencyMs || latestRow?.avg_review_duration_ms || 0,
-        avgReviewDurationMs: latencyStats.avgLatencyMs || 0,
-        totalTokensUsed: latestRow?.total_tokens_used || 0,
-        avgTokensPerReview: latestRow?.avg_tokens_per_review || 0,
+        avgReviewDurationMs: latencyStats.avgLatencyMs ?? latestRow?.avg_review_duration_ms ?? 0,
+        totalTokensUsed: latestRow?.total_tokens_used ?? 0,
+        avgTokensPerReview: latestRow?.avg_tokens_per_review ?? 0,
       },
       severityDistribution: severityDist,
       trends: metricsRows,
@@ -104,7 +103,7 @@ export class MetricsService {
     const lines: string[] = [];
     const periodLabel = report.periodType === 'daily' ? 'Daily' : 'Weekly';
 
-    lines.push(`## 📊 ${periodLabel} Review Metrics`);
+    lines.push(`## ${periodLabel} Review Metrics`);
     lines.push('');
     lines.push(
       `**Period:** ${new Date(report.periodStart).toLocaleDateString()} — ${new Date(report.periodEnd).toLocaleDateString()}`,
@@ -141,9 +140,6 @@ export class MetricsService {
     lines.push('### Performance');
     lines.push('| Metric | Value |');
     lines.push('|--------|-------|');
-    lines.push(
-      `| Avg Review Latency | ${this.formatDuration(report.performance.avgReviewLatencyMs)} |`,
-    );
     lines.push(
       `| Avg Review Duration | ${this.formatDuration(report.performance.avgReviewDurationMs)} |`,
     );
