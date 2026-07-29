@@ -362,9 +362,8 @@ async function createAutofixPR(
           ].join('\n'),
         );
         return null;
-      } else {
-        await markAnalysisReady(gh, issueNumber);
       }
+      await markAnalysisReady(gh, issueNumber);
 
       issueContext = await gh.gatherContext({ issueNumber });
     }

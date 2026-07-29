@@ -213,9 +213,8 @@ export async function runFixIssue(
       );
       core.setOutput('changes_made', 'false');
       return;
-    } else {
-      await markAnalysisReady(gh, issueNumber);
     }
+    await markAnalysisReady(gh, issueNumber);
 
     issueContext = await gh.gatherContext({ issueNumber });
   }
