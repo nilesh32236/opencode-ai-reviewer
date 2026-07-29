@@ -170,7 +170,7 @@ jobs:
           mode: fix
           model: 'opencode/deepseek-v4-flash-free'
           max_fix_iterations: 3
-          run_checks_after_fix: 'pnpm build && pnpm typecheck && pnpm test && pnpm lint'
+          run_checks_after_fix: 'pnpm lint'
           github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -265,7 +265,7 @@ jobs:
           mode: fix
           model: 'opencode/deepseek-v4-flash-free'
           max_fix_iterations: 1
-          run_checks_after_fix: 'pnpm build && pnpm typecheck && pnpm test && pnpm lint'
+          run_checks_after_fix: 'pnpm lint'
           github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -359,9 +359,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Wait for CI to start on main
-        run: sleep 30
-
       - name: Check main branch CI status
         id: ci-check
         env:

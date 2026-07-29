@@ -54,12 +54,8 @@ jobs:
           npm install -g pnpm
           pnpm install
 
-      - name: Setup OpenCode
-        run: |
-          chmod +x .github/scripts/setup-opencode.sh
-          .github/scripts/setup-opencode.sh
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+      - name: Setup OpenCode CLI
+        run: npm install -g opencode-cli@latest
 
       - name: Write Self-Improvement Prompt
         run: |
@@ -160,22 +156,19 @@ jobs:
             ATTEMPT=$((ATTEMPT + 1))
             echo "=== Verification attempt ${ATTEMPT}/${MAX_RETRIES} ==="
 
-            # Run all verification steps and capture output
+            # Run all verification steps and collect all errors
             VERIFY_FAILED=""
             VERIFY_OUTPUT=""
+            ALL_FAILURES=""
 
-            if ! BUILD_OUT=$(pnpm build 2>&1); then
-              VERIFY_FAILED="build"
-              VERIFY_OUTPUT="$BUILD_OUT"
-            elif ! TC_OUT=$(pnpm typecheck 2>&1); then
-              VERIFY_FAILED="typecheck"
-              VERIFY_OUTPUT="$TC_OUT"
-            elif ! TEST_OUT=$(pnpm test 2>&1); then
-              VERIFY_FAILED="test"
-              VERIFY_OUTPUT="$TEST_OUT"
-            elif ! LINT_OUT=$(pnpm lint 2>&1); then
-              VERIFY_FAILED="lint"
-              VERIFY_OUTPUT="$LINT_OUT"
+            BUILD_OUT=$(pnpm build 2>&1) || ALL_FAILURES="${ALL_FAILURES}build: ${BUILD_OUT}"$'\n'
+            TC_OUT=$(pnpm typecheck 2>&1) || ALL_FAILURES="${ALL_FAILURES}typecheck: ${TC_OUT}"$'\n'
+            TEST_OUT=$(pnpm test 2>&1) || ALL_FAILURES="${ALL_FAILURES}test: ${TEST_OUT}"$'\n'
+            LINT_OUT=$(pnpm lint 2>&1) || ALL_FAILURES="${ALL_FAILURES}lint: ${LINT_OUT}"$'\n'
+
+            if [ -n "$ALL_FAILURES" ]; then
+              VERIFY_FAILED="verification"
+              VERIFY_OUTPUT="$ALL_FAILURES"
             fi
 
             if [ -z "$VERIFY_FAILED" ]; then
@@ -202,7 +195,7 @@ jobs:
           \`\`\`
 
           ## Research Before Fixing
-          1. Use **search_web** to look up the error message if it's unfamiliar.
+          1. Use **websearch** to look up the error message if it's unfamiliar.
           2. Use **Context7 MCP** to check API docs if the error involves a library.
 
           ## Code Rules
@@ -258,7 +251,7 @@ jobs:
           git checkout -b "$BRANCH"
           git add -A
           git commit -m "feat(improvement): autonomous codebase enhancement [run ${{ github.run_id }}]"
-          git push origin "$BRANCH"
+          git push origin "$BRANCH" --force-with-lease
 
           # Build PR body
           if [ -f .improvement-summary.md ]; then
@@ -266,7 +259,7 @@ jobs:
             # Clean up summary file so it doesn't stay in the branch
             git rm .improvement-summary.md
             git commit -m "chore: remove improvement summary file"
-            git push origin "$BRANCH"
+            git push origin "$BRANCH" --force-with-lease
           else
             SUMMARY="The self-improving agent made changes."
           fi

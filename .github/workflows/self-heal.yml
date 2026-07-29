@@ -106,7 +106,7 @@ jobs:
             echo "Fetching logs for workflow run #${RUN_ID} (${WORKFLOW_NAME})..."
 
             # Download the logs for the failed run
-            gh run view "$RUN_ID" --repo "${{ github.repository }}" --log-failed 2>/dev/null > /tmp/ci-failure-logs.txt || true
+            gh run view "$RUN_ID" --repo "${{ github.repository }}" --log 2>/dev/null > /tmp/ci-failure-logs.txt || true
 
             if [ ! -s /tmp/ci-failure-logs.txt ]; then
               # Fallback: get the run summary
@@ -128,6 +128,9 @@ jobs:
 
           LOGS=$(cat /tmp/ci-failure-logs.txt)
           echo "logs_captured=true" >> "$GITHUB_OUTPUT"
+          echo "logs_content<<EOF_LOGS" >> "$GITHUB_OUTPUT"
+          echo "$LOGS" >> "$GITHUB_OUTPUT"
+          echo "EOF_LOGS" >> "$GITHUB_OUTPUT"
           echo "Captured $(wc -c < /tmp/ci-failure-logs.txt) bytes of failure logs"
 
       - name: Run self-heal
@@ -136,7 +139,7 @@ jobs:
         with:
           mode: self-heal
           model: 'opencode/deepseek-v4-flash-free'
-          ci_failure_logs: ${{ steps.capture-logs.outputs.logs_captured == 'true' && '' || '' }}
+          ci_failure_logs: ${{ steps.capture-logs.outputs.logs_captured == 'true' && steps.capture-logs.outputs.logs_content || '' }}
           failed_step: ${{ steps.capture-logs.outputs.failed_step }}
           failed_workflow: ${{ steps.capture-logs.outputs.failed_workflow }}
           github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
@@ -150,8 +153,7 @@ jobs:
       - name: Fallback self-heal via OpenCode CLI
         if: steps.check-existing.outputs.existing_pr == '' && steps.capture-logs.outputs.logs_captured == 'true' && failure()
         run: |
-          chmod +x .github/scripts/setup-opencode.sh
-          .github/scripts/setup-opencode.sh
+          npm install -g opencode-cli@latest
 
           FAILURE_LOGS=$(cat /tmp/ci-failure-logs.txt | head -500)
           FAILED_STEP="${{ steps.capture-logs.outputs.failed_step }}"
@@ -167,7 +169,7 @@ jobs:
 
           ## Research Instructions (MANDATORY)
           1. Use **Context7 MCP** to check the latest API docs for any libraries mentioned in the errors.
-          2. Use **search_web** to search for the exact error message and find solutions.
+          2. Use **websearch** to search for the exact error message and find solutions.
           3. Check GitHub issues for the relevant packages.
 
           ## Fix Instructions

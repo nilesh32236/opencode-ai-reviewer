@@ -172,6 +172,10 @@ outputs:
     description: 'Number of minor issues found'
   changes_made:
     description: 'Whether changes were made during fix'
+  pr_url:
+    description: 'URL of the created self-heal PR'
+  verification_passed:
+    description: 'Whether verification passed in the self-heal workflow'
 
 runs:
   using: 'node24'
