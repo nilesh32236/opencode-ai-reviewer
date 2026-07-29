@@ -32,16 +32,17 @@ export class MetricsService {
       sinceDays?: number;
     } = {},
   ): Promise<ReviewMetricsReport> {
-    const period = options.period || 'daily';
+    const period = options.period ?? 'daily';
     const sinceDays = options.sinceDays ?? 30;
 
-    const [metricsRows, perPRStats, feedbackBreakdown, latencyStats, severityDist] =
+    const [metricsRows, perPRStats, feedbackBreakdown, latencyStats, severityDist, telemetryStats] =
       await Promise.all([
         this.store.getMetrics(period, 10),
         this.store.getPerPRStats(sinceDays),
         this.store.getFeedbackBreakdown(sinceDays),
         this.store.getLatencyStats(sinceDays),
         this.store.getSeverityDistribution(sinceDays),
+        this.store.getTelemetryStats(sinceDays),
       ]);
 
     const latestRow = metricsRows[0];
@@ -74,8 +75,9 @@ export class MetricsService {
       },
       performance: {
         avgReviewDurationMs: latencyStats.avgLatencyMs ?? latestRow?.avg_review_duration_ms ?? 0,
-        totalTokensUsed: latestRow?.total_tokens_used ?? 0,
-        avgTokensPerReview: latestRow?.avg_tokens_per_review ?? 0,
+        totalTokensUsed: telemetryStats.totalTokensUsed ?? latestRow?.total_tokens_used ?? 0,
+        avgTokensPerReview:
+          telemetryStats.avgTokensPerReview ?? latestRow?.avg_tokens_per_review ?? 0,
       },
       severityDistribution: severityDist,
       trends: metricsRows,

@@ -750,7 +750,7 @@ export abstract class SqlAdapter implements LearningRepository {
     const mid = Math.floor(counts.length / 2);
     const p50 =
       counts.length % 2 === 0 ? Math.round((counts[mid - 1] + counts[mid]) / 2) : counts[mid];
-    const p90 = counts[Math.floor(counts.length * 0.9)] || 0;
+    const p90 = counts[Math.floor(counts.length * 0.9)] ?? 0;
 
     return {
       totalPrs: counts.length,
@@ -758,7 +758,7 @@ export abstract class SqlAdapter implements LearningRepository {
       avgFindingsPerPr: Math.round(avg * 100) / 100,
       p50FindingsPerPr: p50,
       p90FindingsPerPr: p90,
-      maxFindingsInPr: counts[counts.length - 1] || 0,
+      maxFindingsInPr: counts[counts.length - 1] ?? 0,
     };
   }
 
@@ -1863,7 +1863,7 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
     const mid = Math.floor(counts.length / 2);
     const p50 =
       counts.length % 2 === 0 ? Math.round((counts[mid - 1] + counts[mid]) / 2) : counts[mid];
-    const p90 = counts[Math.floor(counts.length * 0.9)] || 0;
+    const p90 = counts[Math.floor(counts.length * 0.9)] ?? 0;
 
     return {
       totalPrs: counts.length,
@@ -1871,7 +1871,7 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
       avgFindingsPerPr: Math.round(avg * 100) / 100,
       p50FindingsPerPr: p50,
       p90FindingsPerPr: p90,
-      maxFindingsInPr: counts[counts.length - 1] || 0,
+      maxFindingsInPr: counts[counts.length - 1] ?? 0,
     };
   }
 

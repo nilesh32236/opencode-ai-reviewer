@@ -916,8 +916,8 @@ export class JsonDatabase implements LearningRepository {
         counts.length % 2 === 0
           ? Math.round((counts[counts.length / 2 - 1] + counts[counts.length / 2]) / 2)
           : counts[Math.floor(counts.length / 2)],
-      p90FindingsPerPr: counts[Math.floor(counts.length * 0.9)] || 0,
-      maxFindingsInPr: counts[counts.length - 1] || 0,
+      p90FindingsPerPr: counts[Math.floor(counts.length * 0.9)] ?? 0,
+      maxFindingsInPr: counts[counts.length - 1] ?? 0,
     };
   }
 
@@ -1024,7 +1024,7 @@ export class JsonDatabase implements LearningRepository {
     let avgConsistency: number | null = null;
 
     const rowsWithTokens = qualityRows.filter(
-      (r): r is typeof r & { tokens_used: number } => r.tokens_used !== undefined,
+      (r): r is typeof r & { tokens_used: number } => typeof r.tokens_used === 'number',
     );
 
     if (qualityRows.length > 0) {
