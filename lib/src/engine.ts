@@ -17,6 +17,7 @@ import {
   buildSynthesisPrompt,
 } from './prompts/builder.js';
 import { buildConversationPrompt } from './prompts/conversation.js';
+import { buildSelfHealPrompt } from './prompts/heal.js';
 import { buildVerificationPrompt } from './prompts/verify.js';
 import type {
   AgentConfig,
@@ -27,6 +28,7 @@ import type {
   ReviewIssue,
   ReviewResult,
   ReviewStrength,
+  SelfHealResult,
 } from './types/index.js';
 import { GitHubHelper } from './utils/github.js';
 import { Logger } from './utils/logger.js';
@@ -636,6 +638,113 @@ export class ReviewEngine {
       core.warning(`Could not read analysis plan from ${planPath}: ${String(err)}`);
       return '⚠️ **Analysis Error**: Could not read generated `.opencode/analysis-plan.md` file.';
     }
+  }
+
+  /**
+   * Run the self-heal workflow to diagnose and fix a CI failure.
+   * Builds a diagnosis prompt from CI failure logs, runs OpenCode CLI to apply fixes,
+   * and reads the diagnosis report and git status from disk.
+   *
+   * @param ciFailureLogs - The CI failure output/logs.
+   * @param failedStep - Name of the CI step that failed.
+   * @param failedWorkflow - Name of the workflow that failed.
+   * @param timeoutMinutes - Optional timeout override.
+   * @param previousAttemptError - Optional error from a previous heal attempt for retry.
+   * @param workingDirectory - Optional working directory.
+   * @returns SelfHealResult with diagnosis and change information.
+   */
+  async runSelfHeal(
+    ciFailureLogs: string,
+    failedStep?: string,
+    failedWorkflow?: string,
+    timeoutMinutes?: number,
+    previousAttemptError?: string,
+    workingDirectory?: string,
+  ): Promise<SelfHealResult> {
+    const prompt = buildSelfHealPrompt(
+      {
+        projectContext: this.config.projectContext.description || undefined,
+        maxRetries: 3,
+      },
+      ciFailureLogs,
+      failedStep,
+      failedWorkflow,
+      previousAttemptError,
+    );
+
+    const workDir = workingDirectory || process.cwd();
+    const diagnosisPath = path.join(workDir, '.opencode', 'heal-diagnosis.md');
+    ensureOutputDir(diagnosisPath);
+
+    const runResult = await runOpenCode(prompt, {
+      model: this.config.fixModel,
+      timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+      workingDirectory: workDir,
+    });
+    await this.recordTelemetry(0, runResult.durationMs, runResult.tokensUsed);
+
+    if (!runResult.success) {
+      core.warning(
+        'OpenCode self-heal execution failed or timed out. Checking for partial changes...',
+      );
+      await new Promise((r) => setTimeout(r, 500));
+    }
+
+    let changesMade = false;
+    let filesChanged: string[] = [];
+    let diagnosis: string | undefined;
+    let diagnosticReport: string | undefined;
+    let summary: string | undefined;
+
+    try {
+      const status = getGitStatus(workDir);
+      changesMade = status.trim().length > 0;
+
+      // Read diagnosis report
+      try {
+        diagnosticReport = await fs.readFile(diagnosisPath, 'utf-8');
+        // Extract the failure classification from the report
+        const classMatch = diagnosticReport.match(/## Failure Classification\s*\n+([^\n#]+)/i);
+        if (classMatch) {
+          diagnosis = classMatch[1].trim().toLowerCase();
+        }
+        await fs.unlink(diagnosisPath).catch(() => {});
+      } catch {
+        core.debug('No heal-diagnosis.md found — proceeding without diagnosis');
+      }
+
+      // Read fix summary if present
+      try {
+        summary = await fs.readFile(path.join(workDir, '.fix-summary.md'), 'utf-8');
+        await fs.unlink(path.join(workDir, '.fix-summary.md')).catch(() => {});
+      } catch {
+        // Use diagnostic report as summary if no fix-summary
+        if (diagnosticReport) {
+          summary = diagnosticReport;
+        }
+      }
+
+      if (changesMade) {
+        try {
+          const raw = cp
+            .execFileSync('git', ['diff', '--name-only', 'HEAD'], {
+              encoding: 'utf-8',
+              cwd: workDir,
+            })
+            .toString()
+            .trim();
+          filesChanged = raw ? raw.split('\n') : [];
+        } catch {
+          core.warning('Could not get git diff to determine changed files');
+        }
+      }
+    } catch (err) {
+      core.warning(
+        `Error reading self-heal results: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    return { changesMade, filesChanged, diagnosis, diagnosticReport, summary };
   }
 
   /**

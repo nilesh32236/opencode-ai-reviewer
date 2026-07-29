@@ -5,7 +5,7 @@ import {
   validateRunChecksCommand,
 } from '@opencode-pr-agent/lib';
 
-const VALID_MODES: ActionMode[] = ['review', 'fix', 'audit', 'post', 'analyze'];
+const VALID_MODES: ActionMode[] = ['review', 'fix', 'audit', 'post', 'analyze', 'self-heal'];
 
 export { DEFAULT_ALLOWLIST, validateRunChecksCommand };
 /**
@@ -87,6 +87,12 @@ export interface ActionInputs {
   enableStateCache: boolean;
   /** Cache key prefix for learning state storage. */
   stateCacheKey: string;
+  /** CI failure logs for self-heal mode. */
+  ciFailureLogs?: string;
+  /** Name of the failed CI step. */
+  failedStep?: string;
+  /** Name of the failed workflow. */
+  failedWorkflow?: string;
 }
 
 /**
@@ -169,5 +175,8 @@ export function parseInputs(): ActionInputs {
     reviewInline: core.getInput('review_inline') !== 'false',
     enableStateCache: core.getInput('enable_state_cache') !== 'false',
     stateCacheKey: core.getInput('state_cache_key') || 'opencode-learning-state',
+    ciFailureLogs: core.getInput('ci_failure_logs') || undefined,
+    failedStep: core.getInput('failed_step') || undefined,
+    failedWorkflow: core.getInput('failed_workflow') || undefined,
   };
 }

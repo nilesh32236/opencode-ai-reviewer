@@ -170,7 +170,7 @@ jobs:
           mode: fix
           model: 'opencode/deepseek-v4-flash-free'
           max_fix_iterations: 3
-          run_checks_after_fix: 'pnpm lint'
+          run_checks_after_fix: 'pnpm build && pnpm typecheck && pnpm test && pnpm lint'
           github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -265,7 +265,7 @@ jobs:
           mode: fix
           model: 'opencode/deepseek-v4-flash-free'
           max_fix_iterations: 1
-          run_checks_after_fix: 'pnpm lint'
+          run_checks_after_fix: 'pnpm build && pnpm typecheck && pnpm test && pnpm lint'
           github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -343,3 +343,90 @@ jobs:
               --repo "${{ github.repository }}" \
               --comment "✅ Resolved by PR #${PR_NUMBER} — merged to main." || true
           fi
+
+  # ─── Post-Merge Health Guard ───────────────────────────────────────────────
+  # After an autofix PR is merged, wait for CI to run on main.
+  # If CI fails, trigger the self-heal workflow to fix the regression.
+  post-merge-health:
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.merged == true &&
+      (
+        contains(github.event.pull_request.labels.*.name, 'autofix:ready') ||
+        contains(github.event.pull_request.labels.*.name, 'self-improvement')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Wait for CI to start on main
+        run: sleep 30
+
+      - name: Check main branch CI status
+        id: ci-check
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Checking CI status on main after merge of PR #${{ github.event.pull_request.number }}..."
+
+          # Wait up to 10 minutes for CI to complete
+          MAX_WAIT=600
+          ELAPSED=0
+          INTERVAL=30
+
+          while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
+            # Get the latest CI run on main
+            STATUS=$(gh run list \
+              --repo "${{ github.repository }}" \
+              --branch main \
+              --workflow ci.yml \
+              --limit 1 \
+              --json conclusion,status \
+              --jq '.[0] | if .status == "completed" then .conclusion else "in_progress" end' 2>/dev/null || echo "unknown")
+
+            echo "CI status: $STATUS (elapsed: ${ELAPSED}s)"
+
+            if [ "$STATUS" = "success" ]; then
+              echo "ci_status=success" >> "$GITHUB_OUTPUT"
+              echo "✅ CI passed on main"
+              exit 0
+            elif [ "$STATUS" = "failure" ]; then
+              echo "ci_status=failure" >> "$GITHUB_OUTPUT"
+              echo "❌ CI failed on main after merge"
+              exit 0
+            fi
+
+            sleep "$INTERVAL"
+            ELAPSED=$((ELAPSED + INTERVAL))
+          done
+
+          echo "ci_status=timeout" >> "$GITHUB_OUTPUT"
+          echo "⏳ CI did not complete within ${MAX_WAIT}s"
+
+      - name: Post warning on merged PR
+        if: steps.ci-check.outputs.ci_status == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          gh pr comment "$PR_NUMBER" \
+            --repo "${{ github.repository }}" \
+            --body "## ⚠️ Post-Merge CI Failure
+
+          CI failed on \`main\` after merging this PR. The self-heal workflow has been triggered to diagnose and fix the issue.
+
+          ---
+          *🤖 Posted automatically by opencode-ai-reviewer*"
+
+      - name: Trigger self-heal workflow
+        if: steps.ci-check.outputs.ci_status == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Triggering self-heal workflow..."
+          gh workflow run self-heal.yml \
+            --repo "${{ github.repository }}" \
+            -f failed_step="Post-merge CI" \
+            -f failure_logs="CI failed on main after merging PR #${{ github.event.pull_request.number }}" || {
+            echo "::warning::Could not trigger self-heal workflow"
+          }

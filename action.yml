@@ -7,7 +7,7 @@ branding:
 
 inputs:
   mode:
-    description: 'Action mode: review, fix, audit, or post'
+    description: 'Action mode: review, fix, audit, post, analyze, or self-heal'
     required: true
     default: 'review'
 
@@ -145,6 +145,18 @@ inputs:
 
   git_user_email:
     description: 'Git user email for commits (default: GITHUB_ACTOR email)'
+    required: false
+
+  ci_failure_logs:
+    description: 'CI failure logs for self-heal mode (required when mode=self-heal)'
+    required: false
+
+  failed_step:
+    description: 'Name of the CI step that failed (for self-heal mode diagnostics)'
+    required: false
+
+  failed_workflow:
+    description: 'Name of the workflow that failed (for self-heal mode diagnostics)'
     required: false
 
 outputs:
