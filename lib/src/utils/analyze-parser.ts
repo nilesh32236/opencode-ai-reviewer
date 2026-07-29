@@ -31,8 +31,7 @@ export function parseAnalysisPlan(markdown: string): AnalysisPlanResult {
   const noneRegex =
     /^\s*(?:[-*•]\s*|\d+\.\s*)?(?:\*\*|__|\*)?\s*(?:none|n\/a|ready to proceed|can proceed|no blocking questions|no questions)\b/i;
 
-  const isNone =
-    questionsSection.length === 0 || noneRegex.test(questionsSection);
+  const isNone = questionsSection.length === 0 || noneRegex.test(questionsSection);
 
   let hasBlockingQuestions = !isNone;
 
