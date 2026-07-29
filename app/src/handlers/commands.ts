@@ -346,6 +346,17 @@ async function createAutofixPR(
 
       if (parsed.hasBlockingQuestions) {
         await postBlockingQuestions(gh, issueNumber, parsed);
+        await gh.postOrUpdateComment(
+          issueNumber,
+          '<!-- autofix-deferred -->',
+          [
+            '⏸️ **Fix Deferred — Questions Pending**',
+            '',
+            'I cannot start the fix yet because there are unanswered questions in the analysis.',
+            'Please answer the questions above, then comment `/fix` again.',
+          ].join('\n'),
+        );
+        return null;
       } else {
         await markAnalysisReady(gh, issueNumber);
       }

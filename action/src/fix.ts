@@ -201,6 +201,13 @@ export async function runFixIssue(
 
     if (parsed.hasBlockingQuestions) {
       await postBlockingQuestions(gh, issueNumber, parsed);
+      await gh.postOrUpdateComment(
+        issueNumber,
+        '<!-- autofix-deferred -->',
+        '⏸️ **Fix Deferred** — Please answer the analysis questions first, then re-trigger `/fix`.',
+      );
+      core.setOutput('changes_made', 'false');
+      return;
     } else {
       await markAnalysisReady(gh, issueNumber);
     }
@@ -209,19 +216,24 @@ export async function runFixIssue(
   }
 
   const issue = await gh.getIssue(issueNumber);
-  const hasUnansweredQuestions =
-    issueContext.includes('<!-- issue-analysis-questions -->') &&
-    issue.labels.includes('analysis:needs-input');
+  const questionsCommentIdx = issue.comments.findIndex((c) =>
+    c.body.startsWith('<!-- issue-analysis-questions -->'),
+  );
+  if (questionsCommentIdx !== -1 && issue.labels.includes('analysis:needs-input')) {
+    const repliesAfter = issue.comments
+      .slice(questionsCommentIdx + 1)
+      .filter((c) => !c.author.includes('[bot]'));
 
-  if (hasUnansweredQuestions) {
-    core.info('Issue has unanswered blocking questions — skipping fix');
-    await gh.postOrUpdateComment(
-      issueNumber,
-      '<!-- autofix-deferred -->',
-      '⏸️ **Fix Deferred** — Please answer the analysis questions first, then re-trigger `/fix`.',
-    );
-    core.setOutput('changes_made', 'false');
-    return;
+    if (repliesAfter.length === 0) {
+      core.info('Issue has unanswered blocking questions — skipping fix');
+      await gh.postOrUpdateComment(
+        issueNumber,
+        '<!-- autofix-deferred -->',
+        '⏸️ **Fix Deferred** — Please answer the analysis questions first, then re-trigger `/fix`.',
+      );
+      core.setOutput('changes_made', 'false');
+      return;
+    }
   }
 
   // Check remaining time budget just before calling OpenCode, after setup steps.
