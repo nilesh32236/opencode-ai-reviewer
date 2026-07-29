@@ -1,5 +1,0 @@
-{"type":"summary","text":"This is valid."}
-{"type":"verdict","ready":false,"reasoning":"Has issues."}
-not valid json at all
-{"type":"issue","severity":"critical","file":"src/a.ts","line":1,"message":"Issue 1"}
-{this is also broken}

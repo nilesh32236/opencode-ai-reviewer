@@ -1,13 +1,6 @@
-import type {
-  AgentConfig,
-  FixResult,
-  GitHubHelper,
-  PRContext,
-  ReviewEngine,
-  ReviewResult,
-} from '@opencode-pr-agent/lib';
-import { DEFAULT_CONFIG } from '@opencode-pr-agent/lib';
+import type { FixResult, GitHubHelper, ReviewEngine, ReviewResult } from '@opencode-pr-agent/lib';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { makeConfig, makeInputs, makePRContext } from './helpers/mock-factories.js';
 
 const {
   mockGetInput,
@@ -124,37 +117,6 @@ const mockEngine = {
   runFix: mockRunFix,
 } as unknown as ReviewEngine;
 
-function makePRContext(overrides: Partial<PRContext> = {}): PRContext {
-  return {
-    number: 42,
-    title: 'Test PR',
-    body: 'Test body',
-    headRef: 'feature',
-    headSha: 'abc123',
-    baseRef: 'main',
-    author: 'test-user',
-    labels: [],
-    changedFiles: [
-      {
-        path: 'src/test.ts',
-        status: 'modified',
-        additions: 10,
-        deletions: 2,
-        patch: '@@ -1 +1 @@\n-old\n+new',
-      },
-    ],
-    ...overrides,
-  };
-}
-
-function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
-  return {
-    ...DEFAULT_CONFIG,
-    timeoutMinutes: 10,
-    ...overrides,
-  };
-}
-
 describe('runAutofixLoop', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -190,7 +152,7 @@ describe('runAutofixLoop', () => {
     });
 
     await runAutofixLoop(
-      {} as never,
+      makeInputs(),
       makeConfig({ maxIterations: 3, enableMCP: false, mcpServers: [] }),
       mockEngine,
       mockGh,
@@ -254,7 +216,7 @@ describe('runAutofixLoop', () => {
     } as FixResult);
 
     await runAutofixLoop(
-      {} as never,
+      makeInputs(),
       makeConfig({ maxIterations: 3, enableMCP: false, mcpServers: [] }),
       mockEngine,
       mockGh,
@@ -308,7 +270,7 @@ describe('runAutofixLoop', () => {
     } as FixResult);
 
     await runAutofixLoop(
-      {} as never,
+      makeInputs(),
       makeConfig({ maxIterations: 3, enableMCP: false, mcpServers: [] }),
       mockEngine,
       mockGh,
@@ -341,20 +303,32 @@ describe('runAutofixLoop', () => {
       stats: { total: 1, critical: 0, important: 1, minor: 0 },
     };
 
-    mockReviewPR.mockResolvedValue(reviewWithIssues);
+    mockReviewPR
+      .mockResolvedValueOnce(reviewWithIssues)
+      .mockResolvedValueOnce(reviewWithIssues)
+      .mockResolvedValueOnce(reviewWithIssues);
     mockPostReview.mockResolvedValue({
       success: true,
       method: 'full',
       reviewId: 1,
       commentIds: [],
     });
-    mockRunFix.mockResolvedValue({
-      changesMade: true,
-      filesChanged: ['src/bug.ts'],
-    } as FixResult);
+    mockRunFix
+      .mockResolvedValueOnce({
+        changesMade: true,
+        filesChanged: ['src/bug.ts'],
+      } as FixResult)
+      .mockResolvedValueOnce({
+        changesMade: true,
+        filesChanged: ['src/bug.ts'],
+      } as FixResult)
+      .mockResolvedValueOnce({
+        changesMade: true,
+        filesChanged: ['src/bug.ts'],
+      } as FixResult);
 
     await runAutofixLoop(
-      {} as never,
+      makeInputs(),
       makeConfig({ maxIterations: 3, enableMCP: false, mcpServers: [] }),
       mockEngine,
       mockGh,

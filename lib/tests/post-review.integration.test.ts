@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ReviewResult } from '../src/types/index.js';
 import { GitHubHelper } from '../src/utils/github.js';
+import { makeReviewResult, mockResponse } from './helpers/mock-factories.js';
 
 vi.mock('@actions/core', () => ({
   info: vi.fn(),
@@ -14,11 +14,10 @@ vi.mock('../src/utils/retry.js', () => ({
   withRetryAndTimeout: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
-function makeReviewResult(overrides: Partial<ReviewResult> = {}): ReviewResult {
-  return {
+function makeTestReviewResult() {
+  return makeReviewResult({
     summary: '## Review Summary\nFound issues.',
     verdict: { ready: false, reasoning: 'Issues found.', autoFixable: false, confidence: 'medium' },
-    strengths: [],
     issues: [
       {
         type: 'issue',
@@ -47,19 +46,10 @@ function makeReviewResult(overrides: Partial<ReviewResult> = {}): ReviewResult {
       },
     ],
     stats: { total: 3, critical: 1, important: 1, minor: 1 },
-    ...overrides,
-  };
+  });
 }
 
-function mockJsonResponse(body: unknown): Response {
-  return {
-    ok: true,
-    status: 200,
-    headers: new Headers({ 'Content-Type': 'application/json' }),
-    json: vi.fn().mockResolvedValue(body),
-    text: vi.fn().mockResolvedValue(JSON.stringify(body)),
-  } as unknown as Response;
-}
+const mockJsonResponse = (body: unknown): Response => mockResponse({ body });
 
 function mockErrorJsonResponse(status: number, body: unknown): Response {
   return {
@@ -78,7 +68,6 @@ describe('GitHubHelper postReview Integration', () => {
 
   const PR_NUMBER = 42;
   const SHA = 'abc123def';
-  const _BASE = `https://api.github.com/repos/owner/repo`;
 
   function setupFetch(): void {
     fetchMock = vi.fn();
@@ -99,7 +88,7 @@ describe('GitHubHelper postReview Integration', () => {
     fetchMock.mockImplementation(async (url: string | URL | Request, options?: RequestInit) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
 
-      if (urlStr.includes('/pulls/') && urlStr.endsWith(`/pulls/${PR_NUMBER}`)) {
+      if (urlStr.endsWith(`/pulls/${PR_NUMBER}`)) {
         return mockJsonResponse({});
       }
 
@@ -124,7 +113,7 @@ describe('GitHubHelper postReview Integration', () => {
       return mockJsonResponse({});
     });
 
-    const result = makeReviewResult();
+    const result = makeTestReviewResult();
     const response = await gh.postReview(PR_NUMBER, SHA, result, true);
 
     expect(response.success).toBe(true);
@@ -171,7 +160,7 @@ describe('GitHubHelper postReview Integration', () => {
       return mockJsonResponse({});
     });
 
-    const result = makeReviewResult();
+    const result = makeTestReviewResult();
     const response = await gh.postReview(PR_NUMBER, SHA, result, true);
 
     expect(response.success).toBe(true);
@@ -211,7 +200,7 @@ describe('GitHubHelper postReview Integration', () => {
       return mockJsonResponse({});
     });
 
-    const result = makeReviewResult();
+    const result = makeTestReviewResult();
     const response = await gh.postReview(PR_NUMBER, SHA, result, true);
 
     expect(response.success).toBe(true);
@@ -244,7 +233,7 @@ describe('GitHubHelper postReview Integration', () => {
       return mockJsonResponse({});
     });
 
-    const result = makeReviewResult();
+    const result = makeTestReviewResult();
     const response = await gh.postReview(PR_NUMBER, SHA, result, true);
 
     expect(response.success).toBe(false);
@@ -267,7 +256,7 @@ describe('GitHubHelper postReview Integration', () => {
       return mockJsonResponse({});
     });
 
-    const result = makeReviewResult();
+    const result = makeTestReviewResult();
     const response = await gh.postReview(PR_NUMBER, SHA, result, false);
 
     expect(response.success).toBe(true);
@@ -325,22 +314,22 @@ describe('GitHubHelper postReview Integration', () => {
       return mockJsonResponse({});
     });
 
-    const result = makeReviewResult();
+    const result = makeTestReviewResult();
     const response = await gh.postReview(PR_NUMBER, SHA, result, true);
 
     expect(response.success).toBe(true);
-
-    const _reviewCalls = fetchMock.mock.calls
-      .filter(
-        ([url]: [string]) =>
-          typeof url === 'string' &&
-          url.includes('/reviews') &&
-          typeof url === 'string' &&
-          !url.includes('/pulls/42'),
-      )
-      .filter(([url]) => typeof url === 'string' && url.includes('/reviews'));
-
     expect(response.method).toBe('full');
     expect(response.commentIds).toBeDefined();
+
+    // Only src/auth/jwt.ts:28 is in the diff (middleware.ts:55 is not)
+    // non-inline issue (routes/user.ts:10) should not be posted as a review comment
+    const reviewCall = fetchMock.mock.calls.find(
+      ([url, opts]) =>
+        typeof url === 'string' && url.includes('/reviews') && opts?.method === 'POST',
+    );
+    const reviewBody = JSON.parse((reviewCall?.[1]?.body as string) || '{}');
+    expect(reviewBody.comments).toHaveLength(1);
+    expect(reviewBody.comments[0].path).toBe('src/auth/jwt.ts');
+    expect(reviewBody.comments[0].line).toBe(28);
   });
 });

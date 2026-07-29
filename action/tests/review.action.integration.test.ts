@@ -1,12 +1,6 @@
-import type {
-  AgentConfig,
-  GitHubHelper,
-  PRContext,
-  ReviewEngine,
-  ReviewResult,
-} from '@opencode-pr-agent/lib';
-import { DEFAULT_CONFIG } from '@opencode-pr-agent/lib';
+import type { GitHubHelper, ReviewEngine, ReviewResult } from '@opencode-pr-agent/lib';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { makeConfig, makeInputs, makePRContext } from './helpers/mock-factories.js';
 
 const {
   mockGetInput,
@@ -82,37 +76,6 @@ const mockEngine = {
   reviewPR: mockReviewPR,
 } as unknown as ReviewEngine;
 
-function makePRContext(overrides: Partial<PRContext> = {}): PRContext {
-  return {
-    number: 42,
-    title: 'Test PR',
-    body: 'Test body',
-    headRef: 'feature',
-    headSha: 'abc123',
-    baseRef: 'main',
-    author: 'test-user',
-    labels: [],
-    changedFiles: [
-      {
-        path: 'src/test.ts',
-        status: 'modified',
-        additions: 10,
-        deletions: 2,
-        patch: '@@ -1 +1 @@\n-old\n+new',
-      },
-    ],
-    ...overrides,
-  };
-}
-
-function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
-  return {
-    ...DEFAULT_CONFIG,
-    timeoutMinutes: 10,
-    ...overrides,
-  };
-}
-
 describe('runReview (action wrapper)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -149,11 +112,7 @@ describe('runReview (action wrapper)', () => {
     const config = makeConfig({ enableMCP: false, mcpServers: [] });
 
     await runReview(
-      {
-        reviewModel: config.reviewModel,
-        fixModel: config.fixModel,
-        reviewPromptFile: undefined,
-      } as never,
+      makeInputs({ reviewModel: config.reviewModel, fixModel: config.fixModel }),
       config,
       mockEngine,
       mockGh,
@@ -182,7 +141,7 @@ describe('runReview (action wrapper)', () => {
     mockGetPR.mockRejectedValue(new Error('Not found'));
 
     await runReview(
-      {} as never,
+      makeInputs(),
       makeConfig({ enableMCP: false, mcpServers: [] }),
       mockEngine,
       mockGh,
@@ -198,7 +157,7 @@ describe('runReview (action wrapper)', () => {
     mockGetPR.mockResolvedValue(pr);
 
     await runReview(
-      {} as never,
+      makeInputs(),
       makeConfig({ enableMCP: false, mcpServers: [] }),
       mockEngine,
       mockGh,
@@ -221,7 +180,7 @@ describe('runReview (action wrapper)', () => {
     } as ReviewResult);
 
     await runReview(
-      {} as never,
+      makeInputs(),
       makeConfig({ enableMCP: false, mcpServers: [] }),
       mockEngine,
       mockGh,
@@ -262,7 +221,7 @@ describe('runReview (action wrapper)', () => {
     });
 
     await runReview(
-      {} as never,
+      makeInputs(),
       makeConfig({ enableMCP: false, mcpServers: [] }),
       mockEngine,
       mockGh,

@@ -1,11 +1,5 @@
 import { vi } from 'vitest';
-import type {
-  AgentConfig,
-  PRContext,
-  ReviewIssue,
-  ReviewResult,
-  ReviewStrength,
-} from '../../src/types/index.js';
+import type { AgentConfig, PRContext, ReviewResult } from '../../src/types/index.js';
 import { DEFAULT_CONFIG } from '../../src/types/index.js';
 
 export function makePRContext(overrides: Partial<PRContext> = {}): PRContext {
@@ -62,11 +56,16 @@ export function makeReviewResult(overrides: Partial<ReviewResult> = {}): ReviewR
   };
 }
 
-export function mockResponse(overrides: Partial<Response> & { body?: unknown } = {}): Response {
-  const headers = new Headers(
-    (overrides as Record<string, unknown>).headers as Record<string, string> | undefined,
-  );
-  const { body, ...rest } = overrides;
+interface MockResponseOptions {
+  status?: number;
+  statusText?: string;
+  headers?: Record<string, string>;
+  body?: unknown;
+}
+
+export function mockResponse(overrides: MockResponseOptions = {}): Response {
+  const { body, headers: rawHeaders, ...rest } = overrides;
+  const headers = new Headers(rawHeaders);
   return {
     ok: true,
     status: 200,
