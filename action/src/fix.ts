@@ -818,7 +818,8 @@ async function resolvePrNumber(): Promise<number | null> {
   if (prNumberInput) {
     const prNumber = Number.parseInt(prNumberInput, 10);
     if (Number.isNaN(prNumber)) {
-      throw new Error(`Invalid pr-number: ${prNumberInput}`);
+      core.setFailed(`Invalid pr-number: ${prNumberInput}`);
+      return null;
     }
     return prNumber;
   }
