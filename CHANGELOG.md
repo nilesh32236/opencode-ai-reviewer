@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.1] — 2026-07-29
+
+
+### Fixed
+
+- self-heal CI failure (attempt 1) [`lint-error` — missing/incomplete jsdoc docstrings caught by `eslint-plugin-jsdoc` in the `doc:check` step.] (#255) (#255)
+
+[v1.6.1]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.0...v1.6.1
+
 ## [v1.6.0] — 2026-07-29
 
 ### Added
