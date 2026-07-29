@@ -71,7 +71,7 @@ jobs:
           ## Research & Context Enrichment (MANDATORY — do this FIRST)
 
           ### Step 1: Web Search for Current Best Practices
-          Use the **search_web** tool to research these topics BEFORE making any changes:
+          Use the **websearch** tool to research these topics BEFORE making any changes:
           - "GitHub Actions self-healing CI/CD autonomous agent best practices 2026"
           - "TypeScript AI code review tool architecture patterns"
           - "Node.js ESM monorepo build optimization"
@@ -231,13 +231,17 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
-      - name: Ensure self-improvement label exists
+      - name: Ensure self-improvement and review labels exist
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
           gh label create "self-improvement" \
             --force --color "7057ff" \
             --description "Autonomous self-improvement PR — review before merging" \
+            -R "${{ github.repository }}" 2>/dev/null || true
+          gh label create "autofix:needs-manual-review" \
+            --force --color "d93f0b" \
+            --description "Max iterations reached or verification failed" \
             -R "${{ github.repository }}" 2>/dev/null || true
 
       - name: Commit and Create Pull Request

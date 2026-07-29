@@ -3,6 +3,7 @@ import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as github from '@actions/github';
 import type { AgentConfig, GitHubHelper, ReviewEngine } from '@opencode-pr-agent/lib';
+import { withRetry } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { sanitize } from './utils.js';
 
@@ -95,8 +96,6 @@ export async function runSelfHeal(
       break;
     }
 
-    changesMade = true;
-
     // Commit the changes
     try {
       await exec.exec('git', ['add', '-A']);
@@ -105,6 +104,7 @@ export async function runSelfHeal(
         '-m',
         `fix: self-heal CI failure (attempt ${attempt + 1})${healResult.diagnosis ? ` [${healResult.diagnosis}]` : ''}`,
       ]);
+      changesMade = true;
     } catch (err) {
       core.warning(sanitize(`Git commit failed: ${err instanceof Error ? err.message : err}`));
       break;
@@ -137,9 +137,12 @@ export async function runSelfHeal(
     return;
   }
 
-  // Push the branch
+  // Push the branch with retry
   try {
-    await exec.exec('git', ['push', 'origin', branchName, '--force-with-lease']);
+    await withRetry(() => exec.exec('git', ['push', 'origin', branchName, '--force-with-lease']), {
+      maxRetries: 3,
+      baseDelayMs: 1000,
+    });
   } catch (err) {
     core.warning(sanitize(`Git push failed: ${err instanceof Error ? err.message : err}`));
     core.setFailed('Could not push heal branch');
@@ -161,36 +164,41 @@ export async function runSelfHeal(
     lastVerificationError === undefined,
   );
 
-  // Create PR
-  const baseBranch = github.context.payload.repository?.default_branch || 'main';
-  const prUrl = await exec
-    .getExecOutput(
-      'gh',
-      [
-        'pr',
-        'create',
-        '--base',
-        baseBranch,
-        '--head',
-        branchName,
-        '--title',
-        prTitle,
-        '--body',
-        prBody,
-        '--label',
-        lastVerificationError ? 'self-heal,autofix:needs-manual-review' : 'self-heal,autofix',
-        '--repo',
-        repo,
-      ],
-      {
-        env: { ...process.env, GH_TOKEN: token } as { [key: string]: string },
+  // Create PR with retry
+  const baseBranch = defaultBranch;
+  let prUrl = '';
+  try {
+    prUrl = await withRetry(
+      async () => {
+        const output = await exec.getExecOutput(
+          'gh',
+          [
+            'pr',
+            'create',
+            '--base',
+            baseBranch,
+            '--head',
+            branchName,
+            '--title',
+            prTitle,
+            '--body',
+            prBody,
+            '--label',
+            lastVerificationError ? 'self-heal,autofix:needs-manual-review' : 'self-heal,autofix',
+            '--repo',
+            repo,
+          ],
+          {
+            env: { ...process.env, GH_TOKEN: token } as { [key: string]: string },
+          },
+        );
+        return output.stdout.trim();
       },
-    )
-    .then((r) => r.stdout.trim())
-    .catch((err) => {
-      core.warning(sanitize(`Failed to create PR: ${err instanceof Error ? err.message : err}`));
-      return '';
-    });
+      { maxRetries: 3, baseDelayMs: 1000 },
+    );
+  } catch (err) {
+    core.warning(sanitize(`Failed to create PR: ${err instanceof Error ? err.message : err}`));
+  }
 
   if (prUrl) {
     core.info(`Created self-heal PR: ${prUrl}`);
@@ -203,7 +211,7 @@ export async function runSelfHeal(
 
 /**
  * Run full verification suite (build, typecheck, test, lint) as a single pipeline.
- * Returns the exit code and combined output for diagnosis.
+ * @returns Object containing exit code (0 for success) and combined stdout/stderr output for diagnosis.
  */
 async function runFullVerification(): Promise<{ exitCode: number; output: string }> {
   const commands = [

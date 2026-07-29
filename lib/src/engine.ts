@@ -47,6 +47,7 @@ export class ReviewEngine {
   private mcp: MCPManager;
   private github: GitHubHelper;
   private config: AgentConfig;
+  private logger: Logger;
   private lessonsCache: { lessons: string[]; timestamp: number } | null = null;
   private mcpDocsCache: { docs: string; libraries: string; timestamp: number } | null = null;
   private static readonly LESSONS_CACHE_TTL = 60_000;
@@ -67,6 +68,7 @@ export class ReviewEngine {
     this.config = config;
     this.github = new GitHubHelper(githubToken, repo);
     this.mcp = new MCPManager(config.mcpServers);
+    this.logger = new Logger('ReviewEngine');
   }
 
   /**
@@ -684,7 +686,7 @@ export class ReviewEngine {
     await this.recordTelemetry(0, runResult.durationMs, runResult.tokensUsed);
 
     if (!runResult.success) {
-      core.warning(
+      this.logger.warn(
         'OpenCode self-heal execution failed or timed out. Checking for partial changes...',
       );
       await new Promise((r) => setTimeout(r, 500));
@@ -710,7 +712,7 @@ export class ReviewEngine {
         }
         await fs.unlink(diagnosisPath).catch(() => {});
       } catch {
-        core.debug('No heal-diagnosis.md found — proceeding without diagnosis');
+        this.logger.debug('No heal-diagnosis.md found — proceeding without diagnosis');
       }
 
       // Read fix summary if present
@@ -735,11 +737,11 @@ export class ReviewEngine {
             .trim();
           filesChanged = raw ? raw.split('\n') : [];
         } catch {
-          core.warning('Could not get git diff to determine changed files');
+          this.logger.warn('Could not get git diff to determine changed files');
         }
       }
     } catch (err) {
-      core.warning(
+      this.logger.warn(
         `Error reading self-heal results: ${err instanceof Error ? err.message : String(err)}`,
       );
     }

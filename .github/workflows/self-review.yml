@@ -374,15 +374,25 @@ jobs:
           ELAPSED=0
           INTERVAL=30
 
+          MERGE_SHA="${{ github.event.pull_request.merge_commit_sha }}"
           while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
-            # Get the latest CI run on main
-            STATUS=$(gh run list \
-              --repo "${{ github.repository }}" \
-              --branch main \
-              --workflow ci.yml \
-              --limit 1 \
-              --json conclusion,status \
-              --jq '.[0] | if .status == "completed" then .conclusion else "in_progress" end' 2>/dev/null || echo "unknown")
+            # Get the CI run on main associated with the merge commit SHA if available
+            if [ -n "$MERGE_SHA" ]; then
+              STATUS=$(gh run list \
+                --repo "${{ github.repository }}" \
+                --commit "$MERGE_SHA" \
+                --workflow ci.yml \
+                --json conclusion,status \
+                --jq '.[0] | if .status == "completed" then .conclusion else "in_progress" end' 2>/dev/null || echo "unknown")
+            else
+              STATUS=$(gh run list \
+                --repo "${{ github.repository }}" \
+                --branch main \
+                --workflow ci.yml \
+                --limit 1 \
+                --json conclusion,status \
+                --jq '.[0] | if .status == "completed" then .conclusion else "in_progress" end' 2>/dev/null || echo "unknown")
+            fi
 
             echo "CI status: $STATUS (elapsed: ${ELAPSED}s)"
 

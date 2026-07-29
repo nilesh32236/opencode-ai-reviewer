@@ -54,6 +54,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
           token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Configure git
@@ -89,10 +90,13 @@ jobs:
         id: capture-logs
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          INPUT_FAILURE_LOGS: ${{ inputs.failure_logs }}
+          INPUT_FAILED_STEP: ${{ inputs.failed_step }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.failure_logs }}" ]; then
-            echo "${{ inputs.failure_logs }}" > /tmp/ci-failure-logs.txt
-            echo "failed_step=${{ inputs.failed_step || 'unknown' }}" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "$INPUT_FAILURE_LOGS" ]; then
+            printf '%s\n' "$INPUT_FAILURE_LOGS" > /tmp/ci-failure-logs.txt
+            FAILED_STEP_VAL="${INPUT_FAILED_STEP:-unknown}"
+            echo "failed_step=${FAILED_STEP_VAL}" >> "$GITHUB_OUTPUT"
             echo "failed_workflow=manual" >> "$GITHUB_OUTPUT"
           else
             # Fetch logs from the failed workflow run
