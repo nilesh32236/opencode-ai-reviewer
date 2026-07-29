@@ -197,7 +197,8 @@ export async function runFixIssue(
   // so check both.
   const hasPlan =
     issueContext.includes('<!-- issue-analysis-plan -->') ||
-    issueContext.includes('### Implementation Plan (from analysis)');
+    issueContext.includes('### Implementation Plan (from analysis)') ||
+    issueContext.includes('# 🔍 Issue Analysis & Implementation Plan');
   if (!hasPlan) {
     core.info('No implementation plan found — running analyze first');
     const planMarkdown = await engine.runAnalyze(issueNumber, issueContext);
@@ -221,7 +222,7 @@ export async function runFixIssue(
 
   const issue = await gh.getIssue(issueNumber);
   const questionsCommentIdx = issue.comments.findIndex((c) =>
-    c.body.startsWith('<!-- issue-analysis-questions -->'),
+    c.body.includes('<!-- issue-analysis-questions -->'),
   );
   if (questionsCommentIdx !== -1 && issue.labels.includes('analysis:needs-input')) {
     const repliesAfter = issue.comments
@@ -238,6 +239,10 @@ export async function runFixIssue(
       core.setOutput('changes_made', 'false');
       return;
     }
+
+    core.info('User replied to blocking questions — clearing analysis:needs-input label');
+    await gh.removeLabel(issueNumber, 'analysis:needs-input');
+    await markAnalysisReady(gh, issueNumber);
   }
 
   // Check remaining time budget just before calling OpenCode, after setup steps.

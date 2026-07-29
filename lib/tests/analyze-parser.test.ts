@@ -2,6 +2,25 @@ import { describe, expect, it } from 'vitest';
 import { parseAnalysisPlan } from '../src/utils/analyze-parser.js';
 
 describe('parseAnalysisPlan', () => {
+  it('parses plan with no blocking questions (formatted with Q1 prefix)', () => {
+    const markdown = `
+# 🔍 Issue Analysis & Implementation Plan
+
+## 📊 Summary & Priority
+- Priority: High
+
+### Blocking Questions
+- **Q1:** None — implementation can proceed immediately. All design decisions have clear precedent in existing code.
+
+### Confidence Level
+HIGH
+    `;
+    const res = parseAnalysisPlan(markdown);
+    expect(res.hasBlockingQuestions).toBe(false);
+    expect(res.blockingQuestions).toEqual([]);
+    expect(res.confidenceLevel).toBe('HIGH');
+  });
+
   it('parses plan with no blocking questions', () => {
     const markdown = `
 # 🔍 Issue Analysis & Implementation Plan

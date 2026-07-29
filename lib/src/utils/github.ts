@@ -1049,23 +1049,26 @@ export class GitHubHelper {
         parts.push('### Comments & Discussion');
         parts.push('');
         for (const c of issue.comments) {
-          if (c.body.startsWith('<!-- issue-analysis-plan -->')) {
-            const planBody = c.body.replace('<!-- issue-analysis-plan -->\n\n', '').trim();
+          const bodyText = c.body || '';
+          const trimmed = bodyText.trimStart();
+          if (trimmed.startsWith('<!-- issue-analysis-plan -->') || trimmed.includes('<!-- issue-analysis-plan -->')) {
+            const planBody = trimmed.replace(/^<!-- issue-analysis-plan -->\r?\n?\r?\n?/, '').trim();
+            parts.push('<!-- issue-analysis-plan -->');
             parts.push('### Implementation Plan (from analysis)');
             parts.push('');
             parts.push(planBody);
             parts.push('');
-          } else if (c.body.startsWith('<!-- issue-analysis-questions -->')) {
-            const questionsBody = c.body
-              .replace('<!-- issue-analysis-questions -->\n\n', '')
+          } else if (trimmed.startsWith('<!-- issue-analysis-questions -->')) {
+            const questionsBody = trimmed
+              .replace(/^<!-- issue-analysis-questions -->\r?\n?\r?\n?/, '')
               .trim();
             parts.push('### Analysis Questions Posed');
             parts.push('');
             parts.push(questionsBody);
             parts.push('');
-          } else if (!c.body.startsWith('<!--')) {
+          } else if (!trimmed.startsWith('<!--')) {
             parts.push(`**@${c.author}** (${c.createdAt}):`);
-            parts.push(c.body || '');
+            parts.push(bodyText);
             parts.push('');
           }
         }
