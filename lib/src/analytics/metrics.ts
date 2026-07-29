@@ -53,7 +53,7 @@ export class MetricsService {
       totalFeedback > 0
         ? (feedbackBreakdown.dismissedCount + feedbackBreakdown.disputedCount) / totalFeedback
         : 0;
-    const tpRate = totalFeedback > 0 ? feedbackBreakdown.acceptedCount / totalFeedback : 1;
+    const tpRate = totalFeedback > 0 ? feedbackBreakdown.acceptedCount / totalFeedback : 0;
     const dismissalRate = totalFeedback > 0 ? feedbackBreakdown.dismissedCount / totalFeedback : 0;
 
     return {

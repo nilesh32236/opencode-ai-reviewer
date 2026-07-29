@@ -902,7 +902,7 @@ export abstract class SqlAdapter implements LearningRepository {
       [cutoffStr],
     );
 
-    const id = `f_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const id = generateId();
 
     await this.run(
       `INSERT INTO review_metrics
@@ -2014,7 +2014,7 @@ export class SqliteAdapter implements DbAdapter, LearningRepository {
         }
       | undefined;
 
-    const id = `f_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const id = generateId();
 
     this.prepareStmt(
       `INSERT INTO review_metrics

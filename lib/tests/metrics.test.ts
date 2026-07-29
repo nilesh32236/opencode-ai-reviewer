@@ -41,7 +41,7 @@ describe('MetricsService', () => {
     expect(report.overview.totalPrs).toBe(0);
     expect(report.overview.totalFindings).toBe(0);
     expect(report.quality.falsePositiveRate).toBe(0);
-    expect(report.quality.truePositiveRate).toBe(1);
+    expect(report.quality.truePositiveRate).toBe(0);
   });
 
   it('getReport returns computed metrics from seeded data', async () => {

@@ -912,7 +912,10 @@ export class JsonDatabase implements LearningRepository {
       totalPrs: counts.length,
       totalFindings,
       avgFindingsPerPr: Math.round(avg * 100) / 100,
-      p50FindingsPerPr: counts[Math.floor(counts.length * 0.5)] || 0,
+      p50FindingsPerPr:
+        counts.length % 2 === 0
+          ? Math.round((counts[counts.length / 2 - 1] + counts[counts.length / 2]) / 2)
+          : counts[Math.floor(counts.length / 2)],
       p90FindingsPerPr: counts[Math.floor(counts.length * 0.9)] || 0,
       maxFindingsInPr: counts[counts.length - 1] || 0,
     };
@@ -1020,8 +1023,12 @@ export class JsonDatabase implements LearningRepository {
     let avgCoverage: number | null = null;
     let avgConsistency: number | null = null;
 
+    const rowsWithTokens = qualityRows.filter(
+      (r): r is typeof r & { tokens_used: number } => r.tokens_used !== undefined,
+    );
+
     if (qualityRows.length > 0) {
-      totalTokens = qualityRows.reduce((s, r) => s + (r.tokens_used ?? 0), 0);
+      totalTokens = rowsWithTokens.reduce((s, r) => s + r.tokens_used, 0);
       avgActionability =
         qualityRows.reduce((s, r) => s + r.actionability_score, 0) / qualityRows.length;
       avgAccuracy = qualityRows.reduce((s, r) => s + r.accuracy_score, 0) / qualityRows.length;
@@ -1031,7 +1038,7 @@ export class JsonDatabase implements LearningRepository {
     }
 
     const row: ReviewMetricsRow = {
-      id: `f_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      id: generateId(),
       period_start: periodStart.toISOString(),
       period_end: periodEnd.toISOString(),
       period_type: periodType,
@@ -1045,7 +1052,7 @@ export class JsonDatabase implements LearningRepository {
       avg_review_duration_ms: latencyStats.avgLatencyMs,
       total_tokens_used: totalTokens,
       avg_tokens_per_review:
-        qualityRows.length > 0 ? Math.round(totalTokens / qualityRows.length) : 0,
+        rowsWithTokens.length > 0 ? Math.round(totalTokens / rowsWithTokens.length) : 0,
       avg_actionability_score: avgActionability,
       avg_accuracy_score: avgAccuracy,
       avg_coverage_score: avgCoverage,

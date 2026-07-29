@@ -102,7 +102,7 @@ export async function runPost(
           severityDist.unknown;
         if (totalSeverity > 0) {
           summaryItems.push(
-            `Severity: ${severityDist.critical} critical, ${severityDist.important} important, ${severityDist.minor} minor`,
+            `Severity: ${severityDist.critical} critical, ${severityDist.important} important, ${severityDist.minor} minor, ${severityDist.unknown} unknown`,
           );
         }
         if (summaryItems.length > 0) {
