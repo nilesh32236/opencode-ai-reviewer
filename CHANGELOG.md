@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.5.4] — 2026-07-29
+
+### Fixed
+
+- Resolve false-positive blocking questions parsing, strip question prefixes cleanly, and handle mixed-content sections (#161, #163, #164)
+- Auto-clear `analysis:needs-input` label and mark `analysis:ready` when maintainers reply to blocking questions (#161, #164)
+- Align comment marker detection in `gatherContext` for CRLF and whitespace resilience (#161, #164)
+- ReDoS security refactoring for answer parsing regexes (#163, #164)
+
+[v1.5.4]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.5.3...v1.5.4
+
 ## [v1.5.3] — 2026-07-29
 
 
