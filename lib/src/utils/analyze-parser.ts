@@ -28,32 +28,32 @@ export function parseAnalysisPlan(markdown: string): AnalysisPlanResult {
       )?.[1]
       ?.trim() ?? '';
 
-  const isNone =
-    questionsSection.length === 0 ||
-    /^\s*(?:[-*•]\s*|\d+\.\s*)?(?:none|n\/a|ready to proceed|can proceed|no blocking questions|no questions)\b/i.test(
-      questionsSection,
-    );
+  const noneRegex =
+    /^\s*(?:[-*•]\s*|\d+\.\s*)?(?:\*\*|__|\*)?\s*(?:none|n\/a|ready to proceed|can proceed|no blocking questions|no questions)\b/i;
 
-  const hasBlockingQuestions = !isNone;
+  const isNone = questionsSection.length === 0 || noneRegex.test(questionsSection);
+
+  let hasBlockingQuestions = !isNone;
 
   const blockingQuestions: string[] = [];
   if (hasBlockingQuestions) {
     const matches = questionsSection.matchAll(
-      /-\s*(?:\*\*Q\d+:\*\*|\*\*Question \d+:\*\*|\d+\.|\*)\s*(.+)/g,
+      /(?:^|\n)\s*(?:-\s*)?(?:\*\*Q\d+:\*\*|\*\*Question \d+:\*\*|\d+\.|\*)\s*(.+?)(?=\n|$)/g,
     );
     for (const match of matches) {
-      const qText = match[1].trim();
-      if (
-        qText &&
-        !/^\s*(?:[-*•]\s*|\d+\.\s*)?(?:none|n\/a|ready to proceed|can proceed|no blocking questions|no questions)\b/i.test(
-          qText,
-        )
-      ) {
+      const qText = match[1]?.trim();
+      if (qText && !noneRegex.test(qText)) {
         blockingQuestions.push(qText);
       }
     }
     if (blockingQuestions.length === 0 && questionsSection.length > 0) {
-      blockingQuestions.push(questionsSection);
+      const cleaned = questionsSection.trim();
+      if (!noneRegex.test(cleaned)) {
+        blockingQuestions.push(cleaned);
+      }
+    }
+    if (blockingQuestions.length === 0) {
+      hasBlockingQuestions = false;
     }
   }
 

@@ -338,7 +338,12 @@ async function createAutofixPR(
     if (signal?.aborted) return null;
 
     // Auto-analyze if no implementation plan exists yet
-    if (!issueContext.includes('<!-- issue-analysis-plan -->')) {
+    // gatherContext() strips the marker and replaces it with the header below,
+    // so check both.
+    const hasPlan =
+      issueContext.includes('<!-- issue-analysis-plan -->') ||
+      issueContext.includes('### Implementation Plan (from analysis)');
+    if (!hasPlan) {
       logger.info('No implementation plan found — running analyze first');
       const planMarkdown = await engine.runAnalyze(issueNumber, issueContext, undefined, tempDir);
       const parsed = parseAnalysisPlan(planMarkdown);
@@ -357,9 +362,8 @@ async function createAutofixPR(
           ].join('\n'),
         );
         return null;
-      } else {
-        await markAnalysisReady(gh, issueNumber);
       }
+      await markAnalysisReady(gh, issueNumber);
 
       issueContext = await gh.gatherContext({ issueNumber });
     }
