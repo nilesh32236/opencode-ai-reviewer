@@ -40,6 +40,23 @@ HIGH
     expect(res.confidenceLevel).toBe('HIGH');
   });
 
+  it('parses mixed-content sections (first item none, second item real question)', () => {
+    const markdown = `
+# Analysis
+
+### Blocking Questions
+- **Q1:** None — implementation can proceed immediately.
+- **Q2:** Should we use Redis or Memcached?
+
+### Confidence Level
+HIGH
+    `;
+    const res = parseAnalysisPlan(markdown);
+    expect(res.hasBlockingQuestions).toBe(true);
+    expect(res.blockingQuestions).toHaveLength(1);
+    expect(res.blockingQuestions[0]).toBe('Should we use Redis or Memcached?');
+  });
+
   it('parses blocking questions correctly', () => {
     const markdown = `
 # Analysis

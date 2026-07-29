@@ -20,6 +20,21 @@ export interface AnalysisPlanResult {
  * @param markdown - Raw markdown output from engine.runAnalyze().
  * @returns Structured AnalysisPlanResult.
  */
+/**
+ * Check if an answer string represents a 'none / no blocking questions' response.
+ * Strips leading bullets and Q1: prefixes before testing keywords.
+ */
+function isNoneAnswer(text: string): boolean {
+  const cleaned = text
+    .replace(/^\s*(?:[-*•]|\d+\.)\s*/, '')
+    .replace(/^(?:\*\*|__|\*)?\s*(?:Q\d*:?|Question\s*\d*:?)?\s*(?:\*\*|__|\*)?\s*/i, '')
+    .trim();
+
+  return /^(?:none|n\/a|ready to proceed|can proceed|no blocking questions|no questions)\b/i.test(
+    cleaned,
+  );
+}
+
 export function parseAnalysisPlan(markdown: string): AnalysisPlanResult {
   const questionsSection =
     markdown
@@ -28,25 +43,21 @@ export function parseAnalysisPlan(markdown: string): AnalysisPlanResult {
       )?.[1]
       ?.trim() ?? '';
 
-  const noneRegex =
-    /^\s*(?:[-*•]|\d+\.)?\s*(?:\*{2}|__|[*_])?\s*(?:Q\d+:?|Question \d+:?|Q:?)?\s*(?:\*{2}|__|[*_])?\s*(?:none|n\/a|ready to proceed|can proceed|no blocking questions|no questions)\b/i;
-
-  const isNoneSection = questionsSection.length === 0 || noneRegex.test(questionsSection);
-
   const blockingQuestions: string[] = [];
-  if (!isNoneSection) {
+
+  if (questionsSection.length > 0) {
     const matches = questionsSection.matchAll(
       /(?:^|\n)\s*(?:-\s*)?(?:\*\*Q\d+:\*\*|\*\*Question \d+:\*\*|\d+\.|\*)\s*(.+?)(?=\n|$)/g,
     );
     for (const match of matches) {
       const qText = match[1]?.trim();
-      if (qText && !noneRegex.test(qText)) {
+      if (qText && !isNoneAnswer(qText)) {
         blockingQuestions.push(qText);
       }
     }
     if (blockingQuestions.length === 0 && questionsSection.length > 0) {
       const cleaned = questionsSection.trim();
-      if (!noneRegex.test(cleaned)) {
+      if (!isNoneAnswer(cleaned)) {
         blockingQuestions.push(cleaned);
       }
     }
