@@ -454,6 +454,47 @@ describe('GitHubHelper', () => {
       });
     });
 
+    it('successfully posts batched review with inline comments', async () => {
+      const diffText = `@@ -42,1 +42,1 @@`;
+
+      fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+        if (
+          url.includes('/pulls/42') &&
+          !url.includes('/reviews') &&
+          !url.includes('/comments') &&
+          !url.includes('/files')
+        ) {
+          return mockResponse({ text: vi.fn().mockResolvedValue(diffText) });
+        }
+        if (url.includes('/pulls/42/reviews')) {
+          if (options && typeof options.body === 'string' && options.body.includes('comments')) {
+            return mockResponse({
+              body: {
+                id: 1,
+                comments: [{ id: 100, path: 'src/b.ts', line: 42 }],
+              },
+            });
+          }
+          return mockResponse({ body: { id: 1 } });
+        }
+        if (url.includes('/pulls/42/comments')) {
+          return mockResponse({ body: { id: 2 } });
+        }
+        return mockResponse({ body: [] });
+      });
+
+      const result = await helper.postReview(42, 'sha123', sampleReviewResult());
+
+      expect(result.success).toBe(true);
+      expect(result.method).toBe('full');
+      expect(result.commentIds).toHaveLength(1);
+      expect(result.commentIds![0]).toMatchObject({
+        file: 'src/b.ts',
+        line: 42,
+        commentId: 100,
+      });
+    });
+
     it('falls back to issue comment when inline comment fails with 422', async () => {
       const diffText = `@@ -42,1 +42,1 @@`;
 

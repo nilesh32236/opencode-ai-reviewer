@@ -1,15 +1,45 @@
 import type { PreviousFindingIteration, ReviewIssue, ReviewResult } from '../types/index.js';
 import type { GitHubHelper } from './github.js';
 
+/**
+ *
+ */
 export interface IterationRecord {
+  /**
+   *
+   */
   iteration: number;
+  /**
+   *
+   */
   status: 'approved' | 'fix-applied' | 'needs-fix' | 'no-changes' | 'timeout';
+  /**
+   *
+   */
   summary: string;
+  /**
+   *
+   */
   critical: number;
+  /**
+   *
+   */
   important: number;
+  /**
+   *
+   */
   minor: number;
+  /**
+   *
+   */
   filesChanged?: string[];
+  /**
+   *
+   */
   commitMessage?: string;
+  /**
+   *
+   */
   fixSummary?: string;
 }
 

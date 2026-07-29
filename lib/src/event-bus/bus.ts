@@ -8,11 +8,29 @@ const SUBSCRIBER_TIMEOUT_MS = 600_000;
 
 /** Health metrics for a single event subscriber. */
 export interface SubscriberHealth {
+  /**
+   *
+   */
   name: string;
+  /**
+   *
+   */
   totalCalls: number;
+  /**
+   *
+   */
   failedCalls: number;
+  /**
+   *
+   */
   lastError: string | null;
+  /**
+   *
+   */
   lastEvent: string | null;
+  /**
+   *
+   */
   lastEventTimestamp: number | null;
 }
 
