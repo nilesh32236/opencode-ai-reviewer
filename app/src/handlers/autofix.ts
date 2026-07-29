@@ -24,6 +24,7 @@ import {
   buildReviewBody,
   configureGit,
   resolveFixedComments,
+  validateRefName,
   validateRunChecksCommand,
 } from '@opencode-pr-agent/lib';
 
@@ -296,6 +297,7 @@ export async function handleAutofixLoop(
           ['commit', '-m', `fix: address review feedback (iteration ${i + 1})`],
           gitOpts,
         );
+        validateRefName(pr.headRef);
         execFileSync('git', ['push', 'origin', pr.headRef], gitOpts);
         previousFindings.push({
           iteration: i + 1,
@@ -418,6 +420,7 @@ export async function handleAutofixLoop(
                       ['commit', '-m', `fix: verification errors (attempt ${v + 1})`],
                       gitOpts,
                     );
+                    validateRefName(pr.headRef);
                     execFileSync('git', ['push', 'origin', pr.headRef], gitOpts);
                   } else {
                     logger.info('Fix agent made no changes to address verification errors');

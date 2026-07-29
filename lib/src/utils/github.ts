@@ -1051,8 +1051,13 @@ export class GitHubHelper {
         for (const c of issue.comments) {
           const bodyText = c.body || '';
           const trimmed = bodyText.trimStart();
-          if (trimmed.startsWith('<!-- issue-analysis-plan -->') || trimmed.includes('<!-- issue-analysis-plan -->')) {
-            const planBody = trimmed.replace(/^<!-- issue-analysis-plan -->\r?\n?\r?\n?/, '').trim();
+          if (
+            trimmed.startsWith('<!-- issue-analysis-plan -->') ||
+            trimmed.includes('<!-- issue-analysis-plan -->')
+          ) {
+            const planBody = trimmed
+              .replace(/^<!-- issue-analysis-plan -->\r?\n?\r?\n?/, '')
+              .trim();
             parts.push('<!-- issue-analysis-plan -->');
             parts.push('### Implementation Plan (from analysis)');
             parts.push('');
