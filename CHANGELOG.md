@@ -4,6 +4,25 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.5.2] — 2026-07-29
+
+
+### Fixed
+
+- resolve auto-analyze bullet parsing and enforce immediate fix deferral on questions
+- address PR review findings
+- verification errors (attempt 1)
+- autofix iteration 1
+- address issue #156
+
+### Changed
+
+- [Autofix] [Audit:code-quality-conventions] 0 critical, 7 important, 7 minor (#155) (#155)
+- ⚡ Bolt: Optimize JSONL parsing (Regex Hoisting & Async I/O) (#153) (#153)
+- [Autofix] [Audit:performance-efficiency] 0 critical, 6 important, 6 minor (#152) (#152)
+
+[v1.5.2]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.5.1...v1.5.2
+
 ## [v1.5.1] — 2026-07-26
 
 
