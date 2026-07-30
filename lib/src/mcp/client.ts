@@ -116,7 +116,7 @@ export class MCPManager {
 
           const connectionTimeout = server.timeoutMs ?? 5000;
           let timedOut = false;
-          let connectTimer: ReturnType<typeof setTimeout>;
+          let connectTimer: ReturnType<typeof setTimeout> | null = null;
           const connectPromise = clientInstance.connect(newTransport);
           await Promise.race([
             connectPromise,
@@ -128,7 +128,7 @@ export class MCPManager {
               }, connectionTimeout);
             }),
           ]).finally(() => {
-            clearTimeout(connectTimer);
+            if (connectTimer !== null) clearTimeout(connectTimer);
             if (timedOut) {
               Promise.resolve(newTransport.close()).catch(() => {});
             }
