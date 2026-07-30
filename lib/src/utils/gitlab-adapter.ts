@@ -31,10 +31,9 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Constructor.
-   * @param token
-   * @param repo
-   * @param apiUrl - apiUrl argument.
-   * @returns Description.
+   * @param token - GitLab personal access token.
+   * @param repo - Repository in 'owner/repo' format.
+   * @param apiUrl - GitLab API base URL (defaults to https://gitlab.com/api/v4).
    */
   constructor(
     private token: string,
@@ -119,13 +118,13 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
-   * Paginate through GitLab API endpoints.
-   * @param endpoint
-   * @param options
-   * @param options.perPage
-   * @param options.maxPages
-   * @param options.direction - options.direction argument.
-   * @returns Description.
+   * Paginate through GitLab API endpoints, fetching all pages up to maxPages.
+   * @param endpoint - API endpoint to paginate.
+   * @param options - Optional pagination settings.
+   * @param options.perPage - Items per page (default 100).
+   * @param options.maxPages - Maximum pages to fetch (default 10).
+   * @param options.direction - Sort direction for pagination.
+   * @returns Array of paginated items from all pages.
    */
   async paginate<T>(
     endpoint: string,
@@ -158,9 +157,9 @@ export class GitLabAdapter implements PlatformAdapter {
   // ─── MR Operations ──────────────────────────────────────
 
   /**
-   * Get MR.
-   * @param number - number argument.
-   * @returns Description.
+   * Fetch a merge request's metadata and changed files, extracting linked issue numbers from the description.
+   * @param number - Merge request number.
+   * @returns Promise resolving to PR context with details, changes, and linked issue info.
    */
   async getMR(number: number): Promise<PRContext> {
     const [mrResult, changesResult] = await Promise.allSettled([
@@ -226,9 +225,9 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
-   * Check if MR exists.
-   * @param number - number argument.
-   * @returns Description.
+   * Check whether a given number refers to an existing merge request.
+   * @param number - Merge request number.
+   * @returns Promise resolving to true if the merge request exists.
    */
   async isMR(number: number): Promise<boolean> {
     try {
@@ -251,9 +250,9 @@ export class GitLabAdapter implements PlatformAdapter {
   // ─── Issue Operations ───────────────────────────────────
 
   /**
-   * Get issue.
-   * @param number - number argument.
-   * @returns Description.
+   * Fetch an issue's details and its comments.
+   * @param number - Issue number.
+   * @returns Promise resolving to issue context with metadata and comments.
    */
   async getIssue(number: number): Promise<IssueContext> {
     const [issueResult, commentsResult] = await Promise.allSettled([
@@ -291,9 +290,9 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
-   * Get issue comments.
-   * @param number - number argument.
-   * @returns Description.
+   * Fetch all comments for an issue.
+   * @param number - Issue number.
+   * @returns Promise resolving to array of issue comments.
    */
   async getIssueComments(number: number): Promise<IssueComment[]> {
     const comments = await this.paginate<{
@@ -314,9 +313,9 @@ export class GitLabAdapter implements PlatformAdapter {
   // ─── Diff Operations ────────────────────────────────────
 
   /**
-   * Get diff lines.
-   * @param mrNumber - mrNumber argument.
-   * @returns Description.
+   * Parse the merge request diff and return the set of changed line identifiers.
+   * @param mrNumber - Merge request number.
+   * @returns Promise resolving to set of changed file:line identifiers.
    */
   async getDiffLines(mrNumber: number): Promise<Set<string>> {
     try {
@@ -357,14 +356,13 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
-   * Get diff since SHA.
-   * @param fromSha
-   * @param toSha - toSha argument.
-   * @returns Description.
+   * Fetch the diff between two SHAs using the GitLab compare API.
+   * @param fromSha - Starting SHA.
+   * @param toSha - Ending SHA.
+   * @returns Promise resolving to concatenated diff string.
    */
   async getDiffSince(fromSha: string, toSha: string): Promise<string> {
     try {
-      /** Compare response type. */
       type CompareResponse = { diffs: Array<{ diff: string }> };
       const data = await this.api<CompareResponse>(
         `/repository/compare?from=${fromSha}&to=${toSha}`,
@@ -383,13 +381,13 @@ export class GitLabAdapter implements PlatformAdapter {
   // ─── Comment Listing & Replies ──────────────────────────
 
   /**
-   * List review comments.
-   * @param mrNumber
-   * @param options
-   * @param options.perPage
-   * @param options.maxPages
-   * @param options.direction - options.direction argument.
-   * @returns Description.
+   * List all review comments on a merge request.
+   * @param mrNumber - Merge request number.
+   * @param options - Optional pagination settings.
+   * @param options.perPage - Items per page.
+   * @param options.maxPages - Maximum pages to fetch.
+   * @param options.direction - Sort direction.
+   * @returns Promise resolving to array of review comments.
    */
   async listReviewComments(
     mrNumber: number,
@@ -399,11 +397,11 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
-   * Create review comment reply.
-   * @param mrNumber
-   * @param commentId
-   * @param body - body argument.
-   * @returns Description.
+   * Create a reply to an existing review comment on a merge request.
+   * @param mrNumber - Merge request number.
+   * @param commentId - Comment ID to reply to.
+   * @param body - Reply body text.
+   * @returns Promise resolving when reply is posted.
    */
   async createReviewCommentReply(mrNumber: number, commentId: number, body: string): Promise<void> {
     const discussion = await this.api<{ discussion_id?: string }>(
@@ -418,13 +416,13 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
-   * List comments.
-   * @param issueNumber
-   * @param options
-   * @param options.perPage
-   * @param options.maxPages
-   * @param options.direction - options.direction argument.
-   * @returns Description.
+   * List comments on an issue.
+   * @param issueNumber - Issue number.
+   * @param options - Optional pagination settings.
+   * @param options.perPage - Items per page.
+   * @param options.maxPages - Maximum pages to fetch.
+   * @param options.direction - Sort direction.
+   * @returns Promise resolving to array of comments.
    */
   async listComments(
     issueNumber: number,
@@ -434,10 +432,10 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
-   * Post comment.
-   * @param issueNumber
-   * @param body - body argument.
-   * @returns Description.
+   * Post a new comment on an issue.
+   * @param issueNumber - Issue number.
+   * @param body - Comment body text.
+   * @returns Promise resolving when comment is posted.
    */
   async postComment(issueNumber: number, body: string): Promise<void> {
     await this.api(`/issues/${issueNumber}/notes`, {
@@ -450,13 +448,13 @@ export class GitLabAdapter implements PlatformAdapter {
   // ─── Review Operations ──────────────────────────────────
 
   /**
-   * Post review.
-   * @param mrNumber
-   * @param _commitSha
-   * @param result
-   * @param postInlineComments
-   * @param suppressLowConfidence - suppressLowConfidence argument.
-   * @returns Description.
+   * Post a full review on a merge request, including summary and inline comments.
+   * @param mrNumber - Merge request number.
+   * @param _commitSha - Commit SHA (unused for GitLab).
+   * @param result - Review result data.
+   * @param postInlineComments - Whether to post inline comments on the diff.
+   * @param suppressLowConfidence - Whether to suppress low-confidence findings.
+   * @returns Promise resolving to review post result with status and comment IDs.
    */
   async postReview(
     mrNumber: number,
@@ -575,11 +573,11 @@ export class GitLabAdapter implements PlatformAdapter {
   // ─── Comment Operations ─────────────────────────────────
 
   /**
-   * Post or update comment.
-   * @param issueNumber
-   * @param marker
-   * @param body - body argument.
-   * @returns Description.
+   * Post a new comment or update an existing one identified by a marker prefix.
+   * @param issueNumber - Issue number.
+   * @param marker - Marker string to identify the comment.
+   * @param body - Comment body text.
+   * @returns Promise resolving to action taken and comment ID.
    */
   async postOrUpdateComment(
     issueNumber: number,
@@ -620,10 +618,10 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
-   * Create comment.
-   * @param issueNumber
-   * @param body - body argument.
-   * @returns Description.
+   * Create a new comment on an issue.
+   * @param issueNumber - Issue number.
+   * @param body - Comment body text.
+   * @returns Promise resolving to created comment ID.
    */
   async createComment(issueNumber: number, body: string): Promise<{ id: number }> {
     const created = await this.api<{ id: number }>(`/issues/${issueNumber}/notes`, {
@@ -635,11 +633,11 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
-   * Reply to review comment.
-   * @param mrNumber
-   * @param commentId
-   * @param body - body argument.
-   * @returns Description.
+   * Reply to an existing review comment on a merge request.
+   * @param mrNumber - Merge request number.
+   * @param commentId - Comment ID to reply to.
+   * @param body - Reply body text.
+   * @returns Promise resolving to created reply comment ID.
    */
   async replyToReviewComment(
     mrNumber: number,
@@ -662,19 +660,19 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
-   * Get review comment.
-   * @param mrNumber
-   * @param commentId - commentId argument.
-   * @returns Description.
+   * Get a single review comment by ID.
+   * @param mrNumber - Merge request number.
+   * @param commentId - Comment ID.
+   * @returns Promise resolving to review comment detail.
    */
   async getReviewComment(mrNumber: number, commentId: number): Promise<ReviewCommentDetail> {
     return this.api<ReviewCommentDetail>(`/merge_requests/${mrNumber}/notes/${commentId}`);
   }
 
   /**
-   * Get review comment thread.
-   * @param _commentId - _commentId argument.
-   * @returns Description.
+   * Get the thread containing a review comment.
+   * @param _commentId - Comment ID (unused, not supported via GitLab REST API).
+   * @returns Promise resolving to an empty review comment thread.
    */
   async getReviewCommentThread(_commentId: number): Promise<ReviewCommentThread> {
     core.warning('getReviewCommentThread not supported via GitLab REST API');
@@ -686,11 +684,11 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
-   * Create issue.
-   * @param title
-   * @param body
-   * @param labels - labels argument.
-   * @returns Description.
+   * Create a new issue in the repository.
+   * @param title - Issue title.
+   * @param body - Issue body text.
+   * @param labels - Labels to apply.
+   * @returns Promise resolving to created issue details, or null on failure.
    */
   async createIssue(
     title: string,
@@ -711,12 +709,12 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
-   * Create PR.
-   * @param title
-   * @param body
-   * @param head
-   * @param base - base argument.
-   * @returns Description.
+   * Create a new merge request.
+   * @param title - Merge request title.
+   * @param body - Merge request description.
+   * @param head - Source branch name.
+   * @param base - Target branch name.
+   * @returns Promise resolving to created MR details, or null on failure.
    */
   async createPR(
     title: string,
@@ -747,10 +745,10 @@ export class GitLabAdapter implements PlatformAdapter {
   // ─── Label Operations ───────────────────────────────────
 
   /**
-   * Add labels.
-   * @param issueNumber
-   * @param labels - labels argument.
-   * @returns Description.
+   * Add labels to an issue.
+   * @param issueNumber - Issue number.
+   * @param labels - Labels to add.
+   * @returns Promise resolving when labels are added.
    */
   async addLabels(issueNumber: number, labels: string[]): Promise<void> {
     const existing = await this.api<{ labels: string[] }>(`/issues/${issueNumber}`);
@@ -763,10 +761,10 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
-   * Remove label.
-   * @param issueNumber
-   * @param label - label argument.
-   * @returns Description.
+   * Remove a label from an issue.
+   * @param issueNumber - Issue number.
+   * @param label - Label to remove.
+   * @returns Promise resolving when label is removed.
    */
   async removeLabel(issueNumber: number, label: string): Promise<void> {
     try {
@@ -787,11 +785,11 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
-   * Set labels.
-   * @param issueNumber
-   * @param add
-   * @param remove - remove argument.
-   * @returns Description.
+   * Replace labels on an issue (add some, remove others).
+   * @param issueNumber - Issue number.
+   * @param add - Labels to add.
+   * @param remove - Labels to remove.
+   * @returns Promise resolving when labels are set.
    */
   async setLabels(issueNumber: number, add: string[], remove: string[]): Promise<void> {
     const current = await this.api<{ labels: string[] }>(`/issues/${issueNumber}`);
@@ -805,9 +803,9 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
-   * Ensure labels exist.
-   * @param labels - labels argument.
-   * @returns Description.
+   * Ensure the given labels exist in the repository, creating them if needed.
+   * @param labels - Labels to ensure exist.
+   * @returns Promise resolving when labels are ensured.
    */
   async ensureLabels(labels: string[]): Promise<void> {
     for (const label of labels) {
@@ -828,11 +826,11 @@ export class GitLabAdapter implements PlatformAdapter {
   // ─── Context ────────────────────────────────────────────
 
   /**
-   * Gather context.
-   * @param options
-   * @param options.issueNumber
-   * @param options.prNumber - options.prNumber argument.
-   * @returns Description.
+   * Gather markdown context for an issue or merge request, including comments and reviews.
+   * @param options - Options with optional issue or PR number.
+   * @param options.issueNumber - Issue number for context.
+   * @param options.prNumber - PR number for context.
+   * @returns Promise resolving to context markdown string.
    */
   async gatherContext(options: {
     issueNumber?: number;
@@ -924,12 +922,11 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
-   * Close opencode PRs.
-   * @param since - since argument.
-   * @returns Description.
+   * Close existing opencode-created merge requests, optionally filtered by creation date.
+   * @param since - Optional date string; only close MRs created on or after this date.
+   * @returns Promise resolving when MRs are closed.
    */
   async closeOpenCodePRs(since?: string): Promise<void> {
-    /** MR summary type. */
     type MRSummary = { iid: number; source_branch: string; created_at: string };
     const mrs = await this.paginate<MRSummary>('/merge_requests?state=opened', { perPage: 100 });
     const opencodeMRs = mrs.filter(
@@ -952,9 +949,9 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
-   * Merge MR.
-   * @param mrNumber - mrNumber argument.
-   * @returns Description.
+   * Merge a merge request.
+   * @param mrNumber - Merge request number.
+   * @returns Promise resolving to true if merge was successful.
    */
   async mergeMR(mrNumber: number): Promise<boolean> {
     try {
@@ -969,9 +966,9 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
-   * Enable auto-merge.
-   * @param mrNumber - mrNumber argument.
-   * @returns Description.
+   * Enable auto-merge on a merge request (merge when pipeline succeeds).
+   * @param mrNumber - Merge request number.
+   * @returns Promise resolving to true if auto-merge was enabled.
    */
   async enableAutoMerge(mrNumber: number): Promise<boolean> {
     try {
@@ -987,10 +984,10 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
-   * Close issue.
-   * @param issueNumber
-   * @param comment - comment argument.
-   * @returns Description.
+   * Close an issue, optionally posting a closing comment.
+   * @param issueNumber - Issue number.
+   * @param comment - Optional closing comment.
+   * @returns Promise resolving when issue is closed.
    */
   async closeIssue(issueNumber: number, comment?: string): Promise<void> {
     try {
@@ -1024,9 +1021,9 @@ export class GitLabAdapter implements PlatformAdapter {
   // ─── Review Threads ─────────────────────────────────────
 
   /**
-   * Get review threads.
-   * @param _mrNumber - _mrNumber argument.
-   * @returns Description.
+   * Get all review threads for a merge request.
+   * @param _mrNumber - Merge request number (unused, limited GitLab REST API support).
+   * @returns Promise resolving to array of review threads.
    */
   async getReviewThreads(_mrNumber: number): Promise<ReviewThreadInfo[]> {
     core.warning('getReviewThreads not fully supported via GitLab REST API');
@@ -1034,19 +1031,19 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
-   * Resolve review thread.
-   * @param _threadId - _threadId argument.
-   * @returns Description.
+   * Resolve a review thread.
+   * @param _threadId - Thread ID to resolve (unused, not supported for GitLab).
+   * @returns Promise resolving when thread is resolved.
    */
   async resolveReviewThread(_threadId: string): Promise<void> {
     core.warning('resolveReviewThread not supported for GitLab');
   }
 
   /**
-   * Minimize review comment.
-   * @param _commentId
-   * @param _classifier - _classifier argument.
-   * @returns Description.
+   * Minimize a review comment (mark as outdated/spam/etc.).
+   * @param _commentId - Comment ID to minimize (unused, not supported for GitLab).
+   * @param _classifier - Classification for the comment (unused, not supported for GitLab).
+   * @returns Promise resolving when comment is minimized.
    */
   async minimizeReviewComment(
     _commentId: string,
@@ -1056,30 +1053,30 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
-   * Get bot review threads.
-   * @param _mrNumber - _mrNumber argument.
-   * @returns Description.
+   * Get bot review threads for a merge request.
+   * @param _mrNumber - Merge request number (unused, not fully supported for GitLab).
+   * @returns Promise resolving to array of bot review threads.
    */
   async getBotReviewThreads(_mrNumber: number): Promise<ReviewThreadInfo[]> {
     return [];
   }
 
   /**
-   * Get open human threads.
-   * @param _mrNumber - _mrNumber argument.
-   * @returns Description.
+   * Get open human review threads as a markdown string.
+   * @param _mrNumber - Merge request number (unused, not fully supported for GitLab).
+   * @returns Promise resolving to empty string.
    */
   async getOpenHumanThreads(_mrNumber: number): Promise<string> {
     return '';
   }
 
   /**
-   * Update MR.
-   * @param mrNumber
-   * @param updates
-   * @param updates.title
-   * @param updates.body - updates.body argument.
-   * @returns Description.
+   * Update a merge request's title and/or description.
+   * @param mrNumber - Merge request number.
+   * @param updates - Object with optional title and/or body updates.
+   * @param updates.title - New title.
+   * @param updates.body - New body.
+   * @returns Promise resolving when MR is updated.
    */
   async updateMR(mrNumber: number, updates: { title?: string; body?: string }): Promise<void> {
     const body: Record<string, string> = {};
