@@ -172,6 +172,20 @@ export interface AgentConfig {
   reviewModel: string;
   /** Model to use for fixes */
   fixModel: string;
+  /** Model to use for audit */
+  auditModel?: string;
+  /** Model to use for synthesis of collated batch results */
+  synthesisModel?: string;
+  /** Model to use for meta-verification (false-positive filtering) */
+  verificationModel?: string;
+  /** Model to use for meta-review quality evaluation */
+  metaReviewModel?: string;
+  /** Model to use for PR explanation */
+  explanationModel?: string;
+  /** Model to use for interactive conversation */
+  conversationModel?: string;
+  /** Model to use for issue analysis */
+  analysisModel?: string;
   /** Max files per sub-agent batch */
   batchSize: number;
   /** Max diff lines per file in context (0 = unlimited) */
@@ -866,6 +880,13 @@ export interface PromptConfig {
 export const DEFAULT_CONFIG: AgentConfig = {
   reviewModel: 'opencode/deepseek-v4-flash-free',
   fixModel: 'opencode/deepseek-v4-flash-free',
+  auditModel: undefined,
+  synthesisModel: undefined,
+  verificationModel: undefined,
+  metaReviewModel: undefined,
+  explanationModel: undefined,
+  conversationModel: undefined,
+  analysisModel: undefined,
   batchSize: 3,
   maxLinesPerFile: 200,
   maxIterations: 3,

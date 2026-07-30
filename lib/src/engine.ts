@@ -77,6 +77,26 @@ export class ReviewEngine {
   }
 
   /**
+   * Resolve the model for a specific pipeline stage, falling back to reviewModel.
+   * @param stageField - Optional per-stage model field name from AgentConfig.
+   * @returns The resolved model string.
+   */
+  private resolveModel(
+    stageField: keyof Pick<
+      AgentConfig,
+      | 'auditModel'
+      | 'synthesisModel'
+      | 'verificationModel'
+      | 'metaReviewModel'
+      | 'explanationModel'
+      | 'conversationModel'
+      | 'analysisModel'
+    >,
+  ): string {
+    return this.config[stageField] ?? this.config.reviewModel;
+  }
+
+  /**
    * Review a pull request by splitting changed files into batches and running
    * concurrent sub-agent reviews with a final synthesis pass.
    *
@@ -391,7 +411,7 @@ export class ReviewEngine {
     ensureOutputDir(finalOutputPath);
 
     const synthesisResult = await runOpenCode(synthesisPrompt, {
-      model: this.config.reviewModel,
+      model: this.resolveModel('synthesisModel'),
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory: workDir,
     });
@@ -650,7 +670,7 @@ export class ReviewEngine {
     );
 
     const auditRunResult = await runOpenCode(prompt, {
-      model: this.config.reviewModel,
+      model: this.resolveModel('auditModel'),
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory,
     });
@@ -699,7 +719,7 @@ export class ReviewEngine {
     );
 
     const runResult = await runOpenCode(prompt, {
-      model: this.config.reviewModel,
+      model: this.resolveModel('analysisModel'),
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory: workDir,
     });
@@ -854,7 +874,7 @@ export class ReviewEngine {
     );
 
     const runResult = await runOpenCode(prompt, {
-      model: this.config.reviewModel,
+      model: this.resolveModel('explanationModel'),
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory: workDir,
     });
@@ -903,7 +923,7 @@ export class ReviewEngine {
       );
 
       const runResult = await runOpenCode(prompt, {
-        model: this.config.reviewModel,
+        model: this.resolveModel('verificationModel'),
         timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
         workingDirectory: workDir,
       });
@@ -1005,7 +1025,7 @@ export class ReviewEngine {
     const prompt = buildConversationPrompt(context);
 
     const runResult = await runOpenCode(prompt, {
-      model: this.config.reviewModel,
+      model: this.resolveModel('conversationModel'),
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory: workDir,
     });

@@ -39,6 +39,18 @@ export interface ActionInputs {
   fixModel: string;
   /** Model identifier for audit operations. */
   auditModel: string;
+  /** Model identifier for synthesis of collated batch results. */
+  synthesisModel: string;
+  /** Model identifier for meta-verification (false-positive filtering). */
+  verificationModel: string;
+  /** Model identifier for meta-review quality evaluation. */
+  metaReviewModel: string;
+  /** Model identifier for PR explanation. */
+  explanationModel: string;
+  /** Model identifier for interactive conversation. */
+  conversationModel: string;
+  /** Model identifier for issue analysis. */
+  analysisModel: string;
   /** Optional path to a custom review prompt file. */
   reviewPromptFile?: string;
   /** Optional extra instructions appended to the review prompt. */
@@ -151,6 +163,18 @@ export function parseInputs(): ActionInputs {
     reviewModel: core.getInput('review_model') || globalModel || 'opencode/deepseek-v4-flash-free',
     fixModel: core.getInput('fix_model') || globalModel || 'opencode/deepseek-v4-flash-free',
     auditModel: core.getInput('audit_model') || globalModel || 'opencode/deepseek-v4-flash-free',
+    synthesisModel:
+      core.getInput('synthesis_model') || globalModel || 'opencode/deepseek-v4-flash-free',
+    verificationModel:
+      core.getInput('verification_model') || globalModel || 'opencode/deepseek-v4-flash-free',
+    metaReviewModel:
+      core.getInput('meta_review_model') || globalModel || 'opencode/deepseek-v4-flash-free',
+    explanationModel:
+      core.getInput('explanation_model') || globalModel || 'opencode/deepseek-v4-flash-free',
+    conversationModel:
+      core.getInput('conversation_model') || globalModel || 'opencode/deepseek-v4-flash-free',
+    analysisModel:
+      core.getInput('analysis_model') || globalModel || 'opencode/deepseek-v4-flash-free',
     reviewPromptFile: core.getInput('review_prompt_file') || undefined,
     reviewPromptExtra: core.getInput('review_prompt_extra') || undefined,
     enableFix: core.getInput('enable_fix') !== 'false',

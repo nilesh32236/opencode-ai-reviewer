@@ -45,7 +45,7 @@ export async function handleReply(
 
     logger.info('Generating reply via OpenCode...');
     const result = await runOpenCode(prompt, {
-      model: config.reviewModel,
+      model: config.conversationModel ?? config.reviewModel,
       timeoutMinutes: 5,
     });
 

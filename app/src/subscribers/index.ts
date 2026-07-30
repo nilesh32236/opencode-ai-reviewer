@@ -43,7 +43,7 @@ export function registerSubscribers(bus: EventBus, learningStore: LearningStore)
   const patternDetector = new PatternDetector(learningStore, {
     windowSize: DEFAULT_CONFIG.learning.patternDiscovery.windowSize,
   });
-  const metaReviewEngine = new MetaReviewEngine(learningStore, patternDetector);
+  const metaReviewEngine = new MetaReviewEngine(learningStore, patternDetector, DEFAULT_CONFIG);
   const metaReviewSub = new MetaReviewSubscriber(
     metaReviewEngine,
     learningStore,
