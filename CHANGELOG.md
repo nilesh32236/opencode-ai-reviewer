@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.14] — 2026-07-30
+
+
+### Fixed
+
+- self-heal CI failure (attempt 1) [**`lint-error`** — eslint `jsdoc/require-jsdoc`, `jsdoc/require-param`, and `jsdoc/require-returns` violations in the `pnpm doc:check` step.] (#285) (#285)
+
+### Changed
+
+- [Autofix] Add IaC scanning for Dockerfiles, Terraform, K8s manifests (#284) (#284)
+- [Autofix] Issue 39: No GitLab Merge Request support (#283) (#283)
+
+[v1.6.14]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.13...v1.6.14
+
 ## [v1.6.13] — 2026-07-30
 
 
