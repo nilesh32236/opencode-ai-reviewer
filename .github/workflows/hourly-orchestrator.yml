@@ -273,7 +273,7 @@ jobs:
           ISSUE_NUM="${{ steps.process-issue.outputs.issue_number }}"
 
           if [ "$PR_PROCESSED" = "true" ]; then
-            echo "✅ Hourly Orchestrator processed PR #${PR_NUM || 'merged/conflict-resolved'}"
+            echo "✅ Hourly Orchestrator processed PR #${PR_NUM:-merged/conflict-resolved}"
           elif [ "$ISSUE_PROCESSED" = "true" ]; then
             echo "✅ Hourly Orchestrator processed Issue #${ISSUE_NUM}"
           else

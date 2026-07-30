@@ -153,7 +153,8 @@ jobs:
       - name: Fallback self-heal via OpenCode CLI
         if: steps.check-existing.outputs.existing_pr == '' && steps.capture-logs.outputs.logs_captured == 'true' && failure()
         run: |
-          npm install -g opencode-cli@latest
+          chmod +x .github/scripts/setup-opencode.sh
+          .github/scripts/setup-opencode.sh
 
           FAILURE_LOGS=$(cat /tmp/ci-failure-logs.txt | head -500)
           FAILED_STEP="${{ steps.capture-logs.outputs.failed_step }}"

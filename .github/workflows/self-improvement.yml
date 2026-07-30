@@ -55,7 +55,9 @@ jobs:
           pnpm install
 
       - name: Setup OpenCode CLI
-        run: npm install -g opencode-cli@latest
+        run: |
+          chmod +x .github/scripts/setup-opencode.sh
+          .github/scripts/setup-opencode.sh
 
       - name: Write Self-Improvement Prompt
         run: |
