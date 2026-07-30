@@ -42,6 +42,7 @@ export { withRetry, withRetryAndTimeout } from './utils/retry.js';
 export { DEFAULT_ALLOWLIST, validateRunChecksCommand } from './utils/command.js';
 export { CircuitBreaker } from './utils/circuit-breaker.js';
 export type { CircuitState, CircuitBreakerOptions } from './utils/circuit-breaker.js';
+export { sanitizeString } from './utils/sanitize.js';
 export { Logger, sanitizeError, sanitizeErrorMessage } from './utils/logger.js';
 export type { LogLevel, LogContext } from './utils/logger.js';
 export {

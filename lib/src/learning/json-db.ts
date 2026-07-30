@@ -241,6 +241,14 @@ export class JsonDatabase implements LearningRepository {
   }
 
   private load() {
+    const tmpPath = this.filePath + '.tmp';
+    if (fs.existsSync(tmpPath)) {
+      try {
+        fs.rmSync(tmpPath);
+      } catch {
+        /* ok */
+      }
+    }
     if (fs.existsSync(this.filePath)) {
       try {
         const content = fs.readFileSync(this.filePath, 'utf-8');
@@ -274,7 +282,9 @@ export class JsonDatabase implements LearningRepository {
     try {
       const dir = path.dirname(this.filePath);
       fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(this.filePath, JSON.stringify(this.data), 'utf-8');
+      const tmpPath = this.filePath + '.tmp';
+      fs.writeFileSync(tmpPath, JSON.stringify(this.data), 'utf-8');
+      fs.renameSync(tmpPath, this.filePath);
     } catch (err) {
       const logger = new Logger('JsonDatabase');
       logger.warn(`Failed to flush JSON database`, err);
@@ -302,7 +312,9 @@ export class JsonDatabase implements LearningRepository {
     try {
       const dir = path.dirname(this.filePath);
       await fsPromises.mkdir(dir, { recursive: true });
-      await fsPromises.writeFile(this.filePath, JSON.stringify(this.data), 'utf-8');
+      const tmpPath = this.filePath + '.tmp';
+      await fsPromises.writeFile(tmpPath, JSON.stringify(this.data), 'utf-8');
+      await fsPromises.rename(tmpPath, this.filePath);
     } catch (err) {
       const logger = new Logger('JsonDatabase');
       logger.warn(`Failed to save JSON database`, err);

@@ -17,6 +17,27 @@ import { withRetry } from './utils/retry.js';
 
 let opencodePath: string | null = null;
 let cachedCIConfig: string | null = null;
+const askPassDirs: string[] = [];
+
+function cleanupAskPassDirs(): void {
+  for (const dir of askPassDirs) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* ok */
+    }
+  }
+}
+
+process.on('exit', cleanupAskPassDirs);
+process.on('SIGINT', () => {
+  cleanupAskPassDirs();
+  process.exit(2);
+});
+process.on('SIGTERM', () => {
+  cleanupAskPassDirs();
+  process.exit(15);
+});
 
 function detectArch(): string {
   const platform = os.platform();
@@ -440,7 +461,9 @@ export async function runOpenCode(
     if (!childProcess.pid) return;
     try {
       if (os.platform() === 'win32') {
-        cp.execSync(`taskkill /PID ${childProcess.pid} /T /F`, { stdio: 'ignore' });
+        cp.execFileSync('taskkill', ['/PID', String(childProcess.pid), '/T', '/F'], {
+          stdio: 'ignore',
+        });
       } else {
         process.kill(-childProcess.pid, signal);
       }
@@ -601,7 +624,6 @@ export function configureGit(
           ].join('\n'),
           { encoding: 'utf-8', mode: 0o700, flag: 'w' },
         );
-        fs.chmodSync(askPassPath, 0o755);
         const gitEnv: Record<string, string> = {
           GIT_ASKPASS: askPassPath,
           OPENCODE_CREDENTIAL_TOKEN: token,
@@ -649,9 +671,16 @@ export function configureGit(
         const prefix = line.substring(0, tabIdx);
         if (!prefix.startsWith('file:')) continue;
         const cfg = prefix.substring(5);
-        const resolvedCfg = path.resolve(cfg);
+        let resolvedCfg: string;
+        try {
+          resolvedCfg = fs.realpathSync(cfg);
+        } catch {
+          resolvedCfg = path.resolve(cfg);
+        }
         // Only modify config files in trusted locations
-        if (!resolvedCfg.startsWith(os.homedir()) && !resolvedCfg.startsWith(cwdForCheck)) {
+        const relHome = path.relative(os.homedir(), resolvedCfg);
+        const relCwd = path.relative(cwdForCheck, resolvedCfg);
+        if (relHome.startsWith('..') && relCwd.startsWith('..')) {
           continue;
         }
         try {
@@ -680,6 +709,7 @@ export function configureGit(
         /* no previous helper to clear */
       }
       const askPassDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-askpass-'));
+      askPassDirs.push(askPassDir);
       const askPassPath = path.join(askPassDir, 'credential.sh');
       fs.writeFileSync(
         askPassPath,
@@ -690,9 +720,8 @@ export function configureGit(
           '  *Password*) echo "${OPENCODE_CREDENTIAL_TOKEN}" ;;',
           'esac',
         ].join('\n'),
-        'utf-8',
+        { encoding: 'utf-8', mode: 0o700 },
       );
-      fs.chmodSync(askPassPath, 0o755);
       process.env.GIT_ASKPASS = askPassPath;
       process.env.OPENCODE_CREDENTIAL_TOKEN = token;
     }
