@@ -241,6 +241,14 @@ export class JsonDatabase implements LearningRepository {
   }
 
   private load() {
+    const tmpPath = this.filePath + '.tmp';
+    if (fs.existsSync(tmpPath)) {
+      try {
+        fs.rmSync(tmpPath);
+      } catch {
+        /* ok */
+      }
+    }
     if (fs.existsSync(this.filePath)) {
       try {
         const content = fs.readFileSync(this.filePath, 'utf-8');

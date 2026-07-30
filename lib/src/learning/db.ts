@@ -25,7 +25,7 @@ import type {
  */
 export function sanitizeDbError(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
-  return msg.replace(/([a-z][a-z0-9+.-]+:\/\/)[^@\s]+@/gi, '$1<redacted>@');
+  return msg.replace(/((?:postgres|mysql|mongodb):\/\/)[^@\s]+@/gi, '$1<redacted>@');
 }
 
 const req = createRequire(__filename);

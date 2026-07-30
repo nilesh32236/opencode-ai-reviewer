@@ -17,16 +17,26 @@ import { withRetry } from './utils/retry.js';
 
 let opencodePath: string | null = null;
 let cachedCIConfig: string | null = null;
-let askPassDir: string | null = null;
+const askPassDirs: string[] = [];
 
-process.on('exit', () => {
-  if (askPassDir) {
+function cleanupAskPassDirs(): void {
+  for (const dir of askPassDirs) {
     try {
-      fs.rmSync(askPassDir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true });
     } catch {
       /* ok */
     }
   }
+}
+
+process.on('exit', cleanupAskPassDirs);
+process.on('SIGINT', () => {
+  cleanupAskPassDirs();
+  process.exit(2);
+});
+process.on('SIGTERM', () => {
+  cleanupAskPassDirs();
+  process.exit(15);
 });
 
 function detectArch(): string {
@@ -661,7 +671,12 @@ export function configureGit(
         const prefix = line.substring(0, tabIdx);
         if (!prefix.startsWith('file:')) continue;
         const cfg = prefix.substring(5);
-        const resolvedCfg = path.resolve(cfg);
+        let resolvedCfg: string;
+        try {
+          resolvedCfg = fs.realpathSync(cfg);
+        } catch {
+          resolvedCfg = path.resolve(cfg);
+        }
         // Only modify config files in trusted locations
         const relHome = path.relative(os.homedir(), resolvedCfg);
         const relCwd = path.relative(cwdForCheck, resolvedCfg);
@@ -693,7 +708,8 @@ export function configureGit(
       } catch {
         /* no previous helper to clear */
       }
-      askPassDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-askpass-'));
+      const askPassDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-askpass-'));
+      askPassDirs.push(askPassDir);
       const askPassPath = path.join(askPassDir, 'credential.sh');
       fs.writeFileSync(
         askPassPath,
