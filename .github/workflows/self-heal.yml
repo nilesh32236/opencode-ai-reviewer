@@ -78,9 +78,9 @@ jobs:
 
       - name: Setup Node.js
         if: steps.check-existing.outputs.existing_pr == ''
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Install pnpm & dependencies
         if: steps.check-existing.outputs.existing_pr == ''
