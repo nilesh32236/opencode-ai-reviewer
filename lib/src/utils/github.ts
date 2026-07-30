@@ -464,6 +464,9 @@ export class GitHubHelper {
    *
    * @param prNumber - PR number.
    * @param options - Pagination and sort options.
+   * @param options.perPage - Items per page (default: 100).
+   * @param options.maxPages - Maximum pages to fetch (default: 10).
+   * @param options.direction - Sort direction (optional, e.g. 'asc' or 'desc').
    * @returns Array of raw review comment objects.
    */
   async listReviewComments(
@@ -493,6 +496,9 @@ export class GitHubHelper {
    *
    * @param issueNumber - PR/issue number.
    * @param options - Pagination and sort options.
+   * @param options.perPage - Items per page (default: 100).
+   * @param options.maxPages - Maximum pages to fetch (default: 10).
+   * @param options.direction - Sort direction (optional, e.g. 'asc' or 'desc').
    * @returns Array of raw issue comment objects.
    */
   async listComments(
