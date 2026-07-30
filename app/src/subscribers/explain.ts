@@ -23,7 +23,15 @@ export function createExplainSubscriber(): Subscriber {
         const config = buildConfig();
         const issueNumber = event.prNumber || 0;
         if (!issueNumber) return;
-        await handleCommand('explain', issueNumber, event.repo || '', getToken(), config, signal);
+        await handleCommand(
+          'explain',
+          issueNumber,
+          event.repo || '',
+          getToken(),
+          config,
+          undefined,
+          signal,
+        );
       } catch (err) {
         logger.error(
           `ExplainSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${err instanceof Error ? err.message : err}`,

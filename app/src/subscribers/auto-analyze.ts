@@ -36,7 +36,15 @@ export function createAutoAnalyzeSubscriber(): Subscriber {
         const needsAnalysis = issueLabels.includes('needs-analysis');
         if (!needsAnalysis) return;
 
-        await handleCommand('analyze', issueNumber, event.repo || '', getToken(), config, signal);
+        await handleCommand(
+          'analyze',
+          issueNumber,
+          event.repo || '',
+          getToken(),
+          config,
+          undefined,
+          signal,
+        );
       } catch (err) {
         logger.error(`AutoAnalyzeSubscriber failed: ${err instanceof Error ? err.message : err}`);
       }

@@ -23,7 +23,15 @@ export function createAnalyzeSubscriber(): Subscriber {
         const config = buildConfig();
         const issueNumber = event.prNumber || 0;
         if (!issueNumber) return;
-        await handleCommand('analyze', issueNumber, event.repo || '', getToken(), config, signal);
+        await handleCommand(
+          'analyze',
+          issueNumber,
+          event.repo || '',
+          getToken(),
+          config,
+          undefined,
+          signal,
+        );
       } catch (err) {
         logger.error(
           `AnalyzeSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${err instanceof Error ? err.message : err}`,

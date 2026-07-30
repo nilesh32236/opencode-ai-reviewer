@@ -1,5 +1,5 @@
 import { Logger, parseCommand } from '@opencode-pr-agent/lib';
-import type { GitHubEvent, Subscriber } from '@opencode-pr-agent/lib';
+import type { GitHubEvent, ParsedCommand, Subscriber } from '@opencode-pr-agent/lib';
 import { handleCommand } from '../handlers/commands.js';
 import { buildConfig } from '../utils/config.js';
 import { getToken } from '../utils/token.js';
@@ -21,8 +21,9 @@ export function createFixSubscriber(): Subscriber {
         const fixIssue = fixPayload.issue as Record<string, unknown> | undefined;
         const fixLabels = fixIssue?.labels as Array<Record<string, string>> | undefined;
 
+        let parsed: ParsedCommand | null = null;
         if (event.type === 'comment.created' || event.type === 'review_comment.created') {
-          const parsed = fixComment?.body ? parseCommand(fixComment.body) : null;
+          parsed = fixComment?.body ? parseCommand(fixComment.body) : null;
           if (!parsed || parsed.command !== 'fix') return;
         }
 
@@ -36,7 +37,15 @@ export function createFixSubscriber(): Subscriber {
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;
 
-        await handleCommand('fix', prNumber, event.repo || '', getToken(), config, signal);
+        await handleCommand(
+          'fix',
+          prNumber,
+          event.repo || '',
+          getToken(),
+          config,
+          parsed ?? undefined,
+          signal,
+        );
       } catch (err) {
         logger.error(
           `FixSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${err instanceof Error ? err.message : err}`,

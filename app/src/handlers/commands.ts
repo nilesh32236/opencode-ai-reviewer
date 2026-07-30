@@ -3,7 +3,12 @@ import type { ExecFileSyncOptions } from 'child_process';
 import { mkdtempSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
-import type { AgentConfig, PRContext, PlatformAdapter } from '@opencode-pr-agent/lib';
+import type {
+  AgentConfig,
+  PRContext,
+  ParsedCommand,
+  PlatformAdapter,
+} from '@opencode-pr-agent/lib';
 import {
   GitHubHelper,
   GitLabAdapter,
@@ -29,6 +34,7 @@ import { handlePRReview } from './pr-review.js';
  * @param repo - Repository string (owner/repo).
  * @param token - GitHub authentication token.
  * @param config - Agent configuration.
+ * @param parsed - Optional parsed command (for flags like --force).
  * @param signal - Optional abort signal
  */
 export async function handleCommand(
@@ -37,6 +43,7 @@ export async function handleCommand(
   repo: string,
   token: string,
   config: AgentConfig,
+  parsed?: ParsedCommand,
   signal?: AbortSignal,
 ): Promise<void> {
   const logger = new Logger('Command', { repo, prNumber: issueNumber });
@@ -82,6 +89,7 @@ export async function handleCommand(
 
       case 'fix': {
         if (signal?.aborted) return;
+        const force = parsed?.flags?.force === true;
         const isPR = await gh.isMR(issueNumber);
         if (isPR) {
           await handleAutofixLoop(
@@ -119,6 +127,7 @@ export async function handleCommand(
               tempDir,
               gitEnv,
               signal,
+              force,
             );
             if (newPR) {
               await handleAutofixLoop(
@@ -285,6 +294,7 @@ async function createAutofixPR(
   tempDir: string,
   gitEnv?: Record<string, string>,
   signal?: AbortSignal,
+  force = false,
 ): Promise<number | null> {
   const logger = new Logger('Command', { repo, prNumber: issueNumber });
   logger.info(`Fix triggered for issue #${issueNumber}`);
@@ -354,7 +364,40 @@ async function createAutofixPR(
       await gh.postOrUpdateComment(issueNumber, '<!-- issue-analysis-plan -->', planMarkdown);
 
       if (parsed.hasBlockingQuestions) {
-        await postBlockingQuestions(gh, issueNumber, parsed);
+        if (force) {
+          logger.info('Force mode — auto-answering blocking questions');
+          await autoAnswerBlockingQuestions(gh, issueNumber, parsed.blockingQuestions);
+        } else {
+          await postBlockingQuestions(gh, issueNumber, parsed);
+          await gh.postOrUpdateComment(
+            issueNumber,
+            '<!-- autofix-deferred -->',
+            [
+              '⏸️ **Fix Deferred — Questions Pending**',
+              '',
+              'I cannot start the fix yet because there are unanswered questions in the analysis.',
+              'Please answer the questions above, then comment `/fix` again.',
+            ].join('\n'),
+          );
+          return null;
+        }
+      } else {
+        await markAnalysisReady(gh, issueNumber);
+      }
+
+      issueContext = await gh.gatherContext({ issueNumber });
+    }
+
+    if (signal?.aborted) return null;
+
+    const hasQuestionsPending = await checkForUnansweredQuestions(gh, issueNumber, issueContext);
+    if (hasQuestionsPending) {
+      if (force) {
+        logger.info('Force mode — auto-answering pending questions from previous analysis');
+        const pendingQuestions = await extractBlockingQuestions(gh, issueNumber);
+        await autoAnswerBlockingQuestions(gh, issueNumber, pendingQuestions);
+      } else {
+        logger.info(`Issue #${issueNumber} has unanswered blocking questions — fix deferred`);
         await gh.postOrUpdateComment(
           issueNumber,
           '<!-- autofix-deferred -->',
@@ -367,27 +410,6 @@ async function createAutofixPR(
         );
         return null;
       }
-      await markAnalysisReady(gh, issueNumber);
-
-      issueContext = await gh.gatherContext({ issueNumber });
-    }
-
-    if (signal?.aborted) return null;
-
-    const hasQuestionsPending = await checkForUnansweredQuestions(gh, issueNumber, issueContext);
-    if (hasQuestionsPending) {
-      logger.info(`Issue #${issueNumber} has unanswered blocking questions — fix deferred`);
-      await gh.postOrUpdateComment(
-        issueNumber,
-        '<!-- autofix-deferred -->',
-        [
-          '⏸️ **Fix Deferred — Questions Pending**',
-          '',
-          'I cannot start the fix yet because there are unanswered questions in the analysis.',
-          'Please answer the questions above, then comment `/fix` again.',
-        ].join('\n'),
-      );
-      return null;
     }
 
     const qa = buildQAContext(issue.comments);
@@ -545,4 +567,60 @@ function buildQAContext(comments: Array<{ author: string; body: string }>): stri
     lines.push('');
   }
   return lines.join('\n');
+}
+
+/**
+ * Auto-answer blocking questions on an issue when --force is used.
+ * Posts a comment with default answers and swaps labels to analysis:ready.
+ */
+async function autoAnswerBlockingQuestions(
+  gh: PlatformAdapter,
+  issueNumber: number,
+  questions: string[],
+): Promise<void> {
+  const answers = questions.map(
+    (q, i) => `**Q${i + 1}:** ${q}\n\n**A${i + 1}:** Yes, proceed with the recommended approach.`,
+  );
+
+  const body = [
+    '<!-- autofix-force-answers -->',
+    '## ✅ Auto-Answers (Force Mode)',
+    '',
+    'The `/fix --force` command was used. Automatically answering the following questions to proceed:',
+    '',
+    ...answers,
+    '',
+    '---',
+    '*Proceeding with implementation.*',
+  ].join('\n');
+
+  await gh.postOrUpdateComment(issueNumber, '<!-- autofix-force-answers -->', body);
+  await gh.setLabels(issueNumber, ['analysis:ready'], ['analysis:needs-input']);
+}
+
+/**
+ * Extract blocking questions from the issue's questions comment.
+ */
+async function extractBlockingQuestions(
+  gh: PlatformAdapter,
+  issueNumber: number,
+): Promise<string[]> {
+  try {
+    const issue = await gh.getIssue(issueNumber);
+    const questionsComment = issue.comments.find((c) =>
+      c.body.startsWith('<!-- issue-analysis-questions -->'),
+    );
+    if (!questionsComment) return [];
+
+    const questions: string[] = [];
+    const qRegex = /(?:\*\*Q\d+:\*\*|\*\*Question \d+:\*\*)\s*(.+?)(?=\n|$)/g;
+    let match: RegExpExecArray | null;
+    while ((match = qRegex.exec(questionsComment.body)) !== null) {
+      const qText = match[1]?.trim();
+      if (qText) questions.push(qText);
+    }
+    return questions;
+  } catch {
+    return [];
+  }
 }
