@@ -12,7 +12,10 @@ function parseEnvInt(envVar: string | undefined, fallback: number): number {
   return Number.isNaN(parsed) ? fallback : parsed;
 }
 
-/** Build the agent configuration from environment variables and defaults. */
+/**
+ * Build the agent configuration from environment variables and defaults.
+ * @returns The resolved agent configuration object.
+ */
 export function buildConfig(): AgentConfig {
   return {
     ...DEFAULT_CONFIG,

@@ -4,6 +4,10 @@ import { handleCommand } from '../handlers/commands.js';
 import { buildConfig } from '../utils/config.js';
 import { getToken } from '../utils/token.js';
 
+/**
+ * Create a subscriber that handles `/fix` commands and `autofix-trigger` label events.
+ * @returns A subscriber object for the fix command.
+ */
 export function createFixSubscriber(): Subscriber {
   const logger = new Logger('FixSubscriber');
   return {

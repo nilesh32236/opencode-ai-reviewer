@@ -4,6 +4,12 @@ import { handlePRReview } from '../handlers/pr-review.js';
 import { buildConfig } from '../utils/config.js';
 import { getToken } from '../utils/token.js';
 
+/**
+ * Create a subscriber that handles PR review, re-review on push, and `/review` commands.
+ * @param learningStore - The learning store instance for review context.
+ * @param bus - The event bus for publishing review-completed events.
+ * @returns A subscriber object for the review command.
+ */
 export function createReviewSubscriber(learningStore: LearningStore, bus: EventBus): Subscriber {
   const logger = new Logger('ReviewSubscriber');
   return {

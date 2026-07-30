@@ -4,6 +4,10 @@ import { handleAudit } from '../handlers/audit.js';
 import { buildConfig } from '../utils/config.js';
 import { getToken } from '../utils/token.js';
 
+/**
+ * Create a subscriber that handles `/audit` commands on comments.
+ * @returns A subscriber object for the audit command.
+ */
 export function createAuditSubscriber(): Subscriber {
   const logger = new Logger('AuditSubscriber');
   return {

@@ -4,6 +4,10 @@ import { handleCommand } from '../handlers/commands.js';
 import { buildConfig } from '../utils/config.js';
 import { getToken } from '../utils/token.js';
 
+/**
+ * Create a subscriber that handles `/explain` commands on comments.
+ * @returns A subscriber object for the explain command.
+ */
 export function createExplainSubscriber(): Subscriber {
   const logger = new Logger('ExplainSubscriber');
   return {

@@ -2,6 +2,10 @@ import { GitHubHelper, Logger } from '@opencode-pr-agent/lib';
 import type { GitHubEvent, Subscriber } from '@opencode-pr-agent/lib';
 import { getToken } from '../utils/token.js';
 
+/**
+ * Create a subscriber that detects when an `analysis:needs-input` issue receives a reply from the author.
+ * @returns A subscriber object for the question-answered event.
+ */
 export function createQuestionAnsweredSubscriber(): Subscriber {
   const logger = new Logger('QuestionAnsweredSubscriber');
   return {
