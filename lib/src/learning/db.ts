@@ -30,7 +30,7 @@ import type {
  */
 export function sanitizeDbError(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
-  return msg.replace(/([a-z][a-z0-9+.-]+:\/\/)[^@\s]+@/gi, '$1<redacted>@');
+  return msg.replace(/((?:postgres|mysql|mongodb):\/\/)[^@\s]+@/gi, '$1<redacted>@');
 }
 
 const req = createRequire(__filename);
@@ -2497,7 +2497,7 @@ export async function connectDb(dbPathOrUrl: string): Promise<LearningRepository
       await client.connect();
       return new PostgresAdapter(client);
     } catch (e) {
-      throw new Error(`Failed to connect to PostgreSQL: ${e instanceof Error ? e.message : e}`);
+      throw new Error(`Failed to connect to PostgreSQL: ${sanitizeDbError(e)}`);
     }
   }
 
@@ -2509,7 +2509,7 @@ export async function connectDb(dbPathOrUrl: string): Promise<LearningRepository
       const connection = await mysql.createConnection(dbPathOrUrl);
       return new MysqlAdapter(connection);
     } catch (e) {
-      throw new Error(`Failed to connect to MySQL: ${e instanceof Error ? e.message : e}`);
+      throw new Error(`Failed to connect to MySQL: ${sanitizeDbError(e)}`);
     }
   }
 
