@@ -33,12 +33,15 @@ fix:
     - node
 
 audit:
-  promptsDir: ".audit-prompts"
+  promptsDir: "prompts/audit-categories"
   categories:
     - "code-quality-conventions"
     - "security-privacy"
     - "error-handling-resilience"
     - "performance-efficiency"
+    - "dockerfile-security"
+    - "terraform-security"
+    - "kubernetes-security"
   targetDirs:
     - "lib/src"
     - "action/src"

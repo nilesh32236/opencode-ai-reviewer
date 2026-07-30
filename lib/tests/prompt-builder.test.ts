@@ -1,11 +1,17 @@
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
 import {
   buildAnalyzePrompt,
   buildFixPrompt,
   buildReplyPrompt,
   buildReviewPrompt,
+  listAuditCategories,
+  loadAuditCategoryPrompt,
 } from '../src/prompts/builder.js';
 import { extractRelevantLogSnippet } from '../src/prompts/heal.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 describe('prompt-builder', () => {
   it('buildReviewPrompt returns a non-empty string', () => {
@@ -294,6 +300,69 @@ describe('prompt-builder', () => {
       expect(prompt).toContain('finding 50');
       // Overflow message present
       expect(prompt).toContain('10 more');
+    });
+  });
+
+  describe('audit categories (IaC security)', () => {
+    const iacCategories = ['dockerfile-security', 'terraform-security', 'kubernetes-security'];
+    const repoRoot = path.resolve(__dirname, '../../');
+    const promptsDir = path.resolve(repoRoot, 'prompts/audit-categories');
+    let originalCwd: string;
+
+    beforeAll(() => {
+      originalCwd = process.cwd();
+      process.chdir(repoRoot);
+    });
+
+    afterAll(() => {
+      process.chdir(originalCwd);
+    });
+
+    it('listAuditCategories includes new IaC categories', () => {
+      const categories = listAuditCategories(promptsDir);
+      for (const cat of iacCategories) {
+        expect(categories).toContain(cat);
+      }
+    });
+
+    it('listAuditCategories with .audit-prompts dir does NOT include IaC categories', () => {
+      const categories = listAuditCategories(path.resolve(repoRoot, '.audit-prompts'));
+      for (const cat of iacCategories) {
+        expect(categories).not.toContain(cat);
+      }
+    });
+
+    it('loadAuditCategoryPrompt returns non-null for dockerfile-security', () => {
+      const prompt = loadAuditCategoryPrompt('dockerfile-security', promptsDir);
+      expect(prompt).not.toBeNull();
+      expect(prompt).toContain('Dockerfile');
+      expect(prompt).toContain('USER root');
+      expect(prompt).toContain('multi-stage');
+    });
+
+    it('loadAuditCategoryPrompt returns non-null for terraform-security', () => {
+      const prompt = loadAuditCategoryPrompt('terraform-security', promptsDir);
+      expect(prompt).not.toBeNull();
+      expect(prompt).toContain('Terraform');
+      expect(prompt).toContain('### Hardcoded Secrets');
+      expect(prompt).toContain('S3');
+    });
+
+    it('loadAuditCategoryPrompt returns non-null for kubernetes-security', () => {
+      const prompt = loadAuditCategoryPrompt('kubernetes-security', promptsDir);
+      expect(prompt).not.toBeNull();
+      expect(prompt).toContain('Kubernetes');
+      expect(prompt).toContain('privileged');
+      expect(prompt).toContain('hostPath');
+    });
+
+    it('all IaC prompts contain output format section', () => {
+      for (const cat of iacCategories) {
+        const prompt = loadAuditCategoryPrompt(cat, promptsDir);
+        expect(prompt).toContain('severity');
+        expect(prompt).toContain('suggestion');
+        expect(prompt).toContain('Output Format');
+      }
     });
   });
 

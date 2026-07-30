@@ -1,3 +1,4 @@
+import { existsSync } from 'fs';
 import { promises as fs } from 'fs';
 import path from 'path';
 import type { AgentConfig, PlatformAdapter, ReviewResult } from '@opencode-pr-agent/lib';
@@ -46,7 +47,17 @@ export async function handleAudit(
     logger.warn(`Failed to ensure audit labels: ${err instanceof Error ? err.message : err}`);
   }
 
-  const promptsDir = config.audit.promptsDir;
+  let promptsDir = config.audit.promptsDir;
+
+  if (!existsSync(promptsDir)) {
+    if (promptsDir === '.audit-prompts' && existsSync('prompts/audit-categories')) {
+      promptsDir = 'prompts/audit-categories';
+    } else {
+      logger.warn(`Audit prompts directory not found: ${promptsDir}`);
+      return;
+    }
+  }
+
   let selectedFile: string;
   let category: string;
 
