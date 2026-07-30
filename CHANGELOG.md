@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.9] — 2026-07-30
+
+
+### Fixed
+
+- self-heal CI failure (attempt 1) [`lint-error` — eslint jsdoc rule violations (`jsdoc/require-param`, `jsdoc/require-returns`)] (#272) (#272)
+
+### Changed
+
+- [Autofix] No smart token budgeting — all files get equal context regardless of complexity (#273) (#273)
+- [Autofix] No existing linter/formatter bridge for hybrid analysis (#271) (#271)
+
+[v1.6.9]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.8...v1.6.9
+
 ## [v1.6.8] — 2026-07-30
 
 
