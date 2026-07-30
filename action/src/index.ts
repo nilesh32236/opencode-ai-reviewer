@@ -165,6 +165,7 @@ async function run(): Promise<void> {
       ...DEFAULT_CONFIG,
       reviewModel: inputs.reviewModel,
       fixModel: inputs.fixModel,
+      auditModel: inputs.auditModel,
       synthesisModel: inputs.synthesisModel,
       verificationModel: inputs.verificationModel,
       metaReviewModel: inputs.metaReviewModel,

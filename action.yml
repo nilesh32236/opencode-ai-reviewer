@@ -16,7 +16,7 @@ inputs:
     required: true
 
   model:
-    description: 'Model to use (shorthand — sets review_model, fix_model, and audit_model)'
+    description: 'Model to use (shorthand — sets review_model, fix_model, and audit_model, and serves as global fallback for all per-stage model inputs)'
     required: false
 
   openai_api_key:
@@ -44,37 +44,30 @@ inputs:
   audit_model:
     description: 'Model to use for codebase audit'
     required: false
-    default: 'opencode/deepseek-v4-flash-free'
 
   synthesis_model:
     description: 'Model to use for synthesizing batch review results'
     required: false
-    default: 'opencode/deepseek-v4-flash-free'
 
   verification_model:
     description: 'Model to use for meta-verification (false-positive filtering)'
     required: false
-    default: 'opencode/deepseek-v4-flash-free'
 
   meta_review_model:
     description: 'Model to use for meta-review quality evaluation'
     required: false
-    default: 'opencode/deepseek-v4-flash-free'
 
   explanation_model:
     description: 'Model to use for PR explanation'
     required: false
-    default: 'opencode/deepseek-v4-flash-free'
 
   conversation_model:
     description: 'Model to use for interactive conversation'
     required: false
-    default: 'opencode/deepseek-v4-flash-free'
 
   analysis_model:
     description: 'Model to use for issue analysis'
     required: false
-    default: 'opencode/deepseek-v4-flash-free'
 
   review_prompt_file:
     description: 'Path to a custom review prompt file'

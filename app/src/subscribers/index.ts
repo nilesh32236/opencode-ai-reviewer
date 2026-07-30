@@ -5,7 +5,7 @@ import {
   MetaReviewSubscriber,
   PatternDetector,
 } from '@opencode-pr-agent/lib';
-import type { EventBus, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
+import type { AgentConfig, EventBus, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
 import { createAnalyzeSubscriber } from './analyze.js';
 import { createAuditSubscriber } from './audit.js';
 import { createAutoAnalyzeSubscriber } from './auto-analyze.js';
@@ -22,9 +22,14 @@ import { createReviewSubscriber } from './review.js';
  * Register all event subscribers with the event bus.
  * @param bus - The EventBus instance.
  * @param learningStore - The LearningStore instance.
+ * @param config - Optional agent config (defaults to DEFAULT_CONFIG).
  * @returns The array of registered subscribers.
  */
-export function registerSubscribers(bus: EventBus, learningStore: LearningStore): Subscriber[] {
+export function registerSubscribers(
+  bus: EventBus,
+  learningStore: LearningStore,
+  config?: AgentConfig,
+): Subscriber[] {
   const subscribers: Subscriber[] = [
     createReviewSubscriber(learningStore, bus),
     createFixSubscriber(),
@@ -43,7 +48,8 @@ export function registerSubscribers(bus: EventBus, learningStore: LearningStore)
   const patternDetector = new PatternDetector(learningStore, {
     windowSize: DEFAULT_CONFIG.learning.patternDiscovery.windowSize,
   });
-  const metaReviewEngine = new MetaReviewEngine(learningStore, patternDetector, DEFAULT_CONFIG);
+  const resolvedConfig = config ?? DEFAULT_CONFIG;
+  const metaReviewEngine = new MetaReviewEngine(learningStore, patternDetector, resolvedConfig);
   const metaReviewSub = new MetaReviewSubscriber(
     metaReviewEngine,
     learningStore,
