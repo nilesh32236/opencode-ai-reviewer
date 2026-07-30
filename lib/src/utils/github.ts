@@ -460,8 +460,11 @@ export class GitHubHelper {
    * @param prNumber - PR number.
    * @returns Array of raw review comment objects.
    */
-  async listReviewComments(prNumber: number): Promise<Array<Record<string, unknown>>> {
-    return this.paginate<Record<string, unknown>>(`/pulls/${prNumber}/comments`);
+  async listReviewComments(
+    prNumber: number,
+    options?: { perPage?: number; maxPages?: number },
+  ): Promise<Array<Record<string, unknown>>> {
+    return this.paginate<Record<string, unknown>>(`/pulls/${prNumber}/comments`, options);
   }
 
   /**
@@ -485,8 +488,11 @@ export class GitHubHelper {
    * @param issueNumber - PR/issue number.
    * @returns Array of raw issue comment objects.
    */
-  async listComments(issueNumber: number): Promise<Array<Record<string, unknown>>> {
-    return this.paginate<Record<string, unknown>>(`/issues/${issueNumber}/comments`);
+  async listComments(
+    issueNumber: number,
+    options?: { perPage?: number; maxPages?: number },
+  ): Promise<Array<Record<string, unknown>>> {
+    return this.paginate<Record<string, unknown>>(`/issues/${issueNumber}/comments`, options);
   }
 
   /**
