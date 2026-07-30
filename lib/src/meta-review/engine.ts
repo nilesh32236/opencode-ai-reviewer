@@ -4,7 +4,7 @@ import * as core from '@actions/core';
 import type { LearningStore } from '../learning/store.js';
 import { runOpenCode } from '../opencode.js';
 import type { PatternDetector } from '../pattern-detector/engine.js';
-import type { GitHubEvent, Subscriber } from '../types/index.js';
+import type { AgentConfig, GitHubEvent, Subscriber } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
 import { buildMetaReviewPrompt } from './prompts.js';
 
@@ -18,10 +18,12 @@ export class MetaReviewEngine {
   /**
    * @param store - Learning store for recording quality metrics and retrieving patterns
    * @param patternDetector - Optional pattern detector for discovering high-quality patterns after meta-review
+   * @param config - Optional agent config for resolving the meta-review model
    */
   constructor(
     private store: LearningStore,
     private patternDetector?: PatternDetector,
+    private config?: AgentConfig,
   ) {}
 
   /**
@@ -68,7 +70,10 @@ export class MetaReviewEngine {
     const prompt = buildMetaReviewPrompt(context);
 
     const metaRunResult = await runOpenCode(prompt, {
-      model: 'opencode/deepseek-v4-flash-free',
+      model:
+        this.config?.metaReviewModel ??
+        this.config?.reviewModel ??
+        'opencode/deepseek-v4-flash-free',
       signal,
     });
     if (!metaRunResult.success) {

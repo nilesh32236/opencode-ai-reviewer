@@ -23,7 +23,19 @@ export interface ActionInputs {
     /** Model identifier for fix operations. */
     fixModel: string;
     /** Model identifier for audit operations. */
-    auditModel: string;
+    auditModel?: string;
+    /** Model identifier for synthesis of collated batch results. */
+    synthesisModel?: string;
+    /** Model identifier for meta-verification (false-positive filtering). */
+    verificationModel?: string;
+    /** Model identifier for meta-review quality evaluation. */
+    metaReviewModel?: string;
+    /** Model identifier for PR explanation. */
+    explanationModel?: string;
+    /** Model identifier for interactive conversation. */
+    conversationModel?: string;
+    /** Model identifier for issue analysis. */
+    analysisModel?: string;
     /** Optional path to a custom review prompt file. */
     reviewPromptFile?: string;
     /** Optional extra instructions appended to the review prompt. */

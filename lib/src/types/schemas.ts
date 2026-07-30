@@ -154,6 +154,13 @@ export const LinterConfigSchema = z.object({
 export const AgentConfigSchema = z.object({
   reviewModel: z.string().default('opencode/deepseek-v4-flash-free'),
   fixModel: z.string().default('opencode/deepseek-v4-flash-free'),
+  auditModel: z.string().optional(),
+  synthesisModel: z.string().optional(),
+  verificationModel: z.string().optional(),
+  metaReviewModel: z.string().optional(),
+  explanationModel: z.string().optional(),
+  conversationModel: z.string().optional(),
+  analysisModel: z.string().optional(),
   batchSize: z.number().int().min(1).max(10).default(3),
   maxLinesPerFile: z.number().int().min(0).max(5000).default(200),
   maxIterations: z.number().int().min(1).max(10).default(3),
