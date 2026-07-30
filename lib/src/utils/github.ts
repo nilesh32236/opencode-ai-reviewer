@@ -411,13 +411,18 @@ export class GitHubHelper {
       const hunkRegex = /^@@\s+-[0-9,]+\s+\+([0-9]+)(?:,([0-9]+))?\s+@@/;
 
       for (const line of linesArray) {
+        if (line.startsWith('\\')) continue;
+        if (line.startsWith('Binary')) continue;
+
         if (line.startsWith('+++ b/')) {
           currentFile = line.substring(6).trim();
+        } else if (line.startsWith('+++ /dev/null')) {
+          currentFile = '';
         } else {
           const match = hunkRegex.exec(line);
           if (match && currentFile) {
             const startLine = Number.parseInt(match[1], 10);
-            const lineCount = Number.parseInt(match[2], 10) || 1;
+            const lineCount = match[2] !== undefined ? Number.parseInt(match[2], 10) : 1;
             for (let i = 0; i < lineCount; i++) {
               lines.add(`${currentFile}:${startLine + i}`);
             }
