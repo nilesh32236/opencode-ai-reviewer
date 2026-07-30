@@ -58,13 +58,21 @@ export class LearningStore {
 
   /**
    * Close the database connection.
+   * Silently ignores the "connection never established" case,
+   * but logs a warning if a genuine close operation fails.
    */
   async close(): Promise<void> {
+    let repo: LearningRepository;
     try {
-      const repo = await this.repoPromise;
-      await repo.close();
+      repo = await this.repoPromise;
     } catch {
-      // Connection never established, nothing to close
+      return;
+    }
+    try {
+      await repo.close();
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.warn('Failed to close database connection', err);
     }
   }
 
