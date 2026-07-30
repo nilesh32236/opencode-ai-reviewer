@@ -42,6 +42,7 @@ on:
     outputs:
       approved:
         description: 'Whether the PR was approved'
+        type: boolean
         value: ${{ jobs.review.outputs.approved }}
     secrets:
       repo_token:
