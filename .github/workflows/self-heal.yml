@@ -129,11 +129,7 @@ jobs:
             echo "CI workflow failed but no logs could be captured." > /tmp/ci-failure-logs.txt
           fi
 
-          LOGS=$(cat /tmp/ci-failure-logs.txt)
           echo "logs_captured=true" >> "$GITHUB_OUTPUT"
-          echo "logs_content<<EOF_LOGS" >> "$GITHUB_OUTPUT"
-          echo "$LOGS" >> "$GITHUB_OUTPUT"
-          echo "EOF_LOGS" >> "$GITHUB_OUTPUT"
           echo "Captured $(wc -c < /tmp/ci-failure-logs.txt) bytes of failure logs"
 
       - name: Run self-heal
@@ -142,7 +138,6 @@ jobs:
         with:
           mode: self-heal
           model: 'opencode/deepseek-v4-flash-free'
-          ci_failure_logs: ${{ steps.capture-logs.outputs.logs_captured == 'true' && steps.capture-logs.outputs.logs_content || '' }}
           failed_step: ${{ steps.capture-logs.outputs.failed_step }}
           failed_workflow: ${{ steps.capture-logs.outputs.failed_workflow }}
           github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
@@ -150,7 +145,7 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
         env:
-          # Pass the logs via environment variable since they can be large
+          # Pass the logs via environment variable file path since they can be large
           CI_FAILURE_LOGS_FILE: /tmp/ci-failure-logs.txt
 
       - name: Fallback self-heal via OpenCode CLI
