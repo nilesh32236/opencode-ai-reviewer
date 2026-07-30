@@ -310,7 +310,11 @@ async function run(): Promise<void> {
       if (engine) {
         await engine.cleanup();
       } else {
-        await learningStore.close().catch(() => {});
+        try {
+          await learningStore.close();
+        } catch (err) {
+          core.warning(`Failed to close learning store: ${err}`);
+        }
       }
     }
   } catch (error) {
