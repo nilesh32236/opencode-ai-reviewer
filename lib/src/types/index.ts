@@ -230,6 +230,32 @@ export interface ProjectContextConfig {
   customRules?: string;
 }
 
+/** Configuration for token budget-based context allocation. */
+export interface TokenBudgetConfig {
+  /** Whether token budget optimization is enabled (opt-in) */
+  enabled: boolean;
+  /** Max diff lines per file for complex files (high complexity score) */
+  maxLinesComplex: number;
+  /** Max diff lines per file for simple files (low complexity score) */
+  maxLinesSimple: number;
+  /** Complexity score threshold above which a file is considered complex */
+  complexityThreshold: number;
+  /** Complexity score threshold below which a file is considered simple */
+  simpleThreshold: number;
+}
+
+/** Metrics tracked for token budget savings logging. */
+export interface TokenBudgetMetrics {
+  /** Total lines that would have been used with equal allocation */
+  baselineLines: number;
+  /** Total lines actually used with token budget */
+  budgetedLines: number;
+  /** Number of files classified as simple */
+  simpleCount: number;
+  /** Number of files classified as complex */
+  complexCount: number;
+}
+
 /** Configuration for review behavior. */
 export interface ReviewConfig {
   /** Skip review for PRs with these labels */
@@ -246,6 +272,8 @@ export interface ReviewConfig {
   excludePatterns: string[];
   /** Whether to run a meta-verification pass that drops low-confidence findings */
   enableMetaVerification: boolean;
+  /** Token budget configuration for smart context allocation */
+  tokenBudget?: TokenBudgetConfig;
 }
 
 // ─── Conversation / @mention ─────────────────────────────
@@ -763,6 +791,8 @@ export interface PromptConfig {
     inline?: boolean;
     /** Patterns to exclude from review */
     excludePatterns?: string[];
+    /** Token budget configuration for smart context allocation */
+    tokenBudget?: TokenBudgetConfig;
   };
   /** Fix prompt configuration */
   fix?: {
@@ -864,6 +894,13 @@ export const DEFAULT_CONFIG: AgentConfig = {
       '**/.next/**',
     ],
     enableMetaVerification: false,
+    tokenBudget: {
+      enabled: false,
+      maxLinesComplex: 200,
+      maxLinesSimple: 20,
+      complexityThreshold: 30,
+      simpleThreshold: 10,
+    },
   },
   audit: {
     promptsDir: '.audit-prompts',
