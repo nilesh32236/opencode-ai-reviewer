@@ -1,5 +1,5 @@
-import * as fs from 'fs';
-import * as path from 'path';
+import { promises as fs } from 'node:fs';
+import * as path from 'node:path';
 import { Logger } from './logger.js';
 
 const logger = new Logger('Reachability');
@@ -86,11 +86,11 @@ const ENTRY_POINT_PATTERNS: EntryPointPattern[] = [
     label: 'AWS Lambda handler',
     regex: /(exports|module\.exports)\.\s*handler\s*[=(]/,
   },
-  { category: 'serverless', label: 'Google Cloud Function', regex: /exports\.\s*\w+\s*=\s*\(/ },
   {
     category: 'serverless',
-    label: 'Vercel serverless function',
-    regex: /export\s+default\s+(async\s+)?function/,
+    label: 'Google Cloud Function',
+    regex:
+      /(?:exports\.\s*(?:handler|entryPoint|hello(?:World)?|(?:[A-Z]\w*))\s*=\s*\()|require\(['"]@google-cloud\/functions-framework['"]\)/i,
   },
 
   // ── Node HTTP server ──
@@ -107,20 +107,31 @@ const ENTRY_POINT_PATTERNS: EntryPointPattern[] = [
   { category: 'cron', label: 'Agenda job definition', regex: /agenda\.define\s*\(/i },
   { category: 'cron', label: 'Bull/BullMQ queue processor', regex: /\.process\s*\(/i },
 
-  // ── SvelteKit ──
-  {
-    category: 'http',
-    label: 'SvelteKit server handler',
-    regex: /export\s+(async\s+)?function\s+(GET|POST|PUT|DELETE|PATCH)\s*\(/,
-  },
-
   // ── Generic event handler ──
   {
     category: 'event',
     label: 'Event emitter listener',
-    regex: /\.on\s*\(\s*['"](?!error|close|end|data)['"]/i,
+    regex: /\.on\s*\(\s*['"](?!error|close|end|data\b)[^'"]+['"]/i,
   },
 ];
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function isFile(filePath: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(filePath);
+    return stat.isFile();
+  } catch {
+    return false;
+  }
+}
 
 /** Result of a reachability analysis for a single finding. */
 export interface ReachabilityResult {
@@ -137,7 +148,7 @@ export interface ReachabilityResult {
  * Uses lightweight pattern matching and import graph traversal.
  *
  * @param filePath - Absolute or relative path to the flagged source file.
- * @param lineNumber - Line number of the finding within the file.
+ * @param _lineNumber - Line number of the finding within the file (reserved for future line-level analysis).
  * @param workDir - Working directory (repo root) for resolving imports.
  * @returns Reachability analysis result.
  */
@@ -148,7 +159,7 @@ export async function analyzeFindingReachability(
 ): Promise<ReachabilityResult> {
   const absolutePath = path.resolve(workDir, filePath);
 
-  if (!fs.existsSync(absolutePath)) {
+  if (!(await fileExists(absolutePath))) {
     logger.debug(`File not found for reachability: ${absolutePath}`);
     return { theoreticalRisk: true };
   }
@@ -165,7 +176,7 @@ export async function analyzeFindingReachability(
     visited.add(current.file);
 
     try {
-      const content = fs.readFileSync(current.file, 'utf-8');
+      const content = await fs.readFile(current.file, 'utf-8');
 
       // Check for entry point patterns in this file
       for (const pattern of entryPointPatterns) {
@@ -210,7 +221,7 @@ export async function analyzeFindingReachability(
 
       // Walk imports up to maxDepth
       if (current.depth < maxDepth) {
-        const imports = extractImports(content, current.file);
+        const imports = await extractImports(content, current.file);
         for (const imp of imports) {
           if (!visited.has(imp)) {
             queue.push({ file: imp, depth: current.depth + 1 });
@@ -235,7 +246,7 @@ export async function analyzeFindingReachability(
  * @param sourceFile - Absolute path to the source file (for resolving relative imports).
  * @returns Array of resolved absolute file paths.
  */
-function extractImports(content: string, sourceFile: string): string[] {
+async function extractImports(content: string, sourceFile: string): Promise<string[]> {
   const imports: string[] = [];
   const sourceDir = path.dirname(sourceFile);
 
@@ -248,7 +259,7 @@ function extractImports(content: string, sourceFile: string): string[] {
     if (!specifier || !specifier.startsWith('.')) continue;
 
     // Try resolving with common extensions
-    const resolved = resolveLocalImport(sourceDir, specifier);
+    const resolved = await resolveLocalImport(sourceDir, specifier);
     if (resolved) imports.push(resolved);
   }
 
@@ -263,29 +274,23 @@ function extractImports(content: string, sourceFile: string): string[] {
  * @param specifier - Import specifier from source (e.g. './foo', '../bar/baz').
  * @returns Resolved absolute file path, or undefined if not found.
  */
-function resolveLocalImport(sourceDir: string, specifier: string): string | undefined {
+async function resolveLocalImport(
+  sourceDir: string,
+  specifier: string,
+): Promise<string | undefined> {
   const extensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
   const basePath = path.resolve(sourceDir, specifier);
 
   // Try exact path first
-  if (fs.existsSync(basePath) && fs.statSync(basePath).isFile()) {
-    return basePath;
-  }
+  if (await isFile(basePath)) return basePath;
 
-  // Try with extensions
   for (const ext of extensions) {
-    const withExt = basePath + ext;
-    if (fs.existsSync(withExt) && fs.statSync(withExt).isFile()) {
-      return withExt;
-    }
+    if (await isFile(basePath + ext)) return basePath + ext;
   }
 
-  // Try as directory with index file
   for (const ext of extensions) {
     const indexPath = path.join(basePath, `index${ext}`);
-    if (fs.existsSync(indexPath) && fs.statSync(indexPath).isFile()) {
-      return indexPath;
-    }
+    if (await isFile(indexPath)) return indexPath;
   }
 
   return undefined;

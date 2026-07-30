@@ -43,7 +43,6 @@ Write findings to the output file in JSON Lines format:
 {"type":"issue","severity":"critical|important|minor","file":"relative/path","line":42,"message":"What the issue is","suggestion":"How to fix it","inline":false}
 ```
 
-
 Note: Findings will be post-processed for reachability — you do not need to include `theoreticalRisk` or `entryPointPath` in your output. Focus on correctly identifying the vulnerability and its location.
 
 ## Severity Guide

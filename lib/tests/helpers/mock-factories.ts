@@ -29,11 +29,6 @@ export function makeAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConf
   return {
     ...DEFAULT_CONFIG,
     timeoutMinutes: 10,
-    review: {
-      ...DEFAULT_CONFIG.review,
-      enableReachability: false,
-      ...(overrides.review || ({} as Record<string, unknown>)),
-    },
     ...overrides,
     review: {
       ...DEFAULT_CONFIG.review,

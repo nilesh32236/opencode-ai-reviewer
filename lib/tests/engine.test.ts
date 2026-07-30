@@ -147,11 +147,6 @@ function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {
     ...DEFAULT_CONFIG,
     timeoutMinutes: 10,
-    review: {
-      ...DEFAULT_CONFIG.review,
-      enableReachability: false,
-      ...(overrides.review || {}),
-    },
     ...overrides,
     review: {
       ...DEFAULT_CONFIG.review,
