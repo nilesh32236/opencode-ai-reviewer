@@ -1,9 +1,18 @@
 {
   "name": "@opencode-pr-agent/lib",
-  "version": "1.6.1",
+  "version": "1.6.3",
   "description": "Shared library for OpenCode AI Reviewer — types, engine, MCP, prompts, GitHub API",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
   "scripts": {
     "build": "tsc",
     "test": "vitest run",

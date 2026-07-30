@@ -3,11 +3,11 @@ name: Hourly Autonomous Orchestrator
 # Runs hourly to process strictly ONE item per run (PR or Issue) in priority order.
 #
 # Priority & Rules:
-# 1. PRs labeled 'autofix' take top priority (max 1 PR processed per run).
+# 1. PRs with any label starting with 'autofix' (e.g., 'autofix', 'autofix-123', 'autofix/v1') take top priority (max 1 PR processed per run).
 #    - Resolves merge conflicts with main if present (via AI & test verification).
 #    - Merges PR if approved (autofix:ready).
 #    - Runs autofix review loop iteration if review issues exist.
-# 2. Issues labeled 'autofix' or 'autofix-trigger' are processed ONLY if no PR was processed.
+# 2. Issues with any label starting with 'autofix' are processed ONLY if no PR was processed.
 #    - Analyzes issue and posts plan if no plan exists yet.
 #    - Creates autofix branch & PR if plan is ready or user replied to questions.
 # 3. Items labeled 'autofix:skipped' or 'autofix:needs-manual-review' are skipped.
@@ -35,7 +35,7 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
@@ -46,9 +46,9 @@ jobs:
           git config --global user.email "opencode-ai-reviewer[bot]@users.noreply.github.com"
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Install pnpm & dependencies
         run: |
@@ -73,27 +73,26 @@ jobs:
         run: |
           echo "Searching for open autofix PRs..."
 
-          # Get open PRs labeled 'autofix'
+          # Get count of open PRs with autofix-family labels
           PRS=$(gh pr list \
             --repo "${{ github.repository }}" \
-            --label "autofix" \
             --state open \
             --json number,title,labels,headRefName,mergeable,state \
-            --jq '.[]')
+            --jq '[.[] | select(.labels | any(.name | startswith("autofix")))] | length')
 
-          if [ -z "$PRS" ]; then
-            echo "No open PRs labeled 'autofix' found."
+          if [ "$PRS" -eq 0 ]; then
+            echo "No open PRs with autofix-family labels found."
             echo "processed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # Find oldest eligible PR (excluding skipped / needs-manual-review / merged)
+          # Find oldest eligible PR (any autofix-family label, excluding skipped / needs-manual-review / merged)
           TARGET_PR=$(gh pr list \
             --repo "${{ github.repository }}" \
-            --label "autofix" \
             --state open \
             --json number,labels,headRefName,mergeable \
             | jq -c '.[] | select(
+                (.labels | any(.name | startswith("autofix"))) and
                 (.labels | map(.name) | contains(["autofix:skipped"]) | not) and
                 (.labels | map(.name) | contains(["autofix:needs-manual-review"]) | not) and
                 (.labels | map(.name) | contains(["autofix:merged"]) | not)
@@ -163,8 +162,9 @@ jobs:
           IS_READY=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json labels --jq '.labels[].name' | grep -x "autofix:ready" || true)
           if [ -n "$IS_READY" ]; then
             echo "PR #${PR_NUMBER} has label 'autofix:ready' — squash merging..."
+            gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch 2>/dev/null || \
             gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch --auto || {
-              echo "::warning::Auto-merge failed for PR #${PR_NUMBER}"
+              echo "::warning::Merge failed for PR #${PR_NUMBER}"
             }
             echo "processed=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -198,20 +198,20 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          echo "No PR was processed. Searching for open issues with label 'autofix' or 'autofix-trigger'..."
+          echo "No PR was processed. Searching for open issues with autofix-family labels..."
 
-          # Get open issues with autofix or autofix-trigger labels
+          # Get open issues with any autofix-family label (excluding autofix:skipped)
           ISSUES=$(gh issue list \
             --repo "${{ github.repository }}" \
             --state open \
             --json number,title,labels,comments \
             | jq -c '.[] | select(
-                (.labels | map(.name) | (contains(["autofix"]) or contains(["autofix-trigger"]))) and
+                (.labels | any(.name | startswith("autofix"))) and
                 (.labels | map(.name) | contains(["autofix:skipped"]) | not)
               )')
 
           if [ -z "$ISSUES" ]; then
-            echo "No open issues with label 'autofix' or 'autofix-trigger' found."
+            echo "No open issues with autofix-family labels found."
             echo "processed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -274,9 +274,9 @@ jobs:
           ISSUE_NUM="${{ steps.process-issue.outputs.issue_number }}"
 
           if [ "$PR_PROCESSED" = "true" ]; then
-            echo "✅ Hourly Orchestrator processed PR #${PR_NUM || 'merged/conflict-resolved'}"
+            echo "✅ Hourly Orchestrator processed PR #${PR_NUM:-merged/conflict-resolved}"
           elif [ "$ISSUE_PROCESSED" = "true" ]; then
             echo "✅ Hourly Orchestrator processed Issue #${ISSUE_NUM}"
           else
-            echo "ℹ️ Hourly Orchestrator idle — no eligible autofix PRs or issues found."
+            echo "ℹ️ Hourly Orchestrator idle — no eligible autofix-family PRs or issues found."
           fi

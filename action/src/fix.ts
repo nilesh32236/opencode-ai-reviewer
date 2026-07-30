@@ -25,7 +25,7 @@ import {
   validateRunChecksCommand,
 } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { sanitize } from './utils.js';
+import { resolvePrNumber, sanitize } from './utils.js';
 
 /**
  * Run a single fix iteration on a PR: resolve PR, gather context, apply
@@ -817,18 +817,4 @@ Please run the workflow again to continue applying fixes.`;
   }
 
   core.setFailed(sanitize(`Autofix execution timed out after ${config.timeoutMinutes} minutes.`));
-}
-
-async function resolvePrNumber(): Promise<number | null> {
-  const prNumberInput = core.getInput('pr-number');
-  if (prNumberInput) {
-    const prNumber = Number.parseInt(prNumberInput, 10);
-    if (Number.isNaN(prNumber)) {
-      throw new Error(`Invalid pr-number: ${prNumberInput}`);
-    }
-    return prNumber;
-  }
-  const fromIssue = github.context.payload.issue?.number;
-  const fromPR = github.context.payload.pull_request?.number;
-  return fromPR || fromIssue || null;
 }
