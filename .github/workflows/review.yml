@@ -53,6 +53,7 @@ on:
     outputs:
       verdict:
         description: 'Review verdict (true/false)'
+        type: boolean
         value: ${{ jobs.review.outputs.verdict }}
       critical_count:
         description: 'Number of critical issues'
