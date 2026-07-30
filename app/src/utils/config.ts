@@ -1,0 +1,42 @@
+import { DEFAULT_CONFIG, getDefaultMCPServers } from '@opencode-pr-agent/lib';
+import type { AgentConfig } from '@opencode-pr-agent/lib';
+
+function parseEnvInt(envVar: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(envVar || String(fallback), 10);
+  return Number.isNaN(parsed) ? fallback : parsed;
+}
+
+export function buildConfig(): AgentConfig {
+  return {
+    ...DEFAULT_CONFIG,
+    reviewModel: process.env.REVIEW_MODEL || DEFAULT_CONFIG.reviewModel,
+    fixModel: process.env.FIX_MODEL || DEFAULT_CONFIG.fixModel,
+    batchSize: parseEnvInt(process.env.BATCH_SIZE, 3),
+    maxLinesPerFile: parseEnvInt(process.env.MAX_LINES_PER_FILE, 200),
+    maxIterations: parseEnvInt(process.env.MAX_ITERATIONS, 3),
+    enableMCP: process.env.ENABLE_MCP !== 'false',
+    mcpServers:
+      process.env.ENABLE_MCP !== 'false'
+        ? getDefaultMCPServers(process.env.GITHUB_TOKEN || '')
+        : [],
+    projectContext: {
+      description: process.env.PROJECT_DESCRIPTION || '',
+      conventionsPath: process.env.CONVENTIONS_PATH || undefined,
+      typecheckCommands: process.env.TYPECHECK_COMMANDS
+        ? process.env.TYPECHECK_COMMANDS.split(',')
+        : [],
+      lintCommands: process.env.LINT_COMMANDS ? process.env.LINT_COMMANDS.split(',') : [],
+    },
+    review: {
+      ...DEFAULT_CONFIG.review,
+      inline: process.env.REVIEW_INLINE !== 'false',
+    },
+    learning: {
+      ...DEFAULT_CONFIG.learning,
+      enabled: true,
+      feedbackSignals: ['dismissed', 'reaction', 'disputed_comment'],
+      metaReview: { enabled: true, interval: 5, minFindingsForReview: 3 },
+      patternDiscovery: { enabled: true, minFrequency: 3, windowSize: 100 },
+    },
+  };
+}
