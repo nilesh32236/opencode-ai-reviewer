@@ -850,6 +850,199 @@ describe('ReviewEngine', () => {
     });
   });
 
+  describe('token budget / complexity heuristic', () => {
+    it('simple file gets reduced context when token budget is enabled', async () => {
+      const smallPatch = '+line 1\n+line 2';
+      const pr = makePRContext({
+        changedFiles: [
+          {
+            path: 'simple/config.ts',
+            status: 'modified' as const,
+            additions: 2,
+            deletions: 0,
+            patch: smallPatch,
+          },
+        ],
+      });
+
+      const eng = new ReviewEngine(
+        makeConfig({
+          maxLinesPerFile: 200,
+          enableMCP: false,
+          mcpServers: [],
+          review: {
+            ...DEFAULT_CONFIG.review,
+            tokenBudget: {
+              enabled: true,
+              maxLinesComplex: 200,
+              maxLinesSimple: 10,
+              complexityThreshold: 30,
+              simpleThreshold: 10,
+            },
+          },
+        }),
+        'fake-token',
+        'owner/repo',
+      );
+
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 100,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      await eng.reviewPR(pr);
+
+      const contextArg = mockBuildReviewPrompt.mock.calls[0][1];
+      expect(contextArg).toContain('Token budget:');
+      expect(contextArg).toContain('(complexity score:');
+    });
+
+    it('complex file gets full context when token budget is enabled', async () => {
+      const lines = Array.from(
+        { length: 5 },
+        (_, i) => `+function foo${i}() {\n+  if (x && y) {\n+    bar();\n+  }\n+}`,
+      );
+      const patch = lines.join('\n');
+
+      const pr = makePRContext({
+        changedFiles: [
+          {
+            path: 'src/complex.ts',
+            status: 'modified' as const,
+            additions: 100,
+            deletions: 20,
+            patch,
+          },
+        ],
+      });
+
+      const eng = new ReviewEngine(
+        makeConfig({
+          maxLinesPerFile: 200,
+          enableMCP: false,
+          mcpServers: [],
+          review: {
+            ...DEFAULT_CONFIG.review,
+            tokenBudget: {
+              enabled: true,
+              maxLinesComplex: 200,
+              maxLinesSimple: 10,
+              complexityThreshold: 30,
+              simpleThreshold: 10,
+            },
+          },
+        }),
+        'fake-token',
+        'owner/repo',
+      );
+
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 100,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      await eng.reviewPR(pr);
+
+      const contextArg = mockBuildReviewPrompt.mock.calls[0][1];
+      expect(contextArg).toContain('Token budget:');
+      const scoreMatch = contextArg.match(/complexity score: ([\d.]+)/);
+      expect(scoreMatch).not.toBeNull();
+      if (scoreMatch) {
+        expect(Number.parseFloat(scoreMatch[1])).toBeGreaterThan(30);
+      }
+      expect(contextArg).not.toContain('[Patch truncated');
+    });
+
+    it('all files get equal treatment when token budget is disabled (backward compat)', async () => {
+      const pr = makePRContext({
+        changedFiles: [
+          {
+            path: 'src/small.ts',
+            status: 'modified' as const,
+            additions: 3,
+            deletions: 0,
+            patch: '+line 1\n+line 2\n+line 3',
+          },
+        ],
+      });
+
+      const eng = new ReviewEngine(
+        makeConfig({ maxLinesPerFile: 100, enableMCP: false, mcpServers: [] }),
+        'fake-token',
+        'owner/repo',
+      );
+
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 100,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      await eng.reviewPR(pr);
+
+      const contextArg = mockBuildReviewPrompt.mock.calls[0][1];
+      expect(contextArg).not.toContain('Token budget:');
+      expect(contextArg).not.toContain('complexity score:');
+    });
+
+    it('no patch files get score 0 and fall back to maxLinesPerFile', async () => {
+      const pr = makePRContext({
+        changedFiles: [
+          {
+            path: 'src/nopatch.ts',
+            status: 'added' as const,
+            additions: 100,
+            deletions: 0,
+          },
+        ],
+      });
+
+      const eng = new ReviewEngine(
+        makeConfig({
+          maxLinesPerFile: 200,
+          enableMCP: false,
+          mcpServers: [],
+          review: {
+            ...DEFAULT_CONFIG.review,
+            tokenBudget: {
+              enabled: true,
+              maxLinesComplex: 200,
+              maxLinesSimple: 10,
+              complexityThreshold: 30,
+              simpleThreshold: 10,
+            },
+          },
+        }),
+        'fake-token',
+        'owner/repo',
+      );
+
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 100,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      await eng.reviewPR(pr);
+
+      const contextArg = mockBuildReviewPrompt.mock.calls[0][1];
+      expect(contextArg).not.toContain('Token budget:');
+      expect(contextArg).not.toContain('**src/nopatch.ts**');
+      expect(contextArg).toContain('### Changed Files');
+      expect(contextArg).toContain('src/nopatch.ts (added, +100/-0)');
+    });
+  });
+
   describe('cleanup()', () => {
     it('completes cleanup successfully', async () => {
       mockMCPDisconnect.mockResolvedValue(undefined);

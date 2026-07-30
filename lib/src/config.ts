@@ -156,6 +156,33 @@ export function validateConfig(config: PromptConfig): PromptConfig {
         (p) => typeof p === 'string',
       );
     }
+    if (config.review.tokenBudget && typeof config.review.tokenBudget === 'object') {
+      const tb = config.review.tokenBudget;
+      result.review.tokenBudget = {
+        enabled: typeof tb.enabled === 'boolean' ? tb.enabled : false,
+        maxLinesComplex:
+          typeof tb.maxLinesComplex === 'number'
+            ? Math.min(Math.max(Math.round(tb.maxLinesComplex), 50), 5000)
+            : 200,
+        maxLinesSimple:
+          typeof tb.maxLinesSimple === 'number'
+            ? Math.min(Math.max(Math.round(tb.maxLinesSimple), 5), 100)
+            : 20,
+        complexityThreshold:
+          typeof tb.complexityThreshold === 'number'
+            ? Math.min(Math.max(tb.complexityThreshold, 0), 100)
+            : 30,
+        simpleThreshold:
+          typeof tb.simpleThreshold === 'number'
+            ? Math.min(Math.max(tb.simpleThreshold, 0), 100)
+            : 10,
+      };
+      if (
+        result.review.tokenBudget.simpleThreshold > result.review.tokenBudget.complexityThreshold
+      ) {
+        result.review.tokenBudget.simpleThreshold = result.review.tokenBudget.complexityThreshold;
+      }
+    }
   }
 
   if (config.fix) {
