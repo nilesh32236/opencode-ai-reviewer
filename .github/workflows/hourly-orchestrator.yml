@@ -162,8 +162,9 @@ jobs:
           IS_READY=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json labels --jq '.labels[].name' | grep -x "autofix:ready" || true)
           if [ -n "$IS_READY" ]; then
             echo "PR #${PR_NUMBER} has label 'autofix:ready' — squash merging..."
+            gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch 2>/dev/null || \
             gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch --auto || {
-              echo "::warning::Auto-merge failed for PR #${PR_NUMBER}"
+              echo "::warning::Merge failed for PR #${PR_NUMBER}"
             }
             echo "processed=true" >> "$GITHUB_OUTPUT"
             exit 0

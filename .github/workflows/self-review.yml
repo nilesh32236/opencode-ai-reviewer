@@ -286,12 +286,9 @@ jobs:
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
           echo "Merging PR #${PR_NUMBER} (autofix:ready)..."
-          gh pr merge "$PR_NUMBER" \
-            --repo "${{ github.repository }}" \
-            --squash \
-            --delete-branch \
-            --auto || {
-            echo "::warning::Auto-merge failed — PR #${PR_NUMBER} may need manual merge"
+          gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch 2>/dev/null || \
+          gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch --auto || {
+            echo "::warning::Merge failed — PR #${PR_NUMBER} may need manual merge"
           }
 
   # ─── Merge Notification ───────────────────────────────────────────────────────
