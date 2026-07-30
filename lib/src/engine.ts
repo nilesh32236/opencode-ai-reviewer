@@ -1088,6 +1088,9 @@ export class ReviewEngine {
 
   /**
    * Run configured linters against changed files.
+   * @param changedFiles - Array of changed file paths.
+   * @param workDir - Working directory for running linters.
+   * @returns Array of linter results.
    */
   private runLinters(changedFiles: Array<{ path: string }>, workDir: string): LinterResult[] {
     if (!this.config.linters?.length) return [];
@@ -1162,6 +1165,9 @@ export class ReviewEngine {
 
   /**
    * Parse linter stdout into structured findings.
+   * @param format - Linter output format (e.g. 'ruff', 'eslint').
+   * @param output - Raw linter stdout.
+   * @returns Array of parsed linter findings.
    */
   private parseLinterOutput(format: string, output: string): LinterFinding[] {
     if (!output.trim()) return [];
@@ -1256,6 +1262,10 @@ export class ReviewEngine {
 
   /**
    * Filter AI-generated findings that duplicate linter findings.
+   * @param issues - AI-generated review issues.
+   * @param linterResults - Results from configured linters.
+   * @param workDir - Optional working directory for path normalization.
+   * @returns Filtered review issues with duplicates removed.
    */
   private deduplicateAgainstLinters(
     issues: ReviewIssue[],
@@ -1411,6 +1421,8 @@ export class ReviewEngine {
  * Map Ruff rule code prefix to a readable severity string.
  * Ruff codes: F (pyflakes), E (pycodestyle error) → error;
  * W (pycodestyle warning), D (pydocstyle) → warning.
+ * @param code - Ruff rule code string.
+ * @returns Mapped severity string.
  */
 function mapRuffSeverity(code: string): string {
   if (!code) return 'warning';
