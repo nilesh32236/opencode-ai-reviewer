@@ -4,6 +4,35 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.3] — 2026-07-30
+
+
+### Fixed
+
+- self-heal CI failure (attempt 1) [`lint-error` — missing jsdoc annotations violated the `jsdoc/require-param` and `jsdoc/require-returns` rules.] (#263) (#263)
+- address issue #235 (#253) (#235
+#253)
+- self-heal CI failure (attempt 1) [**no failure detected** — all ci steps pass cleanly.] (#262) (#262)
+- address issue #170 (#247) (#170
+#247)
+- self-heal CI failure (attempt 1) [**runtime-error** — unhandled `typeerror` during mcp client connection teardown.] (#260) (#260)
+
+### Changed
+
+- fix(action): resolve @opencode-pr-agent/lib module resolution in action vitest and workflows
+- fix(self-heal): extract relevant error traceback snippet from CI logs for prompt context
+- [Autofix] parseInt without NaN guard for pr-number input in fix mode (#251) (#251)
+- fix(ci): attempt immediate PR squash merge before falling back to --auto
+- fix(self-heal): prevent E2BIG argument list error and declare self-heal action inputs
+- chore(ci): upgrade all workflow actions to absolute latest major versions (checkout@v7, setup-node@v7, action-setup@v6, codeql@v4, gh-release@v3)
+- chore(ci): upgrade setup-node to v5, action-setup to v4, and bump Node versions to 22/24
+- perf(ci): check for existing heal PR before Node setup & dependency installation
+- fix(deps): update engines.node range to >=20.0.0 to support Node 20+
+- fix(ci): repair hourly-orchestrator parameter expansion & self-heal opencode setup script
+- [Autofix] No integration tests for the critical review-to-comment pipeline (#254) (#254)
+
+[v1.6.3]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.2...v1.6.3
+
 ## [v1.6.2] — 2026-07-30
 
 
