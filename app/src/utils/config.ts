@@ -48,6 +48,9 @@ export function buildConfig(): AgentConfig {
       ...DEFAULT_CONFIG.review,
       inline: process.env.REVIEW_INLINE !== 'false',
       ...(process.env.TOKEN_BUDGET ? { tokenBudget: JSON.parse(process.env.TOKEN_BUDGET) } : {}),
+      ...(process.env.ENABLE_REACHABILITY !== undefined
+        ? { enableReachability: process.env.ENABLE_REACHABILITY !== 'false' }
+        : {}),
     },
     learning: {
       ...DEFAULT_CONFIG.learning,

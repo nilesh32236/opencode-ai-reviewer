@@ -188,6 +188,9 @@ async function run(): Promise<void> {
         ...DEFAULT_CONFIG.review,
         inline: loadedConfig?.review?.inline ?? inputs.reviewInline,
         ...(loadedConfig?.review?.tokenBudget && { tokenBudget: loadedConfig.review.tokenBudget }),
+        ...(loadedConfig?.review?.enableReachability !== undefined && {
+          enableReachability: loadedConfig.review.enableReachability,
+        }),
       },
       audit: {
         ...DEFAULT_CONFIG.audit,

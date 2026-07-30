@@ -62,6 +62,10 @@ export interface ReviewIssue {
   previouslyReported?: boolean;
   /** GitHub comment ID after posting */
   commentId?: number;
+  /** Whether the vulnerability is theoretically reachable (default: false means reachable) */
+  theoreticalRisk?: boolean;
+  /** Entry point path if the finding is reachable from user input */
+  entryPointPath?: string;
 }
 
 /** Previous fix iteration data for tracking progress across fix cycles. */
@@ -288,6 +292,8 @@ export interface ReviewConfig {
   excludePatterns: string[];
   /** Whether to run a meta-verification pass that drops low-confidence findings */
   enableMetaVerification: boolean;
+  /** Whether to enable lightweight reachability analysis on security findings */
+  enableReachability: boolean;
   /** Token budget configuration for smart context allocation */
   tokenBudget?: TokenBudgetConfig;
 }
@@ -468,6 +474,10 @@ export interface IssueFinding extends BaseFinding {
   inline?: boolean;
   /** Whether previously reported */
   previouslyReported?: boolean;
+  /** Whether the vulnerability is theoretically reachable (default: false means reachable) */
+  theoreticalRisk?: boolean;
+  /** Entry point path if the finding is reachable from user input */
+  entryPointPath?: string;
 }
 
 /** An executive summary finding in JSONL format. */
@@ -809,6 +819,8 @@ export interface PromptConfig {
     excludePatterns?: string[];
     /** Token budget configuration for smart context allocation */
     tokenBudget?: TokenBudgetConfig;
+    /** Enable lightweight reachability analysis on security findings (default: true) */
+    enableReachability?: boolean;
   };
   /** Fix prompt configuration */
   fix?: {
@@ -917,6 +929,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
       '**/.next/**',
     ],
     enableMetaVerification: false,
+    enableReachability: true,
     tokenBudget: {
       enabled: false,
       maxLinesComplex: 200,

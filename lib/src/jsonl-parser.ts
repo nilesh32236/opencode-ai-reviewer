@@ -152,6 +152,8 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
         suggestionCode: i.suggestionCode,
         inline: i.inline,
         previouslyReported: i.previouslyReported,
+        theoreticalRisk: i.theoreticalRisk,
+        entryPointPath: i.entryPointPath,
       })),
       stats: {
         total: issues.length,
@@ -278,6 +280,8 @@ export function parseJsonlString(content: string): ReviewResult {
       suggestionCode: i.suggestionCode,
       inline: i.inline,
       previouslyReported: i.previouslyReported,
+      theoreticalRisk: i.theoreticalRisk,
+      entryPointPath: i.entryPointPath,
     })),
     stats: {
       total: issues.length,
@@ -375,6 +379,8 @@ function validateAndNormalize(obj: Record<string, unknown>): Finding {
         inline: typeof obj.inline === 'boolean' ? obj.inline : false,
         previouslyReported:
           typeof obj.previouslyReported === 'boolean' ? obj.previouslyReported : undefined,
+        theoreticalRisk: typeof obj.theoreticalRisk === 'boolean' ? obj.theoreticalRisk : undefined,
+        entryPointPath: typeof obj.entryPointPath === 'string' ? obj.entryPointPath : undefined,
       } as IssueFinding;
     }
 

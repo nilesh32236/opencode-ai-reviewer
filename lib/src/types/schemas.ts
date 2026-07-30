@@ -108,6 +108,7 @@ export const ReviewConfigSchema = z.object({
       '**/build/**',
       '**/.next/**',
     ]),
+  enableReachability: z.boolean().optional().default(true),
   tokenBudget: TokenBudgetConfigSchema.optional(),
 });
 
@@ -269,6 +270,7 @@ export const PromptConfigSchema = z.object({
       inline: z.boolean().optional(),
       excludePatterns: z.array(z.string()).optional(),
       tokenBudget: TokenBudgetConfigSchema.optional(),
+      enableReachability: z.boolean().optional(),
     })
     .optional(),
   fix: z
