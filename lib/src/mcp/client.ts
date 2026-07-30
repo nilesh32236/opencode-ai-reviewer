@@ -116,7 +116,7 @@ export class MCPManager {
 
           const connectionTimeout = server.timeoutMs ?? 5000;
           let timedOut = false;
-          let connectTimer: ReturnType<typeof setTimeout>;
+          let connectTimer: ReturnType<typeof setTimeout> | null = null;
           const connectPromise = clientInstance.connect(newTransport);
           await Promise.race([
             connectPromise,
@@ -128,7 +128,7 @@ export class MCPManager {
               }, connectionTimeout);
             }),
           ]).finally(() => {
-            clearTimeout(connectTimer);
+            if (connectTimer !== null) clearTimeout(connectTimer);
             if (timedOut) {
               Promise.resolve(newTransport.close()).catch(() => {});
             }
@@ -297,7 +297,7 @@ export class MCPManager {
           await transport.close();
         })();
         closePromise.catch(() => {});
-        let disconnectTimer: ReturnType<typeof setTimeout>;
+        let disconnectTimer: ReturnType<typeof setTimeout> | null = null;
         await Promise.race([
           closePromise,
           new Promise<void>((_, reject) => {
@@ -306,7 +306,9 @@ export class MCPManager {
               disconnectTimeoutMs,
             );
           }),
-        ]).finally(() => clearTimeout(disconnectTimer!));
+        ]).finally(() => {
+          if (disconnectTimer !== null) clearTimeout(disconnectTimer);
+        });
         this.logger.info(`Disconnected from ${name}`);
       } catch (err) {
         try {
