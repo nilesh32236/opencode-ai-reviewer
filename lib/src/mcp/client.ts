@@ -47,29 +47,39 @@ export class MCPManager {
 
     core.startGroup(`MCP: Connecting to ${this.servers.length} server(s)`);
 
-    for (const server of this.servers) {
-      if (server.type === 'local' && server.command) {
-        const cmd = server.command;
-        await this.connectServer(
-          server,
-          () =>
-            new StdioClientTransport({
-              command: cmd[0],
-              args: cmd.slice(1),
-              env: { ...process.env, ...server.environment } as Record<string, string>,
-            }),
-        );
-      } else if (server.type === 'remote' && server.url) {
-        const headers: Record<string, string> = {};
-        if (server.environment) {
-          for (const [key, value] of Object.entries(server.environment)) {
-            if (value !== undefined) headers[key] = value;
-          }
+    const results = await Promise.allSettled(
+      this.servers.map((server) => {
+        if (server.type === 'local' && server.command) {
+          const cmd = server.command;
+          return this.connectServer(
+            server,
+            () =>
+              new StdioClientTransport({
+                command: cmd[0],
+                args: cmd.slice(1),
+                env: { ...process.env, ...server.environment } as Record<string, string>,
+              }),
+          );
         }
-        await this.connectServer(
-          server,
-          () => new SSEClientTransport(new URL(server.url!), { requestInit: { headers } }),
-        );
+        if (server.type === 'remote' && server.url) {
+          const headers: Record<string, string> = {};
+          if (server.environment) {
+            for (const [key, value] of Object.entries(server.environment)) {
+              if (value !== undefined) headers[key] = value;
+            }
+          }
+          return this.connectServer(
+            server,
+            () => new SSEClientTransport(new URL(server.url!), { requestInit: { headers } }),
+          );
+        }
+        return Promise.resolve();
+      }),
+    );
+
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        this.logger.warn('MCP connection failed', result.reason);
       }
     }
 
