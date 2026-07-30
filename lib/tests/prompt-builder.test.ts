@@ -1,11 +1,17 @@
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
 import {
   buildAnalyzePrompt,
   buildFixPrompt,
   buildReplyPrompt,
   buildReviewPrompt,
+  listAuditCategories,
+  loadAuditCategoryPrompt,
 } from '../src/prompts/builder.js';
 import { extractRelevantLogSnippet } from '../src/prompts/heal.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 describe('prompt-builder', () => {
   it('buildReviewPrompt returns a non-empty string', () => {
@@ -294,6 +300,60 @@ describe('prompt-builder', () => {
       expect(prompt).toContain('finding 50');
       // Overflow message present
       expect(prompt).toContain('10 more');
+    });
+  });
+
+  describe('audit categories (IaC security)', () => {
+    const iacCategories = ['dockerfile-security', 'terraform-security', 'kubernetes-security'];
+    let originalCwd: string;
+
+    beforeAll(() => {
+      originalCwd = process.cwd();
+      process.chdir(path.resolve(__dirname, '../../'));
+    });
+
+    afterAll(() => {
+      process.chdir(originalCwd);
+    });
+
+    it('listAuditCategories includes new IaC categories', () => {
+      const categories = listAuditCategories();
+      for (const cat of iacCategories) {
+        expect(categories).toContain(cat);
+      }
+    });
+
+    it('loadAuditCategoryPrompt returns non-null for dockerfile-security', () => {
+      const prompt = loadAuditCategoryPrompt('dockerfile-security');
+      expect(prompt).not.toBeNull();
+      expect(prompt).toContain('Dockerfile');
+      expect(prompt).toContain('USER root');
+      expect(prompt).toContain('multi-stage');
+    });
+
+    it('loadAuditCategoryPrompt returns non-null for terraform-security', () => {
+      const prompt = loadAuditCategoryPrompt('terraform-security');
+      expect(prompt).not.toBeNull();
+      expect(prompt).toContain('Terraform');
+      expect(prompt).toContain('### Hardcoded Secrets');
+      expect(prompt).toContain('S3');
+    });
+
+    it('loadAuditCategoryPrompt returns non-null for kubernetes-security', () => {
+      const prompt = loadAuditCategoryPrompt('kubernetes-security');
+      expect(prompt).not.toBeNull();
+      expect(prompt).toContain('Kubernetes');
+      expect(prompt).toContain('privileged');
+      expect(prompt).toContain('hostPath');
+    });
+
+    it('all IaC prompts contain output format section', () => {
+      for (const cat of iacCategories) {
+        const prompt = loadAuditCategoryPrompt(cat);
+        expect(prompt).toContain('severity');
+        expect(prompt).toContain('suggestion');
+        expect(prompt).toContain('Output Format');
+      }
     });
   });
 

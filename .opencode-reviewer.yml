@@ -39,6 +39,9 @@ audit:
     - "security-privacy"
     - "error-handling-resilience"
     - "performance-efficiency"
+    - "dockerfile-security"
+    - "terraform-security"
+    - "kubernetes-security"
   targetDirs:
     - "lib/src"
     - "action/src"
