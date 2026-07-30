@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.5] — 2026-07-30
+
+
+### Fixed
+
+- remove type:module from lib, use export type * from, inline DEFAULT_CONFIG and schemas
+
+### Changed
+
+- chore: rebuild compiled output with ncc 0.44.1
+- ⚡ Bolt: Optimize JSON database file I/O with debounced async writes (#261) (#261)
+- [Autofix] Issue 61: No review analytics dashboard or accuracy metrics tracking (#252) (#252)
+
+[v1.6.5]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.4...v1.6.5
+
 ## [v1.6.4] — 2026-07-30
 
 
