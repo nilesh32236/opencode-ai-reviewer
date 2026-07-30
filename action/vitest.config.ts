@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
@@ -6,5 +7,10 @@ export default defineConfig({
     environment: 'node',
     include: ['tests/**/*.test.ts'],
     root: '.',
+  },
+  resolve: {
+    alias: {
+      '@opencode-pr-agent/lib': path.resolve(__dirname, '../lib/src/index.ts'),
+    },
   },
 });
