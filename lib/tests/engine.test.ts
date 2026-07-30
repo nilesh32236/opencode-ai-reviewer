@@ -7,6 +7,8 @@ const {
   mockMCPDisconnect,
   mockMCPGetLibraryDocs,
   mockGitHubGetPR,
+  mockGitHubGetDiffSince,
+  mockGitHubGetOpenHumanThreads,
   mockRunOpenCode,
   mockParseJsonlFile,
   mockEmptyResult,
@@ -16,12 +18,14 @@ const {
   mockBuildAnalyzePrompt,
   mockBuildSynthesisPrompt,
   MockMCPManager,
-  MockGitHubHelper,
+  createMockAdapter,
 } = vi.hoisted(() => {
   const _mockMCPConnect = vi.fn();
   const _mockMCPDisconnect = vi.fn();
   const _mockMCPGetLibraryDocs = vi.fn();
   const _mockGitHubGetPR = vi.fn();
+  const _mockGitHubGetDiffSince = vi.fn().mockResolvedValue('');
+  const _mockGitHubGetOpenHumanThreads = vi.fn().mockResolvedValue('');
   const _mockRunOpenCode = vi.fn();
   const _mockParseJsonlFile = vi.fn();
   const _mockEmptyResult = vi.fn(() => ({
@@ -49,11 +53,54 @@ const {
     getPR = _mockGitHubGetPR;
   }
 
+  function _createMockAdapter() {
+    return {
+      getMR: _mockGitHubGetPR,
+      isMR: vi.fn().mockResolvedValue(true),
+      getDefaultBranch: vi.fn().mockResolvedValue('main'),
+      getIssue: vi.fn(),
+      getIssueComments: vi.fn().mockResolvedValue([]),
+      getDiffLines: vi.fn().mockResolvedValue(new Set<string>()),
+      getDiffSince: _mockGitHubGetDiffSince,
+      listReviewComments: vi.fn().mockResolvedValue([]),
+      createReviewCommentReply: vi.fn(),
+      listComments: vi.fn().mockResolvedValue([]),
+      postComment: vi.fn(),
+      postReview: vi.fn(),
+      postOrUpdateComment: vi.fn(),
+      createComment: vi.fn(),
+      replyToReviewComment: vi.fn(),
+      getReviewComment: vi.fn(),
+      getReviewCommentThread: vi.fn(),
+      createIssue: vi.fn(),
+      createPR: vi.fn(),
+      addLabels: vi.fn(),
+      removeLabel: vi.fn(),
+      setLabels: vi.fn(),
+      ensureLabels: vi.fn(),
+      gatherContext: vi.fn().mockResolvedValue(''),
+      closeOpenCodePRs: vi.fn(),
+      mergeMR: vi.fn(),
+      enableAutoMerge: vi.fn(),
+      closeIssue: vi.fn(),
+      getReviewThreads: vi.fn().mockResolvedValue([]),
+      resolveReviewThread: vi.fn(),
+      minimizeReviewComment: vi.fn(),
+      getBotReviewThreads: vi.fn().mockResolvedValue([]),
+      getOpenHumanThreads: _mockGitHubGetOpenHumanThreads,
+      updateMR: vi.fn(),
+      getCurrentUser: vi.fn().mockResolvedValue('test-bot'),
+      paginate: vi.fn().mockResolvedValue([]),
+    };
+  }
+
   return {
     mockMCPConnect: _mockMCPConnect,
     mockMCPDisconnect: _mockMCPDisconnect,
     mockMCPGetLibraryDocs: _mockMCPGetLibraryDocs,
     mockGitHubGetPR: _mockGitHubGetPR,
+    mockGitHubGetDiffSince: _mockGitHubGetDiffSince,
+    mockGitHubGetOpenHumanThreads: _mockGitHubGetOpenHumanThreads,
     mockRunOpenCode: _mockRunOpenCode,
     mockParseJsonlFile: _mockParseJsonlFile,
     mockEmptyResult: _mockEmptyResult,
@@ -63,7 +110,7 @@ const {
     mockBuildAnalyzePrompt: _mockBuildAnalyzePrompt,
     mockBuildSynthesisPrompt: _mockBuildSynthesisPrompt,
     MockMCPManager: _MockMCPManager,
-    MockGitHubHelper: _MockGitHubHelper,
+    createMockAdapter: _createMockAdapter,
   };
 });
 
@@ -159,9 +206,12 @@ function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
 describe('ReviewEngine', () => {
   let engine: ReviewEngine;
 
+  let mockAdapter: ReturnType<typeof createMockAdapter>;
+
   beforeEach(() => {
     vi.resetAllMocks();
-    engine = new ReviewEngine(makeConfig(), 'fake-token', 'owner/repo');
+    mockAdapter = createMockAdapter();
+    engine = new ReviewEngine(makeConfig(), mockAdapter);
   });
 
   describe('reviewPR()', () => {
@@ -172,8 +222,7 @@ describe('ReviewEngine', () => {
         makeConfig({
           mcpServers: [{ name: 'context7', type: 'local', command: ['node', 'server.js'] }],
         }),
-        'fake-token',
-        'owner/repo',
+        mockAdapter,
       );
       mockMCPConnect.mockResolvedValue(undefined);
       mockMCPGetLibraryDocs.mockResolvedValue('docs content');
@@ -257,12 +306,7 @@ describe('ReviewEngine', () => {
         getRelevantLessons: vi.fn().mockRejectedValue(new Error('DB error')),
         close: vi.fn(),
       };
-      const eng = new ReviewEngine(
-        makeConfig(),
-        'fake-token',
-        'owner/repo',
-        learningStore as never,
-      );
+      const eng = new ReviewEngine(makeConfig(), mockAdapter, learningStore as never);
       mockMCPConnect.mockResolvedValue(undefined);
       mockRunOpenCode.mockResolvedValue({
         success: true,
@@ -284,8 +328,7 @@ describe('ReviewEngine', () => {
       };
       const eng = new ReviewEngine(
         makeConfig({ enableMCP: false, mcpServers: [] }),
-        'fake-token',
-        'owner/repo',
+        mockAdapter,
         learningStore as never,
       );
       mockRunOpenCode.mockResolvedValue({
@@ -303,11 +346,7 @@ describe('ReviewEngine', () => {
     });
 
     it('skips MCP when enableMCP is false', async () => {
-      const eng = new ReviewEngine(
-        makeConfig({ enableMCP: false, mcpServers: [] }),
-        'fake-token',
-        'owner/repo',
-      );
+      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
       mockRunOpenCode.mockResolvedValue({
         success: true,
         output: '',
@@ -548,11 +587,7 @@ describe('ReviewEngine', () => {
     });
 
     it('skips MCP when no servers configured', async () => {
-      const eng = new ReviewEngine(
-        makeConfig({ enableMCP: false, mcpServers: [] }),
-        'fake-token',
-        'owner/repo',
-      );
+      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
       const mockedGetGitStatus = vi.mocked(getGitStatus);
       mockedGetGitStatus.mockReturnValue('');
 
@@ -638,11 +673,7 @@ describe('ReviewEngine', () => {
     });
 
     it('skips MCP when enableMCP is false', async () => {
-      const eng = new ReviewEngine(
-        makeConfig({ enableMCP: false, mcpServers: [] }),
-        'fake-token',
-        'owner/repo',
-      );
+      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
       mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
       mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
 
@@ -661,8 +692,7 @@ describe('ReviewEngine', () => {
         makeConfig({
           mcpServers: [{ name: 'context7', type: 'local', command: ['node', 'server.js'] }],
         }),
-        'fake-token',
-        'owner/repo',
+        mockAdapter,
       );
       mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
 
@@ -707,11 +737,7 @@ describe('ReviewEngine', () => {
     });
 
     it('works with custom config', async () => {
-      const eng = new ReviewEngine(
-        makeConfig({ enableMCP: false, mcpServers: [] }),
-        'fake-token',
-        'owner/repo',
-      );
+      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
       mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
 
       const fsPromises = fs.promises;
@@ -745,8 +771,7 @@ describe('ReviewEngine', () => {
 
       const eng = new ReviewEngine(
         makeConfig({ maxLinesPerFile: maxLines, enableMCP: false, mcpServers: [] }),
-        'fake-token',
-        'owner/repo',
+        mockAdapter,
       );
 
       mockRunOpenCode.mockResolvedValue({
@@ -787,8 +812,7 @@ describe('ReviewEngine', () => {
 
       const eng = new ReviewEngine(
         makeConfig({ maxLinesPerFile: 100, enableMCP: false, mcpServers: [] }),
-        'fake-token',
-        'owner/repo',
+        mockAdapter,
       );
 
       mockRunOpenCode.mockResolvedValue({
@@ -833,8 +857,7 @@ describe('ReviewEngine', () => {
 
       const eng = new ReviewEngine(
         makeConfig({ maxLinesPerFile: 50, enableMCP: false, mcpServers: [] }),
-        'fake-token',
-        'owner/repo',
+        mockAdapter,
       );
 
       mockRunOpenCode.mockResolvedValue({
@@ -886,8 +909,7 @@ describe('ReviewEngine', () => {
             },
           },
         }),
-        'fake-token',
-        'owner/repo',
+        mockAdapter,
       );
 
       mockRunOpenCode.mockResolvedValue({
@@ -940,8 +962,7 @@ describe('ReviewEngine', () => {
             },
           },
         }),
-        'fake-token',
-        'owner/repo',
+        mockAdapter,
       );
 
       mockRunOpenCode.mockResolvedValue({
@@ -979,8 +1000,7 @@ describe('ReviewEngine', () => {
 
       const eng = new ReviewEngine(
         makeConfig({ maxLinesPerFile: 100, enableMCP: false, mcpServers: [] }),
-        'fake-token',
-        'owner/repo',
+        mockAdapter,
       );
 
       mockRunOpenCode.mockResolvedValue({
@@ -1026,8 +1046,7 @@ describe('ReviewEngine', () => {
             },
           },
         }),
-        'fake-token',
-        'owner/repo',
+        mockAdapter,
       );
 
       mockRunOpenCode.mockResolvedValue({
@@ -1066,12 +1085,7 @@ describe('ReviewEngine', () => {
       const learningStore = {
         close: vi.fn().mockResolvedValue(undefined),
       };
-      const eng = new ReviewEngine(
-        makeConfig(),
-        'fake-token',
-        'owner/repo',
-        learningStore as never,
-      );
+      const eng = new ReviewEngine(makeConfig(), mockAdapter, learningStore as never);
       mockMCPDisconnect.mockResolvedValue(undefined);
 
       await eng.cleanup();
@@ -1083,12 +1097,7 @@ describe('ReviewEngine', () => {
       const learningStore = {
         close: vi.fn().mockRejectedValue(new Error('Close failed')),
       };
-      const eng = new ReviewEngine(
-        makeConfig(),
-        'fake-token',
-        'owner/repo',
-        learningStore as never,
-      );
+      const eng = new ReviewEngine(makeConfig(), mockAdapter, learningStore as never);
       mockMCPDisconnect.mockResolvedValue(undefined);
 
       await expect(eng.cleanup()).resolves.toBeUndefined();
@@ -1124,7 +1133,7 @@ describe('ReviewEngine', () => {
     });
 
     it('skips linters when no linters configured', async () => {
-      const eng = new ReviewEngine(makeConfig({ linters: [] }), 'fake-token', 'owner/repo');
+      const eng = new ReviewEngine(makeConfig({ linters: [] }), mockAdapter);
 
       mockMCPConnect.mockResolvedValue(undefined);
       mockRunOpenCode.mockResolvedValue({
@@ -1145,8 +1154,7 @@ describe('ReviewEngine', () => {
         makeConfig({
           linters: [{ pattern: '**/*.ts', command: 'eslint', args: ['--format', 'json'] }],
         }),
-        'fake-token',
-        'owner/repo',
+        mockAdapter,
       );
 
       mockSpawnSync.mockReturnValue({
@@ -1194,8 +1202,7 @@ describe('ReviewEngine', () => {
         makeConfig({
           linters: [{ pattern: '**/*.py', command: 'ruff' }],
         }),
-        'fake-token',
-        'owner/repo',
+        mockAdapter,
       );
       const pr = makePRContext({
         changedFiles: [
@@ -1242,8 +1249,7 @@ describe('ReviewEngine', () => {
         makeConfig({
           linters: [{ pattern: '**/*.ts', command: 'eslint' }],
         }),
-        'fake-token',
-        'owner/repo',
+        mockAdapter,
       );
 
       mockSpawnSync.mockImplementation(() => {
@@ -1268,8 +1274,7 @@ describe('ReviewEngine', () => {
         makeConfig({
           linters: [{ pattern: '**/*.ts', command: 'eslint', parseFormat: 'eslint' }],
         }),
-        'fake-token',
-        'owner/repo',
+        mockAdapter,
       );
 
       mockSpawnSync.mockReturnValue({
@@ -1344,8 +1349,7 @@ describe('ReviewEngine', () => {
         makeConfig({
           linters: [{ pattern: '**/*.ts', command: 'eslint', parseFormat: 'eslint' }],
         }),
-        'fake-token',
-        'owner/repo',
+        mockAdapter,
       );
 
       mockSpawnSync.mockReturnValue({

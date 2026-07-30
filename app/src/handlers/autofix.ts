@@ -58,7 +58,7 @@ export async function handleAutofixLoop(
   logger.info(`Starting autofix loop for PR #${prNumber} in ${repo}`);
 
   const gh = new GitHubHelper(token, repo);
-  const engine = new ReviewEngine(config, token, repo);
+  const engine = new ReviewEngine(config, gh);
   const history: IterationRecord[] = [];
   const previousFindings: PreviousFindingIteration[] = [];
   let approved = false;

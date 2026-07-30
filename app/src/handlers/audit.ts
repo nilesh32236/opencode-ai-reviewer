@@ -92,7 +92,7 @@ export async function handleAudit(
     return;
   }
 
-  const engine = new ReviewEngine(config, token, repo);
+  const engine = new ReviewEngine(config, gh);
 
   try {
     const auditWorkingDir = tempDir || process.cwd();

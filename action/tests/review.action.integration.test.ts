@@ -66,8 +66,8 @@ vi.mock('@actions/github', () => ({
 import { runReview } from '../src/review.js';
 
 const mockGh = {
-  getPR: mockGetPR,
-  isPR: mockIsPR,
+  getMR: mockGetPR,
+  isMR: mockIsPR,
   getBotReviewThreads: mockGetBotReviewThreads,
   postReview: mockPostReview,
 } as unknown as GitHubHelper;

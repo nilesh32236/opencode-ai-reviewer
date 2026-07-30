@@ -33,7 +33,7 @@ export async function handlePRReview(
 
   let pr: PRContext;
   try {
-    pr = await gh.getPR(prNumber);
+    pr = await gh.getMR(prNumber);
   } catch (err) {
     logger.error(`Failed to get PR #${prNumber}: ${err instanceof Error ? err.message : err}`);
     return null;
@@ -45,7 +45,7 @@ export async function handlePRReview(
     return null;
   }
 
-  const engine = new ReviewEngine(config, token, repo, learningStore);
+  const engine = new ReviewEngine(config, gh, learningStore);
 
   try {
     const reviewWorkingDir = tempDir || process.cwd();

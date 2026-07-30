@@ -4,8 +4,8 @@ import * as github from '@actions/github';
 import type {
   AgentConfig,
   FixResult,
-  GitHubHelper,
   IssueComment,
+  PlatformAdapter,
   PreviousFindingIteration,
   ReviewEngine,
 } from '@opencode-pr-agent/lib';
@@ -33,13 +33,13 @@ import { resolvePrNumber, sanitize } from './utils.js';
  * @param inputs - Parsed action inputs.
  * @param config - Full agent configuration.
  * @param engine - Review engine instance.
- * @param gh - GitHub API helper.
+ * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  */
 export async function runFix(
   inputs: ActionInputs,
   config: AgentConfig,
   engine: ReviewEngine,
-  gh: GitHubHelper,
+  gh: PlatformAdapter,
 ): Promise<void> {
   const prNumber = await resolvePrNumber();
   if (prNumber === null) {
@@ -57,7 +57,7 @@ export async function runFix(
     return;
   }
 
-  const pr = await gh.getPR(prNumber);
+  const pr = await gh.getMR(prNumber);
   const contextMarkdown = await gh.gatherContext({ prNumber });
 
   const fixResult = await engine.runFix(prNumber, iteration, contextMarkdown, pr);
@@ -102,7 +102,7 @@ export async function runFix(
       );
 
       if (v < maxVerificationRetries) {
-        const freshPr = await gh.getPR(prNumber);
+        const freshPr = await gh.getMR(prNumber);
         const freshContextMarkdown = await gh.gatherContext({ prNumber });
         const retryResult = await engine.runFix(
           prNumber,
@@ -156,7 +156,7 @@ export async function runFixIssue(
   inputs: ActionInputs,
   config: AgentConfig,
   engine: ReviewEngine,
-  gh: GitHubHelper,
+  gh: PlatformAdapter,
   repo: string,
   token: string,
 ): Promise<void> {
@@ -387,7 +387,7 @@ export async function runAutofixLoop(
   inputs: ActionInputs,
   config: AgentConfig,
   engine: ReviewEngine,
-  gh: GitHubHelper,
+  gh: PlatformAdapter,
   _repo: string,
   _token: string,
 ): Promise<void> {
@@ -424,7 +424,7 @@ export async function runAutofixLoop(
 
     core.info(`=== Autofix iteration ${i + 1}/${config.maxIterations} ===`);
 
-    const pr = await gh.getPR(prNumber);
+    const pr = await gh.getMR(prNumber);
     const prHeadSha = pr.headSha;
 
     let previousBotComments:
@@ -666,7 +666,7 @@ export async function runAutofixLoop(
           core.info(
             `Feeding verification error to fix engine (retry ${v + 1}/${maxVerificationRetries})...`,
           );
-          const prAgain = await gh.getPR(prNumber);
+          const prAgain = await gh.getMR(prNumber);
           const freshContextMarkdown = await gh.gatherContext({ prNumber });
           const retryResult = await engine.runFix(
             prNumber,
@@ -760,7 +760,7 @@ async function handleTimeoutGracefully(
   history: IterationRecord[],
   iteration: number,
   config: AgentConfig,
-  gh: GitHubHelper,
+  gh: PlatformAdapter,
 ): Promise<void> {
   const status = await exec.getExecOutput('git', ['status', '--porcelain']);
   const hasChanges = status.stdout.trim().length > 0;
@@ -777,7 +777,7 @@ async function handleTimeoutGracefully(
       await exec.exec('git', ['add', '-A']);
       await exec.exec('git', ['commit', '-m', commitMessage]);
 
-      const pr = await gh.getPR(prNumber);
+      const pr = await gh.getMR(prNumber);
       validateRefName(pr.headRef);
       await exec.exec('git', ['push', 'origin', pr.headRef]);
       core.info('Successfully pushed partial changes.');

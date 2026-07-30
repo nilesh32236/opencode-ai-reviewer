@@ -41,7 +41,7 @@ export async function handleConversation(
   // Fetch the PR for context
   let pr: PRContext;
   try {
-    pr = await gh.getPR(prNumber);
+    pr = await gh.getMR(prNumber);
   } catch (err) {
     logger.error(`Failed to get PR #${prNumber}: ${err instanceof Error ? err.message : err}`);
     return;
@@ -83,7 +83,7 @@ export async function handleConversation(
   };
 
   // Run through the engine
-  const engine = new ReviewEngine(config, token, repo, learningStore);
+  const engine = new ReviewEngine(config, gh, learningStore);
   try {
     if (signal?.aborted) return;
 

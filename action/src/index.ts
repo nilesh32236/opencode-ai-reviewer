@@ -7,9 +7,11 @@ import {
   type AgentConfig,
   DEFAULT_CONFIG,
   GitHubHelper,
+  GitLabAdapter,
   LearningStore,
   type MCPServerConfig,
   MCPServerConfigSchema,
+  type PlatformAdapter,
   ReviewEngine,
   configureGit,
   getDefaultMCPServers,
@@ -119,9 +121,12 @@ async function run(): Promise<void> {
       inputs.checkAllowlist = loadedConfig.fix.checkAllowlist;
     }
 
-    const repo =
-      core.getInput('repo') || `${github.context.repo.owner}/${github.context.repo.repo}`;
+    const platform = (process.env.PLATFORM || 'github') as 'github' | 'gitlab';
     const token = inputs.githubToken;
+    const repo =
+      platform === 'gitlab'
+        ? `${process.env.CI_PROJECT_NAMESPACE || ''}/${process.env.CI_PROJECT_NAME || ''}`
+        : core.getInput('repo') || `${github.context.repo.owner}/${github.context.repo.repo}`;
 
     if (inputs.enableStateCache) {
       cacheManager = new StateCacheManager(inputs.stateCacheKey);
@@ -240,8 +245,9 @@ async function run(): Promise<void> {
     const learningStore = new LearningStore();
 
     try {
-      engine = new ReviewEngine(config, token, repo, learningStore);
-      const gh = new GitHubHelper(token, repo);
+      const gh: PlatformAdapter =
+        platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
+      engine = new ReviewEngine(config, gh, learningStore);
 
       switch (inputs.mode) {
         case 'analyze':

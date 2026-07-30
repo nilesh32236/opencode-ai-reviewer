@@ -1,5 +1,6 @@
 import * as core from '@actions/core';
 import { buildInlineComments } from '../jsonl-parser.js';
+import type { PlatformAdapter, ReviewPostResult, ReviewThreadInfo } from '../platform/adapter.js';
 import type {
   ChangedFile,
   IssueComment,
@@ -52,31 +53,6 @@ interface ReviewThreadsQueryResponse {
   };
 }
 
-/** Information about a review comment thread. */
-export interface ReviewThreadInfo {
-  /** GraphQL node ID of the thread (used for resolve mutation). */
-  threadId: string;
-  /** Whether the thread is resolved. */
-  isResolved: boolean;
-  /** The first (root) comment in the thread. */
-  firstComment: {
-    /** GraphQL node ID of the comment (used for minimize mutation). */
-    commentId: string;
-    /** REST API database ID of the comment. */
-    databaseId: number;
-    /** Comment body markdown. */
-    body: string;
-    /** File path the comment is on. */
-    filePath: string;
-    /** Line number the comment is on (or null if outdated/unassigned). */
-    lineNumber: number | null;
-    /** GitHub login of the comment author. */
-    author: string;
-    /** ISO 8601 creation timestamp. */
-    createdAt: string;
-  };
-}
-
 /**
  * Helper for GitHub REST API interactions (PRs, issues, reviews, comments, labels).
  * Handles authentication, rate-limit warnings, pagination, and automatic retry
@@ -89,7 +65,7 @@ export interface ReviewThreadInfo {
  * Pagination:
  * - Uses `paginate` to fetch multi-page results with configurable per-page and max-pages.
  */
-export class GitHubHelper {
+export class GitHubHelper implements PlatformAdapter {
   /**
    * @param token - GitHub personal access token (classic or fine-grained).
    * @param repo - Repository in "owner/name" format.
@@ -291,6 +267,11 @@ export class GitHubHelper {
     };
   }
 
+  /** PlatformAdapter alias for getPR. */
+  async getMR(number: number): Promise<PRContext> {
+    return this.getPR(number);
+  }
+
   /**
    * Check whether a given issue/PR number refers to a pull request.
    *
@@ -304,6 +285,11 @@ export class GitHubHelper {
     } catch {
       return false;
     }
+  }
+
+  /** PlatformAdapter alias for isPR. */
+  async isMR(number: number): Promise<boolean> {
+    return this.isPR(number);
   }
 
   /**
@@ -544,18 +530,7 @@ export class GitHubHelper {
     result: ReviewResult,
     postInlineComments = true,
     suppressLowConfidence?: boolean,
-  ): Promise<{
-    success: boolean;
-    method: 'full' | 'partial' | 'body-only' | 'failed';
-    reviewId?: number;
-    commentIds?: Array<{
-      file: string;
-      line: number;
-      commentId: number;
-      nodeId?: string;
-      side?: string;
-    }>;
-  }> {
+  ): Promise<ReviewPostResult> {
     const workingResult = suppressLowConfidence
       ? {
           ...result,
@@ -1201,6 +1176,11 @@ export class GitHubHelper {
     }
   }
 
+  /** PlatformAdapter alias for mergePR. */
+  async mergeMR(mrNumber: number): Promise<boolean> {
+    return this.mergePR(mrNumber);
+  }
+
   /**
    * Enable auto-merge on a PR using squash method.
    *
@@ -1313,7 +1293,7 @@ export class GitHubHelper {
 
   private currentUserLogin: string | null = null;
 
-  private async getCurrentUser(): Promise<string> {
+  async getCurrentUser(): Promise<string> {
     if (this.currentUserLogin) return this.currentUserLogin;
     if (process.env.GITHUB_ACTOR) {
       this.currentUserLogin = process.env.GITHUB_ACTOR;
@@ -1546,6 +1526,11 @@ export class GitHubHelper {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updates),
     });
+  }
+
+  /** PlatformAdapter alias for updatePR. */
+  async updateMR(mrNumber: number, updates: { title?: string; body?: string }): Promise<void> {
+    return this.updatePR(mrNumber, updates);
   }
 
   // ─── Private Helpers ────────────────────────────────────

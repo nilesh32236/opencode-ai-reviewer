@@ -174,8 +174,12 @@ export interface ReviewComment {
 }
 
 // ─── Configuration ────────────────────────────────────────
+export type Platform = 'github' | 'gitlab';
+
 /** Top-level agent configuration for reviews, fixes, audits, and learning. */
 export interface AgentConfig {
+  /** Platform to use (github or gitlab, defaults to github). */
+  platform?: Platform;
   /** Model to use for reviews */
   reviewModel: string;
   /** Model to use for fixes */
@@ -384,6 +388,8 @@ export interface ReviewInput {
   model?: string;
   /** GitHub token for API access */
   githubToken: string;
+  /** Platform identifier (github or gitlab). */
+  platform?: Platform;
   /** Optional partial config overrides */
   config?: Partial<AgentConfig>;
 }
@@ -398,6 +404,8 @@ export interface FixInput {
   model?: string;
   /** GitHub token for API access */
   githubToken: string;
+  /** Platform identifier (github or gitlab). */
+  platform?: Platform;
   /** Current fix iteration number */
   iteration: number;
 }
@@ -414,6 +422,8 @@ export interface AuditInput {
   repo: string;
   /** GitHub token for API access */
   githubToken: string;
+  /** Platform identifier (github or gitlab). */
+  platform?: Platform;
 }
 
 // ─── JSONL Finding Types ──────────────────────────────────
@@ -906,6 +916,7 @@ export interface PromptConfig {
 
 // ─── Defaults ─────────────────────────────────────────────
 export const DEFAULT_CONFIG: AgentConfig = {
+  platform: 'github',
   reviewModel: 'opencode/deepseek-v4-flash-free',
   fixModel: 'opencode/deepseek-v4-flash-free',
   auditModel: undefined,

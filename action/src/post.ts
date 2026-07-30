@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as github from '@actions/github';
-import type { GitHubHelper } from '@opencode-pr-agent/lib';
+import type { PlatformAdapter } from '@opencode-pr-agent/lib';
 import { LearningStore, validateRunChecksCommand } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { sanitize } from './utils.js';
@@ -10,13 +10,13 @@ import { sanitize } from './utils.js';
  * Run post-processing after a review/fix action: optionally run a
  * verification command, and post a review summary comment to the PR.
  * @param inputs - Parsed action inputs.
- * @param gh - GitHub API helper.
+ * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param _repo - Repository string (owner/repo, unused).
  * @param _token - GitHub authentication token (unused).
  */
 export async function runPost(
   inputs: ActionInputs,
-  gh: GitHubHelper,
+  gh: PlatformAdapter,
   _repo: string,
   _token: string,
 ): Promise<void> {

@@ -170,7 +170,7 @@ export async function handleAnalyzeCommand(
   logger.info(`Analyzing issue #${issueNumber}`);
 
   const gh = new GitHubHelper(token, repo);
-  const engine = new ReviewEngine(config, token, repo);
+  const engine = new ReviewEngine(config, gh);
 
   try {
     const issueContext = await gh.gatherContext({ issueNumber });
@@ -221,7 +221,7 @@ export async function handleExplainCommand(
   logger.info(`Explaining PR #${issueNumber}`);
 
   const gh = new GitHubHelper(token, repo);
-  const engine = new ReviewEngine(config, token, repo);
+  const engine = new ReviewEngine(config, gh);
 
   try {
     const pr = await gh.getPR(issueNumber);
@@ -299,7 +299,7 @@ async function createAutofixPR(
     timeout: 120_000,
     ...(gitEnv ? { env: { ...process.env, ...gitEnv } } : {}),
   };
-  const engine = new ReviewEngine(config, token, repo);
+  const engine = new ReviewEngine(config, gh);
   const branchName = `autofix/issue-${issueNumber}`;
 
   try {

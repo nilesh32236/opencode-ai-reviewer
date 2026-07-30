@@ -98,7 +98,7 @@ vi.mock('@actions/exec', () => ({
 import { runAutofixLoop } from '../src/fix.js';
 
 const mockGh = {
-  getPR: mockGetPR,
+  getMR: mockGetPR,
   getIssueComments: mockGetIssueComments,
   getBotReviewThreads: mockGetBotReviewThreads,
   postReview: mockPostReview,
