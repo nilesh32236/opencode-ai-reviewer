@@ -20,8 +20,9 @@ export async function runPost(
   _repo: string,
   _token: string,
 ): Promise<void> {
-  const prNumber =
-    github.context.payload.pull_request?.number || github.context.payload.issue?.number;
+  const prNumber = process.env.CI_MERGE_REQUEST_IID
+    ? Number(process.env.CI_MERGE_REQUEST_IID)
+    : github.context.payload.pull_request?.number || github.context.payload.issue?.number;
   if (!prNumber) {
     core.setFailed('Could not determine PR number for post-processing');
     return;

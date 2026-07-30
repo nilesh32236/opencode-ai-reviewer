@@ -87,7 +87,7 @@ export interface PlatformAdapter {
   ): Promise<{ action: 'created' | 'updated' | 'failed'; commentId: number }>;
   createComment(issueNumber: number, body: string): Promise<{ id: number }>;
   replyToReviewComment(mrNumber: number, commentId: number, body: string): Promise<{ id: number }>;
-  getReviewComment(commentId: number): Promise<ReviewCommentDetail>;
+  getReviewComment(mrNumber: number, commentId: number): Promise<ReviewCommentDetail>;
   getReviewCommentThread(commentId: number): Promise<ReviewCommentThread>;
   createIssue(
     title: string,

@@ -21,57 +21,16 @@ interface FixtureEntry {
 
 const fixtureQueue: FixtureEntry[] = [];
 
-const { mockRunOpenCode, MockMCPManager, createMockAdapter } = vi.hoisted(() => {
+const { mockRunOpenCode, MockMCPManager } = vi.hoisted(() => {
   const _mockRunOpenCode = vi.fn();
   class _MockMCPManager {
     connect = vi.fn().mockResolvedValue(undefined);
     disconnect = vi.fn().mockResolvedValue(undefined);
     getLibraryDocs = vi.fn().mockResolvedValue('');
   }
-  function _createMockAdapter() {
-    return {
-      getMR: vi.fn(),
-      isMR: vi.fn().mockResolvedValue(true),
-      getDefaultBranch: vi.fn().mockResolvedValue('main'),
-      getIssue: vi.fn(),
-      getIssueComments: vi.fn().mockResolvedValue([]),
-      getDiffLines: vi.fn().mockResolvedValue(new Set<string>()),
-      getDiffSince: vi.fn().mockResolvedValue(''),
-      listReviewComments: vi.fn().mockResolvedValue([]),
-      createReviewCommentReply: vi.fn(),
-      listComments: vi.fn().mockResolvedValue([]),
-      postComment: vi.fn(),
-      postReview: vi.fn(),
-      postOrUpdateComment: vi.fn(),
-      createComment: vi.fn(),
-      replyToReviewComment: vi.fn(),
-      getReviewComment: vi.fn(),
-      getReviewCommentThread: vi.fn(),
-      createIssue: vi.fn(),
-      createPR: vi.fn(),
-      addLabels: vi.fn(),
-      removeLabel: vi.fn(),
-      setLabels: vi.fn(),
-      ensureLabels: vi.fn(),
-      gatherContext: vi.fn().mockResolvedValue(''),
-      closeOpenCodePRs: vi.fn(),
-      mergeMR: vi.fn(),
-      enableAutoMerge: vi.fn(),
-      closeIssue: vi.fn(),
-      getReviewThreads: vi.fn().mockResolvedValue([]),
-      resolveReviewThread: vi.fn(),
-      minimizeReviewComment: vi.fn(),
-      getBotReviewThreads: vi.fn().mockResolvedValue([]),
-      getOpenHumanThreads: vi.fn().mockResolvedValue(''),
-      updateMR: vi.fn(),
-      getCurrentUser: vi.fn().mockResolvedValue('test-bot'),
-      paginate: vi.fn().mockResolvedValue([]),
-    };
-  }
   return {
     mockRunOpenCode: _mockRunOpenCode,
     MockMCPManager: _MockMCPManager,
-    createMockAdapter: _createMockAdapter,
   };
 });
 

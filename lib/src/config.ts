@@ -3,7 +3,8 @@ import * as path from 'path';
 import * as core from '@actions/core';
 import yaml from 'js-yaml';
 import { minimatch } from 'minimatch';
-import type { ConfigOverride, LinterConfig, Platform, PromptConfig } from './types/index.js';
+import type { ConfigOverride, LinterConfig, PromptConfig } from './types/index.js';
+import type { Platform } from './types/index.js';
 import { PromptConfigSchema } from './types/schemas.js';
 import { DEFAULT_ALLOWLIST } from './utils/command.js';
 
@@ -20,7 +21,7 @@ export interface ResolveConfigOptions {
  * For 'github' (default): checks .opencode-reviewer.yml/yaml and .github/opencode-reviewer.yml/yaml.
  * For 'gitlab': checks .opencode-reviewer.yml/yaml and .gitlab/opencode-reviewer.yml/yaml.
  */
-function getConfigFilenames(platform?: string): string[] {
+function getConfigFilenames(platform?: Platform): string[] {
   const platformDir = platform === 'gitlab' ? '.gitlab' : '.github';
   return [
     '.opencode-reviewer.yml',
@@ -38,7 +39,7 @@ function getConfigFilenames(platform?: string): string[] {
  * @param platform - Platform identifier ('github' or 'gitlab', defaults to 'github').
  * @returns Parsed and validated PromptConfig, or null if no config file is found.
  */
-export function loadConfig(workingDir = '.', platform?: string): PromptConfig | null {
+export function loadConfig(workingDir = '.', platform?: Platform): PromptConfig | null {
   const configFilenames = getConfigFilenames(platform);
   for (const filename of configFilenames) {
     const fullPath = path.resolve(workingDir, filename);

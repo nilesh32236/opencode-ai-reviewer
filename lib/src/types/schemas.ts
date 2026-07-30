@@ -266,6 +266,7 @@ export const ConfigOverrideSchema = z.object({
 
 /** Zod schema validating the full prompt configuration from a YAML/JSON config file. All sections are optional and will be merged with defaults. */
 export const PromptConfigSchema = z.object({
+  platform: z.enum(['github', 'gitlab']).optional(),
   review: z
     .object({
       systemPrompt: z.string().optional(),

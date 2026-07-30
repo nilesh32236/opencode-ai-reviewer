@@ -29,20 +29,24 @@ import { runReview } from './review.js';
 import { runSelfHeal } from './self-heal.js';
 import { sanitize } from './utils.js';
 
-function buildCacheKey(prefix: string): string {
-  const repoNwo = `${github.context.repo.owner}/${github.context.repo.repo}`;
-  const branch = github.context.ref.replace('refs/heads/', '');
-  return `${prefix}-${repoNwo}-${branch}`;
+function buildCacheKey(prefix: string, repo?: string, branch?: string): string {
+  const repoNwo = repo || `${github.context.repo.owner}/${github.context.repo.repo}`;
+  const branchRef = branch || github.context.ref.replace('refs/heads/', '');
+  return `${prefix}-${repoNwo}-${branchRef}`;
 }
 
 class StateCacheManager {
   private learningDbMtimeMs = 0;
   private readonly stateDir: string;
   private readonly cacheKeyPrefix: string;
+  private readonly repo: string;
+  private readonly branch: string;
 
-  constructor(cacheKeyPrefix: string) {
+  constructor(cacheKeyPrefix: string, repo?: string, branch?: string) {
     this.cacheKeyPrefix = cacheKeyPrefix;
     this.stateDir = path.resolve(process.cwd(), '.opencode');
+    this.repo = repo || `${github.context.repo.owner}/${github.context.repo.repo}`;
+    this.branch = branch || github.context.ref.replace('refs/heads/', '');
   }
 
   private getLearningDbMtime(): number {
@@ -62,10 +66,8 @@ class StateCacheManager {
     }
 
     core.info('Restoring learning state from cache...');
-    const primaryKey = buildCacheKey(this.cacheKeyPrefix);
-    const restoreKeys = [
-      `${this.cacheKeyPrefix}-${github.context.repo.owner}/${github.context.repo.repo}-`,
-    ];
+    const primaryKey = buildCacheKey(this.cacheKeyPrefix, this.repo, this.branch);
+    const restoreKeys = [`${this.cacheKeyPrefix}-${this.repo}-`];
     try {
       const cacheKey = await restoreCache([this.stateDir], primaryKey, restoreKeys);
       if (cacheKey) {
@@ -98,7 +100,7 @@ class StateCacheManager {
       return;
     }
 
-    const cacheKey = buildCacheKey(this.cacheKeyPrefix);
+    const cacheKey = buildCacheKey(this.cacheKeyPrefix, this.repo, this.branch);
     try {
       await saveCache([this.stateDir], cacheKey);
       core.info(`Saved learning state to cache key: ${cacheKey}`);
@@ -115,13 +117,23 @@ async function run(): Promise<void> {
 
   try {
     inputs = parseInputs();
-    const loadedConfig = loadConfig();
+
+    const platform = (process.env.PLATFORM || 'github') as string as 'github' | 'gitlab';
+    const loadedConfig = loadConfig(undefined, platform);
+
+    if (platform === 'gitlab') {
+      if (!process.env.CI_PROJECT_NAMESPACE || !process.env.CI_PROJECT_NAME) {
+        core.setFailed(
+          'GitLab platform requires CI_PROJECT_NAMESPACE and CI_PROJECT_NAME env vars',
+        );
+        return;
+      }
+    }
 
     if (loadedConfig?.fix?.checkAllowlist?.length) {
       inputs.checkAllowlist = loadedConfig.fix.checkAllowlist;
     }
 
-    const platform = (process.env.PLATFORM || 'github') as 'github' | 'gitlab';
     const token = inputs.githubToken;
     const repo =
       platform === 'gitlab'
@@ -129,19 +141,24 @@ async function run(): Promise<void> {
         : core.getInput('repo') || `${github.context.repo.owner}/${github.context.repo.repo}`;
 
     if (inputs.enableStateCache) {
-      cacheManager = new StateCacheManager(inputs.stateCacheKey);
+      cacheManager = new StateCacheManager(inputs.stateCacheKey, repo);
       await cacheManager.restore();
     }
 
     await setupOpenCode(inputs.opencodeVersion);
     await setupWorkspaceDependencies(process.cwd());
 
-    configureGit(
-      core.getInput('git_user_name') || process.env.GITHUB_ACTOR || 'opencode-ai-reviewer[bot]',
+    const gitUser =
+      core.getInput('git_user_name') ||
+      (platform === 'gitlab'
+        ? process.env.GITLAB_USER_LOGIN || 'opencode-reviewer[bot]'
+        : process.env.GITHUB_ACTOR || 'opencode-ai-reviewer[bot]');
+    const gitEmail =
       core.getInput('git_user_email') ||
-        `${process.env.GITHUB_ACTOR || 'opencode-ai-reviewer[bot]'}@users.noreply.github.com`,
-      token,
-    );
+      (platform === 'gitlab'
+        ? `${process.env.GITLAB_USER_LOGIN || 'opencode-reviewer[bot]'}@noreply.gitlab.com`
+        : `${process.env.GITHUB_ACTOR || 'opencode-ai-reviewer[bot]'}@users.noreply.github.com`);
+    configureGit(gitUser, gitEmail, token);
 
     let mcpServers: MCPServerConfig[] = [];
     if (inputs.enableMCP) {
@@ -257,17 +274,24 @@ async function run(): Promise<void> {
           await runReview(inputs, config, engine, gh, repo);
           break;
         case 'fix':
-          if (github.context.payload.issue?.pull_request) {
-            await runAutofixLoop(inputs, config, engine, gh, repo, token);
-          } else if (
-            github.context.payload.issue?.number &&
-            !github.context.payload.issue?.pull_request
-          ) {
-            await runFixIssue(inputs, config, engine, gh, repo, token);
-          } else if (inputs.enableFix) {
-            await runAutofixLoop(inputs, config, engine, gh, repo, token);
-          } else {
-            await runFix(inputs, config, engine, gh);
+          {
+            const isPr =
+              platform === 'gitlab'
+                ? !!process.env.CI_MERGE_REQUEST_IID
+                : !!github.context.payload.issue?.pull_request;
+            const issueNum =
+              platform === 'gitlab'
+                ? Number(process.env.CI_MERGE_REQUEST_IID || '0')
+                : github.context.payload.issue?.number;
+            if (isPr) {
+              await runAutofixLoop(inputs, config, engine, gh, repo, token);
+            } else if (issueNum && !isPr) {
+              await runFixIssue(inputs, config, engine, gh, repo, token);
+            } else if (inputs.enableFix) {
+              await runAutofixLoop(inputs, config, engine, gh, repo, token);
+            } else {
+              await runFix(inputs, config, engine, gh);
+            }
           }
           break;
         case 'audit':
@@ -291,10 +315,11 @@ async function run(): Promise<void> {
     }
   } catch (error) {
     const mode = core.getInput('mode') || 'unknown';
-    const prNumber =
-      github.context.payload.pull_request?.number ||
-      github.context.payload.issue?.number ||
-      'unknown';
+    const prNumber = process.env.CI_MERGE_REQUEST_IID
+      ? Number(process.env.CI_MERGE_REQUEST_IID)
+      : github.context.payload.pull_request?.number ||
+        github.context.payload.issue?.number ||
+        'unknown';
     core.setFailed(
       `Action failed (mode: ${mode}, pr/issue: ${prNumber}): ${sanitize(error instanceof Error ? error.message : String(error))}`,
     );

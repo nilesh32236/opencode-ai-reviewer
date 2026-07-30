@@ -1,6 +1,5 @@
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
-import * as github from '@actions/github';
 import type {
   AgentConfig,
   FixResult,
@@ -157,8 +156,8 @@ export async function runFixIssue(
   config: AgentConfig,
   engine: ReviewEngine,
   gh: PlatformAdapter,
-  repo: string,
-  token: string,
+  _repo: string,
+  _token: string,
 ): Promise<void> {
   const issueNumber = await resolvePrNumber();
   if (!issueNumber) {
@@ -322,36 +321,10 @@ export async function runFixIssue(
   // Ensure the autofix label exists in the repository before referencing it in pr create
   await gh.ensureLabels(['autofix']);
 
-  const baseBranch = github.context.payload.repository?.default_branch || 'main';
+  const baseBranch = await gh.getDefaultBranch();
 
-  const prUrl = await exec
-    .getExecOutput(
-      'gh',
-      [
-        'pr',
-        'create',
-        '--base',
-        baseBranch,
-        '--head',
-        branchName,
-        '--title',
-        prTitle,
-        '--body',
-        prBody,
-        '--label',
-        'autofix',
-        '--repo',
-        repo,
-      ],
-      {
-        env: { ...process.env, GH_TOKEN: token } as { [key: string]: string },
-      },
-    )
-    .then((r) => r.stdout.trim())
-    .catch((err) => {
-      core.warning(sanitize(`Failed to create PR: ${err instanceof Error ? err.message : err}`));
-      return '';
-    });
+  const prResult = await gh.createPR(prTitle, prBody, branchName, baseBranch);
+  const prUrl = prResult?.url || '';
 
   if (prUrl) {
     core.info(`Created PR: ${prUrl}`);

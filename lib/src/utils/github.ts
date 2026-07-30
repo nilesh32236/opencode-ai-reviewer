@@ -13,6 +13,7 @@ import type {
 } from '../types/index.js';
 import { CircuitBreaker } from './circuit-breaker.js';
 import { withRetry, withRetryAndTimeout } from './retry.js';
+import { buildReviewBody, getConfidenceBadge } from './review-body.js';
 
 /** Paginated result wrapper for API responses. */
 export interface PaginatedResult<T> {
@@ -548,7 +549,7 @@ export class GitHubHelper implements PlatformAdapter {
           (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
         )
       : workingResult.issues;
-    const body = this.buildReviewBody({ ...workingResult, issues: issuesForBody });
+    const body = buildReviewBody({ ...workingResult, issues: issuesForBody });
 
     const commentIds: Array<{
       file: string;
@@ -766,7 +767,10 @@ export class GitHubHelper implements PlatformAdapter {
    * @param commentId - Review comment ID.
    * @returns The review comment details.
    */
-  async getReviewComment(commentId: number): Promise<{
+  async getReviewComment(
+    _mrNumber: number,
+    commentId: number,
+  ): Promise<{
     id: number;
     body: string;
     user: { login: string; type: string };
@@ -824,7 +828,7 @@ export class GitHubHelper implements PlatformAdapter {
     let lineNumber: number | undefined;
 
     while (currentId) {
-      const comment = await this.getReviewComment(currentId);
+      const comment = await this.getReviewComment(0, currentId);
       const entry = {
         id: comment.id,
         author: comment.user.login,
@@ -1531,90 +1535,6 @@ export class GitHubHelper implements PlatformAdapter {
   /** PlatformAdapter alias for updatePR. */
   async updateMR(mrNumber: number, updates: { title?: string; body?: string }): Promise<void> {
     return this.updatePR(mrNumber, updates);
-  }
-
-  // ─── Private Helpers ────────────────────────────────────
-
-  private buildReviewBody(result: ReviewResult): string {
-    const lines: string[] = [];
-
-    // Executive Summary (if present)
-    if (result.executiveSummary) {
-      const es = result.executiveSummary;
-      const riskEmoji = es.riskLevel === 'high' ? '🔴' : es.riskLevel === 'medium' ? '🟡' : '🟢';
-      lines.push('## Executive Summary');
-      lines.push('');
-      lines.push(`**Purpose:** ${es.purpose}`);
-      lines.push('');
-      lines.push(`**Risk:** ${riskEmoji} ${es.riskLevel.toUpperCase()} — ${es.riskRationale}`);
-      if (es.breakingChanges.length > 0) {
-        lines.push('');
-        lines.push('**Breaking Changes:**');
-        for (const bc of es.breakingChanges) {
-          lines.push(`- ⚠️ ${bc}`);
-        }
-      }
-      lines.push('');
-      lines.push('---');
-      lines.push('');
-    }
-
-    lines.push(
-      '## PR Review Summary',
-      '',
-      result.summary,
-      '',
-      `**Ready to merge?** ${result.verdict.ready}`,
-      '',
-      `**Reasoning:** ${result.verdict.reasoning}`,
-      '',
-    );
-
-    if (result.strengths.length > 0) {
-      lines.push('### Strengths');
-      lines.push('');
-      for (const s of result.strengths) {
-        lines.push(`- **${s.file}:${s.line}** — ${s.message}`);
-      }
-      lines.push('');
-    }
-
-    if (result.issues.length > 0) {
-      lines.push('### Issues');
-      lines.push('');
-      for (const i of result.issues) {
-        const badge = getConfidenceBadge(i.confidence);
-        lines.push(
-          `- ${badge} **${i.severity.toUpperCase()}:** \`${i.file}:${i.line}\` — ${i.message}`,
-        );
-        if (i.suggestion) {
-          lines.push(`  > 💡 **How to fix:** ${i.suggestion}`);
-        }
-        if (i.suggestionCode) {
-          lines.push('<details><summary>Show suggested fix</summary>');
-          lines.push('');
-          lines.push('```suggestion');
-          lines.push(i.suggestionCode.trim());
-          lines.push('```');
-          lines.push('</details>');
-        }
-      }
-    }
-
-    return lines.join('\n');
-  }
-}
-
-function getConfidenceBadge(confidence?: 'high' | 'medium' | 'low'): string {
-  switch (confidence) {
-    case 'high':
-      return '🔴';
-    case 'medium':
-      return '🟡';
-    case 'low':
-      return '⚪';
-    default:
-      return '⚪';
   }
 }
 

@@ -16,6 +16,7 @@ opencode-review:
   variables:
     PLATFORM: "gitlab"
     GITLAB_TOKEN: ${GITLAB_TOKEN}
+    INPUT_GITHUB_TOKEN: ${GITLAB_TOKEN}
     OPENCODE_API_KEY: ${OPENCODE_API_KEY}
     REVIEW_MODE: "review"
     OPENCODE_VERSION: "latest"
@@ -26,5 +27,3 @@ opencode-review:
   except:
     variables:
       - $CI_MERGE_REQUEST_LABELS =~ /.*autofix.*/
-      - $CI_MERGE_REQUEST_LABELS =~ /.*autofix:approved.*/
-      - $CI_MERGE_REQUEST_LABELS =~ /.*autofix:merged.*/

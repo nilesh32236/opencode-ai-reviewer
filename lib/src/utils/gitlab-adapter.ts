@@ -16,6 +16,7 @@ import type {
 } from '../types/index.js';
 import { CircuitBreaker } from './circuit-breaker.js';
 import { withRetry } from './retry.js';
+import { buildReviewBody, getConfidenceBadge } from './review-body.js';
 
 export class GitLabAdapter implements PlatformAdapter {
   private circuitBreaker = new CircuitBreaker({
@@ -194,8 +195,8 @@ export class GitLabAdapter implements PlatformAdapter {
             : f.renamed_file
               ? ('renamed' as const)
               : ('modified' as const),
-        additions: 0,
-        deletions: 0,
+        additions: f.diff ? (f.diff.match(/^\+[^+]/gm) || []).length : 0,
+        deletions: f.diff ? (f.diff.match(/^-[^-]/gm) || []).length : 0,
         patch: f.diff,
       })),
       linkedIssue,
@@ -274,8 +275,8 @@ export class GitLabAdapter implements PlatformAdapter {
   async getDiffLines(mrNumber: number): Promise<Set<string>> {
     try {
       const diffText = await this.api<string>(
-        `/merge_requests/${mrNumber}`,
-        { headers: { Accept: 'application/json' } },
+        `/merge_requests/${mrNumber}/diff`,
+        { headers: { Accept: 'text/plain' } },
         'text',
       );
       const lines = new Set<string>();
@@ -311,12 +312,13 @@ export class GitLabAdapter implements PlatformAdapter {
 
   async getDiffSince(fromSha: string, toSha: string): Promise<string> {
     try {
-      const diffText = await this.api<string>(
+      type CompareResponse = { diffs: Array<{ diff: string }> };
+      const data = await this.api<CompareResponse>(
         `/repository/compare?from=${fromSha}&to=${toSha}`,
         { headers: { Accept: 'application/json' } },
-        'text',
+        'json',
       );
-      return diffText;
+      return (data.diffs || []).map((d) => d.diff).join('\n');
     } catch (err) {
       core.warning(
         `Could not fetch diff between ${fromSha.slice(0, 7)} and ${toSha.slice(0, 7)}: ${String(err)}`,
@@ -335,7 +337,11 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   async createReviewCommentReply(mrNumber: number, commentId: number, body: string): Promise<void> {
-    await this.api(`/merge_requests/${mrNumber}/notes/${commentId}/notes`, {
+    const discussion = await this.api<{ discussion_id?: string }>(
+      `/merge_requests/${mrNumber}/notes/${commentId}`,
+    );
+    const discussionId = discussion?.discussion_id || String(commentId);
+    await this.api(`/merge_requests/${mrNumber}/discussions/${discussionId}/notes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ body }),
@@ -361,7 +367,7 @@ export class GitLabAdapter implements PlatformAdapter {
 
   async postReview(
     mrNumber: number,
-    commitSha: string,
+    _commitSha: string,
     result: ReviewResult,
     postInlineComments = true,
     suppressLowConfidence?: boolean,
@@ -383,7 +389,7 @@ export class GitLabAdapter implements PlatformAdapter {
           (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
         )
       : workingResult.issues;
-    const body = this.buildReviewBody({ ...workingResult, issues: issuesForBody });
+    const body = buildReviewBody({ ...workingResult, issues: issuesForBody });
 
     const commentIds: Array<{
       file: string;
@@ -409,19 +415,25 @@ export class GitLabAdapter implements PlatformAdapter {
       return { success: true, method: 'body-only' };
     }
 
+    // Fetch MR metadata once for diff_refs (avoid N+1)
+    let baseSha = '';
+    let headSha = '';
+    try {
+      const mrMeta = await this.api<{
+        diff_refs?: { base_sha: string; head_sha: string; start_sha: string };
+      }>(`/merge_requests/${mrNumber}`);
+      if (mrMeta.diff_refs) {
+        baseSha = mrMeta.diff_refs.base_sha;
+        headSha = mrMeta.diff_refs.head_sha;
+      }
+    } catch (err) {
+      core.warning(`Could not fetch MR metadata for SHA refs: ${err}`);
+    }
+    const startSha = baseSha || headSha;
+
     // Post inline comments as individual discussion threads
     for (const comment of inlineComments) {
       try {
-        const diffResult = await this.api<{ changes?: string }>(
-          `/merge_requests/${mrNumber}`,
-          { headers: { Accept: 'application/json' } },
-          'text',
-        );
-        const diffText = typeof diffResult === 'string' ? diffResult : '';
-        const baseSha = this.extractBaseSha(diffText);
-        const headSha = this.extractHeadSha(diffText);
-        const startSha = baseSha || headSha;
-
         await this.api(`/merge_requests/${mrNumber}/discussions`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -518,23 +530,35 @@ export class GitLabAdapter implements PlatformAdapter {
 
   async replyToReviewComment(
     mrNumber: number,
-    _commentId: number,
+    commentId: number,
     body: string,
   ): Promise<{ id: number }> {
-    const result = await this.api<{ id: number }>(`/merge_requests/${mrNumber}/notes`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ body }),
-    });
+    const discussion = await this.api<{ discussion_id?: string }>(
+      `/merge_requests/${mrNumber}/notes/${commentId}`,
+    );
+    const discussionId = discussion?.discussion_id || String(commentId);
+    const result = await this.api<{ id: number }>(
+      `/merge_requests/${mrNumber}/discussions/${discussionId}/notes`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body }),
+      },
+    );
     return { id: result.id };
   }
 
-  async getReviewComment(commentId: number): Promise<ReviewCommentDetail> {
-    return this.api<ReviewCommentDetail>(`/merge_requests/notes/${commentId}`);
+  async getReviewComment(mrNumber: number, commentId: number): Promise<ReviewCommentDetail> {
+    return this.api<ReviewCommentDetail>(`/merge_requests/${mrNumber}/notes/${commentId}`);
   }
 
   async getReviewCommentThread(_commentId: number): Promise<ReviewCommentThread> {
-    throw new Error('Review comment threads not supported via GitLab REST API');
+    core.warning('getReviewCommentThread not supported via GitLab REST API');
+    return {
+      comments: [],
+      rootComment: { id: 0, author: '', body: '', isBot: false },
+      filePath: '',
+    };
   }
 
   async createIssue(
@@ -584,10 +608,12 @@ export class GitLabAdapter implements PlatformAdapter {
   // ─── Label Operations ───────────────────────────────────
 
   async addLabels(issueNumber: number, labels: string[]): Promise<void> {
+    const existing = await this.api<{ labels: string[] }>(`/issues/${issueNumber}`);
+    const merged = [...new Set([...(existing.labels || []), ...labels])];
     await this.api(`/issues/${issueNumber}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ labels: labels.join(',') }),
+      body: JSON.stringify({ labels: merged.join(',') }),
     });
   }
 
@@ -620,8 +646,20 @@ export class GitLabAdapter implements PlatformAdapter {
     });
   }
 
-  async ensureLabels(_labels: string[]): Promise<void> {
-    core.warning('ensureLabels not implemented for GitLab');
+  async ensureLabels(labels: string[]): Promise<void> {
+    for (const label of labels) {
+      try {
+        await this.api('/labels', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: label, color: '#6699cc', description: '' }),
+        });
+      } catch (err) {
+        core.debug(
+          `Label creation for "${label}": ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
   }
 
   // ─── Context ────────────────────────────────────────────
@@ -631,22 +669,29 @@ export class GitLabAdapter implements PlatformAdapter {
     prNumber?: number;
   }): Promise<string> {
     const parts: string[] = [];
-    const [issue, mr, reviewComments, reviews] = await Promise.all([
+
+    let allNotes: Array<Record<string, unknown>> = [];
+    if (options.prNumber) {
+      allNotes = await this.paginate<Record<string, unknown>>(
+        `/merge_requests/${options.prNumber}/notes`,
+      );
+    }
+
+    const [issue, mr] = await Promise.all([
       options.issueNumber ? this.getIssue(options.issueNumber) : Promise.resolve(undefined),
       options.prNumber ? this.getMR(options.prNumber) : Promise.resolve(undefined),
-      options.prNumber
-        ? this.paginate<{
-            author: { username: string };
-            body: string;
-            created_at: string;
-          }>(`/merge_requests/${options.prNumber}/notes`)
-        : Promise.resolve([]),
-      options.prNumber
-        ? this.paginate<{ author: { username: string }; state: string; body: string }>(
-            `/merge_requests/${options.prNumber}/notes`,
-          )
-        : Promise.resolve([]),
     ]);
+
+    const reviewComments = allNotes as Array<{
+      author: { username: string };
+      body: string;
+      created_at: string;
+    }>;
+    const reviews = allNotes as Array<{
+      author: { username: string };
+      state: string;
+      body: string;
+    }>;
 
     if (issue) {
       parts.push(`## Issue #${issue.number}`);
@@ -838,98 +883,5 @@ export class GitLabAdapter implements PlatformAdapter {
       this.currentUserLogin = 'opencode-reviewer[bot]';
       return this.currentUserLogin;
     }
-  }
-
-  // ─── Private Helpers ────────────────────────────────────
-
-  private buildReviewBody(result: ReviewResult): string {
-    const lines: string[] = [];
-
-    if (result.executiveSummary) {
-      const es = result.executiveSummary;
-      const riskEmoji = es.riskLevel === 'high' ? '🔴' : es.riskLevel === 'medium' ? '🟡' : '🟢';
-      lines.push('## Executive Summary');
-      lines.push('');
-      lines.push(`**Purpose:** ${es.purpose}`);
-      lines.push('');
-      lines.push(`**Risk:** ${riskEmoji} ${es.riskLevel.toUpperCase()} — ${es.riskRationale}`);
-      if (es.breakingChanges.length > 0) {
-        lines.push('');
-        lines.push('**Breaking Changes:**');
-        for (const bc of es.breakingChanges) {
-          lines.push(`- ⚠️ ${bc}`);
-        }
-      }
-      lines.push('');
-      lines.push('---');
-      lines.push('');
-    }
-
-    lines.push(
-      '## MR Review Summary',
-      '',
-      result.summary,
-      '',
-      `**Ready to merge?** ${result.verdict.ready}`,
-      '',
-      `**Reasoning:** ${result.verdict.reasoning}`,
-      '',
-    );
-
-    if (result.strengths.length > 0) {
-      lines.push('### Strengths');
-      lines.push('');
-      for (const s of result.strengths) {
-        lines.push(`- **${s.file}:${s.line}** — ${s.message}`);
-      }
-      lines.push('');
-    }
-
-    if (result.issues.length > 0) {
-      lines.push('### Issues');
-      lines.push('');
-      for (const i of result.issues) {
-        const badge = this.getConfidenceBadge(i.confidence);
-        lines.push(
-          `- ${badge} **${i.severity.toUpperCase()}:** \`${i.file}:${i.line}\` — ${i.message}`,
-        );
-        if (i.suggestion) {
-          lines.push(`  > 💡 **How to fix:** ${i.suggestion}`);
-        }
-        if (i.suggestionCode) {
-          lines.push('<details><summary>Show suggested fix</summary>');
-          lines.push('');
-          lines.push('```suggestion');
-          lines.push(i.suggestionCode.trim());
-          lines.push('```');
-          lines.push('</details>');
-        }
-      }
-    }
-
-    return lines.join('\n');
-  }
-
-  private getConfidenceBadge(confidence?: 'high' | 'medium' | 'low'): string {
-    switch (confidence) {
-      case 'high':
-        return '🔴';
-      case 'medium':
-        return '🟡';
-      case 'low':
-        return '⚪';
-      default:
-        return '⚪';
-    }
-  }
-
-  private extractBaseSha(diffText: string): string | undefined {
-    const match = diffText.match(/@@\s+-([0-9a-f]+)/);
-    return match?.[1];
-  }
-
-  private extractHeadSha(diffText: string): string | undefined {
-    const match = diffText.match(/\+([0-9a-f]+)\s+@@/);
-    return match?.[1];
   }
 }

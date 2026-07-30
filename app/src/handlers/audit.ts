@@ -1,7 +1,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
-import type { AgentConfig, ReviewResult } from '@opencode-pr-agent/lib';
-import { GitHubHelper, Logger, ReviewEngine } from '@opencode-pr-agent/lib';
+import type { AgentConfig, PlatformAdapter, ReviewResult } from '@opencode-pr-agent/lib';
+import { GitHubHelper, GitLabAdapter, Logger, ReviewEngine } from '@opencode-pr-agent/lib';
 
 /**
  * Handle an audit command: read a prompt file, run the audit engine against
@@ -28,7 +28,8 @@ export async function handleAudit(
 
   if (signal?.aborted) return;
 
-  const gh = new GitHubHelper(token, repo);
+  const gh: PlatformAdapter =
+    config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
 
   try {
     await gh.ensureLabels([

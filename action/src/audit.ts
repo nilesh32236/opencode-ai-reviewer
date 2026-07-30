@@ -124,8 +124,9 @@ export async function runAudit(
 
     let existingIssueNumber: number | undefined;
     try {
+      const issueState = process.env.PLATFORM === 'gitlab' ? 'opened' : 'open';
       const openAuditIssues = (await gh.paginate(
-        `/issues?state=open&labels=audit:${category}&per_page=100`,
+        `/issues?state=${issueState}&labels=audit:${category}&per_page=100`,
       )) as Array<{ number: number; title: string }>;
       const match = openAuditIssues.find((issue: { number: number; title: string }) =>
         issue.title.startsWith(titlePrefix),

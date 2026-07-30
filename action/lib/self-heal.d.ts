@@ -17,4 +17,4 @@ import type { ActionInputs } from './inputs.js';
  * @param repo - Repository string (owner/repo).
  * @param token - GitHub authentication token.
  */
-export declare function runSelfHeal(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, repo: string, token: string): Promise<void>;
+export declare function runSelfHeal(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, _repo: string, _token: string): Promise<void>;

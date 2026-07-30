@@ -29,8 +29,8 @@ export async function runSelfHeal(
   config: AgentConfig,
   engine: ReviewEngine,
   gh: PlatformAdapter,
-  repo: string,
-  token: string,
+  _repo: string,
+  _token: string,
 ): Promise<void> {
   // Read CI failure logs from input or from a file
   let ciFailureLogs = inputs.ciFailureLogs;
@@ -168,34 +168,11 @@ export async function runSelfHeal(
   const baseBranch = defaultBranch;
   let prUrl = '';
   try {
-    prUrl = await withRetry(
-      async () => {
-        const output = await exec.getExecOutput(
-          'gh',
-          [
-            'pr',
-            'create',
-            '--base',
-            baseBranch,
-            '--head',
-            branchName,
-            '--title',
-            prTitle,
-            '--body',
-            prBody,
-            '--label',
-            lastVerificationError ? 'self-heal,autofix:needs-manual-review' : 'self-heal,autofix',
-            '--repo',
-            repo,
-          ],
-          {
-            env: { ...process.env, GH_TOKEN: token } as { [key: string]: string },
-          },
-        );
-        return output.stdout.trim();
-      },
+    const result = await withRetry(
+      async () => gh.createPR(prTitle, prBody, branchName, baseBranch),
       { maxRetries: 3, baseDelayMs: 1000 },
     );
+    prUrl = result?.url || '';
   } catch (err) {
     core.warning(sanitize(`Failed to create PR: ${err instanceof Error ? err.message : err}`));
   }

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { buildInlineComments } from '../src/jsonl-parser.js';
 import type { ReviewResult } from '../src/types/index.js';
 import { GitLabAdapter } from '../src/utils/gitlab-adapter.js';
-import { buildInlineComments } from '../src/jsonl-parser.js';
 
 vi.mock('@actions/core', () => {
   const warning = vi.fn();
@@ -324,7 +324,12 @@ describe('GitLabAdapter', () => {
     };
 
     const notesData = [
-      { id: 101, author: { username: 'commenter1' }, created_at: '2024-01-01T00:00:00Z', body: 'First!' },
+      {
+        id: 101,
+        author: { username: 'commenter1' },
+        created_at: '2024-01-01T00:00:00Z',
+        body: 'First!',
+      },
     ];
 
     it('returns issue context', async () => {
@@ -382,8 +387,18 @@ describe('GitLabAdapter', () => {
       fetchMock.mockResolvedValue(
         mockResponse({
           body: [
-            { id: 1, author: { username: 'alice' }, created_at: '2024-01-01T00:00:00Z', body: 'Great work' },
-            { id: 2, author: { username: 'bob' }, created_at: '2024-01-02T00:00:00Z', body: 'Needs fixes' },
+            {
+              id: 1,
+              author: { username: 'alice' },
+              created_at: '2024-01-01T00:00:00Z',
+              body: 'Great work',
+            },
+            {
+              id: 2,
+              author: { username: 'bob' },
+              created_at: '2024-01-02T00:00:00Z',
+              body: 'Needs fixes',
+            },
           ],
         }),
       );
@@ -630,7 +645,7 @@ diff --git a/src/a.ts b/src/a.ts
     it('returns diff text from compare endpoint', async () => {
       const diffText = 'diff --git a/a.ts b/a.ts\n@@ -1 +1 @@\n-change\n+change';
       fetchMock.mockImplementation(async () =>
-        mockResponse({ text: vi.fn().mockResolvedValue(diffText) }),
+        mockResponse({ body: { diffs: [{ diff: diffText }] } }),
       );
 
       const result = await adapter.getDiffSince('abc123', 'def456');
@@ -730,18 +745,25 @@ diff --git a/src/a.ts b/src/a.ts
     it('re-throws error on failure', async () => {
       fetchMock.mockResolvedValue(mockErrorResponse(500));
 
-      await expect(adapter.postOrUpdateComment(1, marker, 'body')).rejects.toThrow('GitLab API 500');
+      await expect(adapter.postOrUpdateComment(1, marker, 'body')).rejects.toThrow(
+        'GitLab API 500',
+      );
     });
   });
 
   describe('createReviewCommentReply', () => {
-    it('POSTs reply to note', async () => {
-      fetchMock.mockResolvedValue(mockResponse({ body: { id: 789 } }));
+    it('POSTs reply to discussion', async () => {
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes('/notes/100') && !url.includes('/notes/100/notes')) {
+          return mockResponse({ body: { id: 100, discussion_id: 'disc-42' } });
+        }
+        return mockResponse({ body: { id: 789 } });
+      });
 
       await adapter.createReviewCommentReply(42, 100, 'Good question!');
 
       expect(fetchMock).toHaveBeenCalledWith(
-        expect.stringContaining('/merge_requests/42/notes/100/notes'),
+        expect.stringContaining('/merge_requests/42/discussions/disc-42/notes'),
         expect.objectContaining({
           method: 'POST',
           body: expect.stringContaining('Good question!'),
@@ -752,19 +774,26 @@ diff --git a/src/a.ts b/src/a.ts
     it('throws on API failure', async () => {
       fetchMock.mockResolvedValue(mockErrorResponse(422));
 
-      await expect(adapter.createReviewCommentReply(42, 100, 'body')).rejects.toThrow('GitLab API 422');
+      await expect(adapter.createReviewCommentReply(42, 100, 'body')).rejects.toThrow(
+        'GitLab API 422',
+      );
     });
   });
 
   describe('replyToReviewComment', () => {
     it('posts a reply and returns the comment id', async () => {
-      fetchMock.mockResolvedValue(mockResponse({ body: { id: 789 } }));
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes('/notes/100') && !url.includes('/notes/100/notes')) {
+          return mockResponse({ body: { id: 100, discussion_id: 'disc-789' } });
+        }
+        return mockResponse({ body: { id: 789 } });
+      });
 
       const result = await adapter.replyToReviewComment(42, 100, 'Good question!');
 
       expect(result.id).toBe(789);
       expect(fetchMock).toHaveBeenCalledWith(
-        expect.stringContaining('/merge_requests/42/notes'),
+        expect.stringContaining('/merge_requests/42/discussions/disc-789/notes'),
         expect.objectContaining({
           method: 'POST',
           body: expect.stringContaining('Good question!'),
@@ -795,7 +824,7 @@ diff --git a/src/a.ts b/src/a.ts
         }),
       );
 
-      const comment = await adapter.getReviewComment(123);
+      const comment = await adapter.getReviewComment(1, 123);
 
       expect(comment.id).toBe(123);
       expect(comment.body).toBe('This is a review comment');
@@ -806,15 +835,15 @@ diff --git a/src/a.ts b/src/a.ts
     it('throws on API failure', async () => {
       fetchMock.mockResolvedValue(mockErrorResponse(404));
 
-      await expect(adapter.getReviewComment(999)).rejects.toThrow('GitLab API 404');
+      await expect(adapter.getReviewComment(1, 999)).rejects.toThrow('GitLab API 404');
     });
   });
 
   describe('getReviewCommentThread', () => {
-    it('throws not supported error', async () => {
-      await expect(adapter.getReviewCommentThread(1)).rejects.toThrow(
-        'Review comment threads not supported via GitLab REST API',
-      );
+    it('returns empty fallback', async () => {
+      const result = await adapter.getReviewCommentThread(1);
+      expect(result.comments).toEqual([]);
+      expect(result.filePath).toBe('');
     });
   });
 
@@ -823,7 +852,10 @@ diff --git a/src/a.ts b/src/a.ts
       vi.mocked(buildInlineComments).mockReturnValue([]);
 
       fetchMock.mockImplementation(async (url: string) => {
-        if (url.includes('/diff_lines') || url.includes('/merge_requests/42') && !url.includes('/changes')) {
+        if (
+          url.includes('/diff_lines') ||
+          (url.includes('/merge_requests/42') && !url.includes('/changes'))
+        ) {
           return mockResponse({ text: vi.fn().mockResolvedValue('@@ -1 +1 @@') });
         }
         if (url.includes('/notes') && url.includes('method')) {
@@ -957,7 +989,7 @@ diff --git a/src/a.ts b/src/a.ts
 
   describe('removeLabel', () => {
     it('fetches current labels, removes one, and PUTs', async () => {
-      fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+      fetchMock.mockImplementation(async (_url: string, options?: RequestInit) => {
         if (options?.method === 'PUT') {
           return mockResponse({ body: {} });
         }
@@ -982,7 +1014,7 @@ diff --git a/src/a.ts b/src/a.ts
 
   describe('setLabels', () => {
     it('merges add/remove with current labels and PUTs', async () => {
-      fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+      fetchMock.mockImplementation(async (_url: string, options?: RequestInit) => {
         if (options?.method === 'PUT') {
           const body = JSON.parse(options.body as string);
           expect(body.labels).toBe('existing,added1,added2');
@@ -1001,12 +1033,16 @@ diff --git a/src/a.ts b/src/a.ts
   });
 
   describe('ensureLabels', () => {
-    it('warns that it is not implemented', async () => {
-      const { warning } = await import('@actions/core');
+    it('creates missing labels', async () => {
+      fetchMock.mockResolvedValue(mockResponse({ body: {} }));
 
-      await adapter.ensureLabels(['label1']);
+      await adapter.ensureLabels(['label1', 'label2']);
 
-      expect(warning).toHaveBeenCalledWith('ensureLabels not implemented for GitLab');
+      const postCalls = fetchMock.mock.calls.filter(
+        ([, opts]: [string, RequestInit]) => opts?.method === 'POST',
+      );
+      expect(postCalls).toHaveLength(2);
+      expect(postCalls[0][0]).toContain('/labels');
     });
   });
 
@@ -1095,9 +1131,7 @@ diff --git a/src/a.ts b/src/a.ts
 
       await adapter.updateMR(42, { body: 'Just body' });
 
-      const callBody = JSON.parse(
-        (fetchMock.mock.calls[0][1] as RequestInit).body as string,
-      );
+      const callBody = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
       expect(callBody.title).toBeUndefined();
       expect(callBody.description).toBe('Just body');
     });
@@ -1242,9 +1276,7 @@ diff --git a/src/a.ts b/src/a.ts
       fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
         if (url.includes('/merge_requests?state=opened')) {
           return mockResponse({
-            body: [
-              { iid: 1, source_branch: 'opencode/fix-1', created_at: '2024-01-01T00:00:00Z' },
-            ],
+            body: [{ iid: 1, source_branch: 'opencode/fix-1', created_at: '2024-01-01T00:00:00Z' }],
           });
         }
         if (url.includes('/merge_requests/') && options?.method === 'PUT') {
@@ -1279,7 +1311,12 @@ diff --git a/src/a.ts b/src/a.ts
         if (url.includes('/issues/1/notes')) {
           return mockResponse({
             body: [
-              { id: 1, author: { username: 'u1' }, created_at: '2024-01-01T00:00:00Z', body: 'Comment 1' },
+              {
+                id: 1,
+                author: { username: 'u1' },
+                created_at: '2024-01-01T00:00:00Z',
+                body: 'Comment 1',
+              },
             ],
           });
         }
@@ -1301,7 +1338,12 @@ diff --git a/src/a.ts b/src/a.ts
         if (url.includes('/merge_requests/42') && url.includes('/notes')) {
           return mockResponse({
             body: [
-              { id: 1, author: { username: 'reviewer' }, body: 'Nice', created_at: '2024-01-01T00:00:00Z' },
+              {
+                id: 1,
+                author: { username: 'reviewer' },
+                body: 'Nice',
+                created_at: '2024-01-01T00:00:00Z',
+              },
             ],
           });
         }
@@ -1321,7 +1363,9 @@ diff --git a/src/a.ts b/src/a.ts
     it('gathers both issue and MR context simultaneously', async () => {
       fetchMock.mockImplementation(async (url: string) => {
         if (url.includes('/issues/1') && !url.includes('/notes')) {
-          return mockResponse({ body: { iid: 1, title: 'Issue', description: 'body', labels: [] } });
+          return mockResponse({
+            body: { iid: 1, title: 'Issue', description: 'body', labels: [] },
+          });
         }
         if (url.includes('/merge_requests/42') && url.includes('/notes')) {
           return mockResponse({ body: [] });
@@ -1355,7 +1399,7 @@ diff --git a/src/a.ts b/src/a.ts
       process.env.GITLAB_USER_LOGIN = 'env-user';
       const result = await adapter.getCurrentUser();
       expect(result).toBe('env-user');
-      delete process.env.GITLAB_USER_LOGIN;
+      process.env.GITLAB_USER_LOGIN = '';
     });
 
     it('returns user from API when env var is not set', async () => {
@@ -1443,7 +1487,8 @@ diff --git a/src/a.ts b/src/a.ts
       let callCount = 0;
       fetchMock.mockImplementation(async () => {
         callCount++;
-        if (callCount === 1) return mockResponse({ body: Array.from({ length: 100 }, (_, i) => ({ id: i })) });
+        if (callCount === 1)
+          return mockResponse({ body: Array.from({ length: 100 }, (_, i) => ({ id: i })) });
         return mockErrorResponse(500);
       });
 
