@@ -305,11 +305,13 @@ describe('prompt-builder', () => {
 
   describe('audit categories (IaC security)', () => {
     const iacCategories = ['dockerfile-security', 'terraform-security', 'kubernetes-security'];
+    const repoRoot = path.resolve(__dirname, '../../');
+    const promptsDir = path.resolve(repoRoot, 'prompts/audit-categories');
     let originalCwd: string;
 
     beforeAll(() => {
       originalCwd = process.cwd();
-      process.chdir(path.resolve(__dirname, '../../'));
+      process.chdir(repoRoot);
     });
 
     afterAll(() => {
@@ -317,14 +319,21 @@ describe('prompt-builder', () => {
     });
 
     it('listAuditCategories includes new IaC categories', () => {
-      const categories = listAuditCategories();
+      const categories = listAuditCategories(promptsDir);
       for (const cat of iacCategories) {
         expect(categories).toContain(cat);
       }
     });
 
+    it('listAuditCategories with .audit-prompts dir does NOT include IaC categories', () => {
+      const categories = listAuditCategories(path.resolve(repoRoot, '.audit-prompts'));
+      for (const cat of iacCategories) {
+        expect(categories).not.toContain(cat);
+      }
+    });
+
     it('loadAuditCategoryPrompt returns non-null for dockerfile-security', () => {
-      const prompt = loadAuditCategoryPrompt('dockerfile-security');
+      const prompt = loadAuditCategoryPrompt('dockerfile-security', promptsDir);
       expect(prompt).not.toBeNull();
       expect(prompt).toContain('Dockerfile');
       expect(prompt).toContain('USER root');
@@ -332,7 +341,7 @@ describe('prompt-builder', () => {
     });
 
     it('loadAuditCategoryPrompt returns non-null for terraform-security', () => {
-      const prompt = loadAuditCategoryPrompt('terraform-security');
+      const prompt = loadAuditCategoryPrompt('terraform-security', promptsDir);
       expect(prompt).not.toBeNull();
       expect(prompt).toContain('Terraform');
       expect(prompt).toContain('### Hardcoded Secrets');
@@ -340,7 +349,7 @@ describe('prompt-builder', () => {
     });
 
     it('loadAuditCategoryPrompt returns non-null for kubernetes-security', () => {
-      const prompt = loadAuditCategoryPrompt('kubernetes-security');
+      const prompt = loadAuditCategoryPrompt('kubernetes-security', promptsDir);
       expect(prompt).not.toBeNull();
       expect(prompt).toContain('Kubernetes');
       expect(prompt).toContain('privileged');
@@ -349,7 +358,7 @@ describe('prompt-builder', () => {
 
     it('all IaC prompts contain output format section', () => {
       for (const cat of iacCategories) {
-        const prompt = loadAuditCategoryPrompt(cat);
+        const prompt = loadAuditCategoryPrompt(cat, promptsDir);
         expect(prompt).toContain('severity');
         expect(prompt).toContain('suggestion');
         expect(prompt).toContain('Output Format');

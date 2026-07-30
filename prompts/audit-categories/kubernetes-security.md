@@ -11,12 +11,20 @@ Scan files matching `*.yaml` or `*.yml` that contain Kubernetes `apiVersion:` (e
 ### Privileged Containers
 - `securityContext.privileged: true` — grants unrestricted host access
 - `securityContext.allowPrivilegeEscalation: true`
-- Containers with `capabilities.add` including `SYS_ADMIN`, `NET_ADMIN`, or `ALL`
 
 ### Root Containers
 - `securityContext.runAsUser: 0` or missing `runAsNonRoot: true`
 - Missing `securityContext.runAsUser` in the pod or container spec
+- Missing `securityContext.runAsGroup` (non-root group) in the pod or container spec
+
+### Container Capabilities
 - Containers that do not drop all capabilities with `capabilities.drop: ["ALL"]`
+- `capabilities.add` including `SYS_ADMIN`, `NET_ADMIN`, or `ALL`
+
+### Pod Security Context
+- Missing `securityContext.seccompProfile` or seccompProfile set to `Unconfined` (should use `RuntimeDefault`)
+- Missing `securityContext.readOnlyRootFilesystem: true` for hardened containers
+- `securityContext.runAsUser: 0` or missing non-root user/group settings
 
 ### Resource Limits
 - Missing `resources.limits.cpu` or `resources.limits.memory`

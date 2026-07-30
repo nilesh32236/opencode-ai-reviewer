@@ -19,7 +19,7 @@ Scan files matching `*.tf` or `*.tfvars`.
 - `aws_s3_bucket` without a `aws_s3_bucket_public_access_block` resource
 
 ### IAM Policies
-- IAM policy documents with `"Effect": "*"` or wildcard `"Action": "*"`
+- IAM policy documents with `"Resource": "*"` or wildcard `"Action": "*"`
 - Overly permissive `Principal` (e.g., `"*"`)
 - Missing `aws_iam_role` least-privilege constraints
 
