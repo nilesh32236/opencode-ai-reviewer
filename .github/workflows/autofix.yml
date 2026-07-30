@@ -66,7 +66,7 @@ jobs:
       approved: ${{ steps.ai-review.outputs.verdict }}
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.ref }}
@@ -90,7 +90,7 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.ref }}
@@ -121,7 +121,6 @@ jobs:
           GH_TOKEN: ${{ secrets.repo_token }}
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
-          gh pr merge "$PR_NUMBER" --squash --delete-branch 2>/dev/null || \
           gh pr merge "$PR_NUMBER" --squash --auto --delete-branch || {
-            echo "::warning::Merge failed — PR may need manual merge"
+            echo "::warning::Auto-merge failed — PR may need manual merge"
           }

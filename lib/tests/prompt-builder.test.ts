@@ -5,7 +5,6 @@ import {
   buildReplyPrompt,
   buildReviewPrompt,
 } from '../src/prompts/builder.js';
-import { extractRelevantLogSnippet } from '../src/prompts/heal.js';
 
 describe('prompt-builder', () => {
   it('buildReviewPrompt returns a non-empty string', () => {
@@ -190,25 +189,6 @@ describe('prompt-builder', () => {
       expect(prompt).toContain('## Instructions');
       expect(prompt).toContain('Answer concisely');
       expect(prompt).toContain('acknowledge it gracefully');
-    });
-  });
-
-  describe('extractRelevantLogSnippet', () => {
-    it('returns logs intact if under maxLength', () => {
-      const shortLogs = 'Short log output';
-      expect(extractRelevantLogSnippet(shortLogs, 100)).toBe(shortLogs);
-    });
-
-    it('extracts snippet centered around error marker when present', () => {
-      const padding = 'A'.repeat(5000);
-      const errorSection = 'FAIL tests/engine.test.ts\nError: expected true to be false';
-      const trailing = 'B'.repeat(5000);
-      const fullLogs = `${padding}\n${errorSection}\n${trailing}`;
-
-      const snippet = extractRelevantLogSnippet(fullLogs, 2000);
-      expect(snippet).toContain('FAIL tests/engine.test.ts');
-      expect(snippet).toContain('[...truncated leading');
-      expect(snippet).toContain('[...truncated trailing');
     });
   });
 });

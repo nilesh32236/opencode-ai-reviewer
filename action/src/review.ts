@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import type { AgentConfig, GitHubHelper, PRContext, ReviewEngine } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { resolvePrNumber, sanitize } from './utils.js';
+import { sanitize } from './utils.js';
 
 /**
  * Execute a code review on a pull request and post results.
@@ -22,16 +22,20 @@ export async function runReview(
   gh: GitHubHelper,
   _repo: string,
 ): Promise<void> {
-  let prNumber = await resolvePrNumber();
+  const prNumberInput = core.getInput('pr-number');
+  let prNumber: number | null = null;
 
-  if (
-    prNumber !== null &&
-    !core.getInput('pr-number') &&
-    !github.context.payload.pull_request?.number
-  ) {
-    const issueNum = github.context.payload.issue?.number;
-    if (issueNum === prNumber && !(await gh.isPR(issueNum))) {
-      prNumber = null;
+  if (prNumberInput) {
+    prNumber = Number.parseInt(prNumberInput, 10);
+  } else {
+    const fromPR = github.context.payload.pull_request?.number;
+    if (fromPR) {
+      prNumber = fromPR;
+    } else {
+      const issueNum = github.context.payload.issue?.number;
+      if (issueNum && (await gh.isPR(issueNum))) {
+        prNumber = issueNum;
+      }
     }
   }
 

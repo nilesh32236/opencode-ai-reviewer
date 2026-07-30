@@ -147,16 +147,6 @@ inputs:
     description: 'Git user email for commits (default: GITHUB_ACTOR email)'
     required: false
 
-  enable_state_cache:
-    description: 'Whether to persist the learning database across runs using Actions Cache'
-    required: false
-    default: 'true'
-
-  state_cache_key:
-    description: 'Custom key prefix for saving/restoring the learning state'
-    required: false
-    default: 'opencode-learning-state'
-
   ci_failure_logs:
     description: 'CI failure logs for self-heal mode (required when mode=self-heal)'
     required: false

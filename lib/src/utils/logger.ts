@@ -1,5 +1,4 @@
 import * as core from '@actions/core';
-import { sanitizeString } from './sanitize.js';
 
 /** Log levels supported by Logger, ordered by increasing severity. */
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -35,6 +34,18 @@ export function sanitizeErrorMessage(error: unknown): string {
     error instanceof Error ? error.message : typeof error === 'string' ? error : String(error);
 
   return sanitizeString(msg);
+}
+
+function sanitizeString(input: string): string {
+  return input
+    .replace(/(ghp|github_pat|gho|ghs|ghu)_[a-zA-Z0-9_-]{36,}/g, '[REDACTED_GITHUB_TOKEN]')
+    .replace(/sk-[a-zA-Z0-9-]{48,}/g, '[REDACTED_OPENAI_KEY]')
+    .replace(/sk-ant-[a-zA-Z0-9_-]{40,}/g, '[REDACTED_ANTHROPIC_KEY]')
+    .replace(/x-access-token:[^@]+@/g, 'x-access-token:[REDACTED]@')
+    .replace(
+      /(OPENAI_API_KEY|ANTHROPIC_API_KEY|GEMINI_API_KEY|GITHUB_TOKEN)[=":]+[^&\s'"]+/gi,
+      '$1=[REDACTED]',
+    );
 }
 
 /** Context metadata attached to log messages for structured logging. */

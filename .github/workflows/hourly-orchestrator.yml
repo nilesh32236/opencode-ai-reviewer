@@ -35,7 +35,7 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
@@ -46,9 +46,9 @@ jobs:
           git config --global user.email "opencode-ai-reviewer[bot]@users.noreply.github.com"
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 20
 
       - name: Install pnpm & dependencies
         run: |
@@ -162,9 +162,8 @@ jobs:
           IS_READY=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json labels --jq '.labels[].name' | grep -x "autofix:ready" || true)
           if [ -n "$IS_READY" ]; then
             echo "PR #${PR_NUMBER} has label 'autofix:ready' — squash merging..."
-            gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch 2>/dev/null || \
             gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch --auto || {
-              echo "::warning::Merge failed for PR #${PR_NUMBER}"
+              echo "::warning::Auto-merge failed for PR #${PR_NUMBER}"
             }
             echo "processed=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -274,7 +273,7 @@ jobs:
           ISSUE_NUM="${{ steps.process-issue.outputs.issue_number }}"
 
           if [ "$PR_PROCESSED" = "true" ]; then
-            echo "✅ Hourly Orchestrator processed PR #${PR_NUM:-merged/conflict-resolved}"
+            echo "✅ Hourly Orchestrator processed PR #${PR_NUM || 'merged/conflict-resolved'}"
           elif [ "$ISSUE_PROCESSED" = "true" ]; then
             echo "✅ Hourly Orchestrator processed Issue #${ISSUE_NUM}"
           else
