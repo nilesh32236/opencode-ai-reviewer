@@ -47,11 +47,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run tests
-        run: pnpm test
-
       - name: Build lib
         run: pnpm --filter @opencode-pr-agent/lib build
+
+      - name: Run tests
+        run: pnpm test
 
       - name: Build action
         run: pnpm --filter @opencode-pr-agent/action build

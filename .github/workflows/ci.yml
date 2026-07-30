@@ -76,6 +76,8 @@ jobs:
           cache: 'pnpm'
 
       - run: pnpm install --frozen-lockfile
+      - name: Build lib
+        run: pnpm --filter @opencode-pr-agent/lib build
       - run: pnpm test -- --coverage
 
       - name: Check coverage thresholds
