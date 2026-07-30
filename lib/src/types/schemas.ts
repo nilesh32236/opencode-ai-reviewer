@@ -73,6 +73,20 @@ export const ProjectContextConfigSchema = z.object({
   customRules: z.string().optional(),
 });
 
+/** Zod schema validating token budget configuration. */
+export const TokenBudgetConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    maxLinesComplex: z.number().int().min(50).max(5000).default(200),
+    maxLinesSimple: z.number().int().min(5).max(100).default(20),
+    complexityThreshold: z.number().min(0).max(100).default(30),
+    simpleThreshold: z.number().min(0).max(100).default(10),
+  })
+  .refine((data) => data.simpleThreshold <= data.complexityThreshold, {
+    message: 'simpleThreshold must be <= complexityThreshold',
+    path: ['simpleThreshold'],
+  });
+
 /** Zod schema validating review configuration. */
 export const ReviewConfigSchema = z.object({
   skipLabels: z.array(z.string()).default(['autofix', 'autofix:approved', 'autofix:merged']),
@@ -94,6 +108,7 @@ export const ReviewConfigSchema = z.object({
       '**/build/**',
       '**/.next/**',
     ]),
+  tokenBudget: TokenBudgetConfigSchema.optional(),
 });
 
 /** Zod schema validating audit configuration. */
@@ -246,6 +261,7 @@ export const PromptConfigSchema = z.object({
       customRules: z.array(z.string()).optional(),
       inline: z.boolean().optional(),
       excludePatterns: z.array(z.string()).optional(),
+      tokenBudget: TokenBudgetConfigSchema.optional(),
     })
     .optional(),
   fix: z

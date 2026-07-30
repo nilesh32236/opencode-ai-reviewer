@@ -32,6 +32,8 @@ import type {
   ReviewResult,
   ReviewStrength,
   SelfHealResult,
+  TokenBudgetConfig,
+  TokenBudgetMetrics,
 } from './types/index.js';
 import { GitHubHelper } from './utils/github.js';
 import { Logger } from './utils/logger.js';
@@ -160,7 +162,8 @@ export class ReviewEngine {
         `Excluded ${pr.changedFiles.length - files.length} file(s) from review by exclude patterns`,
       );
     }
-    const prContext = this.buildPRContextString(pr);
+    const tokenBudgetConfig = this.config.review.tokenBudget;
+    const { context: prContext, budgetMetrics } = this.buildPRContextString(pr, tokenBudgetConfig);
     let openThreadsContext = '';
     try {
       openThreadsContext = await this.github.getOpenHumanThreads(pr.number);
@@ -258,6 +261,8 @@ export class ReviewEngine {
           }
         }
 
+        this.logTokenSavings(budgetMetrics);
+
         return await this.verifyReviewResult(
           finalResult,
           baseContext,
@@ -296,7 +301,11 @@ export class ReviewEngine {
             mkdirSync(batchDir, { recursive: true });
           }
           const batchPR = { ...pr, changedFiles: batch };
-          const batchContext = this.buildPRContextString(batchPR);
+          const { context: batchContext } = this.buildPRContextString(
+            batchPR,
+            tokenBudgetConfig,
+            true,
+          );
           const context = mcpDocs
             ? batchContext + '\n\n## Library Documentation\n' + mcpDocs
             : batchContext;
@@ -399,6 +408,11 @@ export class ReviewEngine {
 
     if (!synthesisResult.success) {
       core.warning('Synthesis pass failed, falling back to merged batch results');
+      if (tokenBudgetConfig?.enabled) {
+        this.logTokenSavings(
+          this.computeTokenBudgetMetrics(files, tokenBudgetConfig, this.config.maxLinesPerFile),
+        );
+      }
       const fallback = this.buildFallbackResult(
         dedupIssues(allIssues),
         allStrengths,
@@ -436,6 +450,12 @@ export class ReviewEngine {
         }
       }
 
+      if (tokenBudgetConfig?.enabled) {
+        this.logTokenSavings(
+          this.computeTokenBudgetMetrics(files, tokenBudgetConfig, this.config.maxLinesPerFile),
+        );
+      }
+
       return await this.verifyReviewResult(
         finalResult,
         baseContext,
@@ -453,6 +473,11 @@ export class ReviewEngine {
         fileBatches,
         'Synthesis output parse failed, using merged batch results',
       );
+      if (tokenBudgetConfig?.enabled) {
+        this.logTokenSavings(
+          this.computeTokenBudgetMetrics(files, tokenBudgetConfig, this.config.maxLinesPerFile),
+        );
+      }
       return await this.verifyReviewResult(fallback, baseContext, workDir, timeoutMinutes);
     }
   }
@@ -822,7 +847,7 @@ export class ReviewEngine {
     const outputPath = path.join(workDir, '.opencode', 'explain-output.md');
     ensureOutputDir(outputPath);
 
-    const prContext = this.buildPRContextString(pr);
+    const { context: prContext } = this.buildPRContextString(pr);
     const prompt = buildExplainPrompt(
       { projectContext: this.config.projectContext.description || undefined },
       prContext,
@@ -1344,9 +1369,137 @@ export class ReviewEngine {
     };
   }
 
-  private buildPRContextString(pr: PRContext): string {
+  private logTokenSavings(metrics?: TokenBudgetMetrics): void {
+    if (!metrics || metrics.baselineLines <= 0) return;
+    const savedLines = metrics.baselineLines - metrics.budgetedLines;
+    const savedPercent =
+      savedLines > 0 ? ((savedLines / metrics.baselineLines) * 100).toFixed(1) : '0.0';
+    core.info(
+      `Token savings: ~${savedLines} lines (${savedPercent}%) — ${metrics.simpleCount} simple, ${metrics.mediumCount} medium, ${metrics.complexCount} complex`,
+    );
+  }
+
+  private computeTokenBudgetMetrics(
+    files: PRContext['changedFiles'],
+    tokenBudgetConfig: TokenBudgetConfig,
+    globalMaxLines: number,
+  ): TokenBudgetMetrics {
+    let totalBaselineLines = 0;
+    let totalBudgetedLines = 0;
+    let simpleCount = 0;
+    let mediumCount = 0;
+    let complexCount = 0;
+
+    for (const f of files) {
+      if (!f.patch) continue;
+      const patchLineCount = f.patch.split('\n').length;
+      const baseline =
+        globalMaxLines > 0 ? Math.min(patchLineCount, globalMaxLines) : patchLineCount;
+      totalBaselineLines += baseline;
+
+      const score = this.computeFileComplexity(f);
+      const { effectiveCap, category } = this.computeEffectiveCap(
+        score,
+        tokenBudgetConfig,
+        globalMaxLines,
+      );
+
+      if (category === 'simple') simpleCount++;
+      else if (category === 'medium') mediumCount++;
+      else complexCount++;
+
+      totalBudgetedLines +=
+        effectiveCap > 0 ? Math.min(patchLineCount, effectiveCap) : patchLineCount;
+    }
+
+    return {
+      baselineLines: totalBaselineLines,
+      budgetedLines: totalBudgetedLines,
+      simpleCount,
+      mediumCount,
+      complexCount,
+    };
+  }
+
+  private computeEffectiveCap(
+    score: number,
+    tokenBudgetConfig: TokenBudgetConfig,
+    globalMaxLines: number,
+  ): { effectiveCap: number; category: 'simple' | 'medium' | 'complex' } {
+    let effectiveCap = globalMaxLines;
+    let category: 'simple' | 'medium' | 'complex';
+
+    if (score >= tokenBudgetConfig.complexityThreshold) {
+      effectiveCap = Math.min(
+        tokenBudgetConfig.maxLinesComplex,
+        globalMaxLines > 0 ? globalMaxLines : Number.POSITIVE_INFINITY,
+      );
+      category = 'complex';
+    } else if (score <= tokenBudgetConfig.simpleThreshold) {
+      effectiveCap = Math.min(
+        tokenBudgetConfig.maxLinesSimple,
+        globalMaxLines > 0 ? globalMaxLines : Number.POSITIVE_INFINITY,
+      );
+      category = 'simple';
+    } else {
+      const range = tokenBudgetConfig.complexityThreshold - tokenBudgetConfig.simpleThreshold;
+      const t = range > 0 ? (score - tokenBudgetConfig.simpleThreshold) / range : 0.5;
+      const interpolated = Math.round(
+        tokenBudgetConfig.maxLinesSimple +
+          t * (tokenBudgetConfig.maxLinesComplex - tokenBudgetConfig.maxLinesSimple),
+      );
+      effectiveCap = Math.min(
+        interpolated,
+        globalMaxLines > 0 ? globalMaxLines : Number.POSITIVE_INFINITY,
+      );
+      category = 'medium';
+    }
+
+    return { effectiveCap, category };
+  }
+
+  private computeFileComplexity(file: {
+    additions: number;
+    deletions: number;
+    patch?: string;
+  }): number {
+    if (!file.patch) return 0;
+
+    const diffContentLines = file.patch
+      .split('\n')
+      .filter((line) => line.startsWith('+') || line.startsWith('-'));
+    const diffContent = diffContentLines.join('\n');
+
+    const controlFlowRegex = /\b(if|else if|switch|case|for|while|catch)\b|\?\:|\&\&|\|\||\?\?/g;
+    const controlFlowMatches = (diffContent.match(controlFlowRegex) || []).length;
+
+    let maxDepth = 0;
+    let currentDepth = 0;
+    for (const char of diffContent) {
+      if (char === '{') {
+        currentDepth++;
+        maxDepth = Math.max(maxDepth, currentDepth);
+      } else if (char === '}') {
+        currentDepth = Math.max(0, currentDepth - 1);
+      }
+    }
+
+    return file.additions * 0.05 + file.deletions * 0.02 + controlFlowMatches * 3 + maxDepth * 2;
+  }
+
+  private buildPRContextString(
+    pr: PRContext,
+    tokenBudgetConfig?: TokenBudgetConfig,
+    skipMetricsTracking = false,
+  ): { context: string; budgetMetrics?: TokenBudgetMetrics } {
     const parts: string[] = [];
     const maxLines = this.config.maxLinesPerFile;
+
+    let totalBaselineLines = 0;
+    let totalBudgetedLines = 0;
+    let simpleCount = 0;
+    let mediumCount = 0;
+    let complexCount = 0;
 
     parts.push(`## PR #${pr.number}: ${pr.title}`);
     parts.push('');
@@ -1390,10 +1543,40 @@ export class ReviewEngine {
     for (const f of pr.changedFiles) {
       if (!f.patch) continue;
       const patchLines = f.patch.split('\n');
-      if (maxLines > 0 && patchLines.length > maxLines) {
-        const truncated = patchLines.slice(0, maxLines).join('\n');
-        const remaining = patchLines.length - maxLines;
-        parts.push(`**${f.path}** (${patchLines.length} lines, showing first ${maxLines}):`);
+      const patchLineCount = patchLines.length;
+
+      let effectiveCap = maxLines;
+      let complexityScore = 0;
+      let budgetSummaryLine = '';
+
+      if (tokenBudgetConfig?.enabled) {
+        complexityScore = this.computeFileComplexity(f);
+        const { effectiveCap: cap, category } = this.computeEffectiveCap(
+          complexityScore,
+          tokenBudgetConfig,
+          maxLines,
+        );
+        effectiveCap = cap;
+
+        if (!skipMetricsTracking) {
+          if (category === 'simple') simpleCount++;
+          else if (category === 'medium') mediumCount++;
+          else complexCount++;
+        }
+
+        budgetSummaryLine = `> Token budget: ${effectiveCap} lines (complexity score: ${complexityScore.toFixed(1)})`;
+      }
+
+      const baselineForFile = maxLines > 0 ? Math.min(patchLineCount, maxLines) : patchLineCount;
+      const budgetedForFile =
+        effectiveCap > 0 ? Math.min(patchLineCount, effectiveCap) : patchLineCount;
+      totalBaselineLines += baselineForFile;
+      totalBudgetedLines += budgetedForFile;
+
+      if (effectiveCap > 0 && patchLineCount > effectiveCap) {
+        const truncated = patchLines.slice(0, effectiveCap).join('\n');
+        const remaining = patchLineCount - effectiveCap;
+        parts.push(`**${f.path}** (${patchLineCount} lines, showing first ${effectiveCap}):`);
         parts.push('');
         parts.push('```diff');
         parts.push(truncated);
@@ -1402,16 +1585,33 @@ export class ReviewEngine {
           `> ... [Patch truncated: ${remaining} remaining lines omitted. Use the 'read' tool to inspect the full file at ${f.path}]`,
         );
       } else {
-        parts.push(`**${f.path}** (${patchLines.length} lines):`);
+        parts.push(`**${f.path}** (${patchLineCount} lines):`);
         parts.push('');
         parts.push('```diff');
         parts.push(f.patch);
         parts.push('```');
       }
+      if (budgetSummaryLine) {
+        parts.push(budgetSummaryLine);
+      }
       parts.push('');
     }
 
-    return parts.join('\n');
+    const result: { context: string; budgetMetrics?: TokenBudgetMetrics } = {
+      context: parts.join('\n'),
+    };
+
+    if (tokenBudgetConfig?.enabled && !skipMetricsTracking) {
+      result.budgetMetrics = {
+        baselineLines: totalBaselineLines,
+        budgetedLines: totalBudgetedLines,
+        simpleCount,
+        mediumCount,
+        complexCount,
+      };
+    }
+
+    return result;
   }
 }
 
