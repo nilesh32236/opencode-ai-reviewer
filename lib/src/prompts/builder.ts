@@ -113,7 +113,12 @@ export function buildReviewPrompt(
         falsePositiveRules,
         deltaContext,
       }
-    : optionsOrLessons || {};
+    : {
+        ...(optionsOrLessons || {}),
+        previousFindings,
+        falsePositiveRules,
+        deltaContext,
+      };
 
   const lessons = options.lessons;
   const prevFindings = options.previousFindings;

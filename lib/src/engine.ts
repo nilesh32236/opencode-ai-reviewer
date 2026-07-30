@@ -1110,7 +1110,12 @@ export class ReviewEngine {
         const args = [...(linterConfig.args || []), ...matchedFiles];
         const start = Date.now();
 
-        const { stdout, stderr, status } = cp.spawnSync(linterConfig.command, args, {
+        const {
+          stdout,
+          stderr,
+          status,
+          error: spawnError,
+        } = cp.spawnSync(linterConfig.command, args, {
           cwd: linterDir,
           encoding: 'utf-8',
           maxBuffer: 50 * 1024 * 1024,
@@ -1125,10 +1130,16 @@ export class ReviewEngine {
           exitCode: status ?? -1,
           stdout: stdout || '',
           stderr: stderr || '',
-          findings: this.parseLinterOutput(linterConfig.parseFormat || 'generic', stdout || ''),
-          success: (status ?? 0) <= 1,
+          findings:
+            status !== null
+              ? this.parseLinterOutput(linterConfig.parseFormat || 'generic', stdout || '')
+              : [],
+          success: status !== null && (status ?? 0) <= 1,
         };
 
+        if (spawnError) {
+          core.debug(`Linter "${result.tool}" spawn error: ${spawnError.message}`);
+        }
         if (stderr) {
           const truncated = stderr.length > 500 ? stderr.slice(0, 500) + '...' : stderr;
           core.debug(`Linter "${result.tool}" stderr: ${truncated}`);
@@ -1161,16 +1172,21 @@ export class ReviewEngine {
         if (Array.isArray(parsed)) {
           return parsed.flatMap((entry: Record<string, unknown>) => {
             const file = String(entry.filename || '');
-            const loc = entry.location as { row?: number; column?: number } | undefined;
-            const cell = entry.cell as { row?: number } | undefined;
+            const loc =
+              entry.location != null
+                ? (entry.location as { row?: number; column?: number })
+                : undefined;
+            const cell = entry.cell != null ? (entry.cell as { row?: number }) : undefined;
             const line = loc?.row ?? cell?.row ?? 0;
             if (line <= 0) return [];
+            const code = String(entry.code || '');
+            const sev = entry.severity ? String(entry.severity) : mapRuffSeverity(code);
             return {
               file,
               line,
-              column: loc?.column ?? undefined,
-              severity: String(entry.severity || (entry.code ? 'error' : 'warning')),
-              ruleId: String(entry.code || ''),
+              column: loc != null ? loc.column : undefined,
+              severity: sev,
+              ruleId: code || undefined,
               message: String(entry.message || ''),
               raw: JSON.stringify(entry),
             };
@@ -1387,6 +1403,20 @@ export class ReviewEngine {
 
     return parts.join('\n');
   }
+}
+
+// ---- Linter helpers ----
+
+/**
+ * Map Ruff rule code prefix to a readable severity string.
+ * Ruff codes: F (pyflakes), E (pycodestyle error) → error;
+ * W (pycodestyle warning), D (pydocstyle) → warning.
+ */
+function mapRuffSeverity(code: string): string {
+  if (!code) return 'warning';
+  const prefix = code[0];
+  if (prefix === 'F' || prefix === 'E') return 'error';
+  return 'warning';
 }
 
 // ---- Manifest-based library detection helpers ----
