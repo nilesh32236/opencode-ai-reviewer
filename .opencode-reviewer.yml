@@ -16,6 +16,7 @@ project:
     "pnpm typecheck": "Run strict TypeScript compiler typechecks"
 
 review:
+  enableReachability: true
   customRules:
     - "Verify error boundary handling in asynchronous functions and network requests."
     - "Check that config loaders fall back gracefully to default values."

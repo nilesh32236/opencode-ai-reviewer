@@ -43,6 +43,7 @@ import {
   detectPythonLibraries,
   detectRubyLibraries,
 } from './utils/manifest-detector.js';
+import { analyzeBatchReachability } from './utils/reachability.js';
 
 /**
  * Orchestrates PR review, auto-fix, and audit workflows.
@@ -911,15 +912,65 @@ export class ReviewEngine {
     timeoutMinutes?: number,
     prNumber?: number,
   ): Promise<ReviewResult> {
-    if (!this.config.review.enableMetaVerification || result.issues.length === 0) {
-      return result;
+    let enrichedResult = result;
+
+    // Lightweight reachability analysis — tag findings with theoreticalRisk and entryPointPath
+    if (this.config.review.enableReachability && result.issues.length > 0) {
+      try {
+        const reachabilityResults = await analyzeBatchReachability(result.issues, workDir);
+        const enrichedIssues = result.issues.map((issue, idx) => {
+          const r = reachabilityResults[idx];
+          if (!r) return issue;
+          let severity = issue.severity;
+          // Downgrade theoretical-risk findings
+          if (
+            r.theoreticalRisk &&
+            (issue.severity === 'critical' || issue.severity === 'important')
+          ) {
+            severity = 'minor';
+          }
+          return {
+            ...issue,
+            theoreticalRisk: r.theoreticalRisk || undefined,
+            entryPointPath: r.entryPointPath,
+            entryPointFile: r.entryPointFile,
+            severity,
+          };
+        });
+
+        const theoreticalCount = enrichedIssues.filter((i) => i.theoreticalRisk).length;
+        if (theoreticalCount > 0) {
+          core.info(
+            `Reachability analysis: ${theoreticalCount} finding(s) tagged as theoretical risk (not reachable from user input)`,
+          );
+        }
+
+        enrichedResult = {
+          ...result,
+          issues: enrichedIssues,
+          stats: {
+            total: enrichedIssues.length,
+            critical: enrichedIssues.filter((i) => i.severity === 'critical').length,
+            important: enrichedIssues.filter((i) => i.severity === 'important').length,
+            minor: enrichedIssues.filter((i) => i.severity === 'minor').length,
+          },
+        };
+      } catch (err) {
+        core.warning(
+          `Reachability analysis failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    if (!this.config.review.enableMetaVerification || enrichedResult.issues.length === 0) {
+      return enrichedResult;
     }
 
     try {
       const prompt = buildVerificationPrompt(
         { projectContext: this.config.projectContext.description || undefined },
         prContext,
-        result.issues,
+        enrichedResult.issues,
       );
 
       const runResult = await runOpenCode(prompt, {
@@ -932,12 +983,12 @@ export class ReviewEngine {
       }
 
       if (!runResult.success) {
-        core.warning('Meta-verification pass failed, returning original result');
-        return result;
+        core.warning('Meta-verification pass failed, returning enriched result');
+        return enrichedResult;
       }
 
       const outputPath = path.join(workDir, '.opencode', 'verification-output.jsonl');
-      if (!existsSync(outputPath)) return result;
+      if (!existsSync(outputPath)) return enrichedResult;
 
       const content = await fs.readFile(outputPath, 'utf-8');
       const lines = content.split('\n').filter((l) => l.trim());
@@ -951,7 +1002,7 @@ export class ReviewEngine {
             typeof parsed.issueIndex === 'number' &&
             Number.isInteger(parsed.issueIndex) &&
             parsed.issueIndex >= 0 &&
-            parsed.issueIndex < result.issues.length
+            parsed.issueIndex < enrichedResult.issues.length
           ) {
             if (parsed.valid === true) {
               validIndices.add(parsed.issueIndex);
@@ -964,13 +1015,13 @@ export class ReviewEngine {
 
       if (validIndices.size === 0) {
         core.info(
-          'Meta-verification produced no valid verification entries — retaining original result',
+          'Meta-verification produced no valid verification entries — retaining enriched result',
         );
-        return result;
+        return enrichedResult;
       }
 
-      const verifiedIssues = result.issues.filter((_, idx) => validIndices.has(idx));
-      const droppedCount = result.issues.length - verifiedIssues.length;
+      const verifiedIssues = enrichedResult.issues.filter((_, idx) => validIndices.has(idx));
+      const droppedCount = enrichedResult.issues.length - verifiedIssues.length;
 
       if (droppedCount > 0) {
         core.info(
@@ -989,7 +1040,7 @@ export class ReviewEngine {
       );
 
       return {
-        ...result,
+        ...enrichedResult,
         issues: verifiedIssues,
         stats: {
           total: verifiedIssues.length,
@@ -1000,7 +1051,7 @@ export class ReviewEngine {
       };
     } catch (err) {
       core.warning(`Meta-verification failed: ${err instanceof Error ? err.message : String(err)}`);
-      return result;
+      return enrichedResult;
     }
   }
 

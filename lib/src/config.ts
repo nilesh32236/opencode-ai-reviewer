@@ -154,6 +154,9 @@ export function validateConfig(config: PromptConfig): PromptConfig {
         (p) => typeof p === 'string',
       );
     }
+    if (typeof config.review.enableReachability === 'boolean') {
+      result.review.enableReachability = config.review.enableReachability;
+    }
     if (config.review.tokenBudget && typeof config.review.tokenBudget === 'object') {
       const tb = config.review.tokenBudget;
       result.review.tokenBudget = {
