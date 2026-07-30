@@ -56,7 +56,10 @@ export function buildReviewBody(
     if (current.issues.length > 0) {
       lines.push('', '### Issues Found');
       for (const i of current.issues) {
-        lines.push(`- **${i.severity.toUpperCase()}:** \`${i.file}:${i.line}\` — ${i.message}`);
+        const badge = getConfidenceBadge(i.confidence);
+        lines.push(
+          `- ${badge} **${i.severity.toUpperCase()}:** \`${i.file}:${i.line}\` — ${i.message}`,
+        );
         if (i.suggestion) {
           lines.push(`  > 💡 **How to fix:** ${i.suggestion}`);
         }
@@ -151,6 +154,19 @@ export function buildFixBody(history: IterationRecord[]): string {
     '🤖 The fix agent has applied changes. The PR will be reviewed again on the next iteration.',
   );
   return lines.join('\n');
+}
+
+function getConfidenceBadge(confidence?: 'high' | 'medium' | 'low'): string {
+  switch (confidence) {
+    case 'high':
+      return '🔴';
+    case 'medium':
+      return '🟡';
+    case 'low':
+      return '⚪';
+    default:
+      return '⚪';
+  }
 }
 
 /**

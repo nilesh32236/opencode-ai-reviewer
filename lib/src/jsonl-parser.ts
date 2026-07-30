@@ -128,6 +128,16 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
       { critical: 0, important: 0, minor: 0 },
     );
 
+    const confidenceCounts = issues.reduce(
+      (acc, i) => {
+        if (i.confidence === 'high') acc.highConfidence++;
+        else if (i.confidence === 'medium') acc.mediumConfidence++;
+        else if (i.confidence === 'low') acc.lowConfidence++;
+        return acc;
+      },
+      { highConfidence: 0, mediumConfidence: 0, lowConfidence: 0 },
+    );
+
     return {
       summary: summary?.text || '',
       verdict: {
@@ -154,12 +164,16 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
         previouslyReported: i.previouslyReported,
         theoreticalRisk: i.theoreticalRisk,
         entryPointPath: i.entryPointPath,
+        confidence: i.confidence,
       })),
       stats: {
         total: issues.length,
         critical: counts.critical,
         important: counts.important,
         minor: counts.minor,
+        highConfidence: confidenceCounts.highConfidence || undefined,
+        mediumConfidence: confidenceCounts.mediumConfidence || undefined,
+        lowConfidence: confidenceCounts.lowConfidence || undefined,
       },
       rawLines,
       failedLines,
@@ -256,6 +270,16 @@ export function parseJsonlString(content: string): ReviewResult {
     { critical: 0, important: 0, minor: 0 },
   );
 
+  const confidenceCounts = issues.reduce(
+    (acc, i) => {
+      if (i.confidence === 'high') acc.highConfidence++;
+      else if (i.confidence === 'medium') acc.mediumConfidence++;
+      else if (i.confidence === 'low') acc.lowConfidence++;
+      return acc;
+    },
+    { highConfidence: 0, mediumConfidence: 0, lowConfidence: 0 },
+  );
+
   return {
     summary: summary?.text || '',
     verdict: {
@@ -282,12 +306,16 @@ export function parseJsonlString(content: string): ReviewResult {
       previouslyReported: i.previouslyReported,
       theoreticalRisk: i.theoreticalRisk,
       entryPointPath: i.entryPointPath,
+      confidence: i.confidence,
     })),
     stats: {
       total: issues.length,
       critical: counts.critical,
       important: counts.important,
       minor: counts.minor,
+      highConfidence: confidenceCounts.highConfidence || undefined,
+      mediumConfidence: confidenceCounts.mediumConfidence || undefined,
+      lowConfidence: confidenceCounts.lowConfidence || undefined,
     },
     rawLines,
     failedLines,
@@ -381,6 +409,10 @@ function validateAndNormalize(obj: Record<string, unknown>): Finding {
           typeof obj.previouslyReported === 'boolean' ? obj.previouslyReported : undefined,
         theoreticalRisk: typeof obj.theoreticalRisk === 'boolean' ? obj.theoreticalRisk : undefined,
         entryPointPath: typeof obj.entryPointPath === 'string' ? obj.entryPointPath : undefined,
+        confidence:
+          typeof obj.confidence === 'string' && ['high', 'medium', 'low'].includes(obj.confidence)
+            ? (obj.confidence as 'high' | 'medium' | 'low')
+            : undefined,
       } as IssueFinding;
     }
 
@@ -421,7 +453,8 @@ export function buildReviewBody(result: ReviewResult): string {
     parts.push('');
     for (const i of result.issues) {
       const severityLabel = i.severity.toUpperCase();
-      parts.push(`- **${severityLabel}:** ${i.file}:${i.line} — ${i.message}`);
+      const badge = getConfidenceBadge(i.confidence);
+      parts.push(`- ${badge} **${severityLabel}:** ${i.file}:${i.line} — ${i.message}`);
       if (i.suggestion) {
         parts.push(`  > Suggestion: ${i.suggestion}`);
       }
@@ -449,10 +482,12 @@ export interface InlineComment {
 export function buildInlineComments(
   result: ReviewResult,
   diffLines?: Set<string>,
+  suppressLowConfidence?: boolean,
 ): InlineComment[] {
   return result.issues
     .filter((issue) => {
       if (issue.inline !== true || !issue.line || issue.line < 1) return false;
+      if (suppressLowConfidence && issue.confidence === 'low') return false;
       if (diffLines && diffLines.size > 0) {
         const key = `${issue.file.replace(/^\//, '')}:${issue.line}`;
         return diffLines.has(key);
@@ -460,7 +495,8 @@ export function buildInlineComments(
       return true;
     })
     .map((issue) => {
-      let body = `**${issue.severity.toUpperCase()}**: ${issue.message}`;
+      const badge = getConfidenceBadge(issue.confidence);
+      let body = `${badge} **${issue.severity.toUpperCase()}**: ${issue.message}`;
       if (issue.suggestion) {
         body += `\n\n> 💡 **How to fix:** ${issue.suggestion}`;
       }
@@ -515,4 +551,17 @@ const CODE_PATTERNS = [
  */
 function looksLikeCode(suggestion: string): boolean {
   return CODE_PATTERNS.some((p) => p.test(suggestion));
+}
+
+function getConfidenceBadge(confidence?: 'high' | 'medium' | 'low'): string {
+  switch (confidence) {
+    case 'high':
+      return '🔴';
+    case 'medium':
+      return '🟡';
+    case 'low':
+      return '⚪';
+    default:
+      return '⚪';
+  }
 }

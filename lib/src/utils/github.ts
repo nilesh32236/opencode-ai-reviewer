@@ -535,6 +535,7 @@ export class GitHubHelper {
    * @param commitSha - SHA of the commit to attach the review to.
    * @param result - Review result with issues and summary.
    * @param postInlineComments - Whether to attempt inline comments (default: true).
+   * @param suppressLowConfidence - Whether to suppress low-confidence findings (default: false).
    * @returns Object indicating success and which posting method was used.
    */
   async postReview(
@@ -542,6 +543,7 @@ export class GitHubHelper {
     commitSha: string,
     result: ReviewResult,
     postInlineComments = true,
+    suppressLowConfidence?: boolean,
   ): Promise<{
     success: boolean;
     method: 'full' | 'partial' | 'body-only' | 'failed';
@@ -554,17 +556,24 @@ export class GitHubHelper {
       side?: string;
     }>;
   }> {
+    const workingResult = suppressLowConfidence
+      ? {
+          ...result,
+          issues: result.issues.filter((i) => i.confidence !== 'low'),
+        }
+      : result;
+
     const inlineComments = postInlineComments
-      ? buildInlineComments(result, await this.getDiffLines(prNumber))
+      ? buildInlineComments(workingResult, await this.getDiffLines(prNumber), suppressLowConfidence)
       : [];
 
     const placedInlineKeys = new Set(inlineComments.map((c) => `${c.path}:${c.line}`));
     const issuesForBody = postInlineComments
-      ? result.issues.filter(
+      ? workingResult.issues.filter(
           (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
         )
-      : result.issues;
-    const body = this.buildReviewBody({ ...result, issues: issuesForBody });
+      : workingResult.issues;
+    const body = this.buildReviewBody({ ...workingResult, issues: issuesForBody });
 
     const commentIds: Array<{
       file: string;
@@ -1589,7 +1598,10 @@ export class GitHubHelper {
       lines.push('### Issues');
       lines.push('');
       for (const i of result.issues) {
-        lines.push(`- **${i.severity.toUpperCase()}:** \`${i.file}:${i.line}\` — ${i.message}`);
+        const badge = getConfidenceBadge(i.confidence);
+        lines.push(
+          `- ${badge} **${i.severity.toUpperCase()}:** \`${i.file}:${i.line}\` — ${i.message}`,
+        );
         if (i.suggestion) {
           lines.push(`  > 💡 **How to fix:** ${i.suggestion}`);
         }
@@ -1605,6 +1617,19 @@ export class GitHubHelper {
     }
 
     return lines.join('\n');
+  }
+}
+
+function getConfidenceBadge(confidence?: 'high' | 'medium' | 'low'): string {
+  switch (confidence) {
+    case 'high':
+      return '🔴';
+    case 'medium':
+      return '🟡';
+    case 'low':
+      return '⚪';
+    default:
+      return '⚪';
   }
 }
 
