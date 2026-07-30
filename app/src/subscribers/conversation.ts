@@ -4,6 +4,11 @@ import { handleConversation } from '../handlers/conversation.js';
 import { buildConfig } from '../utils/config.js';
 import { getToken } from '../utils/token.js';
 
+/**
+ * Create a subscriber that handles @mention conversations on PRs and issues.
+ * @param learningStore - The learning store instance for context and patterns.
+ * @returns A subscriber object for conversation handling.
+ */
 export function createConversationSubscriber(learningStore: LearningStore): Subscriber {
   const logger = new Logger('ConversationSubscriber');
   return {

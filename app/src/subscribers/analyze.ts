@@ -4,6 +4,10 @@ import { handleCommand } from '../handlers/commands.js';
 import { buildConfig } from '../utils/config.js';
 import { getToken } from '../utils/token.js';
 
+/**
+ * Create a subscriber that handles `/analyze` commands on comments.
+ * @returns A subscriber object for the analyze command.
+ */
 export function createAnalyzeSubscriber(): Subscriber {
   const logger = new Logger('AnalyzeSubscriber');
   return {

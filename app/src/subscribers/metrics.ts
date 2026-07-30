@@ -2,6 +2,11 @@ import { GitHubHelper, Logger, MetricsService, parseCommand } from '@opencode-pr
 import type { GitHubEvent, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
 import { getToken } from '../utils/token.js';
 
+/**
+ * Create a subscriber that handles `/metrics` commands to display review metrics.
+ * @param learningStore - The learning store instance for metrics data.
+ * @returns A subscriber object for the metrics command.
+ */
 export function createMetricsSubscriber(learningStore: LearningStore): Subscriber {
   const logger = new Logger('MetricsSubscriber');
   return {

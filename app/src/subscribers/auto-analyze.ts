@@ -4,6 +4,10 @@ import { handleCommand } from '../handlers/commands.js';
 import { buildConfig } from '../utils/config.js';
 import { getToken } from '../utils/token.js';
 
+/**
+ * Create a subscriber that auto-analyzes newly opened issues with the `needs-analysis` label.
+ * @returns A subscriber object for auto-analysis.
+ */
 export function createAutoAnalyzeSubscriber(): Subscriber {
   const logger = new Logger('AutoAnalyzeSubscriber');
   return {

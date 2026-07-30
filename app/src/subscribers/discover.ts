@@ -2,6 +2,11 @@ import { GitHubHelper, Logger, PatternDetector, parseCommand } from '@opencode-p
 import type { GitHubEvent, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
 import { getToken } from '../utils/token.js';
 
+/**
+ * Create a subscriber that handles `/discover` commands to surface recurring review patterns.
+ * @param learningStore - The learning store instance for pattern discovery.
+ * @returns A subscriber object for the discover command.
+ */
 export function createDiscoverSubscriber(learningStore: LearningStore): Subscriber {
   const logger = new Logger('DiscoverSubscriber');
   return {
