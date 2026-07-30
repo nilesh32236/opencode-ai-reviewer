@@ -3,7 +3,7 @@ import type { GitHubEvent, LearningStore, Subscriber } from '@opencode-pr-agent/
 import { getToken } from '../utils/token.js';
 
 export function createDiscoverSubscriber(learningStore: LearningStore): Subscriber {
-  const logger = new Logger('App');
+  const logger = new Logger('DiscoverSubscriber');
   return {
     name: 'DiscoverSubscriber',
     subscribedEvents: ['comment.created', 'review_comment.created'],
@@ -17,7 +17,6 @@ export function createDiscoverSubscriber(learningStore: LearningStore): Subscrib
 
         const issueNumber = event.prNumber || 0;
         if (!issueNumber) return;
-        if (!learningStore) return;
 
         const DISCOVER_WINDOW_DEFAULT = 2;
         const detector = new PatternDetector(learningStore);

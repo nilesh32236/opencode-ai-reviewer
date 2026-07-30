@@ -5,7 +5,7 @@ import { buildConfig } from '../utils/config.js';
 import { getToken } from '../utils/token.js';
 
 export function createReviewSubscriber(learningStore: LearningStore, bus: EventBus): Subscriber {
-  const logger = new Logger('App');
+  const logger = new Logger('ReviewSubscriber');
   return {
     name: 'ReviewSubscriber',
     subscribedEvents: ['pr.opened', 'pr.synchronize', 'comment.created', 'review_comment.created'],
@@ -36,10 +36,7 @@ export function createReviewSubscriber(learningStore: LearningStore, bus: EventB
         if (!prNumber) return;
 
         const previousHeadSha =
-          event.type === 'pr.synchronize'
-            ? (evPayload.before as string) ||
-              ((evPayload.pull_request as Record<string, unknown> | undefined)?.before as string)
-            : undefined;
+          event.type === 'pr.synchronize' ? (evPayload.before as string) : undefined;
 
         const result = await handlePRReview(
           prNumber,
@@ -56,7 +53,7 @@ export function createReviewSubscriber(learningStore: LearningStore, bus: EventB
               type: 'review.completed',
               category: 'internal',
               payload: {
-                prNumber: event.prNumber || 0,
+                prNumber,
                 reviewSummary: result.summary,
                 findingsCount: result.issues.length + result.strengths.length,
                 issuesCount: result.issues.length,
@@ -66,7 +63,7 @@ export function createReviewSubscriber(learningStore: LearningStore, bus: EventB
               },
               timestamp: Date.now(),
               repo: event.repo,
-              prNumber: event.prNumber || 0,
+              prNumber,
             });
           } catch (err) {
             logger.error(

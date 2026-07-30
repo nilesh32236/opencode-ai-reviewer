@@ -5,7 +5,7 @@ import { buildConfig } from '../utils/config.js';
 import { getToken } from '../utils/token.js';
 
 export function createFixSubscriber(): Subscriber {
-  const logger = new Logger('App');
+  const logger = new Logger('FixSubscriber');
   return {
     name: 'FixSubscriber',
     subscribedEvents: ['comment.created', 'review_comment.created', 'issue.labeled'],

@@ -1,11 +1,18 @@
 import { DEFAULT_CONFIG, getDefaultMCPServers } from '@opencode-pr-agent/lib';
 import type { AgentConfig } from '@opencode-pr-agent/lib';
 
+/**
+ * Parse an integer from an environment variable with a fallback.
+ * @param envVar - Environment variable value (may be undefined).
+ * @param fallback - Default value if envVar is not set or not a valid integer.
+ * @returns The parsed integer or the fallback value.
+ */
 function parseEnvInt(envVar: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(envVar || String(fallback), 10);
   return Number.isNaN(parsed) ? fallback : parsed;
 }
 
+/** Build the agent configuration from environment variables and defaults. */
 export function buildConfig(): AgentConfig {
   return {
     ...DEFAULT_CONFIG,

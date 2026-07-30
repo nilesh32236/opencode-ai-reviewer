@@ -4,6 +4,11 @@ import { registerSubscribers } from './subscribers/index.js';
 
 const logger = new Logger('App');
 
+/**
+ * Initialize the Probot app with event subscribers for review, fix, and audit.
+ * Registers all subscribers with the event bus and handles SIGTERM cleanup.
+ * @param app - The Probot application instance.
+ */
 export default (app: Probot): void => {
   if (!process.env.GITHUB_TOKEN && !process.env.APP_ID) {
     throw new Error('GITHUB_TOKEN or APP_ID must be set for the GitHub App to start');

@@ -1,3 +1,7 @@
+/**
+ * Get the GitHub token from the environment.
+ * @returns The GitHub token string.
+ */
 export function getToken(): string {
   const token = process.env.GITHUB_TOKEN || '';
   if (!token) {

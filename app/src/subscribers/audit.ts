@@ -5,7 +5,7 @@ import { buildConfig } from '../utils/config.js';
 import { getToken } from '../utils/token.js';
 
 export function createAuditSubscriber(): Subscriber {
-  const logger = new Logger('App');
+  const logger = new Logger('AuditSubscriber');
   return {
     name: 'AuditSubscriber',
     subscribedEvents: ['comment.created', 'review_comment.created'],
@@ -17,7 +17,7 @@ export function createAuditSubscriber(): Subscriber {
         const parsed = auditComment?.body ? parseCommand(auditComment.body) : null;
         if (!parsed || parsed.command !== 'audit') return;
         const config = buildConfig();
-        await handleAudit(event.repo || '', getToken(), config);
+        await handleAudit(event.repo || '', getToken(), config, signal);
       } catch (err) {
         logger.error(
           `AuditSubscriber failed for repo ${event.repo}: ${err instanceof Error ? err.message : err}`,

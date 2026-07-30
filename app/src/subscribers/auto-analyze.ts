@@ -5,7 +5,7 @@ import { buildConfig } from '../utils/config.js';
 import { getToken } from '../utils/token.js';
 
 export function createAutoAnalyzeSubscriber(): Subscriber {
-  const logger = new Logger('App');
+  const logger = new Logger('AutoAnalyzeSubscriber');
   return {
     name: 'AutoAnalyzeSubscriber',
     subscribedEvents: ['issue.opened'],

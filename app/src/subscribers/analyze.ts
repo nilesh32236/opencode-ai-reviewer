@@ -5,7 +5,7 @@ import { buildConfig } from '../utils/config.js';
 import { getToken } from '../utils/token.js';
 
 export function createAnalyzeSubscriber(): Subscriber {
-  const logger = new Logger('App');
+  const logger = new Logger('AnalyzeSubscriber');
   return {
     name: 'AnalyzeSubscriber',
     subscribedEvents: ['comment.created', 'review_comment.created'],
@@ -19,7 +19,7 @@ export function createAnalyzeSubscriber(): Subscriber {
         const config = buildConfig();
         const issueNumber = event.prNumber || 0;
         if (!issueNumber) return;
-        await handleCommand('analyze', issueNumber, event.repo || '', getToken(), config);
+        await handleCommand('analyze', issueNumber, event.repo || '', getToken(), config, signal);
       } catch (err) {
         logger.error(
           `AnalyzeSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${err instanceof Error ? err.message : err}`,

@@ -5,7 +5,7 @@ import { buildConfig } from '../utils/config.js';
 import { getToken } from '../utils/token.js';
 
 export function createReplySubscriber(): Subscriber {
-  const logger = new Logger('App');
+  const logger = new Logger('ReplySubscriber');
   return {
     name: 'ReplySubscriber',
     subscribedEvents: ['review_comment.created'],

@@ -12,6 +12,7 @@ import { GitHubHelper, Logger, ReviewEngine } from '@opencode-pr-agent/lib';
  * @param targetDir - Optional specific directory to audit.
  * @param promptName - Optional specific audit prompt name (without .md).
  * @param tempDir - Optional temporary working directory.
+ * @param signal - Optional abort signal.
  */
 export async function handleAudit(
   repo: string,
@@ -20,9 +21,12 @@ export async function handleAudit(
   targetDir?: string,
   promptName?: string,
   tempDir?: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const logger = new Logger('Audit', { repo });
   logger.info(`Starting audit for ${repo}${targetDir ? ` targeting ${targetDir}` : ''}`);
+
+  if (signal?.aborted) return;
 
   const gh = new GitHubHelper(token, repo);
 

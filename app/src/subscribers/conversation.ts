@@ -5,7 +5,7 @@ import { buildConfig } from '../utils/config.js';
 import { getToken } from '../utils/token.js';
 
 export function createConversationSubscriber(learningStore: LearningStore): Subscriber {
-  const logger = new Logger('App');
+  const logger = new Logger('ConversationSubscriber');
   return {
     name: 'ConversationSubscriber',
     subscribedEvents: ['comment.created', 'review_comment.created'],
@@ -18,6 +18,8 @@ export function createConversationSubscriber(learningStore: LearningStore): Subs
         const convUser = (convComment?.user as Record<string, string>)?.login || '';
 
         const config = buildConfig();
+        if (!config.conversation.enabled) return;
+
         const mentionHandle = config.conversation.mentionHandle;
 
         if (!convBody.toLowerCase().includes(`@${mentionHandle.toLowerCase()}`)) return;
@@ -29,8 +31,6 @@ export function createConversationSubscriber(learningStore: LearningStore): Subs
         ) {
           return;
         }
-
-        if (!config.conversation.enabled) return;
 
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;

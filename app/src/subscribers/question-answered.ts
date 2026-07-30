@@ -3,7 +3,7 @@ import type { GitHubEvent, Subscriber } from '@opencode-pr-agent/lib';
 import { getToken } from '../utils/token.js';
 
 export function createQuestionAnsweredSubscriber(): Subscriber {
-  const logger = new Logger('App');
+  const logger = new Logger('QuestionAnsweredSubscriber');
   return {
     name: 'QuestionAnsweredSubscriber',
     subscribedEvents: ['comment.created'],
@@ -26,7 +26,6 @@ export function createQuestionAnsweredSubscriber(): Subscriber {
         if (!issueNumber) return;
 
         const gh = new GitHubHelper(getToken(), event.repo || '');
-        const _parentId = (comment.in_reply_to_id as number) || (comment.id as number) || 0;
         const issueComments = await gh.getIssueComments(issueNumber);
         const questionsComment = issueComments.find((c) =>
           c.body.startsWith('<!-- issue-analysis-questions -->'),

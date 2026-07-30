@@ -5,7 +5,7 @@ import { buildConfig } from '../utils/config.js';
 import { getToken } from '../utils/token.js';
 
 export function createExplainSubscriber(): Subscriber {
-  const logger = new Logger('App');
+  const logger = new Logger('ExplainSubscriber');
   return {
     name: 'ExplainSubscriber',
     subscribedEvents: ['comment.created', 'review_comment.created'],
@@ -19,7 +19,7 @@ export function createExplainSubscriber(): Subscriber {
         const config = buildConfig();
         const issueNumber = event.prNumber || 0;
         if (!issueNumber) return;
-        await handleCommand('explain', issueNumber, event.repo || '', getToken(), config);
+        await handleCommand('explain', issueNumber, event.repo || '', getToken(), config, signal);
       } catch (err) {
         logger.error(
           `ExplainSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${err instanceof Error ? err.message : err}`,

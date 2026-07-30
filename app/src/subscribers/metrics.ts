@@ -3,7 +3,7 @@ import type { GitHubEvent, LearningStore, Subscriber } from '@opencode-pr-agent/
 import { getToken } from '../utils/token.js';
 
 export function createMetricsSubscriber(learningStore: LearningStore): Subscriber {
-  const logger = new Logger('App');
+  const logger = new Logger('MetricsSubscriber');
   return {
     name: 'MetricsSubscriber',
     subscribedEvents: ['comment.created', 'review_comment.created'],
