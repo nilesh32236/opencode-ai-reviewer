@@ -17,7 +17,15 @@ export function createAuditSubscriber(): Subscriber {
         const parsed = auditComment?.body ? parseCommand(auditComment.body) : null;
         if (!parsed || parsed.command !== 'audit') return;
         const config = buildConfig();
-        await handleAudit(event.repo || '', getToken(), config, signal);
+        await handleAudit(
+          event.repo || '',
+          getToken(),
+          config,
+          undefined,
+          undefined,
+          undefined,
+          signal,
+        );
       } catch (err) {
         logger.error(
           `AuditSubscriber failed for repo ${event.repo}: ${err instanceof Error ? err.message : err}`,

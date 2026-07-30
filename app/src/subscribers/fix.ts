@@ -15,7 +15,7 @@ export function createFixSubscriber(): Subscriber {
         const fixPayload = event.payload as Record<string, unknown>;
         const fixComment = fixPayload.comment as Record<string, string> | undefined;
         const fixIssue = fixPayload.issue as Record<string, unknown> | undefined;
-        const fixLabels = fixPayload.labels as Array<Record<string, string>> | undefined;
+        const fixLabels = fixIssue?.labels as Array<Record<string, string>> | undefined;
 
         if (event.type === 'comment.created' || event.type === 'review_comment.created') {
           const parsed = fixComment?.body ? parseCommand(fixComment.body) : null;
