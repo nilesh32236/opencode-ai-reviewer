@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.4] — 2026-07-30
+
+
+### Fixed
+
+- self-heal CI failure (attempt 1) [lint-error] (#264) (#264)
+
+### Changed
+
+- [Autofix] [Audit:security-privacy] 1 critical, 4 important, 3 minor (#257) (#257)
+
+[v1.6.4]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.3...v1.6.4
+
 ## [v1.6.3] — 2026-07-30
 
 
