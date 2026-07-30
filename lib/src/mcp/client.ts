@@ -297,7 +297,7 @@ export class MCPManager {
           await transport.close();
         })();
         closePromise.catch(() => {});
-        let disconnectTimer: ReturnType<typeof setTimeout>;
+        let disconnectTimer: ReturnType<typeof setTimeout> | null = null;
         await Promise.race([
           closePromise,
           new Promise<void>((_, reject) => {
@@ -306,7 +306,9 @@ export class MCPManager {
               disconnectTimeoutMs,
             );
           }),
-        ]).finally(() => clearTimeout(disconnectTimer!));
+        ]).finally(() => {
+          if (disconnectTimer !== null) clearTimeout(disconnectTimer);
+        });
         this.logger.info(`Disconnected from ${name}`);
       } catch (err) {
         try {
