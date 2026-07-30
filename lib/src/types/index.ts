@@ -194,6 +194,8 @@ export interface AgentConfig {
   learning: LearningConfig;
   /** Conversation / @mention behavior */
   conversation: ConversationConfig;
+  /** Linter configurations for hybrid analysis */
+  linters: LinterConfig[];
 }
 
 /** Configuration for an MCP server used for context enrichment. */
@@ -693,6 +695,57 @@ export interface ConfigOverride {
   };
 }
 
+// ─── Linter Configuration ─────────────────────────────────
+/** Configuration for a linter/formatter tool. */
+export interface LinterConfig {
+  /** Glob pattern for files this linter applies to (e.g. "**\/*.ts") */
+  pattern: string;
+  /** Command to execute (e.g. "npx eslint", "ruff") */
+  command: string;
+  /** Arguments appended after file paths */
+  args?: string[];
+  /** Working directory relative to repo root */
+  workingDirectory?: string;
+  /** Output parse format. Defaults to "generic". */
+  parseFormat?: 'eslint' | 'ruff' | 'sarif' | 'generic';
+}
+
+/** A single finding from a linter. */
+export interface LinterFinding {
+  /** File path relative to repo root */
+  file: string;
+  /** Line number (1-indexed) */
+  line: number;
+  /** Column number, if available */
+  column?: number;
+  /** Severity (error, warning, etc.) */
+  severity: string;
+  /** Rule identifier (e.g. "no-unused-vars") */
+  ruleId?: string;
+  /** Human-readable message */
+  message: string;
+  /** Raw output line from the linter */
+  raw: string;
+}
+
+/** Result of running a linter. */
+export interface LinterResult {
+  /** Human-readable tool name */
+  tool: string;
+  /** Linter command that was run */
+  command: string;
+  /** Exit code */
+  exitCode: number;
+  /** Raw stdout */
+  stdout: string;
+  /** Raw stderr */
+  stderr: string;
+  /** Parsed findings */
+  findings: LinterFinding[];
+  /** Whether the tool executed successfully */
+  success: boolean;
+}
+
 // ─── Prompt Config ────────────────────────────────────────
 /** Full prompt configuration loaded from YAML/JSON config file. */
 export interface PromptConfig {
@@ -771,6 +824,8 @@ export interface PromptConfig {
   };
   /** Per-path and per-branch config overrides */
   overrides?: ConfigOverride[];
+  /** Linter configuration */
+  linters?: LinterConfig[];
 }
 
 // ─── Defaults ─────────────────────────────────────────────
@@ -833,6 +888,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     mentionHandle: 'opencode-reviewer',
     enabled: true,
   },
+  linters: [],
 };
 
 // ─── Event Bus ───────────────────────────────────────────

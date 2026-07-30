@@ -74,6 +74,10 @@ export interface ReviewPromptOptions {
      */
     commentId: number;
   }>;
+  /**
+   *
+   */
+  linterResults?: import('../types/index.js').LinterResult[];
 }
 
 /**
@@ -100,6 +104,7 @@ export function buildReviewPrompt(
     body: string;
     commentId: number;
   }>,
+  linterResults?: import('../types/index.js').LinterResult[],
 ): string {
   const options: ReviewPromptOptions = Array.isArray(optionsOrLessons)
     ? {
@@ -115,6 +120,7 @@ export function buildReviewPrompt(
   const fpRules = options.falsePositiveRules;
   const deltaCtx = options.deltaContext;
   const prevBotComments = options.previousBotComments ?? previousBotComments;
+  const linterRes = options.linterResults ?? linterResults;
 
   if (inputs.reviewPromptFile) {
     const customPrompt = loadPromptFile(inputs.reviewPromptFile);
@@ -211,6 +217,37 @@ export function buildReviewPrompt(
     for (const rule of fpRules) {
       sections.push(`- ${rule}`);
     }
+  }
+
+  if (linterRes && linterRes.length > 0) {
+    sections.push('\n## Linter Results');
+    sections.push('');
+    sections.push(
+      'The following linters have been run against the changed files. Their output is provided for cross-reference. ' +
+        'DO NOT flag issues that a linter already catches. Focus only on issues that linters cannot detect: ' +
+        'architecture, design, logic, security, edge cases, and project-specific conventions.',
+    );
+    sections.push('');
+    for (const result of linterRes) {
+      if (result.findings.length === 0) continue;
+      sections.push(`### ${result.tool}`);
+      sections.push('');
+      sections.push(`Command: \`${result.command}\``);
+      sections.push('');
+      const cap = result.findings.slice(0, 50);
+      for (const finding of cap) {
+        sections.push(
+          `- \`${finding.file}:${finding.line}${finding.column ? `:${finding.column}` : ''}\` ${finding.ruleId ? `[${finding.ruleId}] ` : ''}${finding.message}`,
+        );
+      }
+      if (result.findings.length > 50) {
+        sections.push(`- ... and ${result.findings.length - 50} more`);
+      }
+      sections.push('');
+    }
+    sections.push(
+      '**Remember:** Your value-add is catching issues that automated linters miss. Prioritize deep architectural and logic review over style or syntax issues that linters already handle.',
+    );
   }
 
   if (lessons && lessons.length > 0) {

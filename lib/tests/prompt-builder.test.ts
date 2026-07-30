@@ -193,6 +193,110 @@ describe('prompt-builder', () => {
     });
   });
 
+  describe('buildReviewPrompt linter results', () => {
+    it('includes linter results section when provided', () => {
+      const linterResults = [
+        {
+          tool: 'eslint',
+          command: 'eslint --format json src/test.ts',
+          exitCode: 0,
+          stdout: '',
+          stderr: '',
+          success: true,
+          findings: [
+            {
+              file: 'src/test.ts',
+              line: 5,
+              severity: 'warning',
+              ruleId: 'no-unused-vars',
+              message: 'x is unused',
+              raw: '',
+            },
+          ],
+        },
+      ];
+
+      const prompt = buildReviewPrompt(
+        { projectContext: '' },
+        'PR context',
+        [],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        linterResults,
+      );
+
+      expect(prompt).toContain('## Linter Results');
+      expect(prompt).toContain('eslint');
+      expect(prompt).toContain('src/test.ts:5');
+      expect(prompt).toContain('[no-unused-vars]');
+      expect(prompt).toContain('x is unused');
+      expect(prompt).toContain('DO NOT flag issues that a linter already catches');
+    });
+
+    it('omits linter results section when not provided', () => {
+      const prompt = buildReviewPrompt({ projectContext: '' }, 'PR context');
+
+      expect(prompt).not.toContain('## Linter Results');
+    });
+
+    it('omits linter results section when empty array', () => {
+      const prompt = buildReviewPrompt(
+        { projectContext: '' },
+        'PR context',
+        [],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        [],
+      );
+
+      expect(prompt).not.toContain('## Linter Results');
+    });
+
+    it('caps linter findings at 50 per tool', () => {
+      const manyFindings = Array.from({ length: 60 }, (_, i) => ({
+        file: 'src/test.ts',
+        line: i + 1,
+        severity: 'warning',
+        ruleId: 'rule',
+        message: `finding ${i + 1}`,
+        raw: '',
+      }));
+
+      const linterResults = [
+        {
+          tool: 'eslint',
+          command: 'eslint src/test.ts',
+          exitCode: 0,
+          stdout: '',
+          stderr: '',
+          success: true,
+          findings: manyFindings,
+        },
+      ];
+
+      const prompt = buildReviewPrompt(
+        { projectContext: '' },
+        'PR context',
+        [],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        linterResults,
+      );
+
+      // First 50 findings shown
+      expect(prompt).toContain('finding 1');
+      expect(prompt).toContain('finding 50');
+      // Overflow message present
+      expect(prompt).toContain('10 more');
+    });
+  });
+
   describe('extractRelevantLogSnippet', () => {
     it('returns logs intact if under maxLength', () => {
       const shortLogs = 'Short log output';

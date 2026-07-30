@@ -107,6 +107,7 @@ vi.mock('@actions/core', () => ({
 
 vi.mock('node:child_process', () => ({
   execFileSync: vi.fn(),
+  spawnSync: vi.fn(),
 }));
 
 vi.mock('fs', async () => {
@@ -121,6 +122,7 @@ vi.mock('fs', async () => {
 });
 
 import * as fs from 'fs';
+import * as cp from 'node:child_process';
 import { ReviewEngine } from '../src/engine.js';
 import { getGitStatus } from '../src/opencode.js';
 
@@ -906,5 +908,315 @@ describe('ReviewEngine', () => {
         vi.useRealTimers();
       }
     }, 20000);
+  });
+
+  describe('linter integration', () => {
+    const mockSpawnSync = vi.mocked(cp.spawnSync);
+    const prLinter = makePRContext();
+
+    beforeEach(() => {
+      mockSpawnSync.mockReturnValue({
+        stdout: '',
+        stderr: '',
+        status: 0,
+        pid: 0,
+        output: [],
+        signal: null,
+      } as never);
+    });
+
+    it('skips linters when no linters configured', async () => {
+      const eng = new ReviewEngine(makeConfig({ linters: [] }), 'fake-token', 'owner/repo');
+
+      mockMCPConnect.mockResolvedValue(undefined);
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 500,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      await eng.reviewPR(prLinter);
+
+      expect(mockSpawnSync).not.toHaveBeenCalled();
+    });
+
+    it('runs linters when configured', async () => {
+      const eng = new ReviewEngine(
+        makeConfig({
+          linters: [{ pattern: '**/*.ts', command: 'eslint', args: ['--format', 'json'] }],
+        }),
+        'fake-token',
+        'owner/repo',
+      );
+
+      mockSpawnSync.mockReturnValue({
+        stdout: JSON.stringify([
+          {
+            filePath: 'src/test.ts',
+            messages: [
+              {
+                line: 5,
+                column: 1,
+                severity: 'warning',
+                ruleId: 'no-unused-vars',
+                message: 'x is unused',
+              },
+            ],
+          },
+        ]),
+        stderr: '',
+        status: 0,
+        pid: 0,
+        output: [],
+        signal: null,
+      } as never);
+
+      mockMCPConnect.mockResolvedValue(undefined);
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 500,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      await eng.reviewPR(prLinter);
+
+      expect(mockSpawnSync).toHaveBeenCalledWith(
+        'eslint',
+        expect.arrayContaining(['--format', 'json', 'src/test.ts']),
+        expect.any(Object),
+      );
+    });
+
+    it('matches linters only to files matching pattern', async () => {
+      const eng = new ReviewEngine(
+        makeConfig({
+          linters: [{ pattern: '**/*.py', command: 'ruff' }],
+        }),
+        'fake-token',
+        'owner/repo',
+      );
+      const pr = makePRContext({
+        changedFiles: [
+          { path: 'src/test.ts', status: 'modified', additions: 10, deletions: 2, patch: 'diff' },
+          { path: 'src/test.py', status: 'modified', additions: 5, deletions: 1, patch: 'diff' },
+        ],
+      });
+
+      mockSpawnSync.mockReturnValue({
+        stdout: '',
+        stderr: '',
+        status: 0,
+        pid: 0,
+        output: [],
+        signal: null,
+      } as never);
+
+      mockMCPConnect.mockResolvedValue(undefined);
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 500,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      await eng.reviewPR(pr);
+
+      // Should only run ruff for .py files, not .ts
+      expect(mockSpawnSync).toHaveBeenCalledWith(
+        'ruff',
+        expect.arrayContaining(['src/test.py']),
+        expect.any(Object),
+      );
+      expect(mockSpawnSync).not.toHaveBeenCalledWith(
+        'ruff',
+        expect.arrayContaining(['src/test.ts']),
+        expect.any(Object),
+      );
+    });
+
+    it('gracefully handles linter failure', async () => {
+      const eng = new ReviewEngine(
+        makeConfig({
+          linters: [{ pattern: '**/*.ts', command: 'eslint' }],
+        }),
+        'fake-token',
+        'owner/repo',
+      );
+
+      mockSpawnSync.mockImplementation(() => {
+        throw new Error('Command not found');
+      });
+
+      mockMCPConnect.mockResolvedValue(undefined);
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 500,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      const result = await eng.reviewPR(prLinter);
+      expect(result).toBeDefined();
+    });
+
+    it('deduplicates AI findings against linter output', async () => {
+      const eng = new ReviewEngine(
+        makeConfig({
+          linters: [{ pattern: '**/*.ts', command: 'eslint', parseFormat: 'eslint' }],
+        }),
+        'fake-token',
+        'owner/repo',
+      );
+
+      mockSpawnSync.mockReturnValue({
+        stdout: JSON.stringify([
+          {
+            filePath: 'src/test.ts',
+            messages: [
+              { line: 5, severity: 'warning', ruleId: 'no-unused-vars', message: 'x is unused' },
+            ],
+          },
+        ]),
+        stderr: '',
+        status: 0,
+        pid: 0,
+        output: [],
+        signal: null,
+      } as never);
+
+      mockMCPConnect.mockResolvedValue(undefined);
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 500,
+      });
+
+      const aiResult: ReviewResult = {
+        summary: 'Found issues',
+        verdict: {
+          ready: false,
+          reasoning: 'Issues found',
+          autoFixable: false,
+          confidence: 'medium',
+        },
+        strengths: [],
+        issues: [
+          {
+            type: 'issue',
+            severity: 'important',
+            file: 'src/test.ts',
+            line: 5,
+            message: 'x is declared but never used',
+            suggestion: 'Remove unused variable',
+          },
+          {
+            type: 'issue',
+            severity: 'critical',
+            file: 'src/test.ts',
+            line: 10,
+            message: 'SQL injection risk',
+            suggestion: 'Use parameterized queries',
+          },
+        ],
+        stats: { total: 2, critical: 1, important: 1, minor: 0 },
+        rawLines: [],
+        failedLines: 0,
+      };
+      mockParseJsonlFile.mockResolvedValue(aiResult);
+
+      const result = await eng.reviewPR(prLinter);
+
+      // Issue at line 5 should be suppressed (linter matches), issue at line 10 should remain
+      expect(result.issues.length).toBe(1);
+      expect(result.issues[0].line).toBe(10);
+      expect(result.issues[0].message).toContain('SQL injection');
+      // Stats should reflect dedup
+      expect(result.stats.total).toBe(1);
+      expect(result.stats.critical).toBe(1);
+      expect(result.stats.important).toBe(0);
+    });
+
+    it('recalculates stats after dedup', async () => {
+      const eng = new ReviewEngine(
+        makeConfig({
+          linters: [{ pattern: '**/*.ts', command: 'eslint', parseFormat: 'eslint' }],
+        }),
+        'fake-token',
+        'owner/repo',
+      );
+
+      mockSpawnSync.mockReturnValue({
+        stdout: JSON.stringify([
+          {
+            filePath: 'src/test.ts',
+            messages: [
+              { line: 5, severity: 'error', ruleId: 'no-unused-vars', message: 'x is unused' },
+              { line: 10, severity: 'error', ruleId: 'no-console', message: 'Unexpected console' },
+            ],
+          },
+        ]),
+        stderr: '',
+        status: 0,
+        pid: 0,
+        output: [],
+        signal: null,
+      } as never);
+
+      mockMCPConnect.mockResolvedValue(undefined);
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 500,
+      });
+
+      const aiResult: ReviewResult = {
+        summary: 'Test',
+        verdict: { ready: false, reasoning: 'test', autoFixable: false, confidence: 'low' },
+        strengths: [],
+        issues: [
+          {
+            type: 'issue',
+            severity: 'critical',
+            file: 'src/test.ts',
+            line: 5,
+            message: 'unused var',
+          },
+          {
+            type: 'issue',
+            severity: 'important',
+            file: 'src/test.ts',
+            line: 10,
+            message: 'console log',
+          },
+          {
+            type: 'issue',
+            severity: 'minor',
+            file: 'src/test.ts',
+            line: 15,
+            message: 'minor style',
+          },
+        ],
+        stats: { total: 3, critical: 1, important: 1, minor: 1 },
+        rawLines: [],
+        failedLines: 0,
+      };
+      mockParseJsonlFile.mockResolvedValue(aiResult);
+
+      const result = await eng.reviewPR(prLinter);
+
+      expect(result.issues.length).toBe(1);
+      expect(result.stats.total).toBe(1);
+      expect(result.stats.critical).toBe(0);
+      expect(result.stats.important).toBe(0);
+      expect(result.stats.minor).toBe(1);
+    });
   });
 });

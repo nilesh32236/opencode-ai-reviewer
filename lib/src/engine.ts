@@ -23,6 +23,9 @@ import type {
   AgentConfig,
   ConversationContext,
   FixResult,
+  LinterConfig,
+  LinterFinding,
+  LinterResult,
   PRContext,
   PreviousFindingIteration,
   ReviewIssue,
@@ -196,6 +199,9 @@ export class ReviewEngine {
       }
     }
 
+    // Run configured linters as pre-processing step
+    const linterResults = await this.runLinters(pr.changedFiles, workDir);
+
     // If PR is small enough for a single batch, skip concurrent processing
     if (files.length <= batchSize) {
       const prompt = buildReviewPrompt(
@@ -210,6 +216,7 @@ export class ReviewEngine {
         falsePositiveRules,
         deltaContext,
         previousBotComments,
+        linterResults,
       );
 
       const outputPath = path.join(workDir, 'review-output.jsonl');
@@ -232,8 +239,27 @@ export class ReviewEngine {
 
       try {
         const parsed = await parseJsonlFile(outputPath);
+
+        // Deduplicate against linter findings
+        let finalResult = parsed;
+        if (linterResults.length > 0) {
+          const deduped = this.deduplicateAgainstLinters(parsed.issues, linterResults);
+          if (deduped.length < parsed.issues.length) {
+            finalResult = {
+              ...parsed,
+              issues: deduped,
+              stats: {
+                total: deduped.length,
+                critical: deduped.filter((i) => i.severity === 'critical').length,
+                important: deduped.filter((i) => i.severity === 'important').length,
+                minor: deduped.filter((i) => i.severity === 'minor').length,
+              },
+            };
+          }
+        }
+
         return await this.verifyReviewResult(
-          parsed,
+          finalResult,
           baseContext,
           workDir,
           timeoutMinutes,
@@ -287,6 +313,7 @@ export class ReviewEngine {
             falsePositiveRules,
             deltaContext,
             previousBotComments,
+            linterResults,
           );
 
           const outputPath = path.join(batchDir, 'review-output.jsonl');
@@ -365,10 +392,15 @@ export class ReviewEngine {
 
     await this.recordTelemetry(pr.number, accumulatedDurationMs, accumulatedTokensUsed);
 
+    const dedupIssues = (issues: ReviewIssue[]): ReviewIssue[] => {
+      if (linterResults.length === 0) return issues;
+      return this.deduplicateAgainstLinters(issues, linterResults);
+    };
+
     if (!synthesisResult.success) {
       core.warning('Synthesis pass failed, falling back to merged batch results');
       const fallback = this.buildFallbackResult(
-        allIssues,
+        dedupIssues(allIssues),
         allStrengths,
         allRawLines,
         totalFailedLines,
@@ -386,11 +418,35 @@ export class ReviewEngine {
 
     try {
       const parsed = await parseJsonlFile(finalOutputPath);
-      return await this.verifyReviewResult(parsed, baseContext, workDir, timeoutMinutes, pr.number);
+
+      let finalResult = parsed;
+      if (linterResults.length > 0) {
+        const deduped = this.deduplicateAgainstLinters(parsed.issues, linterResults);
+        if (deduped.length < parsed.issues.length) {
+          finalResult = {
+            ...parsed,
+            issues: deduped,
+            stats: {
+              total: deduped.length,
+              critical: deduped.filter((i) => i.severity === 'critical').length,
+              important: deduped.filter((i) => i.severity === 'important').length,
+              minor: deduped.filter((i) => i.severity === 'minor').length,
+            },
+          };
+        }
+      }
+
+      return await this.verifyReviewResult(
+        finalResult,
+        baseContext,
+        workDir,
+        timeoutMinutes,
+        pr.number,
+      );
     } catch {
       core.warning('Synthesis output parse failed, falling back to merged batch results');
       const fallback = this.buildFallbackResult(
-        allIssues,
+        dedupIssues(allIssues),
         allStrengths,
         allRawLines,
         totalFailedLines,
@@ -1028,6 +1084,148 @@ export class ReviewEngine {
     const docs = await this.mcp.getLibraryDocs(libraries);
     this.mcpDocsCache = { docs, libraries: key, timestamp: now };
     return docs;
+  }
+
+  /**
+   * Run configured linters against changed files.
+   */
+  private runLinters(changedFiles: Array<{ path: string }>, workDir: string): LinterResult[] {
+    if (!this.config.linters?.length) return [];
+
+    const results: LinterResult[] = [];
+
+    for (const linterConfig of this.config.linters) {
+      try {
+        const matchedFiles = changedFiles
+          .map((f) => f.path)
+          .filter((p): p is string => typeof p === 'string' && Boolean(p))
+          .filter((p) => minimatch(p, linterConfig.pattern));
+
+        if (matchedFiles.length === 0) continue;
+
+        const linterDir = linterConfig.workingDirectory
+          ? path.resolve(workDir, linterConfig.workingDirectory)
+          : workDir;
+
+        const args = [...(linterConfig.args || []), ...matchedFiles];
+        const start = Date.now();
+
+        const { stdout, stderr, status } = cp.spawnSync(linterConfig.command, args, {
+          cwd: linterDir,
+          encoding: 'utf-8',
+          maxBuffer: 10 * 1024 * 1024,
+          timeout: 60_000,
+        });
+
+        const duration = Date.now() - start;
+
+        const result: LinterResult = {
+          tool: linterConfig.command.split('/').pop() || linterConfig.command,
+          command: `${linterConfig.command} ${args.join(' ')}`,
+          exitCode: status ?? -1,
+          stdout: stdout || '',
+          stderr: stderr || '',
+          findings: this.parseLinterOutput(linterConfig.parseFormat || 'generic', stdout || ''),
+          success: (status ?? 0) <= 1,
+        };
+
+        core.info(
+          `Linter "${result.tool}" finished in ${duration}ms with exit code ${status} (${result.findings.length} findings)`,
+        );
+
+        results.push(result);
+      } catch (err) {
+        core.warning(
+          `Linter "${linterConfig.command}" failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Parse linter stdout into structured findings.
+   */
+  private parseLinterOutput(format: string, output: string): LinterFinding[] {
+    if (!output.trim()) return [];
+
+    if (format === 'eslint' || format === 'ruff') {
+      try {
+        const parsed = JSON.parse(output);
+        if (Array.isArray(parsed)) {
+          return parsed.flatMap((entry: Record<string, unknown>) => {
+            const filePath = String(entry.filePath || '');
+            const rawMessages = entry.messages as unknown;
+            const messages = Array.isArray(rawMessages) ? rawMessages : [entry];
+            return (messages as Array<Record<string, unknown>>).map((msg) => ({
+              file: filePath,
+              line: Number(msg.line) || 0,
+              column: Number(msg.column) || undefined,
+              severity: String(msg.severity || 'warning'),
+              ruleId: String(msg.ruleId || msg.code || ''),
+              message: String(msg.message || ''),
+              raw: JSON.stringify(msg),
+            }));
+          });
+        }
+      } catch {
+        // fall through to generic parser
+      }
+    }
+
+    const findings: LinterFinding[] = [];
+    const GENERIC_RE = /^([^:]+):(\d+):(\d+):\s*(error|warning|info|note|help)?:?\s*(.*)$/m;
+    for (const line of output.split('\n')) {
+      const match = line.match(GENERIC_RE);
+      if (match) {
+        findings.push({
+          file: match[1],
+          line: Number.parseInt(match[2], 10),
+          column: Number.parseInt(match[3], 10),
+          severity: match[4] || 'warning',
+          message: match[5] || '',
+          raw: line,
+        });
+      }
+    }
+
+    return findings;
+  }
+
+  /**
+   * Filter AI-generated findings that duplicate linter findings.
+   */
+  private deduplicateAgainstLinters(
+    issues: ReviewIssue[],
+    linterResults: LinterResult[],
+  ): ReviewIssue[] {
+    if (!linterResults.length || !issues.length) return issues;
+
+    const linterLocations = new Set<string>();
+    for (const result of linterResults) {
+      for (const finding of result.findings) {
+        linterLocations.add(`${finding.file}:${finding.line}`);
+      }
+    }
+
+    const filtered = issues.filter((issue) => {
+      const key = `${issue.file}:${issue.line}`;
+      if (linterLocations.has(key)) {
+        core.debug(`Suppressing AI finding at ${key} — matches linter output`);
+        return false;
+      }
+      return true;
+    });
+
+    const dropped = issues.length - filtered.length;
+    if (dropped > 0) {
+      core.info(
+        `Hybrid analysis suppressed ${dropped} finding(s) that overlap with configured linters`,
+      );
+    }
+
+    return filtered;
   }
 
   private buildFallbackResult(
