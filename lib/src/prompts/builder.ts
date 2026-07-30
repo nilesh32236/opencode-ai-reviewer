@@ -89,6 +89,7 @@ export interface ReviewPromptOptions {
  * @param falsePositiveRules - Optional false positive suppression rules.
  * @param deltaContext - Optional delta diff string for incremental reviews.
  * @param previousBotComments - Optional previous bot review comments to avoid re-reporting.
+ * @param linterResults - Optional linter results for context.
  * @returns The assembled review prompt string.
  */
 export function buildReviewPrompt(
