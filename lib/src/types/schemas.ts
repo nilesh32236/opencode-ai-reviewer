@@ -74,13 +74,18 @@ export const ProjectContextConfigSchema = z.object({
 });
 
 /** Zod schema validating token budget configuration. */
-export const TokenBudgetConfigSchema = z.object({
-  enabled: z.boolean().default(false),
-  maxLinesComplex: z.number().int().min(50).max(5000).default(200),
-  maxLinesSimple: z.number().int().min(5).max(100).default(20),
-  complexityThreshold: z.number().min(0).max(100).default(30),
-  simpleThreshold: z.number().min(0).max(100).default(10),
-});
+export const TokenBudgetConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    maxLinesComplex: z.number().int().min(50).max(5000).default(200),
+    maxLinesSimple: z.number().int().min(5).max(100).default(20),
+    complexityThreshold: z.number().min(0).max(100).default(30),
+    simpleThreshold: z.number().min(0).max(100).default(10),
+  })
+  .refine((data) => data.simpleThreshold <= data.complexityThreshold, {
+    message: 'simpleThreshold must be <= complexityThreshold',
+    path: ['simpleThreshold'],
+  });
 
 /** Zod schema validating review configuration. */
 export const ReviewConfigSchema = z.object({

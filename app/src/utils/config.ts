@@ -40,6 +40,7 @@ export function buildConfig(): AgentConfig {
     review: {
       ...DEFAULT_CONFIG.review,
       inline: process.env.REVIEW_INLINE !== 'false',
+      ...(process.env.TOKEN_BUDGET ? { tokenBudget: JSON.parse(process.env.TOKEN_BUDGET) } : {}),
     },
     learning: {
       ...DEFAULT_CONFIG.learning,

@@ -252,6 +252,8 @@ export interface TokenBudgetMetrics {
   budgetedLines: number;
   /** Number of files classified as simple */
   simpleCount: number;
+  /** Number of files classified as medium (interpolation range) */
+  mediumCount: number;
   /** Number of files classified as complex */
   complexCount: number;
 }

@@ -903,7 +903,7 @@ describe('ReviewEngine', () => {
     it('complex file gets full context when token budget is enabled', async () => {
       const lines = Array.from(
         { length: 5 },
-        (_, i) => `+function foo${i}() {\n+  if (x) {\n+    bar();\n+  }\n+}`,
+        (_, i) => `+function foo${i}() {\n+  if (x && y) {\n+    bar();\n+  }\n+}`,
       );
       const patch = lines.join('\n');
 
@@ -951,6 +951,12 @@ describe('ReviewEngine', () => {
 
       const contextArg = mockBuildReviewPrompt.mock.calls[0][1];
       expect(contextArg).toContain('Token budget:');
+      const scoreMatch = contextArg.match(/complexity score: ([\d.]+)/);
+      expect(scoreMatch).not.toBeNull();
+      if (scoreMatch) {
+        expect(Number.parseFloat(scoreMatch[1])).toBeGreaterThan(30);
+      }
+      expect(contextArg).not.toContain('[Patch truncated');
     });
 
     it('all files get equal treatment when token budget is disabled (backward compat)', async () => {
