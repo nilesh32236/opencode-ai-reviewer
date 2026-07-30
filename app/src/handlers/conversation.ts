@@ -149,10 +149,11 @@ async function gatherReviewCommentThread(
   mentionHandle: string,
 ): Promise<ReviewCommentThread> {
   try {
-    // Fetch recent review comments (only need ~5 for context; limit to 10 per page)
+    // Fetch recent review comments (only need ~5 for context; limit to 10 per page, newest first)
     const allComments = (await gh.listReviewComments(prNumber, {
       perPage: 10,
       maxPages: 1,
+      direction: 'desc',
     })) as Array<{
       id: number;
       body: string;
@@ -212,8 +213,12 @@ async function gatherIssueCommentThread(
   mentionHandle: string,
 ): Promise<IssueCommentThread> {
   try {
-    // Fetch recent issue comments (only need ~5 for context; limit to 10 per page)
-    const allComments = (await gh.listComments(prNumber, { perPage: 10, maxPages: 1 })) as Array<{
+    // Fetch recent issue comments (only need ~5 for context; limit to 10 per page, newest first)
+    const allComments = (await gh.listComments(prNumber, {
+      perPage: 10,
+      maxPages: 1,
+      direction: 'desc',
+    })) as Array<{
       id: number;
       body: string;
       user?: { login?: string };

@@ -195,20 +195,25 @@ export class GitHubHelper {
    * @param options - Pagination options.
    * @param options.perPage - Items per page (default: 100).
    * @param options.maxPages - Maximum pages to fetch (default: 10).
+   * @param options.direction - Sort direction (optional, e.g. 'asc' or 'desc').
    * @returns Array of items from all pages.
    */
   public async paginate<T>(
     endpoint: string,
-    options?: { perPage?: number; maxPages?: number },
+    options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
   ): Promise<T[]> {
     const perPage = options?.perPage ?? 100;
     const maxPages = options?.maxPages ?? 10;
+    const direction = options?.direction;
     const allItems: T[] = [];
     let page = 1;
 
     while (page <= maxPages) {
       const separator = endpoint.includes('?') ? '&' : '?';
-      const pagePath = `${endpoint}${separator}per_page=${perPage}&page=${page}`;
+      let pagePath = `${endpoint}${separator}per_page=${perPage}&page=${page}`;
+      if (direction) {
+        pagePath += `&direction=${direction}`;
+      }
       try {
         const items = await this.api<T[]>(pagePath);
         allItems.push(...items);
@@ -455,14 +460,15 @@ export class GitHubHelper {
   // ─── Comment Listing & Replies ──────────────────────────
 
   /**
-   * List all review comments on a pull request (paginated).
+   * List review comments on a pull request (paginated, subject to perPage/maxPages/direction options).
    *
    * @param prNumber - PR number.
+   * @param options - Pagination and sort options.
    * @returns Array of raw review comment objects.
    */
   async listReviewComments(
     prNumber: number,
-    options?: { perPage?: number; maxPages?: number },
+    options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
   ): Promise<Array<Record<string, unknown>>> {
     return this.paginate<Record<string, unknown>>(`/pulls/${prNumber}/comments`, options);
   }
@@ -483,14 +489,15 @@ export class GitHubHelper {
   }
 
   /**
-   * List all issue comments on a PR or issue (paginated).
+   * List issue comments on a PR or issue (paginated, subject to perPage/maxPages/direction options).
    *
    * @param issueNumber - PR/issue number.
+   * @param options - Pagination and sort options.
    * @returns Array of raw issue comment objects.
    */
   async listComments(
     issueNumber: number,
-    options?: { perPage?: number; maxPages?: number },
+    options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
   ): Promise<Array<Record<string, unknown>>> {
     return this.paginate<Record<string, unknown>>(`/issues/${issueNumber}/comments`, options);
   }
