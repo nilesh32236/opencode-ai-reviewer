@@ -707,7 +707,9 @@ export interface LinterConfig {
   /** Working directory relative to repo root */
   workingDirectory?: string;
   /** Output parse format. Defaults to "generic". */
-  parseFormat?: 'eslint' | 'ruff' | 'sarif' | 'generic';
+  parseFormat?: 'eslint' | 'ruff' | 'generic';
+  /** Timeout in milliseconds (default: 60000). */
+  timeout?: number;
 }
 
 /** A single finding from a linter. */

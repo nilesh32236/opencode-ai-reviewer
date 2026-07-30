@@ -200,7 +200,7 @@ export class ReviewEngine {
     }
 
     // Run configured linters as pre-processing step
-    const linterResults = await this.runLinters(pr.changedFiles, workDir);
+    const linterResults = await this.runLinters(files, workDir);
 
     // If PR is small enough for a single batch, skip concurrent processing
     if (files.length <= batchSize) {
@@ -243,7 +243,7 @@ export class ReviewEngine {
         // Deduplicate against linter findings
         let finalResult = parsed;
         if (linterResults.length > 0) {
-          const deduped = this.deduplicateAgainstLinters(parsed.issues, linterResults);
+          const deduped = this.deduplicateAgainstLinters(parsed.issues, linterResults, workDir);
           if (deduped.length < parsed.issues.length) {
             finalResult = {
               ...parsed,
@@ -394,7 +394,7 @@ export class ReviewEngine {
 
     const dedupIssues = (issues: ReviewIssue[]): ReviewIssue[] => {
       if (linterResults.length === 0) return issues;
-      return this.deduplicateAgainstLinters(issues, linterResults);
+      return this.deduplicateAgainstLinters(issues, linterResults, workDir);
     };
 
     if (!synthesisResult.success) {
@@ -421,7 +421,7 @@ export class ReviewEngine {
 
       let finalResult = parsed;
       if (linterResults.length > 0) {
-        const deduped = this.deduplicateAgainstLinters(parsed.issues, linterResults);
+        const deduped = this.deduplicateAgainstLinters(parsed.issues, linterResults, workDir);
         if (deduped.length < parsed.issues.length) {
           finalResult = {
             ...parsed,
@@ -1113,8 +1113,8 @@ export class ReviewEngine {
         const { stdout, stderr, status } = cp.spawnSync(linterConfig.command, args, {
           cwd: linterDir,
           encoding: 'utf-8',
-          maxBuffer: 10 * 1024 * 1024,
-          timeout: 60_000,
+          maxBuffer: 50 * 1024 * 1024,
+          timeout: linterConfig.timeout ?? 60_000,
         });
 
         const duration = Date.now() - start;
@@ -1128,6 +1128,11 @@ export class ReviewEngine {
           findings: this.parseLinterOutput(linterConfig.parseFormat || 'generic', stdout || ''),
           success: (status ?? 0) <= 1,
         };
+
+        if (stderr) {
+          const truncated = stderr.length > 500 ? stderr.slice(0, 500) + '...' : stderr;
+          core.debug(`Linter "${result.tool}" stderr: ${truncated}`);
+        }
 
         core.info(
           `Linter "${result.tool}" finished in ${duration}ms with exit code ${status} (${result.findings.length} findings)`,
@@ -1150,7 +1155,31 @@ export class ReviewEngine {
   private parseLinterOutput(format: string, output: string): LinterFinding[] {
     if (!output.trim()) return [];
 
-    if (format === 'eslint' || format === 'ruff') {
+    if (format === 'ruff') {
+      try {
+        const parsed = JSON.parse(output);
+        if (Array.isArray(parsed)) {
+          return parsed.flatMap((entry: Record<string, unknown>) => {
+            const file = String(entry.filename || '');
+            const loc = entry.location as { row?: number; column?: number } | undefined;
+            const cell = entry.cell as { row?: number } | undefined;
+            const line = loc?.row ?? cell?.row ?? 0;
+            if (line <= 0) return [];
+            return {
+              file,
+              line,
+              column: loc?.column ?? undefined,
+              severity: String(entry.severity || (entry.code ? 'error' : 'warning')),
+              ruleId: String(entry.code || ''),
+              message: String(entry.message || ''),
+              raw: JSON.stringify(entry),
+            };
+          });
+        }
+      } catch {
+        // fall through to generic parser
+      }
+    } else if (format === 'eslint') {
       try {
         const parsed = JSON.parse(output);
         if (Array.isArray(parsed)) {
@@ -1158,15 +1187,29 @@ export class ReviewEngine {
             const filePath = String(entry.filePath || '');
             const rawMessages = entry.messages as unknown;
             const messages = Array.isArray(rawMessages) ? rawMessages : [entry];
-            return (messages as Array<Record<string, unknown>>).map((msg) => ({
-              file: filePath,
-              line: Number(msg.line) || 0,
-              column: Number(msg.column) || undefined,
-              severity: String(msg.severity || 'warning'),
-              ruleId: String(msg.ruleId || msg.code || ''),
-              message: String(msg.message || ''),
-              raw: JSON.stringify(msg),
-            }));
+            return (messages as Array<Record<string, unknown>>)
+              .map((msg) => {
+                const line = Number(msg.line) || 0;
+                if (line <= 0) return null;
+                const sev =
+                  msg.severity === 2
+                    ? 'error'
+                    : msg.severity === 1
+                      ? 'warning'
+                      : String(msg.severity || 'warning');
+                const col = Number(msg.column) || undefined;
+                const result: LinterFinding = {
+                  file: filePath,
+                  line,
+                  severity: sev,
+                  ruleId: String(msg.ruleId || msg.code || '') || undefined,
+                  message: String(msg.message || ''),
+                  raw: JSON.stringify(msg),
+                };
+                if (col !== undefined) result.column = col;
+                return result;
+              })
+              .filter((f): f is LinterFinding => f !== null);
           });
         }
       } catch {
@@ -1179,10 +1222,12 @@ export class ReviewEngine {
     for (const line of output.split('\n')) {
       const match = line.match(GENERIC_RE);
       if (match) {
+        const lineNum = Number.parseInt(match[2], 10) || 0;
+        if (lineNum <= 0) continue;
         findings.push({
           file: match[1],
-          line: Number.parseInt(match[2], 10),
-          column: Number.parseInt(match[3], 10),
+          line: lineNum,
+          column: Number.parseInt(match[3], 10) || undefined,
           severity: match[4] || 'warning',
           message: match[5] || '',
           raw: line,
@@ -1199,21 +1244,34 @@ export class ReviewEngine {
   private deduplicateAgainstLinters(
     issues: ReviewIssue[],
     linterResults: LinterResult[],
+    workDir?: string,
   ): ReviewIssue[] {
     if (!linterResults.length || !issues.length) return issues;
 
-    const linterLocations = new Set<string>();
+    const linterFindings: { key: string; message: string }[] = [];
     for (const result of linterResults) {
       for (const finding of result.findings) {
-        linterLocations.add(`${finding.file}:${finding.line}`);
+        const normalized = workDir
+          ? path.relative(workDir, path.resolve(workDir, finding.file))
+          : finding.file;
+        linterFindings.push({ key: `${normalized}:${finding.line}`, message: finding.message });
       }
     }
 
     const filtered = issues.filter((issue) => {
-      const key = `${issue.file}:${issue.line}`;
-      if (linterLocations.has(key)) {
-        core.debug(`Suppressing AI finding at ${key} — matches linter output`);
-        return false;
+      const normalized = workDir
+        ? path.relative(workDir, path.resolve(workDir, issue.file))
+        : issue.file;
+      const key = `${normalized}:${issue.line}`;
+      const match = linterFindings.find((lf) => lf.key === key);
+      if (match) {
+        const msgOverlap =
+          match.message &&
+          issue.message.toLowerCase().includes(match.message.toLowerCase().slice(0, 20));
+        if (msgOverlap) {
+          core.debug(`Suppressing AI finding at ${key} — matches linter output`);
+          return false;
+        }
       }
       return true;
     });

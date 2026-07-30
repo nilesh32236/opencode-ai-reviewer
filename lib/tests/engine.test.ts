@@ -1078,9 +1078,7 @@ describe('ReviewEngine', () => {
         stdout: JSON.stringify([
           {
             filePath: 'src/test.ts',
-            messages: [
-              { line: 5, severity: 'warning', ruleId: 'no-unused-vars', message: 'x is unused' },
-            ],
+            messages: [{ line: 5, severity: 2, ruleId: 'no-unused-vars', message: 'x is unused' }],
           },
         ]),
         stderr: '',
@@ -1113,7 +1111,7 @@ describe('ReviewEngine', () => {
             severity: 'important',
             file: 'src/test.ts',
             line: 5,
-            message: 'x is declared but never used',
+            message: 'x is unused, declared but never used',
             suggestion: 'Remove unused variable',
           },
           {
@@ -1157,8 +1155,8 @@ describe('ReviewEngine', () => {
           {
             filePath: 'src/test.ts',
             messages: [
-              { line: 5, severity: 'error', ruleId: 'no-unused-vars', message: 'x is unused' },
-              { line: 10, severity: 'error', ruleId: 'no-console', message: 'Unexpected console' },
+              { line: 5, severity: 2, ruleId: 'no-unused-vars', message: 'x is unused' },
+              { line: 10, severity: 2, ruleId: 'no-console', message: 'Unexpected console' },
             ],
           },
         ]),
@@ -1187,14 +1185,14 @@ describe('ReviewEngine', () => {
             severity: 'critical',
             file: 'src/test.ts',
             line: 5,
-            message: 'unused var',
+            message: 'x is unused, declared but not used',
           },
           {
             type: 'issue',
             severity: 'important',
             file: 'src/test.ts',
             line: 10,
-            message: 'console log',
+            message: 'Unexpected console statement found',
           },
           {
             type: 'issue',

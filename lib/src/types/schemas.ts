@@ -131,7 +131,8 @@ export const LinterConfigSchema = z.object({
   command: z.string().min(1),
   args: z.array(z.string()).optional(),
   workingDirectory: z.string().optional(),
-  parseFormat: z.enum(['eslint', 'ruff', 'sarif', 'generic']).optional().default('generic'),
+  parseFormat: z.enum(['eslint', 'ruff', 'generic']).optional().default('generic'),
+  timeout: z.number().int().positive().optional(),
 });
 
 /** Zod schema validating the full agent configuration, merging provided values with defaults. */

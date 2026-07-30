@@ -290,6 +290,7 @@ export function validateConfig(config: PromptConfig): PromptConfig {
       if (!l || typeof l !== 'object') return false;
       if (typeof l.pattern !== 'string' || typeof l.command !== 'string') return false;
       if (l.args && !Array.isArray(l.args)) return false;
+      if (l.parseFormat && !['eslint', 'ruff', 'generic'].includes(l.parseFormat)) return false;
       return true;
     });
   }
@@ -334,7 +335,7 @@ function extractDefaultsFromConfig(config: PromptConfig): Record<string, unknown
     defaults.audit_auto_fix = 'false';
   }
   if (config.linters?.length) {
-    defaults.linters = config.linters;
+    defaults.linters = JSON.stringify(config.linters);
   }
 
   if (config.project?.description) {
