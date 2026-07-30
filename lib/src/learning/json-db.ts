@@ -17,57 +17,19 @@ import type {
   TelemetryStats,
 } from './types.js';
 
-/**
- *
- */
+/** Database row for a code review finding. */
 export interface FindingRow {
-  /**
-   *
-   */
   id: string;
-  /**
-   *
-   */
   pr_number: number;
-  /**
-   *
-   */
   type: string;
-  /**
-   *
-   */
   severity?: string;
-  /**
-   *
-   */
   file?: string;
-  /**
-   *
-   */
   line?: number;
-  /**
-   *
-   */
   message: string;
-  /**
-   *
-   */
   suggestion?: string;
-  /**
-   *
-   */
   duration_ms?: number;
-  /**
-   *
-   */
   tokens_used?: number;
-  /**
-   *
-   */
   comment_id?: number;
-  /**
-   *
-   */
   created_at: string;
 }
 
@@ -80,105 +42,36 @@ interface FeedbackRow {
   created_at: string;
 }
 
-/**
- *
- */
+/** Database row for review quality metrics. */
 export interface ReviewQualityRow {
-  /**
-   *
-   */
   id: string;
-  /**
-   *
-   */
   pr_number: number;
-  /**
-   *
-   */
   actionability_score: number;
-  /**
-   *
-   */
   accuracy_score: number;
-  /**
-   *
-   */
   coverage_score: number;
-  /**
-   *
-   */
   consistency_score: number;
-  /**
-   *
-   */
   duration_ms?: number;
-  /**
-   *
-   */
   tokens_used?: number;
-  /**
-   *
-   */
   created_at: string;
 }
 
-/**
- *
- */
+/** Database row for a detected pattern. */
 export interface PatternRow {
-  /**
-   *
-   */
   id: string;
-  /**
-   *
-   */
   pattern_key: string;
-  /**
-   *
-   */
   message_cluster: string;
-  /**
-   *
-   */
   frequency: number;
-  /**
-   *
-   */
   file_types?: string;
-  /**
-   *
-   */
   first_seen: string;
-  /**
-   *
-   */
   last_seen: string;
 }
 
-/**
- *
- */
+/** Database row for a custom review rule. */
 export interface CustomRuleRow {
-  /**
-   *
-   */
   id: string;
-  /**
-   *
-   */
   rule_text: string;
-  /**
-   *
-   */
   source: string;
-  /**
-   *
-   */
   status: string;
-  /**
-   *
-   */
   approved_at?: string;
 }
 
@@ -204,9 +97,6 @@ interface MetaReviewCounterRow {
  * on process exit.
  */
 export class JsonDatabase implements LearningRepository {
-  /**
-   *
-   */
   public data: {
     findings: FindingRow[];
     feedback: FeedbackRow[];
@@ -266,9 +156,7 @@ export class JsonDatabase implements LearningRepository {
     }
   }
 
-  /**
-   *
-   */
+  /** Flush pending writes to disk. */
   public async flush(): Promise<void> {
     if (this.writeTimeout) {
       clearTimeout(this.writeTimeout);
@@ -277,9 +165,7 @@ export class JsonDatabase implements LearningRepository {
     await this.writeToDisk();
   }
 
-  /**
-   *
-   */
+  /** Synchronously flush pending writes to disk. */
   public flushSync(): void {
     if (this.writeTimeout) {
       clearTimeout(this.writeTimeout);
@@ -297,9 +183,7 @@ export class JsonDatabase implements LearningRepository {
     }
   }
 
-  /**
-   *
-   */
+  /** Schedule a deferred write to disk. */
   public save() {
     if (this.inTransaction) return;
     if (this.writeTimeout) {
@@ -381,9 +265,7 @@ export class JsonDatabase implements LearningRepository {
     return wrapper as T;
   }
 
-  /**
-   *
-   */
+  /** Close the database and flush pending writes. */
   async close(): Promise<void> {
     this.flushSync();
   }
@@ -883,9 +765,7 @@ export class JsonDatabase implements LearningRepository {
     };
   }
 
-  /**
-   *
-   */
+  /** Reset the review counter to zero. */
   async resetCounter(): Promise<void> {
     const entry = this.data.meta_review_counter.find((x) => x.id === 1);
     if (entry) {

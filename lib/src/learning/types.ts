@@ -5,109 +5,40 @@ export type { CustomRuleRow, FindingRow, PatternRow, ReviewQualityRow };
 
 /** Input data for recording a single review finding. */
 export interface FindingInput {
-  /**
-   *
-   */
   id?: string;
-  /**
-   *
-   */
   prNumber: number;
-  /**
-   *
-   */
   type: string;
-  /**
-   *
-   */
   severity?: string;
-  /**
-   *
-   */
   file?: string;
-  /**
-   *
-   */
   line?: number;
-  /**
-   *
-   */
   message: string;
-  /**
-   *
-   */
   suggestion?: string;
-  /**
-   *
-   */
   durationMs?: number;
-  /**
-   *
-   */
   tokensUsed?: number;
-  /**
-   *
-   */
   commentId?: number; // GitHub comment ID
 }
 
 /** Aggregated telemetry statistics for review executions. */
 export interface TelemetryStats {
-  /**
-   *
-   */
   avgDurationMs: number;
-  /**
-   *
-   */
   totalReviews: number;
-  /**
-   *
-   */
   totalTokensUsed: number;
-  /**
-   *
-   */
   avgTokensPerReview: number;
 }
 
 /** Input data for recording a feedback signal on a finding. */
 export interface FeedbackInput {
-  /**
-   *
-   */
   findingId: string;
-  /**
-   *
-   */
   signalType: LearningFeedback['signalType'];
-  /**
-   *
-   */
   signalValue: string;
-  /**
-   *
-   */
   prNumber: number;
 }
 
 /** Input data for recording a detected pattern. */
 export interface PatternInput {
-  /**
-   *
-   */
   patternKey: string;
-  /**
-   *
-   */
   messageCluster: string[];
-  /**
-   *
-   */
   frequency: number;
-  /**
-   *
-   */
   fileTypes: string[];
 }
 

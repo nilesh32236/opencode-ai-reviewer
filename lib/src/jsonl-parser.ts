@@ -193,21 +193,9 @@ export function parseJsonlString(content: string): ReviewResult {
 
   let executiveSummary:
     | {
-        /**
-         *
-         */
         purpose: string;
-        /**
-         *
-         */
         riskLevel: 'low' | 'medium' | 'high';
-        /**
-         *
-         */
         riskRationale: string;
-        /**
-         *
-         */
         breakingChanges: string[];
       }
     | undefined;
@@ -438,25 +426,11 @@ export function buildReviewBody(result: ReviewResult): string {
   return parts.join('\n');
 }
 
-/**
- *
- */
+/** An inline review comment on a pull request diff. */
 export interface InlineComment {
-  /**
-   *
-   */
   path: string;
-  /**
-   *
-   */
   line: number;
-  /**
-   *
-   */
   side: string;
-  /**
-   *
-   */
   body: string;
 }
 

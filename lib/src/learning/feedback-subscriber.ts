@@ -12,13 +12,7 @@ const DISPUTE_KEYWORDS = ['false positive', 'not an issue', 'wrong', 'incorrect'
  * false-positive rate calculation and learning.
  */
 export class FeedbackSubscriber implements Subscriber {
-  /**
-   *
-   */
   name = 'FeedbackSubscriber';
-  /**
-   *
-   */
   subscribedEvents = [
     'review.dismissed',
     'review_comment.dismissed',

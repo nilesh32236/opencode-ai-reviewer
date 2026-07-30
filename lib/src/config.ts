@@ -7,9 +7,7 @@ import type { ConfigOverride, LinterConfig, PromptConfig } from './types/index.j
 import { PromptConfigSchema } from './types/schemas.js';
 import { DEFAULT_ALLOWLIST } from './utils/command.js';
 
-/**
- *
- */
+/** Options for resolving configuration values. */
 export interface ResolveConfigOptions {
   /** File paths being reviewed (for path-based overrides) */
   paths?: string[];

@@ -13,17 +13,9 @@ import type {
 import { CircuitBreaker } from './circuit-breaker.js';
 import { withRetry, withRetryAndTimeout } from './retry.js';
 
-/**
- *
- */
+/** Paginated result wrapper for API responses. */
 export interface PaginatedResult<T> {
-  /**
-   *
-   */
   items: T[];
-  /**
-   *
-   */
   totalCount: number;
 }
 
@@ -60,9 +52,7 @@ interface ReviewThreadsQueryResponse {
   };
 }
 
-/**
- *
- */
+/** Information about a review comment thread. */
 export interface ReviewThreadInfo {
   /** GraphQL node ID of the thread (used for resolve mutation). */
   threadId: string;
