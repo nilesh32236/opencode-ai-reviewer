@@ -4,6 +4,26 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.12] — 2026-07-30
+
+
+### Fixed
+
+- self-heal CI failure (attempt 1) [lint-error (eslint `jsdoc/require-param` rule)] (#282) (#282)
+- address issue #209 (#281) (#209
+#281)
+- address issue #214 (#279) (#214
+#279)
+- address issue #219 (#278) (#219
+#278)
+
+### Changed
+
+- [Autofix] Issue 28: No reachability analysis for security findings (#280) (#280)
+- [Autofix] 76: Separate 'review' and 'fix' model configuration is too coarse-grained (#277) (#277)
+
+[v1.6.12]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.11...v1.6.12
+
 ## [v1.6.11] — 2026-07-30
 
 

@@ -477,6 +477,7 @@ export interface InlineComment {
  * Build inline review comments from issues in a ReviewResult, filtered to lines present in the diff.
  * @param result - The review result containing issues.
  * @param diffLines - Optional set of "file:line" strings to filter inline comments to diff lines.
+ * @param suppressLowConfidence - When true, filters out issues with low confidence.
  * @returns An array of inline comment objects.
  */
 export function buildInlineComments(
