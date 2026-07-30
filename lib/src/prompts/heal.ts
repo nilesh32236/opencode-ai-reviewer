@@ -56,13 +56,7 @@ export function buildSelfHealPrompt(
   sections.push('### Failure Logs');
   sections.push('');
   sections.push('```');
-  // Truncate very long logs to avoid overwhelming the context
-  const maxLogLength = 8000;
-  const truncatedLogs =
-    ciFailureLogs.length > maxLogLength
-      ? `[...truncated ${ciFailureLogs.length - maxLogLength} bytes...]\n${ciFailureLogs.slice(-maxLogLength)}`
-      : ciFailureLogs;
-  sections.push(truncatedLogs);
+  sections.push(extractRelevantLogSnippet(ciFailureLogs, 12000));
   sections.push('```');
   sections.push('');
 
@@ -184,4 +178,35 @@ export function buildSelfHealPrompt(
   sections.push('The workflow step after you finish will handle all git operations.');
 
   return sections.join('\n');
+}
+
+/**
+ * Intelligently extract the most relevant snippet from long CI failure logs.
+ * Prioritizes failure markers (e.g. "FAIL", "Error:", "::error::") and includes
+ * both header context (what command ran) and failure traceback details.
+ */
+export function extractRelevantLogSnippet(logs: string, maxLength = 12000): string {
+  if (logs.length <= maxLength) {
+    return logs;
+  }
+
+  // Look for error markers in the logs
+  const errorRegex = /(?:FAIL|Error:|FAILED|::error::|npm error|vitest|stderr|exit code [1-9])/i;
+  const match = errorRegex.exec(logs);
+
+  if (match && match.index >= 0) {
+    // Window starting 1000 chars before the first error match
+    const matchIndex = match.index;
+    const start = Math.max(0, matchIndex - 1000);
+    const end = Math.min(logs.length, start + maxLength);
+    const snippet = logs.slice(start, end);
+    return `[...truncated leading ${start} bytes...]\n${snippet}\n[...truncated trailing ${logs.length - end} bytes...]`;
+  }
+
+  // Fallback: Combine head (2500 chars) and tail (maxLength - 2500 chars)
+  const headSize = 2500;
+  const tailSize = maxLength - headSize;
+  const head = logs.slice(0, headSize);
+  const tail = logs.slice(-tailSize);
+  return `${head}\n\n[...truncated ${logs.length - maxLength} bytes...]\n\n${tail}`;
 }
