@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.11] — 2026-07-30
+
+
+### Fixed
+
+- self-heal CI failure (attempt 1) [lint-error (jsdoc docstring coverage)] (#276) (#276)
+
+### Changed
+
+- [Autofix] Unbounded comment fetching in conversation handler (#275) (#275)
+
+[v1.6.11]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.10...v1.6.11
+
 ## [v1.6.10] — 2026-07-30
 
 
