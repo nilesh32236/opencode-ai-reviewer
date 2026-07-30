@@ -34,6 +34,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Check for committed build artifacts
+        run: |
+          ARTIFACTS=$(git ls-files 'lib/tests/*.test.js' 'lib/tests/*.test.d.ts' 'lib/vitest.config.d.ts')
+          if [ -n "$ARTIFACTS" ]; then
+            echo "ERROR: Compiled test artifacts committed:" >&2
+            echo "$ARTIFACTS" >&2
+            exit 1
+          fi
+
       - name: Build lib
         run: pnpm --filter @opencode-pr-agent/lib build
 
