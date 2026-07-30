@@ -18,6 +18,7 @@ import { CircuitBreaker } from './circuit-breaker.js';
 import { withRetry } from './retry.js';
 import { buildReviewBody, getConfidenceBadge } from './review-body.js';
 
+/** GitLab adapter. */
 export class GitLabAdapter implements PlatformAdapter {
   private circuitBreaker = new CircuitBreaker({
     failureThreshold: 5,
@@ -28,6 +29,13 @@ export class GitLabAdapter implements PlatformAdapter {
 
   private currentUserLogin: string | null = null;
 
+  /**
+   * Constructor.
+   * @param token
+   * @param repo
+   * @param apiUrl - apiUrl argument.
+   * @returns Description.
+   */
   constructor(
     private token: string,
     private repo: string,
@@ -110,6 +118,15 @@ export class GitLabAdapter implements PlatformAdapter {
     }
   }
 
+  /**
+   * Paginate through GitLab API endpoints.
+   * @param endpoint
+   * @param options
+   * @param options.perPage
+   * @param options.maxPages
+   * @param options.direction - options.direction argument.
+   * @returns Description.
+   */
   async paginate<T>(
     endpoint: string,
     options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
@@ -140,6 +157,11 @@ export class GitLabAdapter implements PlatformAdapter {
 
   // ─── MR Operations ──────────────────────────────────────
 
+  /**
+   * Get MR.
+   * @param number - number argument.
+   * @returns Description.
+   */
   async getMR(number: number): Promise<PRContext> {
     const [mrResult, changesResult] = await Promise.allSettled([
       this.api<{
@@ -203,6 +225,11 @@ export class GitLabAdapter implements PlatformAdapter {
     };
   }
 
+  /**
+   * Check if MR exists.
+   * @param number - number argument.
+   * @returns Description.
+   */
   async isMR(number: number): Promise<boolean> {
     try {
       await this.api(`/merge_requests/${number}`, { method: 'HEAD' });
@@ -212,6 +239,10 @@ export class GitLabAdapter implements PlatformAdapter {
     }
   }
 
+  /**
+   * Get default branch.
+   * @returns Default branch name.
+   */
   async getDefaultBranch(): Promise<string> {
     const project = await this.api<{ default_branch: string }>('');
     return project.default_branch;
@@ -219,6 +250,11 @@ export class GitLabAdapter implements PlatformAdapter {
 
   // ─── Issue Operations ───────────────────────────────────
 
+  /**
+   * Get issue.
+   * @param number - number argument.
+   * @returns Description.
+   */
   async getIssue(number: number): Promise<IssueContext> {
     const [issueResult, commentsResult] = await Promise.allSettled([
       this.api<{
@@ -254,6 +290,11 @@ export class GitLabAdapter implements PlatformAdapter {
     };
   }
 
+  /**
+   * Get issue comments.
+   * @param number - number argument.
+   * @returns Description.
+   */
   async getIssueComments(number: number): Promise<IssueComment[]> {
     const comments = await this.paginate<{
       id: number;
@@ -272,6 +313,11 @@ export class GitLabAdapter implements PlatformAdapter {
 
   // ─── Diff Operations ────────────────────────────────────
 
+  /**
+   * Get diff lines.
+   * @param mrNumber - mrNumber argument.
+   * @returns Description.
+   */
   async getDiffLines(mrNumber: number): Promise<Set<string>> {
     try {
       const diffText = await this.api<string>(
@@ -310,8 +356,15 @@ export class GitLabAdapter implements PlatformAdapter {
     }
   }
 
+  /**
+   * Get diff since SHA.
+   * @param fromSha
+   * @param toSha - toSha argument.
+   * @returns Description.
+   */
   async getDiffSince(fromSha: string, toSha: string): Promise<string> {
     try {
+      /** Compare response type. */
       type CompareResponse = { diffs: Array<{ diff: string }> };
       const data = await this.api<CompareResponse>(
         `/repository/compare?from=${fromSha}&to=${toSha}`,
@@ -329,6 +382,15 @@ export class GitLabAdapter implements PlatformAdapter {
 
   // ─── Comment Listing & Replies ──────────────────────────
 
+  /**
+   * List review comments.
+   * @param mrNumber
+   * @param options
+   * @param options.perPage
+   * @param options.maxPages
+   * @param options.direction - options.direction argument.
+   * @returns Description.
+   */
   async listReviewComments(
     mrNumber: number,
     options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
@@ -336,6 +398,13 @@ export class GitLabAdapter implements PlatformAdapter {
     return this.paginate<Record<string, unknown>>(`/merge_requests/${mrNumber}/notes`, options);
   }
 
+  /**
+   * Create review comment reply.
+   * @param mrNumber
+   * @param commentId
+   * @param body - body argument.
+   * @returns Description.
+   */
   async createReviewCommentReply(mrNumber: number, commentId: number, body: string): Promise<void> {
     const discussion = await this.api<{ discussion_id?: string }>(
       `/merge_requests/${mrNumber}/notes/${commentId}`,
@@ -348,6 +417,15 @@ export class GitLabAdapter implements PlatformAdapter {
     });
   }
 
+  /**
+   * List comments.
+   * @param issueNumber
+   * @param options
+   * @param options.perPage
+   * @param options.maxPages
+   * @param options.direction - options.direction argument.
+   * @returns Description.
+   */
   async listComments(
     issueNumber: number,
     options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
@@ -355,6 +433,12 @@ export class GitLabAdapter implements PlatformAdapter {
     return this.paginate<Record<string, unknown>>(`/issues/${issueNumber}/notes`, options);
   }
 
+  /**
+   * Post comment.
+   * @param issueNumber
+   * @param body - body argument.
+   * @returns Description.
+   */
   async postComment(issueNumber: number, body: string): Promise<void> {
     await this.api(`/issues/${issueNumber}/notes`, {
       method: 'POST',
@@ -365,6 +449,15 @@ export class GitLabAdapter implements PlatformAdapter {
 
   // ─── Review Operations ──────────────────────────────────
 
+  /**
+   * Post review.
+   * @param mrNumber
+   * @param _commitSha
+   * @param result
+   * @param postInlineComments
+   * @param suppressLowConfidence - suppressLowConfidence argument.
+   * @returns Description.
+   */
   async postReview(
     mrNumber: number,
     _commitSha: string,
@@ -481,6 +574,13 @@ export class GitLabAdapter implements PlatformAdapter {
 
   // ─── Comment Operations ─────────────────────────────────
 
+  /**
+   * Post or update comment.
+   * @param issueNumber
+   * @param marker
+   * @param body - body argument.
+   * @returns Description.
+   */
   async postOrUpdateComment(
     issueNumber: number,
     marker: string,
@@ -519,6 +619,12 @@ export class GitLabAdapter implements PlatformAdapter {
     }
   }
 
+  /**
+   * Create comment.
+   * @param issueNumber
+   * @param body - body argument.
+   * @returns Description.
+   */
   async createComment(issueNumber: number, body: string): Promise<{ id: number }> {
     const created = await this.api<{ id: number }>(`/issues/${issueNumber}/notes`, {
       method: 'POST',
@@ -528,6 +634,13 @@ export class GitLabAdapter implements PlatformAdapter {
     return { id: created.id };
   }
 
+  /**
+   * Reply to review comment.
+   * @param mrNumber
+   * @param commentId
+   * @param body - body argument.
+   * @returns Description.
+   */
   async replyToReviewComment(
     mrNumber: number,
     commentId: number,
@@ -548,10 +661,21 @@ export class GitLabAdapter implements PlatformAdapter {
     return { id: result.id };
   }
 
+  /**
+   * Get review comment.
+   * @param mrNumber
+   * @param commentId - commentId argument.
+   * @returns Description.
+   */
   async getReviewComment(mrNumber: number, commentId: number): Promise<ReviewCommentDetail> {
     return this.api<ReviewCommentDetail>(`/merge_requests/${mrNumber}/notes/${commentId}`);
   }
 
+  /**
+   * Get review comment thread.
+   * @param _commentId - _commentId argument.
+   * @returns Description.
+   */
   async getReviewCommentThread(_commentId: number): Promise<ReviewCommentThread> {
     core.warning('getReviewCommentThread not supported via GitLab REST API');
     return {
@@ -561,6 +685,13 @@ export class GitLabAdapter implements PlatformAdapter {
     };
   }
 
+  /**
+   * Create issue.
+   * @param title
+   * @param body
+   * @param labels - labels argument.
+   * @returns Description.
+   */
   async createIssue(
     title: string,
     body: string,
@@ -579,6 +710,14 @@ export class GitLabAdapter implements PlatformAdapter {
     }
   }
 
+  /**
+   * Create PR.
+   * @param title
+   * @param body
+   * @param head
+   * @param base - base argument.
+   * @returns Description.
+   */
   async createPR(
     title: string,
     body: string,
@@ -607,6 +746,12 @@ export class GitLabAdapter implements PlatformAdapter {
 
   // ─── Label Operations ───────────────────────────────────
 
+  /**
+   * Add labels.
+   * @param issueNumber
+   * @param labels - labels argument.
+   * @returns Description.
+   */
   async addLabels(issueNumber: number, labels: string[]): Promise<void> {
     const existing = await this.api<{ labels: string[] }>(`/issues/${issueNumber}`);
     const merged = [...new Set([...(existing.labels || []), ...labels])];
@@ -617,6 +762,12 @@ export class GitLabAdapter implements PlatformAdapter {
     });
   }
 
+  /**
+   * Remove label.
+   * @param issueNumber
+   * @param label - label argument.
+   * @returns Description.
+   */
   async removeLabel(issueNumber: number, label: string): Promise<void> {
     try {
       const current = await this.api<{ labels: string[] }>(`/issues/${issueNumber}`);
@@ -635,6 +786,13 @@ export class GitLabAdapter implements PlatformAdapter {
     }
   }
 
+  /**
+   * Set labels.
+   * @param issueNumber
+   * @param add
+   * @param remove - remove argument.
+   * @returns Description.
+   */
   async setLabels(issueNumber: number, add: string[], remove: string[]): Promise<void> {
     const current = await this.api<{ labels: string[] }>(`/issues/${issueNumber}`);
     const currentLabels = current.labels || [];
@@ -646,6 +804,11 @@ export class GitLabAdapter implements PlatformAdapter {
     });
   }
 
+  /**
+   * Ensure labels exist.
+   * @param labels - labels argument.
+   * @returns Description.
+   */
   async ensureLabels(labels: string[]): Promise<void> {
     for (const label of labels) {
       try {
@@ -664,6 +827,13 @@ export class GitLabAdapter implements PlatformAdapter {
 
   // ─── Context ────────────────────────────────────────────
 
+  /**
+   * Gather context.
+   * @param options
+   * @param options.issueNumber
+   * @param options.prNumber - options.prNumber argument.
+   * @returns Description.
+   */
   async gatherContext(options: {
     issueNumber?: number;
     prNumber?: number;
@@ -753,7 +923,13 @@ export class GitLabAdapter implements PlatformAdapter {
     return parts.join('\n');
   }
 
+  /**
+   * Close opencode PRs.
+   * @param since - since argument.
+   * @returns Description.
+   */
   async closeOpenCodePRs(since?: string): Promise<void> {
+    /** MR summary type. */
     type MRSummary = { iid: number; source_branch: string; created_at: string };
     const mrs = await this.paginate<MRSummary>('/merge_requests?state=opened', { perPage: 100 });
     const opencodeMRs = mrs.filter(
@@ -775,6 +951,11 @@ export class GitLabAdapter implements PlatformAdapter {
     }
   }
 
+  /**
+   * Merge MR.
+   * @param mrNumber - mrNumber argument.
+   * @returns Description.
+   */
   async mergeMR(mrNumber: number): Promise<boolean> {
     try {
       await this.api(`/merge_requests/${mrNumber}/merge`, {
@@ -787,6 +968,11 @@ export class GitLabAdapter implements PlatformAdapter {
     }
   }
 
+  /**
+   * Enable auto-merge.
+   * @param mrNumber - mrNumber argument.
+   * @returns Description.
+   */
   async enableAutoMerge(mrNumber: number): Promise<boolean> {
     try {
       await this.api(`/merge_requests/${mrNumber}/merge`, {
@@ -800,6 +986,12 @@ export class GitLabAdapter implements PlatformAdapter {
     }
   }
 
+  /**
+   * Close issue.
+   * @param issueNumber
+   * @param comment - comment argument.
+   * @returns Description.
+   */
   async closeIssue(issueNumber: number, comment?: string): Promise<void> {
     try {
       await this.api(`/issues/${issueNumber}`, {
@@ -831,15 +1023,31 @@ export class GitLabAdapter implements PlatformAdapter {
 
   // ─── Review Threads ─────────────────────────────────────
 
+  /**
+   * Get review threads.
+   * @param _mrNumber - _mrNumber argument.
+   * @returns Description.
+   */
   async getReviewThreads(_mrNumber: number): Promise<ReviewThreadInfo[]> {
     core.warning('getReviewThreads not fully supported via GitLab REST API');
     return [];
   }
 
+  /**
+   * Resolve review thread.
+   * @param _threadId - _threadId argument.
+   * @returns Description.
+   */
   async resolveReviewThread(_threadId: string): Promise<void> {
     core.warning('resolveReviewThread not supported for GitLab');
   }
 
+  /**
+   * Minimize review comment.
+   * @param _commentId
+   * @param _classifier - _classifier argument.
+   * @returns Description.
+   */
   async minimizeReviewComment(
     _commentId: string,
     _classifier: 'SPAM' | 'ABUSE' | 'OFF_TOPIC' | 'OUTDATED' | 'RESOLVED' | 'DUPLICATE',
@@ -847,14 +1055,32 @@ export class GitLabAdapter implements PlatformAdapter {
     core.warning('minimizeReviewComment not supported for GitLab');
   }
 
+  /**
+   * Get bot review threads.
+   * @param _mrNumber - _mrNumber argument.
+   * @returns Description.
+   */
   async getBotReviewThreads(_mrNumber: number): Promise<ReviewThreadInfo[]> {
     return [];
   }
 
+  /**
+   * Get open human threads.
+   * @param _mrNumber - _mrNumber argument.
+   * @returns Description.
+   */
   async getOpenHumanThreads(_mrNumber: number): Promise<string> {
     return '';
   }
 
+  /**
+   * Update MR.
+   * @param mrNumber
+   * @param updates
+   * @param updates.title
+   * @param updates.body - updates.body argument.
+   * @returns Description.
+   */
   async updateMR(mrNumber: number, updates: { title?: string; body?: string }): Promise<void> {
     const body: Record<string, string> = {};
     if (updates.title) body.title = updates.title;
@@ -866,6 +1092,10 @@ export class GitLabAdapter implements PlatformAdapter {
     });
   }
 
+  /**
+   * Get current user.
+   * @returns Current user login.
+   */
   async getCurrentUser(): Promise<string> {
     if (this.currentUserLogin) return this.currentUserLogin;
     if (process.env.GITLAB_USER_LOGIN) {

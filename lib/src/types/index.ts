@@ -174,6 +174,7 @@ export interface ReviewComment {
 }
 
 // ─── Configuration ────────────────────────────────────────
+/** Supported Git hosting platforms. */
 export type Platform = 'github' | 'gitlab';
 
 /** Top-level agent configuration for reviews, fixes, audits, and learning. */

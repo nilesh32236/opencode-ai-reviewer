@@ -148,8 +148,8 @@ export async function runFix(
  * @param config - Agent config (provides timeoutMinutes).
  * @param engine - Review engine instance.
  * @param gh - GitHub API helper.
- * @param repo - Repository string (owner/repo).
- * @param token - GitHub authentication token.
+ * @param _repo - Repository string (owner/repo).
+ * @param _token - GitHub authentication token.
  */
 export async function runFixIssue(
   inputs: ActionInputs,
