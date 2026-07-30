@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.6] — 2026-07-30
+
+
+### Fixed
+
+- self-heal CI failure (attempt 1) [`lint-error` — eslint jsdoc coverage violations (`jsdoc/require-jsdoc`, `jsdoc/require-returns`, `jsdoc/require-param`)] (#269) (#269)
+
+### Changed
+
+- [Autofix] Issue 20: app/src/index.ts is a 500+ line single module handling all subscribers (#267) (#267)
+- [Autofix] MCP disconnect timeout has unguarded non-null assertion (#266) (#266)
+
+[v1.6.6]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.5...v1.6.6
+
 ## [v1.6.5] — 2026-07-30
 
 
