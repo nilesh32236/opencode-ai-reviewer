@@ -184,6 +184,10 @@ export function buildSelfHealPrompt(
  * Intelligently extract the most relevant snippet from long CI failure logs.
  * Prioritizes failure markers (e.g. "FAIL", "Error:", "::error::") and includes
  * both header context (what command ran) and failure traceback details.
+ *
+ * @param logs - The CI failure logs string.
+ * @param maxLength - Maximum length for the snippet (default 12000).
+ * @returns The truncated log snippet with leading/trailing truncation markers.
  */
 export function extractRelevantLogSnippet(logs: string, maxLength = 12000): string {
   if (logs.length <= maxLength) {
