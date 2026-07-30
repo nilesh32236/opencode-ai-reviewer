@@ -5,11 +5,16 @@ import { connectDb } from './db.js';
 import { applyMigrations, getDbPath } from './schema.js';
 import type {
   CustomRuleRow,
+  FeedbackBreakdown,
   FindingInput,
   FindingRow,
+  LatencyStats,
   LearningRepository,
   PatternRow,
+  PerPRStats,
+  ReviewMetricsRow,
   ReviewQualityRow,
+  SeverityDistribution,
   TelemetryStats,
 } from './types.js';
 
@@ -440,5 +445,115 @@ export class LearningStore {
   async resetCounter(): Promise<void> {
     const repo = await this.repoPromise;
     await repo.resetCounter();
+  }
+
+  /**
+   * Retrieve per-PR finding statistics.
+   *
+   * @param sinceDays - Optional filter to only include findings from the last N days.
+   * @returns PerPRStats with total PRs, avg findings, and distribution.
+   */
+  async getPerPRStats(sinceDays?: number): Promise<PerPRStats> {
+    try {
+      const repo = await this.repoPromise;
+      return repo.getPerPRStats(sinceDays);
+    } catch {
+      return {
+        totalPrs: 0,
+        totalFindings: 0,
+        avgFindingsPerPr: 0,
+        p50FindingsPerPr: 0,
+        p90FindingsPerPr: 0,
+        maxFindingsInPr: 0,
+      };
+    }
+  }
+
+  /**
+   * Retrieve feedback counts grouped by signal type.
+   *
+   * @param sinceDays - Optional filter to only include feedback from the last N days.
+   * @returns FeedbackBreakdown with grouped feedback counts.
+   */
+  async getFeedbackBreakdown(sinceDays?: number): Promise<FeedbackBreakdown> {
+    try {
+      const repo = await this.repoPromise;
+      return repo.getFeedbackBreakdown(sinceDays);
+    } catch {
+      return {
+        totalFeedback: 0,
+        dismissedCount: 0,
+        disputedCount: 0,
+        acceptedCount: 0,
+        bySignalType: {},
+      };
+    }
+  }
+
+  /**
+   * Retrieve review latency statistics.
+   *
+   * @param sinceDays - Optional filter to only include reviews from the last N days.
+   * @returns LatencyStats with avg, min, max, and median latency.
+   */
+  async getLatencyStats(sinceDays?: number): Promise<LatencyStats> {
+    try {
+      const repo = await this.repoPromise;
+      return repo.getLatencyStats(sinceDays);
+    } catch {
+      return {
+        avgLatencyMs: 0,
+        minLatencyMs: 0,
+        maxLatencyMs: 0,
+        medianLatencyMs: 0,
+        totalReviews: 0,
+      };
+    }
+  }
+
+  /**
+   * Compute and insert a new aggregated metrics row into review_metrics.
+   *
+   * @param periodType - 'daily' or 'weekly'.
+   */
+  async aggregateMetrics(periodType: 'daily' | 'weekly'): Promise<void> {
+    try {
+      const repo = await this.repoPromise;
+      await repo.aggregateMetrics(periodType);
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.warn('Failed to aggregate metrics', err);
+    }
+  }
+
+  /**
+   * Retrieve pre-computed review metrics rows.
+   *
+   * @param periodType - 'daily' or 'weekly'.
+   * @param limit - Maximum number of rows (default: 10).
+   * @returns Array of review_metrics rows.
+   */
+  async getMetrics(periodType: 'daily' | 'weekly', limit = 10): Promise<ReviewMetricsRow[]> {
+    try {
+      const repo = await this.repoPromise;
+      return repo.getMetrics(periodType, limit);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Get severity distribution of findings.
+   *
+   * @param sinceDays - Optional filter to only include findings from the last N days.
+   * @returns SeverityDistribution with counts per severity level.
+   */
+  async getSeverityDistribution(sinceDays?: number): Promise<SeverityDistribution> {
+    try {
+      const repo = await this.repoPromise;
+      return repo.getSeverityDistribution(sinceDays);
+    } catch {
+      return { critical: 0, important: 0, minor: 0, unknown: 0 };
+    }
   }
 }

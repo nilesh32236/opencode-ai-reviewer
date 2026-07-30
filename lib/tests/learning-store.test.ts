@@ -323,6 +323,175 @@ describe('LearningStore', () => {
   });
 });
 
+describe('LearningStore Analytics', () => {
+  let store: LearningStore;
+
+  beforeEach(() => {
+    for (const suffix of ['', '-wal', '-shm']) {
+      try {
+        fs.unlinkSync(TEST_DB + suffix);
+      } catch {
+        /* ok */
+      }
+    }
+    store = new LearningStore(TEST_DB);
+  });
+
+  afterEach(async () => {
+    await store.close();
+    for (const suffix of ['', '-wal', '-shm']) {
+      try {
+        fs.unlinkSync(TEST_DB + suffix);
+      } catch {
+        /* ok */
+      }
+    }
+  });
+
+  it('getPerPRStats returns correct stats', async () => {
+    const empty = await store.getPerPRStats();
+    expect(empty.totalPrs).toBe(0);
+    expect(empty.totalFindings).toBe(0);
+
+    await store.recordFinding({ prNumber: 1, type: 'issue', message: 'F1' });
+    await store.recordFinding({ prNumber: 1, type: 'issue', message: 'F2' });
+    await store.recordFinding({ prNumber: 2, type: 'issue', message: 'F3' });
+
+    const stats = await store.getPerPRStats();
+    expect(stats.totalPrs).toBe(2);
+    expect(stats.totalFindings).toBe(3);
+    expect(stats.avgFindingsPerPr).toBe(1.5);
+    expect(stats.maxFindingsInPr).toBe(2);
+  });
+
+  it('getFeedbackBreakdown groups correctly', async () => {
+    const empty = await store.getFeedbackBreakdown();
+    expect(empty.totalFeedback).toBe(0);
+
+    const id1 = await store.recordFinding({ prNumber: 1, type: 'issue', message: 'F1' });
+    const id2 = await store.recordFinding({ prNumber: 1, type: 'issue', message: 'F2' });
+
+    await store.recordFeedback({
+      findingId: id1,
+      signalType: 'dismissed',
+      signalValue: 'fp',
+      prNumber: 1,
+    });
+    await store.recordFeedback({
+      findingId: id2,
+      signalType: 'disputed_comment',
+      signalValue: 'disagree',
+      prNumber: 1,
+    });
+
+    const breakdown = await store.getFeedbackBreakdown();
+    expect(breakdown.totalFeedback).toBe(2);
+    expect(breakdown.dismissedCount).toBe(1);
+    expect(breakdown.disputedCount).toBe(1);
+    expect(breakdown.acceptedCount).toBe(0);
+    expect(breakdown.bySignalType.dismissed).toBe(1);
+    expect(breakdown.bySignalType.disputed_comment).toBe(1);
+  });
+
+  it('getLatencyStats returns correct stats', async () => {
+    const empty = await store.getLatencyStats();
+    expect(empty.totalReviews).toBe(0);
+
+    await store.recordQuality({
+      prNumber: 1,
+      actionabilityScore: 0,
+      accuracyScore: 0,
+      coverageScore: 0,
+      consistencyScore: 0,
+      durationMs: 5000,
+      tokensUsed: 100,
+    });
+    await store.recordQuality({
+      prNumber: 2,
+      actionabilityScore: 0,
+      accuracyScore: 0,
+      coverageScore: 0,
+      consistencyScore: 0,
+      durationMs: 15000,
+      tokensUsed: 200,
+    });
+
+    const stats = await store.getLatencyStats();
+    expect(stats.totalReviews).toBe(2);
+    expect(stats.avgLatencyMs).toBe(10000);
+    expect(stats.minLatencyMs).toBe(5000);
+    expect(stats.maxLatencyMs).toBe(15000);
+    expect(stats.medianLatencyMs).toBe(10000);
+  });
+
+  it('aggregateMetrics creates summary row', async () => {
+    await store.recordFinding({
+      prNumber: 1,
+      type: 'issue',
+      severity: 'critical',
+      message: 'Critical issue',
+    });
+    await store.recordFinding({
+      prNumber: 1,
+      type: 'issue',
+      severity: 'minor',
+      message: 'Minor issue',
+    });
+    await store.recordFinding({
+      prNumber: 2,
+      type: 'issue',
+      severity: 'important',
+      message: 'Important issue',
+    });
+
+    const fbId = await store.recordFinding({
+      prNumber: 1,
+      type: 'issue',
+      message: 'Feedback target',
+    });
+    await store.recordFeedback({
+      findingId: fbId,
+      signalType: 'dismissed',
+      signalValue: 'fp',
+      prNumber: 1,
+    });
+
+    await store.recordQuality({
+      prNumber: 1,
+      actionabilityScore: 0.8,
+      accuracyScore: 0.9,
+      coverageScore: 0.7,
+      consistencyScore: 0.85,
+      durationMs: 5000,
+      tokensUsed: 1500,
+    });
+
+    await store.aggregateMetrics('daily');
+
+    const rows = await store.getMetrics('daily', 5);
+    expect(rows.length).toBeGreaterThanOrEqual(1);
+    expect(rows[0].period_type).toBe('daily');
+    expect(rows[0].total_prs).toBe(2);
+    expect(rows[0].total_findings).toBe(4);
+    expect(rows[0].total_feedback).toBe(1);
+    expect(rows[0].dismissed_count).toBe(1);
+  });
+
+  it('getSeverityDistribution returns correct distribution', async () => {
+    await store.recordFinding({ prNumber: 1, type: 'issue', severity: 'critical', message: 'A' });
+    await store.recordFinding({ prNumber: 1, type: 'issue', severity: 'important', message: 'B' });
+    await store.recordFinding({ prNumber: 1, type: 'issue', severity: 'important', message: 'C' });
+    await store.recordFinding({ prNumber: 1, type: 'issue', severity: 'minor', message: 'D' });
+    await store.recordFinding({ prNumber: 1, type: 'issue', message: 'E' });
+
+    const dist = await store.getSeverityDistribution();
+    expect(dist.critical).toBe(1);
+    expect(dist.important).toBe(2);
+    expect(dist.minor).toBe(1);
+    expect(dist.unknown).toBe(1);
+  });
+});
+
 describe('LearningStore JSON Fallback Smoke Test', () => {
   let jsonStore: LearningStore;
   let jsonDbPath: string;

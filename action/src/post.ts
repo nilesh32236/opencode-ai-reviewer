@@ -67,24 +67,47 @@ export async function runPost(
     core.warning('PR has unresolved issues — check review output');
   }
 
-  // Post telemetry summary
+  // Post telemetry & metrics summary
   try {
     const learningEnabled = core.getInput('learning_enabled') !== 'false';
     if (learningEnabled) {
       const store = new LearningStore();
       try {
-        const stats = await store.getTelemetryStats(30);
+        const [stats, perPRStats, severityDist] = await Promise.all([
+          store.getTelemetryStats(30),
+          store.getPerPRStats(30),
+          store.getSeverityDistribution(30),
+        ]);
+
+        const summaryItems: string[] = [];
         if (stats.totalReviews > 0) {
-          await core.summary
-            .addHeading('Execution Telemetry', 2)
-            .addList([
-              `Total Reviews: ${stats.totalReviews}`,
-              `Average Duration: ${(stats.avgDurationMs / 1000).toFixed(1)}s`,
-              `Total Tokens Used: ${stats.totalTokensUsed.toLocaleString()}`,
-              `Avg Tokens/Review: ${stats.avgTokensPerReview.toLocaleString()}`,
-            ])
-            .write();
-          core.info('Posted telemetry summary');
+          summaryItems.push(
+            `Total Reviews: ${stats.totalReviews}`,
+            `Total Findings: ${perPRStats.totalFindings}`,
+            `Average Duration: ${(stats.avgDurationMs / 1000).toFixed(1)}s`,
+            `Total Tokens Used: ${stats.totalTokensUsed.toLocaleString()}`,
+            `Avg Tokens/Review: ${stats.avgTokensPerReview.toLocaleString()}`,
+          );
+        }
+        if (perPRStats.totalPrs > 0) {
+          summaryItems.push(
+            `Avg Findings/PR: ${perPRStats.avgFindingsPerPr}`,
+            `Max Findings in a PR: ${perPRStats.maxFindingsInPr}`,
+          );
+        }
+        const totalSeverity =
+          severityDist.critical +
+          severityDist.important +
+          severityDist.minor +
+          severityDist.unknown;
+        if (totalSeverity > 0) {
+          summaryItems.push(
+            `Severity: ${severityDist.critical} critical, ${severityDist.important} important, ${severityDist.minor} minor, ${severityDist.unknown} unknown`,
+          );
+        }
+        if (summaryItems.length > 0) {
+          await core.summary.addHeading('Review Analytics', 2).addList(summaryItems).write();
+          core.info('Posted review analytics summary');
         }
       } finally {
         await store.close();
@@ -93,7 +116,7 @@ export async function runPost(
   } catch (err) {
     core.warning(
       sanitize(
-        `Failed to post telemetry summary: ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to post review analytics summary: ${err instanceof Error ? err.message : String(err)}`,
       ),
     );
   }

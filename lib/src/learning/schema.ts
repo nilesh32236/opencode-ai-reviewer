@@ -164,6 +164,33 @@ export async function applyMigrations(runner: MigrationRunner): Promise<void> {
         throw err;
       }
     }
+
+    await runner.exec(`
+      CREATE TABLE IF NOT EXISTS review_metrics (
+        id TEXT PRIMARY KEY,
+        period_start TEXT NOT NULL,
+        period_end TEXT NOT NULL,
+        period_type TEXT NOT NULL,
+        total_prs INTEGER NOT NULL DEFAULT 0,
+        total_findings INTEGER NOT NULL DEFAULT 0,
+        avg_findings_per_pr REAL,
+        total_feedback INTEGER NOT NULL DEFAULT 0,
+        dismissed_count INTEGER NOT NULL DEFAULT 0,
+        disputed_count INTEGER NOT NULL DEFAULT 0,
+        false_positive_rate REAL,
+        avg_review_duration_ms REAL,
+        total_tokens_used INTEGER,
+        avg_tokens_per_review REAL,
+        avg_actionability_score REAL,
+        avg_accuracy_score REAL,
+        avg_coverage_score REAL,
+        avg_consistency_score REAL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    await runner.exec(
+      `CREATE INDEX IF NOT EXISTS idx_review_metrics_period ON review_metrics(period_type, period_start)`,
+    );
   } catch (err) {
     const logger = new Logger('LearningStore');
     logger.error('Migration failed', err);
