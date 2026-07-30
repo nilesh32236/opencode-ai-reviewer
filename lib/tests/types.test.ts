@@ -61,4 +61,63 @@ describe('types', () => {
     });
     expect(valid.success).toBe(false);
   });
+
+  it('ReviewEntrySchema validates issue with valid confidence', () => {
+    const valid = ReviewEntrySchema.safeParse({
+      type: 'issue',
+      severity: 'important',
+      file: 'src/test.ts',
+      line: 15,
+      message: 'Test issue with confidence.',
+      confidence: 'high',
+    });
+    expect(valid.success).toBe(true);
+  });
+
+  it('ReviewEntrySchema validates issue with medium confidence', () => {
+    const valid = ReviewEntrySchema.safeParse({
+      type: 'issue',
+      severity: 'minor',
+      file: 'src/test.ts',
+      line: 20,
+      message: 'Test issue with confidence.',
+      confidence: 'medium',
+    });
+    expect(valid.success).toBe(true);
+  });
+
+  it('ReviewEntrySchema validates issue with low confidence', () => {
+    const valid = ReviewEntrySchema.safeParse({
+      type: 'issue',
+      severity: 'minor',
+      file: 'src/test.ts',
+      line: 25,
+      message: 'Test issue with confidence.',
+      confidence: 'low',
+    });
+    expect(valid.success).toBe(true);
+  });
+
+  it('ReviewEntrySchema rejects issue with invalid confidence', () => {
+    const valid = ReviewEntrySchema.safeParse({
+      type: 'issue',
+      severity: 'critical',
+      file: 'src/test.ts',
+      line: 10,
+      message: 'Test issue message',
+      confidence: 'very-high',
+    });
+    expect(valid.success).toBe(false);
+  });
+
+  it('ReviewEntrySchema validates issue without confidence (optional)', () => {
+    const valid = ReviewEntrySchema.safeParse({
+      type: 'issue',
+      severity: 'critical',
+      file: 'src/test.ts',
+      line: 10,
+      message: 'Test issue message',
+    });
+    expect(valid.success).toBe(true);
+  });
 });

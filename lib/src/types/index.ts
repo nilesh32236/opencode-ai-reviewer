@@ -68,6 +68,8 @@ export interface ReviewIssue {
   entryPointPath?: string;
   /** File path of the entry point if the finding is reachable from user input */
   entryPointFile?: string;
+  /** Confidence level of the finding */
+  confidence?: 'high' | 'medium' | 'low';
 }
 
 /** Previous fix iteration data for tracking progress across fix cycles. */
@@ -292,8 +294,10 @@ export interface ReviewConfig {
   commandTriggers: string[];
   /** Glob patterns for files to exclude from review (e.g., lockfiles, generated code) */
   excludePatterns: string[];
-  /** Whether to run a meta-verification pass that drops low-confidence findings */
+  /** Whether to run a meta-verification pass that drops false-positive findings */
   enableMetaVerification: boolean;
+  /** Whether to suppress low-confidence findings from review output */
+  suppressLowConfidence?: boolean;
   /** Whether to enable lightweight reachability analysis on security findings */
   enableReachability: boolean;
   /** Token budget configuration for smart context allocation */
@@ -482,6 +486,8 @@ export interface IssueFinding extends BaseFinding {
   entryPointPath?: string;
   /** File path of the entry point if the finding is reachable from user input */
   entryPointFile?: string;
+  /** Confidence level of the finding */
+  confidence?: 'high' | 'medium' | 'low';
 }
 
 /** An executive summary finding in JSONL format. */
@@ -548,6 +554,12 @@ export interface ReviewResult {
     important: number;
     /** Number of minor issues */
     minor: number;
+    /** Number of high-confidence issues */
+    highConfidence?: number;
+    /** Number of medium-confidence issues */
+    mediumConfidence?: number;
+    /** Number of low-confidence issues */
+    lowConfidence?: number;
   };
   /** Raw JSONL lines from the model output */
   rawLines?: string[];
@@ -933,6 +945,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
       '**/.next/**',
     ],
     enableMetaVerification: false,
+    suppressLowConfidence: false,
     enableReachability: true,
     tokenBudget: {
       enabled: false,

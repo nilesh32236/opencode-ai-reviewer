@@ -44,6 +44,7 @@ export const ReviewIssueSchema = z.object({
   inline: z.boolean().optional().default(false),
   theoreticalRisk: z.boolean().optional(),
   entryPointPath: z.string().optional(),
+  confidence: z.enum(['high', 'medium', 'low']).optional(),
 });
 
 /** Zod discriminated union for all review entry types. */

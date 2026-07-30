@@ -962,97 +962,129 @@ export class ReviewEngine {
       }
     }
 
-    if (!this.config.review.enableMetaVerification || enrichedResult.issues.length === 0) {
-      return enrichedResult;
-    }
+    if (this.config.review.enableMetaVerification && enrichedResult.issues.length > 0) {
+      try {
+        const prompt = buildVerificationPrompt(
+          { projectContext: this.config.projectContext.description || undefined },
+          prContext,
+          enrichedResult.issues,
+        );
 
-    try {
-      const prompt = buildVerificationPrompt(
-        { projectContext: this.config.projectContext.description || undefined },
-        prContext,
-        enrichedResult.issues,
-      );
+        const runResult = await runOpenCode(prompt, {
+          model: this.resolveModel('verificationModel'),
+          timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+          workingDirectory: workDir,
+        });
+        if (prNumber) {
+          await this.recordTelemetry(prNumber, runResult.durationMs, runResult.tokensUsed);
+        }
 
-      const runResult = await runOpenCode(prompt, {
-        model: this.resolveModel('verificationModel'),
-        timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
-        workingDirectory: workDir,
-      });
-      if (prNumber) {
-        await this.recordTelemetry(prNumber, runResult.durationMs, runResult.tokensUsed);
-      }
+        if (runResult.success) {
+          const outputPath = path.join(workDir, '.opencode', 'verification-output.jsonl');
+          if (existsSync(outputPath)) {
+            const content = await fs.readFile(outputPath, 'utf-8');
+            const lines = content.split('\n').filter((l) => l.trim());
 
-      if (!runResult.success) {
-        core.warning('Meta-verification pass failed, returning enriched result');
-        return enrichedResult;
-      }
+            const validIndices = new Set<number>();
+            for (const line of lines) {
+              try {
+                const parsed = JSON.parse(line.trim());
+                if (
+                  parsed.type === 'verification' &&
+                  typeof parsed.issueIndex === 'number' &&
+                  Number.isInteger(parsed.issueIndex) &&
+                  parsed.issueIndex >= 0 &&
+                  parsed.issueIndex < enrichedResult.issues.length
+                ) {
+                  if (parsed.valid === true) {
+                    validIndices.add(parsed.issueIndex);
+                  }
+                }
+              } catch {
+                // ignore malformed verification lines
+              }
+            }
 
-      const outputPath = path.join(workDir, '.opencode', 'verification-output.jsonl');
-      if (!existsSync(outputPath)) return enrichedResult;
+            if (validIndices.size > 0) {
+              const verifiedIssues = enrichedResult.issues.filter((_, idx) =>
+                validIndices.has(idx),
+              );
+              const droppedCount = enrichedResult.issues.length - verifiedIssues.length;
 
-      const content = await fs.readFile(outputPath, 'utf-8');
-      const lines = content.split('\n').filter((l) => l.trim());
+              if (droppedCount > 0) {
+                core.info(
+                  `Meta-verification dropped ${droppedCount} false-positive finding(s) (kept ${verifiedIssues.length})`,
+                );
+              }
 
-      const validIndices = new Set<number>();
-      for (const line of lines) {
-        try {
-          const parsed = JSON.parse(line.trim());
-          if (
-            parsed.type === 'verification' &&
-            typeof parsed.issueIndex === 'number' &&
-            Number.isInteger(parsed.issueIndex) &&
-            parsed.issueIndex >= 0 &&
-            parsed.issueIndex < enrichedResult.issues.length
-          ) {
-            if (parsed.valid === true) {
-              validIndices.add(parsed.issueIndex);
+              const counts = verifiedIssues.reduce(
+                (acc, i) => {
+                  if (i.severity === 'critical') acc.critical++;
+                  else if (i.severity === 'important') acc.important++;
+                  else if (i.severity === 'minor') acc.minor++;
+                  return acc;
+                },
+                { critical: 0, important: 0, minor: 0 },
+              );
+
+              enrichedResult = {
+                ...enrichedResult,
+                issues: verifiedIssues,
+                stats: {
+                  total: verifiedIssues.length,
+                  critical: counts.critical,
+                  important: counts.important,
+                  minor: counts.minor,
+                },
+              };
+            } else {
+              core.info(
+                'Meta-verification produced no valid verification entries — retaining enriched result',
+              );
             }
           }
-        } catch {
-          // ignore malformed verification lines
+        } else {
+          core.warning('Meta-verification pass failed, returning enriched result');
         }
-      }
-
-      if (validIndices.size === 0) {
-        core.info(
-          'Meta-verification produced no valid verification entries — retaining enriched result',
-        );
-        return enrichedResult;
-      }
-
-      const verifiedIssues = enrichedResult.issues.filter((_, idx) => validIndices.has(idx));
-      const droppedCount = enrichedResult.issues.length - verifiedIssues.length;
-
-      if (droppedCount > 0) {
-        core.info(
-          `Meta-verification dropped ${droppedCount} false-positive finding(s) (kept ${verifiedIssues.length})`,
+      } catch (err) {
+        core.warning(
+          `Meta-verification failed: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
-
-      const counts = verifiedIssues.reduce(
-        (acc, i) => {
-          if (i.severity === 'critical') acc.critical++;
-          else if (i.severity === 'important') acc.important++;
-          else if (i.severity === 'minor') acc.minor++;
-          return acc;
-        },
-        { critical: 0, important: 0, minor: 0 },
-      );
-
-      return {
-        ...enrichedResult,
-        issues: verifiedIssues,
-        stats: {
-          total: verifiedIssues.length,
-          critical: counts.critical,
-          important: counts.important,
-          minor: counts.minor,
-        },
-      };
-    } catch (err) {
-      core.warning(`Meta-verification failed: ${err instanceof Error ? err.message : String(err)}`);
-      return enrichedResult;
     }
+
+    // Suppress low-confidence findings if configured
+    if (this.config.review.suppressLowConfidence) {
+      const beforeCount = enrichedResult.issues.length;
+      const filteredIssues = enrichedResult.issues.filter((i) => i.confidence !== 'low');
+      if (filteredIssues.length < beforeCount) {
+        const droppedLowConfidence = beforeCount - filteredIssues.length;
+        core.info(
+          `Low-confidence suppression dropped ${droppedLowConfidence} finding(s) (kept ${filteredIssues.length})`,
+        );
+        const counts = filteredIssues.reduce(
+          (acc, i) => {
+            if (i.severity === 'critical') acc.critical++;
+            else if (i.severity === 'important') acc.important++;
+            else if (i.severity === 'minor') acc.minor++;
+            return acc;
+          },
+          { critical: 0, important: 0, minor: 0 },
+        );
+        enrichedResult = {
+          ...enrichedResult,
+          issues: filteredIssues,
+          stats: {
+            total: filteredIssues.length,
+            critical: counts.critical,
+            important: counts.important,
+            minor: counts.minor,
+          },
+        };
+      }
+    }
+
+    return enrichedResult;
   }
 
   /**

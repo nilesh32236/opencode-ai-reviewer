@@ -157,6 +157,26 @@ export function buildReviewPrompt(
     '- **minor**: Style, naming, optimization, documentation, small refactors — nice to have',
   );
 
+  sections.push('\n## Confidence Guide');
+  sections.push('');
+  sections.push(
+    'Assign a confidence level to each issue based on how certain you are that it is a real problem:',
+  );
+  sections.push('');
+  sections.push(
+    '- **high**: Deterministic bugs (injection, XSS, null dereference, type errors, PII exposure) — these are clearly wrong and must be fixed',
+  );
+  sections.push(
+    '- **medium**: Plausible issues (logic concerns, missing validation, style violations with known impact, maintainability concerns) — likely real but may have edge cases',
+  );
+  sections.push(
+    '- **low**: Speculative suggestions (prefer X over Y, future-proofing, minor style preferences, optional optimizations) — nice to have but not actionable without more context',
+  );
+  sections.push('');
+  sections.push(
+    'Include the `"confidence"` field in every `issue` JSONL line. This helps developers prioritize which findings to address first.',
+  );
+
   sections.push('\n## Output Format: JSON Lines');
   sections.push('');
   sections.push(buildOutputFormat());
@@ -720,7 +740,7 @@ function buildOutputFormat(): string {
 {"type":"summary","text":"Brief overall assessment of the PR. 2-3 sentences."}
 {"type":"verdict","ready":false,"reasoning":"1-2 sentence technical assessment.","autoFixable":true,"confidence":"high"}
 {"type":"strength","file":"src/example.ts","line":10,"message":"What's well done and why."}
-{"type":"issue","severity":"critical","file":"src/example.ts","line":42,"message":"What's wrong.","suggestion":"Add a null guard before iterating over data.user","suggestionCode":"const user = data?.user ?? null;","inline":true}
+{"type":"issue","severity":"critical","file":"src/example.ts","line":42,"message":"What's wrong.","suggestion":"Add a null guard before iterating over data.user","suggestionCode":"const user = data?.user ?? null;","inline":true,"confidence":"high"}
 \`\`\`
 
 **Rules for the JSONL file:**

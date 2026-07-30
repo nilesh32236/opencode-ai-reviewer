@@ -120,6 +120,95 @@ describe('jsonl-parser', () => {
       expect(result.issues).toHaveLength(0);
       expect(result.failedLines).toBe(1);
     });
+
+    it('parses issue with confidence field', () => {
+      const input = JSON.stringify({
+        type: 'issue',
+        severity: 'critical',
+        file: 'src/a.ts',
+        line: 10,
+        message: 'High confidence issue.',
+        confidence: 'high',
+      });
+      const result = parseJsonlString(input);
+      expect(result.issues).toHaveLength(1);
+      expect(result.issues[0].confidence).toBe('high');
+    });
+
+    it('parses issue with medium confidence', () => {
+      const input = JSON.stringify({
+        type: 'issue',
+        severity: 'important',
+        file: 'src/b.ts',
+        line: 20,
+        message: 'Medium confidence issue.',
+        confidence: 'medium',
+      });
+      const result = parseJsonlString(input);
+      expect(result.issues).toHaveLength(1);
+      expect(result.issues[0].confidence).toBe('medium');
+    });
+
+    it('parses issue with low confidence', () => {
+      const input = JSON.stringify({
+        type: 'issue',
+        severity: 'minor',
+        file: 'src/c.ts',
+        line: 30,
+        message: 'Low confidence issue.',
+        confidence: 'low',
+      });
+      const result = parseJsonlString(input);
+      expect(result.issues).toHaveLength(1);
+      expect(result.issues[0].confidence).toBe('low');
+    });
+
+    it('parses issue without confidence as undefined', () => {
+      const input = JSON.stringify({
+        type: 'issue',
+        severity: 'critical',
+        file: 'src/d.ts',
+        line: 40,
+        message: 'No confidence.',
+      });
+      const result = parseJsonlString(input);
+      expect(result.issues).toHaveLength(1);
+      expect(result.issues[0].confidence).toBeUndefined();
+    });
+
+    it('parses multiple issues with mixed confidence', () => {
+      const input = [
+        JSON.stringify({
+          type: 'issue',
+          severity: 'critical',
+          file: 'a.ts',
+          line: 1,
+          message: 'High.',
+          confidence: 'high',
+        }),
+        JSON.stringify({
+          type: 'issue',
+          severity: 'important',
+          file: 'b.ts',
+          line: 2,
+          message: 'Medium.',
+          confidence: 'medium',
+        }),
+        JSON.stringify({
+          type: 'issue',
+          severity: 'minor',
+          file: 'c.ts',
+          line: 3,
+          message: 'Low.',
+          confidence: 'low',
+        }),
+      ].join('\n');
+      const result = parseJsonlString(input);
+      expect(result.issues).toHaveLength(3);
+      expect(result.issues[0].confidence).toBe('high');
+      expect(result.issues[1].confidence).toBe('medium');
+      expect(result.issues[2].confidence).toBe('low');
+    });
   });
 
   describe('stripMarkdownFences', () => {
@@ -250,6 +339,39 @@ describe('jsonl-parser', () => {
       const body = buildReviewBody(emptyResult);
       expect(body).toContain('No summary provided');
       expect(body).toContain('No reasoning provided');
+    });
+
+    it('includes confidence badges in issue rendering', () => {
+      const result: ReviewResult = {
+        summary: 'Test.',
+        verdict: { ready: false, reasoning: 'Issues found.' },
+        strengths: [],
+        issues: [
+          {
+            type: 'issue',
+            severity: 'critical',
+            file: 'src/a.ts',
+            line: 10,
+            message: 'High confidence issue.',
+            confidence: 'high',
+          },
+          {
+            type: 'issue',
+            severity: 'minor',
+            file: 'src/b.ts',
+            line: 20,
+            message: 'Low confidence issue.',
+            confidence: 'low',
+          },
+        ],
+        stats: { total: 2, critical: 1, important: 0, minor: 1 },
+        rawLines: [],
+        failedLines: 0,
+      };
+
+      const body = buildReviewBody(result);
+      expect(body).toContain('🔴');
+      expect(body).toContain('⚪');
     });
   });
 
@@ -493,6 +615,42 @@ describe('jsonl-parser', () => {
 
       const comments = buildInlineComments(result);
       expect(comments).toHaveLength(2);
+    });
+
+    it('suppresses low-confidence inline comments when suppressLowConfidence is true', () => {
+      const result: ReviewResult = {
+        summary: '',
+        verdict: { ready: false, reasoning: '' },
+        strengths: [],
+        issues: [
+          {
+            type: 'issue',
+            severity: 'critical',
+            file: 'src/a.ts',
+            line: 10,
+            message: 'High confidence.',
+            confidence: 'high',
+            inline: true,
+          },
+          {
+            type: 'issue',
+            severity: 'minor',
+            file: 'src/b.ts',
+            line: 20,
+            message: 'Low confidence.',
+            confidence: 'low',
+            inline: true,
+          },
+        ],
+        stats: { total: 2, critical: 1, important: 0, minor: 1 },
+        rawLines: [],
+        failedLines: 0,
+      };
+
+      const comments = buildInlineComments(result, undefined, true);
+      expect(comments).toHaveLength(1);
+      expect(comments[0].path).toBe('src/a.ts');
+      expect(comments[0].line).toBe(10);
     });
   });
 });
