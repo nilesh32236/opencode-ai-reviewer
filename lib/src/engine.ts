@@ -23,6 +23,9 @@ import type {
   AgentConfig,
   ConversationContext,
   FixResult,
+  LinterConfig,
+  LinterFinding,
+  LinterResult,
   PRContext,
   PreviousFindingIteration,
   ReviewIssue,
@@ -196,6 +199,9 @@ export class ReviewEngine {
       }
     }
 
+    // Run configured linters as pre-processing step
+    const linterResults = await this.runLinters(files, workDir);
+
     // If PR is small enough for a single batch, skip concurrent processing
     if (files.length <= batchSize) {
       const prompt = buildReviewPrompt(
@@ -210,6 +216,7 @@ export class ReviewEngine {
         falsePositiveRules,
         deltaContext,
         previousBotComments,
+        linterResults,
       );
 
       const outputPath = path.join(workDir, 'review-output.jsonl');
@@ -232,8 +239,27 @@ export class ReviewEngine {
 
       try {
         const parsed = await parseJsonlFile(outputPath);
+
+        // Deduplicate against linter findings
+        let finalResult = parsed;
+        if (linterResults.length > 0) {
+          const deduped = this.deduplicateAgainstLinters(parsed.issues, linterResults, workDir);
+          if (deduped.length < parsed.issues.length) {
+            finalResult = {
+              ...parsed,
+              issues: deduped,
+              stats: {
+                total: deduped.length,
+                critical: deduped.filter((i) => i.severity === 'critical').length,
+                important: deduped.filter((i) => i.severity === 'important').length,
+                minor: deduped.filter((i) => i.severity === 'minor').length,
+              },
+            };
+          }
+        }
+
         return await this.verifyReviewResult(
-          parsed,
+          finalResult,
           baseContext,
           workDir,
           timeoutMinutes,
@@ -287,6 +313,7 @@ export class ReviewEngine {
             falsePositiveRules,
             deltaContext,
             previousBotComments,
+            linterResults,
           );
 
           const outputPath = path.join(batchDir, 'review-output.jsonl');
@@ -365,10 +392,15 @@ export class ReviewEngine {
 
     await this.recordTelemetry(pr.number, accumulatedDurationMs, accumulatedTokensUsed);
 
+    const dedupIssues = (issues: ReviewIssue[]): ReviewIssue[] => {
+      if (linterResults.length === 0) return issues;
+      return this.deduplicateAgainstLinters(issues, linterResults, workDir);
+    };
+
     if (!synthesisResult.success) {
       core.warning('Synthesis pass failed, falling back to merged batch results');
       const fallback = this.buildFallbackResult(
-        allIssues,
+        dedupIssues(allIssues),
         allStrengths,
         allRawLines,
         totalFailedLines,
@@ -386,11 +418,35 @@ export class ReviewEngine {
 
     try {
       const parsed = await parseJsonlFile(finalOutputPath);
-      return await this.verifyReviewResult(parsed, baseContext, workDir, timeoutMinutes, pr.number);
+
+      let finalResult = parsed;
+      if (linterResults.length > 0) {
+        const deduped = this.deduplicateAgainstLinters(parsed.issues, linterResults, workDir);
+        if (deduped.length < parsed.issues.length) {
+          finalResult = {
+            ...parsed,
+            issues: deduped,
+            stats: {
+              total: deduped.length,
+              critical: deduped.filter((i) => i.severity === 'critical').length,
+              important: deduped.filter((i) => i.severity === 'important').length,
+              minor: deduped.filter((i) => i.severity === 'minor').length,
+            },
+          };
+        }
+      }
+
+      return await this.verifyReviewResult(
+        finalResult,
+        baseContext,
+        workDir,
+        timeoutMinutes,
+        pr.number,
+      );
     } catch {
       core.warning('Synthesis output parse failed, falling back to merged batch results');
       const fallback = this.buildFallbackResult(
-        allIssues,
+        dedupIssues(allIssues),
         allStrengths,
         allRawLines,
         totalFailedLines,
@@ -1030,6 +1086,222 @@ export class ReviewEngine {
     return docs;
   }
 
+  /**
+   * Run configured linters against changed files.
+   */
+  private runLinters(changedFiles: Array<{ path: string }>, workDir: string): LinterResult[] {
+    if (!this.config.linters?.length) return [];
+
+    const results: LinterResult[] = [];
+
+    for (const linterConfig of this.config.linters) {
+      try {
+        const matchedFiles = changedFiles
+          .map((f) => f.path)
+          .filter((p): p is string => typeof p === 'string' && Boolean(p))
+          .filter((p) => minimatch(p, linterConfig.pattern));
+
+        if (matchedFiles.length === 0) continue;
+
+        const linterDir = linterConfig.workingDirectory
+          ? path.resolve(workDir, linterConfig.workingDirectory)
+          : workDir;
+
+        const args = [...(linterConfig.args || []), ...matchedFiles];
+        const start = Date.now();
+
+        const {
+          stdout,
+          stderr,
+          status,
+          error: spawnError,
+        } = cp.spawnSync(linterConfig.command, args, {
+          cwd: linterDir,
+          encoding: 'utf-8',
+          maxBuffer: 50 * 1024 * 1024,
+          timeout: linterConfig.timeout ?? 60_000,
+        });
+
+        const duration = Date.now() - start;
+
+        const result: LinterResult = {
+          tool: linterConfig.command.split('/').pop() || linterConfig.command,
+          command: `${linterConfig.command} ${args.join(' ')}`,
+          exitCode: status ?? -1,
+          stdout: stdout || '',
+          stderr: stderr || '',
+          findings:
+            status !== null
+              ? this.parseLinterOutput(linterConfig.parseFormat || 'generic', stdout || '')
+              : [],
+          success: status !== null && (status ?? 0) <= 1,
+        };
+
+        if (spawnError) {
+          core.debug(`Linter "${result.tool}" spawn error: ${spawnError.message}`);
+        }
+        if (stderr) {
+          const truncated = stderr.length > 500 ? stderr.slice(0, 500) + '...' : stderr;
+          core.debug(`Linter "${result.tool}" stderr: ${truncated}`);
+        }
+
+        core.info(
+          `Linter "${result.tool}" finished in ${duration}ms with exit code ${status} (${result.findings.length} findings)`,
+        );
+
+        results.push(result);
+      } catch (err) {
+        core.warning(
+          `Linter "${linterConfig.command}" failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Parse linter stdout into structured findings.
+   */
+  private parseLinterOutput(format: string, output: string): LinterFinding[] {
+    if (!output.trim()) return [];
+
+    if (format === 'ruff') {
+      try {
+        const parsed = JSON.parse(output);
+        if (Array.isArray(parsed)) {
+          return parsed.flatMap((entry: Record<string, unknown>) => {
+            const file = String(entry.filename || '');
+            const loc =
+              entry.location != null
+                ? (entry.location as { row?: number; column?: number })
+                : undefined;
+            const cell = entry.cell != null ? (entry.cell as { row?: number }) : undefined;
+            const line = loc?.row ?? cell?.row ?? 0;
+            if (line <= 0) return [];
+            const code = String(entry.code || '');
+            const sev = entry.severity ? String(entry.severity) : mapRuffSeverity(code);
+            return {
+              file,
+              line,
+              column: loc != null ? loc.column : undefined,
+              severity: sev,
+              ruleId: code || undefined,
+              message: String(entry.message || ''),
+              raw: JSON.stringify(entry),
+            };
+          });
+        }
+      } catch {
+        // fall through to generic parser
+      }
+    } else if (format === 'eslint') {
+      try {
+        const parsed = JSON.parse(output);
+        if (Array.isArray(parsed)) {
+          return parsed.flatMap((entry: Record<string, unknown>) => {
+            const filePath = String(entry.filePath || '');
+            const rawMessages = entry.messages as unknown;
+            const messages = Array.isArray(rawMessages) ? rawMessages : [entry];
+            return (messages as Array<Record<string, unknown>>)
+              .map((msg) => {
+                const line = Number(msg.line) || 0;
+                if (line <= 0) return null;
+                const sev =
+                  msg.severity === 2
+                    ? 'error'
+                    : msg.severity === 1
+                      ? 'warning'
+                      : String(msg.severity || 'warning');
+                const col = Number(msg.column) || undefined;
+                const result: LinterFinding = {
+                  file: filePath,
+                  line,
+                  severity: sev,
+                  ruleId: String(msg.ruleId || msg.code || '') || undefined,
+                  message: String(msg.message || ''),
+                  raw: JSON.stringify(msg),
+                };
+                if (col !== undefined) result.column = col;
+                return result;
+              })
+              .filter((f): f is LinterFinding => f !== null);
+          });
+        }
+      } catch {
+        // fall through to generic parser
+      }
+    }
+
+    const findings: LinterFinding[] = [];
+    const GENERIC_RE = /^([^:]+):(\d+):(\d+):\s*(error|warning|info|note|help)?:?\s*(.*)$/m;
+    for (const line of output.split('\n')) {
+      const match = line.match(GENERIC_RE);
+      if (match) {
+        const lineNum = Number.parseInt(match[2], 10) || 0;
+        if (lineNum <= 0) continue;
+        findings.push({
+          file: match[1],
+          line: lineNum,
+          column: Number.parseInt(match[3], 10) || undefined,
+          severity: match[4] || 'warning',
+          message: match[5] || '',
+          raw: line,
+        });
+      }
+    }
+
+    return findings;
+  }
+
+  /**
+   * Filter AI-generated findings that duplicate linter findings.
+   */
+  private deduplicateAgainstLinters(
+    issues: ReviewIssue[],
+    linterResults: LinterResult[],
+    workDir?: string,
+  ): ReviewIssue[] {
+    if (!linterResults.length || !issues.length) return issues;
+
+    const linterFindings: { key: string; message: string }[] = [];
+    for (const result of linterResults) {
+      for (const finding of result.findings) {
+        const normalized = workDir
+          ? path.relative(workDir, path.resolve(workDir, finding.file))
+          : finding.file;
+        linterFindings.push({ key: `${normalized}:${finding.line}`, message: finding.message });
+      }
+    }
+
+    const filtered = issues.filter((issue) => {
+      const normalized = workDir
+        ? path.relative(workDir, path.resolve(workDir, issue.file))
+        : issue.file;
+      const key = `${normalized}:${issue.line}`;
+      const match = linterFindings.find((lf) => lf.key === key);
+      if (match) {
+        const msgOverlap =
+          match.message &&
+          issue.message.toLowerCase().includes(match.message.toLowerCase().slice(0, 20));
+        if (msgOverlap) {
+          core.debug(`Suppressing AI finding at ${key} — matches linter output`);
+          return false;
+        }
+      }
+      return true;
+    });
+
+    const dropped = issues.length - filtered.length;
+    if (dropped > 0) {
+      core.info(
+        `Hybrid analysis suppressed ${dropped} finding(s) that overlap with configured linters`,
+      );
+    }
+
+    return filtered;
+  }
+
   private buildFallbackResult(
     allIssues: ReviewIssue[],
     allStrengths: ReviewStrength[],
@@ -1131,6 +1403,20 @@ export class ReviewEngine {
 
     return parts.join('\n');
   }
+}
+
+// ---- Linter helpers ----
+
+/**
+ * Map Ruff rule code prefix to a readable severity string.
+ * Ruff codes: F (pyflakes), E (pycodestyle error) → error;
+ * W (pycodestyle warning), D (pydocstyle) → warning.
+ */
+function mapRuffSeverity(code: string): string {
+  if (!code) return 'warning';
+  const prefix = code[0];
+  if (prefix === 'F' || prefix === 'E') return 'error';
+  return 'warning';
 }
 
 // ---- Manifest-based library detection helpers ----

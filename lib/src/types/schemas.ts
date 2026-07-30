@@ -125,6 +125,16 @@ export const LearningConfigSchema = z.object({
     .default({}),
 });
 
+/** Zod schema for linter configuration. */
+export const LinterConfigSchema = z.object({
+  pattern: z.string().min(1),
+  command: z.string().min(1),
+  args: z.array(z.string()).optional(),
+  workingDirectory: z.string().optional(),
+  parseFormat: z.enum(['eslint', 'ruff', 'generic']).optional().default('generic'),
+  timeout: z.number().int().positive().optional(),
+});
+
 /** Zod schema validating the full agent configuration, merging provided values with defaults. */
 export const AgentConfigSchema = z.object({
   reviewModel: z.string().default('opencode/deepseek-v4-flash-free'),
@@ -142,6 +152,7 @@ export const AgentConfigSchema = z.object({
   review: ReviewConfigSchema.default({}),
   audit: AuditConfigSchema.default({}),
   learning: LearningConfigSchema.default({}),
+  linters: z.array(LinterConfigSchema).default([]),
 });
 
 // ─── Parse & Validate Helpers ─────────────────────────────
@@ -283,6 +294,7 @@ export const PromptConfigSchema = z.object({
     })
     .optional(),
   overrides: z.array(ConfigOverrideSchema).optional(),
+  linters: z.array(LinterConfigSchema).optional(),
 });
 
 /**

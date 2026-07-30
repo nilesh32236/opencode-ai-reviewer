@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as core from '@actions/core';
 import yaml from 'js-yaml';
 import { minimatch } from 'minimatch';
-import type { ConfigOverride, PromptConfig } from './types/index.js';
+import type { ConfigOverride, LinterConfig, PromptConfig } from './types/index.js';
 import { PromptConfigSchema } from './types/schemas.js';
 import { DEFAULT_ALLOWLIST } from './utils/command.js';
 
@@ -285,6 +285,16 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     }
   }
 
+  if (Array.isArray(config.linters)) {
+    result.linters = config.linters.filter((l): l is LinterConfig => {
+      if (!l || typeof l !== 'object') return false;
+      if (typeof l.pattern !== 'string' || typeof l.command !== 'string') return false;
+      if (l.args && !Array.isArray(l.args)) return false;
+      if (l.parseFormat && !['eslint', 'ruff', 'generic'].includes(l.parseFormat)) return false;
+      return true;
+    });
+  }
+
   return result;
 }
 
@@ -324,6 +334,10 @@ function extractDefaultsFromConfig(config: PromptConfig): Record<string, unknown
   if (config.audit?.autoFix === false) {
     defaults.audit_auto_fix = 'false';
   }
+  if (config.linters?.length) {
+    defaults.linters = JSON.stringify(config.linters);
+  }
+
   if (config.project?.description) {
     defaults.project_context = [
       config.project.name ? `**Project:** ${config.project.name}` : '',
