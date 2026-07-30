@@ -14,7 +14,7 @@ import type { ActionInputs } from './inputs.js';
  * @param config - Full agent configuration.
  * @param engine - Review engine instance.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
- * @param repo - Repository string (owner/repo).
- * @param token - GitHub authentication token.
+ * @param _repo - Repository string (owner/repo).
+ * @param _token - GitHub authentication token.
  */
 export declare function runSelfHeal(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, _repo: string, _token: string): Promise<void>;

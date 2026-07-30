@@ -20,6 +20,8 @@ export interface ResolveConfigOptions {
  * Build platform-specific config filenames.
  * For 'github' (default): checks .opencode-reviewer.yml/yaml and .github/opencode-reviewer.yml/yaml.
  * For 'gitlab': checks .opencode-reviewer.yml/yaml and .gitlab/opencode-reviewer.yml/yaml.
+ * @param platform - Platform identifier ('github' or 'gitlab', defaults to 'github').
+ * @returns Array of config filenames to search.
  */
 function getConfigFilenames(platform?: Platform): string[] {
   const platformDir = platform === 'gitlab' ? '.gitlab' : '.github';

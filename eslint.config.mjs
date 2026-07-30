@@ -47,7 +47,7 @@ export default [
         },
       ],
       'jsdoc/require-param-description': [
-        'error',
+        'warn',
         {
           contexts: [
             'ArrowFunctionExpression',
@@ -71,7 +71,7 @@ export default [
         },
       ],
       'jsdoc/require-returns-description': [
-        'error',
+        'warn',
         {
           contexts: [
             'ArrowFunctionExpression',

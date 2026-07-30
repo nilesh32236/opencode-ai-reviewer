@@ -1,5 +1,10 @@
 import type { ReviewResult } from '../types/index.js';
 
+/**
+ * Build a markdown review body from a ReviewResult.
+ * @param result - Review result to render.
+ * @returns Formatted markdown string.
+ */
 export function buildReviewBody(result: ReviewResult): string {
   const lines: string[] = [];
 
@@ -68,6 +73,11 @@ export function buildReviewBody(result: ReviewResult): string {
   return lines.join('\n');
 }
 
+/**
+ * Get an emoji badge for a confidence level.
+ * @param confidence - Confidence level.
+ * @returns Emoji string representing the confidence level.
+ */
 export function getConfidenceBadge(confidence?: 'high' | 'medium' | 'low'): string {
   switch (confidence) {
     case 'high':

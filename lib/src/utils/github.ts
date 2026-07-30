@@ -268,7 +268,12 @@ export class GitHubHelper implements PlatformAdapter {
     };
   }
 
-  /** PlatformAdapter alias for getPR. */
+  /**
+   * PlatformAdapter alias for getPR.
+   *
+   * @param number - PR number.
+   * @returns PR context including title, body, branches, author, labels, and changed files.
+   */
   async getMR(number: number): Promise<PRContext> {
     return this.getPR(number);
   }
@@ -288,7 +293,12 @@ export class GitHubHelper implements PlatformAdapter {
     }
   }
 
-  /** PlatformAdapter alias for isPR. */
+  /**
+   * PlatformAdapter alias for isPR.
+   *
+   * @param number - Issue/PR number.
+   * @returns True if the number corresponds to a pull request.
+   */
   async isMR(number: number): Promise<boolean> {
     return this.isPR(number);
   }
@@ -764,6 +774,7 @@ export class GitHubHelper implements PlatformAdapter {
    * Fetch a single pull request review comment by ID.
    * Uses GET /repos/{owner}/{repo}/pulls/comments/{commentId}.
    *
+   * @param _mrNumber - Unused, required for PlatformAdapter compatibility.
    * @param commentId - Review comment ID.
    * @returns The review comment details.
    */
@@ -1180,7 +1191,12 @@ export class GitHubHelper implements PlatformAdapter {
     }
   }
 
-  /** PlatformAdapter alias for mergePR. */
+  /**
+   * PlatformAdapter alias for mergePR.
+   *
+   * @param mrNumber - PR number to merge.
+   * @returns True if the merge succeeded.
+   */
   async mergeMR(mrNumber: number): Promise<boolean> {
     return this.mergePR(mrNumber);
   }
@@ -1297,6 +1313,12 @@ export class GitHubHelper implements PlatformAdapter {
 
   private currentUserLogin: string | null = null;
 
+  /**
+   * Get the authenticated user's login name.
+   * Falls back to GITHUB_ACTOR env var or resolves via /user and /app API endpoints.
+   *
+   * @returns The login name of the authenticated user or bot.
+   */
   async getCurrentUser(): Promise<string> {
     if (this.currentUserLogin) return this.currentUserLogin;
     if (process.env.GITHUB_ACTOR) {
@@ -1532,7 +1554,15 @@ export class GitHubHelper implements PlatformAdapter {
     });
   }
 
-  /** PlatformAdapter alias for updatePR. */
+  /**
+   * PlatformAdapter alias for updatePR.
+   *
+   * @param mrNumber - PR number.
+   * @param updates - Object containing optional title and body updates.
+   * @param updates.title - Optional new PR title.
+   * @param updates.body - Optional new PR body.
+   * @returns A promise that resolves when the update is complete.
+   */
   async updateMR(mrNumber: number, updates: { title?: string; body?: string }): Promise<void> {
     return this.updatePR(mrNumber, updates);
   }
