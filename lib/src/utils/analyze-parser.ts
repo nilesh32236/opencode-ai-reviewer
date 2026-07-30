@@ -1,8 +1,6 @@
 import type { GitHubHelper } from './github.js';
 
-/**
- *
- */
+/** Result of an analysis plan generation. */
 export interface AnalysisPlanResult {
   /** Full raw markdown of the analysis plan. */
   planMarkdown: string;

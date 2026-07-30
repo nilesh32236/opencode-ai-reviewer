@@ -13,6 +13,7 @@ export default [
       jsdoc,
     },
     rules: {
+      'jsdoc/no-blank-blocks': ['warn', { enableFixer: true }],
       'jsdoc/require-jsdoc': [
         'error',
         {
@@ -29,9 +30,7 @@ export default [
             'TSInterfaceDeclaration',
             'TSTypeAliasDeclaration',
             'TSMethodSignature',
-            'TSPropertySignature',
             'MethodDefinition',
-            'PropertyDefinition',
           ],
         },
       ],

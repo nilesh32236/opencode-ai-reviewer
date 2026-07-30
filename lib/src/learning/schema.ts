@@ -11,12 +11,10 @@ export function getDbPath(): string {
   return DB_PATH;
 }
 
-/**
- *
- */
+/** Interface for running database migrations. */
 export interface MigrationRunner {
   /**
-   *
+   * Execute a SQL migration statement.
    * @param sql - SQL statement to execute.
    * @returns Promise that resolves when execution completes.
    */
