@@ -147,6 +147,12 @@ export interface ReachabilityResult {
  * Analyze whether a security finding is reachable from user input.
  * Uses lightweight pattern matching and import graph traversal.
  *
+ * Note: This analysis is file-scoped, not line-scoped. It checks whether any
+ * entry point exists in the flagged file or its import graph. Line-level
+ * reachability is reserved for a future enhancement. Path alias imports
+ * (e.g. @/, ~/) are not resolved and may produce false positives for
+ * projects using TypeScript path aliases or webpack resolve aliases.
+ *
  * @param filePath - Absolute or relative path to the flagged source file.
  * @param _lineNumber - Line number of the finding within the file (reserved for future line-level analysis).
  * @param workDir - Working directory (repo root) for resolving imports.
@@ -239,7 +245,7 @@ export async function analyzeFindingReachability(
 
 /**
  * Extract imported file paths from source code.
- * Supports both ESM `import` and CommonJS `require`.
+ * Supports ESM `import`, CommonJS `require`, and dynamic `import()` calls.
  * Only resolves local imports (starting with `.` or `..`).
  *
  * @param content - Source file content.
@@ -258,9 +264,18 @@ async function extractImports(content: string, sourceFile: string): Promise<stri
     const specifier = match[1] || match[2];
     if (!specifier || !specifier.startsWith('.')) continue;
 
-    // Try resolving with common extensions
     const resolved = await resolveLocalImport(sourceDir, specifier);
     if (resolved) imports.push(resolved);
+  }
+
+  // Also capture dynamic import() calls (e.g. Next.js dynamic imports, code splitting)
+  const dynamicImportRe = /import\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+  while ((match = dynamicImportRe.exec(content)) !== null) {
+    const specifier = match[1];
+    if (!specifier || !specifier.startsWith('.')) continue;
+
+    const resolved = await resolveLocalImport(sourceDir, specifier);
+    if (resolved && !imports.includes(resolved)) imports.push(resolved);
   }
 
   return imports;
@@ -286,6 +301,17 @@ async function resolveLocalImport(
 
   for (const ext of extensions) {
     if (await isFile(basePath + ext)) return basePath + ext;
+  }
+
+  // Handle .js → .ts mapping (TypeScript ESM convention: import './foo.js' → foo.ts)
+  const jsExts = ['.js', '.jsx', '.mjs', '.cjs'];
+  for (const jsExt of jsExts) {
+    if (specifier.endsWith(jsExt)) {
+      const tsBase = basePath.slice(0, -jsExt.length);
+      for (const tsExt of ['.ts', '.tsx', '.mts', '.cts']) {
+        if (await isFile(tsBase + tsExt)) return tsBase + tsExt;
+      }
+    }
   }
 
   for (const ext of extensions) {

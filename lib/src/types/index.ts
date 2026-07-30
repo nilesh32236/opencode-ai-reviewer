@@ -66,6 +66,8 @@ export interface ReviewIssue {
   theoreticalRisk?: boolean;
   /** Entry point path if the finding is reachable from user input */
   entryPointPath?: string;
+  /** File path of the entry point if the finding is reachable from user input */
+  entryPointFile?: string;
 }
 
 /** Previous fix iteration data for tracking progress across fix cycles. */
@@ -478,6 +480,8 @@ export interface IssueFinding extends BaseFinding {
   theoreticalRisk?: boolean;
   /** Entry point path if the finding is reachable from user input */
   entryPointPath?: string;
+  /** File path of the entry point if the finding is reachable from user input */
+  entryPointFile?: string;
 }
 
 /** An executive summary finding in JSONL format. */

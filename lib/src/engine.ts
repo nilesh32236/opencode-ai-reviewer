@@ -933,6 +933,7 @@ export class ReviewEngine {
             ...issue,
             theoreticalRisk: r.theoreticalRisk || undefined,
             entryPointPath: r.entryPointPath,
+            entryPointFile: r.entryPointFile,
             severity,
           };
         });
