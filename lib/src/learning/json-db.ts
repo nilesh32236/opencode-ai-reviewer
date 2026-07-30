@@ -288,9 +288,14 @@ export class JsonDatabase implements LearningRepository {
     if (this.inTransaction) return;
     if (this.writeTimeout) {
       clearTimeout(this.writeTimeout);
-      this.writeTimeout = null;
     }
-    this.flushSync();
+    this.writeTimeout = setTimeout(() => {
+      this.writeTimeout = null;
+      this.writeToDisk().catch((err) => {
+        const logger = new Logger('JsonDatabase');
+        logger.warn(`Failed to execute async debounced save`, err);
+      });
+    }, 100);
   }
 
   private async writeToDisk() {

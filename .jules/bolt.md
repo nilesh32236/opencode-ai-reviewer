@@ -13,3 +13,6 @@
 ## 2026-07-27 - Optimize JSONL parsing (Regex Hoisting & Async I/O)
 **Learning:** Found that `codePatterns` in `looksLikeCode` and markdown regexes in `stripMarkdownFences` were being recompiled and reallocated on every function call. Also found synchronous `fs.readFileSync` inside an async function (`parseJsonlFile`) which blocks the event loop on large files.
 **Action:** Always hoist regular expressions to module scope to avoid recompilation overhead. Always use asynchronous file I/O operations (`fs.promises.readFile`) inside async functions.
+## 2026-07-30 - Optimize JsonDatabase save() with debounced async I/O
+**Learning:** Found that `JsonDatabase.save()` called `this.flushSync()` which performed synchronous file writing blocking the main thread on every mutation. By using `setTimeout` to debounce the call by 100ms and writing asynchronously using `writeToDisk()`, we drastically reduce redundant I/O operations and prevent blocking during batch processing.
+**Action:** Always debounce repeated write operations and use async file APIs like `fs.promises.writeFile` rather than synchronous alternatives like `fs.writeFileSync`.
