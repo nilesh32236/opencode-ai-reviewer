@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.13] — 2026-07-30
+
+
+### Fixed
+
+- remove unsupported type field from workflow_call outputs
+
+[v1.6.13]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.12...v1.6.13
+
 ## [v1.6.12] — 2026-07-30
 
 
