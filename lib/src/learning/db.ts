@@ -2450,6 +2450,7 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
   /**
    * Compute and insert a new aggregated metrics row.
    * @param periodType - 'daily' or 'weekly'.
+   * @returns A promise that resolves when the aggregation is complete.
    */
   async aggregateMetrics(periodType: 'daily' | 'weekly'): Promise<void> {
     return this.db.aggregateMetrics(periodType);

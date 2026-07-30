@@ -11,6 +11,9 @@ export class MetricsService {
   private store: LearningStore;
   private logger: Logger;
 
+  /**
+   * @param store - The LearningStore instance to query for metrics data.
+   */
   constructor(store: LearningStore) {
     this.store = store;
     this.logger = new Logger('MetricsService');

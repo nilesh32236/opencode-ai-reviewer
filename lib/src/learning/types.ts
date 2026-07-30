@@ -347,85 +347,143 @@ export interface LearningRepository {
 
 /** Per-PR finding statistics. */
 export interface PerPRStats {
+  /** Total number of PRs reviewed. */
   totalPrs: number;
+  /** Total number of findings across all PRs. */
   totalFindings: number;
+  /** Average findings per PR. */
   avgFindingsPerPr: number;
+  /** Median (P50) findings per PR. */
   p50FindingsPerPr: number;
+  /** P90 findings per PR. */
   p90FindingsPerPr: number;
+  /** Maximum findings in a single PR. */
   maxFindingsInPr: number;
 }
 
 /** Feedback breakdown by signal type and value. */
 export interface FeedbackBreakdown {
+  /** Total number of feedback signals. */
   totalFeedback: number;
+  /** Number of dismissed feedback signals. */
   dismissedCount: number;
+  /** Number of disputed feedback signals. */
   disputedCount: number;
+  /** Number of accepted feedback signals. */
   acceptedCount: number;
+  /** Feedback count grouped by signal type. */
   bySignalType: Record<string, number>;
 }
 
 /** Review latency statistics. */
 export interface LatencyStats {
+  /** Average review latency in milliseconds. */
   avgLatencyMs: number;
+  /** Minimum review latency in milliseconds. */
   minLatencyMs: number;
+  /** Maximum review latency in milliseconds. */
   maxLatencyMs: number;
+  /** Median review latency in milliseconds. */
   medianLatencyMs: number;
+  /** Total number of reviews measured. */
   totalReviews: number;
 }
 
 /** A row from the review_metrics summary table. */
 export interface ReviewMetricsRow {
+  /** Unique identifier for the metrics row. */
   id: string;
+  /** Start of the aggregation period. */
   period_start: string;
+  /** End of the aggregation period. */
   period_end: string;
+  /** Type of period (daily or weekly). */
   period_type: string;
+  /** Total PRs reviewed in the period. */
   total_prs: number;
+  /** Total findings in the period. */
   total_findings: number;
+  /** Average findings per PR. */
   avg_findings_per_pr: number | null;
+  /** Total feedback signals received. */
   total_feedback: number;
+  /** Number of dismissed feedback signals. */
   dismissed_count: number;
+  /** Number of disputed feedback signals. */
   disputed_count: number;
+  /** Rate of false positive feedback. */
   false_positive_rate: number | null;
+  /** Average review duration in milliseconds. */
   avg_review_duration_ms: number | null;
+  /** Total tokens used in the period. */
   total_tokens_used: number | null;
+  /** Average tokens per review. */
   avg_tokens_per_review: number | null;
+  /** Average actionability score. */
   avg_actionability_score: number | null;
+  /** Average accuracy score. */
   avg_accuracy_score: number | null;
+  /** Average coverage score. */
   avg_coverage_score: number | null;
+  /** Average consistency score. */
   avg_consistency_score: number | null;
+  /** Timestamp when the row was created. */
   created_at: string;
 }
 
 /** Severity distribution of findings. */
 export interface SeverityDistribution {
+  /** Count of critical severity findings. */
   critical: number;
+  /** Count of important severity findings. */
   important: number;
+  /** Count of minor severity findings. */
   minor: number;
+  /** Count of unknown severity findings. */
   unknown: number;
 }
 
 /** Structured metrics report for display. */
 export interface ReviewMetricsReport {
+  /** Type of period (daily or weekly). */
   periodType: 'daily' | 'weekly';
+  /** Start of the report period. */
   periodStart: string;
+  /** End of the report period. */
   periodEnd: string;
+  /** Overview statistics. */
   overview: {
+    /** Total PRs reviewed. */
     totalPrs: number;
+    /** Total findings. */
     totalFindings: number;
+    /** Average findings per PR. */
     avgFindingsPerPr: number;
   };
+  /** Quality metrics. */
   quality: {
+    /** Rate of true positive feedback. */
     truePositiveRate: number;
+    /** Rate of false positive feedback. */
     falsePositiveRate: number;
+    /** Rate of dismissed feedback. */
     dismissalRate: number;
+    /** Overall accuracy score. */
     accuracyScore: number | null;
+    /** Overall actionability score. */
     actionabilityScore: number | null;
   };
+  /** Performance metrics. */
   performance: {
+    /** Average review duration in milliseconds. */
     avgReviewDurationMs: number;
+    /** Total tokens used. */
     totalTokensUsed: number;
+    /** Average tokens per review. */
     avgTokensPerReview: number;
   };
+  /** Optional severity distribution. */
   severityDistribution?: SeverityDistribution;
+  /** Optional trends data (pre-computed rows). */
   trends?: ReviewMetricsRow[];
 }

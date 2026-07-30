@@ -16,7 +16,7 @@ export const sanitize = (message: string): string => {
 
 /**
  * Resolves the PR number from the `pr-number` input or the GitHub event context.
- * Returns `null` when no PR number can be determined.
+ * @returns The PR number, or `null` when no PR number can be determined.
  */
 export async function resolvePrNumber(): Promise<number | null> {
   const prNumberInput = core.getInput('pr-number');
