@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import type { AgentConfig, GitHubHelper, PRContext, ReviewEngine } from '@opencode-pr-agent/lib';
+import type { AgentConfig, PRContext, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { resolvePrNumber, sanitize } from './utils.js';
 
@@ -12,14 +12,14 @@ import { resolvePrNumber, sanitize } from './utils.js';
  * @param inputs - Parsed action inputs.
  * @param config - Full agent configuration.
  * @param engine - Review engine instance.
- * @param gh - GitHub API helper.
+ * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param _repo - Repository string (owner/repo).
  */
 export async function runReview(
   inputs: ActionInputs,
   config: AgentConfig,
   engine: ReviewEngine,
-  gh: GitHubHelper,
+  gh: PlatformAdapter,
   _repo: string,
 ): Promise<void> {
   let prNumber = await resolvePrNumber();
@@ -30,7 +30,7 @@ export async function runReview(
     !github.context.payload.pull_request?.number
   ) {
     const issueNum = github.context.payload.issue?.number;
-    if (issueNum === prNumber && !(await gh.isPR(issueNum))) {
+    if (issueNum === prNumber && !(await gh.isMR(issueNum))) {
       prNumber = null;
     }
   }
@@ -42,7 +42,7 @@ export async function runReview(
 
   let pr: PRContext;
   try {
-    pr = await gh.getPR(prNumber);
+    pr = await gh.getMR(prNumber);
   } catch (err) {
     core.setFailed(
       sanitize(`Failed to get PR #${prNumber}: ${err instanceof Error ? err.message : err}`),

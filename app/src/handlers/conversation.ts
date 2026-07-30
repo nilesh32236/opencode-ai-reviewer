@@ -4,8 +4,15 @@ import type {
   ConversationMessage,
   LearningStore,
   PRContext,
+  PlatformAdapter,
 } from '@opencode-pr-agent/lib';
-import { GitHubHelper, Logger, ReviewEngine, detectIntent } from '@opencode-pr-agent/lib';
+import {
+  GitHubHelper,
+  GitLabAdapter,
+  Logger,
+  ReviewEngine,
+  detectIntent,
+} from '@opencode-pr-agent/lib';
 
 /**
  * Handle an interactive conversation triggered by an @mention in a PR comment.
@@ -36,12 +43,13 @@ export async function handleConversation(
   const logger = new Logger('Conversation', { prNumber, repo });
   logger.info(`Handling conversation for comment ${commentId} on PR #${prNumber}`);
 
-  const gh = new GitHubHelper(token, repo);
+  const gh: PlatformAdapter =
+    config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
 
   // Fetch the PR for context
   let pr: PRContext;
   try {
-    pr = await gh.getPR(prNumber);
+    pr = await gh.getMR(prNumber);
   } catch (err) {
     logger.error(`Failed to get PR #${prNumber}: ${err instanceof Error ? err.message : err}`);
     return;
@@ -83,7 +91,7 @@ export async function handleConversation(
   };
 
   // Run through the engine
-  const engine = new ReviewEngine(config, token, repo, learningStore);
+  const engine = new ReviewEngine(config, gh, learningStore);
   try {
     if (signal?.aborted) return;
 
@@ -143,7 +151,7 @@ interface IssueCommentThread {
  * @returns Object containing conversation messages, file path, and diff hunk.
  */
 async function gatherReviewCommentThread(
-  gh: GitHubHelper,
+  gh: PlatformAdapter,
   prNumber: number,
   commentId: number,
   mentionHandle: string,
@@ -207,7 +215,7 @@ async function gatherReviewCommentThread(
  * @returns Object containing context conversation messages.
  */
 async function gatherIssueCommentThread(
-  gh: GitHubHelper,
+  gh: PlatformAdapter,
   prNumber: number,
   commentId: number,
   mentionHandle: string,
@@ -260,7 +268,7 @@ async function gatherIssueCommentThread(
  * @param body - Message body of the reply.
  */
 async function postReviewCommentReply(
-  gh: GitHubHelper,
+  gh: PlatformAdapter,
   prNumber: number,
   commentId: number,
   body: string,
@@ -276,7 +284,7 @@ async function postReviewCommentReply(
  * @param body - Message body of the comment.
  */
 async function postIssueCommentReply(
-  gh: GitHubHelper,
+  gh: PlatformAdapter,
   prNumber: number,
   body: string,
 ): Promise<void> {

@@ -3,9 +3,10 @@ import type { ExecFileSyncOptions } from 'child_process';
 import { mkdtempSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
-import type { AgentConfig, PRContext } from '@opencode-pr-agent/lib';
+import type { AgentConfig, PRContext, PlatformAdapter } from '@opencode-pr-agent/lib';
 import {
   GitHubHelper,
+  GitLabAdapter,
   Logger,
   ReviewEngine,
   buildAutofixPRBody,
@@ -39,7 +40,8 @@ export async function handleCommand(
   signal?: AbortSignal,
 ): Promise<void> {
   const logger = new Logger('Command', { repo, prNumber: issueNumber });
-  const gh = new GitHubHelper(token, repo);
+  const gh: PlatformAdapter =
+    config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
 
   const tempDir = mkdtempSync(path.join(os.tmpdir(), 'opencode-workspace-'));
 
@@ -72,7 +74,7 @@ export async function handleCommand(
       }
 
       case 'review': {
-        if (await gh.isPR(issueNumber)) {
+        if (await gh.isMR(issueNumber)) {
           await handlePRReview(issueNumber, repo, token, config, undefined, tempDir);
         }
         break;
@@ -80,7 +82,7 @@ export async function handleCommand(
 
       case 'fix': {
         if (signal?.aborted) return;
-        const isPR = await gh.isPR(issueNumber);
+        const isPR = await gh.isMR(issueNumber);
         if (isPR) {
           await handleAutofixLoop(
             issueNumber,
@@ -169,8 +171,9 @@ export async function handleAnalyzeCommand(
   const logger = new Logger('Command:Analyze', { repo, prNumber: issueNumber });
   logger.info(`Analyzing issue #${issueNumber}`);
 
-  const gh = new GitHubHelper(token, repo);
-  const engine = new ReviewEngine(config, token, repo);
+  const gh: PlatformAdapter =
+    config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
+  const engine = new ReviewEngine(config, gh);
 
   try {
     const issueContext = await gh.gatherContext({ issueNumber });
@@ -220,11 +223,12 @@ export async function handleExplainCommand(
   const logger = new Logger('Command:Explain', { repo, prNumber: issueNumber });
   logger.info(`Explaining PR #${issueNumber}`);
 
-  const gh = new GitHubHelper(token, repo);
-  const engine = new ReviewEngine(config, token, repo);
+  const gh: PlatformAdapter =
+    config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
+  const engine = new ReviewEngine(config, gh);
 
   try {
-    const pr = await gh.getPR(issueNumber);
+    const pr = await gh.getMR(issueNumber);
     const explanation = await engine.runExplain(pr, tempDir);
 
     await gh.postOrUpdateComment(issueNumber, '<!-- pr-explanation -->', explanation);
@@ -245,7 +249,7 @@ export async function handleExplainCommand(
 }
 
 async function findExistingAutofixPR(
-  gh: GitHubHelper,
+  gh: PlatformAdapter,
   issueNumber: number,
 ): Promise<number | null> {
   const logger = new Logger('Command', { prNumber: issueNumber });
@@ -273,10 +277,10 @@ async function findExistingAutofixPR(
 }
 
 async function createAutofixPR(
-  gh: GitHubHelper,
+  gh: PlatformAdapter,
   issueNumber: number,
   repo: string,
-  token: string,
+  _token: string,
   config: AgentConfig,
   tempDir: string,
   gitEnv?: Record<string, string>,
@@ -299,7 +303,7 @@ async function createAutofixPR(
     timeout: 120_000,
     ...(gitEnv ? { env: { ...process.env, ...gitEnv } } : {}),
   };
-  const engine = new ReviewEngine(config, token, repo);
+  const engine = new ReviewEngine(config, gh);
   const branchName = `autofix/issue-${issueNumber}`;
 
   try {
@@ -496,7 +500,7 @@ async function createAutofixPR(
 }
 
 async function checkForUnansweredQuestions(
-  gh: GitHubHelper,
+  gh: PlatformAdapter,
   issueNumber: number,
   issueContext: string,
 ): Promise<boolean> {

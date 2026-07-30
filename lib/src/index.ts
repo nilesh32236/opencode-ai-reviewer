@@ -9,6 +9,14 @@ export {
   setupWorkspaceDependencies,
 } from './opencode.js';
 export { GitHubHelper } from './utils/github.js';
+export { GitLabAdapter } from './utils/gitlab-adapter.js';
+export type {
+  PlatformAdapter,
+  ReviewPostResult,
+  ReviewThreadInfo,
+  ReviewCommentDetail,
+  ReviewCommentThread,
+} from './platform/adapter.js';
 export {
   emptyResult,
   parseJsonlFile,

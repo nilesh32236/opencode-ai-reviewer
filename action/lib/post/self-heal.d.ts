@@ -1,4 +1,4 @@
-import type { AgentConfig, GitHubHelper, ReviewEngine } from '@opencode-pr-agent/lib';
+import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 /**
  * Run the self-heal workflow: diagnose a CI failure, apply a fix,
@@ -13,8 +13,8 @@ import type { ActionInputs } from './inputs.js';
  * @param inputs - Parsed action inputs (includes ciFailureLogs, failedStep, failedWorkflow).
  * @param config - Full agent configuration.
  * @param engine - Review engine instance.
- * @param gh - GitHub API helper.
+ * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param repo - Repository string (owner/repo).
  * @param token - GitHub authentication token.
  */
-export declare function runSelfHeal(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: GitHubHelper, repo: string, token: string): Promise<void>;
+export declare function runSelfHeal(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, _repo: string, _token: string): Promise<void>;

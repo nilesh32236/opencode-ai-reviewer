@@ -1,4 +1,4 @@
-import type { AgentConfig, GitHubHelper, ReviewEngine } from '@opencode-pr-agent/lib';
+import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 /**
  * Execute a code review on a pull request and post results.
@@ -8,7 +8,7 @@ import type { ActionInputs } from './inputs.js';
  * @param inputs - Parsed action inputs.
  * @param config - Full agent configuration.
  * @param engine - Review engine instance.
- * @param gh - GitHub API helper.
+ * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param _repo - Repository string (owner/repo).
  */
-export declare function runReview(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: GitHubHelper, _repo: string): Promise<void>;
+export declare function runReview(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, _repo: string): Promise<void>;

@@ -913,7 +913,7 @@ diff --git a/deleted.ts b/deleted.ts
         }),
       );
 
-      const comment = await helper.getReviewComment(123);
+      const comment = await helper.getReviewComment(1, 123);
 
       expect(comment.id).toBe(123);
       expect(comment.body).toBe('This is a review comment');
@@ -930,7 +930,7 @@ diff --git a/deleted.ts b/deleted.ts
     it('throws on API failure', async () => {
       fetchMock.mockResolvedValue(mockErrorResponse(404));
 
-      await expect(helper.getReviewComment(999)).rejects.toThrow('GitHub API 404');
+      await expect(helper.getReviewComment(1, 999)).rejects.toThrow('GitHub API 404');
     });
   });
 

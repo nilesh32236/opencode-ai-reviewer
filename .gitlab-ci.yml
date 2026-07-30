@@ -1,0 +1,29 @@
+---
+# OpenCode AI Reviewer — GitLab CI job template
+# https://github.com/anomalyco/opencode-ai-reviewer
+#
+# To use this template in your project:
+#   1. Copy this file to your repository as .gitlab-ci.yml (or include it)
+#   2. Set GITLAB_TOKEN in your CI/CD variables (GitLab personal access token with api scope)
+#   3. Set OPENCODE_API_KEY or other model provider keys as CI/CD variables
+#
+# The job runs automatically on every merge request. To skip review on a specific MR,
+# add a label matching `skip_labels` (default: autofix, autofix:approved, autofix:merged).
+
+opencode-review:
+  stage: review
+  image: node:20
+  variables:
+    PLATFORM: "gitlab"
+    GITLAB_TOKEN: ${GITLAB_TOKEN}
+    INPUT_GITHUB_TOKEN: ${GITLAB_TOKEN}
+    OPENCODE_API_KEY: ${OPENCODE_API_KEY}
+    REVIEW_MODE: "review"
+    OPENCODE_VERSION: "latest"
+  script:
+    - npx @opencode-pr-agent/action
+  only:
+    - merge_requests
+  except:
+    variables:
+      - $CI_MERGE_REQUEST_LABELS =~ /.*autofix.*/

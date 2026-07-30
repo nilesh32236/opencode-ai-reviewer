@@ -1,4 +1,4 @@
-import type { GitHubHelper } from './github.js';
+import type { PlatformAdapter } from '../platform/adapter.js';
 
 /** Result of an analysis plan generation. */
 export interface AnalysisPlanResult {
@@ -90,7 +90,7 @@ export function parseAnalysisPlan(markdown: string): AnalysisPlanResult {
  * @param parsed - Parsed analysis plan result.
  */
 export async function postBlockingQuestions(
-  gh: GitHubHelper,
+  gh: PlatformAdapter,
   issueNumber: number,
   parsed: AnalysisPlanResult,
 ): Promise<void> {
@@ -117,7 +117,7 @@ export async function postBlockingQuestions(
  * @param gh - GitHub helper instance.
  * @param issueNumber - Issue number.
  */
-export async function markAnalysisReady(gh: GitHubHelper, issueNumber: number): Promise<void> {
+export async function markAnalysisReady(gh: PlatformAdapter, issueNumber: number): Promise<void> {
   await gh.ensureLabels(['analysis:ready']);
   await gh.addLabels(issueNumber, ['analysis:ready']);
 }

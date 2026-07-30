@@ -7,6 +7,7 @@ import type {
   AgentConfig,
   FixResult,
   PRContext,
+  PlatformAdapter,
   PreviousFindingIteration,
   ReviewResult,
 } from '@opencode-pr-agent/lib';
@@ -14,6 +15,7 @@ import {
   DEFAULT_ALLOWLIST,
   FIX_MARKER,
   GitHubHelper,
+  GitLabAdapter,
   type IterationRecord,
   Logger,
   REVIEW_MARKER,
@@ -57,8 +59,9 @@ export async function handleAutofixLoop(
   const logger = new Logger('Autofix', { prNumber, repo });
   logger.info(`Starting autofix loop for PR #${prNumber} in ${repo}`);
 
-  const gh = new GitHubHelper(token, repo);
-  const engine = new ReviewEngine(config, token, repo);
+  const gh: PlatformAdapter =
+    config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
+  const engine = new ReviewEngine(config, gh);
   const history: IterationRecord[] = [];
   const previousFindings: PreviousFindingIteration[] = [];
   let approved = false;
@@ -90,7 +93,7 @@ export async function handleAutofixLoop(
 
       let pr: PRContext;
       try {
-        pr = await gh.getPR(prNumber);
+        pr = await gh.getMR(prNumber);
       } catch (err) {
         logger.error(
           `Failed to get PR in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
@@ -322,7 +325,7 @@ export async function handleAutofixLoop(
               branchName: pr.headRef,
               hasTests: verificationPassed,
             });
-            await gh.updatePR(prNumber, { body: updatedBody });
+            await gh.updateMR(prNumber, { body: updatedBody });
             logger.info(`Updated PR #${prNumber} description with latest fix summary`);
           } catch (updateErr) {
             logger.warn(`Could not update PR description: ${updateErr}`);
@@ -401,7 +404,7 @@ export async function handleAutofixLoop(
                   `Feeding verification error to fix engine (retry ${v + 1}/${maxVerificationRetries})...`,
                 );
                 try {
-                  const freshPr = await gh.getPR(prNumber);
+                  const freshPr = await gh.getMR(prNumber);
                   const retryResult = await engine.runFix(
                     prNumber,
                     i,

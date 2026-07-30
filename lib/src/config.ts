@@ -4,6 +4,7 @@ import * as core from '@actions/core';
 import yaml from 'js-yaml';
 import { minimatch } from 'minimatch';
 import type { ConfigOverride, LinterConfig, PromptConfig } from './types/index.js';
+import type { Platform } from './types/index.js';
 import { PromptConfigSchema } from './types/schemas.js';
 import { DEFAULT_ALLOWLIST } from './utils/command.js';
 
@@ -15,22 +16,32 @@ export interface ResolveConfigOptions {
   branch?: string;
 }
 
-const CONFIG_FILENAMES = [
-  '.opencode-reviewer.yml',
-  '.opencode-reviewer.yaml',
-  '.github/opencode-reviewer.yml',
-  '.github/opencode-reviewer.yaml',
-];
+/**
+ * Build platform-specific config filenames.
+ * For 'github' (default): checks .opencode-reviewer.yml/yaml and .github/opencode-reviewer.yml/yaml.
+ * For 'gitlab': checks .opencode-reviewer.yml/yaml and .gitlab/opencode-reviewer.yml/yaml.
+ */
+function getConfigFilenames(platform?: Platform): string[] {
+  const platformDir = platform === 'gitlab' ? '.gitlab' : '.github';
+  return [
+    '.opencode-reviewer.yml',
+    '.opencode-reviewer.yaml',
+    `${platformDir}/opencode-reviewer.yml`,
+    `${platformDir}/opencode-reviewer.yaml`,
+  ];
+}
 
 /**
  * Load the first matching config file from well-known paths.
- * Searches for .opencode-reviewer.yml/yaml in the working directory and .github/.
+ * Searches for .opencode-reviewer.yml/yaml in the working directory and platform-specific directory.
  *
  * @param workingDir - Directory to start searching from (default: current working directory).
+ * @param platform - Platform identifier ('github' or 'gitlab', defaults to 'github').
  * @returns Parsed and validated PromptConfig, or null if no config file is found.
  */
-export function loadConfig(workingDir = '.'): PromptConfig | null {
-  for (const filename of CONFIG_FILENAMES) {
+export function loadConfig(workingDir = '.', platform?: Platform): PromptConfig | null {
+  const configFilenames = getConfigFilenames(platform);
+  for (const filename of configFilenames) {
     const fullPath = path.resolve(workingDir, filename);
     if (fs.existsSync(fullPath)) {
       core.info(`Loading config from ${filename}`);

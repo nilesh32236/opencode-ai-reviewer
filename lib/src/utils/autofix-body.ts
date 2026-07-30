@@ -1,5 +1,5 @@
+import type { PlatformAdapter } from '../platform/adapter.js';
 import type { PreviousFindingIteration, ReviewIssue, ReviewResult } from '../types/index.js';
-import type { GitHubHelper } from './github.js';
 
 /** Record of a single auto-fix iteration. */
 export interface IterationRecord {
@@ -196,7 +196,7 @@ export function buildReadyBody(history: IterationRecord[], prNumber: number): st
  * Resolve review comment threads for issues that have been verified as fixed
  * in the current review iteration.
  *
- * @param gh - GitHub helper instance.
+ * @param gh - Platform adapter instance.
  * @param prNumber - PR number.
  * @param previousFindings - Previous iteration findings with comment IDs.
  * @param currentIssues - Issues from the current review iteration.
@@ -205,7 +205,7 @@ export function buildReadyBody(history: IterationRecord[], prNumber: number): st
  * @param logger.warn - Logger warn method.
  */
 export async function resolveFixedComments(
-  gh: GitHubHelper,
+  gh: PlatformAdapter,
   prNumber: number,
   previousFindings: PreviousFindingIteration[],
   currentIssues: ReviewIssue[],

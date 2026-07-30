@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import type { AgentConfig, GitHubHelper, ReviewEngine } from '@opencode-pr-agent/lib';
+import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
 import {
   markAnalysisReady,
   parseAnalysisPlan,
@@ -15,7 +15,7 @@ import { sanitize } from './utils.js';
  * @param _inputs - Parsed action inputs (unused, retained for interface compatibility).
  * @param _config - Full agent configuration (unused, retained for interface compatibility).
  * @param engine - Review engine instance.
- * @param gh - GitHub API helper.
+ * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param _repo - Repository string (owner/repo, unused).
  * @param _token - GitHub authentication token (unused).
  */
@@ -23,7 +23,7 @@ export async function runAnalyze(
   _inputs: ActionInputs,
   _config: AgentConfig,
   engine: ReviewEngine,
-  gh: GitHubHelper,
+  gh: PlatformAdapter,
   _repo: string,
   _token: string,
 ): Promise<void> {

@@ -1,4 +1,4 @@
-import type { AgentConfig, GitHubHelper, ReviewEngine } from '@opencode-pr-agent/lib';
+import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 /**
  * Execute a codebase audit: select a random (or named) audit prompt,
@@ -7,6 +7,6 @@ import type { ActionInputs } from './inputs.js';
  * @param inputs - Parsed action inputs.
  * @param config - Full agent configuration.
  * @param engine - Review engine instance.
- * @param gh - GitHub API helper.
+ * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  */
-export declare function runAudit(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: GitHubHelper): Promise<void>;
+export declare function runAudit(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter): Promise<void>;

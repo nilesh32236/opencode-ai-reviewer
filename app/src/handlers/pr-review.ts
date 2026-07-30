@@ -1,5 +1,11 @@
-import type { AgentConfig, LearningStore, PRContext, ReviewResult } from '@opencode-pr-agent/lib';
-import { GitHubHelper, Logger, ReviewEngine } from '@opencode-pr-agent/lib';
+import type {
+  AgentConfig,
+  LearningStore,
+  PRContext,
+  PlatformAdapter,
+  ReviewResult,
+} from '@opencode-pr-agent/lib';
+import { GitHubHelper, GitLabAdapter, Logger, ReviewEngine } from '@opencode-pr-agent/lib';
 import { handleAutofixLoop } from './autofix.js';
 
 /**
@@ -29,11 +35,12 @@ export async function handlePRReview(
     `Starting review for PR #${prNumber}${previousHeadSha ? ` (delta from ${previousHeadSha.slice(0, 7)})` : ''}`,
   );
 
-  const gh = new GitHubHelper(token, repo);
+  const gh: PlatformAdapter =
+    config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
 
   let pr: PRContext;
   try {
-    pr = await gh.getPR(prNumber);
+    pr = await gh.getMR(prNumber);
   } catch (err) {
     logger.error(`Failed to get PR #${prNumber}: ${err instanceof Error ? err.message : err}`);
     return null;
@@ -45,7 +52,7 @@ export async function handlePRReview(
     return null;
   }
 
-  const engine = new ReviewEngine(config, token, repo, learningStore);
+  const engine = new ReviewEngine(config, gh, learningStore);
 
   try {
     const reviewWorkingDir = tempDir || process.cwd();

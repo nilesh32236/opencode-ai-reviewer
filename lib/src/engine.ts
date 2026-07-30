@@ -8,6 +8,7 @@ import { emptyResult, parseJsonlFile } from './jsonl-parser.js';
 import type { LearningStore } from './learning/store.js';
 import { MCPManager } from './mcp/client.js';
 import { ensureOutputDir, getGitStatus, runOpenCode } from './opencode.js';
+import type { PlatformAdapter } from './platform/adapter.js';
 import {
   buildAnalyzePrompt,
   buildAuditPrompt,
@@ -35,7 +36,6 @@ import type {
   TokenBudgetConfig,
   TokenBudgetMetrics,
 } from './types/index.js';
-import { GitHubHelper } from './utils/github.js';
 import { Logger } from './utils/logger.js';
 import {
   detectDotnetLibraries,
@@ -51,7 +51,7 @@ import { analyzeBatchReachability } from './utils/reachability.js';
  */
 export class ReviewEngine {
   private mcp: MCPManager;
-  private github: GitHubHelper;
+  private adapter: PlatformAdapter;
   private config: AgentConfig;
   private logger: Logger;
   private lessonsCache: { lessons: string[]; timestamp: number } | null = null;
@@ -61,18 +61,16 @@ export class ReviewEngine {
 
   /**
    * @param config - Agent configuration (models, batch size, MCP servers, etc.).
-   * @param githubToken - GitHub API token for PR/issue operations.
-   * @param repo - Repository in "owner/name" format.
+   * @param adapter - Platform adapter for MR/issue operations (GitHubHelper or GitLabAdapter).
    * @param learningStore - Optional learning store for recording/querying past findings.
    */
   constructor(
     config: AgentConfig,
-    githubToken: string,
-    repo: string,
+    adapter: PlatformAdapter,
     private learningStore?: LearningStore,
   ) {
     this.config = config;
-    this.github = new GitHubHelper(githubToken, repo);
+    this.adapter = adapter;
     this.mcp = new MCPManager(config.mcpServers);
     this.logger = new Logger('ReviewEngine');
   }
@@ -154,7 +152,7 @@ export class ReviewEngine {
     let deltaContext: string | undefined;
     if (previousHeadSha && previousHeadSha !== pr.headSha) {
       try {
-        deltaContext = await this.github.getDiffSince(previousHeadSha, pr.headSha || pr.headRef);
+        deltaContext = await this.adapter.getDiffSince(previousHeadSha, pr.headSha || pr.headRef);
       } catch (err) {
         core.warning(
           `Failed to fetch delta diff since ${previousHeadSha}: ${err instanceof Error ? err.message : String(err)}`,
@@ -187,7 +185,7 @@ export class ReviewEngine {
     const { context: prContext, budgetMetrics } = this.buildPRContextString(pr, tokenBudgetConfig);
     let openThreadsContext = '';
     try {
-      openThreadsContext = await this.github.getOpenHumanThreads(pr.number);
+      openThreadsContext = await this.adapter.getOpenHumanThreads(pr.number);
     } catch (err) {
       core.warning(
         `Failed to fetch open human threads: ${err instanceof Error ? err.message : String(err)}`,
@@ -532,7 +530,7 @@ export class ReviewEngine {
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
       try {
         await this.mcp.connect();
-        const pr = cachedPR ?? (await this.github.getPR(prNumber));
+        const pr = cachedPR ?? (await this.adapter.getMR(prNumber));
         const libraries = detectLibraries(
           pr.changedFiles.map((f) => f.path),
           workingDirectory,

@@ -156,6 +156,7 @@ export const LinterConfigSchema = z.object({
 
 /** Zod schema validating the full agent configuration, merging provided values with defaults. */
 export const AgentConfigSchema = z.object({
+  platform: z.enum(['github', 'gitlab']).optional().default('github'),
   reviewModel: z.string().default('opencode/deepseek-v4-flash-free'),
   fixModel: z.string().default('opencode/deepseek-v4-flash-free'),
   auditModel: z.string().optional(),
@@ -265,6 +266,7 @@ export const ConfigOverrideSchema = z.object({
 
 /** Zod schema validating the full prompt configuration from a YAML/JSON config file. All sections are optional and will be merged with defaults. */
 export const PromptConfigSchema = z.object({
+  platform: z.enum(['github', 'gitlab']).optional(),
   review: z
     .object({
       systemPrompt: z.string().optional(),

@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as core from '@actions/core';
-import type { AgentConfig, GitHubHelper, ReviewEngine } from '@opencode-pr-agent/lib';
+import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { sanitize } from './utils.js';
 
@@ -12,13 +12,13 @@ import { sanitize } from './utils.js';
  * @param inputs - Parsed action inputs.
  * @param config - Full agent configuration.
  * @param engine - Review engine instance.
- * @param gh - GitHub API helper.
+ * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  */
 export async function runAudit(
   inputs: ActionInputs,
   config: AgentConfig,
   engine: ReviewEngine,
-  gh: GitHubHelper,
+  gh: PlatformAdapter,
 ): Promise<void> {
   const promptsDirRaw = core.getInput('audit-prompts-dir');
   let promptsDir = promptsDirRaw || config.audit.promptsDir;
@@ -124,8 +124,9 @@ export async function runAudit(
 
     let existingIssueNumber: number | undefined;
     try {
+      const issueState = process.env.PLATFORM === 'gitlab' ? 'opened' : 'open';
       const openAuditIssues = (await gh.paginate(
-        `/issues?state=open&labels=audit:${category}&per_page=100`,
+        `/issues?state=${issueState}&labels=audit:${category}&per_page=100`,
       )) as Array<{ number: number; title: string }>;
       const match = openAuditIssues.find((issue: { number: number; title: string }) =>
         issue.title.startsWith(titlePrefix),

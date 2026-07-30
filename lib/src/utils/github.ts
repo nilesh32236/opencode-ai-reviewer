@@ -1,5 +1,6 @@
 import * as core from '@actions/core';
 import { buildInlineComments } from '../jsonl-parser.js';
+import type { PlatformAdapter, ReviewPostResult, ReviewThreadInfo } from '../platform/adapter.js';
 import type {
   ChangedFile,
   IssueComment,
@@ -12,6 +13,7 @@ import type {
 } from '../types/index.js';
 import { CircuitBreaker } from './circuit-breaker.js';
 import { withRetry, withRetryAndTimeout } from './retry.js';
+import { buildReviewBody, getConfidenceBadge } from './review-body.js';
 
 /** Paginated result wrapper for API responses. */
 export interface PaginatedResult<T> {
@@ -52,31 +54,6 @@ interface ReviewThreadsQueryResponse {
   };
 }
 
-/** Information about a review comment thread. */
-export interface ReviewThreadInfo {
-  /** GraphQL node ID of the thread (used for resolve mutation). */
-  threadId: string;
-  /** Whether the thread is resolved. */
-  isResolved: boolean;
-  /** The first (root) comment in the thread. */
-  firstComment: {
-    /** GraphQL node ID of the comment (used for minimize mutation). */
-    commentId: string;
-    /** REST API database ID of the comment. */
-    databaseId: number;
-    /** Comment body markdown. */
-    body: string;
-    /** File path the comment is on. */
-    filePath: string;
-    /** Line number the comment is on (or null if outdated/unassigned). */
-    lineNumber: number | null;
-    /** GitHub login of the comment author. */
-    author: string;
-    /** ISO 8601 creation timestamp. */
-    createdAt: string;
-  };
-}
-
 /**
  * Helper for GitHub REST API interactions (PRs, issues, reviews, comments, labels).
  * Handles authentication, rate-limit warnings, pagination, and automatic retry
@@ -89,7 +66,7 @@ export interface ReviewThreadInfo {
  * Pagination:
  * - Uses `paginate` to fetch multi-page results with configurable per-page and max-pages.
  */
-export class GitHubHelper {
+export class GitHubHelper implements PlatformAdapter {
   /**
    * @param token - GitHub personal access token (classic or fine-grained).
    * @param repo - Repository in "owner/name" format.
@@ -291,6 +268,11 @@ export class GitHubHelper {
     };
   }
 
+  /** PlatformAdapter alias for getPR. */
+  async getMR(number: number): Promise<PRContext> {
+    return this.getPR(number);
+  }
+
   /**
    * Check whether a given issue/PR number refers to a pull request.
    *
@@ -304,6 +286,11 @@ export class GitHubHelper {
     } catch {
       return false;
     }
+  }
+
+  /** PlatformAdapter alias for isPR. */
+  async isMR(number: number): Promise<boolean> {
+    return this.isPR(number);
   }
 
   /**
@@ -544,18 +531,7 @@ export class GitHubHelper {
     result: ReviewResult,
     postInlineComments = true,
     suppressLowConfidence?: boolean,
-  ): Promise<{
-    success: boolean;
-    method: 'full' | 'partial' | 'body-only' | 'failed';
-    reviewId?: number;
-    commentIds?: Array<{
-      file: string;
-      line: number;
-      commentId: number;
-      nodeId?: string;
-      side?: string;
-    }>;
-  }> {
+  ): Promise<ReviewPostResult> {
     const workingResult = suppressLowConfidence
       ? {
           ...result,
@@ -573,7 +549,7 @@ export class GitHubHelper {
           (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
         )
       : workingResult.issues;
-    const body = this.buildReviewBody({ ...workingResult, issues: issuesForBody });
+    const body = buildReviewBody({ ...workingResult, issues: issuesForBody });
 
     const commentIds: Array<{
       file: string;
@@ -791,7 +767,10 @@ export class GitHubHelper {
    * @param commentId - Review comment ID.
    * @returns The review comment details.
    */
-  async getReviewComment(commentId: number): Promise<{
+  async getReviewComment(
+    _mrNumber: number,
+    commentId: number,
+  ): Promise<{
     id: number;
     body: string;
     user: { login: string; type: string };
@@ -849,7 +828,7 @@ export class GitHubHelper {
     let lineNumber: number | undefined;
 
     while (currentId) {
-      const comment = await this.getReviewComment(currentId);
+      const comment = await this.getReviewComment(0, currentId);
       const entry = {
         id: comment.id,
         author: comment.user.login,
@@ -1201,6 +1180,11 @@ export class GitHubHelper {
     }
   }
 
+  /** PlatformAdapter alias for mergePR. */
+  async mergeMR(mrNumber: number): Promise<boolean> {
+    return this.mergePR(mrNumber);
+  }
+
   /**
    * Enable auto-merge on a PR using squash method.
    *
@@ -1313,7 +1297,7 @@ export class GitHubHelper {
 
   private currentUserLogin: string | null = null;
 
-  private async getCurrentUser(): Promise<string> {
+  async getCurrentUser(): Promise<string> {
     if (this.currentUserLogin) return this.currentUserLogin;
     if (process.env.GITHUB_ACTOR) {
       this.currentUserLogin = process.env.GITHUB_ACTOR;
@@ -1548,88 +1532,9 @@ export class GitHubHelper {
     });
   }
 
-  // ─── Private Helpers ────────────────────────────────────
-
-  private buildReviewBody(result: ReviewResult): string {
-    const lines: string[] = [];
-
-    // Executive Summary (if present)
-    if (result.executiveSummary) {
-      const es = result.executiveSummary;
-      const riskEmoji = es.riskLevel === 'high' ? '🔴' : es.riskLevel === 'medium' ? '🟡' : '🟢';
-      lines.push('## Executive Summary');
-      lines.push('');
-      lines.push(`**Purpose:** ${es.purpose}`);
-      lines.push('');
-      lines.push(`**Risk:** ${riskEmoji} ${es.riskLevel.toUpperCase()} — ${es.riskRationale}`);
-      if (es.breakingChanges.length > 0) {
-        lines.push('');
-        lines.push('**Breaking Changes:**');
-        for (const bc of es.breakingChanges) {
-          lines.push(`- ⚠️ ${bc}`);
-        }
-      }
-      lines.push('');
-      lines.push('---');
-      lines.push('');
-    }
-
-    lines.push(
-      '## PR Review Summary',
-      '',
-      result.summary,
-      '',
-      `**Ready to merge?** ${result.verdict.ready}`,
-      '',
-      `**Reasoning:** ${result.verdict.reasoning}`,
-      '',
-    );
-
-    if (result.strengths.length > 0) {
-      lines.push('### Strengths');
-      lines.push('');
-      for (const s of result.strengths) {
-        lines.push(`- **${s.file}:${s.line}** — ${s.message}`);
-      }
-      lines.push('');
-    }
-
-    if (result.issues.length > 0) {
-      lines.push('### Issues');
-      lines.push('');
-      for (const i of result.issues) {
-        const badge = getConfidenceBadge(i.confidence);
-        lines.push(
-          `- ${badge} **${i.severity.toUpperCase()}:** \`${i.file}:${i.line}\` — ${i.message}`,
-        );
-        if (i.suggestion) {
-          lines.push(`  > 💡 **How to fix:** ${i.suggestion}`);
-        }
-        if (i.suggestionCode) {
-          lines.push('<details><summary>Show suggested fix</summary>');
-          lines.push('');
-          lines.push('```suggestion');
-          lines.push(i.suggestionCode.trim());
-          lines.push('```');
-          lines.push('</details>');
-        }
-      }
-    }
-
-    return lines.join('\n');
-  }
-}
-
-function getConfidenceBadge(confidence?: 'high' | 'medium' | 'low'): string {
-  switch (confidence) {
-    case 'high':
-      return '🔴';
-    case 'medium':
-      return '🟡';
-    case 'low':
-      return '⚪';
-    default:
-      return '⚪';
+  /** PlatformAdapter alias for updatePR. */
+  async updateMR(mrNumber: number, updates: { title?: string; body?: string }): Promise<void> {
+    return this.updatePR(mrNumber, updates);
   }
 }
 

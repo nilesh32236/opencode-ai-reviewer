@@ -28,7 +28,10 @@ const { mockRunOpenCode, MockMCPManager } = vi.hoisted(() => {
     disconnect = vi.fn().mockResolvedValue(undefined);
     getLibraryDocs = vi.fn().mockResolvedValue('');
   }
-  return { mockRunOpenCode: _mockRunOpenCode, MockMCPManager: _MockMCPManager };
+  return {
+    mockRunOpenCode: _mockRunOpenCode,
+    MockMCPManager: _MockMCPManager,
+  };
 });
 
 vi.mock('../src/mcp/client.js', () => ({
@@ -56,9 +59,11 @@ vi.mock('node:child_process', () => ({
 }));
 
 import { ReviewEngine } from '../src/engine.js';
+import { GitHubHelper } from '../src/utils/github.js';
 
 describe('Review Pipeline Integration', () => {
   let engine: ReviewEngine;
+  let gh: GitHubHelper;
   let workDir: string;
   let origCwd: string;
   let fetchMock: ReturnType<typeof vi.fn>;
@@ -194,6 +199,7 @@ describe('Review Pipeline Integration', () => {
     workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-pipeline-'));
     process.chdir(workDir);
 
+    gh = new GitHubHelper('fake-token', 'owner/repo');
     setupFetchMock();
     setupRunOpenCodeMock();
   });
@@ -205,11 +211,7 @@ describe('Review Pipeline Integration', () => {
   });
 
   it('a) successful full review flow (single batch)', async () => {
-    engine = new ReviewEngine(
-      makeAgentConfig({ enableMCP: false, mcpServers: [] }),
-      'fake-token',
-      'owner/repo',
-    );
+    engine = new ReviewEngine(makeAgentConfig({ enableMCP: false, mcpServers: [] }), gh);
     const pr = makePRContext();
 
     fixtureQueue.push({ content: SAMPLE_VALID_JSONL });
@@ -250,8 +252,7 @@ describe('Review Pipeline Integration', () => {
 
     engine = new ReviewEngine(
       makeAgentConfig({ batchSize: 3, enableMCP: false, mcpServers: [] }),
-      'fake-token',
-      'owner/repo',
+      gh,
     );
 
     fixtureQueue.push(
@@ -284,11 +285,7 @@ describe('Review Pipeline Integration', () => {
   });
 
   it('c) OpenCode CLI failure — pre-batch failure', async () => {
-    engine = new ReviewEngine(
-      makeAgentConfig({ enableMCP: false, mcpServers: [] }),
-      'fake-token',
-      'owner/repo',
-    );
+    engine = new ReviewEngine(makeAgentConfig({ enableMCP: false, mcpServers: [] }), gh);
     const pr = makePRContext();
 
     fixtureQueue.push({ content: undefined, success: false });
@@ -313,8 +310,7 @@ describe('Review Pipeline Integration', () => {
 
     engine = new ReviewEngine(
       makeAgentConfig({ batchSize: 3, enableMCP: false, mcpServers: [] }),
-      'fake-token',
-      'owner/repo',
+      gh,
     );
 
     fixtureQueue.push(
@@ -344,8 +340,7 @@ describe('Review Pipeline Integration', () => {
 
     engine = new ReviewEngine(
       makeAgentConfig({ batchSize: 3, enableMCP: false, mcpServers: [] }),
-      'fake-token',
-      'owner/repo',
+      gh,
     );
 
     fixtureQueue.push(
@@ -362,11 +357,7 @@ describe('Review Pipeline Integration', () => {
   });
 
   it('f) JSONL parse failure — main review (malformed output)', async () => {
-    engine = new ReviewEngine(
-      makeAgentConfig({ enableMCP: false, mcpServers: [] }),
-      'fake-token',
-      'owner/repo',
-    );
+    engine = new ReviewEngine(makeAgentConfig({ enableMCP: false, mcpServers: [] }), gh);
     const pr = makePRContext();
 
     fixtureQueue.push({ content: 'this is not valid json line 1\nnor is this' });
@@ -390,8 +381,7 @@ describe('Review Pipeline Integration', () => {
 
     engine = new ReviewEngine(
       makeAgentConfig({ batchSize: 3, enableMCP: false, mcpServers: [] }),
-      'fake-token',
-      'owner/repo',
+      gh,
     );
 
     fixtureQueue.push(
@@ -420,8 +410,7 @@ describe('Review Pipeline Integration', () => {
 
     engine = new ReviewEngine(
       makeAgentConfig({ batchSize: 3, enableMCP: false, mcpServers: [] }),
-      'fake-token',
-      'owner/repo',
+      gh,
     );
 
     fixtureQueue.push(
@@ -452,8 +441,7 @@ describe('Review Pipeline Integration', () => {
           excludePatterns: DEFAULT_CONFIG.review.excludePatterns,
         },
       }),
-      'fake-token',
-      'owner/repo',
+      gh,
     );
     const pr = makePRContext();
 
@@ -494,8 +482,7 @@ describe('Review Pipeline Integration', () => {
           enableMetaVerification: DEFAULT_CONFIG.review.enableMetaVerification,
         },
       }),
-      'fake-token',
-      'owner/repo',
+      gh,
     );
     const nonExcludedFiles = Array.from({ length: 5 }, (_, i) => ({
       path: `src/lib/module${i}.ts`,
@@ -575,8 +562,7 @@ describe('Review Pipeline Integration', () => {
 
     engine = new ReviewEngine(
       makeAgentConfig({ maxLinesPerFile, enableMCP: false, mcpServers: [] }),
-      'fake-token',
-      'owner/repo',
+      gh,
     );
 
     fixtureQueue.push({ content: SAMPLE_VALID_JSONL });
@@ -618,8 +604,7 @@ describe('Review Pipeline Integration', () => {
           enableMetaVerification: DEFAULT_CONFIG.review.enableMetaVerification,
         },
       }),
-      'fake-token',
-      'owner/repo',
+      gh,
     );
 
     const result = await engine.reviewPR(pr);

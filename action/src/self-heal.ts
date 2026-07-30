@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as github from '@actions/github';
-import type { AgentConfig, GitHubHelper, ReviewEngine } from '@opencode-pr-agent/lib';
+import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
 import { withRetry } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { sanitize } from './utils.js';
@@ -20,7 +20,7 @@ import { sanitize } from './utils.js';
  * @param inputs - Parsed action inputs (includes ciFailureLogs, failedStep, failedWorkflow).
  * @param config - Full agent configuration.
  * @param engine - Review engine instance.
- * @param gh - GitHub API helper.
+ * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param repo - Repository string (owner/repo).
  * @param token - GitHub authentication token.
  */
@@ -28,9 +28,9 @@ export async function runSelfHeal(
   inputs: ActionInputs,
   config: AgentConfig,
   engine: ReviewEngine,
-  gh: GitHubHelper,
-  repo: string,
-  token: string,
+  gh: PlatformAdapter,
+  _repo: string,
+  _token: string,
 ): Promise<void> {
   // Read CI failure logs from input or from a file
   let ciFailureLogs = inputs.ciFailureLogs;
@@ -168,34 +168,11 @@ export async function runSelfHeal(
   const baseBranch = defaultBranch;
   let prUrl = '';
   try {
-    prUrl = await withRetry(
-      async () => {
-        const output = await exec.getExecOutput(
-          'gh',
-          [
-            'pr',
-            'create',
-            '--base',
-            baseBranch,
-            '--head',
-            branchName,
-            '--title',
-            prTitle,
-            '--body',
-            prBody,
-            '--label',
-            lastVerificationError ? 'self-heal,autofix:needs-manual-review' : 'self-heal,autofix',
-            '--repo',
-            repo,
-          ],
-          {
-            env: { ...process.env, GH_TOKEN: token } as { [key: string]: string },
-          },
-        );
-        return output.stdout.trim();
-      },
+    const result = await withRetry(
+      async () => gh.createPR(prTitle, prBody, branchName, baseBranch),
       { maxRetries: 3, baseDelayMs: 1000 },
     );
+    prUrl = result?.url || '';
   } catch (err) {
     core.warning(sanitize(`Failed to create PR: ${err instanceof Error ? err.message : err}`));
   }

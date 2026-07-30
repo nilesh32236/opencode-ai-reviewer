@@ -1,5 +1,11 @@
-import type { AgentConfig } from '@opencode-pr-agent/lib';
-import { GitHubHelper, Logger, buildReplyPrompt, runOpenCode } from '@opencode-pr-agent/lib';
+import type { AgentConfig, PlatformAdapter } from '@opencode-pr-agent/lib';
+import {
+  GitHubHelper,
+  GitLabAdapter,
+  Logger,
+  buildReplyPrompt,
+  runOpenCode,
+} from '@opencode-pr-agent/lib';
 
 /**
  * Handle a conversational reply to an AI review comment thread.
@@ -22,7 +28,8 @@ export async function handleReply(
   userCommentBody: string,
 ): Promise<void> {
   const logger = new Logger('Reply', { repo, prNumber });
-  const gh = new GitHubHelper(token, repo);
+  const gh: PlatformAdapter =
+    config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
 
   try {
     const thread = await gh.getReviewCommentThread(parentCommentId);
@@ -73,14 +80,14 @@ export async function handleReply(
  * @returns A diff snippet string, or a fallback message if unavailable.
  */
 async function fetchDiffSnippet(
-  gh: GitHubHelper,
+  gh: PlatformAdapter,
   prNumber: number,
   filePath: string,
   _lineNumber?: number,
 ): Promise<string> {
   if (!filePath) return '(No file context available)';
   try {
-    const pr = await gh.getPR(prNumber);
+    const pr = await gh.getMR(prNumber);
     const file = pr.changedFiles.find((f) => f.path === filePath);
     return file?.patch || '(No diff available for this file)';
   } catch {
