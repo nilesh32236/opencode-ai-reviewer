@@ -7,7 +7,7 @@ branding:
 
 inputs:
   mode:
-    description: 'Action mode: review, fix, audit, or post'
+    description: 'Action mode: review, fix, audit, post, analyze, or self-heal'
     required: true
     default: 'review'
 
@@ -147,6 +147,28 @@ inputs:
     description: 'Git user email for commits (default: GITHUB_ACTOR email)'
     required: false
 
+  enable_state_cache:
+    description: 'Whether to persist the learning database across runs using Actions Cache'
+    required: false
+    default: 'true'
+
+  state_cache_key:
+    description: 'Custom key prefix for saving/restoring the learning state'
+    required: false
+    default: 'opencode-learning-state'
+
+  ci_failure_logs:
+    description: 'CI failure logs for self-heal mode (required when mode=self-heal)'
+    required: false
+
+  failed_step:
+    description: 'Name of the CI step that failed (for self-heal mode diagnostics)'
+    required: false
+
+  failed_workflow:
+    description: 'Name of the workflow that failed (for self-heal mode diagnostics)'
+    required: false
+
 outputs:
   review_summary:
     description: 'Summary of the review'
@@ -160,6 +182,10 @@ outputs:
     description: 'Number of minor issues found'
   changes_made:
     description: 'Whether changes were made during fix'
+  pr_url:
+    description: 'URL of the created self-heal PR'
+  verification_passed:
+    description: 'Whether verification passed in the self-heal workflow'
 
 runs:
   using: 'node24'

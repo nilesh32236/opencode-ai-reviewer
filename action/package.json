@@ -1,12 +1,13 @@
 {
   "name": "@opencode-pr-agent/action",
-  "version": "1.5.3",
+  "version": "1.6.3",
   "private": true,
   "main": "lib/index.js",
   "scripts": {
     "build": "ncc build src/index.ts -o lib --minify && ncc build src/post.ts -o lib/post --minify",
     "build:tsc": "tsc",
     "watch": "tsc --watch",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -20,6 +21,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "@vercel/ncc": "^0.38.3"
+    "@vercel/ncc": "^0.38.3",
+    "vitest": "^4.1.10"
   }
 }

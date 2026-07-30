@@ -72,6 +72,12 @@ export interface ActionInputs {
     enableStateCache: boolean;
     /** Cache key prefix for learning state storage. */
     stateCacheKey: string;
+    /** CI failure logs for self-heal mode. */
+    ciFailureLogs?: string;
+    /** Name of the failed CI step. */
+    failedStep?: string;
+    /** Name of the failed workflow. */
+    failedWorkflow?: string;
 }
 /**
  * Parse and validate all GitHub Action inputs from workflow environment.

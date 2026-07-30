@@ -1,0 +1,282 @@
+name: Hourly Autonomous Orchestrator
+
+# Runs hourly to process strictly ONE item per run (PR or Issue) in priority order.
+#
+# Priority & Rules:
+# 1. PRs with any label starting with 'autofix' (e.g., 'autofix', 'autofix-123', 'autofix/v1') take top priority (max 1 PR processed per run).
+#    - Resolves merge conflicts with main if present (via AI & test verification).
+#    - Merges PR if approved (autofix:ready).
+#    - Runs autofix review loop iteration if review issues exist.
+# 2. Issues with any label starting with 'autofix' are processed ONLY if no PR was processed.
+#    - Analyzes issue and posts plan if no plan exists yet.
+#    - Creates autofix branch & PR if plan is ready or user replied to questions.
+# 3. Items labeled 'autofix:skipped' or 'autofix:needs-manual-review' are skipped.
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # Hourly at minute 0
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: hourly-orchestrator
+  cancel-in-progress: false
+
+env:
+  CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+
+jobs:
+  orchestrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config --global user.name "opencode-ai-reviewer[bot]"
+          git config --global user.email "opencode-ai-reviewer[bot]@users.noreply.github.com"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install pnpm & dependencies
+        run: |
+          npm install -g pnpm
+          pnpm install
+
+      - name: Setup OpenCode
+        run: |
+          chmod +x .github/scripts/setup-opencode.sh
+          .github/scripts/setup-opencode.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+
+      # ─── STEP 1: Process Open PR ─────────────────────────────────────────────
+      - name: Find & Process Eligible PR
+        id: process-pr
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          echo "Searching for open autofix PRs..."
+
+          # Get count of open PRs with autofix-family labels
+          PRS=$(gh pr list \
+            --repo "${{ github.repository }}" \
+            --state open \
+            --json number,title,labels,headRefName,mergeable,state \
+            --jq '[.[] | select(.labels | any(.name | startswith("autofix")))] | length')
+
+          if [ "$PRS" -eq 0 ]; then
+            echo "No open PRs with autofix-family labels found."
+            echo "processed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Find oldest eligible PR (any autofix-family label, excluding skipped / needs-manual-review / merged)
+          TARGET_PR=$(gh pr list \
+            --repo "${{ github.repository }}" \
+            --state open \
+            --json number,labels,headRefName,mergeable \
+            | jq -c '.[] | select(
+                (.labels | any(.name | startswith("autofix"))) and
+                (.labels | map(.name) | contains(["autofix:skipped"]) | not) and
+                (.labels | map(.name) | contains(["autofix:needs-manual-review"]) | not) and
+                (.labels | map(.name) | contains(["autofix:merged"]) | not)
+              )' | head -1)
+
+          if [ -z "$TARGET_PR" ]; then
+            echo "No eligible autofix PRs (all are skipped or marked for manual review)."
+            echo "processed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          PR_NUMBER=$(echo "$TARGET_PR" | jq -r '.number')
+          HEAD_REF=$(echo "$TARGET_PR" | jq -r '.headRefName')
+          MERGEABLE=$(echo "$TARGET_PR" | jq -r '.mergeable')
+
+          echo "Targeting PR #${PR_NUMBER} (branch: ${HEAD_REF}, mergeable: ${MERGEABLE})..."
+
+          git fetch origin "${HEAD_REF}:${HEAD_REF}" 2>/dev/null || git checkout -b "${HEAD_REF}" "origin/${HEAD_REF}"
+          git checkout "${HEAD_REF}"
+
+          # ── Merge Conflict Resolution ──
+          if [ "$MERGEABLE" = "DIRTY" ] || ! git merge-base --is-ancestor origin/main HEAD; then
+            echo "PR #${PR_NUMBER} has merge conflicts or is behind main — attempting merge..."
+            git fetch origin main
+
+            if ! git merge origin/main --no-commit --no-ff; then
+              echo "Merge conflicts detected on PR #${PR_NUMBER}. Attempting AI conflict resolution..."
+
+              cat << CONFLICT_EOF > /tmp/conflict-prompt.txt
+          You are an AI conflict resolution agent. Merge conflicts occurred while merging origin/main into the branch.
+
+          ## Conflicts Summary
+          \`\`\`
+          $(git status --porcelain)
+          \`\`\`
+
+          ## Instructions
+          1. Inspect the conflicted files using git status and file viewing tools.
+          2. Resolve all merge conflict markers (<<<<<<<, =======, >>>>>>>) safely.
+          3. Ensure ESM imports end with .js extensions and strict TypeScript types are maintained.
+          4. Run verification: pnpm build && pnpm typecheck && pnpm test && pnpm lint
+          5. Do NOT run git commit or git push yourself.
+          CONFLICT_EOF
+
+              opencode run --auto --model opencode/deepseek-v4-flash-free \
+                "$(cat /tmp/conflict-prompt.txt)" < /dev/null || true
+
+              # Verify conflict resolution
+              if pnpm build && pnpm typecheck && pnpm test && pnpm lint; then
+                echo "✅ Conflict resolution verified successfully."
+                git add -A
+                git commit -m "chore: resolve merge conflicts with main [autofix]"
+                git push origin "${HEAD_REF}" --force-with-lease
+              else
+                echo "❌ AI could not resolve merge conflicts cleanly."
+                git merge --abort 2>/dev/null || true
+                gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "autofix:skipped" || true
+                gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
+                  --body "⚠️ **Merge Conflict Resolution Skipped**: Could not automatically resolve merge conflicts with \`main\`. Marked as \`autofix:skipped\` for manual review." || true
+                echo "processed=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            fi
+          fi
+
+          # ── Check for Auto-Merge ──
+          IS_READY=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json labels --jq '.labels[].name' | grep -x "autofix:ready" || true)
+          if [ -n "$IS_READY" ]; then
+            echo "PR #${PR_NUMBER} has label 'autofix:ready' — squash merging..."
+            gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch 2>/dev/null || \
+            gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch --auto || {
+              echo "::warning::Merge failed for PR #${PR_NUMBER}"
+            }
+            echo "processed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Export PR number for the next action step
+          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "processed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Run Autofix Step for PR
+        if: steps.process-pr.outputs.processed == 'true' && steps.process-pr.outputs.pr_number != ''
+        uses: ./action
+        with:
+          mode: fix
+          model: 'opencode/deepseek-v4-flash-free'
+          max_fix_iterations: 1
+          run_checks_after_fix: 'pnpm build && pnpm typecheck && pnpm test && pnpm lint'
+          pr-number: ${{ steps.process-pr.outputs.pr_number }}
+          github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+
+      # ─── STEP 2: Process Open Issue (only if NO PR was processed) ─────────────
+      - name: Find & Process Labeled Issue
+        if: steps.process-pr.outputs.processed != 'true'
+        id: process-issue
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          echo "No PR was processed. Searching for open issues with autofix-family labels..."
+
+          # Get open issues with any autofix-family label (excluding autofix:skipped)
+          ISSUES=$(gh issue list \
+            --repo "${{ github.repository }}" \
+            --state open \
+            --json number,title,labels,comments \
+            | jq -c '.[] | select(
+                (.labels | any(.name | startswith("autofix"))) and
+                (.labels | map(.name) | contains(["autofix:skipped"]) | not)
+              )')
+
+          if [ -z "$ISSUES" ]; then
+            echo "No open issues with autofix-family labels found."
+            echo "processed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Find oldest eligible issue
+          TARGET_ISSUE=""
+          while IFS= read -r ISSUE; do
+            ISSUE_NUM=$(echo "$ISSUE" | jq -r '.number')
+            HAS_NEEDS_INPUT=$(echo "$ISSUE" | jq -r '.labels[].name' | grep -x "analysis:needs-input" || true)
+
+            if [ -n "$HAS_NEEDS_INPUT" ]; then
+              # Check if user has replied after the questions comment
+              COMMENTS=$(gh issue view "$ISSUE_NUM" --repo "${{ github.repository }}" --json comments --jq '.comments')
+              QUESTIONS_IDX=$(echo "$COMMENTS" | jq '[to_entries[] | select(.value.body | contains("<!-- issue-analysis-questions -->"))] | last | .key // -1')
+
+              if [ "$QUESTIONS_IDX" -ne -1 ]; then
+                USER_REPLIES=$(echo "$COMMENTS" | jq ".[$((QUESTIONS_IDX + 1)):] | map(select(.author.login | endswith("[bot]") | not)) | length")
+                if [ "$USER_REPLIES" -le 0 ]; then
+                  echo "Issue #${ISSUE_NUM} is waiting for user input (analysis:needs-input) — skipping."
+                  continue
+                fi
+              fi
+            fi
+
+            TARGET_ISSUE="$ISSUE"
+            break
+          done <<< "$ISSUES"
+
+          if [ -z "$TARGET_ISSUE" ]; then
+            echo "No eligible issues to process."
+            echo "processed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          ISSUE_NUMBER=$(echo "$TARGET_ISSUE" | jq -r '.number')
+          echo "Targeting Issue #${ISSUE_NUMBER}..."
+
+          echo "issue_number=${ISSUE_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "processed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Run Action for Labeled Issue
+        if: steps.process-pr.outputs.processed != 'true' && steps.process-issue.outputs.processed == 'true' && steps.process-issue.outputs.issue_number != ''
+        uses: ./action
+        with:
+          mode: fix
+          model: 'opencode/deepseek-v4-flash-free'
+          max_fix_iterations: 1
+          run_checks_after_fix: 'pnpm build && pnpm typecheck && pnpm test && pnpm lint'
+          github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+
+      # ─── Summary Step ────────────────────────────────────────────────────────
+      - name: Report Orchestrator Run Summary
+        run: |
+          PR_PROCESSED="${{ steps.process-pr.outputs.processed }}"
+          PR_NUM="${{ steps.process-pr.outputs.pr_number }}"
+          ISSUE_PROCESSED="${{ steps.process-issue.outputs.processed }}"
+          ISSUE_NUM="${{ steps.process-issue.outputs.issue_number }}"
+
+          if [ "$PR_PROCESSED" = "true" ]; then
+            echo "✅ Hourly Orchestrator processed PR #${PR_NUM:-merged/conflict-resolved}"
+          elif [ "$ISSUE_PROCESSED" = "true" ]; then
+            echo "✅ Hourly Orchestrator processed Issue #${ISSUE_NUM}"
+          else
+            echo "ℹ️ Hourly Orchestrator idle — no eligible autofix-family PRs or issues found."
+          fi

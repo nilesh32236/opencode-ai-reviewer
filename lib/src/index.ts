@@ -69,6 +69,8 @@ export { clusterFindings } from './pattern-detector/cluster.js';
 export { RuleApprovalSubscriber } from './pattern-detector/rule-approval.js';
 export * from './utils/validation.js';
 export { buildConversationPrompt, detectIntent } from './prompts/conversation.js';
+export { buildSelfHealPrompt, extractRelevantLogSnippet } from './prompts/heal.js';
+export type { SelfHealPromptInputs } from './prompts/heal.js';
 export { buildVerificationPrompt } from './prompts/verify.js';
 export {
   IterationRecord,

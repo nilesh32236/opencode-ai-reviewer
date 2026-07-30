@@ -21,10 +21,11 @@ import {
   parseAnalysisPlan,
   postBlockingQuestions,
   resolveFixedComments,
+  validateRefName,
   validateRunChecksCommand,
 } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { sanitize } from './utils.js';
+import { resolvePrNumber, sanitize } from './utils.js';
 
 /**
  * Run a single fix iteration on a PR: resolve PR, gather context, apply
@@ -70,6 +71,7 @@ export async function runFix(
         '-m',
         `fix: address review feedback (iteration ${iteration + 1})`,
       ]);
+      validateRefName(pr.headRef);
       await exec.exec('git', ['push', 'origin', pr.headRef]);
     } catch (err) {
       core.warning(sanitize(`Git operations failed: ${err instanceof Error ? err.message : err}`));
@@ -120,6 +122,7 @@ export async function runFix(
               '-m',
               `fix: verification errors (iteration ${iteration + 1})`,
             ]);
+            validateRefName(pr.headRef);
             await exec.exec('git', ['push', 'origin', pr.headRef]);
           } catch (err) {
             core.warning(
@@ -589,6 +592,7 @@ export async function runAutofixLoop(
     try {
       await exec.exec('git', ['add', '-A']);
       await exec.exec('git', ['commit', '-m', commitMsg]);
+      validateRefName(pr.headRef);
       await exec.exec('git', ['push', 'origin', pr.headRef]);
       currentEntry.commitMessage = commitMsg;
 
@@ -682,6 +686,7 @@ export async function runAutofixLoop(
           try {
             await exec.exec('git', ['add', '-A']);
             await exec.exec('git', ['commit', '-m', `fix: verification errors (attempt ${v + 1})`]);
+            validateRefName(pr.headRef);
             await exec.exec('git', ['push', 'origin', pr.headRef]);
           } catch (err) {
             core.warning(
@@ -773,6 +778,7 @@ async function handleTimeoutGracefully(
       await exec.exec('git', ['commit', '-m', commitMessage]);
 
       const pr = await gh.getPR(prNumber);
+      validateRefName(pr.headRef);
       await exec.exec('git', ['push', 'origin', pr.headRef]);
       core.info('Successfully pushed partial changes.');
     } catch (err) {
@@ -811,18 +817,4 @@ Please run the workflow again to continue applying fixes.`;
   }
 
   core.setFailed(sanitize(`Autofix execution timed out after ${config.timeoutMinutes} minutes.`));
-}
-
-async function resolvePrNumber(): Promise<number | null> {
-  const prNumberInput = core.getInput('pr-number');
-  if (prNumberInput) {
-    const prNumber = Number.parseInt(prNumberInput, 10);
-    if (Number.isNaN(prNumber)) {
-      throw new Error(`Invalid pr-number: ${prNumberInput}`);
-    }
-    return prNumber;
-  }
-  const fromIssue = github.context.payload.issue?.number;
-  const fromPR = github.context.payload.pull_request?.number;
-  return fromPR || fromIssue || null;
 }

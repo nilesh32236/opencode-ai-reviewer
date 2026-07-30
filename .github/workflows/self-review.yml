@@ -89,7 +89,7 @@ jobs:
             echo "ref=${{ github.event.pull_request.head.ref }}" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ steps.resolve-ref.outputs.ref }}
@@ -149,16 +149,16 @@ jobs:
             echo "ref=${{ github.event.pull_request.head.ref }}" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ steps.resolve-ref.outputs.ref }}
           token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Install pnpm & dependencies
         run: |
@@ -184,7 +184,7 @@ jobs:
     env:
       CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
           token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
@@ -218,7 +218,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
           token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
@@ -247,7 +247,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
@@ -286,12 +286,9 @@ jobs:
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
           echo "Merging PR #${PR_NUMBER} (autofix:ready)..."
-          gh pr merge "$PR_NUMBER" \
-            --repo "${{ github.repository }}" \
-            --squash \
-            --delete-branch \
-            --auto || {
-            echo "::warning::Auto-merge failed — PR #${PR_NUMBER} may need manual merge"
+          gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch 2>/dev/null || \
+          gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch --auto || {
+            echo "::warning::Merge failed — PR #${PR_NUMBER} may need manual merge"
           }
 
   # ─── Merge Notification ───────────────────────────────────────────────────────
@@ -343,3 +340,97 @@ jobs:
               --repo "${{ github.repository }}" \
               --comment "✅ Resolved by PR #${PR_NUMBER} — merged to main." || true
           fi
+
+  # ─── Post-Merge Health Guard ───────────────────────────────────────────────
+  # After an autofix PR is merged, wait for CI to run on main.
+  # If CI fails, trigger the self-heal workflow to fix the regression.
+  post-merge-health:
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.merged == true &&
+      (
+        contains(github.event.pull_request.labels.*.name, 'autofix:ready') ||
+        contains(github.event.pull_request.labels.*.name, 'self-improvement')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check main branch CI status
+        id: ci-check
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Checking CI status on main after merge of PR #${{ github.event.pull_request.number }}..."
+
+          # Wait up to 10 minutes for CI to complete
+          MAX_WAIT=600
+          ELAPSED=0
+          INTERVAL=30
+
+          MERGE_SHA="${{ github.event.pull_request.merge_commit_sha }}"
+          while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
+            # Get the CI run on main associated with the merge commit SHA if available
+            if [ -n "$MERGE_SHA" ]; then
+              STATUS=$(gh run list \
+                --repo "${{ github.repository }}" \
+                --commit "$MERGE_SHA" \
+                --workflow ci.yml \
+                --json conclusion,status \
+                --jq '.[0] | if .status == "completed" then .conclusion else "in_progress" end' 2>/dev/null || echo "unknown")
+            else
+              STATUS=$(gh run list \
+                --repo "${{ github.repository }}" \
+                --branch main \
+                --workflow ci.yml \
+                --limit 1 \
+                --json conclusion,status \
+                --jq '.[0] | if .status == "completed" then .conclusion else "in_progress" end' 2>/dev/null || echo "unknown")
+            fi
+
+            echo "CI status: $STATUS (elapsed: ${ELAPSED}s)"
+
+            if [ "$STATUS" = "success" ]; then
+              echo "ci_status=success" >> "$GITHUB_OUTPUT"
+              echo "✅ CI passed on main"
+              exit 0
+            elif [ "$STATUS" = "failure" ]; then
+              echo "ci_status=failure" >> "$GITHUB_OUTPUT"
+              echo "❌ CI failed on main after merge"
+              exit 0
+            fi
+
+            sleep "$INTERVAL"
+            ELAPSED=$((ELAPSED + INTERVAL))
+          done
+
+          echo "ci_status=timeout" >> "$GITHUB_OUTPUT"
+          echo "⏳ CI did not complete within ${MAX_WAIT}s"
+
+      - name: Post warning on merged PR
+        if: steps.ci-check.outputs.ci_status == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          gh pr comment "$PR_NUMBER" \
+            --repo "${{ github.repository }}" \
+            --body "## ⚠️ Post-Merge CI Failure
+
+          CI failed on \`main\` after merging this PR. The self-heal workflow has been triggered to diagnose and fix the issue.
+
+          ---
+          *🤖 Posted automatically by opencode-ai-reviewer*"
+
+      - name: Trigger self-heal workflow
+        if: steps.ci-check.outputs.ci_status == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Triggering self-heal workflow..."
+          gh workflow run self-heal.yml \
+            --repo "${{ github.repository }}" \
+            -f failed_step="Post-merge CI" \
+            -f failure_logs="CI failed on main after merging PR #${{ github.event.pull_request.number }}" || {
+            echo "::warning::Could not trigger self-heal workflow"
+          }
