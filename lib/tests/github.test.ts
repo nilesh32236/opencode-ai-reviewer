@@ -413,6 +413,171 @@ describe('GitHubHelper', () => {
       const lines = await helper.getDiffLines(42);
       expect(lines.size).toBe(0);
     });
+
+    it('handles no-comma hunk both sides', async () => {
+      const diffText = `diff --git a/src/a.ts b/src/a.ts
+--- a/src/a.ts
++++ b/src/a.ts
+@@ -1 +1 @@
+ context`;
+      fetchMock.mockImplementation(async () =>
+        mockResponse({ text: vi.fn().mockResolvedValue(diffText) }),
+      );
+      const lines = await helper.getDiffLines(42);
+      expect(lines.has('src/a.ts:1')).toBe(true);
+      expect(lines.size).toBe(1);
+    });
+
+    it('handles no-comma hunk on new side only', async () => {
+      const diffText = `diff --git a/src/a.ts b/src/a.ts
+--- a/src/a.ts
++++ b/src/a.ts
+@@ -1,3 +1 @@
+ context`;
+      fetchMock.mockImplementation(async () =>
+        mockResponse({ text: vi.fn().mockResolvedValue(diffText) }),
+      );
+      const lines = await helper.getDiffLines(42);
+      expect(lines.has('src/a.ts:1')).toBe(true);
+      expect(lines.size).toBe(1);
+    });
+
+    it('handles hunk with explicit zero line count (all lines deleted)', async () => {
+      const diffText = `diff --git a/file1.ts b/file1.ts
+--- a/file1.ts
++++ b/file1.ts
+@@ -1,7 +1,0 @@`;
+      fetchMock.mockImplementation(async () =>
+        mockResponse({ text: vi.fn().mockResolvedValue(diffText) }),
+      );
+      const lines = await helper.getDiffLines(42);
+      expect(lines.size).toBe(0);
+    });
+
+    it('skips \\\\ No newline at end of file markers', async () => {
+      const diffText = `diff --git a/src/a.ts b/src/a.ts
+--- a/src/a.ts
++++ b/src/a.ts
+@@ -1,3 +1,4 @@
+ line1
+ line2
++line3
++line4
+\\\\ No newline at end of file`;
+      fetchMock.mockImplementation(async () =>
+        mockResponse({ text: vi.fn().mockResolvedValue(diffText) }),
+      );
+      const lines = await helper.getDiffLines(42);
+      expect(lines.has('src/a.ts:1')).toBe(true);
+      expect(lines.has('src/a.ts:2')).toBe(true);
+      expect(lines.has('src/a.ts:3')).toBe(true);
+      expect(lines.has('src/a.ts:4')).toBe(true);
+      expect(lines.size).toBe(4);
+    });
+
+    it('skips binary diff sections', async () => {
+      const diffText = `diff --git a/image.png b/image.png
+Binary files a/image.png and b/image.png differ`;
+      fetchMock.mockImplementation(async () =>
+        mockResponse({ text: vi.fn().mockResolvedValue(diffText) }),
+      );
+      const lines = await helper.getDiffLines(42);
+      expect(lines.size).toBe(0);
+    });
+
+    it('handles renamed-only file with no hunks', async () => {
+      const diffText = `diff --git a/old.ts b/new.ts
+similarity index 100%
+rename from old.ts
+rename to new.ts`;
+      fetchMock.mockImplementation(async () =>
+        mockResponse({ text: vi.fn().mockResolvedValue(diffText) }),
+      );
+      const lines = await helper.getDiffLines(42);
+      expect(lines.size).toBe(0);
+    });
+
+    it('processes text hunks after a binary diff in the same response', async () => {
+      const diffText = `diff --git a/image.png b/image.png
+Binary files a/image.png and b/image.png differ
+diff --git a/src/a.ts b/src/a.ts
+--- a/src/a.ts
++++ b/src/a.ts
+@@ -1,3 +1,4 @@
+ line1
+ line2
++line3
++line4`;
+      fetchMock.mockImplementation(async () =>
+        mockResponse({ text: vi.fn().mockResolvedValue(diffText) }),
+      );
+      const lines = await helper.getDiffLines(42);
+      expect(lines.has('src/a.ts:1')).toBe(true);
+      expect(lines.has('src/a.ts:2')).toBe(true);
+      expect(lines.has('src/a.ts:3')).toBe(true);
+      expect(lines.has('src/a.ts:4')).toBe(true);
+      expect(lines.size).toBe(4);
+    });
+
+    it('handles new file addition with @@ -0,0 +1 @@', async () => {
+      const diffText = `diff --git a/new.ts b/new.ts
+--- /dev/null
++++ b/new.ts
+@@ -0,0 +1 @@
++new content`;
+      fetchMock.mockImplementation(async () =>
+        mockResponse({ text: vi.fn().mockResolvedValue(diffText) }),
+      );
+      const lines = await helper.getDiffLines(42);
+      expect(lines.has('new.ts:1')).toBe(true);
+      expect(lines.size).toBe(1);
+    });
+
+    it('handles context text after @@ markers', async () => {
+      const diffText = `diff --git a/src/a.ts b/src/a.ts
+--- a/src/a.ts
++++ b/src/a.ts
+@@ -1,3 +1,4 @@ some function name
+ line1
+ line2
++line3
++line4`;
+      fetchMock.mockImplementation(async () =>
+        mockResponse({ text: vi.fn().mockResolvedValue(diffText) }),
+      );
+      const lines = await helper.getDiffLines(42);
+      expect(lines.has('src/a.ts:1')).toBe(true);
+      expect(lines.has('src/a.ts:2')).toBe(true);
+      expect(lines.has('src/a.ts:3')).toBe(true);
+      expect(lines.has('src/a.ts:4')).toBe(true);
+      expect(lines.size).toBe(4);
+    });
+
+    it('does not register lines from deleted files', async () => {
+      const diffText = `diff --git a/file1.ts b/file1.ts
+--- a/file1.ts
++++ b/file1.ts
+@@ -1,3 +1,4 @@
+ line1
+ line2
++line3
++line4
+diff --git a/deleted.ts b/deleted.ts
+--- a/deleted.ts
++++ /dev/null
+@@ -1,5 +0,0 @@
+-old1
+-old2`;
+      fetchMock.mockImplementation(async () =>
+        mockResponse({ text: vi.fn().mockResolvedValue(diffText) }),
+      );
+      const lines = await helper.getDiffLines(42);
+      expect(lines.has('file1.ts:1')).toBe(true);
+      expect(lines.has('file1.ts:2')).toBe(true);
+      expect(lines.has('file1.ts:3')).toBe(true);
+      expect(lines.has('file1.ts:4')).toBe(true);
+      expect(lines.size).toBe(4);
+    });
   });
 
   describe('postReview', () => {

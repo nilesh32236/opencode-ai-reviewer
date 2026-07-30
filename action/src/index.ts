@@ -24,6 +24,7 @@ import { runAutofixLoop, runFix, runFixIssue } from './fix.js';
 import { type ActionInputs, parseInputs } from './inputs.js';
 import { runPost } from './post.js';
 import { runReview } from './review.js';
+import { runSelfHeal } from './self-heal.js';
 import { sanitize } from './utils.js';
 
 function buildCacheKey(prefix: string): string {
@@ -254,6 +255,9 @@ async function run(): Promise<void> {
           break;
         case 'audit':
           await runAudit(inputs, config, engine, gh);
+          break;
+        case 'self-heal':
+          await runSelfHeal(inputs, config, engine, gh, repo, token);
           break;
         case 'post':
           await runPost(inputs, gh, repo, token);

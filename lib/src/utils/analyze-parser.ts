@@ -15,14 +15,11 @@ export interface AnalysisPlanResult {
 }
 
 /**
- * Parse an analysis plan markdown document to extract blocking questions and confidence level.
- *
- * @param markdown - Raw markdown output from engine.runAnalyze().
- * @returns Structured AnalysisPlanResult.
- */
-/**
  * Check if an answer string represents a 'none / no blocking questions' response.
  * Strips leading bullets and Q1: prefixes before testing keywords.
+ *
+ * @param text - The answer string to check.
+ * @returns True if the answer represents no blocking questions.
  */
 function isNoneAnswer(text: string): boolean {
   const cleaned = text
@@ -35,6 +32,12 @@ function isNoneAnswer(text: string): boolean {
   );
 }
 
+/**
+ * Parse an analysis plan markdown document to extract blocking questions and confidence level.
+ *
+ * @param markdown - Raw markdown output from engine.runAnalyze().
+ * @returns Structured AnalysisPlanResult.
+ */
 export function parseAnalysisPlan(markdown: string): AnalysisPlanResult {
   const questionsSection =
     markdown

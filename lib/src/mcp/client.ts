@@ -130,7 +130,7 @@ export class MCPManager {
           ]).finally(() => {
             clearTimeout(connectTimer);
             if (timedOut) {
-              newTransport.close().catch(() => {});
+              Promise.resolve(newTransport.close()).catch(() => {});
             }
           });
 

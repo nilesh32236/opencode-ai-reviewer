@@ -511,6 +511,20 @@ export interface FixResult {
   summary?: string;
 }
 
+/** Result of a self-heal operation that diagnoses and fixes CI failures. */
+export interface SelfHealResult {
+  /** Whether any file changes were made */
+  changesMade: boolean;
+  /** Files that were modified by the heal */
+  filesChanged: string[];
+  /** Root cause diagnosis (e.g., 'build-error', 'test-failure', 'lint-error', 'dependency-issue') */
+  diagnosis?: string;
+  /** Detailed diagnostic report in markdown */
+  diagnosticReport?: string;
+  /** Summary of changes made */
+  summary?: string;
+}
+
 /** Result of a codebase audit. */
 export interface AuditResult {
   /** Category name of the audit */
@@ -610,7 +624,7 @@ export interface PromptContext {
 
 // ─── Action Mode ──────────────────────────────────────────
 /** Operating mode of the action/app. */
-export type ActionMode = 'review' | 'fix' | 'audit' | 'post' | 'analyze';
+export type ActionMode = 'review' | 'fix' | 'audit' | 'post' | 'analyze' | 'self-heal';
 
 // ─── Issue Details ────────────────────────────────────────
 /** Details of a GitHub issue. */

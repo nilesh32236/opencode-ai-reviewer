@@ -4,6 +4,54 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.2] — 2026-07-30
+
+
+### Fixed
+
+- address issue #258 (#259) (#258
+#259)
+
+[v1.6.2]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.1...v1.6.2
+
+## [v1.6.1] — 2026-07-29
+
+
+### Fixed
+
+- self-heal CI failure (attempt 1) [`lint-error` — missing/incomplete jsdoc docstrings caught by `eslint-plugin-jsdoc` in the `doc:check` step.] (#255) (#255)
+
+[v1.6.1]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.0...v1.6.1
+
+## [v1.6.0] — 2026-07-29
+
+### Added
+
+- add self-healing CI and enhanced self-improvement workflows (fixes #165)
+
+### Fixed
+
+- address all PR review comments
+
+### Changed
+
+- feat(workflow): add Hourly Autonomous Orchestrator workflow (.github/workflows/hourly-orchestrator.yml)
+- fix(review): address review feedback on self-healing PR
+
+[v1.6.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.5.5...v1.6.0
+
+## [v1.5.5] — 2026-07-29
+
+
+### Fixed
+
+- address issue #174 (#250) (#174
+#250)
+- address issue #189 (#231) (#189
+#231)
+
+[v1.5.5]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.5.4...v1.5.5
+
 ## [v1.5.4] — 2026-07-29
 
 ### Fixed
