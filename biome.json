@@ -48,6 +48,9 @@
       "lib/tests/benchmarks/*.d.ts",
       "lib/tests/.test-*",
       "lib/vitest.config.js",
+      "lib/vitest.config.d.ts",
+      "lib/vitest.benchmark.config.js",
+      "lib/vitest.benchmark.config.d.ts",
       "lib/bench-results.json",
       "lib/bench-metrics.json"
     ]

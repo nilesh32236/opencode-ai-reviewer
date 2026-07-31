@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { INTER_CHUNK_DELAY_MS, expectedReviewOpenCodeCalls } from '../../src/engine.js';
 import { BUDGETS, type BudgetName } from './budgets.js';
 
 function getBudget(name: BudgetName): number {
@@ -78,11 +79,20 @@ function allBenchmarks(results: BenchResults): VitestBenchmark[] {
   return flat;
 }
 
+/**
+ * Locate the benchmark whose full name matches `namePattern`. Patterns must be
+ * anchored to the benchmark-name suffix so a name cannot accidentally be a
+ * substring of another (e.g. 'buildPRContextString 1 files' vs
+ * 'buildPRContextString 1 files tokenBudget'). Ambiguity is reported as a
+ * missing benchmark so a future rename fails CI instead of silently checking
+ * the wrong benchmark.
+ */
 function findBenchmark(
   benchmarks: VitestBenchmark[],
   namePattern: RegExp,
 ): VitestBenchmark | undefined {
-  return benchmarks.find((b) => namePattern.test(b.name));
+  const matches = benchmarks.filter((b) => namePattern.test(b.name));
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 function checkTiming(
@@ -177,7 +187,7 @@ function checkApiCalls(results: CheckResult[], metrics: BenchMetrics): void {
       continue;
     }
     const batches = entry.meta?.batches ?? 1;
-    const expectedCalls = batches === 1 ? 1 : batches + 1;
+    const expectedCalls = expectedReviewOpenCodeCalls(batches);
     results.push({
       name: `runOpenCode calls ${entry.name}`,
       measured: `${entry.value} calls`,
@@ -188,54 +198,68 @@ function checkApiCalls(results: CheckResult[], metrics: BenchMetrics): void {
 }
 
 function checkE2eOverhead(results: CheckResult[], metrics: BenchMetrics): void {
-  const budget = getBudget('batchOverheadMaxMs');
-  const budgetLabel = `< ${budget}ms/batch`;
+  const overheadBudget = getBudget('batchOverheadMaxMs');
+  const latencyBudget = getBudget('reviewLatencyMaxMs');
+  const overheadLabel = `< ${overheadBudget}ms/batch`;
+  const latencyLabel = `< ${latencyBudget}ms`;
+
   const baseline = metrics.e2eLatency.find((e) => (e.meta?.batches ?? 1) === 1);
-  if (!baseline) {
-    for (const expected of E2E_METRIC_NAMES) {
-      results.push({
-        name: `per-batch overhead ${expected}`,
-        measured: 'N/A (baseline missing)',
-        budget: budgetLabel,
-        passed: false,
-      });
-    }
-    return;
-  }
-  const baselineAdjusted = adjustedLatency(baseline);
+  const baselineAdjusted = baseline === undefined ? undefined : adjustedLatency(baseline);
+
   for (const expected of E2E_METRIC_NAMES) {
     const entry = metrics.e2eLatency.find((e) => e.name === expected);
     if (!entry) {
       results.push({
+        name: `reviewPR latency ${expected}`,
+        measured: 'N/A (metric missing)',
+        budget: latencyLabel,
+        passed: false,
+      });
+      results.push({
         name: `per-batch overhead ${expected}`,
         measured: 'N/A (metric missing)',
-        budget: budgetLabel,
+        budget: overheadLabel,
         passed: false,
       });
       continue;
     }
+    results.push({
+      name: `reviewPR latency ${entry.name}`,
+      measured: `${adjustedLatency(entry).toFixed(2)}ms`,
+      budget: latencyLabel,
+      passed: adjustedLatency(entry) < latencyBudget,
+    });
     const batches = entry.meta?.batches ?? 1;
     if (batches <= 1) continue;
+    if (baselineAdjusted === undefined) {
+      results.push({
+        name: `per-batch overhead ${entry.name}`,
+        measured: 'N/A (baseline missing)',
+        budget: overheadLabel,
+        passed: false,
+      });
+      continue;
+    }
     const overheadPerBatch = (adjustedLatency(entry) - baselineAdjusted) / (batches - 1);
     results.push({
       name: `per-batch overhead ${entry.name}`,
       measured: `${overheadPerBatch.toFixed(1)}ms/batch`,
-      budget: budgetLabel,
-      passed: overheadPerBatch < budget,
+      budget: overheadLabel,
+      passed: overheadPerBatch < overheadBudget,
     });
   }
 }
 
 /**
  * Subtract fixed inter-chunk backoff delays (150ms per gap between concurrent
- * batch chunks) so the overhead metric reflects real orchestration cost and is
- * independent of the runner's CPU count.
+ * batch chunks) so both the overhead and the absolute latency metric reflect
+ * real orchestration cost and are independent of the runner's CPU count.
  * @param entry - The latency metric entry.
  * @returns The delay-adjusted latency in milliseconds.
  */
 function adjustedLatency(entry: MetricEntry): number {
   const delays = entry.meta?.delays ?? 0;
-  const delayMs = entry.meta?.delayMs ?? 150;
+  const delayMs = entry.meta?.delayMs ?? INTER_CHUNK_DELAY_MS;
   return Math.max(0, entry.value - delays * delayMs);
 }
 
@@ -267,7 +291,7 @@ function main(): void {
     checkThroughput(
       checks,
       benchmarks,
-      new RegExp(`jsonl string parse ${n} lines`),
+      new RegExp(`jsonl string parse ${n} lines$`),
       `jsonl string parse (${n} lines)`,
       n,
       BUDGETS.jsonlParseLinesPerSecond,
@@ -277,7 +301,7 @@ function main(): void {
   checkThroughput(
     checks,
     benchmarks,
-    /jsonl file parse 500 lines/,
+    /jsonl file parse 500 lines$/,
     'jsonl file parse (500 lines)',
     500,
     BUDGETS.jsonlFileParseLinesPerSecond,
@@ -287,7 +311,7 @@ function main(): void {
     checkTiming(
       checks,
       benchmarks,
-      new RegExp(`buildReviewPrompt ${n} files`),
+      new RegExp(`buildReviewPrompt ${n} files$`),
       `buildReviewPrompt (${n} files)`,
       BUDGETS.promptBuildMaxMs,
     );
@@ -297,20 +321,33 @@ function main(): void {
     checkTiming(
       checks,
       benchmarks,
-      new RegExp(`buildFixPrompt ${n} issues`),
+      new RegExp(`buildFixPrompt ${n} issues$`),
       `buildFixPrompt (${n} issues)`,
       BUDGETS.promptBuildMaxMs,
     );
   }
 
-  checkTiming(checks, benchmarks, /buildAuditPrompt/, 'buildAuditPrompt', BUDGETS.promptBuildMaxMs);
+  checkTiming(
+    checks,
+    benchmarks,
+    /buildAuditPrompt$/,
+    'buildAuditPrompt',
+    BUDGETS.promptBuildMaxMs,
+  );
 
   for (const n of [1, 5, 25, 100]) {
     checkTiming(
       checks,
       benchmarks,
-      new RegExp(`buildPRContextString ${n} files`),
+      new RegExp(`buildPRContextString ${n} files$`),
       `buildPRContextString (${n} files)`,
+      BUDGETS.contextBuildMaxMs,
+    );
+    checkTiming(
+      checks,
+      benchmarks,
+      new RegExp(`buildPRContextString ${n} files tokenBudget$`),
+      `buildPRContextString (${n} files, token budget)`,
       BUDGETS.contextBuildMaxMs,
     );
   }

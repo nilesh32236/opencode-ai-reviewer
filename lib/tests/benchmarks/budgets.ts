@@ -6,17 +6,22 @@
  */
 export const BUDGETS = {
   /** Minimum throughput for parseJsonlString, in lines/second. */
-  jsonlParseLinesPerSecond: 50_000,
+  jsonlParseLinesPerSecond: 200_000,
   /** Minimum throughput for parseJsonlFile, in lines/second. */
-  jsonlFileParseLinesPerSecond: 10_000,
+  jsonlFileParseLinesPerSecond: 50_000,
   /** Maximum prompt construction time in milliseconds. */
-  promptBuildMaxMs: 100,
+  promptBuildMaxMs: 1,
   /** Maximum PR context building time in milliseconds. */
-  contextBuildMaxMs: 200,
+  contextBuildMaxMs: 2,
   /** Maximum heap delta in bytes when parsing a 2000-line JSONL payload. */
-  heapDeltaMaxBytes: 5 * 1024 * 1024,
+  heapDeltaMaxBytes: 2 * 1024 * 1024,
   /** Maximum per-batch orchestration overhead in milliseconds. */
-  batchOverheadMaxMs: 50,
+  batchOverheadMaxMs: 10,
+  /**
+   * Maximum end-to-end reviewPR latency (excluding the fixed inter-chunk
+   * backoff, which is runner-topology-dependent) in milliseconds.
+   */
+  reviewLatencyMaxMs: 40,
 } as const;
 
 /** Names of every enforceable budget. */

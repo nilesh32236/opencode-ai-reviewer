@@ -18,8 +18,8 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "bench:typecheck": "tsc -p tsconfig.benchmark.json",
-    "bench": "NODE_OPTIONS=--expose-gc vitest bench --config vitest.benchmark.config.ts",
-    "bench:check": "NODE_OPTIONS=--expose-gc vitest bench --config vitest.benchmark.config.ts && tsx tests/benchmarks/reporter.ts"
+    "bench": "vitest bench --config vitest.benchmark.config.ts",
+    "bench:check": "vitest bench --config vitest.benchmark.config.ts && tsx tests/benchmarks/reporter.ts"
   },
   "dependencies": {
     "@actions/core": "^1.11.1",

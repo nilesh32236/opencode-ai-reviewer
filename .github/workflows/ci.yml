@@ -117,9 +117,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build lib
-        run: pnpm --filter @opencode-pr-agent/lib build
-
       - name: Type check benchmark code
         run: pnpm --filter @opencode-pr-agent/lib bench:typecheck
 

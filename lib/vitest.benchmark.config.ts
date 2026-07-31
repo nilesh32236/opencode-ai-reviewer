@@ -6,6 +6,7 @@ export default defineConfig({
     environment: 'node',
     include: ['tests/benchmarks/**/*.bench.ts'],
     root: '.',
+    execArgv: ['--expose-gc'],
     benchmark: {
       reporters: ['default'],
       outputJson: './bench-results.json',

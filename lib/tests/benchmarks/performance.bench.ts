@@ -2,11 +2,21 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { afterAll, bench, describe, vi } from 'vitest';
-import { INTER_CHUNK_DELAY_MS, MAX_BATCH_CONCURRENCY, ReviewEngine } from '../../src/engine.js';
+import {
+  INTER_CHUNK_DELAY_MS,
+  MAX_BATCH_CONCURRENCY,
+  ReviewEngine,
+  computeChunkDelays,
+} from '../../src/engine.js';
 import { parseJsonlFile, parseJsonlString } from '../../src/jsonl-parser.js';
 import type { PlatformAdapter } from '../../src/platform/adapter.js';
 import { buildAuditPrompt, buildFixPrompt, buildReviewPrompt } from '../../src/prompts/builder.js';
-import { type AgentConfig, DEFAULT_CONFIG, type PRContext } from '../../src/types/index.js';
+import {
+  type AgentConfig,
+  DEFAULT_CONFIG,
+  type PRContext,
+  type TokenBudgetConfig,
+} from '../../src/types/index.js';
 import {
   generateIssues,
   generateJsonlFixture,
@@ -30,12 +40,16 @@ const { mockRunOpenCode } = vi.hoisted(() => {
   return { mockRunOpenCode: _mockRunOpenCode };
 });
 
-vi.mock('@actions/core', () => ({
-  info: vi.fn(),
-  warning: vi.fn(),
-  error: vi.fn(),
-  debug: vi.fn(),
-}));
+vi.mock('@actions/core', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@actions/core')>();
+  return {
+    ...actual,
+    info: vi.fn(),
+    warning: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  };
+});
 
 vi.mock('../../src/opencode.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/opencode.js')>();
@@ -146,6 +160,13 @@ afterAll(() => {
 
 const metrics: BenchMetrics = { memory: [], apiCalls: [], e2eLatency: [] };
 let maxHeapDelta = 0;
+const e2eSamples: Record<string, number[]> = {};
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
 
 describe('JSONL parsing throughput', () => {
   for (const n of JSONL_LINE_COUNTS) {
@@ -195,11 +216,31 @@ describe('PR context building', () => {
   }
 });
 
+describe('PR context building (token budget)', () => {
+  const tokenBudgetConfig: TokenBudgetConfig = {
+    enabled: true,
+    maxLinesComplex: 200,
+    maxLinesSimple: 20,
+    complexityThreshold: 30,
+    simpleThreshold: 10,
+  };
+  for (const n of PR_FILE_COUNTS) {
+    bench(`buildPRContextString ${n} files tokenBudget`, () => {
+      engine.buildPRContextString(prFixtures[n], tokenBudgetConfig);
+    });
+  }
+});
+
 describe('Memory usage', () => {
   bench(
     'jsonl string parse heap delta (2000 lines)',
     () => {
-      globalThis.gc?.();
+      if (typeof globalThis.gc !== 'function') {
+        throw new Error(
+          'Memory benchmark requires --expose-gc; vitest.benchmark.config.ts enables it via test.execArgv',
+        );
+      }
+      globalThis.gc();
       const before = process.memoryUsage().heapUsed;
       parseJsonlString(jsonlFixtures[2000]);
       const after = process.memoryUsage().heapUsed;
@@ -236,11 +277,11 @@ describe('Engine orchestration overhead', () => {
 
         const name = `reviewPR-${n}-files`;
         const batches = Math.ceil(n / BATCH_SIZE);
-        const concurrencyLimit = Math.min(os.cpus().length, batches, MAX_BATCH_CONCURRENCY);
-        const chunks = Math.ceil(batches / concurrencyLimit);
-        const delays = Math.max(0, chunks - 1);
-        const prevElapsed = metrics.e2eLatency.find((e) => e.name === name)?.value;
-        const minElapsed = prevElapsed !== undefined ? Math.min(prevElapsed, elapsed) : elapsed;
+        const concurrencyLimit = Math.min(os.cpus().length || 4, batches, MAX_BATCH_CONCURRENCY);
+        const delays = computeChunkDelays(batches, concurrencyLimit);
+        const samples = [...(e2eSamples[name] ?? []), elapsed];
+        e2eSamples[name] = samples;
+        const latency = median(samples);
 
         metrics.apiCalls = [
           ...dropMetrics(metrics.apiCalls, name),
@@ -250,13 +291,13 @@ describe('Engine orchestration overhead', () => {
           ...dropMetrics(metrics.e2eLatency, name),
           {
             name,
-            value: Math.round(minElapsed),
+            value: latency,
             meta: { batches, delays, delayMs: INTER_CHUNK_DELAY_MS },
           },
         ];
         writeMetrics(metrics);
       },
-      { iterations: 3, time: 0 },
+      { iterations: 10, time: 0 },
     );
   }
 });

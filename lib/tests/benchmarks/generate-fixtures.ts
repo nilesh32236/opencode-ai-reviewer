@@ -1,4 +1,3 @@
-import { promises as fs } from 'fs';
 import type { PRContext, ReviewIssue } from '../../src/types/index.js';
 
 const SEVERITIES: Array<'critical' | 'important' | 'minor'> = ['critical', 'important', 'minor'];
@@ -55,16 +54,6 @@ export function generateJsonlFixture(lineCount: number): string {
     lines.push(generateJsonlLine(i));
   }
   return lines.join('\n');
-}
-
-/**
- * Write a JSONL fixture to disk so file-based parsers can be benchmarked.
- * @param lineCount - Number of JSONL lines to write.
- * @param filePath - Destination file path.
- * @returns A promise that resolves once the fixture is written.
- */
-export async function writeJsonlFixture(lineCount: number, filePath: string): Promise<void> {
-  await fs.writeFile(filePath, generateJsonlFixture(lineCount), 'utf-8');
 }
 
 /**

@@ -52,6 +52,28 @@ export const MAX_BATCH_CONCURRENCY = 8;
 export const INTER_CHUNK_DELAY_MS = 150;
 
 /**
+ * Compute the number of fixed inter-chunk backoff delays that `reviewPR`
+ * inserts between concurrently processed batch chunks.
+ * @param batchCount - Number of file batches to process.
+ * @param concurrencyLimit - Maximum number of batches processed concurrently.
+ * @returns The number of `INTER_CHUNK_DELAY_MS` waits applied.
+ */
+export function computeChunkDelays(batchCount: number, concurrencyLimit: number): number {
+  return Math.max(0, Math.ceil(batchCount / concurrencyLimit) - 1);
+}
+
+/**
+ * Compute the expected number of `runOpenCode` invocations for a review.
+ * Single-batch reviews run one pass; multi-batch reviews run one pass per
+ * batch plus a final synthesis pass.
+ * @param batchCount - Number of file batches to process.
+ * @returns The expected number of OpenCode invocations.
+ */
+export function expectedReviewOpenCodeCalls(batchCount: number): number {
+  return batchCount <= 1 ? 1 : batchCount + 1;
+}
+
+/**
  * Orchestrates PR review, auto-fix, and audit workflows.
  * Wraps MCP context enrichment, learning-store queries, and OpenCode CLI invocation.
  */
@@ -317,14 +339,16 @@ export class ReviewEngine {
       MAX_BATCH_CONCURRENCY,
     );
     const batchResults: ReviewResult[] = [];
-    for (let i = 0; i < fileBatches.length; i += concurrencyLimit) {
-      if (i > 0) {
+    const chunkCount = computeChunkDelays(fileBatches.length, concurrencyLimit) + 1;
+    for (let chunk = 0; chunk < chunkCount; chunk++) {
+      if (chunk > 0) {
         await new Promise((r) => setTimeout(r, INTER_CHUNK_DELAY_MS));
       }
-      const chunk = fileBatches.slice(i, i + concurrencyLimit);
+      const batchStart = chunk * concurrencyLimit;
+      const chunkBatches = fileBatches.slice(batchStart, batchStart + concurrencyLimit);
       const chunkOutputs = await Promise.all(
-        chunk.map(async (batch, chunkIdx) => {
-          const idx = i + chunkIdx;
+        chunkBatches.map(async (batch, chunkOffset) => {
+          const idx = batchStart + chunkOffset;
           const batchDir = path.join(workDir, `.opencode`, `batch-${idx}`);
           if (!existsSync(batchDir)) {
             mkdirSync(batchDir, { recursive: true });
