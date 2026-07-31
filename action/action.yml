@@ -7,7 +7,7 @@ branding:
 
 inputs:
   mode:
-    description: 'Action mode: review, fix, audit, or post'
+    description: 'Action mode: review, fix, audit, post, analyze, or self-heal'
     required: true
     default: 'review'
 

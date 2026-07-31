@@ -73,7 +73,7 @@ jobs:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
 ```
 
-The Action runs `review` mode by default. Other modes: `fix`, `audit`, `analyze`, `post`.
+The Action runs `review` mode by default. Other modes: `fix`, `audit`, `analyze`, `post`, `self-heal`.
 
 ---
 
@@ -81,7 +81,7 @@ The Action runs `review` mode by default. Other modes: `fix`, `audit`, `analyze`
 
 | Input                    | Default                              | Description                                    |
 | ------------------------ | ------------------------------------ | ---------------------------------------------- |
-| `mode`                   | `review`                             | One of: `review`, `fix`, `audit`, `analyze`, `post` |
+| `mode`                   | `review`                             | One of: `review`, `fix`, `audit`, `analyze`, `post`, `self-heal` |
 | `github_token`           | _(required)_                         | GitHub token for API access                    |
 | `openai_api_key`         | —                                    | OpenAI API key                                 |
 | `anthropic_api_key`      | —                                    | Anthropic API key                              |
