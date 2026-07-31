@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.19] — 2026-07-31
+
+
+### Fixed
+
+- address issue #242 (#295) (#242
+#295)
+
+### Changed
+
+- [Autofix] Issue 23: action.yml 'mode' description is incomplete - missing 'analyze' mode (#294) (#294)
+
+[v1.6.19]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.18...v1.6.19
+
 ## [v1.6.18] — 2026-07-31
 
 
