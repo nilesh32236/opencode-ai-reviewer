@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.18] — 2026-07-31
+
+
+### Fixed
+
+- address issue #248 (#293) (#248
+#293)
+
+### Changed
+
+- [Autofix] Issue 20: app/src/index.ts is a 500+ line single module handling all subscribers (#291) (#291)
+
+[v1.6.18]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.17...v1.6.18
+
 ## [v1.6.17] — 2026-07-31
 
 
