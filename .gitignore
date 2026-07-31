@@ -4,6 +4,7 @@ dist/
 .opencode/
 .audit-output.jsonl
 .review-output.jsonl
+review-output.jsonl
 .fix-stuck.md
 .fix-summary.md
 .env
@@ -26,6 +27,13 @@ lib/tests/.test-*
 # Compiled test artifacts
 lib/tests/*.test.js
 lib/tests/*.test.d.ts
+lib/tests/benchmarks/*.js
+lib/tests/benchmarks/*.d.ts
 lib/vitest.config.js
 lib/vitest.config.d.ts
+lib/vitest.benchmark.config.js
+lib/vitest.benchmark.config.d.ts
+# Generated benchmark artifacts
+lib/bench-results.json
+lib/bench-metrics.json
 

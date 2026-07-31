@@ -45,6 +45,34 @@ import {
 } from './utils/manifest-detector.js';
 import { analyzeBatchReachability } from './utils/reachability.js';
 
+/** Maximum number of batch chunks processed concurrently by `reviewPR`. */
+export const MAX_BATCH_CONCURRENCY = 8;
+
+/** Fixed inter-chunk backoff delay in milliseconds between concurrent chunks. */
+export const INTER_CHUNK_DELAY_MS = 150;
+
+/**
+ * Compute the number of fixed inter-chunk backoff delays that `reviewPR`
+ * inserts between concurrently processed batch chunks.
+ * @param batchCount - Number of file batches to process.
+ * @param concurrencyLimit - Maximum number of batches processed concurrently.
+ * @returns The number of `INTER_CHUNK_DELAY_MS` waits applied.
+ */
+export function computeChunkDelays(batchCount: number, concurrencyLimit: number): number {
+  return Math.max(0, Math.ceil(batchCount / concurrencyLimit) - 1);
+}
+
+/**
+ * Compute the expected number of `runOpenCode` invocations for a review.
+ * Single-batch reviews run one pass; multi-batch reviews run one pass per
+ * batch plus a final synthesis pass.
+ * @param batchCount - Number of file batches to process.
+ * @returns The expected number of OpenCode invocations.
+ */
+export function expectedReviewOpenCodeCalls(batchCount: number): number {
+  return batchCount <= 1 ? 1 : batchCount + 1;
+}
+
 /**
  * Orchestrates PR review, auto-fix, and audit workflows.
  * Wraps MCP context enrichment, learning-store queries, and OpenCode CLI invocation.
@@ -305,16 +333,22 @@ export class ReviewEngine {
 
     let accumulatedDurationMs = 0;
     let accumulatedTokensUsed = 0;
-    const concurrencyLimit = Math.min(os.cpus().length || 4, fileBatches.length, 8);
+    const concurrencyLimit = Math.min(
+      os.cpus().length || 4,
+      fileBatches.length,
+      MAX_BATCH_CONCURRENCY,
+    );
     const batchResults: ReviewResult[] = [];
-    for (let i = 0; i < fileBatches.length; i += concurrencyLimit) {
-      if (i > 0) {
-        await new Promise((r) => setTimeout(r, 150));
+    const chunkCount = computeChunkDelays(fileBatches.length, concurrencyLimit) + 1;
+    for (let chunk = 0; chunk < chunkCount; chunk++) {
+      if (chunk > 0) {
+        await new Promise((r) => setTimeout(r, INTER_CHUNK_DELAY_MS));
       }
-      const chunk = fileBatches.slice(i, i + concurrencyLimit);
+      const batchStart = chunk * concurrencyLimit;
+      const chunkBatches = fileBatches.slice(batchStart, batchStart + concurrencyLimit);
       const chunkOutputs = await Promise.all(
-        chunk.map(async (batch, chunkIdx) => {
-          const idx = i + chunkIdx;
+        chunkBatches.map(async (batch, chunkOffset) => {
+          const idx = batchStart + chunkOffset;
           const batchDir = path.join(workDir, `.opencode`, `batch-${idx}`);
           if (!existsSync(batchDir)) {
             mkdirSync(batchDir, { recursive: true });
@@ -1588,7 +1622,17 @@ export class ReviewEngine {
     return file.additions * 0.05 + file.deletions * 0.02 + controlFlowMatches * 3 + maxDepth * 2;
   }
 
-  private buildPRContextString(
+  /**
+   * Build a markdown context string describing a pull request, its changed
+   * files, and their diffs (optionally honoring a token budget). Exposed as a
+   * pure computation so performance benchmarks can measure context gathering
+   * time in isolation.
+   * @param pr - Pull request context with changed files.
+   * @param tokenBudgetConfig - Optional token budget configuration for per-file caps.
+   * @param skipMetricsTracking - When true, skips collecting budget metrics.
+   * @returns The markdown context string and optional token budget metrics.
+   */
+  buildPRContextString(
     pr: PRContext,
     tokenBudgetConfig?: TokenBudgetConfig,
     skipMetricsTracking = false,
