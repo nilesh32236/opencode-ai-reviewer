@@ -44,7 +44,7 @@ export { EventBus } from './event-bus/bus.js';
 export type { SubscriberHealth } from './event-bus/bus.js';
 export { EventRouter } from './event-bus/router.js';
 export { LearningStore } from './learning/store.js';
-export { connectDb } from './learning/db.js';
+export { connectDb } from './learning/db/index.js';
 export type {
   LearningRepository,
   TelemetryStats,
