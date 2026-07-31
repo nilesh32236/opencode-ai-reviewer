@@ -1,6 +1,10 @@
 import { SqlAdapter, translateQuery } from './sql-adapter.js';
 import type { DbAdapter, MysqlConnection } from './types.js';
 
+/**
+ * MySQL database adapter implementing the DbAdapter interface.
+ * Translates SQLite-flavored SQL to MySQL syntax and executes it via a mysql2 connection.
+ */
 export class MysqlAdapter extends SqlAdapter implements DbAdapter {
   private connection: MysqlConnection;
   private translateCache = new Map<string, string>();
