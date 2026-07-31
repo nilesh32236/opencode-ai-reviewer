@@ -49,6 +49,8 @@ All shipped workflows are production-ready with timeouts, concurrency guards, an
 
 > **Secrets configuration:** The reusable workflows accept API keys **only via GitHub Secrets** (`secrets: inherit` or an explicit `secrets:` mapping). Configure `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `GEMINI_API_KEY` in your repository's *Settings → Secrets and variables → Actions* if you use OpenAI, Anthropic, or Gemini models. The default OpenCode model (`opencode/deepseek-v4-flash-free`) requires no external API key.
 
+> **⚠️ Migration (breaking change):** Passing `openai_api_key`, `anthropic_api_key`, or `gemini_api_key` via `with:` to the reusable workflows is no longer supported — such calls fail validation with "Unexpected input(s)". Remove them from `with:` and supply the keys via `secrets: inherit` or an explicit `secrets:` mapping (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`).
+
 ### Option B: Direct Action Usage
 
 Create `.github/workflows/pr-review.yml` for full control over every input:
