@@ -4,6 +4,13 @@
 #     autofix:
 #       uses: nilesh32236/opencode-ai-reviewer/.github/workflows/autofix.yml@v1
 #       secrets: inherit
+#
+# Required secrets:
+#   - repo_token: GitHub token with contents:write, pull-requests:write, issues:write
+# Optional secrets (for non-default models):
+#   - OPENAI_API_KEY
+#   - ANTHROPIC_API_KEY
+#   - GEMINI_API_KEY
 
 name: AI Autofix Loop
 
@@ -30,15 +37,6 @@ on:
         required: false
         type: string
         default: ''
-      openai_api_key:
-        required: false
-        type: string
-      anthropic_api_key:
-        required: false
-        type: string
-      gemini_api_key:
-        required: false
-        type: string
     outputs:
       approved:
         description: 'Whether the PR was approved'
@@ -47,6 +45,15 @@ on:
       repo_token:
         description: 'GitHub token with contents:write, pull-requests:write, issues:write'
         required: true
+      OPENAI_API_KEY:
+        description: 'OpenAI API key (required when using OpenAI models)'
+        required: false
+      ANTHROPIC_API_KEY:
+        description: 'Anthropic API key (required when using Anthropic models)'
+        required: false
+      GEMINI_API_KEY:
+        description: 'Google Gemini API key (required when using Gemini models)'
+        required: false
 
 permissions:
   contents: write
@@ -71,6 +78,22 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.ref }}
 
+      - name: Validate API key secrets
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if echo "${{ inputs.model }}" | grep -qiE 'openai|gpt'; then
+            [ -n "$OPENAI_API_KEY" ] || echo "::warning::OPENAI_API_KEY secret is not configured — OpenAI models will fail to authenticate"
+          fi
+          if echo "${{ inputs.model }}" | grep -qiE 'anthropic|claude'; then
+            [ -n "$ANTHROPIC_API_KEY" ] || echo "::warning::ANTHROPIC_API_KEY secret is not configured — Anthropic models will fail to authenticate"
+          fi
+          if echo "${{ inputs.model }}" | grep -qiE 'gemini'; then
+            [ -n "$GEMINI_API_KEY" ] || echo "::warning::GEMINI_API_KEY secret is not configured — Gemini models will fail to authenticate"
+          fi
+
       - name: AI Review
         id: ai-review
         uses: nilesh32236/opencode-ai-reviewer@v1
@@ -78,9 +101,9 @@ jobs:
           mode: review
           model: ${{ inputs.model }}
           github_token: ${{ secrets.repo_token }}
-          openai_api_key: ${{ secrets.OPENAI_API_KEY || inputs.openai_api_key }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY || inputs.anthropic_api_key }}
-          gemini_api_key: ${{ secrets.GEMINI_API_KEY || inputs.gemini_api_key }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
 
   # ── Job 2: Fix ──
   fix:
@@ -95,6 +118,22 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.ref }}
 
+      - name: Validate API key secrets
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if echo "${{ inputs.model }}" | grep -qiE 'openai|gpt'; then
+            [ -n "$OPENAI_API_KEY" ] || echo "::warning::OPENAI_API_KEY secret is not configured — OpenAI models will fail to authenticate"
+          fi
+          if echo "${{ inputs.model }}" | grep -qiE 'anthropic|claude'; then
+            [ -n "$ANTHROPIC_API_KEY" ] || echo "::warning::ANTHROPIC_API_KEY secret is not configured — Anthropic models will fail to authenticate"
+          fi
+          if echo "${{ inputs.model }}" | grep -qiE 'gemini'; then
+            [ -n "$GEMINI_API_KEY" ] || echo "::warning::GEMINI_API_KEY secret is not configured — Gemini models will fail to authenticate"
+          fi
+
       - name: AI Fix
         id: ai-fix
         uses: nilesh32236/opencode-ai-reviewer@v1
@@ -104,9 +143,9 @@ jobs:
           max_fix_iterations: ${{ inputs.max_iterations }}
           run_checks_after_fix: ${{ inputs.run_checks }}
           github_token: ${{ secrets.repo_token }}
-          openai_api_key: ${{ secrets.OPENAI_API_KEY || inputs.openai_api_key }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY || inputs.anthropic_api_key }}
-          gemini_api_key: ${{ secrets.GEMINI_API_KEY || inputs.gemini_api_key }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
 
   # ── Job 3: Auto-merge ──
   auto-merge:
