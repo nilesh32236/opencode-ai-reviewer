@@ -58,11 +58,17 @@ export async function handleReply(
 
     if (!result.success || !result.output.trim()) {
       logger.warn('OpenCode returned no output — posting failure reply');
-      await gh.replyToReviewComment(
-        prNumber,
-        parentCommentId,
-        "❌ I couldn't generate a reply. Please try again or rephrase.",
-      );
+      try {
+        await gh.replyToReviewComment(
+          prNumber,
+          parentCommentId,
+          "❌ I couldn't generate a reply. Please try again or rephrase.",
+        );
+      } catch (replyErr) {
+        logger.warn(
+          `Failed to post failure reply: ${replyErr instanceof Error ? replyErr.message : replyErr}`,
+        );
+      }
       return;
     }
 

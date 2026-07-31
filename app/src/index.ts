@@ -168,7 +168,17 @@ export default (app: Probot): void => {
         const parsed = auditComment?.body ? parseCommand(auditComment.body) : null;
         if (!parsed || parsed.command !== 'audit') return;
         const config = buildConfig();
-        await handleAudit(event.repo || '', getToken(), config);
+        const auditIssue = event.prNumber || 0;
+        await handleAudit(
+          event.repo || '',
+          getToken(),
+          config,
+          undefined,
+          undefined,
+          undefined,
+          signal,
+          auditIssue,
+        );
       } catch (err) {
         logger.error(
           `AuditSubscriber failed for repo ${event.repo}: ${err instanceof Error ? err.message : err}`,

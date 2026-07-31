@@ -14,6 +14,10 @@ describe('review-body', () => {
       expect(getSeverityBadge('important')).toBe('🟠');
       expect(getSeverityBadge('minor')).toBe('🔵');
     });
+
+    it('falls back to a neutral badge for unknown severities', () => {
+      expect(getSeverityBadge('unknown' as never)).toBe('⚪');
+    });
   });
 
   describe('formatConfidenceLabel', () => {

@@ -2,7 +2,13 @@ import { existsSync } from 'fs';
 import { promises as fs } from 'fs';
 import path from 'path';
 import type { AgentConfig, PlatformAdapter, ReviewResult } from '@opencode-pr-agent/lib';
-import { GitHubHelper, GitLabAdapter, Logger, ReviewEngine } from '@opencode-pr-agent/lib';
+import {
+  GitHubHelper,
+  GitLabAdapter,
+  Logger,
+  ReviewEngine,
+  sanitizeErrorMessage,
+} from '@opencode-pr-agent/lib';
 
 /**
  * Handle an audit command: read a prompt file, run the audit engine against
@@ -56,6 +62,7 @@ export async function handleAudit(
       promptsDir = 'prompts/audit-categories';
     } else {
       logger.warn(`Audit prompts directory not found: ${promptsDir}`);
+      await postAuditFailure(gh, issueNumber, 'The audit prompts directory was not found.');
       return;
     }
   }
@@ -69,6 +76,7 @@ export async function handleAudit(
 
     if (mdFiles.length === 0) {
       logger.info(`No prompt files found in ${promptsDir}`);
+      await postAuditFailure(gh, issueNumber, 'No audit prompt files were found.');
       return;
     }
 
@@ -79,6 +87,7 @@ export async function handleAudit(
         await fs.access(specific, fs.constants.R_OK);
       } catch {
         logger.info(`Prompt '${promptName}' not found`);
+        await postAuditFailure(gh, issueNumber, `Audit prompt '${promptName}' was not found.`);
         return;
       }
       selectedFile = specific;
@@ -90,6 +99,7 @@ export async function handleAudit(
     }
   } catch (err) {
     logger.error(`Error reading audit prompts: ${err instanceof Error ? err.message : err}`, err);
+    await postAuditFailure(gh, issueNumber, sanitizeErrorMessage(err));
     return;
   }
 
@@ -103,6 +113,7 @@ export async function handleAudit(
     promptContent = await fs.readFile(selectedFile, 'utf-8');
   } catch (err) {
     logger.error(`Failed to read audit prompt file: ${err instanceof Error ? err.message : err}`);
+    await postAuditFailure(gh, issueNumber, sanitizeErrorMessage(err));
     return;
   }
 
@@ -121,24 +132,13 @@ export async function handleAudit(
       );
     } catch (err) {
       logger.error(`Audit engine failed: ${err instanceof Error ? err.message : err}`);
-      if (issueNumber !== undefined) {
-        try {
-          await gh.postOrUpdateComment(
-            issueNumber,
-            '<!-- audit-error -->',
-            `❌ **Audit failed.** ${err instanceof Error ? err.message : String(err)}`,
-          );
-        } catch (commentErr) {
-          logger.warn(
-            `Failed to post audit-failure comment: ${commentErr instanceof Error ? commentErr.message : commentErr}`,
-          );
-        }
-      }
+      await postAuditFailure(gh, issueNumber, sanitizeErrorMessage(err));
       return;
     }
 
     if (!result.summary && result.issues.length === 0) {
       logger.warn('Audit returned no meaningful content — skipping issue creation');
+      await postAuditFailure(gh, issueNumber, 'The audit returned no meaningful content.');
       return;
     }
 
@@ -171,6 +171,33 @@ export async function handleAudit(
     } catch (err) {
       logger.error(`Engine cleanup failed: ${err instanceof Error ? err.message : err}`);
     }
+  }
+}
+
+/**
+ * Post an audit-failure comment on the triggering issue when one is known.
+ * Best-effort: a failure to post the comment is logged but never thrown.
+ * @param gh - Platform adapter.
+ * @param issueNumber - Issue/PR number that triggered the audit, if any.
+ * @param message - Sanitized failure message.
+ */
+async function postAuditFailure(
+  gh: PlatformAdapter,
+  issueNumber: number | undefined,
+  message: string,
+): Promise<void> {
+  if (issueNumber === undefined) return;
+  try {
+    await gh.postOrUpdateComment(
+      issueNumber,
+      '<!-- audit-error -->',
+      `❌ **Audit failed.** ${message}`,
+    );
+  } catch (commentErr) {
+    const logger = new Logger('Audit');
+    logger.warn(
+      `Failed to post audit-failure comment: ${commentErr instanceof Error ? commentErr.message : commentErr}`,
+    );
   }
 }
 

@@ -749,6 +749,31 @@ diff --git a/src/a.ts b/src/a.ts
         'GitLab API 500',
       );
     });
+
+    it('falls back to merge request notes when the target is an MR', async () => {
+      fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+        if (url.includes('/issues/42/notes')) {
+          return mockErrorResponse(404, 'Not Found');
+        }
+        if (url.includes('/merge_requests/42/notes') && options?.method === 'POST') {
+          return mockResponse({ body: { id: 777 } });
+        }
+        if (url.includes('/merge_requests/42/notes')) {
+          return mockResponse({ body: [] });
+        }
+        return mockResponse({ body: {} });
+      });
+
+      const result = await adapter.postOrUpdateComment(42, marker, 'MR review');
+
+      expect(result.action).toBe('created');
+      expect(result.commentId).toBe(777);
+      const mrPost = fetchMock.mock.calls.find(
+        ([url, opts]: [string, RequestInit]) =>
+          url.includes('/merge_requests/42/notes') && opts?.method === 'POST',
+      );
+      expect(mrPost).toBeTruthy();
+    });
   });
 
   describe('createReviewCommentReply', () => {
@@ -1055,6 +1080,28 @@ diff --git a/src/a.ts b/src/a.ts
       );
       const body = JSON.parse(String(postCall?.[1]?.body));
       expect(body.color).toBe('#9a5a00');
+    });
+
+    it('PUTs an existing label with the semantic color on a 409', async () => {
+      fetchMock.mockImplementation(async (_url: string, options?: RequestInit) => {
+        if (options?.method === 'PUT') {
+          return mockResponse({ body: {} });
+        }
+        if (options?.method === 'POST') {
+          return mockErrorResponse(409, 'Label already exists');
+        }
+        return mockResponse({ body: {} });
+      });
+
+      await adapter.ensureLabels(['audit:critical']);
+
+      const putCall = fetchMock.mock.calls.find(
+        ([url, opts]: [string, RequestInit]) =>
+          url.includes('/labels/audit%3Acritical') && opts?.method === 'PUT',
+      );
+      expect(putCall).toBeTruthy();
+      const body = JSON.parse(String(putCall?.[1]?.body));
+      expect(body.color).toBe('#b60205');
     });
   });
 

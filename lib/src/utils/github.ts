@@ -992,20 +992,44 @@ export class GitHubHelper implements PlatformAdapter {
     const concurrency = 3;
     for (let i = 0; i < labels.length; i += concurrency) {
       await Promise.all(
-        labels.slice(i, i + concurrency).map((label) =>
-          this.api('/labels', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: label, color: getLabelColor(label) }),
-          }).catch((err) =>
-            core.debug(
-              `Label creation failed for "${label}": ${
-                err instanceof Error ? err.message : String(err)
-              }`,
+        labels
+          .slice(i, i + concurrency)
+          .map((label) =>
+            this.ensureLabel(label).catch((err) =>
+              core.debug(
+                `Label creation failed for "${label}": ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              ),
             ),
           ),
-        ),
       );
+    }
+  }
+
+  /**
+   * Create a label, or update its color if it already exists.
+   * GitHub returns 422 when POSTing a label that already exists, so we fall
+   * back to PATCH to re-color existing labels (e.g. ones created by older
+   * versions with the hash-derived HSL palette).
+   * @param label - Label name.
+   */
+  private async ensureLabel(label: string): Promise<void> {
+    const color = getLabelColor(label);
+    try {
+      await this.api('/labels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: label, color }),
+      });
+    } catch (err) {
+      const status = (err as Error & { status?: number }).status;
+      if (status !== 422) throw err;
+      await this.api(`/labels/${encodeURIComponent(label)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ color }),
+      });
     }
   }
 

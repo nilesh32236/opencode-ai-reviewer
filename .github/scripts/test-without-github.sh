@@ -46,7 +46,7 @@ echo -e "${GREEN}  ✓ Unit tests passed${NC}"
 # ─── Step 4: JSONL Parser Smoke Test ───
 echo -e "${YELLOW}[4/5]${NC} JSONL parser smoke test..."
 node -e "
-const { parseJsonlString, buildReviewBody, buildInlineComments } = require('./lib/jsonl-parser');
+const { parseJsonlString, buildReviewBody, buildInlineComments } = require('../lib/dist');
 
 // Test with sample data
 const sample = [

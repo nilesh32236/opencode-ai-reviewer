@@ -127,6 +127,17 @@ export async function handlePRReview(
 
     if (!result.summary && result.issues.length === 0 && result.strengths.length === 0) {
       logger.warn(`Review returned no meaningful content for PR #${prNumber}`, { prNumber, repo });
+      try {
+        await gh.postOrUpdateComment(
+          prNumber,
+          REVIEW_IN_PROGRESS_MARKER,
+          '✅ **Review complete** — no findings to report.',
+        );
+      } catch (commentErr) {
+        logger.warn(
+          `Failed to post review-complete comment: ${commentErr instanceof Error ? commentErr.message : commentErr}`,
+        );
+      }
       return null;
     }
 
@@ -166,6 +177,17 @@ export async function handlePRReview(
       }
     } else {
       logger.warn(`Failed to post review to PR #${prNumber}`, { prNumber, repo });
+      try {
+        await gh.postOrUpdateComment(
+          prNumber,
+          REVIEW_IN_PROGRESS_MARKER,
+          '❌ **Review failed.** Could not post the review to the platform.',
+        );
+      } catch (commentErr) {
+        logger.warn(
+          `Failed to post review-failure comment: ${commentErr instanceof Error ? commentErr.message : commentErr}`,
+        );
+      }
     }
 
     if (

@@ -588,36 +588,67 @@ export class GitLabAdapter implements PlatformAdapter {
     body: string,
   ): Promise<{ action: 'created' | 'updated' | 'failed'; commentId: number }> {
     try {
-      const markedBody = `${marker}\n\n${body}`;
-
-      const allComments = await this.paginate<{ id: number; body: string }>(
-        `/issues/${issueNumber}/notes`,
-        { perPage: 100, maxPages: 5 },
-      );
-
-      const existing = allComments.find((c) => c.body?.startsWith(marker));
-
-      if (existing) {
-        await this.api(`/issues/${issueNumber}/notes/${existing.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ body: markedBody }),
-        });
-        return { action: 'updated' as const, commentId: existing.id };
-      }
-
-      const created = await this.api<{ id: number }>(`/issues/${issueNumber}/notes`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body: markedBody }),
-      });
-      return { action: 'created' as const, commentId: created.id };
+      return await this.postOrUpdateNote(issueNumber, marker, body, 'issues');
     } catch (err) {
+      // Merge requests are not issues, so /issues/:iid/notes 404s for them.
+      // Fall back to the MR notes endpoint so status/failure comments work on
+      // GitLab merge requests as well.
+      if ((err as Error & { status?: number }).status === 404) {
+        try {
+          return await this.postOrUpdateNote(issueNumber, marker, body, 'merge_requests');
+        } catch (mrErr) {
+          core.warning(
+            `Failed to post or update comment on MR ${issueNumber}: ${mrErr instanceof Error ? mrErr.message : mrErr}`,
+          );
+          throw mrErr;
+        }
+      }
       core.warning(
         `Failed to post or update comment on issue ${issueNumber}: ${err instanceof Error ? err.message : err}`,
       );
       throw err;
     }
+  }
+
+  /**
+   * Post or update a marker-prefixed note on either an issue or a merge request.
+   * @param issueNumber - Issue or MR IID.
+   * @param marker - Marker prefix used to find the existing comment.
+   * @param body - Comment body.
+   * @param kind - Whether the target is an issue or a merge request.
+   * @returns The action taken and the comment id.
+   */
+  private async postOrUpdateNote(
+    issueNumber: number,
+    marker: string,
+    body: string,
+    kind: 'issues' | 'merge_requests',
+  ): Promise<{ action: 'created' | 'updated' | 'failed'; commentId: number }> {
+    const notesPath = `/${kind}/${issueNumber}/notes`;
+    const markedBody = `${marker}\n\n${body}`;
+
+    const allComments = await this.paginate<{ id: number; body: string }>(notesPath, {
+      perPage: 100,
+      maxPages: 5,
+    });
+
+    const existing = allComments.find((c) => c.body?.startsWith(marker));
+
+    if (existing) {
+      await this.api(`${notesPath}/${existing.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body: markedBody }),
+      });
+      return { action: 'updated' as const, commentId: existing.id };
+    }
+
+    const created = await this.api<{ id: number }>(notesPath, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body: markedBody }),
+    });
+    return { action: 'created' as const, commentId: created.id };
   }
 
   /**
@@ -812,16 +843,34 @@ export class GitLabAdapter implements PlatformAdapter {
    */
   async ensureLabels(labels: string[]): Promise<void> {
     for (const label of labels) {
+      const color = `#${getLabelColor(label)}`;
       try {
         await this.api('/labels', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: label, color: `#${getLabelColor(label)}`, description: '' }),
+          body: JSON.stringify({ name: label, color, description: '' }),
         });
       } catch (err) {
-        core.debug(
-          `Label creation for "${label}": ${err instanceof Error ? err.message : String(err)}`,
-        );
+        // GitLab returns 409 when a label with the same name already exists.
+        // Update its color so existing installs pick up the semantic palette.
+        const status = (err as Error & { status?: number }).status;
+        if (status === 409) {
+          try {
+            await this.api(`/labels/${encodeURIComponent(label)}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ color }),
+            });
+          } catch (updateErr) {
+            core.debug(
+              `Label update for "${label}": ${updateErr instanceof Error ? updateErr.message : String(updateErr)}`,
+            );
+          }
+        } else {
+          core.debug(
+            `Label creation for "${label}": ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
       }
     }
   }

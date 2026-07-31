@@ -13,6 +13,8 @@ export function getSeverityBadge(severity: Severity): string {
       return '🟠';
     case 'minor':
       return '🔵';
+    default:
+      return '⚪';
   }
 }
 

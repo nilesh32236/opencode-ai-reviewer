@@ -1177,6 +1177,31 @@ diff --git a/deleted.ts b/deleted.ts
       await expect(helper.ensureLabels(['good', 'bad', 'also-good'])).resolves.toBeUndefined();
     });
 
+    it('PATCHes existing labels to update their color on a 422', async () => {
+      const patchUrls: string[] = [];
+
+      fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+        if (options?.method === 'PATCH') {
+          patchUrls.push(url);
+          return mockResponse({ body: {} });
+        }
+        if (options?.method === 'POST') {
+          return mockErrorResponse(422);
+        }
+        return mockResponse({ body: {} });
+      });
+
+      await helper.ensureLabels(['audit:critical']);
+
+      expect(patchUrls).toHaveLength(1);
+      expect(patchUrls[0]).toContain('/labels/audit%3Acritical');
+      const patchCall = fetchMock.mock.calls.find(
+        ([, opts]: [string, RequestInit]) => opts?.method === 'PATCH',
+      );
+      const body = JSON.parse(String(patchCall?.[1]?.body));
+      expect(body.color).toBe('b60205');
+    });
+
     it('handles empty labels array', async () => {
       await helper.ensureLabels([]);
       expect(fetchMock).not.toHaveBeenCalled();

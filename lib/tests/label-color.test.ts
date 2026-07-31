@@ -23,24 +23,44 @@ describe('getLabelColor', () => {
     expect(getLabelColor('audit:minor')).toBe('0b5c9e');
   });
 
-  it('falls back to neutral gray for unknown labels', () => {
-    expect(getLabelColor('audit:security')).toBe('6e7781');
-    expect(getLabelColor('autofix')).toBe('6e7781');
+  it('gives non-severity labels a distinct deterministic color', () => {
+    expect(getLabelColor('audit:security')).toBe(getLabelColor('audit:security'));
+    expect(getLabelColor('audit:security')).not.toBe(getLabelColor('autofix'));
+    expect(getLabelColor('autofix')).not.toBe('6e7781');
+  });
+
+  it('falls back to neutral gray only for an empty name', () => {
     expect(getLabelColor('')).toBe('6e7781');
   });
 
   it('returns the same color for the same name (deterministic)', () => {
     expect(getLabelColor('audit:critical')).toBe(getLabelColor('audit:critical'));
+    expect(getLabelColor('audit:security-privacy')).toBe(getLabelColor('audit:security-privacy'));
   });
 
   it('returns 6-char hex colors without a leading #', () => {
-    for (const name of ['audit:critical', 'audit:important', 'audit:minor', 'unknown']) {
+    for (const name of [
+      'audit:critical',
+      'audit:important',
+      'audit:minor',
+      'audit:security-privacy',
+      'autofix',
+      'unknown',
+    ]) {
       expect(getLabelColor(name)).toMatch(/^[0-9a-f]{6}$/);
     }
   });
 
   it('all palette colors meet WCAG AA 4.5:1 contrast against white text', () => {
-    for (const name of ['audit:critical', 'audit:important', 'audit:minor', 'unknown']) {
+    for (const name of [
+      'audit:critical',
+      'audit:important',
+      'audit:minor',
+      'audit:security-privacy',
+      'autofix',
+      'analysis:ready',
+      'unknown',
+    ]) {
       expect(contrastAgainstWhite(getLabelColor(name))).toBeGreaterThanOrEqual(4.5);
     }
   });
