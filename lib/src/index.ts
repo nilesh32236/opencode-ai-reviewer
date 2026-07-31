@@ -86,7 +86,22 @@ export { FeedbackSubscriber } from './learning/feedback-subscriber.js';
 export { MetaReviewEngine, MetaReviewSubscriber } from './meta-review/engine.js';
 export { buildMetaReviewPrompt } from './meta-review/prompts.js';
 export { PatternDetector, PatternDetectorOptions } from './pattern-detector/engine.js';
-export { clusterFindings } from './pattern-detector/cluster.js';
+export {
+  clusterFindings,
+  clusterFindingsExact,
+  clusterFindingsWithStatus,
+  MAX_CLUSTER_INPUT,
+  EXACT_CLUSTER_LIMIT,
+} from './pattern-detector/cluster.js';
+export type { ClusterResult } from './pattern-detector/cluster.js';
+export {
+  hashToken,
+  computeMinHashSignature,
+  lshCandidates,
+  MINHASH_SIGNATURE_SIZE,
+  LSH_BANDS,
+  LSH_ROWS,
+} from './pattern-detector/minhash.js';
 export { RuleApprovalSubscriber } from './pattern-detector/rule-approval.js';
 export * from './utils/validation.js';
 export { buildConversationPrompt, detectIntent } from './prompts/conversation.js';

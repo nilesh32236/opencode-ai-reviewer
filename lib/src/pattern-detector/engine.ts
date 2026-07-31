@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import type { LearningStore } from '../learning/store.js';
 import { Logger } from '../utils/logger.js';
-import { clusterFindings } from './cluster.js';
+import { MAX_CLUSTER_INPUT, clusterFindingsWithStatus } from './cluster.js';
 
 const NON_ALPHANUMERIC_REGEX = /[^a-z0-9]+/g;
 
@@ -17,6 +17,8 @@ export interface DiscoveredPattern {
 export interface PatternDetectorOptions {
   windowSize?: number;
   sinceDays?: number;
+  /** Maximum number of unique findings clustered in a single discover() call. */
+  maxFindingsToCluster?: number;
 }
 
 /**
@@ -38,6 +40,7 @@ export class PatternDetector {
     this.options = {
       windowSize: options.windowSize ?? 100,
       sinceDays: options.sinceDays,
+      maxFindingsToCluster: options.maxFindingsToCluster ?? MAX_CLUSTER_INPUT,
     };
   }
 
@@ -71,7 +74,23 @@ export class PatternDetector {
     const uniqueMessages = [...new Set(findings.map((f) => f.message).filter(Boolean))];
     if (uniqueMessages.length === 0) return [];
 
-    const clusters = clusterFindings(uniqueMessages, 0.3);
+    const { maxFindingsToCluster } = this.options;
+    const messagesToCluster =
+      maxFindingsToCluster !== undefined && uniqueMessages.length > maxFindingsToCluster
+        ? uniqueMessages.slice(0, maxFindingsToCluster)
+        : uniqueMessages;
+
+    if (messagesToCluster.length < uniqueMessages.length) {
+      core.warning(
+        `PatternDetector: truncating ${uniqueMessages.length - messagesToCluster.length} of ` +
+          `${uniqueMessages.length} unique findings for clustering (max ${messagesToCluster.length})`,
+      );
+    }
+
+    const { clusters, truncated } = clusterFindingsWithStatus(messagesToCluster, 0.3);
+    if (truncated) {
+      core.warning(`PatternDetector: clustering truncated to ${MAX_CLUSTER_INPUT} findings`);
+    }
 
     // Handle frequent messages that didn't cluster (single-message patterns)
     const clusteredMsgs = new Set(clusters.flatMap((c) => c.messages));

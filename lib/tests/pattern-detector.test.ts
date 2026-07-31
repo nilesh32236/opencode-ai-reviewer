@@ -2,11 +2,89 @@ import fs from 'fs';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { LearningStore } from '../src/learning/store.js';
-import { clusterFindings } from '../src/pattern-detector/cluster.js';
+import {
+  EXACT_CLUSTER_LIMIT,
+  MAX_CLUSTER_INPUT,
+  clusterFindings,
+  clusterFindingsExact,
+  clusterFindingsWithStatus,
+} from '../src/pattern-detector/cluster.js';
 import { PatternDetector } from '../src/pattern-detector/engine.js';
+import {
+  LSH_BANDS,
+  LSH_ROWS,
+  computeMinHashSignature,
+  hashToken,
+  lshCandidates,
+} from '../src/pattern-detector/minhash.js';
 import { RuleApprovalSubscriber } from '../src/pattern-detector/rule-approval.js';
 
 const TEST_DB = path.join(__dirname, '.test-pattern.db');
+
+function seededRandom(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state += 0x6d2b79f5;
+    let r = Math.imul(state ^ (state >>> 15), 1 | state);
+    r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function makeSyntheticDataset(
+  numGroups: number,
+  perGroup: number,
+  noiseTokens: number,
+  seed: number,
+): { messages: string[]; groups: string[][] } {
+  const rng = seededRandom(seed);
+  const messages: string[] = [];
+  const groups: string[][] = [];
+
+  for (let g = 0; g < numGroups; g++) {
+    const template = Array.from({ length: 6 }, (_, t) => `g${g}tok${t}`);
+    const group: string[] = [];
+    for (let m = 0; m < perGroup; m++) {
+      const tokens = [...template];
+      const noise = new Set<string>();
+      while (noise.size < noiseTokens) {
+        noise.add(`n${Math.floor(rng() * 100000)}`);
+      }
+      for (const n of noise) tokens.push(n);
+      tokens.push(`id${g}_${m}`);
+      const message = tokens.join(' ');
+      messages.push(message);
+      group.push(message);
+    }
+    groups.push(group);
+  }
+
+  return { messages, groups };
+}
+
+function clusterRecall(
+  clusters: Array<{ centroid: string; messages: string[] }>,
+  groups: string[][],
+): number {
+  const clusterOf = new Map<string, number>();
+  clusters.forEach((cluster, idx) => {
+    for (const msg of cluster.messages) clusterOf.set(msg, idx);
+  });
+
+  let totalPairs = 0;
+  let recoveredPairs = 0;
+  for (const group of groups) {
+    for (let a = 0; a < group.length; a++) {
+      for (let b = a + 1; b < group.length; b++) {
+        totalPairs++;
+        const ca = clusterOf.get(group[a]);
+        const cb = clusterOf.get(group[b]);
+        if (ca !== undefined && ca === cb) recoveredPairs++;
+      }
+    }
+  }
+  return totalPairs === 0 ? 1 : recoveredPairs / totalPairs;
+}
 
 describe('clusterFindings', () => {
   it('groups similar messages by Jaccard similarity', () => {
@@ -73,6 +151,137 @@ describe('clusterFindings', () => {
 
     const clusters = clusterFindings(messages, 0.3);
     expect(clusters.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('clusterFindings – scaling', () => {
+  it('caps large inputs to MAX_CLUSTER_INPUT with truncation status', () => {
+    const { messages } = makeSyntheticDataset(30, 20, 2, 7);
+    expect(messages.length).toBeGreaterThan(MAX_CLUSTER_INPUT);
+
+    const result = clusterFindingsWithStatus(messages, 0.3);
+    expect(result.truncated).toBe(true);
+
+    const capped = new Set(messages.slice(0, MAX_CLUSTER_INPUT));
+    for (const cluster of result.clusters) {
+      for (const msg of cluster.messages) {
+        expect(capped.has(msg)).toBe(true);
+      }
+    }
+  });
+
+  it('public API returns clusters only referencing capped messages', () => {
+    const { messages } = makeSyntheticDataset(30, 20, 2, 8);
+    expect(messages.length).toBeGreaterThan(MAX_CLUSTER_INPUT);
+
+    const clusters = clusterFindings(messages, 0.3);
+    const capped = new Set(messages.slice(0, MAX_CLUSTER_INPUT));
+    for (const cluster of clusters) {
+      for (const msg of cluster.messages) {
+        expect(capped.has(msg)).toBe(true);
+      }
+    }
+  });
+
+  it('keeps exact path for inputs at or below EXACT_CLUSTER_LIMIT', () => {
+    const { messages } = makeSyntheticDataset(EXACT_CLUSTER_LIMIT, 2, 2, 9);
+    expect(messages.length).toBe(EXACT_CLUSTER_LIMIT * 2);
+    expect(clusterFindingsWithStatus(messages, 0.3).truncated).toBe(false);
+  });
+
+  it('produces far fewer LSH candidates than all pairs for large datasets', () => {
+    const { messages } = makeSyntheticDataset(30, 20, 2, 10);
+    const rng = seededRandom(11);
+    const singletons = Array.from({ length: 400 }, (_, i) => {
+      const noise = Array.from({ length: 4 }, () => `z${Math.floor(rng() * 100000)}`);
+      return `s${i} ${noise.join(' ')}`;
+    });
+    const all = [...messages, ...singletons];
+
+    const signatures = all.map((m) =>
+      computeMinHashSignature(
+        new Set(
+          m
+            .toLowerCase()
+            .replace(/[^a-z0-9\s]/g, '')
+            .split(/\s+/)
+            .filter((t) => t.length > 2),
+        ),
+      ),
+    );
+
+    const candidates = lshCandidates(signatures, LSH_BANDS, LSH_ROWS);
+    const totalPairs = (all.length * (all.length - 1)) / 2;
+    expect(candidates.size).toBeLessThan(totalPairs * 0.05);
+  });
+
+  it('reaches near-exact recall on the LSH path for large inputs', () => {
+    const { messages, groups } = makeSyntheticDataset(30, 12, 2, 42);
+    expect(messages.length).toBeGreaterThan(EXACT_CLUSTER_LIMIT);
+    expect(messages.length).toBeLessThanOrEqual(MAX_CLUSTER_INPUT);
+
+    const exactClusters = clusterFindingsExact(messages, 0.3);
+    const lshClusters = clusterFindings(messages, 0.3);
+
+    const exactRecall = clusterRecall(exactClusters, groups);
+    const lshRecall = clusterRecall(lshClusters, groups);
+
+    expect(exactRecall).toBeGreaterThanOrEqual(0.9);
+    expect(lshRecall).toBeGreaterThanOrEqual(0.9);
+    expect(lshRecall).toBeGreaterThanOrEqual(exactRecall - 0.05);
+
+    const largest = [...lshClusters].sort((a, b) => b.messages.length - a.messages.length)[0];
+    if (largest) {
+      const dominantGroup = groups.reduce(
+        (best, group) => {
+          const overlap = group.filter((m) => largest.messages.includes(m)).length;
+          return overlap > best.overlap ? { group, overlap } : best;
+        },
+        { group: [] as string[], overlap: 0 },
+      );
+      expect(dominantGroup.overlap / largest.messages.length).toBeGreaterThanOrEqual(0.8);
+    }
+  });
+});
+
+describe('minhash', () => {
+  it('hashToken is deterministic and salt-sensitive', () => {
+    const a1 = hashToken('error', 0);
+    const a2 = hashToken('error', 0);
+    const b = hashToken('error', 1);
+    expect(a1).toBe(a2);
+    expect(a1).not.toBe(b);
+  });
+
+  it('computes identical signatures for identical token sets', () => {
+    const s1 = computeMinHashSignature(new Set(['foo', 'bar', 'baz']));
+    const s2 = computeMinHashSignature(new Set(['bar', 'baz', 'foo']));
+    expect(s1).toEqual(s2);
+  });
+
+  it('returns all-zero signatures for empty token sets', () => {
+    expect(computeMinHashSignature(new Set<string>())).toEqual(new Array(128).fill(0));
+  });
+
+  it('puts similar sets in shared LSH bands', () => {
+    const a = new Set(['error', 'handling', 'async', 'route', 'missing']);
+    const b = new Set(['error', 'handling', 'async', 'route', 'wrapper']);
+    const candidates = lshCandidates(
+      [computeMinHashSignature(a), computeMinHashSignature(b)],
+      LSH_BANDS,
+      LSH_ROWS,
+    );
+    expect(candidates.size).toBeGreaterThan(0);
+  });
+
+  it('deduplicates candidate pairs', () => {
+    const a = new Set(['error', 'handling', 'async', 'route', 'missing']);
+    const b = new Set(['error', 'handling', 'async', 'route', 'wrapper']);
+    const signatures = [computeMinHashSignature(a), computeMinHashSignature(b)];
+    const candidates = lshCandidates(signatures, LSH_BANDS, LSH_ROWS);
+    for (const [i, j] of candidates) {
+      expect(i).toBeLessThan(j);
+    }
   });
 });
 
