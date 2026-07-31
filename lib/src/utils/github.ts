@@ -12,8 +12,9 @@ import type {
   ReviewStrength,
 } from '../types/index.js';
 import { CircuitBreaker } from './circuit-breaker.js';
+import { getLabelColor } from './label-color.js';
 import { withRetry, withRetryAndTimeout } from './retry.js';
-import { buildReviewBody, getConfidenceBadge } from './review-body.js';
+import { buildReviewBody } from './review-body.js';
 
 /** Paginated result wrapper for API responses. */
 export interface PaginatedResult<T> {
@@ -995,7 +996,7 @@ export class GitHubHelper implements PlatformAdapter {
           this.api('/labels', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: label, color: generateLabelColor(label) }),
+            body: JSON.stringify({ name: label, color: getLabelColor(label) }),
           }).catch((err) =>
             core.debug(
               `Label creation failed for "${label}": ${
@@ -1566,36 +1567,4 @@ export class GitHubHelper implements PlatformAdapter {
   async updateMR(mrNumber: number, updates: { title?: string; body?: string }): Promise<void> {
     return this.updatePR(mrNumber, updates);
   }
-}
-
-function generateLabelColor(name: string): string {
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) {
-    hash = name.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  const hue = Math.abs(hash) % 360;
-  // Convert HSL (hue, 65%, 45%) to 6-character hex string without leading '#'
-  const h = hue / 360;
-  const s = 0.65;
-  const l = 0.45;
-
-  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-  const p = 2 * l - q;
-
-  const hueToRgb = (t: number) => {
-    let nt = t;
-    if (nt < 0) nt += 1;
-    if (nt > 1) nt -= 1;
-    if (nt < 1 / 6) return p + (q - p) * 6 * nt;
-    if (nt < 1 / 2) return q;
-    if (nt < 2 / 3) return p + (q - p) * (2 / 3 - nt) * 6;
-    return p;
-  };
-
-  const r = Math.round(hueToRgb(h + 1 / 3) * 255);
-  const g = Math.round(hueToRgb(h) * 255);
-  const b = Math.round(hueToRgb(h - 1 / 3) * 255);
-
-  const toHex = (x: number) => x.toString(16).padStart(2, '0');
-  return `${toHex(r)}${toHex(g)}${toHex(b)}`;
 }

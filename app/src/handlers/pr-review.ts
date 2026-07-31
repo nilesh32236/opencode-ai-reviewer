@@ -5,8 +5,17 @@ import type {
   PlatformAdapter,
   ReviewResult,
 } from '@opencode-pr-agent/lib';
-import { GitHubHelper, GitLabAdapter, Logger, ReviewEngine } from '@opencode-pr-agent/lib';
+import {
+  GitHubHelper,
+  GitLabAdapter,
+  Logger,
+  ReviewEngine,
+  sanitizeErrorMessage,
+} from '@opencode-pr-agent/lib';
 import { handleAutofixLoop } from './autofix.js';
+
+/** Marker identifying the "review in progress" status comment on a PR. */
+const REVIEW_IN_PROGRESS_MARKER = '<!-- review-in-progress -->';
 
 /**
  * Handle a PR review: fetch the PR, check skip conditions, run the review
@@ -75,6 +84,18 @@ export async function handlePRReview(
 
     let result: ReviewResult;
     try {
+      try {
+        await gh.postOrUpdateComment(
+          prNumber,
+          REVIEW_IN_PROGRESS_MARKER,
+          '⏳ **Reviewing this PR...** The review engine is analyzing the changes. This may take a few minutes.',
+        );
+      } catch (err) {
+        logger.warn(
+          `Failed to post review-in-progress comment: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+
       result = await engine.reviewPR(
         pr,
         undefined,
@@ -90,6 +111,17 @@ export async function handlePRReview(
       logger.error(
         `Review engine failed for PR #${prNumber}: ${err instanceof Error ? err.message : err}`,
       );
+      try {
+        await gh.postOrUpdateComment(
+          prNumber,
+          REVIEW_IN_PROGRESS_MARKER,
+          `❌ **Review failed.** ${sanitizeErrorMessage(err)}`,
+        );
+      } catch (commentErr) {
+        logger.warn(
+          `Failed to post review-failure comment: ${commentErr instanceof Error ? commentErr.message : commentErr}`,
+        );
+      }
       return null;
     }
 
@@ -105,11 +137,33 @@ export async function handlePRReview(
       logger.error(
         `Failed to post review for PR #${prNumber}: ${err instanceof Error ? err.message : err}`,
       );
+      try {
+        await gh.postOrUpdateComment(
+          prNumber,
+          REVIEW_IN_PROGRESS_MARKER,
+          `❌ **Review failed.** Could not post the review: ${sanitizeErrorMessage(err)}`,
+        );
+      } catch (commentErr) {
+        logger.warn(
+          `Failed to post review-failure comment: ${commentErr instanceof Error ? commentErr.message : commentErr}`,
+        );
+      }
       return null;
     }
 
     if (reviewResult.success) {
       logger.info(`Review posted to PR #${prNumber} (${reviewResult.method})`);
+      try {
+        await gh.postOrUpdateComment(
+          prNumber,
+          REVIEW_IN_PROGRESS_MARKER,
+          '✅ **Review complete** — see the review above.',
+        );
+      } catch (err) {
+        logger.warn(
+          `Failed to post review-complete comment: ${err instanceof Error ? err.message : err}`,
+        );
+      }
     } else {
       logger.warn(`Failed to post review to PR #${prNumber}`, { prNumber, repo });
     }

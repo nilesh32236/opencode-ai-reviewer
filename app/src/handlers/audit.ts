@@ -14,6 +14,7 @@ import { GitHubHelper, GitLabAdapter, Logger, ReviewEngine } from '@opencode-pr-
  * @param promptName - Optional specific audit prompt name (without .md).
  * @param tempDir - Optional temporary working directory.
  * @param signal - Optional abort signal.
+ * @param issueNumber - Optional issue/PR number that triggered the audit; used to post a failure comment.
  */
 export async function handleAudit(
   repo: string,
@@ -23,6 +24,7 @@ export async function handleAudit(
   promptName?: string,
   tempDir?: string,
   signal?: AbortSignal,
+  issueNumber?: number,
 ): Promise<void> {
   const logger = new Logger('Audit', { repo });
   logger.info(`Starting audit for ${repo}${targetDir ? ` targeting ${targetDir}` : ''}`);
@@ -119,6 +121,19 @@ export async function handleAudit(
       );
     } catch (err) {
       logger.error(`Audit engine failed: ${err instanceof Error ? err.message : err}`);
+      if (issueNumber !== undefined) {
+        try {
+          await gh.postOrUpdateComment(
+            issueNumber,
+            '<!-- audit-error -->',
+            `❌ **Audit failed.** ${err instanceof Error ? err.message : String(err)}`,
+          );
+        } catch (commentErr) {
+          logger.warn(
+            `Failed to post audit-failure comment: ${commentErr instanceof Error ? commentErr.message : commentErr}`,
+          );
+        }
+      }
       return;
     }
 

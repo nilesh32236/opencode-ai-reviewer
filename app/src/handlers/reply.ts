@@ -57,7 +57,12 @@ export async function handleReply(
     });
 
     if (!result.success || !result.output.trim()) {
-      logger.warn('OpenCode returned no output — skipping reply');
+      logger.warn('OpenCode returned no output — posting failure reply');
+      await gh.replyToReviewComment(
+        prNumber,
+        parentCommentId,
+        "❌ I couldn't generate a reply. Please try again or rephrase.",
+      );
       return;
     }
 
@@ -67,6 +72,17 @@ export async function handleReply(
     logger.info('Posted conversational reply to review comment thread');
   } catch (err) {
     logger.error(`Reply handler failed: ${err instanceof Error ? err.message : err}`);
+    try {
+      await gh.replyToReviewComment(
+        prNumber,
+        parentCommentId,
+        '❌ I encountered an error processing your request. Please try again or rephrase.',
+      );
+    } catch (replyErr) {
+      logger.warn(
+        `Failed to post failure reply: ${replyErr instanceof Error ? replyErr.message : replyErr}`,
+      );
+    }
   }
 }
 

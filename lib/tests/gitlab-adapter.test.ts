@@ -1044,6 +1044,18 @@ diff --git a/src/a.ts b/src/a.ts
       expect(postCalls).toHaveLength(2);
       expect(postCalls[0][0]).toContain('/labels');
     });
+
+    it('uses the semantic palette color for severity labels', async () => {
+      fetchMock.mockResolvedValue(mockResponse({ body: {} }));
+
+      await adapter.ensureLabels(['audit:important']);
+
+      const postCall = fetchMock.mock.calls.find(
+        ([, opts]: [string, RequestInit]) => opts?.method === 'POST',
+      );
+      const body = JSON.parse(String(postCall?.[1]?.body));
+      expect(body.color).toBe('#9a5a00');
+    });
   });
 
   describe('review threads (no-ops)', () => {

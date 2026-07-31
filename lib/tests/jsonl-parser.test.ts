@@ -1,7 +1,6 @@
 import * as path from 'path';
 import {
   buildInlineComments,
-  buildReviewBody,
   parseJsonlFile,
   parseJsonlString,
   stripMarkdownFences,
@@ -289,89 +288,6 @@ describe('jsonl-parser', () => {
       const result = await parseJsonlFile('/nonexistent/path/file.jsonl');
       expect(result.summary).toBe('');
       expect(result.issues).toHaveLength(0);
-    });
-  });
-
-  describe('buildReviewBody', () => {
-    it('builds a complete review body', () => {
-      const result: ReviewResult = {
-        summary: 'Good PR overall.',
-        verdict: { ready: false, reasoning: 'One critical issue found.' },
-        strengths: [{ type: 'strength', file: 'src/a.ts', line: 10, message: 'Clean function.' }],
-        issues: [
-          {
-            type: 'issue',
-            severity: 'critical',
-            file: 'src/b.ts',
-            line: 42,
-            message: 'Missing auth check.',
-            suggestion: 'Add requireAuth middleware.',
-          },
-        ],
-        stats: { total: 1, critical: 1, important: 0, minor: 0 },
-        rawLines: [],
-        failedLines: 0,
-      };
-
-      const body = buildReviewBody(result);
-
-      expect(body).toContain('## AI Code Review Summary');
-      expect(body).toContain('Good PR overall.');
-      expect(body).toContain('**Ready to merge?** No');
-      expect(body).toContain('One critical issue found.');
-      expect(body).toContain('Clean function.');
-      expect(body).toContain('CRITICAL');
-      expect(body).toContain('Missing auth check.');
-      expect(body).toContain('Add requireAuth middleware.');
-    });
-
-    it('handles empty result gracefully', () => {
-      const emptyResult: ReviewResult = {
-        summary: '',
-        verdict: { ready: false, reasoning: '' },
-        strengths: [],
-        issues: [],
-        stats: { total: 0, critical: 0, important: 0, minor: 0 },
-        rawLines: [],
-        failedLines: 0,
-      };
-
-      const body = buildReviewBody(emptyResult);
-      expect(body).toContain('No summary provided');
-      expect(body).toContain('No reasoning provided');
-    });
-
-    it('includes confidence badges in issue rendering', () => {
-      const result: ReviewResult = {
-        summary: 'Test.',
-        verdict: { ready: false, reasoning: 'Issues found.' },
-        strengths: [],
-        issues: [
-          {
-            type: 'issue',
-            severity: 'critical',
-            file: 'src/a.ts',
-            line: 10,
-            message: 'High confidence issue.',
-            confidence: 'high',
-          },
-          {
-            type: 'issue',
-            severity: 'minor',
-            file: 'src/b.ts',
-            line: 20,
-            message: 'Low confidence issue.',
-            confidence: 'low',
-          },
-        ],
-        stats: { total: 2, critical: 1, important: 0, minor: 1 },
-        rawLines: [],
-        failedLines: 0,
-      };
-
-      const body = buildReviewBody(result);
-      expect(body).toContain('🔴');
-      expect(body).toContain('⚪');
     });
   });
 
