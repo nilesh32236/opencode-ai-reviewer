@@ -7,6 +7,13 @@
 #       with:
 #         model: 'opencode/deepseek-v4-flash-free'
 #       secrets: inherit
+#
+# Required secrets:
+#   - repo_token: GitHub token with pull-requests:write
+# Optional secrets (for non-default models):
+#   - OPENAI_API_KEY
+#   - ANTHROPIC_API_KEY
+#   - GEMINI_API_KEY
 
 name: AI PR Review
 
@@ -38,18 +45,6 @@ on:
         required: false
         type: string
         default: ''
-      openai_api_key:
-        description: 'OpenAI API key'
-        required: false
-        type: string
-      anthropic_api_key:
-        description: 'Anthropic API key'
-        required: false
-        type: string
-      gemini_api_key:
-        description: 'Google Gemini API key'
-        required: false
-        type: string
     outputs:
       verdict:
         description: 'Review verdict (true/false)'
@@ -67,6 +62,15 @@ on:
       repo_token:
         description: 'GitHub token with pull-requests:write'
         required: true
+      OPENAI_API_KEY:
+        description: 'OpenAI API key (required when using OpenAI models)'
+        required: false
+      ANTHROPIC_API_KEY:
+        description: 'Anthropic API key (required when using Anthropic models)'
+        required: false
+      GEMINI_API_KEY:
+        description: 'Google Gemini API key (required when using Gemini models)'
+        required: false
 
 permissions:
   contents: read
@@ -93,6 +97,22 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.ref }}
 
+      - name: Validate API key secrets
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if echo "${{ inputs.model }}" | grep -qiE 'openai|gpt'; then
+            [ -n "$OPENAI_API_KEY" ] || echo "::warning::OPENAI_API_KEY secret is not configured — OpenAI models will fail to authenticate"
+          fi
+          if echo "${{ inputs.model }}" | grep -qiE 'anthropic|claude'; then
+            [ -n "$ANTHROPIC_API_KEY" ] || echo "::warning::ANTHROPIC_API_KEY secret is not configured — Anthropic models will fail to authenticate"
+          fi
+          if echo "${{ inputs.model }}" | grep -qiE 'gemini'; then
+            [ -n "$GEMINI_API_KEY" ] || echo "::warning::GEMINI_API_KEY secret is not configured — Gemini models will fail to authenticate"
+          fi
+
       - name: AI Code Review
         id: ai-review
         uses: nilesh32236/opencode-ai-reviewer@v1
@@ -103,7 +123,7 @@ jobs:
           fail_on_critical: ${{ inputs.fail_on_critical }}
           include_strengths: ${{ inputs.include_strengths }}
           project_context: ${{ inputs.project_context }}
-          openai_api_key: ${{ secrets.OPENAI_API_KEY || inputs.openai_api_key }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY || inputs.anthropic_api_key }}
-          gemini_api_key: ${{ secrets.GEMINI_API_KEY || inputs.gemini_api_key }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
           github_token: ${{ secrets.repo_token }}
