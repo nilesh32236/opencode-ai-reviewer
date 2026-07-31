@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.20] — 2026-07-31
+
+
+### Fixed
+
+- self-heal CI failure (attempt 1) [`lint-error` — eslint `jsdoc/require-jsdoc` violations in the ci "verify docstring coverage" step (`pnpm doc:check`).] (#296) (#296)
+
+[v1.6.20]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.19...v1.6.20
+
 ## [v1.6.19] — 2026-07-31
 
 
