@@ -1,6 +1,7 @@
 import { EventBus, EventRouter, LearningStore, Logger } from '@opencode-pr-agent/lib';
 import type { Probot } from 'probot';
 import { registerSubscribers } from './subscribers/index.js';
+import { buildConfig } from './utils/config.js';
 
 const logger = new Logger('App');
 
@@ -18,7 +19,8 @@ export default (app: Probot): void => {
   const bus = new EventBus();
   const router = new EventRouter(bus);
 
-  registerSubscribers(bus, learningStore);
+  const registeredSubscribers = registerSubscribers(bus, learningStore, buildConfig());
+  logger.info(`Registered ${registeredSubscribers.length} subscribers`);
 
   app.onAny(async (context) => {
     try {
