@@ -1,7 +1,7 @@
 import type { LearningFeedback, LearningQuality } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
 import { withRetry } from '../utils/retry.js';
-import { connectDb } from './db.js';
+import { connectDb } from './db/index.js';
 import { applyMigrations, getDbPath } from './schema.js';
 import type {
   CustomRuleRow,

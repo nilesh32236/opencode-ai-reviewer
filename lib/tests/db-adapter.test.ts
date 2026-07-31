@@ -9,7 +9,7 @@ import {
   PostgresAdapter,
   SqliteAdapter,
   connectDb,
-} from '../src/learning/db.js';
+} from '../src/learning/db/index.js';
 import { JsonDatabase } from '../src/learning/json-db.js';
 import { applyMigrations } from '../src/learning/schema.js';
 import type { LearningRepository } from '../src/learning/types.js';
