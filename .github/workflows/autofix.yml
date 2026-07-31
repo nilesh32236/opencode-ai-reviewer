@@ -75,6 +75,10 @@ jobs:
   review:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
     outputs:
       approved: ${{ steps.ai-review.outputs.verdict }}
 
@@ -85,12 +89,9 @@ jobs:
           ref: ${{ github.event.pull_request.head.ref }}
 
       - name: Validate API key secrets
-        uses: ./.github/actions/validate-api-keys
+        uses: nilesh32236/opencode-ai-reviewer/.github/actions/validate-api-keys@v1
         with:
           model: ${{ inputs.model }}
-          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
 
       - name: AI Review
         id: ai-review
@@ -109,6 +110,10 @@ jobs:
     if: always() && needs.review.result == 'success' && needs.review.outputs.approved != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
     steps:
       - uses: actions/checkout@v7
@@ -117,12 +122,9 @@ jobs:
           ref: ${{ github.event.pull_request.head.ref }}
 
       - name: Validate API key secrets
-        uses: ./.github/actions/validate-api-keys
+        uses: nilesh32236/opencode-ai-reviewer/.github/actions/validate-api-keys@v1
         with:
           model: ${{ inputs.model }}
-          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
 
       - name: AI Fix
         id: ai-fix

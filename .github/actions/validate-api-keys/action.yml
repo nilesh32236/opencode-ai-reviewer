@@ -3,6 +3,11 @@
 # OpenAI, Anthropic, or Gemini but the corresponding secret is not configured.
 # Never fails the job — the model may fall back to a key-less provider.
 #
+# The API key values are read from the environment (OPENAI_API_KEY,
+# ANTHROPIC_API_KEY, GEMINI_API_KEY) rather than from inputs, so callers keep
+# them out of this action's input context by declaring them at the job level
+# via env. Job/workflow-level env propagates into composite action steps.
+#
 # Provider detection is heuristic (model slug matching) and only covers the
 # OpenAI, Anthropic, and Gemini providers that the action can authenticate.
 # Other providers (e.g. Mistral) are not validated and never warn here.
@@ -14,15 +19,6 @@ inputs:
   model:
     description: 'OpenCode model identifier (e.g. opencode/deepseek-v4-flash-free)'
     required: true
-  openai_api_key:
-    description: 'OPENAI_API_KEY secret value (may be empty)'
-    required: false
-  anthropic_api_key:
-    description: 'ANTHROPIC_API_KEY secret value (may be empty)'
-    required: false
-  gemini_api_key:
-    description: 'GEMINI_API_KEY secret value (may be empty)'
-    required: false
 
 runs:
   using: 'composite'
@@ -31,9 +27,9 @@ runs:
       shell: bash
       env:
         MODEL: ${{ inputs.model }}
-        OPENAI_API_KEY: ${{ inputs.openai_api_key }}
-        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
-        GEMINI_API_KEY: ${{ inputs.gemini_api_key }}
+        OPENAI_API_KEY: ${{ env.OPENAI_API_KEY }}
+        ANTHROPIC_API_KEY: ${{ env.ANTHROPIC_API_KEY }}
+        GEMINI_API_KEY: ${{ env.GEMINI_API_KEY }}
       run: |
         if echo "$MODEL" | grep -qiE 'openai|gpt'; then
           [ -n "$OPENAI_API_KEY" ] || echo "::warning::OPENAI_API_KEY secret is not configured — OpenAI models will fail to authenticate"
