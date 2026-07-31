@@ -28,4 +28,7 @@ lib/tests/*.test.js
 lib/tests/*.test.d.ts
 lib/vitest.config.js
 lib/vitest.config.d.ts
+# Generated benchmark artifacts
+lib/bench-results.json
+lib/bench-metrics.json
 

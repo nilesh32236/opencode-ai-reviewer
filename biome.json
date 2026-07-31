@@ -45,7 +45,9 @@
       "lib/tests/*.js",
       "lib/tests/*.d.ts",
       "lib/tests/.test-*",
-      "lib/vitest.config.js"
+      "lib/vitest.config.js",
+      "lib/bench-results.json",
+      "lib/bench-metrics.json"
     ]
   }
 }

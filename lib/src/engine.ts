@@ -1588,7 +1588,17 @@ export class ReviewEngine {
     return file.additions * 0.05 + file.deletions * 0.02 + controlFlowMatches * 3 + maxDepth * 2;
   }
 
-  private buildPRContextString(
+  /**
+   * Build a markdown context string describing a pull request, its changed
+   * files, and their diffs (optionally honoring a token budget). Exposed as a
+   * pure computation so performance benchmarks can measure context gathering
+   * time in isolation.
+   * @param pr - Pull request context with changed files.
+   * @param tokenBudgetConfig - Optional token budget configuration for per-file caps.
+   * @param skipMetricsTracking - When true, skips collecting budget metrics.
+   * @returns The markdown context string and optional token budget metrics.
+   */
+  buildPRContextString(
     pr: PRContext,
     tokenBudgetConfig?: TokenBudgetConfig,
     skipMetricsTracking = false,

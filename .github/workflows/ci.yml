@@ -36,7 +36,7 @@ jobs:
 
       - name: Check for committed build artifacts
         run: |
-          ARTIFACTS=$(git ls-files 'lib/tests/*.test.js' 'lib/tests/*.test.d.ts' 'lib/vitest.config.d.ts')
+          ARTIFACTS=$(git ls-files 'lib/tests/*.test.js' 'lib/tests/*.test.d.ts' 'lib/vitest.config.d.ts' 'lib/vitest.benchmark.config.js' 'lib/vitest.benchmark.config.d.ts')
           if [ -n "$ARTIFACTS" ]; then
             echo "ERROR: Compiled test artifacts committed:" >&2
             echo "$ARTIFACTS" >&2
@@ -92,3 +92,41 @@ jobs:
       - name: Check coverage thresholds
         run: |
           echo "Coverage report generated. See details in the test output above."
+
+  benchmarks:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup PNPM
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.8.0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build lib
+        run: pnpm --filter @opencode-pr-agent/lib build
+
+      - name: Run benchmarks
+        run: pnpm --filter @opencode-pr-agent/lib bench
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: |
+            lib/bench-results.json
+            lib/bench-metrics.json
+          if-no-files-found: error
+
+      - name: Check performance budgets
+        run: pnpm --filter @opencode-pr-agent/lib exec tsx tests/benchmarks/reporter.ts

@@ -16,7 +16,9 @@
     "build": "tsc",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "bench": "vitest bench --config vitest.benchmark.config.ts",
+    "bench:check": "vitest bench --config vitest.benchmark.config.ts && tsx tests/benchmarks/reporter.ts"
   },
   "dependencies": {
     "@actions/core": "^1.11.1",
@@ -37,6 +39,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.15.0",
     "@types/pg": "^8.11.10",
+    "tsx": "^4.20.3",
     "typescript": "^5.8.0",
     "vitest": "^4.1.10"
   }

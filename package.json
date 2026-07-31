@@ -18,6 +18,8 @@
     "format": "biome format --write .",
     "doc:check": "eslint '**/src/**/*.ts'",
     "doc:fix": "eslint '**/src/**/*.ts' --fix",
+    "bench": "pnpm --filter @opencode-pr-agent/lib bench",
+    "bench:check": "pnpm --filter @opencode-pr-agent/lib bench:check",
     "typecheck": "pnpm --recursive typecheck",
     "setup:local": "docker compose -f docker/docker-compose.yml up -d --build",
     "teardown:local": "docker compose -f docker/docker-compose.yml down"
