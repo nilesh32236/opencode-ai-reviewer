@@ -1,6 +1,10 @@
 import { SqlAdapter } from './sql-adapter.js';
 import type { DbAdapter, SqliteDatabase } from './types.js';
 
+/**
+ * SQLite database adapter implementing the DbAdapter interface.
+ * Uses a bounded prepared-statement cache backed by better-sqlite3.
+ */
 export class SqliteAdapter extends SqlAdapter implements DbAdapter {
   private db: SqliteDatabase;
   private stmtCache = new Map<string, ReturnType<SqliteDatabase['prepare']>>();

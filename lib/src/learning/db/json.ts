@@ -17,6 +17,11 @@ import type {
 } from '../types.js';
 import type { DbAdapter, LearningRepository } from './types.js';
 
+/**
+ * JSON file-backed implementation of the LearningRepository and DbAdapter interfaces.
+ * Delegates all domain methods to a JsonDatabase instance. Raw SQL operations are
+ * not supported and throw an error; callers should use the repository methods instead.
+ */
 export class JsonDbAdapter implements DbAdapter, LearningRepository {
   private db: JsonDatabase;
 

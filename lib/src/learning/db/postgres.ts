@@ -1,6 +1,10 @@
 import { SqlAdapter, translateQuery } from './sql-adapter.js';
 import type { DbAdapter, PostgresClient } from './types.js';
 
+/**
+ * PostgreSQL database adapter implementing the DbAdapter interface.
+ * Translates SQLite-flavored SQL to Postgres syntax and executes it via a pg client.
+ */
 export class PostgresAdapter extends SqlAdapter implements DbAdapter {
   private client: PostgresClient;
   private translateCache = new Map<string, string>();
