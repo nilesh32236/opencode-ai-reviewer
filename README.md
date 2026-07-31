@@ -73,7 +73,7 @@ jobs:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
 ```
 
-The Action runs `review` mode by default. Other modes: `fix`, `audit`, `post`, `pr-review`.
+The Action runs `review` mode by default. Other modes: `fix`, `audit`, `analyze`, `post`, `self-heal`.
 
 ---
 
@@ -81,7 +81,7 @@ The Action runs `review` mode by default. Other modes: `fix`, `audit`, `post`, `
 
 | Input                    | Default                              | Description                                    |
 | ------------------------ | ------------------------------------ | ---------------------------------------------- |
-| `mode`                   | `review`                             | One of: `review`, `fix`, `audit`, `post`, `pr-review` |
+| `mode`                   | `review`                             | One of: `review`, `fix`, `audit`, `analyze`, `post`, `self-heal` |
 | `github_token`           | _(required)_                         | GitHub token for API access                    |
 | `openai_api_key`         | —                                    | OpenAI API key                                 |
 | `anthropic_api_key`      | —                                    | Anthropic API key                              |
@@ -274,6 +274,7 @@ The app listens for these commands in PR/issue comments:
 - `/review` or `/oc` — trigger a review
 - `/fix` — trigger auto-fix
 - `/audit` — trigger codebase audit
+- `/analyze` — analyze an issue and generate an implementation plan
 
 ---
 
