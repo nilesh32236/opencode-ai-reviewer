@@ -15,8 +15,9 @@ import type {
   ReviewResult,
 } from '../types/index.js';
 import { CircuitBreaker } from './circuit-breaker.js';
+import { getLabelColor } from './label-color.js';
 import { withRetry } from './retry.js';
-import { buildReviewBody, getConfidenceBadge } from './review-body.js';
+import { buildReviewBody } from './review-body.js';
 
 /** GitLab adapter. */
 export class GitLabAdapter implements PlatformAdapter {
@@ -815,7 +816,7 @@ export class GitLabAdapter implements PlatformAdapter {
         await this.api('/labels', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: label, color: '#6699cc', description: '' }),
+          body: JSON.stringify({ name: label, color: `#${getLabelColor(label)}`, description: '' }),
         });
       } catch (err) {
         core.debug(

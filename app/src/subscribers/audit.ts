@@ -21,6 +21,12 @@ export function createAuditSubscriber(): Subscriber {
         const parsed = auditComment?.body ? parseCommand(auditComment.body) : null;
         if (!parsed || parsed.command !== 'audit') return;
         const config = buildConfig();
+        const auditIssue =
+          auditPayload.issue && typeof auditPayload.issue === 'object'
+            ? ((auditPayload.issue as Record<string, unknown>).number as number | undefined)
+            : ((auditPayload.pull_request as Record<string, unknown> | undefined)?.number as
+                | number
+                | undefined);
         await handleAudit(
           event.repo || '',
           getToken(),
@@ -29,6 +35,7 @@ export function createAuditSubscriber(): Subscriber {
           undefined,
           undefined,
           signal,
+          auditIssue,
         );
       } catch (err) {
         logger.error(

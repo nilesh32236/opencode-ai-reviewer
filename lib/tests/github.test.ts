@@ -1181,6 +1181,18 @@ diff --git a/deleted.ts b/deleted.ts
       await helper.ensureLabels([]);
       expect(fetchMock).not.toHaveBeenCalled();
     });
+
+    it('uses the semantic palette color for severity labels', async () => {
+      fetchMock.mockResolvedValue(mockResponse({ body: {} }));
+
+      await helper.ensureLabels(['audit:critical']);
+
+      const postCall = fetchMock.mock.calls.find(
+        ([, opts]: [string, RequestInit]) => opts?.method === 'POST',
+      );
+      const body = JSON.parse(String(postCall?.[1]?.body));
+      expect(body.color).toBe('b60205');
+    });
   });
 
   describe('gatherContext', () => {

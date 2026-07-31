@@ -1,5 +1,6 @@
 import type { PlatformAdapter } from '../platform/adapter.js';
 import type { PreviousFindingIteration, ReviewIssue, ReviewResult } from '../types/index.js';
+import { formatIssueBullet } from './review-body.js';
 
 /** Record of a single auto-fix iteration. */
 export interface IterationRecord {
@@ -56,10 +57,7 @@ export function buildReviewBody(
     if (current.issues.length > 0) {
       lines.push('', '### Issues Found');
       for (const i of current.issues) {
-        const badge = getConfidenceBadge(i.confidence);
-        lines.push(
-          `- ${badge} **${i.severity.toUpperCase()}:** \`${i.file}:${i.line}\` — ${i.message}`,
-        );
+        lines.push(formatIssueBullet(i));
         if (i.suggestion) {
           lines.push(`  > 💡 **How to fix:** ${i.suggestion}`);
         }
@@ -154,19 +152,6 @@ export function buildFixBody(history: IterationRecord[]): string {
     '🤖 The fix agent has applied changes. The PR will be reviewed again on the next iteration.',
   );
   return lines.join('\n');
-}
-
-function getConfidenceBadge(confidence?: 'high' | 'medium' | 'low'): string {
-  switch (confidence) {
-    case 'high':
-      return '🔴';
-    case 'medium':
-      return '🟡';
-    case 'low':
-      return '⚪';
-    default:
-      return '⚪';
-  }
 }
 
 /**

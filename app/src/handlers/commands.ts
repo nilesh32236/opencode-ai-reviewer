@@ -148,7 +148,16 @@ export async function handleCommand(
       }
 
       case 'audit': {
-        await handleAudit(repo, token, config, undefined, undefined, tempDir);
+        await handleAudit(
+          repo,
+          token,
+          config,
+          undefined,
+          undefined,
+          tempDir,
+          undefined,
+          issueNumber,
+        );
         break;
       }
     }

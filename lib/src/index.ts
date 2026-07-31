@@ -62,6 +62,12 @@ export { DEFAULT_ALLOWLIST, validateRunChecksCommand } from './utils/command.js'
 export { CircuitBreaker } from './utils/circuit-breaker.js';
 export type { CircuitState, CircuitBreakerOptions } from './utils/circuit-breaker.js';
 export { sanitizeString } from './utils/sanitize.js';
+export { getLabelColor } from './utils/label-color.js';
+export {
+  formatConfidenceLabel,
+  formatIssueBullet,
+  getSeverityBadge,
+} from './utils/review-body.js';
 export {
   analyzeFindingReachability,
   analyzeBatchReachability,

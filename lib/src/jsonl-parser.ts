@@ -11,6 +11,7 @@ import type {
   SummaryFinding,
   VerdictFinding,
 } from './types/index.js';
+import { formatConfidenceLabel, getSeverityBadge } from './utils/review-body.js';
 
 const VALID_TYPES: FindingType[] = ['summary', 'verdict', 'strength', 'issue'];
 const VALID_SEVERITIES: Severity[] = ['critical', 'important', 'minor'];
@@ -424,50 +425,6 @@ function validateAndNormalize(obj: Record<string, unknown>): Finding {
   }
 }
 
-/**
- * Build a markdown review body from a ReviewResult.
- * @param result - The review result to format.
- * @returns A markdown string with the review summary, strengths, and issues.
- */
-export function buildReviewBody(result: ReviewResult): string {
-  const parts: string[] = [];
-
-  parts.push('## AI Code Review Summary');
-  parts.push('');
-  parts.push(result.summary || 'No summary provided.');
-  parts.push('');
-  parts.push(`**Ready to merge?** ${result.verdict.ready ? 'Yes' : 'No'}`);
-  parts.push('');
-  parts.push(`**Reasoning:** ${result.verdict.reasoning || 'No reasoning provided.'}`);
-  parts.push('');
-
-  if (result.strengths.length > 0) {
-    parts.push('### Strengths');
-    parts.push('');
-    for (const s of result.strengths) {
-      const location = s.file && s.line ? `**${s.file}:${s.line}**` : '';
-      parts.push(`- ${location ? location + ' — ' : ''}${s.message}`);
-    }
-    parts.push('');
-  }
-
-  if (result.issues.length > 0) {
-    parts.push('### Issues');
-    parts.push('');
-    for (const i of result.issues) {
-      const severityLabel = i.severity.toUpperCase();
-      const badge = getConfidenceBadge(i.confidence);
-      parts.push(`- ${badge} **${severityLabel}:** ${i.file}:${i.line} — ${i.message}`);
-      if (i.suggestion) {
-        parts.push(`  > Suggestion: ${i.suggestion}`);
-      }
-    }
-    parts.push('');
-  }
-
-  return parts.join('\n');
-}
-
 /** An inline review comment on a pull request diff. */
 export interface InlineComment {
   path: string;
@@ -499,8 +456,7 @@ export function buildInlineComments(
       return true;
     })
     .map((issue) => {
-      const badge = getConfidenceBadge(issue.confidence);
-      let body = `${badge} **${issue.severity.toUpperCase()}**: ${issue.message}`;
+      let body = `${getSeverityBadge(issue.severity)} **${issue.severity.toUpperCase()}**: ${issue.message}${formatConfidenceLabel(issue.confidence)}`;
       if (issue.suggestion) {
         body += `\n\n> 💡 **How to fix:** ${issue.suggestion}`;
       }
@@ -555,17 +511,4 @@ const CODE_PATTERNS = [
  */
 function looksLikeCode(suggestion: string): boolean {
   return CODE_PATTERNS.some((p) => p.test(suggestion));
-}
-
-function getConfidenceBadge(confidence?: 'high' | 'medium' | 'low'): string {
-  switch (confidence) {
-    case 'high':
-      return '🔴';
-    case 'medium':
-      return '🟡';
-    case 'low':
-      return '⚪';
-    default:
-      return '⚪';
-  }
 }
