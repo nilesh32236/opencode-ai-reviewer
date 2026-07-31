@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.16] — 2026-07-31
+
+
+### Fixed
+
+- address issue #171 (#289) (#171
+#289)
+
+### Changed
+
+- fix(action): apply autofix label when creating PRs from issues and self-heal
+
+[v1.6.16]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.15...v1.6.16
+
 ## [v1.6.15] — 2026-07-31
 
 
