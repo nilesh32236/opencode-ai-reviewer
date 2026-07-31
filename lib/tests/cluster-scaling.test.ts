@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   EXACT_CLUSTER_LIMIT,
+  MAX_CLUSTER_INPUT,
   clusterFindings,
   clusterFindingsExact,
+  clusterFindingsWithStatus,
 } from '../src/pattern-detector/cluster.js';
 import {
   LSH_BANDS,
@@ -77,6 +79,16 @@ function makeBenchmarkDataset(n: number, seed: number): string[] {
     messages.push(tokens.join(' '));
   }
 
+  // Shuffle so the first MAX_CLUSTER_INPUT messages are a representative mix
+  // of near-duplicates and singletons regardless of N, rather than a dense
+  // block of near-duplicates that would bias the LSH comparison.
+  for (let i = messages.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    const tmp = messages[i];
+    messages[i] = messages[j];
+    messages[j] = tmp;
+  }
+
   return messages;
 }
 
@@ -113,19 +125,21 @@ describe('cluster scaling', () => {
 });
 
 describe.runIf(process.env.RUN_BENCH === '1')('cluster scaling benchmark', () => {
-  it('compares exact vs adaptive clustering time across dataset sizes', () => {
+  it('compares exact vs adaptive clustering on identical inputs (isolates LSH effect)', () => {
     const sizes = [100, 200, 500, 1000, 2000, 5000];
     const rows: Array<{ n: number; exactMs: number; adaptiveMs: number; speedup: number }> = [];
 
     for (const n of sizes) {
-      const messages = makeBenchmarkDataset(n, n);
+      // Same input for both paths: cap to MAX_CLUSTER_INPUT so the adaptive
+      // path is NOT silently truncating while the exact path runs on full N.
+      const input = makeBenchmarkDataset(n, n).slice(0, MAX_CLUSTER_INPUT);
 
       const startExact = performance.now();
-      const exactClusters = clusterFindingsExact(messages, 0.3);
+      const exactClusters = clusterFindingsExact(input, 0.3);
       const exactMs = performance.now() - startExact;
 
       const startAdaptive = performance.now();
-      const adaptiveClusters = clusterFindings(messages, 0.3);
+      const adaptiveClusters = clusterFindings(input, 0.3);
       const adaptiveMs = performance.now() - startAdaptive;
 
       rows.push({ n, exactMs, adaptiveMs, speedup: exactMs / Math.max(adaptiveMs, 0.001) });
@@ -134,7 +148,31 @@ describe.runIf(process.env.RUN_BENCH === '1')('cluster scaling benchmark', () =>
       expect(adaptiveMs).toBeLessThan(10000);
     }
 
-    console.log('clusterFindings benchmark (exact vs adaptive):');
+    console.log('clusterFindings benchmark (exact vs adaptive, same capped input):');
+    console.log(JSON.stringify(rows, null, 2));
+  }, 120000);
+
+  it('shows the adaptive path stays bounded by MAX_CLUSTER_INPUT on full-N inputs', () => {
+    const sizes = [500, 1000, 2000, 5000];
+    const rows: Array<{ n: number; exactMs: number; adaptiveMs: number; speedup: number }> = [];
+
+    for (const n of sizes) {
+      const messages = makeBenchmarkDataset(n, n);
+
+      const startExact = performance.now();
+      clusterFindingsExact(messages, 0.3);
+      const exactMs = performance.now() - startExact;
+
+      const startAdaptive = performance.now();
+      const { truncated } = clusterFindingsWithStatus(messages, 0.3);
+      const adaptiveMs = performance.now() - startAdaptive;
+
+      rows.push({ n, exactMs, adaptiveMs, speedup: exactMs / Math.max(adaptiveMs, 0.001) });
+      expect(truncated).toBe(n > MAX_CLUSTER_INPUT);
+      expect(adaptiveMs).toBeLessThan(10000);
+    }
+
+    console.log('clusterFindings benchmark (full-N: exact vs truncation-capped adaptive):');
     console.log(JSON.stringify(rows, null, 2));
   }, 120000);
 });

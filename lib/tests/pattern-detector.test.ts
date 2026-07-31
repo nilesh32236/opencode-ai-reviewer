@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LearningStore } from '../src/learning/store.js';
 import {
   EXACT_CLUSTER_LIMIT,
@@ -242,6 +242,72 @@ describe('clusterFindings – scaling', () => {
       expect(dominantGroup.overlap / largest.messages.length).toBeGreaterThanOrEqual(0.8);
     }
   });
+
+  it('falls back to the exact path for thresholds below the LSH calibration', () => {
+    const { messages } = makeSyntheticDataset(30, 8, 2, 12);
+    expect(messages.length).toBeGreaterThan(EXACT_CLUSTER_LIMIT);
+    expect(messages.length).toBeLessThanOrEqual(MAX_CLUSTER_INPUT);
+
+    const exactClusters = clusterFindingsExact(messages, 0.2);
+    const adaptiveClusters = clusterFindings(messages, 0.2);
+
+    const exactSet = new Set(exactClusters.flatMap((c) => c.messages));
+    const adaptiveSet = new Set(adaptiveClusters.flatMap((c) => c.messages));
+    expect(adaptiveSet.size).toBe(exactSet.size);
+  });
+
+  it('warns when the public API truncates input to the cap', () => {
+    const { messages } = makeSyntheticDataset(30, 20, 2, 13);
+    expect(messages.length).toBeGreaterThan(MAX_CLUSTER_INPUT);
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      clusterFindings(messages, 0.3);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('clusterFindings'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('honors a maxInput cap below MAX_CLUSTER_INPUT', () => {
+    const { messages } = makeSyntheticDataset(20, 20, 2, 14);
+    expect(messages.length).toBeLessThan(MAX_CLUSTER_INPUT);
+
+    const result = clusterFindingsWithStatus(messages, 0.3, 200);
+    expect(result.truncated).toBe(true);
+
+    const capped = new Set(messages.slice(0, 200));
+    for (const cluster of result.clusters) {
+      for (const msg of cluster.messages) {
+        expect(capped.has(msg)).toBe(true);
+      }
+    }
+  });
+
+  it('raises the clustering cap above MAX_CLUSTER_INPUT via maxInput', () => {
+    const { messages } = makeSyntheticDataset(30, 30, 2, 15);
+    expect(messages.length).toBeGreaterThan(MAX_CLUSTER_INPUT);
+
+    const defaultResult = clusterFindingsWithStatus(messages, 0.3);
+    const raisedResult = clusterFindingsWithStatus(messages, 0.3, 900);
+    expect(defaultResult.truncated).toBe(true);
+    expect(raisedResult.truncated).toBe(false);
+  });
+
+  it('never clusters messages that tokenize to empty sets', () => {
+    const shortMessages = Array.from({ length: 300 }, (_, i) => `x${i}`);
+    const real = [
+      'Missing error handling in async route handler',
+      'Unhandled promise rejection in error handling route',
+      'Add error boundary to React component',
+    ];
+
+    const clusters = clusterFindings([...shortMessages, ...real], 0.3);
+    const clustered = new Set(clusters.flatMap((c) => c.messages));
+    for (const m of shortMessages) {
+      expect(clustered.has(m)).toBe(false);
+    }
+  });
 });
 
 describe('minhash', () => {
@@ -251,6 +317,14 @@ describe('minhash', () => {
     const b = hashToken('error', 1);
     expect(a1).toBe(a2);
     expect(a1).not.toBe(b);
+  });
+
+  it('hashToken is a stable uint32 for large salt values', () => {
+    const h1 = hashToken('error handling', 4294967295);
+    const h2 = hashToken('error handling', 4294967295);
+    expect(h1).toBe(h2);
+    expect(h1).toBeGreaterThanOrEqual(0);
+    expect(h1).toBeLessThanOrEqual(4294967295);
   });
 
   it('computes identical signatures for identical token sets', () => {
@@ -282,6 +356,12 @@ describe('minhash', () => {
     for (const [i, j] of candidates) {
       expect(i).toBeLessThan(j);
     }
+  });
+
+  it('all-zero signatures (empty sets) become candidates for every pair', () => {
+    const zeros = Array.from({ length: 10 }, () => computeMinHashSignature(new Set<string>()));
+    const candidates = lshCandidates(zeros, LSH_BANDS, LSH_ROWS);
+    expect(candidates.size).toBe((10 * 9) / 2);
   });
 });
 
@@ -342,6 +422,36 @@ describe('PatternDetector', () => {
     const patterns = await detector.discover(3);
     expect(patterns.length).toBeGreaterThanOrEqual(1);
     expect(patterns[0].frequency).toBeGreaterThanOrEqual(3);
+  });
+
+  it('honors maxFindingsToCluster as the effective clustering cap', async () => {
+    const clusterMessages = [
+      'Missing error handling in async route handler',
+      'Unhandled promise rejection in error handling route',
+      'Add error boundary to React component',
+      'Wrap component with error boundary',
+    ];
+    const singletons = Array.from({ length: 550 }, (_, i) => `s${i}`);
+    const findings = [...singletons, ...clusterMessages].map((message) => ({
+      message,
+      file: 'src/routes.ts',
+    }));
+
+    const getSpy = vi.spyOn(store, 'getFindingMessages').mockResolvedValue(findings);
+
+    // Default cap (MAX_CLUSTER_INPUT = 500) excludes the trailing cluster
+    // messages, so no cluster-based pattern reaches minFrequency.
+    const defaultDetector = new PatternDetector(store);
+    const defaultPatterns = await defaultDetector.discover(2);
+    expect(defaultPatterns.length).toBe(0);
+
+    // A raised cap genuinely raises the effective ceiling: the trailing
+    // cluster messages now contribute and produce a pattern.
+    const raisedDetector = new PatternDetector(store, { maxFindingsToCluster: 600 });
+    const raisedPatterns = await raisedDetector.discover(2);
+    expect(raisedPatterns.length).toBeGreaterThanOrEqual(1);
+
+    getSpy.mockRestore();
   });
 });
 

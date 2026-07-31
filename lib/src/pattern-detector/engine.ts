@@ -17,7 +17,11 @@ export interface DiscoveredPattern {
 export interface PatternDetectorOptions {
   windowSize?: number;
   sinceDays?: number;
-  /** Maximum number of unique findings clustered in a single discover() call. */
+  /**
+   * Maximum number of unique findings clustered in a single discover() call.
+   * Passed through as the clustering cap, so values above or below the default
+   * MAX_CLUSTER_INPUT (500) are honored. When omitted, MAX_CLUSTER_INPUT is used.
+   */
   maxFindingsToCluster?: number;
 }
 
@@ -75,22 +79,18 @@ export class PatternDetector {
     if (uniqueMessages.length === 0) return [];
 
     const { maxFindingsToCluster } = this.options;
+    const cap = maxFindingsToCluster ?? MAX_CLUSTER_INPUT;
     const messagesToCluster =
-      maxFindingsToCluster !== undefined && uniqueMessages.length > maxFindingsToCluster
-        ? uniqueMessages.slice(0, maxFindingsToCluster)
-        : uniqueMessages;
+      uniqueMessages.length > cap ? uniqueMessages.slice(0, cap) : uniqueMessages;
 
     if (messagesToCluster.length < uniqueMessages.length) {
       core.warning(
         `PatternDetector: truncating ${uniqueMessages.length - messagesToCluster.length} of ` +
-          `${uniqueMessages.length} unique findings for clustering (max ${messagesToCluster.length})`,
+          `${uniqueMessages.length} unique findings for clustering (max ${cap})`,
       );
     }
 
-    const { clusters, truncated } = clusterFindingsWithStatus(messagesToCluster, 0.3);
-    if (truncated) {
-      core.warning(`PatternDetector: clustering truncated to ${MAX_CLUSTER_INPUT} findings`);
-    }
+    const { clusters } = clusterFindingsWithStatus(messagesToCluster, 0.3, cap);
 
     // Handle frequent messages that didn't cluster (single-message patterns)
     const clusteredMsgs = new Set(clusters.flatMap((c) => c.messages));

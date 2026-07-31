@@ -11,8 +11,14 @@ const WHITESPACE_REGEX = /\s+/;
 
 /** Maximum number of messages clustered with the exact O(N²) all-pairs path. */
 export const EXACT_CLUSTER_LIMIT = 100;
-/** Hard safety-net cap on the number of messages clustered in a single call. */
+/** Default hard safety-net cap on the number of messages clustered in a single call. */
 export const MAX_CLUSTER_INPUT = 500;
+/**
+ * Similarity at which the LSH band/row configuration is calibrated:
+ * (1/LSH_BANDS)^(1/LSH_ROWS) ≈ 0.29. Below this, the LSH pre-filter would
+ * drop genuinely similar pairs, so the exact path is used instead.
+ */
+const LSH_BAND_THRESHOLD = (1 / LSH_BANDS) ** (1 / LSH_ROWS);
 
 /**
  * Tokenize a message into a set of lowercase alphanumeric tokens (length > 2).
@@ -110,7 +116,7 @@ function greedyCluster(
  */
 export interface ClusterResult {
   clusters: Array<{ centroid: string; messages: string[] }>;
-  /** True when the input was truncated to MAX_CLUSTER_INPUT. */
+  /** True when the input was truncated to the configured maxInput cap. */
   truncated: boolean;
 }
 
@@ -132,39 +138,65 @@ export function clusterFindingsExact(
 }
 
 /**
+ * Build per-index candidate lists for the LSH path using MinHash signatures.
+ * Messages whose token set is empty are skipped: their Jaccard similarity to
+ * every other message is 0, so they can never be clustered, and skipping them
+ * avoids the all-pairs candidate blow-up that all-zero signatures would cause.
+ * @param tokens - Token sets for each message.
+ * @returns Per-index candidate lists (index > i), with indices remapped back
+ * to the full token array.
+ */
+function buildLshCandidatesByIndex(tokens: Set<string>[]): number[][] {
+  const candidatesByIndex: number[][] = Array.from({ length: tokens.length }, () => []);
+  const nonEmptyIndices: number[] = [];
+  const signatures: number[][] = [];
+
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i].size === 0) continue;
+    nonEmptyIndices.push(i);
+    signatures.push(computeMinHashSignature(tokens[i], MINHASH_SIGNATURE_SIZE));
+  }
+
+  const candidatePairs = lshCandidates(signatures, LSH_BANDS, LSH_ROWS);
+  for (const [a, b] of candidatePairs) {
+    candidatesByIndex[nonEmptyIndices[a]].push(nonEmptyIndices[b]);
+  }
+  for (const candidates of candidatesByIndex) {
+    candidates.sort((a, b) => a - b);
+  }
+  return candidatesByIndex;
+}
+
+/**
  * Cluster finding messages with an adaptive strategy:
- * - Inputs larger than MAX_CLUSTER_INPUT are truncated to the cap (safety net).
+ * - Inputs larger than `maxInput` are truncated to the cap (safety net).
  * - Inputs up to EXACT_CLUSTER_LIMIT use the exact all-pairs greedy algorithm.
  * - Larger inputs use MinHash LSH candidate pre-filtering followed by exact
  *   Jaccard verification on the candidate pairs (near-linear in practice).
+ *   The LSH path is calibrated for thresholds at or above ~0.29; for lower
+ *   thresholds the exact path is used so no similar pairs are dropped.
  * @param messages - Array of finding message strings.
  * @param threshold - Jaccard similarity threshold (default 0.3).
+ * @param maxInput - Hard cap on the number of messages clustered (default MAX_CLUSTER_INPUT).
  * @returns Clusters plus whether the input was truncated.
  */
-export function clusterFindingsWithStatus(messages: string[], threshold = 0.3): ClusterResult {
+export function clusterFindingsWithStatus(
+  messages: string[],
+  threshold = 0.3,
+  maxInput: number = MAX_CLUSTER_INPUT,
+): ClusterResult {
   if (messages.length === 0) return { clusters: [], truncated: false };
 
-  const truncated = messages.length > MAX_CLUSTER_INPUT;
-  const input = truncated ? messages.slice(0, MAX_CLUSTER_INPUT) : messages;
+  const truncated = messages.length > maxInput;
+  const input = truncated ? messages.slice(0, maxInput) : messages;
 
   const tokens = input.map((m) => tokenize(m));
 
   let clusters: Array<{ centroid: string; messages: string[] }>;
-  if (input.length <= EXACT_CLUSTER_LIMIT) {
+  if (input.length <= EXACT_CLUSTER_LIMIT || threshold < LSH_BAND_THRESHOLD) {
     clusters = greedyCluster(tokens, input, threshold, null);
   } else {
-    const signatures = tokens.map((t) => computeMinHashSignature(t, MINHASH_SIGNATURE_SIZE));
-    const candidatePairs = lshCandidates(signatures, LSH_BANDS, LSH_ROWS);
-
-    const candidatesByIndex: number[][] = Array.from({ length: input.length }, () => []);
-    for (const [i, j] of candidatePairs) {
-      candidatesByIndex[i].push(j);
-    }
-    for (const candidates of candidatesByIndex) {
-      candidates.sort((a, b) => a - b);
-    }
-
-    clusters = greedyCluster(tokens, input, threshold, candidatesByIndex);
+    clusters = greedyCluster(tokens, input, threshold, buildLshCandidatesByIndex(tokens));
   }
 
   return { clusters, truncated };
@@ -178,15 +210,28 @@ export function clusterFindingsWithStatus(messages: string[], threshold = 0.3): 
  * Only clusters with 2+ messages are returned.
  *
  * For large inputs the clustering switches to a MinHash LSH pre-filtered
- * candidate set (near-linear) with a hard cap of MAX_CLUSTER_INPUT.
+ * candidate set (near-linear) with a hard cap of `maxInput` (default
+ * MAX_CLUSTER_INPUT = 500). Inputs above the cap are truncated to it; when
+ * that happens a warning is emitted on the console. The LSH path is calibrated
+ * for thresholds at or above ~0.29 — for lower thresholds the exact O(N²) path
+ * is used so no similar pairs are dropped.
  *
  * @param messages - Array of finding message strings.
  * @param threshold - Jaccard similarity threshold (default 0.3).
+ * @param maxInput - Hard cap on the number of messages clustered (default MAX_CLUSTER_INPUT).
  * @returns Array of clusters, each with a centroid and member messages.
  */
 export function clusterFindings(
   messages: string[],
   threshold = 0.3,
+  maxInput: number = MAX_CLUSTER_INPUT,
 ): Array<{ centroid: string; messages: string[] }> {
-  return clusterFindingsWithStatus(messages, threshold).clusters;
+  const { clusters, truncated } = clusterFindingsWithStatus(messages, threshold, maxInput);
+  if (truncated) {
+    console.warn(
+      `clusterFindings: input of ${messages.length} messages exceeds the cap of ${maxInput}; ` +
+        `${messages.length - maxInput} message(s) were not clustered`,
+    );
+  }
+  return clusters;
 }

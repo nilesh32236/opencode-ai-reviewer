@@ -36,13 +36,19 @@ function mix32(value: string): number {
 /**
  * Hash a token into a deterministic 32-bit unsigned integer.
  * The salt identifies an independent pseudo-permutation (hash function index).
+ * Uses the same mix32-based primary/secondary construction as
+ * `computeMinHashSignature` so the public primitive is consistent with the
+ * production path; `Math.imul` keeps every multiply a true 32-bit operation
+ * regardless of salt magnitude.
  * @param token - The token to hash.
  * @param salt - Salt value selecting the hash function.
  * @returns A uint32 hash value in the range [0, 2^32).
  */
 export function hashToken(token: string, salt: number): number {
-  const salted = mix32(`${salt}:${token}`);
-  return Math.imul(salted ^ (salt * 0x9e3779b1), 0x85ebca6b) >>> 0;
+  const base = mix32(token);
+  const primary = (base ^ Math.imul(salt, PRIMARY_HASH_SALT)) >>> 0;
+  const secondary = (Math.imul(base ^ Math.imul(salt, SECONDARY_HASH_SALT), 0xc2b2ae35) >>> 0) | 1;
+  return (primary + secondary) >>> 0;
 }
 
 /**
@@ -51,6 +57,13 @@ export function hashToken(token: string, salt: number): number {
  * tokens of `primary + k * secondary (mod 2^32)`, which approximates k
  * independent pseudo-random permutations. Identical token sets produce
  * identical signatures.
+ *
+ * Note: empty token sets produce all-zero signatures. Because every empty or
+ * identically-tokenized message then shares every LSH band, such messages all
+ * become candidates for one another (up to C(n,2) pairs). Exact Jaccard
+ * verification discards those candidates, so this is a performance concern,
+ * not a correctness one; callers should skip empty token sets before
+ * signature computation where large such inputs are expected.
  * @param tokens - Set of tokens to summarize.
  * @param numHashes - Number of hash functions (signature length).
  * @returns Array of `numHashes` minimum hash values.
@@ -80,6 +93,9 @@ export function computeMinHashSignature(
  * landing in the same band bucket are treated as candidate similar pairs.
  * Bucket keys are 32-bit integer hashes of the band rows — rare key collisions
  * only add spurious candidates, which exact Jaccard verification discards.
+ * All-zero signatures (e.g. from empty token sets) all land in the same bucket,
+ * so large sets of them degrade to all-pairs candidates; see
+ * `computeMinHashSignature`.
  * Returns a deduplicated set of index pairs `(i, j)` with `i < j`.
  * @param signatures - MinHash signatures, one per item.
  * @param bands - Number of bands to split each signature into.
