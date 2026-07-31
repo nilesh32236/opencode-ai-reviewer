@@ -66,6 +66,10 @@ else
 
   PR_NUMBER=$(echo "$PR_URL" | grep -oP '/pull/\K[0-9]+' || echo "")
 
+  if [ -n "$PR_NUMBER" ]; then
+    gh pr edit "$PR_NUMBER" --add-label "autofix" --repo "$REPO" 2>/dev/null || true
+  fi
+
   echo "pr_number=${PR_NUMBER}"
   echo "pr_url=${PR_URL}"
   echo "action=created"

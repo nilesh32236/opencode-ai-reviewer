@@ -164,17 +164,30 @@ export async function runSelfHeal(
     lastVerificationError === undefined,
   );
 
-  // Create PR with retry
   const baseBranch = defaultBranch;
   let prUrl = '';
+  let prNumber: number | undefined;
   try {
     const result = await withRetry(
       async () => gh.createPR(prTitle, prBody, branchName, baseBranch),
       { maxRetries: 3, baseDelayMs: 1000 },
     );
     prUrl = result?.url || '';
+    prNumber = result?.number;
   } catch (err) {
     core.warning(sanitize(`Failed to create PR: ${err instanceof Error ? err.message : err}`));
+  }
+
+  if (prNumber) {
+    try {
+      await gh.addLabels(prNumber, ['autofix', 'self-heal']);
+    } catch (err) {
+      core.warning(
+        sanitize(
+          `Failed to label self-heal PR #${prNumber}: ${err instanceof Error ? err.message : err}`,
+        ),
+      );
+    }
   }
 
   if (prUrl) {

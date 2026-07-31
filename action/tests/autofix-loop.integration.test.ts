@@ -24,6 +24,11 @@ const {
   mockGetReviewThreads,
   mockResolveReviewThread,
   mockMinimizeReviewComment,
+  mockAddLabels,
+  mockEnsureLabels,
+  mockCreatePR,
+  mockGetDefaultBranch,
+  mockGetIssue,
 } = vi.hoisted(() => {
   const _mockGetInput = vi.fn();
   const _mockSetOutput = vi.fn();
@@ -46,6 +51,11 @@ const {
   const _mockGetReviewThreads = vi.fn();
   const _mockResolveReviewThread = vi.fn();
   const _mockMinimizeReviewComment = vi.fn();
+  const _mockAddLabels = vi.fn();
+  const _mockEnsureLabels = vi.fn();
+  const _mockCreatePR = vi.fn();
+  const _mockGetDefaultBranch = vi.fn();
+  const _mockGetIssue = vi.fn();
   return {
     mockGetInput: _mockGetInput,
     mockSetOutput: _mockSetOutput,
@@ -68,6 +78,11 @@ const {
     mockGetReviewThreads: _mockGetReviewThreads,
     mockResolveReviewThread: _mockResolveReviewThread,
     mockMinimizeReviewComment: _mockMinimizeReviewComment,
+    mockAddLabels: _mockAddLabels,
+    mockEnsureLabels: _mockEnsureLabels,
+    mockCreatePR: _mockCreatePR,
+    mockGetDefaultBranch: _mockGetDefaultBranch,
+    mockGetIssue: _mockGetIssue,
   };
 });
 
@@ -92,10 +107,15 @@ vi.mock('@actions/github', () => ({
 
 vi.mock('@actions/exec', () => ({
   exec: vi.fn().mockResolvedValue(0),
-  getExecOutput: vi.fn().mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' }),
+  getExecOutput: vi.fn().mockImplementation(async (cmd: string, args: string[]) => {
+    if (cmd === 'git' && args.includes('status')) {
+      return { exitCode: 0, stdout: 'M src/fix.ts', stderr: '' };
+    }
+    return { exitCode: 0, stdout: '', stderr: '' };
+  }),
 }));
 
-import { runAutofixLoop } from '../src/fix.js';
+import { runAutofixLoop, runFixIssue } from '../src/fix.js';
 
 const mockGh = {
   getMR: mockGetPR,
@@ -110,6 +130,11 @@ const mockGh = {
   getReviewThreads: mockGetReviewThreads,
   resolveReviewThread: mockResolveReviewThread,
   minimizeReviewComment: mockMinimizeReviewComment,
+  addLabels: mockAddLabels,
+  ensureLabels: mockEnsureLabels,
+  createPR: mockCreatePR,
+  getDefaultBranch: mockGetDefaultBranch,
+  getIssue: mockGetIssue,
 } as unknown as GitHubHelper;
 
 const mockEngine = {
@@ -344,5 +369,50 @@ describe('runAutofixLoop', () => {
       ['autofix:needs-manual-review'],
       ['autofix', 'autofix:needs-fix'],
     );
+  });
+});
+
+describe('runFixIssue', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetInput.mockReturnValue('42');
+    mockGetDefaultBranch.mockResolvedValue('main');
+    mockGatherContext.mockResolvedValue('<!-- issue-analysis-plan -->\n### Implementation Plan');
+    mockGetIssue.mockResolvedValue({
+      number: 42,
+      title: 'Fix sample bug',
+      body: 'Bug description',
+      labels: [],
+      comments: [],
+    });
+    mockRunFix.mockResolvedValue({
+      changesMade: true,
+      summary: 'Applied fix',
+      filesChanged: ['src/fix.ts'],
+    });
+    mockEnsureLabels.mockResolvedValue(undefined);
+    mockCreatePR.mockResolvedValue({ number: 99, url: 'https://github.com/owner/repo/pull/99' });
+    mockAddLabels.mockResolvedValue(undefined);
+  });
+
+  it('creates PR from issue and adds autofix label to the created PR', async () => {
+    await runFixIssue(
+      makeInputs({ mode: 'fix' }),
+      makeConfig({ timeoutMinutes: 20 }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+      'token',
+    );
+
+    expect(mockCreatePR).toHaveBeenCalledWith(
+      '[Autofix] Fix sample bug',
+      expect.stringContaining('Fixes #42'),
+      'autofix/issue-42',
+      'main',
+    );
+    expect(mockAddLabels).toHaveBeenCalledWith(99, ['autofix']);
+    expect(mockSetOutput).toHaveBeenCalledWith('pr_url', 'https://github.com/owner/repo/pull/99');
+    expect(mockSetOutput).toHaveBeenCalledWith('changes_made', 'true');
   });
 });

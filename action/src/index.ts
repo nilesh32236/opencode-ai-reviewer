@@ -278,11 +278,13 @@ async function run(): Promise<void> {
             const isPr =
               platform === 'gitlab'
                 ? !!process.env.CI_MERGE_REQUEST_IID
-                : !!github.context.payload.issue?.pull_request;
+                : !!github.context.payload.pull_request ||
+                  !!github.context.payload.issue?.pull_request;
             const issueNum =
               platform === 'gitlab'
                 ? Number(process.env.CI_MERGE_REQUEST_IID || '0')
-                : github.context.payload.issue?.number;
+                : github.context.payload.issue?.number ||
+                  github.context.payload.pull_request?.number;
             if (isPr) {
               await runAutofixLoop(inputs, config, engine, gh, repo, token);
             } else if (issueNum && !isPr) {

@@ -329,6 +329,17 @@ export async function runFixIssue(
   if (prUrl) {
     core.info(`Created PR: ${prUrl}`);
     core.setOutput('pr_url', prUrl);
+    if (prResult?.number) {
+      try {
+        await gh.addLabels(prResult.number, ['autofix']);
+      } catch (err) {
+        core.warning(
+          sanitize(
+            `Failed to label autofix PR #${prResult.number}: ${err instanceof Error ? err.message : err}`,
+          ),
+        );
+      }
+    }
     try {
       await gh.postOrUpdateComment(
         issueNumber,
