@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.15] — 2026-07-31
+
+
+### Fixed
+
+- self-heal CI failure (attempt 1) [`lint-error` — eslint/jsdoc rule violations (verify docstring coverage step)] (#287) (#287)
+- support /fix --force to auto-answer blocking questions and proceed
+- address issue #168 (#286) (#168
+#286)
+
+[v1.6.15]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.14...v1.6.15
+
 ## [v1.6.14] — 2026-07-30
 
 
