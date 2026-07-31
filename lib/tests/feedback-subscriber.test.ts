@@ -88,7 +88,7 @@ describe('FeedbackSubscriber', () => {
       type: 'comment.created',
       category: 'comment',
       payload: {
-        comment: { body: 'This is a false positive, not an issue' },
+        comment: { body: 'This is a false positive, not an issue', in_reply_to_id: 42 },
         issue: { number: 1 },
       },
       timestamp: Date.now(),
@@ -110,7 +110,7 @@ describe('FeedbackSubscriber', () => {
       type: 'comment.created',
       category: 'comment',
       payload: {
-        comment: { body: 'Looks good to me!' },
+        comment: { body: 'Looks good to me!', in_reply_to_id: 42 },
         issue: { number: 1 },
       },
       timestamp: Date.now(),
@@ -119,6 +119,118 @@ describe('FeedbackSubscriber', () => {
 
     const fpRate = await store.getFalsePositiveRate();
     expect(fpRate).toBe(0);
+  });
+
+  it('ignores top-level comments even with dispute keywords', async () => {
+    await store.recordFinding({
+      prNumber: 1,
+      type: 'issue',
+      message: 'test',
+    });
+
+    await subscriber.handle({
+      type: 'comment.created',
+      category: 'comment',
+      payload: {
+        comment: { body: 'This finding is wrong' },
+        issue: { number: 1 },
+      },
+      timestamp: Date.now(),
+      prNumber: 1,
+    });
+
+    const fpRate = await store.getFalsePositiveRate();
+    expect(fpRate).toBe(0);
+  });
+
+  it('fetches at most 20 findings for feedback', async () => {
+    for (let i = 0; i < 30; i++) {
+      await store.recordFinding({
+        prNumber: 1,
+        type: 'issue',
+        message: `finding ${i}`,
+      });
+    }
+
+    await subscriber.handle({
+      type: 'comment.created',
+      category: 'comment',
+      payload: {
+        comment: { body: 'This is wrong', in_reply_to_id: 42 },
+        issue: { number: 1 },
+      },
+      timestamp: Date.now(),
+      prNumber: 1,
+    });
+
+    const breakdown = await store.getFeedbackBreakdown();
+    expect(breakdown.disputedCount).toBe(20);
+  });
+
+  it('debounce prevents duplicate processing within 60s', async () => {
+    await store.recordFinding({
+      prNumber: 1,
+      type: 'issue',
+      message: 'test',
+    });
+
+    const event = {
+      type: 'comment.created' as const,
+      category: 'comment' as const,
+      payload: {
+        comment: { body: 'This is wrong', in_reply_to_id: 42 },
+        issue: { number: 1 },
+      },
+      timestamp: Date.now(),
+      prNumber: 1,
+    };
+
+    await subscriber.handle(event);
+    await subscriber.handle(event);
+
+    const breakdown = await store.getFeedbackBreakdown();
+    expect(breakdown.disputedCount).toBe(1);
+  });
+
+  it('parses file:line from comment body to narrow feedback', async () => {
+    await store.recordFinding({
+      prNumber: 1,
+      type: 'issue',
+      message: 'unrelated',
+      file: 'src/other.ts',
+      line: 10,
+    });
+    await store.recordFinding({
+      prNumber: 1,
+      type: 'issue',
+      message: 'target',
+      file: 'src/target.ts',
+      line: 42,
+    });
+    await store.recordFinding({
+      prNumber: 1,
+      type: 'issue',
+      message: 'target line',
+      file: 'src/target.ts',
+      line: 60,
+    });
+
+    await subscriber.handle({
+      type: 'comment.created',
+      category: 'comment',
+      payload: {
+        comment: {
+          body: 'This is incorrect at src/target.ts:42',
+          in_reply_to_id: 42,
+        },
+        issue: { number: 1 },
+      },
+      timestamp: Date.now(),
+      prNumber: 1,
+    });
+
+    const breakdown = await store.getFeedbackBreakdown();
+    expect(breakdown.disputedCount).toBe(1);
   });
 
   it('ignores empty comment bodies', async () => {
@@ -166,7 +278,10 @@ describe('FeedbackSubscriber', () => {
       await sub.handle({
         type: 'comment.created',
         category: 'comment',
-        payload: { comment: { body: kw }, issue: { number: 1 } },
+        payload: {
+          comment: { body: kw, in_reply_to_id: 42 },
+          issue: { number: 1 },
+        },
         timestamp: Date.now(),
         prNumber: 1,
       });
