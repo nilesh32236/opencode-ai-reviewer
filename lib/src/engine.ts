@@ -45,6 +45,12 @@ import {
 } from './utils/manifest-detector.js';
 import { analyzeBatchReachability } from './utils/reachability.js';
 
+/** Maximum number of batch chunks processed concurrently by `reviewPR`. */
+export const MAX_BATCH_CONCURRENCY = 8;
+
+/** Fixed inter-chunk backoff delay in milliseconds between concurrent chunks. */
+export const INTER_CHUNK_DELAY_MS = 150;
+
 /**
  * Orchestrates PR review, auto-fix, and audit workflows.
  * Wraps MCP context enrichment, learning-store queries, and OpenCode CLI invocation.
@@ -305,11 +311,15 @@ export class ReviewEngine {
 
     let accumulatedDurationMs = 0;
     let accumulatedTokensUsed = 0;
-    const concurrencyLimit = Math.min(os.cpus().length || 4, fileBatches.length, 8);
+    const concurrencyLimit = Math.min(
+      os.cpus().length || 4,
+      fileBatches.length,
+      MAX_BATCH_CONCURRENCY,
+    );
     const batchResults: ReviewResult[] = [];
     for (let i = 0; i < fileBatches.length; i += concurrencyLimit) {
       if (i > 0) {
-        await new Promise((r) => setTimeout(r, 150));
+        await new Promise((r) => setTimeout(r, INTER_CHUNK_DELAY_MS));
       }
       const chunk = fileBatches.slice(i, i + concurrencyLimit);
       const chunkOutputs = await Promise.all(

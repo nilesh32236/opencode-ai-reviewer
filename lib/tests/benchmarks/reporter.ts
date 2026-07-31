@@ -1,6 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { BUDGETS } from './budgets.js';
+import { BUDGETS, type BudgetName } from './budgets.js';
+
+function getBudget(name: BudgetName): number {
+  return BUDGETS[name];
+}
 
 interface VitestBenchmark {
   name: string;
@@ -98,7 +102,7 @@ function checkTiming(
     });
     return;
   }
-  const meanMs = benchmark.mean * 1000;
+  const meanMs = benchmark.mean;
   results.push({
     name: label,
     measured: `${meanMs.toFixed(3)}ms`,
@@ -134,68 +138,90 @@ function checkThroughput(
   });
 }
 
+const MEMORY_METRIC_NAMES = ['jsonl-parse-2000-lines'] as const;
+const E2E_METRIC_NAMES = ['reviewPR-1-files', 'reviewPR-5-files', 'reviewPR-25-files'] as const;
+
 function checkMemory(results: CheckResult[], metrics: BenchMetrics): void {
-  for (const entry of metrics.memory) {
-    const budget = BUDGETS.heapDeltaMaxBytes;
+  const budget = getBudget('heapDeltaMaxBytes');
+  const budgetLabel = `< ${(budget / 1024).toFixed(1)} KiB`;
+  for (const expected of MEMORY_METRIC_NAMES) {
+    const entry = metrics.memory.find((e) => e.name === expected);
+    if (!entry) {
+      results.push({
+        name: `heap delta ${expected}`,
+        measured: 'N/A (metric missing)',
+        budget: budgetLabel,
+        passed: false,
+      });
+      continue;
+    }
     results.push({
       name: `heap delta ${entry.name}`,
       measured: `${(entry.value / 1024).toFixed(1)} KiB`,
-      budget: `< ${(budget / 1024).toFixed(1)} KiB`,
+      budget: budgetLabel,
       passed: entry.value < budget,
-    });
-  }
-  if (metrics.memory.length === 0) {
-    results.push({
-      name: 'heap delta jsonl-parse-2000-lines',
-      measured: 'N/A (metric missing)',
-      budget: `< ${(BUDGETS.heapDeltaMaxBytes / 1024).toFixed(1)} KiB`,
-      passed: false,
     });
   }
 }
 
 function checkApiCalls(results: CheckResult[], metrics: BenchMetrics): void {
-  for (const entry of metrics.apiCalls) {
+  for (const expected of E2E_METRIC_NAMES) {
+    const entry = metrics.apiCalls.find((e) => e.name === expected);
+    if (!entry) {
+      results.push({
+        name: `runOpenCode calls ${expected}`,
+        measured: 'N/A (metric missing)',
+        budget: '== expected calls',
+        passed: false,
+      });
+      continue;
+    }
     const batches = entry.meta?.batches ?? 1;
-    const expected = batches === 1 ? 1 : batches + 1;
+    const expectedCalls = batches === 1 ? 1 : batches + 1;
     results.push({
       name: `runOpenCode calls ${entry.name}`,
       measured: `${entry.value} calls`,
-      budget: `== ${expected} calls`,
-      passed: entry.value === expected,
-    });
-  }
-  if (metrics.apiCalls.length === 0) {
-    results.push({
-      name: 'runOpenCode calls reviewPR-1-files',
-      measured: 'N/A (metric missing)',
-      budget: '== 1 call',
-      passed: false,
+      budget: `== ${expectedCalls} calls`,
+      passed: entry.value === expectedCalls,
     });
   }
 }
 
 function checkE2eOverhead(results: CheckResult[], metrics: BenchMetrics): void {
+  const budget = getBudget('batchOverheadMaxMs');
+  const budgetLabel = `< ${budget}ms/batch`;
   const baseline = metrics.e2eLatency.find((e) => (e.meta?.batches ?? 1) === 1);
   if (!baseline) {
-    results.push({
-      name: 'per-batch orchestration overhead',
-      measured: 'N/A (baseline missing)',
-      budget: `< ${BUDGETS.batchOverheadMaxMs}ms/batch`,
-      passed: false,
-    });
+    for (const expected of E2E_METRIC_NAMES) {
+      results.push({
+        name: `per-batch overhead ${expected}`,
+        measured: 'N/A (baseline missing)',
+        budget: budgetLabel,
+        passed: false,
+      });
+    }
     return;
   }
   const baselineAdjusted = adjustedLatency(baseline);
-  for (const entry of metrics.e2eLatency) {
+  for (const expected of E2E_METRIC_NAMES) {
+    const entry = metrics.e2eLatency.find((e) => e.name === expected);
+    if (!entry) {
+      results.push({
+        name: `per-batch overhead ${expected}`,
+        measured: 'N/A (metric missing)',
+        budget: budgetLabel,
+        passed: false,
+      });
+      continue;
+    }
     const batches = entry.meta?.batches ?? 1;
     if (batches <= 1) continue;
     const overheadPerBatch = (adjustedLatency(entry) - baselineAdjusted) / (batches - 1);
     results.push({
       name: `per-batch overhead ${entry.name}`,
       measured: `${overheadPerBatch.toFixed(1)}ms/batch`,
-      budget: `< ${BUDGETS.batchOverheadMaxMs}ms/batch`,
-      passed: overheadPerBatch < BUDGETS.batchOverheadMaxMs,
+      budget: budgetLabel,
+      passed: overheadPerBatch < budget,
     });
   }
 }
@@ -214,13 +240,13 @@ function adjustedLatency(entry: MetricEntry): number {
 }
 
 function printTable(results: CheckResult[]): void {
-  const nameWidth = Math.max(...results.map((r) => r.name.length), 'Budget'.length);
+  const nameWidth = Math.max(...results.map((r) => r.name.length), 'Check'.length);
   const measuredWidth = Math.max(...results.map((r) => r.measured.length), 'Measured'.length);
   const budgetWidth = Math.max(...results.map((r) => r.budget.length), 'Budget'.length);
   const statusWidth = 6;
 
   const pad = (s: string, width: number): string => s.padEnd(width);
-  const header = `${pad('Budget', nameWidth)} | ${pad('Measured', measuredWidth)} | ${pad('Budget', budgetWidth)} | ${pad('Status', statusWidth)}`;
+  const header = `${pad('Check', nameWidth)} | ${pad('Measured', measuredWidth)} | ${pad('Budget', budgetWidth)} | ${pad('Status', statusWidth)}`;
   console.log(header);
   console.log('-'.repeat(header.length));
   for (const r of results) {

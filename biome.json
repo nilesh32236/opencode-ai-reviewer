@@ -44,6 +44,8 @@
       "action/lib",
       "lib/tests/*.js",
       "lib/tests/*.d.ts",
+      "lib/tests/benchmarks/*.js",
+      "lib/tests/benchmarks/*.d.ts",
       "lib/tests/.test-*",
       "lib/vitest.config.js",
       "lib/bench-results.json",

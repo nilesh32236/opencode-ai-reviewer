@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { bench, describe, vi } from 'vitest';
-import { ReviewEngine } from '../../src/engine.js';
+import { afterAll, bench, describe, vi } from 'vitest';
+import { INTER_CHUNK_DELAY_MS, MAX_BATCH_CONCURRENCY, ReviewEngine } from '../../src/engine.js';
 import { parseJsonlFile, parseJsonlString } from '../../src/jsonl-parser.js';
 import type { PlatformAdapter } from '../../src/platform/adapter.js';
 import { buildAuditPrompt, buildFixPrompt, buildReviewPrompt } from '../../src/prompts/builder.js';
@@ -73,8 +73,57 @@ function makeBenchmarkConfig(): AgentConfig {
 
 function makeBenchmarkAdapter(): PlatformAdapter {
   return {
+    getMR: async () => generatePRContextFixture(1),
+    isMR: async () => true,
+    getDefaultBranch: async () => 'main',
+    getIssue: async () => ({
+      number: 1,
+      title: 'Synthetic issue',
+      body: '',
+      labels: [],
+      comments: [],
+    }),
+    getIssueComments: async () => [],
+    getDiffLines: async () => new Set<string>(),
+    getDiffSince: async () => '',
+    listReviewComments: async () => [],
+    createReviewCommentReply: async () => {},
+    listComments: async () => [],
+    postComment: async () => {},
+    postReview: async () => ({ success: true, method: 'full' }),
+    postOrUpdateComment: async () => ({ action: 'created', commentId: 1 }),
+    createComment: async () => ({ id: 1 }),
+    replyToReviewComment: async () => ({ id: 1 }),
+    getReviewComment: async () => ({
+      id: 1,
+      body: '',
+      user: { login: 'benchmark-bot', type: 'Bot' },
+    }),
+    getReviewCommentThread: async () => ({
+      comments: [],
+      rootComment: { id: 0, author: '', body: '', isBot: false },
+      filePath: '',
+    }),
+    createIssue: async () => null,
+    createPR: async () => null,
+    addLabels: async () => {},
+    removeLabel: async () => {},
+    setLabels: async () => {},
+    ensureLabels: async () => {},
+    gatherContext: async () => '',
+    closeOpenCodePRs: async () => {},
+    mergeMR: async () => true,
+    enableAutoMerge: async () => true,
+    closeIssue: async () => {},
+    getReviewThreads: async () => [],
+    resolveReviewThread: async () => {},
+    minimizeReviewComment: async () => {},
+    getBotReviewThreads: async () => [],
     getOpenHumanThreads: async () => '',
-  } as unknown as PlatformAdapter;
+    updateMR: async () => {},
+    getCurrentUser: async () => 'benchmark-bot',
+    paginate: async () => [],
+  };
 }
 
 const engine = new ReviewEngine(makeBenchmarkConfig(), makeBenchmarkAdapter());
@@ -89,6 +138,11 @@ const jsonlFile = path.join(tmpDir, 'output-500.jsonl');
 writeFileSync(jsonlFile, jsonlFixtures[500], 'utf-8');
 
 const e2eWorkDir = mkdtempSync(path.join(os.tmpdir(), 'opencode-engine-bench-'));
+
+afterAll(() => {
+  rmSync(tmpDir, { recursive: true, force: true });
+  rmSync(e2eWorkDir, { recursive: true, force: true });
+});
 
 const metrics: BenchMetrics = { memory: [], apiCalls: [], e2eLatency: [] };
 let maxHeapDelta = 0;
@@ -182,7 +236,7 @@ describe('Engine orchestration overhead', () => {
 
         const name = `reviewPR-${n}-files`;
         const batches = Math.ceil(n / BATCH_SIZE);
-        const concurrencyLimit = Math.min(os.cpus().length, batches, 8);
+        const concurrencyLimit = Math.min(os.cpus().length, batches, MAX_BATCH_CONCURRENCY);
         const chunks = Math.ceil(batches / concurrencyLimit);
         const delays = Math.max(0, chunks - 1);
         const prevElapsed = metrics.e2eLatency.find((e) => e.name === name)?.value;
@@ -197,7 +251,7 @@ describe('Engine orchestration overhead', () => {
           {
             name,
             value: Math.round(minElapsed),
-            meta: { batches, delays, delayMs: 150 },
+            meta: { batches, delays, delayMs: INTER_CHUNK_DELAY_MS },
           },
         ];
         writeMetrics(metrics);
