@@ -572,6 +572,9 @@ function buildQAContext(comments: Array<{ author: string; body: string }>): stri
 /**
  * Auto-answer blocking questions on an issue when --force is used.
  * Posts a comment with default answers and swaps labels to analysis:ready.
+ * @param gh - Platform adapter
+ * @param issueNumber - Issue number
+ * @param questions - Blocking questions to answer
  */
 async function autoAnswerBlockingQuestions(
   gh: PlatformAdapter,
@@ -600,6 +603,9 @@ async function autoAnswerBlockingQuestions(
 
 /**
  * Extract blocking questions from the issue's questions comment.
+ * @param gh - Platform adapter
+ * @param issueNumber - Issue number
+ * @returns Array of blocking question strings
  */
 async function extractBlockingQuestions(
   gh: PlatformAdapter,
