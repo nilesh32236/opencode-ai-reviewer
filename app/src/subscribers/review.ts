@@ -42,7 +42,10 @@ export function createReviewSubscriber(learningStore: LearningStore, bus: EventB
         if (!prNumber) return;
 
         const previousHeadSha =
-          event.type === 'pr.synchronize' ? (evPayload.before as string) : undefined;
+          event.type === 'pr.synchronize'
+            ? (evPayload.before as string) ||
+              ((evPayload.pull_request as Record<string, unknown> | undefined)?.before as string)
+            : undefined;
 
         const result = await handlePRReview(
           prNumber,
