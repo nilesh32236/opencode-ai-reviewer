@@ -188,6 +188,9 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
       return emptyResult();
     }
     throw err;
+  } finally {
+    rl.close();
+    stream.destroy();
   }
 }
 
