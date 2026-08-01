@@ -964,6 +964,10 @@ export interface LinterResult {
 export interface PromptConfig {
   /** Review prompt configuration */
   review?: {
+    /** Skip review for PRs with these labels */
+    skipLabels?: string[];
+    /** Skip review for these actors */
+    skipActors?: string[];
     /** Custom system prompt */
     systemPrompt?: string;
     /** Extra context to inject */

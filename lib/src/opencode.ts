@@ -100,7 +100,7 @@ async function fetchWithRetry(url: string, retries = 3, token?: string): Promise
  * @param version - Version tag to download (defaults to 'latest').
  * @returns A Promise resolving to the path of the OpenCode binary.
  */
-export async function setupOpenCode(version = 'latest'): Promise<string> {
+export async function setupOpenCode(version = 'latest', token?: string): Promise<string> {
   const existingPath = await io.which('opencode', false);
   if (existingPath) {
     core.info(`OpenCode already available at: ${existingPath}`);
@@ -119,19 +119,12 @@ export async function setupOpenCode(version = 'latest'): Promise<string> {
     releaseUrl = `https://api.github.com/repos/anomalyco/opencode/releases/tags/${tag}`;
   }
 
-  // The ambient token may be repo-scoped (GitHub Actions GITHUB_TOKEN) or not
-  // GitHub-scoped at all (e.g. a GitLab CI token in INPUT_GITHUB_TOKEN). Sending
-  // either to the api.github.com release endpoint can deterministically fail the
-  // cross-repo lookup (401/403/404). Only attach the ambient token when running
-  // in GitHub Actions where it is guaranteed to be a GitHub credential; in any
-  // other runtime (GitLab CI, local) call the public endpoint anonymously so the
-  // token is never transmitted. On auth failures the lookup degrades gracefully
-  // to an anonymous request so setup never aborts.
   let response: Response;
   const ambientToken =
-    process.env.GITHUB_ACTIONS === 'true'
+    token ||
+    (process.env.GITHUB_ACTIONS === 'true'
       ? process.env.GITHUB_TOKEN || process.env.INPUT_GITHUB_TOKEN || undefined
-      : undefined;
+      : undefined);
   try {
     response = await fetchWithRetry(releaseUrl, 3, ambientToken);
   } catch (err) {

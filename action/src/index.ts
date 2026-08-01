@@ -150,7 +150,7 @@ async function run(): Promise<void> {
     }
 
     if (inputs.mode !== 'setup') {
-      await setupOpenCode(inputs.opencodeVersion);
+      await setupOpenCode(inputs.opencodeVersion, token);
       await setupWorkspaceDependencies(process.cwd());
     }
 
@@ -214,6 +214,8 @@ async function run(): Promise<void> {
       },
       review: {
         ...DEFAULT_CONFIG.review,
+        ...(loadedConfig?.review?.skipLabels && { skipLabels: loadedConfig.review.skipLabels }),
+        ...(loadedConfig?.review?.skipActors && { skipActors: loadedConfig.review.skipActors }),
         inline: loadedConfig?.review?.inline ?? inputs.reviewInline,
         ...(loadedConfig?.review?.tokenBudget && { tokenBudget: loadedConfig.review.tokenBudget }),
         ...(loadedConfig?.review?.enableReachability !== undefined && {
