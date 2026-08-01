@@ -44,6 +44,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     inline: null,
     excludePatterns: null,
     enableReachability: null,
+    enableCodebaseIndex: null,
     tokenBudget: null,
     budget: null,
     costTracking: null,

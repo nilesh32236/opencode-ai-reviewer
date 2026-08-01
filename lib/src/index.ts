@@ -54,6 +54,20 @@ export {
 } from './prompts/builder.js';
 export { ReviewEngine } from './engine.js';
 export { SetupEngine } from './setup/engine.js';
+export { CodebaseIndex } from './codebase-index/index.js';
+export { CodebaseIndexCache } from './codebase-index/cache.js';
+export { CodebaseExtractor } from './codebase-index/extractor.js';
+export type { CodebaseExtractorOptions } from './codebase-index/extractor.js';
+export type {
+  IndexedSymbol,
+  IndexedSymbolKind,
+  ImportEdge,
+  ImportKind,
+  CallGraphEdge,
+  WorkspaceInfo,
+  CodebaseIndexData,
+  CodebaseContext,
+} from './codebase-index/types.js';
 export type {
   SetupCheck,
   SetupCheckStatus,

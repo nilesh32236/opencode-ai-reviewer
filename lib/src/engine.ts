@@ -4,6 +4,8 @@ import * as os from 'os';
 import * as path from 'path';
 import * as core from '@actions/core';
 import { minimatch } from 'minimatch';
+import { CodebaseIndex, CodebaseIndexCache } from './codebase-index/index.js';
+import type { CodebaseIndexData } from './codebase-index/types.js';
 import { conversationThreadId } from './conversation/state.js';
 import type { ConversationStateManager } from './conversation/state.js';
 import type { EventBus } from './event-bus/bus.js';
@@ -367,6 +369,30 @@ export class ReviewEngine {
     const workDir = workingDirectory || process.cwd();
     const batchSize = this.config.batchSize || 3;
 
+    // Build a ref-keyed codebase index and extract cross-file context for the
+    // changed files. Non-critical: indexing failures degrade gracefully to a
+    // review without cross-file context.
+    let codebaseIndex: CodebaseIndex | undefined;
+    let codebaseIndexData: CodebaseIndexData | undefined;
+    if (this.config.review.enableCodebaseIndex) {
+      try {
+        const indexEngine = new CodebaseIndex(
+          new CodebaseIndexCache(path.join(workDir, '.opencode', 'codebase-index-cache')),
+        );
+        codebaseIndexData = await indexEngine.buildOrLoad(workDir, pr.headSha);
+        codebaseIndex = indexEngine;
+        core.info(
+          `Codebase index ready: ${codebaseIndexData.symbols.length} symbols, ` +
+            `${codebaseIndexData.imports.length} imports, ${codebaseIndexData.callGraph.length} call edges ` +
+            `(built in ${codebaseIndexData.buildTimeMs}ms)`,
+        );
+      } catch (err) {
+        core.warning(
+          `Codebase index build skipped: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
     // Fetch delta context if previousHeadSha is provided
     let deltaContext: string | undefined;
     if (previousHeadSha && previousHeadSha !== pr.headSha) {
@@ -462,6 +488,15 @@ export class ReviewEngine {
 
     // If PR is small enough for a single batch, skip concurrent processing
     if (files.length <= batchSize) {
+      const codebaseIndexContext =
+        codebaseIndex && codebaseIndexData
+          ? codebaseIndex.formatContext(
+              codebaseIndex.getContextForFiles(
+                codebaseIndexData,
+                files.map((f) => f.path),
+              ),
+            )
+          : '';
       const prompt = buildReviewPrompt(
         {
           projectContext: this.config.projectContext.description || undefined,
@@ -478,6 +513,7 @@ export class ReviewEngine {
           linterResults,
           budgetMode,
           totalDiffLines,
+          codebaseIndexContext,
         },
       );
 
@@ -587,6 +623,16 @@ export class ReviewEngine {
             ? batchContext + '\n\n## Library Documentation\n' + mcpDocs
             : batchContext;
 
+          const batchCodebaseContext =
+            codebaseIndex && codebaseIndexData
+              ? codebaseIndex.formatContext(
+                  codebaseIndex.getContextForFiles(
+                    codebaseIndexData,
+                    batch.map((f) => f.path),
+                  ),
+                )
+              : '';
+
           const prompt = buildReviewPrompt(
             {
               projectContext: this.config.projectContext.description || undefined,
@@ -601,6 +647,7 @@ export class ReviewEngine {
               deltaContext,
               previousBotComments,
               linterResults,
+              codebaseIndexContext: batchCodebaseContext,
             },
           );
 

@@ -169,6 +169,7 @@ export const ReviewConfigSchema = z.object({
       '**/.next/**',
     ]),
   enableReachability: z.boolean().optional().default(true),
+  enableCodebaseIndex: z.boolean().optional().default(true),
   tokenBudget: TokenBudgetConfigSchema.optional(),
   reviewBudget: ReviewBudgetConfigSchema.default(ReviewBudgetConfigSchema.parse({})),
   costTracking: CostTrackingConfigSchema.optional(),
