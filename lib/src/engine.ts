@@ -1333,18 +1333,13 @@ export class ReviewEngine {
   }
 
   /**
-   * Perform an optional meta-verification pass to filter out false positives.
-   * If enableMetaVerification is enabled, runs an LLM verification pass over
-   * proposed issues and drops findings marked invalid.
+   * Apply the sensitivity filter to a review result, dropping findings that
+   * fall below the configured severity, confidence, or count thresholds.
    *
    * @param result - Review result containing candidate issues.
-   * @param prContext - Assembled PR context string.
-   * @param workDir - Working directory for the workspace.
-   * @param timeoutMinutes - Optional timeout in minutes for verification.
-   * @param prNumber - Optional PR number for logging context.
-   * @param budgetMode - Optional budget review mode selected from PR diff size (used to prepend the split banner).
-   * @param totalDiffLines - Optional total diff line count reported in the split banner.
-   * @returns Filtered ReviewResult with verified issues.
+   * @param defaultCategory - Default category assigned to findings without one.
+   * @param extraMinSeverityRank - Optional extra minimum severity rank applied on top of the configured floor.
+   * @returns ReviewResult with the filtered issues and recomputed stats.
    */
   private applySensitivityFilter(
     result: ReviewResult,
