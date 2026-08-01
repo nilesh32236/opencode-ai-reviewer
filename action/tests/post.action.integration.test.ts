@@ -152,4 +152,37 @@ describe('runPost token usage comment', () => {
     expect(body).not.toContain('Prompt Tokens');
     expect(body).not.toContain('Completion Tokens');
   });
+
+  it('posts the review summary comment from saved state', async () => {
+    mockGetState.mockImplementation((key: string) => {
+      switch (key) {
+        case 'review_summary':
+          return '## Review\nSolid changes.';
+        case 'verdict':
+          return 'true';
+        default:
+          return '';
+      }
+    });
+
+    await runPost(makeInputs(), mockGh, 'owner/repo', 'token');
+
+    expect(mockPostOrUpdateComment).toHaveBeenCalledTimes(1);
+    const [prNumber, marker, body] = mockPostOrUpdateComment.mock.calls[0] as [
+      number,
+      string,
+      string,
+    ];
+    expect(prNumber).toBe(42);
+    expect(marker).toBe('<!-- review-summary -->');
+    expect(body).toBe('## Review Summary\n\n## Review\nSolid changes.');
+  });
+
+  it('skips the token-usage comment when review_comment_summary is disabled', async () => {
+    mockGetState.mockImplementation((key: string) => (key === 'token_usage' ? '1234' : ''));
+
+    await runPost(makeInputs({ reviewCommentSummary: false }), mockGh, 'owner/repo', 'token');
+
+    expect(mockPostOrUpdateComment).not.toHaveBeenCalled();
+  });
 });

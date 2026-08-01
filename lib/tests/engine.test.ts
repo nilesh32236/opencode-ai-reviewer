@@ -1940,6 +1940,72 @@ describe('ReviewEngine', () => {
       expect(result.usage?.estimatedCost).toBeUndefined();
     });
 
+    it('prices dated/versioned model aliases against their base model rate', async () => {
+      const eng = new ReviewEngine(
+        makeCostTrackingConfig({ reviewModel: 'gpt-4o-2024-08-06' }, { verbosity: 'detailed' }),
+        mockAdapter,
+      );
+
+      const result = await eng.reviewPR(pr);
+
+      const expected = (400 / 1000) * 0.0025 + (100 / 1000) * 0.01;
+      expect(result.usage?.estimatedCost).toBeCloseTo(expected, 6);
+    });
+
+    it('prices the uncovered remainder in the both-sides-parsed branch', async () => {
+      // totalTokens (500) exceeds the parsed prompt+completion sum (400) — the
+      // uncovered remainder must be priced (at the conservative input rate)
+      // rather than silently dropped.
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 500,
+        promptTokens: 300,
+        completionTokens: 100,
+      });
+
+      const eng = new ReviewEngine(
+        makeCostTrackingConfig({
+          review: {
+            ...DEFAULT_CONFIG.review,
+            costTracking: {
+              enabled: true,
+              verbosity: 'detailed',
+              inputCostPer1K: 0.01,
+              outputCostPer1K: 0.02,
+            },
+          },
+        }),
+        mockAdapter,
+      );
+
+      const result = await eng.reviewPR(pr);
+
+      // 300 prompt @ input + 100 completion @ output + 100 uncovered @ input
+      // (the conservative default rate for the remainder).
+      expect(result.usage?.estimatedCost).toBeCloseTo(
+        ((300 + 100) / 1000) * 0.01 + (100 / 1000) * 0.02,
+        6,
+      );
+    });
+
+    it('does not write a cost log entry when nothing meaningful was measured', async () => {
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 0,
+      });
+
+      const eng = new ReviewEngine(makeCostTrackingConfig(), mockAdapter);
+
+      await eng.reviewPR(pr);
+
+      const appendFile = fs.promises.appendFile as ReturnType<typeof vi.fn>;
+      expect(appendFile).not.toHaveBeenCalled();
+    });
+
     it('writes a JSONL cost log when exposure is enabled', async () => {
       const eng = new ReviewEngine(makeCostTrackingConfig(), mockAdapter);
 
@@ -2082,6 +2148,70 @@ describe('ReviewEngine', () => {
       // Second entry is the synthesis call's delta (50), not the cumulative 250.
       expect(secondEntry).toContain('"totalTokens":50');
       expect(secondEntry).toContain('"model":"claude-3-5-sonnet"');
+    });
+
+    it('tags each JSONL cost log entry with its pipeline stage', async () => {
+      mockRunOpenCode
+        .mockResolvedValueOnce({
+          success: true,
+          output: '',
+          durationMs: 100,
+          tokensUsed: 100,
+          promptTokens: 80,
+          completionTokens: 20,
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          output: '',
+          durationMs: 100,
+          tokensUsed: 100,
+          promptTokens: 80,
+          completionTokens: 20,
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          output: '',
+          durationMs: 200,
+          tokensUsed: 50,
+          promptTokens: 40,
+          completionTokens: 10,
+        });
+      mockParseJsonlFile
+        .mockResolvedValueOnce(mockEmptyResult())
+        .mockResolvedValueOnce(mockEmptyResult())
+        .mockResolvedValueOnce(mockEmptyResult());
+
+      const eng = new ReviewEngine(
+        makeCostTrackingConfig(
+          {
+            reviewModel: 'gpt-4o',
+            synthesisModel: 'claude-3-5-sonnet',
+            batchSize: 2,
+          },
+          { verbosity: 'detailed' },
+        ),
+        mockAdapter,
+      );
+
+      const multiBatchPR = makePRContext({
+        changedFiles: [
+          { path: 'src/a.ts', status: 'modified', additions: 10, deletions: 0 },
+          { path: 'src/b.ts', status: 'modified', additions: 10, deletions: 0 },
+          { path: 'src/c.ts', status: 'modified', additions: 10, deletions: 0 },
+          { path: 'src/d.ts', status: 'modified', additions: 10, deletions: 0 },
+        ],
+      });
+
+      await eng.reviewPR(multiBatchPR);
+
+      const appendFile = fs.promises.appendFile as ReturnType<typeof vi.fn>;
+      expect(appendFile).toHaveBeenCalledTimes(2);
+      const firstEntry = appendFile.mock.calls[0][1] as string;
+      const secondEntry = appendFile.mock.calls[1][1] as string;
+      expect(firstEntry).toContain('"stage":"review"');
+      expect(secondEntry).toContain('"stage":"synthesis"');
+      // The batch entry carries the PR number; non-PR stages pass 0.
+      expect(firstEntry).toContain('"prNumber":42');
     });
   });
 });

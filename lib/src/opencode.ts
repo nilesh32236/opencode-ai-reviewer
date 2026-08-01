@@ -586,15 +586,21 @@ export async function runOpenCode(
     if (capturedOutput.length > MAX_CAPTURED_BYTES) {
       capturedOutput = capturedOutput.slice(-MAX_CAPTURED_BYTES);
     }
+    // Accumulate incrementally instead of overwriting: a usage block split
+    // across chunk boundaries, or a chunk containing only one side of the
+    // breakdown, must not clobber a previously parsed larger value with a
+    // partial one. Keeping the largest observed value is a safe heuristic — the
+    // authoritative result still comes from the final full-output parse in
+    // resolveTokenBreakdown, and a partial figure is always <= the true value.
     const parsed = parseTokenUsageDetailed(text);
     if (parsed.totalTokens > 0) {
-      tokenUsageResult = parsed.totalTokens;
+      tokenUsageResult = Math.max(tokenUsageResult, parsed.totalTokens);
     }
     if (parsed.promptTokens !== undefined && parsed.promptTokens > 0) {
-      promptTokensResult = parsed.promptTokens;
+      promptTokensResult = Math.max(promptTokensResult, parsed.promptTokens);
     }
     if (parsed.completionTokens !== undefined && parsed.completionTokens > 0) {
-      completionTokensResult = parsed.completionTokens;
+      completionTokensResult = Math.max(completionTokensResult, parsed.completionTokens);
     }
   }
 

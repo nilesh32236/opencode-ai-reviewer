@@ -26,6 +26,21 @@ function formatDuration(durationMs: number): string {
 }
 
 /**
+ * Format a USD cost for display, preserving significance for tiny values.
+ * Values below $0.00005 would otherwise collapse to a misleading '$0.0000'
+ * with `toFixed(4)`; those are rendered in exponential notation instead so a
+ * genuine but tiny charge is never indistinguishable from 'no cost computed'.
+ * @param cost - Cost in USD.
+ * @returns A display string (e.g. "0.0046", "4.50e-5").
+ */
+export function formatCostUsd(cost: number): string {
+  if (cost > 0 && cost < 0.00005) {
+    return cost.toExponential(2);
+  }
+  return cost.toFixed(4);
+}
+
+/**
  * Build a markdown token usage summary section from accumulated telemetry.
  * Renders totals plus duration, and includes the prompt/completion breakdown
  * and estimated cost when available. Returns an empty string when nothing was
@@ -54,7 +69,7 @@ export function buildTokenUsageSection(usage: TokenUsage): string {
   }
   lines.push(`| Duration | ${formatDuration(usage.durationMs)} |`);
   if (usage.estimatedCost !== undefined) {
-    lines.push(`| Estimated Cost | $${usage.estimatedCost.toFixed(4)} |`);
+    lines.push(`| Estimated Cost | $${formatCostUsd(usage.estimatedCost)} |`);
   }
   return lines.join('\n');
 }

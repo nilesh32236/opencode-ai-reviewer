@@ -1,6 +1,12 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import type { AgentConfig, PRContext, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
+import {
+  type AgentConfig,
+  type PRContext,
+  type PlatformAdapter,
+  type ReviewEngine,
+  formatCostUsd,
+} from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { resolvePrNumber, sanitize } from './utils.js';
 
@@ -120,6 +126,17 @@ export async function runReview(
   core.setOutput('important_count', String(result.stats.important));
   core.setOutput('minor_count', String(result.stats.minor));
 
+  // Persist summary/verdict and token-usage data for the post step (a separate
+  // process) via core.saveState — step outputs written with core.setOutput are
+  // never visible to it. Only save when the review was actually posted, so the
+  // post step never surfaces a comment on a PR whose review was not published.
+  if (!reviewResult.success) {
+    core.info('Review was not posted — skipping post-step state/outputs');
+    return;
+  }
+  core.saveState('review_summary', result.summary);
+  core.saveState('verdict', String(result.verdict.ready));
+
   const costTracking = config.review.costTracking;
   const telemetry = engine.getLastTelemetry();
   // Mirror the lib's guard (attachUsage): only expose state/outputs when
@@ -138,9 +155,10 @@ export async function runReview(
     core.saveState('token_usage', totalTokens);
     core.saveState('token_usage_duration', String(telemetry.durationMs));
     if (telemetry.estimatedCost !== undefined) {
-      // Normalize to the same fixed-decimal format used by the post comment
-      // and review-body renderer so automation consumers see stable output.
-      const cost = telemetry.estimatedCost.toFixed(4);
+      // Normalize to the same significance-preserving format used by the post
+      // comment and review-body renderer so automation consumers see stable
+      // output that never collapses a tiny charge to a misleading $0.0000.
+      const cost = formatCostUsd(telemetry.estimatedCost);
       core.setOutput('cost', cost);
       core.saveState('cost', cost);
     }

@@ -45,11 +45,17 @@ function parseCostRate(raw: string): number | undefined {
 
 /**
  * Validate and normalize the cost tracking verbosity input.
+ * Any unrecognized value is rejected with a warning and falls back to the
+ * 'summary' default, matching the strictness of the config-file path where an
+ * invalid verbosity drops the costTracking block entirely.
  * @param raw - Raw verbosity string ('off' | 'summary' | 'detailed').
  * @returns A valid CostTrackingVerbosity, defaulting to 'summary'.
  */
 function parseCostTrackingVerbosity(raw: string): CostTrackingVerbosity {
-  if (raw === 'off' || raw === 'detailed') return raw;
+  if (raw === 'off' || raw === 'summary' || raw === 'detailed') return raw;
+  core.warning(
+    `Invalid cost_tracking_verbosity value "${raw}" — expected 'off', 'summary', or 'detailed'; defaulting to 'summary'.`,
+  );
   return 'summary';
 }
 

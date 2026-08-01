@@ -104,20 +104,24 @@ export const ReviewBudgetConfigSchema = z
 
 /**
  * Zod schema validating token usage / cost tracking configuration.
- * Every field is optional and the whole object is wrapped in `.catch({})` so
- * a malformed costTracking block (string boolean, quoted rate, invalid
- * verbosity) falls back to an empty object instead of failing the whole config
- * parse and silently discarding unrelated settings. `enabled`/`verbosity` have
- * no schema-level defaults: when the config file omits them (or defines only
- * rates), they stay `undefined` so the action inputs — the primary opt-in
- * mechanism — are honored via the `??` fallback in the action wrapper.
+ * The whole object is wrapped in `.catch({})` so a non-object costTracking
+ * block falls back to an empty object instead of failing the whole config
+ * parse and silently discarding unrelated settings. Each field additionally
+ * uses `.catch(undefined)` so a single invalid field (string boolean, quoted
+ * rate, out-of-enum verbosity, negative rate) is dropped WITHOUT discarding
+ * valid sibling fields — e.g. an explicit `enabled: true` opt-in or a valid
+ * `outputCostPer1K` next to a negative input rate are preserved.
+ * `enabled`/`verbosity` have no schema-level defaults: when the config file
+ * omits them (or defines only rates), they stay `undefined` so the action
+ * inputs — the primary opt-in mechanism — are honored via the `??` fallback in
+ * the action wrapper.
  */
 export const CostTrackingConfigSchema = z
   .object({
-    enabled: z.boolean().optional(),
-    verbosity: z.enum(['off', 'summary', 'detailed']).optional(),
-    inputCostPer1K: z.number().nonnegative().optional(),
-    outputCostPer1K: z.number().nonnegative().optional(),
+    enabled: z.boolean().optional().catch(undefined),
+    verbosity: z.enum(['off', 'summary', 'detailed']).optional().catch(undefined),
+    inputCostPer1K: z.number().nonnegative().optional().catch(undefined),
+    outputCostPer1K: z.number().nonnegative().optional().catch(undefined),
   })
   .catch({});
 

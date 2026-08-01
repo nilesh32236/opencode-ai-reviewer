@@ -406,6 +406,7 @@ export class ReviewEngine {
         runResult,
         this.config.reviewModel,
         workDir,
+        'review',
       );
 
       if (!runResult.success) {
@@ -582,6 +583,7 @@ export class ReviewEngine {
       },
       this.config.reviewModel,
       workDir,
+      'review',
     );
 
     // Collate findings from all batches
@@ -622,6 +624,7 @@ export class ReviewEngine {
       synthesisResult,
       this.resolveModel('synthesisModel'),
       workDir,
+      'synthesis',
     );
 
     const dedupIssues = (issues: ReviewIssue[]): ReviewIssue[] => {
@@ -716,7 +719,7 @@ export class ReviewEngine {
         baseContext,
         workDir,
         timeoutMinutes,
-        undefined,
+        pr.number,
         budgetMode,
         totalDiffLines,
       );
@@ -794,6 +797,7 @@ export class ReviewEngine {
       fixRunResult,
       this.config.fixModel,
       workingDirectory,
+      'fix',
     );
     if (!fixRunResult.success) {
       core.warning(
@@ -913,6 +917,7 @@ export class ReviewEngine {
       auditRunResult,
       this.resolveModel('auditModel'),
       workingDirectory,
+      'audit',
     );
     if (!auditRunResult.success) {
       core.warning('OpenCode audit execution failed, returning fallback empty result');
@@ -971,6 +976,7 @@ export class ReviewEngine {
       runResult,
       this.resolveModel('analysisModel'),
       workDir,
+      'analyze',
     );
 
     if (!runResult.success) {
@@ -1041,6 +1047,7 @@ export class ReviewEngine {
       runResult,
       this.config.fixModel,
       workDir,
+      'self-heal',
     );
 
     if (!runResult.success) {
@@ -1144,6 +1151,7 @@ export class ReviewEngine {
       runResult,
       this.resolveModel('explanationModel'),
       workDir,
+      'explain',
     );
 
     if (!runResult.success) {
@@ -1252,6 +1260,7 @@ export class ReviewEngine {
             runResult,
             this.resolveModel('verificationModel'),
             workDir,
+            'verification',
           );
         }
 
@@ -1401,6 +1410,7 @@ export class ReviewEngine {
       runResult,
       this.resolveModel('conversationModel'),
       workDir,
+      'conversation',
     );
 
     if (!runResult.success) {
@@ -1452,6 +1462,25 @@ export class ReviewEngine {
     }
   }
 
+  /**
+   * Accumulate token usage / cost telemetry for a single model call.
+   * The JSONL cost log receives a per-call delta (this call's usage) tagged
+   * with the pipeline stage that produced it, while the in-memory accumulator
+   * keeps running totals for `getLastTelemetry()`.
+   * @param prNumber - PR (or issue) number for the run. Non-PR pipeline stages
+   * (audit, self-heal) pass 0 — the `stage` field discriminates those entries.
+   * @param durationMs - Wall-clock duration of the model call in milliseconds.
+   * @param tokensUsed - Total tokens consumed by this call.
+   * @param breakdown - Optional prompt/completion token breakdown.
+   * @param breakdown.promptTokens - Prompt (input) tokens for this call.
+   * @param breakdown.completionTokens - Completion (output) tokens for this call.
+   * @param model - Model identifier used for the call.
+   * @param workingDirectory - Working directory the run was executed in.
+   * @param stage - Pipeline stage that produced the call ('review', 'synthesis',
+   * 'verification', 'fix', 'audit', 'analyze', 'self-heal', 'explain',
+   * 'conversation'). Written to the JSONL entry so consumers can distinguish
+   * entries and filter by pipeline.
+   */
   private async recordTelemetry(
     prNumber: number,
     durationMs: number,
@@ -1459,6 +1488,7 @@ export class ReviewEngine {
     breakdown?: { promptTokens?: number; completionTokens?: number },
     model?: string,
     workingDirectory?: string,
+    stage?: string,
   ): Promise<void> {
     const costTracking = this.config.review.costTracking;
 
@@ -1487,10 +1517,13 @@ export class ReviewEngine {
       estimatedCost: hasCost ? (prev?.estimatedCost ?? 0) + (computedCost ?? 0) : undefined,
     };
 
-    if (exposureEnabled) {
+    if (exposureEnabled && (tokensUsed > 0 || computedCost !== undefined)) {
       // Write one entry per model call using this call's delta (not the
       // accumulated snapshot) so every JSONL line is independently summable
-      // and carries the model that actually produced the tokens.
+      // and carries the model that actually produced the tokens. Entries are
+      // only appended when something meaningful was measured (tokens or a
+      // computed cost), matching the zero-token guards used by attachUsage and
+      // the action wrapper so the log does not accumulate noise 0-token lines.
       await this.writeCostLog(
         prNumber,
         model,
@@ -1502,6 +1535,7 @@ export class ReviewEngine {
           estimatedCost: computedCost,
         },
         workingDirectory,
+        stage,
       );
     }
 
@@ -1547,9 +1581,25 @@ export class ReviewEngine {
       // proxy identifiers like "org/gpt-4o-finetuned-v2" never match a base
       // model's rate. Whole-segment matching also keeps "gpt-4o-mini" from
       // being priced as "gpt-4o".
+      //
+      // Dated/versioned aliases (e.g. "gpt-4o-2024-08-06",
+      // "claude-3-5-sonnet-20241022", "gemini-1.5-pro-001") have their trailing
+      // date/version suffix stripped so they still price against the base
+      // model — the common case for users relying on the known-model table.
+      // Fine-tune/proxy identifiers that do not end in a date/version stay
+      // unmatched.
+      //
+      // Precedence rule: an explicitly-configured rate is always used as-is.
+      // When only one side is configured and the model matches the table, the
+      // missing rate is filled from the known-model table; for an unknown
+      // model, cost is undefined unless both rates are configured.
       const modelKey = (model ?? '').toLowerCase();
       const lastSegment = modelKey.split('/').pop() ?? modelKey;
-      const known = Object.keys(KNOWN_MODEL_RATES).find((key) => lastSegment === key);
+      const baseModel = lastSegment.replace(
+        /[-_](?:20\d{2}(?:[-_]\d{2}){2}|v?\d+(?:[-_]\d+)*|latest)$/i,
+        '',
+      );
+      const known = Object.keys(KNOWN_MODEL_RATES).find((key) => baseModel === key);
       if (known) {
         inputCost = inputCost ?? KNOWN_MODEL_RATES[known].inputCostPer1K;
         outputCost = outputCost ?? KNOWN_MODEL_RATES[known].outputCostPer1K;
@@ -1560,7 +1610,9 @@ export class ReviewEngine {
     const completion = completionTokens;
     const pricedTokens = (prompt ?? 0) + (completion ?? 0);
     // When totalTokens exceeds the priced prompt+completion sum, the CLI
-    // reported a total but only one (or neither) side of the breakdown parsed.
+    // reported a total but some tokens were not captured by the parsed
+    // breakdown (e.g. cache/inference tokens reported in total_tokens beyond
+    // the prompt+completion pair).
     const remainder =
       totalTokens !== undefined && totalTokens > pricedTokens ? totalTokens - pricedTokens : 0;
     if (prompt !== undefined && completion !== undefined) {
@@ -1572,7 +1624,10 @@ export class ReviewEngine {
         }
         return undefined;
       }
-      return (prompt / 1000) * inputCost + (completion / 1000) * outputCost;
+      // Price the uncovered remainder at the input rate — the conservative
+      // default — so partial parsing never silently drops tokens from the
+      // estimate. This matches the single-side branches below.
+      return ((prompt + remainder) / 1000) * inputCost + (completion / 1000) * outputCost;
     }
     // Only one side of the breakdown parsed — price the uncovered remainder at
     // the known side's rate so partial parsing does not silently drop tokens.
@@ -1603,17 +1658,24 @@ export class ReviewEngine {
    * backoff), so it is not directly comparable to single-call entries.
    * Non-critical — failures are logged and swallowed so telemetry never breaks
    * the pipeline.
-   * @param prNumber - PR (or issue) number associated with the run.
+   * @param prNumber - PR (or issue) number associated with the run. Non-PR
+   * pipeline stages (audit, self-heal) record 0 — the `stage` field
+   * discriminates those entries.
    * @param model - Model identifier used for the run.
    * @param telemetry - Per-call token usage data to log.
    * @param workingDirectory - Directory the run was executed in (the log is
    * co-located with the review output it describes). Defaults to cwd.
+   * @param stage - Pipeline stage that produced this call ('review', 'synthesis',
+   * 'verification', 'fix', 'audit', 'analyze', 'self-heal', 'explain',
+   * 'conversation'). Lets consumers tell which pipeline produced each entry and
+   * filter aggregation accordingly.
    */
   private async writeCostLog(
     prNumber: number,
     model: string | undefined,
     telemetry: TokenUsage,
     workingDirectory?: string,
+    stage?: string,
   ): Promise<void> {
     try {
       const outputPath = path.join(
@@ -1624,6 +1686,7 @@ export class ReviewEngine {
       ensureOutputDir(outputPath);
       const entry = {
         prNumber,
+        stage,
         timestamp: new Date().toISOString(),
         totalTokens: telemetry.totalTokens,
         promptTokens: telemetry.promptTokens,

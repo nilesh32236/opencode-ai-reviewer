@@ -689,6 +689,17 @@ fix:
       expect(result).toEqual({});
     });
 
+    it('drops invalid fields while preserving valid siblings (per-field catch)', () => {
+      const result = CostTrackingConfigSchema.parse({
+        enabled: true,
+        inputCostPer1K: -1,
+        outputCostPer1K: 0.01,
+      });
+      expect(result.enabled).toBe(true);
+      expect(result.inputCostPer1K).toBeUndefined();
+      expect(result.outputCostPer1K).toBe(0.01);
+    });
+
     it('still loads unrelated settings when costTracking is malformed', () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-config-costtest-'));
       try {

@@ -78,6 +78,7 @@ export { sanitizeString } from './utils/sanitize.js';
 export { getLabelColor } from './utils/label-color.js';
 export {
   buildTokenUsageSection,
+  formatCostUsd,
   formatConfidenceLabel,
   formatIssueBullet,
   getSeverityBadge,

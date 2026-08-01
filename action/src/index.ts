@@ -231,6 +231,13 @@ async function run(): Promise<void> {
             1000,
         },
         costTracking: {
+          // enabled/verbosity precedence: an explicit value in
+          // .opencode-reviewer.yml wins over the workflow inputs (a repo-level
+          // 'enabled: false' is a deliberate opt-out override); the `??`
+          // fallback lets the action inputs — the primary opt-in mechanism —
+          // take effect when the config file omits these keys. This differs
+          // from the rate fields below, where explicit action inputs always
+          // win over config-file defaults.
           enabled: loadedConfig?.review?.costTracking?.enabled ?? inputs.costTrackingEnabled,
           verbosity: loadedConfig?.review?.costTracking?.verbosity ?? inputs.costTrackingVerbosity,
           ...(loadedConfig?.review?.costTracking?.inputCostPer1K !== undefined && {

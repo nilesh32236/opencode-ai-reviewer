@@ -1,4 +1,4 @@
-import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
+import { type AgentConfig, type PlatformAdapter, type ReviewEngine } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 /**
  * Execute a code review on a pull request and post results.

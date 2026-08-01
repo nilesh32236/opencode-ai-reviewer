@@ -48,7 +48,11 @@ export async function runPost(
     }
   }
 
-  const reviewSummary = core.getInput('review_summary');
+  // The summary/verdict data is read from the main step's saved state
+  // (core.saveState in review.ts), which the runner exposes to this post step
+  // via the STATE_* environment variables — step outputs written with
+  // core.setOutput are never visible to a separate post process.
+  const reviewSummary = core.getState('review_summary');
   if (reviewSummary && inputs.reviewCommentSummary) {
     try {
       await gh.postOrUpdateComment(
@@ -79,7 +83,11 @@ export async function runPost(
   // comment is skipped — the token_usage / cost step outputs remain the
   // cross-platform surface for automation.
   const tokenUsageState = core.getState('token_usage');
-  if (tokenUsageState) {
+  // The token-usage comment is gated on the same reviewCommentSummary flag as
+  // the review-summary comment, so users who disable review comments to keep
+  // the PR clean do not get a token-usage comment either (the cost_tracking
+  // verbosity 'off' input remains the dedicated opt-out).
+  if (tokenUsageState && inputs.reviewCommentSummary) {
     try {
       const usage: TokenUsage = {
         totalTokens: Number(tokenUsageState),
@@ -116,7 +124,7 @@ export async function runPost(
     }
   }
 
-  const verdict = core.getInput('verdict');
+  const verdict = core.getState('verdict');
   if (verdict === 'true') {
     core.info('PR is approved — no annotations needed');
   } else {

@@ -388,4 +388,83 @@ describe('runReview (action wrapper)', () => {
     expect(mockSaveState).not.toHaveBeenCalledWith('token_usage', expect.anything());
     expect(mockSaveState).not.toHaveBeenCalledWith('cost', expect.anything());
   });
+
+  it('saves review_summary and verdict to state for the post step', async () => {
+    const pr = makePRContext();
+    mockGetPR.mockResolvedValue(pr);
+    mockReviewPR.mockResolvedValue({
+      summary: '## Review\nGood PR.',
+      verdict: { ready: true, reasoning: 'LGTM', autoFixable: false, confidence: 'high' },
+      strengths: [],
+      issues: [],
+      stats: { total: 0, critical: 0, important: 0, minor: 0 },
+    });
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+
+    const config = makeConfig({ enableMCP: false, mcpServers: [] });
+
+    await runReview(
+      makeInputs({ reviewModel: config.reviewModel, fixModel: config.fixModel }),
+      config,
+      mockEngine,
+      mockGh,
+      'owner/repo',
+    );
+
+    expect(mockSaveState).toHaveBeenCalledWith('review_summary', '## Review\nGood PR.');
+    expect(mockSaveState).toHaveBeenCalledWith('verdict', 'true');
+  });
+
+  it('does not save post-step state when the review was not posted', async () => {
+    const pr = makePRContext();
+    mockGetPR.mockResolvedValue(pr);
+    mockReviewPR.mockResolvedValue({
+      summary: '## Review\nGood PR.',
+      verdict: { ready: true, reasoning: 'LGTM', autoFixable: false, confidence: 'high' },
+      strengths: [],
+      issues: [],
+      stats: { total: 0, critical: 0, important: 0, minor: 0 },
+    });
+    mockPostReview.mockResolvedValue({
+      success: false,
+      method: 'full',
+      reviewId: null,
+      commentIds: [],
+    });
+    mockGetLastTelemetry.mockReturnValue({
+      totalTokens: 1234,
+      promptTokens: 1000,
+      completionTokens: 234,
+      durationMs: 5000,
+      estimatedCost: 0.0046,
+    });
+
+    const config = makeConfig({
+      enableMCP: false,
+      mcpServers: [],
+      review: {
+        ...DEFAULT_CONFIG.review,
+        costTracking: { enabled: true, verbosity: 'summary' },
+      },
+    });
+
+    await runReview(
+      makeInputs({ reviewModel: config.reviewModel, fixModel: config.fixModel }),
+      config,
+      mockEngine,
+      mockGh,
+      'owner/repo',
+    );
+
+    // No post-step comment should appear on a PR whose review was never posted.
+    expect(mockSaveState).not.toHaveBeenCalledWith('review_summary', expect.anything());
+    expect(mockSaveState).not.toHaveBeenCalledWith('verdict', expect.anything());
+    expect(mockSaveState).not.toHaveBeenCalledWith('token_usage', expect.anything());
+    expect(mockSetOutput).not.toHaveBeenCalledWith('token_usage', expect.anything());
+  });
 });
