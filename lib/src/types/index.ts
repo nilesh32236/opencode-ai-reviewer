@@ -298,6 +298,35 @@ export interface ReviewBudgetConfig {
   splitThreshold: number;
 }
 
+/** Detail level for exposing token usage / cost data to users. */
+export type CostTrackingVerbosity = 'off' | 'summary' | 'detailed';
+
+/** Configuration for token usage / cost tracking exposure. */
+export interface CostTrackingConfig {
+  /** Whether token usage and cost data are surfaced to users (default: false) */
+  enabled?: boolean;
+  /** How much detail to expose: 'off' (nothing), 'summary' (totals), 'detailed' (totals + prompt/completion breakdown) */
+  verbosity?: CostTrackingVerbosity;
+  /** Cost per 1K input tokens in USD (used for cost estimation) */
+  inputCostPer1K?: number;
+  /** Cost per 1K output tokens in USD (used for cost estimation) */
+  outputCostPer1K?: number;
+}
+
+/** Token usage and cost data accumulated for a review pipeline run. */
+export interface TokenUsage {
+  /** Total number of tokens consumed across all model calls */
+  totalTokens: number;
+  /** Total prompt (input) tokens, when parseable */
+  promptTokens?: number;
+  /** Total completion (output) tokens, when parseable */
+  completionTokens?: number;
+  /** Total wall-clock duration of the run in milliseconds */
+  durationMs: number;
+  /** Estimated cost of the run in USD, when rates are configured or the model is known */
+  estimatedCost?: number;
+}
+
 /** Configuration for review behavior. */
 export interface ReviewConfig {
   /** Skip review for PRs with these labels */
@@ -322,6 +351,8 @@ export interface ReviewConfig {
   tokenBudget?: TokenBudgetConfig;
   /** Budget-based review configuration for large PRs */
   reviewBudget?: ReviewBudgetConfig;
+  /** Token usage / cost tracking configuration */
+  costTracking?: CostTrackingConfig;
 }
 
 // ─── Conversation / @mention ─────────────────────────────
@@ -595,6 +626,8 @@ export interface ReviewResult {
   failedBatches?: number;
   /** Optional executive summary with risk assessment */
   executiveSummary?: ExecutiveSummary;
+  /** Optional token usage / cost data accumulated for this run (server-side, not AI-derived) */
+  usage?: TokenUsage;
 }
 
 /** Result of an auto-fix operation. */
@@ -874,6 +907,8 @@ export interface PromptConfig {
       /** Diff line threshold for split recommendation mode (default: 1000) */
       splitThreshold?: number;
     };
+    /** Token usage / cost tracking configuration */
+    costTracking?: CostTrackingConfig;
   };
   /** Fix prompt configuration */
   fix?: {
@@ -996,6 +1031,10 @@ export const DEFAULT_CONFIG: AgentConfig = {
       enabled: false,
       summaryThreshold: 500,
       splitThreshold: 1000,
+    },
+    costTracking: {
+      enabled: false,
+      verbosity: 'summary',
     },
   },
   audit: {

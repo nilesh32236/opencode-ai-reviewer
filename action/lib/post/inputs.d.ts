@@ -1,4 +1,4 @@
-import { type ActionMode, DEFAULT_ALLOWLIST, validateRunChecksCommand } from '@opencode-pr-agent/lib';
+import { type ActionMode, type CostTrackingVerbosity, DEFAULT_ALLOWLIST, validateRunChecksCommand } from '@opencode-pr-agent/lib';
 export { DEFAULT_ALLOWLIST, validateRunChecksCommand };
 /**
  * Parse and validate a timeout value from a raw string.
@@ -92,6 +92,14 @@ export interface ActionInputs {
     failedStep?: string;
     /** Name of the failed workflow. */
     failedWorkflow?: string;
+    /** Whether token usage / cost data is exposed to users. */
+    costTrackingEnabled: boolean;
+    /** Detail level for token/cost exposure. */
+    costTrackingVerbosity: CostTrackingVerbosity;
+    /** Cost per 1K input tokens (USD) for cost estimation. */
+    costTrackingInputCostPer1K?: number;
+    /** Cost per 1K output tokens (USD) for cost estimation. */
+    costTrackingOutputCostPer1K?: number;
 }
 /**
  * Parse and validate all GitHub Action inputs from workflow environment.

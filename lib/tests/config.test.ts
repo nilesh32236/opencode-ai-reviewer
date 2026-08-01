@@ -4,7 +4,7 @@ import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { loadConfig, mergeConfigWithInputs, resolveConfig, validateConfig } from '../src/config.js';
 import { DEFAULT_CONFIG } from '../src/types/index.js';
-import { AgentConfigSchema } from '../src/types/schemas.js';
+import { AgentConfigSchema, CostTrackingConfigSchema } from '../src/types/schemas.js';
 
 describe('config', () => {
   it('DEFAULT_CONFIG is defined', () => {
@@ -652,6 +652,61 @@ fix:
       expect(result.learning.metaReview.interval).toBe(5);
       expect(result.learning.patternDiscovery.minFrequency).toBe(3);
       expect(result.learning.patternDiscovery.windowSize).toBe(100);
+    });
+  });
+
+  describe('costTracking config handling', () => {
+    it('keeps enabled/verbosity unset for a partial costTracking section (rates only)', () => {
+      const result = validateConfig({
+        review: { costTracking: { inputCostPer1K: 0.5 } },
+      } as never);
+      expect(result.review?.costTracking).toEqual({ inputCostPer1K: 0.5 });
+    });
+
+    it('preserves explicitly-set enabled/verbosity', () => {
+      const result = validateConfig({
+        review: { costTracking: { enabled: true, verbosity: 'detailed' } },
+      } as never);
+      expect(result.review?.costTracking?.enabled).toBe(true);
+      expect(result.review?.costTracking?.verbosity).toBe('detailed');
+    });
+
+    it('sanitizes negative cost rates away', () => {
+      const result = validateConfig({
+        review: { costTracking: { enabled: true, inputCostPer1K: -1, outputCostPer1K: 0.01 } },
+      } as never);
+      expect(result.review?.costTracking?.inputCostPer1K).toBeUndefined();
+      expect(result.review?.costTracking?.outputCostPer1K).toBe(0.01);
+    });
+
+    it('does not fail the whole config parse on a malformed costTracking block', () => {
+      const result = CostTrackingConfigSchema.parse({ enabled: 'true' });
+      expect(result).toEqual({});
+    });
+
+    it('does not fail the whole config parse on an invalid verbosity', () => {
+      const result = CostTrackingConfigSchema.parse({ verbosity: 'banana' });
+      expect(result).toEqual({});
+    });
+
+    it('still loads unrelated settings when costTracking is malformed', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-config-costtest-'));
+      try {
+        fs.writeFileSync(
+          path.join(tmpDir, '.opencode-reviewer.yml'),
+          `review:
+  costTracking:
+    enabled: "true"
+fix:
+  maxIterations: 5
+`,
+        );
+        const config = loadConfig(tmpDir);
+        expect(config).not.toBeNull();
+        expect(config!.fix?.maxIterations).toBe(5);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
     });
   });
 });

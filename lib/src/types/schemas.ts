@@ -102,6 +102,25 @@ export const ReviewBudgetConfigSchema = z
     path: ['splitThreshold'],
   });
 
+/**
+ * Zod schema validating token usage / cost tracking configuration.
+ * Every field is optional and the whole object is wrapped in `.catch({})` so
+ * a malformed costTracking block (string boolean, quoted rate, invalid
+ * verbosity) falls back to an empty object instead of failing the whole config
+ * parse and silently discarding unrelated settings. `enabled`/`verbosity` have
+ * no schema-level defaults: when the config file omits them (or defines only
+ * rates), they stay `undefined` so the action inputs — the primary opt-in
+ * mechanism — are honored via the `??` fallback in the action wrapper.
+ */
+export const CostTrackingConfigSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    verbosity: z.enum(['off', 'summary', 'detailed']).optional(),
+    inputCostPer1K: z.number().nonnegative().optional(),
+    outputCostPer1K: z.number().nonnegative().optional(),
+  })
+  .catch({});
+
 /** Zod schema validating review configuration. */
 export const ReviewConfigSchema = z.object({
   skipLabels: z.array(z.string()).default(['autofix', 'autofix:approved', 'autofix:merged']),
@@ -126,6 +145,7 @@ export const ReviewConfigSchema = z.object({
   enableReachability: z.boolean().optional().default(true),
   tokenBudget: TokenBudgetConfigSchema.optional(),
   reviewBudget: ReviewBudgetConfigSchema.default(ReviewBudgetConfigSchema.parse({})),
+  costTracking: CostTrackingConfigSchema.optional(),
 });
 
 /** Zod schema validating audit configuration. */
@@ -296,6 +316,7 @@ export const PromptConfigSchema = z.object({
           splitThreshold: z.number().int().min(1).optional(),
         })
         .optional(),
+      costTracking: CostTrackingConfigSchema.optional(),
     })
     .optional(),
   fix: z

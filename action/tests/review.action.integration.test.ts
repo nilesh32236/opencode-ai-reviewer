@@ -1,4 +1,9 @@
-import type { GitHubHelper, ReviewEngine, ReviewResult } from '@opencode-pr-agent/lib';
+import {
+  DEFAULT_CONFIG,
+  type GitHubHelper,
+  type ReviewEngine,
+  type ReviewResult,
+} from '@opencode-pr-agent/lib';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeConfig, makeInputs, makePRContext } from './helpers/mock-factories.js';
 
@@ -15,6 +20,8 @@ const {
   mockGetBotReviewThreads,
   mockReviewPR,
   mockPostReview,
+  mockSaveState,
+  mockGetLastTelemetry,
 } = vi.hoisted(() => {
   const _mockGetInput = vi.fn();
   const _mockSetOutput = vi.fn();
@@ -28,6 +35,8 @@ const {
   const _mockGetBotReviewThreads = vi.fn();
   const _mockReviewPR = vi.fn();
   const _mockPostReview = vi.fn();
+  const _mockSaveState = vi.fn();
+  const _mockGetLastTelemetry = vi.fn().mockReturnValue(null);
   return {
     mockGetInput: _mockGetInput,
     mockSetOutput: _mockSetOutput,
@@ -41,6 +50,8 @@ const {
     mockGetBotReviewThreads: _mockGetBotReviewThreads,
     mockReviewPR: _mockReviewPR,
     mockPostReview: _mockPostReview,
+    mockSaveState: _mockSaveState,
+    mockGetLastTelemetry: _mockGetLastTelemetry,
   };
 });
 
@@ -52,6 +63,7 @@ vi.mock('@actions/core', () => ({
   warning: mockWarning,
   error: mockError,
   debug: mockDebug,
+  saveState: mockSaveState,
 }));
 
 vi.mock('@actions/github', () => ({
@@ -74,6 +86,7 @@ const mockGh = {
 
 const mockEngine = {
   reviewPR: mockReviewPR,
+  getLastTelemetry: mockGetLastTelemetry,
 } as unknown as ReviewEngine;
 
 describe('runReview (action wrapper)', () => {
@@ -230,5 +243,149 @@ describe('runReview (action wrapper)', () => {
 
     expect(reviewResult.issues[0].commentId).toBe(555);
     expect(mockSetOutput).toHaveBeenCalledWith('verdict', 'false');
+  });
+
+  it('exposes token usage and normalized cost when cost tracking is enabled', async () => {
+    const pr = makePRContext();
+    mockGetPR.mockResolvedValue(pr);
+    mockReviewPR.mockResolvedValue({
+      summary: '## Review\nGood PR.',
+      verdict: { ready: true, reasoning: 'LGTM', autoFixable: false, confidence: 'high' },
+      strengths: [],
+      issues: [],
+      stats: { total: 0, critical: 0, important: 0, minor: 0 },
+    });
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+    mockGetLastTelemetry.mockReturnValue({
+      totalTokens: 1234,
+      promptTokens: 1000,
+      completionTokens: 234,
+      durationMs: 5000,
+      estimatedCost: 0.0046005,
+    });
+
+    const config = makeConfig({
+      enableMCP: false,
+      mcpServers: [],
+      review: {
+        ...DEFAULT_CONFIG.review,
+        costTracking: { enabled: true, verbosity: 'summary' },
+      },
+    });
+
+    await runReview(
+      makeInputs({ reviewModel: config.reviewModel, fixModel: config.fixModel }),
+      config,
+      mockEngine,
+      mockGh,
+      'owner/repo',
+    );
+
+    expect(mockSetOutput).toHaveBeenCalledWith('token_usage', '1234');
+    expect(mockSaveState).toHaveBeenCalledWith('token_usage', '1234');
+    expect(mockSaveState).toHaveBeenCalledWith('token_usage_duration', '5000');
+    // Cost is normalized to the fixed-decimal format used by the post comment.
+    expect(mockSetOutput).toHaveBeenCalledWith('cost', '0.0046');
+    expect(mockSaveState).toHaveBeenCalledWith('cost', '0.0046');
+    // Summary verbosity must not persist the prompt/completion breakdown.
+    expect(mockSaveState).not.toHaveBeenCalledWith('token_usage_prompt', '1000');
+  });
+
+  it('saves the prompt/completion breakdown to state for detailed verbosity', async () => {
+    const pr = makePRContext();
+    mockGetPR.mockResolvedValue(pr);
+    mockReviewPR.mockResolvedValue({
+      summary: '## Review\nGood PR.',
+      verdict: { ready: true, reasoning: 'LGTM', autoFixable: false, confidence: 'high' },
+      strengths: [],
+      issues: [],
+      stats: { total: 0, critical: 0, important: 0, minor: 0 },
+    });
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+    mockGetLastTelemetry.mockReturnValue({
+      totalTokens: 1234,
+      promptTokens: 1000,
+      completionTokens: 234,
+      durationMs: 5000,
+      estimatedCost: 0.0046,
+    });
+
+    const config = makeConfig({
+      enableMCP: false,
+      mcpServers: [],
+      review: {
+        ...DEFAULT_CONFIG.review,
+        costTracking: { enabled: true, verbosity: 'detailed' },
+      },
+    });
+
+    await runReview(
+      makeInputs({ reviewModel: config.reviewModel, fixModel: config.fixModel }),
+      config,
+      mockEngine,
+      mockGh,
+      'owner/repo',
+    );
+
+    expect(mockSaveState).toHaveBeenCalledWith('token_usage_prompt', '1000');
+    expect(mockSaveState).toHaveBeenCalledWith('token_usage_completion', '234');
+  });
+
+  it('does not save token usage/cost state when nothing meaningful was measured', async () => {
+    const pr = makePRContext();
+    mockGetPR.mockResolvedValue(pr);
+    mockReviewPR.mockResolvedValue({
+      summary: '## Review\nGood PR.',
+      verdict: { ready: true, reasoning: 'LGTM', autoFixable: false, confidence: 'high' },
+      strengths: [],
+      issues: [],
+      stats: { total: 0, critical: 0, important: 0, minor: 0 },
+    });
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+    // The default free model often emits no parseable usage: totalTokens is 0
+    // and no rate applies, so estimatedCost is undefined. The wrapper must not
+    // surface a misleading 'Total Tokens | 0 |' state/output/comment.
+    mockGetLastTelemetry.mockReturnValue({
+      totalTokens: 0,
+      durationMs: 1000,
+      estimatedCost: undefined,
+    });
+
+    const config = makeConfig({
+      enableMCP: false,
+      mcpServers: [],
+      review: {
+        ...DEFAULT_CONFIG.review,
+        costTracking: { enabled: true, verbosity: 'summary' },
+      },
+    });
+
+    await runReview(
+      makeInputs({ reviewModel: config.reviewModel, fixModel: config.fixModel }),
+      config,
+      mockEngine,
+      mockGh,
+      'owner/repo',
+    );
+
+    expect(mockSetOutput).not.toHaveBeenCalledWith('token_usage', expect.anything());
+    expect(mockSetOutput).not.toHaveBeenCalledWith('cost', expect.anything());
+    expect(mockSaveState).not.toHaveBeenCalledWith('token_usage', expect.anything());
+    expect(mockSaveState).not.toHaveBeenCalledWith('cost', expect.anything());
   });
 });

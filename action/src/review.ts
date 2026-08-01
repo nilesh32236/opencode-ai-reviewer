@@ -119,4 +119,40 @@ export async function runReview(
   core.setOutput('critical_count', String(result.stats.critical));
   core.setOutput('important_count', String(result.stats.important));
   core.setOutput('minor_count', String(result.stats.minor));
+
+  const costTracking = config.review.costTracking;
+  const telemetry = engine.getLastTelemetry();
+  // Mirror the lib's guard (attachUsage): only expose state/outputs when
+  // something meaningful was actually measured. With the default free model the
+  // CLI often emits no parseable usage, in which case totalTokens is 0 and
+  // estimatedCost is undefined — surfacing a '0' here would make post.ts post a
+  // misleading 'Total Tokens 0' PR comment (the string '0' is truthy).
+  if (
+    costTracking?.enabled === true &&
+    costTracking.verbosity !== 'off' &&
+    telemetry &&
+    (telemetry.totalTokens > 0 || telemetry.estimatedCost !== undefined)
+  ) {
+    const totalTokens = String(telemetry.totalTokens);
+    core.setOutput('token_usage', totalTokens);
+    core.saveState('token_usage', totalTokens);
+    core.saveState('token_usage_duration', String(telemetry.durationMs));
+    if (telemetry.estimatedCost !== undefined) {
+      // Normalize to the same fixed-decimal format used by the post comment
+      // and review-body renderer so automation consumers see stable output.
+      const cost = telemetry.estimatedCost.toFixed(4);
+      core.setOutput('cost', cost);
+      core.saveState('cost', cost);
+    }
+    // Save the prompt/completion breakdown for the post-step comment when the
+    // 'detailed' verbosity is requested.
+    if (costTracking.verbosity === 'detailed') {
+      if (telemetry.promptTokens !== undefined) {
+        core.saveState('token_usage_prompt', String(telemetry.promptTokens));
+      }
+      if (telemetry.completionTokens !== undefined) {
+        core.saveState('token_usage_completion', String(telemetry.completionTokens));
+      }
+    }
+  }
 }
