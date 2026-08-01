@@ -99,6 +99,28 @@ describe('FeedbackSubscriber', () => {
     expect(fpRate).toBe(1);
   });
 
+  it('ignores slash-command replies even when they contain dispute keywords', async () => {
+    await store.recordFinding({
+      prNumber: 1,
+      type: 'issue',
+      message: 'test',
+    });
+
+    await subscriber.handle({
+      type: 'comment.created',
+      category: 'comment',
+      payload: {
+        comment: { body: '/dismiss false positive', in_reply_to_id: 42 },
+        issue: { number: 1 },
+      },
+      timestamp: Date.now(),
+      prNumber: 1,
+    });
+
+    const fpRate = await store.getFalsePositiveRate();
+    expect(fpRate).toBe(0);
+  });
+
   it('ignores non-dispute comments', async () => {
     await store.recordFinding({
       prNumber: 1,

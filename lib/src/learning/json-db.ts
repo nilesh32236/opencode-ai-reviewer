@@ -89,6 +89,24 @@ interface MetaReviewCounterRow {
 }
 
 /**
+ * Dismissal signal values that indicate a finding is a genuine false positive
+ * and should therefore suppress future flags. `/dismiss out_of_scope` and
+ * `/dismiss other` mean the finding is valid but not applicable to this PR —
+ * those are recorded for metrics but must not generate 'DO NOT flag' rules.
+ * Legacy FeedbackSubscriber dismissal signals (review/comment dismissed or
+ * deleted) represent real dismissal actions and remain suppression-worthy.
+ */
+const SUPPRESSING_DISMISS_SIGNALS = new Set<string>([
+  'false_positive',
+  'intentional',
+  'review_dismissed',
+  'comment_dismissed',
+  'comment_deleted',
+]);
+
+export { SUPPRESSING_DISMISS_SIGNALS };
+
+/**
  * In-memory JSON-backed database implementing the LearningRepository interface.
  * Persists data to disk as JSON. Directly operates on in-memory arrays for all
  * CRUD operations without SQL parsing.
@@ -517,10 +535,15 @@ export class JsonDatabase implements LearningRepository {
   async getFalsePositiveRules(filePaths: string[], limit = 20): Promise<string[]> {
     const extensions = deriveFileExtensions(filePaths);
 
-    // Build a set of finding IDs that have dismissed/disputed feedback
+    // Build a set of finding IDs that have dismissal/dispute feedback
+    // signalling a genuine false positive (a reason that means the finding is
+    // wrong, not merely out of scope).
     const disputedFindingIds = new Set<string>();
     for (const fb of this.data.feedback) {
-      if (fb.signal_type === 'dismissed' || fb.signal_type === 'disputed_comment') {
+      if (
+        fb.signal_type === 'disputed_comment' ||
+        (fb.signal_type === 'dismissed' && SUPPRESSING_DISMISS_SIGNALS.has(fb.signal_value ?? ''))
+      ) {
         disputedFindingIds.add(fb.finding_id);
       }
     }

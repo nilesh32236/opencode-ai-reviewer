@@ -492,6 +492,116 @@ describe('LearningStore Analytics', () => {
   });
 });
 
+describe('LearningStore getFalsePositiveRules', () => {
+  let store: LearningStore;
+
+  beforeEach(() => {
+    try {
+      fs.unlinkSync(TEST_DB);
+    } catch {
+      /* ok */
+    }
+    try {
+      fs.unlinkSync(TEST_DB + '-wal');
+    } catch {
+      /* ok */
+    }
+    try {
+      fs.unlinkSync(TEST_DB.replace(/\.db$/, '.json'));
+    } catch {
+      /* ok */
+    }
+    store = new LearningStore(TEST_DB);
+  });
+
+  afterEach(async () => {
+    await store.close();
+    try {
+      fs.unlinkSync(TEST_DB);
+    } catch {
+      /* ok */
+    }
+    try {
+      fs.unlinkSync(TEST_DB + '-wal');
+    } catch {
+      /* ok */
+    }
+    try {
+      fs.unlinkSync(TEST_DB.replace(/\.db$/, '.json'));
+    } catch {
+      /* ok */
+    }
+  });
+
+  it('generates a DO NOT flag rule for a false_positive dismissal', async () => {
+    const id = await store.recordFinding({
+      prNumber: 1,
+      type: 'issue',
+      file: 'src/a.ts',
+      message: 'Missing null check',
+    });
+    await store.recordFeedback({
+      findingId: id,
+      signalType: 'dismissed',
+      signalValue: 'false_positive',
+      prNumber: 1,
+    });
+
+    const rules = await store.getFalsePositiveRules(['src/a.ts']);
+    expect(rules).toHaveLength(1);
+    expect(rules[0]).toContain('Missing null check');
+    expect(rules[0]).toContain('DO NOT flag');
+  });
+
+  it('does not generate a DO NOT flag rule for out_of_scope or other dismissals', async () => {
+    const id1 = await store.recordFinding({
+      prNumber: 1,
+      type: 'issue',
+      file: 'src/a.ts',
+      message: 'Out of scope finding',
+    });
+    const id2 = await store.recordFinding({
+      prNumber: 1,
+      type: 'issue',
+      file: 'src/a.ts',
+      message: 'Other reason finding',
+    });
+    await store.recordFeedback({
+      findingId: id1,
+      signalType: 'dismissed',
+      signalValue: 'out_of_scope',
+      prNumber: 1,
+    });
+    await store.recordFeedback({
+      findingId: id2,
+      signalType: 'dismissed',
+      signalValue: 'other',
+      prNumber: 1,
+    });
+
+    const rules = await store.getFalsePositiveRules(['src/a.ts']);
+    expect(rules).toHaveLength(0);
+  });
+
+  it('treats legacy review_dismissed feedback as suppression-worthy', async () => {
+    const id = await store.recordFinding({
+      prNumber: 1,
+      type: 'issue',
+      file: 'src/a.ts',
+      message: 'Legacy dismissed finding',
+    });
+    await store.recordFeedback({
+      findingId: id,
+      signalType: 'dismissed',
+      signalValue: 'review_dismissed',
+      prNumber: 1,
+    });
+
+    const rules = await store.getFalsePositiveRules(['src/a.ts']);
+    expect(rules).toHaveLength(1);
+  });
+});
+
 describe('LearningStore JSON Fallback Smoke Test', () => {
   let jsonStore: LearningStore;
   let jsonDbPath: string;

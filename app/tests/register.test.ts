@@ -20,6 +20,7 @@ const EXPECTED_SUBSCRIBERS = [
   'AutoAnalyzeSubscriber',
   'QuestionAnsweredSubscriber',
   'ReplySubscriber',
+  'DismissSubscriber',
   'ExplainSubscriber',
   'ConversationSubscriber',
   'SetupSubscriber',

@@ -1,4 +1,4 @@
-import { Logger } from '@opencode-pr-agent/lib';
+import { Logger, parseCommand } from '@opencode-pr-agent/lib';
 import type { GitHubEvent, Subscriber } from '@opencode-pr-agent/lib';
 import { handleReply } from '../handlers/reply.js';
 import { buildConfig } from '../utils/config.js';
@@ -26,18 +26,19 @@ export function createReplySubscriber(): Subscriber {
         const parentId = comment.in_reply_to_id as number | undefined;
         if (!parentId) return;
 
+        const body = comment.body as string | undefined;
+        if (!body) return;
+
+        // /dismiss is handled by its dedicated review-thread subscriber; other
+        // slash commands have no such subscriber and should still get the
+        // conversational reply.
+        if (parseCommand(body)?.command === 'dismiss') return;
+
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;
 
         const config = buildConfig();
-        await handleReply(
-          prNumber,
-          event.repo || '',
-          getToken(),
-          config,
-          parentId,
-          comment.body as string,
-        );
+        await handleReply(prNumber, event.repo || '', getToken(), config, parentId, body);
       } catch (err) {
         logger.error(`ReplySubscriber failed: ${err instanceof Error ? err.message : err}`);
       }
