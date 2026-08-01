@@ -384,6 +384,7 @@ export interface ReviewSensitivityConfig {
   ignorePatterns?: string[];
 }
 
+/** Main review configuration controlling what is reviewed and how findings are reported. */
 export interface ReviewConfig {
   /** Skip review for PRs with these labels */
   skipLabels: string[];
