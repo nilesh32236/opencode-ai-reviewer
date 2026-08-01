@@ -21,10 +21,13 @@ export class TelemetrySubscriber implements Subscriber {
   constructor(private readonly store: LearningStore) {}
 
   /**
-   * Record quality metrics for a completed pipeline event when it carries a PR
-   * number and duration/token usage. Events without a PR number (e.g. audits)
-   * or without any resource telemetry are skipped because there is nothing to
-   * persist.
+   * Record quality metrics for a completed pipeline event when it carries
+   * duration/token usage. Events without any resource telemetry are skipped
+   * because there is nothing to persist.
+   *
+   * Stages that do not map to a PR-numbered completion event (e.g. audits)
+   * default to `prNumber = 0`, matching the pre-event-bus behavior where
+   * `ReviewEngine.recordTelemetry` persisted such rows directly.
    *
    * Pipeline events do not carry quality scores, so the recorded rows have
    * zero scores and exist purely to feed duration/token telemetry; the metrics
@@ -36,8 +39,7 @@ export class TelemetrySubscriber implements Subscriber {
     const payload = event.payload;
     if (typeof payload !== 'object' || payload === null) return;
     const typed = payload as PipelineEventPayload;
-    const prNumber = event.prNumber ?? typed.prNumber;
-    if (!prNumber) return;
+    const prNumber = event.prNumber ?? typed.prNumber ?? 0;
     if (typed.durationMs === undefined && typed.tokensUsed === undefined) return;
 
     try {

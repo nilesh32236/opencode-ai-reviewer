@@ -4,6 +4,7 @@ import * as path from 'path';
 import type { LearningQuality } from '../../types/index.js';
 import { Logger } from '../../utils/logger.js';
 import { JsonDatabase, SUPPRESSING_DISMISS_SIGNALS } from '../json-db.js';
+import { QUALITY_SCORE_SQL_FRAGMENT } from '../quality.js';
 import { deriveFileExtensions, generateId } from '../schema.js';
 import type {
   CustomRuleRow,
@@ -488,7 +489,7 @@ export abstract class SqlAdapter implements LearningRepository {
    */
   async getQualityTrends(limit = 20): Promise<ReviewQualityRow[]> {
     const rows = await this.all(
-      'SELECT * FROM review_quality WHERE actionability_score > 0 OR accuracy_score > 0 OR coverage_score > 0 OR consistency_score > 0 ORDER BY created_at DESC LIMIT ?',
+      `SELECT * FROM review_quality WHERE ${QUALITY_SCORE_SQL_FRAGMENT} ORDER BY created_at DESC LIMIT ?`,
       [limit],
     );
     return rows as ReviewQualityRow[];
@@ -835,15 +836,14 @@ export abstract class SqlAdapter implements LearningRepository {
       total_tokens: number | null;
     }>(
       `SELECT
-        AVG(actionability_score) as avg_actionability,
-        AVG(accuracy_score) as avg_accuracy,
-        AVG(coverage_score) as avg_coverage,
-        AVG(consistency_score) as avg_consistency,
+        AVG(CASE WHEN ${QUALITY_SCORE_SQL_FRAGMENT} THEN actionability_score END) as avg_actionability,
+        AVG(CASE WHEN ${QUALITY_SCORE_SQL_FRAGMENT} THEN accuracy_score END) as avg_accuracy,
+        AVG(CASE WHEN ${QUALITY_SCORE_SQL_FRAGMENT} THEN coverage_score END) as avg_coverage,
+        AVG(CASE WHEN ${QUALITY_SCORE_SQL_FRAGMENT} THEN consistency_score END) as avg_consistency,
         AVG(tokens_used) as avg_tokens,
         SUM(tokens_used) as total_tokens
        FROM review_quality
-       WHERE created_at >= ?
-         AND (actionability_score > 0 OR accuracy_score > 0 OR coverage_score > 0 OR consistency_score > 0)`,
+       WHERE created_at >= ?`,
       [cutoffStr],
     );
 

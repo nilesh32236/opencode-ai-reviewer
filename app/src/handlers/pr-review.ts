@@ -180,7 +180,18 @@ export async function handlePRReview(
         `Review agent confirmed issues are auto-fixable with high confidence. Launching handleAutofixLoop...`,
       );
       try {
-        await handleAutofixLoop(prNumber, repo, token, config, undefined, tempDir);
+        await handleAutofixLoop(
+          prNumber,
+          repo,
+          token,
+          config,
+          undefined,
+          tempDir,
+          undefined,
+          undefined,
+          undefined,
+          eventBus,
+        );
       } catch (err) {
         logger.error(
           `Autofix loop failed for PR #${prNumber}: ${err instanceof Error ? err.message : err}`,

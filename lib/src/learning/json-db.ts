@@ -3,6 +3,7 @@ import * as fsPromises from 'node:fs/promises';
 import * as path from 'path';
 import type { LearningQuality } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
+import { hasQualityScore } from './quality.js';
 import { deriveFileExtensions, generateId } from './schema.js';
 import type {
   FeedbackBreakdown,
@@ -614,13 +615,7 @@ export class JsonDatabase implements LearningRepository {
    */
   async getQualityTrends(limit = 20): Promise<ReviewQualityRow[]> {
     return [...this.data.review_quality]
-      .filter(
-        (r) =>
-          r.actionability_score > 0 ||
-          r.accuracy_score > 0 ||
-          r.coverage_score > 0 ||
-          r.consistency_score > 0,
-      )
+      .filter(hasQualityScore)
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
       .slice(0, limit);
   }
@@ -947,13 +942,7 @@ export class JsonDatabase implements LearningRepository {
 
     // Zero-score rows are telemetry-only (pipeline stages with no quality
     // assessment); exclude them from quality averages like getQualityTrends does.
-    const scoredRows = qualityRows.filter(
-      (r) =>
-        r.actionability_score > 0 ||
-        r.accuracy_score > 0 ||
-        r.coverage_score > 0 ||
-        r.consistency_score > 0,
-    );
+    const scoredRows = qualityRows.filter(hasQualityScore);
 
     let totalTokens = 0;
     let avgActionability: number | null = null;

@@ -118,6 +118,8 @@ export class ReviewEngine {
   private telemetry: TokenUsage | null = null;
   private static readonly LESSONS_CACHE_TTL = 60_000;
   private static readonly MCP_DOCS_CACHE_TTL = 60_000;
+  /** In-flight fire-and-forget publish promises, drained in cleanup(). */
+  private pendingPublishes = new Set<Promise<unknown>>();
 
   /**
    * @param config - Agent configuration (models, batch size, MCP servers, etc.).
@@ -171,7 +173,7 @@ export class ReviewEngine {
     // events carrying an issueNumber are correlated to a PR/issue via prNumber.
     const numbered = eventPayload as PipelineEventPayload & { issueNumber?: number };
     const prNumber = numbered.prNumber ?? numbered.issueNumber;
-    void this.eventBus
+    const publishPromise = this.eventBus
       .publish({
         type,
         category: 'pipeline',
@@ -185,6 +187,10 @@ export class ReviewEngine {
           `Failed to publish ${type} event: ${err instanceof Error ? err.message : String(err)}`,
         );
       });
+    // Track the promise so cleanup() can drain pending publishes before the
+    // learning store closes, making telemetry writes durable at shutdown.
+    this.pendingPublishes.add(publishPromise);
+    void publishPromise.finally(() => this.pendingPublishes.delete(publishPromise));
   }
 
   /**
@@ -203,6 +209,28 @@ export class ReviewEngine {
       durationMs: telemetry?.durationMs ?? payload.durationMs,
       tokensUsed: telemetry?.totalTokens ?? payload.tokensUsed,
     });
+  }
+
+  /**
+   * Publish a pipeline stage "completed" event from a single place, attaching
+   * the stage's resolved model so every exit branch of a stage method emits an
+   * identical completion event without repeating the publish boilerplate.
+   * @param type - The completed pipeline event type to emit.
+   * @param base - The stage-specific payload (without model/telemetry fields).
+   * @param modelField - Config field resolving the model used for the stage.
+   */
+  private publishStageCompleted<T extends PipelineEventType>(
+    type: T,
+    base: Omit<PipelineEventPayloadMap[T], 'timestamp' | 'modelUsed' | 'durationMs' | 'tokensUsed'>,
+    modelField: Parameters<ReviewEngine['resolveModel']>[0],
+  ): void {
+    // The spread of a generic-indexed union payload can't be proven assignable
+    // to the specific event's payload shape, but the callers always pass the
+    // stage's own payload type, so the cast is safe.
+    this.publishCompleted(type, {
+      ...base,
+      modelUsed: this.resolveModel(modelField),
+    } as Omit<PipelineEventPayloadMap[T], 'timestamp'>);
   }
 
   /**
@@ -314,18 +342,25 @@ export class ReviewEngine {
       previousBotComments,
     );
     const finalResult = this.attachUsage(result);
-    // Fire-and-forget completion publish: heavy subscribers (e.g. meta-review)
-    // must not delay the handler's review post or observe unpersisted findings.
-    this.publishCompleted(PIPELINE_EVENT_TYPES.REVIEW_COMPLETED, {
-      prNumber: pr.number,
-      reviewSummary: finalResult.summary,
-      findingsCount: finalResult.issues.length + finalResult.strengths.length,
-      issuesCount: finalResult.issues.length,
-      strengthsCount: finalResult.strengths.length,
-      hasVerdict: Boolean(finalResult.verdict?.reasoning),
-      fileCount: new Set(finalResult.issues.map((i) => i.file).filter(Boolean)).size,
-      modelUsed: this.config.reviewModel,
-    });
+    // Only publish review.completed when the review produced meaningful output.
+    // Skipped/empty reviews (all files excluded, or no summary/findings) must
+    // not emit the event: MetaReviewSubscriber counts every event against its
+    // interval and would otherwise trigger an expensive meta-review LLM run
+    // (recording bogus quality scores) for reviews that were never posted.
+    if (finalResult.summary || finalResult.issues.length > 0 || finalResult.strengths.length > 0) {
+      // Fire-and-forget completion publish: heavy subscribers (e.g. meta-review)
+      // must not delay the handler's review post or observe unpersisted findings.
+      this.publishCompleted(PIPELINE_EVENT_TYPES.REVIEW_COMPLETED, {
+        prNumber: pr.number,
+        reviewSummary: finalResult.summary,
+        findingsCount: finalResult.issues.length + finalResult.strengths.length,
+        issuesCount: finalResult.issues.length,
+        strengthsCount: finalResult.strengths.length,
+        hasVerdict: Boolean(finalResult.verdict?.reasoning),
+        fileCount: new Set(finalResult.issues.map((i) => i.file).filter(Boolean)).size,
+        modelUsed: this.config.reviewModel,
+      });
+    }
     return finalResult;
   }
 
@@ -1028,12 +1063,11 @@ export class ReviewEngine {
       core.warning('OpenCode audit execution failed, returning fallback empty result');
       const r = emptyResult();
       r.verdict.reasoning = 'Audit execution failed';
-      this.publishCompleted(PIPELINE_EVENT_TYPES.AUDIT_COMPLETED, {
-        category,
-        targetDir,
-        issuesCount: 0,
-        modelUsed: this.resolveModel('auditModel'),
-      });
+      this.publishStageCompleted(
+        PIPELINE_EVENT_TYPES.AUDIT_COMPLETED,
+        { category, targetDir, issuesCount: 0 },
+        'auditModel',
+      );
       return r;
     }
 
@@ -1041,23 +1075,21 @@ export class ReviewEngine {
     const outputPath = path.join(auditDir, `.opencode/audit-${category}.jsonl`);
     try {
       const auditResult = await parseJsonlFile(outputPath);
-      this.publishCompleted(PIPELINE_EVENT_TYPES.AUDIT_COMPLETED, {
-        category,
-        targetDir,
-        issuesCount: auditResult.issues.length,
-        modelUsed: this.resolveModel('auditModel'),
-      });
+      this.publishStageCompleted(
+        PIPELINE_EVENT_TYPES.AUDIT_COMPLETED,
+        { category, targetDir, issuesCount: auditResult.issues.length },
+        'auditModel',
+      );
       return auditResult;
     } catch {
       core.warning(`Failed to parse audit output at ${outputPath}, returning empty result`);
       const r = emptyResult();
       r.verdict.reasoning = 'Failed to parse audit output';
-      this.publishCompleted(PIPELINE_EVENT_TYPES.AUDIT_COMPLETED, {
-        category,
-        targetDir,
-        issuesCount: 0,
-        modelUsed: this.resolveModel('auditModel'),
-      });
+      this.publishStageCompleted(
+        PIPELINE_EVENT_TYPES.AUDIT_COMPLETED,
+        { category, targetDir, issuesCount: 0 },
+        'auditModel',
+      );
       return r;
     }
   }
@@ -1108,34 +1140,38 @@ export class ReviewEngine {
 
     if (!runResult.success) {
       core.warning('OpenCode analyze execution failed or timed out.');
-      this.publishCompleted(PIPELINE_EVENT_TYPES.ANALYZE_COMPLETED, {
-        issueNumber,
-        modelUsed: this.resolveModel('analysisModel'),
-      });
+      this.publishStageCompleted(
+        PIPELINE_EVENT_TYPES.ANALYZE_COMPLETED,
+        { issueNumber },
+        'analysisModel',
+      );
       return '⚠️ **Analysis Failed**: OpenCode CLI was unable to complete the codebase analysis.';
     }
 
     try {
       const planMarkdown = await fs.readFile(planPath, 'utf-8');
       await fs.unlink(planPath).catch(() => {});
-      this.publishCompleted(PIPELINE_EVENT_TYPES.ANALYZE_COMPLETED, {
-        issueNumber,
-        modelUsed: this.resolveModel('analysisModel'),
-      });
+      this.publishStageCompleted(
+        PIPELINE_EVENT_TYPES.ANALYZE_COMPLETED,
+        { issueNumber },
+        'analysisModel',
+      );
       return planMarkdown.trim();
     } catch (err) {
       if (runResult.output && runResult.output.trim().length > 0) {
-        this.publishCompleted(PIPELINE_EVENT_TYPES.ANALYZE_COMPLETED, {
-          issueNumber,
-          modelUsed: this.resolveModel('analysisModel'),
-        });
+        this.publishStageCompleted(
+          PIPELINE_EVENT_TYPES.ANALYZE_COMPLETED,
+          { issueNumber },
+          'analysisModel',
+        );
         return runResult.output.trim();
       }
       core.warning(`Could not read analysis plan from ${planPath}: ${String(err)}`);
-      this.publishCompleted(PIPELINE_EVENT_TYPES.ANALYZE_COMPLETED, {
-        issueNumber,
-        modelUsed: this.resolveModel('analysisModel'),
-      });
+      this.publishStageCompleted(
+        PIPELINE_EVENT_TYPES.ANALYZE_COMPLETED,
+        { issueNumber },
+        'analysisModel',
+      );
       return '⚠️ **Analysis Error**: Could not read generated `.opencode/analysis-plan.md` file.';
     }
   }
@@ -1253,7 +1289,18 @@ export class ReviewEngine {
       );
     }
 
-    return { changesMade, filesChanged, diagnosis, diagnosticReport, summary };
+    const selfHealResult = { changesMade, filesChanged, diagnosis, diagnosticReport, summary };
+    // Publish a self-heal completion event so duration/token telemetry for the
+    // heal run is persisted by the TelemetrySubscriber even though self-heal
+    // has no PR-numbered completion event (prNumber defaults to 0 in the
+    // subscriber, matching the pre-event-bus direct-write behavior).
+    this.publishCompleted(PIPELINE_EVENT_TYPES.SELF_HEAL_COMPLETED, {
+      changesMade,
+      filesChanged,
+      diagnosis,
+      modelUsed: this.config.fixModel,
+    });
+    return selfHealResult;
   }
 
   /**
@@ -1300,25 +1347,28 @@ export class ReviewEngine {
     );
 
     if (!runResult.success) {
-      this.publishCompleted(PIPELINE_EVENT_TYPES.EXPLAIN_COMPLETED, {
-        prNumber: pr.number,
-        modelUsed: this.resolveModel('explanationModel'),
-      });
+      this.publishStageCompleted(
+        PIPELINE_EVENT_TYPES.EXPLAIN_COMPLETED,
+        { prNumber: pr.number },
+        'explanationModel',
+      );
       return '⚠️ **Explanation Failed**: OpenCode CLI was unable to generate the PR explanation.';
     }
 
     try {
       const content = await fs.readFile(outputPath, 'utf-8');
-      this.publishCompleted(PIPELINE_EVENT_TYPES.EXPLAIN_COMPLETED, {
-        prNumber: pr.number,
-        modelUsed: this.resolveModel('explanationModel'),
-      });
+      this.publishStageCompleted(
+        PIPELINE_EVENT_TYPES.EXPLAIN_COMPLETED,
+        { prNumber: pr.number },
+        'explanationModel',
+      );
       return content.trim();
     } catch {
-      this.publishCompleted(PIPELINE_EVENT_TYPES.EXPLAIN_COMPLETED, {
-        prNumber: pr.number,
-        modelUsed: this.resolveModel('explanationModel'),
-      });
+      this.publishStageCompleted(
+        PIPELINE_EVENT_TYPES.EXPLAIN_COMPLETED,
+        { prNumber: pr.number },
+        'explanationModel',
+      );
       return '⚠️ **Explanation Failed**: Could not read explanation from `.opencode/explain-output.md`.';
     }
   }
@@ -1788,6 +1838,13 @@ export class ReviewEngine {
   async cleanup(): Promise<void> {
     const timeoutMs = 15_000;
     const start = Date.now();
+
+    // Drain pending fire-and-forget publishes before closing the learning
+    // store so in-flight TelemetrySubscriber writes are not silently lost
+    // when the one-shot process exits.
+    if (this.pendingPublishes.size > 0) {
+      await Promise.allSettled([...this.pendingPublishes]);
+    }
 
     const mcpTask = this.mcp
       .disconnect()

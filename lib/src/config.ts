@@ -8,6 +8,30 @@ import type { Platform } from './types/index.js';
 import { PromptConfigSchema } from './types/schemas.js';
 import { DEFAULT_ALLOWLIST } from './utils/command.js';
 
+/** Default path for the structured event log (kept inside the gitignored `.opencode/` dir). */
+const DEFAULT_EVENT_LOG_PATH = '.opencode/events.ndjson';
+
+/**
+ * Constrain an event log path to the `.opencode/` directory. The action's fix
+ * loop uses `git add -A`, and `.opencode/` is gitignored, so writing the log
+ * there keeps it out of fix commits. An unconstrained path could point at an
+ * arbitrary writable file (including existing repo files that would be
+ * corrupted by appended JSON), so any path that does not resolve inside
+ * `.opencode/` falls back to the default.
+ * @param configuredPath - The configured event log path.
+ * @returns A path guaranteed to live inside `.opencode/`.
+ */
+function constrainEventLogPath(configuredPath: string): string {
+  const trimmed = configuredPath.trim();
+  const resolved = path.resolve(trimmed);
+  const opencodeDir = path.resolve('.opencode');
+  const rel = path.relative(opencodeDir, resolved);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    return DEFAULT_EVENT_LOG_PATH;
+  }
+  return trimmed;
+}
+
 /** Options for resolving configuration values. */
 export interface ResolveConfigOptions {
   /** File paths being reviewed (for path-based overrides) */
@@ -419,7 +443,9 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     result.eventLogging = {
       enabled: typeof el.enabled === 'boolean' ? el.enabled : false,
       path:
-        typeof el.path === 'string' && el.path.trim() !== '' ? el.path : '.opencode/events.ndjson',
+        typeof el.path === 'string' && el.path.trim() !== ''
+          ? constrainEventLogPath(el.path)
+          : DEFAULT_EVENT_LOG_PATH,
     };
   }
 

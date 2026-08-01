@@ -320,10 +320,16 @@ async function run(): Promise<void> {
       // Persist duration/token telemetry for completed pipeline stages so
       // /metrics keeps reporting latency and token usage.
       eventBus.register(new TelemetrySubscriber(learningStore));
+      // Pluggable subscribers are arbitrary code executed on the runner. The
+      // repo config (`.opencode-reviewer.yml`) is untrusted input, so they are
+      // only loaded when the OPERATOR explicitly opts in via an env var —
+      // never when merely configured in the repo.
+      const allowPluggableEventSubscribers = process.env.ENABLE_EVENT_SUBSCRIBERS === 'true';
       const registeredSubscribers = await registerEventSubscribers(
         eventBus,
         config.eventLogging,
         config.eventSubscribers,
+        { allowPluggable: allowPluggableEventSubscribers },
       );
       if (registeredSubscribers.length > 0) {
         core.info(`Registered ${registeredSubscribers.length} event subscriber(s)`);

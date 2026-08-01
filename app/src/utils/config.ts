@@ -1,5 +1,5 @@
 import { DEFAULT_CONFIG, getDefaultMCPServers } from '@opencode-pr-agent/lib';
-import type { AgentConfig } from '@opencode-pr-agent/lib';
+import type { AgentConfig, PluggableSubscriberConfig } from '@opencode-pr-agent/lib';
 
 /**
  * Parse an integer from an environment variable with a fallback.
@@ -25,12 +25,38 @@ function clampInt(value: number, min: number, max: number = Number.MAX_SAFE_INTE
 }
 
 /**
+ * Parse the EVENT_SUBSCRIBERS env var into pluggable subscriber config entries.
+ * Malformed JSON is rejected with a fallback to an empty list so app startup
+ * never breaks on a bad env var.
+ * @returns Parsed subscriber entries, or an empty array when unset/invalid.
+ */
+function parseEventSubscribers(): PluggableSubscriberConfig[] {
+  const raw = process.env.EVENT_SUBSCRIBERS;
+  if (!raw || raw.trim() === '') return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (s): s is PluggableSubscriberConfig =>
+        !!s && typeof s === 'object' && typeof (s as PluggableSubscriberConfig).path === 'string',
+    );
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Build the agent configuration from environment variables and defaults.
  * @returns The resolved agent configuration object.
  */
 export function buildConfig(): AgentConfig {
   return {
     ...DEFAULT_CONFIG,
+    eventLogging: {
+      enabled: process.env.EVENT_LOGGING_ENABLED === 'true',
+      path: process.env.EVENT_LOGGING_PATH || '.opencode/events.ndjson',
+    },
+    eventSubscribers: parseEventSubscribers(),
     reviewModel: process.env.REVIEW_MODEL || DEFAULT_CONFIG.reviewModel,
     fixModel: process.env.FIX_MODEL || DEFAULT_CONFIG.fixModel,
     auditModel: process.env.AUDIT_MODEL || undefined,

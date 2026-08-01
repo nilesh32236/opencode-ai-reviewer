@@ -7,11 +7,34 @@ import { LoggingSubscriber } from './logging-subscriber.js';
 const logger = new Logger('EventSubscribers');
 
 /**
+ * Options controlling which event subscribers may be registered.
+ */
+export interface RegisterEventSubscribersOptions {
+  /**
+   * Whether pluggable subscribers declared in `eventSubscribers` may be
+   * loaded and executed. Pluggable modules are arbitrary code: loading them
+   * from repo-controlled config (as the GitHub Action does when it reads
+   * `.opencode-reviewer.yml` from an untrusted PR checkout) would let a
+   * hostile PR run code on the runner. Callers must therefore opt in
+   * explicitly — e.g. gated behind an operator-set env var — for pluggable
+   * subscribers to be registered. The built-in LoggingSubscriber is always
+   * safe and is not affected by this flag.
+   */
+  allowPluggable?: boolean;
+}
+
+/**
  * Resolve a configured subscriber module path to an absolute path that must
- * live inside the working directory (the repo checkout). Relative paths are
- * resolved against `process.cwd()`, and absolute paths that escape the checkout
- * are rejected so a hostile repository cannot load arbitrary code into the
- * runner via `eventSubscribers`.
+ * live inside the working directory. Relative paths are resolved against
+ * `process.cwd()` and absolute paths that escape the working directory are
+ * rejected.
+ *
+ * NOTE: confining paths to the working directory is NOT a security boundary —
+ * in the GitHub Action the working directory IS the untrusted repo checkout,
+ * so a repo can ship and load arbitrary modules. Loading pluggable modules is
+ * therefore gated behind the `allowPluggable` opt-in flag, which must only be
+ * set from operator-controlled configuration (env vars / action inputs), never
+ * from repo-controlled config.
  * @param modulePath - Configured module path (relative or absolute).
  * @returns The resolved absolute path, or null when it escapes the checkout.
  */
@@ -67,21 +90,27 @@ async function resolveSubscriberModule(modulePath: string): Promise<Subscriber |
  * Register the built-in logging subscriber (when enabled) plus any pluggable
  * subscribers declared in `eventSubscribers` on the given event bus.
  *
- * Pluggable subscribers are treated as trusted first-party configuration: their
- * module paths must resolve inside the working directory (the repo checkout).
+ * Pluggable subscribers are arbitrary code, so they are only loaded when the
+ * caller explicitly opts in via `options.allowPluggable`. See
+ * {@link RegisterEventSubscribersOptions} for the security rationale. When
+ * pluggable subscribers are configured but not allowed, they are skipped with
+ * a warning and only the built-in logging subscriber is registered.
  * @param bus - The event bus to register subscribers on.
  * @param eventLogging - Event logging config controlling the LoggingSubscriber.
  * @param eventSubscribers - Pluggable subscriber config entries to load.
+ * @param options - Options controlling which subscribers may be loaded.
  * @returns The list of subscribers that were successfully registered.
  */
 export async function registerEventSubscribers(
   bus: EventBus,
   eventLogging?: EventLoggingConfig,
   eventSubscribers?: PluggableSubscriberConfig[],
+  options?: RegisterEventSubscribersOptions,
 ): Promise<Subscriber[]> {
   const registered: Subscriber[] = [];
   const loggingConfig: EventLoggingConfig = eventLogging ?? { enabled: false };
   const subscriberConfigs: PluggableSubscriberConfig[] = eventSubscribers ?? [];
+  const allowPluggable = options?.allowPluggable === true;
 
   if (loggingConfig.enabled) {
     const logPath = loggingConfig.path ?? '.opencode/events.ndjson';
@@ -91,16 +120,30 @@ export async function registerEventSubscribers(
     logger.info(`Registered LoggingSubscriber (path: ${logPath})`);
   }
 
+  if (subscriberConfigs.length > 0 && !allowPluggable) {
+    logger.warn(
+      `Skipping ${subscriberConfigs.length} pluggable event subscriber(s): pluggable subscribers require explicit opt-in via an operator-controlled setting`,
+    );
+    return registered;
+  }
+
   const seenPaths = new Set<string>();
   for (const entry of subscriberConfigs) {
+    const displayName = entry.name && entry.name.trim() !== '' ? entry.name : '<anonymous>';
+    if (typeof entry.path !== 'string' || entry.path.trim() === '') {
+      logger.warn(
+        `Skipping event subscriber "${displayName}": missing or empty path ${String(entry.path)}`,
+      );
+      continue;
+    }
     const resolvedPath = resolveSubscriberModulePath(entry.path);
     if (!resolvedPath) {
-      logger.warn(`Skipping event subscriber "${entry.name}": invalid path ${entry.path}`);
+      logger.warn(`Skipping event subscriber "${displayName}": invalid path ${entry.path}`);
       continue;
     }
     if (seenPaths.has(resolvedPath)) {
       logger.warn(
-        `Skipping duplicate event subscriber "${entry.name}": ${entry.path} already registered`,
+        `Skipping duplicate event subscriber "${displayName}": ${entry.path} already registered`,
       );
       continue;
     }
@@ -108,7 +151,7 @@ export async function registerEventSubscribers(
 
     const sub = await resolveSubscriberModule(resolvedPath);
     if (!sub) {
-      logger.warn(`Skipping event subscriber "${entry.name}": could not load ${entry.path}`);
+      logger.warn(`Skipping event subscriber "${displayName}": could not load ${entry.path}`);
       continue;
     }
 
@@ -119,7 +162,7 @@ export async function registerEventSubscribers(
     let named: Subscriber = sub;
     if (!sub.name || sub.name === '') {
       named = Object.assign(Object.create(Object.getPrototypeOf(sub) as object), sub, {
-        name: entry.name,
+        name: displayName,
       }) as Subscriber;
     }
     bus.register(named);

@@ -242,9 +242,9 @@ export interface EventLoggingConfig {
 /** Configuration for a pluggable event subscriber loaded from a module path. */
 export interface PluggableSubscriberConfig {
   /** Display name for the subscriber (used for logging and health tracking). */
-  name: string;
+  name?: string;
   /** Module path exporting the subscriber (default, `subscriber`, or `createSubscriber` export). */
-  path: string;
+  path?: string;
 }
 
 /** Configuration for an MCP server used for context enrichment. */
@@ -1204,6 +1204,7 @@ export const PIPELINE_EVENT_TYPES = {
   EXPLAIN_COMPLETED: 'explain.completed',
   CONVERSATION_STARTED: 'conversation.started',
   CONVERSATION_COMPLETED: 'conversation.completed',
+  SELF_HEAL_COMPLETED: 'self-heal.completed',
 } as const;
 
 /** A specific pipeline event type identifier (e.g. `review.started`). */
@@ -1335,6 +1336,16 @@ export interface ConversationCompletedPayload extends PipelineEventPayload {
   autoCloseReason?: string;
 }
 
+/** Payload for a `self-heal.completed` event. */
+export interface SelfHealCompletedPayload extends PipelineEventPayload {
+  /** Whether the self-heal run changed files. */
+  changesMade?: boolean;
+  /** Files changed by the self-heal run. */
+  filesChanged?: string[];
+  /** Failure diagnosis from the self-heal run, if known. */
+  diagnosis?: string;
+}
+
 /** Union of all pipeline lifecycle event payloads. */
 export type PipelineEventPayloadMap = {
   'review.started': ReviewStartedPayload;
@@ -1349,6 +1360,7 @@ export type PipelineEventPayloadMap = {
   'explain.completed': ExplainCompletedPayload;
   'conversation.started': ConversationStartedPayload;
   'conversation.completed': ConversationCompletedPayload;
+  'self-heal.completed': SelfHealCompletedPayload;
 };
 
 /** A generic event emitted on the internal event bus. */

@@ -31,7 +31,13 @@ export default (app: Probot): void => {
 
   // Honor the eventLogging / eventSubscribers config options like the action
   // does; failures are logged so app startup never breaks on bad config.
-  registerEventSubscribers(bus, config.eventLogging, config.eventSubscribers)
+  // In the app, config comes entirely from operator-controlled env vars, so a
+  // configured EVENT_SUBSCRIBERS is itself the operator opt-in for loading
+  // pluggable subscriber modules.
+  const allowPluggable = (config.eventSubscribers?.length ?? 0) > 0;
+  registerEventSubscribers(bus, config.eventLogging, config.eventSubscribers, {
+    allowPluggable,
+  })
     .then((extra) => {
       if (extra.length > 0) {
         logger.info(`Registered ${extra.length} event subscriber(s)`);

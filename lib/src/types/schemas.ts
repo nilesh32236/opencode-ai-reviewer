@@ -207,10 +207,15 @@ export const EventLoggingConfigSchema = z.object({
   path: z.string().default('.opencode/events.ndjson'),
 });
 
-/** Zod schema validating a pluggable event subscriber configuration entry. */
+/**
+ * Zod schema validating a pluggable event subscriber configuration entry.
+ * `name`/`path` are non-strict so a malformed entry (empty name or missing
+ * path) does not reject the ENTIRE config file; `validateConfig` filters such
+ * entries out gracefully.
+ */
 export const PluggableSubscriberConfigSchema = z.object({
-  name: z.string().min(1),
-  path: z.string().min(1),
+  name: z.string().optional(),
+  path: z.string().optional(),
 });
 
 /** Zod schema validating the full agent configuration, merging provided values with defaults. */

@@ -363,6 +363,73 @@ fix:
     });
   });
 
+  describe('validateConfig eventLogging', () => {
+    it('defaults enabled to false for a non-boolean value', () => {
+      const result = validateConfig({ eventLogging: { enabled: 'yes' } } as never);
+      expect(result.eventLogging?.enabled).toBe(false);
+    });
+
+    it('defaults path to .opencode/events.ndjson when missing or empty', () => {
+      const missing = validateConfig({ eventLogging: { enabled: true } } as never);
+      expect(missing.eventLogging?.path).toBe('.opencode/events.ndjson');
+
+      const empty = validateConfig({
+        eventLogging: { enabled: true, path: '   ' },
+      } as never);
+      expect(empty.eventLogging?.path).toBe('.opencode/events.ndjson');
+    });
+
+    it('preserves a valid path inside .opencode/', () => {
+      const result = validateConfig({
+        eventLogging: { enabled: true, path: '.opencode/custom-events.ndjson' },
+      } as never);
+      expect(result.eventLogging?.path).toBe('.opencode/custom-events.ndjson');
+    });
+
+    it('constrains a path outside .opencode/ back to the default', () => {
+      const result = validateConfig({
+        eventLogging: { enabled: true, path: '../outside.log' },
+      } as never);
+      expect(result.eventLogging?.path).toBe('.opencode/events.ndjson');
+
+      const absolute = validateConfig({
+        eventLogging: { enabled: true, path: '/etc/events.ndjson' },
+      } as never);
+      expect(absolute.eventLogging?.path).toBe('.opencode/events.ndjson');
+    });
+  });
+
+  describe('validateConfig eventSubscribers', () => {
+    it('drops whitespace-only subscriber name/path', () => {
+      const result = validateConfig({
+        eventSubscribers: [
+          { name: '  ', path: '  ' },
+          { name: 'real', path: './sub.mjs' },
+        ],
+      } as never);
+      expect(result.eventSubscribers).toEqual([{ name: 'real', path: './sub.mjs' }]);
+    });
+
+    it('trims valid subscriber name and path', () => {
+      const result = validateConfig({
+        eventSubscribers: [{ name: '  My Sub  ', path: ' ./sub.mjs ' }],
+      } as never);
+      expect(result.eventSubscribers).toEqual([{ name: 'My Sub', path: './sub.mjs' }]);
+    });
+
+    it('drops malformed non-object entries', () => {
+      const result = validateConfig({
+        eventSubscribers: [null, 42, { name: 'missing-path' }],
+      } as never);
+      expect(result.eventSubscribers).toEqual([]);
+    });
+
+    it('leaves eventSubscribers undefined when absent', () => {
+      const result = validateConfig({});
+      expect(result.eventSubscribers).toBeUndefined();
+    });
+  });
+
   describe('resolveConfig', () => {
     const baseConfig = {
       review: { customRules: ['base-rule'] },

@@ -76,7 +76,7 @@ describe('TelemetrySubscriber', () => {
     expect(stats.totalReviews).toBe(1);
   });
 
-  it('skips events without a PR number (e.g. audits)', async () => {
+  it('records events without a PR number using prNumber 0 (e.g. audits)', async () => {
     const event: GitHubEvent = {
       type: 'audit.completed',
       category: 'pipeline',
@@ -87,7 +87,9 @@ describe('TelemetrySubscriber', () => {
     await sub.handle(event);
 
     const stats = await store.getTelemetryStats();
-    expect(stats.totalReviews).toBe(0);
+    expect(stats.totalReviews).toBe(1);
+    expect(stats.avgDurationMs).toBe(500);
+    expect(stats.totalTokensUsed).toBe(42);
   });
 
   it('skips events without duration or token telemetry', async () => {

@@ -8,9 +8,13 @@ import { registerEventSubscribers } from '../src/event-bus/register-event-subscr
 import type { GitHubEvent } from '../src/types/index.js';
 
 const tmpDir = path.join(os.tmpdir(), `.test-event-subs-${Date.now()}`);
+// Pluggable subscriber modules must resolve inside process.cwd(), so fixtures
+// are written under the working directory (and cleaned up after each test).
+const fixtureDir = path.join(process.cwd(), `.test-event-subs-fixture-${Date.now()}`);
 
 afterEach(async () => {
   await fs.rm(tmpDir, { recursive: true, force: true });
+  await fs.rm(fixtureDir, { recursive: true, force: true });
 });
 
 describe('LoggingSubscriber', () => {
@@ -107,19 +111,62 @@ describe('registerEventSubscribers', () => {
     expect(registered).toHaveLength(0);
   });
 
+  it('skips pluggable subscribers unless explicitly opted in via allowPluggable', async () => {
+    const bus = new EventBus();
+    const subPath = path.join(fixtureDir, 'custom-subscriber.mjs');
+    await fs.mkdir(fixtureDir, { recursive: true });
+    await fs.writeFile(
+      subPath,
+      `export default { name: 'CustomSub', subscribedEvents: ['review.completed'], handle: async () => {} };`,
+    );
+
+    // Without opt-in, configured pluggable subscribers are skipped entirely.
+    const withoutOptIn = await registerEventSubscribers(bus, { enabled: false }, [
+      { name: 'custom', path: subPath },
+    ]);
+    expect(withoutOptIn).toHaveLength(0);
+
+    // With opt-in, the module is loaded and registered.
+    const withOptIn = await registerEventSubscribers(
+      bus,
+      { enabled: false },
+      [{ name: 'custom', path: subPath }],
+      { allowPluggable: true },
+    );
+    expect(withOptIn).toHaveLength(1);
+    expect(withOptIn[0].name).toBe('CustomSub');
+  });
+
   it('skips pluggable subscribers whose paths escape the working directory', async () => {
     const bus = new EventBus();
-    const registered = await registerEventSubscribers(bus, { enabled: false }, [
-      { name: 'evil', path: '/etc/passwd' },
-    ]);
+    const registered = await registerEventSubscribers(
+      bus,
+      { enabled: false },
+      [{ name: 'evil', path: '/etc/passwd' }],
+      { allowPluggable: true },
+    );
     expect(registered).toHaveLength(0);
   });
 
   it('skips pluggable subscribers pointing at non-existent modules', async () => {
     const bus = new EventBus();
-    const registered = await registerEventSubscribers(bus, { enabled: false }, [
-      { name: 'ghost', path: 'does-not-exist.mjs' },
-    ]);
+    const registered = await registerEventSubscribers(
+      bus,
+      { enabled: false },
+      [{ name: 'ghost', path: 'does-not-exist.mjs' }],
+      { allowPluggable: true },
+    );
+    expect(registered).toHaveLength(0);
+  });
+
+  it('skips entries with missing or empty paths even when opted in', async () => {
+    const bus = new EventBus();
+    const registered = await registerEventSubscribers(
+      bus,
+      { enabled: false },
+      [{ name: 'bad', path: '' }, { name: 'missing' }],
+      { allowPluggable: true },
+    );
     expect(registered).toHaveLength(0);
   });
 });
