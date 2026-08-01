@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import * as path from 'path';
 import type { LearningQuality } from '../../types/index.js';
 import { Logger } from '../../utils/logger.js';
-import { JsonDatabase } from '../json-db.js';
+import { JsonDatabase, SUPPRESSING_DISMISS_SIGNALS } from '../json-db.js';
 import { deriveFileExtensions, generateId } from '../schema.js';
 import type {
   CustomRuleRow,
@@ -382,19 +382,26 @@ export abstract class SqlAdapter implements LearningRepository {
   async getFalsePositiveRules(filePaths: string[], limit = 20): Promise<string[]> {
     const extensions = deriveFileExtensions(filePaths);
 
+    // Only dismissals signalling a genuine false positive suppress future
+    // flags; /dismiss out_of_scope and /dismiss other are metrics-only.
+    const signalValues = [...SUPPRESSING_DISMISS_SIGNALS];
+    const signalPlaceholders = signalValues.map(() => '?').join(', ');
+    const signalFilter = `(fb.signal_type = 'disputed_comment' OR (fb.signal_type = 'dismissed' AND fb.signal_value IN (${signalPlaceholders})))`;
+
     let extFilter = '';
-    const params: unknown[] = [limit];
+    const params: unknown[] = [...signalValues];
     if (extensions.length > 0) {
       extFilter = `AND (f.file IS NULL OR ${extensions.map(() => `f.file LIKE ?`).join(' OR ')})`;
-      params.unshift(...extensions.map((e) => `%${e}`));
+      params.push(...extensions.map((e) => `%${e}`));
     }
+    params.push(limit);
 
     try {
       const rows = await this.all<{ message: string; file: string | null; signal_count: number }>(
         `SELECT f.message, f.file, COUNT(fb.id) as signal_count
          FROM findings f
          INNER JOIN feedback fb ON fb.finding_id = f.id
-         WHERE fb.signal_type IN ('dismissed', 'disputed_comment')
+         WHERE ${signalFilter}
          ${extFilter}
          GROUP BY f.message, f.file
          ORDER BY signal_count DESC

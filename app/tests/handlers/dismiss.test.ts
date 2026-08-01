@@ -14,6 +14,7 @@ import { GitHubHelper } from '@opencode-pr-agent/lib';
 import {
   buildDismissAck,
   handleDismissCommand,
+  isPrivilegedAuthor,
   parseDismissReason,
 } from '../../src/handlers/dismiss.js';
 
@@ -34,6 +35,21 @@ function makeConfig(): AgentConfig {
     platform: 'github',
   };
 }
+
+describe('isPrivilegedAuthor', () => {
+  it('allows owner, member, and collaborator associations', () => {
+    expect(isPrivilegedAuthor('OWNER')).toBe(true);
+    expect(isPrivilegedAuthor('MEMBER')).toBe(true);
+    expect(isPrivilegedAuthor('COLLABORATOR')).toBe(true);
+  });
+
+  it('rejects unprivileged and missing associations', () => {
+    expect(isPrivilegedAuthor('CONTRIBUTOR')).toBe(false);
+    expect(isPrivilegedAuthor('NONE')).toBe(false);
+    expect(isPrivilegedAuthor(undefined)).toBe(false);
+    expect(isPrivilegedAuthor('')).toBe(false);
+  });
+});
 
 describe('parseDismissReason', () => {
   it('parses a positional reason', () => {
@@ -108,8 +124,26 @@ describe('handleDismissCommand', () => {
       store,
       10,
       makeParsed('other'),
+      'COLLABORATOR',
     );
 
+    expect(store.recordFeedbackBatch).not.toHaveBeenCalled();
+    expect(ghMock.minimizeReviewComment).not.toHaveBeenCalled();
+  });
+
+  it('skips when the dismissing user is not privileged', async () => {
+    await handleDismissCommand(
+      1,
+      'owner/repo',
+      'token',
+      makeConfig(),
+      store,
+      10,
+      makeParsed('other'),
+      'CONTRIBUTOR',
+    );
+
+    expect(ghMock.getReviewCommentThread).not.toHaveBeenCalled();
     expect(store.recordFeedbackBatch).not.toHaveBeenCalled();
     expect(ghMock.minimizeReviewComment).not.toHaveBeenCalled();
   });
@@ -134,6 +168,7 @@ describe('handleDismissCommand', () => {
       store,
       10,
       makeParsed('false_positive'),
+      'COLLABORATOR',
     );
 
     expect(store.recordFeedbackBatch).toHaveBeenCalledWith([
@@ -146,6 +181,82 @@ describe('handleDismissCommand', () => {
     ]);
   });
 
+  it('correlates findings by comment_id when the identifier is available', async () => {
+    ghMock.getReviewCommentThread.mockResolvedValue({
+      comments: [{ id: 10, author: 'bot', body: 'root', isBot: true }],
+      rootComment: { id: 10, author: 'bot', body: 'root', isBot: true },
+      filePath: 'src/a.ts',
+      lineNumber: 5,
+    });
+    (store.getFindings as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        id: 'f1',
+        pr_number: 1,
+        type: 'issue',
+        file: 'src/a.ts',
+        line: 5,
+        message: 'x',
+        comment_id: 9,
+      },
+      {
+        id: 'f2',
+        pr_number: 1,
+        type: 'issue',
+        file: 'src/a.ts',
+        line: 5,
+        message: 'x',
+        comment_id: 10,
+      },
+    ]);
+
+    await handleDismissCommand(
+      1,
+      'owner/repo',
+      'token',
+      makeConfig(),
+      store,
+      10,
+      makeParsed('false_positive'),
+      'COLLABORATOR',
+    );
+
+    expect(store.recordFeedbackBatch).toHaveBeenCalledWith([
+      {
+        findingId: 'f2',
+        signalType: 'dismissed',
+        signalValue: 'false_positive',
+        prNumber: 1,
+      },
+    ]);
+  });
+
+  it('bails out when the thread has no file/line anchor and no comment_id', async () => {
+    ghMock.getReviewCommentThread.mockResolvedValue({
+      comments: [{ id: 10, author: 'bot', body: 'root', isBot: true }],
+      rootComment: { id: 10, author: 'bot', body: 'root', isBot: true },
+      filePath: '',
+      lineNumber: undefined,
+    });
+    (store.getFindings as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: 'f1', pr_number: 1, type: 'issue', file: 'src/a.ts', line: 5, message: 'x' },
+    ]);
+
+    await handleDismissCommand(
+      1,
+      'owner/repo',
+      'token',
+      makeConfig(),
+      store,
+      10,
+      makeParsed(),
+      'COLLABORATOR',
+    );
+
+    expect(store.recordFeedbackBatch).not.toHaveBeenCalled();
+    expect(ghMock.minimizeReviewComment).not.toHaveBeenCalled();
+    expect(ghMock.replyToReviewComment).not.toHaveBeenCalled();
+  });
+
   it('minimizes the bot comment and posts an acknowledgment', async () => {
     ghMock.getReviewCommentThread.mockResolvedValue({
       comments: [{ id: 10, author: 'bot', body: 'root', isBot: true }],
@@ -153,7 +264,9 @@ describe('handleDismissCommand', () => {
       filePath: 'src/a.ts',
       lineNumber: 5,
     });
-    (store.getFindings as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (store.getFindings as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: 'f1', pr_number: 1, type: 'issue', file: 'src/a.ts', line: 5, message: 'x' },
+    ]);
     ghMock.getBotReviewThreads.mockResolvedValue([
       {
         threadId: 'thread-1',
@@ -178,6 +291,7 @@ describe('handleDismissCommand', () => {
       store,
       10,
       makeParsed('intentional'),
+      'COLLABORATOR',
     );
 
     expect(ghMock.minimizeReviewComment).toHaveBeenCalledWith('node-10', 'RESOLVED');
@@ -193,13 +307,22 @@ describe('handleDismissCommand', () => {
       comments: [{ id: 10, author: 'bot', body: 'root', isBot: true }],
       rootComment: { id: 10, author: 'bot', body: 'root', isBot: true },
       filePath: 'src/a.ts',
-      lineNumber: undefined,
+      lineNumber: 5,
     });
     (store.getFindings as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: 'f1', pr_number: 1, type: 'issue', file: 'src/a.ts', message: 'x' },
+      { id: 'f1', pr_number: 1, type: 'issue', file: 'src/a.ts', line: 5, message: 'x' },
     ]);
 
-    await handleDismissCommand(1, 'owner/repo', 'token', makeConfig(), store, 10, makeParsed());
+    await handleDismissCommand(
+      1,
+      'owner/repo',
+      'token',
+      makeConfig(),
+      store,
+      10,
+      makeParsed(),
+      'COLLABORATOR',
+    );
 
     expect(store.recordFeedbackBatch).toHaveBeenCalledWith([
       {
@@ -209,5 +332,34 @@ describe('handleDismissCommand', () => {
         prNumber: 1,
       },
     ]);
+  });
+
+  it('does not minimize or post an ack when nothing was recorded', async () => {
+    ghMock.getReviewCommentThread.mockResolvedValue({
+      comments: [{ id: 10, author: 'bot', body: 'root', isBot: true }],
+      rootComment: { id: 10, author: 'bot', body: 'root', isBot: true },
+      filePath: 'src/a.ts',
+      lineNumber: 5,
+    });
+    (store.getFindings as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: 'f1', pr_number: 1, type: 'issue', file: 'src/a.ts', line: 5, message: 'x' },
+    ]);
+    (store.recordFeedbackBatch as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('db down'),
+    );
+
+    await handleDismissCommand(
+      1,
+      'owner/repo',
+      'token',
+      makeConfig(),
+      store,
+      10,
+      makeParsed('other'),
+      'COLLABORATOR',
+    );
+
+    expect(ghMock.minimizeReviewComment).not.toHaveBeenCalled();
+    expect(ghMock.replyToReviewComment).not.toHaveBeenCalled();
   });
 });

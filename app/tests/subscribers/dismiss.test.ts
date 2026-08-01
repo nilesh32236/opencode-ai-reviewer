@@ -5,6 +5,10 @@ import { createDismissSubscriber } from '../../src/subscribers/dismiss.js';
 
 vi.mock('../../src/handlers/dismiss.js', () => ({
   handleDismissCommand: vi.fn(),
+  isPrivilegedAuthor: vi.fn(
+    (association?: string) =>
+      association === 'OWNER' || association === 'MEMBER' || association === 'COLLABORATOR',
+  ),
 }));
 
 const mockedHandleDismiss = vi.mocked(handleDismissCommand);
@@ -21,6 +25,7 @@ function makeEvent(body: string, overrides: Record<string, unknown> = {}): GitHu
         body,
         in_reply_to_id: 42,
         user: { type: 'User', login: 'octocat' },
+        author_association: 'COLLABORATOR',
       },
       ...overrides,
     },
@@ -46,13 +51,15 @@ describe('DismissSubscriber', () => {
     await sub.handle(makeEvent('/dismiss false_positive'));
 
     expect(mockedHandleDismiss).toHaveBeenCalledTimes(1);
-    const [prNumber, repo, token, , , parentId, parsed] = mockedHandleDismiss.mock.calls[0];
+    const [prNumber, repo, token, , , parentId, parsed, association] =
+      mockedHandleDismiss.mock.calls[0];
     expect(prNumber).toBe(123);
     expect(repo).toBe('owner/repo');
     expect(token).toBe('test-token');
     expect(parentId).toBe(42);
     expect(parsed?.command).toBe('dismiss');
     expect(parsed?.args).toEqual(['false_positive']);
+    expect(association).toBe('COLLABORATOR');
   });
 
   it('does not trigger for non-dismiss comments', async () => {
@@ -80,6 +87,7 @@ describe('DismissSubscriber', () => {
           body: '/dismiss false_positive',
           in_reply_to_id: 42,
           user: { type: 'Bot', login: 'opencode-pr-agent[bot]' },
+          author_association: 'MEMBER',
         },
       }),
     );
@@ -95,6 +103,24 @@ describe('DismissSubscriber', () => {
         comment: {
           body: '/dismiss false_positive',
           user: { type: 'User', login: 'octocat' },
+          author_association: 'COLLABORATOR',
+        },
+      }),
+    );
+
+    expect(mockedHandleDismiss).not.toHaveBeenCalled();
+  });
+
+  it('does not trigger for unprivileged commenters', async () => {
+    const sub = createDismissSubscriber(store);
+
+    await sub.handle(
+      makeEvent('/dismiss false_positive', {
+        comment: {
+          body: '/dismiss false_positive',
+          in_reply_to_id: 42,
+          user: { type: 'User', login: 'external-contributor' },
+          author_association: 'CONTRIBUTOR',
         },
       }),
     );

@@ -29,9 +29,10 @@ export function createReplySubscriber(): Subscriber {
         const body = comment.body as string | undefined;
         if (!body) return;
 
-        // Slash commands (e.g. /dismiss) are handled by dedicated subscribers,
-        // not by the conversational reply flow.
-        if (parseCommand(body)) return;
+        // /dismiss is handled by its dedicated review-thread subscriber; other
+        // slash commands have no such subscriber and should still get the
+        // conversational reply.
+        if (parseCommand(body)?.command === 'dismiss') return;
 
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;

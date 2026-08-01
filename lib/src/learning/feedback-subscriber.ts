@@ -1,5 +1,6 @@
 import * as core from '@actions/core';
 import type { GitHubEvent, Subscriber } from '../types/index.js';
+import { parseCommand } from '../utils/command-match.js';
 import { Logger } from '../utils/logger.js';
 import type { LearningStore } from './store.js';
 import type { FindingRow } from './types.js';
@@ -245,6 +246,11 @@ export class FeedbackSubscriber implements Subscriber {
     // Only process threaded replies to existing comments (bot review comments);
     // ignore top-level comments even when they contain dispute keywords.
     if (!payload?.comment?.in_reply_to_id) return;
+
+    // Slash-command replies (e.g. /dismiss false positive) are handled by their
+    // dedicated subscribers — do not let their keywords trigger dispute
+    // feedback on top of the command's own recorded feedback.
+    if (parseCommand(body)) return;
 
     const now = Date.now();
     const lastProcessed = this.lastProcessedAt.get(prNumber);

@@ -1,6 +1,6 @@
 import { Logger, parseCommand } from '@opencode-pr-agent/lib';
 import type { GitHubEvent, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
-import { handleDismissCommand } from '../handlers/dismiss.js';
+import { handleDismissCommand, isPrivilegedAuthor } from '../handlers/dismiss.js';
 import { buildConfig } from '../utils/config.js';
 import { getToken } from '../utils/token.js';
 
@@ -8,6 +8,11 @@ import { getToken } from '../utils/token.js';
  * Create a subscriber that handles `/dismiss <reason>` commands issued as
  * replies on bot review threads. Dismissals are recorded in the learning store
  * so future reviews can avoid repeating the flagged pattern.
+ *
+ * Only privileged commenters (owner, member, or collaborator) may dismiss:
+ * a dismissal hides a bot comment and writes 'dismissed' feedback into the
+ * shared learning store, so unprivileged commenters on public PRs must not be
+ * able to trigger it.
  * @param learningStore - The learning store used to persist dismissal feedback.
  * @returns A subscriber object for the dismiss event.
  */
@@ -38,6 +43,15 @@ export function createDismissSubscriber(learningStore: LearningStore): Subscribe
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;
 
+        const authorAssociation = comment.author_association as string | undefined;
+        if (!isPrivilegedAuthor(authorAssociation)) {
+          const login = (user?.login as string | undefined) || 'unknown';
+          logger.info(
+            `User ${login} (association "${authorAssociation || 'none'}") is not authorized to dismiss — skipping`,
+          );
+          return;
+        }
+
         const config = buildConfig();
         await handleDismissCommand(
           prNumber,
@@ -47,6 +61,8 @@ export function createDismissSubscriber(learningStore: LearningStore): Subscribe
           learningStore,
           parentId,
           parsed,
+          authorAssociation,
+          signal,
         );
       } catch (err) {
         logger.error(`DismissSubscriber failed: ${err instanceof Error ? err.message : err}`);
