@@ -1,24 +1,20 @@
-import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as io from '@actions/io';
 import { getConfigFilenames, loadConfig } from '../config.js';
-import { resolveOpenCodePath, runOpenCode } from '../opencode.js';
+import { checkHealth, resolveOpenCodePath, runOpenCode } from '../opencode.js';
 import type { AgentConfig } from '../types/index.js';
 import { GitHubHelper } from '../utils/github.js';
 import { withRetryAndTimeout } from '../utils/retry.js';
 import { sanitizeString } from '../utils/sanitize.js';
-import {
-  MINIMUM_OPENCODE_VERSION,
-  UNPARSEABLE_VERSION,
-  compareVersions,
-  formatVersion,
-  parseVersion,
-} from '../utils/version.js';
+import { MINIMUM_OPENCODE_VERSION, parseVersion } from '../utils/version.js';
 import type { SetupCheck, SetupEngineOptions, SetupResult } from './types.js';
 
 /** Default per-model connectivity probe timeout in milliseconds. */
 const DEFAULT_PROBE_TIMEOUT_MS = 30_000;
+
+/** Timeout for the OpenCode CLI `--version` health probe, in milliseconds. */
+const OPENCODE_VERSION_CHECK_TIMEOUT_MS = 15_000;
 
 const MODEL_PROVIDER_KEYS: Array<{ label: string; envs: string[] }> = [
   { label: 'OpenAI (OPENAI_API_KEY)', envs: ['OPENAI_API_KEY', 'INPUT_OPENAI_API_KEY'] },
@@ -250,8 +246,8 @@ export class SetupEngine {
 
   /**
    * Verify the OpenCode CLI is installed and at or above the minimum version.
-   * Resolves the binary via PATH or installs the requested version, then parses
-   * the `opencode --version` output and compares against the minimum.
+   * Resolves the binary via PATH or installs the requested version, then runs
+   * the shared {@link checkHealth} probe against it.
    *
    * Note: when opencode is not already on PATH this check auto-installs the
    * requested version as a side effect — that is intentional so the check is
@@ -263,11 +259,20 @@ export class SetupEngine {
     const start = Date.now();
     const minimum = this.options.minimumOpenCodeVersion || MINIMUM_OPENCODE_VERSION;
 
+    if (parseVersion(minimum) === null) {
+      return this.fail(
+        'OpenCode CLI',
+        `minimumOpenCodeVersion "${minimum}" is not a valid semantic version`,
+        `Set minimumOpenCodeVersion to a value like "1.1.1"`,
+        Date.now() - start,
+      );
+    }
+
     const preinstalled = Boolean(await io.which('opencode', false));
 
     let binaryPath: string;
     try {
-      binaryPath = await resolveOpenCodePath(this.options.opencodeVersion || 'latest');
+      binaryPath = await resolveOpenCodePath(this.options.opencodeVersion || 'latest', minimum);
     } catch (err) {
       return this.fail(
         'OpenCode CLI',
@@ -280,66 +285,37 @@ export class SetupEngine {
       ? `Path: ${binaryPath}`
       : `Path: ${binaryPath} (opencode was not on PATH and was auto-installed)`;
 
-    let versionText: string;
-    try {
-      versionText = execFileSync(binaryPath, ['--version'], {
-        timeout: 15_000,
-        killSignal: 'SIGKILL',
-        encoding: 'utf-8',
-        stdio: 'pipe',
-      }).trim();
-    } catch (err) {
-      const killed =
-        err !== null &&
-        typeof err === 'object' &&
-        'killed' in err &&
-        (err as { killed?: boolean }).killed === true;
-      if (killed) {
-        return this.fail(
-          'OpenCode CLI',
-          'OpenCode CLI version check timed out',
-          `Binary at ${binaryPath} did not respond to --version within 15 seconds`,
-          Date.now() - start,
-        );
-      }
-      return this.fail(
-        'OpenCode CLI',
-        'OpenCode CLI version check failed',
-        `Binary at ${binaryPath}: ${err instanceof Error ? err.message : String(err)}`,
-        Date.now() - start,
-      );
-    }
+    // Reuse the shared health check so the version/parse/timeout handling is
+    // identical to the runtime path in opencode.ts — the two checks cannot
+    // disagree. A longer timeout than the default is kept so a slow first run
+    // on a cold cache is not misreported as a failure.
+    const health = await checkHealth({
+      binPath: binaryPath,
+      minimumVersion: minimum,
+      timeoutMs: OPENCODE_VERSION_CHECK_TIMEOUT_MS,
+    });
 
-    const parsed = parseVersion(versionText);
-    if (!parsed) {
+    if (!health.available) {
       return this.fail(
         'OpenCode CLI',
-        'OpenCode CLI version could not be parsed',
-        `Binary at ${binaryPath} returned: ${versionText || '(empty output)'}`,
+        'OpenCode CLI is not available',
+        health.message,
         Date.now() - start,
       );
     }
-    const version = formatVersion(parsed);
-    const cmp = compareVersions(version, minimum);
-    if (cmp === UNPARSEABLE_VERSION) {
+    if (!health.compatible) {
       return this.fail(
         'OpenCode CLI',
-        `minimumOpenCodeVersion "${minimum}" is not a valid semantic version`,
-        `Set minimumOpenCodeVersion to a value like "1.1.1" (binary: ${binaryPath})`,
-        Date.now() - start,
-      );
-    }
-    if (cmp < 0) {
-      return this.fail(
-        'OpenCode CLI',
-        `OpenCode CLI v${version} is below the minimum supported version v${minimum}`,
-        `Upgrade opencode or set opencode_version to a newer tag (binary: ${binaryPath})`,
+        health.version
+          ? `OpenCode CLI v${health.version.raw} is below the minimum supported version v${minimum}`
+          : `OpenCode CLI version check failed: ${health.message}`,
+        health.message,
         Date.now() - start,
       );
     }
     return this.pass(
       'OpenCode CLI',
-      `OpenCode CLI v${version} installed`,
+      `OpenCode CLI v${health.version?.raw ?? 'unknown'} installed`,
       installNote,
       Date.now() - start,
     );

@@ -38,8 +38,11 @@ export function parseVersion(text: string): ParsedVersion | null {
 }
 
 /**
- * Compare two semantic version strings.
- * Pre-release versions sort below the corresponding release (1.1.1-rc.1 < 1.1.1).
+ * Compare two semantic version strings per the SemVer 2.0.0 ordering rules.
+ * Pre-release versions sort below the corresponding release (1.1.1-rc.1 < 1.1.1),
+ * and pre-release identifiers are compared segment-wise: numeric identifiers are
+ * compared numerically (1.1.1-rc.10 > 1.1.1-rc.2), numeric identifiers sort below
+ * alphanumeric ones, and alphanumeric identifiers compare lexically (ASCII).
  * @param a - First version string.
  * @param b - Second version string.
  * @returns Negative when a < b, positive when a > b, 0 when equal, or
@@ -53,10 +56,55 @@ export function compareVersions(a: string, b: string): number {
   if (av.major !== bv.major) return av.major - bv.major;
   if (av.minor !== bv.minor) return av.minor - bv.minor;
   if (av.patch !== bv.patch) return av.patch - bv.patch;
-  if (av.prerelease === null && bv.prerelease === null) return 0;
-  if (av.prerelease === null) return 1;
-  if (bv.prerelease === null) return -1;
-  return av.prerelease < bv.prerelease ? -1 : av.prerelease === bv.prerelease ? 0 : 1;
+  return comparePrerelease(av.prerelease, bv.prerelease);
+}
+
+/**
+ * Compare two pre-release identifiers (or null for a release version) using
+ * SemVer precedence rules. A release version (null) always sorts above any
+ * pre-release of the same major.minor.patch.
+ * @param a - Pre-release identifier of the first version, or null.
+ * @param b - Pre-release identifier of the second version, or null.
+ * @returns Negative when a < b, positive when a > b, 0 when equal.
+ */
+function comparePrerelease(a: string | null, b: string | null): number {
+  if (a === null && b === null) return 0;
+  if (a === null) return 1;
+  if (b === null) return -1;
+  const aParts = a.split('.');
+  const bParts = b.split('.');
+  const segmentCount = Math.max(aParts.length, bParts.length);
+  for (let i = 0; i < segmentCount; i++) {
+    const aPart = aParts[i];
+    const bPart = bParts[i];
+    if (aPart === undefined) return -1;
+    if (bPart === undefined) return 1;
+    const cmp = comparePrereleaseSegment(aPart, bPart);
+    if (cmp !== 0) return cmp;
+  }
+  return 0;
+}
+
+/**
+ * Compare two single pre-release identifier segments.
+ * Numeric identifiers compare numerically and sort below alphanumeric ones;
+ * alphanumeric identifiers compare lexically (ASCII).
+ * @param a - First identifier segment.
+ * @param b - Second identifier segment.
+ * @returns Negative when a < b, positive when a > b, 0 when equal.
+ */
+function comparePrereleaseSegment(a: string, b: string): number {
+  if (a === b) return 0;
+  const aIsNumeric = /^\d+$/.test(a);
+  const bIsNumeric = /^\d+$/.test(b);
+  if (aIsNumeric && bIsNumeric) {
+    const aNum = BigInt(a);
+    const bNum = BigInt(b);
+    return aNum < bNum ? -1 : aNum > bNum ? 1 : 0;
+  }
+  if (aIsNumeric) return -1;
+  if (bIsNumeric) return 1;
+  return a < b ? -1 : 1;
 }
 
 /**

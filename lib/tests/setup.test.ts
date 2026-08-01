@@ -3,32 +3,45 @@ import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockResolveOpenCodePath, mockRunOpenCode, mockExecFileSync, mockGetRepositoryPermissions } =
-  vi.hoisted(() => {
-    const _mockResolveOpenCodePath = vi.fn().mockResolvedValue('/usr/local/bin/opencode');
-    const _mockRunOpenCode = vi.fn().mockResolvedValue({
-      success: true,
-      output: 'ok',
-      durationMs: 100,
-      tokensUsed: 0,
-    });
-    const _mockExecFileSync = vi.fn().mockReturnValue('opencode v1.2.3');
-    const _mockGetRepositoryPermissions = vi.fn().mockResolvedValue({
-      admin: false,
-      push: true,
-      pull: true,
-    });
-    return {
-      mockResolveOpenCodePath: _mockResolveOpenCodePath,
-      mockRunOpenCode: _mockRunOpenCode,
-      mockExecFileSync: _mockExecFileSync,
-      mockGetRepositoryPermissions: _mockGetRepositoryPermissions,
-    };
+const {
+  mockResolveOpenCodePath,
+  mockRunOpenCode,
+  mockCheckHealth,
+  mockExecFileSync,
+  mockGetRepositoryPermissions,
+} = vi.hoisted(() => {
+  const _mockResolveOpenCodePath = vi.fn().mockResolvedValue('/usr/local/bin/opencode');
+  const _mockRunOpenCode = vi.fn().mockResolvedValue({
+    success: true,
+    output: 'ok',
+    durationMs: 100,
+    tokensUsed: 0,
   });
+  const _mockCheckHealth = vi.fn().mockResolvedValue({
+    available: true,
+    compatible: true,
+    version: { raw: 'v1.2.3', major: 1, minor: 2, patch: 3, prerelease: null },
+    message: 'OpenCode v1.2.3 is available and compatible',
+  });
+  const _mockExecFileSync = vi.fn().mockReturnValue('opencode v1.2.3');
+  const _mockGetRepositoryPermissions = vi.fn().mockResolvedValue({
+    admin: false,
+    push: true,
+    pull: true,
+  });
+  return {
+    mockResolveOpenCodePath: _mockResolveOpenCodePath,
+    mockRunOpenCode: _mockRunOpenCode,
+    mockCheckHealth: _mockCheckHealth,
+    mockExecFileSync: _mockExecFileSync,
+    mockGetRepositoryPermissions: _mockGetRepositoryPermissions,
+  };
+});
 
 vi.mock('../src/opencode.js', () => ({
   resolveOpenCodePath: mockResolveOpenCodePath,
   runOpenCode: mockRunOpenCode,
+  checkHealth: mockCheckHealth,
 }));
 
 vi.mock('../src/utils/github.js', () => ({
@@ -88,6 +101,12 @@ describe('SetupEngine', () => {
       output: 'ok',
       durationMs: 100,
       tokensUsed: 0,
+    });
+    mockCheckHealth.mockResolvedValue({
+      available: true,
+      compatible: true,
+      version: { raw: 'v1.2.3', major: 1, minor: 2, patch: 3, prerelease: null },
+      message: 'OpenCode v1.2.3 is available and compatible',
     });
     mockGetRepositoryPermissions.mockResolvedValue({ admin: false, push: true, pull: true });
   });
@@ -264,10 +283,18 @@ describe('SetupEngine', () => {
       const check = await engine.checkOpenCodeCLI();
       expect(check.status).toBe('pass');
       expect(check.message).toContain('v1.2.3');
+      expect(mockCheckHealth).toHaveBeenCalledWith(
+        expect.objectContaining({ binPath: '/usr/local/bin/opencode', minimumVersion: '1.1.1' }),
+      );
     });
 
     it('fails when the version is below the minimum', async () => {
-      mockExecFileSync.mockReturnValue('opencode v1.0.0');
+      mockCheckHealth.mockResolvedValue({
+        available: true,
+        compatible: false,
+        version: { raw: 'v1.0.0', major: 1, minor: 0, patch: 0, prerelease: null },
+        message: 'OpenCode v1.0.0 is installed but version 1.1.1+ is required.',
+      });
       const engine = new SetupEngine(makeConfig(), { workingDirectory: tmpDir });
       const check = await engine.checkOpenCodeCLI();
       expect(check.status).toBe('fail');
@@ -275,13 +302,21 @@ describe('SetupEngine', () => {
     });
 
     it('honors a custom minimum version', async () => {
-      mockExecFileSync.mockReturnValue('opencode v1.0.0');
+      mockCheckHealth.mockResolvedValue({
+        available: true,
+        compatible: true,
+        version: { raw: 'v1.0.0', major: 1, minor: 0, patch: 0, prerelease: null },
+        message: 'OpenCode v1.0.0 is available and compatible',
+      });
       const engine = new SetupEngine(makeConfig(), {
         workingDirectory: tmpDir,
         minimumOpenCodeVersion: '0.9.0',
       });
       const check = await engine.checkOpenCodeCLI();
       expect(check.status).toBe('pass');
+      expect(mockCheckHealth).toHaveBeenCalledWith(
+        expect.objectContaining({ minimumVersion: '0.9.0' }),
+      );
     });
 
     it('fails when the binary cannot be resolved', async () => {
@@ -300,10 +335,16 @@ describe('SetupEngine', () => {
       const check = await engine.checkOpenCodeCLI();
       expect(check.status).toBe('fail');
       expect(check.message).toContain('minimumOpenCodeVersion');
+      expect(mockCheckHealth).not.toHaveBeenCalled();
     });
 
     it('treats a pre-release as below the release (1.1.1-rc.1 < 1.1.1)', async () => {
-      mockExecFileSync.mockReturnValue('opencode v1.1.1-rc.1');
+      mockCheckHealth.mockResolvedValue({
+        available: true,
+        compatible: false,
+        version: { raw: 'v1.1.1-rc.1', major: 1, minor: 1, patch: 1, prerelease: 'rc.1' },
+        message: 'OpenCode v1.1.1-rc.1 is installed but version 1.1.1+ is required.',
+      });
       const engine = new SetupEngine(makeConfig(), { workingDirectory: tmpDir });
       const check = await engine.checkOpenCodeCLI();
       expect(check.status).toBe('fail');
@@ -311,22 +352,42 @@ describe('SetupEngine', () => {
     });
 
     it('passes a pre-release when the base version is above the minimum', async () => {
-      mockExecFileSync.mockReturnValue('opencode v1.2.0-rc.1');
+      mockCheckHealth.mockResolvedValue({
+        available: true,
+        compatible: true,
+        version: { raw: 'v1.2.0-rc.1', major: 1, minor: 2, patch: 0, prerelease: 'rc.1' },
+        message: 'OpenCode v1.2.0-rc.1 is available and compatible',
+      });
       const engine = new SetupEngine(makeConfig(), { workingDirectory: tmpDir });
       const check = await engine.checkOpenCodeCLI();
       expect(check.status).toBe('pass');
     });
 
     it('fails when the version command times out', async () => {
-      mockExecFileSync.mockImplementation(() => {
-        const err = new Error('timed out') as Error & { killed?: boolean };
-        err.killed = true;
-        throw err;
+      mockCheckHealth.mockResolvedValue({
+        available: true,
+        compatible: false,
+        version: null,
+        message:
+          'OpenCode binary found at /usr/local/bin/opencode but version check failed: timed out',
       });
       const engine = new SetupEngine(makeConfig(), { workingDirectory: tmpDir });
       const check = await engine.checkOpenCodeCLI();
       expect(check.status).toBe('fail');
       expect(check.message).toContain('timed out');
+    });
+
+    it('fails when the binary is not available', async () => {
+      mockCheckHealth.mockResolvedValue({
+        available: false,
+        compatible: false,
+        version: null,
+        message: 'OpenCode CLI not found.',
+      });
+      const engine = new SetupEngine(makeConfig(), { workingDirectory: tmpDir });
+      const check = await engine.checkOpenCodeCLI();
+      expect(check.status).toBe('fail');
+      expect(check.message).toContain('not available');
     });
   });
 
