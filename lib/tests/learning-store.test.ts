@@ -477,6 +477,38 @@ describe('LearningStore Analytics', () => {
     expect(rows[0].dismissed_count).toBe(1);
   });
 
+  it('aggregateMetrics excludes telemetry-only (zero-score) rows from quality averages', async () => {
+    // Telemetry-only row written by TelemetrySubscriber/recordTelemetry fallback.
+    await store.recordQuality({
+      prNumber: 1,
+      actionabilityScore: 0,
+      accuracyScore: 0,
+      coverageScore: 0,
+      consistencyScore: 0,
+      durationMs: 5000,
+      tokensUsed: 1000,
+    });
+    // Real scored review.
+    await store.recordQuality({
+      prNumber: 2,
+      actionabilityScore: 0.8,
+      accuracyScore: 0.9,
+      coverageScore: 0.7,
+      consistencyScore: 0.85,
+      durationMs: 5000,
+      tokensUsed: 1500,
+    });
+
+    await store.aggregateMetrics('daily');
+
+    const rows = await store.getMetrics('daily', 5);
+    expect(rows.length).toBeGreaterThanOrEqual(1);
+    expect(rows[0].avg_actionability_score).toBeCloseTo(0.8, 5);
+    expect(rows[0].avg_accuracy_score).toBeCloseTo(0.9, 5);
+    expect(rows[0].avg_coverage_score).toBeCloseTo(0.7, 5);
+    expect(rows[0].avg_consistency_score).toBeCloseTo(0.85, 5);
+  });
+
   it('getSeverityDistribution returns correct distribution', async () => {
     await store.recordFinding({ prNumber: 1, type: 'issue', severity: 'critical', message: 'A' });
     await store.recordFinding({ prNumber: 1, type: 'issue', severity: 'important', message: 'B' });

@@ -945,6 +945,16 @@ export class JsonDatabase implements LearningRepository {
       return new Date(r.created_at).getTime() >= cutoff;
     });
 
+    // Zero-score rows are telemetry-only (pipeline stages with no quality
+    // assessment); exclude them from quality averages like getQualityTrends does.
+    const scoredRows = qualityRows.filter(
+      (r) =>
+        r.actionability_score > 0 ||
+        r.accuracy_score > 0 ||
+        r.coverage_score > 0 ||
+        r.consistency_score > 0,
+    );
+
     let totalTokens = 0;
     let avgActionability: number | null = null;
     let avgAccuracy: number | null = null;
@@ -955,14 +965,15 @@ export class JsonDatabase implements LearningRepository {
       (r): r is typeof r & { tokens_used: number } => typeof r.tokens_used === 'number',
     );
 
-    if (qualityRows.length > 0) {
+    if (rowsWithTokens.length > 0) {
       totalTokens = rowsWithTokens.reduce((s, r) => s + r.tokens_used, 0);
+    }
+    if (scoredRows.length > 0) {
       avgActionability =
-        qualityRows.reduce((s, r) => s + r.actionability_score, 0) / qualityRows.length;
-      avgAccuracy = qualityRows.reduce((s, r) => s + r.accuracy_score, 0) / qualityRows.length;
-      avgCoverage = qualityRows.reduce((s, r) => s + r.coverage_score, 0) / qualityRows.length;
-      avgConsistency =
-        qualityRows.reduce((s, r) => s + r.consistency_score, 0) / qualityRows.length;
+        scoredRows.reduce((s, r) => s + r.actionability_score, 0) / scoredRows.length;
+      avgAccuracy = scoredRows.reduce((s, r) => s + r.accuracy_score, 0) / scoredRows.length;
+      avgCoverage = scoredRows.reduce((s, r) => s + r.coverage_score, 0) / scoredRows.length;
+      avgConsistency = scoredRows.reduce((s, r) => s + r.consistency_score, 0) / scoredRows.length;
     }
 
     const row: ReviewMetricsRow = {

@@ -5,6 +5,7 @@ import os from 'os';
 import path from 'path';
 import type {
   AgentConfig,
+  EventBus,
   PRContext,
   ParsedCommand,
   PlatformAdapter,
@@ -37,6 +38,7 @@ import { handlePRReview } from './pr-review.js';
  * @param config - Agent configuration.
  * @param parsed - Optional parsed command (for flags like --force).
  * @param signal - Optional abort signal
+ * @param eventBus - Optional event bus for publishing pipeline events.
  */
 export async function handleCommand(
   command: 'fix' | 'review' | 'audit' | 'analyze' | 'explain' | 'setup',
@@ -46,6 +48,7 @@ export async function handleCommand(
   config: AgentConfig,
   parsed?: ParsedCommand,
   signal?: AbortSignal,
+  eventBus?: EventBus,
 ): Promise<void> {
   const logger = new Logger('Command', { repo, prNumber: issueNumber });
   const gh: PlatformAdapter =
@@ -87,18 +90,27 @@ export async function handleCommand(
 
     switch (command) {
       case 'analyze': {
-        await handleAnalyzeCommand(issueNumber, repo, token, config, tempDir);
+        await handleAnalyzeCommand(issueNumber, repo, token, config, tempDir, eventBus);
         break;
       }
 
       case 'explain': {
-        await handleExplainCommand(issueNumber, repo, token, config, tempDir);
+        await handleExplainCommand(issueNumber, repo, token, config, tempDir, eventBus);
         break;
       }
 
       case 'review': {
         if (await gh.isMR(issueNumber)) {
-          await handlePRReview(issueNumber, repo, token, config, undefined, tempDir);
+          await handlePRReview(
+            issueNumber,
+            repo,
+            token,
+            config,
+            undefined,
+            tempDir,
+            undefined,
+            eventBus,
+          );
         }
         break;
       }
@@ -118,6 +130,7 @@ export async function handleCommand(
             gitEnv,
             undefined,
             signal,
+            eventBus,
           );
         } else {
           const existingPR = await findExistingAutofixPR(gh, issueNumber);
@@ -132,6 +145,7 @@ export async function handleCommand(
               gitEnv,
               undefined,
               signal,
+              eventBus,
             );
           } else {
             const newPR = await createAutofixPR(
@@ -144,6 +158,7 @@ export async function handleCommand(
               gitEnv,
               signal,
               force,
+              eventBus,
             );
             if (newPR) {
               await handleAutofixLoop(
@@ -156,6 +171,7 @@ export async function handleCommand(
                 gitEnv,
                 undefined,
                 signal,
+                eventBus,
               );
             }
           }
@@ -173,6 +189,7 @@ export async function handleCommand(
           tempDir,
           undefined,
           issueNumber,
+          eventBus,
         );
         break;
       }
@@ -199,6 +216,7 @@ export async function handleCommand(
  * @param token - GitHub authentication token.
  * @param config - Agent configuration.
  * @param tempDir - Temporary working directory.
+ * @param eventBus - Optional event bus for publishing pipeline events.
  */
 export async function handleAnalyzeCommand(
   issueNumber: number,
@@ -206,13 +224,14 @@ export async function handleAnalyzeCommand(
   token: string,
   config: AgentConfig,
   tempDir: string,
+  eventBus?: EventBus,
 ): Promise<void> {
   const logger = new Logger('Command:Analyze', { repo, prNumber: issueNumber });
   logger.info(`Analyzing issue #${issueNumber}`);
 
   const gh: PlatformAdapter =
     config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
-  const engine = new ReviewEngine(config, gh);
+  const engine = new ReviewEngine(config, gh, undefined, eventBus, repo);
 
   try {
     const issueContext = await gh.gatherContext({ issueNumber });
@@ -251,6 +270,7 @@ export async function handleAnalyzeCommand(
  * @param token - GitHub authentication token.
  * @param config - Agent configuration.
  * @param tempDir - Temporary working directory.
+ * @param eventBus - Optional event bus for publishing pipeline events.
  */
 export async function handleExplainCommand(
   issueNumber: number,
@@ -258,13 +278,14 @@ export async function handleExplainCommand(
   token: string,
   config: AgentConfig,
   tempDir: string,
+  eventBus?: EventBus,
 ): Promise<void> {
   const logger = new Logger('Command:Explain', { repo, prNumber: issueNumber });
   logger.info(`Explaining PR #${issueNumber}`);
 
   const gh: PlatformAdapter =
     config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
-  const engine = new ReviewEngine(config, gh);
+  const engine = new ReviewEngine(config, gh, undefined, eventBus, repo);
 
   try {
     const pr = await gh.getMR(issueNumber);
@@ -374,6 +395,7 @@ async function createAutofixPR(
   gitEnv?: Record<string, string>,
   signal?: AbortSignal,
   force = false,
+  eventBus?: EventBus,
 ): Promise<number | null> {
   const logger = new Logger('Command', { repo, prNumber: issueNumber });
   logger.info(`Fix triggered for issue #${issueNumber}`);
@@ -392,7 +414,7 @@ async function createAutofixPR(
     timeout: 120_000,
     ...(gitEnv ? { env: { ...process.env, ...gitEnv } } : {}),
   };
-  const engine = new ReviewEngine(config, gh);
+  const engine = new ReviewEngine(config, gh, undefined, eventBus, repo);
   const branchName = `autofix/issue-${issueNumber}`;
 
   try {

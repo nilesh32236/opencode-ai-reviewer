@@ -1,5 +1,5 @@
 import { Logger, parseCommand } from '@opencode-pr-agent/lib';
-import type { GitHubEvent, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
+import type { EventBus, GitHubEvent, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
 import { handleAudit } from '../handlers/audit.js';
 import { buildConfig } from '../utils/config.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
@@ -8,9 +8,10 @@ import { getToken } from '../utils/token.js';
 /**
  * Create a subscriber that handles `/audit` commands on comments.
  * @param rateLimiter - The shared rate limiter for cost control.
+ * @param eventBus - Optional event bus for publishing pipeline events.
  * @returns A subscriber object for the audit command.
  */
-export function createAuditSubscriber(rateLimiter: RateLimiter): Subscriber {
+export function createAuditSubscriber(rateLimiter: RateLimiter, eventBus?: EventBus): Subscriber {
   const logger = new Logger('AuditSubscriber');
   return {
     name: 'AuditSubscriber',
@@ -42,6 +43,7 @@ export function createAuditSubscriber(rateLimiter: RateLimiter): Subscriber {
           undefined,
           signal,
           auditIssue,
+          eventBus,
         );
         await recordRateLimit(rateLimiter, event, 'command', 'audit', reservation);
       } catch (err) {

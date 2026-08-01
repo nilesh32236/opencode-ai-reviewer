@@ -3,6 +3,7 @@ import type {
   ConversationContext,
   ConversationMessage,
   ConversationStateManager,
+  EventBus,
   LearningStore,
   PRContext,
   PlatformAdapter,
@@ -31,6 +32,7 @@ import {
  * @param signal - Optional abort signal for cancellation.
  * @param tempDir - Optional temporary working directory.
  * @param stateManager - Optional conversation state manager for context window management.
+ * @param eventBus - Optional event bus for publishing pipeline events.
  */
 export async function handleConversation(
   commentId: number,
@@ -43,6 +45,7 @@ export async function handleConversation(
   signal?: AbortSignal,
   tempDir?: string,
   stateManager?: ConversationStateManager,
+  eventBus?: EventBus,
 ): Promise<void> {
   const logger = new Logger('Conversation', { prNumber, repo });
   logger.info(`Handling conversation for comment ${commentId} on PR #${prNumber}`);
@@ -116,7 +119,7 @@ export async function handleConversation(
   };
 
   // Run through the engine
-  const engine = new ReviewEngine(config, gh, learningStore);
+  const engine = new ReviewEngine(config, gh, learningStore, eventBus, repo);
   try {
     if (signal?.aborted) return;
 

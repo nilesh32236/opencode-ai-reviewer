@@ -5,6 +5,7 @@ import os from 'os';
 import path from 'path';
 import type {
   AgentConfig,
+  EventBus,
   FixResult,
   PRContext,
   PlatformAdapter,
@@ -43,6 +44,7 @@ import {
  * @param initialGitEnv - Optional Git environment variables (for auth).
  * @param checkAllowlist - Optional list of allowed check commands.
  * @param signal - Optional abort signal
+ * @param eventBus - Optional event bus for publishing pipeline events.
  */
 export async function handleAutofixLoop(
   prNumber: number,
@@ -54,6 +56,7 @@ export async function handleAutofixLoop(
   initialGitEnv?: Record<string, string>,
   checkAllowlist?: string[],
   signal?: AbortSignal,
+  eventBus?: EventBus,
 ): Promise<void> {
   if (signal?.aborted) return;
   const logger = new Logger('Autofix', { prNumber, repo });
@@ -61,7 +64,7 @@ export async function handleAutofixLoop(
 
   const gh: PlatformAdapter =
     config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
-  const engine = new ReviewEngine(config, gh);
+  const engine = new ReviewEngine(config, gh, undefined, eventBus, repo);
   const history: IterationRecord[] = [];
   const previousFindings: PreviousFindingIteration[] = [];
   let approved = false;
