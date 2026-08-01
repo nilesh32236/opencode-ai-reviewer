@@ -10,6 +10,7 @@ describe('parseCommand', () => {
     expect(parseCommand('/analyse')?.command).toBe('analyze');
     expect(parseCommand('/explain')?.command).toBe('explain');
     expect(parseCommand('/setup')?.command).toBe('setup');
+    expect(parseCommand('/dismiss')?.command).toBe('dismiss');
     expect(parseCommand('/oc setup')?.command).toBe('setup');
   });
 
@@ -31,6 +32,24 @@ describe('parseCommand', () => {
     const res = parseCommand('/audit security lib/src');
     expect(res?.command).toBe('audit');
     expect(res?.args).toEqual(['security', 'lib/src']);
+  });
+
+  it('parses /dismiss with a reason argument', () => {
+    const res = parseCommand('/dismiss false_positive');
+    expect(res?.command).toBe('dismiss');
+    expect(res?.args).toEqual(['false_positive']);
+  });
+
+  it('parses /dismiss with a reason flag', () => {
+    const res = parseCommand('/dismiss --reason=intentional');
+    expect(res?.command).toBe('dismiss');
+    expect(res?.flags.reason).toBe('intentional');
+  });
+
+  it('parses /oc dismiss with an out_of_scope reason', () => {
+    const res = parseCommand('/oc dismiss out_of_scope');
+    expect(res?.command).toBe('dismiss');
+    expect(res?.args).toEqual(['out_of_scope']);
   });
 
   it('parses --force flag as boolean true', () => {
