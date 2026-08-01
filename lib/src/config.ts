@@ -414,6 +414,29 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     });
   }
 
+  if (config.eventLogging && typeof config.eventLogging === 'object') {
+    const el = config.eventLogging;
+    result.eventLogging = {
+      enabled: typeof el.enabled === 'boolean' ? el.enabled : false,
+      path:
+        typeof el.path === 'string' && el.path.trim() !== '' ? el.path : '.opencode/events.ndjson',
+    };
+  }
+
+  if (Array.isArray(config.eventSubscribers)) {
+    result.eventSubscribers = config.eventSubscribers
+      .filter(
+        (s): s is { name: string; path: string } =>
+          !!s &&
+          typeof s === 'object' &&
+          typeof s.name === 'string' &&
+          s.name.trim() !== '' &&
+          typeof s.path === 'string' &&
+          s.path.trim() !== '',
+      )
+      .map((s) => ({ name: s.name.trim(), path: s.path.trim() }));
+  }
+
   return result;
 }
 

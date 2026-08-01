@@ -6,6 +6,7 @@ import * as core from '@actions/core';
 import { minimatch } from 'minimatch';
 import { conversationThreadId } from './conversation/state.js';
 import type { ConversationStateManager } from './conversation/state.js';
+import type { EventBus } from './event-bus/bus.js';
 import { emptyResult, parseJsonlFile } from './jsonl-parser.js';
 import type { LearningStore } from './learning/store.js';
 import { MCPManager } from './mcp/client.js';
@@ -36,6 +37,9 @@ import type {
   LinterFinding,
   LinterResult,
   PRContext,
+  PipelineEventPayload,
+  PipelineEventPayloadMap,
+  PipelineEventType,
   PreviousFindingIteration,
   ReviewBudgetMode,
   ReviewIssue,
@@ -46,6 +50,7 @@ import type {
   TokenBudgetMetrics,
   TokenUsage,
 } from './types/index.js';
+import { PIPELINE_EVENT_TYPES } from './types/index.js';
 import { Logger } from './utils/logger.js';
 import {
   detectDotnetLibraries,
@@ -118,11 +123,16 @@ export class ReviewEngine {
    * @param config - Agent configuration (models, batch size, MCP servers, etc.).
    * @param adapter - Platform adapter for MR/issue operations (GitHubHelper or GitLabAdapter).
    * @param learningStore - Optional learning store for recording/querying past findings.
+   * @param eventBus - Optional event bus for publishing pipeline lifecycle events.
+   * @param repo - Optional repository in "owner/repo" format, included on published
+   * pipeline events for attribution in audit logs and downstream consumers.
    */
   constructor(
     config: AgentConfig,
     adapter: PlatformAdapter,
     private learningStore?: LearningStore,
+    private eventBus?: EventBus,
+    private repo?: string,
   ) {
     this.config = config;
     this.adapter = adapter;
@@ -138,6 +148,61 @@ export class ReviewEngine {
    */
   getLastTelemetry(): TokenUsage | null {
     return this.telemetry;
+  }
+
+  /**
+   * Publish a pipeline lifecycle event on the event bus when one is attached.
+   * Non-critical observability: publishing is fire-and-forget so subscriber
+   * latency (pluggable third-party subscribers, slow filesystem writes) can
+   * never block the review/fix/audit/analyze pipeline.
+   * @param type - The pipeline event type to emit.
+   * @param payload - The event payload (timestamp is added automatically).
+   */
+  private publishEvent<T extends PipelineEventType>(
+    type: T,
+    payload: Omit<PipelineEventPayloadMap[T], 'timestamp'>,
+  ): void {
+    if (!this.eventBus) return;
+    const eventPayload = {
+      ...payload,
+      timestamp: Date.now(),
+    } as PipelineEventPayloadMap[T];
+    // GitHub issues and PRs share the same numbering space, so analyze/explain
+    // events carrying an issueNumber are correlated to a PR/issue via prNumber.
+    const numbered = eventPayload as PipelineEventPayload & { issueNumber?: number };
+    const prNumber = numbered.prNumber ?? numbered.issueNumber;
+    void this.eventBus
+      .publish({
+        type,
+        category: 'pipeline',
+        payload: eventPayload,
+        timestamp: eventPayload.timestamp,
+        prNumber,
+        repo: this.repo ?? numbered.repo,
+      })
+      .catch((err) => {
+        this.logger.warn(
+          `Failed to publish ${type} event: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+  }
+
+  /**
+   * Publish a pipeline "completed" event, attaching the engine's accumulated
+   * duration/token telemetry so every completion event is self-describing.
+   * @param type - The completed pipeline event type to emit.
+   * @param payload - The event payload (without duration/token telemetry).
+   */
+  private publishCompleted<T extends PipelineEventType>(
+    type: T,
+    payload: Omit<PipelineEventPayloadMap[T], 'timestamp'>,
+  ): void {
+    const telemetry = this.getLastTelemetry();
+    this.publishEvent(type, {
+      ...payload,
+      durationMs: telemetry?.durationMs ?? payload.durationMs,
+      tokensUsed: telemetry?.totalTokens ?? payload.tokensUsed,
+    });
   }
 
   /**
@@ -233,6 +298,10 @@ export class ReviewEngine {
   ): Promise<ReviewResult> {
     // Reset telemetry so the reported usage reflects only this review invocation.
     this.telemetry = null;
+    this.publishEvent(PIPELINE_EVENT_TYPES.REVIEW_STARTED, {
+      prNumber: pr.number,
+      modelUsed: this.config.reviewModel,
+    });
     const result = await this.runReviewPipeline(
       pr,
       _iteration,
@@ -244,7 +313,20 @@ export class ReviewEngine {
       previousHeadSha,
       previousBotComments,
     );
-    return this.attachUsage(result);
+    const finalResult = this.attachUsage(result);
+    // Fire-and-forget completion publish: heavy subscribers (e.g. meta-review)
+    // must not delay the handler's review post or observe unpersisted findings.
+    this.publishCompleted(PIPELINE_EVENT_TYPES.REVIEW_COMPLETED, {
+      prNumber: pr.number,
+      reviewSummary: finalResult.summary,
+      findingsCount: finalResult.issues.length + finalResult.strengths.length,
+      issuesCount: finalResult.issues.length,
+      strengthsCount: finalResult.strengths.length,
+      hasVerdict: Boolean(finalResult.verdict?.reasoning),
+      fileCount: new Set(finalResult.issues.map((i) => i.file).filter(Boolean)).size,
+      modelUsed: this.config.reviewModel,
+    });
+    return finalResult;
   }
 
   private async runReviewPipeline(
@@ -758,6 +840,11 @@ export class ReviewEngine {
   ): Promise<FixResult> {
     // Reset telemetry so the reported usage reflects only this fix invocation.
     this.telemetry = null;
+    this.publishEvent(PIPELINE_EVENT_TYPES.FIX_STARTED, {
+      prNumber,
+      iteration,
+      modelUsed: this.config.fixModel,
+    });
     let mcpDocs = '';
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
       try {
@@ -859,7 +946,17 @@ export class ReviewEngine {
       );
     }
 
-    return { changesMade, filesChanged, stuck, stuckReason, summary };
+    const fixResult = { changesMade, filesChanged, stuck, stuckReason, summary };
+    this.publishCompleted(PIPELINE_EVENT_TYPES.FIX_COMPLETED, {
+      prNumber,
+      iteration,
+      changesMade,
+      filesChanged,
+      stuck,
+      stuckReason,
+      modelUsed: this.config.fixModel,
+    });
+    return fixResult;
   }
 
   /**
@@ -883,6 +980,11 @@ export class ReviewEngine {
   ): Promise<ReviewResult> {
     // Reset telemetry so the reported usage reflects only this audit invocation.
     this.telemetry = null;
+    this.publishEvent(PIPELINE_EVENT_TYPES.AUDIT_STARTED, {
+      category,
+      targetDir,
+      modelUsed: this.resolveModel('auditModel'),
+    });
     let mcpDocs = '';
     if (this.config.enableMCP) {
       try {
@@ -926,17 +1028,36 @@ export class ReviewEngine {
       core.warning('OpenCode audit execution failed, returning fallback empty result');
       const r = emptyResult();
       r.verdict.reasoning = 'Audit execution failed';
+      this.publishCompleted(PIPELINE_EVENT_TYPES.AUDIT_COMPLETED, {
+        category,
+        targetDir,
+        issuesCount: 0,
+        modelUsed: this.resolveModel('auditModel'),
+      });
       return r;
     }
 
     const auditDir = workingDirectory || process.cwd();
     const outputPath = path.join(auditDir, `.opencode/audit-${category}.jsonl`);
     try {
-      return await parseJsonlFile(outputPath);
+      const auditResult = await parseJsonlFile(outputPath);
+      this.publishCompleted(PIPELINE_EVENT_TYPES.AUDIT_COMPLETED, {
+        category,
+        targetDir,
+        issuesCount: auditResult.issues.length,
+        modelUsed: this.resolveModel('auditModel'),
+      });
+      return auditResult;
     } catch {
       core.warning(`Failed to parse audit output at ${outputPath}, returning empty result`);
       const r = emptyResult();
       r.verdict.reasoning = 'Failed to parse audit output';
+      this.publishCompleted(PIPELINE_EVENT_TYPES.AUDIT_COMPLETED, {
+        category,
+        targetDir,
+        issuesCount: 0,
+        modelUsed: this.resolveModel('auditModel'),
+      });
       return r;
     }
   }
@@ -958,6 +1079,10 @@ export class ReviewEngine {
   ): Promise<string> {
     // Reset telemetry so the reported usage reflects only this analysis invocation.
     this.telemetry = null;
+    this.publishEvent(PIPELINE_EVENT_TYPES.ANALYZE_STARTED, {
+      issueNumber,
+      modelUsed: this.resolveModel('analysisModel'),
+    });
     const workDir = workingDirectory || process.cwd();
     const planPath = path.join(workDir, '.opencode', 'analysis-plan.md');
     ensureOutputDir(planPath);
@@ -983,18 +1108,34 @@ export class ReviewEngine {
 
     if (!runResult.success) {
       core.warning('OpenCode analyze execution failed or timed out.');
+      this.publishCompleted(PIPELINE_EVENT_TYPES.ANALYZE_COMPLETED, {
+        issueNumber,
+        modelUsed: this.resolveModel('analysisModel'),
+      });
       return '⚠️ **Analysis Failed**: OpenCode CLI was unable to complete the codebase analysis.';
     }
 
     try {
       const planMarkdown = await fs.readFile(planPath, 'utf-8');
       await fs.unlink(planPath).catch(() => {});
+      this.publishCompleted(PIPELINE_EVENT_TYPES.ANALYZE_COMPLETED, {
+        issueNumber,
+        modelUsed: this.resolveModel('analysisModel'),
+      });
       return planMarkdown.trim();
     } catch (err) {
       if (runResult.output && runResult.output.trim().length > 0) {
+        this.publishCompleted(PIPELINE_EVENT_TYPES.ANALYZE_COMPLETED, {
+          issueNumber,
+          modelUsed: this.resolveModel('analysisModel'),
+        });
         return runResult.output.trim();
       }
       core.warning(`Could not read analysis plan from ${planPath}: ${String(err)}`);
+      this.publishCompleted(PIPELINE_EVENT_TYPES.ANALYZE_COMPLETED, {
+        issueNumber,
+        modelUsed: this.resolveModel('analysisModel'),
+      });
       return '⚠️ **Analysis Error**: Could not read generated `.opencode/analysis-plan.md` file.';
     }
   }
@@ -1130,6 +1271,10 @@ export class ReviewEngine {
   ): Promise<string> {
     // Reset telemetry so the reported usage reflects only this explanation invocation.
     this.telemetry = null;
+    this.publishEvent(PIPELINE_EVENT_TYPES.EXPLAIN_STARTED, {
+      prNumber: pr.number,
+      modelUsed: this.resolveModel('explanationModel'),
+    });
     const workDir = workingDirectory || process.cwd();
     const outputPath = path.join(workDir, '.opencode', 'explain-output.md');
     ensureOutputDir(outputPath);
@@ -1155,13 +1300,25 @@ export class ReviewEngine {
     );
 
     if (!runResult.success) {
+      this.publishCompleted(PIPELINE_EVENT_TYPES.EXPLAIN_COMPLETED, {
+        prNumber: pr.number,
+        modelUsed: this.resolveModel('explanationModel'),
+      });
       return '⚠️ **Explanation Failed**: OpenCode CLI was unable to generate the PR explanation.';
     }
 
     try {
       const content = await fs.readFile(outputPath, 'utf-8');
+      this.publishCompleted(PIPELINE_EVENT_TYPES.EXPLAIN_COMPLETED, {
+        prNumber: pr.number,
+        modelUsed: this.resolveModel('explanationModel'),
+      });
       return content.trim();
     } catch {
+      this.publishCompleted(PIPELINE_EVENT_TYPES.EXPLAIN_COMPLETED, {
+        prNumber: pr.number,
+        modelUsed: this.resolveModel('explanationModel'),
+      });
       return '⚠️ **Explanation Failed**: Could not read explanation from `.opencode/explain-output.md`.';
     }
   }
@@ -1405,6 +1562,16 @@ export class ReviewEngine {
 
     const threadId = conversationThreadId(context);
     const state = stateManager?.getOrCreateState(threadId);
+    this.publishEvent(PIPELINE_EVENT_TYPES.CONVERSATION_STARTED, {
+      prNumber: context.prContext.number,
+      threadId,
+      modelUsed: this.resolveModel('conversationModel'),
+    });
+
+    // Real auto-close reason captured from the decision this turn (e.g.
+    // 'max_turns'); stays undefined when the thread was already closed or no
+    // close decision fired, so the completed event is not mislabeled.
+    let autoCloseReason: string | undefined;
 
     const runTurn = async (): Promise<string> => {
       // Auto-close check: once the turn limit is reached, answer with the close
@@ -1419,8 +1586,9 @@ export class ReviewEngine {
         const decision = stateManager.shouldAutoClose(state, conversationConfig);
         if (decision.shouldClose) {
           state.alreadyClosed = true;
+          autoCloseReason = decision.reason ?? 'max_turns';
           this.logger.info(
-            `Conversation ${threadId} auto-closed (${decision.reason ?? 'limit'}) after ${state.turnCount} turns`,
+            `Conversation ${threadId} auto-closed (${autoCloseReason}) after ${state.turnCount} turns`,
           );
           return decision.message ?? '';
         }
@@ -1509,10 +1677,21 @@ export class ReviewEngine {
 
     // Serialize turns on the same thread so concurrent webhooks cannot drop a
     // turn increment or clobber a summary snapshot.
-    if (stateManager && state) {
-      return stateManager.withThreadLock(threadId, runTurn);
-    }
-    return runTurn();
+    const finalizeConversation = async (): Promise<string> => {
+      const reply =
+        stateManager && state
+          ? await stateManager.withThreadLock(threadId, runTurn)
+          : await runTurn();
+      this.publishCompleted(PIPELINE_EVENT_TYPES.CONVERSATION_COMPLETED, {
+        prNumber: context.prContext.number,
+        threadId,
+        turnCount: state?.turnCount,
+        autoCloseReason,
+        modelUsed: this.resolveModel('conversationModel'),
+      });
+      return reply;
+    };
+    return finalizeConversation();
   }
 
   /**
@@ -1689,19 +1868,26 @@ export class ReviewEngine {
       );
     }
 
-    if (!this.learningStore) return;
-    try {
-      await this.learningStore.recordQuality({
-        prNumber,
-        actionabilityScore: 0,
-        accuracyScore: 0,
-        coverageScore: 0,
-        consistencyScore: 0,
-        durationMs,
-        tokensUsed,
-      });
-    } catch (err) {
-      new Logger('ReviewEngine').warn('Failed to record telemetry', err);
+    // When no event bus is attached there is no TelemetrySubscriber to persist
+    // duration/token telemetry, so write the quality row directly to keep
+    // /metrics working regardless of wiring. With a bus attached the subscriber
+    // handles this write instead (see telemetry-subscriber.ts).
+    if (!this.eventBus && this.learningStore) {
+      try {
+        await this.learningStore.recordQuality({
+          prNumber,
+          actionabilityScore: 0,
+          accuracyScore: 0,
+          coverageScore: 0,
+          consistencyScore: 0,
+          durationMs,
+          tokensUsed,
+        });
+      } catch (err) {
+        this.logger.warn(
+          `Failed to record telemetry: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   }
 

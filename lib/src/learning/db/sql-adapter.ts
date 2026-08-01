@@ -842,7 +842,8 @@ export abstract class SqlAdapter implements LearningRepository {
         AVG(tokens_used) as avg_tokens,
         SUM(tokens_used) as total_tokens
        FROM review_quality
-       WHERE created_at >= ?`,
+       WHERE created_at >= ?
+         AND (actionability_score > 0 OR accuracy_score > 0 OR coverage_score > 0 OR consistency_score > 0)`,
       [cutoffStr],
     );
 

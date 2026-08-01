@@ -201,6 +201,18 @@ export const RateLimitingConfigSchema = z.object({
   retentionHours: z.number().int().min(1).max(8760).default(48),
 });
 
+/** Zod schema validating structured event logging configuration. */
+export const EventLoggingConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  path: z.string().default('.opencode/events.ndjson'),
+});
+
+/** Zod schema validating a pluggable event subscriber configuration entry. */
+export const PluggableSubscriberConfigSchema = z.object({
+  name: z.string().min(1),
+  path: z.string().min(1),
+});
+
 /** Zod schema validating the full agent configuration, merging provided values with defaults. */
 export const AgentConfigSchema = z.object({
   platform: z.enum(['github', 'gitlab']).optional().default('github'),
@@ -228,6 +240,8 @@ export const AgentConfigSchema = z.object({
   learning: LearningConfigSchema.default({}),
   linters: z.array(LinterConfigSchema).default([]),
   rateLimiting: RateLimitingConfigSchema.default(RateLimitingConfigSchema.parse({})),
+  eventLogging: EventLoggingConfigSchema.default(EventLoggingConfigSchema.parse({})),
+  eventSubscribers: z.array(PluggableSubscriberConfigSchema).default([]),
 });
 
 // ─── Parse & Validate Helpers ─────────────────────────────
@@ -389,6 +403,8 @@ export const PromptConfigSchema = z.object({
     .optional(),
   overrides: z.array(ConfigOverrideSchema).optional(),
   linters: z.array(LinterConfigSchema).optional(),
+  eventLogging: EventLoggingConfigSchema.optional(),
+  eventSubscribers: z.array(PluggableSubscriberConfigSchema).optional(),
 });
 
 /**

@@ -1,5 +1,6 @@
 import type {
   AgentConfig,
+  EventBus,
   LearningStore,
   PRContext,
   PlatformAdapter,
@@ -28,6 +29,7 @@ const REVIEW_IN_PROGRESS_MARKER = '<!-- review-in-progress -->';
  * @param learningStore - Optional learning store for recording findings.
  * @param tempDir - Optional temporary working directory.
  * @param previousHeadSha - Optional previous HEAD sha
+ * @param eventBus - Optional event bus for publishing pipeline events.
  * @returns The review result or null if review was skipped or failed.
  */
 export async function handlePRReview(
@@ -38,6 +40,7 @@ export async function handlePRReview(
   learningStore?: LearningStore,
   tempDir?: string,
   previousHeadSha?: string,
+  eventBus?: EventBus,
 ): Promise<ReviewResult | null> {
   const logger = new Logger('PRReview', { prNumber, repo });
   logger.info(
@@ -61,7 +64,7 @@ export async function handlePRReview(
     return null;
   }
 
-  const engine = new ReviewEngine(config, gh, learningStore);
+  const engine = new ReviewEngine(config, gh, learningStore, eventBus, repo);
 
   try {
     const reviewWorkingDir = tempDir || process.cwd();

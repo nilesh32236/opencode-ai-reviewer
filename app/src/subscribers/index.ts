@@ -5,6 +5,7 @@ import {
   MetaReviewEngine,
   MetaReviewSubscriber,
   PatternDetector,
+  TelemetrySubscriber,
 } from '@opencode-pr-agent/lib';
 import type { AgentConfig, EventBus, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
 import { createRateLimiter } from '../utils/rate-limit.js';
@@ -41,18 +42,22 @@ export function registerSubscribers(
 
   const subscribers: Subscriber[] = [
     createReviewSubscriber(learningStore, bus, rateLimiter),
-    createFixSubscriber(rateLimiter),
-    createAuditSubscriber(rateLimiter),
-    createAnalyzeSubscriber(rateLimiter),
-    createAutoAnalyzeSubscriber(rateLimiter),
+    createFixSubscriber(rateLimiter, bus),
+    createAuditSubscriber(rateLimiter, bus),
+    createAnalyzeSubscriber(rateLimiter, bus),
+    createAutoAnalyzeSubscriber(rateLimiter, bus),
     createQuestionAnsweredSubscriber(),
     createReplySubscriber(rateLimiter),
     createDismissSubscriber(learningStore),
-    createExplainSubscriber(rateLimiter),
-    createConversationSubscriber(learningStore, rateLimiter),
+    createExplainSubscriber(rateLimiter, bus),
+    createConversationSubscriber(learningStore, rateLimiter, bus),
     createSetupSubscriber(),
     createAdminSubscriber(rateLimiter, resolvedConfig),
   ];
+
+  // Persist duration/token telemetry for completed pipeline stages into the
+  // learning store so /metrics keeps reporting latency and token usage.
+  subscribers.push(new TelemetrySubscriber(learningStore));
 
   const feedbackSub = new FeedbackSubscriber(learningStore);
   subscribers.push(feedbackSub);

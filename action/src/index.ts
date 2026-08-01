@@ -6,6 +6,7 @@ import * as github from '@actions/github';
 import {
   type AgentConfig,
   DEFAULT_CONFIG,
+  EventBus,
   GitHubHelper,
   GitLabAdapter,
   LearningStore,
@@ -13,10 +14,12 @@ import {
   MCPServerConfigSchema,
   type PlatformAdapter,
   ReviewEngine,
+  TelemetrySubscriber,
   configureGit,
   getDefaultMCPServers,
   loadConfig,
   mergeConfigWithInputs,
+  registerEventSubscribers,
   setupOpenCode,
   setupWorkspaceDependencies,
 } from '@opencode-pr-agent/lib';
@@ -308,14 +311,29 @@ async function run(): Promise<void> {
           }),
         }),
       },
+      eventLogging: loadedConfig?.eventLogging ?? DEFAULT_CONFIG.eventLogging,
+      eventSubscribers: loadedConfig?.eventSubscribers ?? DEFAULT_CONFIG.eventSubscribers,
     };
 
     const learningStore = new LearningStore();
 
     try {
+      const eventBus = new EventBus();
+      // Persist duration/token telemetry for completed pipeline stages so
+      // /metrics keeps reporting latency and token usage.
+      eventBus.register(new TelemetrySubscriber(learningStore));
+      const registeredSubscribers = await registerEventSubscribers(
+        eventBus,
+        config.eventLogging,
+        config.eventSubscribers,
+      );
+      if (registeredSubscribers.length > 0) {
+        core.info(`Registered ${registeredSubscribers.length} event subscriber(s)`);
+      }
+
       const gh: PlatformAdapter =
         platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
-      engine = new ReviewEngine(config, gh, learningStore);
+      engine = new ReviewEngine(config, gh, learningStore, eventBus, repo);
 
       switch (inputs.mode) {
         case 'analyze':

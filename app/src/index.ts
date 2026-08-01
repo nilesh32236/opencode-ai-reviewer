@@ -1,4 +1,10 @@
-import { EventBus, EventRouter, LearningStore, Logger } from '@opencode-pr-agent/lib';
+import {
+  EventBus,
+  EventRouter,
+  LearningStore,
+  Logger,
+  registerEventSubscribers,
+} from '@opencode-pr-agent/lib';
 import type { Probot } from 'probot';
 import { registerSubscribers } from './subscribers/index.js';
 import { buildConfig } from './utils/config.js';
@@ -18,9 +24,24 @@ export default (app: Probot): void => {
   const learningStore = new LearningStore();
   const bus = new EventBus();
   const router = new EventRouter(bus);
+  const config = buildConfig();
 
-  const registeredSubscribers = registerSubscribers(bus, learningStore, buildConfig());
+  const registeredSubscribers = registerSubscribers(bus, learningStore, config);
   logger.info(`Registered ${registeredSubscribers.length} subscribers`);
+
+  // Honor the eventLogging / eventSubscribers config options like the action
+  // does; failures are logged so app startup never breaks on bad config.
+  registerEventSubscribers(bus, config.eventLogging, config.eventSubscribers)
+    .then((extra) => {
+      if (extra.length > 0) {
+        logger.info(`Registered ${extra.length} event subscriber(s)`);
+      }
+    })
+    .catch((err) => {
+      logger.warn(
+        `Failed to register event subscribers: ${err instanceof Error ? err.message : err}`,
+      );
+    });
 
   app.onAny(async (context) => {
     try {

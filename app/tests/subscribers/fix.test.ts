@@ -50,6 +50,7 @@ describe('FixSubscriber', () => {
       expect.any(Object),
       undefined,
       undefined,
+      undefined,
     );
   });
 
