@@ -68,13 +68,18 @@ function detectArch(): string {
   return `${osName}-${archName}`;
 }
 
-async function fetchWithRetry(url: string, retries = 3): Promise<Response> {
+async function fetchWithRetry(
+  url: string,
+  retries = 3,
+  token?: string,
+): Promise<Response> {
   return withRetry(
     async () => {
       const response = await fetch(url, {
         headers: {
           Accept: 'application/vnd.github+json',
           'X-GitHub-Api-Version': '2022-11-28',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       });
       if (response.ok) return response;
@@ -114,7 +119,11 @@ export async function setupOpenCode(version = 'latest'): Promise<string> {
     releaseUrl = `https://api.github.com/repos/anomalyco/opencode/releases/tags/${tag}`;
   }
 
-  const response = await fetchWithRetry(releaseUrl);
+  const response = await fetchWithRetry(
+    releaseUrl,
+    3,
+    process.env.GITHUB_TOKEN || process.env.INPUT_GITHUB_TOKEN || undefined,
+  );
   const release = (await response.json()) as {
     tag_name?: string;
     assets: Array<{ name: string; browser_download_url: string }>;

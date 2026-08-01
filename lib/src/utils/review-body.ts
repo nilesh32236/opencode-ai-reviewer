@@ -50,6 +50,13 @@ export function formatIssueBullet(issue: ReviewIssue): string {
 export function buildReviewBody(result: ReviewResult): string {
   const lines: string[] = [];
 
+  if (result.failedBatches !== undefined && result.failedBatches > 0) {
+    lines.push(
+      `> ⚠️ **Partial review** — ${result.failedBatches} file batch(es) failed; findings may be missing.`,
+    );
+    lines.push('');
+  }
+
   if (result.executiveSummary) {
     const es = result.executiveSummary;
     const riskEmoji = es.riskLevel === 'high' ? '🔴' : es.riskLevel === 'medium' ? '🟡' : '🟢';

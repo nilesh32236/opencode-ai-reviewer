@@ -576,6 +576,8 @@ export interface ReviewResult {
   rawLines?: string[];
   /** Number of lines that failed to parse */
   failedLines?: number;
+  /** Number of file batches whose review failed (review is partial when > 0) */
+  failedBatches?: number;
   /** Optional executive summary with risk assessment */
   executiveSummary?: ExecutiveSummary;
 }

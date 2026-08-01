@@ -126,7 +126,8 @@ export async function runAudit(
     try {
       const issueState = process.env.PLATFORM === 'gitlab' ? 'opened' : 'open';
       const openAuditIssues = (await gh.paginate(
-        `/issues?state=${issueState}&labels=audit:${category}&per_page=100`,
+        `/issues?state=${issueState}&labels=audit:${category}`,
+        { perPage: 100, maxPages: 10, throwOnError: true },
       )) as Array<{ number: number; title: string }>;
       const match = openAuditIssues.find((issue: { number: number; title: string }) =>
         issue.title.startsWith(titlePrefix),
@@ -134,8 +135,13 @@ export async function runAudit(
       if (match) {
         existingIssueNumber = match.number;
       }
-    } catch {
-      /* ignore search failure */
+    } catch (err) {
+      core.warning(
+        sanitize(
+          `Failed to search for existing open audit issue — aborting issue creation to avoid duplicates: ${err instanceof Error ? err.message : err}`,
+        ),
+      );
+      return;
     }
 
     if (existingIssueNumber) {

@@ -87,9 +87,15 @@ export interface PlatformAdapter {
   /**
    * Get all comments on an issue.
    * @param number - Issue number.
+   * @param options - Optional pagination options.
+   * @param options.throwOnError - When true, rethrow a pagination error instead of
+   * silently returning partial comments (default: false).
    * @returns Promise resolving to array of issue comments.
    */
-  getIssueComments(number: number): Promise<IssueComment[]>;
+  getIssueComments(
+    number: number,
+    options?: { throwOnError?: boolean },
+  ): Promise<IssueComment[]>;
   /**
    * Get the set of changed line identifiers for a merge request.
    * @param mrNumber - Merge request number.
@@ -197,9 +203,11 @@ export interface PlatformAdapter {
   /**
    * Get the thread containing a review comment.
    * @param commentId - Comment ID.
+   * @param prNumber - Optional PR number, used to reconstruct the thread from the
+   * paginated comment list in a single pass (avoids N+1 API calls).
    * @returns Promise resolving to review comment thread.
    */
-  getReviewCommentThread(commentId: number): Promise<ReviewCommentThread>;
+  getReviewCommentThread(commentId: number, prNumber?: number): Promise<ReviewCommentThread>;
   /**
    * Create a new issue.
    * @param title - Issue title.
@@ -342,10 +350,17 @@ export interface PlatformAdapter {
    * @param options.perPage - Items per page.
    * @param options.maxPages - Maximum pages to fetch.
    * @param options.direction - Sort direction.
+   * @param options.throwOnError - When true, rethrow a page-fetch error instead of
+   * silently returning partial data (default: false).
    * @returns Promise resolving to array of paginated results.
    */
   paginate<T>(
     endpoint: string,
-    options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
+    options?: {
+      perPage?: number;
+      maxPages?: number;
+      direction?: 'asc' | 'desc';
+      throwOnError?: boolean;
+    },
   ): Promise<T[]>;
 }

@@ -157,11 +157,12 @@ async function gatherReviewCommentThread(
   mentionHandle: string,
 ): Promise<ReviewCommentThread> {
   try {
-    // Fetch recent review comments (only need ~5 for context; limit to 10 per page, newest first)
-    const allComments = (await gh.listReviewComments(prNumber, {
-      perPage: 10,
-      maxPages: 1,
-      direction: 'desc',
+    // Fetch review comments in ascending order across a bounded window so the
+    // triggering comment is found even when it is older than the newest page.
+    const rawComments = (await gh.listReviewComments(prNumber, {
+      perPage: 100,
+      maxPages: 20,
+      direction: 'asc',
     })) as Array<{
       id: number;
       body: string;
@@ -171,19 +172,54 @@ async function gatherReviewCommentThread(
       user?: { login?: string };
     }>;
 
-    // Find the triggering comment
-    const triggerComment = allComments.find((c) => c.id === commentId);
-    if (!triggerComment) {
-      return { thread: [] };
+    const triggerComment = rawComments.find((c) => c.id === commentId);
+
+    let threadComments: Array<{
+      id: number;
+      body: string;
+      path?: string;
+      user?: { login?: string };
+    }>;
+    let filePath: string | undefined;
+    let diffHunk: string | undefined;
+
+    if (triggerComment) {
+      // Reconstruct the full thread by walking the in_reply_to_id chain from the
+      // trigger up to the root, preserving multi-level reply chains instead of
+      // only matching direct replies to the root.
+      const chainIds = new Set<number>();
+      let currentId: number | undefined = commentId;
+      while (currentId) {
+        chainIds.add(currentId);
+        currentId = rawComments.find((c) => c.id === currentId)?.in_reply_to_id;
+      }
+      threadComments = rawComments.filter((c) => chainIds.has(c.id));
+      filePath = triggerComment.path;
+      diffHunk = triggerComment.diff_hunk;
+    } else {
+      // The trigger comment is older than the bounded window — fetch it directly
+      // by ID and walk its in_reply_to_id chain so the conversation is never
+      // silently skipped.
+      const chain: Array<{
+        id: number;
+        body: string;
+        path?: string;
+        in_reply_to_id?: number;
+        user?: { login?: string };
+      }> = [];
+      let currentId: number | undefined = commentId;
+      while (currentId) {
+        const comment = await gh.getReviewComment(prNumber, currentId);
+        chain.push(comment);
+        currentId = comment.in_reply_to_id;
+      }
+      filePath = chain[0]?.path;
+      threadComments = chain.reverse();
     }
 
-    // Determine the root comment (for threaded replies)
-    const rootId = triggerComment.in_reply_to_id || triggerComment.id;
-
-    // Collect all comments in the thread
-    const threadComments = allComments
-      .filter((c) => c.id === rootId || c.in_reply_to_id === rootId)
-      .sort((a, b) => a.id - b.id);
+    if (threadComments.length === 0) {
+      return { thread: [] };
+    }
 
     const thread: ConversationMessage[] = threadComments.map((c) => ({
       role: isBotComment(c.user?.login, mentionHandle) ? ('assistant' as const) : ('user' as const),
@@ -193,8 +229,8 @@ async function gatherReviewCommentThread(
 
     return {
       thread,
-      filePath: triggerComment.path,
-      diffHunk: triggerComment.diff_hunk,
+      filePath,
+      diffHunk,
     };
   } catch (err) {
     new Logger('Conversation').warn(
@@ -221,11 +257,12 @@ async function gatherIssueCommentThread(
   mentionHandle: string,
 ): Promise<IssueCommentThread> {
   try {
-    // Fetch recent issue comments (only need ~5 for context; limit to 10 per page, newest first)
+    // Fetch issue comments in ascending order across a bounded window so the
+    // triggering comment is located even when it is not among the newest.
     const allComments = (await gh.listComments(prNumber, {
-      perPage: 10,
-      maxPages: 1,
-      direction: 'desc',
+      perPage: 100,
+      maxPages: 20,
+      direction: 'asc',
     })) as Array<{
       id: number;
       body: string;

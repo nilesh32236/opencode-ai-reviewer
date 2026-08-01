@@ -97,6 +97,7 @@ export class GitHubHelper implements PlatformAdapter {
     path: string,
     options: RequestInit = {},
     responseType?: 'json' | 'text',
+    signal?: AbortSignal,
   ): Promise<T> {
     const url = `${this.apiUrl}/repos/${this.repo}${path}`;
     const method = (options.method ?? 'GET').toUpperCase();
@@ -108,6 +109,10 @@ export class GitHubHelper implements PlatformAdapter {
         async () => {
           const controller = new AbortController();
           const timeout = setTimeout(() => controller.abort(), 30_000);
+          const onAbort = () => controller.abort();
+          if (signal) {
+            signal.addEventListener('abort', onAbort, { once: true });
+          }
           try {
             const res = await fetch(url, {
               ...options,
@@ -134,11 +139,15 @@ export class GitHubHelper implements PlatformAdapter {
             return responseType === 'text' ? (res.text() as T) : res.json();
           } finally {
             clearTimeout(timeout);
+            if (signal) {
+              signal.removeEventListener('abort', onAbort);
+            }
           }
         },
         {
           retryableStatuses: isIdempotent ? [429, 500, 502, 503, 504] : [429],
           retryUnknownStatus: isIdempotent,
+          signal,
         },
       ),
     );
@@ -174,11 +183,13 @@ export class GitHubHelper implements PlatformAdapter {
    * @param options.perPage - Items per page (default: 100).
    * @param options.maxPages - Maximum pages to fetch (default: 10).
    * @param options.direction - Sort direction (optional, e.g. 'asc' or 'desc').
+   * @param options.throwOnError - When true, rethrow a page-fetch error instead of
+   * silently returning partial data (default: false).
    * @returns Array of items from all pages.
    */
   public async paginate<T>(
     endpoint: string,
-    options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
+    options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc'; throwOnError?: boolean },
   ): Promise<T[]> {
     const perPage = options?.perPage ?? 100;
     const maxPages = options?.maxPages ?? 10;
@@ -201,6 +212,9 @@ export class GitHubHelper implements PlatformAdapter {
         core.warning(
           `Failed to fetch page ${page} for ${endpoint}: ${err instanceof Error ? err.message : err}`,
         );
+        if (options?.throwOnError) {
+          throw err;
+        }
         break;
       }
       page++;
@@ -362,15 +376,21 @@ export class GitHubHelper implements PlatformAdapter {
    * Fetch all comments on an issue (paginated, up to 1000 comments).
    *
    * @param number - Issue number.
+   * @param options - Optional pagination options.
+   * @param options.throwOnError - When true, rethrow a pagination error instead of
+   * silently returning partial comments (default: false).
    * @returns Array of issue comments with author, date, and body.
    */
-  async getIssueComments(number: number): Promise<IssueComment[]> {
+  async getIssueComments(
+    number: number,
+    options?: { throwOnError?: boolean },
+  ): Promise<IssueComment[]> {
     const comments = await this.paginate<{
       id: number;
       user: { login: string };
       created_at: string;
       body: string;
-    }>(`/issues/${number}/comments`);
+    }>(`/issues/${number}/comments`, { throwOnError: options?.throwOnError });
 
     return comments.map((c) => ({
       id: c.id,
@@ -702,7 +722,7 @@ export class GitHubHelper implements PlatformAdapter {
 
       const allComments = await this.paginate<{ id: number; body: string }>(
         `/issues/${issueNumber}/comments`,
-        { perPage: 100, maxPages: 5 },
+        { perPage: 100, maxPages: 5, throwOnError: true },
       );
 
       const existing = allComments.find((c) => c.body?.startsWith(marker));
@@ -806,10 +826,18 @@ export class GitHubHelper implements PlatformAdapter {
    * Fetch the full thread for a review comment by walking the in_reply_to_id chain.
    * Collects all ancestor comments from root to the given comment.
    *
+   * When `prNumber` is provided the thread is reconstructed from the paginated
+   * comment list in a single pass (avoiding one API call per ancestor). Without
+   * it, the chain is walked with direct fetches, which is inherently sequential.
+   *
    * @param commentId - The leaf comment ID to walk the thread from.
+   * @param prNumber - Optional PR number used for single-pass reconstruction.
    * @returns Thread info including ordered comments, root comment, file path, and line number.
    */
-  async getReviewCommentThread(commentId: number): Promise<{
+  async getReviewCommentThread(
+    commentId: number,
+    prNumber?: number,
+  ): Promise<{
     comments: Array<{
       id: number;
       author: string;
@@ -820,6 +848,69 @@ export class GitHubHelper implements PlatformAdapter {
     filePath: string;
     lineNumber?: number;
   }> {
+    const commentById = new Map<
+      number,
+      {
+        id: number;
+        body: string;
+        user: { login: string; type: string };
+        path?: string;
+        line?: number;
+        in_reply_to_id?: number;
+      }
+    >();
+    const chainIds: number[] = [];
+
+    if (prNumber !== undefined) {
+      // Single-pass reconstruction: fetch the paginated comment list and rebuild
+      // the in_reply_to_id chain locally, eliminating one API call per ancestor.
+      const all = (await this.listReviewComments(prNumber, {
+        perPage: 100,
+        maxPages: 10,
+        direction: 'asc',
+      })) as Array<{
+        id: number;
+        body: string;
+        user: { login: string; type: string };
+        path?: string;
+        line?: number;
+        in_reply_to_id?: number;
+      }>;
+      for (const c of all) {
+        if (typeof c.id === 'number') commentById.set(c.id, c);
+      }
+
+      let currentId: number | undefined = commentId;
+      let needsDirectWalk = false;
+      while (currentId) {
+        const comment = commentById.get(currentId);
+        if (!comment) {
+          needsDirectWalk = currentId !== commentId;
+          break;
+        }
+        chainIds.unshift(currentId);
+        currentId = comment.in_reply_to_id;
+      }
+
+      // The trigger comment is outside the fetched window (or an ancestor is):
+      // discover the remaining chain via direct fetches.
+      if (chainIds.length === 0) {
+        await this.walkChainById(commentId, commentById, chainIds);
+      } else if (needsDirectWalk) {
+        const lastId = chainIds[chainIds.length - 1];
+        const last = commentById.get(lastId);
+        let ancestorId = last?.in_reply_to_id;
+        while (ancestorId) {
+          const ancestor = await this.getReviewComment(0, ancestorId);
+          commentById.set(ancestor.id, ancestor);
+          chainIds.unshift(ancestorId);
+          ancestorId = ancestor.in_reply_to_id;
+        }
+      }
+    } else {
+      await this.walkChainById(commentId, commentById, chainIds);
+    }
+
     const comments: Array<{
       id: number;
       author: string;
@@ -827,7 +918,6 @@ export class GitHubHelper implements PlatformAdapter {
       isBot: boolean;
     }> = [];
 
-    let currentId: number | undefined = commentId;
     let root:
       | {
           id: number;
@@ -839,21 +929,21 @@ export class GitHubHelper implements PlatformAdapter {
     let filePath = '';
     let lineNumber: number | undefined;
 
-    while (currentId) {
-      const comment = await this.getReviewComment(0, currentId);
+    for (const id of chainIds) {
+      const comment = commentById.get(id);
+      if (!comment) continue;
       const entry = {
         id: comment.id,
         author: comment.user.login,
         body: comment.body,
         isBot: comment.user.type === 'Bot',
       };
-      comments.unshift(entry);
+      comments.push(entry);
 
       if (comment.path) filePath = comment.path;
       if (comment.line !== undefined) lineNumber = comment.line;
 
-      root = entry;
-      currentId = comment.in_reply_to_id;
+      if (!root) root = entry;
     }
 
     if (!root) {
@@ -861,6 +951,43 @@ export class GitHubHelper implements PlatformAdapter {
     }
 
     return { comments, rootComment: root, filePath, lineNumber };
+  }
+
+  /**
+   * Walk the in_reply_to_id chain from a leaf comment up to the root using
+   * direct comment fetches (inherently sequential since each step depends on
+   * the previous ancestor's in_reply_to_id).
+   *
+   * @param commentId - The leaf comment ID to start from.
+   * @param commentById - Map to store fetched comments by ID.
+   * @param chainIds - Array to populate with chain IDs in root-to-leaf order.
+   */
+  private async walkChainById(
+    commentId: number,
+    commentById: Map<
+      number,
+      {
+        id: number;
+        body: string;
+        user: { login: string; type: string };
+        path?: string;
+        line?: number;
+        in_reply_to_id?: number;
+      }
+    >,
+    chainIds: number[],
+  ): Promise<void> {
+    const discovered: number[] = [];
+    let currentId: number | undefined = commentId;
+    while (currentId) {
+      discovered.push(currentId);
+      const comment = await this.getReviewComment(0, currentId);
+      commentById.set(comment.id, comment);
+      currentId = comment.in_reply_to_id;
+    }
+    for (const id of [...discovered].reverse()) {
+      if (commentById.has(id)) chainIds.push(id);
+    }
   }
 
   /**
@@ -1187,7 +1314,10 @@ export class GitHubHelper implements PlatformAdapter {
         }),
       });
       return true;
-    } catch {
+    } catch (err) {
+      core.warning(
+        `Failed to merge PR #${prNumber}: ${err instanceof Error ? err.message : err}`,
+      );
       return false;
     }
   }
@@ -1216,7 +1346,10 @@ export class GitHubHelper implements PlatformAdapter {
         body: JSON.stringify({ merge_method: 'squash' }),
       });
       return true;
-    } catch {
+    } catch (err) {
+      core.warning(
+        `Failed to enable auto-merge on PR #${prNumber}: ${err instanceof Error ? err.message : err}`,
+      );
       return false;
     }
   }
@@ -1269,10 +1402,18 @@ export class GitHubHelper implements PlatformAdapter {
     return `${url.origin}/api/graphql`;
   }
 
-  private async graphql<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
+  private async graphql<T>(
+    query: string,
+    variables: Record<string, unknown> = {},
+    signal?: AbortSignal,
+  ): Promise<T> {
     const execute = async (): Promise<T> => {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 30_000);
+      const onAbort = () => controller.abort();
+      if (signal) {
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
       try {
         const response = await fetch(this.graphqlUrl, {
           method: 'POST',
@@ -1301,6 +1442,9 @@ export class GitHubHelper implements PlatformAdapter {
         return result.data as T;
       } finally {
         clearTimeout(timeout);
+        if (signal) {
+          signal.removeEventListener('abort', onAbort);
+        }
       }
     };
 
@@ -1308,6 +1452,7 @@ export class GitHubHelper implements PlatformAdapter {
       withRetry(execute, {
         retryableStatuses: [429, 500, 502, 503, 504],
         retryUnknownStatus: true,
+        signal,
       }),
     );
   }
@@ -1392,8 +1537,7 @@ export class GitHubHelper implements PlatformAdapter {
 
     while (hasNextPage && pageCount < maxPages) {
       pageCount++;
-      const data = (await this.graphql(
-        `
+      const query = `
         query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
           repository(owner: $owner, name: $repo) {
             pullRequest(number: $number) {
@@ -1419,9 +1563,27 @@ export class GitHubHelper implements PlatformAdapter {
             }
           }
         }
-        `,
-        { owner, repo, number: prNumber, cursor },
-      )) as ReviewThreadsQueryResponse;
+        `;
+      let data: ReviewThreadsQueryResponse;
+      try {
+        data = (await this.graphql(query, { owner, repo, number: prNumber, cursor })) as ReviewThreadsQueryResponse;
+      } catch (err) {
+        core.warning(
+          `Failed to fetch review thread page ${pageCount} for PR #${prNumber}: ${
+            err instanceof Error ? err.message : err
+          } — retrying once`,
+        );
+        try {
+          data = (await this.graphql(query, { owner, repo, number: prNumber, cursor })) as ReviewThreadsQueryResponse;
+        } catch (retryErr) {
+          core.warning(
+            `Retry for review thread page ${pageCount} failed — continuing with partial thread data: ${
+              retryErr instanceof Error ? retryErr.message : retryErr
+            }`,
+          );
+          break;
+        }
+      }
 
       const threadsData = data.repository.pullRequest.reviewThreads;
       for (const node of threadsData.nodes) {
