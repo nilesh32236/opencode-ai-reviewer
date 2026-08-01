@@ -58,6 +58,19 @@ export interface ReviewCommentThread {
   rootComment: { id: number; author: string; body: string; isBot: boolean };
   filePath: string;
   lineNumber?: number;
+  /**
+   * Set when the ancestor chain could not be fully reconstructed (e.g. a direct
+   * by-id fetch failed mid-walk), so `rootComment` may not be the true thread
+   * root. Consumers should fall back to `triggerComment` for the reply-flow
+   * isBot gate and prompt root in that case.
+   */
+  truncated?: boolean;
+  /**
+   * The comment the reply/@mention event was triggered on (the leaf). Always
+   * present in the reconstructed chain and used as a reliable root when the
+   * chain is truncated.
+   */
+  triggerComment?: { id: number; author: string; body: string; isBot: boolean };
 }
 
 /** Platform-agnostic adapter interface for interacting with Git hosting services. */
@@ -106,6 +119,22 @@ export interface PlatformAdapter {
     commentId: number,
     signal?: AbortSignal,
   ): Promise<{ id: number; body: string; user?: { login?: string } }>;
+  /**
+   * Get the most recent comments on an issue/PR. Unlike the REST list endpoint
+   * (which returns ascending and ignores sort/direction on GitHub), this returns
+   * the tail of the conversation so @mention replies on busy PRs still receive
+   * preceding turns. Implemented via the GraphQL issueComments(last: N)
+   * connection on GitHub and a descending notes window on GitLab.
+   * @param issueNumber - PR/issue number.
+   * @param count - Maximum number of comments to return.
+   * @param signal - Optional AbortSignal to cancel the request.
+   * @returns Promise resolving to the newest `count` comments in ascending order.
+   */
+  getRecentIssueComments(
+    issueNumber: number,
+    count: number,
+    signal?: AbortSignal,
+  ): Promise<Array<{ id: number; body: string; user?: { login?: string } }>>;
   /**
    * Get the set of changed line identifiers for a merge request.
    * @param mrNumber - Merge request number.

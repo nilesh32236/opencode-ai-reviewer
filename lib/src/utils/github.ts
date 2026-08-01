@@ -437,6 +437,55 @@ export class GitHubHelper implements PlatformAdapter {
     );
   }
 
+  /**
+   * Fetch the tail of an issue's comments (the newest `count`), ascending by id.
+   * The REST issue-comments endpoint ignores sort/direction and only pages
+   * ascending, so on busy PRs (more comments than one window) a freshly-posted
+   * @mention trigger would fall outside the ascending window and its preceding
+   * conversation turns would be lost. The GraphQL `issueComments(last: N)`
+   * connection returns the conversation tail, which the caller reverses into
+   * chronological order.
+   *
+   * @param issueNumber - PR/issue number.
+   * @param count - Maximum number of comments to return.
+   * @param signal - Optional AbortSignal to cancel the request.
+   * @returns Promise resolving to the newest `count` comments in ascending order.
+   */
+  async getRecentIssueComments(
+    issueNumber: number,
+    count: number,
+    signal?: AbortSignal,
+  ): Promise<Array<{ id: number; body: string; user?: { login?: string } }>> {
+    const [owner, repo] = this.repo.split('/') as [string, string];
+    const query = `
+      query($owner: String!, $repo: String!, $number: Int!, $count: Int!) {
+        repository(owner: $owner, name: $repo) {
+          pullRequest(number: $number) {
+            issueComments(last: $count) {
+              nodes {
+                databaseId
+                body
+                author { login }
+              }
+            }
+          }
+        }
+      }
+    `;
+    const data = await this.graphql<{
+      repository: {
+        pullRequest: {
+          issueComments: {
+            nodes: Array<{ databaseId: number; body: string; author: { login: string } }>;
+          };
+        };
+      };
+    }>(query, { owner, repo, number: issueNumber, count }, signal);
+    return (data.repository.pullRequest.issueComments?.nodes ?? [])
+      .map((n) => ({ id: n.databaseId, body: n.body, user: { login: n.author?.login } }))
+      .sort((a, b) => a.id - b.id);
+  }
+
   // ─── Diff Operations ────────────────────────────────────
 
   /**
@@ -899,28 +948,36 @@ export class GitHubHelper implements PlatformAdapter {
     rootComment: { id: number; author: string; body: string; isBot: boolean };
     filePath: string;
     lineNumber?: number;
+    truncated?: boolean;
+    triggerComment?: { id: number; author: string; body: string; isBot: boolean };
   }> {
     const commentById = new Map<number, ThreadComment>();
     const chainIds: number[] = [];
+    let truncated = false;
 
     if (prNumber !== undefined) {
       // Single-pass reconstruction: fetch the paginated comment list and rebuild
       // the in_reply_to_id chain locally, eliminating one API call per ancestor.
       // The window is fetched newest-first ('desc') so recently-replied-to
       // triggers land in-window on busy PRs, reserving the by-id walk for
-      // genuinely old ancestors.
+      // genuinely old ancestors. Only the ancestor chain is needed for the reply
+      // flow (the subtree BFS is discarded), so request chainOnly with a small
+      // window bound to avoid over-fetching the full thread on repos with many
+      // review comments.
       const result = await gatherReviewThread(
         this,
         prNumber,
         commentId,
-        { perPage: 100, maxPages: 10, direction: 'desc' },
+        { perPage: 100, maxPages: 3, direction: 'desc', chainOnly: true },
         signal,
       );
-      for (const c of result.comments) {
-        if (typeof c.id === 'number') commentById.set(c.id, c);
-      }
+      truncated = result.truncated === true;
+      const seen = new Set<number>();
       for (const c of result.chain) {
-        if (!chainIds.includes(c.id)) chainIds.push(c.id);
+        if (typeof c.id === 'number') commentById.set(c.id, c);
+        if (seen.has(c.id)) continue;
+        seen.add(c.id);
+        chainIds.push(c.id);
       }
     } else {
       await this.walkChainById(commentId, commentById, chainIds, signal);
@@ -943,6 +1000,14 @@ export class GitHubHelper implements PlatformAdapter {
       | undefined;
     let filePath = '';
     let lineNumber: number | undefined;
+    let triggerComment:
+      | {
+          id: number;
+          author: string;
+          body: string;
+          isBot: boolean;
+        }
+      | undefined;
 
     // Anchor filePath/lineNumber on the ROOT comment (first chain entry) to
     // preserve the pre-refactor leaf-to-root walk semantics, falling back to the
@@ -965,11 +1030,31 @@ export class GitHubHelper implements PlatformAdapter {
       if (!root) root = entry;
     }
 
+    // The trigger (leaf) is the last chain entry — it is always present when the
+    // chain was built, so it is a reliable anchor when the chain is truncated.
+    const lastId = chainIds.length > 0 ? chainIds[chainIds.length - 1] : undefined;
+    const lastComment = lastId !== undefined ? commentById.get(lastId) : undefined;
+    if (lastComment) {
+      triggerComment = {
+        id: lastComment.id,
+        author: lastComment.user?.login ?? '',
+        body: lastComment.body,
+        isBot: lastComment.user?.type === 'Bot',
+      };
+    }
+
     if (!root) {
       throw new Error(`Comment ${commentId} not found — cannot build thread`);
     }
 
-    return { comments, rootComment: root, filePath, lineNumber };
+    return {
+      comments,
+      rootComment: root,
+      filePath,
+      lineNumber,
+      truncated,
+      triggerComment,
+    };
   }
 
   /**

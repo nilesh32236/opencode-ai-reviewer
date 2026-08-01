@@ -465,7 +465,12 @@ describe('setupOpenCode()', () => {
     mockComputeSha256.mockResolvedValue('bin-checksum-123');
 
     const prevToken = process.env.GITHUB_TOKEN;
+    const prevActions = process.env.GITHUB_ACTIONS;
     process.env.GITHUB_TOKEN = 'some-token';
+    // ambientToken is only attached when GITHUB_ACTIONS === 'true'; set it
+    // explicitly so the authenticated path is exercised deterministically
+    // regardless of the host environment, and restore both in finally.
+    process.env.GITHUB_ACTIONS = 'true';
     try {
       const result = await setupOpenCode('v1.0.0');
       expect(result).toBe('/tmp/opencode-cached/opencode');
@@ -474,6 +479,11 @@ describe('setupOpenCode()', () => {
         process.env.GITHUB_TOKEN = undefined;
       } else {
         process.env.GITHUB_TOKEN = prevToken;
+      }
+      if (prevActions === undefined) {
+        process.env.GITHUB_ACTIONS = undefined;
+      } else {
+        process.env.GITHUB_ACTIONS = prevActions;
       }
     }
 

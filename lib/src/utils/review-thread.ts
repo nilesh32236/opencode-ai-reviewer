@@ -26,9 +26,17 @@ export interface ReviewThreadResult {
   /**
    * Full thread subtree — every comment that directly or transitively replies to
    * a comment in the ancestor chain (sibling replies and nested branches) — sorted
-   * ascending by id.
+   * ascending by id. When `chainOnly` is set this equals `chain`.
    */
   comments: ThreadComment[];
+  /**
+   * True when the ancestor chain could not be fully reconstructed (e.g. a direct
+   * by-id fetch failed mid-walk), so the chain may not reach the true thread
+   * root. Callers should anchor the reply-flow isBot gate and prompt root on the
+   * guaranteed-present trigger comment in that case so replies are not silently
+   * dropped.
+   */
+  truncated?: boolean;
 }
 
 /**
@@ -43,10 +51,13 @@ export interface ReviewThreadResult {
  *
  * The window is then expanded to the full thread subtree with a single-pass BFS
  * (queue-based, O(n)) so sibling and nested replies reach the caller, matching
- * the intent that prior bot/user turns are never dropped.
+ * the intent that prior bot/user turns are never dropped. Pass `chainOnly` to
+ * skip this expansion and return only the ancestor chain (cheaper for callers
+ * that do not need the whole subtree).
  *
  * A single failed direct fetch returns the partially gathered chain instead of
- * dropping the whole thread, so callers can still answer with available context.
+ * dropping the whole thread, so callers can still answer with available context;
+ * the `truncated` flag signals that the chain may not reach the true root.
  *
  * Shared by both the reply flow (GitHubHelper.getReviewCommentThread) and the
  * @mention conversation flow (gatherReviewCommentThread) so the bug-prone chain
@@ -55,8 +66,9 @@ export interface ReviewThreadResult {
  * @param gh - Platform adapter.
  * @param prNumber - Merge request number.
  * @param commentId - Triggering review comment ID.
- * @param options - Window bounds (perPage/maxPages/direction). Callers choose
- * their own bounds; 'desc' keeps freshly-posted triggers in-window on busy PRs.
+ * @param options - Window bounds (perPage/maxPages/direction) and whether to skip
+ * the subtree expansion. Callers choose their own bounds; 'desc' keeps
+ * freshly-posted triggers in-window on busy PRs.
  * @param signal - Optional AbortSignal to cancel the underlying API requests.
  * @returns The reconstructed ancestor chain and full subtree.
  */
@@ -64,9 +76,16 @@ export async function gatherReviewThread(
   gh: PlatformAdapter,
   prNumber: number,
   commentId: number,
-  options: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' } = {},
+  options: {
+    perPage?: number;
+    maxPages?: number;
+    direction?: 'asc' | 'desc';
+    /** Skip the subtree BFS and return only the ancestor chain (cheaper). */
+    chainOnly?: boolean;
+  } = {},
   signal?: AbortSignal,
 ): Promise<ReviewThreadResult> {
+  const { chainOnly = false } = options;
   let rawComments: ThreadComment[];
   try {
     rawComments = (await gh.listReviewComments(
@@ -76,9 +95,12 @@ export async function gatherReviewThread(
     )) as unknown as ThreadComment[];
   } catch (err) {
     core.warning(
-      `Failed to gather review comment thread: ${err instanceof Error ? err.message : err}`,
+      `Failed to gather review comment thread window: ${err instanceof Error ? err.message : err}`,
     );
-    return { chain: [], comments: [] };
+    // Fall through to the by-id chain walk instead of returning empty: a
+    // window-fetch failure must not surface as 'comment not found' in callers.
+    // The missing-id walk below then fetches the trigger and its ancestors by ID.
+    rawComments = [];
   }
 
   // Index once for O(1) lookups (avoids repeated rawComments.find in loops).
@@ -105,11 +127,12 @@ export async function gatherReviewThread(
     currentId = comment.in_reply_to_id;
   }
 
-  // The trigger or an ancestor fell outside the window: fetch the missing chain
-  // by ID so a deep/old thread is never silently truncated. Ancestors already in
-  // the window are resolved from the in-memory map without an API call, and a
-  // single failed fetch returns the partially gathered chain instead of dropping
-  // the whole thread.
+  // The trigger or an ancestor fell outside the window (or the window fetch
+  // failed): fetch the missing chain by ID so a deep/old thread is never
+  // silently truncated. Ancestors already in the window are resolved from the
+  // in-memory map without an API call, and a single failed fetch returns the
+  // partially gathered chain instead of dropping the whole thread.
+  let truncated = false;
   if (missingId !== undefined) {
     const missing: ThreadComment[] = [];
     let ancestorId: number | undefined = missingId;
@@ -134,6 +157,7 @@ export async function gatherReviewThread(
               err instanceof Error ? err.message : err
             }`,
           );
+          truncated = true;
           break;
         }
       }
@@ -145,14 +169,19 @@ export async function gatherReviewThread(
   }
 
   if (chain.length === 0) {
-    return { chain: [], comments: [] };
+    return { chain: [], comments: [], truncated };
+  }
+
+  if (chainOnly) {
+    return { chain, comments: chain, truncated };
   }
 
   // Include the whole thread subtree: a queue-based BFS over windowed comments
-  // indexed by in_reply_to_id, seeded with the chain IDs (single-pass O(n)).
-  // The chain itself may hold direct-fetched comments outside the window, so the
-  // final list is resolved through byId and sorted ascending by id. Only the
-  // bounded window is scanned, so out-of-window sibling replies are omitted.
+  // indexed by in_reply_to_id, seeded with the chain IDs (single-pass O(n), the
+  // queue is advanced by head index to avoid shift() re-indexing). The chain
+  // itself may hold direct-fetched comments outside the window, so the final
+  // list is resolved through byId and sorted ascending by id. Only the bounded
+  // window is scanned, so out-of-window sibling replies are omitted.
   const childrenByParent = new Map<number, ThreadComment[]>();
   for (const c of rawComments) {
     if (c.in_reply_to_id === undefined) continue;
@@ -165,8 +194,10 @@ export async function gatherReviewThread(
   }
   const threadIds = new Set<number>(chain.map((c) => c.id));
   const queue = [...threadIds];
-  while (queue.length > 0) {
-    const parentId = queue.shift() as number;
+  let head = 0;
+  while (head < queue.length) {
+    const parentId = queue[head] as number;
+    head++;
     const children = childrenByParent.get(parentId);
     if (!children) continue;
     for (const child of children) {
@@ -180,5 +211,15 @@ export async function gatherReviewThread(
     .filter((c): c is ThreadComment => c !== undefined)
     .sort((a, b) => a.id - b.id);
 
-  return { chain, comments };
+  // The direct-fetch fallback recovered out-of-window comments; the subtree BFS
+  // only scanned the bounded window, so their sibling/nested replies may be
+  // absent. Log a warning so operators can tell the reconstructed thread is
+  // incomplete rather than silently trusting it.
+  if (missingId !== undefined) {
+    core.warning(
+      `Review comment thread for ${commentId} recovered out-of-window comments via direct fetches — sibling replies outside the paginated window may be omitted from the reconstructed thread`,
+    );
+  }
+
+  return { chain, comments, truncated };
 }

@@ -1296,6 +1296,57 @@ diff --git a/deleted.ts b/deleted.ts
       expect(thread.comments.map((c) => c.id)).toEqual([2, 1]);
       expect(new Set(thread.comments.map((c) => c.id)).size).toBe(2);
     });
+
+    it('signals truncation and exposes the trigger comment when a mid-chain fetch fails', async () => {
+      // Window contains the trigger (2) which replies to 1; the by-id fetch of
+      // the missing root (1) fails. The chain is partial, so truncated is set
+      // and the guaranteed-present trigger comment is exposed for the reply-flow
+      // isBot gate and prompt root.
+      const windowComments = [
+        { id: 2, body: 'trigger', user: { login: 'developer', type: 'User' }, in_reply_to_id: 1 },
+      ];
+
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes('/pulls/1/comments')) return mockResponse({ body: windowComments });
+        if (url.includes('/pulls/comments/1')) return mockErrorResponse(404);
+        return mockResponse({ body: {} });
+      });
+
+      const thread = await helper.getReviewCommentThread(2, 1);
+
+      expect(thread.truncated).toBe(true);
+      expect(thread.triggerComment?.id).toBe(2);
+      expect(thread.comments.map((c) => c.id)).toEqual([2]);
+    });
+
+    it('is not truncated when the full chain is reconstructed in a single pass', async () => {
+      const comments = [
+        {
+          id: 1,
+          body: 'root',
+          user: { login: 'opencode-bot', type: 'Bot' },
+          path: 'src/index.ts',
+          line: 42,
+          in_reply_to_id: null,
+        },
+        {
+          id: 2,
+          body: 'leaf',
+          user: { login: 'developer', type: 'User' },
+          path: 'src/index.ts',
+          line: 42,
+          in_reply_to_id: 1,
+        },
+      ];
+
+      fetchMock.mockResolvedValue(mockResponse({ body: comments }));
+
+      const thread = await helper.getReviewCommentThread(2, 1);
+
+      expect(thread.truncated).toBe(false);
+      expect(thread.triggerComment?.id).toBe(2);
+      expect(thread.comments.map((c) => c.id)).toEqual([1, 2]);
+    });
   });
 
   describe('createComment', () => {

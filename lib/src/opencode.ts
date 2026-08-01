@@ -68,7 +68,12 @@ function detectArch(): string {
   return `${osName}-${archName}`;
 }
 
-async function fetchWithRetry(url: string, retries = 3, token?: string): Promise<Response> {
+async function fetchWithRetry(
+  url: string,
+  retries = 3,
+  token?: string,
+  options?: { retryableStatuses?: number[] },
+): Promise<Response> {
   return withRetry(
     async () => {
       const response = await fetch(url, {
@@ -85,11 +90,14 @@ async function fetchWithRetry(url: string, retries = 3, token?: string): Promise
     },
     {
       maxRetries: retries,
-      // 403 is NOT retryable here: on the authenticated attempt a rejected
+      // 403 is NOT retryable on the authenticated attempt: a rejected
       // repo-scoped token deterministically returns 403, and burning three
       // backoff retries (~7-10s) before the anonymous fallback is wasteful. A
       // 403 also never becomes transiently successful, so failing fast is safe.
-      retryableStatuses: [429, 500, 502, 503, 504],
+      // The anonymous call passes its own retryable set that includes 403 so an
+      // unauthenticated rate-limit 403 (X-RateLimit-Remaining: 0) retries with
+      // backoff instead of failing fast.
+      retryableStatuses: options?.retryableStatuses ?? [429, 500, 502, 503, 504],
     },
   );
 }
@@ -139,7 +147,21 @@ export async function setupOpenCode(version = 'latest'): Promise<string> {
       err instanceof Error && 'status' in err ? (err as Error & { status: number }).status : 0;
     if (status === 401 || status === 403 || status === 404) {
       core.warning(`Authenticated release lookup failed (HTTP ${status}) — retrying anonymously`);
-      response = await fetchWithRetry(releaseUrl, 3);
+      try {
+        // Anonymous 403s are almost always unauthenticated rate-limit responses
+        // (X-RateLimit-Remaining: 0), so 403 is retryable here with backoff —
+        // unlike the authenticated attempt where it is a deterministic auth
+        // rejection. 401/404/429 and 5xx remain retryable too.
+        response = await fetchWithRetry(releaseUrl, 3, undefined, {
+          retryableStatuses: [403, 429, 500, 502, 503, 504],
+        });
+      } catch (anonErr) {
+        throw new Error(
+          `Could not reach GitHub releases API anonymously: ${
+            anonErr instanceof Error ? anonErr.message : anonErr
+          }`,
+        );
+      }
     } else {
       throw err;
     }

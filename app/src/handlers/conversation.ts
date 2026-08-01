@@ -191,9 +191,11 @@ export async function gatherReviewCommentThread(
     return { thread: [] };
   }
 
-  // Anchor filePath on the first chain comment that carries a path so file
-  // context survives when the root is a thread-level comment without one.
-  const filePath = chain.find((c) => c.path)?.path ?? chain[chain.length - 1]?.path;
+  // Anchor filePath on the ROOT comment (first chain entry), falling back to the
+  // first ancestor in the chain that carries a path so file context survives
+  // when the root is a thread-level comment without one. Matches the reply flow
+  // in GitHubHelper.getReviewCommentThread.
+  const filePath = chain[0]?.path ?? chain.find((c) => c.path)?.path;
   const diffHunk = chain.find((c) => c.diff_hunk)?.diff_hunk;
 
   const thread: ConversationMessage[] = comments.map((c) => ({
@@ -214,11 +216,13 @@ export async function gatherReviewCommentThread(
  * Fetches a bounded window of issue comments in ascending order — GitHub's
  * per-issue comments endpoint ignores sort/direction and always returns
  * ascending, and the GitLab adapter maps 'asc' to order_by=created_at&sort — so
- * the triggering comment is always found with the comments preceding it when the
- * PR has few enough comments to fit in the window. When the trigger is older
- * than the window it is fetched directly by ID; if even that fetch fails the
- * newest window comments are used so the @mention is answered rather than
- * silently dropped.
+ * the triggering comment is found with the comments preceding it when the PR has
+ * few enough comments to fit in the window. On busy PRs the freshly-posted
+ * trigger falls outside the ascending window, so the conversation tail (newest
+ * comments) is fetched via `getRecentIssueComments` to recover preceding turns.
+ * Only when the trigger is genuinely older than both is it fetched directly by
+ * ID; if even that fails the newest window comments are used so the @mention is
+ * answered rather than silently dropped.
  *
  * Exported for unit testing.
  *
@@ -264,31 +268,52 @@ export async function gatherIssueCommentThread(
   const triggerIdx = allComments.findIndex((c) => c.id === commentId);
 
   let contextComments: Array<{ id: number; body: string; user?: { login?: string } }>;
-  if (triggerIdx === -1) {
-    // The trigger is older than the bounded window — fetch it by ID and build a
-    // minimal thread so the conversation is never silently skipped. If that
-    // fetch fails, fall back to the newest window comments so the @mention is
-    // still answered rather than dropped.
-    let triggerComment: { id: number; body: string; user?: { login?: string } } | undefined;
-    try {
-      triggerComment = await gh.getIssueComment(prNumber, commentId, signal);
-    } catch (err) {
-      new Logger('Conversation').warn(
-        `Failed to fetch trigger comment ${commentId} by id — falling back to recent window comments: ${
-          err instanceof Error ? err.message : err
-        }`,
-      );
-    }
-    if (triggerComment) {
-      contextComments = [triggerComment];
-    } else {
-      contextComments = allComments.slice(-5);
-    }
-  } else {
+  if (triggerIdx !== -1) {
     // Ascending window: take up to 5 comments preceding the trigger (older
     // turns) plus the trigger itself, already in chronological order.
     const contextStart = Math.max(0, triggerIdx - 5);
     contextComments = allComments.slice(contextStart, triggerIdx + 1);
+  } else {
+    // The trigger is not in the ascending window. On busy PRs (more comments
+    // than the window) a freshly-posted @mention trigger is never in-window, so
+    // fetch the tail of the conversation — the newest comments — which puts the
+    // trigger back in context with the turns preceding it. Only a genuinely old
+    // trigger falls through to a by-id fetch.
+    let recent: Array<{ id: number; body: string; user?: { login?: string } }> = [];
+    try {
+      recent = await gh.getRecentIssueComments(prNumber, 6, signal);
+    } catch (err) {
+      new Logger('Conversation').warn(
+        `Failed to fetch recent issue comments for context: ${
+          err instanceof Error ? err.message : err
+        }`,
+      );
+    }
+    const recentIdx = recent.findIndex((c) => c.id === commentId);
+    if (recentIdx !== -1) {
+      const contextStart = Math.max(0, recentIdx - 5);
+      contextComments = recent.slice(contextStart, recentIdx + 1);
+    } else {
+      // The trigger is genuinely older than the window and the recent tail —
+      // fetch it by ID and build a minimal thread so the conversation is never
+      // silently skipped. If that fetch fails, fall back to the newest window
+      // comments so the @mention is still answered rather than dropped.
+      let triggerComment: { id: number; body: string; user?: { login?: string } } | undefined;
+      try {
+        triggerComment = await gh.getIssueComment(prNumber, commentId, signal);
+      } catch (err) {
+        new Logger('Conversation').warn(
+          `Failed to fetch trigger comment ${commentId} by id — falling back to recent window comments: ${
+            err instanceof Error ? err.message : err
+          }`,
+        );
+      }
+      if (triggerComment) {
+        contextComments = [triggerComment];
+      } else {
+        contextComments = allComments.slice(-5);
+      }
+    }
   }
 
   const thread: ConversationMessage[] = contextComments.map((c) => ({

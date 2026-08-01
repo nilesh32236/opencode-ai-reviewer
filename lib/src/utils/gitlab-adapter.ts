@@ -751,6 +751,33 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
+   * Get the tail of an issue's notes (the newest `count`), ascending by id.
+   * GitLab returns notes newest-first by default, so a descending window of
+   * `count` notes yields the conversation tail; the result is reversed into
+   * chronological order.
+   *
+   * @param issueNumber - PR/issue number.
+   * @param count - Maximum number of notes to return.
+   * @param signal - Optional AbortSignal to cancel the request.
+   * @returns The newest `count` notes in ascending order.
+   */
+  async getRecentIssueComments(
+    issueNumber: number,
+    count: number,
+    signal?: AbortSignal,
+  ): Promise<Array<{ id: number; body: string; user?: { login?: string } }>> {
+    const notes = await this.paginate<{ id: number; body: string; author?: { username?: string } }>(
+      `/issues/${issueNumber}/notes`,
+      { perPage: 100, maxPages: 5, direction: 'desc' },
+      signal,
+    );
+    return notes
+      .slice(0, count)
+      .map((n) => ({ id: n.id, body: n.body, user: { login: n.author?.username } }))
+      .sort((a, b) => a.id - b.id);
+  }
+
+  /**
    * Get review comment thread.
    * @param _commentId - _commentId argument.
    * @param _prNumber - Optional PR number (unused, thread reconstruction unsupported).

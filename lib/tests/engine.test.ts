@@ -59,6 +59,7 @@ const {
       getIssue: vi.fn(),
       getIssueComments: vi.fn().mockResolvedValue([]),
       getIssueComment: vi.fn(),
+      getRecentIssueComments: vi.fn().mockResolvedValue([]),
       getDiffLines: vi.fn().mockResolvedValue(new Set<string>()),
       getDiffSince: _mockGitHubGetDiffSince,
       listReviewComments: vi.fn().mockResolvedValue([]),

@@ -9,9 +9,15 @@ import { sanitize } from './utils.js';
  * Tracks the last audit issue number per category for this process. When the
  * existing-issue search fails, the fail-open create path reuses the recorded
  * issue (updating it) instead of creating a fresh duplicate on every invocation,
- * bounding duplicate accumulation during a search outage. State is per-process,
- * so it cannot survive across workflow runs; on the first fail-open of a process
- * a new issue is created and recorded for subsequent reuse.
+ * bounding duplicate accumulation within a single process invocation.
+ *
+ * NOTE: The registry is per-process only, and each GitHub Action workflow run is
+ * a fresh process with an empty registry. During a sustained search outage every
+ * run therefore still falls through to the create branch and posts a new
+ * duplicate audit issue — the bound applies only within one process invocation
+ * (e.g. repeated runAudit calls in the same run). Bounding it across runs would
+ * require durable persistence (e.g. recording the last issue number in the
+ * audit-update marker comment), which is out of scope here.
  */
 const lastAuditIssueByCategory = new Map<string, number>();
 
@@ -162,9 +168,15 @@ export async function runAudit(
       // failure: fall back to creating the issue (accepting a rare duplicate)
       // so the findings are never silently lost. Only setFailed if even that
       // fallback write fails (handled in the create branch below). To bound
-      // duplicate accumulation during a search outage, reuse the last issue this
-      // process tracked for the category when one is known.
+      // duplicate accumulation within this process invocation, reuse the last
+      // issue this process tracked for the category when one is known (the
+      // registry cannot survive across workflow runs — see its doc comment).
       existingIssueNumber = lastAuditIssueByCategory.get(category);
+      if (existingIssueNumber === undefined) {
+        core.info(
+          'No prior audit issue tracked for this category in this process — a fresh issue will be created; repeated runs during a search outage may create duplicates',
+        );
+      }
     }
 
     if (existingIssueNumber) {

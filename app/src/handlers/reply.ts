@@ -18,6 +18,7 @@ import {
  * @param config - Agent configuration.
  * @param parentCommentId - ID of the AI-originated comment being replied to.
  * @param userCommentBody - The developer's reply/question body.
+ * @param signal - Optional AbortSignal to cancel the underlying API requests.
  */
 export async function handleReply(
   prNumber: number,
@@ -26,15 +27,24 @@ export async function handleReply(
   config: AgentConfig,
   parentCommentId: number,
   userCommentBody: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const logger = new Logger('Reply', { repo, prNumber });
   const gh: PlatformAdapter =
     config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
 
   try {
-    const thread = await gh.getReviewCommentThread(parentCommentId, prNumber);
+    const thread = await gh.getReviewCommentThread(parentCommentId, prNumber, signal);
 
-    if (!thread.rootComment.isBot) {
+    // When the ancestor chain is truncated (a direct by-id fetch failed
+    // mid-walk), chain[0] may not be the true thread root — a mid-thread user
+    // comment could be presented as the 'root' and silently skip a
+    // bot-originated thread. Base the isBot gate on the guaranteed-present
+    // trigger comment (the comment the user actually replied to) instead.
+    const rootForReply =
+      thread.truncated && thread.triggerComment ? thread.triggerComment : thread.rootComment;
+
+    if (!rootForReply.isBot) {
       logger.info('Root comment is not from a bot — skipping reply');
       return;
     }
@@ -45,7 +55,7 @@ export async function handleReply(
       thread.filePath,
       thread.lineNumber,
       diffSnippet,
-      thread.rootComment.body,
+      rootForReply.body,
       thread.comments,
       userCommentBody,
     );

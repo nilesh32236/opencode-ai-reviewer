@@ -37,6 +37,7 @@ export function createReplySubscriber(): Subscriber {
           config,
           parentId,
           comment.body as string,
+          signal,
         );
       } catch (err) {
         logger.error(`ReplySubscriber failed: ${err instanceof Error ? err.message : err}`);

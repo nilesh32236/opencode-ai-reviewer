@@ -13,6 +13,7 @@ function makeAdapter(overrides: Partial<PlatformAdapter> = {}): PlatformAdapter 
     getReviewComment: vi.fn(),
     listComments: vi.fn().mockResolvedValue([]),
     getIssueComment: vi.fn(),
+    getRecentIssueComments: vi.fn().mockResolvedValue([]),
     ...overrides,
   } as unknown as PlatformAdapter;
 }
@@ -202,6 +203,33 @@ describe('conversation thread gathering', () => {
 
       expect(result.thread.map((m) => m.body)).toEqual(['root', 'trigger']);
     });
+
+    it('falls through to the by-id walk when the window fetch fails', async () => {
+      // A window-fetch failure must not surface as 'comment not found': the
+      // trigger and its ancestors are fetched by ID instead.
+      const root = {
+        id: 1,
+        body: 'root',
+        in_reply_to_id: null,
+        path: 'src/a.ts',
+        user: { login: 'user' },
+      };
+      const gh = makeAdapter({
+        listReviewComments: vi.fn().mockRejectedValue(new Error('GitHub API 500')),
+        getReviewComment: vi
+          .fn()
+          .mockImplementation(async (_p: number, id: number) =>
+            id === 3
+              ? { id: 3, body: 'trigger', in_reply_to_id: 1, user: { login: 'user' } }
+              : root,
+          ),
+      });
+
+      const result = await gatherReviewCommentThread(gh, 1, 3, MENTION);
+
+      expect(result.thread.map((m) => m.body)).toEqual(['root', 'trigger']);
+      expect(result.filePath).toBe('src/a.ts');
+    });
   });
 
   describe('gatherIssueCommentThread', () => {
@@ -253,6 +281,29 @@ describe('conversation thread gathering', () => {
       const result = await gatherIssueCommentThread(gh, 1, 1, MENTION);
 
       expect(result.thread.map((m) => m.body)).toEqual(['c8', 'c9']);
+    });
+
+    it('recovers preceding turns from the conversation tail when the trigger is outside the window', async () => {
+      // Busy PR: the ascending window does not include the freshly-posted
+      // trigger (id 20). The recent tail contains the trigger and the turns
+      // preceding it, so the model still receives context.
+      const gh = makeAdapter({
+        listComments: vi.fn().mockResolvedValue([]),
+        getRecentIssueComments: vi.fn().mockResolvedValue(
+          [16, 17, 18, 19, 20].map((id) => ({
+            id,
+            body: `c${id}`,
+            user: { login: 'user' },
+          })),
+        ),
+      });
+
+      const result = await gatherIssueCommentThread(gh, 1, 20, MENTION);
+
+      // Newest 5 preceding turns (16..19) plus the trigger, in chronological order.
+      expect(result.thread.map((m) => m.body)).toEqual(['c16', 'c17', 'c18', 'c19', 'c20']);
+      expect(gh.getRecentIssueComments).toHaveBeenCalledWith(1, 6, undefined);
+      expect(gh.getIssueComment).not.toHaveBeenCalled();
     });
   });
 });

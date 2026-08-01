@@ -418,6 +418,28 @@ describe('GitLabAdapter', () => {
     });
   });
 
+  describe('getRecentIssueComments', () => {
+    it('returns the newest notes in ascending order', async () => {
+      // GitLab returns notes newest-first; the adapter takes the first `count`
+      // and sorts ascending.
+      fetchMock.mockResolvedValue(
+        mockResponse({
+          body: [
+            { id: 9, author: { username: 'alice' }, body: 'newest' },
+            { id: 8, author: { username: 'bob' }, body: 'older' },
+          ],
+        }),
+      );
+
+      const comments = await adapter.getRecentIssueComments(1, 2);
+
+      expect(comments.map((c) => c.id)).toEqual([8, 9]);
+      const url = (fetchMock.mock.calls[0] as unknown[])[0] as string;
+      expect(url).toContain('order_by=created_at');
+      expect(url).toContain('sort=desc');
+    });
+  });
+
   describe('getDiffLines', () => {
     it('parses diff text into line set', async () => {
       const diffText = `diff --git a/src/a.ts b/src/a.ts
