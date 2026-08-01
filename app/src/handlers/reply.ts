@@ -32,7 +32,7 @@ export async function handleReply(
     config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
 
   try {
-    const thread = await gh.getReviewCommentThread(parentCommentId);
+    const thread = await gh.getReviewCommentThread(parentCommentId, prNumber);
 
     if (!thread.rootComment.isBot) {
       logger.info('Root comment is not from a bot — skipping reply');

@@ -1,6 +1,10 @@
 import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 /**
+ * Reset the per-process audit-issue registry. Exported for tests.
+ */
+export declare function resetAuditIssueRegistry(): void;
+/**
  * Execute a codebase audit: select a random (or named) audit prompt,
  * run the audit engine on a target directory, optionally create a
  * GitHub issue with the findings, and add severity labels.

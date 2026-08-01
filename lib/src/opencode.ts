@@ -68,13 +68,14 @@ function detectArch(): string {
   return `${osName}-${archName}`;
 }
 
-async function fetchWithRetry(url: string, retries = 3): Promise<Response> {
+async function fetchWithRetry(url: string, retries = 3, token?: string): Promise<Response> {
   return withRetry(
     async () => {
       const response = await fetch(url, {
         headers: {
           Accept: 'application/vnd.github+json',
           'X-GitHub-Api-Version': '2022-11-28',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       });
       if (response.ok) return response;
@@ -84,7 +85,11 @@ async function fetchWithRetry(url: string, retries = 3): Promise<Response> {
     },
     {
       maxRetries: retries,
-      retryableStatuses: [403, 429, 500, 502, 503, 504],
+      // 403 is NOT retryable here: on the authenticated attempt a rejected
+      // repo-scoped token deterministically returns 403, and burning three
+      // backoff retries (~7-10s) before the anonymous fallback is wasteful. A
+      // 403 also never becomes transiently successful, so failing fast is safe.
+      retryableStatuses: [429, 500, 502, 503, 504],
     },
   );
 }
@@ -114,11 +119,49 @@ export async function setupOpenCode(version = 'latest'): Promise<string> {
     releaseUrl = `https://api.github.com/repos/anomalyco/opencode/releases/tags/${tag}`;
   }
 
-  const response = await fetchWithRetry(releaseUrl);
+  // The ambient token may be repo-scoped (GitHub Actions GITHUB_TOKEN) or not
+  // GitHub-scoped at all (e.g. a GitLab CI token in INPUT_GITHUB_TOKEN). Sending
+  // either to the api.github.com release endpoint can deterministically fail the
+  // cross-repo lookup (401/403/404). Only attach the ambient token when running
+  // in GitHub Actions where it is guaranteed to be a GitHub credential; in any
+  // other runtime (GitLab CI, local) call the public endpoint anonymously so the
+  // token is never transmitted. On auth failures the lookup degrades gracefully
+  // to an anonymous request so setup never aborts.
+  let response: Response;
+  const ambientToken =
+    process.env.GITHUB_ACTIONS === 'true'
+      ? process.env.GITHUB_TOKEN || process.env.INPUT_GITHUB_TOKEN || undefined
+      : undefined;
+  try {
+    response = await fetchWithRetry(releaseUrl, 3, ambientToken);
+  } catch (err) {
+    const status =
+      err instanceof Error && 'status' in err ? (err as Error & { status: number }).status : 0;
+    if (status === 401 || status === 403 || status === 404) {
+      core.warning(`Authenticated release lookup failed (HTTP ${status}) — retrying anonymously`);
+      response = await fetchWithRetry(releaseUrl, 3);
+    } else {
+      throw err;
+    }
+  }
+  const status = response.status;
   const release = (await response.json()) as {
     tag_name?: string;
-    assets: Array<{ name: string; browser_download_url: string }>;
+    assets?: Array<{ name: string; browser_download_url: string }>;
   };
+
+  if (!Array.isArray(release.assets)) {
+    // A 404 from the (possibly anonymous) lookup means the requested tag does
+    // not exist rather than an auth failure — surface a clear error naming the
+    // tag so setup failures are diagnosable instead of a confusing TypeError
+    // from release.assets.find below.
+    const requested =
+      version === 'latest' ? 'latest' : version.startsWith('v') ? version : `v${version}`;
+    throw new Error(
+      `Release${version === 'latest' ? '' : ` ${requested}`} not found on anomalyco/opencode (HTTP ${status}) — cannot download opencode`,
+    );
+  }
+  const releaseAssets = release.assets;
 
   const semver = (release.tag_name || version).replace(/^v/, '');
   const platform = os.platform();
@@ -146,7 +189,7 @@ export async function setupOpenCode(version = 'latest'): Promise<string> {
     }
   }
 
-  const asset = release.assets.find((a) => a.name === assetName);
+  const asset = releaseAssets.find((a) => a.name === assetName);
   if (!asset) {
     throw new Error(
       `Could not find asset "${assetName}" in release ${release.tag_name || version}`,
@@ -169,7 +212,7 @@ export async function setupOpenCode(version = 'latest'): Promise<string> {
 
       await verifyDownloadedArchive(
         dlPath,
-        release.assets,
+        releaseAssets,
         assetName,
         release.tag_name || version,
         arch,

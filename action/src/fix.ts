@@ -46,7 +46,17 @@ export async function runFix(
     return;
   }
 
-  const comments = await gh.getIssueComments(prNumber);
+  let comments: IssueComment[];
+  try {
+    comments = await gh.getIssueComments(prNumber, { throwOnError: true });
+  } catch (err) {
+    core.setFailed(
+      sanitize(
+        `Failed to fetch issue comments for iteration count: ${err instanceof Error ? err.message : err}`,
+      ),
+    );
+    return;
+  }
   const iteration = comments.filter((c: IssueComment) => c.body.includes(REVIEW_MARKER)).length;
 
   if (iteration >= config.maxIterations) {

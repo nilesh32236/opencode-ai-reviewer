@@ -340,6 +340,7 @@ export function emptyResult(): ReviewResult {
     stats: { total: 0, critical: 0, important: 0, minor: 0 },
     rawLines: [],
     failedLines: 0,
+    failedBatches: 0,
     executiveSummary: {
       purpose: '',
       riskLevel: 'low',

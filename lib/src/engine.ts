@@ -82,7 +82,7 @@ export class ReviewEngine {
   private adapter: PlatformAdapter;
   private config: AgentConfig;
   private logger: Logger;
-  private lessonsCache: { lessons: string[]; timestamp: number } | null = null;
+  private lessonsCache: { lessons: string[]; filePaths: string; timestamp: number } | null = null;
   private mcpDocsCache: { docs: string; libraries: string; timestamp: number } | null = null;
   private static readonly LESSONS_CACHE_TTL = 60_000;
   private static readonly MCP_DOCS_CACHE_TTL = 60_000;
@@ -339,6 +339,7 @@ export class ReviewEngine {
       MAX_BATCH_CONCURRENCY,
     );
     const batchResults: ReviewResult[] = [];
+    let failedBatches = 0;
     const chunkCount = computeChunkDelays(fileBatches.length, concurrencyLimit) + 1;
     for (let chunk = 0; chunk < chunkCount; chunk++) {
       if (chunk > 0) {
@@ -392,6 +393,7 @@ export class ReviewEngine {
             return {
               durationMs: runResult.durationMs,
               tokensUsed: runResult.tokensUsed,
+              failed: true,
               result: emptyResult(),
             };
           }
@@ -401,6 +403,7 @@ export class ReviewEngine {
             return {
               durationMs: runResult.durationMs,
               tokensUsed: runResult.tokensUsed,
+              failed: false,
               result: parsed,
             };
           } catch {
@@ -408,6 +411,7 @@ export class ReviewEngine {
             return {
               durationMs: runResult.durationMs,
               tokensUsed: runResult.tokensUsed,
+              failed: true,
               result: emptyResult(),
             };
           }
@@ -417,6 +421,7 @@ export class ReviewEngine {
         accumulatedDurationMs += item.durationMs;
         accumulatedTokensUsed += item.tokensUsed;
         batchResults.push(item.result);
+        if (item.failed) failedBatches++;
       }
     }
 
@@ -473,6 +478,7 @@ export class ReviewEngine {
         totalFailedLines,
         fileBatches,
         'Synthesis failed, using merged batch results',
+        failedBatches,
       );
       return await this.verifyReviewResult(
         fallback,
@@ -487,6 +493,9 @@ export class ReviewEngine {
       const parsed = await parseJsonlFile(finalOutputPath);
 
       let finalResult = parsed;
+      if (failedBatches > 0) {
+        finalResult = { ...parsed, failedBatches };
+      }
       if (linterResults.length > 0) {
         const deduped = this.deduplicateAgainstLinters(parsed.issues, linterResults, workDir);
         if (deduped.length < parsed.issues.length) {
@@ -499,6 +508,7 @@ export class ReviewEngine {
               important: deduped.filter((i) => i.severity === 'important').length,
               minor: deduped.filter((i) => i.severity === 'minor').length,
             },
+            ...(failedBatches > 0 ? { failedBatches } : {}),
           };
         }
       }
@@ -525,6 +535,7 @@ export class ReviewEngine {
         totalFailedLines,
         fileBatches,
         'Synthesis output parse failed, using merged batch results',
+        failedBatches,
       );
       if (tokenBudgetConfig?.enabled) {
         this.logTokenSavings(
@@ -1222,12 +1233,17 @@ export class ReviewEngine {
 
   private async getRelevantLessons(filePaths: string[]): Promise<string[]> {
     const now = Date.now();
-    if (this.lessonsCache && now - this.lessonsCache.timestamp < ReviewEngine.LESSONS_CACHE_TTL) {
+    const key = [...new Set(filePaths)].sort().join(',');
+    if (
+      this.lessonsCache &&
+      this.lessonsCache.filePaths === key &&
+      now - this.lessonsCache.timestamp < ReviewEngine.LESSONS_CACHE_TTL
+    ) {
       return this.lessonsCache.lessons;
     }
     if (!this.learningStore) return [];
     const lessons = await this.learningStore.getRelevantLessons(filePaths);
-    this.lessonsCache = { lessons, timestamp: now };
+    this.lessonsCache = { lessons, filePaths: key, timestamp: now };
     return lessons;
   }
 
@@ -1479,6 +1495,7 @@ export class ReviewEngine {
     totalFailedLines: number,
     fileBatches: Array<PRContext['changedFiles']>,
     reasoning: string,
+    failedBatches = 0,
   ): ReviewResult {
     return {
       summary:
@@ -1501,6 +1518,7 @@ export class ReviewEngine {
       },
       rawLines: allRawLines,
       failedLines: totalFailedLines,
+      failedBatches,
     };
   }
 

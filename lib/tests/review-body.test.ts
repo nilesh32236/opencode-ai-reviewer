@@ -140,5 +140,37 @@ describe('review-body', () => {
       const body = buildReviewBody(emptyResult);
       expect(body).toContain('MR Review Summary');
     });
+
+    it('renders a partial-review banner when failedBatches is set', () => {
+      const result: ReviewResult = {
+        summary: 'Partial result.',
+        verdict: { ready: false, reasoning: 'Some batches failed.' },
+        strengths: [],
+        issues: [],
+        stats: { total: 0, critical: 0, important: 0, minor: 0 },
+        rawLines: [],
+        failedLines: 0,
+        failedBatches: 2,
+      };
+
+      const body = buildReviewBody(result);
+      expect(body).toContain('Partial review');
+      expect(body).toContain('2 file batch(es) failed');
+    });
+
+    it('omits the partial-review banner when no batches failed', () => {
+      const result: ReviewResult = {
+        summary: 'Full result.',
+        verdict: { ready: true, reasoning: 'All good.' },
+        strengths: [],
+        issues: [],
+        stats: { total: 0, critical: 0, important: 0, minor: 0 },
+        rawLines: [],
+        failedLines: 0,
+      };
+
+      const body = buildReviewBody(result);
+      expect(body).not.toContain('Partial review');
+    });
   });
 });

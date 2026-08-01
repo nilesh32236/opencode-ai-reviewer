@@ -44,6 +44,7 @@ export interface ReviewCommentDetail {
   line?: number;
   in_reply_to_id?: number;
   pull_request_review_id?: number;
+  diff_hunk?: string;
 }
 
 /** A thread of review comments. */
@@ -87,9 +88,24 @@ export interface PlatformAdapter {
   /**
    * Get all comments on an issue.
    * @param number - Issue number.
+   * @param options - Optional pagination options.
+   * @param options.throwOnError - When true, rethrow a pagination error instead of
+   * silently returning partial comments (default: false).
    * @returns Promise resolving to array of issue comments.
    */
-  getIssueComments(number: number): Promise<IssueComment[]>;
+  getIssueComments(number: number, options?: { throwOnError?: boolean }): Promise<IssueComment[]>;
+  /**
+   * Get a single issue comment by ID.
+   * @param issueNumber - Issue/PR number the comment belongs to.
+   * @param commentId - Issue comment ID.
+   * @param signal - Optional AbortSignal to cancel the request.
+   * @returns Promise resolving to the raw issue comment (id, body, author login).
+   */
+  getIssueComment(
+    issueNumber: number,
+    commentId: number,
+    signal?: AbortSignal,
+  ): Promise<{ id: number; body: string; user?: { login?: string } }>;
   /**
    * Get the set of changed line identifiers for a merge request.
    * @param mrNumber - Merge request number.
@@ -115,6 +131,7 @@ export interface PlatformAdapter {
   listReviewComments(
     mrNumber: number,
     options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
+    signal?: AbortSignal,
   ): Promise<Array<Record<string, unknown>>>;
   /**
    * Create a reply to an existing review comment.
@@ -136,6 +153,7 @@ export interface PlatformAdapter {
   listComments(
     issueNumber: number,
     options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
+    signal?: AbortSignal,
   ): Promise<Array<Record<string, unknown>>>;
   /**
    * Post a comment on an issue.
@@ -191,15 +209,27 @@ export interface PlatformAdapter {
    * Get a single review comment by ID.
    * @param mrNumber - Merge request number.
    * @param commentId - Comment ID.
+   * @param signal - Optional AbortSignal to cancel the request.
    * @returns Promise resolving to review comment detail.
    */
-  getReviewComment(mrNumber: number, commentId: number): Promise<ReviewCommentDetail>;
+  getReviewComment(
+    mrNumber: number,
+    commentId: number,
+    signal?: AbortSignal,
+  ): Promise<ReviewCommentDetail>;
   /**
    * Get the thread containing a review comment.
    * @param commentId - Comment ID.
+   * @param prNumber - Optional PR number, used to reconstruct the thread from the
+   * paginated comment list in a single pass (avoids N+1 API calls).
+   * @param signal - Optional AbortSignal to cancel the underlying API requests.
    * @returns Promise resolving to review comment thread.
    */
-  getReviewCommentThread(commentId: number): Promise<ReviewCommentThread>;
+  getReviewCommentThread(
+    commentId: number,
+    prNumber?: number,
+    signal?: AbortSignal,
+  ): Promise<ReviewCommentThread>;
   /**
    * Create a new issue.
    * @param title - Issue title.
@@ -342,10 +372,19 @@ export interface PlatformAdapter {
    * @param options.perPage - Items per page.
    * @param options.maxPages - Maximum pages to fetch.
    * @param options.direction - Sort direction.
+   * @param options.throwOnError - When true, rethrow a page-fetch error instead of
+   * silently returning partial data (default: false).
+   * @param signal - Optional AbortSignal to cancel the paginated fetch.
    * @returns Promise resolving to array of paginated results.
    */
   paginate<T>(
     endpoint: string,
-    options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
+    options?: {
+      perPage?: number;
+      maxPages?: number;
+      direction?: 'asc' | 'desc';
+      throwOnError?: boolean;
+    },
+    signal?: AbortSignal,
   ): Promise<T[]>;
 }

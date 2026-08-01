@@ -441,6 +441,49 @@ describe('setupOpenCode()', () => {
     expect(mockDownloadTool).toHaveBeenCalled();
   });
 
+  it('degrades to an anonymous lookup when the authenticated release request returns 403', async () => {
+    mockIoWhich.mockResolvedValue(null);
+    const releaseBody = {
+      tag_name: 'v1.0.0',
+      assets: [
+        {
+          name: 'opencode-linux-x64.tar.gz',
+          browser_download_url: 'https://example.com/opencode-linux-x64.tar.gz',
+        },
+      ],
+    };
+    mockFetch
+      .mockResolvedValueOnce(new Response('Forbidden', { status: 403, statusText: 'Forbidden' }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(releaseBody), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+    mockDownloadTool.mockResolvedValue('/tmp/opencode.tar.gz');
+    mockCacheDir.mockResolvedValue('/tmp/opencode-cached');
+    mockComputeSha256.mockResolvedValue('bin-checksum-123');
+
+    const prevToken = process.env.GITHUB_TOKEN;
+    process.env.GITHUB_TOKEN = 'some-token';
+    try {
+      const result = await setupOpenCode('v1.0.0');
+      expect(result).toBe('/tmp/opencode-cached/opencode');
+    } finally {
+      if (prevToken === undefined) {
+        process.env.GITHUB_TOKEN = undefined;
+      } else {
+        process.env.GITHUB_TOKEN = prevToken;
+      }
+    }
+
+    // The first (authenticated) attempt fails fast, and the anonymous fallback succeeds.
+    const firstInit = mockFetch.mock.calls[0][1] as RequestInit;
+    expect(firstInit.headers).toMatchObject({ Authorization: 'Bearer some-token' });
+    const secondInit = mockFetch.mock.calls[1][1] as RequestInit;
+    expect((secondInit.headers as Record<string, string>).Authorization).toBeUndefined();
+  });
+
   it('downloads and verifies with release checksum asset', async () => {
     mockIoWhich.mockResolvedValue(null);
     mockFetch.mockResolvedValue(

@@ -43,6 +43,8 @@ export function makeInputs(overrides: Partial<ActionInputs> = {}): ActionInputs 
     enableFix: false,
     maxFixIterations: 3,
     enableAudit: false,
+    auditTargetDirs: [],
+    auditLabels: ['audit'],
     ...overrides,
   };
 }

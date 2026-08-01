@@ -12,6 +12,7 @@ import {
   Logger,
   ReviewEngine,
   detectIntent,
+  gatherReviewThread,
 } from '@opencode-pr-agent/lib';
 
 /**
@@ -63,13 +64,25 @@ export async function handleConversation(
 
   if (isReviewComment) {
     // For review comments, fetch the full comment thread on that file/line
-    const threadResult = await gatherReviewCommentThread(gh, prNumber, commentId, mentionHandle);
+    const threadResult = await gatherReviewCommentThread(
+      gh,
+      prNumber,
+      commentId,
+      mentionHandle,
+      signal,
+    );
     thread = threadResult.thread;
     filePath = threadResult.filePath;
     diffHunk = threadResult.diffHunk;
   } else {
     // For issue comments, fetch the comment thread on the PR
-    const threadResult = await gatherIssueCommentThread(gh, prNumber, commentId, mentionHandle);
+    const threadResult = await gatherIssueCommentThread(
+      gh,
+      prNumber,
+      commentId,
+      mentionHandle,
+      signal,
+    );
     thread = threadResult.thread;
   }
 
@@ -142,119 +155,149 @@ interface IssueCommentThread {
 
 /**
  * Gather the full review comment thread for a given comment.
- * Fetches all review comments on the PR and filters by thread.
+ * Delegates the bounded-window fetch, in_reply_to_id chain walk with by-id
+ * fallback, and subtree expansion to the shared `gatherReviewThread` lib helper
+ * (also consumed by GitHubHelper.getReviewCommentThread) so the logic cannot
+ * drift between the reply and @mention flows. The window is fetched newest-first
+ * ('desc') so freshly-posted @mention triggers and their recent replies land
+ * in-window on busy PRs; the output is normalized by the explicit id sort and
+ * the chain walk is order-independent via the by-id map.
+ *
+ * Exported for unit testing.
  *
  * @param gh - GitHub API helper instance.
  * @param prNumber - PR number.
  * @param commentId - Triggering review comment ID.
  * @param mentionHandle - Bot mention handle.
+ * @param signal - Optional AbortSignal to cancel the underlying API requests.
  * @returns Object containing conversation messages, file path, and diff hunk.
  */
-async function gatherReviewCommentThread(
+export async function gatherReviewCommentThread(
   gh: PlatformAdapter,
   prNumber: number,
   commentId: number,
   mentionHandle: string,
+  signal?: AbortSignal,
 ): Promise<ReviewCommentThread> {
-  try {
-    // Fetch recent review comments (only need ~5 for context; limit to 10 per page, newest first)
-    const allComments = (await gh.listReviewComments(prNumber, {
-      perPage: 10,
-      maxPages: 1,
-      direction: 'desc',
-    })) as Array<{
-      id: number;
-      body: string;
-      path?: string;
-      diff_hunk?: string;
-      in_reply_to_id?: number;
-      user?: { login?: string };
-    }>;
+  const { chain, comments } = await gatherReviewThread(
+    gh,
+    prNumber,
+    commentId,
+    { perPage: 100, maxPages: 5, direction: 'desc' },
+    signal,
+  );
 
-    // Find the triggering comment
-    const triggerComment = allComments.find((c) => c.id === commentId);
-    if (!triggerComment) {
-      return { thread: [] };
-    }
-
-    // Determine the root comment (for threaded replies)
-    const rootId = triggerComment.in_reply_to_id || triggerComment.id;
-
-    // Collect all comments in the thread
-    const threadComments = allComments
-      .filter((c) => c.id === rootId || c.in_reply_to_id === rootId)
-      .sort((a, b) => a.id - b.id);
-
-    const thread: ConversationMessage[] = threadComments.map((c) => ({
-      role: isBotComment(c.user?.login, mentionHandle) ? ('assistant' as const) : ('user' as const),
-      body: stripMention(c.body, mentionHandle),
-      author: c.user?.login,
-    }));
-
-    return {
-      thread,
-      filePath: triggerComment.path,
-      diffHunk: triggerComment.diff_hunk,
-    };
-  } catch (err) {
-    new Logger('Conversation').warn(
-      `Failed to gather review comment thread: ${err instanceof Error ? err.message : err}`,
-    );
+  if (chain.length === 0) {
     return { thread: [] };
   }
+
+  // Anchor filePath on the first chain comment that carries a path so file
+  // context survives when the root is a thread-level comment without one.
+  const filePath = chain.find((c) => c.path)?.path ?? chain[chain.length - 1]?.path;
+  const diffHunk = chain.find((c) => c.diff_hunk)?.diff_hunk;
+
+  const thread: ConversationMessage[] = comments.map((c) => ({
+    role: isBotComment(c.user?.login, mentionHandle) ? ('assistant' as const) : ('user' as const),
+    body: stripMention(c.body, mentionHandle),
+    author: c.user?.login,
+  }));
+
+  return {
+    thread,
+    filePath,
+    diffHunk,
+  };
 }
 
 /**
  * Gather the issue comment thread for a given comment.
- * Fetches recent issue comments on the PR.
+ * Fetches a bounded window of issue comments in ascending order — GitHub's
+ * per-issue comments endpoint ignores sort/direction and always returns
+ * ascending, and the GitLab adapter maps 'asc' to order_by=created_at&sort — so
+ * the triggering comment is always found with the comments preceding it when the
+ * PR has few enough comments to fit in the window. When the trigger is older
+ * than the window it is fetched directly by ID; if even that fetch fails the
+ * newest window comments are used so the @mention is answered rather than
+ * silently dropped.
+ *
+ * Exported for unit testing.
  *
  * @param gh - GitHub API helper instance.
  * @param prNumber - PR number.
  * @param commentId - Triggering issue comment ID.
  * @param mentionHandle - Bot mention handle.
+ * @param signal - Optional AbortSignal to cancel the underlying API requests.
  * @returns Object containing context conversation messages.
  */
-async function gatherIssueCommentThread(
+export async function gatherIssueCommentThread(
   gh: PlatformAdapter,
   prNumber: number,
   commentId: number,
   mentionHandle: string,
+  signal?: AbortSignal,
 ): Promise<IssueCommentThread> {
+  let allComments: Array<{ id: number; body: string; user?: { login?: string } }> = [];
   try {
-    // Fetch recent issue comments (only need ~5 for context; limit to 10 per page, newest first)
-    const allComments = (await gh.listComments(prNumber, {
-      perPage: 10,
-      maxPages: 1,
-      direction: 'desc',
-    })) as Array<{
+    // Ascending order matches what GitHub actually returns for issue comments
+    // (the direction param is ignored by the endpoint).
+    allComments = (await gh.listComments(
+      prNumber,
+      {
+        perPage: 100,
+        maxPages: 5,
+        direction: 'asc',
+      },
+      signal,
+    )) as Array<{
       id: number;
       body: string;
       user?: { login?: string };
     }>;
-
-    // Find comments around the triggering comment for thread context
-    const triggerIdx = allComments.findIndex((c) => c.id === commentId);
-    if (triggerIdx === -1) {
-      return { thread: [] };
-    }
-
-    // Take up to 5 recent comments before the trigger + the trigger itself
-    const contextStart = Math.max(0, triggerIdx - 5);
-    const contextComments = allComments.slice(contextStart, triggerIdx + 1);
-
-    const thread: ConversationMessage[] = contextComments.map((c) => ({
-      role: isBotComment(c.user?.login, mentionHandle) ? ('assistant' as const) : ('user' as const),
-      body: stripMention(c.body, mentionHandle),
-      author: c.user?.login,
-    }));
-
-    return { thread };
   } catch (err) {
     new Logger('Conversation').warn(
       `Failed to gather issue comment thread: ${err instanceof Error ? err.message : err}`,
     );
     return { thread: [] };
   }
+
+  // Find comments around the triggering comment for thread context.
+  const triggerIdx = allComments.findIndex((c) => c.id === commentId);
+
+  let contextComments: Array<{ id: number; body: string; user?: { login?: string } }>;
+  if (triggerIdx === -1) {
+    // The trigger is older than the bounded window — fetch it by ID and build a
+    // minimal thread so the conversation is never silently skipped. If that
+    // fetch fails, fall back to the newest window comments so the @mention is
+    // still answered rather than dropped.
+    let triggerComment: { id: number; body: string; user?: { login?: string } } | undefined;
+    try {
+      triggerComment = await gh.getIssueComment(prNumber, commentId, signal);
+    } catch (err) {
+      new Logger('Conversation').warn(
+        `Failed to fetch trigger comment ${commentId} by id — falling back to recent window comments: ${
+          err instanceof Error ? err.message : err
+        }`,
+      );
+    }
+    if (triggerComment) {
+      contextComments = [triggerComment];
+    } else {
+      contextComments = allComments.slice(-5);
+    }
+  } else {
+    // Ascending window: take up to 5 comments preceding the trigger (older
+    // turns) plus the trigger itself, already in chronological order.
+    const contextStart = Math.max(0, triggerIdx - 5);
+    contextComments = allComments.slice(contextStart, triggerIdx + 1);
+  }
+
+  const thread: ConversationMessage[] = contextComments.map((c) => ({
+    role: isBotComment(c.user?.login, mentionHandle) ? ('assistant' as const) : ('user' as const),
+    body: stripMention(c.body, mentionHandle),
+    author: c.user?.login,
+  }));
+
+  return { thread };
 }
 
 // ─── Comment Posting Helpers ─────────────────────────────────────

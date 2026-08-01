@@ -98,6 +98,7 @@ function makeBenchmarkAdapter(): PlatformAdapter {
       comments: [],
     }),
     getIssueComments: async () => [],
+    getIssueComment: async () => ({ id: 1, body: '', user: { login: 'benchmark-bot' } }),
     getDiffLines: async () => new Set<string>(),
     getDiffSince: async () => '',
     listReviewComments: async () => [],

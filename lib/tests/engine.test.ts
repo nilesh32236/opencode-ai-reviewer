@@ -58,6 +58,7 @@ const {
       getDefaultBranch: vi.fn().mockResolvedValue('main'),
       getIssue: vi.fn(),
       getIssueComments: vi.fn().mockResolvedValue([]),
+      getIssueComment: vi.fn(),
       getDiffLines: vi.fn().mockResolvedValue(new Set<string>()),
       getDiffSince: _mockGitHubGetDiffSince,
       listReviewComments: vi.fn().mockResolvedValue([]),
@@ -1413,6 +1414,103 @@ describe('ReviewEngine', () => {
       expect(result.stats.critical).toBe(0);
       expect(result.stats.important).toBe(0);
       expect(result.stats.minor).toBe(1);
+    });
+
+    it('preserves failedBatches when linter dedup rebuilds the result', async () => {
+      const eng = new ReviewEngine(
+        makeConfig({
+          linters: [{ pattern: '**/*.ts', command: 'eslint', parseFormat: 'eslint' }],
+        }),
+        mockAdapter,
+      );
+
+      // > batchSize (3) files forces the concurrent batch path where
+      // failedBatches is tracked.
+      const pr = makePRContext({
+        changedFiles: [
+          { path: 'src/a.ts', status: 'modified', additions: 10, deletions: 2, patch: 'diff' },
+          { path: 'src/b.ts', status: 'modified', additions: 10, deletions: 2, patch: 'diff' },
+          { path: 'src/c.ts', status: 'modified', additions: 10, deletions: 2, patch: 'diff' },
+          { path: 'src/test.ts', status: 'modified', additions: 10, deletions: 2, patch: 'diff' },
+        ],
+      });
+
+      mockSpawnSync.mockReturnValue({
+        stdout: JSON.stringify([
+          {
+            filePath: 'src/test.ts',
+            messages: [{ line: 5, severity: 2, ruleId: 'no-unused-vars', message: 'x is unused' }],
+          },
+        ]),
+        stderr: '',
+        status: 0,
+        pid: 0,
+        output: [],
+        signal: null,
+      } as never);
+
+      mockMCPConnect.mockResolvedValue(undefined);
+
+      // Batch 1 review fails => 1 failed batch; batch 2 and the synthesis pass
+      // succeed so the parsed result flows through the linter dedup branch.
+      mockRunOpenCode
+        .mockResolvedValueOnce({
+          success: false,
+          output: '',
+          durationMs: 1000,
+          tokensUsed: 500,
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          output: '',
+          durationMs: 1000,
+          tokensUsed: 500,
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          output: '',
+          durationMs: 1000,
+          tokensUsed: 500,
+        });
+
+      const aiResult: ReviewResult = {
+        summary: 'Found issues',
+        verdict: {
+          ready: false,
+          reasoning: 'Issues found',
+          autoFixable: false,
+          confidence: 'medium',
+        },
+        strengths: [],
+        issues: [
+          {
+            type: 'issue',
+            severity: 'important',
+            file: 'src/test.ts',
+            line: 5,
+            message: 'x is unused, declared but never used',
+            suggestion: 'Remove unused variable',
+          },
+          {
+            type: 'issue',
+            severity: 'critical',
+            file: 'src/test.ts',
+            line: 10,
+            message: 'SQL injection risk',
+            suggestion: 'Use parameterized queries',
+          },
+        ],
+        stats: { total: 2, critical: 1, important: 1, minor: 0 },
+        rawLines: [],
+        failedLines: 0,
+      };
+      mockParseJsonlFile.mockResolvedValue(aiResult);
+
+      const result = await eng.reviewPR(pr);
+
+      // Dedup fires (line 5 suppressed) but the partial-review marker survives.
+      expect(result.issues.length).toBe(1);
+      expect(result.failedBatches).toBe(1);
     });
   });
 });

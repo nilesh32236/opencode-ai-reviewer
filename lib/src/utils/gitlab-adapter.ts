@@ -51,6 +51,7 @@ export class GitLabAdapter implements PlatformAdapter {
     path: string,
     options: RequestInit = {},
     responseType?: 'json' | 'text',
+    signal?: AbortSignal,
   ): Promise<T> {
     const url = `${this.apiUrl}/projects/${this.projectPath}${path}`;
     const method = (options.method ?? 'GET').toUpperCase();
@@ -62,6 +63,16 @@ export class GitLabAdapter implements PlatformAdapter {
         async () => {
           const controller = new AbortController();
           const timeout = setTimeout(() => controller.abort(), 30_000);
+          const onAbort = () => controller.abort();
+          if (signal) {
+            // Guard against the signal already being aborted in the gap between
+            // withRetry's top-of-loop check and this listener registration.
+            if (signal.aborted) {
+              controller.abort();
+            } else {
+              signal.addEventListener('abort', onAbort, { once: true });
+            }
+          }
           try {
             const res = await fetch(url, {
               ...options,
@@ -87,11 +98,15 @@ export class GitLabAdapter implements PlatformAdapter {
             return responseType === 'text' ? (res.text() as T) : res.json();
           } finally {
             clearTimeout(timeout);
+            if (signal) {
+              signal.removeEventListener('abort', onAbort);
+            }
           }
         },
         {
           retryableStatuses: isIdempotent ? [429, 500, 502, 503, 504] : [429],
           retryUnknownStatus: isIdempotent,
+          signal,
         },
       ),
     );
@@ -126,11 +141,20 @@ export class GitLabAdapter implements PlatformAdapter {
    * @param options.perPage
    * @param options.maxPages
    * @param options.direction - options.direction argument.
+   * @param options.throwOnError - When true, rethrow a page-fetch error instead of
+   * silently returning partial data (default: false).
+   * @param signal - Optional AbortSignal to cancel the paginated fetch.
    * @returns Description.
    */
   async paginate<T>(
     endpoint: string,
-    options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
+    options?: {
+      perPage?: number;
+      maxPages?: number;
+      direction?: 'asc' | 'desc';
+      throwOnError?: boolean;
+    },
+    signal?: AbortSignal,
   ): Promise<T[]> {
     const perPage = options?.perPage ?? 100;
     const maxPages = options?.maxPages ?? 10;
@@ -139,15 +163,24 @@ export class GitLabAdapter implements PlatformAdapter {
 
     while (page <= maxPages) {
       const separator = endpoint.includes('?') ? '&' : '?';
-      const pagePath = `${endpoint}${separator}per_page=${perPage}&page=${page}`;
+      let pagePath = `${endpoint}${separator}per_page=${perPage}&page=${page}`;
+      // GitLab ignores GitHub's `direction` query param; order_by/sort must be
+      // set explicitly so the 'asc' assumptions in callers hold on both platforms
+      // (GitLab returns notes newest-first by default).
+      if (options?.direction) {
+        pagePath += `&order_by=created_at&sort=${options.direction}`;
+      }
       try {
-        const items = await this.api<T[]>(pagePath);
+        const items = await this.api<T[]>(pagePath, {}, undefined, signal);
         allItems.push(...items);
         if (items.length < perPage) break;
       } catch (err) {
         core.warning(
           `Failed to fetch page ${page} for ${endpoint}: ${err instanceof Error ? err.message : err}`,
         );
+        if (options?.throwOnError) {
+          throw err;
+        }
         break;
       }
       page++;
@@ -294,15 +327,21 @@ export class GitLabAdapter implements PlatformAdapter {
   /**
    * Get issue comments.
    * @param number - number argument.
+   * @param options - Optional pagination options.
+   * @param options.throwOnError - When true, rethrow a pagination error instead of
+   * silently returning partial comments (default: false).
    * @returns Description.
    */
-  async getIssueComments(number: number): Promise<IssueComment[]> {
+  async getIssueComments(
+    number: number,
+    options?: { throwOnError?: boolean },
+  ): Promise<IssueComment[]> {
     const comments = await this.paginate<{
       id: number;
       author: { username: string };
       created_at: string;
       body: string;
-    }>(`/issues/${number}/notes`);
+    }>(`/issues/${number}/notes`, { throwOnError: options?.throwOnError });
 
     return comments.map((c) => ({
       id: c.id,
@@ -390,13 +429,19 @@ export class GitLabAdapter implements PlatformAdapter {
    * @param options.perPage
    * @param options.maxPages
    * @param options.direction - options.direction argument.
+   * @param signal - Optional AbortSignal to cancel the paginated fetch.
    * @returns Description.
    */
   async listReviewComments(
     mrNumber: number,
     options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
+    signal?: AbortSignal,
   ): Promise<Array<Record<string, unknown>>> {
-    return this.paginate<Record<string, unknown>>(`/merge_requests/${mrNumber}/notes`, options);
+    return this.paginate<Record<string, unknown>>(
+      `/merge_requests/${mrNumber}/notes`,
+      options,
+      signal,
+    );
   }
 
   /**
@@ -425,13 +470,15 @@ export class GitLabAdapter implements PlatformAdapter {
    * @param options.perPage
    * @param options.maxPages
    * @param options.direction - options.direction argument.
+   * @param signal - Optional AbortSignal to cancel the paginated fetch.
    * @returns Description.
    */
   async listComments(
     issueNumber: number,
     options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
+    signal?: AbortSignal,
   ): Promise<Array<Record<string, unknown>>> {
-    return this.paginate<Record<string, unknown>>(`/issues/${issueNumber}/notes`, options);
+    return this.paginate<Record<string, unknown>>(`/issues/${issueNumber}/notes`, options, signal);
   }
 
   /**
@@ -592,7 +639,7 @@ export class GitLabAdapter implements PlatformAdapter {
 
       const allComments = await this.paginate<{ id: number; body: string }>(
         `/issues/${issueNumber}/notes`,
-        { perPage: 100, maxPages: 5 },
+        { perPage: 100, maxPages: 5, throwOnError: true },
       );
 
       const existing = allComments.find((c) => c.body?.startsWith(marker));
@@ -666,18 +713,55 @@ export class GitLabAdapter implements PlatformAdapter {
    * Get review comment.
    * @param mrNumber
    * @param commentId - commentId argument.
+   * @param signal - Optional AbortSignal to cancel the request.
    * @returns Description.
    */
-  async getReviewComment(mrNumber: number, commentId: number): Promise<ReviewCommentDetail> {
-    return this.api<ReviewCommentDetail>(`/merge_requests/${mrNumber}/notes/${commentId}`);
+  async getReviewComment(
+    mrNumber: number,
+    commentId: number,
+    signal?: AbortSignal,
+  ): Promise<ReviewCommentDetail> {
+    return this.api<ReviewCommentDetail>(
+      `/merge_requests/${mrNumber}/notes/${commentId}`,
+      {},
+      undefined,
+      signal,
+    );
+  }
+
+  /**
+   * Get a single issue comment by ID.
+   * @param issueNumber - Issue/PR number the comment belongs to.
+   * @param commentId - Note ID.
+   * @param signal - Optional AbortSignal to cancel the request.
+   * @returns The raw issue comment (GitLab notes use author.username).
+   */
+  async getIssueComment(
+    issueNumber: number,
+    commentId: number,
+    signal?: AbortSignal,
+  ): Promise<{ id: number; body: string; user?: { login?: string } }> {
+    const note = await this.api<{ id: number; body: string; author?: { username?: string } }>(
+      `/issues/${issueNumber}/notes/${commentId}`,
+      {},
+      undefined,
+      signal,
+    );
+    return { id: note.id, body: note.body, user: { login: note.author?.username } };
   }
 
   /**
    * Get review comment thread.
    * @param _commentId - _commentId argument.
+   * @param _prNumber - Optional PR number (unused, thread reconstruction unsupported).
+   * @param _signal - Optional AbortSignal (unused).
    * @returns Description.
    */
-  async getReviewCommentThread(_commentId: number): Promise<ReviewCommentThread> {
+  async getReviewCommentThread(
+    _commentId: number,
+    _prNumber?: number,
+    _signal?: AbortSignal,
+  ): Promise<ReviewCommentThread> {
     core.warning('getReviewCommentThread not supported via GitLab REST API');
     return {
       comments: [],
