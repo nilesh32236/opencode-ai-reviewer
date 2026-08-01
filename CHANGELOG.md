@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.25] — 2026-08-01
+
+
+### Fixed
+
+- self-heal CI failure (attempt 1) [`lint-error` — eslint `jsdoc/require-param` **error** in the `ci` → `verify docstring coverage` step (`pnpm doc:check`).] (#310) (#310)
+
+### Changed
+
+- [Autofix] 78: Event bus system is defined but underutilized (#311) (#311)
+- fix(setup): pass authenticated token to setupOpenCode to prevent anonymous rate limits
+- fix(review): allow manual triggers to bypass skipLabels and load skipLabels from config
+- [Autofix] 79: The 'conversation' mode lacks conversation history and context window management (#309) (#309)
+- fix(workflow): add ref input and dynamic ref resolution for issue_comment triggers
+
+[v1.6.25]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.24...v1.6.25
+
 ## [v1.6.24] — 2026-08-01
 
 
