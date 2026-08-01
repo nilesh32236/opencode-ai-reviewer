@@ -5,7 +5,15 @@ import {
   validateRunChecksCommand,
 } from '@opencode-pr-agent/lib';
 
-const VALID_MODES: ActionMode[] = ['review', 'fix', 'audit', 'post', 'analyze', 'self-heal'];
+const VALID_MODES: ActionMode[] = [
+  'review',
+  'fix',
+  'audit',
+  'post',
+  'analyze',
+  'self-heal',
+  'setup',
+];
 
 export { DEFAULT_ALLOWLIST, validateRunChecksCommand };
 /**

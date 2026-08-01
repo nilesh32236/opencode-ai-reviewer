@@ -289,6 +289,33 @@ async function verifyDownloadedArchive(
 }
 
 /**
+ * Resolve the path to the OpenCode CLI binary, installing it if necessary.
+ * Prefers an existing PATH binary; otherwise downloads the requested version
+ * via `setupOpenCode`.
+ *
+ * @param version - Version to install when opencode is missing (defaults to 'latest').
+ * @returns The absolute path to the opencode binary.
+ */
+export async function resolveOpenCodePath(version = 'latest'): Promise<string> {
+  const existingPath = await io.which('opencode', false);
+  if (existingPath) {
+    opencodePath = existingPath;
+    return existingPath;
+  }
+  return setupOpenCode(version);
+}
+
+/**
+ * Return the resolved path to the OpenCode CLI binary, or null if opencode
+ * has not been located or installed yet.
+ *
+ * @returns The absolute path, or null when opencode is not set up.
+ */
+export function getOpenCodeBinaryPath(): string | null {
+  return opencodePath;
+}
+
+/**
  * Build the OpenCode CI config object.
  *
  * Based on https://opencode.ai/docs/permissions and https://opencode.ai/docs/config:

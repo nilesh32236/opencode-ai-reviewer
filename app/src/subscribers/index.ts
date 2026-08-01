@@ -17,6 +17,7 @@ import { createMetricsSubscriber } from './metrics.js';
 import { createQuestionAnsweredSubscriber } from './question-answered.js';
 import { createReplySubscriber } from './reply.js';
 import { createReviewSubscriber } from './review.js';
+import { createSetupSubscriber } from './setup.js';
 
 /**
  * Register all event subscribers with the event bus.
@@ -40,6 +41,7 @@ export function registerSubscribers(
     createReplySubscriber(),
     createExplainSubscriber(),
     createConversationSubscriber(learningStore),
+    createSetupSubscriber(),
   ];
 
   const feedbackSub = new FeedbackSubscriber(learningStore);

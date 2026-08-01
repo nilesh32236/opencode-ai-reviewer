@@ -9,6 +9,8 @@ describe('parseCommand', () => {
     expect(parseCommand('/analyze')?.command).toBe('analyze');
     expect(parseCommand('/analyse')?.command).toBe('analyze');
     expect(parseCommand('/explain')?.command).toBe('explain');
+    expect(parseCommand('/setup')?.command).toBe('setup');
+    expect(parseCommand('/oc setup')?.command).toBe('setup');
   });
 
   it('handles /oc prefix', () => {

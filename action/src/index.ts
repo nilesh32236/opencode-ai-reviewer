@@ -27,6 +27,7 @@ import { type ActionInputs, parseInputs } from './inputs.js';
 import { runPost } from './post.js';
 import { runReview } from './review.js';
 import { runSelfHeal } from './self-heal.js';
+import { runSetup } from './setup.js';
 import { sanitize } from './utils.js';
 
 function buildCacheKey(prefix: string, repo?: string, branch?: string): string {
@@ -318,6 +319,9 @@ async function run(): Promise<void> {
           break;
         case 'post':
           await runPost(inputs, gh, repo, token);
+          break;
+        case 'setup':
+          await runSetup(inputs, config, gh, repo, token);
           break;
         default:
           core.setFailed(`Unknown mode: ${inputs.mode}`);

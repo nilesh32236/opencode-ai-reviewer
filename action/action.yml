@@ -7,7 +7,7 @@ branding:
 
 inputs:
   mode:
-    description: 'Action mode: review, fix, audit, post, analyze, or self-heal'
+    description: 'Action mode: review, fix, audit, post, analyze, self-heal, or setup'
     required: true
     default: 'review'
 
@@ -191,6 +191,10 @@ outputs:
     description: 'URL of the created self-heal PR'
   verification_passed:
     description: 'Whether verification passed in the self-heal workflow'
+  setup_passed:
+    description: 'Whether the setup validation passed (setup mode)'
+  setup_report:
+    description: 'Markdown setup validation report (setup mode)'
 
 runs:
   using: 'node24'

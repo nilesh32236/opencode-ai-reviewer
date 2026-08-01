@@ -1479,6 +1479,35 @@ export class GitHubHelper implements PlatformAdapter {
   private currentUserLogin: string | null = null;
 
   /**
+   * Fetch the permissions the authenticated token has on the configured repository.
+   * Makes a `GET /repos/{owner}/{repo}` call and returns the `permissions` object
+   * (e.g. `{ admin, push, pull }`) that GitHub includes for authenticated requests.
+   *
+   * @returns A record of permission booleans, or null when the repository is not
+   * accessible with the current token (missing repo or 403/404). Throws on
+   * transport/network failures so callers can degrade gracefully.
+   * @throws Error when the GitHub API is unreachable (status 0).
+   */
+  async getRepositoryPermissions(): Promise<Record<string, boolean> | null> {
+    try {
+      const repo = await this.api<{ permissions?: Record<string, boolean> }>('/');
+      return repo.permissions ?? null;
+    } catch (err) {
+      const status =
+        err instanceof Error && 'status' in err ? (err as Error & { status: number }).status : 0;
+      if (status === 0) {
+        // Network/transport failure — rethrow so callers can distinguish this
+        // from a genuine "no access" (403/404) response.
+        throw err;
+      }
+      core.debug(
+        `Failed to fetch repository permissions for ${this.repo}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
+  }
+
+  /**
    * Get the authenticated user's login name.
    * Falls back to GITHUB_ACTOR env var or resolves via /user and /app API endpoints.
    *

@@ -7,6 +7,8 @@ export {
   configureGit,
   getGitStatus,
   setupWorkspaceDependencies,
+  resolveOpenCodePath,
+  getOpenCodeBinaryPath,
 } from './opencode.js';
 export { GitHubHelper } from './utils/github.js';
 export { GitLabAdapter } from './utils/gitlab-adapter.js';
@@ -40,6 +42,13 @@ export {
   listAuditCategories,
 } from './prompts/builder.js';
 export { ReviewEngine } from './engine.js';
+export { SetupEngine } from './setup/engine.js';
+export type {
+  SetupCheck,
+  SetupCheckStatus,
+  SetupResult,
+  SetupEngineOptions,
+} from './setup/types.js';
 export { EventBus } from './event-bus/bus.js';
 export type { SubscriberHealth } from './event-bus/bus.js';
 export { EventRouter } from './event-bus/router.js';

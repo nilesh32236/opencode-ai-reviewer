@@ -44,6 +44,7 @@ The following reusable workflows are shipped with the action:
 | `review.yml` | AI-powered PR review | `uses: nilesh32236/opencode-ai-reviewer/.github/workflows/review.yml@v1` |
 | `audit.yml` | Full codebase audit | `uses: nilesh32236/opencode-ai-reviewer/.github/workflows/audit.yml@v1` |
 | `autofix.yml` | Review → fix → auto-merge loop | `uses: nilesh32236/opencode-ai-reviewer/.github/workflows/autofix.yml@v1` |
+| `setup.yml` | Onboarding setup validation | `uses: nilesh32236/opencode-ai-reviewer/.github/workflows/setup.yml@v1` or run manually / comment `/setup` |
 
 All shipped workflows are production-ready with timeouts, concurrency guards, and zero-config defaults — the GitHub Token is auto-inherited via `secrets: inherit`. See [examples/basic/review.yml](examples/basic/review.yml) and [examples/advanced/ai-suite.yml](examples/advanced/ai-suite.yml) for ready-to-copy templates that compose these reusable workflows.
 
@@ -75,7 +76,19 @@ jobs:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
 ```
 
-The Action runs `review` mode by default. Other modes: `fix`, `audit`, `analyze`, `post`, `self-heal`.
+The Action runs `review` mode by default. Other modes: `fix`, `audit`, `analyze`, `post`, `self-heal`, `setup`.
+
+### Setup Wizard (`setup` mode)
+
+New to the reviewer? Run the setup validation before your first real review. It runs five pre-flight checks and posts a clear pass/fail report with actionable fixes:
+
+1. **Secrets** — required tokens are present (`GITHUB_TOKEN` plus a provider API key when a non-`opencode/*` model is configured).
+2. **Permissions** — the token/App has read/write access to the repository (issues & pull requests).
+3. **OpenCode CLI** — installed and at version `>= 1.1.1`.
+4. **Model connectivity** — a lightweight probe against the configured review model.
+5. **Config** — `.opencode-reviewer.yml` parses and referenced paths (audit prompts dir, target dirs, category files) exist.
+
+Trigger it manually via the Actions tab (run the `setup.yml` workflow with *workflow_dispatch*), or comment `/setup` on any issue. The report is posted as an issue comment and to the job summary; the `setup_passed` output lets downstream steps gate on the result. See [docs/setup-flow.md](docs/setup-flow.md) for details.
 
 ---
 
@@ -83,7 +96,7 @@ The Action runs `review` mode by default. Other modes: `fix`, `audit`, `analyze`
 
 | Input                    | Default                              | Description                                    |
 | ------------------------ | ------------------------------------ | ---------------------------------------------- |
-| `mode`                   | `review`                             | One of: `review`, `fix`, `audit`, `analyze`, `post`, `self-heal` |
+| `mode`                   | `review`                             | One of: `review`, `fix`, `audit`, `analyze`, `post`, `self-heal`, `setup` |
 | `github_token`           | _(required)_                         | GitHub token for API access                    |
 | `openai_api_key`         | —                                    | OpenAI API key — supply via `${{ secrets.OPENAI_API_KEY }}` |
 | `anthropic_api_key`      | —                                    | Anthropic API key — supply via `${{ secrets.ANTHROPIC_API_KEY }}` |
