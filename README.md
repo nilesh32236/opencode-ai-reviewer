@@ -189,6 +189,25 @@ fix:
 
 The `checkAllowlist` option controls which programs are allowed in `runChecks`. Commands using programs outside the allowlist are skipped with a warning. Default: `[pnpm, npm, yarn, node]`. This prevents shell injection from untrusted configuration sources — only add programs you trust.
 
+### Conversation Configuration
+
+Long-running `@mention` conversations are kept within the model's context window via a sliding window, summarization, and a hard turn limit:
+
+```yaml
+conversation:
+  maxTurns: 50                 # auto-close after N assistant turns (0 = unlimited)
+  slidingWindowSize: 20        # most-recent messages kept in full; older ones are summarized
+  contextTokenBudget: 32000    # estimated-token budget for the conversation prompt (~75% of the model limit)
+  summarizationModel: ~        # optional model override for summarization passes (defaults to conversation/review model)
+```
+
+- **`maxTurns`** — once reached, the conversation is auto-closed with a clear message instead of growing unbounded.
+- **`slidingWindowSize`** — messages older than this window are condensed into a summary snapshot rather than dropped.
+- **`contextTokenBudget`** — the conversation prompt is trimmed (recent-window size reduced) to stay within this budget, logs estimated token usage against it, and warns when approaching it. Align it with the context window of your `conversationModel`/`reviewModel` (e.g. raise it for 128K-token models).
+- **`summarizationModel`** — optional model used for the summarization passes that condense older messages; defaults to the conversation/review model.
+
+These values can also be set via environment variables (`CONVERSATION_MAX_TURNS`, `CONVERSATION_SLIDING_WINDOW_SIZE`, `CONVERSATION_CONTEXT_TOKEN_BUDGET`, `CONVERSATION_SUMMARIZATION_MODEL`) for the Probot app.
+
 ---
 
 ## MCP Server Configuration

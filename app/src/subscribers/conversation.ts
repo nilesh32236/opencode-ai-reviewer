@@ -1,4 +1,6 @@
-import { Logger } from '@opencode-pr-agent/lib';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { ConversationStateManager, Logger } from '@opencode-pr-agent/lib';
 import type { GitHubEvent, LearningStore, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
 import { handleConversation } from '../handlers/conversation.js';
 import { buildConfig } from '../utils/config.js';
@@ -7,6 +9,12 @@ import { getToken } from '../utils/token.js';
 
 /**
  * Create a subscriber that handles @mention conversations on PRs and issues.
+ *
+ * A long-lived `ConversationStateManager` is owned by the subscriber so tracked
+ * state (turn count, summary snapshots) survives across individual webhook
+ * turns — otherwise every @mention would start with empty state and the sliding
+ * window/summarization logic would never accumulate.
+ *
  * @param learningStore - The learning store instance for context and patterns.
  * @param rateLimiter - The shared rate limiter for cost control.
  * @returns A subscriber object for conversation handling.
@@ -16,6 +24,7 @@ export function createConversationSubscriber(
   rateLimiter: RateLimiter,
 ): Subscriber {
   const logger = new Logger('ConversationSubscriber');
+  const conversationStateManager = new ConversationStateManager();
   return {
     name: 'ConversationSubscriber',
     subscribedEvents: ['comment.created', 'review_comment.created'],
@@ -53,6 +62,15 @@ export function createConversationSubscriber(
         const reservation = await checkRateLimit(rateLimiter, event, 'interactive', 'conversation');
         if (!reservation) return;
 
+        // Each conversation gets its own scratch directory under the OS temp dir
+        // so concurrent webhooks (Probot handles them concurrently) never clobber
+        // each other's `.opencode/conversation-output.txt` / `conversation-summary.txt`.
+        const convWorkDir = path.join(
+          os.tmpdir(),
+          'opencode-conv',
+          `${(event.repo || '').replace('/', '-')}-${prNumber}-${commentId}`,
+        );
+
         await handleConversation(
           commentId,
           prNumber,
@@ -62,6 +80,8 @@ export function createConversationSubscriber(
           isReviewComment,
           learningStore,
           signal,
+          convWorkDir,
+          conversationStateManager,
         );
         await recordRateLimit(rateLimiter, event, 'interactive', 'conversation', reservation);
       } catch (err) {

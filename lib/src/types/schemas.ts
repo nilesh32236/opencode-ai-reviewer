@@ -379,6 +379,14 @@ export const PromptConfigSchema = z.object({
       commandReference: z.record(z.string()).optional(),
     })
     .optional(),
+  conversation: z
+    .object({
+      maxTurns: z.number().int().min(0).max(1000).optional(),
+      slidingWindowSize: z.number().int().min(1).max(500).optional(),
+      contextTokenBudget: z.number().int().min(1000).max(1000000).optional(),
+      summarizationModel: z.string().optional(),
+    })
+    .optional(),
   overrides: z.array(ConfigOverrideSchema).optional(),
   linters: z.array(LinterConfigSchema).optional(),
 });

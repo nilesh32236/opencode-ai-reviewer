@@ -364,6 +364,14 @@ export interface ConversationConfig {
   mentionHandle: string;
   /** Whether to enable conversation mode */
   enabled: boolean;
+  /** Max conversation turns (assistant responses) before auto-close. 0 = unlimited. */
+  maxTurns: number;
+  /** Number of most recent messages to keep in full when summarizing older context */
+  slidingWindowSize: number;
+  /** Token budget for the full conversation prompt (~75% of the model limit) */
+  contextTokenBudget: number;
+  /** Optional model override for summarization calls (defaults to conversation/review model) */
+  summarizationModel?: string;
 }
 
 /** Tier of a rate-limited action. */
@@ -408,6 +416,10 @@ export interface ConversationMessage {
 
 /** Context for an interactive conversation on a PR comment. */
 export interface ConversationContext {
+  /** Unique identifier for the conversation thread (repo+pr+file), when known */
+  threadId?: string;
+  /** Repository in "owner/repo" format (used to build collision-free fallback thread ids) */
+  repo?: string;
   /** File path the comment is attached to (for review comments) */
   filePath?: string;
   /** Diff hunk context around the comment */
@@ -418,6 +430,25 @@ export interface ConversationContext {
   prContext: PRContext;
   /** Detected intent of the user's request */
   intent: ConversationIntent;
+}
+
+/**
+ * Tracks state for an active conversation thread so long-running
+ * conversations can be summarized and auto-closed gracefully.
+ */
+export interface ConversationState {
+  /** Unique identifier for the conversation thread (repo+pr+thread-root-id) */
+  threadId: string;
+  /** Number of assistant responses posted so far */
+  turnCount: number;
+  /** Unix timestamp of the last message */
+  lastActivityTimestamp: number;
+  /** Previously generated summary of older messages (before sliding window) */
+  summarySnapshot?: string;
+  /** Number of older messages covered by the current summary snapshot */
+  summarizedCount?: number;
+  /** Whether the thread has already been auto-closed (avoid duplicate close messages) */
+  alreadyClosed?: boolean;
 }
 
 /** Configuration for audit behavior. */
@@ -999,6 +1030,17 @@ export interface PromptConfig {
     /** Reference for shell commands (name → command) */
     commandReference?: Record<string, string>;
   };
+  /** Conversation / @mention context-window management configuration */
+  conversation?: {
+    /** Max conversation turns before auto-close (0 = unlimited) */
+    maxTurns?: number;
+    /** Number of most recent messages kept in full when summarizing older context */
+    slidingWindowSize?: number;
+    /** Token budget for the full conversation prompt */
+    contextTokenBudget?: number;
+    /** Optional model override for summarization calls */
+    summarizationModel?: string;
+  };
   /** Per-path and per-branch config overrides */
   overrides?: ConfigOverride[];
   /** Linter configuration */
@@ -1006,6 +1048,16 @@ export interface PromptConfig {
 }
 
 // ─── Defaults ─────────────────────────────────────────────
+
+/** Default values for the conversation / @mention feature. */
+export const DEFAULT_CONVERSATION_CONFIG: ConversationConfig = {
+  mentionHandle: 'opencode-reviewer',
+  enabled: true,
+  maxTurns: 50,
+  slidingWindowSize: 20,
+  contextTokenBudget: 32000,
+};
+
 export const DEFAULT_CONFIG: AgentConfig = {
   platform: 'github',
   reviewModel: 'opencode/deepseek-v4-flash-free',
@@ -1088,8 +1140,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     },
   },
   conversation: {
-    mentionHandle: 'opencode-reviewer',
-    enabled: true,
+    ...DEFAULT_CONVERSATION_CONFIG,
   },
   linters: [],
   rateLimiting: {

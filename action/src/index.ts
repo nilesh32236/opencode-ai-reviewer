@@ -291,6 +291,21 @@ async function run(): Promise<void> {
             },
           }
         : DEFAULT_CONFIG.learning,
+      conversation: {
+        ...DEFAULT_CONFIG.conversation,
+        ...(loadedConfig?.conversation && {
+          maxTurns: loadedConfig.conversation.maxTurns ?? DEFAULT_CONFIG.conversation.maxTurns,
+          slidingWindowSize:
+            loadedConfig.conversation.slidingWindowSize ??
+            DEFAULT_CONFIG.conversation.slidingWindowSize,
+          contextTokenBudget:
+            loadedConfig.conversation.contextTokenBudget ??
+            DEFAULT_CONFIG.conversation.contextTokenBudget,
+          ...(loadedConfig.conversation.summarizationModel !== undefined && {
+            summarizationModel: loadedConfig.conversation.summarizationModel,
+          }),
+        }),
+      },
     };
 
     const learningStore = new LearningStore();
