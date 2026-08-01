@@ -10,8 +10,17 @@ export {
   resolveOpenCodePath,
   parseTokenUsage,
   parseTokenUsageDetailed,
+  checkHealth,
+  parseOpenCodeVersion,
+  isVersionCompatible,
+  MINIMUM_OPENCODE_VERSION,
 } from './opencode.js';
-export type { TokenUsageBreakdown } from './opencode.js';
+export type {
+  TokenUsageBreakdown,
+  OpenCodeHealth,
+  OpenCodeVersion,
+  CheckHealthOptions,
+} from './opencode.js';
 export { GitHubHelper } from './utils/github.js';
 export { GitLabAdapter } from './utils/gitlab-adapter.js';
 export type {

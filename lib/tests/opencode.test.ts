@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const {
   mockSpawn,
   mockExecFileSync,
+  mockExecFile,
   mockExecGetExecOutput,
   mockIoWhich,
   mockDownloadTool,
@@ -19,6 +20,7 @@ const {
 } = vi.hoisted(() => {
   const _mockSpawn = vi.fn();
   const _mockExecFileSync = vi.fn();
+  const _mockExecFile = vi.fn();
   const _mockExecGetExecOutput = vi.fn();
   const _mockIoWhich = vi.fn();
   const _mockDownloadTool = vi.fn().mockResolvedValue('/tmp/opencode.tar.gz');
@@ -36,6 +38,7 @@ const {
   return {
     mockSpawn: _mockSpawn,
     mockExecFileSync: _mockExecFileSync,
+    mockExecFile: _mockExecFile,
     mockExecGetExecOutput: _mockExecGetExecOutput,
     mockIoWhich: _mockIoWhich,
     mockDownloadTool: _mockDownloadTool,
@@ -55,6 +58,7 @@ const {
 vi.mock('child_process', () => ({
   spawn: mockSpawn,
   execFileSync: mockExecFileSync,
+  execFile: mockExecFile,
 }));
 
 vi.mock('@actions/core', () => ({
@@ -114,7 +118,51 @@ vi.mock('fs', async (importOriginal) => {
 // Mock global fetch for setupOpenCode's API call
 vi.stubGlobal('fetch', mockFetch);
 
-import { configureGit, getGitStatus, runOpenCode, setupOpenCode } from '../src/opencode.js';
+import {
+  checkHealth,
+  configureGit,
+  getGitStatus,
+  isVersionCompatible,
+  parseOpenCodeVersion,
+  resetOpenCodeState,
+  resolveOpenCodePath,
+  runOpenCode,
+  setupOpenCode,
+} from '../src/opencode.js';
+
+// Reset module-level OpenCode state (cached path / validation cache) between
+// tests so the validated-once pre-flight behavior is deterministic.
+beforeEach(() => {
+  resetOpenCodeState();
+});
+
+// The health check probes the binary via child_process.execFile (callback
+// style). These helpers simulate a successful version probe and a failing one.
+function mockVersionOutput(output: string): void {
+  mockExecFile.mockImplementation(
+    (
+      _file: string,
+      _args: string[],
+      _opts: unknown,
+      cb: (err: Error | null, stdout: string) => void,
+    ) => {
+      cb(null, output, '');
+    },
+  );
+}
+
+function mockVersionError(err: Error): void {
+  mockExecFile.mockImplementation(
+    (
+      _file: string,
+      _args: string[],
+      _opts: unknown,
+      cb: (err: Error | null, stdout: string) => void,
+    ) => {
+      cb(err, '', '');
+    },
+  );
+}
 
 function makeMockProcess() {
   const listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
@@ -144,15 +192,207 @@ function makeMockProcess() {
   };
 }
 
+describe('checkHealth()', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns available true and compatible true when the binary is recent enough', async () => {
+    mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+    mockVersionOutput('opencode v1.2.3\n');
+
+    const health = await checkHealth();
+
+    expect(health.available).toBe(true);
+    expect(health.compatible).toBe(true);
+    expect(health.version).toEqual({
+      raw: 'v1.2.3',
+      major: 1,
+      minor: 2,
+      patch: 3,
+      prerelease: null,
+    });
+    expect(health.message).toContain('compatible');
+  });
+
+  it('returns available false when the binary is missing', async () => {
+    mockIoWhich.mockResolvedValue(null);
+
+    const health = await checkHealth();
+
+    expect(health.available).toBe(false);
+    expect(health.compatible).toBe(false);
+    expect(health.version).toBeNull();
+    expect(health.message).toContain('npm install -g opencode-ai');
+  });
+
+  it('returns compatible false when the version is too old', async () => {
+    mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+    mockVersionOutput('opencode v1.0.0\n');
+
+    const health = await checkHealth();
+
+    expect(health.available).toBe(true);
+    expect(health.compatible).toBe(false);
+    expect(health.message).toContain('1.1.1');
+    expect(health.message).toContain('npm install -g opencode-ai@latest');
+  });
+
+  it('returns compatible false when the version output cannot be parsed', async () => {
+    mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+    mockVersionOutput('segmentation fault\n');
+
+    const health = await checkHealth();
+
+    expect(health.available).toBe(true);
+    expect(health.compatible).toBe(false);
+    expect(health.message).toContain('could not be determined');
+  });
+
+  it('returns compatible false when the version check throws', async () => {
+    mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+    mockVersionError(new Error('ETIMEDOUT'));
+
+    const health = await checkHealth();
+
+    expect(health.available).toBe(true);
+    expect(health.compatible).toBe(false);
+    expect(health.message).toContain('ETIMEDOUT');
+  });
+
+  it('reports an unexecutable binary as not available', async () => {
+    mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+    const err = new Error('spawn ENOENT') as Error & { code?: string };
+    err.code = 'ENOENT';
+    mockVersionError(err);
+
+    const health = await checkHealth();
+
+    expect(health.available).toBe(false);
+    expect(health.compatible).toBe(false);
+    expect(health.version).toBeNull();
+    expect(health.message).toContain('could not be executed');
+  });
+
+  it('honors a custom minimum version', async () => {
+    mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+    mockVersionOutput('opencode v1.0.0\n');
+
+    const health = await checkHealth({ minimumVersion: '0.9.0' });
+
+    expect(health.available).toBe(true);
+    expect(health.compatible).toBe(true);
+  });
+
+  it('uses a custom upgrade hint when provided', async () => {
+    mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+    mockVersionOutput('opencode v1.0.0\n');
+
+    const health = await checkHealth({
+      upgradeHint: 'Set opencode_version to a newer tag and re-run',
+    });
+
+    expect(health.compatible).toBe(false);
+    expect(health.message).toContain('Set opencode_version to a newer tag and re-run');
+    expect(health.message).not.toContain('npm install -g opencode-ai@latest');
+  });
+});
+
+describe('parseOpenCodeVersion() and isVersionCompatible()', () => {
+  it('parses valid version strings correctly', () => {
+    const v = parseOpenCodeVersion('opencode v1.2.3\n');
+    expect(v).toEqual({ raw: 'v1.2.3', major: 1, minor: 2, patch: 3, prerelease: null });
+  });
+
+  it('parses versions without a leading v prefix', () => {
+    const v = parseOpenCodeVersion('1.1.1');
+    expect(v?.major).toBe(1);
+    expect(v?.minor).toBe(1);
+    expect(v?.patch).toBe(1);
+  });
+
+  it('parses pre-release versions', () => {
+    const v = parseOpenCodeVersion('opencode v1.1.1-rc.1');
+    expect(v).toEqual({ raw: 'v1.1.1-rc.1', major: 1, minor: 1, patch: 1, prerelease: 'rc.1' });
+  });
+
+  it('returns null for garbage input', () => {
+    expect(parseOpenCodeVersion('')).toBeNull();
+    expect(parseOpenCodeVersion('not a version')).toBeNull();
+    expect(parseOpenCodeVersion('opencode: unknown command')).toBeNull();
+  });
+
+  it('does not match version numbers embedded in paths or stack traces', () => {
+    expect(
+      parseOpenCodeVersion('TypeError: x\n    at /opt/app/node_modules/1.2.3/dist/cli.js:10:5'),
+    ).toBeNull();
+    expect(parseOpenCodeVersion('dl opencode 1.2.3.dmg')).toBeNull();
+  });
+
+  it('isVersionCompatible compares against the default minimum', () => {
+    const mk = (
+      raw: string,
+      major: number,
+      minor: number,
+      patch: number,
+      prerelease: string | null = null,
+    ) => ({
+      raw,
+      major,
+      minor,
+      patch,
+      prerelease,
+    });
+    expect(isVersionCompatible(mk('v1.2.3', 1, 2, 3))).toBe(true);
+    expect(isVersionCompatible(mk('v1.1.0', 1, 1, 0))).toBe(false);
+    expect(isVersionCompatible(mk('v2.0.0', 2, 0, 0))).toBe(true);
+    // Pre-release 1.1.1-rc.1 sorts below the 1.1.1 release
+    expect(isVersionCompatible(mk('v1.1.1-rc.1', 1, 1, 1, 'rc.1'))).toBe(false);
+    expect(isVersionCompatible(mk('v1.2.0', 1, 2, 0), '1.0.0')).toBe(true);
+    // Numeric pre-release segments compare numerically (rc.10 > rc.9)
+    expect(isVersionCompatible(mk('v1.2.0-rc.10', 1, 2, 0, 'rc.10'), '1.2.0-rc.9')).toBe(true);
+    expect(isVersionCompatible(mk('v1.2.0-rc.9', 1, 2, 0, 'rc.9'), '1.2.0-rc.10')).toBe(false);
+    expect(isVersionCompatible(mk('v1.2.0-rc.2', 1, 2, 0, 'rc.2'), '1.2.0-rc.10')).toBe(false);
+  });
+});
+
+describe('setupOpenCode() version validation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('throws a clear error when the existing binary version is too old', async () => {
+    mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+    mockVersionOutput('opencode v1.0.0\n');
+
+    await expect(setupOpenCode()).rejects.toThrow(/1\.1\.1/);
+  });
+
+  it('throws a clear error when the existing binary version cannot be parsed', async () => {
+    mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+    mockVersionOutput('???\n');
+
+    await expect(setupOpenCode()).rejects.toThrow(/version could not be determined/);
+  });
+
+  it('throws a clear error when an explicitly pinned download version is below the minimum', async () => {
+    mockIoWhich.mockResolvedValue(null);
+
+    await expect(setupOpenCode('v1.0.0')).rejects.toThrow(/below the minimum/);
+    expect(mockDownloadTool).not.toHaveBeenCalled();
+  });
+});
+
 describe('runOpenCode()', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+    mockVersionOutput('opencode v1.2.3\n');
     mockExecGetExecOutput.mockResolvedValue({ stdout: 'opencode v1.0.0\n', stderr: '' });
     mockFetch.mockResolvedValue(
       new Response(
         JSON.stringify({
-          tag_name: 'v1.0.0',
+          tag_name: 'v1.2.0',
           assets: [
             {
               name: 'opencode-linux-x64.tar.gz',
@@ -163,6 +403,39 @@ describe('runOpenCode()', () => {
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       ),
     );
+  });
+
+  it('rejects with the health message when the installed binary is too old', async () => {
+    mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+    mockVersionOutput('opencode v1.0.0\n');
+
+    await expect(runOpenCode('test', { model: 'gpt-4' })).rejects.toThrow(/1\.1\.1/);
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
+
+  it('rejects via the pre-flight check when a pre-set PATH binary is too old', async () => {
+    mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+    mockVersionOutput('opencode v1.0.0\n');
+
+    await resolveOpenCodePath();
+
+    await expect(runOpenCode('test', { model: 'gpt-4' })).rejects.toThrow(/1\.1\.1/);
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
+
+  it('probes the binary only once when setupOpenCode validated it in the same call', async () => {
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const resultPromise = runOpenCode('test', { model: 'gpt-4' });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    proc.emitClose(0);
+    const result = await resultPromise;
+
+    expect(result.success).toBe(true);
+    // setupOpenCode ran the health check; runOpenCode's redundant probe was skipped.
+    expect(mockExecFile).toHaveBeenCalledTimes(1);
   });
 
   it('returns success on normal completion with exit code 0', async () => {
@@ -345,6 +618,21 @@ describe('runOpenCode()', () => {
 describe('setupOpenCode()', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockVersionOutput('opencode v1.2.3\n');
+    mockFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          tag_name: 'v1.2.0',
+          assets: [
+            {
+              name: 'opencode-linux-x64.tar.gz',
+              browser_download_url: 'https://example.com/opencode-linux-x64.tar.gz',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
   });
 
   it('returns existing path if opencode is already installed', async () => {
@@ -357,7 +645,7 @@ describe('setupOpenCode()', () => {
 
   it('uses cached binary when checksum matches', async () => {
     mockIoWhich.mockResolvedValue(null);
-    mockToolFind.mockReturnValue('/cache/opencode/1.0.0/linux-x64');
+    mockToolFind.mockReturnValue('/cache/opencode/1.2.0/linux-x64');
     mockComputeSha256.mockResolvedValue('abc123');
 
     const fsModule = await import('fs');
@@ -366,15 +654,15 @@ describe('setupOpenCode()', () => {
     );
     (fsModule.readFileSync as ReturnType<typeof vi.fn>).mockReturnValue('abc123\n');
 
-    const result = await setupOpenCode('v1.0.0');
+    const result = await setupOpenCode('v1.2.0');
 
-    expect(result).toBe('/cache/opencode/1.0.0/linux-x64/opencode');
+    expect(result).toBe('/cache/opencode/1.2.0/linux-x64/opencode');
     expect(mockDownloadTool).not.toHaveBeenCalled();
   });
 
   it('re-downloads when cached binary checksum mismatches', async () => {
     mockIoWhich.mockResolvedValue(null);
-    mockToolFind.mockReturnValue('/cache/opencode/1.0.0/linux-x64');
+    mockToolFind.mockReturnValue('/cache/opencode/1.2.0/linux-x64');
     mockComputeSha256.mockResolvedValue('def456');
 
     const fsModule = await import('fs');
@@ -386,7 +674,7 @@ describe('setupOpenCode()', () => {
     mockFetch.mockResolvedValue(
       new Response(
         JSON.stringify({
-          tag_name: 'v1.0.0',
+          tag_name: 'v1.2.0',
           assets: [
             {
               name: 'opencode-linux-x64.tar.gz',
@@ -404,7 +692,7 @@ describe('setupOpenCode()', () => {
     mockGetKnownChecksum.mockReturnValue(null);
     mockComputeSha256.mockResolvedValue('bin-checksum-123');
 
-    const result = await setupOpenCode('v1.0.0');
+    const result = await setupOpenCode('v1.2.0');
 
     expect(result).toBe('/tmp/opencode-cached/opencode');
     expect(mockDownloadTool).toHaveBeenCalled();
@@ -412,7 +700,7 @@ describe('setupOpenCode()', () => {
 
   it('re-downloads when cached binary has no checksum file', async () => {
     mockIoWhich.mockResolvedValue(null);
-    mockToolFind.mockReturnValue('/cache/opencode/1.0.0/linux-x64');
+    mockToolFind.mockReturnValue('/cache/opencode/1.2.0/linux-x64');
 
     const fsModule = await import('fs');
     (fsModule.existsSync as ReturnType<typeof vi.fn>).mockReturnValue(false);
@@ -420,7 +708,7 @@ describe('setupOpenCode()', () => {
     mockFetch.mockResolvedValue(
       new Response(
         JSON.stringify({
-          tag_name: 'v1.0.0',
+          tag_name: 'v1.2.0',
           assets: [
             {
               name: 'opencode-linux-x64.tar.gz',
@@ -435,7 +723,7 @@ describe('setupOpenCode()', () => {
     mockCacheDir.mockResolvedValue('/tmp/opencode-cached');
     mockComputeSha256.mockResolvedValue('bin-checksum-123');
 
-    const result = await setupOpenCode('v1.0.0');
+    const result = await setupOpenCode('v1.2.0');
 
     expect(result).toBe('/tmp/opencode-cached/opencode');
     expect(mockDownloadTool).toHaveBeenCalled();
@@ -444,7 +732,7 @@ describe('setupOpenCode()', () => {
   it('degrades to an anonymous lookup when the authenticated release request returns 403', async () => {
     mockIoWhich.mockResolvedValue(null);
     const releaseBody = {
-      tag_name: 'v1.0.0',
+      tag_name: 'v1.2.0',
       assets: [
         {
           name: 'opencode-linux-x64.tar.gz',
@@ -467,7 +755,7 @@ describe('setupOpenCode()', () => {
     const prevToken = process.env.GITHUB_TOKEN;
     process.env.GITHUB_TOKEN = 'some-token';
     try {
-      const result = await setupOpenCode('v1.0.0');
+      const result = await setupOpenCode('v1.2.0');
       expect(result).toBe('/tmp/opencode-cached/opencode');
     } finally {
       if (prevToken === undefined) {
@@ -489,7 +777,7 @@ describe('setupOpenCode()', () => {
     mockFetch.mockResolvedValue(
       new Response(
         JSON.stringify({
-          tag_name: 'v1.0.0',
+          tag_name: 'v1.2.0',
           assets: [
             {
               name: 'opencode-linux-x64.tar.gz',
@@ -512,7 +800,7 @@ describe('setupOpenCode()', () => {
     mockVerifyChecksum.mockResolvedValue(true);
     mockComputeSha256.mockResolvedValue('stored-checksum');
 
-    const result = await setupOpenCode('v1.0.0');
+    const result = await setupOpenCode('v1.2.0');
 
     expect(result).toBe('/tmp/opencode-cached/opencode');
     expect(mockDownloadTool).toHaveBeenCalledTimes(2);
@@ -524,7 +812,7 @@ describe('setupOpenCode()', () => {
     mockFetch.mockResolvedValue(
       new Response(
         JSON.stringify({
-          tag_name: 'v1.0.0',
+          tag_name: 'v1.2.0',
           assets: [
             {
               name: 'opencode-linux-x64.tar.gz',
@@ -545,7 +833,7 @@ describe('setupOpenCode()', () => {
     mockParseChecksumFile.mockReturnValue('expected-hash-value');
     mockVerifyChecksum.mockRejectedValue(new Error('Checksum mismatch'));
 
-    await expect(setupOpenCode('v1.0.0')).rejects.toThrow('Checksum mismatch');
+    await expect(setupOpenCode('v1.2.0')).rejects.toThrow('Checksum mismatch');
   });
 
   it('falls back to known checksum when no release checksum asset', async () => {
@@ -553,7 +841,7 @@ describe('setupOpenCode()', () => {
     mockFetch.mockResolvedValue(
       new Response(
         JSON.stringify({
-          tag_name: 'v1.0.0',
+          tag_name: 'v1.2.0',
           assets: [
             {
               name: 'opencode-linux-x64.tar.gz',
@@ -572,7 +860,7 @@ describe('setupOpenCode()', () => {
     mockVerifyChecksum.mockResolvedValue(true);
     mockComputeSha256.mockResolvedValue('stored-checksum');
 
-    const result = await setupOpenCode('v1.0.0');
+    const result = await setupOpenCode('v1.2.0');
 
     expect(result).toBe('/tmp/opencode-cached/opencode');
     expect(mockGetKnownChecksum).toHaveBeenCalled();
@@ -584,7 +872,7 @@ describe('setupOpenCode()', () => {
     mockFetch.mockResolvedValue(
       new Response(
         JSON.stringify({
-          tag_name: 'v1.0.0',
+          tag_name: 'v1.2.0',
           assets: [
             {
               name: 'opencode-linux-x64.tar.gz',
@@ -602,10 +890,38 @@ describe('setupOpenCode()', () => {
     mockGetKnownChecksum.mockReturnValue(null);
     mockComputeSha256.mockResolvedValue('stored-checksum');
 
-    const result = await setupOpenCode('v1.0.0');
+    const result = await setupOpenCode('v1.2.0');
 
     expect(result).toBe('/tmp/opencode-cached/opencode');
     expect(mockDownloadTool).toHaveBeenCalled();
+  });
+
+  it('throws after a fresh download when the binary reports a version below the minimum', async () => {
+    mockIoWhich.mockResolvedValue(null);
+    mockToolFind.mockReturnValue('');
+    mockDownloadTool.mockResolvedValue('/tmp/opencode.tar.gz');
+    mockCacheDir.mockResolvedValue('/tmp/opencode-cached');
+    mockComputeSha256.mockResolvedValue('bin-checksum-123');
+    mockVersionOutput('opencode v1.0.0\n');
+
+    await expect(setupOpenCode('v1.2.0')).rejects.toThrow(/below the minimum/);
+    expect(mockDownloadTool).toHaveBeenCalled();
+  });
+
+  it('throws for a cached binary that reports a version below the minimum', async () => {
+    mockIoWhich.mockResolvedValue(null);
+    mockToolFind.mockReturnValue('/cache/opencode/1.2.0/linux-x64');
+    mockComputeSha256.mockResolvedValue('abc123');
+
+    const fsModule = await import('fs');
+    (fsModule.existsSync as ReturnType<typeof vi.fn>).mockImplementation(
+      (p: string) => p.endsWith('.checksum') || p.endsWith('opencode'),
+    );
+    (fsModule.readFileSync as ReturnType<typeof vi.fn>).mockReturnValue('abc123\n');
+    mockVersionOutput('opencode v1.0.0\n');
+
+    await expect(setupOpenCode('v1.2.0')).rejects.toThrow(/below the minimum/);
+    expect(mockDownloadTool).not.toHaveBeenCalled();
   });
 });
 

@@ -3,7 +3,6 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as core from '@actions/core';
-import * as exec from '@actions/exec';
 import * as io from '@actions/io';
 import * as tc from '@actions/tool-cache';
 import {
@@ -14,10 +13,35 @@ import {
   verifyChecksum,
 } from './utils/checksum.js';
 import { withRetry } from './utils/retry.js';
+import {
+  MINIMUM_OPENCODE_VERSION,
+  UNPARSEABLE_VERSION,
+  compareVersions,
+  formatVersion,
+  parseVersion,
+} from './utils/version.js';
+
+export { MINIMUM_OPENCODE_VERSION } from './utils/version.js';
+
+/** Default timeout for the `opencode --version` health probe, in milliseconds. */
+export const DEFAULT_HEALTH_TIMEOUT_MS = 5_000;
 
 let opencodePath: string | null = null;
+/** Path of the opencode binary most recently confirmed compatible by checkHealth(). */
+let validatedOpenCodePath: string | null = null;
 let cachedCIConfig: string | null = null;
 const askPassDirs: string[] = [];
+
+/**
+ * Reset the module-level OpenCode state (cached binary path, validation cache,
+ * and CI config cache). Used by tests and by long-lived processes that re-run
+ * setup against a changed environment.
+ */
+export function resetOpenCodeState(): void {
+  opencodePath = null;
+  validatedOpenCodePath = null;
+  cachedCIConfig = null;
+}
 
 function cleanupAskPassDirs(): void {
   for (const dir of askPassDirs) {
@@ -38,6 +62,202 @@ process.on('SIGTERM', () => {
   cleanupAskPassDirs();
   process.exit(15);
 });
+
+/**
+ * Parsed OpenCode CLI version, with the raw text matched from `--version` output.
+ */
+export interface OpenCodeVersion {
+  raw: string;
+  major: number;
+  minor: number;
+  patch: number;
+  /** Pre-release identifier (e.g. "rc.1") or null for a release version. */
+  prerelease: string | null;
+}
+
+/**
+ * Parse an OpenCode CLI version from `opencode --version` output.
+ * Handles output like "opencode v1.1.1", "1.1.1-rc.1", or plain "v1.2.3".
+ *
+ * The version token must be standalone (bounded by whitespace or the start/end
+ * of the output) so version-like numbers embedded in error text, stack traces,
+ * or file paths are not accepted as the CLI version.
+ * @param output - The raw output from `opencode --version`.
+ * @returns A parsed version, or null when no standalone semver token is found.
+ */
+export function parseOpenCodeVersion(output: string): OpenCodeVersion | null {
+  const match = output.match(
+    /(?:^|\s)(v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?=\s|$)/,
+  );
+  if (!match) return null;
+  const raw = match[1];
+  const parsed = parseVersion(raw);
+  if (!parsed) return null;
+  return {
+    raw,
+    major: parsed.major,
+    minor: parsed.minor,
+    patch: parsed.patch,
+    prerelease: parsed.prerelease,
+  };
+}
+
+/**
+ * Compare a parsed OpenCode version against a minimum semver string.
+ * @param version - The parsed OpenCode version.
+ * @param minimum - Minimum acceptable version (default: {@link MINIMUM_OPENCODE_VERSION}).
+ * @returns True when the version is at or above the minimum.
+ */
+export function isVersionCompatible(
+  version: OpenCodeVersion,
+  minimum: string = MINIMUM_OPENCODE_VERSION,
+): boolean {
+  const cmp = compareVersions(formatVersion(version), minimum);
+  if (cmp === UNPARSEABLE_VERSION) return false;
+  return cmp >= 0;
+}
+
+/**
+ * Structured health status of the OpenCode CLI integration.
+ */
+export interface OpenCodeHealth {
+  /** Whether an opencode binary is present and executable. */
+  available: boolean;
+  /** Parsed version from `opencode --version`, or null when unavailable/unparseable. */
+  version: OpenCodeVersion | null;
+  /** Whether the installed version meets the minimum supported version. */
+  compatible: boolean;
+  /** Human-readable status with install/upgrade instructions when needed. */
+  message: string;
+}
+
+/**
+ * Options for {@link checkHealth}.
+ */
+export interface CheckHealthOptions {
+  /** Absolute path to the opencode binary. Defaults to the cached path or a PATH lookup. */
+  binPath?: string;
+  /** Minimum acceptable version (default: {@link MINIMUM_OPENCODE_VERSION}). */
+  minimumVersion?: string;
+  /** Timeout for the `--version` probe in milliseconds (default: 5000). */
+  timeoutMs?: number;
+  /**
+   * Optional replacement for the generic npm upgrade hint shown when the
+   * installed version is below the minimum. Used by the download/cached setup
+   * paths, where a global npm upgrade would not fix the installed binary.
+   */
+  upgradeHint?: string;
+}
+
+const INSTALL_MESSAGE =
+  'OpenCode CLI not found. Install it via: npm install -g opencode-ai\n' +
+  'Or download from: https://github.com/anomalyco/opencode/releases';
+
+/**
+ * Run `opencode --version` asynchronously, bounded by a timeout.
+ * The probe is deliberately non-blocking (unlike execFileSync) so a slow or
+ * hung binary cannot stall the event loop for concurrent batch processing.
+ * @param binPath - Absolute path to the opencode binary.
+ * @param timeoutMs - Timeout before the probe is killed (SIGKILL).
+ * @returns The raw stdout of the version command.
+ * @throws The underlying execFile error (ENOENT, ETIMEDOUT, etc.).
+ */
+function execVersion(binPath: string, timeoutMs: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    cp.execFile(
+      binPath,
+      ['--version'],
+      {
+        encoding: 'utf-8',
+        timeout: timeoutMs,
+        killSignal: 'SIGKILL',
+        maxBuffer: 1024 * 1024,
+      },
+      (err, stdout) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve(stdout);
+      },
+    );
+  });
+}
+
+/**
+ * Pre-flight health check for the OpenCode CLI integration.
+ * Runs `opencode --version` with a short timeout and verifies the installed
+ * version meets the minimum supported version. External consumers can call
+ * this before issuing commands to surface a clear, actionable error instead of
+ * an opaque ENOENT/parse failure.
+ *
+ * The probe is asynchronous (never blocks the event loop) and bounded by
+ * `timeoutMs`. On success the checked binary path is recorded so that
+ * {@link runOpenCode} can skip the redundant probe for an already-validated
+ * binary.
+ * @param options - Health check options.
+ * @returns A structured health result.
+ */
+export async function checkHealth(options: CheckHealthOptions = {}): Promise<OpenCodeHealth> {
+  const minimumVersion = options.minimumVersion ?? MINIMUM_OPENCODE_VERSION;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS;
+  const binPath = options.binPath ?? opencodePath ?? (await io.which('opencode', false));
+  if (!binPath) {
+    return {
+      available: false,
+      version: null,
+      compatible: false,
+      message: INSTALL_MESSAGE,
+    };
+  }
+  try {
+    const stdout = await execVersion(binPath, timeoutMs);
+    const version = parseOpenCodeVersion(stdout || '');
+    if (!version) {
+      return {
+        available: true,
+        version: null,
+        compatible: false,
+        message: `OpenCode binary found at ${binPath} but version could not be determined from output: ${(stdout || '').trim()}`,
+      };
+    }
+    const compatible = isVersionCompatible(version, minimumVersion);
+    if (compatible) {
+      validatedOpenCodePath = binPath;
+      return {
+        available: true,
+        version,
+        compatible: true,
+        message: `OpenCode ${version.raw} is available and compatible`,
+      };
+    }
+    const hint = options.upgradeHint ?? 'Upgrade with: npm install -g opencode-ai@latest';
+    return {
+      available: true,
+      version,
+      compatible: false,
+      message: `OpenCode ${version.raw} is installed but version ${minimumVersion}+ is required.\n${hint}`,
+    };
+  } catch (err) {
+    const code = (err as Error & { code?: string }).code;
+    if (code === 'ENOENT' || code === 'EACCES' || code === 'EPERM') {
+      return {
+        available: false,
+        version: null,
+        compatible: false,
+        message: `OpenCode binary at ${binPath} could not be executed (${code}). Reinstall it via: npm install -g opencode-ai, or download from: https://github.com/anomalyco/opencode/releases`,
+      };
+    }
+    return {
+      available: true,
+      version: null,
+      compatible: false,
+      message: `OpenCode binary found at ${binPath} but version check failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    };
+  }
+}
 
 function detectArch(): string {
   const platform = os.platform();
@@ -99,14 +319,42 @@ async function fetchWithRetry(url: string, retries = 3, token?: string): Promise
  * Checks PATH first; if not found, downloads and caches the specified version.
  * @param version - Version tag to download (defaults to 'latest').
  * @param token - Optional GitHub token used for the authenticated release lookup.
+ * @param minimumVersion - Minimum acceptable installed version (default: {@link MINIMUM_OPENCODE_VERSION}).
  * @returns A Promise resolving to the path of the OpenCode binary.
  */
-export async function setupOpenCode(version = 'latest', token?: string): Promise<string> {
+export async function setupOpenCode(
+  version = 'latest',
+  token?: string,
+  minimumVersion: string = MINIMUM_OPENCODE_VERSION,
+): Promise<string> {
   const existingPath = await io.which('opencode', false);
   if (existingPath) {
     core.info(`OpenCode already available at: ${existingPath}`);
     opencodePath = existingPath;
+    const health = await checkHealth({ binPath: existingPath, minimumVersion });
+    if (!health.compatible) {
+      throw new Error(health.message);
+    }
     return existingPath;
+  }
+
+  // Fail fast for explicitly pinned versions below the minimum: the downloaded
+  // binary would immediately fail the post-install health check, so surface a
+  // clear error before spending time and bandwidth on a doomed download.
+  const requestedVersion = version !== 'latest' ? parseVersion(version) : null;
+  if (requestedVersion) {
+    const cmp = compareVersions(formatVersion(requestedVersion), minimumVersion);
+    if (cmp === UNPARSEABLE_VERSION) {
+      throw new Error(
+        `minimumOpenCodeVersion "${minimumVersion}" is not a valid semantic version — set it to a value like "${MINIMUM_OPENCODE_VERSION}"`,
+      );
+    }
+    if (cmp < 0) {
+      throw new Error(
+        `Requested OpenCode version ${version} is below the minimum supported version ${minimumVersion}. ` +
+          `Set opencode_version to a tag >= ${minimumVersion} and re-run.`,
+      );
+    }
   }
 
   const arch = detectArch();
@@ -175,6 +423,14 @@ export async function setupOpenCode(version = 'latest', token?: string): Promise
         if (platform !== 'win32') fs.chmodSync(cachedBinPath, 0o755);
         core.addPath(cachedToolDir);
         opencodePath = cachedBinPath;
+        const health = await checkHealth({
+          binPath: cachedBinPath,
+          minimumVersion,
+          upgradeHint: `The cached binary for requested tag ${version} is below the minimum. Set opencode_version to a tag >= ${minimumVersion} and re-run, or install the CLI via: npm install -g opencode-ai`,
+        });
+        if (!health.compatible) {
+          throw new Error(health.message);
+        }
         return cachedBinPath;
       }
       core.info('Cached binary checksum mismatch, re-downloading...');
@@ -236,14 +492,16 @@ export async function setupOpenCode(version = 'latest', token?: string): Promise
 
   core.addPath(cachedPath);
 
-  try {
-    const output = await exec.getExecOutput(binPath, ['--version']);
-    core.info(`OpenCode installed: ${output.stdout.trim()}`);
-  } catch {
-    core.warning('OpenCode installed but version check failed');
-  }
-
   opencodePath = binPath;
+  const health = await checkHealth({
+    binPath,
+    minimumVersion,
+    upgradeHint: `The downloaded binary for requested tag ${version} reports a version below the minimum. Set opencode_version to a tag >= ${minimumVersion} and re-run, or install the CLI via: npm install -g opencode-ai`,
+  });
+  if (!health.compatible) {
+    throw new Error(health.message);
+  }
+  core.info(`OpenCode installed: ${health.version?.raw ?? binPath}`);
   return binPath;
 }
 
@@ -288,15 +546,19 @@ async function verifyDownloadedArchive(
  * via `setupOpenCode`.
  *
  * @param version - Version to install when opencode is missing (defaults to 'latest').
+ * @param minimumVersion - Minimum acceptable installed version (default: {@link MINIMUM_OPENCODE_VERSION}).
  * @returns The absolute path to the opencode binary.
  */
-export async function resolveOpenCodePath(version = 'latest'): Promise<string> {
+export async function resolveOpenCodePath(
+  version = 'latest',
+  minimumVersion: string = MINIMUM_OPENCODE_VERSION,
+): Promise<string> {
   const existingPath = await io.which('opencode', false);
   if (existingPath) {
     opencodePath = existingPath;
     return existingPath;
   }
-  return setupOpenCode(version);
+  return setupOpenCode(version, undefined, minimumVersion);
 }
 
 /**
@@ -475,6 +737,17 @@ export async function runOpenCode(
   completionTokens?: number;
 }> {
   const binaryPath = opencodePath || (await setupOpenCode());
+  // setupOpenCode() already validates (and throws on) an incompatible binary in
+  // the same call, so only probe again when the binary was pre-set without
+  // validation (e.g. a PATH binary resolved by resolveOpenCodePath, or an
+  // externally pre-set opencodePath in a long-lived process). This avoids a
+  // redundant `opencode --version` spawn on the fresh-setup hot path.
+  if (binaryPath !== validatedOpenCodePath) {
+    const health = await checkHealth({ binPath: binaryPath });
+    if (!health.compatible) {
+      throw new Error(health.message);
+    }
+  }
   const startTime = Date.now();
   const cwd = options.workingDirectory || process.cwd();
   if (!fs.existsSync(cwd)) {
