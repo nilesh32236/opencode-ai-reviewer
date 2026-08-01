@@ -147,7 +147,7 @@ async function run(): Promise<void> {
     }
 
     if (inputs.mode !== 'setup') {
-      await setupOpenCode(inputs.opencodeVersion);
+      await setupOpenCode(inputs.opencodeVersion, token);
       await setupWorkspaceDependencies(process.cwd());
     }
 
