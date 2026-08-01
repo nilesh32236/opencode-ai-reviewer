@@ -57,6 +57,9 @@ export interface ReviewThreadResult {
  * @param commentId - Triggering review comment ID.
  * @param options - Window bounds (perPage/maxPages/direction). Callers choose
  * their own bounds; 'desc' keeps freshly-posted triggers in-window on busy PRs.
+ * @param options.perPage - Items per page.
+ * @param options.maxPages - Maximum pages to fetch.
+ * @param options.direction - Sort direction.
  * @param signal - Optional AbortSignal to cancel the underlying API requests.
  * @returns The reconstructed ancestor chain and full subtree.
  */

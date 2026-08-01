@@ -126,6 +126,7 @@ export interface PlatformAdapter {
    * @param options.perPage - Items per page.
    * @param options.maxPages - Maximum pages to fetch.
    * @param options.direction - Sort direction.
+   * @param signal - Optional AbortSignal to cancel the request.
    * @returns Promise resolving to array of review comments.
    */
   listReviewComments(
@@ -148,6 +149,7 @@ export interface PlatformAdapter {
    * @param options.perPage - Items per page.
    * @param options.maxPages - Maximum pages to fetch.
    * @param options.direction - Sort direction.
+   * @param signal - Optional AbortSignal to cancel the request.
    * @returns Promise resolving to array of comments.
    */
   listComments(
