@@ -103,10 +103,14 @@ export class CodebaseExtractor {
       } catch {
         continue;
       }
+      const ext = path.extname(file).toLowerCase();
+      const isJs = JS_EXTENSIONS.has(ext);
+      const isTs = TS_EXTENSIONS.has(ext);
       const sourceFile = this.parseSourceFile(file, content);
+      let fileImports: ImportEdge[] = [];
       if (sourceFile) {
         symbols.push(...this.extractSymbols(sourceFile, relativeFile));
-        const fileImports = this.extractImports(sourceFile, relativeFile, file, baseDir);
+        fileImports = this.extractImports(sourceFile, relativeFile, file, baseDir);
         imports.push(...fileImports);
         callGraph.push(...this.extractCallGraph(sourceFile, relativeFile, fileImports));
       }
@@ -114,10 +118,14 @@ export class CodebaseExtractor {
       // `undefined` for JS-family input, so the regex pass must run *in
       // addition* to the AST pass — otherwise CommonJS `require()` /
       // dynamic `import()` / `module.exports` symbols in .js/.mjs/.cjs files
-      // would never be indexed. Dedupe against AST results by line+specifier.
-      if (!sourceFile || JS_EXTENSIONS.has(path.extname(file).toLowerCase())) {
-        const regex = this.extractRegexBased(relativeFile, content, file, baseDir);
-        symbols.push(...regex.symbols);
+      // would never be indexed. TypeScript files get the same require()/
+      // import() coverage (those calls are not ImportDeclarations), but their
+      // exports are already handled by the AST pass. Regex results are masked
+      // against comments/strings, deduped against AST results, and capped per
+      // file so minified bundles cannot dominate the index.
+      if (!sourceFile || isJs || isTs) {
+        const regex = this.extractRegexBased(relativeFile, content, file, baseDir, fileImports);
+        if (isJs || !sourceFile) symbols.push(...regex.symbols);
         imports.push(...regex.imports);
       }
     }
@@ -453,9 +461,20 @@ export class CodebaseExtractor {
     return '';
   }
 
-  /** True when a module specifier refers to a package/node builtin, not a local path. */
+  /**
+   * True when a module specifier refers to a package/node builtin or a known
+   * non-code asset rather than a local source module. Asset imports
+   * (`./styles.css`, `./data.json`) are not indexable by the extractor, so they
+   * are treated as external and never reported as broken local imports.
+   *
+   * @param specifier - The raw module specifier (e.g. `./foo`, `zod`, `./data.json`).
+   * @returns True when the specifier is external (bare or a non-code asset).
+   */
   private isExternalSpecifier(specifier: string): boolean {
-    return !specifier.startsWith('.') && !specifier.startsWith('/');
+    if (!specifier.startsWith('.') && !specifier.startsWith('/')) return true;
+    return /\.(json|css|scss|sass|less|styl|png|jpe?g|gif|svg|webp|avif|ico|woff2?|ttf|otf|eot|wasm|map|txt|md)$/i.test(
+      specifier,
+    );
   }
 
   // ─── Call-graph extraction ──────────────────────────────
@@ -524,6 +543,12 @@ export class CodebaseExtractor {
    * Arbitrary property calls (`console.log(...)`, `json.parse(...)`) never
    * resolve, because the receiver type is unknown in a pure syntactic parse and
    * would produce misleading caller/callee edges.
+   *
+   * @param node - The call expression to resolve.
+   * @param localDefinitions - Local top-level symbol names in the same file.
+   * @param importMap - Named/namespace imports of the file keyed by binding name.
+   * @param callerFile - File path (relative to the indexed root) containing the call.
+   * @returns The resolved target `{ file, name }`, or undefined when ambiguous.
    */
   private resolveCallTarget(
     node: ts.CallExpression,
@@ -585,22 +610,57 @@ export class CodebaseExtractor {
 
   // ─── Regex fallback (CommonJS / dynamic imports) ────────
 
+  /** Cap on regex-extracted symbols per file so minified bundles cannot flood the index. */
+  private static readonly MAX_REGEX_SYMBOLS_PER_FILE = 50;
+  /** Cap on regex-extracted import edges per file so minified bundles cannot flood the index. */
+  private static readonly MAX_REGEX_IMPORTS_PER_FILE = 100;
+
+  /**
+   * Extract CommonJS `require()` / dynamic `import()` edges and `module.exports`
+   * symbol names. The scan runs over a copy of the source with comments and
+   * string/template literals masked (length-preserving) so commented-out or
+   * string-embedded `require()`/`module.exports` text never produces phantom
+   * entries. Results are deduped against the AST-extracted imports for the same
+   * file (a static `import './x.js'` next to `require('./x.js')` yields a
+   * single edge) and capped per file.
+   *
+   * @param relativeFile - File path relative to the indexed root.
+   * @param content - Raw file content (used for accurate line/column numbers).
+   * @param absoluteFile - Absolute path of the file.
+   * @param baseDir - Base directory resolved paths are reported relative to.
+   * @param astImports - Import edges already extracted from the AST pass for this file.
+   * @returns Regex-extracted symbols and import edges.
+   */
   private extractRegexBased(
     relativeFile: string,
     content: string,
     absoluteFile: string,
     baseDir: string,
+    astImports: ImportEdge[] = [],
   ): { symbols: IndexedSymbol[]; imports: ImportEdge[] } {
     const symbols: IndexedSymbol[] = [];
     const imports: ImportEdge[] = [];
+    const masked = this.maskCommentsAndStrings(content);
+
+    // Dedupe against AST edges by (target or specifier, kind) so a static
+    // side-effect import next to a `require()` of the same module is not
+    // reported twice. Unresolved local specifiers dedupe by specifier.
+    const seen = new Set<string>();
+    for (const edge of astImports) {
+      seen.add(`${edge.targetFile || edge.sourceFile}:\u0000:${edge.importKind}`);
+    }
 
     // `require('...')` and `import('...')` calls.
     const requireRe = /\b(?:require|import)\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
     let match: RegExpExecArray | null;
-    while ((match = requireRe.exec(content)) !== null) {
-      const specifier = match[1];
-      if (!specifier || !specifier.startsWith('.')) continue;
+    while ((match = requireRe.exec(masked)) !== null) {
+      if (imports.length >= CodebaseExtractor.MAX_REGEX_IMPORTS_PER_FILE) break;
+      const specifier = this.specifierAtOffset(content, match);
+      if (!specifier || this.isExternalSpecifier(specifier)) continue;
       const targetFile = this.resolveLocalImport(absoluteFile, specifier, baseDir);
+      const dedupeKey = targetFile ? `${targetFile}:\u0000:side-effect` : `unresolved:${specifier}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
       const line = this.lineOfOffset(content, match.index);
       imports.push({
         sourceFile: relativeFile,
@@ -613,7 +673,8 @@ export class CodebaseExtractor {
 
     // `module.exports = ...` and `exports.foo = ...` for CommonJS symbol names.
     const exportRe = /(?:module\.)?exports(?:\.(\w+))?\s*=/g;
-    while ((match = exportRe.exec(content)) !== null) {
+    while ((match = exportRe.exec(masked)) !== null) {
+      if (symbols.length >= CodebaseExtractor.MAX_REGEX_SYMBOLS_PER_FILE) break;
       const name = match[1] ?? 'default';
       const line = this.lineOfOffset(content, match.index);
       symbols.push({
@@ -628,6 +689,44 @@ export class CodebaseExtractor {
     }
 
     return { symbols, imports };
+  }
+
+  /**
+   * Replace comments and string/template literals with spaces, preserving the
+   * original length and newlines so match offsets stay valid for line/column
+   * computation. String delimiters are kept so the `require('...')` pattern can
+   * still be located; the actual specifier is read back from the raw content by
+   * {@link specifierAtOffset}.
+   *
+   * @param content - Raw file content.
+   * @returns The content with comments/strings masked.
+   */
+  private maskCommentsAndStrings(content: string): string {
+    return content.replace(
+      /(\/\/[^\n]*|\/\*[\s\S]*?\*\/|'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`)/g,
+      (match) => {
+        const first = match[0];
+        if (first === "'" || first === '"' || first === '`') {
+          return first + match.slice(1, -1).replace(/[^\n]/g, ' ') + first;
+        }
+        return match.replace(/[^\n]/g, ' ');
+      },
+    );
+  }
+
+  /**
+   * Read the actual module specifier from the raw content at a regex match that
+   * was found on the masked content (whose string bodies are blanked).
+   *
+   * @param content - Raw file content.
+   * @param match - Regex match on the masked content.
+   * @returns The unquoted specifier, or undefined when none is present.
+   */
+  private specifierAtOffset(content: string, match: RegExpExecArray): string | undefined {
+    const end = Math.min(match.index + match[0].length, content.length);
+    const original = content.slice(match.index, end);
+    const quoted = original.match(/['"]([^'"]+)['"]/);
+    return quoted ? quoted[1] : undefined;
   }
 
   private lineOfOffset(content: string, offset: number): number {

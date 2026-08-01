@@ -299,6 +299,20 @@ export class ReviewEngine {
   }
 
   /**
+   * Resolve the codebase-index cache directory. The cache is stored OUTSIDE the
+   * git checkout (under the OS temp dir, namespaced by the repository root) so
+   * attacker-controlled PR content committed to the tree can never be loaded as
+   * a trusted index, and so CI runs on a fresh checkout do not write (and
+   * potentially commit) multi-MB JSON inside the workspace.
+   * @param repoRoot - The repository root the index is built from.
+   * @returns The absolute cache directory for this repository.
+   */
+  private codebaseIndexCacheDir(repoRoot: string): string {
+    const digest = createHash('sha256').update(path.resolve(repoRoot)).digest('hex').slice(0, 16);
+    return path.join(os.tmpdir(), 'opencode-codebase-index', digest);
+  }
+
+  /**
    * Build the injected cross-file codebase context for a set of changed files.
    * Filters out empty/missing paths and catches formatting failures so a
    * corrupt index can never fail the whole review — it degrades to a diff-only
@@ -494,10 +508,10 @@ export class ReviewEngine {
     let codebaseIndexData: CodebaseIndexData | undefined;
     if (this.config.review.enableCodebaseIndex) {
       try {
-        const indexEngine = new CodebaseIndex(
-          new CodebaseIndexCache(path.join(workDir, '.opencode', 'codebase-index-cache')),
-        );
         const indexRoot = this.resolveCodebaseRoot(workDir);
+        const indexEngine = new CodebaseIndex(
+          new CodebaseIndexCache(this.codebaseIndexCacheDir(indexRoot)),
+        );
         const cacheKey = this.codebaseIndexCacheKey(pr.headSha, indexRoot);
         const startedAt = Date.now();
         codebaseIndexData = await indexEngine.buildOrLoad(indexRoot, cacheKey);

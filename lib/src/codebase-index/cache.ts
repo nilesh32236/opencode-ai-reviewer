@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { Logger } from '../utils/logger.js';
-import type { CodebaseIndexData } from './types.js';
+import type { CallGraphEdge, CodebaseIndexData, ImportEdge, IndexedSymbol } from './types.js';
 
 /**
  * Ref-keyed JSON cache for codebase indexes.
@@ -30,13 +30,7 @@ export class CodebaseIndexCache {
       const raw = fs.readFileSync(this.cachePath(refSha), 'utf-8');
       const data = JSON.parse(raw) as CodebaseIndexData;
       if (data.refSha !== refSha) return null;
-      if (
-        !Array.isArray(data.symbols) ||
-        !Array.isArray(data.imports) ||
-        !Array.isArray(data.callGraph)
-      ) {
-        return null;
-      }
+      if (!this.isValidIndex(data)) return null;
       return data;
     } catch (err) {
       this.logger.debug(
@@ -93,5 +87,54 @@ export class CodebaseIndexCache {
 
   private cachePath(refSha: string): string {
     return path.join(this.cacheDir, `${refSha}.json`);
+  }
+
+  /**
+   * Validate the shape of a cached index. Beyond the collection-level array
+   * check, every entry must carry its required fields so a schema-drifted,
+   * hand-edited, or attacker-supplied cache file degrades to a rebuild instead
+   * of rendering garbage (e.g. `undefined` values) into the review prompt.
+   * @param data - The parsed cache entry.
+   * @returns True when the entry is structurally valid.
+   */
+  private isValidIndex(data: CodebaseIndexData): boolean {
+    if (
+      !Array.isArray(data.symbols) ||
+      !Array.isArray(data.imports) ||
+      !Array.isArray(data.callGraph)
+    ) {
+      return false;
+    }
+    const validSymbol = (s: IndexedSymbol): boolean =>
+      typeof s === 'object' &&
+      s !== null &&
+      typeof s.name === 'string' &&
+      typeof s.file === 'string' &&
+      typeof s.line === 'number' &&
+      typeof s.column === 'number' &&
+      typeof s.kind === 'string' &&
+      typeof s.isDefaultExport === 'boolean' &&
+      typeof s.isExported === 'boolean';
+    const validImport = (e: ImportEdge): boolean =>
+      typeof e === 'object' &&
+      e !== null &&
+      typeof e.sourceFile === 'string' &&
+      typeof e.importedSymbol === 'string' &&
+      typeof e.targetFile === 'string' &&
+      typeof e.importKind === 'string' &&
+      typeof e.line === 'number';
+    const validCall = (e: CallGraphEdge): boolean =>
+      typeof e === 'object' &&
+      e !== null &&
+      typeof e.callerFile === 'string' &&
+      typeof e.callerFunction === 'string' &&
+      typeof e.calleeFile === 'string' &&
+      typeof e.calleeFunction === 'string' &&
+      typeof e.line === 'number';
+    return (
+      data.symbols.every(validSymbol) &&
+      data.imports.every(validImport) &&
+      data.callGraph.every(validCall)
+    );
   }
 }

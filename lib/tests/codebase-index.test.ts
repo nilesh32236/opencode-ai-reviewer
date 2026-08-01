@@ -185,6 +185,49 @@ describe('CodebaseIndexCache', () => {
     cache.invalidate('sha1');
     expect(cache.get('sha1')).toBeNull();
   });
+
+  it('rejects entries with array-shaped but structurally invalid contents', () => {
+    const dir = makeTempDir();
+    const cacheDir = path.join(dir, 'cache');
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const cache = new CodebaseIndexCache(cacheDir);
+
+    fs.writeFileSync(
+      path.join(cacheDir, 'bad-symbol.json'),
+      JSON.stringify({
+        refSha: 'bad-symbol',
+        symbols: [{ name: 42 }],
+        imports: [],
+        callGraph: [],
+      }),
+      'utf-8',
+    );
+    expect(cache.get('bad-symbol')).toBeNull();
+
+    fs.writeFileSync(
+      path.join(cacheDir, 'bad-import.json'),
+      JSON.stringify({
+        refSha: 'bad-import',
+        symbols: [],
+        imports: [{ sourceFile: 42 }],
+        callGraph: [],
+      }),
+      'utf-8',
+    );
+    expect(cache.get('bad-import')).toBeNull();
+
+    fs.writeFileSync(
+      path.join(cacheDir, 'bad-call.json'),
+      JSON.stringify({
+        refSha: 'bad-call',
+        symbols: [],
+        imports: [],
+        callGraph: [{ callerFile: 42 }],
+      }),
+      'utf-8',
+    );
+    expect(cache.get('bad-call')).toBeNull();
+  });
 });
 
 describe('CodebaseIndex', () => {
@@ -268,6 +311,86 @@ describe('CodebaseIndex', () => {
     expect(context).toContain('Unresolved Local Imports');
     expect(context).toContain('missing');
     expect(context).not.toContain('zod');
+  });
+
+  it('does not flag non-code asset imports as broken local imports', async () => {
+    const dir = makeTempDir();
+    writeFixture(dir, {
+      'src/main.ts': `import './styles.css';
+        import data from './data.json';
+        import { missing } from './does-not-exist.js';
+        export const x = 1;`,
+    });
+    const engine = new CodebaseIndex();
+    const index = await engine.buildOrLoad(dir, 'sha');
+    const context = engine.formatContext(engine.getContextForFiles(index, ['src/main.ts']));
+
+    expect(context).toContain('Unresolved Local Imports');
+    expect(context).toContain('missing');
+    expect(context).not.toContain('styles.css');
+    expect(context).not.toContain('data.json');
+  });
+
+  it('extracts require() and dynamic import() edges from TypeScript files too', async () => {
+    const dir = makeTempDir();
+    writeFixture(dir, {
+      'src/mod.ts': 'export function helper(): void {}',
+      'src/main.ts': `import { helper } from './mod.js';
+        const viaRequire = require('./mod.js');
+        export async function run(): Promise<void> {
+          await import('./mod.js');
+          helper();
+        }`,
+    });
+    const engine = new CodebaseIndex();
+    const index = await engine.buildOrLoad(dir, 'sha');
+
+    // The static import is an AST edge; require() and dynamic import() are
+    // regex edges (deduped to one) — all resolve to the same module.
+    const toMod = index.imports.filter(
+      (e) => e.sourceFile === 'src/main.ts' && e.targetFile === 'src/mod.ts',
+    );
+    expect(toMod.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('dedupes require() against a static side-effect import in the same .js file', async () => {
+    const dir = makeTempDir();
+    writeFixture(dir, {
+      'src/helper.js': 'function helper() { return 1; }\nmodule.exports = helper;',
+      'src/main.js': `import './helper.js';
+        require('./helper.js');`,
+    });
+    const engine = new CodebaseIndex();
+    const index = await engine.buildOrLoad(dir, 'sha');
+
+    const toHelper = index.imports.filter(
+      (e) => e.sourceFile === 'src/main.js' && e.targetFile === 'src/helper.js',
+    );
+    expect(toHelper.length).toBe(1);
+  });
+
+  it('ignores require()/module.exports text inside comments and strings', async () => {
+    const dir = makeTempDir();
+    writeFixture(dir, {
+      'src/real.js': 'module.exports = { real: true };',
+      'src/main.cjs': `// require('./ghost.js')
+        const text = "module.exports = 'fake'";
+        require('./real.js');
+        module.exports = { real: true };`,
+    });
+    const engine = new CodebaseIndex();
+    const index = await engine.buildOrLoad(dir, 'sha');
+
+    const targets = index.imports
+      .filter((e) => e.sourceFile === 'src/main.cjs')
+      .map((e) => e.targetFile);
+    expect(targets).toContain('src/real.js');
+    expect(targets).not.toContain('src/ghost.js');
+
+    const exportedNames = index.symbols
+      .filter((s) => s.file === 'src/main.cjs' && s.isExported)
+      .map((s) => s.name);
+    expect(exportedNames).toEqual(['default']);
   });
 
   it('extracts CommonJS require() and module.exports via the regex pass on .js/.cjs files', () => {

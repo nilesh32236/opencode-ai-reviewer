@@ -27,8 +27,9 @@ const MAX_EDGES_PER_SECTION = 150;
  * Orchestrates codebase indexing: extraction + ref-keyed caching + prompt
  * enrichment for a set of changed files.
  *
- * The index is built once per ref and cached under `.opencode/codebase-index-cache/`
- * so repeated reviews on the same ref skip recomputation. Cross-file context
+ * The index is built once per ref and cached (by default outside the git
+ * checkout, under the OS temp dir keyed by repository identity) so repeated
+ * reviews on the same ref skip recomputation. Cross-file context
  * (exported symbols, import edges, call-graph edges) is filtered down to only
  * what is relevant to the changed files and formatted as markdown for the
  * review prompt.

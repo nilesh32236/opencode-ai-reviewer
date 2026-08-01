@@ -194,9 +194,10 @@ export function buildConfig(): AgentConfig {
  * vars + defaults (no per-repo context at startup), so per-repo sensitivity
  * tuning is applied here at the point where a repo working directory exists.
  *
- * Only the `review.sensitivity` / `review.categories` blocks are merged (the
- * engine filters findings off those fields); all other config-file sections
- * remain Action-only. Unknown/malformed config files degrade gracefully to the
+ * Only the `review.sensitivity` / `review.categories` / `review.enableCodebaseIndex`
+ * fields are merged (the engine filters findings off those fields and respects
+ * the codebase-index toggle); all other config-file sections remain Action-only.
+ * Unknown/malformed config files degrade gracefully to the
  * base config so a broken repo config never breaks the review.
  *
  * @param baseConfig - The base agent configuration (from `buildConfig()`).
