@@ -52,9 +52,15 @@ export function buildConfig(): AgentConfig {
         ? { enableReachability: process.env.ENABLE_REACHABILITY !== 'false' }
         : {}),
       reviewBudget: {
-        enabled: process.env.REVIEW_BUDGET !== 'false',
-        summaryThreshold: parseEnvInt(process.env.REVIEW_BUDGET_SUMMARY_THRESHOLD, 500),
-        splitThreshold: parseEnvInt(process.env.REVIEW_BUDGET_SPLIT_THRESHOLD, 1000),
+        enabled: process.env.REVIEW_BUDGET === 'true',
+        summaryThreshold: Math.max(
+          parseEnvInt(process.env.REVIEW_BUDGET_SUMMARY_THRESHOLD, 500),
+          1,
+        ),
+        splitThreshold: Math.max(
+          parseEnvInt(process.env.REVIEW_BUDGET_SPLIT_THRESHOLD, 1000),
+          Math.max(parseEnvInt(process.env.REVIEW_BUDGET_SUMMARY_THRESHOLD, 500), 1),
+        ),
       },
     },
     learning: {

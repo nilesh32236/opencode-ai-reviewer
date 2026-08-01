@@ -208,7 +208,7 @@ export function validateConfig(config: PromptConfig): PromptConfig {
           ? Math.max(Math.round(budget.splitThreshold), 1)
           : 1000;
       result.review.budget = {
-        enabled: typeof budget.enabled === 'boolean' ? budget.enabled : true,
+        enabled: typeof budget.enabled === 'boolean' ? budget.enabled : false,
         summaryThreshold,
         splitThreshold: Math.max(splitThreshold, summaryThreshold),
       };

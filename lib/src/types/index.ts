@@ -290,7 +290,7 @@ export type ReviewBudgetMode = 'full' | 'summary' | 'split';
 
 /** Configuration for budget-based review of large PRs. */
 export interface ReviewBudgetConfig {
-  /** Enable budget-based review adaptation (default: true) */
+  /** Enable budget-based review adaptation (default: false — opt-in) */
   enabled: boolean;
   /** Diff line threshold for summary-only mode (default: 500) */
   summaryThreshold: number;
@@ -321,7 +321,7 @@ export interface ReviewConfig {
   /** Token budget configuration for smart context allocation */
   tokenBudget?: TokenBudgetConfig;
   /** Budget-based review configuration for large PRs */
-  reviewBudget: ReviewBudgetConfig;
+  reviewBudget?: ReviewBudgetConfig;
 }
 
 // ─── Conversation / @mention ─────────────────────────────
@@ -993,7 +993,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
       simpleThreshold: 10,
     },
     reviewBudget: {
-      enabled: true,
+      enabled: false,
       summaryThreshold: 500,
       splitThreshold: 1000,
     },

@@ -1,6 +1,10 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { parseReviewOutput } from '../src/types/schemas.js';
+import {
+  AgentConfigSchema,
+  ReviewBudgetConfigSchema,
+  parseReviewOutput,
+} from '../src/types/schemas.js';
 
 describe('parseReviewOutput', () => {
   it('parses valid JSONL with all entry types', () => {
@@ -69,5 +73,42 @@ describe('parseReviewOutput', () => {
     expect(critical.length).toBe(1);
     expect(important.length).toBe(1);
     expect(minor.length).toBe(1);
+  });
+});
+
+describe('ReviewBudgetConfigSchema', () => {
+  it('applies field defaults when an empty object is parsed', () => {
+    expect(ReviewBudgetConfigSchema.parse({})).toEqual({
+      enabled: false,
+      summaryThreshold: 500,
+      splitThreshold: 1000,
+    });
+  });
+
+  it('defaults enabled to false (opt-in)', () => {
+    expect(ReviewBudgetConfigSchema.parse({ summaryThreshold: 300 }).enabled).toBe(false);
+  });
+
+  it('rejects splitThreshold below summaryThreshold', () => {
+    expect(() =>
+      ReviewBudgetConfigSchema.parse({ summaryThreshold: 900, splitThreshold: 100 }),
+    ).toThrow('splitThreshold must be >= summaryThreshold');
+  });
+
+  it('accepts splitThreshold equal to summaryThreshold', () => {
+    expect(
+      ReviewBudgetConfigSchema.parse({ summaryThreshold: 900, splitThreshold: 900 }),
+    ).toMatchObject({ summaryThreshold: 900, splitThreshold: 900 });
+  });
+});
+
+describe('AgentConfigSchema review budget default', () => {
+  it('applies reviewBudget field defaults when omitted', () => {
+    const config = AgentConfigSchema.parse({});
+    expect(config.review.reviewBudget).toEqual({
+      enabled: false,
+      summaryThreshold: 500,
+      splitThreshold: 1000,
+    });
   });
 });

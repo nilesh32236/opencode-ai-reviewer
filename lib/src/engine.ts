@@ -125,16 +125,19 @@ export class ReviewEngine {
    *
    * @param result - The review result to decorate.
    * @param budgetMode - The selected budget review mode.
-   * @param totalDiffLines - Total number of diff lines across all changed files.
+   * @param totalDiffLines - Optional total number of diff lines across all changed files.
    * @returns The decorated review result.
    */
   private applyBudgetModeBanner(
     result: ReviewResult,
     budgetMode: ReviewBudgetMode,
-    totalDiffLines: number,
+    totalDiffLines?: number,
   ): ReviewResult {
     if (budgetMode !== 'split') return result;
-    const banner = `## ⚠️ Large PR Detected (~${totalDiffLines} lines)\n\nThis pull request is very large. Consider splitting it into smaller, focused PRs for faster, more thorough reviews. Ideally each PR should contain fewer than ${this.config.review.reviewBudget.splitThreshold} lines of changes.\n\n---\n\n`;
+    const lineCount =
+      totalDiffLines !== undefined ? `~${totalDiffLines} lines` : 'a very large number of lines';
+    const splitThreshold = this.config.review.reviewBudget?.splitThreshold ?? 1000;
+    const banner = `## ⚠️ Large PR Detected (${lineCount})\n\nThis pull request is very large. Consider splitting it into smaller, focused PRs for faster, more thorough reviews. Ideally each PR should contain fewer than ${splitThreshold} lines of changes.\n\n---\n\n`;
     return {
       ...result,
       summary: banner + (result.summary || ''),
@@ -248,13 +251,21 @@ export class ReviewEngine {
       );
     }
 
-    // Calculate total diff size for budget mode selection
-    const totalDiffLines = files.reduce(
-      (sum, f) => sum + (f.patch ? f.patch.split('\n').length : 0),
-      0,
-    );
-    const budgetMode = this.determineBudgetMode(totalDiffLines);
-    core.info(`Review budget mode: ${budgetMode} (total diff: ~${totalDiffLines} lines)`);
+    // Calculate total diff size for budget mode selection. Diff lines are derived
+    // from the always-accurate additions/deletions counters (the patch field can
+    // be null for binary files and truncated/omitted for very large files).
+    // Incremental (delta) reviews re-check only new commits, so budget-mode
+    // adaptation is skipped for them to avoid forcing summary/split on a small delta.
+    const isIncremental = Boolean(previousHeadSha && previousHeadSha !== pr.headSha);
+    let budgetMode: ReviewBudgetMode = 'full';
+    let totalDiffLines: number | undefined;
+    if (!isIncremental) {
+      totalDiffLines = files.reduce((sum, f) => sum + (f.additions || 0) + (f.deletions || 0), 0);
+      budgetMode = this.determineBudgetMode(totalDiffLines);
+      core.info(`Review budget mode: ${budgetMode} (total diff: ~${totalDiffLines} lines)`);
+    } else {
+      core.info('Skipping review budget adaptation for incremental (delta) review');
+    }
 
     const tokenBudgetConfig = this.config.review.tokenBudget;
     const { context: prContext, budgetMetrics } = this.buildPRContextString(pr, tokenBudgetConfig);
@@ -308,14 +319,16 @@ export class ReviewEngine {
           reviewPromptExtra: promptExtra,
         },
         baseContext,
-        lessons,
-        previousFindings,
-        falsePositiveRules,
-        deltaContext,
-        previousBotComments,
-        linterResults,
-        budgetMode,
-        totalDiffLines,
+        {
+          lessons,
+          previousFindings,
+          falsePositiveRules,
+          deltaContext,
+          previousBotComments,
+          linterResults,
+          budgetMode,
+          totalDiffLines,
+        },
       );
 
       const outputPath = path.join(workDir, 'review-output.jsonl');
@@ -333,7 +346,7 @@ export class ReviewEngine {
         core.warning('OpenCode review execution failed, returning fallback empty result');
         const r = emptyResult();
         r.verdict.reasoning = 'Review execution failed';
-        return r;
+        return this.applyBudgetModeBanner(r, budgetMode, totalDiffLines);
       }
 
       try {
@@ -372,7 +385,7 @@ export class ReviewEngine {
         core.warning(`Failed to parse review output at ${outputPath}, returning empty result`);
         const r = emptyResult();
         r.verdict.reasoning = 'Failed to parse review output';
-        return r;
+        return this.applyBudgetModeBanner(r, budgetMode, totalDiffLines);
       }
     }
 
@@ -422,14 +435,14 @@ export class ReviewEngine {
               reviewPromptExtra: promptExtra,
             },
             context,
-            lessons,
-            previousFindings,
-            falsePositiveRules,
-            deltaContext,
-            previousBotComments,
-            linterResults,
-            budgetMode,
-            totalDiffLines,
+            {
+              lessons,
+              previousFindings,
+              falsePositiveRules,
+              deltaContext,
+              previousBotComments,
+              linterResults,
+            },
           );
 
           const outputPath = path.join(batchDir, 'review-output.jsonl');
@@ -1011,6 +1024,8 @@ export class ReviewEngine {
    * @param workDir - Working directory for the workspace.
    * @param timeoutMinutes - Optional timeout in minutes for verification.
    * @param prNumber - Optional PR number for logging context.
+   * @param budgetMode - Optional budget review mode selected from PR diff size (used to prepend the split banner).
+   * @param totalDiffLines - Optional total diff line count reported in the split banner.
    * @returns Filtered ReviewResult with verified issues.
    */
   private async verifyReviewResult(

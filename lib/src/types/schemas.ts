@@ -91,11 +91,16 @@ export const TokenBudgetConfigSchema = z
   });
 
 /** Zod schema validating budget-based review configuration. */
-export const ReviewBudgetConfigSchema = z.object({
-  enabled: z.boolean().default(true),
-  summaryThreshold: z.number().int().min(1).default(500),
-  splitThreshold: z.number().int().min(1).default(1000),
-});
+export const ReviewBudgetConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    summaryThreshold: z.number().int().min(1).default(500),
+    splitThreshold: z.number().int().min(1).default(1000),
+  })
+  .refine((data) => data.splitThreshold >= data.summaryThreshold, {
+    message: 'splitThreshold must be >= summaryThreshold',
+    path: ['splitThreshold'],
+  });
 
 /** Zod schema validating review configuration. */
 export const ReviewConfigSchema = z.object({
@@ -120,7 +125,7 @@ export const ReviewConfigSchema = z.object({
     ]),
   enableReachability: z.boolean().optional().default(true),
   tokenBudget: TokenBudgetConfigSchema.optional(),
-  reviewBudget: ReviewBudgetConfigSchema.default({}),
+  reviewBudget: ReviewBudgetConfigSchema.default(ReviewBudgetConfigSchema.parse({})),
 });
 
 /** Zod schema validating audit configuration. */

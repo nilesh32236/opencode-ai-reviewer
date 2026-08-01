@@ -133,15 +133,19 @@ Set `review_inline: false` in your workflow inputs or `.opencode-reviewer.yml` (
 review:
   inline: true    # or false for summary-only
   budget:
-    enabled: true               # enable budget-based review adaptation (default: true)
-    summaryThreshold: 500       # PRs with more diff lines use summary-only mode
-    splitThreshold: 1000        # PRs with more diff lines get a split recommendation
+    enabled: false              # enable budget-based review adaptation (default: false — opt-in)
+    summaryThreshold: 500       # PRs with >= this many diff lines use summary-only mode
+    splitThreshold: 1000        # PRs with >= this many diff lines get a split recommendation
 ```
 
-When a PR exceeds the configured thresholds, the reviewer adapts its depth:
+> **Opt-in by default:** Budget-based review is **disabled** by default (`enabled: false`) to preserve existing review behavior. Enable it explicitly (`enabled: true`) to opt in to adaptive review depth on large PRs.
+
+When budget review is enabled and a PR exceeds the configured thresholds (based on the total added + deleted lines after exclude-pattern filtering), the reviewer adapts its depth:
 - **< 500 lines** (default `summaryThreshold`): full detailed review.
-- **500–1000 lines**: summary-only mode — critical patterns (security, breaking changes, API misuse) are still checked, but line-by-line review is skipped and a budget-mode banner is added.
-- **> 1000 lines** (default `splitThreshold`): critical patterns are checked, a split recommendation banner is prepended to the review, and the PR is advised to be broken into smaller PRs.
+- **>= 500 lines**: summary-only mode — critical patterns (security, breaking changes, API misuse) are still checked, but the review focuses on critical patterns and may report fewer findings. A budget-mode banner is added to the prompt.
+- **>= 1000 lines** (default `splitThreshold`): critical patterns are checked, and a "Large PR Detected" banner recommending a split is prepended to the final review.
+
+> **Note:** Budget modes focus the model's *output* on critical patterns; they do not reduce the embedded diff context, so input token consumption and runtime are essentially unchanged. For the largest PRs, consider splitting the PR or raising `maxLinesPerFile`/`batchSize` instead.
 
 #### Per-path overrides
 

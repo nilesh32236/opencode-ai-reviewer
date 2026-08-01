@@ -262,7 +262,7 @@ fix:
     it('applies review.budget defaults when only partial config given', () => {
       const result = validateConfig({ review: { budget: { summaryThreshold: 300 } } } as never);
       expect(result.review?.budget).toEqual({
-        enabled: true,
+        enabled: false,
         summaryThreshold: 300,
         splitThreshold: 1000,
       });

@@ -1533,6 +1533,23 @@ describe('ReviewEngine', () => {
       });
     }
 
+    function makeBudgetEnabledConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
+      return makeConfig({
+        enableMCP: false,
+        mcpServers: [],
+        ...overrides,
+        review: {
+          ...DEFAULT_CONFIG.review,
+          reviewBudget: { enabled: true, summaryThreshold: 500, splitThreshold: 1000 },
+          ...((overrides.review || {}) as Record<string, unknown>),
+        },
+      });
+    }
+
+    function budgetModeArg(): unknown {
+      return mockBuildReviewPrompt.mock.calls[0][2];
+    }
+
     beforeEach(() => {
       mockMCPConnect.mockResolvedValue(undefined);
       mockRunOpenCode.mockResolvedValue({
@@ -1544,35 +1561,53 @@ describe('ReviewEngine', () => {
     });
 
     it('uses full mode below the summary threshold', async () => {
-      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      const eng = new ReviewEngine(makeBudgetEnabledConfig(), mockAdapter);
       mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
 
       await eng.reviewPR(makeLargePR(100));
 
       expect(mockBuildReviewPrompt).toHaveBeenCalled();
-      expect(mockBuildReviewPrompt.mock.calls[0][8]).toBe('full');
-      expect(mockBuildReviewPrompt.mock.calls[0][9]).toBe(100);
+      expect(budgetModeArg()).toMatchObject({ budgetMode: 'full', totalDiffLines: 100 });
+    });
+
+    it('uses summary mode exactly at the summary threshold (500 lines)', async () => {
+      const eng = new ReviewEngine(makeBudgetEnabledConfig(), mockAdapter);
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      const result = await eng.reviewPR(makeLargePR(500));
+
+      expect(budgetModeArg()).toMatchObject({ budgetMode: 'summary', totalDiffLines: 500 });
+      expect(result.summary).not.toContain('Large PR Detected');
     });
 
     it('uses summary mode at the summary threshold with budget banner', async () => {
-      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      const eng = new ReviewEngine(makeBudgetEnabledConfig(), mockAdapter);
       mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
 
       const result = await eng.reviewPR(makeLargePR(600));
 
-      expect(mockBuildReviewPrompt.mock.calls[0][8]).toBe('summary');
-      expect(mockBuildReviewPrompt.mock.calls[0][9]).toBe(600);
+      expect(budgetModeArg()).toMatchObject({ budgetMode: 'summary', totalDiffLines: 600 });
       expect(result.summary).not.toContain('Large PR Detected');
     });
 
+    it('uses split mode exactly at the split threshold (1000 lines)', async () => {
+      const eng = new ReviewEngine(makeBudgetEnabledConfig(), mockAdapter);
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      const result = await eng.reviewPR(makeLargePR(1000));
+
+      expect(budgetModeArg()).toMatchObject({ budgetMode: 'split', totalDiffLines: 1000 });
+      expect(result.summary).toContain('Large PR Detected');
+      expect(result.summary).toContain('split');
+    });
+
     it('uses split mode above the split threshold and prepends a split recommendation', async () => {
-      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      const eng = new ReviewEngine(makeBudgetEnabledConfig(), mockAdapter);
       mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
 
       const result = await eng.reviewPR(makeLargePR(1500));
 
-      expect(mockBuildReviewPrompt.mock.calls[0][8]).toBe('split');
-      expect(mockBuildReviewPrompt.mock.calls[0][9]).toBe(1500);
+      expect(budgetModeArg()).toMatchObject({ budgetMode: 'split', totalDiffLines: 1500 });
       expect(result.summary).toContain('Large PR Detected');
       expect(result.summary).toContain('split');
     });
@@ -1593,7 +1628,17 @@ describe('ReviewEngine', () => {
 
       const result = await eng.reviewPR(makeLargePR(2000));
 
-      expect(mockBuildReviewPrompt.mock.calls[0][8]).toBe('full');
+      expect(budgetModeArg()).toMatchObject({ budgetMode: 'full' });
+      expect(result.summary).not.toContain('Large PR Detected');
+    });
+
+    it('defaults to full mode when reviewBudget is not configured', async () => {
+      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      const result = await eng.reviewPR(makeLargePR(2000));
+
+      expect(budgetModeArg()).toMatchObject({ budgetMode: 'full' });
       expect(result.summary).not.toContain('Large PR Detected');
     });
 
@@ -1613,11 +1658,11 @@ describe('ReviewEngine', () => {
 
       await eng.reviewPR(makeLargePR(150));
 
-      expect(mockBuildReviewPrompt.mock.calls[0][8]).toBe('summary');
+      expect(budgetModeArg()).toMatchObject({ budgetMode: 'summary' });
     });
 
     it('computes budget mode from total diff lines across multiple files', async () => {
-      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      const eng = new ReviewEngine(makeBudgetEnabledConfig(), mockAdapter);
       mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
 
       const pr = makePRContext({
@@ -1641,8 +1686,56 @@ describe('ReviewEngine', () => {
 
       await eng.reviewPR(pr);
 
-      expect(mockBuildReviewPrompt.mock.calls[0][8]).toBe('summary');
-      expect(mockBuildReviewPrompt.mock.calls[0][9]).toBe(600);
+      expect(budgetModeArg()).toMatchObject({ budgetMode: 'summary', totalDiffLines: 600 });
+    });
+
+    it('does not inject budget-mode instructions into per-batch prompts', async () => {
+      const eng = new ReviewEngine(makeBudgetEnabledConfig({ batchSize: 1 }), mockAdapter);
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      const pr = makePRContext({
+        changedFiles: [
+          {
+            path: 'src/a.ts',
+            status: 'modified' as const,
+            additions: 600,
+            deletions: 0,
+            patch: makePatch(600),
+          },
+          {
+            path: 'src/b.ts',
+            status: 'modified' as const,
+            additions: 600,
+            deletions: 0,
+            patch: makePatch(600),
+          },
+        ],
+      });
+
+      await eng.reviewPR(pr);
+
+      expect(mockBuildReviewPrompt).toHaveBeenCalled();
+      for (const call of mockBuildReviewPrompt.mock.calls) {
+        const options = call[2] as { budgetMode?: string; totalDiffLines?: number };
+        expect(options.budgetMode).toBeUndefined();
+        expect(options.totalDiffLines).toBeUndefined();
+      }
+    });
+
+    it('prepends the split banner on the single-batch execution-failure path', async () => {
+      const eng = new ReviewEngine(makeBudgetEnabledConfig(), mockAdapter);
+      mockRunOpenCode.mockResolvedValue({
+        success: false,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 100,
+      });
+
+      const result = await eng.reviewPR(makeLargePR(1500));
+
+      expect(result.summary).toContain('Large PR Detected');
+      expect(result.summary).toContain('split');
+      expect(result.verdict.reasoning).toBe('Review execution failed');
     });
   });
 });
