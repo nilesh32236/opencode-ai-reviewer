@@ -189,6 +189,36 @@ export async function applyMigrations(runner: MigrationRunner): Promise<void> {
     await runner.exec(
       `CREATE INDEX IF NOT EXISTS idx_review_metrics_period ON review_metrics(period_type, period_start)`,
     );
+
+    // Rate limit tracking for the Probot app. Each row records one
+    // rate-limited action (slash command, @mention conversation, or threaded
+    // reply) so per-repo, per-user, per-PR cooldown, and daily token budget
+    // limits can be enforced and persisted across app restarts.
+    await runner.exec(`
+      CREATE TABLE IF NOT EXISTS rate_limits (
+        id TEXT PRIMARY KEY,
+        repo TEXT,
+        github_user TEXT,
+        pr_number INTEGER,
+        action TEXT NOT NULL DEFAULT 'review',
+        tier TEXT NOT NULL DEFAULT 'command',
+        tokens_used INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    await runner.exec(
+      `CREATE INDEX IF NOT EXISTS idx_rate_limits_repo_created ON rate_limits(repo, created_at)`,
+    );
+    await runner.exec(
+      `CREATE INDEX IF NOT EXISTS idx_rate_limits_user_created ON rate_limits(github_user, created_at)`,
+    );
+    await runner.exec(`DROP INDEX IF EXISTS idx_rate_limits_pr_tier`);
+    await runner.exec(
+      `CREATE INDEX IF NOT EXISTS idx_rate_limits_repo_pr_tier ON rate_limits(repo, pr_number, tier)`,
+    );
+    await runner.exec(
+      `CREATE INDEX IF NOT EXISTS idx_rate_limits_created ON rate_limits(created_at)`,
+    );
   } catch (err) {
     const logger = new Logger('LearningStore');
     logger.error('Migration failed', err);

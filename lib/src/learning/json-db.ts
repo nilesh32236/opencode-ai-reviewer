@@ -12,6 +12,9 @@ import type {
   LearningRepository,
   PatternInput,
   PerPRStats,
+  RateLimitActionInput,
+  RateLimitCountFilter,
+  RateLimitRow,
   ReviewMetricsRow,
   SeverityDistribution,
   TelemetryStats,
@@ -124,6 +127,7 @@ export class JsonDatabase implements LearningRepository {
     prompt_overrides: PromptOverrideRow[];
     meta_review_counter: MetaReviewCounterRow[];
     review_metrics?: ReviewMetricsRow[];
+    rate_limits: RateLimitRow[];
   };
   private filePath: string;
   private inTransaction = false;
@@ -143,8 +147,12 @@ export class JsonDatabase implements LearningRepository {
       custom_rules: [],
       prompt_overrides: [],
       meta_review_counter: [],
+      rate_limits: [],
     };
     this.load();
+    if (this.data.rate_limits === undefined) {
+      this.data.rate_limits = [];
+    }
     if (this.data.meta_review_counter.length === 0) {
       this.data.meta_review_counter.push({ id: 1, count: 0 });
       this.save();
@@ -1019,5 +1027,175 @@ export class JsonDatabase implements LearningRepository {
       else dist.unknown++;
     }
     return dist;
+  }
+
+  // ─── Rate limit tracking ─────────────────────────────────
+
+  /**
+   * Record a rate-limited action.
+   * @param input - Rate limit action data to append.
+   * @returns The generated row ID, for later token reconciliation.
+   */
+  async recordRateLimitAction(input: RateLimitActionInput): Promise<string> {
+    const id = generateId();
+    this.data.rate_limits.push({
+      id,
+      repo: input.repo,
+      github_user: input.githubUser,
+      pr_number: input.prNumber,
+      action: input.action,
+      tier: input.tier,
+      tokens_used: input.tokensUsed,
+      created_at: new Date().toISOString(),
+    });
+    this.save();
+    return id;
+  }
+
+  /**
+   * Reconcile a reserved rate-limit row with its actual token usage.
+   * @param id - Row ID returned by recordRateLimitAction.
+   * @param tokensUsed - Actual tokens consumed by the run.
+   */
+  async completeRateLimitAction(id: string, tokensUsed: number): Promise<void> {
+    const row = this.data.rate_limits.find((r) => r.id === id);
+    if (!row) return;
+    row.tokens_used = tokensUsed;
+    this.save();
+  }
+
+  /**
+   * Count rate-limit rows matching a filter.
+   * @param filter - Filter with optional repo/user/tier and required sinceMs cutoff.
+   * @returns The number of matching rows.
+   */
+  async countRateLimitActions(filter: RateLimitCountFilter): Promise<number> {
+    return this.data.rate_limits.filter((r) => {
+      const ts = Date.parse(r.created_at);
+      if (Number.isNaN(ts) || ts < filter.sinceMs) return false;
+      if (filter.repo && r.repo !== filter.repo) return false;
+      if (filter.user && r.github_user !== filter.user) return false;
+      if (filter.tier && r.tier !== filter.tier) return false;
+      return true;
+    }).length;
+  }
+
+  /**
+   * Sum the tokens_used of all rate-limit rows at or after sinceMs.
+   * @param sinceMs - Window cutoff as an epoch millisecond timestamp.
+   * @returns Total estimated tokens consumed in the window.
+   */
+  async sumRateLimitTokens(sinceMs: number): Promise<number> {
+    return this.data.rate_limits.reduce((sum, r) => {
+      const ts = Date.parse(r.created_at);
+      if (!Number.isNaN(ts) && ts >= sinceMs) {
+        return sum + (r.tokens_used || 0);
+      }
+      return sum;
+    }, 0);
+  }
+
+  /**
+   * Get the most recent rate-limit action time for a repo, PR, and tier.
+   * PR/issue numbers are scoped per repository, so the repo dimension is
+   * required to avoid cross-repo cooldown collisions.
+   * @param repo - Repository in owner/repo format.
+   * @param prNumber - PR number to look up.
+   * @param tier - Tier ('command' or 'interactive').
+   * @returns Epoch millisecond timestamp of the last action, or null if none.
+   */
+  async getLastRateLimitTime(repo: string, prNumber: number, tier: string): Promise<number | null> {
+    let last: number | null = null;
+    for (const r of this.data.rate_limits) {
+      if (r.repo !== repo || r.pr_number !== prNumber || r.tier !== tier) continue;
+      const ts = Date.parse(r.created_at);
+      if (!Number.isNaN(ts) && (last === null || ts > last)) {
+        last = ts;
+      }
+    }
+    return last;
+  }
+
+  /**
+   * Aggregate rate-limit counts grouped by repository.
+   * @param sinceMs - Window cutoff as an epoch millisecond timestamp.
+   * @param limit - Maximum number of results (default: 10).
+   * @param tier - Optional tier filter (e.g. 'command' to match hourly enforcement).
+   * @returns Array of repo/count pairs ordered by count descending.
+   */
+  async getRateLimitUsageByRepo(
+    sinceMs: number,
+    limit = 10,
+    tier?: string,
+  ): Promise<Array<{ repo: string; count: number }>> {
+    const counts = new Map<string, number>();
+    for (const r of this.data.rate_limits) {
+      const ts = Date.parse(r.created_at);
+      if (Number.isNaN(ts) || ts < sinceMs) continue;
+      if (tier && r.tier !== tier) continue;
+      counts.set(r.repo, (counts.get(r.repo) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .map(([repo, count]) => ({ repo, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, limit);
+  }
+
+  /**
+   * Aggregate rate-limit counts grouped by GitHub user.
+   * @param sinceMs - Window cutoff as an epoch millisecond timestamp.
+   * @param limit - Maximum number of results (default: 10).
+   * @returns Array of user/count pairs ordered by count descending.
+   */
+  async getRateLimitUsageByUser(
+    sinceMs: number,
+    limit = 10,
+  ): Promise<Array<{ user: string; count: number }>> {
+    const counts = new Map<string, number>();
+    for (const r of this.data.rate_limits) {
+      const ts = Date.parse(r.created_at);
+      if (Number.isNaN(ts) || ts < sinceMs) continue;
+      counts.set(r.github_user, (counts.get(r.github_user) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .map(([user, count]) => ({ user, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, limit);
+  }
+
+  /**
+   * Delete rate-limit rows for a repo, user, or (with no args) all rows.
+   * @param repo - Optional repository to reset.
+   * @param user - Optional GitHub user to reset.
+   * @returns Number of deleted rows.
+   */
+  async resetRateLimits(repo?: string, user?: string): Promise<number> {
+    const before = this.data.rate_limits.length;
+    if (!repo && !user) {
+      this.data.rate_limits = [];
+    } else {
+      this.data.rate_limits = this.data.rate_limits.filter((r) => {
+        if (repo && r.repo === repo) return false;
+        if (user && r.github_user === user) return false;
+        return true;
+      });
+    }
+    this.save();
+    return before - this.data.rate_limits.length;
+  }
+
+  /**
+   * Delete rate-limit rows older than the given timestamp.
+   * @param olderThanMs - Rows created before this epoch millisecond timestamp are deleted.
+   * @returns Number of deleted rows.
+   */
+  async cleanupRateLimits(olderThanMs: number): Promise<number> {
+    const before = this.data.rate_limits.length;
+    this.data.rate_limits = this.data.rate_limits.filter((r) => {
+      const ts = Date.parse(r.created_at);
+      return Number.isNaN(ts) || ts >= olderThanMs;
+    });
+    this.save();
+    return before - this.data.rate_limits.length;
   }
 }

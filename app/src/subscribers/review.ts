@@ -1,16 +1,28 @@
 import { Logger, parseCommand } from '@opencode-pr-agent/lib';
-import type { EventBus, GitHubEvent, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
+import type {
+  EventBus,
+  GitHubEvent,
+  LearningStore,
+  RateLimiter,
+  Subscriber,
+} from '@opencode-pr-agent/lib';
 import { handlePRReview } from '../handlers/pr-review.js';
 import { buildConfig } from '../utils/config.js';
+import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
 /**
  * Create a subscriber that handles PR review, re-review on push, and `/review` commands.
  * @param learningStore - The learning store instance for review context.
  * @param bus - The event bus for publishing review-completed events.
+ * @param rateLimiter - The shared rate limiter for cost control.
  * @returns A subscriber object for the review command.
  */
-export function createReviewSubscriber(learningStore: LearningStore, bus: EventBus): Subscriber {
+export function createReviewSubscriber(
+  learningStore: LearningStore,
+  bus: EventBus,
+  rateLimiter: RateLimiter,
+): Subscriber {
   const logger = new Logger('ReviewSubscriber');
   return {
     name: 'ReviewSubscriber',
@@ -41,6 +53,16 @@ export function createReviewSubscriber(learningStore: LearningStore, bus: EventB
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;
 
+        // Auto-triggered events (pr.opened / pr.synchronize) go through the same
+        // command-tier guardrails, but no user invoked the bot, so a denial comment
+        // would be misleading — enforce silently in that case.
+        const isCommandInvoked =
+          event.type === 'comment.created' || event.type === 'review_comment.created';
+        const reservation = await checkRateLimit(rateLimiter, event, 'command', 'review', {
+          postDenialComment: isCommandInvoked,
+        });
+        if (!reservation) return;
+
         const previousHeadSha =
           event.type === 'pr.synchronize'
             ? (evPayload.before as string) ||
@@ -57,6 +79,14 @@ export function createReviewSubscriber(learningStore: LearningStore, bus: EventB
           previousHeadSha,
         );
         if (result) {
+          await recordRateLimit(
+            rateLimiter,
+            event,
+            'command',
+            'review',
+            reservation,
+            result.usage?.totalTokens,
+          );
           try {
             await bus.publish({
               type: 'review.completed',

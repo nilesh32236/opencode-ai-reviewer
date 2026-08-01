@@ -13,6 +13,18 @@ function parseEnvInt(envVar: string | undefined, fallback: number): number {
 }
 
 /**
+ * Clamp an integer into a [min, max] range so that hostile or malformed env
+ * overrides (negative, absurdly large) cannot silently disable rate limits.
+ * @param value - Parsed integer value.
+ * @param min - Inclusive minimum.
+ * @param max - Inclusive maximum (defaults to Number.MAX_SAFE_INTEGER).
+ * @returns The clamped integer.
+ */
+function clampInt(value: number, min: number, max: number = Number.MAX_SAFE_INTEGER): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+/**
  * Build the agent configuration from environment variables and defaults.
  * @returns The resolved agent configuration object.
  */
@@ -69,6 +81,76 @@ export function buildConfig(): AgentConfig {
       feedbackSignals: ['dismissed', 'reaction', 'disputed_comment'],
       metaReview: { enabled: true, interval: 5, minFindingsForReview: 3 },
       patternDiscovery: { enabled: true, minFrequency: 3, windowSize: 100 },
+    },
+    rateLimiting: {
+      ...DEFAULT_CONFIG.rateLimiting,
+      enabled: process.env.RATE_LIMIT_ENABLED !== 'false',
+      reviewsPerRepoPerHour: clampInt(
+        parseEnvInt(
+          process.env.RATE_LIMIT_REVIEWS_PER_REPO_HOUR,
+          DEFAULT_CONFIG.rateLimiting.reviewsPerRepoPerHour,
+        ),
+        0,
+        1000,
+      ),
+      reviewsPerUserPerDay: clampInt(
+        parseEnvInt(
+          process.env.RATE_LIMIT_REVIEWS_PER_USER_DAY,
+          DEFAULT_CONFIG.rateLimiting.reviewsPerUserPerDay,
+        ),
+        0,
+        10000,
+      ),
+      prCooldownMinutes: clampInt(
+        parseEnvInt(
+          process.env.RATE_LIMIT_PR_COOLDOWN_MINUTES,
+          DEFAULT_CONFIG.rateLimiting.prCooldownMinutes,
+        ),
+        0,
+        1440,
+      ),
+      conversationCooldownSeconds: clampInt(
+        parseEnvInt(
+          process.env.RATE_LIMIT_CONVERSATION_COOLDOWN_SECONDS,
+          DEFAULT_CONFIG.rateLimiting.conversationCooldownSeconds,
+        ),
+        0,
+        3600,
+      ),
+      dailyTokenBudget: clampInt(
+        parseEnvInt(
+          process.env.RATE_LIMIT_DAILY_TOKEN_BUDGET,
+          DEFAULT_CONFIG.rateLimiting.dailyTokenBudget,
+        ),
+        0,
+      ),
+      estimatedTokensPerCommand: clampInt(
+        parseEnvInt(
+          process.env.RATE_LIMIT_ESTIMATED_TOKENS_PER_COMMAND,
+          DEFAULT_CONFIG.rateLimiting.estimatedTokensPerCommand,
+        ),
+        0,
+      ),
+      estimatedTokensPerInteractive: clampInt(
+        parseEnvInt(
+          process.env.RATE_LIMIT_ESTIMATED_TOKENS_PER_INTERACTIVE,
+          DEFAULT_CONFIG.rateLimiting.estimatedTokensPerInteractive,
+        ),
+        0,
+      ),
+      adminUsers: process.env.RATE_LIMIT_ADMIN_USERS
+        ? process.env.RATE_LIMIT_ADMIN_USERS.split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : DEFAULT_CONFIG.rateLimiting.adminUsers,
+      retentionHours: clampInt(
+        parseEnvInt(
+          process.env.RATE_LIMIT_RETENTION_HOURS,
+          DEFAULT_CONFIG.rateLimiting.retentionHours,
+        ),
+        1,
+        8760,
+      ),
     },
   };
 }

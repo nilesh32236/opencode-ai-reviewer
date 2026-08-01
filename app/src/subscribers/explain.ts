@@ -1,14 +1,16 @@
 import { Logger, parseCommand } from '@opencode-pr-agent/lib';
-import type { GitHubEvent, Subscriber } from '@opencode-pr-agent/lib';
+import type { GitHubEvent, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
 import { handleCommand } from '../handlers/commands.js';
 import { buildConfig } from '../utils/config.js';
+import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
 /**
  * Create a subscriber that handles `/explain` commands on comments.
+ * @param rateLimiter - The shared rate limiter for cost control.
  * @returns A subscriber object for the explain command.
  */
-export function createExplainSubscriber(): Subscriber {
+export function createExplainSubscriber(rateLimiter: RateLimiter): Subscriber {
   const logger = new Logger('ExplainSubscriber');
   return {
     name: 'ExplainSubscriber',
@@ -23,6 +25,8 @@ export function createExplainSubscriber(): Subscriber {
         const config = buildConfig();
         const issueNumber = event.prNumber || 0;
         if (!issueNumber) return;
+        const reservation = await checkRateLimit(rateLimiter, event, 'command', 'explain');
+        if (!reservation) return;
         await handleCommand(
           'explain',
           issueNumber,
@@ -32,6 +36,7 @@ export function createExplainSubscriber(): Subscriber {
           undefined,
           signal,
         );
+        await recordRateLimit(rateLimiter, event, 'command', 'explain', reservation);
       } catch (err) {
         logger.error(
           `ExplainSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${err instanceof Error ? err.message : err}`,

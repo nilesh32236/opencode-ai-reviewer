@@ -1,14 +1,16 @@
 import { Logger, parseCommand } from '@opencode-pr-agent/lib';
-import type { GitHubEvent, Subscriber } from '@opencode-pr-agent/lib';
+import type { GitHubEvent, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
 import { handleAudit } from '../handlers/audit.js';
 import { buildConfig } from '../utils/config.js';
+import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
 /**
  * Create a subscriber that handles `/audit` commands on comments.
+ * @param rateLimiter - The shared rate limiter for cost control.
  * @returns A subscriber object for the audit command.
  */
-export function createAuditSubscriber(): Subscriber {
+export function createAuditSubscriber(rateLimiter: RateLimiter): Subscriber {
   const logger = new Logger('AuditSubscriber');
   return {
     name: 'AuditSubscriber',
@@ -27,6 +29,10 @@ export function createAuditSubscriber(): Subscriber {
             : ((auditPayload.pull_request as Record<string, unknown> | undefined)?.number as
                 | number
                 | undefined);
+        const reservation = await checkRateLimit(rateLimiter, event, 'command', 'audit', {
+          prNumber: auditIssue,
+        });
+        if (!reservation) return;
         await handleAudit(
           event.repo || '',
           getToken(),
@@ -37,6 +43,7 @@ export function createAuditSubscriber(): Subscriber {
           signal,
           auditIssue,
         );
+        await recordRateLimit(rateLimiter, event, 'command', 'audit', reservation);
       } catch (err) {
         logger.error(
           `AuditSubscriber failed for repo ${event.repo}: ${err instanceof Error ? err.message : err}`,

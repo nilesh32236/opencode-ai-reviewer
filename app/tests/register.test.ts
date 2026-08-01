@@ -24,6 +24,7 @@ const EXPECTED_SUBSCRIBERS = [
   'ExplainSubscriber',
   'ConversationSubscriber',
   'SetupSubscriber',
+  'AdminSubscriber',
   'FeedbackSubscriber',
   'MetaReviewSubscriber',
   'DiscoverSubscriber',

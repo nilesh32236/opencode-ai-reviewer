@@ -187,6 +187,20 @@ export const LinterConfigSchema = z.object({
   timeout: z.number().int().positive().optional(),
 });
 
+/** Zod schema validating rate limiting configuration. */
+export const RateLimitingConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  reviewsPerRepoPerHour: z.number().int().min(0).max(1000).default(10),
+  reviewsPerUserPerDay: z.number().int().min(0).max(10000).default(50),
+  prCooldownMinutes: z.number().int().min(0).max(1440).default(2),
+  conversationCooldownSeconds: z.number().int().min(0).max(3600).default(30),
+  dailyTokenBudget: z.number().int().min(0).default(500000),
+  estimatedTokensPerCommand: z.number().int().min(0).default(25000),
+  estimatedTokensPerInteractive: z.number().int().min(0).default(5000),
+  adminUsers: z.array(z.string()).default([]),
+  retentionHours: z.number().int().min(1).max(8760).default(48),
+});
+
 /** Zod schema validating the full agent configuration, merging provided values with defaults. */
 export const AgentConfigSchema = z.object({
   platform: z.enum(['github', 'gitlab']).optional().default('github'),
@@ -213,6 +227,7 @@ export const AgentConfigSchema = z.object({
   audit: AuditConfigSchema.default({}),
   learning: LearningConfigSchema.default({}),
   linters: z.array(LinterConfigSchema).default([]),
+  rateLimiting: RateLimitingConfigSchema.default(RateLimitingConfigSchema.parse({})),
 });
 
 // ─── Parse & Validate Helpers ─────────────────────────────
