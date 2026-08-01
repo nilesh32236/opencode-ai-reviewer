@@ -63,7 +63,6 @@ function makeState(overrides: Partial<ConversationState> = {}): ConversationStat
     threadId: 'org/repo/42/src/a.ts',
     turnCount: 0,
     lastActivityTimestamp: Date.now(),
-    messageCount: 0,
     ...overrides,
   };
 }
@@ -105,13 +104,49 @@ describe('buildConversationPrompt', () => {
 
   it('includes the summary snapshot as a condensed preamble when present', () => {
     const messages = makeMessages(30);
-    const state = makeState({ summarySnapshot: 'We agreed to extract the helper.' });
+    const state = makeState({
+      summarySnapshot: 'We agreed to extract the helper.',
+      summarizedCount: 10,
+    });
     const prompt = buildConversationPrompt(makeContext(messages), BASE_CONFIG, state);
     expect(prompt).toContain('## Conversation Summary');
     expect(prompt).toContain('We agreed to extract the helper.');
     // Older messages are not re-listed in the thread.
     expect(prompt).not.toContain('\nmessage 1\n');
     expect(prompt).toContain('\nmessage 30\n');
+  });
+
+  it('re-renders older messages not yet covered by the summary snapshot', () => {
+    // 23 messages with a summary covering only the first 2: msg3 rolled out of
+    // the window but is not in the snapshot — it must still reach the model.
+    const messages = makeMessages(23);
+    const state = makeState({ summarySnapshot: 'summary of msg1-2', summarizedCount: 2 });
+    const prompt = buildConversationPrompt(makeContext(messages), BASE_CONFIG, state);
+    expect(prompt).toContain('recently rolled out');
+    expect(prompt).toContain('\nmessage 3\n');
+    // Fully covered older messages are not re-sent.
+    expect(prompt).not.toContain('\nmessage 1\n');
+    expect(prompt).not.toContain('\nmessage 2\n');
+  });
+
+  it('enforces the token budget by reducing the recent-window size', () => {
+    // Each message is huge (~500 chars), so 20 recent messages blow far past a
+    // tiny budget; the prompt must shrink the window rather than overflow.
+    const messages = Array.from({ length: 30 }, (_, i) => ({
+      role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+      body: `very long message ${i + 1} ` + 'x'.repeat(500),
+      author: i % 2 === 0 ? 'alice' : 'bot',
+    }));
+    const prompt = buildConversationPrompt(makeContext(messages), {
+      ...BASE_CONFIG,
+      slidingWindowSize: 20,
+      contextTokenBudget: 2500,
+    });
+    // The most recent message is always kept.
+    expect(prompt).toContain('very long message 30');
+    // A window larger than what fits must have been dropped (older message gone).
+    const estimate = estimateTokens(prompt);
+    expect(estimate).toBeLessThanOrEqual(3000);
   });
 
   it('appends context usage info with turn and token estimate', () => {
@@ -172,6 +207,20 @@ describe('buildConversationSummaryPrompt', () => {
     expect(prompt).toContain('conversation-summary.txt');
     expect(prompt).toContain('turn 12');
   });
+
+  it('merges new messages into an existing summary instead of rewriting', () => {
+    const messages = makeMessages(3);
+    const prompt = buildConversationSummaryPrompt(
+      messages,
+      BASE_CONFIG,
+      12,
+      'Existing summary text.',
+    );
+    expect(prompt).toContain('Existing Summary');
+    expect(prompt).toContain('Existing summary text.');
+    expect(prompt).toContain('Newer Messages to Merge In');
+    expect(prompt).toContain('message 1');
+  });
 });
 
 describe('ConversationStateManager', () => {
@@ -199,10 +248,9 @@ describe('ConversationStateManager', () => {
   it('updateState stores a summary snapshot with its coverage count', () => {
     const manager = new ConversationStateManager();
     const state = manager.getOrCreateState('a');
-    manager.updateState(state, 'summary text', 5, 25);
+    manager.updateState(state, 'summary text', 5);
     expect(state.summarySnapshot).toBe('summary text');
     expect(state.summarizedCount).toBe(5);
-    expect(state.messageCount).toBe(25);
     expect(state.turnCount).toBe(1);
   });
 
@@ -248,6 +296,80 @@ describe('ConversationStateManager', () => {
     const state = makeState({ turnCount: 10_000 });
     expect(manager.shouldAutoClose(state, { ...BASE_CONFIG, maxTurns: 0 }).shouldClose).toBe(false);
   });
+
+  it('shouldAutoClose guards against a missing maxTurns instead of throwing', () => {
+    const manager = new ConversationStateManager();
+    const state = makeState({ turnCount: 10 });
+    expect(
+      manager.shouldAutoClose(state, { ...BASE_CONFIG, maxTurns: undefined as unknown as number })
+        .shouldClose,
+    ).toBe(false);
+  });
+
+  it('shouldSummarize guards against a missing slidingWindowSize', () => {
+    const manager = new ConversationStateManager();
+    const state = makeState();
+    expect(
+      manager.shouldSummarize(state, 10, {
+        ...BASE_CONFIG,
+        slidingWindowSize: undefined as unknown as number,
+      }),
+    ).toBe(false);
+  });
+
+  it('evicts idle states older than the TTL on next access', () => {
+    const manager = new ConversationStateManager();
+    const state = manager.getOrCreateState('stale');
+    state.lastActivityTimestamp = Date.now() - ConversationStateManager.STATE_TTL_MS - 1000;
+    const fresh = manager.getOrCreateState('fresh');
+    expect(fresh.turnCount).toBe(0);
+    // The stale entry was pruned when a new one was created.
+    const recreated = manager.getOrCreateState('stale');
+    expect(recreated).not.toBe(state);
+  });
+
+  it('evicts the least-recently-active state when at capacity', () => {
+    const manager = new ConversationStateManager();
+    const first = manager.getOrCreateState('first');
+    first.lastActivityTimestamp = 1;
+    for (let i = 0; i < ConversationStateManager.MAX_STATES; i++) {
+      manager.getOrCreateState(`thread-${i}`);
+    }
+    // 'first' is the least recently active and must have been evicted.
+    expect(manager.getOrCreateState('first')).not.toBe(first);
+  });
+
+  it('serializes turns on the same thread with withThreadLock', async () => {
+    const manager = new ConversationStateManager();
+    const order: string[] = [];
+    await Promise.all([
+      manager.withThreadLock('a', async () => {
+        order.push('start-1');
+        await new Promise((r) => setTimeout(r, 20));
+        order.push('end-1');
+      }),
+      manager.withThreadLock('a', async () => {
+        order.push('start-2');
+        order.push('end-2');
+      }),
+      manager.withThreadLock('b', async () => {
+        order.push('b');
+      }),
+    ]);
+    // Same-thread turns are serialized; different threads run independently.
+    expect(order.indexOf('start-1')).toBeLessThan(order.indexOf('end-1'));
+    expect(order.indexOf('start-2')).toBeLessThan(order.indexOf('end-2'));
+    expect(order.indexOf('end-1')).toBeLessThan(order.indexOf('start-2'));
+  });
+
+  it('updateState preserves alreadyClosed flag across turns', () => {
+    const manager = new ConversationStateManager();
+    const state = manager.getOrCreateState('a');
+    state.alreadyClosed = true;
+    manager.updateState(state, undefined, undefined, 3);
+    expect(state.alreadyClosed).toBe(true);
+    expect(state.turnCount).toBe(1);
+  });
 });
 
 describe('conversationThreadId', () => {
@@ -263,6 +385,12 @@ describe('conversationThreadId', () => {
     const ctx = makeContext([]);
     ctx.filePath = undefined;
     expect(conversationThreadId(ctx)).toBe('42/issue');
+  });
+
+  it('includes the repo in the fallback key when available', () => {
+    expect(conversationThreadId({ ...makeContext([]), repo: 'org/repo' })).toBe(
+      'org/repo/42/src/a.ts',
+    );
   });
 });
 

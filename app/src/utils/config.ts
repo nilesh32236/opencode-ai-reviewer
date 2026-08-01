@@ -107,6 +107,10 @@ export function buildConfig(): AgentConfig {
         1000,
         1000000,
       ),
+      ...(process.env.CONVERSATION_SUMMARIZATION_MODEL !== undefined &&
+      process.env.CONVERSATION_SUMMARIZATION_MODEL.trim() !== ''
+        ? { summarizationModel: process.env.CONVERSATION_SUMMARIZATION_MODEL.trim() }
+        : {}),
     },
     rateLimiting: {
       ...DEFAULT_CONFIG.rateLimiting,

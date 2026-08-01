@@ -78,12 +78,16 @@ export async function handleConversation(
     filePath = threadResult.filePath;
     diffHunk = threadResult.diffHunk;
   } else {
-    // For issue comments, fetch the comment thread on the PR
+    // For issue comments, fetch the comment thread on the PR. Accumulate up to
+    // the configured sliding-window size so long issue threads can actually
+    // engage the sliding-window/summarization machinery instead of always
+    // fitting in the window.
     const threadResult = await gatherIssueCommentThread(
       gh,
       prNumber,
       commentId,
       mentionHandle,
+      config.conversation.slidingWindowSize,
       signal,
     );
     thread = threadResult.thread;
@@ -99,7 +103,11 @@ export async function handleConversation(
   const intent = lastUserMessage ? detectIntent(lastUserMessage.body) : 'general';
 
   const context: ConversationContext = {
-    threadId: `${repo}/${prNumber}/${filePath || 'issue'}`,
+    // Include the triggering comment id for review-comment threads so each
+    // distinct discussion tracks its own turns/summary instead of sharing a
+    // single state across every inline thread on the same file.
+    threadId: `${repo}/${prNumber}/${filePath || 'issue'}${isReviewComment ? `#${commentId}` : ''}`,
+    repo,
     filePath,
     diffHunk,
     thread,
@@ -115,6 +123,13 @@ export async function handleConversation(
     const response = await engine.runConversation(context, undefined, tempDir, stateManager);
 
     if (signal?.aborted) return;
+
+    // Already-closed threads return '' as a silent no-op — do not post a
+    // duplicate close message or an empty comment.
+    if (!response) {
+      logger.info(`Conversation ${commentId} returned no response — skipping post`);
+      return;
+    }
 
     // Post the response as a reply
     if (isReviewComment) {
@@ -224,12 +239,18 @@ export async function gatherReviewCommentThread(
  * newest window comments are used so the @mention is answered rather than
  * silently dropped.
  *
+ * Up to `windowSize` comments preceding the trigger are accumulated so issue
+ * threads can grow beyond the conversation sliding window and trigger the
+ * summarization machinery (a hardcoded 5-comment cap always fit the window and
+ * made the feature dead for issue @mentions).
+ *
  * Exported for unit testing.
  *
  * @param gh - GitHub API helper instance.
  * @param prNumber - PR number.
  * @param commentId - Triggering issue comment ID.
  * @param mentionHandle - Bot mention handle.
+ * @param windowSize - Number of preceding comments to accumulate (defaults to 20).
  * @param signal - Optional AbortSignal to cancel the underlying API requests.
  * @returns Object containing context conversation messages.
  */
@@ -238,6 +259,7 @@ export async function gatherIssueCommentThread(
   prNumber: number,
   commentId: number,
   mentionHandle: string,
+  windowSize = 20,
   signal?: AbortSignal,
 ): Promise<IssueCommentThread> {
   let allComments: Array<{ id: number; body: string; user?: { login?: string } }> = [];
@@ -286,12 +308,13 @@ export async function gatherIssueCommentThread(
     if (triggerComment) {
       contextComments = [triggerComment];
     } else {
-      contextComments = allComments.slice(-5);
+      contextComments = allComments.slice(-windowSize - 1);
     }
   } else {
-    // Ascending window: take up to 5 comments preceding the trigger (older
-    // turns) plus the trigger itself, already in chronological order.
-    const contextStart = Math.max(0, triggerIdx - 5);
+    // Ascending window: take up to `windowSize` comments preceding the trigger
+    // (older turns) plus the trigger itself, already in chronological order, so
+    // long issue threads overflow the sliding window and can be summarized.
+    const contextStart = Math.max(0, triggerIdx - windowSize);
     contextComments = allComments.slice(contextStart, triggerIdx + 1);
   }
 

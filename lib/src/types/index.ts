@@ -418,6 +418,8 @@ export interface ConversationMessage {
 export interface ConversationContext {
   /** Unique identifier for the conversation thread (repo+pr+file), when known */
   threadId?: string;
+  /** Repository in "owner/repo" format (used to build collision-free fallback thread ids) */
+  repo?: string;
   /** File path the comment is attached to (for review comments) */
   filePath?: string;
   /** Diff hunk context around the comment */
@@ -445,8 +447,8 @@ export interface ConversationState {
   summarySnapshot?: string;
   /** Number of older messages covered by the current summary snapshot */
   summarizedCount?: number;
-  /** Total number of messages seen */
-  messageCount: number;
+  /** Whether the thread has already been auto-closed (avoid duplicate close messages) */
+  alreadyClosed?: boolean;
 }
 
 /** Configuration for audit behavior. */
@@ -1036,6 +1038,8 @@ export interface PromptConfig {
     slidingWindowSize?: number;
     /** Token budget for the full conversation prompt */
     contextTokenBudget?: number;
+    /** Optional model override for summarization calls */
+    summarizationModel?: string;
   };
   /** Per-path and per-branch config overrides */
   overrides?: ConfigOverride[];
@@ -1044,6 +1048,16 @@ export interface PromptConfig {
 }
 
 // ─── Defaults ─────────────────────────────────────────────
+
+/** Default values for the conversation / @mention feature. */
+export const DEFAULT_CONVERSATION_CONFIG: ConversationConfig = {
+  mentionHandle: 'opencode-reviewer',
+  enabled: true,
+  maxTurns: 50,
+  slidingWindowSize: 20,
+  contextTokenBudget: 32000,
+};
+
 export const DEFAULT_CONFIG: AgentConfig = {
   platform: 'github',
   reviewModel: 'opencode/deepseek-v4-flash-free',
@@ -1126,11 +1140,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     },
   },
   conversation: {
-    mentionHandle: 'opencode-reviewer',
-    enabled: true,
-    maxTurns: 50,
-    slidingWindowSize: 20,
-    contextTokenBudget: 32000,
+    ...DEFAULT_CONVERSATION_CONFIG,
   },
   linters: [],
   rateLimiting: {

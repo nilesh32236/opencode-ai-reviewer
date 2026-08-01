@@ -19,7 +19,11 @@ import {
   buildReviewPrompt,
   buildSynthesisPrompt,
 } from './prompts/builder.js';
-import { buildConversationPrompt, buildConversationSummaryPrompt } from './prompts/conversation.js';
+import {
+  buildConversationPrompt,
+  buildConversationSummaryPrompt,
+  normalizeConversationConfig,
+} from './prompts/conversation.js';
 import { buildSelfHealPrompt } from './prompts/heal.js';
 import { buildVerificationPrompt } from './prompts/verify.js';
 import type {
@@ -1378,13 +1382,16 @@ export class ReviewEngine {
    * When a `stateManager` is provided, conversation state is tracked across
    * turns: the thread is auto-closed once it reaches `maxTurns`, and older
    * messages beyond the sliding window are condensed into a summary snapshot so
-   * the prompt stays within the configured context budget.
+   * the prompt stays within the configured context budget. Turns on the same
+   * thread are serialized with a per-thread lock so concurrent webhooks cannot
+   * interleave state transitions.
    *
    * @param context - Full conversation context (thread, file, diff, intent).
    * @param timeoutMinutes - Optional timeout override.
    * @param workingDirectory - Optional working directory for OpenCode execution.
    * @param stateManager - Optional state manager for turn/window/summary tracking.
-   * @returns The raw response text for posting as a GitHub comment.
+   * @returns The raw response text for posting as a GitHub comment ('' when the
+   * thread is already closed and should be silently skipped).
    */
   async runConversation(
     context: ConversationContext,
@@ -1394,147 +1401,204 @@ export class ReviewEngine {
   ): Promise<string> {
     // Reset telemetry so the reported usage reflects only this conversation invocation.
     this.telemetry = null;
-    const conversationConfig = this.config.conversation;
+    const conversationConfig = normalizeConversationConfig(this.config.conversation);
 
     const threadId = conversationThreadId(context);
     const state = stateManager?.getOrCreateState(threadId);
 
-    // Auto-close check: once the turn limit is reached, answer with the close
-    // message directly instead of spending a model call. Subsequent @mentions
-    // on the same thread keep returning the close message because the tracked
-    // turn count never resets below the limit.
-    if (state && stateManager) {
-      const decision = stateManager.shouldAutoClose(state, conversationConfig);
-      if (decision.shouldClose) {
-        this.logger.info(
-          `Conversation ${threadId} auto-closed (${decision.reason ?? 'limit'}) after ${state.turnCount} turns`,
-        );
-        return decision.message ?? '';
-      }
-    }
-
-    const workDir = workingDirectory || process.cwd();
-    const outputPath = path.join(workDir, '.opencode', 'conversation-output.txt');
-    ensureOutputDir(outputPath);
-
-    const prompt = buildConversationPrompt(context, conversationConfig, state);
-
-    const runResult = await runOpenCode(prompt, {
-      model: this.resolveModel('conversationModel'),
-      timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
-      workingDirectory: workDir,
-    });
-    await this.recordTelemetry(
-      context.prContext.number,
-      runResult.durationMs,
-      runResult.tokensUsed,
-      runResult,
-      this.resolveModel('conversationModel'),
-      workDir,
-    );
-
-    if (!runResult.success) {
-      return 'I encountered an error processing your request. Please try again or rephrase your question.';
-    }
-
-    // Read the response from the output file before any summarization pass so
-    // the secondary summarization run cannot overwrite the main reply.
-    let responseText: string;
-    try {
-      const output = await fs.readFile(outputPath, 'utf-8');
-      responseText = output.trim();
-    } catch {
-      return 'I encountered an error reading the conversation reply from `.opencode/conversation-output.txt`.';
-    }
-
-    // Sliding-window summarization: when the thread overflows the window and the
-    // older chunk has grown, condense the older messages synchronously so the
-    // next turn sees a summary instead of dropping context.
-    if (state && stateManager) {
-      const threadLength = context.thread.length;
-      try {
-        if (stateManager.shouldSummarize(state, threadLength, conversationConfig)) {
-          const summary = await this.summarizeOlderMessages(
-            context,
-            state,
-            conversationConfig,
-            workDir,
-          );
-          stateManager.updateState(
-            state,
-            summary,
-            Math.max(0, threadLength - conversationConfig.slidingWindowSize),
-            threadLength,
-          );
-        } else {
-          stateManager.updateState(state, undefined, undefined, threadLength);
+    const runTurn = async (): Promise<string> => {
+      // Auto-close check: once the turn limit is reached, answer with the close
+      // message directly instead of spending a model call. The message is posted
+      // only once — later @mentions on the closed thread return '' so the handler
+      // can skip posting a duplicate comment.
+      if (state && stateManager) {
+        if (state.alreadyClosed) {
+          this.logger.info(`Conversation ${threadId} already closed — skipping turn`);
+          return '';
         }
-      } catch (err) {
-        this.logger.warn(
-          `Conversation state update failed for ${threadId}: ${err instanceof Error ? err.message : err}`,
-        );
-        // State bookkeeping must never fail the conversation turn.
-        stateManager.updateState(state, undefined, undefined, threadLength);
+        const decision = stateManager.shouldAutoClose(state, conversationConfig);
+        if (decision.shouldClose) {
+          state.alreadyClosed = true;
+          this.logger.info(
+            `Conversation ${threadId} auto-closed (${decision.reason ?? 'limit'}) after ${state.turnCount} turns`,
+          );
+          return decision.message ?? '';
+        }
       }
-    }
 
-    if (responseText) return responseText;
-    return 'I encountered an error generating the conversation response (output was empty).';
+      const workDir = workingDirectory || process.cwd();
+      const outputPath = path.join(workDir, '.opencode', 'conversation-output.txt');
+      ensureOutputDir(outputPath);
+
+      const prompt = buildConversationPrompt(context, conversationConfig, state);
+
+      const runResult = await runOpenCode(prompt, {
+        model: this.resolveModel('conversationModel'),
+        timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+        workingDirectory: workDir,
+      });
+      await this.recordTelemetry(
+        context.prContext.number,
+        runResult.durationMs,
+        runResult.tokensUsed,
+        runResult,
+        this.resolveModel('conversationModel'),
+        workDir,
+      );
+
+      if (!runResult.success) {
+        return 'I encountered an error processing your request. Please try again or rephrase your question.';
+      }
+
+      // Read the response from the output file before any summarization pass so
+      // the secondary summarization run cannot overwrite the main reply.
+      let responseText: string;
+      try {
+        const output = await fs.readFile(outputPath, 'utf-8');
+        responseText = output.trim();
+      } catch {
+        return 'I encountered an error reading the conversation reply from `.opencode/conversation-output.txt`.';
+      }
+
+      // A failed/empty generation must not consume a turn or trigger a
+      // summarization pass — return before touching the tracked state.
+      if (!responseText) {
+        return 'I encountered an error generating the conversation response (output was empty).';
+      }
+
+      // Sliding-window summarization: when the thread overflows the window and the
+      // older chunk has grown, condense the newer older messages synchronously so
+      // the next turn sees a summary instead of dropping context.
+      if (state && stateManager) {
+        const threadLength = context.thread.length;
+        try {
+          if (stateManager.shouldSummarize(state, threadLength, conversationConfig)) {
+            const result = await this.summarizeOlderMessages(
+              context,
+              state,
+              conversationConfig,
+              workDir,
+              timeoutMinutes,
+            );
+            if (result.fresh) {
+              stateManager.updateState(
+                state,
+                result.text,
+                Math.max(0, threadLength - conversationConfig.slidingWindowSize),
+              );
+            } else {
+              // Summarization failed or produced no fresh snapshot — keep the
+              // previous coverage so shouldSummarize re-triggers next turn and
+              // the rolled-out messages are not dropped from context.
+              stateManager.updateState(state);
+            }
+          } else {
+            stateManager.updateState(state);
+          }
+        } catch (err) {
+          this.logger.warn(
+            `Conversation state update failed for ${threadId}: ${err instanceof Error ? err.message : err}`,
+          );
+          // State bookkeeping must never fail the conversation turn.
+          stateManager.updateState(state);
+        }
+      }
+
+      return responseText;
+    };
+
+    // Serialize turns on the same thread so concurrent webhooks cannot drop a
+    // turn increment or clobber a summary snapshot.
+    if (stateManager && state) {
+      return stateManager.withThreadLock(threadId, runTurn);
+    }
+    return runTurn();
   }
 
   /**
    * Generate (or refresh) a condensed summary of the older messages that fell
-   * out of the conversation sliding window. Runs synchronously every N turns —
-   * only when the older chunk grows past a threshold — so the added latency is
-   * negligible. Falls back to the previous summary on failure.
+   * out of the conversation sliding window. Runs synchronously only when
+   * `shouldSummarize` fires (the older chunk doubles), so the added latency is
+   * a single extra OpenCode run on those turns. Summarization is incremental —
+   * only the messages added since the last snapshot are sent, merged into the
+   * existing summary — so the summary prompt stays bounded.
+   *
+   * The summary output file is unlinked before the run so a failed/empty write
+   * yields an empty read and the previous snapshot is kept (never reused stale).
    *
    * @param context - Full conversation context.
    * @param state - Tracked conversation state (for previous summary fallback).
    * @param config - Conversation configuration (window size, summarization model).
    * @param workDir - Working directory for the summarization OpenCode run.
-   * @returns The summary text, or the previous snapshot when summarization fails.
+   * @param timeoutMinutes - Optional timeout override (defaults to config timeout).
+   * @returns The summary text and whether a genuinely fresh snapshot was produced.
    */
   private async summarizeOlderMessages(
     context: ConversationContext,
     state: ConversationState,
     config: ConversationConfig,
     workDir: string,
-  ): Promise<string> {
+    timeoutMinutes?: number,
+  ): Promise<{ text: string; fresh: boolean }> {
     const splitAt = context.thread.length - config.slidingWindowSize;
     const olderMessages = context.thread.slice(0, Math.max(0, splitAt));
-    if (olderMessages.length === 0) return state.summarySnapshot ?? '';
+    if (olderMessages.length === 0) {
+      return { text: state.summarySnapshot ?? '', fresh: false };
+    }
 
     const summaryPath = path.join(workDir, '.opencode', 'conversation-summary.txt');
     ensureOutputDir(summaryPath);
+    // Unlink any stale summary from a previous turn so a run that writes nothing
+    // cannot silently reuse old content as a "fresh" snapshot.
+    try {
+      await fs.unlink(summaryPath);
+    } catch {
+      // File does not exist yet — nothing to unlink.
+    }
+
+    // Only the messages added since the last snapshot need to be merged into
+    // the existing summary, bounding the summary prompt to O(window).
+    const covered = state.summarizedCount ?? 0;
+    const newMessages = olderMessages.slice(covered);
 
     const summaryPrompt = buildConversationSummaryPrompt(
-      olderMessages,
+      newMessages.length > 0 ? newMessages : olderMessages,
       config,
       state.turnCount + 1,
+      state.summarySnapshot,
     );
 
     this.logger.info(
-      `Summarizing ${olderMessages.length} older conversation messages (${context.prContext.number})`,
+      `Summarizing ${newMessages.length} new older conversation messages (${context.prContext.number})`,
     );
     const runResult = await runOpenCode(summaryPrompt, {
       model: config.summarizationModel ?? this.resolveModel('conversationModel'),
-      timeoutMinutes: this.config.timeoutMinutes,
+      timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory: workDir,
       quiet: true,
     });
 
+    await this.recordTelemetry(
+      context.prContext.number,
+      runResult.durationMs,
+      runResult.tokensUsed,
+      runResult,
+      config.summarizationModel ?? this.resolveModel('conversationModel'),
+      workDir,
+    );
+
     if (!runResult.success) {
       this.logger.warn('Conversation summarization run failed — keeping previous summary');
-      return state.summarySnapshot ?? '';
+      return { text: state.summarySnapshot ?? '', fresh: false };
     }
 
     try {
       const summary = (await fs.readFile(summaryPath, 'utf-8')).trim();
-      if (summary) return summary;
+      if (summary) return { text: summary, fresh: true };
     } catch {
       this.logger.warn('Failed to read conversation summary output — keeping previous summary');
     }
-    return state.summarySnapshot ?? '';
+    return { text: state.summarySnapshot ?? '', fresh: false };
   }
 
   /**

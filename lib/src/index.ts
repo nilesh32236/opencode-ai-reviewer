@@ -129,6 +129,7 @@ export {
   buildConversationPrompt,
   buildConversationSummaryPrompt,
   detectIntent,
+  normalizeConversationConfig,
 } from './prompts/conversation.js';
 export { buildSelfHealPrompt, extractRelevantLogSnippet } from './prompts/heal.js';
 export type { SelfHealPromptInputs } from './prompts/heal.js';

@@ -1,3 +1,5 @@
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { ConversationStateManager, Logger } from '@opencode-pr-agent/lib';
 import type { GitHubEvent, LearningStore, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
 import { handleConversation } from '../handlers/conversation.js';
@@ -60,6 +62,15 @@ export function createConversationSubscriber(
         const reservation = await checkRateLimit(rateLimiter, event, 'interactive', 'conversation');
         if (!reservation) return;
 
+        // Each conversation gets its own scratch directory under the OS temp dir
+        // so concurrent webhooks (Probot handles them concurrently) never clobber
+        // each other's `.opencode/conversation-output.txt` / `conversation-summary.txt`.
+        const convWorkDir = path.join(
+          os.tmpdir(),
+          'opencode-conv',
+          `${(event.repo || '').replace('/', '-')}-${prNumber}-${commentId}`,
+        );
+
         await handleConversation(
           commentId,
           prNumber,
@@ -69,7 +80,7 @@ export function createConversationSubscriber(
           isReviewComment,
           learningStore,
           signal,
-          undefined,
+          convWorkDir,
           conversationStateManager,
         );
         await recordRateLimit(rateLimiter, event, 'interactive', 'conversation', reservation);

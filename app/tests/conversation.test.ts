@@ -205,7 +205,7 @@ describe('conversation thread gathering', () => {
   });
 
   describe('gatherIssueCommentThread', () => {
-    it('takes up to 5 preceding comments plus the trigger, in chronological order', async () => {
+    it('takes up to the configured window of preceding comments plus the trigger, in chronological order', async () => {
       // Ascending window (direction: 'asc') — the ordering GitHub's issue
       // comments endpoint actually returns (it ignores sort/direction).
       const comments = Array.from({ length: 10 }, (_, i) => ({
@@ -215,7 +215,7 @@ describe('conversation thread gathering', () => {
       }));
       const gh = makeAdapter({ listComments: vi.fn().mockResolvedValue(comments) });
 
-      const result = await gatherIssueCommentThread(gh, 1, 10, MENTION);
+      const result = await gatherIssueCommentThread(gh, 1, 10, MENTION, 5);
 
       // trigger at idx 9; preceding 5 (older) are ids 5..9, already chronological.
       expect(result.thread.map((m) => m.body)).toEqual(['c5', 'c6', 'c7', 'c8', 'c9', 'c10']);
@@ -224,6 +224,22 @@ describe('conversation thread gathering', () => {
         { perPage: 100, maxPages: 5, direction: 'asc' },
         undefined,
       );
+    });
+
+    it('accumulates more than 5 preceding comments when the window is larger, so long threads can engage the sliding window', async () => {
+      const comments = Array.from({ length: 30 }, (_, i) => ({
+        id: i + 1,
+        body: `c${i + 1}`,
+        user: { login: 'user' },
+      }));
+      const gh = makeAdapter({ listComments: vi.fn().mockResolvedValue(comments) });
+
+      const result = await gatherIssueCommentThread(gh, 1, 30, MENTION, 20);
+
+      // trigger at idx 29; 20 preceding comments (ids 10..30) are accumulated.
+      expect(result.thread).toHaveLength(21);
+      expect(result.thread[0].body).toBe('c10');
+      expect(result.thread[result.thread.length - 1].body).toBe('c30');
     });
 
     it('fetches the trigger by id when it is older than the window', async () => {

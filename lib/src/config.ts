@@ -347,10 +347,15 @@ export function validateConfig(config: PromptConfig): PromptConfig {
       typeof conv.contextTokenBudget === 'number' && Number.isFinite(conv.contextTokenBudget)
         ? Math.min(Math.max(Math.round(conv.contextTokenBudget), 1000), 1000000)
         : undefined;
+    const summarizationModel =
+      typeof conv.summarizationModel === 'string' && conv.summarizationModel.trim() !== ''
+        ? conv.summarizationModel.trim()
+        : undefined;
     if (
       maxTurns !== undefined ||
       slidingWindowSize !== undefined ||
-      contextTokenBudget !== undefined
+      contextTokenBudget !== undefined ||
+      summarizationModel !== undefined
     ) {
       result.conversation = {};
       if (maxTurns !== undefined) result.conversation.maxTurns = maxTurns;
@@ -358,6 +363,9 @@ export function validateConfig(config: PromptConfig): PromptConfig {
         result.conversation.slidingWindowSize = slidingWindowSize;
       if (contextTokenBudget !== undefined)
         result.conversation.contextTokenBudget = contextTokenBudget;
+      if (summarizationModel !== undefined) {
+        result.conversation.summarizationModel = summarizationModel;
+      }
     }
   }
 
