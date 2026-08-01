@@ -14,6 +14,23 @@ const logger = new Logger('RateLimit');
 const RATE_LIMIT_MARKER = '<!-- rate-limit-reached -->';
 
 /**
+ * Minimum time between denial-notice posts for the same PR/issue. Repeated
+ * blocked attempts within this window update nothing (the marker is already in
+ * place), avoiding paginated comment-fetch + PATCH churn under burst traffic.
+ */
+const DENIAL_NOTICE_THROTTLE_MS = 10 * 60 * 1000;
+
+/** Last posted denial-notice timestamp per `repo#prNumber`. */
+const lastDenialNotice = new Map<string, number>();
+
+/**
+ * Clear the in-memory denial-notice throttle (used by tests).
+ */
+export function clearDenialNoticeThrottle(): void {
+  lastDenialNotice.clear();
+}
+
+/**
  * Create a shared RateLimiter backed by the learning store and app config.
  * @param store - The learning store used for rate-limit persistence.
  * @param config - Resolved agent configuration.
@@ -64,15 +81,26 @@ export async function checkRateLimit(
   const target = options.prNumber ?? event.prNumber ?? 0;
   if (!repo || !target) return null;
   const user = extractActor(event.payload);
+  if (user === 'unknown') {
+    logger.warn(
+      `Could not attribute rate-limit action to a GitHub user (repo=${repo}, pr=${target}); charging 'unknown' bucket`,
+    );
+  }
   const result = await limiter.checkReview(repo, user, target, { tier, action });
   if (result.allowed) return result;
   if (options.postDenialComment !== false) {
-    try {
-      const gh = new GitHubHelper(getToken(), repo);
-      await gh.postOrUpdateComment(target, RATE_LIMIT_MARKER, limiter.formatLimitMessage(result));
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn(`Failed to post rate limit message: ${msg}`);
+    const noticeKey = `${repo}#${target}`;
+    const now = Date.now();
+    const lastPosted = lastDenialNotice.get(noticeKey) ?? 0;
+    if (now - lastPosted >= DENIAL_NOTICE_THROTTLE_MS) {
+      try {
+        const gh = new GitHubHelper(getToken(), repo);
+        await gh.postOrUpdateComment(target, RATE_LIMIT_MARKER, limiter.formatLimitMessage(result));
+        lastDenialNotice.set(noticeKey, now);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn(`Failed to post rate limit message: ${msg}`);
+      }
     }
   }
   return null;

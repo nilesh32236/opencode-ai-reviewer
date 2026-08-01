@@ -14,6 +14,8 @@ import type {
   PerPRStats,
   RateLimitActionInput,
   RateLimitCountFilter,
+  RateLimitReservationInput,
+  RateLimitReservationResult,
   ReviewMetricsRow,
   ReviewQualityRow,
   SeverityDistribution,
@@ -564,6 +566,29 @@ export class LearningStore {
       return repo.getSeverityDistribution(sinceDays);
     } catch {
       return { critical: 0, important: 0, minor: 0, unknown: 0 };
+    }
+  }
+
+  /**
+   * Atomically evaluate all configured limits and, when allowed, reserve a
+   * rate-limit slot charged at the tier estimate. Unlike the other rate-limit
+   * read paths, this method FAILS CLOSED: when the store cannot measure usage
+   * or persist the reservation it rethrows so callers can deny the action
+   * rather than silently disabling the cost-control guardrail.
+   *
+   * @param input - Reservation parameters including window boundaries and limits.
+   * @returns Whether the slot was reserved, or why it was refused.
+   */
+  async reserveRateLimitSlot(
+    input: RateLimitReservationInput,
+  ): Promise<RateLimitReservationResult> {
+    try {
+      const repo = await this.repoPromise;
+      return await repo.reserveRateLimitSlot(input);
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.error('Rate-limit reserve failed; failing closed', err);
+      throw err;
     }
   }
 

@@ -1,7 +1,11 @@
 import { DEFAULT_CONFIG, RateLimiter } from '@opencode-pr-agent/lib';
-import type { GitHubEvent } from '@opencode-pr-agent/lib';
+import type { GitHubEvent, RateLimitReservationInput } from '@opencode-pr-agent/lib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { checkRateLimit, recordRateLimit } from '../src/utils/rate-limit.js';
+import {
+  checkRateLimit,
+  clearDenialNoticeThrottle,
+  recordRateLimit,
+} from '../src/utils/rate-limit.js';
 
 const { mockPostOrUpdateComment, mockPostComment } = vi.hoisted(() => ({
   mockPostOrUpdateComment: vi.fn().mockResolvedValue({ action: 'created', commentId: 1 }),
@@ -38,6 +42,16 @@ function makeEvent(body: string): GitHubEvent {
 function makeLimiter(): { limiter: RateLimiter; rows: unknown[] } {
   const rows: unknown[] = [];
   const fakeStore = {
+    reserveRateLimitSlot: vi.fn().mockImplementation(async (input: RateLimitReservationInput) => {
+      rows.push({});
+      return {
+        allowed: true,
+        reservationId: 'res-1',
+        repoCount: 1,
+        userCount: 1,
+        tokensUsed: input.tokensUsed,
+      };
+    }),
     countRateLimitActions: vi.fn().mockResolvedValue(0),
     sumRateLimitTokens: vi.fn().mockResolvedValue(0),
     getLastRateLimitTime: vi.fn().mockResolvedValue(null),
@@ -60,6 +74,7 @@ describe('checkRateLimit / recordRateLimit', () => {
     mockPostOrUpdateComment.mockReset();
     mockPostOrUpdateComment.mockResolvedValue({ action: 'created', commentId: 1 });
     mockPostComment.mockReset();
+    clearDenialNoticeThrottle();
   });
 
   afterEach(() => {

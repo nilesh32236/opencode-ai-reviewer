@@ -17,6 +17,8 @@ import type {
   PerPRStats,
   RateLimitActionInput,
   RateLimitCountFilter,
+  RateLimitReservationInput,
+  RateLimitReservationResult,
   ReviewMetricsRow,
   ReviewQualityRow,
   SeverityDistribution,
@@ -925,6 +927,103 @@ export abstract class SqlAdapter implements LearningRepository {
   }
 
   /**
+   * Atomically evaluate all configured limits and, when allowed, reserve a
+   * rate-limit slot charged at the tier estimate. The checks and the insert run
+   * inside one transaction so concurrent requests cannot all pass under-limit
+   * checks before any reservation commits (TOCTOU).
+   * @param input - Reservation parameters including window boundaries and limits.
+   * @returns Whether the slot was reserved, or why it was refused.
+   */
+  async reserveRateLimitSlot(
+    input: RateLimitReservationInput,
+  ): Promise<RateLimitReservationResult> {
+    return this.transaction(async () => {
+      const hourStartIso = new Date(input.hourStart).toISOString();
+      const dayStartIso = new Date(input.dayStart).toISOString();
+
+      let repoCount = 0;
+      if (input.repoHourlyLimit !== null) {
+        const repoRow = await this.get<{ cnt: number }>(
+          `SELECT COUNT(*) as cnt FROM rate_limits WHERE repo = ? AND tier = ? AND created_at >= ?`,
+          [input.repo, 'command', hourStartIso],
+        );
+        repoCount = repoRow?.cnt ?? 0;
+        if (repoCount >= input.repoHourlyLimit) {
+          return {
+            allowed: false as const,
+            reason: 'repo_hourly',
+            resetAt: input.hourStart + input.hourMs,
+          };
+        }
+      }
+
+      const userRow = await this.get<{ cnt: number }>(
+        `SELECT COUNT(*) as cnt FROM rate_limits WHERE github_user = ? AND created_at >= ?`,
+        [input.githubUser, dayStartIso],
+      );
+      const userCount = userRow?.cnt ?? 0;
+      if (userCount >= input.userDailyLimit) {
+        return {
+          allowed: false as const,
+          reason: 'user_daily',
+          resetAt: input.dayStart + input.dayMs,
+        };
+      }
+
+      const lastRow = await this.get<{ last: string }>(
+        `SELECT MAX(created_at) as last FROM rate_limits WHERE repo = ? AND pr_number = ? AND tier = ?`,
+        [input.repo, input.prNumber, input.tier],
+      );
+      if (lastRow?.last) {
+        const lastTime = Date.parse(lastRow.last);
+        if (!Number.isNaN(lastTime) && input.now - lastTime < input.cooldownMs) {
+          return {
+            allowed: false as const,
+            reason: 'pr_cooldown',
+            resetAt: lastTime + input.cooldownMs,
+          };
+        }
+      }
+
+      const tokenRow = await this.get<{ total: number }>(
+        `SELECT COALESCE(SUM(tokens_used), 0) as total FROM rate_limits WHERE created_at >= ?`,
+        [dayStartIso],
+      );
+      const tokensUsed = tokenRow?.total ?? 0;
+      if (tokensUsed + input.tokensUsed > input.tokenBudget) {
+        return {
+          allowed: false as const,
+          reason: 'token_budget',
+          resetAt: input.dayStart + input.dayMs,
+        };
+      }
+
+      const id = generateId();
+      await this.run(
+        `INSERT INTO rate_limits (id, repo, github_user, pr_number, action, tier, tokens_used, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          input.repo,
+          input.githubUser,
+          input.prNumber,
+          input.action,
+          input.tier,
+          input.tokensUsed,
+          new Date().toISOString(),
+        ],
+      );
+      return {
+        allowed: true as const,
+        reservationId: id,
+        repoCount,
+        userCount,
+        tokensUsed: input.tokensUsed,
+      };
+    });
+  }
+
+  /**
    * Record a rate-limited action.
    * @param input - Rate limit action data to insert.
    * @returns The generated row ID, for later token reconciliation.
@@ -1052,7 +1151,7 @@ export abstract class SqlAdapter implements LearningRepository {
     limit = 10,
   ): Promise<Array<{ user: string; count: number }>> {
     return this.all<{ user: string; count: number }>(
-      `SELECT github_user as user, COUNT(*) as count FROM rate_limits WHERE created_at >= ? GROUP BY github_user ORDER BY count DESC LIMIT ?`,
+      `SELECT github_user as user, COUNT(*) as count FROM rate_limits WHERE created_at >= ? AND github_user IS NOT NULL GROUP BY github_user ORDER BY count DESC LIMIT ?`,
       [new Date(sinceMs).toISOString(), limit],
     );
   }

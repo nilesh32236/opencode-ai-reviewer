@@ -33,7 +33,7 @@ export function createAuditSubscriber(rateLimiter: RateLimiter): Subscriber {
           prNumber: auditIssue,
         });
         if (!reservation) return;
-        await handleAudit(
+        const tokensUsed = await handleAudit(
           event.repo || '',
           getToken(),
           config,
@@ -43,7 +43,7 @@ export function createAuditSubscriber(rateLimiter: RateLimiter): Subscriber {
           signal,
           auditIssue,
         );
-        await recordRateLimit(rateLimiter, event, 'command', 'audit', reservation);
+        await recordRateLimit(rateLimiter, event, 'command', 'audit', reservation, tokensUsed);
       } catch (err) {
         logger.error(
           `AuditSubscriber failed for repo ${event.repo}: ${err instanceof Error ? err.message : err}`,

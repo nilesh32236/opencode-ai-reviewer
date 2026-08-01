@@ -12,6 +12,8 @@ import type {
   PerPRStats,
   RateLimitActionInput,
   RateLimitCountFilter,
+  RateLimitReservationInput,
+  RateLimitReservationResult,
   ReviewMetricsRow,
   ReviewQualityRow,
   SeverityDistribution,
@@ -402,6 +404,18 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
    */
   async getSeverityDistribution(sinceDays?: number): Promise<SeverityDistribution> {
     return this.db.getSeverityDistribution(sinceDays);
+  }
+
+  /**
+   * Atomically evaluate all configured limits and, when allowed, reserve a
+   * rate-limit slot charged at the tier estimate.
+   * @param input - Reservation parameters including window boundaries and limits.
+   * @returns Whether the slot was reserved, or why it was refused.
+   */
+  async reserveRateLimitSlot(
+    input: RateLimitReservationInput,
+  ): Promise<RateLimitReservationResult> {
+    return this.db.reserveRateLimitSlot(input);
   }
 
   /**

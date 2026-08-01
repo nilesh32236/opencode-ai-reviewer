@@ -85,12 +85,15 @@ export function buildConfig(): AgentConfig {
     rateLimiting: {
       ...DEFAULT_CONFIG.rateLimiting,
       enabled: process.env.RATE_LIMIT_ENABLED !== 'false',
+      // Count/token limits clamp to a minimum of 1: a 0 (or negative) override
+      // would make every `count >= 0` check deny every action and silently shut
+      // the bot down. Use RATE_LIMIT_ENABLED=false to turn limiting off.
       reviewsPerRepoPerHour: clampInt(
         parseEnvInt(
           process.env.RATE_LIMIT_REVIEWS_PER_REPO_HOUR,
           DEFAULT_CONFIG.rateLimiting.reviewsPerRepoPerHour,
         ),
-        0,
+        1,
         1000,
       ),
       reviewsPerUserPerDay: clampInt(
@@ -98,7 +101,7 @@ export function buildConfig(): AgentConfig {
           process.env.RATE_LIMIT_REVIEWS_PER_USER_DAY,
           DEFAULT_CONFIG.rateLimiting.reviewsPerUserPerDay,
         ),
-        0,
+        1,
         10000,
       ),
       prCooldownMinutes: clampInt(
@@ -122,21 +125,21 @@ export function buildConfig(): AgentConfig {
           process.env.RATE_LIMIT_DAILY_TOKEN_BUDGET,
           DEFAULT_CONFIG.rateLimiting.dailyTokenBudget,
         ),
-        0,
+        1,
       ),
       estimatedTokensPerCommand: clampInt(
         parseEnvInt(
           process.env.RATE_LIMIT_ESTIMATED_TOKENS_PER_COMMAND,
           DEFAULT_CONFIG.rateLimiting.estimatedTokensPerCommand,
         ),
-        0,
+        1,
       ),
       estimatedTokensPerInteractive: clampInt(
         parseEnvInt(
           process.env.RATE_LIMIT_ESTIMATED_TOKENS_PER_INTERACTIVE,
           DEFAULT_CONFIG.rateLimiting.estimatedTokensPerInteractive,
         ),
-        0,
+        1,
       ),
       adminUsers: process.env.RATE_LIMIT_ADMIN_USERS
         ? process.env.RATE_LIMIT_ADMIN_USERS.split(',')

@@ -37,6 +37,7 @@ import { handlePRReview } from './pr-review.js';
  * @param config - Agent configuration.
  * @param parsed - Optional parsed command (for flags like --force).
  * @param signal - Optional abort signal
+ * @returns The actual token usage of the command run, or undefined when unavailable.
  */
 export async function handleCommand(
   command: 'fix' | 'review' | 'audit' | 'analyze' | 'explain' | 'setup',
@@ -46,7 +47,7 @@ export async function handleCommand(
   config: AgentConfig,
   parsed?: ParsedCommand,
   signal?: AbortSignal,
-): Promise<void> {
+): Promise<number | undefined> {
   const logger = new Logger('Command', { repo, prNumber: issueNumber });
   const gh: PlatformAdapter =
     config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
@@ -80,35 +81,34 @@ export async function handleCommand(
           `Running setup validation against an empty workspace because ${repo} could not be cloned`,
         );
         await handleSetup(issueNumber, repo, token, config, tempDir);
-        return;
+        return undefined;
       }
       throw err;
     }
 
     switch (command) {
       case 'analyze': {
-        await handleAnalyzeCommand(issueNumber, repo, token, config, tempDir);
-        break;
+        return handleAnalyzeCommand(issueNumber, repo, token, config, tempDir);
       }
 
       case 'explain': {
-        await handleExplainCommand(issueNumber, repo, token, config, tempDir);
-        break;
+        return handleExplainCommand(issueNumber, repo, token, config, tempDir);
       }
 
       case 'review': {
         if (await gh.isMR(issueNumber)) {
-          await handlePRReview(issueNumber, repo, token, config, undefined, tempDir);
+          const result = await handlePRReview(issueNumber, repo, token, config, undefined, tempDir);
+          return result?.usage?.totalTokens;
         }
-        break;
+        return undefined;
       }
 
       case 'fix': {
-        if (signal?.aborted) return;
+        if (signal?.aborted) return undefined;
         const force = parsed?.flags?.force === true;
         const isPR = await gh.isMR(issueNumber);
         if (isPR) {
-          await handleAutofixLoop(
+          return handleAutofixLoop(
             issueNumber,
             repo,
             token,
@@ -119,52 +119,50 @@ export async function handleCommand(
             undefined,
             signal,
           );
-        } else {
-          const existingPR = await findExistingAutofixPR(gh, issueNumber);
-          if (existingPR) {
-            await handleAutofixLoop(
-              existingPR,
-              repo,
-              token,
-              config,
-              undefined,
-              tempDir,
-              gitEnv,
-              undefined,
-              signal,
-            );
-          } else {
-            const newPR = await createAutofixPR(
-              gh,
-              issueNumber,
-              repo,
-              token,
-              config,
-              tempDir,
-              gitEnv,
-              signal,
-              force,
-            );
-            if (newPR) {
-              await handleAutofixLoop(
-                newPR,
-                repo,
-                token,
-                config,
-                undefined,
-                tempDir,
-                gitEnv,
-                undefined,
-                signal,
-              );
-            }
-          }
         }
-        break;
+        const existingPR = await findExistingAutofixPR(gh, issueNumber);
+        if (existingPR) {
+          return handleAutofixLoop(
+            existingPR,
+            repo,
+            token,
+            config,
+            undefined,
+            tempDir,
+            gitEnv,
+            undefined,
+            signal,
+          );
+        }
+        const newPR = await createAutofixPR(
+          gh,
+          issueNumber,
+          repo,
+          token,
+          config,
+          tempDir,
+          gitEnv,
+          signal,
+          force,
+        );
+        if (newPR) {
+          return handleAutofixLoop(
+            newPR,
+            repo,
+            token,
+            config,
+            undefined,
+            tempDir,
+            gitEnv,
+            undefined,
+            signal,
+          );
+        }
+        return undefined;
       }
 
       case 'audit': {
-        await handleAudit(
+        return handleAudit(
           repo,
           token,
           config,
@@ -174,18 +172,18 @@ export async function handleCommand(
           undefined,
           issueNumber,
         );
-        break;
       }
 
       case 'setup': {
         await handleSetup(issueNumber, repo, token, config, tempDir);
-        break;
+        return undefined;
       }
     }
   } catch (err) {
     logger.error(
       `Command ${command} failed for issue ${issueNumber} in ${repo}: ${err instanceof Error ? err.message : err}`,
     );
+    return undefined;
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -199,6 +197,7 @@ export async function handleCommand(
  * @param token - GitHub authentication token.
  * @param config - Agent configuration.
  * @param tempDir - Temporary working directory.
+ * @returns The actual token usage of the analysis run, or undefined when unavailable.
  */
 export async function handleAnalyzeCommand(
   issueNumber: number,
@@ -206,7 +205,7 @@ export async function handleAnalyzeCommand(
   token: string,
   config: AgentConfig,
   tempDir: string,
-): Promise<void> {
+): Promise<number | undefined> {
   const logger = new Logger('Command:Analyze', { repo, prNumber: issueNumber });
   logger.info(`Analyzing issue #${issueNumber}`);
 
@@ -229,6 +228,7 @@ export async function handleAnalyzeCommand(
     }
 
     logger.info(`Posted analysis plan for issue #${issueNumber}`);
+    return engine.getLastTelemetry()?.totalTokens;
   } catch (err) {
     logger.error(
       `Failed to analyze issue #${issueNumber}: ${err instanceof Error ? err.message : err}`,
@@ -238,6 +238,7 @@ export async function handleAnalyzeCommand(
       '<!-- issue-analysis-error -->',
       `❌ **Analysis Failed**: ${err instanceof Error ? err.message : String(err)}`,
     );
+    return undefined;
   } finally {
     await engine.cleanup();
   }
@@ -251,6 +252,7 @@ export async function handleAnalyzeCommand(
  * @param token - GitHub authentication token.
  * @param config - Agent configuration.
  * @param tempDir - Temporary working directory.
+ * @returns The actual token usage of the explanation run, or undefined when unavailable.
  */
 export async function handleExplainCommand(
   issueNumber: number,
@@ -258,7 +260,7 @@ export async function handleExplainCommand(
   token: string,
   config: AgentConfig,
   tempDir: string,
-): Promise<void> {
+): Promise<number | undefined> {
   const logger = new Logger('Command:Explain', { repo, prNumber: issueNumber });
   logger.info(`Explaining PR #${issueNumber}`);
 
@@ -273,6 +275,7 @@ export async function handleExplainCommand(
     await gh.postOrUpdateComment(issueNumber, '<!-- pr-explanation -->', explanation);
 
     logger.info(`Posted explanation for PR #${issueNumber}`);
+    return engine.getLastTelemetry()?.totalTokens;
   } catch (err) {
     logger.error(
       `Failed to explain PR #${issueNumber}: ${err instanceof Error ? err.message : err}`,
@@ -282,6 +285,7 @@ export async function handleExplainCommand(
       '<!-- pr-explanation-error -->',
       `❌ **Explanation Failed**: ${err instanceof Error ? err.message : String(err)}`,
     );
+    return undefined;
   } finally {
     await engine.cleanup();
   }

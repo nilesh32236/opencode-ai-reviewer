@@ -27,7 +27,7 @@ export function createExplainSubscriber(rateLimiter: RateLimiter): Subscriber {
         if (!issueNumber) return;
         const reservation = await checkRateLimit(rateLimiter, event, 'command', 'explain');
         if (!reservation) return;
-        await handleCommand(
+        const tokensUsed = await handleCommand(
           'explain',
           issueNumber,
           event.repo || '',
@@ -36,7 +36,7 @@ export function createExplainSubscriber(rateLimiter: RateLimiter): Subscriber {
           undefined,
           signal,
         );
-        await recordRateLimit(rateLimiter, event, 'command', 'explain', reservation);
+        await recordRateLimit(rateLimiter, event, 'command', 'explain', reservation, tokensUsed);
       } catch (err) {
         logger.error(
           `ExplainSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${err instanceof Error ? err.message : err}`,

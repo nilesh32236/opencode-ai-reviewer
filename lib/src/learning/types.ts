@@ -84,6 +84,81 @@ export interface RateLimitRow {
 }
 
 /**
+ * Reason a rate limit check denied an action. Mirrors the RateLimitReason in
+ * lib/src/utils/rate-limiter.ts so the store can report why a reservation was
+ * refused without importing from utils.
+ */
+export type RateLimitReservationReason =
+  | 'repo_hourly'
+  | 'user_daily'
+  | 'pr_cooldown'
+  | 'token_budget';
+
+/**
+ * Result of an atomic rate-limit check-and-reserve. When allowed, a row was
+ * inserted and charged `tokensUsed` immediately so concurrent requests observe
+ * the reservation; when denied, `reason` and `resetAt` describe the limit hit.
+ */
+export type RateLimitReservationResult =
+  | {
+      /** Whether the action may proceed. */
+      allowed: true;
+      /** ID of the reserved rate_limits row (for later reconciliation). */
+      reservationId: string;
+      /** Command-tier actions for the repo in the current hour window. */
+      repoCount: number;
+      /** Actions for the user in the current day window. */
+      userCount: number;
+      /** Estimated tokens charged to the reservation. */
+      tokensUsed: number;
+    }
+  | {
+      allowed: false;
+      reason: RateLimitReservationReason;
+      /** Epoch millisecond timestamp after which the limit resets. */
+      resetAt: number;
+    };
+
+/**
+ * Input for an atomic rate-limit check-and-reserve. Carries the window
+ * boundaries and configured limits so the store can evaluate and reserve in a
+ * single transaction, closing the TOCTOU race between separate check and
+ * record calls.
+ */
+export interface RateLimitReservationInput {
+  /** Repository in owner/repo format. */
+  repo: string;
+  /** GitHub username of the actor. */
+  githubUser: string;
+  /** PR (or issue) number the action targets. */
+  prNumber: number;
+  /** Command name that will run (e.g. 'review', 'fix', 'conversation'). */
+  action: string;
+  /** Cost tier of the action ('command' or 'interactive'). */
+  tier: RateLimitTier;
+  /** Estimated tokens to charge the reservation immediately. */
+  tokensUsed: number;
+  /** Epoch millisecond timestamp of the request (for cooldown math). */
+  now: number;
+  /** Start of the current hour window (epoch ms). */
+  hourStart: number;
+  /** Start of the current UTC day window (epoch ms). */
+  dayStart: number;
+  /** Length of the hour window (ms) for reset computation. */
+  hourMs: number;
+  /** Length of the day window (ms) for reset computation. */
+  dayMs: number;
+  /** Per-repo hourly cap; null when the tier is not subject to it (interactive). */
+  repoHourlyLimit: number | null;
+  /** Per-user daily cap (all tiers combined). */
+  userDailyLimit: number;
+  /** Per-PR cooldown for this tier (ms). */
+  cooldownMs: number;
+  /** Daily token budget shared across tiers. */
+  tokenBudget: number;
+}
+
+/**
  * Repository interface for the learning store.
  * Implementations can back this with SQLite, PostgreSQL, MySQL, or JSON.
  * All methods are async and should handle connection failures gracefully.
@@ -316,6 +391,17 @@ export interface LearningRepository {
    */
   getSeverityDistribution(sinceDays?: number): Promise<SeverityDistribution>;
 
+  /**
+   * Atomically evaluate all configured limits and, when allowed, insert a
+   * reserved rate-limit row charged at the tier estimate. The checks and the
+   * insert happen in a single transaction so concurrent requests cannot all
+   * pass under-limit checks before any reservation commits (TOCTOU). The store
+   * must throw (not swallow) when the reservation cannot be persisted so
+   * callers can fail closed.
+   * @param input - Reservation parameters including window boundaries and limits.
+   * @returns Whether the slot was reserved, or why it was refused.
+   */
+  reserveRateLimitSlot(input: RateLimitReservationInput): Promise<RateLimitReservationResult>;
   /**
    * Record a rate-limited action (slash command, conversation, or reply).
    * The returned ID can be passed to completeRateLimitAction to reconcile the

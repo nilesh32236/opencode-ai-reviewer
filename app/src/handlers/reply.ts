@@ -18,6 +18,7 @@ import {
  * @param config - Agent configuration.
  * @param parentCommentId - ID of the AI-originated comment being replied to.
  * @param userCommentBody - The developer's reply/question body.
+ * @returns The actual token usage of the reply run, or undefined when unavailable.
  */
 export async function handleReply(
   prNumber: number,
@@ -26,7 +27,7 @@ export async function handleReply(
   config: AgentConfig,
   parentCommentId: number,
   userCommentBody: string,
-): Promise<void> {
+): Promise<number | undefined> {
   const logger = new Logger('Reply', { repo, prNumber });
   const gh: PlatformAdapter =
     config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
@@ -63,13 +64,14 @@ export async function handleReply(
         parentCommentId,
         "❌ I couldn't generate a reply. Please try again or rephrase.",
       );
-      return;
+      return result.tokensUsed || undefined;
     }
 
     const replyBody = cleanReplyOutput(result.output);
 
     await gh.replyToReviewComment(prNumber, parentCommentId, replyBody);
     logger.info('Posted conversational reply to review comment thread');
+    return result.tokensUsed || undefined;
   } catch (err) {
     logger.error(`Reply handler failed: ${err instanceof Error ? err.message : err}`);
     try {

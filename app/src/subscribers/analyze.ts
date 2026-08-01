@@ -27,7 +27,7 @@ export function createAnalyzeSubscriber(rateLimiter: RateLimiter): Subscriber {
         if (!issueNumber) return;
         const reservation = await checkRateLimit(rateLimiter, event, 'command', 'analyze');
         if (!reservation) return;
-        await handleCommand(
+        const tokensUsed = await handleCommand(
           'analyze',
           issueNumber,
           event.repo || '',
@@ -36,7 +36,7 @@ export function createAnalyzeSubscriber(rateLimiter: RateLimiter): Subscriber {
           undefined,
           signal,
         );
-        await recordRateLimit(rateLimiter, event, 'command', 'analyze', reservation);
+        await recordRateLimit(rateLimiter, event, 'command', 'analyze', reservation, tokensUsed);
       } catch (err) {
         logger.error(
           `AnalyzeSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${err instanceof Error ? err.message : err}`,

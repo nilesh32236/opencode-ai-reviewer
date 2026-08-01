@@ -65,6 +65,9 @@ export type {
   ReviewMetricsRow,
   SeverityDistribution,
   ReviewMetricsReport,
+  RateLimitReservationInput,
+  RateLimitReservationResult,
+  RateLimitReservationReason,
 } from './learning/types.js';
 export { MetricsService } from './analytics/metrics.js';
 export { getDbPath } from './learning/schema.js';

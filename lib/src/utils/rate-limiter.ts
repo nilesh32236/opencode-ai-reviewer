@@ -1,4 +1,9 @@
-import type { RateLimitActionInput, RateLimitCountFilter } from '../learning/types.js';
+import type {
+  RateLimitActionInput,
+  RateLimitCountFilter,
+  RateLimitReservationInput,
+  RateLimitReservationResult,
+} from '../learning/types.js';
 import type { RateLimitTier, RateLimitingConfig } from '../types/index.js';
 import { Logger } from './logger.js';
 
@@ -6,7 +11,12 @@ const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
 /** Reason a rate limit was hit. */
-export type RateLimitReason = 'repo_hourly' | 'user_daily' | 'pr_cooldown' | 'token_budget';
+export type RateLimitReason =
+  | 'repo_hourly'
+  | 'user_daily'
+  | 'pr_cooldown'
+  | 'token_budget'
+  | 'store_unavailable';
 
 /** Result of a rate limit check. */
 export interface RateLimitResult {
@@ -37,6 +47,7 @@ export interface RateLimitCheckOptions {
 
 /** Persistence contract implemented by the learning store. */
 export interface RateLimitStore {
+  reserveRateLimitSlot(input: RateLimitReservationInput): Promise<RateLimitReservationResult>;
   countRateLimitActions(filter: RateLimitCountFilter): Promise<number>;
   sumRateLimitTokens(sinceMs: number): Promise<number>;
   getLastRateLimitTime(repo: string, prNumber: number, tier: string): Promise<number | null>;
@@ -76,12 +87,14 @@ export interface RateLimitStatus {
  * - Per-PR cooldown (separate for command and interactive tiers).
  * - Daily estimated token budget (all tiers combined).
  *
- * To close the check-then-run race, checkReview() reserves a rate_limits row
- * (charged the tier estimate) immediately after all checks pass, so concurrent
- * webhook events see the reservation before the (potentially minutes-long) LLM
- * run finishes. recordReview() reconciles the reservation with actual token
- * usage; when a run fails or is skipped, the reservation is left in place so
- * the attempt still counts toward the limits.
+ * To close the check-then-run race, checkReview() evaluates every limit and
+ * reserves a rate_limits row (charged the tier estimate) in a single atomic
+ * store operation, so concurrent webhook events observe each other's
+ * reservations before the (potentially minutes-long) LLM run finishes.
+ * recordReview() reconciles the reservation with actual token usage; when a run
+ * fails or is skipped, the reservation is left in place so the attempt still
+ * counts toward the limits. When the store is unavailable the check fails
+ * closed (denies) so the cost-control guardrail cannot silently disappear.
  */
 export class RateLimiter {
   private readonly config: RateLimitingConfig;
@@ -128,84 +141,81 @@ export class RateLimiter {
         ? this.config.estimatedTokensPerInteractive
         : this.config.estimatedTokensPerCommand;
 
-    let repoCount = 0;
-    if (tier === 'command') {
-      repoCount = await this.store.countRateLimitActions({
-        repo,
-        tier: 'command',
-        sinceMs: hourStart,
-      });
-      if (repoCount >= this.config.reviewsPerRepoPerHour) {
-        return {
-          allowed: false,
-          reason: 'repo_hourly',
-          remaining: 0,
-          resetAt: hourStart + HOUR_MS,
-        };
-      }
-    }
+    const input: RateLimitReservationInput = {
+      repo,
+      githubUser: user,
+      prNumber,
+      action: options?.action ?? 'review',
+      tier,
+      tokensUsed: estimatedTokens,
+      now,
+      hourStart,
+      dayStart,
+      hourMs: HOUR_MS,
+      dayMs: DAY_MS,
+      repoHourlyLimit: tier === 'command' ? this.config.reviewsPerRepoPerHour : null,
+      userDailyLimit: this.config.reviewsPerUserPerDay,
+      cooldownMs,
+      tokenBudget: this.config.dailyTokenBudget,
+    };
 
-    const userCount = await this.store.countRateLimitActions({
-      user,
-      sinceMs: dayStart,
-    });
-    if (userCount >= this.config.reviewsPerUserPerDay) {
-      return {
-        allowed: false,
-        reason: 'user_daily',
-        remaining: 0,
-        resetAt: dayStart + DAY_MS,
-      };
-    }
-
-    const lastTime = await this.store.getLastRateLimitTime(repo, prNumber, tier);
-    if (lastTime !== null && now - lastTime < cooldownMs) {
-      return {
-        allowed: false,
-        reason: 'pr_cooldown',
-        remaining: 0,
-        resetAt: lastTime + cooldownMs,
-      };
-    }
-
-    const tokensUsed = await this.store.sumRateLimitTokens(dayStart);
-    if (tokensUsed + estimatedTokens > this.config.dailyTokenBudget) {
-      return {
-        allowed: false,
-        reason: 'token_budget',
-        remaining: Math.max(0, this.config.dailyTokenBudget - tokensUsed),
-        resetAt: dayStart + DAY_MS,
-      };
-    }
-
-    let reservationId: string | undefined;
+    let reservation: RateLimitReservationResult;
     try {
-      reservationId = await this.store.recordRateLimitAction({
-        repo,
-        githubUser: user,
-        prNumber,
-        action: options?.action ?? 'review',
-        tier,
-        tokensUsed: estimatedTokens,
-      });
+      // The repo/user/cooldown/token checks and the reservation insert run in a
+      // single atomic store operation, so concurrent requests observe each
+      // other's reservations before any (potentially minutes-long) LLM run
+      // starts. When the store cannot measure usage or persist the reservation,
+      // fail closed: deny rather than silently disabling the cost-control
+      // guardrail.
+      reservation = await this.store.reserveRateLimitSlot(input);
     } catch (err) {
       const logger = new Logger('RateLimiter');
-      logger.error('Failed to reserve rate limit slot; proceeding without reservation', err);
+      logger.error('Rate-limit store unavailable; failing closed (denying action)', err);
+      return {
+        allowed: false,
+        reason: 'store_unavailable',
+        remaining: 0,
+        resetAt: dayStart + DAY_MS,
+      };
     }
 
-    const budgetHeadroomActions = Math.floor(
-      Math.max(0, this.config.dailyTokenBudget - tokensUsed) / estimatedTokens,
-    );
+    if (!reservation.allowed) {
+      return {
+        allowed: false,
+        reason: reservation.reason,
+        remaining: 0,
+        resetAt: reservation.resetAt,
+      };
+    }
+
+    const { repoCount, userCount, tokensUsed } = reservation;
+    // Post-reservation headroom: this request already reserved one slot, so the
+    // remaining counts reflect the reservation. Guard against a zero tier
+    // estimate (otherwise the division yields Infinity/NaN).
+    const budgetHeadroomActions =
+      estimatedTokens > 0
+        ? Math.floor(Math.max(0, this.config.dailyTokenBudget - tokensUsed) / estimatedTokens)
+        : Number.MAX_SAFE_INTEGER;
     const remaining =
       tier === 'command'
-        ? Math.min(
-            this.config.reviewsPerRepoPerHour - repoCount,
-            this.config.reviewsPerUserPerDay - userCount,
-            budgetHeadroomActions,
+        ? Math.max(
+            0,
+            Math.min(
+              this.config.reviewsPerRepoPerHour - repoCount,
+              this.config.reviewsPerUserPerDay - userCount,
+              budgetHeadroomActions,
+            ),
           )
-        : Math.min(this.config.reviewsPerUserPerDay - userCount, budgetHeadroomActions);
+        : Math.max(
+            0,
+            Math.min(this.config.reviewsPerUserPerDay - userCount, budgetHeadroomActions),
+          );
 
-    return { allowed: true, remaining, resetAt: dayStart + DAY_MS, reservationId };
+    // The soonest of the hourly and daily reset boundaries governs when the
+    // tightest limit frees up.
+    const resetAt = Math.min(hourStart + HOUR_MS, dayStart + DAY_MS);
+
+    return { allowed: true, remaining, resetAt, reservationId: reservation.reservationId };
   }
 
   /**
@@ -261,6 +271,7 @@ export class RateLimiter {
       user_daily: 'the per-user daily review limit',
       pr_cooldown: 'the cooldown between actions on the same pull request',
       token_budget: 'the daily token budget',
+      store_unavailable: 'the rate-limit store is unavailable',
     };
     const reasonText = result.reason ? reasons[result.reason] : 'the rate limit';
     return [

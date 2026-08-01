@@ -43,6 +43,7 @@ import {
  * @param initialGitEnv - Optional Git environment variables (for auth).
  * @param checkAllowlist - Optional list of allowed check commands.
  * @param signal - Optional abort signal
+ * @returns The total actual token usage across all fix-loop iterations, or undefined when unavailable.
  */
 export async function handleAutofixLoop(
   prNumber: number,
@@ -54,8 +55,8 @@ export async function handleAutofixLoop(
   initialGitEnv?: Record<string, string>,
   checkAllowlist?: string[],
   signal?: AbortSignal,
-): Promise<void> {
-  if (signal?.aborted) return;
+): Promise<number | undefined> {
+  if (signal?.aborted) return undefined;
   const logger = new Logger('Autofix', { prNumber, repo });
   logger.info(`Starting autofix loop for PR #${prNumber} in ${repo}`);
 
@@ -66,6 +67,13 @@ export async function handleAutofixLoop(
   const previousFindings: PreviousFindingIteration[] = [];
   let approved = false;
   let verificationPassed = false;
+  let totalTokens = 0;
+
+  /** Accumulate the engine's per-invocation token telemetry into the total. */
+  const accumulateTokens = (): void => {
+    const telemetry = engine.getLastTelemetry();
+    if (telemetry?.totalTokens) totalTokens += telemetry.totalTokens;
+  };
 
   let gitEnv = initialGitEnv;
   let ownTempDir: string | undefined;
@@ -138,6 +146,7 @@ export async function handleAutofixLoop(
         );
         break;
       }
+      accumulateTokens();
 
       if (!result.summary && result.issues.length === 0 && result.strengths.length === 0) {
         logger.error(`Review returned empty result in iteration ${i + 1}`);
@@ -252,6 +261,7 @@ export async function handleAutofixLoop(
         );
         break;
       }
+      accumulateTokens();
 
       if (fixResult?.stuck) {
         const stuckBody = [
@@ -429,6 +439,7 @@ export async function handleAutofixLoop(
                     logger.info('Fix agent made no changes to address verification errors');
                     break;
                   }
+                  accumulateTokens();
                 } catch (innerErr) {
                   logger.error(
                     `Verification retry failed: ${innerErr instanceof Error ? innerErr.message : innerErr}`,
@@ -485,4 +496,6 @@ export async function handleAutofixLoop(
       }
     }
   }
+
+  return totalTokens > 0 ? totalTokens : undefined;
 }

@@ -48,7 +48,8 @@ export function createDiscoverSubscriber(
         }
 
         await gh.postOrUpdateComment(issueNumber, '<!-- discovered-patterns -->', body);
-        await recordRateLimit(rateLimiter, event, 'command', 'discover', reservation);
+        // /discover runs no LLM calls, so reconcile the reservation at 0 tokens.
+        await recordRateLimit(rateLimiter, event, 'command', 'discover', reservation, 0);
       } catch (err) {
         logger.error(`DiscoverSubscriber failed: ${err instanceof Error ? err.message : err}`);
       }

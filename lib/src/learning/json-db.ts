@@ -14,6 +14,8 @@ import type {
   PerPRStats,
   RateLimitActionInput,
   RateLimitCountFilter,
+  RateLimitReservationInput,
+  RateLimitReservationResult,
   RateLimitRow,
   ReviewMetricsRow,
   SeverityDistribution,
@@ -1032,6 +1034,97 @@ export class JsonDatabase implements LearningRepository {
   // ─── Rate limit tracking ─────────────────────────────────
 
   /**
+   * Atomically evaluate all configured limits and, when allowed, reserve a
+   * rate-limit slot charged at the tier estimate. Because the JSON backend runs
+   * in a single process and all operations below are synchronous (no awaited
+   * boundaries between the checks and the insert), concurrent reservations
+   * cannot interleave, closing the TOCTOU race for this backend.
+   * @param input - Reservation parameters including window boundaries and limits.
+   * @returns Whether the slot was reserved, or why it was refused.
+   */
+  async reserveRateLimitSlot(
+    input: RateLimitReservationInput,
+  ): Promise<RateLimitReservationResult> {
+    const parse = (iso: string): number => Date.parse(iso);
+    const within = (r: RateLimitRow, sinceMs: number): boolean => {
+      const ts = parse(r.created_at);
+      return !Number.isNaN(ts) && ts >= sinceMs;
+    };
+
+    let repoCount = 0;
+    if (input.repoHourlyLimit !== null) {
+      repoCount = this.data.rate_limits.filter(
+        (r) => r.tier === 'command' && within(r, input.hourStart) && r.repo === input.repo,
+      ).length;
+      if (repoCount >= input.repoHourlyLimit) {
+        return {
+          allowed: false as const,
+          reason: 'repo_hourly',
+          resetAt: input.hourStart + input.hourMs,
+        };
+      }
+    }
+
+    const userCount = this.data.rate_limits.filter(
+      (r) => r.github_user === input.githubUser && within(r, input.dayStart),
+    ).length;
+    if (userCount >= input.userDailyLimit) {
+      return {
+        allowed: false as const,
+        reason: 'user_daily',
+        resetAt: input.dayStart + input.dayMs,
+      };
+    }
+
+    let lastTime: number | null = null;
+    for (const r of this.data.rate_limits) {
+      if (r.repo !== input.repo || r.pr_number !== input.prNumber || r.tier !== input.tier)
+        continue;
+      const ts = parse(r.created_at);
+      if (!Number.isNaN(ts) && (lastTime === null || ts > lastTime)) lastTime = ts;
+    }
+    if (lastTime !== null && input.now - lastTime < input.cooldownMs) {
+      return {
+        allowed: false as const,
+        reason: 'pr_cooldown',
+        resetAt: lastTime + input.cooldownMs,
+      };
+    }
+
+    const tokensUsed = this.data.rate_limits.reduce(
+      (sum, r) => (within(r, input.dayStart) ? sum + (r.tokens_used || 0) : sum),
+      0,
+    );
+    if (tokensUsed + input.tokensUsed > input.tokenBudget) {
+      return {
+        allowed: false as const,
+        reason: 'token_budget',
+        resetAt: input.dayStart + input.dayMs,
+      };
+    }
+
+    const id = generateId();
+    this.data.rate_limits.push({
+      id,
+      repo: input.repo,
+      github_user: input.githubUser,
+      pr_number: input.prNumber,
+      action: input.action,
+      tier: input.tier,
+      tokens_used: input.tokensUsed,
+      created_at: new Date().toISOString(),
+    });
+    this.save();
+    return {
+      allowed: true as const,
+      reservationId: id,
+      repoCount,
+      userCount,
+      tokensUsed: input.tokensUsed,
+    };
+  }
+
+  /**
    * Record a rate-limited action.
    * @param input - Rate limit action data to append.
    * @returns The generated row ID, for later token reconciliation.
@@ -1165,6 +1258,8 @@ export class JsonDatabase implements LearningRepository {
 
   /**
    * Delete rate-limit rows for a repo, user, or (with no args) all rows.
+   * When both repo and user are supplied, repo takes precedence (matching the
+   * SQL adapter), since a repo-scoped reset is the more conservative scope.
    * @param repo - Optional repository to reset.
    * @param user - Optional GitHub user to reset.
    * @returns Number of deleted rows.
@@ -1173,12 +1268,10 @@ export class JsonDatabase implements LearningRepository {
     const before = this.data.rate_limits.length;
     if (!repo && !user) {
       this.data.rate_limits = [];
+    } else if (repo) {
+      this.data.rate_limits = this.data.rate_limits.filter((r) => r.repo !== repo);
     } else {
-      this.data.rate_limits = this.data.rate_limits.filter((r) => {
-        if (repo && r.repo === repo) return false;
-        if (user && r.github_user === user) return false;
-        return true;
-      });
+      this.data.rate_limits = this.data.rate_limits.filter((r) => r.github_user !== user);
     }
     this.save();
     return before - this.data.rate_limits.length;

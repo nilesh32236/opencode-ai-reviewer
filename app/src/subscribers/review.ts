@@ -61,7 +61,14 @@ export function createReviewSubscriber(
         const reservation = await checkRateLimit(rateLimiter, event, 'command', 'review', {
           postDenialComment: isCommandInvoked,
         });
-        if (!reservation) return;
+        if (!reservation) {
+          if (!isCommandInvoked) {
+            logger.info(
+              `Auto-review skipped for PR #${prNumber} (${event.type}) due to rate limiting`,
+            );
+          }
+          return;
+        }
 
         const previousHeadSha =
           event.type === 'pr.synchronize'
@@ -78,15 +85,19 @@ export function createReviewSubscriber(
           undefined,
           previousHeadSha,
         );
+        // Reconcile the reservation even when the review was legitimately
+        // skipped (null result) so no-op invocations charge 0 tokens instead of
+        // pinning the full estimate; genuine failures keep the estimate because
+        // they throw out of this try and never reconcile.
+        await recordRateLimit(
+          rateLimiter,
+          event,
+          'command',
+          'review',
+          reservation,
+          result ? result.usage?.totalTokens : 0,
+        );
         if (result) {
-          await recordRateLimit(
-            rateLimiter,
-            event,
-            'command',
-            'review',
-            reservation,
-            result.usage?.totalTokens,
-          );
           try {
             await bus.publish({
               type: 'review.completed',

@@ -39,10 +39,16 @@ export function createFixSubscriber(rateLimiter: RateLimiter): Subscriber {
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;
 
-        const reservation = await checkRateLimit(rateLimiter, event, 'command', 'fix');
+        // Auto-triggered issue.labeled events have no user-invoked command, so a
+        // denial comment would be misleading — enforce silently in that case.
+        const isCommandInvoked =
+          event.type === 'comment.created' || event.type === 'review_comment.created';
+        const reservation = await checkRateLimit(rateLimiter, event, 'command', 'fix', {
+          postDenialComment: isCommandInvoked,
+        });
         if (!reservation) return;
 
-        await handleCommand(
+        const tokensUsed = await handleCommand(
           'fix',
           prNumber,
           event.repo || '',
@@ -51,7 +57,7 @@ export function createFixSubscriber(rateLimiter: RateLimiter): Subscriber {
           parsed ?? undefined,
           signal,
         );
-        await recordRateLimit(rateLimiter, event, 'command', 'fix', reservation);
+        await recordRateLimit(rateLimiter, event, 'command', 'fix', reservation, tokensUsed);
       } catch (err) {
         logger.error(
           `FixSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${err instanceof Error ? err.message : err}`,

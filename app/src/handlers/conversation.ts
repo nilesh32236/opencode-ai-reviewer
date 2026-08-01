@@ -29,6 +29,7 @@ import {
  * @param learningStore - Optional learning store for the engine.
  * @param signal - Optional abort signal for cancellation.
  * @param tempDir - Optional temporary working directory.
+ * @returns The actual token usage of the conversation run, or undefined when unavailable.
  */
 export async function handleConversation(
   commentId: number,
@@ -40,7 +41,7 @@ export async function handleConversation(
   learningStore?: LearningStore,
   signal?: AbortSignal,
   tempDir?: string,
-): Promise<void> {
+): Promise<number | undefined> {
   const logger = new Logger('Conversation', { prNumber, repo });
   logger.info(`Handling conversation for comment ${commentId} on PR #${prNumber}`);
 
@@ -120,6 +121,7 @@ export async function handleConversation(
     }
 
     logger.info(`Conversation response posted for comment ${commentId} on PR #${prNumber}`);
+    return engine.getLastTelemetry()?.totalTokens;
   } catch (err) {
     logger.error(
       `Conversation failed for comment ${commentId}: ${err instanceof Error ? err.message : err}`,

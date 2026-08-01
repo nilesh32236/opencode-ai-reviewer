@@ -41,6 +41,9 @@ export function createAdminSubscriber(rateLimiter: RateLimiter, config: AgentCon
         const adminUsers = config.rateLimiting.adminUsers || [];
         const author = (comment?.user as Record<string, string> | undefined)?.login || '';
         if (!adminUsers.some((u) => u.toLowerCase() === author.toLowerCase())) {
+          logger.warn(
+            `Unauthorized ${parsed.command} attempt by ${author || 'unknown'} on ${event.repo} #${event.prNumber ?? '?'}`,
+          );
           return;
         }
 
@@ -94,8 +97,35 @@ async function handleReset(
     typeof parsed.flags.user === 'string' ? (parsed.flags.user as string) : undefined;
   const allFlag = parsed.flags.all === true;
 
+  // Require exactly one, explicit scope: `--all`, `--repo=X`, or `--user=Y`.
+  // A bare or ambiguous reset must never fall through to a global wipe.
+  if (allFlag && (repoFlag || userFlag)) {
+    await gh.postOrUpdateComment(
+      prNumber,
+      STATUS_MARKER,
+      'Invalid syntax — `--all` cannot be combined with `--repo` or `--user`.',
+    );
+    return;
+  }
+  if (repoFlag && userFlag) {
+    await gh.postOrUpdateComment(
+      prNumber,
+      STATUS_MARKER,
+      'Invalid syntax — use exactly one of `--repo=<name>` or `--user=<login>`.',
+    );
+    return;
+  }
+  if (!allFlag && !repoFlag && !userFlag) {
+    await gh.postOrUpdateComment(
+      prNumber,
+      STATUS_MARKER,
+      'Usage: `/rate-limits-reset --all` | `/rate-limits-reset --repo=<name>` | `/rate-limits-reset --user=<login>`',
+    );
+    return;
+  }
+
   let removed: number;
-  if (allFlag || (!repoFlag && !userFlag)) {
+  if (allFlag) {
     removed = await rateLimiter.resetAll();
   } else if (repoFlag) {
     removed = await rateLimiter.resetRepo(repoFlag);

@@ -6,7 +6,13 @@ import {
   MetaReviewSubscriber,
   PatternDetector,
 } from '@opencode-pr-agent/lib';
-import type { AgentConfig, EventBus, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
+import type {
+  AgentConfig,
+  EventBus,
+  LearningStore,
+  RateLimiter,
+  Subscriber,
+} from '@opencode-pr-agent/lib';
 import { createRateLimiter } from '../utils/rate-limit.js';
 import { createAdminSubscriber } from './admin.js';
 import { createAnalyzeSubscriber } from './analyze.js';
@@ -23,6 +29,44 @@ import { createReplySubscriber } from './reply.js';
 import { createReviewSubscriber } from './review.js';
 import { createSetupSubscriber } from './setup.js';
 
+const logger = new Logger('RateLimiter');
+
+/** How often the rate_limits table is pruned in a long-lived process. */
+const CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+let cleanupTimer: ReturnType<typeof setInterval> | null = null;
+let shutdownCleanupRegistered = false;
+
+/**
+ * Schedule periodic pruning of stale rate-limit rows. A long-lived process
+ * would otherwise grow the rate_limits table unbounded (inflating every count
+ * and sum query) until the next restart. The timer is unref'd so it never keeps
+ * the process alive, and it is cleared on shutdown signals.
+ * @param rateLimiter - The shared rate limiter whose cleanup is run periodically.
+ */
+function schedulePeriodicCleanup(rateLimiter: RateLimiter): void {
+  if (cleanupTimer) clearInterval(cleanupTimer);
+  cleanupTimer = setInterval(() => {
+    rateLimiter.cleanup().catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn(`Rate limiter periodic cleanup failed: ${msg}`);
+    });
+  }, CLEANUP_INTERVAL_MS);
+  cleanupTimer.unref?.();
+
+  if (!shutdownCleanupRegistered) {
+    shutdownCleanupRegistered = true;
+    const clearTimer = (): void => {
+      if (cleanupTimer) {
+        clearInterval(cleanupTimer);
+        cleanupTimer = null;
+      }
+    };
+    process.once('SIGTERM', clearTimer);
+    process.once('SIGINT', clearTimer);
+  }
+}
+
 /**
  * Register all event subscribers with the event bus.
  * @param bus - The EventBus instance.
@@ -37,7 +81,6 @@ export function registerSubscribers(
 ): Subscriber[] {
   const resolvedConfig = config ?? DEFAULT_CONFIG;
   const rateLimiter = createRateLimiter(learningStore, resolvedConfig);
-  const logger = new Logger('RateLimiter');
 
   const subscribers: Subscriber[] = [
     createReviewSubscriber(learningStore, bus, rateLimiter),
@@ -76,6 +119,9 @@ export function registerSubscribers(
     const msg = err instanceof Error ? err.message : String(err);
     logger.warn(`Rate limiter cleanup failed: ${msg}`);
   });
+
+  // ...and periodically, so a long-lived process does not accumulate stale rows.
+  schedulePeriodicCleanup(rateLimiter);
 
   bus.registerAll(subscribers);
 

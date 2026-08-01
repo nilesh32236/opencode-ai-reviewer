@@ -15,6 +15,7 @@ import { GitHubHelper, GitLabAdapter, Logger, ReviewEngine } from '@opencode-pr-
  * @param tempDir - Optional temporary working directory.
  * @param signal - Optional abort signal.
  * @param issueNumber - Optional issue/PR number that triggered the audit; used to post a failure comment.
+ * @returns The actual token usage of the audit run, or undefined when unavailable.
  */
 export async function handleAudit(
   repo: string,
@@ -25,7 +26,7 @@ export async function handleAudit(
   tempDir?: string,
   signal?: AbortSignal,
   issueNumber?: number,
-): Promise<void> {
+): Promise<number | undefined> {
   const logger = new Logger('Audit', { repo });
   logger.info(`Starting audit for ${repo}${targetDir ? ` targeting ${targetDir}` : ''}`);
 
@@ -139,7 +140,7 @@ export async function handleAudit(
 
     if (!result.summary && result.issues.length === 0) {
       logger.warn('Audit returned no meaningful content — skipping issue creation');
-      return;
+      return result.usage?.totalTokens;
     }
 
     logger.info(
@@ -165,6 +166,8 @@ export async function handleAudit(
     } else {
       logger.info('No critical or important issues found — skipping issue creation');
     }
+
+    return result.usage?.totalTokens;
   } finally {
     try {
       await engine.cleanup();

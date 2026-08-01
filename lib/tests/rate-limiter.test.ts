@@ -3,7 +3,12 @@ import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { LearningStore } from '../src/learning/store.js';
-import type { RateLimitActionInput, RateLimitCountFilter } from '../src/learning/types.js';
+import type {
+  RateLimitActionInput,
+  RateLimitCountFilter,
+  RateLimitReservationInput,
+  RateLimitReservationResult,
+} from '../src/learning/types.js';
 import type { RateLimitingConfig } from '../src/types/index.js';
 import { RateLimiter } from '../src/utils/rate-limiter.js';
 import type { RateLimitStore } from '../src/utils/rate-limiter.js';
@@ -37,6 +42,70 @@ class MockStore implements RateLimitStore {
 
   private iso(ts: number): string {
     return new Date(ts).toISOString();
+  }
+
+  async reserveRateLimitSlot(
+    input: RateLimitReservationInput,
+  ): Promise<RateLimitReservationResult> {
+    let repoCount = 0;
+    if (input.repoHourlyLimit !== null) {
+      repoCount = this.rows.filter(
+        (r) =>
+          r.repo === input.repo &&
+          r.tier === 'command' &&
+          Date.parse(r.created_at) >= input.hourStart,
+      ).length;
+      if (repoCount >= input.repoHourlyLimit) {
+        return {
+          allowed: false,
+          reason: 'repo_hourly',
+          resetAt: input.hourStart + input.hourMs,
+        };
+      }
+    }
+
+    const userCount = this.rows.filter(
+      (r) => r.github_user === input.githubUser && Date.parse(r.created_at) >= input.dayStart,
+    ).length;
+    if (userCount >= input.userDailyLimit) {
+      return { allowed: false, reason: 'user_daily', resetAt: input.dayStart + input.dayMs };
+    }
+
+    const times = this.rows
+      .filter(
+        (r) => r.repo === input.repo && r.pr_number === input.prNumber && r.tier === input.tier,
+      )
+      .map((r) => Date.parse(r.created_at));
+    const lastTime = times.length > 0 ? Math.max(...times) : null;
+    if (lastTime !== null && input.now - lastTime < input.cooldownMs) {
+      return { allowed: false, reason: 'pr_cooldown', resetAt: lastTime + input.cooldownMs };
+    }
+
+    const tokensUsed = this.rows
+      .filter((r) => Date.parse(r.created_at) >= input.dayStart)
+      .reduce((sum, r) => sum + r.tokens_used, 0);
+    if (tokensUsed + input.tokensUsed > input.tokenBudget) {
+      return { allowed: false, reason: 'token_budget', resetAt: input.dayStart + input.dayMs };
+    }
+
+    const id = `row-${this.rows.length}`;
+    this.rows.push({
+      id,
+      repo: input.repo,
+      github_user: input.githubUser,
+      pr_number: input.prNumber,
+      action: input.action,
+      tier: input.tier,
+      tokens_used: input.tokensUsed,
+      created_at: this.iso(input.now),
+    });
+    return {
+      allowed: true,
+      reservationId: id,
+      repoCount,
+      userCount,
+      tokensUsed: input.tokensUsed,
+    };
   }
 
   async recordRateLimitAction(input: RateLimitActionInput): Promise<string> {
@@ -330,6 +399,30 @@ describe('RateLimiter', () => {
 
     await limiter.recordReview('org/repo', 'alice', 1, 'review', 'command');
     expect(store.rows).toHaveLength(0);
+  });
+
+  it('fails closed when the rate-limit store is unavailable during reservation', async () => {
+    const brokenStore = new MockStore();
+    brokenStore.reserveRateLimitSlot = async () => {
+      throw new Error('connection lost');
+    };
+    limiter = new RateLimiter(makeConfig(), brokenStore);
+
+    const result = await limiter.checkReview('org/repo', 'alice', 1, { tier: 'command' });
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toBe('store_unavailable');
+    expect(result.remaining).toBe(0);
+  });
+
+  it('guards the headroom computation against a zero tier estimate', async () => {
+    limiter = new RateLimiter(
+      makeConfig({ estimatedTokensPerCommand: 0, dailyTokenBudget: 0 }),
+      store,
+    );
+    const result = await limiter.checkReview('org/repo', 'alice', 1, { tier: 'command' });
+    expect(result.allowed).toBe(true);
+    expect(Number.isFinite(result.remaining)).toBe(true);
+    expect(result.remaining).toBeGreaterThan(0);
   });
 
   it('formats a clear 429-style message with a reset time', async () => {

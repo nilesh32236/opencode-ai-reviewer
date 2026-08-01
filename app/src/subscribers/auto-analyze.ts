@@ -38,10 +38,14 @@ export function createAutoAnalyzeSubscriber(rateLimiter: RateLimiter): Subscribe
         const needsAnalysis = issueLabels.includes('needs-analysis');
         if (!needsAnalysis) return;
 
-        const reservation = await checkRateLimit(rateLimiter, event, 'command', 'analyze');
+        // issue.opened is auto-triggered: no user invoked a command, so deny
+        // silently rather than posting a misleading 429 comment.
+        const reservation = await checkRateLimit(rateLimiter, event, 'command', 'analyze', {
+          postDenialComment: false,
+        });
         if (!reservation) return;
 
-        await handleCommand(
+        const tokensUsed = await handleCommand(
           'analyze',
           issueNumber,
           event.repo || '',
@@ -50,7 +54,7 @@ export function createAutoAnalyzeSubscriber(rateLimiter: RateLimiter): Subscribe
           undefined,
           signal,
         );
-        await recordRateLimit(rateLimiter, event, 'command', 'analyze', reservation);
+        await recordRateLimit(rateLimiter, event, 'command', 'analyze', reservation, tokensUsed);
       } catch (err) {
         logger.error(`AutoAnalyzeSubscriber failed: ${err instanceof Error ? err.message : err}`);
       }

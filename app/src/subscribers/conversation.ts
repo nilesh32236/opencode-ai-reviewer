@@ -53,7 +53,7 @@ export function createConversationSubscriber(
         const reservation = await checkRateLimit(rateLimiter, event, 'interactive', 'conversation');
         if (!reservation) return;
 
-        await handleConversation(
+        const tokensUsed = await handleConversation(
           commentId,
           prNumber,
           event.repo || '',
@@ -63,7 +63,14 @@ export function createConversationSubscriber(
           learningStore,
           signal,
         );
-        await recordRateLimit(rateLimiter, event, 'interactive', 'conversation', reservation);
+        await recordRateLimit(
+          rateLimiter,
+          event,
+          'interactive',
+          'conversation',
+          reservation,
+          tokensUsed,
+        );
       } catch (err) {
         logger.error(
           `ConversationSubscriber failed for repo ${event.repo}: ${err instanceof Error ? err.message : err}`,

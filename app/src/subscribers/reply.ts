@@ -12,6 +12,27 @@ import { getToken } from '../utils/token.js';
  */
 export function createReplySubscriber(rateLimiter: RateLimiter): Subscriber {
   const logger = new Logger('ReplySubscriber');
+
+  /**
+   * Slash commands owned by dedicated subscribers that also listen on
+   * `review_comment.created`. Defer to them so one threaded reply produces one
+   * LLM run and one rate-limit charge, not a duplicate interactive one. Commands
+   * without a dedicated subscriber (e.g. `/help`) remain conversational.
+   */
+  const DEFERRED_REPLY_COMMANDS = new Set([
+    'analyze',
+    'audit',
+    'discover',
+    'dismiss',
+    'explain',
+    'fix',
+    'metrics',
+    'rate-limits',
+    'rate-limits-reset',
+    'reconcile-comments',
+    'review',
+    'setup',
+  ]);
   return {
     name: 'ReplySubscriber',
     subscribedEvents: ['review_comment.created'],
@@ -31,10 +52,13 @@ export function createReplySubscriber(rateLimiter: RateLimiter): Subscriber {
         const body = comment.body as string | undefined;
         if (!body) return;
 
-        // /dismiss is handled by its dedicated review-thread subscriber; other
-        // slash commands have no such subscriber and should still get the
-        // conversational reply.
-        if (parseCommand(body)?.command === 'dismiss') return;
+        // Any slash command owned by a dedicated command subscriber (/review,
+        // /fix, /analyze, /dismiss, ...) is handled by that subscriber, which
+        // also listens on review_comment.created. Defer here so a single
+        // threaded reply produces one LLM run and one rate-limit charge, not a
+        // duplicate interactive one.
+        const parsedCmd = parseCommand(body);
+        if (parsedCmd && DEFERRED_REPLY_COMMANDS.has(parsedCmd.command)) return;
 
         // A reply that @mentions the bot is handled by ConversationSubscriber,
         // so defer here to avoid double LLM calls and double rate-limit charges.
@@ -54,8 +78,15 @@ export function createReplySubscriber(rateLimiter: RateLimiter): Subscriber {
         const reservation = await checkRateLimit(rateLimiter, event, 'interactive', 'reply');
         if (!reservation) return;
 
-        await handleReply(prNumber, event.repo || '', getToken(), config, parentId, body);
-        await recordRateLimit(rateLimiter, event, 'interactive', 'reply', reservation);
+        const tokensUsed = await handleReply(
+          prNumber,
+          event.repo || '',
+          getToken(),
+          config,
+          parentId,
+          body,
+        );
+        await recordRateLimit(rateLimiter, event, 'interactive', 'reply', reservation, tokensUsed);
       } catch (err) {
         logger.error(`ReplySubscriber failed: ${err instanceof Error ? err.message : err}`);
       }
