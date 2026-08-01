@@ -68,7 +68,22 @@ export async function handleCommand(
       timeout: 120_000,
       ...(gitEnv ? { env: { ...process.env, ...gitEnv } } : {}),
     };
-    execFileSync('git', ['clone', `https://github.com/${repo}.git`, tempDir], cloneOpts);
+    try {
+      execFileSync('git', ['clone', `https://github.com/${repo}.git`, tempDir], cloneOpts);
+    } catch (err) {
+      logger.error(`Git clone failed for ${repo}: ${err instanceof Error ? err.message : err}`);
+      if (command === 'setup') {
+        // Setup must still produce a diagnostic report even when the repo
+        // cannot be cloned (e.g. missing/read-only token): run the checks
+        // against the empty temp dir so token-independent checks still run.
+        logger.info(
+          `Running setup validation against an empty workspace because ${repo} could not be cloned`,
+        );
+        await handleSetup(issueNumber, repo, token, config, tempDir);
+        return;
+      }
+      throw err;
+    }
 
     switch (command) {
       case 'analyze': {

@@ -99,6 +99,8 @@ export interface ActionInputs {
   auditLabels: string[];
   /** Version of opencode to use. */
   opencodeVersion: string;
+  /** In setup mode, probe every configured model instead of only the review model. */
+  probeAllModels: boolean;
   /** Timeout in minutes for the operation. */
   timeoutMinutes: number;
   /** Whether to post review comments inline on the diff. */
@@ -197,6 +199,7 @@ export function parseInputs(): ActionInputs {
     auditAutoFix: core.getInput('audit_auto_fix') === 'true',
     auditLabels,
     opencodeVersion,
+    probeAllModels: core.getInput('probe_all_models') === 'true',
     timeoutMinutes: parseTimeoutMinutes(core.getInput('timeout_minutes')),
     reviewInline: core.getInput('review_inline') !== 'false',
     enableStateCache: core.getInput('enable_state_cache') !== 'false',

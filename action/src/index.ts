@@ -146,8 +146,10 @@ async function run(): Promise<void> {
       await cacheManager.restore();
     }
 
-    await setupOpenCode(inputs.opencodeVersion);
-    await setupWorkspaceDependencies(process.cwd());
+    if (inputs.mode !== 'setup') {
+      await setupOpenCode(inputs.opencodeVersion);
+      await setupWorkspaceDependencies(process.cwd());
+    }
 
     const gitUser =
       core.getInput('git_user_name') ||

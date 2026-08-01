@@ -23,7 +23,7 @@ export interface ResolveConfigOptions {
  * @param platform - Platform identifier ('github' or 'gitlab', defaults to 'github').
  * @returns Array of config filenames to search.
  */
-function getConfigFilenames(platform?: Platform): string[] {
+export function getConfigFilenames(platform?: Platform): string[] {
   const platformDir = platform === 'gitlab' ? '.gitlab' : '.github';
   return [
     '.opencode-reviewer.yml',
@@ -257,6 +257,9 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     }
     if (typeof config.audit.autoFix === 'boolean') {
       result.audit.autoFix = config.audit.autoFix;
+    }
+    if (Array.isArray(config.audit.targetDirs)) {
+      result.audit.targetDirs = config.audit.targetDirs.filter((d) => typeof d === 'string');
     }
   }
 

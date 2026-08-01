@@ -82,10 +82,10 @@ The Action runs `review` mode by default. Other modes: `fix`, `audit`, `analyze`
 
 New to the reviewer? Run the setup validation before your first real review. It runs five pre-flight checks and posts a clear pass/fail report with actionable fixes:
 
-1. **Secrets** — required tokens are present (`GITHUB_TOKEN` plus a provider API key when a non-`opencode/*` model is configured).
-2. **Permissions** — the token/App has read/write access to the repository (issues & pull requests).
+1. **Secrets** — required tokens are present (`GITHUB_TOKEN` or a GitHub App `APP_ID` + private key, plus a provider API key when a non-`opencode/*` model is configured).
+2. **Permissions** — the token/App can read the repository; `issues: write` / `pull-requests: write` scopes are assumed (not surfaced by the repo permissions endpoint for fine-grained tokens).
 3. **OpenCode CLI** — installed and at version `>= 1.1.1`.
-4. **Model connectivity** — a lightweight probe against the configured review model.
+4. **Model connectivity** — a lightweight probe against the configured review model (or all configured models with `probe_all_models: true`).
 5. **Config** — `.opencode-reviewer.yml` parses and referenced paths (audit prompts dir, target dirs, category files) exist.
 
 Trigger it manually via the Actions tab (run the `setup.yml` workflow with *workflow_dispatch*), or comment `/setup` on any issue. The report is posted as an issue comment and to the job summary; the `setup_passed` output lets downstream steps gate on the result. See [docs/setup-flow.md](docs/setup-flow.md) for details.
@@ -123,6 +123,7 @@ Trigger it manually via the Actions tab (run the `setup.yml` workflow with *work
 | `audit_create_issues`    | `true`                               | Create GitHub issues for audit findings        |
 | `audit_auto_fix`         | `false`                              | Auto-trigger fixes for audit findings          |
 | `audit_labels`           | `audit`                              | Comma-separated labels for audit issues        |
+| `probe_all_models`       | `false`                              | In setup mode, probe every configured model instead of only the review model |
 | `enable_state_cache`     | `true`                               | Persist the learning database across runs using GitHub Actions Cache |
 | `state_cache_key`        | `opencode-learning-state`            | Custom key prefix for the learning state cache |
 

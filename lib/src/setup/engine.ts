@@ -1,11 +1,13 @@
+import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as exec from '@actions/exec';
-import { loadConfig } from '../config.js';
+import * as io from '@actions/io';
+import { getConfigFilenames, loadConfig } from '../config.js';
 import { resolveOpenCodePath, runOpenCode } from '../opencode.js';
 import type { AgentConfig } from '../types/index.js';
 import { GitHubHelper } from '../utils/github.js';
 import { withRetryAndTimeout } from '../utils/retry.js';
+import { sanitizeString } from '../utils/sanitize.js';
 import type { SetupCheck, SetupEngineOptions, SetupResult } from './types.js';
 
 /** Default minimum OpenCode CLI version the current code is known to work with. */
@@ -18,33 +20,51 @@ interface ParsedVersion {
   major: number;
   minor: number;
   patch: number;
+  /** Pre-release identifier (e.g. "rc.1") or null for a release version. */
+  prerelease: string | null;
 }
 
+/** Sentinel returned by {@link compareVersions} when either input is unparseable. */
+const UNPARSEABLE_VERSION = Number.MAX_SAFE_INTEGER;
+
+/**
+ * Parse a semantic version string (e.g. "v1.2.3", "1.2.3-rc.1").
+ * Build metadata is ignored; pre-release suffixes are captured for ordering.
+ * @param text - The version text to parse.
+ * @returns A parsed version, or null when no semver shape is found.
+ */
 function parseVersion(text: string): ParsedVersion | null {
-  const match = text.match(/\bv?(\d+)\.(\d+)\.(\d+)/);
+  const match = text.match(/\bv?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?/);
   if (!match) return null;
   return {
     major: Number.parseInt(match[1], 10),
     minor: Number.parseInt(match[2], 10),
     patch: Number.parseInt(match[3], 10),
+    prerelease: match[4] || null,
   };
 }
 
+/**
+ * Compare two semantic version strings.
+ * Pre-release versions sort below the corresponding release (1.1.1-rc.1 < 1.1.1).
+ * @param a - First version string.
+ * @param b - Second version string.
+ * @returns Negative when a < b, positive when a > b, 0 when equal, or
+ * {@link UNPARSEABLE_VERSION} when either input cannot be parsed so callers
+ * never silently treat an unparseable version as "pass".
+ */
 function compareVersions(a: string, b: string): number {
   const av = parseVersion(a);
   const bv = parseVersion(b);
-  if (!av || !bv) return 0;
+  if (!av || !bv) return UNPARSEABLE_VERSION;
   if (av.major !== bv.major) return av.major - bv.major;
   if (av.minor !== bv.minor) return av.minor - bv.minor;
-  return av.patch - bv.patch;
+  if (av.patch !== bv.patch) return av.patch - bv.patch;
+  if (av.prerelease === null && bv.prerelease === null) return 0;
+  if (av.prerelease === null) return 1;
+  if (bv.prerelease === null) return -1;
+  return av.prerelease < bv.prerelease ? -1 : av.prerelease === bv.prerelease ? 0 : 1;
 }
-
-const CONFIG_FILENAMES: Array<(platformDir: string) => string> = [
-  () => '.opencode-reviewer.yml',
-  () => '.opencode-reviewer.yaml',
-  (platformDir) => `${platformDir}/opencode-reviewer.yml`,
-  (platformDir) => `${platformDir}/opencode-reviewer.yaml`,
-];
 
 const MODEL_PROVIDER_KEYS: Array<{ label: string; envs: string[] }> = [
   { label: 'OpenAI (OPENAI_API_KEY)', envs: ['OPENAI_API_KEY', 'INPUT_OPENAI_API_KEY'] },
@@ -64,7 +84,8 @@ const MODEL_PROVIDER_KEYS: Array<{ label: string; envs: string[] }> = [
  * error deep in the pipeline:
  *
  * 1. Secrets — required tokens are present (presence only, not validity).
- * 2. Permissions — the GitHub token/App can read & write the target repository.
+ * 2. Permissions — the GitHub token/App can read the target repository (write
+ *    scopes are reported as informational, not verifiable via the repo endpoint).
  * 3. OpenCode CLI — installed and at an acceptable version.
  * 4. Model connectivity — a lightweight probe against the configured model(s).
  * 5. Config — `.opencode-reviewer.yml` parses and referenced paths exist.
@@ -130,7 +151,15 @@ export class SetupEngine {
     if (githubToken) {
       present.push('GitHub token');
     } else {
-      missing.push('GITHUB_TOKEN / INPUT_GITHUB_TOKEN');
+      const appCredential = this.resolveAppCredential();
+      if (appCredential.present) {
+        present.push('GitHub App credential (APP_ID + private key)');
+      } else {
+        missing.push(
+          appCredential.failure ||
+            'GITHUB_TOKEN / INPUT_GITHUB_TOKEN (or APP_ID + private key for a GitHub App)',
+        );
+      }
     }
 
     const foundProviders: string[] = [];
@@ -170,9 +199,13 @@ export class SetupEngine {
 
   /**
    * Verify the GitHub deployment has the permissions needed to review PRs and
-   * issues. For a GitHub App (APP_ID set) verifies the private key is present.
-   * When a repository is known, probes `GET /repos/{owner}/{repo}` to confirm
-   * the token actually has read/write (`push`) access.
+   * issues. For a GitHub App (APP_ID + private key) verifies the credential is
+   * present. When a repository is known, probes `GET /repos/{owner}/{repo}` to
+   * confirm the token can at least read the repository. The repo `permissions`
+   * endpoint only exposes contents access — `push` (write) is reported as an
+   * informational note, not a hard failure, because the reviewer's actual
+   * requirements (`issues: write` / `pull-requests: write`) are not surfaced
+   * by that endpoint for fine-grained tokens.
    *
    * @returns The check result.
    */
@@ -181,25 +214,21 @@ export class SetupEngine {
     const notes: string[] = [];
     const failures: string[] = [];
 
-    const appId = process.env.APP_ID;
-    const privateKey =
-      process.env.PRIVATE_KEY || process.env.APP_PRIVATE_KEY || process.env.PRIVATE_KEY_PATH;
-    if (appId) {
-      notes.push(`GitHub App configured (APP_ID=${appId})`);
-      if (privateKey) {
+    const appCredential = this.resolveAppCredential();
+    if (process.env.APP_ID) {
+      notes.push(`GitHub App configured (APP_ID=${process.env.APP_ID})`);
+      if (appCredential.present) {
         notes.push('GitHub App private key present');
       } else {
-        failures.push(
-          'APP_ID is set but no private key was found (PRIVATE_KEY or PRIVATE_KEY_PATH)',
-        );
+        failures.push(appCredential.failure ?? 'APP_ID is set but the private key is invalid');
       }
     }
 
     const token =
       this.options.githubToken || process.env.GITHUB_TOKEN || process.env.INPUT_GITHUB_TOKEN || '';
-    if (!token) {
+    if (!token && !appCredential.present) {
       failures.push(
-        'No GitHub token found — set GITHUB_TOKEN (or APP_ID/PRIVATE_KEY for a GitHub App)',
+        'No GitHub credentials found — set GITHUB_TOKEN (or APP_ID + private key for a GitHub App)',
       );
     }
 
@@ -222,12 +251,16 @@ export class SetupEngine {
     }
 
     if (repoPermissions) {
+      const read = repoPermissions.pull === true || repoPermissions.push === true;
       const write = repoPermissions.push === true;
-      notes.push(`Token has ${write ? 'read/write (push)' : 'read-only'} access to ${repo}`);
+      notes.push(`Token has ${write ? 'read/write' : read ? 'read-only' : 'no'} access to ${repo}`);
       if (!write) {
-        failures.push(
-          `Token has read-only access to ${repo} — grant pull-requests: write and issues: write`,
+        notes.push(
+          `Note: contents "push" is false for ${repo} — the reviewer's issues: write / pull-requests: write scopes are not surfaced by the repo permissions endpoint and are assumed to be granted.`,
         );
+      }
+      if (!read) {
+        failures.push(`Token cannot read ${repo} — ensure the token can read the repository`);
       }
     } else if (apiUnreachable) {
       return this.skip(
@@ -247,7 +280,7 @@ export class SetupEngine {
       return this.pass(
         'Permissions',
         repoPermissions
-          ? `Read/write access verified for ${repo}`
+          ? `Repository access verified for ${repo}`
           : 'Authentication present; no repository probe requested',
         notes.join('\n') || undefined,
         durationMs,
@@ -266,11 +299,17 @@ export class SetupEngine {
    * Resolves the binary via PATH or installs the requested version, then parses
    * the `opencode --version` output and compares against the minimum.
    *
+   * Note: when opencode is not already on PATH this check auto-installs the
+   * requested version as a side effect — that is intentional so the check is
+   * also the installer for the setup workflow.
+   *
    * @returns The check result.
    */
   async checkOpenCodeCLI(): Promise<SetupCheck> {
     const start = Date.now();
     const minimum = this.options.minimumOpenCodeVersion || DEFAULT_MINIMUM_OPENCODE_VERSION;
+
+    const preinstalled = Boolean(await io.which('opencode', false));
 
     let binaryPath: string;
     try {
@@ -283,35 +322,32 @@ export class SetupEngine {
         Date.now() - start,
       );
     }
+    const installNote = preinstalled
+      ? `Path: ${binaryPath}`
+      : `Path: ${binaryPath} (opencode was not on PATH and was auto-installed)`;
 
+    let versionText: string;
     try {
-      const output = await exec.getExecOutput(binaryPath, ['--version']);
-      const versionText = (output.stdout || output.stderr).trim();
-      const parsed = parseVersion(versionText);
-      if (!parsed) {
-        return this.fail(
-          'OpenCode CLI',
-          'OpenCode CLI version could not be parsed',
-          `Binary at ${binaryPath} returned: ${versionText || '(empty output)'}`,
-          Date.now() - start,
-        );
-      }
-      const version = `${parsed.major}.${parsed.minor}.${parsed.patch}`;
-      if (compareVersions(version, minimum) < 0) {
-        return this.fail(
-          'OpenCode CLI',
-          `OpenCode CLI v${version} is below the minimum supported version v${minimum}`,
-          `Upgrade opencode or set opencode_version to a newer tag (binary: ${binaryPath})`,
-          Date.now() - start,
-        );
-      }
-      return this.pass(
-        'OpenCode CLI',
-        `OpenCode CLI v${version} installed`,
-        `Path: ${binaryPath}`,
-        Date.now() - start,
-      );
+      versionText = execFileSync(binaryPath, ['--version'], {
+        timeout: 15_000,
+        killSignal: 'SIGKILL',
+        encoding: 'utf-8',
+        stdio: 'pipe',
+      }).trim();
     } catch (err) {
+      const killed =
+        err !== null &&
+        typeof err === 'object' &&
+        'killed' in err &&
+        (err as { killed?: boolean }).killed === true;
+      if (killed) {
+        return this.fail(
+          'OpenCode CLI',
+          'OpenCode CLI version check timed out',
+          `Binary at ${binaryPath} did not respond to --version within 15 seconds`,
+          Date.now() - start,
+        );
+      }
       return this.fail(
         'OpenCode CLI',
         'OpenCode CLI version check failed',
@@ -319,6 +355,42 @@ export class SetupEngine {
         Date.now() - start,
       );
     }
+
+    const parsed = parseVersion(versionText);
+    if (!parsed) {
+      return this.fail(
+        'OpenCode CLI',
+        'OpenCode CLI version could not be parsed',
+        `Binary at ${binaryPath} returned: ${versionText || '(empty output)'}`,
+        Date.now() - start,
+      );
+    }
+    const version = parsed.prerelease
+      ? `${parsed.major}.${parsed.minor}.${parsed.patch}-${parsed.prerelease}`
+      : `${parsed.major}.${parsed.minor}.${parsed.patch}`;
+    const cmp = compareVersions(version, minimum);
+    if (cmp === UNPARSEABLE_VERSION) {
+      return this.fail(
+        'OpenCode CLI',
+        `minimumOpenCodeVersion "${minimum}" is not a valid semantic version`,
+        `Set minimumOpenCodeVersion to a value like "1.1.1" (binary: ${binaryPath})`,
+        Date.now() - start,
+      );
+    }
+    if (cmp < 0) {
+      return this.fail(
+        'OpenCode CLI',
+        `OpenCode CLI v${version} is below the minimum supported version v${minimum}`,
+        `Upgrade opencode or set opencode_version to a newer tag (binary: ${binaryPath})`,
+        Date.now() - start,
+      );
+    }
+    return this.pass(
+      'OpenCode CLI',
+      `OpenCode CLI v${version} installed`,
+      installNote,
+      Date.now() - start,
+    );
   }
 
   /**
@@ -342,25 +414,45 @@ export class SetupEngine {
     for (const model of models) {
       try {
         const result = await withRetryAndTimeout(
-          async (signal) =>
-            runOpenCode('Reply with a single word: ok', {
+          async (signal) => {
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const probe = runOpenCode('Reply with a single word: ok', {
               model,
               workingDirectory: this.options.workingDirectory,
               timeoutMinutes: 1,
               signal,
-            }),
+              quiet: true,
+            });
+            const guard = new Promise<never>((_, reject) => {
+              timer = setTimeout(
+                () => reject(new Error(`probe timed out after ${timeoutMs}ms`)),
+                timeoutMs,
+              );
+            });
+            try {
+              return await Promise.race([probe, guard]);
+            } finally {
+              if (timer) clearTimeout(timer);
+            }
+          },
           timeoutMs,
           { maxRetries: 1, operationName: 'setup-model-probe' },
         );
         if (result.success) {
           successes.push(`- \`${model}\` responded in ${(result.durationMs / 1000).toFixed(1)}s`);
         } else {
-          const snippet = (result.output || '').trim().replace(/\s+/g, ' ').slice(0, 300);
-          failures.push(`- \`${model}\` returned an error${snippet ? `: ${snippet}` : ''}`);
+          // Redact likely secret patterns (e.g. echoed API keys) and sanitize
+          // before embedding raw CLI output in a public comment.
+          const raw = (result.output || '').trim().replace(/\s+/g, ' ');
+          const snippet = sanitizeString(raw.replace(/sk-[a-zA-Z0-9_-]{8,}/gi, 'sk-***')).slice(
+            0,
+            300,
+          );
+          failures.push(`- \`${model}\` returned an error:\n\n\`\`\`\n${snippet}\n\`\`\``);
         }
       } catch (err) {
         failures.push(
-          `- \`${model}\` probe failed: ${err instanceof Error ? err.message : String(err)}`,
+          `- \`${model}\` probe failed: ${sanitizeString(err instanceof Error ? err.message : String(err))}`,
         );
       }
     }
@@ -394,17 +486,15 @@ export class SetupEngine {
     const start = Date.now();
     const wd = this.options.workingDirectory || process.cwd();
     const platform = this.options.platform ?? this.config.platform ?? 'github';
-    const platformDir = platform === 'gitlab' ? '.gitlab' : '.github';
 
-    const existing = CONFIG_FILENAMES.map((make) => make(platformDir)).find((filename) =>
-      fs.existsSync(path.resolve(wd, filename)),
-    );
+    const filenames = getConfigFilenames(platform);
+    const existing = filenames.find((filename) => fs.existsSync(path.resolve(wd, filename)));
 
     if (!existing) {
       return this.pass(
         'Config',
         'No config file found — the default configuration will be used',
-        `Searched: ${CONFIG_FILENAMES.map((make) => make(platformDir)).join(', ')}`,
+        `Searched: ${filenames.join(', ')}`,
         Date.now() - start,
       );
     }
@@ -434,8 +524,21 @@ export class SetupEngine {
     }
 
     for (const dir of config.audit?.targetDirs ?? []) {
-      if (!fs.existsSync(path.resolve(wd, dir))) {
-        pathIssues.push(`audit.targetDirs entry "${dir}" does not exist`);
+      const resolved = path.resolve(wd, dir);
+      const exists = fs.existsSync(resolved);
+      const isDir =
+        exists &&
+        (() => {
+          try {
+            return fs.statSync(resolved).isDirectory();
+          } catch {
+            return false;
+          }
+        })();
+      if (!isDir) {
+        pathIssues.push(
+          `audit.targetDirs entry "${dir}" does not exist or is not a directory (expected ${resolved})`,
+        );
       }
     }
 
@@ -543,6 +646,45 @@ export class SetupEngine {
       models.add(this.config.reviewModel);
     }
     return [...models].filter(Boolean);
+  }
+
+  /**
+   * Determine whether a GitHub App credential is present and usable.
+   * An App credential is satisfied by APP_ID plus a private key supplied
+   * inline (PRIVATE_KEY / APP_PRIVATE_KEY) or via PRIVATE_KEY_PATH.
+   *
+   * @returns `present: true` when the credential is complete, otherwise a
+   * human-readable reason for the failure.
+   */
+  private resolveAppCredential(): { present: boolean; failure?: string } {
+    if (!process.env.APP_ID) return { present: false };
+    const rawKey =
+      process.env.PRIVATE_KEY || process.env.APP_PRIVATE_KEY || process.env.PRIVATE_KEY_PATH;
+    if (!rawKey) {
+      return {
+        present: false,
+        failure:
+          'APP_ID is set but no private key was found (PRIVATE_KEY, APP_PRIVATE_KEY, or PRIVATE_KEY_PATH)',
+      };
+    }
+    const keyMaterial = process.env.PRIVATE_KEY_PATH
+      ? (() => {
+          try {
+            return fs.readFileSync(process.env.PRIVATE_KEY_PATH, 'utf-8');
+          } catch {
+            return '';
+          }
+        })()
+      : rawKey;
+    if (!keyMaterial.includes('PRIVATE KEY')) {
+      return {
+        present: false,
+        failure: process.env.PRIVATE_KEY_PATH
+          ? `PRIVATE_KEY_PATH "${process.env.PRIVATE_KEY_PATH}" does not contain a PEM private key`
+          : 'The configured GitHub App private key does not look like a PEM key',
+      };
+    }
+    return { present: true };
   }
 
   private pass(name: string, message: string, details?: string, durationMs?: number): SetupCheck {

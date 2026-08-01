@@ -14,6 +14,7 @@ import type {
 import { CircuitBreaker } from './circuit-breaker.js';
 import { getLabelColor } from './label-color.js';
 import { withRetry, withRetryAndTimeout } from './retry.js';
+import type { RetryOptions } from './retry.js';
 import { buildReviewBody } from './review-body.js';
 import { gatherReviewThread } from './review-thread.js';
 import type { ThreadComment } from './review-thread.js';
@@ -100,6 +101,7 @@ export class GitHubHelper implements PlatformAdapter {
     options: RequestInit = {},
     responseType?: 'json' | 'text',
     signal?: AbortSignal,
+    retryOptions: RetryOptions = {},
   ): Promise<T> {
     const url = `${this.apiUrl}/repos/${this.repo}${path}`;
     const method = (options.method ?? 'GET').toUpperCase();
@@ -157,6 +159,7 @@ export class GitHubHelper implements PlatformAdapter {
           retryableStatuses: isIdempotent ? [429, 500, 502, 503, 504] : [429],
           retryUnknownStatus: isIdempotent,
           signal,
+          ...retryOptions,
         },
       ),
     );
@@ -1490,7 +1493,15 @@ export class GitHubHelper implements PlatformAdapter {
    */
   async getRepositoryPermissions(): Promise<Record<string, boolean> | null> {
     try {
-      const repo = await this.api<{ permissions?: Record<string, boolean> }>('/');
+      const repo = await this.api<{ permissions?: Record<string, boolean> }>(
+        '/',
+        undefined,
+        undefined,
+        undefined,
+        // The permission probe is a pre-flight check: degrade quickly on
+        // transport failures instead of burning retries/backoff.
+        { maxRetries: 1, retryUnknownStatus: false },
+      );
       return repo.permissions ?? null;
     } catch (err) {
       const status =

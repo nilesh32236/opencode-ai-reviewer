@@ -24,7 +24,7 @@ export async function runSetup(
 ): Promise<void> {
   const issueNumber =
     github.context.payload.issue?.number || github.context.payload.pull_request?.number;
-  const platform = config.platform ?? 'github';
+  const platform = (process.env.PLATFORM || config.platform || 'github') as 'github' | 'gitlab';
 
   core.info(`Running setup validation for ${repo}...`);
 
@@ -33,7 +33,7 @@ export async function runSetup(
     platform,
     githubToken: token,
     repo: platform === 'github' ? repo : undefined,
-    probeModels: [config.reviewModel],
+    ...(inputs.probeAllModels ? { probeAllModels: true } : { probeModels: [config.reviewModel] }),
     opencodeVersion: inputs.opencodeVersion,
   });
 

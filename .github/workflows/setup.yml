@@ -29,6 +29,11 @@ on:
         required: false
         type: string
         default: 'latest'
+      probe_all_models:
+        description: 'Probe every configured model instead of only the review model'
+        required: false
+        type: boolean
+        default: false
   issue_comment:
     types: [created]
 
@@ -43,9 +48,14 @@ concurrency:
 
 jobs:
   setup:
+    # Only trusted commenters (OWNER/MEMBER/COLLABORATOR) can trigger the
+    # on-demand run, since it executes with the operator's paid API keys and a
+    # write-scoped GITHUB_TOKEN. Command matching mirrors the App's parseCommand
+    # semantics (case-insensitive, `/oc setup` alias) as closely as the Actions
+    # expression language allows.
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event.issue.pull_request == null &&
+      (contains(fromJson('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
        (startsWith(github.event.comment.body, '/setup') ||
         startsWith(github.event.comment.body, '/oc setup')))
     runs-on: ubuntu-latest
@@ -65,13 +75,8 @@ jobs:
           mode: setup
           model: ${{ inputs.model || 'opencode/deepseek-v4-flash-free' }}
           opencode_version: ${{ inputs.opencode_version || 'latest' }}
+          probe_all_models: ${{ inputs.probe_all_models || 'false' }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
-
-      - name: Fail on validation errors
-        if: steps.ai-setup.outputs.setup_passed == 'false'
-        run: |
-          echo "::error::Setup validation failed — review the report for actionable fixes."
-          exit 1

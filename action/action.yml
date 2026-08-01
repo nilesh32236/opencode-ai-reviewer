@@ -144,6 +144,11 @@ inputs:
     required: false
     default: 'latest'
 
+  probe_all_models:
+    description: 'In setup mode, probe every configured model (review, fix, audit, etc.) instead of only the review model'
+    required: false
+    default: 'false'
+
   git_user_name:
     description: 'Git user name for commits (default: GITHUB_ACTOR)'
     required: false

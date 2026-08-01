@@ -8,7 +8,6 @@ export {
   getGitStatus,
   setupWorkspaceDependencies,
   resolveOpenCodePath,
-  getOpenCodeBinaryPath,
 } from './opencode.js';
 export { GitHubHelper } from './utils/github.js';
 export { GitLabAdapter } from './utils/gitlab-adapter.js';

@@ -2,7 +2,6 @@ import { Logger, parseCommand } from '@opencode-pr-agent/lib';
 import type { GitHubEvent, Subscriber } from '@opencode-pr-agent/lib';
 import { handleCommand } from '../handlers/commands.js';
 import { buildConfig } from '../utils/config.js';
-import { getToken } from '../utils/token.js';
 
 /**
  * Create a subscriber that handles `/setup` commands on comments.
@@ -23,15 +22,10 @@ export function createSetupSubscriber(): Subscriber {
         const config = buildConfig();
         const issueNumber = event.prNumber || 0;
         if (!issueNumber) return;
-        await handleCommand(
-          'setup',
-          issueNumber,
-          event.repo || '',
-          getToken(),
-          config,
-          parsed,
-          signal,
-        );
+        // Pass the raw token (possibly empty) so the setup engine can produce a
+        // diagnostic report instead of aborting the flow before it starts.
+        const token = process.env.GITHUB_TOKEN || '';
+        await handleCommand('setup', issueNumber, event.repo || '', token, config, parsed, signal);
       } catch (err) {
         logger.error(
           `SetupSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${err instanceof Error ? err.message : err}`,
