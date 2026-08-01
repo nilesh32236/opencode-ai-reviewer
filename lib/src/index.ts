@@ -69,6 +69,13 @@ export type {
 export { MetricsService } from './analytics/metrics.js';
 export { getDbPath } from './learning/schema.js';
 export { withRetry, withRetryAndTimeout } from './utils/retry.js';
+export { estimateTokens } from './utils/token-estimate.js';
+export {
+  ConversationStateManager,
+  conversationThreadId,
+  formatAutoCloseMessage,
+} from './conversation/state.js';
+export type { AutoCloseDecision } from './conversation/state.js';
 export { DEFAULT_ALLOWLIST, validateRunChecksCommand } from './utils/command.js';
 export { CircuitBreaker } from './utils/circuit-breaker.js';
 export type { CircuitState, CircuitBreakerOptions } from './utils/circuit-breaker.js';
@@ -118,7 +125,11 @@ export {
 } from './pattern-detector/minhash.js';
 export { RuleApprovalSubscriber } from './pattern-detector/rule-approval.js';
 export * from './utils/validation.js';
-export { buildConversationPrompt, detectIntent } from './prompts/conversation.js';
+export {
+  buildConversationPrompt,
+  buildConversationSummaryPrompt,
+  detectIntent,
+} from './prompts/conversation.js';
 export { buildSelfHealPrompt, extractRelevantLogSnippet } from './prompts/heal.js';
 export type { SelfHealPromptInputs } from './prompts/heal.js';
 export { buildVerificationPrompt } from './prompts/verify.js';

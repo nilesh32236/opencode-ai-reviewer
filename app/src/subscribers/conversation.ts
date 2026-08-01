@@ -1,4 +1,4 @@
-import { Logger } from '@opencode-pr-agent/lib';
+import { ConversationStateManager, Logger } from '@opencode-pr-agent/lib';
 import type { GitHubEvent, LearningStore, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
 import { handleConversation } from '../handlers/conversation.js';
 import { buildConfig } from '../utils/config.js';
@@ -7,6 +7,12 @@ import { getToken } from '../utils/token.js';
 
 /**
  * Create a subscriber that handles @mention conversations on PRs and issues.
+ *
+ * A long-lived `ConversationStateManager` is owned by the subscriber so tracked
+ * state (turn count, summary snapshots) survives across individual webhook
+ * turns — otherwise every @mention would start with empty state and the sliding
+ * window/summarization logic would never accumulate.
+ *
  * @param learningStore - The learning store instance for context and patterns.
  * @param rateLimiter - The shared rate limiter for cost control.
  * @returns A subscriber object for conversation handling.
@@ -16,6 +22,7 @@ export function createConversationSubscriber(
   rateLimiter: RateLimiter,
 ): Subscriber {
   const logger = new Logger('ConversationSubscriber');
+  const conversationStateManager = new ConversationStateManager();
   return {
     name: 'ConversationSubscriber',
     subscribedEvents: ['comment.created', 'review_comment.created'],
@@ -62,6 +69,8 @@ export function createConversationSubscriber(
           isReviewComment,
           learningStore,
           signal,
+          undefined,
+          conversationStateManager,
         );
         await recordRateLimit(rateLimiter, event, 'interactive', 'conversation', reservation);
       } catch (err) {

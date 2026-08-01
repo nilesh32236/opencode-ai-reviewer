@@ -333,6 +333,34 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     }
   }
 
+  if (config.conversation && typeof config.conversation === 'object') {
+    const conv = config.conversation;
+    const maxTurns =
+      typeof conv.maxTurns === 'number' && Number.isFinite(conv.maxTurns)
+        ? Math.min(Math.max(Math.round(conv.maxTurns), 0), 1000)
+        : undefined;
+    const slidingWindowSize =
+      typeof conv.slidingWindowSize === 'number' && Number.isFinite(conv.slidingWindowSize)
+        ? Math.min(Math.max(Math.round(conv.slidingWindowSize), 1), 500)
+        : undefined;
+    const contextTokenBudget =
+      typeof conv.contextTokenBudget === 'number' && Number.isFinite(conv.contextTokenBudget)
+        ? Math.min(Math.max(Math.round(conv.contextTokenBudget), 1000), 1000000)
+        : undefined;
+    if (
+      maxTurns !== undefined ||
+      slidingWindowSize !== undefined ||
+      contextTokenBudget !== undefined
+    ) {
+      result.conversation = {};
+      if (maxTurns !== undefined) result.conversation.maxTurns = maxTurns;
+      if (slidingWindowSize !== undefined)
+        result.conversation.slidingWindowSize = slidingWindowSize;
+      if (contextTokenBudget !== undefined)
+        result.conversation.contextTokenBudget = contextTokenBudget;
+    }
+  }
+
   if (Array.isArray(config.overrides)) {
     result.overrides = [];
     for (const o of config.overrides) {

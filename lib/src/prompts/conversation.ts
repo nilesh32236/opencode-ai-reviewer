@@ -1,4 +1,19 @@
-import type { ConversationContext } from '../types/index.js';
+import type {
+  ConversationConfig,
+  ConversationContext,
+  ConversationMessage,
+  ConversationState,
+} from '../types/index.js';
+import { estimateTokens } from '../utils/token-estimate.js';
+
+/** Fallback conversation defaults used when no explicit config is supplied. */
+const DEFAULT_CONVERSATION_CONFIG: ConversationConfig = {
+  mentionHandle: 'opencode-reviewer',
+  enabled: true,
+  maxTurns: 50,
+  slidingWindowSize: 20,
+  contextTokenBudget: 32000,
+};
 
 /**
  * Intent detection keywords for classifying user requests.
@@ -77,14 +92,55 @@ export function detectIntent(message: string): 'explain' | 'fix' | 'general' {
 }
 
 /**
+ * Normalize a partial conversation config to a fully defaulted object.
+ * @param config - Optional user-provided conversation config.
+ * @returns The effective conversation config with defaults applied.
+ */
+function normalizeConversationConfig(config?: ConversationConfig): ConversationConfig {
+  if (!config) return DEFAULT_CONVERSATION_CONFIG;
+  return {
+    ...DEFAULT_CONVERSATION_CONFIG,
+    ...config,
+  };
+}
+
+/**
+ * Estimate the current 1-indexed turn number from tracked state, falling back
+ * to counting assistant messages in the thread when state is unavailable.
+ * @param thread - Full conversation thread.
+ * @param state - Optional tracked conversation state.
+ * @returns The current 1-indexed turn number.
+ */
+function currentTurnNumber(thread: ConversationMessage[], state?: ConversationState): number {
+  const tracked = state?.turnCount ?? 0;
+  if (tracked > 0) return tracked + 1;
+  const assistantCount = thread.filter((m) => m.role === 'assistant').length;
+  return assistantCount + 1;
+}
+
+/**
  * Build a prompt for the LLM to respond to an interactive conversation in a PR comment.
- * The prompt includes file context, diff hunks, the full conversation thread,
- * and specific output format instructions based on the detected intent.
+ * The prompt includes file context, diff hunks, a sliding window of recent
+ * conversation messages (with a condensed summary of older context), and
+ * specific output format instructions based on the detected intent.
+ *
+ * Long threads are managed via a sliding window: messages older than
+ * `config.slidingWindowSize` are replaced by a summary snapshot (when one has
+ * been produced) so the prompt stays within the configured token budget. A
+ * context-usage footer reports the current turn and estimated token usage, and
+ * warnings are appended when the conversation approaches its turn limit.
  *
  * @param context - Full conversation context including thread, file, diff, and intent.
+ * @param config - Optional conversation configuration (defaults applied).
+ * @param state - Optional tracked conversation state (turn count, summary snapshot).
  * @returns The formatted prompt string for the LLM.
  */
-export function buildConversationPrompt(context: ConversationContext): string {
+export function buildConversationPrompt(
+  context: ConversationContext,
+  config?: ConversationConfig,
+  state?: ConversationState,
+): string {
+  const effectiveConfig = normalizeConversationConfig(config);
   const sections: string[] = [];
 
   sections.push('# Interactive Code Conversation');
@@ -125,10 +181,39 @@ export function buildConversationPrompt(context: ConversationContext): string {
     sections.push('');
   }
 
-  // Conversation thread
+  // Sliding window: split the thread into older messages (summarized) and the
+  // most recent messages kept in full.
+  const windowSize = effectiveConfig.slidingWindowSize;
+  let olderMessages: ConversationMessage[] = [];
+  let recentMessages = context.thread;
+  if (context.thread.length > windowSize) {
+    const splitAt = context.thread.length - windowSize;
+    olderMessages = context.thread.slice(0, splitAt);
+    recentMessages = context.thread.slice(splitAt);
+  }
+
+  // Condensed summary of earlier context, when one is available.
+  if (state?.summarySnapshot) {
+    sections.push('## Conversation Summary');
+    sections.push('');
+    sections.push(
+      'Summary of earlier discussion (older messages were condensed to stay within context limits):',
+    );
+    sections.push('');
+    sections.push(state.summarySnapshot);
+    sections.push('');
+  }
+
+  // Conversation thread (recent messages only)
   sections.push('## Conversation Thread');
   sections.push('');
-  for (const msg of context.thread) {
+  if (olderMessages.length > 0 && !state?.summarySnapshot) {
+    sections.push(
+      `> Note: ${olderMessages.length} earlier message(s) have been omitted to stay within context limits and will be summarized on the next turn.`,
+    );
+    sections.push('');
+  }
+  for (const msg of recentMessages) {
     const roleLabel = msg.role === 'user' ? `👤 ${msg.author || 'Developer'}` : '🤖 Assistant';
     sections.push(`### ${roleLabel}`);
     sections.push('');
@@ -190,6 +275,101 @@ export function buildConversationPrompt(context: ConversationContext): string {
   sections.push('Do NOT wrap your response in JSON or any other structure.');
   sections.push('Do NOT include greeting lines like "Hi!" or sign-off lines.');
   sections.push('Be direct, technical, and helpful.');
+
+  // Context usage footer with limit warnings.
+  const turnNumber = currentTurnNumber(context.thread, state);
+  const maxTurns = effectiveConfig.maxTurns;
+  const estimatedTokens = estimateTokens(sections.join('\n'));
+  const budget = effectiveConfig.contextTokenBudget;
+
+  const warnings: string[] = [];
+  if (maxTurns > 0 && turnNumber > 0.8 * maxTurns) {
+    warnings.push(
+      `This conversation is approaching its ${maxTurns}-turn limit (turn ${turnNumber}). The next few turns will be the last; please wrap up or start a new thread.`,
+    );
+  }
+  if (estimatedTokens > 0.9 * budget) {
+    warnings.push(
+      `The conversation context is approaching its token budget (~${budget.toLocaleString()} tokens). Older context may be condensed further to stay within limits.`,
+    );
+  }
+
+  if (warnings.length > 0) {
+    sections.push('');
+    sections.push('## ⚠️ Warnings');
+    sections.push('');
+    for (const warning of warnings) {
+      sections.push(`- ${warning}`);
+    }
+    sections.push('');
+  }
+
+  sections.push('## Context Usage');
+  sections.push('');
+  sections.push(
+    `- Turn: ${Math.min(turnNumber, maxTurns > 0 ? maxTurns : turnNumber)}/${maxTurns > 0 ? maxTurns : '∞'}`,
+  );
+  sections.push(
+    `- Context: ~${estimatedTokens.toLocaleString()} / ${budget.toLocaleString()} tokens (~${Math.round((estimatedTokens / budget) * 100)}%)`,
+  );
+
+  return sections.join('\n');
+}
+
+/**
+ * Build a prompt that condenses an older portion of a long-running conversation
+ * into a dense summary. The summary is written to
+ * `.opencode/conversation-summary.txt` so it does not collide with the main
+ * conversation response output file.
+ *
+ * @param messages - The older messages to condense.
+ * @param config - Optional conversation configuration (used for model-aware wording).
+ * @param turnCount - The current 1-indexed turn number (for context).
+ * @returns The formatted summarization prompt string.
+ */
+export function buildConversationSummaryPrompt(
+  messages: ConversationMessage[],
+  config?: ConversationConfig,
+  turnCount?: number,
+): string {
+  const effectiveConfig = normalizeConversationConfig(config);
+  const sections: string[] = [];
+
+  sections.push('# Conversation Summarization');
+  sections.push('');
+  sections.push('You are condensing the older part of a long-running code review conversation.');
+  sections.push(
+    'Summarize the messages below into a concise but information-dense paragraph (2-6 sentences).',
+  );
+  sections.push(
+    'Preserve: the file/line(s) being discussed, decisions reached, agreed-upon changes, open questions, and any key references.',
+  );
+  sections.push('Do NOT include greetings, sign-offs, or markdown headings.');
+  sections.push(
+    'The most recent messages remain available to the main conversation — only summarize what is listed below.',
+  );
+  sections.push('');
+  if (turnCount !== undefined && effectiveConfig.maxTurns > 0) {
+    sections.push(
+      `This is turn ${Math.min(turnCount, effectiveConfig.maxTurns)} of up to ${effectiveConfig.maxTurns}.`,
+    );
+    sections.push('');
+  }
+  sections.push('## Messages');
+  sections.push('');
+  for (const msg of messages) {
+    const roleLabel = msg.role === 'user' ? `👤 ${msg.author || 'Developer'}` : '🤖 Assistant';
+    sections.push(`### ${roleLabel}`);
+    sections.push('');
+    sections.push(msg.body);
+    sections.push('');
+  }
+  sections.push('## Output');
+  sections.push('');
+  sections.push(
+    'Write ONLY the summary as plain text, directly to `.opencode/conversation-summary.txt`.',
+  );
+  sections.push('Do NOT wrap it in JSON or markdown code fences.');
 
   return sections.join('\n');
 }

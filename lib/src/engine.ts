@@ -4,6 +4,8 @@ import * as os from 'os';
 import * as path from 'path';
 import * as core from '@actions/core';
 import { minimatch } from 'minimatch';
+import { conversationThreadId } from './conversation/state.js';
+import type { ConversationStateManager } from './conversation/state.js';
 import { emptyResult, parseJsonlFile } from './jsonl-parser.js';
 import type { LearningStore } from './learning/store.js';
 import { MCPManager } from './mcp/client.js';
@@ -17,12 +19,14 @@ import {
   buildReviewPrompt,
   buildSynthesisPrompt,
 } from './prompts/builder.js';
-import { buildConversationPrompt } from './prompts/conversation.js';
+import { buildConversationPrompt, buildConversationSummaryPrompt } from './prompts/conversation.js';
 import { buildSelfHealPrompt } from './prompts/heal.js';
 import { buildVerificationPrompt } from './prompts/verify.js';
 import type {
   AgentConfig,
+  ConversationConfig,
   ConversationContext,
+  ConversationState,
   FixResult,
   LinterConfig,
   LinterFinding,
@@ -1371,23 +1375,49 @@ export class ReviewEngine {
    * Run an interactive conversation in response to an @mention in a PR comment.
    * Builds a conversation prompt from the provided context and runs it through OpenCode CLI.
    *
+   * When a `stateManager` is provided, conversation state is tracked across
+   * turns: the thread is auto-closed once it reaches `maxTurns`, and older
+   * messages beyond the sliding window are condensed into a summary snapshot so
+   * the prompt stays within the configured context budget.
+   *
    * @param context - Full conversation context (thread, file, diff, intent).
    * @param timeoutMinutes - Optional timeout override.
    * @param workingDirectory - Optional working directory for OpenCode execution.
+   * @param stateManager - Optional state manager for turn/window/summary tracking.
    * @returns The raw response text for posting as a GitHub comment.
    */
   async runConversation(
     context: ConversationContext,
     timeoutMinutes?: number,
     workingDirectory?: string,
+    stateManager?: ConversationStateManager,
   ): Promise<string> {
     // Reset telemetry so the reported usage reflects only this conversation invocation.
     this.telemetry = null;
+    const conversationConfig = this.config.conversation;
+
+    const threadId = conversationThreadId(context);
+    const state = stateManager?.getOrCreateState(threadId);
+
+    // Auto-close check: once the turn limit is reached, answer with the close
+    // message directly instead of spending a model call. Subsequent @mentions
+    // on the same thread keep returning the close message because the tracked
+    // turn count never resets below the limit.
+    if (state && stateManager) {
+      const decision = stateManager.shouldAutoClose(state, conversationConfig);
+      if (decision.shouldClose) {
+        this.logger.info(
+          `Conversation ${threadId} auto-closed (${decision.reason ?? 'limit'}) after ${state.turnCount} turns`,
+        );
+        return decision.message ?? '';
+      }
+    }
+
     const workDir = workingDirectory || process.cwd();
     const outputPath = path.join(workDir, '.opencode', 'conversation-output.txt');
     ensureOutputDir(outputPath);
 
-    const prompt = buildConversationPrompt(context);
+    const prompt = buildConversationPrompt(context, conversationConfig, state);
 
     const runResult = await runOpenCode(prompt, {
       model: this.resolveModel('conversationModel'),
@@ -1407,14 +1437,104 @@ export class ReviewEngine {
       return 'I encountered an error processing your request. Please try again or rephrase your question.';
     }
 
-    // Read the response from the output file
+    // Read the response from the output file before any summarization pass so
+    // the secondary summarization run cannot overwrite the main reply.
+    let responseText: string;
     try {
       const output = await fs.readFile(outputPath, 'utf-8');
-      if (output.trim()) return output.trim();
-      return 'I encountered an error generating the conversation response (output was empty).';
+      responseText = output.trim();
     } catch {
       return 'I encountered an error reading the conversation reply from `.opencode/conversation-output.txt`.';
     }
+
+    // Sliding-window summarization: when the thread overflows the window and the
+    // older chunk has grown, condense the older messages synchronously so the
+    // next turn sees a summary instead of dropping context.
+    if (state && stateManager) {
+      const threadLength = context.thread.length;
+      try {
+        if (stateManager.shouldSummarize(state, threadLength, conversationConfig)) {
+          const summary = await this.summarizeOlderMessages(
+            context,
+            state,
+            conversationConfig,
+            workDir,
+          );
+          stateManager.updateState(
+            state,
+            summary,
+            Math.max(0, threadLength - conversationConfig.slidingWindowSize),
+            threadLength,
+          );
+        } else {
+          stateManager.updateState(state, undefined, undefined, threadLength);
+        }
+      } catch (err) {
+        this.logger.warn(
+          `Conversation state update failed for ${threadId}: ${err instanceof Error ? err.message : err}`,
+        );
+        // State bookkeeping must never fail the conversation turn.
+        stateManager.updateState(state, undefined, undefined, threadLength);
+      }
+    }
+
+    if (responseText) return responseText;
+    return 'I encountered an error generating the conversation response (output was empty).';
+  }
+
+  /**
+   * Generate (or refresh) a condensed summary of the older messages that fell
+   * out of the conversation sliding window. Runs synchronously every N turns —
+   * only when the older chunk grows past a threshold — so the added latency is
+   * negligible. Falls back to the previous summary on failure.
+   *
+   * @param context - Full conversation context.
+   * @param state - Tracked conversation state (for previous summary fallback).
+   * @param config - Conversation configuration (window size, summarization model).
+   * @param workDir - Working directory for the summarization OpenCode run.
+   * @returns The summary text, or the previous snapshot when summarization fails.
+   */
+  private async summarizeOlderMessages(
+    context: ConversationContext,
+    state: ConversationState,
+    config: ConversationConfig,
+    workDir: string,
+  ): Promise<string> {
+    const splitAt = context.thread.length - config.slidingWindowSize;
+    const olderMessages = context.thread.slice(0, Math.max(0, splitAt));
+    if (olderMessages.length === 0) return state.summarySnapshot ?? '';
+
+    const summaryPath = path.join(workDir, '.opencode', 'conversation-summary.txt');
+    ensureOutputDir(summaryPath);
+
+    const summaryPrompt = buildConversationSummaryPrompt(
+      olderMessages,
+      config,
+      state.turnCount + 1,
+    );
+
+    this.logger.info(
+      `Summarizing ${olderMessages.length} older conversation messages (${context.prContext.number})`,
+    );
+    const runResult = await runOpenCode(summaryPrompt, {
+      model: config.summarizationModel ?? this.resolveModel('conversationModel'),
+      timeoutMinutes: this.config.timeoutMinutes,
+      workingDirectory: workDir,
+      quiet: true,
+    });
+
+    if (!runResult.success) {
+      this.logger.warn('Conversation summarization run failed — keeping previous summary');
+      return state.summarySnapshot ?? '';
+    }
+
+    try {
+      const summary = (await fs.readFile(summaryPath, 'utf-8')).trim();
+      if (summary) return summary;
+    } catch {
+      this.logger.warn('Failed to read conversation summary output — keeping previous summary');
+    }
+    return state.summarySnapshot ?? '';
   }
 
   /**

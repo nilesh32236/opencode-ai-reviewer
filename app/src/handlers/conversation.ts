@@ -2,6 +2,7 @@ import type {
   AgentConfig,
   ConversationContext,
   ConversationMessage,
+  ConversationStateManager,
   LearningStore,
   PRContext,
   PlatformAdapter,
@@ -29,6 +30,7 @@ import {
  * @param learningStore - Optional learning store for the engine.
  * @param signal - Optional abort signal for cancellation.
  * @param tempDir - Optional temporary working directory.
+ * @param stateManager - Optional conversation state manager for context window management.
  */
 export async function handleConversation(
   commentId: number,
@@ -40,6 +42,7 @@ export async function handleConversation(
   learningStore?: LearningStore,
   signal?: AbortSignal,
   tempDir?: string,
+  stateManager?: ConversationStateManager,
 ): Promise<void> {
   const logger = new Logger('Conversation', { prNumber, repo });
   logger.info(`Handling conversation for comment ${commentId} on PR #${prNumber}`);
@@ -96,6 +99,7 @@ export async function handleConversation(
   const intent = lastUserMessage ? detectIntent(lastUserMessage.body) : 'general';
 
   const context: ConversationContext = {
+    threadId: `${repo}/${prNumber}/${filePath || 'issue'}`,
     filePath,
     diffHunk,
     thread,
@@ -108,7 +112,7 @@ export async function handleConversation(
   try {
     if (signal?.aborted) return;
 
-    const response = await engine.runConversation(context, undefined, tempDir);
+    const response = await engine.runConversation(context, undefined, tempDir, stateManager);
 
     if (signal?.aborted) return;
 

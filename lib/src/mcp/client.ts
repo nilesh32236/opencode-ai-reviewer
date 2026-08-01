@@ -17,6 +17,7 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { MCPContextEntry, MCPQueryResult, MCPServerConfig } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
 import { withRetry } from '../utils/retry.js';
+import { estimateTokens } from '../utils/token-estimate.js';
 
 /**
  * Manages connections to MCP (Model Context Protocol) servers.
@@ -342,16 +343,6 @@ function extractTextFromResult(result: unknown): string {
       .join('\n');
   }
   return '';
-}
-
-/**
- * Rough token estimate for a string (~4 chars per token).
- * @param text - The string to estimate token count for
- * @returns Estimated token count (based on ~4 characters per token)
- */
-function estimateTokens(text: string): number {
-  // Rough estimate: ~4 chars per token
-  return Math.ceil(text.length / 4);
 }
 
 /**

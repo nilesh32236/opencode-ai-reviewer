@@ -82,6 +82,32 @@ export function buildConfig(): AgentConfig {
       metaReview: { enabled: true, interval: 5, minFindingsForReview: 3 },
       patternDiscovery: { enabled: true, minFrequency: 3, windowSize: 100 },
     },
+    conversation: {
+      ...DEFAULT_CONFIG.conversation,
+      mentionHandle:
+        process.env.CONVERSATION_MENTION_HANDLE || DEFAULT_CONFIG.conversation.mentionHandle,
+      maxTurns: clampInt(
+        parseEnvInt(process.env.CONVERSATION_MAX_TURNS, DEFAULT_CONFIG.conversation.maxTurns),
+        0,
+        1000,
+      ),
+      slidingWindowSize: clampInt(
+        parseEnvInt(
+          process.env.CONVERSATION_SLIDING_WINDOW_SIZE,
+          DEFAULT_CONFIG.conversation.slidingWindowSize,
+        ),
+        1,
+        500,
+      ),
+      contextTokenBudget: clampInt(
+        parseEnvInt(
+          process.env.CONVERSATION_CONTEXT_TOKEN_BUDGET,
+          DEFAULT_CONFIG.conversation.contextTokenBudget,
+        ),
+        1000,
+        1000000,
+      ),
+    },
     rateLimiting: {
       ...DEFAULT_CONFIG.rateLimiting,
       enabled: process.env.RATE_LIMIT_ENABLED !== 'false',
