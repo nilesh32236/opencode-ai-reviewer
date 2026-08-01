@@ -842,6 +842,7 @@ export class GitHubHelper implements PlatformAdapter {
    *
    * @param _mrNumber - Unused, required for PlatformAdapter compatibility.
    * @param commentId - Review comment ID.
+   * @param signal - Optional AbortSignal to cancel the request.
    * @returns The review comment details.
    */
   async getReviewComment(
