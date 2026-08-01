@@ -161,6 +161,7 @@ vi.mock('fs', async () => {
     promises: {
       readFile: vi.fn(),
       unlink: vi.fn(),
+      appendFile: vi.fn(),
     },
   };
 });
@@ -1736,6 +1737,154 @@ describe('ReviewEngine', () => {
       expect(result.summary).toContain('Large PR Detected');
       expect(result.summary).toContain('split');
       expect(result.verdict.reasoning).toBe('Review execution failed');
+    });
+  });
+
+  describe('token usage / cost telemetry', () => {
+    const pr = makePRContext();
+
+    function makeCostTrackingConfig(
+      overrides: Partial<AgentConfig> = {},
+      costTracking: { enabled?: boolean; verbosity?: 'off' | 'summary' | 'detailed' } = {},
+    ): AgentConfig {
+      return makeConfig({
+        enableMCP: false,
+        mcpServers: [],
+        ...overrides,
+        review: {
+          ...DEFAULT_CONFIG.review,
+          costTracking: {
+            enabled: costTracking.enabled ?? true,
+            verbosity: costTracking.verbosity ?? 'summary',
+          },
+          ...((overrides.review || {}) as Record<string, unknown>),
+        },
+      });
+    }
+
+    beforeEach(() => {
+      mockMCPConnect.mockResolvedValue(undefined);
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 500,
+        promptTokens: 400,
+        completionTokens: 100,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+    });
+
+    it('returns null telemetry before any pipeline run', () => {
+      expect(engine.getLastTelemetry()).toBeNull();
+    });
+
+    it('accumulates token usage after a review run', async () => {
+      const eng = new ReviewEngine(makeCostTrackingConfig(), mockAdapter);
+
+      await eng.reviewPR(pr);
+
+      const telemetry = eng.getLastTelemetry();
+      expect(telemetry).not.toBeNull();
+      expect(telemetry?.totalTokens).toBe(500);
+      expect(telemetry?.promptTokens).toBe(400);
+      expect(telemetry?.completionTokens).toBe(100);
+      expect(telemetry?.durationMs).toBe(1000);
+    });
+
+    it('attaches summary usage to the review result', async () => {
+      const eng = new ReviewEngine(makeCostTrackingConfig(), mockAdapter);
+
+      const result = await eng.reviewPR(pr);
+
+      expect(result.usage).toEqual({
+        totalTokens: 500,
+        durationMs: 1000,
+        estimatedCost: undefined,
+      });
+    });
+
+    it('attaches full breakdown for detailed verbosity', async () => {
+      const eng = new ReviewEngine(
+        makeCostTrackingConfig({}, { verbosity: 'detailed' }),
+        mockAdapter,
+      );
+
+      const result = await eng.reviewPR(pr);
+
+      expect(result.usage).toEqual({
+        totalTokens: 500,
+        promptTokens: 400,
+        completionTokens: 100,
+        durationMs: 1000,
+        estimatedCost: undefined,
+      });
+    });
+
+    it('does not attach usage when cost tracking is disabled', async () => {
+      const eng = new ReviewEngine(makeCostTrackingConfig({}, { enabled: false }), mockAdapter);
+
+      const result = await eng.reviewPR(pr);
+
+      expect(result.usage).toBeUndefined();
+    });
+
+    it('estimates cost from configured rates', async () => {
+      const eng = new ReviewEngine(
+        makeCostTrackingConfig({
+          review: {
+            ...DEFAULT_CONFIG.review,
+            costTracking: {
+              enabled: true,
+              verbosity: 'detailed',
+              inputCostPer1K: 0.01,
+              outputCostPer1K: 0.02,
+            },
+          },
+        }),
+        mockAdapter,
+      );
+
+      const result = await eng.reviewPR(pr);
+
+      expect(result.usage?.estimatedCost).toBeCloseTo(0.004 + 0.002, 6);
+    });
+
+    it('falls back to known model rates when config rates are absent', async () => {
+      const eng = new ReviewEngine(
+        makeCostTrackingConfig(
+          { reviewModel: 'anthropic/claude-3-5-sonnet' },
+          { verbosity: 'detailed' },
+        ),
+        mockAdapter,
+      );
+
+      const result = await eng.reviewPR(pr);
+
+      const expected = (400 / 1000) * 0.003 + (100 / 1000) * 0.015;
+      expect(result.usage?.estimatedCost).toBeCloseTo(expected, 6);
+    });
+
+    it('leaves estimatedCost undefined for unknown free models', async () => {
+      const eng = new ReviewEngine(
+        makeCostTrackingConfig({ reviewModel: 'opencode/deepseek-v4-flash-free' }),
+        mockAdapter,
+      );
+
+      const result = await eng.reviewPR(pr);
+
+      expect(result.usage?.estimatedCost).toBeUndefined();
+    });
+
+    it('writes a JSONL cost log when exposure is enabled', async () => {
+      const eng = new ReviewEngine(makeCostTrackingConfig(), mockAdapter);
+
+      await eng.reviewPR(pr);
+
+      const appendFile = fs.promises.appendFile;
+      expect(appendFile).toHaveBeenCalled();
+      const [, content] = (appendFile as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(content).toContain('"totalTokens":500');
     });
   });
 });

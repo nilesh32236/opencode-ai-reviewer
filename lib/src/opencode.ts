@@ -345,12 +345,35 @@ function buildCIConfig(): string {
 }
 
 /**
- * Parse token usage from OpenCode CLI output.
- * Looks for common LLM token patterns. Returns 0 if no pattern matches.
- * @param output - The CLI output string to parse for token usage.
- * @returns The number of tokens used, or 0 if no pattern matches.
+ * Breakdown of token usage parsed from OpenCode CLI output.
  */
-export function parseTokenUsage(output: string): number {
+export interface TokenUsageBreakdown {
+  /** Total tokens consumed, or 0 if no pattern matched. */
+  totalTokens: number;
+  /** Prompt (input) tokens when explicitly reported. */
+  promptTokens?: number;
+  /** Completion (output) tokens when explicitly reported. */
+  completionTokens?: number;
+}
+
+function extractSingleToken(output: string, pattern: RegExp): number | undefined {
+  const match = output.match(pattern);
+  if (!match) return undefined;
+  const parsed = Number.parseInt(match[1], 10);
+  if (Number.isSafeInteger(parsed) && parsed >= 0) return parsed;
+  return undefined;
+}
+
+/**
+ * Parse token usage from OpenCode CLI output, capturing the prompt/completion
+ * breakdown in addition to the total.
+ * Looks for common LLM token patterns (total_tokens, total tokens, and the
+ * Anthropic/Gemini input_tokens + output_tokens pair).
+ * @param output - The CLI output string to parse for token usage.
+ * @returns An object with the total token count (0 if no pattern matches) and
+ * optional prompt/completion token counts.
+ */
+export function parseTokenUsageDetailed(output: string): TokenUsageBreakdown {
   // Prioritize total_tokens patterns to avoid matching prompt_tokens or completion_tokens.
   // Use word-bounded key matches so suffixes like prompt_total_tokens are not accepted.
   const totalPatterns = [
@@ -361,20 +384,36 @@ export function parseTokenUsage(output: string): number {
     const match = output.match(pattern);
     if (match) {
       const parsed = Number.parseInt(match[1], 10);
-      if (Number.isSafeInteger(parsed) && parsed >= 0) return parsed;
+      if (Number.isSafeInteger(parsed) && parsed >= 0) {
+        return {
+          totalTokens: parsed,
+          promptTokens: extractSingleToken(output, /\bprompt_tokens\b["\s]*[:=]\s*(\d+)/i),
+          completionTokens: extractSingleToken(output, /\bcompletion_tokens\b["\s]*[:=]\s*(\d+)/i),
+        };
+      }
     }
   }
   // Fallback: sum input_tokens + output_tokens (used by Anthropic, Gemini)
-  const inputMatch = output.match(/\binput_tokens\b["\s]*[:=]\s*(\d+)/i);
-  const outputMatch = output.match(/\boutput_tokens\b["\s]*[:=]\s*(\d+)/i);
-  const inputTokens = inputMatch ? Number.parseInt(inputMatch[1], 10) : 0;
-  const outputTokens = outputMatch ? Number.parseInt(outputMatch[1], 10) : 0;
-  const hasInput = inputMatch !== null && Number.isSafeInteger(inputTokens) && inputTokens >= 0;
-  const hasOutput = outputMatch !== null && Number.isSafeInteger(outputTokens) && outputTokens >= 0;
-  if (hasInput || hasOutput) {
-    return (hasInput ? inputTokens : 0) + (hasOutput ? outputTokens : 0);
+  const inputTokens = extractSingleToken(output, /\binput_tokens\b["\s]*[:=]\s*(\d+)/i);
+  const outputTokens = extractSingleToken(output, /\boutput_tokens\b["\s]*[:=]\s*(\d+)/i);
+  if (inputTokens !== undefined || outputTokens !== undefined) {
+    return {
+      totalTokens: (inputTokens ?? 0) + (outputTokens ?? 0),
+      promptTokens: inputTokens,
+      completionTokens: outputTokens,
+    };
   }
-  return 0;
+  return { totalTokens: 0 };
+}
+
+/**
+ * Parse token usage from OpenCode CLI output.
+ * Looks for common LLM token patterns. Returns 0 if no pattern matches.
+ * @param output - The CLI output string to parse for token usage.
+ * @returns The number of tokens used, or 0 if no pattern matches.
+ */
+export function parseTokenUsage(output: string): number {
+  return parseTokenUsageDetailed(output).totalTokens;
 }
 
 /**
@@ -406,7 +445,14 @@ export async function runOpenCode(
     /** When true, do not stream the transcript to the CI logs. */
     quiet?: boolean;
   },
-): Promise<{ success: boolean; output: string; durationMs: number; tokensUsed: number }> {
+): Promise<{
+  success: boolean;
+  output: string;
+  durationMs: number;
+  tokensUsed: number;
+  promptTokens?: number;
+  completionTokens?: number;
+}> {
   const binaryPath = opencodePath || (await setupOpenCode());
   const startTime = Date.now();
   const cwd = options.workingDirectory || process.cwd();
@@ -505,15 +551,23 @@ export async function runOpenCode(
   const MAX_CAPTURED_BYTES = 50 * 1024;
   let capturedOutput = '';
   let tokenUsageResult = 0;
+  let promptTokensResult = 0;
+  let completionTokensResult = 0;
 
   function appendCaptured(text: string): void {
     capturedOutput += text;
     if (capturedOutput.length > MAX_CAPTURED_BYTES) {
       capturedOutput = capturedOutput.slice(-MAX_CAPTURED_BYTES);
     }
-    const parsed = parseTokenUsage(text);
-    if (parsed > 0) {
-      tokenUsageResult = parsed;
+    const parsed = parseTokenUsageDetailed(text);
+    if (parsed.totalTokens > 0) {
+      tokenUsageResult = parsed.totalTokens;
+    }
+    if (parsed.promptTokens !== undefined && parsed.promptTokens > 0) {
+      promptTokensResult = parsed.promptTokens;
+    }
+    if (parsed.completionTokens !== undefined && parsed.completionTokens > 0) {
+      completionTokensResult = parsed.completionTokens;
     }
   }
 
@@ -605,7 +659,12 @@ export async function runOpenCode(
     });
 
     const durationMs = Date.now() - startTime;
-    const finalTokens = parseTokenUsage(capturedOutput) || tokenUsageResult;
+    const finalBreakdown = resolveTokenBreakdown(
+      capturedOutput,
+      tokenUsageResult,
+      promptTokensResult,
+      completionTokensResult,
+    );
 
     if (exitCode === 0 && !processError) {
       core.info(`OpenCode finished in ${(durationMs / 1000).toFixed(1)}s`);
@@ -613,7 +672,9 @@ export async function runOpenCode(
         success: true,
         output: capturedOutput,
         durationMs,
-        tokensUsed: finalTokens,
+        tokensUsed: finalBreakdown.tokensUsed,
+        promptTokens: finalBreakdown.promptTokens,
+        completionTokens: finalBreakdown.completionTokens,
       };
     }
 
@@ -624,17 +685,26 @@ export async function runOpenCode(
       success: false,
       output: capturedOutput,
       durationMs,
-      tokensUsed: finalTokens,
+      tokensUsed: finalBreakdown.tokensUsed,
+      promptTokens: finalBreakdown.promptTokens,
+      completionTokens: finalBreakdown.completionTokens,
     };
   } catch (err) {
     const durationMs = Date.now() - startTime;
-    const finalTokens = parseTokenUsage(capturedOutput) || tokenUsageResult;
+    const finalBreakdown = resolveTokenBreakdown(
+      capturedOutput,
+      tokenUsageResult,
+      promptTokensResult,
+      completionTokensResult,
+    );
     core.error(`OpenCode execution failed: ${String(err)}`);
     return {
       success: false,
       output: capturedOutput,
       durationMs,
-      tokensUsed: finalTokens,
+      tokensUsed: finalBreakdown.tokensUsed,
+      promptTokens: finalBreakdown.promptTokens,
+      completionTokens: finalBreakdown.completionTokens,
     };
   } finally {
     clearTimeout(timeoutHandle);
@@ -642,6 +712,33 @@ export async function runOpenCode(
       clearTimeout(forceKillHandle);
     }
   }
+}
+
+/**
+ * Compute the final token breakdown, preferring a full parse of the retained
+ * output and falling back to the incremental per-chunk totals.
+ * @param capturedOutput - The retained CLI output string.
+ * @param incrementalTotal - Total token count accumulated from chunk parsing.
+ * @param incrementalPrompt - Prompt token count accumulated from chunk parsing.
+ * @param incrementalCompletion - Completion token count accumulated from chunk parsing.
+ * @returns The merged token breakdown.
+ */
+function resolveTokenBreakdown(
+  capturedOutput: string,
+  incrementalTotal: number,
+  incrementalPrompt: number,
+  incrementalCompletion: number,
+): {
+  tokensUsed: number;
+  promptTokens?: number;
+  completionTokens?: number;
+} {
+  const parsed = parseTokenUsageDetailed(capturedOutput);
+  return {
+    tokensUsed: parsed.totalTokens || incrementalTotal,
+    promptTokens: parsed.promptTokens ?? (incrementalPrompt || undefined),
+    completionTokens: parsed.completionTokens ?? (incrementalCompletion || undefined),
+  };
 }
 
 /**

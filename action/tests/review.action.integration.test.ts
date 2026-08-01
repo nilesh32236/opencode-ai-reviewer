@@ -74,6 +74,7 @@ const mockGh = {
 
 const mockEngine = {
   reviewPR: mockReviewPR,
+  getLastTelemetry: vi.fn().mockReturnValue(null),
 } as unknown as ReviewEngine;
 
 describe('runReview (action wrapper)', () => {

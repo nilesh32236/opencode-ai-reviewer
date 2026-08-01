@@ -179,6 +179,24 @@ inputs:
     description: 'Name of the workflow that failed (for self-heal mode diagnostics)'
     required: false
 
+  cost_tracking_enabled:
+    description: 'Expose token usage and cost data via step outputs, PR comment section, and .jsonl log'
+    required: false
+    default: 'false'
+
+  cost_tracking_verbosity:
+    description: 'Detail level for token/cost exposure: off, summary (totals), or detailed (totals + per-model breakdown)'
+    required: false
+    default: 'summary'
+
+  cost_tracking_input_cost_per_1k:
+    description: 'Cost per 1K input tokens (USD) used for cost estimation'
+    required: false
+
+  cost_tracking_output_cost_per_1k:
+    description: 'Cost per 1K output tokens (USD) used for cost estimation'
+    required: false
+
 outputs:
   review_summary:
     description: 'Summary of the review'
@@ -200,6 +218,10 @@ outputs:
     description: 'Whether the setup validation passed (setup mode)'
   setup_report:
     description: 'Markdown setup validation report (setup mode)'
+  token_usage:
+    description: 'Total tokens consumed during the review (when cost_tracking_enabled=true)'
+  cost:
+    description: 'Estimated cost of the review run in USD (when cost_tracking_enabled=true and computable)'
 
 runs:
   using: 'node24'

@@ -8,7 +8,10 @@ export {
   getGitStatus,
   setupWorkspaceDependencies,
   resolveOpenCodePath,
+  parseTokenUsage,
+  parseTokenUsageDetailed,
 } from './opencode.js';
+export type { TokenUsageBreakdown } from './opencode.js';
 export { GitHubHelper } from './utils/github.js';
 export { GitLabAdapter } from './utils/gitlab-adapter.js';
 export type {
@@ -74,6 +77,7 @@ export type { ThreadComment, ReviewThreadResult } from './utils/review-thread.js
 export { sanitizeString } from './utils/sanitize.js';
 export { getLabelColor } from './utils/label-color.js';
 export {
+  buildTokenUsageSection,
   formatConfidenceLabel,
   formatIssueBullet,
   getSeverityBadge,

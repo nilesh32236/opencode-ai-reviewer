@@ -119,4 +119,15 @@ export async function runReview(
   core.setOutput('critical_count', String(result.stats.critical));
   core.setOutput('important_count', String(result.stats.important));
   core.setOutput('minor_count', String(result.stats.minor));
+
+  const costTracking = config.review.costTracking;
+  const telemetry = engine.getLastTelemetry();
+  if (costTracking?.enabled === true && costTracking.verbosity !== 'off' && telemetry) {
+    core.setOutput('token_usage', String(telemetry.totalTokens));
+    core.saveState('token_usage', String(telemetry.totalTokens));
+    if (telemetry.estimatedCost !== undefined) {
+      core.setOutput('cost', String(telemetry.estimatedCost));
+      core.saveState('cost', String(telemetry.estimatedCost));
+    }
+  }
 }

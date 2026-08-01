@@ -213,6 +213,34 @@ export function validateConfig(config: PromptConfig): PromptConfig {
         splitThreshold: Math.max(splitThreshold, summaryThreshold),
       };
     }
+    if (config.review.costTracking && typeof config.review.costTracking === 'object') {
+      const ct = config.review.costTracking;
+      const verbosity =
+        ct.verbosity === 'off' || ct.verbosity === 'summary' || ct.verbosity === 'detailed'
+          ? ct.verbosity
+          : 'summary';
+      const inputCostPer1K =
+        typeof ct.inputCostPer1K === 'number' && ct.inputCostPer1K >= 0
+          ? ct.inputCostPer1K
+          : undefined;
+      const outputCostPer1K =
+        typeof ct.outputCostPer1K === 'number' && ct.outputCostPer1K >= 0
+          ? ct.outputCostPer1K
+          : undefined;
+      if (inputCostPer1K !== undefined || outputCostPer1K !== undefined) {
+        result.review.costTracking = {
+          enabled: typeof ct.enabled === 'boolean' ? ct.enabled : false,
+          verbosity,
+          ...(inputCostPer1K !== undefined && { inputCostPer1K }),
+          ...(outputCostPer1K !== undefined && { outputCostPer1K }),
+        };
+      } else {
+        result.review.costTracking = {
+          enabled: typeof ct.enabled === 'boolean' ? ct.enabled : false,
+          verbosity,
+        };
+      }
+    }
   }
 
   if (config.fix) {

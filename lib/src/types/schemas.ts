@@ -102,6 +102,16 @@ export const ReviewBudgetConfigSchema = z
     path: ['splitThreshold'],
   });
 
+/** Zod schema validating token usage / cost tracking configuration. */
+export const CostTrackingConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    verbosity: z.enum(['off', 'summary', 'detailed']).default('summary'),
+    inputCostPer1K: z.number().nonnegative().optional(),
+    outputCostPer1K: z.number().nonnegative().optional(),
+  })
+  .default({});
+
 /** Zod schema validating review configuration. */
 export const ReviewConfigSchema = z.object({
   skipLabels: z.array(z.string()).default(['autofix', 'autofix:approved', 'autofix:merged']),
@@ -126,6 +136,7 @@ export const ReviewConfigSchema = z.object({
   enableReachability: z.boolean().optional().default(true),
   tokenBudget: TokenBudgetConfigSchema.optional(),
   reviewBudget: ReviewBudgetConfigSchema.default(ReviewBudgetConfigSchema.parse({})),
+  costTracking: CostTrackingConfigSchema.optional(),
 });
 
 /** Zod schema validating audit configuration. */
@@ -296,6 +307,7 @@ export const PromptConfigSchema = z.object({
           splitThreshold: z.number().int().min(1).optional(),
         })
         .optional(),
+      costTracking: CostTrackingConfigSchema.optional(),
     })
     .optional(),
   fix: z

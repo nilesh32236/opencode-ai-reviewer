@@ -230,6 +230,22 @@ async function run(): Promise<void> {
             DEFAULT_CONFIG.review.reviewBudget?.splitThreshold ??
             1000,
         },
+        costTracking: {
+          enabled: loadedConfig?.review?.costTracking?.enabled ?? inputs.costTrackingEnabled,
+          verbosity: loadedConfig?.review?.costTracking?.verbosity ?? inputs.costTrackingVerbosity,
+          ...(inputs.costTrackingInputCostPer1K !== undefined && {
+            inputCostPer1K: inputs.costTrackingInputCostPer1K,
+          }),
+          ...(inputs.costTrackingOutputCostPer1K !== undefined && {
+            outputCostPer1K: inputs.costTrackingOutputCostPer1K,
+          }),
+          ...(loadedConfig?.review?.costTracking?.inputCostPer1K !== undefined && {
+            inputCostPer1K: loadedConfig.review.costTracking.inputCostPer1K,
+          }),
+          ...(loadedConfig?.review?.costTracking?.outputCostPer1K !== undefined && {
+            outputCostPer1K: loadedConfig.review.costTracking.outputCostPer1K,
+          }),
+        },
       },
       audit: {
         ...DEFAULT_CONFIG.audit,

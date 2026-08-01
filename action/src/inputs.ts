@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 import {
   type ActionMode,
+  type CostTrackingVerbosity,
   DEFAULT_ALLOWLIST,
   validateRunChecksCommand,
 } from '@opencode-pr-agent/lib';
@@ -27,6 +28,29 @@ export function parseTimeoutMinutes(raw: string): number {
     throw new Error('timeout_minutes must be a positive integer');
   }
   return timeoutMinutes;
+}
+
+/**
+ * Parse an optional USD cost rate (per 1K tokens) from a raw string.
+ * Returns undefined for empty or invalid input.
+ * @param raw - The raw cost rate string (e.g. "0.0025").
+ * @returns The parsed rate, or undefined.
+ */
+function parseCostRate(raw: string): number | undefined {
+  const trimmed = raw?.trim();
+  if (!trimmed) return undefined;
+  const rate = Number(trimmed);
+  return Number.isFinite(rate) && rate >= 0 ? rate : undefined;
+}
+
+/**
+ * Validate and normalize the cost tracking verbosity input.
+ * @param raw - Raw verbosity string ('off' | 'summary' | 'detailed').
+ * @returns A valid CostTrackingVerbosity, defaulting to 'summary'.
+ */
+function parseCostTrackingVerbosity(raw: string): CostTrackingVerbosity {
+  if (raw === 'off' || raw === 'detailed') return raw;
+  return 'summary';
 }
 
 /** Parsed and validated GitHub Action inputs for the OpenCode PR Agent. */
@@ -115,6 +139,14 @@ export interface ActionInputs {
   failedStep?: string;
   /** Name of the failed workflow. */
   failedWorkflow?: string;
+  /** Whether token usage / cost data is exposed to users. */
+  costTrackingEnabled: boolean;
+  /** Detail level for token/cost exposure. */
+  costTrackingVerbosity: CostTrackingVerbosity;
+  /** Cost per 1K input tokens (USD) for cost estimation. */
+  costTrackingInputCostPer1K?: number;
+  /** Cost per 1K output tokens (USD) for cost estimation. */
+  costTrackingOutputCostPer1K?: number;
 }
 
 /**
@@ -207,5 +239,11 @@ export function parseInputs(): ActionInputs {
     ciFailureLogs: core.getInput('ci_failure_logs') || undefined,
     failedStep: core.getInput('failed_step') || undefined,
     failedWorkflow: core.getInput('failed_workflow') || undefined,
+    costTrackingEnabled: core.getInput('cost_tracking_enabled') === 'true',
+    costTrackingVerbosity: parseCostTrackingVerbosity(
+      core.getInput('cost_tracking_verbosity') || 'summary',
+    ),
+    costTrackingInputCostPer1K: parseCostRate(core.getInput('cost_tracking_input_cost_per_1k')),
+    costTrackingOutputCostPer1K: parseCostRate(core.getInput('cost_tracking_output_cost_per_1k')),
   };
 }

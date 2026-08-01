@@ -1,4 +1,4 @@
-import type { ReviewIssue, ReviewResult, Severity } from '../types/index.js';
+import type { ReviewIssue, ReviewResult, Severity, TokenUsage } from '../types/index.js';
 
 /**
  * Get an emoji badge aligned with a finding's severity.
@@ -14,6 +14,45 @@ export function getSeverityBadge(severity: Severity): string {
     case 'minor':
       return '🔵';
   }
+}
+
+/**
+ * Format a duration in milliseconds as a human-readable seconds string.
+ * @param durationMs - Duration in milliseconds.
+ * @returns A seconds string (e.g. "12.3s").
+ */
+function formatDuration(durationMs: number): string {
+  return `${(durationMs / 1000).toFixed(1)}s`;
+}
+
+/**
+ * Build a markdown token usage summary section from accumulated telemetry.
+ * Renders totals plus duration, and includes the prompt/completion breakdown
+ * and estimated cost when available.
+ * @param usage - Accumulated token usage data.
+ * @returns Markdown string for the token usage section.
+ */
+export function buildTokenUsageSection(usage: TokenUsage): string {
+  const lines: string[] = [
+    '---',
+    '',
+    '### Token Usage',
+    '',
+    '| Metric | Value |',
+    '|--------|-------|',
+    `| Total Tokens | ${usage.totalTokens.toLocaleString()} |`,
+  ];
+  if (usage.promptTokens !== undefined) {
+    lines.push(`| Prompt Tokens | ${usage.promptTokens.toLocaleString()} |`);
+  }
+  if (usage.completionTokens !== undefined) {
+    lines.push(`| Completion Tokens | ${usage.completionTokens.toLocaleString()} |`);
+  }
+  lines.push(`| Duration | ${formatDuration(usage.durationMs)} |`);
+  if (usage.estimatedCost !== undefined) {
+    lines.push(`| Estimated Cost | $${usage.estimatedCost.toFixed(4)} |`);
+  }
+  return lines.join('\n');
 }
 
 /**
@@ -114,6 +153,10 @@ export function buildReviewBody(result: ReviewResult): string {
         lines.push('</details>');
       }
     }
+  }
+
+  if (result.usage) {
+    lines.push(buildTokenUsageSection(result.usage));
   }
 
   return lines.join('\n');

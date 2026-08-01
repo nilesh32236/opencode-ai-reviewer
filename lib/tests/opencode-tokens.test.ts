@@ -1,5 +1,35 @@
 import { describe, expect, it } from 'vitest';
-import { parseTokenUsage } from '../src/opencode.js';
+import { parseTokenUsage, parseTokenUsageDetailed } from '../src/opencode.js';
+
+describe('parseTokenUsageDetailed', () => {
+  it('parses total_tokens with prompt/completion breakdown in JSON format', () => {
+    const output =
+      '{"usage": {"total_tokens": 1234, "prompt_tokens": 1000, "completion_tokens": 234}}';
+    expect(parseTokenUsageDetailed(output)).toEqual({
+      totalTokens: 1234,
+      promptTokens: 1000,
+      completionTokens: 234,
+    });
+  });
+
+  it('captures prompt/completion from Anthropic input/output tokens', () => {
+    const output = 'Anthropic response: {"input_tokens": 800, "output_tokens": 200}';
+    expect(parseTokenUsageDetailed(output)).toEqual({
+      totalTokens: 1000,
+      promptTokens: 800,
+      completionTokens: 200,
+    });
+  });
+
+  it('leaves prompt/completion undefined when only total is present', () => {
+    const output = 'Execution completed. total tokens: 5678';
+    expect(parseTokenUsageDetailed(output)).toEqual({ totalTokens: 5678 });
+  });
+
+  it('returns zero breakdown when no token usage pattern matches', () => {
+    expect(parseTokenUsageDetailed('no stats here')).toEqual({ totalTokens: 0 });
+  });
+});
 
 describe('parseTokenUsage', () => {
   it('parses total_tokens in JSON format', () => {

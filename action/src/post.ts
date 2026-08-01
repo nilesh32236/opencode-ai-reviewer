@@ -61,6 +61,32 @@ export async function runPost(
     }
   }
 
+  // Post a token usage / cost summary to the PR conversation. The data is
+  // read from the main step's saved state (core.saveState in review.ts), which
+  // the runner exposes to this post step via the STATE_* environment variables.
+  const tokenUsage = core.getState('token_usage');
+  if (tokenUsage && inputs.costTrackingEnabled && inputs.costTrackingVerbosity !== 'off') {
+    try {
+      const cost = core.getState('cost');
+      const rows = [
+        '## Token Usage',
+        '',
+        '| Metric | Value |',
+        '|--------|-------|',
+        `| Total Tokens | ${Number(tokenUsage).toLocaleString()} |`,
+      ];
+      if (cost) {
+        rows.push(`| Estimated Cost | $${Number(cost).toFixed(4)} |`);
+      }
+      await gh.postOrUpdateComment(prNumber, '<!-- token-usage -->', rows.join('\n'));
+      core.info('Posted token usage summary comment');
+    } catch (err) {
+      core.warning(
+        sanitize(`Failed to post token usage comment: ${err instanceof Error ? err.message : err}`),
+      );
+    }
+  }
+
   const verdict = core.getInput('verdict');
   if (verdict === 'true') {
     core.info('PR is approved — no annotations needed');
