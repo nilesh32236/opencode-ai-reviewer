@@ -1,10 +1,19 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import * as core from '@actions/core';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig, mergeConfigWithInputs, resolveConfig, validateConfig } from '../src/config.js';
 import { DEFAULT_CONFIG } from '../src/types/index.js';
 import { AgentConfigSchema, CostTrackingConfigSchema } from '../src/types/schemas.js';
+
+vi.mock('@actions/core', () => {
+  const warning = vi.fn();
+  const info = vi.fn();
+  const debug = vi.fn();
+  const setFailed = vi.fn();
+  return { warning, info, debug, setFailed };
+});
 
 describe('config', () => {
   it('DEFAULT_CONFIG is defined', () => {
@@ -707,6 +716,232 @@ fix:
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
+    });
+  });
+
+  describe('sensitivity config parsing', () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+      vi.clearAllMocks();
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-sensitivity-test-'));
+    });
+
+    afterEach(() => {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('loads a full sensitivity block from YAML', () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.opencode-reviewer.yml'),
+        `review:
+  sensitivity:
+    minSeverity: error
+    confidenceThreshold: medium
+    maxFindingsPerCategory: 5
+    maxTotalFindings: 20
+    focusAreas:
+      - security
+      - performance
+    ignorePatterns:
+      - '**/*.test.ts'
+      - '**/generated/**'
+`,
+      );
+      const config = loadConfig(tmpDir);
+      expect(config?.review?.sensitivity).toEqual({
+        minSeverity: 'error',
+        confidenceThreshold: 'medium',
+        maxFindingsPerCategory: 5,
+        maxTotalFindings: 20,
+        focusAreas: ['security', 'performance'],
+        ignorePatterns: ['**/*.test.ts', '**/generated/**'],
+      });
+    });
+
+    it('applies defaults for missing sensitivity sub-fields', () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.opencode-reviewer.yml'),
+        `review:
+  sensitivity:
+    minSeverity: critical
+`,
+      );
+      const config = loadConfig(tmpDir);
+      expect(config?.review?.sensitivity?.minSeverity).toBe('critical');
+      expect(config?.review?.sensitivity?.confidenceThreshold).toBe('low');
+      expect(config?.review?.sensitivity?.maxTotalFindings).toBe(50);
+    });
+
+    it('clamps numeric sensitivity fields to the 1-500 range', () => {
+      const result = validateConfig({
+        review: { sensitivity: { maxTotalFindings: 9999, maxFindingsPerCategory: -3 } },
+      } as never);
+      expect(result.review?.sensitivity?.maxTotalFindings).toBe(500);
+      expect(result.review?.sensitivity?.maxFindingsPerCategory).toBe(1);
+    });
+
+    it('rejects invalid minSeverity values', () => {
+      const result = validateConfig({
+        review: { sensitivity: { minSeverity: 'banana' } },
+      } as never);
+      expect(result.review?.sensitivity?.minSeverity).toBeUndefined();
+    });
+
+    it('rejects invalid confidenceThreshold values', () => {
+      const result = validateConfig({
+        review: { sensitivity: { confidenceThreshold: 'banana' } },
+      } as never);
+      expect(result.review?.sensitivity?.confidenceThreshold).toBeUndefined();
+    });
+
+    it('filters non-string focusAreas and ignorePatterns', () => {
+      const result = validateConfig({
+        review: {
+          sensitivity: {
+            focusAreas: ['security', null, 42],
+            ignorePatterns: ['**/*.test.ts', null],
+          },
+        },
+      } as never);
+      expect(result.review?.sensitivity?.focusAreas).toEqual(['security']);
+      expect(result.review?.sensitivity?.ignorePatterns).toEqual(['**/*.test.ts']);
+    });
+
+    it('logs warnings for unknown keys in the config', () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.opencode-reviewer.yml'),
+        `review:
+  sensitivity:
+    minSeverity: warning
+    bogusKey: 1
+unknownSection: true
+`,
+      );
+      const config = loadConfig(tmpDir);
+      expect(config).not.toBeNull();
+      expect(core.warning).toHaveBeenCalledWith(
+        expect.stringContaining('Unknown config key "review.sensitivity.bogusKey"'),
+      );
+      expect(core.warning).toHaveBeenCalledWith(
+        expect.stringContaining('Unknown config key "unknownSection"'),
+      );
+    });
+
+    it('loads config from an explicit configPath', () => {
+      fs.writeFileSync(
+        path.join(tmpDir, 'custom-config.yml'),
+        `review:
+  sensitivity:
+    minSeverity: error
+`,
+      );
+      const config = loadConfig(tmpDir, 'github', 'custom-config.yml');
+      expect(config?.review?.sensitivity?.minSeverity).toBe('error');
+    });
+
+    it('returns null when explicit configPath does not exist', () => {
+      const config = loadConfig(tmpDir, 'github', 'missing.yml');
+      expect(config).toBeNull();
+    });
+  });
+
+  describe('per-category sensitivity overrides', () => {
+    it('preserves valid category overrides', () => {
+      const result = validateConfig({
+        review: {
+          categories: {
+            security: { minSeverity: 'critical' },
+            style: { enabled: false },
+            performance: { maxFindings: 3 },
+          },
+        },
+      } as never);
+      expect(result.review?.categories).toEqual({
+        security: { minSeverity: 'critical' },
+        style: { enabled: false },
+        performance: { maxFindings: 3 },
+      });
+    });
+
+    it('loads categories from YAML', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-categories-test-'));
+      try {
+        fs.writeFileSync(
+          path.join(tmpDir, '.opencode-reviewer.yml'),
+          `review:
+  categories:
+    security:
+      minSeverity: warning
+    style:
+      enabled: false
+`,
+        );
+        const config = loadConfig(tmpDir);
+        expect(config?.review?.categories).toEqual({
+          security: { minSeverity: 'warning' },
+          style: { enabled: false },
+        });
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('skips invalid category override entries', () => {
+      const result = validateConfig({
+        review: {
+          categories: {
+            security: { minSeverity: 'banana' },
+            style: 'nope',
+            perf: { enabled: 'yes', maxFindings: 2 },
+          },
+        },
+      } as never);
+      expect(result.review?.categories).toEqual({
+        security: {},
+        perf: { maxFindings: 2 },
+      });
+    });
+
+    it('clamps category maxFindings to the 1-500 range', () => {
+      const result = validateConfig({
+        review: { categories: { security: { maxFindings: 900 } } },
+      } as never);
+      expect(result.review?.categories?.security?.maxFindings).toBe(500);
+    });
+  });
+
+  describe('sensitivity config merge semantics', () => {
+    it('DEFAULT_CONFIG ships neutral sensitivity defaults', () => {
+      expect(DEFAULT_CONFIG.review.sensitivity).toEqual({
+        minSeverity: 'warning',
+        confidenceThreshold: 'low',
+        maxTotalFindings: 50,
+      });
+    });
+
+    it('AgentConfigSchema applies sensitivity defaults for partial blocks', () => {
+      const result = AgentConfigSchema.parse({
+        review: { sensitivity: { minSeverity: 'error' } },
+      });
+      expect(result.review.sensitivity).toEqual({
+        minSeverity: 'error',
+        confidenceThreshold: 'low',
+        maxTotalFindings: 50,
+        focusAreas: [],
+        ignorePatterns: [],
+      });
+    });
+
+    it('mergeConfigWithInputs still treats sensitivity as config-only (no input flattening)', () => {
+      const config = {
+        review: {
+          sensitivity: { minSeverity: 'critical' },
+        },
+      } as never;
+      const result = mergeConfigWithInputs(config, {});
+      expect(result.review_min_severity).toBeUndefined();
+      expect(result.review_prompt).toBeUndefined();
     });
   });
 });

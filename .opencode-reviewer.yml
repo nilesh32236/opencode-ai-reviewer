@@ -17,6 +17,11 @@ project:
 
 review:
   enableReachability: true
+  sensitivity:
+    minSeverity: warning
+    confidenceThreshold: low
+    maxFindingsPerCategory: 10
+    maxTotalFindings: 50
   customRules:
     - "Verify error boundary handling in asynchronous functions and network requests."
     - "Check that config loaders fall back gracefully to default values."

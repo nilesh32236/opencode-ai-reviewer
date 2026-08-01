@@ -45,6 +45,7 @@ export const ReviewIssueSchema = z.object({
   theoreticalRisk: z.boolean().optional(),
   entryPointPath: z.string().optional(),
   confidence: z.enum(['high', 'medium', 'low']).optional(),
+  category: z.string().optional(),
 });
 
 /** Zod discriminated union for all review entry types. */
@@ -121,6 +122,23 @@ export const CostTrackingConfigSchema = z
   })
   .catch({});
 
+/** Zod schema validating per-category sensitivity override. */
+export const CategoryOverrideSchema = z.object({
+  minSeverity: z.enum(['warning', 'error', 'critical']).optional(),
+  enabled: z.boolean().optional(),
+  maxFindings: z.number().int().min(1).max(500).optional(),
+});
+
+/** Zod schema validating per-repository sensitivity configuration. */
+export const ReviewSensitivitySchema = z.object({
+  minSeverity: z.enum(['warning', 'error', 'critical']).default('warning'),
+  confidenceThreshold: z.enum(['low', 'medium', 'high']).default('low'),
+  maxFindingsPerCategory: z.number().int().min(1).max(500).optional(),
+  maxTotalFindings: z.number().int().min(1).max(500).default(50),
+  focusAreas: z.array(z.string()).optional().default([]),
+  ignorePatterns: z.array(z.string()).optional().default([]),
+});
+
 /** Zod schema validating review configuration. */
 export const ReviewConfigSchema = z.object({
   skipLabels: z.array(z.string()).default(['autofix', 'autofix:approved', 'autofix:merged']),
@@ -146,6 +164,8 @@ export const ReviewConfigSchema = z.object({
   tokenBudget: TokenBudgetConfigSchema.optional(),
   reviewBudget: ReviewBudgetConfigSchema.default(ReviewBudgetConfigSchema.parse({})),
   costTracking: CostTrackingConfigSchema.optional(),
+  sensitivity: ReviewSensitivitySchema.optional(),
+  categories: z.record(CategoryOverrideSchema).optional(),
 });
 
 /** Zod schema validating audit configuration. */
@@ -346,6 +366,8 @@ export const PromptConfigSchema = z.object({
         })
         .optional(),
       costTracking: CostTrackingConfigSchema.optional(),
+      sensitivity: ReviewSensitivitySchema.optional(),
+      categories: z.record(CategoryOverrideSchema).optional(),
     })
     .optional(),
   fix: z

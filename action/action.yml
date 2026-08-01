@@ -54,6 +54,10 @@ inputs:
     description: 'Extra context to append to the review prompt'
     required: false
 
+  config:
+    description: 'Path to a custom config file (overrides .opencode-reviewer.yml discovery)'
+    required: false
+
   enable_fix:
     description: 'Enable auto-fix mode'
     required: false

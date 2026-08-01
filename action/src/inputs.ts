@@ -87,6 +87,8 @@ export interface ActionInputs {
   reviewPromptFile?: string;
   /** Optional extra instructions appended to the review prompt. */
   reviewPromptExtra?: string;
+  /** Optional path to a custom config file (overrides .opencode-reviewer.yml discovery). */
+  configFile?: string;
   /** Whether automated fix mode is enabled. */
   enableFix: boolean;
   /** Maximum number of fix iterations allowed. */
@@ -213,6 +215,7 @@ export function parseInputs(): ActionInputs {
     analysisModel: core.getInput('analysis_model') || globalModel || undefined,
     reviewPromptFile: core.getInput('review_prompt_file') || undefined,
     reviewPromptExtra: core.getInput('review_prompt_extra') || undefined,
+    configFile: core.getInput('config') || undefined,
     enableFix: core.getInput('enable_fix') !== 'false',
     maxFixIterations,
     enableAudit: core.getInput('enable_audit') === 'true',
