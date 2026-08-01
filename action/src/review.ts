@@ -50,10 +50,15 @@ export async function runReview(
     return;
   }
 
+  const isManualTrigger =
+    github.context.eventName === 'issue_comment' ||
+    github.context.eventName === 'workflow_dispatch' ||
+    Boolean(core.getInput('pr-number'));
+
   const hasSkipLabel = pr.labels.some((l: string) => config.review.skipLabels.includes(l));
   const isSkippedActor = config.review.skipActors.includes(pr.author);
 
-  if (hasSkipLabel) {
+  if (hasSkipLabel && !isManualTrigger) {
     core.info(`PR has skip label — skipping review`);
     return;
   }
