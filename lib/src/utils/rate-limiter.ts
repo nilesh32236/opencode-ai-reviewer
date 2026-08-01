@@ -37,21 +37,73 @@ export interface RateLimitCheckOptions {
 
 /** Persistence contract implemented by the learning store. */
 export interface RateLimitStore {
+  /**
+   * Count rate-limit rows matching a filter.
+   * @param filter - Filter with optional repo/user/tier and required sinceMs cutoff.
+   * @returns The number of matching rows.
+   */
   countRateLimitActions(filter: RateLimitCountFilter): Promise<number>;
+  /**
+   * Sum the tokens_used of all rate-limit rows at or after sinceMs.
+   * @param sinceMs - Window cutoff as an epoch millisecond timestamp.
+   * @returns Total estimated tokens consumed in the window.
+   */
   sumRateLimitTokens(sinceMs: number): Promise<number>;
+  /**
+   * Get the most recent rate-limit action time for a repo, PR, and tier.
+   * @param repo - Repository in owner/repo format.
+   * @param prNumber - PR number to look up.
+   * @param tier - Tier ('command' or 'interactive').
+   * @returns Epoch millisecond timestamp of the last action, or null if none.
+   */
   getLastRateLimitTime(repo: string, prNumber: number, tier: string): Promise<number | null>;
+  /**
+   * Record a rate-limited action.
+   * @param input - Rate limit action data to append.
+   * @returns The generated row ID, for later token reconciliation.
+   */
   recordRateLimitAction(input: RateLimitActionInput): Promise<string>;
+  /**
+   * Reconcile a reserved rate-limit row with its actual token usage.
+   * @param id - Row ID returned by recordRateLimitAction.
+   * @param tokensUsed - Actual tokens consumed by the run.
+   * @returns A promise that resolves when the reconciliation is complete.
+   */
   completeRateLimitAction(id: string, tokensUsed: number): Promise<void>;
+  /**
+   * Aggregate rate-limit usage counts grouped by repository.
+   * @param sinceMs - Window cutoff as an epoch millisecond timestamp.
+   * @param limit - Maximum number of results (default: 10).
+   * @param tier - Optional tier filter.
+   * @returns Array of repo/count pairs ordered by count descending.
+   */
   getRateLimitUsageByRepo(
     sinceMs: number,
     limit?: number,
     tier?: string,
   ): Promise<Array<{ repo: string; count: number }>>;
+  /**
+   * Aggregate rate-limit usage counts grouped by user.
+   * @param sinceMs - Window cutoff as an epoch millisecond timestamp.
+   * @param limit - Maximum number of results (default: 10).
+   * @returns Array of user/count pairs ordered by count descending.
+   */
   getRateLimitUsageByUser(
     sinceMs: number,
     limit?: number,
   ): Promise<Array<{ user: string; count: number }>>;
+  /**
+   * Reset rate-limit records for a repo and/or user.
+   * @param repo - Optional repository in owner/repo format to scope the reset.
+   * @param user - Optional GitHub username to scope the reset.
+   * @returns Number of deleted records.
+   */
   resetRateLimits(repo?: string, user?: string): Promise<number>;
+  /**
+   * Delete rate-limit records older than the given cutoff.
+   * @param olderThanMs - Epoch millisecond cutoff; older rows are deleted.
+   * @returns Number of deleted records.
+   */
   cleanupRateLimits(olderThanMs: number): Promise<number>;
 }
 
@@ -335,13 +387,21 @@ export class RateLimiter {
   }
 }
 
-/** Get the epoch millisecond timestamp of the start of the current UTC day. */
+/**
+ * Get the epoch millisecond timestamp of the start of the current UTC day.
+ * @param ts - Epoch millisecond timestamp to convert.
+ * @returns Epoch millisecond timestamp of the start of the UTC day.
+ */
 function startOfUtcDay(ts: number): number {
   const d = new Date(ts);
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
 }
 
-/** Format an epoch millisecond timestamp as a readable UTC label. */
+/**
+ * Format an epoch millisecond timestamp as a readable UTC label.
+ * @param ts - Epoch millisecond timestamp to format.
+ * @returns Readable UTC timestamp label.
+ */
 function formatResetTime(ts: number): string {
   return `${new Date(ts).toISOString().replace('T', ' ').slice(0, 16)} UTC`;
 }

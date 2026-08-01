@@ -68,6 +68,8 @@ export function createAdminSubscriber(rateLimiter: RateLimiter, config: AgentCon
  * @param gh - GitHub helper for posting the result.
  * @param rateLimiter - The shared RateLimiter instance.
  * @param parsed - Parsed command with optional --repo/--user/--all flags.
+ * @param parsed.flags - Raw flags parsed from the command body (values are strings,
+ *   or booleans when a flag was present without an `=` value).
  * @param prNumber - PR/issue number to post the result on.
  */
 async function handleReset(

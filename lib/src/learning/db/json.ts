@@ -417,6 +417,7 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
    * Reconcile a reserved rate-limit row with its actual token usage.
    * @param id - Row ID returned by recordRateLimitAction.
    * @param tokensUsed - Actual tokens consumed by the run.
+   * @returns A promise that resolves when the reconciliation is complete.
    */
   async completeRateLimitAction(id: string, tokensUsed: number): Promise<void> {
     return this.db.completeRateLimitAction(id, tokensUsed);
