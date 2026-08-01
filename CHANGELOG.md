@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.23] — 2026-08-01
+
+
+### Fixed
+
+- self-heal CI failure (attempt 1) [`lint-error` — eslint `jsdoc/require-param` violations in the ci "verify docstring coverage" step (`pnpm doc:check`).] (#302) (#302)
+
+### Changed
+
+- [Autofix] [Audit:api-data-fetching] 2 critical, 5 important, 6 minor (#301) (#301)
+- fix(orchestrator): fix hourly orchestrator PR conflict resolution, AI QA answering, and fix-issue workflow dispatch triggers
+- [Autofix] No performance benchmarks or CI performance regression tests (#299) (#299)
+
+[v1.6.23]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.22...v1.6.23
+
 ## [v1.6.22] — 2026-07-31
 
 
