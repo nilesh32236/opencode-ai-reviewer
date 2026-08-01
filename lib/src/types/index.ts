@@ -305,7 +305,7 @@ export type CostTrackingVerbosity = 'off' | 'summary' | 'detailed';
 export interface CostTrackingConfig {
   /** Whether token usage and cost data are surfaced to users (default: false) */
   enabled: boolean;
-  /** How much detail to expose: 'off' (nothing), 'summary' (totals), 'detailed' (totals + per-model breakdown) */
+  /** How much detail to expose: 'off' (nothing), 'summary' (totals), 'detailed' (totals + prompt/completion breakdown) */
   verbosity: CostTrackingVerbosity;
   /** Cost per 1K input tokens in USD (used for cost estimation) */
   inputCostPer1K?: number;

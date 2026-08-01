@@ -405,6 +405,7 @@ export class ReviewEngine {
         runResult.tokensUsed,
         runResult,
         this.config.reviewModel,
+        workDir,
       );
 
       if (!runResult.success) {
@@ -460,7 +461,6 @@ export class ReviewEngine {
       fileBatches.push(files.slice(i, i + batchSize));
     }
 
-    let accumulatedDurationMs = 0;
     let accumulatedTokensUsed = 0;
     let accumulatedPromptTokens = 0;
     let accumulatedCompletionTokens = 0;
@@ -472,6 +472,7 @@ export class ReviewEngine {
     const batchResults: ReviewResult[] = [];
     let failedBatches = 0;
     const chunkCount = computeChunkDelays(fileBatches.length, concurrencyLimit) + 1;
+    const batchLoopStart = Date.now();
     for (let chunk = 0; chunk < chunkCount; chunk++) {
       if (chunk > 0) {
         await new Promise((r) => setTimeout(r, INTER_CHUNK_DELAY_MS));
@@ -557,7 +558,6 @@ export class ReviewEngine {
         }),
       );
       for (const item of chunkOutputs) {
-        accumulatedDurationMs += item.durationMs;
         accumulatedTokensUsed += item.tokensUsed;
         accumulatedPromptTokens += item.promptTokens ?? 0;
         accumulatedCompletionTokens += item.completionTokens ?? 0;
@@ -565,6 +565,22 @@ export class ReviewEngine {
         if (item.failed) failedBatches++;
       }
     }
+
+    // Record telemetry for the concurrent batch reviews. Batches overlap, so
+    // use true wall-clock time for the batch loop rather than summing each
+    // batch's own duration. Attribution is to the review model.
+    const batchWallClockMs = Date.now() - batchLoopStart;
+    await this.recordTelemetry(
+      pr.number,
+      batchWallClockMs,
+      accumulatedTokensUsed,
+      {
+        promptTokens: accumulatedPromptTokens > 0 ? accumulatedPromptTokens : undefined,
+        completionTokens: accumulatedCompletionTokens > 0 ? accumulatedCompletionTokens : undefined,
+      },
+      this.config.reviewModel,
+      workDir,
+    );
 
     // Collate findings from all batches
     const allIssues: ReviewIssue[] = [];
@@ -595,20 +611,15 @@ export class ReviewEngine {
       workingDirectory: workDir,
     });
 
-    accumulatedDurationMs += synthesisResult.durationMs;
-    accumulatedTokensUsed += synthesisResult.tokensUsed;
-    accumulatedPromptTokens += synthesisResult.promptTokens ?? 0;
-    accumulatedCompletionTokens += synthesisResult.completionTokens ?? 0;
-
+    // Record the synthesis pass separately so its tokens are priced at the
+    // synthesis model's own rate (not the review model's) in the JSONL log.
     await this.recordTelemetry(
       pr.number,
-      accumulatedDurationMs,
-      accumulatedTokensUsed,
-      {
-        promptTokens: accumulatedPromptTokens > 0 ? accumulatedPromptTokens : undefined,
-        completionTokens: accumulatedCompletionTokens > 0 ? accumulatedCompletionTokens : undefined,
-      },
+      synthesisResult.durationMs,
+      synthesisResult.tokensUsed,
+      synthesisResult,
       this.resolveModel('synthesisModel'),
+      workDir,
     );
 
     const dedupIssues = (issues: ReviewIssue[]): ReviewIssue[] => {
@@ -735,6 +746,8 @@ export class ReviewEngine {
     verificationError?: string,
     workingDirectory?: string,
   ): Promise<FixResult> {
+    // Reset telemetry so the reported usage reflects only this fix invocation.
+    this.telemetry = null;
     let mcpDocs = '';
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
       try {
@@ -778,6 +791,7 @@ export class ReviewEngine {
       fixRunResult.tokensUsed,
       fixRunResult,
       this.config.fixModel,
+      workingDirectory,
     );
     if (!fixRunResult.success) {
       core.warning(
@@ -857,6 +871,8 @@ export class ReviewEngine {
     timeoutMinutes?: number,
     workingDirectory?: string,
   ): Promise<ReviewResult> {
+    // Reset telemetry so the reported usage reflects only this audit invocation.
+    this.telemetry = null;
     let mcpDocs = '';
     if (this.config.enableMCP) {
       try {
@@ -894,6 +910,7 @@ export class ReviewEngine {
       auditRunResult.tokensUsed,
       auditRunResult,
       this.resolveModel('auditModel'),
+      workingDirectory,
     );
     if (!auditRunResult.success) {
       core.warning('OpenCode audit execution failed, returning fallback empty result');
@@ -929,6 +946,8 @@ export class ReviewEngine {
     timeoutMinutes?: number,
     workingDirectory?: string,
   ): Promise<string> {
+    // Reset telemetry so the reported usage reflects only this analysis invocation.
+    this.telemetry = null;
     const workDir = workingDirectory || process.cwd();
     const planPath = path.join(workDir, '.opencode', 'analysis-plan.md');
     ensureOutputDir(planPath);
@@ -949,6 +968,7 @@ export class ReviewEngine {
       runResult.tokensUsed,
       runResult,
       this.resolveModel('analysisModel'),
+      workDir,
     );
 
     if (!runResult.success) {
@@ -990,6 +1010,8 @@ export class ReviewEngine {
     previousAttemptError?: string,
     workingDirectory?: string,
   ): Promise<SelfHealResult> {
+    // Reset telemetry so the reported usage reflects only this heal invocation.
+    this.telemetry = null;
     const prompt = buildSelfHealPrompt(
       {
         projectContext: this.config.projectContext.description || undefined,
@@ -1016,6 +1038,7 @@ export class ReviewEngine {
       runResult.tokensUsed,
       runResult,
       this.config.fixModel,
+      workDir,
     );
 
     if (!runResult.success) {
@@ -1095,6 +1118,8 @@ export class ReviewEngine {
     workingDirectory?: string,
     timeoutMinutes?: number,
   ): Promise<string> {
+    // Reset telemetry so the reported usage reflects only this explanation invocation.
+    this.telemetry = null;
     const workDir = workingDirectory || process.cwd();
     const outputPath = path.join(workDir, '.opencode', 'explain-output.md');
     ensureOutputDir(outputPath);
@@ -1116,6 +1141,7 @@ export class ReviewEngine {
       runResult.tokensUsed,
       runResult,
       this.resolveModel('explanationModel'),
+      workDir,
     );
 
     if (!runResult.success) {
@@ -1223,6 +1249,7 @@ export class ReviewEngine {
             runResult.tokensUsed,
             runResult,
             this.resolveModel('verificationModel'),
+            workDir,
           );
         }
 
@@ -1352,6 +1379,8 @@ export class ReviewEngine {
     timeoutMinutes?: number,
     workingDirectory?: string,
   ): Promise<string> {
+    // Reset telemetry so the reported usage reflects only this conversation invocation.
+    this.telemetry = null;
     const workDir = workingDirectory || process.cwd();
     const outputPath = path.join(workDir, '.opencode', 'conversation-output.txt');
     ensureOutputDir(outputPath);
@@ -1369,6 +1398,7 @@ export class ReviewEngine {
       runResult.tokensUsed,
       runResult,
       this.resolveModel('conversationModel'),
+      workDir,
     );
 
     if (!runResult.success) {
@@ -1426,6 +1456,7 @@ export class ReviewEngine {
     tokensUsed: number,
     breakdown?: { promptTokens?: number; completionTokens?: number },
     model?: string,
+    workingDirectory?: string,
   ): Promise<void> {
     const costTracking = this.config.review.costTracking;
 
@@ -1433,20 +1464,43 @@ export class ReviewEngine {
     // store so cost exposure works even when the store is unavailable.
     const exposureEnabled = costTracking?.enabled === true && costTracking.verbosity !== 'off';
     const computedCost = exposureEnabled
-      ? this.estimateCost(breakdown?.promptTokens, breakdown?.completionTokens, model)
+      ? this.estimateCost(breakdown?.promptTokens, breakdown?.completionTokens, model, tokensUsed)
       : undefined;
     const prev = this.telemetry;
     const hasCost = computedCost !== undefined || prev?.estimatedCost !== undefined;
+    // Keep prompt/completion undefined when no breakdown was ever observed so
+    // downstream renderers omit those rows instead of showing a misleading 0.
+    const hasPrompt = breakdown?.promptTokens !== undefined || prev?.promptTokens !== undefined;
+    const hasCompletion =
+      breakdown?.completionTokens !== undefined || prev?.completionTokens !== undefined;
     this.telemetry = {
       totalTokens: (prev?.totalTokens ?? 0) + tokensUsed,
-      promptTokens: (prev?.promptTokens ?? 0) + (breakdown?.promptTokens ?? 0),
-      completionTokens: (prev?.completionTokens ?? 0) + (breakdown?.completionTokens ?? 0),
+      promptTokens: hasPrompt
+        ? (prev?.promptTokens ?? 0) + (breakdown?.promptTokens ?? 0)
+        : undefined,
+      completionTokens: hasCompletion
+        ? (prev?.completionTokens ?? 0) + (breakdown?.completionTokens ?? 0)
+        : undefined,
       durationMs: (prev?.durationMs ?? 0) + durationMs,
       estimatedCost: hasCost ? (prev?.estimatedCost ?? 0) + (computedCost ?? 0) : undefined,
     };
 
     if (exposureEnabled) {
-      await this.writeCostLog(prNumber, model, this.telemetry);
+      // Write one entry per model call using this call's delta (not the
+      // accumulated snapshot) so every JSONL line is independently summable
+      // and carries the model that actually produced the tokens.
+      await this.writeCostLog(
+        prNumber,
+        model,
+        {
+          totalTokens: tokensUsed,
+          promptTokens: breakdown?.promptTokens,
+          completionTokens: breakdown?.completionTokens,
+          durationMs,
+          estimatedCost: computedCost,
+        },
+        workingDirectory,
+      );
     }
 
     if (!this.learningStore) return;
@@ -1472,19 +1526,28 @@ export class ReviewEngine {
    * @param promptTokens - Prompt (input) tokens, if known.
    * @param completionTokens - Completion (output) tokens, if known.
    * @param model - Model identifier used for the known-model fallback.
+   * @param totalTokens - Total tokens, used for a heuristic estimate when the
+   * prompt/completion breakdown is unavailable.
    * @returns Estimated cost in USD, or undefined when not computable.
    */
   private estimateCost(
     promptTokens: number | undefined,
     completionTokens: number | undefined,
     model?: string,
+    totalTokens?: number,
   ): number | undefined {
     const costTracking = this.config.review.costTracking;
     let inputCost = costTracking?.inputCostPer1K;
     let outputCost = costTracking?.outputCostPer1K;
     if (inputCost === undefined || outputCost === undefined) {
+      // Match on the exact last path segment (e.g. "claude-3-5-sonnet" from
+      // "anthropic/claude-3-5-sonnet") so provider prefixes, fine-tunes, and
+      // proxy identifiers like "org/gpt-4o-finetuned-v2" never match a base
+      // model's rate. Whole-segment matching also keeps "gpt-4o-mini" from
+      // being priced as "gpt-4o".
       const modelKey = (model ?? '').toLowerCase();
-      const known = Object.keys(KNOWN_MODEL_RATES).find((key) => modelKey.includes(key));
+      const lastSegment = modelKey.split('/').pop() ?? modelKey;
+      const known = Object.keys(KNOWN_MODEL_RATES).find((key) => lastSegment === key);
       if (known) {
         inputCost = inputCost ?? KNOWN_MODEL_RATES[known].inputCostPer1K;
         outputCost = outputCost ?? KNOWN_MODEL_RATES[known].outputCostPer1K;
@@ -1493,25 +1556,43 @@ export class ReviewEngine {
     if (inputCost === undefined || outputCost === undefined) return undefined;
     const prompt = promptTokens ?? 0;
     const completion = completionTokens ?? 0;
-    if (prompt === 0 && completion === 0) return undefined;
+    if (prompt === 0 && completion === 0) {
+      // No prompt/completion breakdown was parsed (e.g. OpenAI-style output
+      // that only reports total_tokens). Fall back to a documented heuristic:
+      // price the full total as input tokens. This is conservative (input
+      // rates are typically lower) and never yields a misleading $0.0000.
+      if (totalTokens !== undefined && totalTokens > 0) {
+        return (totalTokens / 1000) * inputCost;
+      }
+      return undefined;
+    }
     return (prompt / 1000) * inputCost + (completion / 1000) * outputCost;
   }
 
   /**
    * Append a structured JSONL entry to `.opencode/review-costs.jsonl` for
-   * external aggregation and dashboarding. Non-critical — failures are logged
-   * and swallowed so telemetry never breaks the pipeline.
+   * external aggregation and dashboarding. Each entry describes a single model
+   * call (the per-call token delta), so consumers can sum totalTokens across
+   * lines without double-counting. Non-critical — failures are logged and
+   * swallowed so telemetry never breaks the pipeline.
    * @param prNumber - PR (or issue) number associated with the run.
    * @param model - Model identifier used for the run.
-   * @param telemetry - Accumulated token usage data to log.
+   * @param telemetry - Per-call token usage data to log.
+   * @param workingDirectory - Directory the run was executed in (the log is
+   * co-located with the review output it describes). Defaults to cwd.
    */
   private async writeCostLog(
     prNumber: number,
     model: string | undefined,
     telemetry: TokenUsage,
+    workingDirectory?: string,
   ): Promise<void> {
     try {
-      const outputPath = path.join(process.cwd(), '.opencode', 'review-costs.jsonl');
+      const outputPath = path.join(
+        workingDirectory || process.cwd(),
+        '.opencode',
+        'review-costs.jsonl',
+      );
       ensureOutputDir(outputPath);
       const entry = {
         prNumber,
@@ -1542,6 +1623,9 @@ export class ReviewEngine {
     if (!costTracking?.enabled || costTracking.verbosity === 'off') return result;
     const telemetry = this.getLastTelemetry();
     if (!telemetry) return result;
+    // Nothing meaningful was measured (no tokens parsed and no cost computed) —
+    // don't surface a misleading zero-token usage section.
+    if (telemetry.totalTokens === 0 && telemetry.estimatedCost === undefined) return result;
     if (costTracking.verbosity === 'summary') {
       return {
         ...result,

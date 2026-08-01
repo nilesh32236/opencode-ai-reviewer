@@ -359,7 +359,8 @@ export interface TokenUsageBreakdown {
 function extractSingleToken(output: string, pattern: RegExp): number | undefined {
   const match = output.match(pattern);
   if (!match) return undefined;
-  const parsed = Number.parseInt(match[1], 10);
+  // Strip thousands separators so localized numbers like "12,345" parse fully.
+  const parsed = Number.parseInt(match[1].replace(/,/g, ''), 10);
   if (Number.isSafeInteger(parsed) && parsed >= 0) return parsed;
   return undefined;
 }
@@ -367,8 +368,9 @@ function extractSingleToken(output: string, pattern: RegExp): number | undefined
 /**
  * Parse token usage from OpenCode CLI output, capturing the prompt/completion
  * breakdown in addition to the total.
- * Looks for common LLM token patterns (total_tokens, total tokens, and the
- * Anthropic/Gemini input_tokens + output_tokens pair).
+ * Looks for common LLM token patterns (total_tokens, total tokens, the
+ * Anthropic/Gemini input_tokens + output_tokens pair, and the OpenAI-style
+ * prompt_tokens + completion_tokens pair).
  * @param output - The CLI output string to parse for token usage.
  * @returns An object with the total token count (0 if no pattern matches) and
  * optional prompt/completion token counts.
@@ -377,30 +379,47 @@ export function parseTokenUsageDetailed(output: string): TokenUsageBreakdown {
   // Prioritize total_tokens patterns to avoid matching prompt_tokens or completion_tokens.
   // Use word-bounded key matches so suffixes like prompt_total_tokens are not accepted.
   const totalPatterns = [
-    /\btotal_tokens\b["\s]*[:=]\s*(\d+)/i,
-    /\btotal\s+tokens\b["\s]*[:=]\s*(\d+)/i,
+    /\btotal_tokens\b["\s]*[:=]\s*([\d,]+)/i,
+    /\btotal\s+tokens\b["\s]*[:=]\s*([\d,]+)/i,
   ];
   for (const pattern of totalPatterns) {
     const match = output.match(pattern);
     if (match) {
-      const parsed = Number.parseInt(match[1], 10);
+      const parsed = Number.parseInt(match[1].replace(/,/g, ''), 10);
       if (Number.isSafeInteger(parsed) && parsed >= 0) {
         return {
           totalTokens: parsed,
-          promptTokens: extractSingleToken(output, /\bprompt_tokens\b["\s]*[:=]\s*(\d+)/i),
-          completionTokens: extractSingleToken(output, /\bcompletion_tokens\b["\s]*[:=]\s*(\d+)/i),
+          promptTokens: extractSingleToken(output, /\bprompt_tokens\b["\s]*[:=]\s*([\d,]+)/i),
+          completionTokens: extractSingleToken(
+            output,
+            /\bcompletion_tokens\b["\s]*[:=]\s*([\d,]+)/i,
+          ),
         };
       }
     }
   }
-  // Fallback: sum input_tokens + output_tokens (used by Anthropic, Gemini)
-  const inputTokens = extractSingleToken(output, /\binput_tokens\b["\s]*[:=]\s*(\d+)/i);
-  const outputTokens = extractSingleToken(output, /\boutput_tokens\b["\s]*[:=]\s*(\d+)/i);
+  // Fallback 1: sum input_tokens + output_tokens (used by Anthropic, Gemini)
+  const inputTokens = extractSingleToken(output, /\binput_tokens\b["\s]*[:=]\s*([\d,]+)/i);
+  const outputTokens = extractSingleToken(output, /\boutput_tokens\b["\s]*[:=]\s*([\d,]+)/i);
   if (inputTokens !== undefined || outputTokens !== undefined) {
     return {
       totalTokens: (inputTokens ?? 0) + (outputTokens ?? 0),
       promptTokens: inputTokens,
       completionTokens: outputTokens,
+    };
+  }
+  // Fallback 2: sum prompt_tokens + completion_tokens (OpenAI-style JSON that
+  // omits total_tokens). Without this, such usage blocks would be lost entirely.
+  const promptTokens = extractSingleToken(output, /\bprompt_tokens\b["\s]*[:=]\s*([\d,]+)/i);
+  const completionTokens = extractSingleToken(
+    output,
+    /\bcompletion_tokens\b["\s]*[:=]\s*([\d,]+)/i,
+  );
+  if (promptTokens !== undefined || completionTokens !== undefined) {
+    return {
+      totalTokens: (promptTokens ?? 0) + (completionTokens ?? 0),
+      promptTokens,
+      completionTokens,
     };
   }
   return { totalTokens: 0 };

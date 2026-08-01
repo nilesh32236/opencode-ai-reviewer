@@ -198,7 +198,7 @@ inputs:
     default: 'false'
 
   cost_tracking_verbosity:
-    description: 'Detail level for token/cost exposure: off, summary (totals), or detailed (totals + per-model breakdown)'
+    description: 'Detail level for token/cost exposure: off, summary (totals), or detailed (totals + prompt/completion breakdown)'
     required: false
     default: 'summary'
 

@@ -28,11 +28,15 @@ function formatDuration(durationMs: number): string {
 /**
  * Build a markdown token usage summary section from accumulated telemetry.
  * Renders totals plus duration, and includes the prompt/completion breakdown
- * and estimated cost when available.
+ * and estimated cost when available. Returns an empty string when nothing was
+ * measured so callers never render a misleading zero-token table.
  * @param usage - Accumulated token usage data.
- * @returns Markdown string for the token usage section.
+ * @returns Markdown string for the token usage section, or '' when empty.
  */
 export function buildTokenUsageSection(usage: TokenUsage): string {
+  if (usage.totalTokens === 0 && usage.estimatedCost === undefined) {
+    return '';
+  }
   const lines: string[] = [
     '---',
     '',
@@ -155,9 +159,10 @@ export function buildReviewBody(result: ReviewResult): string {
     }
   }
 
-  if (result.usage) {
-    lines.push(buildTokenUsageSection(result.usage));
-  }
+  // Token usage / cost is deliberately NOT rendered here: it is surfaced once
+  // via the dedicated post-step comment (action/src/post.ts), which is gated on
+  // the saved state and is verbosity-aware. Rendering it here too would show
+  // the same totals twice on the same PR.
 
   return lines.join('\n');
 }

@@ -227,19 +227,12 @@ export function validateConfig(config: PromptConfig): PromptConfig {
         typeof ct.outputCostPer1K === 'number' && ct.outputCostPer1K >= 0
           ? ct.outputCostPer1K
           : undefined;
-      if (inputCostPer1K !== undefined || outputCostPer1K !== undefined) {
-        result.review.costTracking = {
-          enabled: typeof ct.enabled === 'boolean' ? ct.enabled : false,
-          verbosity,
-          ...(inputCostPer1K !== undefined && { inputCostPer1K }),
-          ...(outputCostPer1K !== undefined && { outputCostPer1K }),
-        };
-      } else {
-        result.review.costTracking = {
-          enabled: typeof ct.enabled === 'boolean' ? ct.enabled : false,
-          verbosity,
-        };
-      }
+      result.review.costTracking = {
+        enabled: typeof ct.enabled === 'boolean' ? ct.enabled : false,
+        verbosity,
+        ...(inputCostPer1K !== undefined && { inputCostPer1K }),
+        ...(outputCostPer1K !== undefined && { outputCostPer1K }),
+      };
     }
   }
 

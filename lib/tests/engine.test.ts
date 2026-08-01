@@ -1886,5 +1886,138 @@ describe('ReviewEngine', () => {
       const [, content] = (appendFile as ReturnType<typeof vi.fn>).mock.calls[0];
       expect(content).toContain('"totalTokens":500');
     });
+
+    it('attributes batch and synthesis tokens to their own models in multi-batch reviews', async () => {
+      mockRunOpenCode
+        .mockResolvedValueOnce({
+          success: true,
+          output: '',
+          durationMs: 100,
+          tokensUsed: 100,
+          promptTokens: 80,
+          completionTokens: 20,
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          output: '',
+          durationMs: 100,
+          tokensUsed: 100,
+          promptTokens: 80,
+          completionTokens: 20,
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          output: '',
+          durationMs: 200,
+          tokensUsed: 50,
+          promptTokens: 40,
+          completionTokens: 10,
+        });
+      mockParseJsonlFile
+        .mockResolvedValueOnce(mockEmptyResult())
+        .mockResolvedValueOnce(mockEmptyResult())
+        .mockResolvedValueOnce(mockEmptyResult());
+
+      const eng = new ReviewEngine(
+        makeCostTrackingConfig(
+          {
+            reviewModel: 'gpt-4o',
+            synthesisModel: 'claude-3-5-sonnet',
+            batchSize: 2,
+          },
+          { verbosity: 'detailed' },
+        ),
+        mockAdapter,
+      );
+
+      const multiBatchPR = makePRContext({
+        changedFiles: [
+          { path: 'src/a.ts', status: 'modified', additions: 10, deletions: 0 },
+          { path: 'src/b.ts', status: 'modified', additions: 10, deletions: 0 },
+          { path: 'src/c.ts', status: 'modified', additions: 10, deletions: 0 },
+          { path: 'src/d.ts', status: 'modified', additions: 10, deletions: 0 },
+        ],
+      });
+
+      const result = await eng.reviewPR(multiBatchPR);
+
+      const telemetry = eng.getLastTelemetry();
+      expect(telemetry?.totalTokens).toBe(250);
+      expect(telemetry?.promptTokens).toBe(200);
+      expect(telemetry?.completionTokens).toBe(50);
+      // Batch duration uses wall-clock (not the sum of concurrent batch
+      // durations = 400); ~200ms synthesis plus the tiny batch loop elapsed.
+      expect(telemetry?.durationMs).toBeGreaterThanOrEqual(200);
+      expect(telemetry?.durationMs).toBeLessThan(300);
+      // Batch tokens priced at gpt-4o, synthesis tokens at claude-3-5-sonnet.
+      const gpt4oCost = (160 / 1000) * 0.0025 + (40 / 1000) * 0.01;
+      const claudeCost = (40 / 1000) * 0.003 + (10 / 1000) * 0.015;
+      expect(result.usage?.estimatedCost).toBeCloseTo(gpt4oCost + claudeCost, 6);
+    });
+
+    it('writes per-call cost log entries instead of cumulative snapshots', async () => {
+      mockRunOpenCode
+        .mockResolvedValueOnce({
+          success: true,
+          output: '',
+          durationMs: 100,
+          tokensUsed: 100,
+          promptTokens: 80,
+          completionTokens: 20,
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          output: '',
+          durationMs: 100,
+          tokensUsed: 100,
+          promptTokens: 80,
+          completionTokens: 20,
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          output: '',
+          durationMs: 200,
+          tokensUsed: 50,
+          promptTokens: 40,
+          completionTokens: 10,
+        });
+      mockParseJsonlFile
+        .mockResolvedValueOnce(mockEmptyResult())
+        .mockResolvedValueOnce(mockEmptyResult())
+        .mockResolvedValueOnce(mockEmptyResult());
+
+      const eng = new ReviewEngine(
+        makeCostTrackingConfig(
+          {
+            reviewModel: 'gpt-4o',
+            synthesisModel: 'claude-3-5-sonnet',
+            batchSize: 2,
+          },
+          { verbosity: 'detailed' },
+        ),
+        mockAdapter,
+      );
+
+      const multiBatchPR = makePRContext({
+        changedFiles: [
+          { path: 'src/a.ts', status: 'modified', additions: 10, deletions: 0 },
+          { path: 'src/b.ts', status: 'modified', additions: 10, deletions: 0 },
+          { path: 'src/c.ts', status: 'modified', additions: 10, deletions: 0 },
+          { path: 'src/d.ts', status: 'modified', additions: 10, deletions: 0 },
+        ],
+      });
+
+      await eng.reviewPR(multiBatchPR);
+
+      const appendFile = fs.promises.appendFile as ReturnType<typeof vi.fn>;
+      expect(appendFile).toHaveBeenCalledTimes(2);
+      const firstEntry = appendFile.mock.calls[0][1] as string;
+      const secondEntry = appendFile.mock.calls[1][1] as string;
+      expect(firstEntry).toContain('"totalTokens":200');
+      expect(firstEntry).toContain('"model":"gpt-4o"');
+      // Second entry is the synthesis call's delta (50), not the cumulative 250.
+      expect(secondEntry).toContain('"totalTokens":50');
+      expect(secondEntry).toContain('"model":"claude-3-5-sonnet"');
+    });
   });
 });

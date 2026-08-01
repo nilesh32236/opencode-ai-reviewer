@@ -102,15 +102,19 @@ export const ReviewBudgetConfigSchema = z
     path: ['splitThreshold'],
   });
 
-/** Zod schema validating token usage / cost tracking configuration. */
-export const CostTrackingConfigSchema = z
-  .object({
-    enabled: z.boolean().default(false),
-    verbosity: z.enum(['off', 'summary', 'detailed']).default('summary'),
-    inputCostPer1K: z.number().nonnegative().optional(),
-    outputCostPer1K: z.number().nonnegative().optional(),
-  })
-  .default({});
+/**
+ * Zod schema validating token usage / cost tracking configuration.
+ * No `.default({})` here on purpose: when costTracking is absent from the
+ * config file the key must stay `undefined` so action inputs (the primary
+ * opt-in mechanism) are honored via the `??` fallback. Inner per-field
+ * defaults still apply when the object IS provided.
+ */
+export const CostTrackingConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  verbosity: z.enum(['off', 'summary', 'detailed']).default('summary'),
+  inputCostPer1K: z.number().nonnegative().optional(),
+  outputCostPer1K: z.number().nonnegative().optional(),
+});
 
 /** Zod schema validating review configuration. */
 export const ReviewConfigSchema = z.object({

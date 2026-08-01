@@ -123,11 +123,26 @@ export async function runReview(
   const costTracking = config.review.costTracking;
   const telemetry = engine.getLastTelemetry();
   if (costTracking?.enabled === true && costTracking.verbosity !== 'off' && telemetry) {
-    core.setOutput('token_usage', String(telemetry.totalTokens));
-    core.saveState('token_usage', String(telemetry.totalTokens));
+    const totalTokens = String(telemetry.totalTokens);
+    core.setOutput('token_usage', totalTokens);
+    core.saveState('token_usage', totalTokens);
+    core.saveState('token_usage_duration', String(telemetry.durationMs));
     if (telemetry.estimatedCost !== undefined) {
-      core.setOutput('cost', String(telemetry.estimatedCost));
-      core.saveState('cost', String(telemetry.estimatedCost));
+      // Normalize to the same fixed-decimal format used by the post comment
+      // and review-body renderer so automation consumers see stable output.
+      const cost = telemetry.estimatedCost.toFixed(4);
+      core.setOutput('cost', cost);
+      core.saveState('cost', cost);
+    }
+    // Save the prompt/completion breakdown for the post-step comment when the
+    // 'detailed' verbosity is requested.
+    if (costTracking.verbosity === 'detailed') {
+      if (telemetry.promptTokens !== undefined) {
+        core.saveState('token_usage_prompt', String(telemetry.promptTokens));
+      }
+      if (telemetry.completionTokens !== undefined) {
+        core.saveState('token_usage_completion', String(telemetry.completionTokens));
+      }
     }
   }
 }

@@ -26,6 +26,22 @@ describe('parseTokenUsageDetailed', () => {
     expect(parseTokenUsageDetailed(output)).toEqual({ totalTokens: 5678 });
   });
 
+  it('sums prompt_tokens + completion_tokens when total_tokens is absent', () => {
+    const output = '{"usage": {"prompt_tokens": 150, "completion_tokens": 40}}';
+    expect(parseTokenUsageDetailed(output)).toEqual({
+      totalTokens: 190,
+      promptTokens: 150,
+      completionTokens: 40,
+    });
+  });
+
+  it('parses localized numbers with thousands separators', () => {
+    expect(parseTokenUsageDetailed('Total tokens: 12,345')).toEqual({ totalTokens: 12345 });
+    expect(
+      parseTokenUsageDetailed('{"usage": {"prompt_tokens": 1,234, "completion_tokens": 567}}'),
+    ).toEqual({ totalTokens: 1801, promptTokens: 1234, completionTokens: 567 });
+  });
+
   it('returns zero breakdown when no token usage pattern matches', () => {
     expect(parseTokenUsageDetailed('no stats here')).toEqual({ totalTokens: 0 });
   });

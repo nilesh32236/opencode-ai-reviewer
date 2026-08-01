@@ -64,10 +64,12 @@ export async function runPost(
   // Post a token usage / cost summary to the PR conversation. The data is
   // read from the main step's saved state (core.saveState in review.ts), which
   // the runner exposes to this post step via the STATE_* environment variables.
+  // Gating on the presence of saved state (rather than the raw workflow inputs)
+  // keeps this consistent with the effective merged config: review.ts already
+  // applied the config-file + inputs gate before saving state.
   const tokenUsage = core.getState('token_usage');
-  if (tokenUsage && inputs.costTrackingEnabled && inputs.costTrackingVerbosity !== 'off') {
+  if (tokenUsage) {
     try {
-      const cost = core.getState('cost');
       const rows = [
         '## Token Usage',
         '',
@@ -75,6 +77,21 @@ export async function runPost(
         '|--------|-------|',
         `| Total Tokens | ${Number(tokenUsage).toLocaleString()} |`,
       ];
+      // Detailed verbosity renders the prompt/completion breakdown, which
+      // review.ts saves to state only when verbosity is 'detailed'.
+      const promptTokens = core.getState('token_usage_prompt');
+      if (promptTokens) {
+        rows.push(`| Prompt Tokens | ${Number(promptTokens).toLocaleString()} |`);
+      }
+      const completionTokens = core.getState('token_usage_completion');
+      if (completionTokens) {
+        rows.push(`| Completion Tokens | ${Number(completionTokens).toLocaleString()} |`);
+      }
+      const durationMs = core.getState('token_usage_duration');
+      if (durationMs) {
+        rows.push(`| Duration | ${(Number(durationMs) / 1000).toFixed(1)}s |`);
+      }
+      const cost = core.getState('cost');
       if (cost) {
         rows.push(`| Estimated Cost | $${Number(cost).toFixed(4)} |`);
       }
