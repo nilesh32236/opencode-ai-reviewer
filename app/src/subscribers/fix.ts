@@ -1,5 +1,5 @@
 import { Logger, parseCommand } from '@opencode-pr-agent/lib';
-import type { GitHubEvent, ParsedCommand, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
+import type { EventBus, GitHubEvent, ParsedCommand, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
 import { handleCommand } from '../handlers/commands.js';
 import { buildConfig } from '../utils/config.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
@@ -8,9 +8,10 @@ import { getToken } from '../utils/token.js';
 /**
  * Create a subscriber that handles `/fix` commands and `autofix-trigger` label events.
  * @param rateLimiter - The shared rate limiter for cost control.
+ * @param eventBus - Optional event bus for publishing pipeline events.
  * @returns A subscriber object for the fix command.
  */
-export function createFixSubscriber(rateLimiter: RateLimiter): Subscriber {
+export function createFixSubscriber(rateLimiter: RateLimiter, eventBus?: EventBus): Subscriber {
   const logger = new Logger('FixSubscriber');
   return {
     name: 'FixSubscriber',
@@ -50,6 +51,7 @@ export function createFixSubscriber(rateLimiter: RateLimiter): Subscriber {
           config,
           parsed ?? undefined,
           signal,
+          eventBus,
         );
         await recordRateLimit(rateLimiter, event, 'command', 'fix', reservation);
       } catch (err) {

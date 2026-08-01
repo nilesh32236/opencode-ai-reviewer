@@ -1,5 +1,5 @@
 import { Logger, parseCommand } from '@opencode-pr-agent/lib';
-import type { GitHubEvent, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
+import type { EventBus, GitHubEvent, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
 import { handleCommand } from '../handlers/commands.js';
 import { buildConfig } from '../utils/config.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
@@ -8,9 +8,10 @@ import { getToken } from '../utils/token.js';
 /**
  * Create a subscriber that handles `/explain` commands on comments.
  * @param rateLimiter - The shared rate limiter for cost control.
+ * @param eventBus - Optional event bus for publishing pipeline events.
  * @returns A subscriber object for the explain command.
  */
-export function createExplainSubscriber(rateLimiter: RateLimiter): Subscriber {
+export function createExplainSubscriber(rateLimiter: RateLimiter, eventBus?: EventBus): Subscriber {
   const logger = new Logger('ExplainSubscriber');
   return {
     name: 'ExplainSubscriber',
@@ -35,6 +36,7 @@ export function createExplainSubscriber(rateLimiter: RateLimiter): Subscriber {
           config,
           undefined,
           signal,
+          eventBus,
         );
         await recordRateLimit(rateLimiter, event, 'command', 'explain', reservation);
       } catch (err) {

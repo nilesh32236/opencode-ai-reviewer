@@ -1,5 +1,5 @@
 import { Logger } from '@opencode-pr-agent/lib';
-import type { GitHubEvent, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
+import type { EventBus, GitHubEvent, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
 import { handleCommand } from '../handlers/commands.js';
 import { buildConfig } from '../utils/config.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
@@ -8,9 +8,10 @@ import { getToken } from '../utils/token.js';
 /**
  * Create a subscriber that auto-analyzes newly opened issues with the `needs-analysis` label.
  * @param rateLimiter - The shared rate limiter for cost control.
+ * @param eventBus - Optional event bus for publishing pipeline events.
  * @returns A subscriber object for auto-analysis.
  */
-export function createAutoAnalyzeSubscriber(rateLimiter: RateLimiter): Subscriber {
+export function createAutoAnalyzeSubscriber(rateLimiter: RateLimiter, eventBus?: EventBus): Subscriber {
   const logger = new Logger('AutoAnalyzeSubscriber');
   return {
     name: 'AutoAnalyzeSubscriber',
@@ -49,6 +50,7 @@ export function createAutoAnalyzeSubscriber(rateLimiter: RateLimiter): Subscribe
           config,
           undefined,
           signal,
+          eventBus,
         );
         await recordRateLimit(rateLimiter, event, 'command', 'analyze', reservation);
       } catch (err) {

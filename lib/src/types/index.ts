@@ -225,6 +225,26 @@ export interface AgentConfig {
   linters: LinterConfig[];
   /** Rate limiting behavior for the Probot app */
   rateLimiting: RateLimitingConfig;
+  /** Structured event logging configuration for the event bus. */
+  eventLogging?: EventLoggingConfig;
+  /** Pluggable event subscribers to register at startup. */
+  eventSubscribers?: PluggableSubscriberConfig[];
+}
+
+/** Configuration for the built-in event logging subscriber. */
+export interface EventLoggingConfig {
+  /** Whether structured event logging to a JSONL file is enabled (default: false). */
+  enabled: boolean;
+  /** Path to the structured event log file (default: `.opencode/events.ndjson`). */
+  path?: string;
+}
+
+/** Configuration for a pluggable event subscriber loaded from a module path. */
+export interface PluggableSubscriberConfig {
+  /** Display name for the subscriber (used for logging and health tracking). */
+  name: string;
+  /** Module path exporting the subscriber (default, `subscriber`, or `createSubscriber` export). */
+  path: string;
 }
 
 /** Configuration for an MCP server used for context enrichment. */
@@ -1045,6 +1065,10 @@ export interface PromptConfig {
   overrides?: ConfigOverride[];
   /** Linter configuration */
   linters?: LinterConfig[];
+  /** Structured event logging configuration for the event bus. */
+  eventLogging?: EventLoggingConfig;
+  /** Pluggable event subscribers to register at startup. */
+  eventSubscribers?: PluggableSubscriberConfig[];
 }
 
 // ─── Defaults ─────────────────────────────────────────────
@@ -1155,11 +1179,195 @@ export const DEFAULT_CONFIG: AgentConfig = {
     adminUsers: [],
     retentionHours: 48,
   },
+  eventLogging: {
+    enabled: false,
+    path: '.opencode/events.ndjson',
+  },
+  eventSubscribers: [],
 };
 
 // ─── Event Bus ───────────────────────────────────────────
 /** Category of a GitHub event for the event bus. */
-export type EventCategory = 'pr' | 'issue' | 'comment' | 'review' | 'internal';
+export type EventCategory = 'pr' | 'issue' | 'comment' | 'review' | 'internal' | 'pipeline';
+
+/** Canonical event type identifiers for internal pipeline lifecycle events. */
+export const PIPELINE_EVENT_TYPES = {
+  REVIEW_STARTED: 'review.started',
+  REVIEW_COMPLETED: 'review.completed',
+  FIX_STARTED: 'fix.started',
+  FIX_COMPLETED: 'fix.completed',
+  AUDIT_STARTED: 'audit.started',
+  AUDIT_COMPLETED: 'audit.completed',
+  ANALYZE_STARTED: 'analyze.started',
+  ANALYZE_COMPLETED: 'analyze.completed',
+  EXPLAIN_STARTED: 'explain.started',
+  EXPLAIN_COMPLETED: 'explain.completed',
+  CONVERSATION_STARTED: 'conversation.started',
+  CONVERSATION_COMPLETED: 'conversation.completed',
+  ERROR_OCCURRED: 'error.occurred',
+  CONFIG_CHANGED: 'config.changed',
+} as const;
+
+/** A specific pipeline event type identifier (e.g. `review.started`). */
+export type PipelineEventType = (typeof PIPELINE_EVENT_TYPES)[keyof typeof PIPELINE_EVENT_TYPES];
+
+/** Common context fields carried by all pipeline lifecycle event payloads. */
+export interface PipelineEventPayload {
+  /** PR (or issue) number the event belongs to, when applicable. */
+  prNumber?: number;
+  /** Repository in owner/repo format, when known. */
+  repo?: string;
+  /** Model used for the pipeline stage. */
+  modelUsed?: string;
+  /** Wall-clock duration of the stage in milliseconds. */
+  durationMs?: number;
+  /** Total tokens consumed by the stage. */
+  tokensUsed?: number;
+  /** Unix timestamp of when the event occurred. */
+  timestamp: number;
+}
+
+/** Payload for a `review.started` event. */
+export interface ReviewStartedPayload extends PipelineEventPayload {
+  /** PR number being reviewed. */
+  prNumber: number;
+}
+
+/** Payload for a `review.completed` event. */
+export interface ReviewCompletedPayload extends PipelineEventPayload {
+  /** PR number that was reviewed. */
+  prNumber: number;
+  /** Markdown summary of the review. */
+  reviewSummary?: string;
+  /** Total number of findings (issues + strengths). */
+  findingsCount?: number;
+  /** Number of issues reported. */
+  issuesCount?: number;
+  /** Number of strengths reported. */
+  strengthsCount?: number;
+  /** Whether the review produced a verdict. */
+  hasVerdict?: boolean;
+  /** Number of distinct files covered by findings. */
+  fileCount?: number;
+}
+
+/** Payload for a `fix.started` event. */
+export interface FixStartedPayload extends PipelineEventPayload {
+  /** PR number being fixed. */
+  prNumber?: number;
+  /** Fix iteration index (0-indexed). */
+  iteration?: number;
+}
+
+/** Payload for a `fix.completed` event. */
+export interface FixCompletedPayload extends PipelineEventPayload {
+  /** PR number that was fixed. */
+  prNumber?: number;
+  /** Fix iteration index (0-indexed). */
+  iteration?: number;
+  /** Whether any file changes were made. */
+  changesMade?: boolean;
+  /** Files modified by the fix. */
+  filesChanged?: string[];
+  /** Whether the fix got stuck. */
+  stuck?: boolean;
+  /** Reason the fix got stuck, if applicable. */
+  stuckReason?: string;
+}
+
+/** Payload for an `audit.started` event. */
+export interface AuditStartedPayload extends PipelineEventPayload {
+  /** Audit category name. */
+  category?: string;
+  /** Directory being audited. */
+  targetDir?: string;
+}
+
+/** Payload for an `audit.completed` event. */
+export interface AuditCompletedPayload extends PipelineEventPayload {
+  /** Audit category name. */
+  category?: string;
+  /** Directory that was audited. */
+  targetDir?: string;
+  /** Number of issues reported. */
+  issuesCount?: number;
+}
+
+/** Payload for an `analyze.started` event. */
+export interface AnalyzeStartedPayload extends PipelineEventPayload {
+  /** Issue number being analyzed. */
+  issueNumber?: number;
+}
+
+/** Payload for an `analyze.completed` event. */
+export interface AnalyzeCompletedPayload extends PipelineEventPayload {
+  /** Issue number that was analyzed. */
+  issueNumber?: number;
+}
+
+/** Payload for an `explain.started` event. */
+export interface ExplainStartedPayload extends PipelineEventPayload {
+  /** PR number being explained. */
+  prNumber?: number;
+}
+
+/** Payload for an `explain.completed` event. */
+export interface ExplainCompletedPayload extends PipelineEventPayload {
+  /** PR number that was explained. */
+  prNumber?: number;
+}
+
+/** Payload for a `conversation.started` event. */
+export interface ConversationStartedPayload extends PipelineEventPayload {
+  /** PR number the conversation belongs to. */
+  prNumber?: number;
+  /** Unique conversation thread identifier. */
+  threadId?: string;
+}
+
+/** Payload for a `conversation.completed` event. */
+export interface ConversationCompletedPayload extends PipelineEventPayload {
+  /** PR number the conversation belongs to. */
+  prNumber?: number;
+  /** Unique conversation thread identifier. */
+  threadId?: string;
+  /** Number of assistant turns in the thread. */
+  turnCount?: number;
+  /** Reason the thread was auto-closed, if applicable. */
+  autoCloseReason?: string;
+}
+
+/** Payload for an `error.occurred` event. */
+export interface ErrorOccurredPayload extends PipelineEventPayload {
+  /** Pipeline stage that failed (e.g. 'review', 'fix'). */
+  stage?: string;
+  /** Error message describing the failure. */
+  error?: string;
+}
+
+/** Payload for a `config.changed` event. */
+export interface ConfigChangedPayload extends PipelineEventPayload {
+  /** Path of the config file that was (re)loaded. */
+  configPath?: string;
+}
+
+/** Union of all pipeline lifecycle event payloads. */
+export type PipelineEventPayloadMap = {
+  'review.started': ReviewStartedPayload;
+  'review.completed': ReviewCompletedPayload;
+  'fix.started': FixStartedPayload;
+  'fix.completed': FixCompletedPayload;
+  'audit.started': AuditStartedPayload;
+  'audit.completed': AuditCompletedPayload;
+  'analyze.started': AnalyzeStartedPayload;
+  'analyze.completed': AnalyzeCompletedPayload;
+  'explain.started': ExplainStartedPayload;
+  'explain.completed': ExplainCompletedPayload;
+  'conversation.started': ConversationStartedPayload;
+  'conversation.completed': ConversationCompletedPayload;
+  'error.occurred': ErrorOccurredPayload;
+  'config.changed': ConfigChangedPayload;
+};
 
 /** A generic event emitted on the internal event bus. */
 export interface GitHubEvent {

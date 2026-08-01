@@ -54,6 +54,8 @@ export type {
 export { EventBus } from './event-bus/bus.js';
 export type { SubscriberHealth } from './event-bus/bus.js';
 export { EventRouter } from './event-bus/router.js';
+export { LoggingSubscriber } from './event-bus/logging-subscriber.js';
+export { registerEventSubscribers } from './event-bus/register-event-subscribers.js';
 export { LearningStore } from './learning/store.js';
 export { connectDb } from './learning/db/index.js';
 export type {
@@ -104,6 +106,7 @@ export {
   verifyChecksum,
 } from './utils/checksum.js';
 export { FeedbackSubscriber } from './learning/feedback-subscriber.js';
+export { TelemetrySubscriber } from './learning/telemetry-subscriber.js';
 export { MetaReviewEngine, MetaReviewSubscriber } from './meta-review/engine.js';
 export { buildMetaReviewPrompt } from './meta-review/prompts.js';
 export { PatternDetector, PatternDetectorOptions } from './pattern-detector/engine.js';

@@ -14,7 +14,7 @@ import { getToken } from '../utils/token.js';
 /**
  * Create a subscriber that handles PR review, re-review on push, and `/review` commands.
  * @param learningStore - The learning store instance for review context.
- * @param bus - The event bus for publishing review-completed events.
+ * @param bus - The event bus used by the review engine to publish pipeline events.
  * @param rateLimiter - The shared rate limiter for cost control.
  * @returns A subscriber object for the review command.
  */
@@ -77,6 +77,7 @@ export function createReviewSubscriber(
           learningStore,
           undefined,
           previousHeadSha,
+          bus,
         );
         if (result) {
           await recordRateLimit(
@@ -87,28 +88,6 @@ export function createReviewSubscriber(
             reservation,
             result.usage?.totalTokens,
           );
-          try {
-            await bus.publish({
-              type: 'review.completed',
-              category: 'internal',
-              payload: {
-                prNumber,
-                reviewSummary: result.summary,
-                findingsCount: result.issues.length + result.strengths.length,
-                issuesCount: result.issues.length,
-                strengthsCount: result.strengths.length,
-                hasVerdict: !!result.verdict.reasoning,
-                fileCount: new Set(result.issues.map((i) => i.file).filter(Boolean)).size,
-              },
-              timestamp: Date.now(),
-              repo: event.repo,
-              prNumber,
-            });
-          } catch (err) {
-            logger.error(
-              `Failed to publish review.completed event: ${err instanceof Error ? err.message : err}`,
-            );
-          }
         }
       } catch (err) {
         logger.error(`ReviewSubscriber failed: ${err instanceof Error ? err.message : err}`);

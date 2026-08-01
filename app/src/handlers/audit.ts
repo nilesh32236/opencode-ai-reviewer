@@ -1,7 +1,7 @@
 import { existsSync } from 'fs';
 import { promises as fs } from 'fs';
 import path from 'path';
-import type { AgentConfig, PlatformAdapter, ReviewResult } from '@opencode-pr-agent/lib';
+import type { AgentConfig, EventBus, PlatformAdapter, ReviewResult } from '@opencode-pr-agent/lib';
 import { GitHubHelper, GitLabAdapter, Logger, ReviewEngine } from '@opencode-pr-agent/lib';
 
 /**
@@ -15,6 +15,7 @@ import { GitHubHelper, GitLabAdapter, Logger, ReviewEngine } from '@opencode-pr-
  * @param tempDir - Optional temporary working directory.
  * @param signal - Optional abort signal.
  * @param issueNumber - Optional issue/PR number that triggered the audit; used to post a failure comment.
+ * @param eventBus - Optional event bus for publishing pipeline events.
  */
 export async function handleAudit(
   repo: string,
@@ -25,6 +26,7 @@ export async function handleAudit(
   tempDir?: string,
   signal?: AbortSignal,
   issueNumber?: number,
+  eventBus?: EventBus,
 ): Promise<void> {
   const logger = new Logger('Audit', { repo });
   logger.info(`Starting audit for ${repo}${targetDir ? ` targeting ${targetDir}` : ''}`);
@@ -106,7 +108,7 @@ export async function handleAudit(
     return;
   }
 
-  const engine = new ReviewEngine(config, gh);
+  const engine = new ReviewEngine(config, gh, undefined, eventBus);
 
   try {
     const auditWorkingDir = tempDir || process.cwd();

@@ -1,7 +1,7 @@
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { ConversationStateManager, Logger } from '@opencode-pr-agent/lib';
-import type { GitHubEvent, LearningStore, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
+import type { EventBus, GitHubEvent, LearningStore, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
 import { handleConversation } from '../handlers/conversation.js';
 import { buildConfig } from '../utils/config.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
@@ -17,11 +17,13 @@ import { getToken } from '../utils/token.js';
  *
  * @param learningStore - The learning store instance for context and patterns.
  * @param rateLimiter - The shared rate limiter for cost control.
+ * @param eventBus - Optional event bus for publishing pipeline events.
  * @returns A subscriber object for conversation handling.
  */
 export function createConversationSubscriber(
   learningStore: LearningStore,
   rateLimiter: RateLimiter,
+  eventBus?: EventBus,
 ): Subscriber {
   const logger = new Logger('ConversationSubscriber');
   const conversationStateManager = new ConversationStateManager();
@@ -82,6 +84,7 @@ export function createConversationSubscriber(
           signal,
           convWorkDir,
           conversationStateManager,
+          eventBus,
         );
         await recordRateLimit(rateLimiter, event, 'interactive', 'conversation', reservation);
       } catch (err) {
