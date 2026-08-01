@@ -15,6 +15,15 @@ on:
         description: 'Specific audit category (omit for random)'
         required: false
         type: string
+      mode:
+        description: 'Workflow mode: audit or fix-issue'
+        required: false
+        type: string
+        default: 'audit'
+      issue_number:
+        description: 'Issue number to fix (for fix-issue mode)'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -178,7 +187,9 @@ jobs:
 
   # ─── Daily Codebase Audit ─────────────────────────────────────────────────────
   audit:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: |
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && (inputs.mode == 'audit' || inputs.mode == '' || inputs.mode == null))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -238,12 +249,15 @@ jobs:
   # The PR will then be handled by the autofix job on the next run.
   fix-issue:
     if: |
-      github.event.issue.pull_request == null && (
-        (github.event_name == 'issue_comment' && contains(github.event.comment.body || '', '/fix'))
-        ||
-        (github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'autofix-trigger'))
-      ) &&
-      !contains(github.event.issue.labels.*.name, 'analysis:needs-input')
+      (github.event_name == 'workflow_dispatch' && (inputs.mode == 'fix-issue' || inputs.issue_number != '')) ||
+      (
+        github.event.issue.pull_request == null && (
+          (github.event_name == 'issue_comment' && contains(github.event.comment.body || '', '/fix'))
+          ||
+          (github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'autofix-trigger'))
+        ) &&
+        !contains(github.event.issue.labels.*.name, 'analysis:needs-input')
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -251,6 +265,12 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Resolve Issue Number
+        id: resolve-issue
+        run: |
+          ISSUE_NUM="${{ inputs.issue_number || github.event.issue.number }}"
+          echo "issue_number=${ISSUE_NUM}" >> "$GITHUB_OUTPUT"
 
       - name: Ensure labels exist
         env:
@@ -266,6 +286,7 @@ jobs:
           model: 'opencode/deepseek-v4-flash-free'
           max_fix_iterations: 1
           run_checks_after_fix: 'pnpm lint'
+          pr-number: ${{ steps.resolve-issue.outputs.issue_number }}
           github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
