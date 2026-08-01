@@ -260,7 +260,7 @@ export function buildReviewPrompt(
     }
   }
 
-  if (codebaseIndexCtx) {
+  if (codebaseIndexCtx && effectiveBudgetMode !== 'split') {
     sections.push('\n## Codebase Context (Cross-File Analysis)');
     sections.push('');
     sections.push(

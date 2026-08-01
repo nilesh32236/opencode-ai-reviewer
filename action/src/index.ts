@@ -221,6 +221,9 @@ async function run(): Promise<void> {
         ...(loadedConfig?.review?.enableReachability !== undefined && {
           enableReachability: loadedConfig.review.enableReachability,
         }),
+        ...(loadedConfig?.review?.enableCodebaseIndex !== undefined && {
+          enableCodebaseIndex: loadedConfig.review.enableCodebaseIndex,
+        }),
         reviewBudget: {
           enabled:
             loadedConfig?.review?.budget?.enabled ??

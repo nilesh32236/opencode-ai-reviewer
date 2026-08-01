@@ -63,6 +63,9 @@ export function buildConfig(): AgentConfig {
       ...(process.env.ENABLE_REACHABILITY !== undefined
         ? { enableReachability: process.env.ENABLE_REACHABILITY !== 'false' }
         : {}),
+      ...(process.env.ENABLE_CODEBASE_INDEX !== undefined
+        ? { enableCodebaseIndex: process.env.ENABLE_CODEBASE_INDEX !== 'false' }
+        : {}),
       reviewBudget: {
         enabled: process.env.REVIEW_BUDGET === 'true',
         summaryThreshold: Math.max(
@@ -205,7 +208,8 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const repoConfig = loadConfig(workingDir);
   const sensitivity = repoConfig?.review?.sensitivity;
   const categories = repoConfig?.review?.categories;
-  if (!sensitivity && !categories) return baseConfig;
+  const enableCodebaseIndex = repoConfig?.review?.enableCodebaseIndex;
+  if (!sensitivity && !categories && enableCodebaseIndex === undefined) return baseConfig;
   return {
     ...baseConfig,
     review: {
@@ -217,6 +221,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
         },
       }),
       ...(categories && { categories }),
+      ...(enableCodebaseIndex !== undefined && { enableCodebaseIndex }),
     },
   };
 }

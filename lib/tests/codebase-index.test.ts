@@ -210,7 +210,136 @@ describe('CodebaseIndex', () => {
 
     const third = await engine.buildOrLoad(dir, 'sha-2');
     expect(third.refSha).toBe('sha-2');
-    expect(third).not.toBe(first);
+    // A distinct ref produces a distinct cache entry rather than reusing sha-1.
+    expect(cache.get('sha-2')?.refSha).toBe('sha-2');
+    expect(cache.get('sha-1')?.refSha).toBe('sha-1');
+    expect(third.symbols.length).toBe(first.symbols.length);
+  });
+
+  it('rejects corrupt cache entries and degrades to a rebuild', async () => {
+    const dir = makeTempDir();
+    const cacheDir = path.join(dir, '.opencode', 'codebase-index-cache');
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const cache = new CodebaseIndexCache(cacheDir);
+    const engine = new CodebaseIndex(cache);
+
+    // Corrupt JSON in the cache directory is ignored.
+    fs.writeFileSync(path.join(cacheDir, 'corrupt-sha.json'), '{not-valid-json', 'utf-8');
+    expect(cache.get('corrupt-sha')).toBeNull();
+
+    // A refSha mismatch is rejected.
+    fs.writeFileSync(
+      path.join(cacheDir, 'mismatch-sha.json'),
+      JSON.stringify({ refSha: 'other-sha', symbols: [], imports: [], callGraph: [] }),
+      'utf-8',
+    );
+    expect(cache.get('mismatch-sha')).toBeNull();
+
+    // Missing/partial collections (e.g. no callGraph) are rejected.
+    fs.writeFileSync(
+      path.join(cacheDir, 'partial-sha.json'),
+      JSON.stringify({ refSha: 'partial-sha', symbols: [], imports: [] }),
+      'utf-8',
+    );
+    expect(cache.get('partial-sha')).toBeNull();
+
+    // A valid entry survives and is served by buildOrLoad.
+    writeFixture(dir, { 'src/a.ts': 'export const value = 1;' });
+    const built = await engine.buildOrLoad(dir, 'valid-sha');
+    expect(built.symbols.length).toBe(1);
+    expect(cache.get('valid-sha')?.refSha).toBe('valid-sha');
+  });
+
+  it('records external package imports without flagging them as broken local imports', async () => {
+    const dir = makeTempDir();
+    writeFixture(dir, {
+      'src/a.ts': `import { z } from 'zod';
+        import * as fs from 'fs';
+        import { missing } from './does-not-exist.js';
+        export const x = 1;`,
+    });
+    const engine = new CodebaseIndex();
+    const index = await engine.buildOrLoad(dir, 'sha');
+    const context = engine.formatContext(engine.getContextForFiles(index, ['src/a.ts']));
+
+    // External/bare specifiers are marked external and never rendered as broken.
+    expect(index.imports.some((e) => e.isExternal && e.importedSymbol === 'z')).toBe(true);
+    expect(index.imports.some((e) => e.isExternal && e.importedSymbol === 'fs')).toBe(true);
+    expect(context).toContain('Unresolved Local Imports');
+    expect(context).toContain('missing');
+    expect(context).not.toContain('zod');
+  });
+
+  it('extracts CommonJS require() and module.exports via the regex pass on .js/.cjs files', () => {
+    const root = makeTempDir();
+    writeFixture(root, {
+      'src/legacy.cjs': `const { helper } = require('./helper.js');
+        module.exports = { run: helper };
+        exports.extra = 1;`,
+      'src/helper.js': 'function helper() { return 1; }\nmodule.exports = { helper };',
+    });
+
+    const index = new CodebaseExtractor().extract(root);
+    const cjsImports = index.imports.filter((e) => e.sourceFile === 'src/legacy.cjs');
+    // require('./helper.js') is captured even though the AST parse succeeds.
+    expect(cjsImports.some((e) => e.targetFile === 'src/helper.js')).toBe(true);
+
+    // module.exports / exports.extra symbols are recorded as exported.
+    const exported = index.symbols.filter((s) => s.file === 'src/legacy.cjs' && s.isExported);
+    expect(exported.some((s) => s.name === 'default')).toBe(true);
+    expect(exported.some((s) => s.name === 'extra')).toBe(true);
+  });
+
+  it('resolves namespace-import member calls but not arbitrary receiver properties', async () => {
+    const dir = makeTempDir();
+    writeFixture(dir, {
+      'src/utils.ts': 'export function normalize(raw: string): string { return raw.trim(); }',
+      'src/main.ts': `import * as utils from './utils.js';
+        class Logger {
+          log(message: string): void { console.log(message); }
+        }
+        export function run(): void {
+          utils.normalize(' x ');
+          new Logger().log('world');
+        }`,
+    });
+    const engine = new CodebaseIndex();
+    const index = await engine.buildOrLoad(dir, 'sha');
+
+    // utils.normalize() resolves through the namespace import.
+    const memberEdge = index.callGraph.find((e) => e.calleeFunction === 'normalize');
+    expect(memberEdge?.calleeFile).toBe('src/utils.ts');
+
+    // console.log() and Logger().log() never resolve to local symbols.
+    const logEdges = index.callGraph.filter((e) => e.calleeFunction === 'log');
+    expect(logEdges.length).toBe(0);
+  });
+
+  it('indexes export default identifiers and local re-exports', async () => {
+    const dir = makeTempDir();
+    writeFixture(dir, {
+      'src/main.ts': `function engine(): void {}
+        export default engine;
+        export { engine as engineAlias };
+        export const visible = true;`,
+    });
+    const engine = new CodebaseIndex();
+    const index = await engine.buildOrLoad(dir, 'sha');
+
+    const engineSymbol = index.symbols.find((s) => s.name === 'engine');
+    expect(engineSymbol?.isDefaultExport).toBe(true);
+    expect(engineSymbol?.isExported).toBe(true);
+
+    // `export { engine as engineAlias }` without a `from` clause records a
+    // local re-export edge back to the same file.
+    expect(
+      index.imports.some(
+        (e) =>
+          e.sourceFile === 'src/main.ts' &&
+          e.targetFile === 'src/main.ts' &&
+          e.importedSymbol === 'engineAlias',
+      ),
+    ).toBe(true);
   });
 
   it('getContextForFiles returns only relevant context for changed files', async () => {
@@ -288,12 +417,15 @@ describe('CodebaseIndex', () => {
 
   it('indexes large repositories quickly (performance sanity check)', () => {
     const dir = makeTempDir();
-    // Simulate a ~10K-file repository with 500 modules x 20 files each.
+    // Simulate a ~10K-file repository with 500 modules x 20 files each. Every
+    // file imports a sibling, so the hot `resolveLocalImport` path (up to ~20
+    // filesystem probes per specifier) is exercised and measured.
     const files: Record<string, string> = {};
     for (let m = 0; m < 500; m++) {
       for (let f = 0; f < 20; f++) {
         const file = `src/mod${m}/file${f}.ts`;
         files[file] =
+          `import { func0 } from './file0.js';\n` +
           `export function func${f}(a: number, b: number): number {\n` +
           `  return a + b + ${m};\n}\n` +
           `export const VALUE_${f} = ${m} * 100 + ${f};\n`;
@@ -306,9 +438,11 @@ describe('CodebaseIndex', () => {
     const elapsedMs = Date.now() - start;
 
     expect(index.symbols.length).toBe(20000);
-    expect(index.imports.length).toBe(0);
+    expect(index.imports.length).toBeGreaterThan(0);
     // Acceptance criterion: index builds in <5s for 10K-file repos. The 20s
     // bound is deliberately generous so slow CI machines never flake.
+    // eslint-disable-next-line no-console
+    console.log(`10K-file index built in ${elapsedMs}ms (target: <5000ms)`);
     expect(elapsedMs).toBeLessThan(20_000);
   });
 });

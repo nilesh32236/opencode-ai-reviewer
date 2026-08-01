@@ -1,5 +1,6 @@
 import { promises as fs, existsSync, mkdirSync, readFileSync } from 'fs';
 import * as cp from 'node:child_process';
+import { createHash } from 'node:crypto';
 import * as os from 'os';
 import * as path from 'path';
 import * as core from '@actions/core';
@@ -249,6 +250,85 @@ export class ReviewEngine {
   }
 
   /**
+   * Resolve the repository root to index. Uses the git top-level so index
+   * paths are repo-root-relative and match `ChangedFile.path`, even when the
+   * working directory is a package subdirectory of a monorepo. Falls back to
+   * `workDir` when the directory is not a git checkout.
+   * @param workDir - The directory the review runs in.
+   * @returns The absolute repository root to build the codebase index from.
+   */
+  private resolveCodebaseRoot(workDir: string): string {
+    try {
+      const root = cp
+        .execFileSync('git', ['rev-parse', '--show-toplevel'], {
+          encoding: 'utf-8',
+          cwd: workDir,
+        })
+        .trim();
+      if (root) return root;
+    } catch {
+      // Not a git checkout — index relative to the working directory.
+    }
+    return workDir;
+  }
+
+  /**
+   * Derive the codebase-index cache key. Keying solely on `headSha` would serve
+   * a stale index during the autofix loop, where the working tree changes
+   * between re-reviews of the same ref. A working-tree fingerprint (hash of
+   * `git status --porcelain`) makes the cache invalidate whenever the tree
+   * changes; a clean checkout keeps the stable `headSha` key.
+   * @param headSha - The PR head SHA.
+   * @param repoRoot - The repository root the index is built from.
+   * @returns The cache key to store/load the index under.
+   */
+  private codebaseIndexCacheKey(headSha: string, repoRoot: string): string {
+    try {
+      const porcelain = cp
+        .execFileSync('git', ['status', '--porcelain'], {
+          encoding: 'utf-8',
+          cwd: repoRoot,
+        })
+        .toString();
+      if (porcelain.trim() === '') return headSha;
+      const digest = createHash('sha256').update(porcelain).digest('hex').slice(0, 16);
+      return `${headSha}-${digest}`;
+    } catch {
+      return headSha;
+    }
+  }
+
+  /**
+   * Build the injected cross-file codebase context for a set of changed files.
+   * Filters out empty/missing paths and catches formatting failures so a
+   * corrupt index can never fail the whole review — it degrades to a diff-only
+   * review instead.
+   * @param index - The codebase index engine (undefined when disabled/failed).
+   * @param data - The loaded index data (undefined when disabled/failed).
+   * @param files - Changed files to derive context for.
+   * @returns The formatted cross-file markdown context, or '' when unavailable.
+   */
+  private formatCodebaseContext(
+    index: CodebaseIndex | undefined,
+    data: CodebaseIndexData | undefined,
+    files: Array<{ path?: string }>,
+  ): string {
+    if (!index || !data) return '';
+    const paths = files
+      .map((f) => f?.path)
+      .filter((p): p is string => typeof p === 'string' && Boolean(p));
+    if (paths.length === 0) return '';
+    try {
+      return index.formatContext(index.getContextForFiles(data, paths));
+    } catch (err) {
+      core.warning(
+        `Codebase index context skipped: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return '';
+    }
+  }
+
+  /**
    * Resolve the model for a specific pipeline stage, falling back to reviewModel.
    * @param stageField - Optional per-stage model field name from AgentConfig.
    * @returns The resolved model string.
@@ -369,30 +449,6 @@ export class ReviewEngine {
     const workDir = workingDirectory || process.cwd();
     const batchSize = this.config.batchSize || 3;
 
-    // Build a ref-keyed codebase index and extract cross-file context for the
-    // changed files. Non-critical: indexing failures degrade gracefully to a
-    // review without cross-file context.
-    let codebaseIndex: CodebaseIndex | undefined;
-    let codebaseIndexData: CodebaseIndexData | undefined;
-    if (this.config.review.enableCodebaseIndex) {
-      try {
-        const indexEngine = new CodebaseIndex(
-          new CodebaseIndexCache(path.join(workDir, '.opencode', 'codebase-index-cache')),
-        );
-        codebaseIndexData = await indexEngine.buildOrLoad(workDir, pr.headSha);
-        codebaseIndex = indexEngine;
-        core.info(
-          `Codebase index ready: ${codebaseIndexData.symbols.length} symbols, ` +
-            `${codebaseIndexData.imports.length} imports, ${codebaseIndexData.callGraph.length} call edges ` +
-            `(built in ${codebaseIndexData.buildTimeMs}ms)`,
-        );
-      } catch (err) {
-        core.warning(
-          `Codebase index build skipped: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
-
     // Fetch delta context if previousHeadSha is provided
     let deltaContext: string | undefined;
     if (previousHeadSha && previousHeadSha !== pr.headSha) {
@@ -425,6 +481,43 @@ export class ReviewEngine {
       core.info(
         `Excluded ${pr.changedFiles.length - files.length} file(s) from review by exclude patterns`,
       );
+    }
+
+    // Build a ref-keyed codebase index and extract cross-file context for the
+    // changed files. Non-critical: indexing failures degrade gracefully to a
+    // review without cross-file context. This runs only after the exclude /
+    // skip early-returns so fully-excluded reviews never pay the indexing cost.
+    // The index is rooted at the git repo top-level so index-relative file
+    // paths match the repo-root-relative `ChangedFile.path` values even when
+    // `workDir` is a package subdirectory of a monorepo.
+    let codebaseIndex: CodebaseIndex | undefined;
+    let codebaseIndexData: CodebaseIndexData | undefined;
+    if (this.config.review.enableCodebaseIndex) {
+      try {
+        const indexEngine = new CodebaseIndex(
+          new CodebaseIndexCache(path.join(workDir, '.opencode', 'codebase-index-cache')),
+        );
+        const indexRoot = this.resolveCodebaseRoot(workDir);
+        const cacheKey = this.codebaseIndexCacheKey(pr.headSha, indexRoot);
+        const startedAt = Date.now();
+        codebaseIndexData = await indexEngine.buildOrLoad(indexRoot, cacheKey);
+        const buildMs = Date.now() - startedAt;
+        codebaseIndex = indexEngine;
+        core.info(
+          `Codebase index ready: ${codebaseIndexData.symbols.length} symbols, ` +
+            `${codebaseIndexData.imports.length} imports, ${codebaseIndexData.callGraph.length} call edges ` +
+            `(built in ${buildMs}ms)`,
+        );
+        if (buildMs > 5000) {
+          core.warning(
+            `Codebase index build took ${buildMs}ms (>5s) — consider excluding non-source directories`,
+          );
+        }
+      } catch (err) {
+        core.warning(
+          `Codebase index build skipped: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
 
     // Calculate total diff size for budget mode selection. Diff lines are derived
@@ -488,15 +581,11 @@ export class ReviewEngine {
 
     // If PR is small enough for a single batch, skip concurrent processing
     if (files.length <= batchSize) {
-      const codebaseIndexContext =
-        codebaseIndex && codebaseIndexData
-          ? codebaseIndex.formatContext(
-              codebaseIndex.getContextForFiles(
-                codebaseIndexData,
-                files.map((f) => f.path),
-              ),
-            )
-          : '';
+      const codebaseIndexContext = this.formatCodebaseContext(
+        codebaseIndex,
+        codebaseIndexData,
+        files,
+      );
       const prompt = buildReviewPrompt(
         {
           projectContext: this.config.projectContext.description || undefined,
@@ -623,15 +712,11 @@ export class ReviewEngine {
             ? batchContext + '\n\n## Library Documentation\n' + mcpDocs
             : batchContext;
 
-          const batchCodebaseContext =
-            codebaseIndex && codebaseIndexData
-              ? codebaseIndex.formatContext(
-                  codebaseIndex.getContextForFiles(
-                    codebaseIndexData,
-                    batch.map((f) => f.path),
-                  ),
-                )
-              : '';
+          const batchCodebaseContext = this.formatCodebaseContext(
+            codebaseIndex,
+            codebaseIndexData,
+            batch,
+          );
 
           const prompt = buildReviewPrompt(
             {

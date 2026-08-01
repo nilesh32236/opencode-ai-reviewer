@@ -1,3 +1,5 @@
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentConfig, PRContext, ReviewResult } from '../src/types/index.js';
 import { DEFAULT_CONFIG } from '../src/types/index.js';
@@ -491,6 +493,64 @@ describe('ReviewEngine', () => {
         expect(result.issues).toHaveLength(1);
         expect(result.stats.total).toBe(1);
       });
+    });
+
+    it('builds the codebase index from the git repo root so cross-file context matches in a monorepo subdirectory', async () => {
+      // Repo-root-relative ChangedFile.path values (e.g. "packages/app/src/util.ts")
+      // only match index entries when the index is rooted at the git top-level,
+      // not at the working directory (packages/app).
+      const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codebase-repo-'));
+      const appDir = path.join(repoRoot, 'packages', 'app');
+      fs.mkdirSync(path.join(appDir, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(appDir, 'src', 'util.ts'), 'export function helper(): void {}');
+      fs.writeFileSync(
+        path.join(appDir, 'src', 'consumer.ts'),
+        "import { helper } from './util.js';\nexport function run(): void { helper(); }",
+      );
+      try {
+        vi.mocked(cp.execFileSync).mockImplementation(((_cmd: string, args: unknown) => {
+          const argList = args as string[];
+          if (argList[0] === 'rev-parse') return `${repoRoot}\n`;
+          if (argList[0] === 'status') return '';
+          return '';
+        }) as typeof cp.execFileSync);
+
+        const monorepoPr = makePRContext({
+          changedFiles: [
+            {
+              path: 'packages/app/src/util.ts',
+              status: 'modified',
+              additions: 1,
+              deletions: 0,
+            },
+          ],
+        });
+        const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+        mockRunOpenCode.mockResolvedValue({
+          success: true,
+          output: '',
+          durationMs: 1000,
+          tokensUsed: 100,
+        });
+        mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+        await eng.reviewPR(
+          monorepoPr,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          appDir,
+        );
+
+        const optionsArg = mockBuildReviewPrompt.mock.calls[0][2] as {
+          codebaseIndexContext?: string;
+        };
+        expect(optionsArg.codebaseIndexContext ?? '').toContain('helper');
+      } finally {
+        fs.rmSync(repoRoot, { recursive: true, force: true });
+      }
     });
   });
 

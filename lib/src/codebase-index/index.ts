@@ -73,8 +73,17 @@ export class CodebaseIndex {
    * @returns The relevant cross-file context.
    */
   getContextForFiles(index: CodebaseIndexData, changedFiles: string[]): CodebaseContext {
-    const changedSet = new Set(changedFiles.map((file) => this.normalizeChangedFile(file)));
-    const isChanged = (file: string): boolean => changedSet.has(this.normalizeChangedFile(file));
+    const normalizedCache = new Map<string, string>();
+    const normalize = (file: string): string => {
+      let value = normalizedCache.get(file);
+      if (value === undefined) {
+        value = this.normalizeChangedFile(file);
+        normalizedCache.set(file, value);
+      }
+      return value;
+    };
+    const changedSet = new Set(changedFiles.map((file) => normalize(file)));
+    const isChanged = (file: string): boolean => changedSet.has(normalize(file));
 
     const localSymbols: IndexedSymbol[] = [];
     const exportedSymbols: IndexedSymbol[] = [];
@@ -126,6 +135,7 @@ export class CodebaseIndex {
       for (const symbol of context.exportedSymbols.slice(0, MAX_SYMBOLS_PER_SECTION)) {
         parts.push(this.formatSymbol(symbol));
       }
+      this.pushTruncationNotice(parts, context.exportedSymbols.length, MAX_SYMBOLS_PER_SECTION);
       parts.push('');
     }
 
@@ -134,11 +144,17 @@ export class CodebaseIndex {
       for (const symbol of context.localSymbols.slice(0, MAX_SYMBOLS_PER_SECTION)) {
         parts.push(this.formatSymbol(symbol));
       }
+      this.pushTruncationNotice(parts, context.localSymbols.length, MAX_SYMBOLS_PER_SECTION);
       parts.push('');
     }
 
     if (context.affectedImports.length > 0) {
-      const unresolved = context.affectedImports.filter((edge) => !edge.targetFile);
+      // External/bare specifiers (node builtins, npm packages) are not "broken
+      // local imports" — only genuinely local relative specifiers that failed
+      // to resolve are reported as potentially broken.
+      const unresolved = context.affectedImports.filter(
+        (edge) => !edge.targetFile && !edge.isExternal,
+      );
       if (unresolved.length > 0) {
         parts.push('### Unresolved Local Imports (possible broken imports)');
         for (const edge of unresolved.slice(0, MAX_EDGES_PER_SECTION)) {
@@ -147,6 +163,7 @@ export class CodebaseIndex {
             `- ${edge.sourceFile}:${edge.line} imports ${symbol} from an unresolvable local module`,
           );
         }
+        this.pushTruncationNotice(parts, unresolved.length, MAX_EDGES_PER_SECTION);
         parts.push('');
       }
       const resolved = context.affectedImports.filter((edge) => edge.targetFile);
@@ -158,6 +175,7 @@ export class CodebaseIndex {
             `- ${edge.sourceFile}:${edge.line} imports ${symbol} from \`${edge.targetFile}\``,
           );
         }
+        this.pushTruncationNotice(parts, resolved.length, MAX_EDGES_PER_SECTION);
         parts.push('');
       }
     }
@@ -169,6 +187,7 @@ export class CodebaseIndex {
           `- \`${edge.callerFile}:${edge.line}\` — \`${edge.callerFunction}()\` → \`${edge.calleeFunction}()\` in \`${edge.calleeFile}\``,
         );
       }
+      this.pushTruncationNotice(parts, context.affectedCallers.length, MAX_EDGES_PER_SECTION);
       parts.push('');
     }
 
@@ -179,10 +198,15 @@ export class CodebaseIndex {
           `- \`${edge.callerFile}:${edge.line}\` — \`${edge.callerFunction}()\` → \`${edge.calleeFunction}()\` in \`${edge.calleeFile}\``,
         );
       }
+      this.pushTruncationNotice(parts, context.affectedCallees.length, MAX_EDGES_PER_SECTION);
       parts.push('');
     }
 
     return parts.join('\n').replace(/\n+$/, '');
+  }
+
+  private pushTruncationNotice(parts: string[], total: number, cap: number): void {
+    if (total > cap) parts.push(`- ... and ${total - cap} more (list truncated)`);
   }
 
   private formatSymbol(symbol: IndexedSymbol): string {

@@ -329,6 +329,9 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     if (typeof config.review.enableReachability === 'boolean') {
       result.review.enableReachability = config.review.enableReachability;
     }
+    if (typeof config.review.enableCodebaseIndex === 'boolean') {
+      result.review.enableCodebaseIndex = config.review.enableCodebaseIndex;
+    }
     if (config.review.tokenBudget && typeof config.review.tokenBudget === 'object') {
       const tb = config.review.tokenBudget;
       result.review.tokenBudget = {

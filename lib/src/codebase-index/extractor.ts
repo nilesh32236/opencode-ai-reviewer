@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { minimatch } from 'minimatch';
 import * as ts from 'typescript';
 import type {
   CallGraphEdge,
@@ -60,6 +61,7 @@ export interface CodebaseExtractorOptions {
 export class CodebaseExtractor {
   private readonly workspaceDir: string | undefined;
   private readonly includeGlobs: string[];
+  private readonly resolutionCache = new Map<string, string>();
 
   /**
    * @param options - Extraction options (workspace root override, include globs).
@@ -107,8 +109,13 @@ export class CodebaseExtractor {
         const fileImports = this.extractImports(sourceFile, relativeFile, file, baseDir);
         imports.push(...fileImports);
         callGraph.push(...this.extractCallGraph(sourceFile, relativeFile, fileImports));
-      } else {
-        // Unparsable or non-TS file — fall back to regex extraction.
+      }
+      // The TypeScript parser is error-tolerant and virtually never returns
+      // `undefined` for JS-family input, so the regex pass must run *in
+      // addition* to the AST pass — otherwise CommonJS `require()` /
+      // dynamic `import()` / `module.exports` symbols in .js/.mjs/.cjs files
+      // would never be indexed. Dedupe against AST results by line+specifier.
+      if (!sourceFile || JS_EXTENSIONS.has(path.extname(file).toLowerCase())) {
         const regex = this.extractRegexBased(relativeFile, content, file, baseDir);
         symbols.push(...regex.symbols);
         imports.push(...regex.imports);
@@ -187,23 +194,7 @@ export class CodebaseExtractor {
 
   private matchesGlobs(relativeFile: string): boolean {
     const normalized = relativeFile.replace(/\\/g, '/');
-    return this.includeGlobs.some((glob) => {
-      if (glob.endsWith('/**')) {
-        return normalized.startsWith(glob.slice(0, -3)) || normalized === glob.slice(0, -3);
-      }
-      if (glob.includes('*')) {
-        const re = new RegExp(
-          '^' +
-            glob
-              .split('*')
-              .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
-              .join('.*') +
-            '$',
-        );
-        return re.test(normalized);
-      }
-      return normalized === glob;
-    });
+    return this.includeGlobs.some((glob) => minimatch(normalized, glob));
   }
 
   // ─── Symbol extraction ──────────────────────────────────
@@ -293,6 +284,26 @@ export class CodebaseExtractor {
         }
       }
     }
+
+    // `export default someIdentifier;` — an ExportAssignment that references a
+    // declaration made elsewhere in the file. Mark that declaration as the
+    // default export so it is not reported as a missing export.
+    const defaultExportNames = new Set<string>();
+    for (const statement of sourceFile.statements) {
+      if (
+        ts.isExportAssignment(statement) &&
+        statement.isExportEquals === undefined &&
+        ts.isIdentifier(statement.expression)
+      ) {
+        defaultExportNames.add(statement.expression.text);
+      }
+    }
+    for (const symbol of symbols) {
+      if (defaultExportNames.has(symbol.name)) {
+        symbol.isDefaultExport = true;
+        symbol.isExported = true;
+      }
+    }
     return symbols;
   }
 
@@ -334,74 +345,99 @@ export class CodebaseExtractor {
       if (ts.isImportDeclaration(statement)) {
         const specifier = this.moduleSpecifierText(statement);
         if (!specifier) continue;
-        const targetFile = this.resolveLocalImport(absoluteFile, specifier, baseDir);
+        const isExternal = this.isExternalSpecifier(specifier);
+        const targetFile = isExternal
+          ? ''
+          : this.resolveLocalImport(absoluteFile, specifier, baseDir);
+        const base = {
+          sourceFile: relativeFile,
+          targetFile,
+          isExternal: isExternal || undefined,
+          line,
+        } as const;
         const clause = statement.importClause;
         if (!clause) {
           edges.push({
-            sourceFile: relativeFile,
+            ...base,
             importedSymbol: '',
-            targetFile,
-            importKind: 'side-effect',
-            line,
+            importKind: 'side-effect' as const,
           });
         } else if (clause.name) {
           edges.push({
-            sourceFile: relativeFile,
+            ...base,
             importedSymbol: clause.name.text,
-            targetFile,
-            importKind: 'default',
-            line,
+            importKind: 'default' as const,
           });
         } else if (clause.namedBindings) {
           if (ts.isNamespaceImport(clause.namedBindings)) {
             edges.push({
-              sourceFile: relativeFile,
+              ...base,
               importedSymbol: clause.namedBindings.name.text,
-              targetFile,
-              importKind: 'namespace',
-              line,
+              importKind: 'namespace' as const,
             });
           } else if (ts.isNamedImports(clause.namedBindings)) {
             for (const element of clause.namedBindings.elements) {
+              edges.push({
+                ...base,
+                importedSymbol: element.name.text,
+                sourceSymbolName: element.propertyName
+                  ? element.propertyName.text
+                  : element.name.text,
+                importKind: 'named' as const,
+              });
+            }
+          }
+        }
+      } else if (ts.isExportDeclaration(statement)) {
+        const specifier = this.moduleSpecifierText(statement);
+        if (!specifier) {
+          // Local re-export without a `from` clause: `export { foo, bar }`.
+          // Record an edge back to this same module so the exported names are
+          // visible to the index.
+          const clause = statement.exportClause;
+          if (clause && ts.isNamedExports(clause)) {
+            for (const element of clause.elements) {
               edges.push({
                 sourceFile: relativeFile,
                 importedSymbol: element.name.text,
                 sourceSymbolName: element.propertyName
                   ? element.propertyName.text
                   : element.name.text,
-                targetFile,
+                targetFile: relativeFile,
                 importKind: 'named',
                 line,
               });
             }
           }
+          continue;
         }
-      } else if (ts.isExportDeclaration(statement)) {
-        // Re-exports: `export { a } from './x'` and `export * from './x'`.
-        const specifier = this.moduleSpecifierText(statement);
-        if (!specifier) continue;
-        const targetFile = this.resolveLocalImport(absoluteFile, specifier, baseDir);
+        const isExternal = this.isExternalSpecifier(specifier);
+        const targetFile = isExternal
+          ? ''
+          : this.resolveLocalImport(absoluteFile, specifier, baseDir);
+        const base = {
+          sourceFile: relativeFile,
+          targetFile,
+          isExternal: isExternal || undefined,
+          line,
+        } as const;
         const clause = statement.exportClause;
         if (clause && ts.isNamedExports(clause)) {
           for (const element of clause.elements) {
             edges.push({
-              sourceFile: relativeFile,
+              ...base,
               importedSymbol: element.name.text,
               sourceSymbolName: element.propertyName
                 ? element.propertyName.text
                 : element.name.text,
-              targetFile,
               importKind: 'named',
-              line,
             });
           }
         } else {
           edges.push({
-            sourceFile: relativeFile,
+            ...base,
             importedSymbol: '*',
-            targetFile,
             importKind: 'namespace',
-            line,
           });
         }
       }
@@ -411,8 +447,15 @@ export class CodebaseExtractor {
 
   private moduleSpecifierText(declaration: ts.ImportDeclaration | ts.ExportDeclaration): string {
     if (!declaration.moduleSpecifier) return '';
-    const text = declaration.moduleSpecifier.getText();
-    return text.replace(/['"]/g, '');
+    if (ts.isStringLiteralLike(declaration.moduleSpecifier)) {
+      return declaration.moduleSpecifier.text;
+    }
+    return '';
+  }
+
+  /** True when a module specifier refers to a package/node builtin, not a local path. */
+  private isExternalSpecifier(specifier: string): boolean {
+    return !specifier.startsWith('.') && !specifier.startsWith('/');
   }
 
   // ─── Call-graph extraction ──────────────────────────────
@@ -433,25 +476,16 @@ export class CodebaseExtractor {
 
     const visit = (node: ts.Node): void => {
       if (ts.isCallExpression(node)) {
-        const calleeName = this.calleeName(node);
-        if (calleeName) {
-          const resolved = this.resolveCallee(
-            calleeName,
-            localDefinitions,
-            importMap,
-            relativeFile,
-          );
-          if (resolved) {
-            const line =
-              sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
-            edges.push({
-              callerFile: relativeFile,
-              callerFunction: this.findEnclosingFunctionName(node) ?? 'top-level',
-              calleeFile: resolved.file,
-              calleeFunction: resolved.name,
-              line,
-            });
-          }
+        const resolved = this.resolveCallTarget(node, localDefinitions, importMap, relativeFile);
+        if (resolved) {
+          const line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
+          edges.push({
+            callerFile: relativeFile,
+            callerFunction: this.findEnclosingFunctionName(node) ?? 'top-level',
+            calleeFile: resolved.file,
+            calleeFunction: resolved.name,
+            line,
+          });
         }
       }
       ts.forEachChild(node, visit);
@@ -466,12 +500,10 @@ export class CodebaseExtractor {
       if (ts.isFunctionDeclaration(statement) && statement.name) {
         definitions.add(statement.name.text);
       } else if (ts.isClassDeclaration(statement) && statement.name) {
+        // Class names only — method names are excluded because a bare property
+        // access (e.g. `console.log(...)`) would otherwise false-resolve to any
+        // same-named method without a type-checker to prove the receiver.
         definitions.add(statement.name.text);
-        for (const member of statement.members) {
-          if (ts.isMethodDeclaration(member) && member.name) {
-            definitions.add(member.name.getText());
-          }
-        }
       } else if (ts.isVariableStatement(statement)) {
         for (const declaration of statement.declarationList.declarations) {
           if (ts.isIdentifier(declaration.name)) definitions.add(declaration.name.text);
@@ -481,31 +513,43 @@ export class CodebaseExtractor {
     return definitions;
   }
 
-  private calleeName(node: ts.CallExpression): string | undefined {
-    const expression = node.expression;
-    if (ts.isIdentifier(expression)) return expression.text;
-    if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.name)) {
-      return expression.name.text;
-    }
-    if (ts.isElementAccessExpression(expression)) {
-      const argument = expression.argumentExpression;
-      if (argument && ts.isStringLiteralLike(argument)) return argument.text;
-    }
-    return undefined;
-  }
-
-  private resolveCallee(
-    name: string,
+  /**
+   * Resolve a call expression to a local or imported target without a type
+   * checker. Only unambiguous calls resolve:
+   * - Bare identifier calls (`build(...)`) that match a local top-level symbol
+   *   or a named/default import.
+   * - Member calls (`utils.normalize(...)`) whose receiver is a namespace
+   *   import binding pointing at a resolvable local module.
+   *
+   * Arbitrary property calls (`console.log(...)`, `json.parse(...)`) never
+   * resolve, because the receiver type is unknown in a pure syntactic parse and
+   * would produce misleading caller/callee edges.
+   */
+  private resolveCallTarget(
+    node: ts.CallExpression,
     localDefinitions: Set<string>,
     importMap: Map<string, ImportEdge>,
     callerFile: string,
   ): { file: string; name: string } | undefined {
-    if (localDefinitions.has(name)) {
-      return { file: callerFile, name };
+    const expression = node.expression;
+    if (ts.isIdentifier(expression)) {
+      const name = expression.text;
+      if (localDefinitions.has(name)) {
+        return { file: callerFile, name };
+      }
+      const edge = importMap.get(name);
+      if (edge?.targetFile) {
+        return { file: edge.targetFile, name: edge.sourceSymbolName ?? name };
+      }
+      return undefined;
     }
-    const edge = importMap.get(name);
-    if (edge?.targetFile) {
-      return { file: edge.targetFile, name: edge.sourceSymbolName ?? name };
+    if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.name)) {
+      if (!ts.isIdentifier(expression.expression)) return undefined;
+      const receiver = expression.expression.text;
+      const edge = importMap.get(receiver);
+      if (edge?.importKind === 'namespace' && edge.targetFile) {
+        return { file: edge.targetFile, name: expression.name.text };
+      }
     }
     return undefined;
   }
@@ -614,34 +658,44 @@ export class CodebaseExtractor {
     if (!specifier.startsWith('.') && !specifier.startsWith('/')) return '';
     const sourceDir = path.dirname(absoluteSourceFile);
     const basePath = path.resolve(sourceDir, specifier);
+    // Memoize per (baseDir, basePath): many files in the same directory import
+    // the same module, and each resolution can probe the filesystem ~20 times.
+    const cacheKey = `${baseDir}\u0000${basePath}`;
+    const cached = this.resolutionCache.get(cacheKey);
+    if (cached !== undefined) return cached;
 
-    if (fs.existsSync(basePath) && fs.statSync(basePath).isFile()) {
-      return this.toRelative(baseDir, basePath);
-    }
+    const result = ((): string => {
+      if (fs.existsSync(basePath) && fs.statSync(basePath).isFile()) {
+        return this.toRelative(baseDir, basePath);
+      }
 
-    for (const ext of LOCAL_EXTENSIONS) {
-      const candidate = basePath + ext;
-      if (fs.existsSync(candidate)) return this.toRelative(baseDir, candidate);
-    }
+      for (const ext of LOCAL_EXTENSIONS) {
+        const candidate = basePath + ext;
+        if (fs.existsSync(candidate)) return this.toRelative(baseDir, candidate);
+      }
 
-    // `.js` → `.ts` ESM convention: `import './foo.js'` maps to `./foo.ts`.
-    const jsExts = ['.js', '.jsx', '.mjs', '.cjs'];
-    for (const jsExt of jsExts) {
-      if (specifier.endsWith(jsExt)) {
-        const tsBase = basePath.slice(0, -jsExt.length);
-        for (const tsExt of ['.ts', '.tsx', '.mts', '.cts']) {
-          const candidate = tsBase + tsExt;
-          if (fs.existsSync(candidate)) return this.toRelative(baseDir, candidate);
+      // `.js` → `.ts` ESM convention: `import './foo.js'` maps to `./foo.ts`.
+      const jsExts = ['.js', '.jsx', '.mjs', '.cjs'];
+      for (const jsExt of jsExts) {
+        if (specifier.endsWith(jsExt)) {
+          const tsBase = basePath.slice(0, -jsExt.length);
+          for (const tsExt of ['.ts', '.tsx', '.mts', '.cts']) {
+            const candidate = tsBase + tsExt;
+            if (fs.existsSync(candidate)) return this.toRelative(baseDir, candidate);
+          }
         }
       }
-    }
 
-    for (const ext of LOCAL_EXTENSIONS) {
-      const indexCandidate = path.join(basePath, `index${ext}`);
-      if (fs.existsSync(indexCandidate)) return this.toRelative(baseDir, indexCandidate);
-    }
+      for (const ext of LOCAL_EXTENSIONS) {
+        const indexCandidate = path.join(basePath, `index${ext}`);
+        if (fs.existsSync(indexCandidate)) return this.toRelative(baseDir, indexCandidate);
+      }
 
-    return '';
+      return '';
+    })();
+
+    this.resolutionCache.set(cacheKey, result);
+    return result;
   }
 
   // ─── Monorepo detection ─────────────────────────────────
@@ -650,10 +704,21 @@ export class CodebaseExtractor {
     const globs = this.readWorkspaceGlobs(root);
     if (globs.length === 0) return undefined;
     return {
-      name: 'workspace',
+      name: this.readWorkspaceName(root),
       rootDir: root,
       fileGlobs: globs,
     };
+  }
+
+  private readWorkspaceName(root: string): string {
+    const pkgPath = path.join(root, 'package.json');
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')) as { name?: unknown };
+      if (typeof pkg.name === 'string' && pkg.name.trim() !== '') return pkg.name.trim();
+    } catch {
+      // Malformed or missing package.json — fall back to the default name.
+    }
+    return 'workspace';
   }
 
   private readWorkspaceGlobs(root: string): string[] {

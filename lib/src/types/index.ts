@@ -1025,6 +1025,8 @@ export interface PromptConfig {
     tokenBudget?: TokenBudgetConfig;
     /** Enable lightweight reachability analysis on security findings (default: true) */
     enableReachability?: boolean;
+    /** Enable codebase indexing for cross-file review context (default: true) */
+    enableCodebaseIndex?: boolean;
     /** Budget-based review configuration for large PRs */
     budget?: {
       /** Enable budget-based review adaptation (default: true) */

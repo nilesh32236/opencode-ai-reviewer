@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { Logger } from '../utils/logger.js';
 import type { CodebaseIndexData } from './types.js';
 
 /**
@@ -11,6 +12,8 @@ import type { CodebaseIndexData } from './types.js';
  * concurrent action runs never observe a partially-written index.
  */
 export class CodebaseIndexCache {
+  private readonly logger = new Logger('CodebaseIndexCache');
+
   /**
    * @param cacheDir - Directory where `<sha>.json` cache files are stored.
    */
@@ -27,9 +30,18 @@ export class CodebaseIndexCache {
       const raw = fs.readFileSync(this.cachePath(refSha), 'utf-8');
       const data = JSON.parse(raw) as CodebaseIndexData;
       if (data.refSha !== refSha) return null;
-      if (!Array.isArray(data.symbols) || !Array.isArray(data.imports)) return null;
+      if (
+        !Array.isArray(data.symbols) ||
+        !Array.isArray(data.imports) ||
+        !Array.isArray(data.callGraph)
+      ) {
+        return null;
+      }
       return data;
-    } catch {
+    } catch (err) {
+      this.logger.debug(
+        `Failed to read codebase index cache for ${refSha}: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return null;
     }
   }
@@ -41,14 +53,26 @@ export class CodebaseIndexCache {
    */
   set(refSha: string, data: CodebaseIndexData): void {
     if (!refSha) return;
+    let tmp: string | undefined;
     try {
       fs.mkdirSync(this.cacheDir, { recursive: true });
       const file = this.cachePath(refSha);
-      const tmp = `${file}.tmp-${process.pid}`;
+      tmp = `${file}.tmp-${process.pid}`;
       fs.writeFileSync(tmp, JSON.stringify(data), 'utf-8');
       fs.renameSync(tmp, file);
-    } catch {
+      tmp = undefined;
+    } catch (err) {
       // Caching is best-effort — a failed write must never break the review.
+      if (tmp) {
+        try {
+          fs.unlinkSync(tmp);
+        } catch {
+          // Best-effort cleanup of the partial temp file.
+        }
+      }
+      this.logger.debug(
+        `Failed to persist codebase index cache: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
@@ -60,8 +84,10 @@ export class CodebaseIndexCache {
     if (!refSha) return;
     try {
       fs.unlinkSync(this.cachePath(refSha));
-    } catch {
-      // Nothing to invalidate.
+    } catch (err) {
+      this.logger.debug(
+        `Failed to invalidate codebase index cache for ${refSha}: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 

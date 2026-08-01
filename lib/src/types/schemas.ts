@@ -369,6 +369,7 @@ export const PromptConfigSchema = z.object({
       excludePatterns: z.array(z.string()).optional(),
       tokenBudget: TokenBudgetConfigSchema.optional(),
       enableReachability: z.boolean().optional(),
+      enableCodebaseIndex: z.boolean().optional(),
       budget: z
         .object({
           enabled: z.boolean().optional(),

@@ -39,8 +39,10 @@ export interface ImportEdge {
   importedSymbol: string;
   /** Original symbol name in the target module (when the import is aliased). */
   sourceSymbolName?: string;
-  /** Resolved file path (relative to the indexed root) of the imported module. Empty when the specifier is external or could not be resolved. */
+  /** Resolved file path (relative to the indexed root) of the imported module. Empty when the specifier could not be resolved to a local file. */
   targetFile: string;
+  /** True when the specifier is a bare package/node builtin specifier rather than a local path. External edges are not reported as broken imports. */
+  isExternal?: boolean;
   /** Kind of import relationship. */
   importKind: ImportKind;
   /** 1-based line where the import statement appears. */
