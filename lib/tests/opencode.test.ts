@@ -114,7 +114,15 @@ vi.mock('fs', async (importOriginal) => {
 // Mock global fetch for setupOpenCode's API call
 vi.stubGlobal('fetch', mockFetch);
 
-import { configureGit, getGitStatus, runOpenCode, setupOpenCode } from '../src/opencode.js';
+import {
+  checkHealth,
+  configureGit,
+  getGitStatus,
+  isVersionCompatible,
+  parseOpenCodeVersion,
+  runOpenCode,
+  setupOpenCode,
+} from '../src/opencode.js';
 
 function makeMockProcess() {
   const listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
@@ -144,10 +152,149 @@ function makeMockProcess() {
   };
 }
 
+describe('checkHealth()', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns available true and compatible true when the binary is recent enough', async () => {
+    mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+    mockExecFileSync.mockReturnValue('opencode v1.2.3\n');
+
+    const health = await checkHealth();
+
+    expect(health.available).toBe(true);
+    expect(health.compatible).toBe(true);
+    expect(health.version).toEqual({
+      raw: 'v1.2.3',
+      major: 1,
+      minor: 2,
+      patch: 3,
+      prerelease: null,
+    });
+    expect(health.message).toContain('compatible');
+  });
+
+  it('returns available false when the binary is missing', async () => {
+    mockIoWhich.mockResolvedValue(null);
+
+    const health = await checkHealth();
+
+    expect(health.available).toBe(false);
+    expect(health.compatible).toBe(false);
+    expect(health.version).toBeNull();
+    expect(health.message).toContain('npm install -g @opencode/cli');
+  });
+
+  it('returns compatible false when the version is too old', async () => {
+    mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+    mockExecFileSync.mockReturnValue('opencode v1.0.0\n');
+
+    const health = await checkHealth();
+
+    expect(health.available).toBe(true);
+    expect(health.compatible).toBe(false);
+    expect(health.message).toContain('1.1.1');
+    expect(health.message).toContain('npm install -g @opencode/cli@latest');
+  });
+
+  it('returns compatible false when the version output cannot be parsed', async () => {
+    mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+    mockExecFileSync.mockReturnValue('segmentation fault\n');
+
+    const health = await checkHealth();
+
+    expect(health.available).toBe(true);
+    expect(health.compatible).toBe(false);
+    expect(health.message).toContain('could not be determined');
+  });
+
+  it('returns compatible false when the version check throws', async () => {
+    mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+    mockExecFileSync.mockImplementation(() => {
+      throw new Error('ETIMEDOUT');
+    });
+
+    const health = await checkHealth();
+
+    expect(health.available).toBe(true);
+    expect(health.compatible).toBe(false);
+    expect(health.message).toContain('ETIMEDOUT');
+  });
+});
+
+describe('parseOpenCodeVersion() and isVersionCompatible()', () => {
+  it('parses valid version strings correctly', () => {
+    const v = parseOpenCodeVersion('opencode v1.2.3\n');
+    expect(v).toEqual({ raw: 'v1.2.3', major: 1, minor: 2, patch: 3, prerelease: null });
+  });
+
+  it('parses versions without a leading v prefix', () => {
+    const v = parseOpenCodeVersion('1.1.1');
+    expect(v?.major).toBe(1);
+    expect(v?.minor).toBe(1);
+    expect(v?.patch).toBe(1);
+  });
+
+  it('parses pre-release versions', () => {
+    const v = parseOpenCodeVersion('opencode v1.1.1-rc.1');
+    expect(v).toEqual({ raw: 'v1.1.1-rc.1', major: 1, minor: 1, patch: 1, prerelease: 'rc.1' });
+  });
+
+  it('returns null for garbage input', () => {
+    expect(parseOpenCodeVersion('')).toBeNull();
+    expect(parseOpenCodeVersion('not a version')).toBeNull();
+    expect(parseOpenCodeVersion('opencode: unknown command')).toBeNull();
+  });
+
+  it('isVersionCompatible compares against the default minimum', () => {
+    const mk = (
+      raw: string,
+      major: number,
+      minor: number,
+      patch: number,
+      prerelease: string | null = null,
+    ) => ({
+      raw,
+      major,
+      minor,
+      patch,
+      prerelease,
+    });
+    expect(isVersionCompatible(mk('v1.2.3', 1, 2, 3))).toBe(true);
+    expect(isVersionCompatible(mk('v1.1.0', 1, 1, 0))).toBe(false);
+    expect(isVersionCompatible(mk('v2.0.0', 2, 0, 0))).toBe(true);
+    // Pre-release 1.1.1-rc.1 sorts below the 1.1.1 release
+    expect(isVersionCompatible(mk('v1.1.1-rc.1', 1, 1, 1, 'rc.1'))).toBe(false);
+    expect(isVersionCompatible(mk('v1.2.0', 1, 2, 0), '1.0.0')).toBe(true);
+  });
+});
+
+describe('setupOpenCode() version validation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('throws a clear error when the existing binary version is too old', async () => {
+    mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+    mockExecFileSync.mockReturnValue('opencode v1.0.0\n');
+
+    await expect(setupOpenCode()).rejects.toThrow(/1\.1\.1/);
+  });
+
+  it('throws a clear error when the existing binary version cannot be parsed', async () => {
+    mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+    mockExecFileSync.mockReturnValue('???\n');
+
+    await expect(setupOpenCode()).rejects.toThrow(/version could not be determined/);
+  });
+});
+
 describe('runOpenCode()', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+    mockExecFileSync.mockReturnValue('opencode v1.2.3\n');
     mockExecGetExecOutput.mockResolvedValue({ stdout: 'opencode v1.0.0\n', stderr: '' });
     mockFetch.mockResolvedValue(
       new Response(
@@ -345,6 +492,7 @@ describe('runOpenCode()', () => {
 describe('setupOpenCode()', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockExecFileSync.mockReturnValue('opencode v1.2.3\n');
   });
 
   it('returns existing path if opencode is already installed', async () => {

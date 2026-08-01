@@ -8,63 +8,17 @@ import type { AgentConfig } from '../types/index.js';
 import { GitHubHelper } from '../utils/github.js';
 import { withRetryAndTimeout } from '../utils/retry.js';
 import { sanitizeString } from '../utils/sanitize.js';
+import {
+  MINIMUM_OPENCODE_VERSION,
+  UNPARSEABLE_VERSION,
+  compareVersions,
+  formatVersion,
+  parseVersion,
+} from '../utils/version.js';
 import type { SetupCheck, SetupEngineOptions, SetupResult } from './types.js';
 
-/** Default minimum OpenCode CLI version the current code is known to work with. */
-const DEFAULT_MINIMUM_OPENCODE_VERSION = '1.1.1';
 /** Default per-model connectivity probe timeout in milliseconds. */
 const DEFAULT_PROBE_TIMEOUT_MS = 30_000;
-
-/** A parsed semantic version. */
-interface ParsedVersion {
-  major: number;
-  minor: number;
-  patch: number;
-  /** Pre-release identifier (e.g. "rc.1") or null for a release version. */
-  prerelease: string | null;
-}
-
-/** Sentinel returned by {@link compareVersions} when either input is unparseable. */
-const UNPARSEABLE_VERSION = Number.MAX_SAFE_INTEGER;
-
-/**
- * Parse a semantic version string (e.g. "v1.2.3", "1.2.3-rc.1").
- * Build metadata is ignored; pre-release suffixes are captured for ordering.
- * @param text - The version text to parse.
- * @returns A parsed version, or null when no semver shape is found.
- */
-function parseVersion(text: string): ParsedVersion | null {
-  const match = text.match(/\bv?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?/);
-  if (!match) return null;
-  return {
-    major: Number.parseInt(match[1], 10),
-    minor: Number.parseInt(match[2], 10),
-    patch: Number.parseInt(match[3], 10),
-    prerelease: match[4] || null,
-  };
-}
-
-/**
- * Compare two semantic version strings.
- * Pre-release versions sort below the corresponding release (1.1.1-rc.1 < 1.1.1).
- * @param a - First version string.
- * @param b - Second version string.
- * @returns Negative when a < b, positive when a > b, 0 when equal, or
- * {@link UNPARSEABLE_VERSION} when either input cannot be parsed so callers
- * never silently treat an unparseable version as "pass".
- */
-function compareVersions(a: string, b: string): number {
-  const av = parseVersion(a);
-  const bv = parseVersion(b);
-  if (!av || !bv) return UNPARSEABLE_VERSION;
-  if (av.major !== bv.major) return av.major - bv.major;
-  if (av.minor !== bv.minor) return av.minor - bv.minor;
-  if (av.patch !== bv.patch) return av.patch - bv.patch;
-  if (av.prerelease === null && bv.prerelease === null) return 0;
-  if (av.prerelease === null) return 1;
-  if (bv.prerelease === null) return -1;
-  return av.prerelease < bv.prerelease ? -1 : av.prerelease === bv.prerelease ? 0 : 1;
-}
 
 const MODEL_PROVIDER_KEYS: Array<{ label: string; envs: string[] }> = [
   { label: 'OpenAI (OPENAI_API_KEY)', envs: ['OPENAI_API_KEY', 'INPUT_OPENAI_API_KEY'] },
@@ -307,7 +261,7 @@ export class SetupEngine {
    */
   async checkOpenCodeCLI(): Promise<SetupCheck> {
     const start = Date.now();
-    const minimum = this.options.minimumOpenCodeVersion || DEFAULT_MINIMUM_OPENCODE_VERSION;
+    const minimum = this.options.minimumOpenCodeVersion || MINIMUM_OPENCODE_VERSION;
 
     const preinstalled = Boolean(await io.which('opencode', false));
 
@@ -365,9 +319,7 @@ export class SetupEngine {
         Date.now() - start,
       );
     }
-    const version = parsed.prerelease
-      ? `${parsed.major}.${parsed.minor}.${parsed.patch}-${parsed.prerelease}`
-      : `${parsed.major}.${parsed.minor}.${parsed.patch}`;
+    const version = formatVersion(parsed);
     const cmp = compareVersions(version, minimum);
     if (cmp === UNPARSEABLE_VERSION) {
       return this.fail(
