@@ -29,6 +29,7 @@ import type {
   LinterResult,
   PRContext,
   PreviousFindingIteration,
+  ReviewBudgetMode,
   ReviewIssue,
   ReviewResult,
   ReviewStrength,
@@ -101,6 +102,46 @@ export class ReviewEngine {
     this.adapter = adapter;
     this.mcp = new MCPManager(config.mcpServers);
     this.logger = new Logger('ReviewEngine');
+  }
+
+  /**
+   * Determine the review budget mode from the total diff size.
+   * Modes are selected using the configurable summary/split thresholds.
+   *
+   * @param totalDiffLines - Total number of diff lines across all changed files.
+   * @returns The selected budget review mode ('full' | 'summary' | 'split').
+   */
+  private determineBudgetMode(totalDiffLines: number): ReviewBudgetMode {
+    const budget = this.config.review.reviewBudget;
+    if (!budget?.enabled) return 'full';
+    if (totalDiffLines >= budget.splitThreshold) return 'split';
+    if (totalDiffLines >= budget.summaryThreshold) return 'summary';
+    return 'full';
+  }
+
+  /**
+   * Prepend a split-recommendation banner to a review result summary when the
+   * PR exceeds the split threshold. Other budget modes leave the result untouched.
+   *
+   * @param result - The review result to decorate.
+   * @param budgetMode - The selected budget review mode.
+   * @param totalDiffLines - Optional total number of diff lines across all changed files.
+   * @returns The decorated review result.
+   */
+  private applyBudgetModeBanner(
+    result: ReviewResult,
+    budgetMode: ReviewBudgetMode,
+    totalDiffLines?: number,
+  ): ReviewResult {
+    if (budgetMode !== 'split') return result;
+    const lineCount =
+      totalDiffLines !== undefined ? `~${totalDiffLines} lines` : 'a very large number of lines';
+    const splitThreshold = this.config.review.reviewBudget?.splitThreshold ?? 1000;
+    const banner = `## ⚠️ Large PR Detected (${lineCount})\n\nThis pull request is very large. Consider splitting it into smaller, focused PRs for faster, more thorough reviews. Ideally each PR should contain fewer than ${splitThreshold} lines of changes.\n\n---\n\n`;
+    return {
+      ...result,
+      summary: banner + (result.summary || ''),
+    };
   }
 
   /**
@@ -209,6 +250,23 @@ export class ReviewEngine {
         `Excluded ${pr.changedFiles.length - files.length} file(s) from review by exclude patterns`,
       );
     }
+
+    // Calculate total diff size for budget mode selection. Diff lines are derived
+    // from the always-accurate additions/deletions counters (the patch field can
+    // be null for binary files and truncated/omitted for very large files).
+    // Incremental (delta) reviews re-check only new commits, so budget-mode
+    // adaptation is skipped for them to avoid forcing summary/split on a small delta.
+    const isIncremental = Boolean(previousHeadSha && previousHeadSha !== pr.headSha);
+    let budgetMode: ReviewBudgetMode = 'full';
+    let totalDiffLines: number | undefined;
+    if (!isIncremental) {
+      totalDiffLines = files.reduce((sum, f) => sum + (f.additions || 0) + (f.deletions || 0), 0);
+      budgetMode = this.determineBudgetMode(totalDiffLines);
+      core.info(`Review budget mode: ${budgetMode} (total diff: ~${totalDiffLines} lines)`);
+    } else {
+      core.info('Skipping review budget adaptation for incremental (delta) review');
+    }
+
     const tokenBudgetConfig = this.config.review.tokenBudget;
     const { context: prContext, budgetMetrics } = this.buildPRContextString(pr, tokenBudgetConfig);
     let openThreadsContext = '';
@@ -261,12 +319,16 @@ export class ReviewEngine {
           reviewPromptExtra: promptExtra,
         },
         baseContext,
-        lessons,
-        previousFindings,
-        falsePositiveRules,
-        deltaContext,
-        previousBotComments,
-        linterResults,
+        {
+          lessons,
+          previousFindings,
+          falsePositiveRules,
+          deltaContext,
+          previousBotComments,
+          linterResults,
+          budgetMode,
+          totalDiffLines,
+        },
       );
 
       const outputPath = path.join(workDir, 'review-output.jsonl');
@@ -284,7 +346,7 @@ export class ReviewEngine {
         core.warning('OpenCode review execution failed, returning fallback empty result');
         const r = emptyResult();
         r.verdict.reasoning = 'Review execution failed';
-        return r;
+        return this.applyBudgetModeBanner(r, budgetMode, totalDiffLines);
       }
 
       try {
@@ -316,12 +378,14 @@ export class ReviewEngine {
           workDir,
           timeoutMinutes,
           pr.number,
+          budgetMode,
+          totalDiffLines,
         );
       } catch {
         core.warning(`Failed to parse review output at ${outputPath}, returning empty result`);
         const r = emptyResult();
         r.verdict.reasoning = 'Failed to parse review output';
-        return r;
+        return this.applyBudgetModeBanner(r, budgetMode, totalDiffLines);
       }
     }
 
@@ -371,12 +435,14 @@ export class ReviewEngine {
               reviewPromptExtra: promptExtra,
             },
             context,
-            lessons,
-            previousFindings,
-            falsePositiveRules,
-            deltaContext,
-            previousBotComments,
-            linterResults,
+            {
+              lessons,
+              previousFindings,
+              falsePositiveRules,
+              deltaContext,
+              previousBotComments,
+              linterResults,
+            },
           );
 
           const outputPath = path.join(batchDir, 'review-output.jsonl');
@@ -486,6 +552,8 @@ export class ReviewEngine {
         workDir,
         timeoutMinutes,
         pr.number,
+        budgetMode,
+        totalDiffLines,
       );
     }
 
@@ -525,6 +593,8 @@ export class ReviewEngine {
         workDir,
         timeoutMinutes,
         pr.number,
+        budgetMode,
+        totalDiffLines,
       );
     } catch {
       core.warning('Synthesis output parse failed, falling back to merged batch results');
@@ -542,7 +612,15 @@ export class ReviewEngine {
           this.computeTokenBudgetMetrics(files, tokenBudgetConfig, this.config.maxLinesPerFile),
         );
       }
-      return await this.verifyReviewResult(fallback, baseContext, workDir, timeoutMinutes);
+      return await this.verifyReviewResult(
+        fallback,
+        baseContext,
+        workDir,
+        timeoutMinutes,
+        undefined,
+        budgetMode,
+        totalDiffLines,
+      );
     }
   }
 
@@ -946,6 +1024,8 @@ export class ReviewEngine {
    * @param workDir - Working directory for the workspace.
    * @param timeoutMinutes - Optional timeout in minutes for verification.
    * @param prNumber - Optional PR number for logging context.
+   * @param budgetMode - Optional budget review mode selected from PR diff size (used to prepend the split banner).
+   * @param totalDiffLines - Optional total diff line count reported in the split banner.
    * @returns Filtered ReviewResult with verified issues.
    */
   private async verifyReviewResult(
@@ -954,6 +1034,8 @@ export class ReviewEngine {
     workDir: string,
     timeoutMinutes?: number,
     prNumber?: number,
+    budgetMode?: ReviewBudgetMode,
+    totalDiffLines?: number,
   ): Promise<ReviewResult> {
     let enrichedResult = result;
 
@@ -1125,6 +1207,10 @@ export class ReviewEngine {
           },
         };
       }
+    }
+
+    if (budgetMode && totalDiffLines !== undefined) {
+      enrichedResult = this.applyBudgetModeBanner(enrichedResult, budgetMode, totalDiffLines);
     }
 
     return enrichedResult;

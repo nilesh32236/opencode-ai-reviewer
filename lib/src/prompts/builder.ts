@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as core from '@actions/core';
-import type { PreviousFindingIteration, ReviewIssue } from '../types/index.js';
+import type { PreviousFindingIteration, ReviewBudgetMode, ReviewIssue } from '../types/index.js';
 
 /** Input parameters for building a review prompt. */
 export interface PromptBuilderInputs {
@@ -26,6 +26,10 @@ export interface ReviewPromptOptions {
     commentId: number;
   }>;
   linterResults?: import('../types/index.js').LinterResult[];
+  /** Budget review mode selected from PR diff size (injects a summary/split banner). */
+  budgetMode?: ReviewBudgetMode;
+  /** Total diff line count reported in the budget banner. */
+  totalDiffLines?: number;
 }
 
 /**
@@ -33,11 +37,13 @@ export interface ReviewPromptOptions {
  * @param inputs - Configuration inputs including optional custom prompt file, project context, etc.
  * @param prContext - The PR context string describing the pull request.
  * @param optionsOrLessons - Optional ReviewPromptOptions object or lessons array.
- * @param previousFindings - Optional findings from previous fix iterations.
- * @param falsePositiveRules - Optional false positive suppression rules.
- * @param deltaContext - Optional delta diff string for incremental reviews.
- * @param previousBotComments - Optional previous bot review comments to avoid re-reporting.
- * @param linterResults - Optional linter results for context.
+ * @param previousFindings - Optional findings from previous fix iterations (legacy positional; prefer options).
+ * @param falsePositiveRules - Optional false positive suppression rules (legacy positional; prefer options).
+ * @param deltaContext - Optional delta diff string for incremental reviews (legacy positional; prefer options).
+ * @param previousBotComments - Optional previous bot review comments to avoid re-reporting (legacy positional; prefer options).
+ * @param linterResults - Optional linter results for context (legacy positional; prefer options).
+ * @param budgetMode - Optional budget review mode selected from PR diff size (legacy positional; prefer options).
+ * @param totalDiffLines - Optional total diff line count used for budget banners (legacy positional; prefer options).
  * @returns The assembled review prompt string.
  */
 export function buildReviewPrompt(
@@ -54,6 +60,8 @@ export function buildReviewPrompt(
     commentId: number;
   }>,
   linterResults?: import('../types/index.js').LinterResult[],
+  budgetMode?: ReviewBudgetMode,
+  totalDiffLines?: number,
 ): string {
   const options: ReviewPromptOptions = Array.isArray(optionsOrLessons)
     ? {
@@ -75,11 +83,18 @@ export function buildReviewPrompt(
   const deltaCtx = options.deltaContext;
   const prevBotComments = options.previousBotComments ?? previousBotComments;
   const linterRes = options.linterResults ?? linterResults;
+  const effectiveBudgetMode = options.budgetMode ?? budgetMode;
+  const effectiveTotalDiffLines = options.totalDiffLines ?? totalDiffLines;
 
   if (inputs.reviewPromptFile) {
     const customPrompt = loadPromptFile(inputs.reviewPromptFile);
     if (customPrompt) {
-      return customPrompt + (inputs.reviewPromptExtra ? '\n\n' + inputs.reviewPromptExtra : '');
+      let result =
+        customPrompt + (inputs.reviewPromptExtra ? '\n\n' + inputs.reviewPromptExtra : '');
+      if (effectiveBudgetMode && effectiveBudgetMode !== 'full') {
+        result += '\n\n' + buildBudgetBanner(effectiveBudgetMode, effectiveTotalDiffLines);
+      }
+      return result;
     }
   }
 
@@ -134,6 +149,11 @@ export function buildReviewPrompt(
   );
   sections.push('4. Review the provided file list thoroughly.');
   sections.push('5. If any single file exceeds 300 lines, read and review it separately.');
+
+  if (effectiveBudgetMode && effectiveBudgetMode !== 'full') {
+    sections.push('');
+    sections.push(buildBudgetBanner(effectiveBudgetMode, effectiveTotalDiffLines));
+  }
 
   sections.push('\n' + buildWhatToCheck());
 
@@ -692,6 +712,19 @@ export function listAuditCategories(promptsDir?: string): string[] {
     } catch {}
   }
   return Array.from(categories).sort();
+}
+
+function buildBudgetBanner(budgetMode: ReviewBudgetMode, totalDiffLines?: number): string {
+  const lineCount =
+    totalDiffLines !== undefined ? `~${totalDiffLines} lines` : 'a very large number of lines';
+  if (budgetMode === 'summary') {
+    return `## Review Budget Mode: SUMMARY
+
+This PR has ${lineCount} of changes. Focus your review on critical patterns only: security vulnerabilities, breaking changes, API misuse, and data exposure. You may report fewer issues than in full mode, but you MUST still emit structured \`summary\`, \`verdict\`, \`strength\`, and \`issue\` JSONL lines exactly as described in the Output Format section.`;
+  }
+  return `## Review Budget Mode: SPLIT RECOMMENDED
+
+This PR has ${lineCount} of changes. Check ONLY for critical security issues, breaking changes, and API misuse. You may report fewer issues than in full mode, but you MUST still emit structured \`summary\`, \`verdict\`, \`strength\`, and \`issue\` JSONL lines exactly as described in the Output Format section. A split recommendation is added to the final review automatically.`;
 }
 
 function buildWhatToCheck(): string {

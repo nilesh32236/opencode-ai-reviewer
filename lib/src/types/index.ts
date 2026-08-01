@@ -285,6 +285,19 @@ export interface TokenBudgetMetrics {
   complexCount: number;
 }
 
+/** Budget review mode determined by diff size. */
+export type ReviewBudgetMode = 'full' | 'summary' | 'split';
+
+/** Configuration for budget-based review of large PRs. */
+export interface ReviewBudgetConfig {
+  /** Enable budget-based review adaptation (default: false — opt-in) */
+  enabled: boolean;
+  /** Diff line threshold for summary-only mode (default: 500) */
+  summaryThreshold: number;
+  /** Diff line threshold for split recommendation mode (default: 1000) */
+  splitThreshold: number;
+}
+
 /** Configuration for review behavior. */
 export interface ReviewConfig {
   /** Skip review for PRs with these labels */
@@ -307,6 +320,8 @@ export interface ReviewConfig {
   enableReachability: boolean;
   /** Token budget configuration for smart context allocation */
   tokenBudget?: TokenBudgetConfig;
+  /** Budget-based review configuration for large PRs */
+  reviewBudget?: ReviewBudgetConfig;
 }
 
 // ─── Conversation / @mention ─────────────────────────────
@@ -850,6 +865,15 @@ export interface PromptConfig {
     tokenBudget?: TokenBudgetConfig;
     /** Enable lightweight reachability analysis on security findings (default: true) */
     enableReachability?: boolean;
+    /** Budget-based review configuration for large PRs */
+    budget?: {
+      /** Enable budget-based review adaptation (default: true) */
+      enabled?: boolean;
+      /** Diff line threshold for summary-only mode (default: 500) */
+      summaryThreshold?: number;
+      /** Diff line threshold for split recommendation mode (default: 1000) */
+      splitThreshold?: number;
+    };
   };
   /** Fix prompt configuration */
   fix?: {
@@ -967,6 +991,11 @@ export const DEFAULT_CONFIG: AgentConfig = {
       maxLinesSimple: 20,
       complexityThreshold: 30,
       simpleThreshold: 10,
+    },
+    reviewBudget: {
+      enabled: false,
+      summaryThreshold: 500,
+      splitThreshold: 1000,
     },
   },
   audit: {

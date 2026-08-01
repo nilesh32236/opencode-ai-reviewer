@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
@@ -382,6 +383,85 @@ describe('prompt-builder', () => {
       expect(snippet).toContain('FAIL tests/engine.test.ts');
       expect(snippet).toContain('[...truncated leading');
       expect(snippet).toContain('[...truncated trailing');
+    });
+  });
+
+  describe('buildReviewPrompt budget modes', () => {
+    const baseInputs = { projectContext: '' };
+
+    it('injects no budget banner in full mode', () => {
+      const prompt = buildReviewPrompt(baseInputs, 'PR context', {
+        budgetMode: 'full',
+        totalDiffLines: 100,
+      });
+      expect(prompt).toContain('## Context Window Management');
+      expect(prompt).not.toContain('Review Budget Mode');
+      expect(prompt).not.toContain('Large PR Detected');
+    });
+
+    it('injects the summary budget banner with the diff line count', () => {
+      const prompt = buildReviewPrompt(baseInputs, 'PR context', {
+        budgetMode: 'summary',
+        totalDiffLines: 600,
+      });
+      expect(prompt).toContain('## Review Budget Mode: SUMMARY');
+      expect(prompt).toContain('~600 lines');
+      expect(prompt).toContain('critical patterns only');
+      expect(prompt).toContain(
+        'structured `summary`, `verdict`, `strength`, and `issue` JSONL lines',
+      );
+      expect(prompt).not.toContain('SPLIT RECOMMENDED');
+    });
+
+    it('injects the split budget banner without a prose split recommendation', () => {
+      const prompt = buildReviewPrompt(baseInputs, 'PR context', {
+        budgetMode: 'split',
+        totalDiffLines: 1500,
+      });
+      expect(prompt).toContain('## Review Budget Mode: SPLIT RECOMMENDED');
+      expect(prompt).toContain('~1500 lines');
+      expect(prompt).toContain('critical security issues, breaking changes, and API misuse');
+      expect(prompt).toContain('A split recommendation is added to the final review automatically');
+      expect(prompt).not.toContain('Review Budget Mode: SUMMARY');
+      expect(prompt).not.toContain('Do NOT perform a line-by-line review');
+    });
+
+    it('omits the line count when totalDiffLines is not provided', () => {
+      const prompt = buildReviewPrompt(baseInputs, 'PR context', { budgetMode: 'summary' });
+      expect(prompt).toContain('## Review Budget Mode: SUMMARY');
+      expect(prompt).toContain('a very large number of lines');
+    });
+
+    it('appends the budget banner to a custom prompt file when not in full mode', () => {
+      const customFile = path.join(process.cwd(), `.tmp-budget-prompt-${Date.now()}.md`);
+      fs.writeFileSync(customFile, 'CUSTOM_REVIEW_PROMPT_CONTENT');
+      try {
+        const prompt = buildReviewPrompt(
+          { projectContext: '', reviewPromptFile: path.basename(customFile) },
+          'PR context',
+          { budgetMode: 'summary', totalDiffLines: 600 },
+        );
+        expect(prompt).toContain('CUSTOM_REVIEW_PROMPT_CONTENT');
+        expect(prompt).toContain('## Review Budget Mode: SUMMARY');
+      } finally {
+        fs.unlinkSync(customFile);
+      }
+    });
+
+    it('does not append the budget banner to a custom prompt file in full mode', () => {
+      const customFile = path.join(process.cwd(), `.tmp-budget-prompt-${Date.now()}.md`);
+      fs.writeFileSync(customFile, 'CUSTOM_REVIEW_PROMPT_CONTENT');
+      try {
+        const prompt = buildReviewPrompt(
+          { projectContext: '', reviewPromptFile: path.basename(customFile) },
+          'PR context',
+          { budgetMode: 'full' },
+        );
+        expect(prompt).toContain('CUSTOM_REVIEW_PROMPT_CONTENT');
+        expect(prompt).not.toContain('## Review Budget Mode:');
+      } finally {
+        fs.unlinkSync(customFile);
+      }
     });
   });
 });

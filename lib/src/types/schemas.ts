@@ -90,6 +90,18 @@ export const TokenBudgetConfigSchema = z
     path: ['simpleThreshold'],
   });
 
+/** Zod schema validating budget-based review configuration. */
+export const ReviewBudgetConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    summaryThreshold: z.number().int().min(1).default(500),
+    splitThreshold: z.number().int().min(1).default(1000),
+  })
+  .refine((data) => data.splitThreshold >= data.summaryThreshold, {
+    message: 'splitThreshold must be >= summaryThreshold',
+    path: ['splitThreshold'],
+  });
+
 /** Zod schema validating review configuration. */
 export const ReviewConfigSchema = z.object({
   skipLabels: z.array(z.string()).default(['autofix', 'autofix:approved', 'autofix:merged']),
@@ -113,6 +125,7 @@ export const ReviewConfigSchema = z.object({
     ]),
   enableReachability: z.boolean().optional().default(true),
   tokenBudget: TokenBudgetConfigSchema.optional(),
+  reviewBudget: ReviewBudgetConfigSchema.default(ReviewBudgetConfigSchema.parse({})),
 });
 
 /** Zod schema validating audit configuration. */
@@ -276,6 +289,13 @@ export const PromptConfigSchema = z.object({
       excludePatterns: z.array(z.string()).optional(),
       tokenBudget: TokenBudgetConfigSchema.optional(),
       enableReachability: z.boolean().optional(),
+      budget: z
+        .object({
+          enabled: z.boolean().optional(),
+          summaryThreshold: z.number().int().min(1).optional(),
+          splitThreshold: z.number().int().min(1).optional(),
+        })
+        .optional(),
     })
     .optional(),
   fix: z

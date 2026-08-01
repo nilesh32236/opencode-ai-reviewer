@@ -213,6 +213,20 @@ async function run(): Promise<void> {
         ...(loadedConfig?.review?.enableReachability !== undefined && {
           enableReachability: loadedConfig.review.enableReachability,
         }),
+        reviewBudget: {
+          enabled:
+            loadedConfig?.review?.budget?.enabled ??
+            DEFAULT_CONFIG.review.reviewBudget?.enabled ??
+            false,
+          summaryThreshold:
+            loadedConfig?.review?.budget?.summaryThreshold ??
+            DEFAULT_CONFIG.review.reviewBudget?.summaryThreshold ??
+            500,
+          splitThreshold:
+            loadedConfig?.review?.budget?.splitThreshold ??
+            DEFAULT_CONFIG.review.reviewBudget?.splitThreshold ??
+            1000,
+        },
       },
       audit: {
         ...DEFAULT_CONFIG.audit,
