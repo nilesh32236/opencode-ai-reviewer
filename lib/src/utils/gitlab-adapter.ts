@@ -754,11 +754,13 @@ export class GitLabAdapter implements PlatformAdapter {
    * Get review comment thread.
    * @param _commentId - _commentId argument.
    * @param _prNumber - Optional PR number (unused, thread reconstruction unsupported).
+   * @param _signal - Optional AbortSignal (unused).
    * @returns Description.
    */
   async getReviewCommentThread(
     _commentId: number,
     _prNumber?: number,
+    _signal?: AbortSignal,
   ): Promise<ReviewCommentThread> {
     core.warning('getReviewCommentThread not supported via GitLab REST API');
     return {

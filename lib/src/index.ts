@@ -61,6 +61,8 @@ export { withRetry, withRetryAndTimeout } from './utils/retry.js';
 export { DEFAULT_ALLOWLIST, validateRunChecksCommand } from './utils/command.js';
 export { CircuitBreaker } from './utils/circuit-breaker.js';
 export type { CircuitState, CircuitBreakerOptions } from './utils/circuit-breaker.js';
+export { gatherReviewThread } from './utils/review-thread.js';
+export type { ThreadComment, ReviewThreadResult } from './utils/review-thread.js';
 export { sanitizeString } from './utils/sanitize.js';
 export { getLabelColor } from './utils/label-color.js';
 export {

@@ -1080,6 +1080,36 @@ diff --git a/deleted.ts b/deleted.ts
       expect(new Set(thread.comments.map((c) => c.id)).size).toBe(3);
     });
 
+    it('fetches the single-pass window newest-first (direction=desc)', async () => {
+      const comments = [
+        {
+          id: 1,
+          body: 'root',
+          user: { login: 'opencode-bot', type: 'Bot' },
+          path: 'src/index.ts',
+          line: 42,
+          in_reply_to_id: null,
+        },
+        {
+          id: 2,
+          body: 'leaf',
+          user: { login: 'developer', type: 'User' },
+          path: 'src/index.ts',
+          line: 42,
+          in_reply_to_id: 1,
+        },
+      ];
+
+      fetchMock.mockResolvedValue(mockResponse({ body: comments }));
+
+      await helper.getReviewCommentThread(2, 1);
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('direction=desc'),
+        expect.any(Object),
+      );
+    });
+
     it('fetches missing ancestors without duplicating in-window comments', async () => {
       // Window contains the middle ancestor (2) and the leaf (3) but NOT the
       // root (1). The direct-walk fallback must start from the deepest found

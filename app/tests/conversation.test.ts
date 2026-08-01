@@ -19,6 +19,24 @@ function makeAdapter(overrides: Partial<PlatformAdapter> = {}): PlatformAdapter 
 
 describe('conversation thread gathering', () => {
   describe('gatherReviewCommentThread', () => {
+    it('fetches the window newest-first so recent triggers stay in-window', async () => {
+      const gh = makeAdapter({
+        listReviewComments: vi.fn().mockResolvedValue([
+          { id: 1, body: 'root', in_reply_to_id: null, user: { login: 'user' } },
+          { id: 2, body: 'trigger', in_reply_to_id: 1, user: { login: 'user' } },
+        ]),
+      });
+
+      const result = await gatherReviewCommentThread(gh, 1, 2, MENTION);
+
+      expect(result.thread.map((m) => m.body)).toEqual(['root', 'trigger']);
+      expect(gh.listReviewComments).toHaveBeenCalledWith(
+        1,
+        { perPage: 100, maxPages: 5, direction: 'desc' },
+        undefined,
+      );
+    });
+
     it('includes the ancestor chain and sibling replies, ascending by id', async () => {
       const comments = [
         {
@@ -188,18 +206,24 @@ describe('conversation thread gathering', () => {
 
   describe('gatherIssueCommentThread', () => {
     it('takes up to 5 preceding comments plus the trigger, in chronological order', async () => {
-      // Newest-first window (direction: 'desc'): id 10 is the newest.
+      // Ascending window (direction: 'asc') — the ordering GitHub's issue
+      // comments endpoint actually returns (it ignores sort/direction).
       const comments = Array.from({ length: 10 }, (_, i) => ({
-        id: 10 - i,
-        body: `c${10 - i}`,
+        id: i + 1,
+        body: `c${i + 1}`,
         user: { login: 'user' },
       }));
       const gh = makeAdapter({ listComments: vi.fn().mockResolvedValue(comments) });
 
       const result = await gatherIssueCommentThread(gh, 1, 10, MENTION);
 
-      // trigger at idx 0; preceding 5 (older) are ids 9..5; reversed to chronological.
+      // trigger at idx 9; preceding 5 (older) are ids 5..9, already chronological.
       expect(result.thread.map((m) => m.body)).toEqual(['c5', 'c6', 'c7', 'c8', 'c9', 'c10']);
+      expect(gh.listComments).toHaveBeenCalledWith(
+        1,
+        { perPage: 100, maxPages: 5, direction: 'asc' },
+        undefined,
+      );
     });
 
     it('fetches the trigger by id when it is older than the window', async () => {
@@ -215,6 +239,20 @@ describe('conversation thread gathering', () => {
       const result = await gatherIssueCommentThread(gh, 1, 1, MENTION);
 
       expect(result.thread.map((m) => m.body)).toEqual(['old trigger']);
+    });
+
+    it('falls back to recent window comments when the by-id trigger fetch fails', async () => {
+      const gh = makeAdapter({
+        listComments: vi.fn().mockResolvedValue([
+          { id: 8, body: 'c8', user: { login: 'user' } },
+          { id: 9, body: 'c9', user: { login: 'user' } },
+        ]),
+        getIssueComment: vi.fn().mockRejectedValue(new Error('GitHub API 404')),
+      });
+
+      const result = await gatherIssueCommentThread(gh, 1, 1, MENTION);
+
+      expect(result.thread.map((m) => m.body)).toEqual(['c8', 'c9']);
     });
   });
 });

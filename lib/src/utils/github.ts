@@ -15,6 +15,8 @@ import { CircuitBreaker } from './circuit-breaker.js';
 import { getLabelColor } from './label-color.js';
 import { withRetry, withRetryAndTimeout } from './retry.js';
 import { buildReviewBody } from './review-body.js';
+import { gatherReviewThread } from './review-thread.js';
+import type { ThreadComment } from './review-thread.js';
 
 /** Paginated result wrapper for API responses. */
 export interface PaginatedResult<T> {
@@ -873,16 +875,20 @@ export class GitHubHelper implements PlatformAdapter {
    * Collects all ancestor comments from root to the given comment.
    *
    * When `prNumber` is provided the thread is reconstructed from the paginated
-   * comment list in a single pass (avoiding one API call per ancestor). Without
-   * it, the chain is walked with direct fetches, which is inherently sequential.
+   * comment list in a single pass (avoiding one API call per ancestor), using
+   * the shared `gatherReviewThread` helper also consumed by the conversation
+   * flow so the chain-walk logic cannot drift. Without it, the chain is walked
+   * with direct fetches, which is inherently sequential.
    *
    * @param commentId - The leaf comment ID to walk the thread from.
    * @param prNumber - Optional PR number used for single-pass reconstruction.
+   * @param signal - Optional AbortSignal to cancel the underlying API requests.
    * @returns Thread info including ordered comments, root comment, file path, and line number.
    */
   async getReviewCommentThread(
     commentId: number,
     prNumber?: number,
+    signal?: AbortSignal,
   ): Promise<{
     comments: Array<{
       id: number;
@@ -894,83 +900,30 @@ export class GitHubHelper implements PlatformAdapter {
     filePath: string;
     lineNumber?: number;
   }> {
-    const commentById = new Map<
-      number,
-      {
-        id: number;
-        body: string;
-        user: { login: string; type: string };
-        path?: string;
-        line?: number;
-        in_reply_to_id?: number;
-      }
-    >();
+    const commentById = new Map<number, ThreadComment>();
     const chainIds: number[] = [];
 
     if (prNumber !== undefined) {
       // Single-pass reconstruction: fetch the paginated comment list and rebuild
       // the in_reply_to_id chain locally, eliminating one API call per ancestor.
-      const all = (await this.listReviewComments(prNumber, {
-        perPage: 100,
-        maxPages: 10,
-        direction: 'asc',
-      })) as Array<{
-        id: number;
-        body: string;
-        user: { login: string; type: string };
-        path?: string;
-        line?: number;
-        in_reply_to_id?: number;
-      }>;
-      for (const c of all) {
+      // The window is fetched newest-first ('desc') so recently-replied-to
+      // triggers land in-window on busy PRs, reserving the by-id walk for
+      // genuinely old ancestors.
+      const result = await gatherReviewThread(
+        this,
+        prNumber,
+        commentId,
+        { perPage: 100, maxPages: 10, direction: 'desc' },
+        signal,
+      );
+      for (const c of result.comments) {
         if (typeof c.id === 'number') commentById.set(c.id, c);
       }
-
-      let currentId: number | undefined = commentId;
-      let needsDirectWalk = false;
-      const walked = new Set<number>();
-      while (currentId) {
-        // Guard against cyclic/malformed in_reply_to_id chains (external data).
-        if (walked.has(currentId)) break;
-        walked.add(currentId);
-        const comment = commentById.get(currentId);
-        if (!comment) {
-          needsDirectWalk = currentId !== commentId;
-          break;
-        }
-        chainIds.unshift(currentId);
-        currentId = comment.in_reply_to_id;
-      }
-
-      // The trigger comment is outside the fetched window (or an ancestor is):
-      // discover the remaining chain via direct fetches. chainIds is built with
-      // unshift while ascending, so ancestors are at the front and the leaf
-      // (trigger) is last. Start from the deepest already-found ancestor
-      // (chainIds[0]) whose in_reply_to_id is the first genuinely missing
-      // comment, so in-window comments are never re-fetched or re-added.
-      if (chainIds.length === 0) {
-        await this.walkChainById(commentId, commentById, chainIds);
-      } else if (needsDirectWalk) {
-        const lastId = chainIds[0];
-        const last = commentById.get(lastId);
-        let ancestorId = last?.in_reply_to_id;
-        const walkedMissing = new Set<number>();
-        while (ancestorId) {
-          // Guard against cyclic/malformed in_reply_to_id chains (external data).
-          if (walkedMissing.has(ancestorId)) break;
-          walkedMissing.add(ancestorId);
-          // Resolve in-window ancestors from the map and only fetch genuinely
-          // missing comments, avoiding both N+1 re-fetches and duplicate IDs
-          // when a malformed chain loops back into the window.
-          const known = commentById.get(ancestorId);
-          const ancestor = known ?? (await this.getReviewComment(0, ancestorId));
-          if (!known) commentById.set(ancestor.id, ancestor);
-          if (!chainIds.includes(ancestorId)) chainIds.unshift(ancestorId);
-          ancestorId = ancestor.in_reply_to_id;
-        }
+      for (const c of result.chain) {
+        if (!chainIds.includes(c.id)) chainIds.push(c.id);
       }
     } else {
-      await this.walkChainById(commentId, commentById, chainIds);
+      await this.walkChainById(commentId, commentById, chainIds, signal);
     }
 
     const comments: Array<{
@@ -1000,9 +953,9 @@ export class GitHubHelper implements PlatformAdapter {
       if (!comment) continue;
       const entry = {
         id: comment.id,
-        author: comment.user.login,
+        author: comment.user?.login ?? '',
         body: comment.body,
-        isBot: comment.user.type === 'Bot',
+        isBot: comment.user?.type === 'Bot',
       };
       comments.push(entry);
 
@@ -1027,21 +980,13 @@ export class GitHubHelper implements PlatformAdapter {
    * @param commentId - The leaf comment ID to start from.
    * @param commentById - Map to store fetched comments by ID.
    * @param chainIds - Array to populate with chain IDs in root-to-leaf order.
+   * @param signal - Optional AbortSignal to cancel the direct-fetch walk.
    */
   private async walkChainById(
     commentId: number,
-    commentById: Map<
-      number,
-      {
-        id: number;
-        body: string;
-        user: { login: string; type: string };
-        path?: string;
-        line?: number;
-        in_reply_to_id?: number;
-      }
-    >,
+    commentById: Map<number, ThreadComment>,
     chainIds: number[],
+    signal?: AbortSignal,
   ): Promise<void> {
     const discovered: number[] = [];
     let currentId: number | undefined = commentId;
@@ -1051,7 +996,7 @@ export class GitHubHelper implements PlatformAdapter {
       if (walked.has(currentId)) break;
       walked.add(currentId);
       discovered.push(currentId);
-      const comment = await this.getReviewComment(0, currentId);
+      const comment = await this.getReviewComment(0, currentId, signal);
       commentById.set(comment.id, comment);
       currentId = comment.in_reply_to_id;
     }

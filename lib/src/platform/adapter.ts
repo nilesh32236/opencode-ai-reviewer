@@ -222,9 +222,14 @@ export interface PlatformAdapter {
    * @param commentId - Comment ID.
    * @param prNumber - Optional PR number, used to reconstruct the thread from the
    * paginated comment list in a single pass (avoids N+1 API calls).
+   * @param signal - Optional AbortSignal to cancel the underlying API requests.
    * @returns Promise resolving to review comment thread.
    */
-  getReviewCommentThread(commentId: number, prNumber?: number): Promise<ReviewCommentThread>;
+  getReviewCommentThread(
+    commentId: number,
+    prNumber?: number,
+    signal?: AbortSignal,
+  ): Promise<ReviewCommentThread>;
   /**
    * Create a new issue.
    * @param title - Issue title.

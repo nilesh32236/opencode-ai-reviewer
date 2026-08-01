@@ -6,6 +6,23 @@ import type { ActionInputs } from './inputs.js';
 import { sanitize } from './utils.js';
 
 /**
+ * Tracks the last audit issue number per category for this process. When the
+ * existing-issue search fails, the fail-open create path reuses the recorded
+ * issue (updating it) instead of creating a fresh duplicate on every invocation,
+ * bounding duplicate accumulation during a search outage. State is per-process,
+ * so it cannot survive across workflow runs; on the first fail-open of a process
+ * a new issue is created and recorded for subsequent reuse.
+ */
+const lastAuditIssueByCategory = new Map<string, number>();
+
+/**
+ * Reset the per-process audit-issue registry. Exported for tests.
+ */
+export function resetAuditIssueRegistry(): void {
+  lastAuditIssueByCategory.clear();
+}
+
+/**
  * Execute a codebase audit: select a random (or named) audit prompt,
  * run the audit engine on a target directory, optionally create a
  * GitHub issue with the findings, and add severity labels.
@@ -144,8 +161,10 @@ export async function runAudit(
       // Do not fail closed and drop the audit's findings on a transient search
       // failure: fall back to creating the issue (accepting a rare duplicate)
       // so the findings are never silently lost. Only setFailed if even that
-      // fallback write fails (handled in the create branch below).
-      existingIssueNumber = undefined;
+      // fallback write fails (handled in the create branch below). To bound
+      // duplicate accumulation during a search outage, reuse the last issue this
+      // process tracked for the category when one is known.
+      existingIssueNumber = lastAuditIssueByCategory.get(category);
     }
 
     if (existingIssueNumber) {
@@ -158,14 +177,17 @@ export async function runAudit(
           `<!-- audit-update-${category} -->`,
           issueBody,
         );
+        lastAuditIssueByCategory.set(category, existingIssueNumber);
         core.setOutput('issue-number', String(existingIssueNumber));
       } catch (err) {
         core.warning(sanitize(`Failed to update existing audit issue: ${String(err)}`));
+        core.setFailed('Audit issue tracking failed — could not update issue');
       }
     } else {
       try {
         const issue = await gh.createIssue(title, issueBody, labels);
         if (issue) {
+          lastAuditIssueByCategory.set(category, issue.number);
           core.setOutput('issue-number', String(issue.number));
           core.info(`Created issue #${issue.number}: ${issue.url}`);
         } else {

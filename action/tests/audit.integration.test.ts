@@ -53,7 +53,7 @@ vi.mock('@actions/core', () => ({
   error: mockError,
 }));
 
-import { runAudit } from '../src/audit.js';
+import { resetAuditIssueRegistry, runAudit } from '../src/audit.js';
 
 const mockEngine = {
   runAudit: mockRunAudit,
@@ -84,6 +84,7 @@ describe('runAudit (action wrapper)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resetAuditIssueRegistry();
 
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-test-'));
     fs.writeFileSync(path.join(tmpDir, 'security.md'), '# Security audit prompt');
@@ -183,6 +184,65 @@ describe('runAudit (action wrapper)', () => {
     );
     expect(mockCreateIssue).not.toHaveBeenCalled();
     expect(mockSetOutput).toHaveBeenCalledWith('issue-number', '7');
+  });
+
+  it('fails loudly when updating an existing audit issue fails', async () => {
+    mockPaginate.mockResolvedValue([
+      { number: 7, title: '[Audit:security] 1 critical, 0 important, 0 minor' },
+    ]);
+    mockPostOrUpdateComment.mockRejectedValue(new Error('GitHub API 500'));
+
+    await runAudit(
+      makeInputs({ auditCreateIssues: true }),
+      makeConfig({
+        audit: {
+          promptsDir: tmpDir,
+          targetDirs: [],
+          autoFix: true,
+          triggerLabel: 'autofix-trigger',
+          issueSeverityThreshold: 'important',
+        },
+      } as AgentConfig),
+      mockEngine,
+      mockGh,
+    );
+
+    expect(mockSetFailed).toHaveBeenCalledWith(
+      'Audit issue tracking failed — could not update issue',
+    );
+  });
+
+  it('reuses the last tracked issue when the search keeps failing (no duplicate create)', async () => {
+    mockPaginate.mockRejectedValue(new Error('GitHub API 500'));
+    mockCreateIssue.mockResolvedValue({
+      number: 42,
+      url: 'https://github.com/owner/repo/issues/42',
+    });
+
+    const inputs = makeInputs({ auditCreateIssues: true });
+    const config = makeConfig({
+      audit: {
+        promptsDir: tmpDir,
+        targetDirs: [],
+        autoFix: true,
+        triggerLabel: 'autofix-trigger',
+        issueSeverityThreshold: 'important',
+      },
+    } as AgentConfig);
+
+    // First fail-open run creates the issue and records it.
+    await runAudit(inputs, config, mockEngine, mockGh);
+    expect(mockCreateIssue).toHaveBeenCalledTimes(1);
+
+    // Second fail-open run reuses the recorded issue number via an update
+    // instead of creating a second duplicate.
+    await runAudit(inputs, config, mockEngine, mockGh);
+    expect(mockCreateIssue).toHaveBeenCalledTimes(1);
+    expect(mockPostOrUpdateComment).toHaveBeenCalledWith(
+      42,
+      '<!-- audit-update-security -->',
+      expect.stringContaining('## Audit: security'),
+    );
   });
 
   it('skips issue creation when no critical or important findings exist', async () => {
