@@ -59,6 +59,21 @@ describe('ReplySubscriber', () => {
     expect(mockedHandleReply).not.toHaveBeenCalled();
   });
 
+  it('skips other commands with a dedicated review-thread subscriber', async () => {
+    const sub = createReplySubscriber();
+
+    await sub.handle(makeEvent('/fix'));
+    await sub.handle(makeEvent('/review'));
+    await sub.handle(makeEvent('/analyze'));
+    await sub.handle(makeEvent('/audit'));
+    await sub.handle(makeEvent('/explain'));
+    await sub.handle(makeEvent('/discover'));
+    await sub.handle(makeEvent('/metrics'));
+    await sub.handle(makeEvent('/setup'));
+
+    expect(mockedHandleReply).not.toHaveBeenCalled();
+  });
+
   it('still handles other slash commands conversationally', async () => {
     const sub = createReplySubscriber();
 

@@ -3,13 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleDismissCommand } from '../../src/handlers/dismiss.js';
 import { createDismissSubscriber } from '../../src/subscribers/dismiss.js';
 
-vi.mock('../../src/handlers/dismiss.js', () => ({
-  handleDismissCommand: vi.fn(),
-  isPrivilegedAuthor: vi.fn(
-    (association?: string) =>
-      association === 'OWNER' || association === 'MEMBER' || association === 'COLLABORATOR',
-  ),
-}));
+vi.mock('../../src/handlers/dismiss.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/handlers/dismiss.js')>();
+  return {
+    ...actual,
+    handleDismissCommand: vi.fn(),
+  };
+});
 
 const mockedHandleDismiss = vi.mocked(handleDismissCommand);
 

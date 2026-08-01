@@ -4,7 +4,7 @@ import type {
   ParsedCommand,
   PlatformAdapter,
 } from '@opencode-pr-agent/lib';
-import { GitHubHelper, Logger } from '@opencode-pr-agent/lib';
+import { GitHubHelper, Logger, isSuppressingDismissSignal } from '@opencode-pr-agent/lib';
 
 /** Structured dismissal reasons a user can pick from. */
 const DISMISS_REASONS = ['false_positive', 'intentional', 'out_of_scope', 'other'] as const;
@@ -36,32 +36,70 @@ export function isPrivilegedAuthor(association?: string): boolean {
 
 /**
  * Extract a structured dismissal reason from a parsed `/dismiss` command.
- * Supports both a positional argument (`/dismiss false_positive`) and an
- * explicit flag (`/dismiss --reason=intentional`). Unknown or missing reasons
- * fall back to `other`.
+ * Supports both positional arguments (`/dismiss false_positive`) and an
+ * explicit flag (`/dismiss --reason=intentional`). Multi-word positional
+ * arguments are joined with underscores (`/dismiss false positive` →
+ * `false_positive`) so the free-text phrase maps to the structured reason.
+ * Unknown or missing reasons fall back to `other`.
  * @param parsed - The parsed slash command.
  * @returns A valid dismissal reason string.
  */
 export function parseDismissReason(parsed: ParsedCommand): string {
-  const flagReason = typeof parsed.flags.reason === 'string' ? parsed.flags.reason : undefined;
-  const candidate = flagReason ?? parsed.args[0];
-  return (DISMISS_REASONS as readonly string[]).includes(candidate ?? '')
-    ? (candidate as string)
+  const normalize = (value: string): string => value.trim().replace(/\s+/g, '_');
+  const flagReason =
+    typeof parsed.flags.reason === 'string' ? normalize(parsed.flags.reason) : undefined;
+  const positional = normalize(parsed.args.join(' '));
+  const candidate = flagReason ?? positional;
+  return (DISMISS_REASONS as readonly string[]).includes(candidate)
+    ? candidate
     : DEFAULT_DISMISS_REASON;
+}
+
+/** Options controlling the acknowledgment message body. */
+export interface DismissAckOptions {
+  /**
+   * Whether the dismissal reason suppresses future flags. Non-suppressing
+   * reasons (out_of_scope, other) are recorded for metrics only.
+   */
+  suppressed?: boolean;
+  /** Whether the bot comment was successfully minimized/hidden. */
+  minimized?: boolean;
 }
 
 /**
  * Build the acknowledgment comment posted on a dismissed review thread.
  * @param reason - The structured dismissal reason.
+ * @param options - Optional flags describing the outcome of the dismissal.
  * @returns The markdown acknowledgment body.
  */
-export function buildDismissAck(reason: string): string {
-  return [
+export function buildDismissAck(reason: string, options: DismissAckOptions = {}): string {
+  const { suppressed = true, minimized = true } = options;
+  const lines = [
     '✅ **Comment dismissed** — this feedback has been recorded.',
     '',
     `Reason: \`${reason}\``,
     '',
-    'Future reviews will account for this feedback.',
+    suppressed
+      ? 'Future reviews will account for this feedback.'
+      : 'This reason is recorded for metrics only — future reviews may still flag similar findings.',
+  ];
+  if (!minimized) {
+    lines.push('The comment could not be hidden automatically.');
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Build the reply posted when a `/dismiss` cannot be correlated to a stored
+ * finding, so the user knows nothing was recorded.
+ * @returns The markdown reply body.
+ */
+export function buildDismissNoMatchReply(): string {
+  return [
+    '⚠️ **No matching finding found to dismiss.**',
+    '',
+    'This comment could not be correlated to a stored finding, so no feedback was recorded.',
+    'Try dismissing the root bot comment of this thread.',
   ].join('\n');
 }
 
@@ -165,8 +203,15 @@ export async function handleDismissCommand(
 
     if (matched.length === 0) {
       logger.info(
-        `No findings matched dismissed comment ${parentCommentId} — nothing recorded, skipping minimize/ack`,
+        `No findings matched dismissed comment ${parentCommentId} — nothing recorded, posting clarifying reply`,
       );
+      try {
+        await gh.replyToReviewComment(prNumber, parentCommentId, buildDismissNoMatchReply());
+      } catch (replyErr) {
+        logger.warn(
+          `Failed to post no-match clarification: ${replyErr instanceof Error ? replyErr.message : replyErr}`,
+        );
+      }
       return;
     }
 
@@ -194,23 +239,38 @@ export async function handleDismissCommand(
     // otherwise the ack would claim a record that does not exist.
     if (!recorded) return;
 
+    let minimized = false;
     try {
       const botThreads = await gh.getBotReviewThreads(prNumber);
       const match = (botThreads ?? []).find((t) => t.firstComment.databaseId === parentCommentId);
       if (match) {
         await gh.minimizeReviewComment(match.firstComment.commentId, 'RESOLVED');
+        minimized = true;
         logger.info(`Minimized bot review comment ${parentCommentId}`);
       } else {
-        logger.warn(
-          `Feedback recorded for comment ${parentCommentId} but no bot thread matched — comment not minimized`,
-        );
+        // The dismissed comment may be a nested bot reply rather than the
+        // thread root; minimize it directly via its own GraphQL node id.
+        const detail = await gh.getReviewComment(prNumber, parentCommentId);
+        if (detail.node_id) {
+          await gh.minimizeReviewComment(detail.node_id, 'RESOLVED');
+          minimized = true;
+          logger.info(`Minimized nested bot review comment ${parentCommentId}`);
+        } else {
+          logger.warn(
+            `Feedback recorded for comment ${parentCommentId} but no bot thread or node id matched — comment not minimized`,
+          );
+        }
       }
     } catch (err) {
       logger.warn(`Failed to minimize comment: ${err instanceof Error ? err.message : err}`);
     }
 
     try {
-      await gh.replyToReviewComment(prNumber, parentCommentId, buildDismissAck(reason));
+      await gh.replyToReviewComment(
+        prNumber,
+        parentCommentId,
+        buildDismissAck(reason, { suppressed: isSuppressingDismissSignal(reason), minimized }),
+      );
       logger.info(`Posted dismissal acknowledgment on comment ${parentCommentId}`);
     } catch (err) {
       logger.warn(

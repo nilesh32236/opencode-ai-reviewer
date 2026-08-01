@@ -3,7 +3,8 @@ import { createRequire } from 'node:module';
 import * as path from 'path';
 import type { LearningQuality } from '../../types/index.js';
 import { Logger } from '../../utils/logger.js';
-import { JsonDatabase, SUPPRESSING_DISMISS_SIGNALS } from '../json-db.js';
+import { SUPPRESSING_DISMISS_SIGNALS, isSuppressingDismissSignal } from '../constants.js';
+import { JsonDatabase } from '../json-db.js';
 import { deriveFileExtensions, generateId } from '../schema.js';
 import type {
   CustomRuleRow,
@@ -228,13 +229,39 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Record multiple feedback signals in a single transaction.
+   * Idempotent — a feedback row already recorded for the same finding, signal
+   * type, and signal value is skipped instead of duplicated.
    * @param feedbacks - Array of feedback data to record.
    */
   async recordFeedbackBatch(feedbacks: FeedbackInput[]): Promise<void> {
     if (feedbacks.length === 0) return;
     await this.transaction(async () => {
-      const placeholders = feedbacks.map(() => '(?, ?, ?, ?, ?)').join(', ');
-      const values = feedbacks.flatMap((fb) => [
+      const findingIds = [...new Set(feedbacks.map((fb) => fb.findingId))];
+      const idPlaceholders = findingIds.map(() => '?').join(', ');
+      const existingRows = await this.all<{
+        finding_id: string;
+        signal_type: string;
+        signal_value: string | null;
+      }>(
+        `SELECT finding_id, signal_type, signal_value FROM feedback WHERE finding_id IN (${idPlaceholders})`,
+        findingIds,
+      );
+      const existingKeys = new Set(
+        existingRows.map(
+          (r) => `${r.finding_id}\u0000${r.signal_type}\u0000${r.signal_value ?? ''}`,
+        ),
+      );
+
+      const fresh = feedbacks.filter((fb) => {
+        const key = `${fb.findingId}\u0000${fb.signalType}\u0000${fb.signalValue ?? ''}`;
+        if (existingKeys.has(key)) return false;
+        existingKeys.add(key);
+        return true;
+      });
+      if (fresh.length === 0) return;
+
+      const placeholders = fresh.map(() => '(?, ?, ?, ?, ?)').join(', ');
+      const values = fresh.flatMap((fb) => [
         generateId(),
         fb.findingId,
         fb.signalType,
@@ -327,8 +354,11 @@ export abstract class SqlAdapter implements LearningRepository {
     if (this.fpRateCache && now - this.fpRateCache.timestamp < SqlAdapter.FP_RATE_CACHE_TTL) {
       return this.fpRateCache.rate;
     }
+    const signalValues = [...SUPPRESSING_DISMISS_SIGNALS];
+    const signalPlaceholders = signalValues.map(() => '?').join(', ');
     const row = await this.get<{ total: number; disputed: number }>(
-      "SELECT COUNT(*) as total, SUM(CASE WHEN signal_type IN ('dismissed', 'disputed_comment') THEN 1 ELSE 0 END) as disputed FROM feedback",
+      `SELECT COUNT(*) as total, SUM(CASE WHEN signal_type = 'disputed_comment' OR (signal_type = 'dismissed' AND (signal_value IS NULL OR signal_value IN (${signalPlaceholders}))) THEN 1 ELSE 0 END) as disputed FROM feedback`,
+      signalValues,
     );
     if (!row || row.total === 0) return 0;
     const rate = row.disputed / row.total;
@@ -384,9 +414,11 @@ export abstract class SqlAdapter implements LearningRepository {
 
     // Only dismissals signalling a genuine false positive suppress future
     // flags; /dismiss out_of_scope and /dismiss other are metrics-only.
+    // Legacy rows with a NULL signal_value (written before the reason taxonomy)
+    // represent real dismissal actions and remain suppression-worthy.
     const signalValues = [...SUPPRESSING_DISMISS_SIGNALS];
     const signalPlaceholders = signalValues.map(() => '?').join(', ');
-    const signalFilter = `(fb.signal_type = 'disputed_comment' OR (fb.signal_type = 'dismissed' AND fb.signal_value IN (${signalPlaceholders})))`;
+    const signalFilter = `(fb.signal_type = 'disputed_comment' OR (fb.signal_type = 'dismissed' AND (fb.signal_value IS NULL OR fb.signal_value IN (${signalPlaceholders}))))`;
 
     let extFilter = '';
     const params: unknown[] = [...signalValues];
@@ -719,8 +751,12 @@ export abstract class SqlAdapter implements LearningRepository {
     const dateFilter = cutoffDate ? 'WHERE created_at >= ?' : '';
     const params: unknown[] = cutoffDate ? [cutoffDate] : [];
 
-    const rows = await this.all<{ signal_type: string; count: number }>(
-      `SELECT signal_type, COUNT(*) as count FROM feedback ${dateFilter} GROUP BY signal_type`,
+    const rows = await this.all<{
+      signal_type: string;
+      signal_value: string | null;
+      count: number;
+    }>(
+      `SELECT signal_type, signal_value, COUNT(*) as count FROM feedback ${dateFilter} GROUP BY signal_type, signal_value`,
       params,
     );
 
@@ -730,9 +766,11 @@ export abstract class SqlAdapter implements LearningRepository {
     const bySignalType: Record<string, number> = {};
 
     for (const row of rows) {
-      bySignalType[row.signal_type] = row.count;
+      bySignalType[row.signal_type] = (bySignalType[row.signal_type] || 0) + row.count;
       totalFeedback += row.count;
-      if (row.signal_type === 'dismissed') dismissedCount += row.count;
+      if (row.signal_type === 'dismissed' && isSuppressingDismissSignal(row.signal_value)) {
+        dismissedCount += row.count;
+      }
       if (row.signal_type === 'disputed_comment') disputedCount += row.count;
     }
 

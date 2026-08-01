@@ -187,6 +187,13 @@ export async function handlePRReview(
 
     if (learningStore) {
       try {
+        // Correlate posted inline comments back to their findings so a later
+        // /dismiss on a bot comment can match by exact comment id.
+        const commentIdByKey = new Map<string, number>();
+        for (const c of reviewResult.commentIds ?? []) {
+          commentIdByKey.set(`${c.file.replace(/^\//, '')}:${c.line}`, c.commentId);
+        }
+
         const findingsToStore = [
           ...result.issues.map((i) => ({
             prNumber,
@@ -196,6 +203,10 @@ export async function handlePRReview(
             line: i.line,
             message: i.message,
             suggestion: i.suggestion,
+            commentId:
+              i.file && i.line !== undefined
+                ? commentIdByKey.get(`${i.file.replace(/^\//, '')}:${i.line}`)
+                : undefined,
           })),
           ...result.strengths.map((s) => ({
             prNumber,

@@ -45,6 +45,8 @@ export interface ReviewCommentDetail {
   in_reply_to_id?: number;
   pull_request_review_id?: number;
   diff_hunk?: string;
+  /** GraphQL node ID, used to minimize the comment regardless of thread position. */
+  node_id?: string;
 }
 
 /** A thread of review comments. */

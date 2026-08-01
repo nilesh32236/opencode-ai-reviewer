@@ -29,10 +29,27 @@ export function createReplySubscriber(): Subscriber {
         const body = comment.body as string | undefined;
         if (!body) return;
 
-        // /dismiss is handled by its dedicated review-thread subscriber; other
-        // slash commands have no such subscriber and should still get the
-        // conversational reply.
-        if (parseCommand(body)?.command === 'dismiss') return;
+        // Commands that own a dedicated review-thread subscriber handle their
+        // own event; the conversational reply must not double-handle them.
+        // Only commands without a dedicated subscriber (/help,
+        // /reconcile-comments) should reach the conversational reply.
+        const parsed = parseCommand(body);
+        if (
+          parsed &&
+          [
+            'review',
+            'fix',
+            'audit',
+            'analyze',
+            'explain',
+            'discover',
+            'dismiss',
+            'metrics',
+            'setup',
+          ].includes(parsed.command)
+        ) {
+          return;
+        }
 
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;

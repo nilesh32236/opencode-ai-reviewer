@@ -861,6 +861,7 @@ export class GitHubHelper implements PlatformAdapter {
     in_reply_to_id?: number;
     pull_request_review_id?: number;
     diff_hunk?: string;
+    node_id?: string;
   }> {
     return this.api<{
       id: number;
@@ -871,6 +872,7 @@ export class GitHubHelper implements PlatformAdapter {
       in_reply_to_id?: number;
       pull_request_review_id?: number;
       diff_hunk?: string;
+      node_id?: string;
     }>(`/pulls/comments/${commentId}`, {}, undefined, signal);
   }
 

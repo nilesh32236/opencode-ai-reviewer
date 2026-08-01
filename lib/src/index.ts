@@ -93,6 +93,10 @@ export {
   verifyChecksum,
 } from './utils/checksum.js';
 export { FeedbackSubscriber } from './learning/feedback-subscriber.js';
+export {
+  SUPPRESSING_DISMISS_SIGNALS,
+  isSuppressingDismissSignal,
+} from './learning/constants.js';
 export { MetaReviewEngine, MetaReviewSubscriber } from './meta-review/engine.js';
 export { buildMetaReviewPrompt } from './meta-review/prompts.js';
 export { PatternDetector, PatternDetectorOptions } from './pattern-detector/engine.js';

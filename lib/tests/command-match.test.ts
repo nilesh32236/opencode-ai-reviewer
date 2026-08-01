@@ -68,6 +68,8 @@ describe('parseCommand', () => {
   it('rejects partial word matches', () => {
     expect(parseCommand('/fixed-issue')).toBeNull();
     expect(parseCommand('/analyzer')).toBeNull();
+    expect(parseCommand('/dismissed')).toBeNull();
+    expect(parseCommand('/dismissing')).toBeNull();
   });
 
   it('finds command in multi-line body', () => {

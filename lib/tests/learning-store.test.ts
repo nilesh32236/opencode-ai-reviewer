@@ -73,7 +73,7 @@ describe('LearningStore', () => {
     await store.recordFeedback({
       findingId: id,
       signalType: 'dismissed',
-      signalValue: 'false positive',
+      signalValue: 'false_positive',
       prNumber: 1,
     });
 
@@ -264,12 +264,33 @@ describe('LearningStore', () => {
     });
 
     await store.recordFeedbackBatch([
-      { findingId: id1, signalType: 'dismissed', signalValue: 'fp', prNumber: 10 },
-      { findingId: id2, signalType: 'dismissed', signalValue: 'not an issue', prNumber: 10 },
+      { findingId: id1, signalType: 'dismissed', signalValue: 'false_positive', prNumber: 10 },
+      { findingId: id2, signalType: 'dismissed', signalValue: 'intentional', prNumber: 10 },
     ]);
 
     const fpRate = await store.getFalsePositiveRate();
     expect(fpRate).toBeGreaterThan(0);
+  });
+
+  it('recordFeedbackBatch is idempotent for identical signals', async () => {
+    const id = await store.recordFinding({
+      prNumber: 10,
+      type: 'issue',
+      message: 'Idempotent feedback test',
+    });
+
+    const signal = {
+      findingId: id,
+      signalType: 'dismissed',
+      signalValue: 'false_positive',
+      prNumber: 10,
+    };
+    await store.recordFeedbackBatch([signal]);
+    await store.recordFeedbackBatch([signal]);
+
+    const breakdown = await store.getFeedbackBreakdown();
+    expect(breakdown.totalFeedback).toBe(1);
+    expect(breakdown.dismissedCount).toBe(1);
   });
 
   it('records quality telemetry and returns aggregated stats with date filtering', async () => {
@@ -374,7 +395,7 @@ describe('LearningStore Analytics', () => {
     await store.recordFeedback({
       findingId: id1,
       signalType: 'dismissed',
-      signalValue: 'fp',
+      signalValue: 'false_positive',
       prNumber: 1,
     });
     await store.recordFeedback({
@@ -452,7 +473,7 @@ describe('LearningStore Analytics', () => {
     await store.recordFeedback({
       findingId: fbId,
       signalType: 'dismissed',
-      signalValue: 'fp',
+      signalValue: 'false_positive',
       prNumber: 1,
     });
 
@@ -599,6 +620,27 @@ describe('LearningStore getFalsePositiveRules', () => {
 
     const rules = await store.getFalsePositiveRules(['src/a.ts']);
     expect(rules).toHaveLength(1);
+  });
+
+  it('treats legacy NULL dismissal feedback as suppression-worthy', async () => {
+    const id = await store.recordFinding({
+      prNumber: 1,
+      type: 'issue',
+      file: 'src/a.ts',
+      message: 'Legacy null finding',
+    });
+    await store.recordFeedback({
+      findingId: id,
+      signalType: 'dismissed',
+      signalValue: undefined,
+      prNumber: 1,
+    });
+
+    const rules = await store.getFalsePositiveRules(['src/a.ts']);
+    expect(rules).toHaveLength(1);
+
+    const fpRate = await store.getFalsePositiveRate();
+    expect(fpRate).toBe(1);
   });
 });
 

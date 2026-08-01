@@ -3,6 +3,7 @@ import * as fsPromises from 'node:fs/promises';
 import * as path from 'path';
 import type { LearningQuality } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
+import { isSuppressingDismissSignal } from './constants.js';
 import { deriveFileExtensions, generateId } from './schema.js';
 import type {
   FeedbackBreakdown,
@@ -16,6 +17,8 @@ import type {
   SeverityDistribution,
   TelemetryStats,
 } from './types.js';
+
+export { SUPPRESSING_DISMISS_SIGNALS } from './constants.js';
 
 /** Database row for a code review finding. */
 export interface FindingRow {
@@ -87,24 +90,6 @@ interface MetaReviewCounterRow {
   id: number;
   count: number;
 }
-
-/**
- * Dismissal signal values that indicate a finding is a genuine false positive
- * and should therefore suppress future flags. `/dismiss out_of_scope` and
- * `/dismiss other` mean the finding is valid but not applicable to this PR —
- * those are recorded for metrics but must not generate 'DO NOT flag' rules.
- * Legacy FeedbackSubscriber dismissal signals (review/comment dismissed or
- * deleted) represent real dismissal actions and remain suppression-worthy.
- */
-const SUPPRESSING_DISMISS_SIGNALS = new Set<string>([
-  'false_positive',
-  'intentional',
-  'review_dismissed',
-  'comment_dismissed',
-  'comment_deleted',
-]);
-
-export { SUPPRESSING_DISMISS_SIGNALS };
 
 /**
  * In-memory JSON-backed database implementing the LearningRepository interface.
@@ -403,11 +388,22 @@ export class JsonDatabase implements LearningRepository {
 
   /**
    * Record multiple feedback entries in a batch.
+   * Idempotent — a feedback row already recorded for the same finding, signal
+   * type, and signal value is skipped instead of duplicated.
    * @param feedbacks - Array of feedback input data.
    */
   async recordFeedbackBatch(feedbacks: FeedbackInput[]): Promise<void> {
     if (feedbacks.length === 0) return;
+    const existing = new Set(
+      this.data.feedback.map(
+        (f) => `${f.finding_id}\u0000${f.signal_type}\u0000${f.signal_value ?? ''}`,
+      ),
+    );
+    let added = 0;
     for (const fb of feedbacks) {
+      const key = `${fb.findingId}\u0000${fb.signalType}\u0000${fb.signalValue ?? ''}`;
+      if (existing.has(key)) continue;
+      existing.add(key);
       this.data.feedback.push({
         id: generateId(),
         finding_id: fb.findingId,
@@ -416,8 +412,9 @@ export class JsonDatabase implements LearningRepository {
         pr_number: fb.prNumber,
         created_at: new Date().toISOString(),
       });
+      added++;
     }
-    this.save();
+    if (added > 0) this.save();
   }
 
   /**
@@ -491,8 +488,10 @@ export class JsonDatabase implements LearningRepository {
   async getFalsePositiveRate(): Promise<number> {
     const total = this.data.feedback.length;
     if (total === 0) return 0;
-    const disputed = this.data.feedback.filter((f) =>
-      ['dismissed', 'disputed_comment'].includes(f.signal_type),
+    const disputed = this.data.feedback.filter(
+      (f) =>
+        f.signal_type === 'disputed_comment' ||
+        (f.signal_type === 'dismissed' && isSuppressingDismissSignal(f.signal_value)),
     ).length;
     return disputed / total;
   }
@@ -542,7 +541,7 @@ export class JsonDatabase implements LearningRepository {
     for (const fb of this.data.feedback) {
       if (
         fb.signal_type === 'disputed_comment' ||
-        (fb.signal_type === 'dismissed' && SUPPRESSING_DISMISS_SIGNALS.has(fb.signal_value ?? ''))
+        (fb.signal_type === 'dismissed' && isSuppressingDismissSignal(fb.signal_value))
       ) {
         disputedFindingIds.add(fb.finding_id);
       }
@@ -858,7 +857,9 @@ export class JsonDatabase implements LearningRepository {
 
     for (const fb of feedbacks) {
       bySignalType[fb.signal_type] = (bySignalType[fb.signal_type] || 0) + 1;
-      if (fb.signal_type === 'dismissed') dismissedCount++;
+      if (fb.signal_type === 'dismissed' && isSuppressingDismissSignal(fb.signal_value)) {
+        dismissedCount++;
+      }
       if (fb.signal_type === 'disputed_comment') disputedCount++;
     }
 
