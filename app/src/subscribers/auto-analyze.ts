@@ -11,7 +11,10 @@ import { getToken } from '../utils/token.js';
  * @param eventBus - Optional event bus for publishing pipeline events.
  * @returns A subscriber object for auto-analysis.
  */
-export function createAutoAnalyzeSubscriber(rateLimiter: RateLimiter, eventBus?: EventBus): Subscriber {
+export function createAutoAnalyzeSubscriber(
+  rateLimiter: RateLimiter,
+  eventBus?: EventBus,
+): Subscriber {
   const logger = new Logger('AutoAnalyzeSubscriber');
   return {
     name: 'AutoAnalyzeSubscriber',

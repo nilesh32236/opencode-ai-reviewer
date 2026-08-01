@@ -108,7 +108,7 @@ export async function handleAudit(
     return;
   }
 
-  const engine = new ReviewEngine(config, gh, undefined, eventBus);
+  const engine = new ReviewEngine(config, gh, undefined, eventBus, repo);
 
   try {
     const auditWorkingDir = tempDir || process.cwd();

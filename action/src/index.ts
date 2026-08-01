@@ -14,6 +14,7 @@ import {
   MCPServerConfigSchema,
   type PlatformAdapter,
   ReviewEngine,
+  TelemetrySubscriber,
   configureGit,
   getDefaultMCPServers,
   loadConfig,
@@ -316,6 +317,9 @@ async function run(): Promise<void> {
 
     try {
       const eventBus = new EventBus();
+      // Persist duration/token telemetry for completed pipeline stages so
+      // /metrics keeps reporting latency and token usage.
+      eventBus.register(new TelemetrySubscriber(learningStore));
       const registeredSubscribers = await registerEventSubscribers(
         eventBus,
         config.eventLogging,
@@ -327,7 +331,7 @@ async function run(): Promise<void> {
 
       const gh: PlatformAdapter =
         platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
-      engine = new ReviewEngine(config, gh, learningStore, eventBus);
+      engine = new ReviewEngine(config, gh, learningStore, eventBus, repo);
 
       switch (inputs.mode) {
         case 'analyze':

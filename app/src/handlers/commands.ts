@@ -101,7 +101,16 @@ export async function handleCommand(
 
       case 'review': {
         if (await gh.isMR(issueNumber)) {
-          await handlePRReview(issueNumber, repo, token, config, undefined, tempDir, undefined, eventBus);
+          await handlePRReview(
+            issueNumber,
+            repo,
+            token,
+            config,
+            undefined,
+            tempDir,
+            undefined,
+            eventBus,
+          );
         }
         break;
       }
@@ -222,7 +231,7 @@ export async function handleAnalyzeCommand(
 
   const gh: PlatformAdapter =
     config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
-  const engine = new ReviewEngine(config, gh, undefined, eventBus);
+  const engine = new ReviewEngine(config, gh, undefined, eventBus, repo);
 
   try {
     const issueContext = await gh.gatherContext({ issueNumber });
@@ -276,7 +285,7 @@ export async function handleExplainCommand(
 
   const gh: PlatformAdapter =
     config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
-  const engine = new ReviewEngine(config, gh, undefined, eventBus);
+  const engine = new ReviewEngine(config, gh, undefined, eventBus, repo);
 
   try {
     const pr = await gh.getMR(issueNumber);
@@ -405,7 +414,7 @@ async function createAutofixPR(
     timeout: 120_000,
     ...(gitEnv ? { env: { ...process.env, ...gitEnv } } : {}),
   };
-  const engine = new ReviewEngine(config, gh, undefined, eventBus);
+  const engine = new ReviewEngine(config, gh, undefined, eventBus, repo);
   const branchName = `autofix/issue-${issueNumber}`;
 
   try {

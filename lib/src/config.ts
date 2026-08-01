@@ -418,7 +418,8 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     const el = config.eventLogging;
     result.eventLogging = {
       enabled: typeof el.enabled === 'boolean' ? el.enabled : false,
-      path: typeof el.path === 'string' && el.path.trim() !== '' ? el.path : '.opencode/events.ndjson',
+      path:
+        typeof el.path === 'string' && el.path.trim() !== '' ? el.path : '.opencode/events.ndjson',
     };
   }
 

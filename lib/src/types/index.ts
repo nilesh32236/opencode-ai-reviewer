@@ -1204,8 +1204,6 @@ export const PIPELINE_EVENT_TYPES = {
   EXPLAIN_COMPLETED: 'explain.completed',
   CONVERSATION_STARTED: 'conversation.started',
   CONVERSATION_COMPLETED: 'conversation.completed',
-  ERROR_OCCURRED: 'error.occurred',
-  CONFIG_CHANGED: 'config.changed',
 } as const;
 
 /** A specific pipeline event type identifier (e.g. `review.started`). */
@@ -1337,20 +1335,6 @@ export interface ConversationCompletedPayload extends PipelineEventPayload {
   autoCloseReason?: string;
 }
 
-/** Payload for an `error.occurred` event. */
-export interface ErrorOccurredPayload extends PipelineEventPayload {
-  /** Pipeline stage that failed (e.g. 'review', 'fix'). */
-  stage?: string;
-  /** Error message describing the failure. */
-  error?: string;
-}
-
-/** Payload for a `config.changed` event. */
-export interface ConfigChangedPayload extends PipelineEventPayload {
-  /** Path of the config file that was (re)loaded. */
-  configPath?: string;
-}
-
 /** Union of all pipeline lifecycle event payloads. */
 export type PipelineEventPayloadMap = {
   'review.started': ReviewStartedPayload;
@@ -1365,8 +1349,6 @@ export type PipelineEventPayloadMap = {
   'explain.completed': ExplainCompletedPayload;
   'conversation.started': ConversationStartedPayload;
   'conversation.completed': ConversationCompletedPayload;
-  'error.occurred': ErrorOccurredPayload;
-  'config.changed': ConfigChangedPayload;
 };
 
 /** A generic event emitted on the internal event bus. */

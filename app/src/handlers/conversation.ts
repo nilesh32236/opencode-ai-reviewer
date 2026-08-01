@@ -119,7 +119,7 @@ export async function handleConversation(
   };
 
   // Run through the engine
-  const engine = new ReviewEngine(config, gh, learningStore, eventBus);
+  const engine = new ReviewEngine(config, gh, learningStore, eventBus, repo);
   try {
     if (signal?.aborted) return;
 

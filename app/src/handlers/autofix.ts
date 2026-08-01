@@ -64,7 +64,7 @@ export async function handleAutofixLoop(
 
   const gh: PlatformAdapter =
     config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
-  const engine = new ReviewEngine(config, gh, undefined, eventBus);
+  const engine = new ReviewEngine(config, gh, undefined, eventBus, repo);
   const history: IterationRecord[] = [];
   const previousFindings: PreviousFindingIteration[] = [];
   let approved = false;
