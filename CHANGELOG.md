@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.24] — 2026-08-01
+
+
+### Fixed
+
+- self-heal CI failure (attempt 1) [`lint-error` — eslint `jsdoc` rule violations in the `ci` → `verify docstring coverage` step (`pnpm doc:check`).] (#308) (#308)
+
+### Changed
+
+- [Autofix] 80: No rate limiting for the Probot app to prevent abuse or cost runaway (#307) (#307)
+- [Autofix] No token usage / cost tracking exposed to users (#306) (#306)
+- [Autofix] No dismiss/feedback mechanism with reason tracking on PR comments (#305) (#305)
+- [Autofix] No onboarding wizard or setup validation tool (#304) (#304)
+- [Autofix] No diff size / review budget handling for very large PRs (#303) (#303)
+
+[v1.6.24]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.23...v1.6.24
+
 ## [v1.6.23] — 2026-08-01
 
 
