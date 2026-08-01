@@ -4,8 +4,11 @@ import {
   MetaReviewEngine,
   MetaReviewSubscriber,
   PatternDetector,
+  RateLimiter,
 } from '@opencode-pr-agent/lib';
 import type { AgentConfig, EventBus, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
+import { createRateLimiter } from '../utils/rate-limit.js';
+import { createAdminSubscriber } from './admin.js';
 import { createAnalyzeSubscriber } from './analyze.js';
 import { createAuditSubscriber } from './audit.js';
 import { createAutoAnalyzeSubscriber } from './auto-analyze.js';
@@ -32,18 +35,22 @@ export function registerSubscribers(
   learningStore: LearningStore,
   config?: AgentConfig,
 ): Subscriber[] {
+  const resolvedConfig = config ?? DEFAULT_CONFIG;
+  const rateLimiter = createRateLimiter(learningStore, resolvedConfig);
+
   const subscribers: Subscriber[] = [
-    createReviewSubscriber(learningStore, bus),
-    createFixSubscriber(),
-    createAuditSubscriber(),
-    createAnalyzeSubscriber(),
+    createReviewSubscriber(learningStore, bus, rateLimiter),
+    createFixSubscriber(rateLimiter),
+    createAuditSubscriber(rateLimiter),
+    createAnalyzeSubscriber(rateLimiter),
     createAutoAnalyzeSubscriber(),
     createQuestionAnsweredSubscriber(),
-    createReplySubscriber(),
+    createReplySubscriber(rateLimiter),
     createDismissSubscriber(learningStore),
-    createExplainSubscriber(),
-    createConversationSubscriber(learningStore),
+    createExplainSubscriber(rateLimiter),
+    createConversationSubscriber(learningStore, rateLimiter),
     createSetupSubscriber(),
+    createAdminSubscriber(rateLimiter),
   ];
 
   const feedbackSub = new FeedbackSubscriber(learningStore);
@@ -52,7 +59,6 @@ export function registerSubscribers(
   const patternDetector = new PatternDetector(learningStore, {
     windowSize: DEFAULT_CONFIG.learning.patternDiscovery.windowSize,
   });
-  const resolvedConfig = config ?? DEFAULT_CONFIG;
   const metaReviewEngine = new MetaReviewEngine(learningStore, patternDetector, resolvedConfig);
   const metaReviewSub = new MetaReviewSubscriber(
     metaReviewEngine,
@@ -61,8 +67,14 @@ export function registerSubscribers(
   );
   subscribers.push(metaReviewSub);
 
-  subscribers.push(createDiscoverSubscriber(learningStore));
+  subscribers.push(createDiscoverSubscriber(learningStore, rateLimiter));
   subscribers.push(createMetricsSubscriber(learningStore));
+
+  // Prune stale rate-limit rows once at startup.
+  rateLimiter.cleanup().catch((err) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`Rate limiter cleanup failed: ${msg}`);
+  });
 
   bus.registerAll(subscribers);
 

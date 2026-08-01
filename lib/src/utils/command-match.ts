@@ -21,6 +21,8 @@ const COMMAND_PATTERNS: Array<{ name: string; regex: RegExp }> = [
   { name: 'discover', regex: /^\s*\/(?:oc\s+)?discover\b/i },
   { name: 'dismiss', regex: /^\s*\/(?:oc\s+)?dismiss\b/i },
   { name: 'reconcile-comments', regex: /^\s*\/(?:oc\s+)?reconcile-comments\b/i },
+  { name: 'rate-limits-reset', regex: /^\s*\/(?:oc\s+)?rate-limits-reset\b/i },
+  { name: 'rate-limits', regex: /^\s*\/(?:oc\s+)?rate-limits(?!-)\b/i },
   { name: 'help', regex: /^\s*\/(?:oc\s+)?help\b/i },
   { name: 'metrics', regex: /^\s*\/(?:oc\s+)?metrics\b/i },
   { name: 'setup', regex: /^\s*\/(?:oc\s+)?setup\b/i },

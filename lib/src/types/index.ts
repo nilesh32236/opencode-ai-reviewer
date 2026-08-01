@@ -223,6 +223,8 @@ export interface AgentConfig {
   conversation: ConversationConfig;
   /** Linter configurations for hybrid analysis */
   linters: LinterConfig[];
+  /** Rate limiting behavior for the Probot app */
+  rateLimiting: RateLimitingConfig;
 }
 
 /** Configuration for an MCP server used for context enrichment. */
@@ -362,6 +364,33 @@ export interface ConversationConfig {
   mentionHandle: string;
   /** Whether to enable conversation mode */
   enabled: boolean;
+}
+
+/** Tier of a rate-limited action. */
+export type RateLimitTier = 'command' | 'interactive';
+
+/** Configuration for rate limiting in the Probot app. */
+export interface RateLimitingConfig {
+  /** Master switch for rate limit enforcement (default: true). */
+  enabled: boolean;
+  /** Max command-tier reviews per repository per hour (default: 10). */
+  reviewsPerRepoPerHour: number;
+  /** Max reviews (all tiers combined) per GitHub user per day (default: 50). */
+  reviewsPerUserPerDay: number;
+  /** Minimum minutes between command-tier actions on the same PR (default: 2). */
+  prCooldownMinutes: number;
+  /** Minimum seconds between interactive actions on the same PR (default: 30). */
+  conversationCooldownSeconds: number;
+  /** Max estimated tokens consumed per rolling day across all actions (default: 500000). */
+  dailyTokenBudget: number;
+  /** Estimated tokens charged per command-tier action (default: 25000). */
+  estimatedTokensPerCommand: number;
+  /** Estimated tokens charged per interactive action (default: 5000). */
+  estimatedTokensPerInteractive: number;
+  /** GitHub usernames allowed to run /rate-limits and /rate-limits-reset commands. */
+  adminUsers: string[];
+  /** How long rate-limit rows are retained before cleanup (hours, default: 48). */
+  retentionHours: number;
 }
 
 /** Intent of a conversation interaction. */
@@ -974,6 +1003,8 @@ export interface PromptConfig {
   overrides?: ConfigOverride[];
   /** Linter configuration */
   linters?: LinterConfig[];
+  /** Rate limiting configuration (documented for parity; enforced via AgentConfig in the Probot app) */
+  rateLimiting?: RateLimitingConfig;
 }
 
 // ─── Defaults ─────────────────────────────────────────────
@@ -1063,6 +1094,18 @@ export const DEFAULT_CONFIG: AgentConfig = {
     enabled: true,
   },
   linters: [],
+  rateLimiting: {
+    enabled: true,
+    reviewsPerRepoPerHour: 10,
+    reviewsPerUserPerDay: 50,
+    prCooldownMinutes: 2,
+    conversationCooldownSeconds: 30,
+    dailyTokenBudget: 500000,
+    estimatedTokensPerCommand: 25000,
+    estimatedTokensPerInteractive: 5000,
+    adminUsers: [],
+    retentionHours: 48,
+  },
 };
 
 // ─── Event Bus ───────────────────────────────────────────

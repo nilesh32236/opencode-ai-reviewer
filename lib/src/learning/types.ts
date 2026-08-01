@@ -42,6 +42,49 @@ export interface PatternInput {
   fileTypes: string[];
 }
 
+/** Tier of a rate-limited action. */
+export type RateLimitTier = 'command' | 'interactive';
+
+/** Input data for recording a rate-limited action in the learning store. */
+export interface RateLimitActionInput {
+  /** Repository in owner/repo format. */
+  repo: string;
+  /** GitHub username of the actor. */
+  githubUser: string;
+  /** PR (or issue) number the action targeted. */
+  prNumber: number;
+  /** Command name that was run (e.g. 'review', 'fix', 'conversation'). */
+  action: string;
+  /** Cost tier of the action ('command' or 'interactive'). */
+  tier: RateLimitTier;
+  /** Estimated tokens consumed by the action. */
+  tokensUsed: number;
+}
+
+/** Filter for counting rate-limit action rows. */
+export interface RateLimitCountFilter {
+  /** Restrict to this repository. */
+  repo?: string;
+  /** Restrict to this GitHub user. */
+  user?: string;
+  /** Restrict to this tier. */
+  tier?: RateLimitTier;
+  /** Only count rows created at or after this epoch millisecond timestamp. */
+  sinceMs: number;
+}
+
+/** A row from the rate_limits tracking table. */
+export interface RateLimitRow {
+  id: string;
+  repo: string;
+  github_user: string;
+  pr_number: number;
+  action: string;
+  tier: string;
+  tokens_used: number;
+  created_at: string;
+}
+
 /**
  * Repository interface for the learning store.
  * Implementations can back this with SQLite, PostgreSQL, MySQL, or JSON.
@@ -274,6 +317,65 @@ export interface LearningRepository {
    * @returns SeverityDistribution with counts per severity level.
    */
   getSeverityDistribution(sinceDays?: number): Promise<SeverityDistribution>;
+
+  /**
+   * Record a rate-limited action (slash command, conversation, or reply).
+   * @param input - Rate limit action data including repo, user, PR, tier, and tokens.
+   * @returns Promise that resolves when the action is recorded.
+   */
+  recordRateLimitAction(input: RateLimitActionInput): Promise<void>;
+  /**
+   * Count rate-limit action rows matching a filter.
+   * @param filter - Filter with optional repo/user/tier and required sinceMs cutoff.
+   * @returns The number of matching rows.
+   */
+  countRateLimitActions(filter: RateLimitCountFilter): Promise<number>;
+  /**
+   * Sum the tokens_used of all rate-limit rows created at or after sinceMs.
+   * @param sinceMs - Only include rows at or after this epoch millisecond timestamp.
+   * @returns Total estimated tokens consumed in the window.
+   */
+  sumRateLimitTokens(sinceMs: number): Promise<number>;
+  /**
+   * Get the most recent rate-limit action timestamp for a PR and tier.
+   * @param prNumber - PR number to look up.
+   * @param tier - Tier ('command' or 'interactive') to look up.
+   * @returns Epoch millisecond timestamp of the last action, or null if none.
+   */
+  getLastRateLimitTime(prNumber: number, tier: string): Promise<number | null>;
+  /**
+   * Aggregate rate-limit action counts grouped by repository.
+   * @param sinceMs - Only include rows at or after this epoch millisecond timestamp.
+   * @param limit - Maximum number of results (default: 10).
+   * @returns Array of repo/count pairs ordered by count descending.
+   */
+  getRateLimitUsageByRepo(
+    sinceMs: number,
+    limit?: number,
+  ): Promise<Array<{ repo: string; count: number }>>;
+  /**
+   * Aggregate rate-limit action counts grouped by GitHub user.
+   * @param sinceMs - Only include rows at or after this epoch millisecond timestamp.
+   * @param limit - Maximum number of results (default: 10).
+   * @returns Array of user/count pairs ordered by count descending.
+   */
+  getRateLimitUsageByUser(
+    sinceMs: number,
+    limit?: number,
+  ): Promise<Array<{ user: string; count: number }>>;
+  /**
+   * Delete rate-limit rows for a repo, user, or (with no args) all rows.
+   * @param repo - Optional repository to reset.
+   * @param user - Optional GitHub user to reset.
+   * @returns Number of deleted rows.
+   */
+  resetRateLimits(repo?: string, user?: string): Promise<number>;
+  /**
+   * Delete rate-limit rows older than the given timestamp.
+   * @param olderThanMs - Rows created before this epoch millisecond timestamp are deleted.
+   * @returns Number of deleted rows.
+   */
+  cleanupRateLimits(olderThanMs: number): Promise<number>;
 }
 
 /** Per-PR finding statistics. */

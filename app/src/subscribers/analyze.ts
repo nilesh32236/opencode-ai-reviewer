@@ -1,14 +1,16 @@
 import { Logger, parseCommand } from '@opencode-pr-agent/lib';
-import type { GitHubEvent, Subscriber } from '@opencode-pr-agent/lib';
+import type { GitHubEvent, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
 import { handleCommand } from '../handlers/commands.js';
 import { buildConfig } from '../utils/config.js';
+import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
 /**
  * Create a subscriber that handles `/analyze` commands on comments.
+ * @param rateLimiter - The shared rate limiter for cost control.
  * @returns A subscriber object for the analyze command.
  */
-export function createAnalyzeSubscriber(): Subscriber {
+export function createAnalyzeSubscriber(rateLimiter: RateLimiter): Subscriber {
   const logger = new Logger('AnalyzeSubscriber');
   return {
     name: 'AnalyzeSubscriber',
@@ -23,6 +25,8 @@ export function createAnalyzeSubscriber(): Subscriber {
         const config = buildConfig();
         const issueNumber = event.prNumber || 0;
         if (!issueNumber) return;
+        const ok = await checkRateLimit(rateLimiter, event, 'command', 'analyze');
+        if (!ok) return;
         await handleCommand(
           'analyze',
           issueNumber,
@@ -32,6 +36,7 @@ export function createAnalyzeSubscriber(): Subscriber {
           undefined,
           signal,
         );
+        await recordRateLimit(rateLimiter, event, 'command', 'analyze');
       } catch (err) {
         logger.error(
           `AnalyzeSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${err instanceof Error ? err.message : err}`,

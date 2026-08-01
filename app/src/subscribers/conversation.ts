@@ -1,15 +1,20 @@
 import { Logger } from '@opencode-pr-agent/lib';
-import type { GitHubEvent, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
+import type { GitHubEvent, LearningStore, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
 import { handleConversation } from '../handlers/conversation.js';
 import { buildConfig } from '../utils/config.js';
+import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
 /**
  * Create a subscriber that handles @mention conversations on PRs and issues.
  * @param learningStore - The learning store instance for context and patterns.
+ * @param rateLimiter - The shared rate limiter for cost control.
  * @returns A subscriber object for conversation handling.
  */
-export function createConversationSubscriber(learningStore: LearningStore): Subscriber {
+export function createConversationSubscriber(
+  learningStore: LearningStore,
+  rateLimiter: RateLimiter,
+): Subscriber {
   const logger = new Logger('ConversationSubscriber');
   return {
     name: 'ConversationSubscriber',
@@ -45,6 +50,9 @@ export function createConversationSubscriber(learningStore: LearningStore): Subs
 
         const isReviewComment = event.type === 'review_comment.created';
 
+        const ok = await checkRateLimit(rateLimiter, event, 'interactive', 'conversation');
+        if (!ok) return;
+
         await handleConversation(
           commentId,
           prNumber,
@@ -55,6 +63,7 @@ export function createConversationSubscriber(learningStore: LearningStore): Subs
           learningStore,
           signal,
         );
+        await recordRateLimit(rateLimiter, event, 'interactive', 'conversation');
       } catch (err) {
         logger.error(
           `ConversationSubscriber failed for repo ${event.repo}: ${err instanceof Error ? err.message : err}`,

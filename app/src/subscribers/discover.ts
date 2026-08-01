@@ -1,13 +1,18 @@
 import { GitHubHelper, Logger, PatternDetector, parseCommand } from '@opencode-pr-agent/lib';
-import type { GitHubEvent, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
+import type { GitHubEvent, LearningStore, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
+import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
 /**
  * Create a subscriber that handles `/discover` commands to surface recurring review patterns.
  * @param learningStore - The learning store instance for pattern discovery.
+ * @param rateLimiter - The shared rate limiter for cost control.
  * @returns A subscriber object for the discover command.
  */
-export function createDiscoverSubscriber(learningStore: LearningStore): Subscriber {
+export function createDiscoverSubscriber(
+  learningStore: LearningStore,
+  rateLimiter: RateLimiter,
+): Subscriber {
   const logger = new Logger('DiscoverSubscriber');
   return {
     name: 'DiscoverSubscriber',
@@ -22,6 +27,9 @@ export function createDiscoverSubscriber(learningStore: LearningStore): Subscrib
 
         const issueNumber = event.prNumber || 0;
         if (!issueNumber) return;
+
+        const ok = await checkRateLimit(rateLimiter, event, 'command', 'discover');
+        if (!ok) return;
 
         const DISCOVER_WINDOW_DEFAULT = 2;
         const detector = new PatternDetector(learningStore);
@@ -40,6 +48,7 @@ export function createDiscoverSubscriber(learningStore: LearningStore): Subscrib
         }
 
         await gh.postOrUpdateComment(issueNumber, '<!-- discovered-patterns -->', body);
+        await recordRateLimit(rateLimiter, event, 'command', 'discover');
       } catch (err) {
         logger.error(`DiscoverSubscriber failed: ${err instanceof Error ? err.message : err}`);
       }

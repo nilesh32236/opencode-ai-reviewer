@@ -12,6 +12,8 @@ import type {
   LearningRepository,
   PatternRow,
   PerPRStats,
+  RateLimitActionInput,
+  RateLimitCountFilter,
   ReviewMetricsRow,
   ReviewQualityRow,
   SeverityDistribution,
@@ -562,6 +564,137 @@ export class LearningStore {
       return repo.getSeverityDistribution(sinceDays);
     } catch {
       return { critical: 0, important: 0, minor: 0, unknown: 0 };
+    }
+  }
+
+  /**
+   * Record a rate-limited action (slash command, conversation, or reply).
+   * Errors are logged but not thrown (graceful degradation).
+   *
+   * @param input - Rate limit action data including repo, user, PR, tier, and tokens.
+   */
+  async recordRateLimitAction(input: RateLimitActionInput): Promise<void> {
+    try {
+      const repo = await this.repoPromise;
+      await repo.recordRateLimitAction(input);
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.warn('Failed to record rate limit action', err);
+    }
+  }
+
+  /**
+   * Count rate-limit action rows matching a filter.
+   *
+   * @param filter - Filter with optional repo/user/tier and required sinceMs cutoff.
+   * @returns The number of matching rows (0 on store failure).
+   */
+  async countRateLimitActions(filter: RateLimitCountFilter): Promise<number> {
+    try {
+      const repo = await this.repoPromise;
+      return await repo.countRateLimitActions(filter);
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Sum the tokens_used of all rate-limit rows at or after sinceMs.
+   *
+   * @param sinceMs - Only include rows at or after this epoch millisecond timestamp.
+   * @returns Total estimated tokens consumed in the window (0 on store failure).
+   */
+  async sumRateLimitTokens(sinceMs: number): Promise<number> {
+    try {
+      const repo = await this.repoPromise;
+      return await repo.sumRateLimitTokens(sinceMs);
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Get the most recent rate-limit action time for a PR and tier.
+   *
+   * @param prNumber - PR number to look up.
+   * @param tier - Tier ('command' or 'interactive').
+   * @returns Epoch millisecond timestamp of the last action, or null if none.
+   */
+  async getLastRateLimitTime(prNumber: number, tier: string): Promise<number | null> {
+    try {
+      const repo = await this.repoPromise;
+      return await repo.getLastRateLimitTime(prNumber, tier);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Aggregate rate-limit action counts grouped by repository.
+   *
+   * @param sinceMs - Only include rows at or after this epoch millisecond timestamp.
+   * @param limit - Maximum number of results (default: 10).
+   * @returns Array of repo/count pairs ordered by count descending.
+   */
+  async getRateLimitUsageByRepo(
+    sinceMs: number,
+    limit = 10,
+  ): Promise<Array<{ repo: string; count: number }>> {
+    try {
+      const repo = await this.repoPromise;
+      return await repo.getRateLimitUsageByRepo(sinceMs, limit);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Aggregate rate-limit action counts grouped by GitHub user.
+   *
+   * @param sinceMs - Only include rows at or after this epoch millisecond timestamp.
+   * @param limit - Maximum number of results (default: 10).
+   * @returns Array of user/count pairs ordered by count descending.
+   */
+  async getRateLimitUsageByUser(
+    sinceMs: number,
+    limit = 10,
+  ): Promise<Array<{ user: string; count: number }>> {
+    try {
+      const repo = await this.repoPromise;
+      return await repo.getRateLimitUsageByUser(sinceMs, limit);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Delete rate-limit rows for a repo, user, or (with no args) all rows.
+   *
+   * @param repo - Optional repository to reset.
+   * @param user - Optional GitHub user to reset.
+   * @returns Number of deleted rows (0 on store failure).
+   */
+  async resetRateLimits(repo?: string, user?: string): Promise<number> {
+    try {
+      const storeRepo = await this.repoPromise;
+      return await storeRepo.resetRateLimits(repo, user);
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Delete rate-limit rows older than the given timestamp.
+   *
+   * @param olderThanMs - Rows created before this epoch millisecond timestamp are deleted.
+   * @returns Number of deleted rows (0 on store failure).
+   */
+  async cleanupRateLimits(olderThanMs: number): Promise<number> {
+    try {
+      const repo = await this.repoPromise;
+      return await repo.cleanupRateLimits(olderThanMs);
+    } catch {
+      return 0;
     }
   }
 }

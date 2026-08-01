@@ -70,5 +70,46 @@ export function buildConfig(): AgentConfig {
       metaReview: { enabled: true, interval: 5, minFindingsForReview: 3 },
       patternDiscovery: { enabled: true, minFrequency: 3, windowSize: 100 },
     },
+    rateLimiting: {
+      ...DEFAULT_CONFIG.rateLimiting,
+      enabled: process.env.RATE_LIMIT_ENABLED !== 'false',
+      reviewsPerRepoPerHour: parseEnvInt(
+        process.env.RATE_LIMIT_REVIEWS_PER_REPO_HOUR,
+        DEFAULT_CONFIG.rateLimiting.reviewsPerRepoPerHour,
+      ),
+      reviewsPerUserPerDay: parseEnvInt(
+        process.env.RATE_LIMIT_REVIEWS_PER_USER_DAY,
+        DEFAULT_CONFIG.rateLimiting.reviewsPerUserPerDay,
+      ),
+      prCooldownMinutes: parseEnvInt(
+        process.env.RATE_LIMIT_PR_COOLDOWN_MINUTES,
+        DEFAULT_CONFIG.rateLimiting.prCooldownMinutes,
+      ),
+      conversationCooldownSeconds: parseEnvInt(
+        process.env.RATE_LIMIT_CONVERSATION_COOLDOWN_SECONDS,
+        DEFAULT_CONFIG.rateLimiting.conversationCooldownSeconds,
+      ),
+      dailyTokenBudget: parseEnvInt(
+        process.env.RATE_LIMIT_DAILY_TOKEN_BUDGET,
+        DEFAULT_CONFIG.rateLimiting.dailyTokenBudget,
+      ),
+      estimatedTokensPerCommand: parseEnvInt(
+        process.env.RATE_LIMIT_ESTIMATED_TOKENS_PER_COMMAND,
+        DEFAULT_CONFIG.rateLimiting.estimatedTokensPerCommand,
+      ),
+      estimatedTokensPerInteractive: parseEnvInt(
+        process.env.RATE_LIMIT_ESTIMATED_TOKENS_PER_INTERACTIVE,
+        DEFAULT_CONFIG.rateLimiting.estimatedTokensPerInteractive,
+      ),
+      adminUsers: process.env.RATE_LIMIT_ADMIN_USERS
+        ? process.env.RATE_LIMIT_ADMIN_USERS.split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : DEFAULT_CONFIG.rateLimiting.adminUsers,
+      retentionHours: parseEnvInt(
+        process.env.RATE_LIMIT_RETENTION_HOURS,
+        DEFAULT_CONFIG.rateLimiting.retentionHours,
+      ),
+    },
   };
 }

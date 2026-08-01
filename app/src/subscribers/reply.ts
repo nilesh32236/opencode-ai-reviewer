@@ -1,14 +1,16 @@
 import { Logger, parseCommand } from '@opencode-pr-agent/lib';
-import type { GitHubEvent, Subscriber } from '@opencode-pr-agent/lib';
+import type { GitHubEvent, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
 import { handleReply } from '../handlers/reply.js';
 import { buildConfig } from '../utils/config.js';
+import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
 /**
  * Create a subscriber that handles reply-to-review comments.
+ * @param rateLimiter - The shared rate limiter for cost control.
  * @returns A subscriber object for the reply event.
  */
-export function createReplySubscriber(): Subscriber {
+export function createReplySubscriber(rateLimiter: RateLimiter): Subscriber {
   const logger = new Logger('ReplySubscriber');
   return {
     name: 'ReplySubscriber',
@@ -38,7 +40,12 @@ export function createReplySubscriber(): Subscriber {
         if (!prNumber) return;
 
         const config = buildConfig();
+
+        const ok = await checkRateLimit(rateLimiter, event, 'interactive', 'reply');
+        if (!ok) return;
+
         await handleReply(prNumber, event.repo || '', getToken(), config, parentId, body);
+        await recordRateLimit(rateLimiter, event, 'interactive', 'reply');
       } catch (err) {
         logger.error(`ReplySubscriber failed: ${err instanceof Error ? err.message : err}`);
       }

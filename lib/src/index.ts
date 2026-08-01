@@ -141,3 +141,12 @@ export { buildAutofixPRBody } from './utils/pr-body.js';
 export type { PRBodyOptions } from './utils/pr-body.js';
 export { parseCommand } from './utils/command-match.js';
 export type { ParsedCommand } from './utils/command-match.js';
+export { RateLimiter } from './utils/rate-limiter.js';
+export type {
+  RateLimitStore,
+  RateLimitResult,
+  RateLimitCheckOptions,
+  RateLimitStatus,
+  RateLimitReason,
+  RateLimitTier,
+} from './utils/rate-limiter.js';

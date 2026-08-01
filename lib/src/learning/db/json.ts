@@ -10,6 +10,8 @@ import type {
   PatternInput,
   PatternRow,
   PerPRStats,
+  RateLimitActionInput,
+  RateLimitCountFilter,
   ReviewMetricsRow,
   ReviewQualityRow,
   SeverityDistribution,
@@ -400,5 +402,86 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
    */
   async getSeverityDistribution(sinceDays?: number): Promise<SeverityDistribution> {
     return this.db.getSeverityDistribution(sinceDays);
+  }
+
+  /**
+   * Record a rate-limited action.
+   * @param input - Rate limit action data to append.
+   */
+  async recordRateLimitAction(input: RateLimitActionInput): Promise<void> {
+    return this.db.recordRateLimitAction(input);
+  }
+
+  /**
+   * Count rate-limit rows matching a filter.
+   * @param filter - Filter with optional repo/user/tier and required sinceMs cutoff.
+   * @returns The number of matching rows.
+   */
+  async countRateLimitActions(filter: RateLimitCountFilter): Promise<number> {
+    return this.db.countRateLimitActions(filter);
+  }
+
+  /**
+   * Sum the tokens_used of all rate-limit rows at or after sinceMs.
+   * @param sinceMs - Window cutoff as an epoch millisecond timestamp.
+   * @returns Total estimated tokens consumed in the window.
+   */
+  async sumRateLimitTokens(sinceMs: number): Promise<number> {
+    return this.db.sumRateLimitTokens(sinceMs);
+  }
+
+  /**
+   * Get the most recent rate-limit action time for a PR and tier.
+   * @param prNumber - PR number to look up.
+   * @param tier - Tier ('command' or 'interactive').
+   * @returns Epoch millisecond timestamp of the last action, or null if none.
+   */
+  async getLastRateLimitTime(prNumber: number, tier: string): Promise<number | null> {
+    return this.db.getLastRateLimitTime(prNumber, tier);
+  }
+
+  /**
+   * Aggregate rate-limit counts grouped by repository.
+   * @param sinceMs - Window cutoff as an epoch millisecond timestamp.
+   * @param limit - Maximum number of results (default: 10).
+   * @returns Array of repo/count pairs ordered by count descending.
+   */
+  async getRateLimitUsageByRepo(
+    sinceMs: number,
+    limit = 10,
+  ): Promise<Array<{ repo: string; count: number }>> {
+    return this.db.getRateLimitUsageByRepo(sinceMs, limit);
+  }
+
+  /**
+   * Aggregate rate-limit counts grouped by GitHub user.
+   * @param sinceMs - Window cutoff as an epoch millisecond timestamp.
+   * @param limit - Maximum number of results (default: 10).
+   * @returns Array of user/count pairs ordered by count descending.
+   */
+  async getRateLimitUsageByUser(
+    sinceMs: number,
+    limit = 10,
+  ): Promise<Array<{ user: string; count: number }>> {
+    return this.db.getRateLimitUsageByUser(sinceMs, limit);
+  }
+
+  /**
+   * Delete rate-limit rows for a repo, user, or (with no args) all rows.
+   * @param repo - Optional repository to reset.
+   * @param user - Optional GitHub user to reset.
+   * @returns Number of deleted rows.
+   */
+  async resetRateLimits(repo?: string, user?: string): Promise<number> {
+    return this.db.resetRateLimits(repo, user);
+  }
+
+  /**
+   * Delete rate-limit rows older than the given timestamp.
+   * @param olderThanMs - Rows created before this epoch millisecond timestamp are deleted.
+   * @returns Number of deleted rows.
+   */
+  async cleanupRateLimits(olderThanMs: number): Promise<number> {
+    return this.db.cleanupRateLimits(olderThanMs);
   }
 }
