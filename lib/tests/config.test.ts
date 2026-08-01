@@ -770,7 +770,7 @@ fix:
       const config = loadConfig(tmpDir);
       expect(config?.review?.sensitivity?.minSeverity).toBe('critical');
       expect(config?.review?.sensitivity?.confidenceThreshold).toBe('low');
-      expect(config?.review?.sensitivity?.maxTotalFindings).toBe(50);
+      expect(config?.review?.sensitivity?.maxTotalFindings).toBeUndefined();
     });
 
     it('clamps numeric sensitivity fields to the 1-500 range', () => {
@@ -779,6 +779,44 @@ fix:
       } as never);
       expect(result.review?.sensitivity?.maxTotalFindings).toBe(500);
       expect(result.review?.sensitivity?.maxFindingsPerCategory).toBe(1);
+    });
+
+    it('clamps out-of-range caps through the real loadConfig path (end-to-end)', () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.opencode-reviewer.yml'),
+        `review:
+  systemPrompt: "Keep unrelated settings"
+  sensitivity:
+    maxTotalFindings: 1000
+    maxFindingsPerCategory: -3
+`,
+      );
+      const config = loadConfig(tmpDir);
+      expect(config).not.toBeNull();
+      expect(config!.review?.systemPrompt).toBe('Keep unrelated settings');
+      expect(config!.review?.sensitivity?.maxTotalFindings).toBe(500);
+      expect(config!.review?.sensitivity?.maxFindingsPerCategory).toBe(1);
+    });
+
+    it('loads skipLabels and skipActors without unknown-key warnings', () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.opencode-reviewer.yml'),
+        `review:
+  skipLabels:
+    - autofix
+  skipActors:
+    - dependabot[bot]
+`,
+      );
+      const config = loadConfig(tmpDir);
+      expect(config?.review?.skipLabels).toEqual(['autofix']);
+      expect(config?.review?.skipActors).toEqual(['dependabot[bot]']);
+      expect(core.warning).not.toHaveBeenCalledWith(
+        expect.stringContaining('Unknown config key "review.skipLabels"'),
+      );
+      expect(core.warning).not.toHaveBeenCalledWith(
+        expect.stringContaining('Unknown config key "review.skipActors"'),
+      );
     });
 
     it('rejects invalid minSeverity values', () => {
@@ -916,7 +954,6 @@ unknownSection: true
       expect(DEFAULT_CONFIG.review.sensitivity).toEqual({
         minSeverity: 'warning',
         confidenceThreshold: 'low',
-        maxTotalFindings: 50,
       });
     });
 
@@ -927,7 +964,6 @@ unknownSection: true
       expect(result.review.sensitivity).toEqual({
         minSeverity: 'error',
         confidenceThreshold: 'low',
-        maxTotalFindings: 50,
         focusAreas: [],
         ignorePatterns: [],
       });

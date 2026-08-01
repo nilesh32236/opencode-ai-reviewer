@@ -16,6 +16,7 @@ import {
   detectIntent,
   gatherReviewThread,
 } from '@opencode-pr-agent/lib';
+import { mergeRepoConfig } from '../utils/config.js';
 
 /**
  * Handle an interactive conversation triggered by an @mention in a PR comment.
@@ -119,7 +120,13 @@ export async function handleConversation(
   };
 
   // Run through the engine
-  const engine = new ReviewEngine(config, gh, learningStore, eventBus, repo);
+  const engine = new ReviewEngine(
+    mergeRepoConfig(config, tempDir),
+    gh,
+    learningStore,
+    eventBus,
+    repo,
+  );
   try {
     if (signal?.aborted) return;
 

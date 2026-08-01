@@ -30,6 +30,7 @@ import {
   validateRefName,
   validateRunChecksCommand,
 } from '@opencode-pr-agent/lib';
+import { mergeRepoConfig } from '../utils/config.js';
 
 /**
  * Run the complete review-fix loop on a PR from the Probot app context.
@@ -64,7 +65,7 @@ export async function handleAutofixLoop(
 
   const gh: PlatformAdapter =
     config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
-  const engine = new ReviewEngine(config, gh, undefined, eventBus, repo);
+  const engine = new ReviewEngine(mergeRepoConfig(config, tempDir), gh, undefined, eventBus, repo);
   const history: IterationRecord[] = [];
   const previousFindings: PreviousFindingIteration[] = [];
   let approved = false;

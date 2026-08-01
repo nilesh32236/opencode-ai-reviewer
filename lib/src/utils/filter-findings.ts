@@ -135,18 +135,26 @@ export function filterFindings(
     if (focusAreas.length > 0 && !focusAreas.includes(category)) continue;
     if (issue.file && ignorePatterns.some((pattern) => minimatch(issue.file, pattern))) continue;
 
+    // Per-category overrides only tighten the effective floor; they can never
+    // loosen a global/audit severity floor (e.g. the audit issueSeverityThreshold).
+    const overrideMinRank =
+      override?.minSeverity !== undefined ? minSeverityRank(override.minSeverity) : undefined;
     const minRank =
-      override?.minSeverity !== undefined ? minSeverityRank(override.minSeverity) : globalMinRank;
+      overrideMinRank !== undefined ? Math.max(overrideMinRank, globalMinRank) : globalMinRank;
     if (severityRank(issue.severity) < minRank) continue;
 
-    if (issue.confidence && confidenceThresholdRank(issue.confidence) < globalConfidenceRank) {
+    // A missing confidence is treated as 'low' (rank 1) so a confidence floor
+    // above 'low' is actually enforced even when the model omits the field.
+    const confidenceRank = issue.confidence ? confidenceThresholdRank(issue.confidence) : 1;
+    if (confidenceRank < globalConfidenceRank) {
       continue;
     }
 
     remaining.push({ ...issue, category });
   }
 
-  if (options.maxFindingsPerCategory !== undefined) {
+  const hasPerCategoryCap = Object.values(categories).some((c) => c?.maxFindings !== undefined);
+  if (options.maxFindingsPerCategory !== undefined || hasPerCategoryCap) {
     const byCategory = new Map<string, ReviewIssue[]>();
     for (const issue of remaining) {
       const category = issue.category ?? defaultCategory;

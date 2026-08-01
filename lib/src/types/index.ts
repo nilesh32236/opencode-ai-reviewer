@@ -1192,7 +1192,6 @@ export const DEFAULT_CONFIG: AgentConfig = {
     sensitivity: {
       minSeverity: 'warning',
       confidenceThreshold: 'low',
-      maxTotalFindings: 50,
     },
   },
   audit: {
@@ -1200,7 +1199,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     targetDirs: [],
     autoFix: true,
     triggerLabel: 'autofix-trigger',
-    issueSeverityThreshold: 'important',
+    issueSeverityThreshold: 'minor',
   },
   learning: {
     enabled: true,

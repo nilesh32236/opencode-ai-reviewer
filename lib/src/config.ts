@@ -36,6 +36,8 @@ const CATEGORY_OVERRIDE_SHAPE: Record<string, ConfigShape> = {
 const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
   platform: null,
   review: {
+    skipLabels: null,
+    skipActors: null,
     systemPrompt: null,
     extraContext: null,
     customRules: null,
@@ -300,6 +302,12 @@ export function validateConfig(config: PromptConfig): PromptConfig {
 
   if (config.review) {
     result.review = {};
+    if (Array.isArray(config.review.skipLabels)) {
+      result.review.skipLabels = config.review.skipLabels.filter((l) => typeof l === 'string');
+    }
+    if (Array.isArray(config.review.skipActors)) {
+      result.review.skipActors = config.review.skipActors.filter((a) => typeof a === 'string');
+    }
     if (typeof config.review.systemPrompt === 'string') {
       result.review.systemPrompt = config.review.systemPrompt;
     }

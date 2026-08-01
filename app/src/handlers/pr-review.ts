@@ -13,8 +13,8 @@ import {
   ReviewEngine,
   sanitizeErrorMessage,
 } from '@opencode-pr-agent/lib';
+import { mergeRepoConfig } from '../utils/config.js';
 import { handleAutofixLoop } from './autofix.js';
-
 /** Marker identifying the "review in progress" status comment on a PR. */
 const REVIEW_IN_PROGRESS_MARKER = '<!-- review-in-progress -->';
 
@@ -64,7 +64,13 @@ export async function handlePRReview(
     return null;
   }
 
-  const engine = new ReviewEngine(config, gh, learningStore, eventBus, repo);
+  const engine = new ReviewEngine(
+    mergeRepoConfig(config, tempDir),
+    gh,
+    learningStore,
+    eventBus,
+    repo,
+  );
 
   try {
     const reviewWorkingDir = tempDir || process.cwd();

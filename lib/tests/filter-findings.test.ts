@@ -128,6 +128,20 @@ describe('filterFindings', () => {
     expect(kept.map((i) => i.file)).toEqual(['b.ts', 'c.ts']);
   });
 
+  it('per-category minSeverity override cannot loosen below the global floor', () => {
+    const issues = [
+      issue({ severity: 'minor', file: 'a.ts', category: 'security' }),
+      issue({ severity: 'important', file: 'b.ts', category: 'security' }),
+    ];
+    const { issues: kept, dropped } = filterFindings(issues, {
+      minSeverity: 'error',
+      minSeverityRankValue: severityRank('important'),
+      categories: { security: { minSeverity: 'warning' } },
+    });
+    expect(dropped).toBe(1);
+    expect(kept.map((i) => i.severity)).toEqual(['important']);
+  });
+
   it('disables a category when enabled is false', () => {
     const issues = [
       issue({ severity: 'critical', file: 'a.ts', category: 'security' }),
@@ -154,6 +168,25 @@ describe('filterFindings', () => {
     expect(kept.map((i) => i.severity)).toEqual(['critical', 'important']);
   });
 
+  it('applies per-category maxFindings even without a global cap', () => {
+    const issues = [
+      issue({ severity: 'critical', file: 'a.ts', category: 'security' }),
+      issue({ severity: 'important', file: 'b.ts', category: 'security' }),
+      issue({ severity: 'minor', file: 'c.ts', category: 'security' }),
+      issue({ severity: 'critical', file: 'd.ts', category: 'performance' }),
+      issue({ severity: 'critical', file: 'e.ts', category: 'style' }),
+    ];
+    const { issues: kept } = filterFindings(issues, {
+      categories: { security: { maxFindings: 2 } },
+    });
+    const security = kept.filter((i) => i.category === 'security');
+    expect(security).toHaveLength(2);
+    expect(security.map((i) => i.severity)).toEqual(['critical', 'important']);
+    // Categories without a per-category cap are not capped.
+    expect(kept.filter((i) => i.category === 'performance')).toHaveLength(1);
+    expect(kept.filter((i) => i.category === 'style')).toHaveLength(1);
+  });
+
   it('drops low-confidence findings above the confidence floor', () => {
     const issues = [
       issue({ severity: 'critical', file: 'a.ts', confidence: 'high' }),
@@ -163,6 +196,27 @@ describe('filterFindings', () => {
     const { issues: kept, dropped } = filterFindings(issues, { confidenceThreshold: 'medium' });
     expect(dropped).toBe(1);
     expect(kept.map((i) => i.confidence)).toEqual(['high', 'medium']);
+  });
+
+  it('drops findings without a confidence field when a confidence floor is set', () => {
+    const issues = [
+      issue({ severity: 'critical', file: 'a.ts', confidence: 'high' }),
+      issue({ severity: 'critical', file: 'b.ts' }),
+    ];
+    const { issues: kept, dropped } = filterFindings(issues, { confidenceThreshold: 'medium' });
+    expect(dropped).toBe(1);
+    expect(kept.map((i) => i.file)).toEqual(['a.ts']);
+  });
+
+  it('treats missing confidence as low under a high confidence floor', () => {
+    const issues = [
+      issue({ severity: 'critical', file: 'a.ts', confidence: 'high' }),
+      issue({ severity: 'critical', file: 'b.ts' }),
+      issue({ severity: 'critical', file: 'c.ts', confidence: 'medium' }),
+    ];
+    const { issues: kept, dropped } = filterFindings(issues, { confidenceThreshold: 'high' });
+    expect(dropped).toBe(2);
+    expect(kept.map((i) => i.file)).toEqual(['a.ts']);
   });
 
   it('assigns the default category to uncategorized findings', () => {

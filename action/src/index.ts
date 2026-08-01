@@ -266,8 +266,7 @@ async function run(): Promise<void> {
             DEFAULT_CONFIG.review.sensitivity?.maxFindingsPerCategory,
           maxTotalFindings:
             loadedConfig?.review?.sensitivity?.maxTotalFindings ??
-            DEFAULT_CONFIG.review.sensitivity?.maxTotalFindings ??
-            50,
+            DEFAULT_CONFIG.review.sensitivity?.maxTotalFindings,
           focusAreas:
             loadedConfig?.review?.sensitivity?.focusAreas ??
             DEFAULT_CONFIG.review.sensitivity?.focusAreas,

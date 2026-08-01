@@ -3,6 +3,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import type { AgentConfig, EventBus, PlatformAdapter, ReviewResult } from '@opencode-pr-agent/lib';
 import { GitHubHelper, GitLabAdapter, Logger, ReviewEngine } from '@opencode-pr-agent/lib';
+import { mergeRepoConfig } from '../utils/config.js';
 
 /**
  * Handle an audit command: read a prompt file, run the audit engine against
@@ -108,7 +109,7 @@ export async function handleAudit(
     return;
   }
 
-  const engine = new ReviewEngine(config, gh, undefined, eventBus, repo);
+  const engine = new ReviewEngine(mergeRepoConfig(config, tempDir), gh, undefined, eventBus, repo);
 
   try {
     const auditWorkingDir = tempDir || process.cwd();

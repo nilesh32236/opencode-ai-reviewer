@@ -1363,8 +1363,11 @@ export class ReviewEngine {
       categories: this.config.review.categories,
       defaultCategory,
     });
-    if (dropped === 0) return result;
-    core.info(`Sensitivity filter dropped ${dropped} finding(s) (kept ${issues.length})`);
+    if (dropped > 0) {
+      core.info(`Sensitivity filter dropped ${dropped} finding(s) (kept ${issues.length})`);
+    }
+    // Always apply the filter output so `category` normalization and severity
+    // ordering are consistent regardless of whether any finding was dropped.
     return {
       ...result,
       issues,

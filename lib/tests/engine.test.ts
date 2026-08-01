@@ -404,6 +404,7 @@ describe('ReviewEngine', () => {
               file: `${prefix}.ts`,
               line: 5,
               message: `Issue in ${prefix}`,
+              category: 'general',
             },
           ],
           stats: { total: 1, critical: 1, important: 0, minor: 0 },
