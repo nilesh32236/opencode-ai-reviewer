@@ -98,6 +98,7 @@ async function fetchWithRetry(url: string, retries = 3, token?: string): Promise
  * Ensure the OpenCode CLI binary is available.
  * Checks PATH first; if not found, downloads and caches the specified version.
  * @param version - Version tag to download (defaults to 'latest').
+ * @param token - Optional GitHub token used for the authenticated release lookup.
  * @returns A Promise resolving to the path of the OpenCode binary.
  */
 export async function setupOpenCode(version = 'latest', token?: string): Promise<string> {
