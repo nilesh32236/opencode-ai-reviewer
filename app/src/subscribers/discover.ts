@@ -28,8 +28,8 @@ export function createDiscoverSubscriber(
         const issueNumber = event.prNumber || 0;
         if (!issueNumber) return;
 
-        const ok = await checkRateLimit(rateLimiter, event, 'command', 'discover');
-        if (!ok) return;
+        const reservation = await checkRateLimit(rateLimiter, event, 'command', 'discover');
+        if (!reservation) return;
 
         const DISCOVER_WINDOW_DEFAULT = 2;
         const detector = new PatternDetector(learningStore);
@@ -48,7 +48,7 @@ export function createDiscoverSubscriber(
         }
 
         await gh.postOrUpdateComment(issueNumber, '<!-- discovered-patterns -->', body);
-        await recordRateLimit(rateLimiter, event, 'command', 'discover');
+        await recordRateLimit(rateLimiter, event, 'command', 'discover', reservation);
       } catch (err) {
         logger.error(`DiscoverSubscriber failed: ${err instanceof Error ? err.message : err}`);
       }

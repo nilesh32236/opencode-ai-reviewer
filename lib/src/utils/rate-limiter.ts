@@ -1,11 +1,9 @@
 import type { RateLimitActionInput, RateLimitCountFilter } from '../learning/types.js';
-import type { RateLimitingConfig } from '../types/index.js';
+import type { RateLimitTier, RateLimitingConfig } from '../types/index.js';
+import { Logger } from './logger.js';
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
-
-/** Tier of a rate-limited action. */
-export type RateLimitTier = 'command' | 'interactive';
 
 /** Reason a rate limit was hit. */
 export type RateLimitReason = 'repo_hourly' | 'user_daily' | 'pr_cooldown' | 'token_budget';
@@ -20,6 +18,13 @@ export interface RateLimitResult {
   remaining: number;
   /** Epoch millisecond timestamp after which the limit resets. */
   resetAt: number;
+  /**
+   * ID of the rate_limits row reserved for this action when allowed.
+   * The reservation is charged the tier estimate immediately so concurrent
+   * requests are counted before execution begins; pass it to recordReview so
+   * the actual token usage can be reconciled after the run.
+   */
+  reservationId?: string;
 }
 
 /** Options for a rate limit check. */
@@ -34,11 +39,13 @@ export interface RateLimitCheckOptions {
 export interface RateLimitStore {
   countRateLimitActions(filter: RateLimitCountFilter): Promise<number>;
   sumRateLimitTokens(sinceMs: number): Promise<number>;
-  getLastRateLimitTime(prNumber: number, tier: string): Promise<number | null>;
-  recordRateLimitAction(input: RateLimitActionInput): Promise<void>;
+  getLastRateLimitTime(repo: string, prNumber: number, tier: string): Promise<number | null>;
+  recordRateLimitAction(input: RateLimitActionInput): Promise<string>;
+  completeRateLimitAction(id: string, tokensUsed: number): Promise<void>;
   getRateLimitUsageByRepo(
     sinceMs: number,
     limit?: number,
+    tier?: string,
   ): Promise<Array<{ repo: string; count: number }>>;
   getRateLimitUsageByUser(
     sinceMs: number,
@@ -68,6 +75,13 @@ export interface RateLimitStatus {
  * - Per-user daily cap (all tiers combined).
  * - Per-PR cooldown (separate for command and interactive tiers).
  * - Daily estimated token budget (all tiers combined).
+ *
+ * To close the check-then-run race, checkReview() reserves a rate_limits row
+ * (charged the tier estimate) immediately after all checks pass, so concurrent
+ * webhook events see the reservation before the (potentially minutes-long) LLM
+ * run finishes. recordReview() reconciles the reservation with actual token
+ * usage; when a run fails or is skipped, the reservation is left in place so
+ * the attempt still counts toward the limits.
  */
 export class RateLimiter {
   private readonly config: RateLimitingConfig;
@@ -83,7 +97,8 @@ export class RateLimiter {
   }
 
   /**
-   * Check whether an action is allowed under all configured limits.
+   * Check whether an action is allowed under all configured limits. When
+   * allowed, reserves a rate_limits row so the action counts immediately.
    * @param repo - Repository in owner/repo format.
    * @param user - GitHub username of the actor.
    * @param prNumber - PR (or issue) number the action targets.
@@ -143,7 +158,7 @@ export class RateLimiter {
       };
     }
 
-    const lastTime = await this.store.getLastRateLimitTime(prNumber, tier);
+    const lastTime = await this.store.getLastRateLimitTime(repo, prNumber, tier);
     if (lastTime !== null && now - lastTime < cooldownMs) {
       return {
         allowed: false,
@@ -163,25 +178,47 @@ export class RateLimiter {
       };
     }
 
+    let reservationId: string | undefined;
+    try {
+      reservationId = await this.store.recordRateLimitAction({
+        repo,
+        githubUser: user,
+        prNumber,
+        action: options?.action ?? 'review',
+        tier,
+        tokensUsed: estimatedTokens,
+      });
+    } catch (err) {
+      const logger = new Logger('RateLimiter');
+      logger.error('Failed to reserve rate limit slot; proceeding without reservation', err);
+    }
+
+    const budgetHeadroomActions = Math.floor(
+      Math.max(0, this.config.dailyTokenBudget - tokensUsed) / estimatedTokens,
+    );
     const remaining =
       tier === 'command'
         ? Math.min(
             this.config.reviewsPerRepoPerHour - repoCount,
             this.config.reviewsPerUserPerDay - userCount,
+            budgetHeadroomActions,
           )
-        : this.config.reviewsPerUserPerDay - userCount;
+        : Math.min(this.config.reviewsPerUserPerDay - userCount, budgetHeadroomActions);
 
-    return { allowed: true, remaining, resetAt: dayStart + DAY_MS };
+    return { allowed: true, remaining, resetAt: dayStart + DAY_MS, reservationId };
   }
 
   /**
-   * Record a completed action so it counts toward future checks.
+   * Record a completed action so it counts toward future checks. When called
+   * with a reservationId (from checkReview), reconciles that row's token charge
+   * with the actual usage; otherwise falls back to recording a new row.
    * @param repo - Repository in owner/repo format.
    * @param user - GitHub username of the actor.
    * @param prNumber - PR (or issue) number the action targeted.
    * @param action - Command name that ran (e.g. 'review', 'conversation').
    * @param tier - Cost tier of the action.
    * @param tokensUsed - Optional actual token usage; falls back to the tier estimate.
+   * @param reservationId - Optional reservation row ID from checkReview.
    */
   async recordReview(
     repo: string,
@@ -190,19 +227,25 @@ export class RateLimiter {
     action: string,
     tier: RateLimitTier,
     tokensUsed?: number,
+    reservationId?: string,
   ): Promise<void> {
     if (!this.config.enabled) return;
     const estimate =
       tier === 'interactive'
         ? this.config.estimatedTokensPerInteractive
         : this.config.estimatedTokensPerCommand;
+    const resolvedTokens = tokensUsed ?? estimate;
+    if (reservationId) {
+      await this.store.completeRateLimitAction(reservationId, resolvedTokens);
+      return;
+    }
     await this.store.recordRateLimitAction({
       repo,
       githubUser: user,
       prNumber,
       action,
       tier,
-      tokensUsed: tokensUsed ?? estimate,
+      tokensUsed: resolvedTokens,
     });
   }
 
@@ -236,7 +279,7 @@ export class RateLimiter {
     const hourStart = Math.floor(now / HOUR_MS) * HOUR_MS;
     const dayStart = startOfUtcDay(now);
     const [repoHourly, userDaily, tokenUsageToday] = await Promise.all([
-      this.store.getRateLimitUsageByRepo(hourStart, 10),
+      this.store.getRateLimitUsageByRepo(hourStart, 10, 'command'),
       this.store.getRateLimitUsageByUser(dayStart, 10),
       this.store.sumRateLimitTokens(dayStart),
     ]);

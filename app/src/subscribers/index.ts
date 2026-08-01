@@ -1,10 +1,10 @@
 import {
   DEFAULT_CONFIG,
   FeedbackSubscriber,
+  Logger,
   MetaReviewEngine,
   MetaReviewSubscriber,
   PatternDetector,
-  RateLimiter,
 } from '@opencode-pr-agent/lib';
 import type { AgentConfig, EventBus, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
 import { createRateLimiter } from '../utils/rate-limit.js';
@@ -37,20 +37,21 @@ export function registerSubscribers(
 ): Subscriber[] {
   const resolvedConfig = config ?? DEFAULT_CONFIG;
   const rateLimiter = createRateLimiter(learningStore, resolvedConfig);
+  const logger = new Logger('RateLimiter');
 
   const subscribers: Subscriber[] = [
     createReviewSubscriber(learningStore, bus, rateLimiter),
     createFixSubscriber(rateLimiter),
     createAuditSubscriber(rateLimiter),
     createAnalyzeSubscriber(rateLimiter),
-    createAutoAnalyzeSubscriber(),
+    createAutoAnalyzeSubscriber(rateLimiter),
     createQuestionAnsweredSubscriber(),
     createReplySubscriber(rateLimiter),
     createDismissSubscriber(learningStore),
     createExplainSubscriber(rateLimiter),
     createConversationSubscriber(learningStore, rateLimiter),
     createSetupSubscriber(),
-    createAdminSubscriber(rateLimiter),
+    createAdminSubscriber(rateLimiter, resolvedConfig),
   ];
 
   const feedbackSub = new FeedbackSubscriber(learningStore);
@@ -73,7 +74,7 @@ export function registerSubscribers(
   // Prune stale rate-limit rows once at startup.
   rateLimiter.cleanup().catch((err) => {
     const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`Rate limiter cleanup failed: ${msg}`);
+    logger.warn(`Rate limiter cleanup failed: ${msg}`);
   });
 
   bus.registerAll(subscribers);

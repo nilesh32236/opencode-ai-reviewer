@@ -29,8 +29,10 @@ export function createAuditSubscriber(rateLimiter: RateLimiter): Subscriber {
             : ((auditPayload.pull_request as Record<string, unknown> | undefined)?.number as
                 | number
                 | undefined);
-        const ok = await checkRateLimit(rateLimiter, event, 'command', 'audit', auditIssue);
-        if (!ok) return;
+        const reservation = await checkRateLimit(rateLimiter, event, 'command', 'audit', {
+          prNumber: auditIssue,
+        });
+        if (!reservation) return;
         await handleAudit(
           event.repo || '',
           getToken(),
@@ -41,7 +43,7 @@ export function createAuditSubscriber(rateLimiter: RateLimiter): Subscriber {
           signal,
           auditIssue,
         );
-        await recordRateLimit(rateLimiter, event, 'command', 'audit');
+        await recordRateLimit(rateLimiter, event, 'command', 'audit', reservation);
       } catch (err) {
         logger.error(
           `AuditSubscriber failed for repo ${event.repo}: ${err instanceof Error ? err.message : err}`,

@@ -927,13 +927,15 @@ export abstract class SqlAdapter implements LearningRepository {
   /**
    * Record a rate-limited action.
    * @param input - Rate limit action data to insert.
+   * @returns The generated row ID, for later token reconciliation.
    */
-  async recordRateLimitAction(input: RateLimitActionInput): Promise<void> {
+  async recordRateLimitAction(input: RateLimitActionInput): Promise<string> {
+    const id = generateId();
     await this.run(
       `INSERT INTO rate_limits (id, repo, github_user, pr_number, action, tier, tokens_used, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        generateId(),
+        id,
         input.repo,
         input.githubUser,
         input.prNumber,
@@ -943,6 +945,16 @@ export abstract class SqlAdapter implements LearningRepository {
         new Date().toISOString(),
       ],
     );
+    return id;
+  }
+
+  /**
+   * Reconcile a reserved rate-limit row with its actual token usage.
+   * @param id - Row ID returned by recordRateLimitAction.
+   * @param tokensUsed - Actual tokens consumed by the run.
+   */
+  async completeRateLimitAction(id: string, tokensUsed: number): Promise<void> {
+    await this.run('UPDATE rate_limits SET tokens_used = ? WHERE id = ?', [tokensUsed, id]);
   }
 
   /**
@@ -986,15 +998,18 @@ export abstract class SqlAdapter implements LearningRepository {
   }
 
   /**
-   * Get the most recent rate-limit action time for a PR and tier.
+   * Get the most recent rate-limit action time for a repo, PR, and tier.
+   * PR/issue numbers are scoped per repository, so the repo dimension is
+   * required to avoid cross-repo cooldown collisions.
+   * @param repo - Repository in owner/repo format.
    * @param prNumber - PR number to look up.
    * @param tier - Tier ('command' or 'interactive').
    * @returns Epoch millisecond timestamp of the last action, or null if none.
    */
-  async getLastRateLimitTime(prNumber: number, tier: string): Promise<number | null> {
+  async getLastRateLimitTime(repo: string, prNumber: number, tier: string): Promise<number | null> {
     const row = await this.get<{ last: string }>(
-      `SELECT MAX(created_at) as last FROM rate_limits WHERE pr_number = ? AND tier = ?`,
-      [prNumber, tier],
+      `SELECT MAX(created_at) as last FROM rate_limits WHERE repo = ? AND pr_number = ? AND tier = ?`,
+      [repo, prNumber, tier],
     );
     const ts = row?.last ? Date.parse(row.last) : Number.NaN;
     return Number.isNaN(ts) ? null : ts;
@@ -1004,15 +1019,25 @@ export abstract class SqlAdapter implements LearningRepository {
    * Aggregate rate-limit counts grouped by repository.
    * @param sinceMs - Window cutoff as an epoch millisecond timestamp.
    * @param limit - Maximum number of results (default: 10).
+   * @param tier - Optional tier filter (e.g. 'command' to match hourly enforcement).
    * @returns Array of repo/count pairs ordered by count descending.
    */
   async getRateLimitUsageByRepo(
     sinceMs: number,
     limit = 10,
+    tier?: string,
   ): Promise<Array<{ repo: string; count: number }>> {
+    const clauses: string[] = ['created_at >= ?'];
+    const params: unknown[] = [new Date(sinceMs).toISOString()];
+    if (tier) {
+      clauses.push('tier = ?');
+      params.push(tier);
+    }
     return this.all<{ repo: string; count: number }>(
-      `SELECT repo, COUNT(*) as count FROM rate_limits WHERE created_at >= ? GROUP BY repo ORDER BY count DESC LIMIT ?`,
-      [new Date(sinceMs).toISOString(), limit],
+      `SELECT repo, COUNT(*) as count FROM rate_limits WHERE ${clauses.join(
+        ' AND ',
+      )} GROUP BY repo ORDER BY count DESC LIMIT ?`,
+      [...params, limit],
     );
   }
 

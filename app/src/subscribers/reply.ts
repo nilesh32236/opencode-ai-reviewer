@@ -36,16 +36,26 @@ export function createReplySubscriber(rateLimiter: RateLimiter): Subscriber {
         // conversational reply.
         if (parseCommand(body)?.command === 'dismiss') return;
 
+        // A reply that @mentions the bot is handled by ConversationSubscriber,
+        // so defer here to avoid double LLM calls and double rate-limit charges.
+        const config = buildConfig();
+        const mentionHandle = config.conversation.mentionHandle ?? '';
+        if (
+          config.conversation.enabled &&
+          mentionHandle &&
+          body.toLowerCase().includes(`@${mentionHandle.toLowerCase()}`)
+        ) {
+          return;
+        }
+
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;
 
-        const config = buildConfig();
-
-        const ok = await checkRateLimit(rateLimiter, event, 'interactive', 'reply');
-        if (!ok) return;
+        const reservation = await checkRateLimit(rateLimiter, event, 'interactive', 'reply');
+        if (!reservation) return;
 
         await handleReply(prNumber, event.repo || '', getToken(), config, parentId, body);
-        await recordRateLimit(rateLimiter, event, 'interactive', 'reply');
+        await recordRateLimit(rateLimiter, event, 'interactive', 'reply', reservation);
       } catch (err) {
         logger.error(`ReplySubscriber failed: ${err instanceof Error ? err.message : err}`);
       }

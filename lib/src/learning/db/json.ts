@@ -407,9 +407,19 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
   /**
    * Record a rate-limited action.
    * @param input - Rate limit action data to append.
+   * @returns The generated row ID, for later token reconciliation.
    */
-  async recordRateLimitAction(input: RateLimitActionInput): Promise<void> {
+  async recordRateLimitAction(input: RateLimitActionInput): Promise<string> {
     return this.db.recordRateLimitAction(input);
+  }
+
+  /**
+   * Reconcile a reserved rate-limit row with its actual token usage.
+   * @param id - Row ID returned by recordRateLimitAction.
+   * @param tokensUsed - Actual tokens consumed by the run.
+   */
+  async completeRateLimitAction(id: string, tokensUsed: number): Promise<void> {
+    return this.db.completeRateLimitAction(id, tokensUsed);
   }
 
   /**
@@ -431,26 +441,29 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
-   * Get the most recent rate-limit action time for a PR and tier.
+   * Get the most recent rate-limit action time for a repo, PR, and tier.
+   * @param repo - Repository in owner/repo format.
    * @param prNumber - PR number to look up.
    * @param tier - Tier ('command' or 'interactive').
    * @returns Epoch millisecond timestamp of the last action, or null if none.
    */
-  async getLastRateLimitTime(prNumber: number, tier: string): Promise<number | null> {
-    return this.db.getLastRateLimitTime(prNumber, tier);
+  async getLastRateLimitTime(repo: string, prNumber: number, tier: string): Promise<number | null> {
+    return this.db.getLastRateLimitTime(repo, prNumber, tier);
   }
 
   /**
    * Aggregate rate-limit counts grouped by repository.
    * @param sinceMs - Window cutoff as an epoch millisecond timestamp.
    * @param limit - Maximum number of results (default: 10).
+   * @param tier - Optional tier filter (e.g. 'command' to match hourly enforcement).
    * @returns Array of repo/count pairs ordered by count descending.
    */
   async getRateLimitUsageByRepo(
     sinceMs: number,
     limit = 10,
+    tier?: string,
   ): Promise<Array<{ repo: string; count: number }>> {
-    return this.db.getRateLimitUsageByRepo(sinceMs, limit);
+    return this.db.getRateLimitUsageByRepo(sinceMs, limit, tier);
   }
 
   /**

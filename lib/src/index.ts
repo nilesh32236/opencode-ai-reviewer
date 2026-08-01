@@ -148,5 +148,4 @@ export type {
   RateLimitCheckOptions,
   RateLimitStatus,
   RateLimitReason,
-  RateLimitTier,
 } from './utils/rate-limiter.js';

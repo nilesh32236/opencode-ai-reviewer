@@ -22,6 +22,7 @@ const BASE_CONFIG: RateLimitingConfig = {
 };
 
 interface Row {
+  id: string;
   repo: string;
   github_user: string;
   pr_number: number;
@@ -38,8 +39,10 @@ class MockStore implements RateLimitStore {
     return new Date(ts).toISOString();
   }
 
-  async recordRateLimitAction(input: RateLimitActionInput): Promise<void> {
+  async recordRateLimitAction(input: RateLimitActionInput): Promise<string> {
+    const id = `row-${this.rows.length}`;
     this.rows.push({
+      id,
       repo: input.repo,
       github_user: input.githubUser,
       pr_number: input.prNumber,
@@ -48,6 +51,12 @@ class MockStore implements RateLimitStore {
       tokens_used: input.tokensUsed,
       created_at: this.iso(Date.now()),
     });
+    return id;
+  }
+
+  async completeRateLimitAction(id: string, tokensUsed: number): Promise<void> {
+    const row = this.rows.find((r) => r.id === id);
+    if (row) row.tokens_used = tokensUsed;
   }
 
   async countRateLimitActions(filter: RateLimitCountFilter): Promise<number> {
@@ -66,9 +75,9 @@ class MockStore implements RateLimitStore {
       .reduce((sum, r) => sum + r.tokens_used, 0);
   }
 
-  async getLastRateLimitTime(prNumber: number, tier: string): Promise<number | null> {
+  async getLastRateLimitTime(repo: string, prNumber: number, tier: string): Promise<number | null> {
     const times = this.rows
-      .filter((r) => r.pr_number === prNumber && r.tier === tier)
+      .filter((r) => r.repo === repo && r.pr_number === prNumber && r.tier === tier)
       .map((r) => Date.parse(r.created_at));
     return times.length > 0 ? Math.max(...times) : null;
   }
@@ -76,10 +85,12 @@ class MockStore implements RateLimitStore {
   async getRateLimitUsageByRepo(
     sinceMs: number,
     limit = 10,
+    tier?: string,
   ): Promise<Array<{ repo: string; count: number }>> {
     const counts = new Map<string, number>();
     for (const r of this.rows) {
       if (Date.parse(r.created_at) < sinceMs) continue;
+      if (tier && r.tier !== tier) continue;
       counts.set(r.repo, (counts.get(r.repo) ?? 0) + 1);
     }
     return [...counts.entries()]
@@ -146,6 +157,75 @@ describe('RateLimiter', () => {
     expect(result.remaining).toBeGreaterThan(0);
   });
 
+  it('reserves a rate-limit slot at check time so concurrent requests are counted', async () => {
+    limiter = new RateLimiter(makeConfig({ reviewsPerRepoPerHour: 1 }), store);
+
+    const first = await limiter.checkReview('org/repo', 'alice', 1, { tier: 'command' });
+    expect(first.allowed).toBe(true);
+    expect(first.reservationId).toBeDefined();
+    // The reservation is persisted before the (potentially slow) run finishes,
+    // so a burst of concurrent events sees it immediately.
+    expect(store.rows).toHaveLength(1);
+
+    const second = await limiter.checkReview('org/repo', 'bob', 2, { tier: 'command' });
+    expect(second.allowed).toBe(false);
+    expect(second.reason).toBe('repo_hourly');
+  });
+
+  it('reconciles the reserved row with actual token usage on completion', async () => {
+    const result = await limiter.checkReview('org/repo', 'alice', 1, { tier: 'command' });
+    expect(result.allowed).toBe(true);
+    expect(result.reservationId).toBeDefined();
+
+    await limiter.recordReview(
+      'org/repo',
+      'alice',
+      1,
+      'review',
+      'command',
+      12000,
+      result.reservationId,
+    );
+
+    expect(store.rows).toHaveLength(1);
+    expect(store.rows[0].tokens_used).toBe(12000);
+  });
+
+  it('keeps the reserved estimate when a run fails, so failed attempts count', async () => {
+    limiter = new RateLimiter(makeConfig({ reviewsPerRepoPerHour: 1 }), store);
+    const result = await limiter.checkReview('org/repo', 'alice', 1, { tier: 'command' });
+    expect(result.allowed).toBe(true);
+
+    // Simulate a failed run: no recordReview call completes the reservation.
+    expect(store.rows).toHaveLength(1);
+    expect(store.rows[0].tokens_used).toBe(25000);
+
+    const second = await limiter.checkReview('org/repo', 'alice', 2, { tier: 'command' });
+    expect(second.allowed).toBe(false);
+    expect(second.reason).toBe('repo_hourly');
+  });
+
+  it('scopes the per-PR cooldown by repository', async () => {
+    limiter = new RateLimiter(makeConfig({ prCooldownMinutes: 2 }), store);
+    await limiter.recordReview('org/repo', 'alice', 42, 'review', 'command');
+
+    const sameRepo = await limiter.checkReview('org/repo', 'bob', 42, { tier: 'command' });
+    expect(sameRepo.allowed).toBe(false);
+    expect(sameRepo.reason).toBe('pr_cooldown');
+
+    const otherRepo = await limiter.checkReview('other/repo', 'bob', 42, { tier: 'command' });
+    expect(otherRepo.allowed).toBe(true);
+  });
+
+  it('filters the status per-repo hourly usage to the command tier', async () => {
+    await limiter.recordReview('org/repo', 'alice', 1, 'review', 'command');
+    await limiter.recordReview('org/repo', 'alice', 2, 'conversation', 'interactive');
+
+    const status = await limiter.getStatus();
+    expect(status.repoHourly).toHaveLength(1);
+    expect(status.repoHourly[0]).toEqual({ repo: 'org/repo', count: 1, limit: 10 });
+  });
+
   it('denies when the per-repo hourly limit is reached (command tier)', async () => {
     limiter = new RateLimiter(makeConfig({ reviewsPerRepoPerHour: 2 }), store);
     await limiter.recordReview('org/repo', 'alice', 1, 'review', 'command');
@@ -197,6 +277,7 @@ describe('RateLimiter', () => {
   it('allows a new action once the cooldown window has expired', async () => {
     limiter = new RateLimiter(makeConfig({ prCooldownMinutes: 1 }), store);
     store.rows.push({
+      id: 'old-row',
       repo: 'org/repo',
       github_user: 'alice',
       pr_number: 42,
@@ -293,7 +374,7 @@ describe('RateLimiter', () => {
     await limiter.recordReview('org/repo', 'alice', 2, 'conversation', 'interactive');
 
     const status = await limiter.getStatus();
-    expect(status.repoHourly[0]).toEqual({ repo: 'org/repo', count: 2, limit: 10 });
+    expect(status.repoHourly[0]).toEqual({ repo: 'org/repo', count: 1, limit: 10 });
     expect(status.userDaily[0]).toEqual({ user: 'alice', count: 2, limit: 50 });
     expect(status.tokenUsageToday).toBeGreaterThan(0);
     expect(status.tokenBudget).toBe(500000);
@@ -302,6 +383,7 @@ describe('RateLimiter', () => {
   it('cleans up stale records beyond the retention window', async () => {
     limiter = new RateLimiter(makeConfig({ retentionHours: 1 }), store);
     store.rows.push({
+      id: 'stale-row',
       repo: 'org/repo',
       github_user: 'alice',
       pr_number: 1,
@@ -311,6 +393,7 @@ describe('RateLimiter', () => {
       created_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
     });
     store.rows.push({
+      id: 'fresh-row',
       repo: 'org/repo',
       github_user: 'alice',
       pr_number: 2,
@@ -394,11 +477,13 @@ describe('LearningStore rate limit persistence', () => {
 
     expect(await store.sumRateLimitTokens(Date.now() - 60_000)).toBe(30000);
 
-    const last = await store.getLastRateLimitTime(7, 'command');
+    const last = await store.getLastRateLimitTime('org/repo', 7, 'command');
     expect(last).not.toBeNull();
     expect(last).toBeLessThanOrEqual(Date.now());
-    expect(await store.getLastRateLimitTime(7, 'interactive')).not.toBeNull();
-    expect(await store.getLastRateLimitTime(999, 'command')).toBeNull();
+    expect(await store.getLastRateLimitTime('org/repo', 7, 'interactive')).not.toBeNull();
+    expect(await store.getLastRateLimitTime('org/repo', 999, 'command')).toBeNull();
+    // The cooldown lookup is scoped per repository.
+    expect(await store.getLastRateLimitTime('other/repo', 7, 'command')).toBeNull();
   });
 
   it('aggregates usage by repo and user', async () => {
@@ -459,6 +544,22 @@ describe('LearningStore rate limit persistence', () => {
     });
     expect(await store.cleanupRateLimits(Date.now() + 60_000)).toBe(1);
     expect(await store.countRateLimitActions({ sinceMs: 0 })).toBe(0);
+  });
+
+  it('reconciles a reserved row with actual token usage', async () => {
+    const id = await store.recordRateLimitAction({
+      repo: 'org/repo',
+      githubUser: 'alice',
+      prNumber: 9,
+      action: 'review',
+      tier: 'command',
+      tokensUsed: 25000,
+    });
+    expect(typeof id).toBe('string');
+    expect(id.length).toBeGreaterThan(0);
+
+    await store.completeRateLimitAction(id, 11000);
+    expect(await store.sumRateLimitTokens(Date.now() - 60_000)).toBe(11000);
   });
 
   it('works end-to-end with the RateLimiter against the real store', async () => {

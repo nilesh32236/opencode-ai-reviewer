@@ -1034,10 +1034,12 @@ export class JsonDatabase implements LearningRepository {
   /**
    * Record a rate-limited action.
    * @param input - Rate limit action data to append.
+   * @returns The generated row ID, for later token reconciliation.
    */
-  async recordRateLimitAction(input: RateLimitActionInput): Promise<void> {
+  async recordRateLimitAction(input: RateLimitActionInput): Promise<string> {
+    const id = generateId();
     this.data.rate_limits.push({
-      id: generateId(),
+      id,
       repo: input.repo,
       github_user: input.githubUser,
       pr_number: input.prNumber,
@@ -1046,6 +1048,19 @@ export class JsonDatabase implements LearningRepository {
       tokens_used: input.tokensUsed,
       created_at: new Date().toISOString(),
     });
+    this.save();
+    return id;
+  }
+
+  /**
+   * Reconcile a reserved rate-limit row with its actual token usage.
+   * @param id - Row ID returned by recordRateLimitAction.
+   * @param tokensUsed - Actual tokens consumed by the run.
+   */
+  async completeRateLimitAction(id: string, tokensUsed: number): Promise<void> {
+    const row = this.data.rate_limits.find((r) => r.id === id);
+    if (!row) return;
+    row.tokens_used = tokensUsed;
     this.save();
   }
 
@@ -1081,15 +1096,18 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   * Get the most recent rate-limit action time for a PR and tier.
+   * Get the most recent rate-limit action time for a repo, PR, and tier.
+   * PR/issue numbers are scoped per repository, so the repo dimension is
+   * required to avoid cross-repo cooldown collisions.
+   * @param repo - Repository in owner/repo format.
    * @param prNumber - PR number to look up.
    * @param tier - Tier ('command' or 'interactive').
    * @returns Epoch millisecond timestamp of the last action, or null if none.
    */
-  async getLastRateLimitTime(prNumber: number, tier: string): Promise<number | null> {
+  async getLastRateLimitTime(repo: string, prNumber: number, tier: string): Promise<number | null> {
     let last: number | null = null;
     for (const r of this.data.rate_limits) {
-      if (r.pr_number !== prNumber || r.tier !== tier) continue;
+      if (r.repo !== repo || r.pr_number !== prNumber || r.tier !== tier) continue;
       const ts = Date.parse(r.created_at);
       if (!Number.isNaN(ts) && (last === null || ts > last)) {
         last = ts;
@@ -1102,16 +1120,19 @@ export class JsonDatabase implements LearningRepository {
    * Aggregate rate-limit counts grouped by repository.
    * @param sinceMs - Window cutoff as an epoch millisecond timestamp.
    * @param limit - Maximum number of results (default: 10).
+   * @param tier - Optional tier filter (e.g. 'command' to match hourly enforcement).
    * @returns Array of repo/count pairs ordered by count descending.
    */
   async getRateLimitUsageByRepo(
     sinceMs: number,
     limit = 10,
+    tier?: string,
   ): Promise<Array<{ repo: string; count: number }>> {
     const counts = new Map<string, number>();
     for (const r of this.data.rate_limits) {
       const ts = Date.parse(r.created_at);
       if (Number.isNaN(ts) || ts < sinceMs) continue;
+      if (tier && r.tier !== tier) continue;
       counts.set(r.repo, (counts.get(r.repo) ?? 0) + 1);
     }
     return [...counts.entries()]

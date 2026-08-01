@@ -1,7 +1,8 @@
-import type { LearningFeedback, LearningQuality } from '../types/index.js';
+import type { LearningFeedback, LearningQuality, RateLimitTier } from '../types/index.js';
 import type { CustomRuleRow, FindingRow, PatternRow, ReviewQualityRow } from './json-db.js';
 
 export type { CustomRuleRow, FindingRow, PatternRow, ReviewQualityRow };
+export type { RateLimitTier };
 
 /** Input data for recording a single review finding. */
 export interface FindingInput {
@@ -41,9 +42,6 @@ export interface PatternInput {
   frequency: number;
   fileTypes: string[];
 }
-
-/** Tier of a rate-limited action. */
-export type RateLimitTier = 'command' | 'interactive';
 
 /** Input data for recording a rate-limited action in the learning store. */
 export interface RateLimitActionInput {
@@ -320,10 +318,22 @@ export interface LearningRepository {
 
   /**
    * Record a rate-limited action (slash command, conversation, or reply).
+   * The returned ID can be passed to completeRateLimitAction to reconcile the
+   * estimated token charge with actual usage after the run finishes.
    * @param input - Rate limit action data including repo, user, PR, tier, and tokens.
-   * @returns Promise that resolves when the action is recorded.
+   * @returns The generated row ID.
    */
-  recordRateLimitAction(input: RateLimitActionInput): Promise<void>;
+  recordRateLimitAction(input: RateLimitActionInput): Promise<string>;
+  /**
+   * Reconcile a previously reserved rate-limit row with its actual token usage.
+   * Used to close the check-then-run race: a row is reserved at check time and
+   * updated here after the run completes (including failed runs, which keep the
+   * reserved estimate so they still count toward limits).
+   * @param id - Row ID returned by recordRateLimitAction.
+   * @param tokensUsed - Actual tokens consumed by the run.
+   * @returns Promise that resolves when the row is updated.
+   */
+  completeRateLimitAction(id: string, tokensUsed: number): Promise<void>;
   /**
    * Count rate-limit action rows matching a filter.
    * @param filter - Filter with optional repo/user/tier and required sinceMs cutoff.
@@ -337,21 +347,26 @@ export interface LearningRepository {
    */
   sumRateLimitTokens(sinceMs: number): Promise<number>;
   /**
-   * Get the most recent rate-limit action timestamp for a PR and tier.
+   * Get the most recent rate-limit action timestamp for a repo, PR, and tier.
+   * PR/issue numbers are scoped per repository, so the repo dimension is
+   * required to avoid cross-repo cooldown collisions.
+   * @param repo - Repository in owner/repo format.
    * @param prNumber - PR number to look up.
    * @param tier - Tier ('command' or 'interactive') to look up.
    * @returns Epoch millisecond timestamp of the last action, or null if none.
    */
-  getLastRateLimitTime(prNumber: number, tier: string): Promise<number | null>;
+  getLastRateLimitTime(repo: string, prNumber: number, tier: string): Promise<number | null>;
   /**
    * Aggregate rate-limit action counts grouped by repository.
    * @param sinceMs - Only include rows at or after this epoch millisecond timestamp.
    * @param limit - Maximum number of results (default: 10).
+   * @param tier - Optional tier filter (e.g. 'command' to match hourly enforcement).
    * @returns Array of repo/count pairs ordered by count descending.
    */
   getRateLimitUsageByRepo(
     sinceMs: number,
     limit?: number,
+    tier?: string,
   ): Promise<Array<{ repo: string; count: number }>>;
   /**
    * Aggregate rate-limit action counts grouped by GitHub user.

@@ -39,8 +39,8 @@ export function createFixSubscriber(rateLimiter: RateLimiter): Subscriber {
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;
 
-        const ok = await checkRateLimit(rateLimiter, event, 'command', 'fix');
-        if (!ok) return;
+        const reservation = await checkRateLimit(rateLimiter, event, 'command', 'fix');
+        if (!reservation) return;
 
         await handleCommand(
           'fix',
@@ -51,7 +51,7 @@ export function createFixSubscriber(rateLimiter: RateLimiter): Subscriber {
           parsed ?? undefined,
           signal,
         );
-        await recordRateLimit(rateLimiter, event, 'command', 'fix');
+        await recordRateLimit(rateLimiter, event, 'command', 'fix', reservation);
       } catch (err) {
         logger.error(
           `FixSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${err instanceof Error ? err.message : err}`,

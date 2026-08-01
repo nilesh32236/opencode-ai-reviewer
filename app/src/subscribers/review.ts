@@ -53,8 +53,15 @@ export function createReviewSubscriber(
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;
 
-        const ok = await checkRateLimit(rateLimiter, event, 'command', 'review');
-        if (!ok) return;
+        // Auto-triggered events (pr.opened / pr.synchronize) go through the same
+        // command-tier guardrails, but no user invoked the bot, so a denial comment
+        // would be misleading — enforce silently in that case.
+        const isCommandInvoked =
+          event.type === 'comment.created' || event.type === 'review_comment.created';
+        const reservation = await checkRateLimit(rateLimiter, event, 'command', 'review', {
+          postDenialComment: isCommandInvoked,
+        });
+        if (!reservation) return;
 
         const previousHeadSha =
           event.type === 'pr.synchronize'
@@ -72,7 +79,14 @@ export function createReviewSubscriber(
           previousHeadSha,
         );
         if (result) {
-          await recordRateLimit(rateLimiter, event, 'command', 'review');
+          await recordRateLimit(
+            rateLimiter,
+            event,
+            'command',
+            'review',
+            reservation,
+            result.usage?.totalTokens,
+          );
           try {
             await bus.publish({
               type: 'review.completed',

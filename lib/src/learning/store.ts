@@ -572,14 +572,34 @@ export class LearningStore {
    * Errors are logged but not thrown (graceful degradation).
    *
    * @param input - Rate limit action data including repo, user, PR, tier, and tokens.
+   * @returns The generated row ID, or an empty string when the store is unavailable.
    */
-  async recordRateLimitAction(input: RateLimitActionInput): Promise<void> {
+  async recordRateLimitAction(input: RateLimitActionInput): Promise<string> {
     try {
       const repo = await this.repoPromise;
-      await repo.recordRateLimitAction(input);
+      return await repo.recordRateLimitAction(input);
     } catch (err) {
       const logger = new Logger('LearningStore');
       logger.warn('Failed to record rate limit action', err);
+      return '';
+    }
+  }
+
+  /**
+   * Reconcile a reserved rate-limit row with its actual token usage.
+   * Errors are logged but not thrown (graceful degradation).
+   *
+   * @param id - Row ID returned by recordRateLimitAction.
+   * @param tokensUsed - Actual tokens consumed by the run.
+   */
+  async completeRateLimitAction(id: string, tokensUsed: number): Promise<void> {
+    if (!id) return;
+    try {
+      const repo = await this.repoPromise;
+      await repo.completeRateLimitAction(id, tokensUsed);
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.warn('Failed to complete rate limit action', err);
     }
   }
 
@@ -593,7 +613,9 @@ export class LearningStore {
     try {
       const repo = await this.repoPromise;
       return await repo.countRateLimitActions(filter);
-    } catch {
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.error('Rate-limit read failed (countRateLimitActions), failing open with 0', err);
       return 0;
     }
   }
@@ -608,23 +630,28 @@ export class LearningStore {
     try {
       const repo = await this.repoPromise;
       return await repo.sumRateLimitTokens(sinceMs);
-    } catch {
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.error('Rate-limit read failed (sumRateLimitTokens), failing open with 0', err);
       return 0;
     }
   }
 
   /**
-   * Get the most recent rate-limit action time for a PR and tier.
+   * Get the most recent rate-limit action time for a repo, PR, and tier.
    *
+   * @param repo - Repository in owner/repo format.
    * @param prNumber - PR number to look up.
    * @param tier - Tier ('command' or 'interactive').
    * @returns Epoch millisecond timestamp of the last action, or null if none.
    */
-  async getLastRateLimitTime(prNumber: number, tier: string): Promise<number | null> {
+  async getLastRateLimitTime(repo: string, prNumber: number, tier: string): Promise<number | null> {
     try {
-      const repo = await this.repoPromise;
-      return await repo.getLastRateLimitTime(prNumber, tier);
-    } catch {
+      const storeRepo = await this.repoPromise;
+      return await storeRepo.getLastRateLimitTime(repo, prNumber, tier);
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.error('Rate-limit read failed (getLastRateLimitTime), failing open with null', err);
       return null;
     }
   }
@@ -634,16 +661,20 @@ export class LearningStore {
    *
    * @param sinceMs - Only include rows at or after this epoch millisecond timestamp.
    * @param limit - Maximum number of results (default: 10).
+   * @param tier - Optional tier filter (e.g. 'command' to match hourly enforcement).
    * @returns Array of repo/count pairs ordered by count descending.
    */
   async getRateLimitUsageByRepo(
     sinceMs: number,
     limit = 10,
+    tier?: string,
   ): Promise<Array<{ repo: string; count: number }>> {
     try {
       const repo = await this.repoPromise;
-      return await repo.getRateLimitUsageByRepo(sinceMs, limit);
-    } catch {
+      return await repo.getRateLimitUsageByRepo(sinceMs, limit, tier);
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.error('Rate-limit read failed (getRateLimitUsageByRepo), returning empty', err);
       return [];
     }
   }
@@ -662,7 +693,9 @@ export class LearningStore {
     try {
       const repo = await this.repoPromise;
       return await repo.getRateLimitUsageByUser(sinceMs, limit);
-    } catch {
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.error('Rate-limit read failed (getRateLimitUsageByUser), returning empty', err);
       return [];
     }
   }
@@ -678,7 +711,9 @@ export class LearningStore {
     try {
       const storeRepo = await this.repoPromise;
       return await storeRepo.resetRateLimits(repo, user);
-    } catch {
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.error('Rate-limit reset failed, returning 0', err);
       return 0;
     }
   }
@@ -693,7 +728,9 @@ export class LearningStore {
     try {
       const repo = await this.repoPromise;
       return await repo.cleanupRateLimits(olderThanMs);
-    } catch {
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.error('Rate-limit cleanup failed, returning 0', err);
       return 0;
     }
   }

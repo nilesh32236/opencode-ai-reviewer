@@ -1,14 +1,16 @@
 import { Logger } from '@opencode-pr-agent/lib';
-import type { GitHubEvent, Subscriber } from '@opencode-pr-agent/lib';
+import type { GitHubEvent, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
 import { handleCommand } from '../handlers/commands.js';
 import { buildConfig } from '../utils/config.js';
+import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
 /**
  * Create a subscriber that auto-analyzes newly opened issues with the `needs-analysis` label.
+ * @param rateLimiter - The shared rate limiter for cost control.
  * @returns A subscriber object for auto-analysis.
  */
-export function createAutoAnalyzeSubscriber(): Subscriber {
+export function createAutoAnalyzeSubscriber(rateLimiter: RateLimiter): Subscriber {
   const logger = new Logger('AutoAnalyzeSubscriber');
   return {
     name: 'AutoAnalyzeSubscriber',
@@ -36,6 +38,9 @@ export function createAutoAnalyzeSubscriber(): Subscriber {
         const needsAnalysis = issueLabels.includes('needs-analysis');
         if (!needsAnalysis) return;
 
+        const reservation = await checkRateLimit(rateLimiter, event, 'command', 'analyze');
+        if (!reservation) return;
+
         await handleCommand(
           'analyze',
           issueNumber,
@@ -45,6 +50,7 @@ export function createAutoAnalyzeSubscriber(): Subscriber {
           undefined,
           signal,
         );
+        await recordRateLimit(rateLimiter, event, 'command', 'analyze', reservation);
       } catch (err) {
         logger.error(`AutoAnalyzeSubscriber failed: ${err instanceof Error ? err.message : err}`);
       }

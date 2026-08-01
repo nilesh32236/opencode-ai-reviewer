@@ -1,6 +1,11 @@
 import { GitHubHelper, Logger, parseCommand } from '@opencode-pr-agent/lib';
-import type { GitHubEvent, RateLimitStatus, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
-import { buildConfig } from '../utils/config.js';
+import type {
+  AgentConfig,
+  GitHubEvent,
+  RateLimitStatus,
+  RateLimiter,
+  Subscriber,
+} from '@opencode-pr-agent/lib';
 import { getToken } from '../utils/token.js';
 
 const STATUS_MARKER = '<!-- rate-limits-status -->';
@@ -8,11 +13,13 @@ const STATUS_MARKER = '<!-- rate-limits-status -->';
 /**
  * Create a subscriber that handles `/rate-limits` (view usage) and
  * `/rate-limits-reset` (reset limits) admin commands. Only GitHub users listed
- * in `rateLimiting.adminUsers` are allowed to run these.
+ * in `rateLimiting.adminUsers` (compared case-insensitively) are allowed to run
+ * these.
  * @param rateLimiter - The shared RateLimiter instance.
+ * @param config - The resolved agent configuration (source of adminUsers).
  * @returns A subscriber object for admin rate limit commands.
  */
-export function createAdminSubscriber(rateLimiter: RateLimiter): Subscriber {
+export function createAdminSubscriber(rateLimiter: RateLimiter, config: AgentConfig): Subscriber {
   const logger = new Logger('AdminSubscriber');
   return {
     name: 'AdminSubscriber',
@@ -31,10 +38,11 @@ export function createAdminSubscriber(rateLimiter: RateLimiter): Subscriber {
           return;
         }
 
-        const config = buildConfig();
         const adminUsers = config.rateLimiting.adminUsers || [];
         const author = (comment?.user as Record<string, string> | undefined)?.login || '';
-        if (!adminUsers.includes(author)) return;
+        if (!adminUsers.some((u) => u.toLowerCase() === author.toLowerCase())) {
+          return;
+        }
 
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;
@@ -68,6 +76,18 @@ async function handleReset(
   parsed: { flags: Record<string, string | boolean> },
   prNumber: number,
 ): Promise<void> {
+  // The flag parser only captures values after '='. A space-separated form like
+  // `--repo <name>` parses --repo as boolean true; treat that as invalid syntax
+  // rather than silently falling through to a global reset.
+  if (parsed.flags.repo === true || parsed.flags.user === true) {
+    await gh.postOrUpdateComment(
+      prNumber,
+      STATUS_MARKER,
+      'Invalid syntax — use `--repo=<name>` or `--user=<login>` (equals form).',
+    );
+    return;
+  }
+
   const repoFlag =
     typeof parsed.flags.repo === 'string' ? (parsed.flags.repo as string) : undefined;
   const userFlag =

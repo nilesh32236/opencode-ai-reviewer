@@ -1003,8 +1003,6 @@ export interface PromptConfig {
   overrides?: ConfigOverride[];
   /** Linter configuration */
   linters?: LinterConfig[];
-  /** Rate limiting configuration (documented for parity; enforced via AgentConfig in the Probot app) */
-  rateLimiting?: RateLimitingConfig;
 }
 
 // ─── Defaults ─────────────────────────────────────────────

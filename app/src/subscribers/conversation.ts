@@ -50,8 +50,8 @@ export function createConversationSubscriber(
 
         const isReviewComment = event.type === 'review_comment.created';
 
-        const ok = await checkRateLimit(rateLimiter, event, 'interactive', 'conversation');
-        if (!ok) return;
+        const reservation = await checkRateLimit(rateLimiter, event, 'interactive', 'conversation');
+        if (!reservation) return;
 
         await handleConversation(
           commentId,
@@ -63,7 +63,7 @@ export function createConversationSubscriber(
           learningStore,
           signal,
         );
-        await recordRateLimit(rateLimiter, event, 'interactive', 'conversation');
+        await recordRateLimit(rateLimiter, event, 'interactive', 'conversation', reservation);
       } catch (err) {
         logger.error(
           `ConversationSubscriber failed for repo ${event.repo}: ${err instanceof Error ? err.message : err}`,

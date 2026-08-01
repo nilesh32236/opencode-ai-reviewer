@@ -381,7 +381,6 @@ export const PromptConfigSchema = z.object({
     .optional(),
   overrides: z.array(ConfigOverrideSchema).optional(),
   linters: z.array(LinterConfigSchema).optional(),
-  rateLimiting: RateLimitingConfigSchema.optional(),
 });
 
 /**
