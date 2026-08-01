@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.26] — 2026-08-01
+
+
+### Fixed
+
+- self-heal CI failure (attempt 1) [`lint-error` — eslint `jsdoc/require-param` **errors** in the `ci` → `verify docstring coverage` step (`pnpm doc:check`).] (#313) (#313)
+
+### Changed
+
+- [Autofix] 77: No graceful degradation when OpenCode CLI is not available or version mismatch (#314) (#314)
+- [Autofix] Issue 29: No threshold tuning or per-repository sensitivity configuration (#312) (#312)
+
+[v1.6.26]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.25...v1.6.26
+
 ## [v1.6.25] — 2026-08-01
 
 
