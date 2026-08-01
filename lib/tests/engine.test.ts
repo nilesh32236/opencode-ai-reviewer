@@ -1850,6 +1850,70 @@ describe('ReviewEngine', () => {
       expect(result.usage?.estimatedCost).toBeCloseTo(0.004 + 0.002, 6);
     });
 
+    it('prices the uncovered remainder when only the prompt side is parsed', async () => {
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 500,
+        promptTokens: 300,
+      });
+
+      const eng = new ReviewEngine(
+        makeCostTrackingConfig({
+          review: {
+            ...DEFAULT_CONFIG.review,
+            costTracking: {
+              enabled: true,
+              verbosity: 'detailed',
+              inputCostPer1K: 0.01,
+              outputCostPer1K: 0.02,
+            },
+          },
+        }),
+        mockAdapter,
+      );
+
+      const result = await eng.reviewPR(pr);
+
+      // 300 prompt tokens priced at the input rate plus the 200 uncovered
+      // tokens priced at the same (input) rate — partial parsing must not
+      // silently drop the remainder.
+      expect(result.usage?.promptTokens).toBe(300);
+      expect(result.usage?.completionTokens).toBeUndefined();
+      expect(result.usage?.estimatedCost).toBeCloseTo((500 / 1000) * 0.01, 6);
+    });
+
+    it('prices the full total as input tokens when no breakdown is parsed', async () => {
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 500,
+      });
+
+      const eng = new ReviewEngine(
+        makeCostTrackingConfig({
+          review: {
+            ...DEFAULT_CONFIG.review,
+            costTracking: {
+              enabled: true,
+              verbosity: 'detailed',
+              inputCostPer1K: 0.01,
+              outputCostPer1K: 0.02,
+            },
+          },
+        }),
+        mockAdapter,
+      );
+
+      const result = await eng.reviewPR(pr);
+
+      expect(result.usage?.promptTokens).toBeUndefined();
+      expect(result.usage?.completionTokens).toBeUndefined();
+      expect(result.usage?.estimatedCost).toBeCloseTo((500 / 1000) * 0.01, 6);
+    });
+
     it('falls back to known model rates when config rates are absent', async () => {
       const eng = new ReviewEngine(
         makeCostTrackingConfig(

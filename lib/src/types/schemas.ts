@@ -104,17 +104,22 @@ export const ReviewBudgetConfigSchema = z
 
 /**
  * Zod schema validating token usage / cost tracking configuration.
- * No `.default({})` here on purpose: when costTracking is absent from the
- * config file the key must stay `undefined` so action inputs (the primary
- * opt-in mechanism) are honored via the `??` fallback. Inner per-field
- * defaults still apply when the object IS provided.
+ * Every field is optional and the whole object is wrapped in `.catch({})` so
+ * a malformed costTracking block (string boolean, quoted rate, invalid
+ * verbosity) falls back to an empty object instead of failing the whole config
+ * parse and silently discarding unrelated settings. `enabled`/`verbosity` have
+ * no schema-level defaults: when the config file omits them (or defines only
+ * rates), they stay `undefined` so the action inputs — the primary opt-in
+ * mechanism — are honored via the `??` fallback in the action wrapper.
  */
-export const CostTrackingConfigSchema = z.object({
-  enabled: z.boolean().default(false),
-  verbosity: z.enum(['off', 'summary', 'detailed']).default('summary'),
-  inputCostPer1K: z.number().nonnegative().optional(),
-  outputCostPer1K: z.number().nonnegative().optional(),
-});
+export const CostTrackingConfigSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    verbosity: z.enum(['off', 'summary', 'detailed']).optional(),
+    inputCostPer1K: z.number().nonnegative().optional(),
+    outputCostPer1K: z.number().nonnegative().optional(),
+  })
+  .catch({});
 
 /** Zod schema validating review configuration. */
 export const ReviewConfigSchema = z.object({

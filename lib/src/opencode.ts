@@ -387,14 +387,22 @@ export function parseTokenUsageDetailed(output: string): TokenUsageBreakdown {
     if (match) {
       const parsed = Number.parseInt(match[1].replace(/,/g, ''), 10);
       if (Number.isSafeInteger(parsed) && parsed >= 0) {
-        return {
-          totalTokens: parsed,
-          promptTokens: extractSingleToken(output, /\bprompt_tokens\b["\s]*[:=]\s*([\d,]+)/i),
-          completionTokens: extractSingleToken(
-            output,
-            /\bcompletion_tokens\b["\s]*[:=]\s*([\d,]+)/i,
-          ),
-        };
+        // Prefer the OpenAI-style prompt/completion pair, but some providers
+        // (e.g. proxies/OpenRouter) report total_tokens together with the
+        // Anthropic/Gemini input/output pair. Fall back to that pair so the
+        // breakdown is not silently dropped for cost estimation.
+        let promptTokens = extractSingleToken(output, /\bprompt_tokens\b["\s]*[:=]\s*([\d,]+)/i);
+        if (promptTokens === undefined) {
+          promptTokens = extractSingleToken(output, /\binput_tokens\b["\s]*[:=]\s*([\d,]+)/i);
+        }
+        let completionTokens = extractSingleToken(
+          output,
+          /\bcompletion_tokens\b["\s]*[:=]\s*([\d,]+)/i,
+        );
+        if (completionTokens === undefined) {
+          completionTokens = extractSingleToken(output, /\boutput_tokens\b["\s]*[:=]\s*([\d,]+)/i);
+        }
+        return { totalTokens: parsed, promptTokens, completionTokens };
       }
     }
   }

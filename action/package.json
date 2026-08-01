@@ -4,7 +4,7 @@
   "private": true,
   "main": "lib/index.js",
   "scripts": {
-    "build": "ncc build src/index.ts -o lib --minify && ncc build src/post.ts -o lib/post --minify",
+    "build": "ncc build src/index.ts -o lib --minify && ncc build src/post-entry.ts -o lib/post --minify",
     "build:tsc": "tsc",
     "watch": "tsc --watch",
     "test": "vitest run",

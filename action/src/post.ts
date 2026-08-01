@@ -1,8 +1,13 @@
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as github from '@actions/github';
-import type { PlatformAdapter } from '@opencode-pr-agent/lib';
-import { LearningStore, validateRunChecksCommand } from '@opencode-pr-agent/lib';
+import type { PlatformAdapter, TokenUsage } from '@opencode-pr-agent/lib';
+import {
+  LearningStore,
+  buildTokenUsageSection,
+  validateRunChecksCommand,
+  withRetry,
+} from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { sanitize } from './utils.js';
 
@@ -67,36 +72,43 @@ export async function runPost(
   // Gating on the presence of saved state (rather than the raw workflow inputs)
   // keeps this consistent with the effective merged config: review.ts already
   // applied the config-file + inputs gate before saving state.
-  const tokenUsage = core.getState('token_usage');
-  if (tokenUsage) {
+  //
+  // NOTE: core.saveState/core.getState persist only within the same GitHub
+  // Actions job (STATE_* env vars). On other platforms (e.g. GitLab, where the
+  // post phase typically runs in a separate job) getState returns '' and this
+  // comment is skipped — the token_usage / cost step outputs remain the
+  // cross-platform surface for automation.
+  const tokenUsageState = core.getState('token_usage');
+  if (tokenUsageState) {
     try {
-      const rows = [
-        '## Token Usage',
-        '',
-        '| Metric | Value |',
-        '|--------|-------|',
-        `| Total Tokens | ${Number(tokenUsage).toLocaleString()} |`,
-      ];
-      // Detailed verbosity renders the prompt/completion breakdown, which
-      // review.ts saves to state only when verbosity is 'detailed'.
+      const usage: TokenUsage = {
+        totalTokens: Number(tokenUsageState),
+        durationMs: Number(core.getState('token_usage_duration') ?? 0),
+      };
+      // Detailed verbosity saves the prompt/completion breakdown, which
+      // review.ts persists to state only when verbosity is 'detailed'.
       const promptTokens = core.getState('token_usage_prompt');
       if (promptTokens) {
-        rows.push(`| Prompt Tokens | ${Number(promptTokens).toLocaleString()} |`);
+        usage.promptTokens = Number(promptTokens);
       }
       const completionTokens = core.getState('token_usage_completion');
       if (completionTokens) {
-        rows.push(`| Completion Tokens | ${Number(completionTokens).toLocaleString()} |`);
-      }
-      const durationMs = core.getState('token_usage_duration');
-      if (durationMs) {
-        rows.push(`| Duration | ${(Number(durationMs) / 1000).toFixed(1)}s |`);
+        usage.completionTokens = Number(completionTokens);
       }
       const cost = core.getState('cost');
       if (cost) {
-        rows.push(`| Estimated Cost | $${Number(cost).toFixed(4)} |`);
+        usage.estimatedCost = Number(cost);
       }
-      await gh.postOrUpdateComment(prNumber, '<!-- token-usage -->', rows.join('\n'));
-      core.info('Posted token usage summary comment');
+      // buildTokenUsageSection is the single canonical renderer shared with the
+      // lib — it omits rows for undefined fields and returns '' when nothing
+      // meaningful was measured, so a zero-token table is never posted.
+      const section = buildTokenUsageSection(usage);
+      if (section) {
+        await withRetry(() => gh.postOrUpdateComment(prNumber, '<!-- token-usage -->', section), {
+          operationName: 'post token usage comment',
+        });
+        core.info('Posted token usage summary comment');
+      }
     } catch (err) {
       core.warning(
         sanitize(`Failed to post token usage comment: ${err instanceof Error ? err.message : err}`),

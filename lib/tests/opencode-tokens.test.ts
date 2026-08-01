@@ -26,6 +26,25 @@ describe('parseTokenUsageDetailed', () => {
     expect(parseTokenUsageDetailed(output)).toEqual({ totalTokens: 5678 });
   });
 
+  it('falls back to input/output tokens for the breakdown when total_tokens is present', () => {
+    const output = 'Proxy: {"total_tokens": 1000, "input_tokens": 800, "output_tokens": 200}';
+    expect(parseTokenUsageDetailed(output)).toEqual({
+      totalTokens: 1000,
+      promptTokens: 800,
+      completionTokens: 200,
+    });
+  });
+
+  it('prefers prompt/completion over input/output when total_tokens is present with both', () => {
+    const output =
+      '{"usage": {"total_tokens": 1234, "prompt_tokens": 1000, "completion_tokens": 234, "input_tokens": 1, "output_tokens": 2}}';
+    expect(parseTokenUsageDetailed(output)).toEqual({
+      totalTokens: 1234,
+      promptTokens: 1000,
+      completionTokens: 234,
+    });
+  });
+
   it('sums prompt_tokens + completion_tokens when total_tokens is absent', () => {
     const output = '{"usage": {"prompt_tokens": 150, "completion_tokens": 40}}';
     expect(parseTokenUsageDetailed(output)).toEqual({

@@ -122,7 +122,17 @@ export async function runReview(
 
   const costTracking = config.review.costTracking;
   const telemetry = engine.getLastTelemetry();
-  if (costTracking?.enabled === true && costTracking.verbosity !== 'off' && telemetry) {
+  // Mirror the lib's guard (attachUsage): only expose state/outputs when
+  // something meaningful was actually measured. With the default free model the
+  // CLI often emits no parseable usage, in which case totalTokens is 0 and
+  // estimatedCost is undefined — surfacing a '0' here would make post.ts post a
+  // misleading 'Total Tokens 0' PR comment (the string '0' is truthy).
+  if (
+    costTracking?.enabled === true &&
+    costTracking.verbosity !== 'off' &&
+    telemetry &&
+    (telemetry.totalTokens > 0 || telemetry.estimatedCost !== undefined)
+  ) {
     const totalTokens = String(telemetry.totalTokens);
     core.setOutput('token_usage', totalTokens);
     core.saveState('token_usage', totalTokens);

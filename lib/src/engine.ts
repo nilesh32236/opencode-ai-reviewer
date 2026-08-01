@@ -566,9 +566,11 @@ export class ReviewEngine {
       }
     }
 
-    // Record telemetry for the concurrent batch reviews. Batches overlap, so
-    // use true wall-clock time for the batch loop rather than summing each
-    // batch's own duration. Attribution is to the review model.
+    // Record telemetry for the concurrent batch reviews as a single aggregated
+    // entry. Batches overlap, so this uses true wall-clock time for the whole
+    // batch loop (including output parsing and inter-chunk backoff) rather than
+    // summing each batch's own duration — documented in writeCostLog's JSDoc.
+    // Attribution is to the review model.
     const batchWallClockMs = Date.now() - batchLoopStart;
     await this.recordTelemetry(
       pr.number,
@@ -1554,27 +1556,53 @@ export class ReviewEngine {
       }
     }
     if (inputCost === undefined || outputCost === undefined) return undefined;
-    const prompt = promptTokens ?? 0;
-    const completion = completionTokens ?? 0;
-    if (prompt === 0 && completion === 0) {
-      // No prompt/completion breakdown was parsed (e.g. OpenAI-style output
-      // that only reports total_tokens). Fall back to a documented heuristic:
-      // price the full total as input tokens. This is conservative (input
-      // rates are typically lower) and never yields a misleading $0.0000.
-      if (totalTokens !== undefined && totalTokens > 0) {
-        return (totalTokens / 1000) * inputCost;
+    const prompt = promptTokens;
+    const completion = completionTokens;
+    const pricedTokens = (prompt ?? 0) + (completion ?? 0);
+    // When totalTokens exceeds the priced prompt+completion sum, the CLI
+    // reported a total but only one (or neither) side of the breakdown parsed.
+    const remainder =
+      totalTokens !== undefined && totalTokens > pricedTokens ? totalTokens - pricedTokens : 0;
+    if (prompt !== undefined && completion !== undefined) {
+      if (prompt === 0 && completion === 0) {
+        // Both sides parsed as zero but a total was reported — fall through to
+        // the total-as-input heuristic below.
+        if (totalTokens !== undefined && totalTokens > 0) {
+          return (totalTokens / 1000) * inputCost;
+        }
+        return undefined;
       }
-      return undefined;
+      return (prompt / 1000) * inputCost + (completion / 1000) * outputCost;
     }
-    return (prompt / 1000) * inputCost + (completion / 1000) * outputCost;
+    // Only one side of the breakdown parsed — price the uncovered remainder at
+    // the known side's rate so partial parsing does not silently drop tokens.
+    if (completion !== undefined) {
+      return ((completion + remainder) / 1000) * outputCost;
+    }
+    if (prompt !== undefined) {
+      return ((prompt + remainder) / 1000) * inputCost;
+    }
+    // No prompt/completion breakdown was parsed (e.g. OpenAI-style output that
+    // only reports total_tokens). Fall back to a documented heuristic: price
+    // the full total as input tokens. This is conservative (input rates are
+    // typically lower) and never yields a misleading $0.0000.
+    if (totalTokens !== undefined && totalTokens > 0) {
+      return (totalTokens / 1000) * inputCost;
+    }
+    return undefined;
   }
 
   /**
    * Append a structured JSONL entry to `.opencode/review-costs.jsonl` for
-   * external aggregation and dashboarding. Each entry describes a single model
-   * call (the per-call token delta), so consumers can sum totalTokens across
-   * lines without double-counting. Non-critical — failures are logged and
-   * swallowed so telemetry never breaks the pipeline.
+   * external aggregation and dashboarding. Each entry records ONE pipeline
+   * stage's token delta (not the running cumulative total), so consumers can
+   * sum `totalTokens` across lines without double-counting. A stage is a single
+   * model call for single-batch/verification runs, or one aggregated entry for
+   * the multi-batch review loop. For the aggregated batch entry, `durationMs`
+   * is end-to-end wall-clock (including output parsing and inter-chunk
+   * backoff), so it is not directly comparable to single-call entries.
+   * Non-critical — failures are logged and swallowed so telemetry never breaks
+   * the pipeline.
    * @param prNumber - PR (or issue) number associated with the run.
    * @param model - Model identifier used for the run.
    * @param telemetry - Per-call token usage data to log.

@@ -215,10 +215,6 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     }
     if (config.review.costTracking && typeof config.review.costTracking === 'object') {
       const ct = config.review.costTracking;
-      const verbosity =
-        ct.verbosity === 'off' || ct.verbosity === 'summary' || ct.verbosity === 'detailed'
-          ? ct.verbosity
-          : 'summary';
       const inputCostPer1K =
         typeof ct.inputCostPer1K === 'number' && ct.inputCostPer1K >= 0
           ? ct.inputCostPer1K
@@ -228,8 +224,14 @@ export function validateConfig(config: PromptConfig): PromptConfig {
           ? ct.outputCostPer1K
           : undefined;
       result.review.costTracking = {
-        enabled: typeof ct.enabled === 'boolean' ? ct.enabled : false,
-        verbosity,
+        // Only set enabled/verbosity when the key is explicitly present so
+        // action inputs (the primary opt-in mechanism) win via the `??`
+        // fallback when the config file defines only a partial costTracking
+        // section (e.g. just rates).
+        ...(typeof ct.enabled === 'boolean' && { enabled: ct.enabled }),
+        ...(ct.verbosity === 'off' || ct.verbosity === 'summary' || ct.verbosity === 'detailed'
+          ? { verbosity: ct.verbosity }
+          : {}),
         ...(inputCostPer1K !== undefined && { inputCostPer1K }),
         ...(outputCostPer1K !== undefined && { outputCostPer1K }),
       };

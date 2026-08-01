@@ -116,4 +116,40 @@ describe('runPost token usage comment', () => {
 
     expect(mockPostOrUpdateComment).not.toHaveBeenCalled();
   });
+
+  it('skips the comment when only a zero token count was measured (no cost)', async () => {
+    // review.ts now guards against saving token_usage='0'; if stale state is
+    // ever present, the shared renderer must still refuse to post a misleading
+    // zero-token table.
+    mockGetState.mockImplementation((key: string) => (key === 'token_usage' ? '0' : ''));
+
+    await runPost(makeInputs(), mockGh, 'owner/repo', 'token');
+
+    expect(mockPostOrUpdateComment).not.toHaveBeenCalled();
+  });
+
+  it('renders summary rows without the prompt/completion breakdown when not saved', async () => {
+    mockGetState.mockImplementation((key: string) => {
+      switch (key) {
+        case 'token_usage':
+          return '1234';
+        case 'token_usage_duration':
+          return '5000';
+        case 'cost':
+          return '0.0046';
+        default:
+          return '';
+      }
+    });
+
+    await runPost(makeInputs(), mockGh, 'owner/repo', 'token');
+
+    expect(mockPostOrUpdateComment).toHaveBeenCalledTimes(1);
+    const [, , body] = mockPostOrUpdateComment.mock.calls[0] as [number, string, string];
+    expect(body).toContain('| Total Tokens | 1,234 |');
+    expect(body).toContain('| Duration | 5.0s |');
+    expect(body).toContain('| Estimated Cost | $0.0046 |');
+    expect(body).not.toContain('Prompt Tokens');
+    expect(body).not.toContain('Completion Tokens');
+  });
 });

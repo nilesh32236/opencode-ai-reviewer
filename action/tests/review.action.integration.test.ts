@@ -340,4 +340,52 @@ describe('runReview (action wrapper)', () => {
     expect(mockSaveState).toHaveBeenCalledWith('token_usage_prompt', '1000');
     expect(mockSaveState).toHaveBeenCalledWith('token_usage_completion', '234');
   });
+
+  it('does not save token usage/cost state when nothing meaningful was measured', async () => {
+    const pr = makePRContext();
+    mockGetPR.mockResolvedValue(pr);
+    mockReviewPR.mockResolvedValue({
+      summary: '## Review\nGood PR.',
+      verdict: { ready: true, reasoning: 'LGTM', autoFixable: false, confidence: 'high' },
+      strengths: [],
+      issues: [],
+      stats: { total: 0, critical: 0, important: 0, minor: 0 },
+    });
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+    // The default free model often emits no parseable usage: totalTokens is 0
+    // and no rate applies, so estimatedCost is undefined. The wrapper must not
+    // surface a misleading 'Total Tokens | 0 |' state/output/comment.
+    mockGetLastTelemetry.mockReturnValue({
+      totalTokens: 0,
+      durationMs: 1000,
+      estimatedCost: undefined,
+    });
+
+    const config = makeConfig({
+      enableMCP: false,
+      mcpServers: [],
+      review: {
+        ...DEFAULT_CONFIG.review,
+        costTracking: { enabled: true, verbosity: 'summary' },
+      },
+    });
+
+    await runReview(
+      makeInputs({ reviewModel: config.reviewModel, fixModel: config.fixModel }),
+      config,
+      mockEngine,
+      mockGh,
+      'owner/repo',
+    );
+
+    expect(mockSetOutput).not.toHaveBeenCalledWith('token_usage', expect.anything());
+    expect(mockSetOutput).not.toHaveBeenCalledWith('cost', expect.anything());
+    expect(mockSaveState).not.toHaveBeenCalledWith('token_usage', expect.anything());
+    expect(mockSaveState).not.toHaveBeenCalledWith('cost', expect.anything());
+  });
 });
