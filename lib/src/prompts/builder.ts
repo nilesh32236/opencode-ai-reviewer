@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as core from '@actions/core';
-import type { PreviousFindingIteration, ReviewIssue } from '../types/index.js';
+import type { PreviousFindingIteration, ReviewBudgetMode, ReviewIssue } from '../types/index.js';
 
 /** Input parameters for building a review prompt. */
 export interface PromptBuilderInputs {
@@ -38,6 +38,8 @@ export interface ReviewPromptOptions {
  * @param deltaContext - Optional delta diff string for incremental reviews.
  * @param previousBotComments - Optional previous bot review comments to avoid re-reporting.
  * @param linterResults - Optional linter results for context.
+ * @param budgetMode - Optional budget review mode selected from PR diff size.
+ * @param totalDiffLines - Optional total diff line count used for budget banners.
  * @returns The assembled review prompt string.
  */
 export function buildReviewPrompt(
@@ -54,6 +56,8 @@ export function buildReviewPrompt(
     commentId: number;
   }>,
   linterResults?: import('../types/index.js').LinterResult[],
+  budgetMode?: ReviewBudgetMode,
+  totalDiffLines?: number,
 ): string {
   const options: ReviewPromptOptions = Array.isArray(optionsOrLessons)
     ? {
@@ -134,6 +138,11 @@ export function buildReviewPrompt(
   );
   sections.push('4. Review the provided file list thoroughly.');
   sections.push('5. If any single file exceeds 300 lines, read and review it separately.');
+
+  if (budgetMode && budgetMode !== 'full') {
+    sections.push('');
+    sections.push(buildBudgetBanner(budgetMode, totalDiffLines));
+  }
 
   sections.push('\n' + buildWhatToCheck());
 
@@ -692,6 +701,19 @@ export function listAuditCategories(promptsDir?: string): string[] {
     } catch {}
   }
   return Array.from(categories).sort();
+}
+
+function buildBudgetBanner(budgetMode: ReviewBudgetMode, totalDiffLines?: number): string {
+  const lineCount =
+    totalDiffLines !== undefined ? `~${totalDiffLines} lines` : 'a very large number of lines';
+  if (budgetMode === 'summary') {
+    return `## Review Budget Mode: SUMMARY
+
+This PR has ${lineCount} of changes. Due to its size, **focus ONLY on critical patterns**: security vulnerabilities, breaking changes, API misuse, and data exposure. Skip line-by-line review. Provide a summary-level assessment.`;
+  }
+  return `## Review Budget Mode: SPLIT RECOMMENDED
+
+This PR has ${lineCount} of changes. This is too large for a single review. Check ONLY for critical security issues, breaking changes, and API misuse. Then provide a recommendation to split this PR into smaller, focused PRs (one logical change per PR). Do NOT perform a line-by-line review.`;
 }
 
 function buildWhatToCheck(): string {

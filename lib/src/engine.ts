@@ -29,6 +29,7 @@ import type {
   LinterResult,
   PRContext,
   PreviousFindingIteration,
+  ReviewBudgetMode,
   ReviewIssue,
   ReviewResult,
   ReviewStrength,
@@ -101,6 +102,43 @@ export class ReviewEngine {
     this.adapter = adapter;
     this.mcp = new MCPManager(config.mcpServers);
     this.logger = new Logger('ReviewEngine');
+  }
+
+  /**
+   * Determine the review budget mode from the total diff size.
+   * Modes are selected using the configurable summary/split thresholds.
+   *
+   * @param totalDiffLines - Total number of diff lines across all changed files.
+   * @returns The selected budget review mode ('full' | 'summary' | 'split').
+   */
+  private determineBudgetMode(totalDiffLines: number): ReviewBudgetMode {
+    const budget = this.config.review.reviewBudget;
+    if (!budget?.enabled) return 'full';
+    if (totalDiffLines >= budget.splitThreshold) return 'split';
+    if (totalDiffLines >= budget.summaryThreshold) return 'summary';
+    return 'full';
+  }
+
+  /**
+   * Prepend a split-recommendation banner to a review result summary when the
+   * PR exceeds the split threshold. Other budget modes leave the result untouched.
+   *
+   * @param result - The review result to decorate.
+   * @param budgetMode - The selected budget review mode.
+   * @param totalDiffLines - Total number of diff lines across all changed files.
+   * @returns The decorated review result.
+   */
+  private applyBudgetModeBanner(
+    result: ReviewResult,
+    budgetMode: ReviewBudgetMode,
+    totalDiffLines: number,
+  ): ReviewResult {
+    if (budgetMode !== 'split') return result;
+    const banner = `## ⚠️ Large PR Detected (~${totalDiffLines} lines)\n\nThis pull request is very large. Consider splitting it into smaller, focused PRs for faster, more thorough reviews. Ideally each PR should contain fewer than ${this.config.review.reviewBudget.splitThreshold} lines of changes.\n\n---\n\n`;
+    return {
+      ...result,
+      summary: banner + (result.summary || ''),
+    };
   }
 
   /**
@@ -209,6 +247,15 @@ export class ReviewEngine {
         `Excluded ${pr.changedFiles.length - files.length} file(s) from review by exclude patterns`,
       );
     }
+
+    // Calculate total diff size for budget mode selection
+    const totalDiffLines = files.reduce(
+      (sum, f) => sum + (f.patch ? f.patch.split('\n').length : 0),
+      0,
+    );
+    const budgetMode = this.determineBudgetMode(totalDiffLines);
+    core.info(`Review budget mode: ${budgetMode} (total diff: ~${totalDiffLines} lines)`);
+
     const tokenBudgetConfig = this.config.review.tokenBudget;
     const { context: prContext, budgetMetrics } = this.buildPRContextString(pr, tokenBudgetConfig);
     let openThreadsContext = '';
@@ -267,6 +314,8 @@ export class ReviewEngine {
         deltaContext,
         previousBotComments,
         linterResults,
+        budgetMode,
+        totalDiffLines,
       );
 
       const outputPath = path.join(workDir, 'review-output.jsonl');
@@ -316,6 +365,8 @@ export class ReviewEngine {
           workDir,
           timeoutMinutes,
           pr.number,
+          budgetMode,
+          totalDiffLines,
         );
       } catch {
         core.warning(`Failed to parse review output at ${outputPath}, returning empty result`);
@@ -377,6 +428,8 @@ export class ReviewEngine {
             deltaContext,
             previousBotComments,
             linterResults,
+            budgetMode,
+            totalDiffLines,
           );
 
           const outputPath = path.join(batchDir, 'review-output.jsonl');
@@ -486,6 +539,8 @@ export class ReviewEngine {
         workDir,
         timeoutMinutes,
         pr.number,
+        budgetMode,
+        totalDiffLines,
       );
     }
 
@@ -525,6 +580,8 @@ export class ReviewEngine {
         workDir,
         timeoutMinutes,
         pr.number,
+        budgetMode,
+        totalDiffLines,
       );
     } catch {
       core.warning('Synthesis output parse failed, falling back to merged batch results');
@@ -542,7 +599,15 @@ export class ReviewEngine {
           this.computeTokenBudgetMetrics(files, tokenBudgetConfig, this.config.maxLinesPerFile),
         );
       }
-      return await this.verifyReviewResult(fallback, baseContext, workDir, timeoutMinutes);
+      return await this.verifyReviewResult(
+        fallback,
+        baseContext,
+        workDir,
+        timeoutMinutes,
+        undefined,
+        budgetMode,
+        totalDiffLines,
+      );
     }
   }
 
@@ -954,6 +1019,8 @@ export class ReviewEngine {
     workDir: string,
     timeoutMinutes?: number,
     prNumber?: number,
+    budgetMode?: ReviewBudgetMode,
+    totalDiffLines?: number,
   ): Promise<ReviewResult> {
     let enrichedResult = result;
 
@@ -1125,6 +1192,10 @@ export class ReviewEngine {
           },
         };
       }
+    }
+
+    if (budgetMode && totalDiffLines !== undefined) {
+      enrichedResult = this.applyBudgetModeBanner(enrichedResult, budgetMode, totalDiffLines);
     }
 
     return enrichedResult;

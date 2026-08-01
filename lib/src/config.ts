@@ -197,6 +197,22 @@ export function validateConfig(config: PromptConfig): PromptConfig {
         result.review.tokenBudget.simpleThreshold = result.review.tokenBudget.complexityThreshold;
       }
     }
+    if (config.review.budget && typeof config.review.budget === 'object') {
+      const budget = config.review.budget;
+      const summaryThreshold =
+        typeof budget.summaryThreshold === 'number'
+          ? Math.max(Math.round(budget.summaryThreshold), 1)
+          : 500;
+      const splitThreshold =
+        typeof budget.splitThreshold === 'number'
+          ? Math.max(Math.round(budget.splitThreshold), 1)
+          : 1000;
+      result.review.budget = {
+        enabled: typeof budget.enabled === 'boolean' ? budget.enabled : true,
+        summaryThreshold,
+        splitThreshold: Math.max(splitThreshold, summaryThreshold),
+      };
+    }
   }
 
   if (config.fix) {

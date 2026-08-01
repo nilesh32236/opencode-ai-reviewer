@@ -51,6 +51,11 @@ export function buildConfig(): AgentConfig {
       ...(process.env.ENABLE_REACHABILITY !== undefined
         ? { enableReachability: process.env.ENABLE_REACHABILITY !== 'false' }
         : {}),
+      reviewBudget: {
+        enabled: process.env.REVIEW_BUDGET !== 'false',
+        summaryThreshold: parseEnvInt(process.env.REVIEW_BUDGET_SUMMARY_THRESHOLD, 500),
+        splitThreshold: parseEnvInt(process.env.REVIEW_BUDGET_SPLIT_THRESHOLD, 1000),
+      },
     },
     learning: {
       ...DEFAULT_CONFIG.learning,

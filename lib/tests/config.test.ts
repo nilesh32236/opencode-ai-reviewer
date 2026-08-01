@@ -248,6 +248,33 @@ fix:
       expect(result.review?.inline).toBeUndefined();
     });
 
+    it('passes through review.budget values', () => {
+      const result = validateConfig({
+        review: { budget: { enabled: false, summaryThreshold: 200, splitThreshold: 800 } },
+      } as never);
+      expect(result.review?.budget).toEqual({
+        enabled: false,
+        summaryThreshold: 200,
+        splitThreshold: 800,
+      });
+    });
+
+    it('applies review.budget defaults when only partial config given', () => {
+      const result = validateConfig({ review: { budget: { summaryThreshold: 300 } } } as never);
+      expect(result.review?.budget).toEqual({
+        enabled: true,
+        summaryThreshold: 300,
+        splitThreshold: 1000,
+      });
+    });
+
+    it('clamps review.budget splitThreshold to be >= summaryThreshold', () => {
+      const result = validateConfig({
+        review: { budget: { summaryThreshold: 900, splitThreshold: 100 } },
+      } as never);
+      expect(result.review?.budget?.splitThreshold).toBe(900);
+    });
+
     it('returns empty object for empty config', () => {
       const result = validateConfig({});
       expect(result).toEqual({});

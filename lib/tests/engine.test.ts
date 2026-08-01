@@ -1513,4 +1513,136 @@ describe('ReviewEngine', () => {
       expect(result.failedBatches).toBe(1);
     });
   });
+
+  describe('review budget modes', () => {
+    function makePatch(lineCount: number): string {
+      return Array.from({ length: lineCount }, (_, i) => `+line ${i + 1}`).join('\n');
+    }
+
+    function makeLargePR(lineCount: number): PRContext {
+      return makePRContext({
+        changedFiles: [
+          {
+            path: 'src/large.ts',
+            status: 'modified' as const,
+            additions: lineCount,
+            deletions: 0,
+            patch: makePatch(lineCount),
+          },
+        ],
+      });
+    }
+
+    beforeEach(() => {
+      mockMCPConnect.mockResolvedValue(undefined);
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 100,
+      });
+    });
+
+    it('uses full mode below the summary threshold', async () => {
+      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      await eng.reviewPR(makeLargePR(100));
+
+      expect(mockBuildReviewPrompt).toHaveBeenCalled();
+      expect(mockBuildReviewPrompt.mock.calls[0][8]).toBe('full');
+      expect(mockBuildReviewPrompt.mock.calls[0][9]).toBe(100);
+    });
+
+    it('uses summary mode at the summary threshold with budget banner', async () => {
+      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      const result = await eng.reviewPR(makeLargePR(600));
+
+      expect(mockBuildReviewPrompt.mock.calls[0][8]).toBe('summary');
+      expect(mockBuildReviewPrompt.mock.calls[0][9]).toBe(600);
+      expect(result.summary).not.toContain('Large PR Detected');
+    });
+
+    it('uses split mode above the split threshold and prepends a split recommendation', async () => {
+      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      const result = await eng.reviewPR(makeLargePR(1500));
+
+      expect(mockBuildReviewPrompt.mock.calls[0][8]).toBe('split');
+      expect(mockBuildReviewPrompt.mock.calls[0][9]).toBe(1500);
+      expect(result.summary).toContain('Large PR Detected');
+      expect(result.summary).toContain('split');
+    });
+
+    it('always uses full mode when budget review is disabled', async () => {
+      const eng = new ReviewEngine(
+        makeConfig({
+          enableMCP: false,
+          mcpServers: [],
+          review: {
+            ...DEFAULT_CONFIG.review,
+            reviewBudget: { enabled: false, summaryThreshold: 500, splitThreshold: 1000 },
+          },
+        }),
+        mockAdapter,
+      );
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      const result = await eng.reviewPR(makeLargePR(2000));
+
+      expect(mockBuildReviewPrompt.mock.calls[0][8]).toBe('full');
+      expect(result.summary).not.toContain('Large PR Detected');
+    });
+
+    it('respects custom thresholds', async () => {
+      const eng = new ReviewEngine(
+        makeConfig({
+          enableMCP: false,
+          mcpServers: [],
+          review: {
+            ...DEFAULT_CONFIG.review,
+            reviewBudget: { enabled: true, summaryThreshold: 100, splitThreshold: 1000 },
+          },
+        }),
+        mockAdapter,
+      );
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      await eng.reviewPR(makeLargePR(150));
+
+      expect(mockBuildReviewPrompt.mock.calls[0][8]).toBe('summary');
+    });
+
+    it('computes budget mode from total diff lines across multiple files', async () => {
+      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      const pr = makePRContext({
+        changedFiles: [
+          {
+            path: 'src/a.ts',
+            status: 'modified' as const,
+            additions: 300,
+            deletions: 0,
+            patch: makePatch(300),
+          },
+          {
+            path: 'src/b.ts',
+            status: 'modified' as const,
+            additions: 300,
+            deletions: 0,
+            patch: makePatch(300),
+          },
+        ],
+      });
+
+      await eng.reviewPR(pr);
+
+      expect(mockBuildReviewPrompt.mock.calls[0][8]).toBe('summary');
+      expect(mockBuildReviewPrompt.mock.calls[0][9]).toBe(600);
+    });
+  });
 });

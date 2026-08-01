@@ -384,4 +384,81 @@ describe('prompt-builder', () => {
       expect(snippet).toContain('[...truncated trailing');
     });
   });
+
+  describe('buildReviewPrompt budget modes', () => {
+    const baseInputs = { projectContext: '' };
+
+    it('injects no budget banner in full mode', () => {
+      const prompt = buildReviewPrompt(
+        baseInputs,
+        'PR context',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'full',
+        100,
+      );
+      expect(prompt).toContain('## Context Window Management');
+      expect(prompt).not.toContain('Review Budget Mode');
+      expect(prompt).not.toContain('Large PR Detected');
+    });
+
+    it('injects the summary budget banner with the diff line count', () => {
+      const prompt = buildReviewPrompt(
+        baseInputs,
+        'PR context',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'summary',
+        600,
+      );
+      expect(prompt).toContain('## Review Budget Mode: SUMMARY');
+      expect(prompt).toContain('~600 lines');
+      expect(prompt).toContain('focus ONLY on critical patterns');
+      expect(prompt).not.toContain('SPLIT RECOMMENDED');
+    });
+
+    it('injects the split budget banner with a split recommendation', () => {
+      const prompt = buildReviewPrompt(
+        baseInputs,
+        'PR context',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'split',
+        1500,
+      );
+      expect(prompt).toContain('## Review Budget Mode: SPLIT RECOMMENDED');
+      expect(prompt).toContain('~1500 lines');
+      expect(prompt).toContain('recommendation to split this PR');
+      expect(prompt).toContain('Do NOT perform a line-by-line review');
+      expect(prompt).not.toContain('Review Budget Mode: SUMMARY');
+    });
+
+    it('omits the line count when totalDiffLines is not provided', () => {
+      const prompt = buildReviewPrompt(
+        baseInputs,
+        'PR context',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'summary',
+      );
+      expect(prompt).toContain('## Review Budget Mode: SUMMARY');
+      expect(prompt).toContain('a very large number of lines');
+    });
+  });
 });
