@@ -1419,6 +1419,9 @@ export class ReviewEngine {
         const decision = stateManager.shouldAutoClose(state, conversationConfig);
         if (decision.shouldClose) {
           state.alreadyClosed = true;
+          // Persist the closure so a restart cannot silently resurrect the
+          // thread and post a second close message.
+          stateManager.markClosed(threadId);
           this.logger.info(
             `Conversation ${threadId} auto-closed (${decision.reason ?? 'limit'}) after ${state.turnCount} turns`,
           );

@@ -37,6 +37,28 @@ describe('conversation thread gathering', () => {
       );
     });
 
+    it('returns the root comment id as the stable thread root', async () => {
+      const comments = [
+        {
+          id: 1,
+          body: 'root',
+          in_reply_to_id: null,
+          path: 'src/a.ts',
+          diff_hunk: 'hunk',
+          user: { login: 'user' },
+        },
+        { id: 2, body: 'reply', in_reply_to_id: 1, user: { login: 'user' } },
+        { id: 3, body: 'trigger', in_reply_to_id: 2, user: { login: 'user' } },
+      ];
+      const gh = makeAdapter({ listReviewComments: vi.fn().mockResolvedValue(comments) });
+
+      const result = await gatherReviewCommentThread(gh, 1, 3, MENTION);
+
+      // The root (oldest ancestor) is stable across turns even though the
+      // triggering comment id changes with every reply.
+      expect(result.threadRootId).toBe(1);
+    });
+
     it('includes the ancestor chain and sibling replies, ascending by id', async () => {
       const comments = [
         {

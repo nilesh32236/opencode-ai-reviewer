@@ -24,7 +24,12 @@ export function createConversationSubscriber(
   rateLimiter: RateLimiter,
 ): Subscriber {
   const logger = new Logger('ConversationSubscriber');
-  const conversationStateManager = new ConversationStateManager();
+  // Persist auto-closed thread ids to a shared JSON file under the OS temp dir
+  // so a closed conversation stays silent across app restarts (the per-thread
+  // scratch dirs are per-comment and cannot hold shared state).
+  const conversationStateManager = new ConversationStateManager({
+    closedThreadsFile: path.join(os.tmpdir(), 'opencode-conv', 'closed-threads.json'),
+  });
   return {
     name: 'ConversationSubscriber',
     subscribedEvents: ['comment.created', 'review_comment.created'],

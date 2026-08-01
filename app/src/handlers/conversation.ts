@@ -63,6 +63,7 @@ export async function handleConversation(
   let thread: ConversationMessage[] = [];
   let filePath: string | undefined;
   let diffHunk: string | undefined;
+  let threadRootId: number | undefined;
   const mentionHandle = config.conversation.mentionHandle;
 
   if (isReviewComment) {
@@ -77,17 +78,18 @@ export async function handleConversation(
     thread = threadResult.thread;
     filePath = threadResult.filePath;
     diffHunk = threadResult.diffHunk;
+    threadRootId = threadResult.threadRootId;
   } else {
     // For issue comments, fetch the comment thread on the PR. Accumulate up to
-    // the configured sliding-window size so long issue threads can actually
-    // engage the sliding-window/summarization machinery instead of always
-    // fitting in the window.
+    // 2x the configured sliding-window size so long issue threads can actually
+    // overflow the engine's window and engage the summarization machinery
+    // instead of always fitting inside it.
     const threadResult = await gatherIssueCommentThread(
       gh,
       prNumber,
       commentId,
       mentionHandle,
-      config.conversation.slidingWindowSize,
+      config.conversation.slidingWindowSize * 2,
       signal,
     );
     thread = threadResult.thread;
@@ -103,10 +105,15 @@ export async function handleConversation(
   const intent = lastUserMessage ? detectIntent(lastUserMessage.body) : 'general';
 
   const context: ConversationContext = {
-    // Include the triggering comment id for review-comment threads so each
-    // distinct discussion tracks its own turns/summary instead of sharing a
-    // single state across every inline thread on the same file.
-    threadId: `${repo}/${prNumber}/${filePath || 'issue'}${isReviewComment ? `#${commentId}` : ''}`,
+    // Key the thread on the ROOT comment id for review-comment threads (the
+    // oldest in_reply_to ancestor) so turns within one discussion accumulate
+    // while distinct threads stay isolated — GitHub assigns a fresh id to every
+    // reply, so keying on the triggering id would reset state each turn. Issue
+    // mentions are keyed by their own comment id so unrelated conversations on
+    // the same PR stop sharing turn counts and summaries.
+    threadId: `${repo}/${prNumber}/${filePath || 'issue'}${
+      isReviewComment ? `#${threadRootId ?? commentId}` : `#${commentId}`
+    }`,
     repo,
     filePath,
     diffHunk,
@@ -166,6 +173,8 @@ interface ReviewCommentThread {
   thread: ConversationMessage[];
   filePath?: string;
   diffHunk?: string;
+  /** Id of the root comment (oldest in_reply_to ancestor) for stable thread identity. */
+  threadRootId?: number;
 }
 
 interface IssueCommentThread {
@@ -189,7 +198,8 @@ interface IssueCommentThread {
  * @param commentId - Triggering review comment ID.
  * @param mentionHandle - Bot mention handle.
  * @param signal - Optional AbortSignal to cancel the underlying API requests.
- * @returns Object containing conversation messages, file path, and diff hunk.
+ * @returns Object containing conversation messages, file path, diff hunk, and
+ * the root (oldest ancestor) comment id for stable thread identity.
  */
 export async function gatherReviewCommentThread(
   gh: PlatformAdapter,
@@ -225,6 +235,8 @@ export async function gatherReviewCommentThread(
     thread,
     filePath,
     diffHunk,
+    // The chain is root-first, so the root is the oldest in_reply_to ancestor.
+    threadRootId: chain[0]?.id,
   };
 }
 

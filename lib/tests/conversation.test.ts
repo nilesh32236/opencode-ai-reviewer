@@ -1,3 +1,6 @@
+import { rmSync, writeFileSync } from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   ConversationStateManager,
@@ -145,6 +148,34 @@ describe('buildConversationPrompt', () => {
     // The most recent message is always kept.
     expect(prompt).toContain('very long message 30');
     // A window larger than what fits must have been dropped (older message gone).
+    const estimate = estimateTokens(prompt);
+    expect(estimate).toBeLessThanOrEqual(3000);
+  });
+
+  it('budget pressure shrinks the prompt even when a summary snapshot exists', () => {
+    // With a snapshot the uncovered "recently rolled out" section must be
+    // omitted once the window shrinks, or uncovered + recent would always equal
+    // thread[covered..end] and the estimate could never come down under budget.
+    const messages = Array.from({ length: 100 }, (_, i) => ({
+      role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+      body: `very long message ${i + 1} ` + 'x'.repeat(400),
+      author: i % 2 === 0 ? 'alice' : 'bot',
+    }));
+    const state = makeState({
+      summarySnapshot: 'summary of first 50',
+      summarizedCount: 50,
+    });
+    const prompt = buildConversationPrompt(
+      makeContext(messages),
+      { ...BASE_CONFIG, slidingWindowSize: 20, contextTokenBudget: 2000 },
+      state,
+    );
+    // The most recent message is always kept and the snapshot preamble retained.
+    expect(prompt).toContain('very long message 100');
+    expect(prompt).toContain('summary of first 50');
+    // Under budget pressure the window shrank, so the rolled-out section is gone
+    // and the assembled prompt actually fits near the budget.
+    expect(prompt).not.toContain('recently rolled out');
     const estimate = estimateTokens(prompt);
     expect(estimate).toBeLessThanOrEqual(3000);
   });
@@ -317,13 +348,15 @@ describe('ConversationStateManager', () => {
     ).toBe(false);
   });
 
-  it('evicts idle states older than the TTL on next access', () => {
+  it('evicts idle states older than the TTL when the throttled prune runs', () => {
     const manager = new ConversationStateManager();
     const state = manager.getOrCreateState('stale');
     state.lastActivityTimestamp = Date.now() - ConversationStateManager.STATE_TTL_MS - 1000;
-    const fresh = manager.getOrCreateState('fresh');
-    expect(fresh.turnCount).toBe(0);
-    // The stale entry was pruned when a new one was created.
+    // Pruning is throttled (every PRUNE_INTERVAL accesses) — force it to run.
+    for (let i = 0; i < ConversationStateManager.PRUNE_INTERVAL; i++) {
+      manager.getOrCreateState(`other-${i}`);
+    }
+    // The stale entry was pruned; a new state is created for the same thread id.
     const recreated = manager.getOrCreateState('stale');
     expect(recreated).not.toBe(state);
   });
@@ -366,9 +399,49 @@ describe('ConversationStateManager', () => {
     const manager = new ConversationStateManager();
     const state = manager.getOrCreateState('a');
     state.alreadyClosed = true;
-    manager.updateState(state, undefined, undefined, 3);
+    manager.updateState(state);
     expect(state.alreadyClosed).toBe(true);
     expect(state.turnCount).toBe(1);
+  });
+});
+
+describe('ConversationStateManager durable closure', () => {
+  it('keeps a closed thread silent across restarts via the closed-threads file', () => {
+    const file = path.join(os.tmpdir(), `opencode-conv-test-${Date.now()}.json`);
+    try {
+      const first = new ConversationStateManager({ closedThreadsFile: file });
+      first.markClosed('org/repo/42/src/a.ts#7');
+
+      // Simulate a restart: a fresh manager reading the same file.
+      const second = new ConversationStateManager({ closedThreadsFile: file });
+      const state = second.getOrCreateState('org/repo/42/src/a.ts#7');
+      // The thread must not resurrect — it is immediately marked closed.
+      expect(state.alreadyClosed).toBe(true);
+      expect(state.turnCount).toBe(0);
+    } finally {
+      rmSync(file, { force: true });
+      rmSync(`${file}.tmp`, { force: true });
+    }
+  });
+
+  it('ignores a missing closed-threads file and starts with no closures', () => {
+    const manager = new ConversationStateManager({
+      closedThreadsFile: path.join(os.tmpdir(), 'does-not-exist.json'),
+    });
+    const state = manager.getOrCreateState('a');
+    expect(state.alreadyClosed).toBeUndefined();
+  });
+
+  it('tolerates a corrupt closed-threads file', () => {
+    const file = path.join(os.tmpdir(), `opencode-conv-corrupt-${Date.now()}.json`);
+    writeFileSync(file, 'not json');
+    try {
+      const manager = new ConversationStateManager({ closedThreadsFile: file });
+      const state = manager.getOrCreateState('a');
+      expect(state.alreadyClosed).toBeUndefined();
+    } finally {
+      rmSync(file, { force: true });
+    }
   });
 });
 

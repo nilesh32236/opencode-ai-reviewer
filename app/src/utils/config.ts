@@ -84,8 +84,11 @@ export function buildConfig(): AgentConfig {
     },
     conversation: {
       ...DEFAULT_CONFIG.conversation,
-      mentionHandle:
-        process.env.CONVERSATION_MENTION_HANDLE || DEFAULT_CONFIG.conversation.mentionHandle,
+      // Strip a leading '@' so both 'handle' and '@handle' inputs behave
+      // identically — the subscriber matches on `@${mentionHandle}`.
+      mentionHandle: (
+        process.env.CONVERSATION_MENTION_HANDLE || DEFAULT_CONFIG.conversation.mentionHandle
+      ).replace(/^@/, ''),
       maxTurns: clampInt(
         parseEnvInt(process.env.CONVERSATION_MAX_TURNS, DEFAULT_CONFIG.conversation.maxTurns),
         0,

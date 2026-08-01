@@ -206,7 +206,7 @@ conversation:
 - **`contextTokenBudget`** — the conversation prompt is trimmed (recent-window size reduced) to stay within this budget, logs estimated token usage against it, and warns when approaching it. Align it with the context window of your `conversationModel`/`reviewModel` (e.g. raise it for 128K-token models).
 - **`summarizationModel`** — optional model used for the summarization passes that condense older messages; defaults to the conversation/review model.
 
-These values can also be set via environment variables (`CONVERSATION_MAX_TURNS`, `CONVERSATION_SLIDING_WINDOW_SIZE`, `CONVERSATION_CONTEXT_TOKEN_BUDGET`, `CONVERSATION_SUMMARIZATION_MODEL`) for the Probot app.
+These values can also be set via environment variables (`CONVERSATION_MENTION_HANDLE`, `CONVERSATION_MAX_TURNS`, `CONVERSATION_SLIDING_WINDOW_SIZE`, `CONVERSATION_CONTEXT_TOKEN_BUDGET`, `CONVERSATION_SUMMARIZATION_MODEL`) for the Probot app. The mention handle is stored without a leading `@`, so both `opencode-reviewer` and `@opencode-reviewer` work.
 
 ---
 

@@ -199,7 +199,16 @@ export function buildConversationPrompt(
 
     // Condensed summary of earlier context, when one is available.
     const covered = state?.summarizedCount ?? 0;
-    const uncoveredOlderMessages = state?.summarySnapshot ? olderMessages.slice(covered) : [];
+    // "Recently rolled out" messages are only rendered while the window is at
+    // its configured size. When budget pressure shrinks the window, the section
+    // is omitted entirely (those messages will be folded into the summary on the
+    // next summarization pass) so the estimate can actually shrink — otherwise
+    // uncovered + recent would always equal thread[covered..end] and the budget
+    // loop would be a no-op whenever a snapshot exists.
+    const uncoveredOlderMessages =
+      state?.summarySnapshot && winSize >= effectiveConfig.slidingWindowSize
+        ? olderMessages.slice(covered)
+        : [];
 
     if (state?.summarySnapshot) {
       sections.push('## Conversation Summary');

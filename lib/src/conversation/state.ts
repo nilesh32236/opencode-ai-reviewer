@@ -1,9 +1,12 @@
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
+import * as path from 'node:path';
 import {
   type ConversationConfig,
   type ConversationContext,
   type ConversationState,
   DEFAULT_CONVERSATION_CONFIG,
 } from '../types/index.js';
+import { Logger } from '../utils/logger.js';
 
 /** Decision describing whether a conversation thread should be auto-closed. */
 export interface AutoCloseDecision {
@@ -51,29 +54,62 @@ export function formatAutoCloseMessage(maxTurns: number): string {
  * long-lived (owned by the app subscriber) so it survives across webhook turns.
  *
  * Idle states are pruned after `STATE_TTL_MS` and the map is capped at
- * `MAX_STATES` entries so a long-lived instance never leaks memory. Per-thread
+ * `MAX_STATES` entries so a long-lived instance never leaks memory. Pruning is
+ * throttled so the O(n) sweep only runs every `PRUNE_INTERVAL` accesses (or
+ * when the map is near capacity) instead of on every webhook turn. Per-thread
  * turns are serialized with {@link withThreadLock} so concurrent webhooks for
  * the same thread cannot drop a turn increment or clobber a summary snapshot.
+ *
+ * Auto-closed thread ids are optionally persisted to a JSON file
+ * (`closedThreadsFile`) so a closure is durable across app restarts: a thread
+ * that was already closed stays silent ('' no-op) after a restart instead of
+ * silently resurrecting and posting a second close message.
  */
 export class ConversationStateManager {
   /** Idle time after which a thread's state is evicted (24h). */
   static readonly STATE_TTL_MS = 24 * 60 * 60 * 1000;
   /** Maximum number of tracked thread states before eviction kicks in. */
   static readonly MAX_STATES = 1000;
+  /** How many getOrCreateState accesses may elapse between TTL sweeps. */
+  static readonly PRUNE_INTERVAL = 100;
 
   private readonly states = new Map<string, ConversationState>();
   private readonly locks = new Map<string, Promise<unknown>>();
+  private readonly closedThreadsFile?: string;
+  private readonly closedThreadIds = new Set<string>();
+  private closedThreadsLoaded = false;
+  private accessesSincePrune = 0;
+
+  /**
+   * @param options - Optional persistence settings.
+   * @param options.closedThreadsFile - Path to a JSON file that records
+   * auto-closed thread ids so closures survive app restarts. When omitted,
+   * closure state is kept in memory only.
+   */
+  constructor(options?: { closedThreadsFile?: string }) {
+    this.closedThreadsFile = options?.closedThreadsFile;
+  }
 
   /**
    * Return the state for a thread, creating it with defaults if unknown.
-   * Prunes expired states and evicts the least-recently-active entry when the
-   * map is at capacity so memory stays bounded.
+   * Prunes expired states (throttled) and evicts the least-recently-active
+   * entry when the map is at capacity so memory stays bounded. When a thread
+   * was auto-closed in a previous process run, the freshly created state is
+   * marked closed and a warning is logged so it cannot resurrect.
    *
    * @param threadId - Unique conversation thread identifier.
    * @returns The existing or newly created conversation state.
    */
   getOrCreateState(threadId: string): ConversationState {
-    this.pruneExpiredStates();
+    this.loadClosedThreads();
+    this.accessesSincePrune += 1;
+    if (
+      this.accessesSincePrune >= ConversationStateManager.PRUNE_INTERVAL ||
+      this.states.size >= ConversationStateManager.MAX_STATES
+    ) {
+      this.pruneExpiredStates();
+      this.accessesSincePrune = 0;
+    }
     let state = this.states.get(threadId);
     if (!state) {
       if (this.states.size >= ConversationStateManager.MAX_STATES) {
@@ -84,9 +120,28 @@ export class ConversationStateManager {
         turnCount: 0,
         lastActivityTimestamp: Date.now(),
       };
+      if (this.closedThreadIds.has(threadId)) {
+        // The thread was closed in a previous run — do not let it resurrect.
+        state.alreadyClosed = true;
+        new Logger('ConversationStateManager').warn(
+          `Previously auto-closed conversation thread ${threadId} resumed after restart — keeping it closed`,
+        );
+      }
       this.states.set(threadId, state);
     }
     return state;
+  }
+
+  /**
+   * Persist the fact that a thread has been auto-closed so it stays silent
+   * across app restarts. Best-effort: a failed write never fails the turn.
+   *
+   * @param threadId - Unique conversation thread identifier that was closed.
+   */
+  markClosed(threadId: string): void {
+    if (this.closedThreadIds.has(threadId)) return;
+    this.closedThreadIds.add(threadId);
+    this.persistClosedThreads();
   }
 
   /**
@@ -183,6 +238,47 @@ export class ConversationStateManager {
       if (now - state.lastActivityTimestamp > ConversationStateManager.STATE_TTL_MS) {
         this.states.delete(id);
       }
+    }
+  }
+
+  /**
+   * Load the persisted set of auto-closed thread ids from disk (once, lazily).
+   * Best-effort: a missing/corrupt file degrades to an empty set.
+   */
+  private loadClosedThreads(): void {
+    if (this.closedThreadsLoaded || !this.closedThreadsFile) return;
+    this.closedThreadsLoaded = true;
+    try {
+      const raw = readFileSync(this.closedThreadsFile, 'utf-8');
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        for (const id of parsed) {
+          if (typeof id === 'string') this.closedThreadIds.add(id);
+        }
+      }
+    } catch {
+      // File missing or unreadable — nothing was closed in a previous run.
+    }
+  }
+
+  /**
+   * Write the set of auto-closed thread ids to disk via an atomic temp-file
+   * rename. Best-effort: a failed write never fails the conversation turn.
+   */
+  private persistClosedThreads(): void {
+    if (!this.closedThreadsFile) return;
+    try {
+      const dir = path.dirname(this.closedThreadsFile);
+      mkdirSync(dir, { recursive: true });
+      const tmp = `${this.closedThreadsFile}.tmp`;
+      writeFileSync(tmp, JSON.stringify([...this.closedThreadIds]), 'utf-8');
+      renameSync(tmp, this.closedThreadsFile);
+    } catch (err) {
+      new Logger('ConversationStateManager').warn(
+        `Failed to persist closed conversation thread ids: ${
+          err instanceof Error ? err.message : err
+        }`,
+      );
     }
   }
 
