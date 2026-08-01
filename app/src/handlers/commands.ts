@@ -14,6 +14,7 @@ import {
   GitLabAdapter,
   Logger,
   ReviewEngine,
+  SetupEngine,
   buildAutofixPRBody,
   configureGit,
   markAnalysisReady,
@@ -38,7 +39,7 @@ import { handlePRReview } from './pr-review.js';
  * @param signal - Optional abort signal
  */
 export async function handleCommand(
-  command: 'fix' | 'review' | 'audit' | 'analyze' | 'explain',
+  command: 'fix' | 'review' | 'audit' | 'analyze' | 'explain' | 'setup',
   issueNumber: number,
   repo: string,
   token: string,
@@ -67,7 +68,22 @@ export async function handleCommand(
       timeout: 120_000,
       ...(gitEnv ? { env: { ...process.env, ...gitEnv } } : {}),
     };
-    execFileSync('git', ['clone', `https://github.com/${repo}.git`, tempDir], cloneOpts);
+    try {
+      execFileSync('git', ['clone', `https://github.com/${repo}.git`, tempDir], cloneOpts);
+    } catch (err) {
+      logger.error(`Git clone failed for ${repo}: ${err instanceof Error ? err.message : err}`);
+      if (command === 'setup') {
+        // Setup must still produce a diagnostic report even when the repo
+        // cannot be cloned (e.g. missing/read-only token): run the checks
+        // against the empty temp dir so token-independent checks still run.
+        logger.info(
+          `Running setup validation against an empty workspace because ${repo} could not be cloned`,
+        );
+        await handleSetup(issueNumber, repo, token, config, tempDir);
+        return;
+      }
+      throw err;
+    }
 
     switch (command) {
       case 'analyze': {
@@ -158,6 +174,11 @@ export async function handleCommand(
           undefined,
           issueNumber,
         );
+        break;
+      }
+
+      case 'setup': {
+        await handleSetup(issueNumber, repo, token, config, tempDir);
         break;
       }
     }
@@ -263,6 +284,55 @@ export async function handleExplainCommand(
     );
   } finally {
     await engine.cleanup();
+  }
+}
+
+/**
+ * Handle a setup command: run the pre-flight validation checks against the
+ * cloned workspace and post the markdown report as a comment on the issue.
+ * @param issueNumber - The issue/PR number that triggered the setup.
+ * @param repo - Repository string (owner/repo).
+ * @param token - GitHub authentication token.
+ * @param config - Agent configuration.
+ * @param tempDir - Temporary working directory containing the cloned repo.
+ */
+export async function handleSetup(
+  issueNumber: number,
+  repo: string,
+  token: string,
+  config: AgentConfig,
+  tempDir: string,
+): Promise<void> {
+  const logger = new Logger('Command:Setup', { repo, prNumber: issueNumber });
+  logger.info(`Running setup validation for issue #${issueNumber}`);
+
+  const gh: PlatformAdapter =
+    config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
+  const engine = new SetupEngine(config, {
+    workingDirectory: tempDir,
+    platform: config.platform,
+    githubToken: token,
+    repo: config.platform === 'github' ? repo : undefined,
+  });
+
+  try {
+    const result = await engine.runAll();
+    const report = engine.formatReport(result);
+
+    await gh.postOrUpdateComment(issueNumber, '<!-- setup-report -->', report);
+
+    logger.info(
+      `Posted setup validation report for issue #${issueNumber} (overall: ${result.overall})`,
+    );
+  } catch (err) {
+    logger.error(
+      `Failed to run setup validation for issue #${issueNumber}: ${err instanceof Error ? err.message : err}`,
+    );
+    await gh.postOrUpdateComment(
+      issueNumber,
+      '<!-- setup-report -->',
+      `❌ **Setup Validation Failed**: ${sanitizeErrorMessage(err)}`,
+    );
   }
 }
 

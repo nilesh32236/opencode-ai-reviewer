@@ -76,6 +76,8 @@ export interface ActionInputs {
     auditLabels: string[];
     /** Version of opencode to use. */
     opencodeVersion: string;
+    /** In setup mode, probe every configured model instead of only the review model. */
+    probeAllModels: boolean;
     /** Timeout in minutes for the operation. */
     timeoutMinutes: number;
     /** Whether to post review comments inline on the diff. */

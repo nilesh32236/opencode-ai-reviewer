@@ -14,6 +14,7 @@ import type {
 import { CircuitBreaker } from './circuit-breaker.js';
 import { getLabelColor } from './label-color.js';
 import { withRetry, withRetryAndTimeout } from './retry.js';
+import type { RetryOptions } from './retry.js';
 import { buildReviewBody } from './review-body.js';
 import { gatherReviewThread } from './review-thread.js';
 import type { ThreadComment } from './review-thread.js';
@@ -100,6 +101,7 @@ export class GitHubHelper implements PlatformAdapter {
     options: RequestInit = {},
     responseType?: 'json' | 'text',
     signal?: AbortSignal,
+    retryOptions: RetryOptions = {},
   ): Promise<T> {
     const url = `${this.apiUrl}/repos/${this.repo}${path}`;
     const method = (options.method ?? 'GET').toUpperCase();
@@ -157,6 +159,7 @@ export class GitHubHelper implements PlatformAdapter {
           retryableStatuses: isIdempotent ? [429, 500, 502, 503, 504] : [429],
           retryUnknownStatus: isIdempotent,
           signal,
+          ...retryOptions,
         },
       ),
     );
@@ -1477,6 +1480,43 @@ export class GitHubHelper implements PlatformAdapter {
   }
 
   private currentUserLogin: string | null = null;
+
+  /**
+   * Fetch the permissions the authenticated token has on the configured repository.
+   * Makes a `GET /repos/{owner}/{repo}` call and returns the `permissions` object
+   * (e.g. `{ admin, push, pull }`) that GitHub includes for authenticated requests.
+   *
+   * @returns A record of permission booleans, or null when the repository is not
+   * accessible with the current token (missing repo or 403/404). Throws on
+   * transport/network failures so callers can degrade gracefully.
+   * @throws Error when the GitHub API is unreachable (status 0).
+   */
+  async getRepositoryPermissions(): Promise<Record<string, boolean> | null> {
+    try {
+      const repo = await this.api<{ permissions?: Record<string, boolean> }>(
+        '/',
+        undefined,
+        undefined,
+        undefined,
+        // The permission probe is a pre-flight check: degrade quickly on
+        // transport failures instead of burning retries/backoff.
+        { maxRetries: 1, retryUnknownStatus: false },
+      );
+      return repo.permissions ?? null;
+    } catch (err) {
+      const status =
+        err instanceof Error && 'status' in err ? (err as Error & { status: number }).status : 0;
+      if (status === 0) {
+        // Network/transport failure — rethrow so callers can distinguish this
+        // from a genuine "no access" (403/404) response.
+        throw err;
+      }
+      core.debug(
+        `Failed to fetch repository permissions for ${this.repo}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
+  }
 
   /**
    * Get the authenticated user's login name.

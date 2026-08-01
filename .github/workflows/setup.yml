@@ -1,0 +1,82 @@
+# ─── Reusable/Manual Workflow: AI Setup Validation ───
+# Trigger the setup wizard two ways:
+#   1. Manually via the Actions tab (workflow_dispatch)
+#   2. Automatically by commenting `/setup` on any issue (issue_comment)
+#
+# The action validates secrets, GitHub permissions, the OpenCode CLI version,
+# model connectivity, and the `.opencode-reviewer.yml` config, then posts a
+# pass/fail report to the triggering issue (or the job summary for manual runs).
+#
+# Required secrets:
+#   - GITHUB_TOKEN: auto-provided, needs issues:write, pull-requests:write
+# Optional secrets (for non-default models):
+#   - OPENAI_API_KEY
+#   - ANTHROPIC_API_KEY
+#   - GEMINI_API_KEY
+
+name: AI Setup Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'OpenCode model to probe (default: opencode/deepseek-v4-flash-free)'
+        required: false
+        type: string
+        default: 'opencode/deepseek-v4-flash-free'
+      opencode_version:
+        description: 'OpenCode CLI version to install if missing (e.g. latest or v1.1.1)'
+        required: false
+        type: string
+        default: 'latest'
+      probe_all_models:
+        description: 'Probe every configured model instead of only the review model'
+        required: false
+        type: boolean
+        default: false
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: setup-${{ github.event.issue.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  setup:
+    # Only trusted commenters (OWNER/MEMBER/COLLABORATOR) can trigger the
+    # on-demand run, since it executes with the operator's paid API keys and a
+    # write-scoped GITHUB_TOKEN. Command matching mirrors the App's parseCommand
+    # semantics (case-insensitive, `/oc setup` alias) as closely as the Actions
+    # expression language allows.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (contains(fromJson('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
+       (startsWith(github.event.comment.body, '/setup') ||
+        startsWith(github.event.comment.body, '/oc setup')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      setup_passed: ${{ steps.ai-setup.outputs.setup_passed }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: AI Setup Validation
+        id: ai-setup
+        uses: nilesh32236/opencode-ai-reviewer@v1
+        with:
+          mode: setup
+          model: ${{ inputs.model || 'opencode/deepseek-v4-flash-free' }}
+          opencode_version: ${{ inputs.opencode_version || 'latest' }}
+          probe_all_models: ${{ inputs.probe_all_models || 'false' }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}

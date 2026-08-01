@@ -289,6 +289,23 @@ async function verifyDownloadedArchive(
 }
 
 /**
+ * Resolve the path to the OpenCode CLI binary, installing it if necessary.
+ * Prefers an existing PATH binary; otherwise downloads the requested version
+ * via `setupOpenCode`.
+ *
+ * @param version - Version to install when opencode is missing (defaults to 'latest').
+ * @returns The absolute path to the opencode binary.
+ */
+export async function resolveOpenCodePath(version = 'latest'): Promise<string> {
+  const existingPath = await io.which('opencode', false);
+  if (existingPath) {
+    opencodePath = existingPath;
+    return existingPath;
+  }
+  return setupOpenCode(version);
+}
+
+/**
  * Build the OpenCode CI config object.
  *
  * Based on https://opencode.ai/docs/permissions and https://opencode.ai/docs/config:
@@ -372,6 +389,8 @@ export function parseTokenUsage(output: string): number {
  * @param options.timeoutMinutes - Max runtime before forced termination (default: 20).
  * @param options.signal - Optional AbortSignal to cancel the OpenCode process externally.
  * @param options.env - Additional environment variables to forward.
+ * @param options.quiet - When true, suppress forwarding the process transcript to
+ * stdout/stderr (output is still captured for parsing/returning).
  * @returns Object indicating success, output text, wall-clock duration in ms, and tokens used.
  */
 export async function runOpenCode(
@@ -384,6 +403,8 @@ export async function runOpenCode(
     /** Optional AbortSignal to cancel the OpenCode process externally. */
     signal?: AbortSignal;
     env?: Record<string, string>;
+    /** When true, do not stream the transcript to the CI logs. */
+    quiet?: boolean;
   },
 ): Promise<{ success: boolean; output: string; durationMs: number; tokensUsed: number }> {
   const binaryPath = opencodePath || (await setupOpenCode());
@@ -546,19 +567,23 @@ export async function runOpenCode(
   childProcess.stdout?.on('data', (data: Buffer) => {
     const text = data.toString();
     appendCaptured(text);
-    try {
-      process.stdout.write(data);
-    } catch {
-      // Stream closed
+    if (!options.quiet) {
+      try {
+        process.stdout.write(data);
+      } catch {
+        // Stream closed
+      }
     }
   });
   childProcess.stderr?.on('data', (data: Buffer) => {
     const text = data.toString();
     appendCaptured(text);
-    try {
-      process.stderr.write(data);
-    } catch {
-      // Stream closed
+    if (!options.quiet) {
+      try {
+        process.stderr.write(data);
+      } catch {
+        // Stream closed
+      }
     }
   });
 
