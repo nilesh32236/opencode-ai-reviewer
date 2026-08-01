@@ -1527,6 +1527,33 @@ diff --git a/src/a.ts b/src/a.ts
         direction: 'asc',
       });
       expect(result).toHaveLength(1);
+
+      // GitLab needs explicit order_by/sort (it ignores GitHub's `direction`).
+      const url = fetchMock.mock.calls[0][0] as string;
+      expect(url).toContain('order_by=created_at');
+      expect(url).toContain('sort=asc');
+    });
+
+    it('appends descending sort when direction is desc', async () => {
+      fetchMock.mockResolvedValue(mockResponse({ body: [{ id: 1 }] }));
+
+      await adapter.paginate('/issues/1/notes', {
+        perPage: 100,
+        maxPages: 1,
+        direction: 'desc',
+      });
+
+      const url = fetchMock.mock.calls[0][0] as string;
+      expect(url).toContain('order_by=created_at');
+      expect(url).toContain('sort=desc');
+    });
+
+    it('rethrows page-fetch errors when throwOnError is set', async () => {
+      fetchMock.mockResolvedValue(mockErrorResponse(500));
+
+      await expect(
+        adapter.paginate('/issues/1/notes', { perPage: 100, maxPages: 2, throwOnError: true }),
+      ).rejects.toThrow('GitLab API 500');
     });
 
     it('adds ? when no query params exist', async () => {

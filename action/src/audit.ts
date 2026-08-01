@@ -141,6 +141,9 @@ export async function runAudit(
           `Failed to search for existing open audit issue — aborting issue creation to avoid duplicates: ${err instanceof Error ? err.message : err}`,
         ),
       );
+      // Fail loudly instead of silently dropping the audit's findings: the
+      // operator must know the audit issue was not tracked.
+      core.setFailed('Audit issue tracking aborted — search for existing issue failed');
       return;
     }
 

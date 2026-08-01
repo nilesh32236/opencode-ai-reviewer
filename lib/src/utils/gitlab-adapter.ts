@@ -155,7 +155,13 @@ export class GitLabAdapter implements PlatformAdapter {
 
     while (page <= maxPages) {
       const separator = endpoint.includes('?') ? '&' : '?';
-      const pagePath = `${endpoint}${separator}per_page=${perPage}&page=${page}`;
+      let pagePath = `${endpoint}${separator}per_page=${perPage}&page=${page}`;
+      // GitLab ignores GitHub's `direction` query param; order_by/sort must be
+      // set explicitly so the 'asc' assumptions in callers hold on both platforms
+      // (GitLab returns notes newest-first by default).
+      if (options?.direction) {
+        pagePath += `&order_by=created_at&sort=${options.direction}`;
+      }
       try {
         const items = await this.api<T[]>(pagePath);
         allItems.push(...items);
@@ -695,6 +701,22 @@ export class GitLabAdapter implements PlatformAdapter {
    */
   async getReviewComment(mrNumber: number, commentId: number): Promise<ReviewCommentDetail> {
     return this.api<ReviewCommentDetail>(`/merge_requests/${mrNumber}/notes/${commentId}`);
+  }
+
+  /**
+   * Get a single issue comment by ID.
+   * @param issueNumber - Issue/PR number the comment belongs to.
+   * @param commentId - Note ID.
+   * @returns The raw issue comment (GitLab notes use author.username).
+   */
+  async getIssueComment(
+    issueNumber: number,
+    commentId: number,
+  ): Promise<{ id: number; body: string; user?: { login?: string } }> {
+    const note = await this.api<{ id: number; body: string; author?: { username?: string } }>(
+      `/issues/${issueNumber}/notes/${commentId}`,
+    );
+    return { id: note.id, body: note.body, user: { login: note.author?.username } };
   }
 
   /**

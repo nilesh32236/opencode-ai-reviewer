@@ -1025,6 +1025,164 @@ diff --git a/deleted.ts b/deleted.ts
       expect(thread.filePath).toBe('');
       expect(thread.lineNumber).toBeUndefined();
     });
+
+    it('reconstructs thread from paginated list in a single pass (prNumber provided)', async () => {
+      const comments = [
+        {
+          id: 1,
+          body: 'root',
+          user: { login: 'opencode-bot', type: 'Bot' },
+          path: 'src/index.ts',
+          line: 42,
+          in_reply_to_id: null,
+        },
+        {
+          id: 2,
+          body: 'middle',
+          user: { login: 'opencode-bot', type: 'Bot' },
+          path: 'src/index.ts',
+          line: 42,
+          in_reply_to_id: 1,
+        },
+        {
+          id: 3,
+          body: 'leaf',
+          user: { login: 'developer', type: 'User' },
+          path: 'src/index.ts',
+          line: 42,
+          in_reply_to_id: 2,
+        },
+      ];
+
+      fetchMock.mockResolvedValue(mockResponse({ body: comments }));
+
+      const thread = await helper.getReviewCommentThread(3, 1);
+
+      expect(thread.comments.map((c) => c.id)).toEqual([1, 2, 3]);
+      expect(thread.rootComment.id).toBe(1);
+      expect(thread.filePath).toBe('src/index.ts');
+      expect(thread.lineNumber).toBe(42);
+      // No duplicate IDs from the single-pass path
+      expect(new Set(thread.comments.map((c) => c.id)).size).toBe(3);
+    });
+
+    it('fetches missing ancestors without duplicating in-window comments', async () => {
+      // Window contains the middle ancestor (2) and the leaf (3) but NOT the
+      // root (1). The direct-walk fallback must start from the deepest found
+      // ancestor so in-window comments are never re-fetched or re-added.
+      const windowComments = [
+        {
+          id: 2,
+          body: 'middle',
+          user: { login: 'opencode-bot', type: 'Bot' },
+          path: 'src/index.ts',
+          line: 42,
+          in_reply_to_id: 1,
+        },
+        {
+          id: 3,
+          body: 'leaf',
+          user: { login: 'developer', type: 'User' },
+          path: 'src/index.ts',
+          line: 42,
+          in_reply_to_id: 2,
+        },
+      ];
+      const rootComment = {
+        id: 1,
+        body: 'root',
+        user: { login: 'opencode-bot', type: 'Bot' },
+        path: 'src/index.ts',
+        line: 42,
+        in_reply_to_id: null,
+      };
+
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes('/pulls/1/comments')) return mockResponse({ body: windowComments });
+        if (url.includes('/pulls/comments/1')) return mockResponse({ body: rootComment });
+        return mockResponse({ body: {} });
+      });
+
+      const thread = await helper.getReviewCommentThread(3, 1);
+
+      expect(thread.comments.map((c) => c.id)).toEqual([1, 2, 3]);
+      // The regression this guards against: [1, 2, 2, 3] from re-fetching an
+      // in-window ancestor would leave a duplicate ID in the thread.
+      expect(new Set(thread.comments.map((c) => c.id)).size).toBe(3);
+      expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('/pulls/comments/2'));
+    });
+
+    it('walks the full chain when the trigger is outside the paginated window', async () => {
+      const comments = [
+        {
+          id: 1,
+          body: 'root',
+          user: { login: 'opencode-bot', type: 'Bot' },
+          path: 'src/index.ts',
+          line: 42,
+          in_reply_to_id: null,
+        },
+        {
+          id: 2,
+          body: 'middle',
+          user: { login: 'opencode-bot', type: 'Bot' },
+          path: 'src/index.ts',
+          line: 42,
+          in_reply_to_id: 1,
+        },
+        {
+          id: 3,
+          body: 'leaf',
+          user: { login: 'developer', type: 'User' },
+          path: 'src/index.ts',
+          line: 42,
+          in_reply_to_id: 2,
+        },
+      ];
+
+      // Empty paginated window -> falls back to direct chain walk.
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes('/pulls/1/comments')) return mockResponse({ body: [] });
+        if (url.includes('/pulls/comments/3')) return mockResponse({ body: comments[2] });
+        if (url.includes('/pulls/comments/2')) return mockResponse({ body: comments[1] });
+        if (url.includes('/pulls/comments/1')) return mockResponse({ body: comments[0] });
+        return mockResponse({ body: {} });
+      });
+
+      const thread = await helper.getReviewCommentThread(3, 1);
+
+      expect(thread.comments.map((c) => c.id)).toEqual([1, 2, 3]);
+      expect(thread.rootComment.id).toBe(1);
+    });
+
+    it('anchors filePath/lineNumber on the root comment', async () => {
+      const comments = [
+        {
+          id: 1,
+          body: 'root',
+          user: { login: 'opencode-bot', type: 'Bot' },
+          path: 'src/root.ts',
+          line: 10,
+          in_reply_to_id: null,
+        },
+        {
+          id: 2,
+          body: 'leaf',
+          user: { login: 'developer', type: 'User' },
+          path: 'src/leaf.ts',
+          line: 99,
+          in_reply_to_id: 1,
+        },
+      ];
+
+      fetchMock.mockResolvedValue(mockResponse({ body: comments }));
+
+      const thread = await helper.getReviewCommentThread(2, 1);
+
+      // Prior leaf-to-root semantics anchored on the root comment.
+      expect(thread.filePath).toBe('src/root.ts');
+      expect(thread.lineNumber).toBe(10);
+    });
   });
 
   describe('createComment', () => {
@@ -1462,6 +1620,48 @@ diff --git a/deleted.ts b/deleted.ts
       await helper.isPR(1);
 
       expect(warning).toHaveBeenCalledWith(expect.stringContaining('rate limited'));
+    });
+  });
+
+  describe('paginate', () => {
+    it('returns all items from single page', async () => {
+      fetchMock.mockResolvedValue(mockResponse({ body: [{ id: 1 }, { id: 2 }] }));
+
+      const result = await helper.paginate('/issues/1/comments');
+      expect(result).toHaveLength(2);
+    });
+
+    it('appends direction to the page URL', async () => {
+      fetchMock.mockResolvedValue(mockResponse({ body: [{ id: 1 }] }));
+
+      await helper.paginate('/issues/1/comments', { perPage: 100, maxPages: 1, direction: 'asc' });
+
+      const url = fetchMock.mock.calls[0][0] as string;
+      expect(url).toContain('direction=asc');
+    });
+
+    it('rethrows page-fetch errors when throwOnError is set', async () => {
+      fetchMock.mockResolvedValue(mockErrorResponse(500));
+
+      await expect(
+        helper.paginate('/issues/1/comments', { perPage: 100, maxPages: 2, throwOnError: true }),
+      ).rejects.toThrow('GitHub API 500');
+    });
+
+    it('returns partial data silently when throwOnError is not set', async () => {
+      const { warning } = await import('@actions/core');
+
+      let callCount = 0;
+      fetchMock.mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1)
+          return mockResponse({ body: Array.from({ length: 100 }, (_, i) => ({ id: i })) });
+        return mockErrorResponse(500);
+      });
+
+      const result = await helper.paginate('/issues/1/comments');
+      expect(result).toHaveLength(100);
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('Failed to fetch page'));
     });
   });
 

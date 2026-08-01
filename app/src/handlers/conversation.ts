@@ -140,9 +140,25 @@ interface IssueCommentThread {
   thread: ConversationMessage[];
 }
 
+/** Raw review comment shape used across window fetches and direct by-id fetches. */
+interface ThreadComment {
+  id: number;
+  body: string;
+  path?: string;
+  diff_hunk?: string;
+  in_reply_to_id?: number;
+  user?: { login?: string };
+}
+
 /**
  * Gather the full review comment thread for a given comment.
- * Fetches all review comments on the PR and filters by thread.
+ * Fetches all review comments on the PR (bounded window) and reconstructs the
+ * whole thread subtree: every comment that directly or transitively replies to
+ * a comment in the trigger's ancestor chain (siblings and nested branches), so
+ * prior bot/user turns are never dropped. Comments outside the window are
+ * fetched directly by ID so the conversation is never silently skipped.
+ *
+ * Exported for unit testing.
  *
  * @param gh - GitHub API helper instance.
  * @param prNumber - PR number.
@@ -150,76 +166,93 @@ interface IssueCommentThread {
  * @param mentionHandle - Bot mention handle.
  * @returns Object containing conversation messages, file path, and diff hunk.
  */
-async function gatherReviewCommentThread(
+export async function gatherReviewCommentThread(
   gh: PlatformAdapter,
   prNumber: number,
   commentId: number,
   mentionHandle: string,
 ): Promise<ReviewCommentThread> {
   try {
-    // Fetch review comments in ascending order across a bounded window so the
-    // triggering comment is found even when it is older than the newest page.
+    // Fetch review comments in ascending order across a bounded window; comments
+    // outside the window are recovered by the direct-fetch fallback below.
     const rawComments = (await gh.listReviewComments(prNumber, {
       perPage: 100,
-      maxPages: 20,
+      maxPages: 5,
       direction: 'asc',
-    })) as Array<{
-      id: number;
-      body: string;
-      path?: string;
-      diff_hunk?: string;
-      in_reply_to_id?: number;
-      user?: { login?: string };
-    }>;
+    })) as unknown as ThreadComment[];
 
-    const triggerComment = rawComments.find((c) => c.id === commentId);
-
-    let threadComments: Array<{
-      id: number;
-      body: string;
-      path?: string;
-      user?: { login?: string };
-    }>;
-    let filePath: string | undefined;
-    let diffHunk: string | undefined;
-
-    if (triggerComment) {
-      // Reconstruct the full thread by walking the in_reply_to_id chain from the
-      // trigger up to the root, preserving multi-level reply chains instead of
-      // only matching direct replies to the root.
-      const chainIds = new Set<number>();
-      let currentId: number | undefined = commentId;
-      while (currentId) {
-        chainIds.add(currentId);
-        currentId = rawComments.find((c) => c.id === currentId)?.in_reply_to_id;
-      }
-      threadComments = rawComments.filter((c) => chainIds.has(c.id));
-      filePath = triggerComment.path;
-      diffHunk = triggerComment.diff_hunk;
-    } else {
-      // The trigger comment is older than the bounded window — fetch it directly
-      // by ID and walk its in_reply_to_id chain so the conversation is never
-      // silently skipped.
-      const chain: Array<{
-        id: number;
-        body: string;
-        path?: string;
-        in_reply_to_id?: number;
-        user?: { login?: string };
-      }> = [];
-      let currentId: number | undefined = commentId;
-      while (currentId) {
-        const comment = await gh.getReviewComment(prNumber, currentId);
-        chain.push(comment);
-        currentId = comment.in_reply_to_id;
-      }
-      filePath = chain[0]?.path;
-      threadComments = chain.reverse();
+    // Index once for O(1) lookups (avoids repeated rawComments.find in loops).
+    const byId = new Map<number, ThreadComment>();
+    for (const c of rawComments) {
+      if (typeof c.id === 'number') byId.set(c.id, c);
     }
 
-    if (threadComments.length === 0) {
+    // Walk the in_reply_to_id chain from the trigger up to the root with a cycle
+    // guard (in_reply_to_id comes from external API data and may be malformed).
+    const chain: ThreadComment[] = [];
+    const visited = new Set<number>();
+    let currentId: number | undefined = commentId;
+    let missingId: number | undefined;
+    while (currentId) {
+      const comment = byId.get(currentId);
+      if (!comment) {
+        missingId = currentId;
+        break;
+      }
+      if (visited.has(currentId)) break;
+      visited.add(currentId);
+      chain.unshift(comment);
+      currentId = comment.in_reply_to_id;
+    }
+
+    // The trigger or an ancestor fell outside the window: fetch the missing
+    // chain by ID so a deep/old thread is never silently truncated.
+    if (missingId !== undefined) {
+      const missing: ThreadComment[] = [];
+      let ancestorId: number | undefined = missingId;
+      while (ancestorId) {
+        if (visited.has(ancestorId)) break;
+        visited.add(ancestorId);
+        const comment = (await gh.getReviewComment(
+          prNumber,
+          ancestorId,
+        )) as unknown as ThreadComment;
+        missing.push(comment);
+        byId.set(comment.id, comment);
+        ancestorId = comment.in_reply_to_id;
+      }
+      // missing is leaf-to-root; prepend reversed to keep the chain root-first.
+      chain.unshift(...missing.reverse());
+    }
+
+    if (chain.length === 0) {
       return { thread: [] };
     }
+
+    // Include the whole thread subtree: every windowed comment that directly or
+    // transitively replies to a comment in the ancestor chain (preserving sibling
+    // replies and nested branches the old root+direct-replies logic kept). The
+    // chain itself may hold direct-fetched comments outside the window, so the
+    // final list is resolved through byId and sorted ascending by id.
+    const threadIds = new Set<number>(chain.map((c) => c.id));
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const c of rawComments) {
+        if (c.in_reply_to_id === undefined) continue;
+        if (threadIds.has(c.in_reply_to_id) && !threadIds.has(c.id)) {
+          threadIds.add(c.id);
+          changed = true;
+        }
+      }
+    }
+    const threadComments = [...threadIds]
+      .map((id) => byId.get(id))
+      .filter((c): c is ThreadComment => c !== undefined)
+      .sort((a, b) => a.id - b.id);
+
+    const filePath = chain[0]?.path;
+    const diffHunk = chain.find((c) => c.diff_hunk)?.diff_hunk;
 
     const thread: ConversationMessage[] = threadComments.map((c) => ({
       role: isBotComment(c.user?.login, mentionHandle) ? ('assistant' as const) : ('user' as const),
@@ -242,7 +275,11 @@ async function gatherReviewCommentThread(
 
 /**
  * Gather the issue comment thread for a given comment.
- * Fetches recent issue comments on the PR.
+ * Fetches recent issue comments on the PR (bounded window). When the triggering
+ * comment is older than the window it is fetched directly by ID so the
+ * conversation is never silently skipped.
+ *
+ * Exported for unit testing.
  *
  * @param gh - GitHub API helper instance.
  * @param prNumber - PR number.
@@ -250,18 +287,18 @@ async function gatherReviewCommentThread(
  * @param mentionHandle - Bot mention handle.
  * @returns Object containing context conversation messages.
  */
-async function gatherIssueCommentThread(
+export async function gatherIssueCommentThread(
   gh: PlatformAdapter,
   prNumber: number,
   commentId: number,
   mentionHandle: string,
 ): Promise<IssueCommentThread> {
   try {
-    // Fetch issue comments in ascending order across a bounded window so the
-    // triggering comment is located even when it is not among the newest.
+    // Fetch issue comments in ascending order across a bounded window; comments
+    // outside the window are recovered by the direct-fetch fallback below.
     const allComments = (await gh.listComments(prNumber, {
       perPage: 100,
-      maxPages: 20,
+      maxPages: 5,
       direction: 'asc',
     })) as Array<{
       id: number;
@@ -269,15 +306,20 @@ async function gatherIssueCommentThread(
       user?: { login?: string };
     }>;
 
-    // Find comments around the triggering comment for thread context
+    // Find comments around the triggering comment for thread context.
     const triggerIdx = allComments.findIndex((c) => c.id === commentId);
-    if (triggerIdx === -1) {
-      return { thread: [] };
-    }
 
-    // Take up to 5 recent comments before the trigger + the trigger itself
-    const contextStart = Math.max(0, triggerIdx - 5);
-    const contextComments = allComments.slice(contextStart, triggerIdx + 1);
+    let contextComments: Array<{ id: number; body: string; user?: { login?: string } }>;
+    if (triggerIdx === -1) {
+      // The trigger is older than the bounded window — fetch it by ID and build
+      // a minimal thread so the conversation is never silently skipped.
+      const triggerComment = await gh.getIssueComment(prNumber, commentId);
+      contextComments = [triggerComment];
+    } else {
+      // Take up to 5 recent comments before the trigger + the trigger itself.
+      const contextStart = Math.max(0, triggerIdx - 5);
+      contextComments = allComments.slice(contextStart, triggerIdx + 1);
+    }
 
     const thread: ConversationMessage[] = contextComments.map((c) => ({
       role: isBotComment(c.user?.login, mentionHandle) ? ('assistant' as const) : ('user' as const),

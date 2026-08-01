@@ -92,10 +92,17 @@ export interface PlatformAdapter {
    * silently returning partial comments (default: false).
    * @returns Promise resolving to array of issue comments.
    */
-  getIssueComments(
-    number: number,
-    options?: { throwOnError?: boolean },
-  ): Promise<IssueComment[]>;
+  getIssueComments(number: number, options?: { throwOnError?: boolean }): Promise<IssueComment[]>;
+  /**
+   * Get a single issue comment by ID.
+   * @param issueNumber - Issue/PR number the comment belongs to.
+   * @param commentId - Issue comment ID.
+   * @returns Promise resolving to the raw issue comment (id, body, author login).
+   */
+  getIssueComment(
+    issueNumber: number,
+    commentId: number,
+  ): Promise<{ id: number; body: string; user?: { login?: string } }>;
   /**
    * Get the set of changed line identifiers for a merge request.
    * @param mrNumber - Merge request number.

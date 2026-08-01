@@ -68,11 +68,7 @@ function detectArch(): string {
   return `${osName}-${archName}`;
 }
 
-async function fetchWithRetry(
-  url: string,
-  retries = 3,
-  token?: string,
-): Promise<Response> {
+async function fetchWithRetry(url: string, retries = 3, token?: string): Promise<Response> {
   return withRetry(
     async () => {
       const response = await fetch(url, {
@@ -119,11 +115,25 @@ export async function setupOpenCode(version = 'latest'): Promise<string> {
     releaseUrl = `https://api.github.com/repos/anomalyco/opencode/releases/tags/${tag}`;
   }
 
-  const response = await fetchWithRetry(
-    releaseUrl,
-    3,
-    process.env.GITHUB_TOKEN || process.env.INPUT_GITHUB_TOKEN || undefined,
-  );
+  // The ambient token may be repo-scoped (GitHub Actions GITHUB_TOKEN) or not
+  // GitHub-scoped at all (e.g. a GitLab CI token in INPUT_GITHUB_TOKEN). Sending
+  // either to the api.github.com release endpoint can deterministically fail the
+  // cross-repo lookup (401/403/404). Only use it when authorized and degrade
+  // gracefully to an anonymous request on auth failures so setup never aborts.
+  let response: Response;
+  const ambientToken = process.env.GITHUB_TOKEN || process.env.INPUT_GITHUB_TOKEN || undefined;
+  try {
+    response = await fetchWithRetry(releaseUrl, 3, ambientToken);
+  } catch (err) {
+    const status =
+      err instanceof Error && 'status' in err ? (err as Error & { status: number }).status : 0;
+    if (status === 401 || status === 403 || status === 404) {
+      core.warning(`Authenticated release lookup failed (HTTP ${status}) — retrying anonymously`);
+      response = await fetchWithRetry(releaseUrl, 3);
+    } else {
+      throw err;
+    }
+  }
   const release = (await response.json()) as {
     tag_name?: string;
     assets: Array<{ name: string; browser_download_url: string }>;

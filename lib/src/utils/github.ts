@@ -189,7 +189,12 @@ export class GitHubHelper implements PlatformAdapter {
    */
   public async paginate<T>(
     endpoint: string,
-    options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc'; throwOnError?: boolean },
+    options?: {
+      perPage?: number;
+      maxPages?: number;
+      direction?: 'asc' | 'desc';
+      throwOnError?: boolean;
+    },
   ): Promise<T[]> {
     const perPage = options?.perPage ?? 100;
     const maxPages = options?.maxPages ?? 10;
@@ -398,6 +403,22 @@ export class GitHubHelper implements PlatformAdapter {
       createdAt: c.created_at,
       body: c.body,
     }));
+  }
+
+  /**
+   * Get a single issue comment by its global comment ID.
+   *
+   * @param _issueNumber - PR/issue number (unused; GitHub issue comment IDs are global).
+   * @param commentId - Issue comment ID.
+   * @returns The raw issue comment object.
+   */
+  async getIssueComment(
+    _issueNumber: number,
+    commentId: number,
+  ): Promise<{ id: number; body: string; user?: { login?: string } }> {
+    return this.api<{ id: number; body: string; user?: { login?: string } }>(
+      `/issues/comments/${commentId}`,
+    );
   }
 
   // ─── Diff Operations ────────────────────────────────────
@@ -893,11 +914,15 @@ export class GitHubHelper implements PlatformAdapter {
       }
 
       // The trigger comment is outside the fetched window (or an ancestor is):
-      // discover the remaining chain via direct fetches.
+      // discover the remaining chain via direct fetches. chainIds is built with
+      // unshift while ascending, so ancestors are at the front and the leaf
+      // (trigger) is last. Start from the deepest already-found ancestor
+      // (chainIds[0]) whose in_reply_to_id is the first genuinely missing
+      // comment, so in-window comments are never re-fetched or re-added.
       if (chainIds.length === 0) {
         await this.walkChainById(commentId, commentById, chainIds);
       } else if (needsDirectWalk) {
-        const lastId = chainIds[chainIds.length - 1];
+        const lastId = chainIds[0];
         const last = commentById.get(lastId);
         let ancestorId = last?.in_reply_to_id;
         while (ancestorId) {
@@ -929,6 +954,10 @@ export class GitHubHelper implements PlatformAdapter {
     let filePath = '';
     let lineNumber: number | undefined;
 
+    // Anchor filePath/lineNumber on the ROOT comment (first chain entry) to
+    // preserve the pre-refactor leaf-to-root walk semantics, falling back to the
+    // first ancestor in the chain that carries them (e.g. when the root is a
+    // general thread-level comment without a path/line).
     for (const id of chainIds) {
       const comment = commentById.get(id);
       if (!comment) continue;
@@ -940,8 +969,8 @@ export class GitHubHelper implements PlatformAdapter {
       };
       comments.push(entry);
 
-      if (comment.path) filePath = comment.path;
-      if (comment.line !== undefined) lineNumber = comment.line;
+      if (!filePath && comment.path) filePath = comment.path;
+      if (lineNumber === undefined && comment.line !== undefined) lineNumber = comment.line;
 
       if (!root) root = entry;
     }
@@ -1315,9 +1344,7 @@ export class GitHubHelper implements PlatformAdapter {
       });
       return true;
     } catch (err) {
-      core.warning(
-        `Failed to merge PR #${prNumber}: ${err instanceof Error ? err.message : err}`,
-      );
+      core.warning(`Failed to merge PR #${prNumber}: ${err instanceof Error ? err.message : err}`);
       return false;
     }
   }
@@ -1564,25 +1591,24 @@ export class GitHubHelper implements PlatformAdapter {
           }
         }
         `;
+      // graphql() retries internally via withRetry (default maxRetries 3), so a
+      // final page failure here is logged and the loop exits, marking the thread
+      // data as partial rather than silently dropping remaining pages.
       let data: ReviewThreadsQueryResponse;
       try {
-        data = (await this.graphql(query, { owner, repo, number: prNumber, cursor })) as ReviewThreadsQueryResponse;
+        data = (await this.graphql(query, {
+          owner,
+          repo,
+          number: prNumber,
+          cursor,
+        })) as ReviewThreadsQueryResponse;
       } catch (err) {
         core.warning(
-          `Failed to fetch review thread page ${pageCount} for PR #${prNumber}: ${
+          `Failed to fetch review thread page ${pageCount} for PR #${prNumber} — continuing with partial thread data: ${
             err instanceof Error ? err.message : err
-          } — retrying once`,
+          }`,
         );
-        try {
-          data = (await this.graphql(query, { owner, repo, number: prNumber, cursor })) as ReviewThreadsQueryResponse;
-        } catch (retryErr) {
-          core.warning(
-            `Retry for review thread page ${pageCount} failed — continuing with partial thread data: ${
-              retryErr instanceof Error ? retryErr.message : retryErr
-            }`,
-          );
-          break;
-        }
+        break;
       }
 
       const threadsData = data.repository.pullRequest.reviewThreads;

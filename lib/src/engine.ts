@@ -508,6 +508,7 @@ export class ReviewEngine {
               important: deduped.filter((i) => i.severity === 'important').length,
               minor: deduped.filter((i) => i.severity === 'minor').length,
             },
+            ...(failedBatches > 0 ? { failedBatches } : {}),
           };
         }
       }
