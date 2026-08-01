@@ -40,6 +40,8 @@ export interface ActionInputs {
     reviewPromptFile?: string;
     /** Optional extra instructions appended to the review prompt. */
     reviewPromptExtra?: string;
+    /** Optional path to a custom config file (overrides .opencode-reviewer.yml discovery). */
+    configFile?: string;
     /** Whether automated fix mode is enabled. */
     enableFix: boolean;
     /** Maximum number of fix iterations allowed. */

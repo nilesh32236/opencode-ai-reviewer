@@ -51,6 +51,7 @@ import type {
   TokenUsage,
 } from './types/index.js';
 import { PIPELINE_EVENT_TYPES } from './types/index.js';
+import { computeReviewStats, filterFindings, severityRank } from './utils/filter-findings.js';
 import { Logger } from './utils/logger.js';
 import {
   detectDotnetLibraries,
@@ -1041,13 +1042,21 @@ export class ReviewEngine {
     const outputPath = path.join(auditDir, `.opencode/audit-${category}.jsonl`);
     try {
       const auditResult = await parseJsonlFile(outputPath);
+      // Apply per-repository sensitivity filters keyed off the audit category,
+      // honoring the dormant `audit.issueSeverityThreshold` as an additional
+      // global severity floor.
+      const filteredResult = this.applySensitivityFilter(
+        auditResult,
+        category,
+        severityRank(this.config.audit.issueSeverityThreshold),
+      );
       this.publishCompleted(PIPELINE_EVENT_TYPES.AUDIT_COMPLETED, {
         category,
         targetDir,
-        issuesCount: auditResult.issues.length,
+        issuesCount: filteredResult.issues.length,
         modelUsed: this.resolveModel('auditModel'),
       });
-      return auditResult;
+      return filteredResult;
     } catch {
       core.warning(`Failed to parse audit output at ${outputPath}, returning empty result`);
       const r = emptyResult();
@@ -1337,6 +1346,35 @@ export class ReviewEngine {
    * @param totalDiffLines - Optional total diff line count reported in the split banner.
    * @returns Filtered ReviewResult with verified issues.
    */
+  private applySensitivityFilter(
+    result: ReviewResult,
+    defaultCategory = 'general',
+    extraMinSeverityRank?: number,
+  ): ReviewResult {
+    const sensitivity = this.config.review.sensitivity ?? {};
+    const { issues, dropped } = filterFindings(result.issues, {
+      minSeverity: sensitivity.minSeverity,
+      minSeverityRankValue: extraMinSeverityRank,
+      confidenceThreshold: sensitivity.confidenceThreshold,
+      maxFindingsPerCategory: sensitivity.maxFindingsPerCategory,
+      maxTotalFindings: sensitivity.maxTotalFindings,
+      focusAreas: sensitivity.focusAreas,
+      ignorePatterns: sensitivity.ignorePatterns,
+      categories: this.config.review.categories,
+      defaultCategory,
+    });
+    if (dropped > 0) {
+      core.info(`Sensitivity filter dropped ${dropped} finding(s) (kept ${issues.length})`);
+    }
+    // Always apply the filter output so `category` normalization and severity
+    // ordering are consistent regardless of whether any finding was dropped.
+    return {
+      ...result,
+      issues,
+      stats: computeReviewStats(issues),
+    };
+  }
+
   private async verifyReviewResult(
     result: ReviewResult,
     prContext: string,
@@ -1524,6 +1562,11 @@ export class ReviewEngine {
         };
       }
     }
+
+    // Apply per-repository sensitivity filters (severity/confidence floors,
+    // focus areas, ignore patterns, finding caps). Runs after verification and
+    // low-confidence suppression so the filters see final severities.
+    enrichedResult = this.applySensitivityFilter(enrichedResult);
 
     if (budgetMode && totalDiffLines !== undefined) {
       enrichedResult = this.applyBudgetModeBanner(enrichedResult, budgetMode, totalDiffLines);

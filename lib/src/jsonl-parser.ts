@@ -166,6 +166,7 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
         theoreticalRisk: i.theoreticalRisk,
         entryPointPath: i.entryPointPath,
         confidence: i.confidence,
+        category: i.category,
       })),
       stats: {
         total: issues.length,
@@ -311,6 +312,7 @@ export function parseJsonlString(content: string): ReviewResult {
       theoreticalRisk: i.theoreticalRisk,
       entryPointPath: i.entryPointPath,
       confidence: i.confidence,
+      category: i.category,
     })),
     stats: {
       total: issues.length,
@@ -418,6 +420,7 @@ function validateAndNormalize(obj: Record<string, unknown>): Finding {
           typeof obj.confidence === 'string' && ['high', 'medium', 'low'].includes(obj.confidence)
             ? (obj.confidence as 'high' | 'medium' | 'low')
             : undefined,
+        category: typeof obj.category === 'string' ? obj.category : undefined,
       } as IssueFinding;
     }
 

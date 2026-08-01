@@ -45,6 +45,7 @@ export const ReviewIssueSchema = z.object({
   theoreticalRisk: z.boolean().optional(),
   entryPointPath: z.string().optional(),
   confidence: z.enum(['high', 'medium', 'low']).optional(),
+  category: z.string().optional(),
 });
 
 /** Zod discriminated union for all review entry types. */
@@ -121,6 +122,31 @@ export const CostTrackingConfigSchema = z
   })
   .catch({});
 
+/** Zod schema validating per-category sensitivity override. */
+export const CategoryOverrideSchema = z.object({
+  minSeverity: z.enum(['warning', 'error', 'critical']).optional(),
+  enabled: z.boolean().optional(),
+  // No 1..500 bounds here: out-of-range values are clamped by
+  // `validateConfig()` (config.ts) instead of rejecting the whole config file.
+  maxFindings: z.number().int().optional(),
+});
+
+/**
+ * Zod schema validating per-repository sensitivity configuration.
+ * Numeric caps intentionally omit `.min()/.max()` bounds — out-of-range values
+ * are clamped by `validateConfig()` (config.ts) rather than failing the parse.
+ * `maxTotalFindings` has no schema default so the cap is only active when a
+ * repository explicitly configures it (the action/app defaults are neutral).
+ */
+export const ReviewSensitivitySchema = z.object({
+  minSeverity: z.enum(['warning', 'error', 'critical']).default('warning'),
+  confidenceThreshold: z.enum(['low', 'medium', 'high']).default('low'),
+  maxFindingsPerCategory: z.number().int().optional(),
+  maxTotalFindings: z.number().int().optional(),
+  focusAreas: z.array(z.string()).optional().default([]),
+  ignorePatterns: z.array(z.string()).optional().default([]),
+});
+
 /** Zod schema validating review configuration. */
 export const ReviewConfigSchema = z.object({
   skipLabels: z.array(z.string()).default(['autofix', 'autofix:approved', 'autofix:merged']),
@@ -146,6 +172,8 @@ export const ReviewConfigSchema = z.object({
   tokenBudget: TokenBudgetConfigSchema.optional(),
   reviewBudget: ReviewBudgetConfigSchema.default(ReviewBudgetConfigSchema.parse({})),
   costTracking: CostTrackingConfigSchema.optional(),
+  sensitivity: ReviewSensitivitySchema.optional(),
+  categories: z.record(CategoryOverrideSchema).optional(),
 });
 
 /** Zod schema validating audit configuration. */
@@ -154,7 +182,7 @@ export const AuditConfigSchema = z.object({
   targetDirs: z.array(z.string()).default([]),
   autoFix: z.boolean().default(true),
   triggerLabel: z.string().default('autofix-trigger'),
-  issueSeverityThreshold: SeveritySchema.default('important'),
+  issueSeverityThreshold: SeveritySchema.default('minor'),
 });
 
 /** Zod schema validating learning configuration with nested meta-review and pattern discovery defaults. */
@@ -331,6 +359,8 @@ export const PromptConfigSchema = z.object({
   platform: z.enum(['github', 'gitlab']).optional(),
   review: z
     .object({
+      skipLabels: z.array(z.string()).optional(),
+      skipActors: z.array(z.string()).optional(),
       systemPrompt: z.string().optional(),
       extraContext: z.string().optional(),
       customRules: z.array(z.string()).optional(),
@@ -346,6 +376,8 @@ export const PromptConfigSchema = z.object({
         })
         .optional(),
       costTracking: CostTrackingConfigSchema.optional(),
+      sensitivity: ReviewSensitivitySchema.optional(),
+      categories: z.record(CategoryOverrideSchema).optional(),
     })
     .optional(),
   fix: z

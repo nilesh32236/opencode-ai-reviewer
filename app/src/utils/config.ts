@@ -1,4 +1,4 @@
-import { DEFAULT_CONFIG, getDefaultMCPServers } from '@opencode-pr-agent/lib';
+import { DEFAULT_CONFIG, getDefaultMCPServers, loadConfig } from '@opencode-pr-agent/lib';
 import type { AgentConfig } from '@opencode-pr-agent/lib';
 
 /**
@@ -181,6 +181,42 @@ export function buildConfig(): AgentConfig {
         1,
         8760,
       ),
+    },
+  };
+}
+
+/**
+ * Merge a repository's `.opencode-reviewer.yml` sensitivity settings into the
+ * base agent configuration. The App builds a server-global config from env
+ * vars + defaults (no per-repo context at startup), so per-repo sensitivity
+ * tuning is applied here at the point where a repo working directory exists.
+ *
+ * Only the `review.sensitivity` / `review.categories` blocks are merged (the
+ * engine filters findings off those fields); all other config-file sections
+ * remain Action-only. Unknown/malformed config files degrade gracefully to the
+ * base config so a broken repo config never breaks the review.
+ *
+ * @param baseConfig - The base agent configuration (from `buildConfig()`).
+ * @param workingDir - Repository working directory containing `.opencode-reviewer.yml`.
+ * @returns The base config merged with the repo's sensitivity settings.
+ */
+export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): AgentConfig {
+  if (!workingDir) return baseConfig;
+  const repoConfig = loadConfig(workingDir);
+  const sensitivity = repoConfig?.review?.sensitivity;
+  const categories = repoConfig?.review?.categories;
+  if (!sensitivity && !categories) return baseConfig;
+  return {
+    ...baseConfig,
+    review: {
+      ...baseConfig.review,
+      ...(sensitivity && {
+        sensitivity: {
+          ...baseConfig.review.sensitivity,
+          ...sensitivity,
+        },
+      }),
+      ...(categories && { categories }),
     },
   };
 }

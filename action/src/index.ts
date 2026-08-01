@@ -123,7 +123,7 @@ async function run(): Promise<void> {
     inputs = parseInputs();
 
     const platform = (process.env.PLATFORM || 'github') as string as 'github' | 'gitlab';
-    const loadedConfig = loadConfig(undefined, platform);
+    const loadedConfig = loadConfig(undefined, platform, inputs.configFile);
 
     if (platform === 'gitlab') {
       if (!process.env.CI_PROJECT_NAMESPACE || !process.env.CI_PROJECT_NAME) {
@@ -252,6 +252,29 @@ async function run(): Promise<void> {
             outputCostPer1K: inputs.costTrackingOutputCostPer1K,
           }),
         },
+        sensitivity: {
+          minSeverity:
+            loadedConfig?.review?.sensitivity?.minSeverity ??
+            DEFAULT_CONFIG.review.sensitivity?.minSeverity ??
+            'warning',
+          confidenceThreshold:
+            loadedConfig?.review?.sensitivity?.confidenceThreshold ??
+            DEFAULT_CONFIG.review.sensitivity?.confidenceThreshold ??
+            'low',
+          maxFindingsPerCategory:
+            loadedConfig?.review?.sensitivity?.maxFindingsPerCategory ??
+            DEFAULT_CONFIG.review.sensitivity?.maxFindingsPerCategory,
+          maxTotalFindings:
+            loadedConfig?.review?.sensitivity?.maxTotalFindings ??
+            DEFAULT_CONFIG.review.sensitivity?.maxTotalFindings,
+          focusAreas:
+            loadedConfig?.review?.sensitivity?.focusAreas ??
+            DEFAULT_CONFIG.review.sensitivity?.focusAreas,
+          ignorePatterns:
+            loadedConfig?.review?.sensitivity?.ignorePatterns ??
+            DEFAULT_CONFIG.review.sensitivity?.ignorePatterns,
+        },
+        categories: loadedConfig?.review?.categories ?? DEFAULT_CONFIG.review.categories,
       },
       audit: {
         ...DEFAULT_CONFIG.audit,

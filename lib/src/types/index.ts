@@ -70,6 +70,8 @@ export interface ReviewIssue {
   entryPointFile?: string;
   /** Confidence level of the finding */
   confidence?: 'high' | 'medium' | 'low';
+  /** Category of the finding (e.g. security, performance); defaults to 'general'. */
+  category?: string;
 }
 
 /** Previous fix iteration data for tracking progress across fix cycles. */
@@ -350,6 +352,38 @@ export interface TokenUsage {
 }
 
 /** Configuration for review behavior. */
+/** Minimum severity floor options for per-repository sensitivity configuration. */
+export type MinSeverity = 'warning' | 'error' | 'critical';
+
+/** Confidence floor options for per-repository sensitivity configuration. */
+export type ConfidenceThreshold = 'low' | 'medium' | 'high';
+
+/** Per-category override for review sensitivity. */
+export interface CategoryOverride {
+  /** Minimum severity floor for this category (overrides the global `minSeverity`). */
+  minSeverity?: MinSeverity;
+  /** Whether findings in this category are enabled (default: true). */
+  enabled?: boolean;
+  /** Maximum findings kept for this category (overrides `maxFindingsPerCategory`). */
+  maxFindings?: number;
+}
+
+/** Per-repository sensitivity configuration for tuning reviewer strictness. */
+export interface ReviewSensitivityConfig {
+  /** Minimum severity floor: 'warning' keeps everything, 'error' drops minor, 'critical' keeps only critical. */
+  minSeverity?: MinSeverity;
+  /** Confidence floor: 'low' keeps everything, 'medium' drops low-confidence, 'high' keeps only high-confidence. */
+  confidenceThreshold?: ConfidenceThreshold;
+  /** Maximum findings kept per category (highest severity first). */
+  maxFindingsPerCategory?: number;
+  /** Maximum total findings kept (highest severity first). */
+  maxTotalFindings?: number;
+  /** If set, only findings whose category matches one of these are kept. */
+  focusAreas?: string[];
+  /** Glob patterns applied to finding file paths. */
+  ignorePatterns?: string[];
+}
+
 export interface ReviewConfig {
   /** Skip review for PRs with these labels */
   skipLabels: string[];
@@ -375,6 +409,10 @@ export interface ReviewConfig {
   reviewBudget?: ReviewBudgetConfig;
   /** Token usage / cost tracking configuration */
   costTracking?: CostTrackingConfig;
+  /** Per-repository sensitivity configuration for tuning reviewer strictness */
+  sensitivity?: ReviewSensitivityConfig;
+  /** Per-category overrides for review sensitivity */
+  categories?: Record<string, CategoryOverride>;
 }
 
 // ─── Conversation / @mention ─────────────────────────────
@@ -625,6 +663,8 @@ export interface IssueFinding extends BaseFinding {
   entryPointFile?: string;
   /** Confidence level of the finding */
   confidence?: 'high' | 'medium' | 'low';
+  /** Category of the finding (e.g. security, performance); defaults to 'general'. */
+  category?: string;
 }
 
 /** An executive summary finding in JSONL format. */
@@ -993,6 +1033,10 @@ export interface PromptConfig {
     };
     /** Token usage / cost tracking configuration */
     costTracking?: CostTrackingConfig;
+    /** Per-repository sensitivity configuration for tuning reviewer strictness */
+    sensitivity?: ReviewSensitivityConfig;
+    /** Per-category overrides for review sensitivity */
+    categories?: Record<string, CategoryOverride>;
   };
   /** Fix prompt configuration */
   fix?: {
@@ -1145,13 +1189,17 @@ export const DEFAULT_CONFIG: AgentConfig = {
       enabled: false,
       verbosity: 'summary',
     },
+    sensitivity: {
+      minSeverity: 'warning',
+      confidenceThreshold: 'low',
+    },
   },
   audit: {
     promptsDir: '.audit-prompts',
     targetDirs: [],
     autoFix: true,
     triggerLabel: 'autofix-trigger',
-    issueSeverityThreshold: 'important',
+    issueSeverityThreshold: 'minor',
   },
   learning: {
     enabled: true,

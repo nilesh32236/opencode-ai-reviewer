@@ -3,10 +3,134 @@ import * as path from 'path';
 import * as core from '@actions/core';
 import yaml from 'js-yaml';
 import { minimatch } from 'minimatch';
-import type { ConfigOverride, LinterConfig, PromptConfig } from './types/index.js';
+import type {
+  CategoryOverride,
+  ConfigOverride,
+  LinterConfig,
+  PromptConfig,
+  ReviewSensitivityConfig,
+} from './types/index.js';
 import type { Platform } from './types/index.js';
 import { PromptConfigSchema } from './types/schemas.js';
 import { DEFAULT_ALLOWLIST } from './utils/command.js';
+
+/**
+ * Shape descriptor used to detect unknown keys in a raw config object.
+ * - `null` means "accept anything" (leaf or opaque container).
+ * - An object means "recurse into these keys".
+ * - An array `[shape]` means "arbitrary keys, each value follows `shape`".
+ */
+type ConfigShape = null | ConfigShapeObject | [ConfigShapeObject];
+
+/** Object whose values are nested ConfigShape descriptors. */
+interface ConfigShapeObject {
+  [key: string]: ConfigShape;
+}
+
+const CATEGORY_OVERRIDE_SHAPE: Record<string, ConfigShape> = {
+  minSeverity: null,
+  enabled: null,
+  maxFindings: null,
+};
+
+const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
+  platform: null,
+  review: {
+    skipLabels: null,
+    skipActors: null,
+    systemPrompt: null,
+    extraContext: null,
+    customRules: null,
+    inline: null,
+    excludePatterns: null,
+    enableReachability: null,
+    tokenBudget: null,
+    budget: null,
+    costTracking: null,
+    sensitivity: {
+      minSeverity: null,
+      confidenceThreshold: null,
+      maxFindingsPerCategory: null,
+      maxTotalFindings: null,
+      focusAreas: null,
+      ignorePatterns: null,
+    },
+    categories: [CATEGORY_OVERRIDE_SHAPE],
+  },
+  fix: {
+    systemPrompt: null,
+    maxIterations: null,
+    runChecks: null,
+    checkAllowlist: null,
+  },
+  audit: {
+    promptsDir: null,
+    categories: null,
+    targetDirs: null,
+    createIssues: null,
+    autoFix: null,
+  },
+  learning: {
+    enabled: null,
+    feedbackSignals: null,
+    metaReview: null,
+    patternDiscovery: null,
+  },
+  project: {
+    name: null,
+    description: null,
+    conventions: null,
+    commandReference: null,
+  },
+  conversation: {
+    maxTurns: null,
+    slidingWindowSize: null,
+    contextTokenBudget: null,
+    summarizationModel: null,
+  },
+  overrides: null,
+  linters: null,
+  eventLogging: {
+    enabled: null,
+    path: null,
+  },
+  eventSubscribers: null,
+};
+
+/**
+ * Recursively walk a raw (pre-schema) config object and log a warning for every
+ * key that is not part of the known config shape. Zod strips unknown keys by
+ * default during `PromptConfigSchema.parse`, so this must run on the raw YAML
+ * object before parsing to satisfy the "config validation reports unknown keys"
+ * requirement.
+ *
+ * @param raw - Raw config value (e.g. from js-yaml).
+ * @param shape - Known shape descriptor to validate against.
+ * @param prefix - Dot-prefix for the current level, used in warning messages.
+ */
+function warnUnknownKeys(raw: unknown, shape: ConfigShape, prefix: string): void {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return;
+  if (shape === null) return;
+
+  const entries = Object.entries(raw);
+
+  if (Array.isArray(shape)) {
+    // Record shape: arbitrary keys, each value validated against shape[0].
+    for (const [key, value] of entries) {
+      warnUnknownKeys(value, shape[0], `${prefix}${key}.`);
+    }
+    return;
+  }
+
+  for (const [key, value] of entries) {
+    const childShape = shape[key];
+    if (childShape === undefined) {
+      core.warning(`Unknown config key "${prefix}${key}" will be ignored`);
+      continue;
+    }
+    warnUnknownKeys(value, childShape, `${prefix}${key}.`);
+  }
+}
 
 /** Options for resolving configuration values. */
 export interface ResolveConfigOptions {
@@ -34,14 +158,40 @@ export function getConfigFilenames(platform?: Platform): string[] {
 }
 
 /**
- * Load the first matching config file from well-known paths.
+ * Load the first matching config file from well-known paths, or from an explicit
+ * `configPath` when provided (e.g. a `--config` CLI flag / `config` action input).
  * Searches for .opencode-reviewer.yml/yaml in the working directory and platform-specific directory.
  *
  * @param workingDir - Directory to start searching from (default: current working directory).
  * @param platform - Platform identifier ('github' or 'gitlab', defaults to 'github').
+ * @param configPath - Optional explicit config file path (relative to workingDir). When set,
+ * only this file is loaded and the well-known filename search is skipped.
  * @returns Parsed and validated PromptConfig, or null if no config file is found.
  */
-export function loadConfig(workingDir = '.', platform?: Platform): PromptConfig | null {
+export function loadConfig(
+  workingDir = '.',
+  platform?: Platform,
+  configPath?: string,
+): PromptConfig | null {
+  if (configPath) {
+    const fullPath = path.resolve(workingDir, configPath);
+    if (!fs.existsSync(fullPath)) {
+      core.warning(`Config file not found at ${fullPath}`);
+      return null;
+    }
+    core.info(`Loading config from ${configPath}`);
+    try {
+      const content = fs.readFileSync(fullPath, 'utf-8');
+      const raw = yaml.load(content) as Record<string, unknown>;
+      warnUnknownKeys(raw, KNOWN_CONFIG_SHAPE, '');
+      const config = PromptConfigSchema.parse(raw);
+      return validateConfig(config);
+    } catch (error) {
+      core.warning(`Failed to parse ${configPath}: ${String(error)}`);
+      return null;
+    }
+  }
+
   const configFilenames = getConfigFilenames(platform);
   for (const filename of configFilenames) {
     const fullPath = path.resolve(workingDir, filename);
@@ -49,7 +199,9 @@ export function loadConfig(workingDir = '.', platform?: Platform): PromptConfig 
       core.info(`Loading config from ${filename}`);
       try {
         const content = fs.readFileSync(fullPath, 'utf-8');
-        const config = PromptConfigSchema.parse(yaml.load(content));
+        const raw = yaml.load(content) as Record<string, unknown>;
+        warnUnknownKeys(raw, KNOWN_CONFIG_SHAPE, '');
+        const config = PromptConfigSchema.parse(raw);
         return validateConfig(config);
       } catch (error) {
         core.warning(`Failed to parse ${filename}: ${String(error)}`);
@@ -150,6 +302,12 @@ export function validateConfig(config: PromptConfig): PromptConfig {
 
   if (config.review) {
     result.review = {};
+    if (Array.isArray(config.review.skipLabels)) {
+      result.review.skipLabels = config.review.skipLabels.filter((l) => typeof l === 'string');
+    }
+    if (Array.isArray(config.review.skipActors)) {
+      result.review.skipActors = config.review.skipActors.filter((a) => typeof a === 'string');
+    }
     if (typeof config.review.systemPrompt === 'string') {
       result.review.systemPrompt = config.review.systemPrompt;
     }
@@ -235,6 +393,67 @@ export function validateConfig(config: PromptConfig): PromptConfig {
         ...(inputCostPer1K !== undefined && { inputCostPer1K }),
         ...(outputCostPer1K !== undefined && { outputCostPer1K }),
       };
+    }
+    if (config.review.sensitivity && typeof config.review.sensitivity === 'object') {
+      const s = config.review.sensitivity;
+      const sensitivity: ReviewSensitivityConfig = {};
+      if (
+        s.minSeverity === 'warning' ||
+        s.minSeverity === 'error' ||
+        s.minSeverity === 'critical'
+      ) {
+        sensitivity.minSeverity = s.minSeverity;
+      }
+      if (
+        s.confidenceThreshold === 'low' ||
+        s.confidenceThreshold === 'medium' ||
+        s.confidenceThreshold === 'high'
+      ) {
+        sensitivity.confidenceThreshold = s.confidenceThreshold;
+      }
+      if (
+        typeof s.maxFindingsPerCategory === 'number' &&
+        Number.isFinite(s.maxFindingsPerCategory)
+      ) {
+        sensitivity.maxFindingsPerCategory = Math.min(
+          Math.max(Math.round(s.maxFindingsPerCategory), 1),
+          500,
+        );
+      }
+      if (typeof s.maxTotalFindings === 'number' && Number.isFinite(s.maxTotalFindings)) {
+        sensitivity.maxTotalFindings = Math.min(Math.max(Math.round(s.maxTotalFindings), 1), 500);
+      }
+      if (Array.isArray(s.focusAreas)) {
+        sensitivity.focusAreas = s.focusAreas.filter((a): a is string => typeof a === 'string');
+      }
+      if (Array.isArray(s.ignorePatterns)) {
+        sensitivity.ignorePatterns = s.ignorePatterns.filter(
+          (p): p is string => typeof p === 'string',
+        );
+      }
+      result.review.sensitivity = sensitivity;
+    }
+    if (config.review.categories && typeof config.review.categories === 'object') {
+      const categories: Record<string, CategoryOverride> = {};
+      for (const [name, override] of Object.entries(config.review.categories)) {
+        if (!override || typeof override !== 'object') continue;
+        const validated: CategoryOverride = {};
+        if (
+          override.minSeverity === 'warning' ||
+          override.minSeverity === 'error' ||
+          override.minSeverity === 'critical'
+        ) {
+          validated.minSeverity = override.minSeverity;
+        }
+        if (typeof override.enabled === 'boolean') {
+          validated.enabled = override.enabled;
+        }
+        if (typeof override.maxFindings === 'number' && Number.isFinite(override.maxFindings)) {
+          validated.maxFindings = Math.min(Math.max(Math.round(override.maxFindings), 1), 500);
+        }
+        categories[name] = validated;
+      }
+      result.review.categories = categories;
     }
   }
 
