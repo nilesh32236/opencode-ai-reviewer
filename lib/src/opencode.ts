@@ -85,7 +85,11 @@ async function fetchWithRetry(url: string, retries = 3, token?: string): Promise
     },
     {
       maxRetries: retries,
-      retryableStatuses: [403, 429, 500, 502, 503, 504],
+      // 403 is NOT retryable here: on the authenticated attempt a rejected
+      // repo-scoped token deterministically returns 403, and burning three
+      // backoff retries (~7-10s) before the anonymous fallback is wasteful. A
+      // 403 also never becomes transiently successful, so failing fast is safe.
+      retryableStatuses: [429, 500, 502, 503, 504],
     },
   );
 }

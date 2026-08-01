@@ -103,8 +103,38 @@ describe('runAudit (action wrapper)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('fails loudly when the existing-issue search fails instead of silently dropping findings', async () => {
+  it('creates the issue without deduplication when the existing-issue search fails', async () => {
     mockPaginate.mockRejectedValue(new Error('GitHub API 500'));
+    mockCreateIssue.mockResolvedValue({
+      number: 42,
+      url: 'https://github.com/owner/repo/issues/42',
+    });
+
+    await runAudit(
+      makeInputs({ auditCreateIssues: true }),
+      makeConfig({
+        audit: {
+          promptsDir: tmpDir,
+          targetDirs: [],
+          autoFix: true,
+          triggerLabel: 'autofix-trigger',
+          issueSeverityThreshold: 'important',
+        },
+      } as AgentConfig),
+      mockEngine,
+      mockGh,
+    );
+
+    expect(mockWarning).toHaveBeenCalledWith(
+      expect.stringContaining('creating issue without deduplication'),
+    );
+    expect(mockCreateIssue).toHaveBeenCalled();
+    expect(mockSetFailed).not.toHaveBeenCalled();
+  });
+
+  it('fails loudly when both the search and the fallback issue creation fail', async () => {
+    mockPaginate.mockRejectedValue(new Error('GitHub API 500'));
+    mockCreateIssue.mockResolvedValue(null);
 
     await runAudit(
       makeInputs({ auditCreateIssues: true }),
@@ -122,10 +152,8 @@ describe('runAudit (action wrapper)', () => {
     );
 
     expect(mockSetFailed).toHaveBeenCalledWith(
-      'Audit issue tracking aborted — search for existing issue failed',
+      'Audit issue tracking failed — could not create issue',
     );
-    expect(mockCreateIssue).not.toHaveBeenCalled();
-    expect(mockPostOrUpdateComment).not.toHaveBeenCalled();
   });
 
   it('updates an existing open issue instead of creating a duplicate', async () => {

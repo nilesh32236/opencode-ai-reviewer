@@ -138,13 +138,14 @@ export async function runAudit(
     } catch (err) {
       core.warning(
         sanitize(
-          `Failed to search for existing open audit issue — aborting issue creation to avoid duplicates: ${err instanceof Error ? err.message : err}`,
+          `Failed to search for existing open audit issue — creating issue without deduplication: ${err instanceof Error ? err.message : err}`,
         ),
       );
-      // Fail loudly instead of silently dropping the audit's findings: the
-      // operator must know the audit issue was not tracked.
-      core.setFailed('Audit issue tracking aborted — search for existing issue failed');
-      return;
+      // Do not fail closed and drop the audit's findings on a transient search
+      // failure: fall back to creating the issue (accepting a rare duplicate)
+      // so the findings are never silently lost. Only setFailed if even that
+      // fallback write fails (handled in the create branch below).
+      existingIssueNumber = undefined;
     }
 
     if (existingIssueNumber) {
@@ -167,9 +168,12 @@ export async function runAudit(
         if (issue) {
           core.setOutput('issue-number', String(issue.number));
           core.info(`Created issue #${issue.number}: ${issue.url}`);
+        } else {
+          core.setFailed('Audit issue tracking failed — could not create issue');
         }
       } catch (error) {
         core.warning(sanitize(`Failed to create audit issue: ${String(error)}`));
+        core.setFailed('Audit issue tracking failed — could not create issue');
       }
     }
   } else {

@@ -111,7 +111,14 @@ export class GitHubHelper implements PlatformAdapter {
           const timeout = setTimeout(() => controller.abort(), 30_000);
           const onAbort = () => controller.abort();
           if (signal) {
-            signal.addEventListener('abort', onAbort, { once: true });
+            // Guard against the signal already being aborted in the gap between
+            // withRetry's top-of-loop check and this listener registration,
+            // which would otherwise leave the attempt un-cancellable.
+            if (signal.aborted) {
+              controller.abort();
+            } else {
+              signal.addEventListener('abort', onAbort, { once: true });
+            }
           }
           try {
             const res = await fetch(url, {
@@ -185,6 +192,7 @@ export class GitHubHelper implements PlatformAdapter {
    * @param options.direction - Sort direction (optional, e.g. 'asc' or 'desc').
    * @param options.throwOnError - When true, rethrow a page-fetch error instead of
    * silently returning partial data (default: false).
+   * @param signal - Optional AbortSignal to cancel the paginated fetch.
    * @returns Array of items from all pages.
    */
   public async paginate<T>(
@@ -195,6 +203,7 @@ export class GitHubHelper implements PlatformAdapter {
       direction?: 'asc' | 'desc';
       throwOnError?: boolean;
     },
+    signal?: AbortSignal,
   ): Promise<T[]> {
     const perPage = options?.perPage ?? 100;
     const maxPages = options?.maxPages ?? 10;
@@ -209,7 +218,7 @@ export class GitHubHelper implements PlatformAdapter {
         pagePath += `&direction=${direction}`;
       }
       try {
-        const items = await this.api<T[]>(pagePath);
+        const items = await this.api<T[]>(pagePath, {}, undefined, signal);
         allItems.push(...items);
 
         if (items.length < perPage) break;
@@ -410,14 +419,19 @@ export class GitHubHelper implements PlatformAdapter {
    *
    * @param _issueNumber - PR/issue number (unused; GitHub issue comment IDs are global).
    * @param commentId - Issue comment ID.
+   * @param signal - Optional AbortSignal to cancel the request.
    * @returns The raw issue comment object.
    */
   async getIssueComment(
     _issueNumber: number,
     commentId: number,
+    signal?: AbortSignal,
   ): Promise<{ id: number; body: string; user?: { login?: string } }> {
     return this.api<{ id: number; body: string; user?: { login?: string } }>(
       `/issues/comments/${commentId}`,
+      {},
+      undefined,
+      signal,
     );
   }
 
@@ -506,13 +520,15 @@ export class GitHubHelper implements PlatformAdapter {
    * @param options.perPage - Items per page (default: 100).
    * @param options.maxPages - Maximum pages to fetch (default: 10).
    * @param options.direction - Sort direction (optional, e.g. 'asc' or 'desc').
+   * @param signal - Optional AbortSignal to cancel the paginated fetch.
    * @returns Array of raw review comment objects.
    */
   async listReviewComments(
     prNumber: number,
     options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
+    signal?: AbortSignal,
   ): Promise<Array<Record<string, unknown>>> {
-    return this.paginate<Record<string, unknown>>(`/pulls/${prNumber}/comments`, options);
+    return this.paginate<Record<string, unknown>>(`/pulls/${prNumber}/comments`, options, signal);
   }
 
   /**
@@ -538,13 +554,19 @@ export class GitHubHelper implements PlatformAdapter {
    * @param options.perPage - Items per page (default: 100).
    * @param options.maxPages - Maximum pages to fetch (default: 10).
    * @param options.direction - Sort direction (optional, e.g. 'asc' or 'desc').
+   * @param signal - Optional AbortSignal to cancel the paginated fetch.
    * @returns Array of raw issue comment objects.
    */
   async listComments(
     issueNumber: number,
     options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
+    signal?: AbortSignal,
   ): Promise<Array<Record<string, unknown>>> {
-    return this.paginate<Record<string, unknown>>(`/issues/${issueNumber}/comments`, options);
+    return this.paginate<Record<string, unknown>>(
+      `/issues/${issueNumber}/comments`,
+      options,
+      signal,
+    );
   }
 
   /**
@@ -823,6 +845,7 @@ export class GitHubHelper implements PlatformAdapter {
   async getReviewComment(
     _mrNumber: number,
     commentId: number,
+    signal?: AbortSignal,
   ): Promise<{
     id: number;
     body: string;
@@ -831,6 +854,7 @@ export class GitHubHelper implements PlatformAdapter {
     line?: number;
     in_reply_to_id?: number;
     pull_request_review_id?: number;
+    diff_hunk?: string;
   }> {
     return this.api<{
       id: number;
@@ -840,7 +864,8 @@ export class GitHubHelper implements PlatformAdapter {
       line?: number;
       in_reply_to_id?: number;
       pull_request_review_id?: number;
-    }>(`/pulls/comments/${commentId}`);
+      diff_hunk?: string;
+    }>(`/pulls/comments/${commentId}`, {}, undefined, signal);
   }
 
   /**
@@ -903,7 +928,11 @@ export class GitHubHelper implements PlatformAdapter {
 
       let currentId: number | undefined = commentId;
       let needsDirectWalk = false;
+      const walked = new Set<number>();
       while (currentId) {
+        // Guard against cyclic/malformed in_reply_to_id chains (external data).
+        if (walked.has(currentId)) break;
+        walked.add(currentId);
         const comment = commentById.get(currentId);
         if (!comment) {
           needsDirectWalk = currentId !== commentId;
@@ -925,10 +954,18 @@ export class GitHubHelper implements PlatformAdapter {
         const lastId = chainIds[0];
         const last = commentById.get(lastId);
         let ancestorId = last?.in_reply_to_id;
+        const walkedMissing = new Set<number>();
         while (ancestorId) {
-          const ancestor = await this.getReviewComment(0, ancestorId);
-          commentById.set(ancestor.id, ancestor);
-          chainIds.unshift(ancestorId);
+          // Guard against cyclic/malformed in_reply_to_id chains (external data).
+          if (walkedMissing.has(ancestorId)) break;
+          walkedMissing.add(ancestorId);
+          // Resolve in-window ancestors from the map and only fetch genuinely
+          // missing comments, avoiding both N+1 re-fetches and duplicate IDs
+          // when a malformed chain loops back into the window.
+          const known = commentById.get(ancestorId);
+          const ancestor = known ?? (await this.getReviewComment(0, ancestorId));
+          if (!known) commentById.set(ancestor.id, ancestor);
+          if (!chainIds.includes(ancestorId)) chainIds.unshift(ancestorId);
           ancestorId = ancestor.in_reply_to_id;
         }
       }
@@ -1008,7 +1045,11 @@ export class GitHubHelper implements PlatformAdapter {
   ): Promise<void> {
     const discovered: number[] = [];
     let currentId: number | undefined = commentId;
+    const walked = new Set<number>();
     while (currentId) {
+      // Guard against cyclic/malformed in_reply_to_id chains (external data).
+      if (walked.has(currentId)) break;
+      walked.add(currentId);
       discovered.push(currentId);
       const comment = await this.getReviewComment(0, currentId);
       commentById.set(comment.id, comment);
@@ -1439,7 +1480,12 @@ export class GitHubHelper implements PlatformAdapter {
       const timeout = setTimeout(() => controller.abort(), 30_000);
       const onAbort = () => controller.abort();
       if (signal) {
-        signal.addEventListener('abort', onAbort, { once: true });
+        // Guard against the signal already being aborted (see api() above).
+        if (signal.aborted) {
+          controller.abort();
+        } else {
+          signal.addEventListener('abort', onAbort, { once: true });
+        }
       }
       try {
         const response = await fetch(this.graphqlUrl, {
@@ -1591,9 +1637,10 @@ export class GitHubHelper implements PlatformAdapter {
           }
         }
         `;
-      // graphql() retries internally via withRetry (default maxRetries 3), so a
-      // final page failure here is logged and the loop exits, marking the thread
-      // data as partial rather than silently dropping remaining pages.
+      // graphql() retries internally via withRetry (default maxRetries 3). A
+      // final page failure is rethrown so getBotReviewThreads/getOpenHumanThreads
+      // callers (which already guard with try/catch) know the thread data may be
+      // truncated rather than silently operating on partial thread data.
       let data: ReviewThreadsQueryResponse;
       try {
         data = (await this.graphql(query, {
@@ -1604,11 +1651,11 @@ export class GitHubHelper implements PlatformAdapter {
         })) as ReviewThreadsQueryResponse;
       } catch (err) {
         core.warning(
-          `Failed to fetch review thread page ${pageCount} for PR #${prNumber} — continuing with partial thread data: ${
+          `Failed to fetch review thread page ${pageCount} for PR #${prNumber} — thread data may be incomplete: ${
             err instanceof Error ? err.message : err
           }`,
         );
-        break;
+        throw err;
       }
 
       const threadsData = data.repository.pullRequest.reviewThreads;

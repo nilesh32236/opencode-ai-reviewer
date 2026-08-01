@@ -932,6 +932,20 @@ diff --git a/deleted.ts b/deleted.ts
 
       await expect(helper.getReviewComment(1, 999)).rejects.toThrow('GitHub API 404');
     });
+
+    it('propagates an already-aborted signal into the fetch request', async () => {
+      fetchMock.mockResolvedValue(mockResponse({ body: { id: 1 } }));
+      const controller = new AbortController();
+      controller.abort();
+
+      await helper.getReviewComment(1, 2, controller.signal);
+
+      // The fetch must have been issued with an aborted signal so it cannot run
+      // uncancellable in the gap between the retry loop and listener registration.
+      const fetchArgs = fetchMock.mock.calls[0][1] as RequestInit;
+      expect(fetchArgs.signal).toBeDefined();
+      expect((fetchArgs.signal as AbortSignal).aborted).toBe(true);
+    });
   });
 
   describe('getReviewCommentThread', () => {
@@ -1182,6 +1196,75 @@ diff --git a/deleted.ts b/deleted.ts
       // Prior leaf-to-root semantics anchored on the root comment.
       expect(thread.filePath).toBe('src/root.ts');
       expect(thread.lineNumber).toBe(10);
+    });
+
+    it('guards against cyclic in_reply_to_id chains in the in-window walk', async () => {
+      const comments = [
+        { id: 1, body: 'a', user: { login: 'user', type: 'User' }, in_reply_to_id: 2 },
+        { id: 2, body: 'b', user: { login: 'user', type: 'User' }, in_reply_to_id: 1 },
+      ];
+
+      fetchMock.mockResolvedValue(mockResponse({ body: comments }));
+
+      const thread = await helper.getReviewCommentThread(1, 1);
+
+      expect(thread.comments.map((c) => c.id)).toEqual([2, 1]);
+      // No duplicate IDs even when the chain loops back on itself.
+      expect(new Set(thread.comments.map((c) => c.id)).size).toBe(2);
+    });
+
+    it('guards against cycles in the direct-fetch ancestor walk', async () => {
+      // Window contains the trigger (2) which replies to 1; 1 is fetched
+      // directly and (malformed) replies back to 2 — the walk must terminate
+      // without re-fetching or duplicating the in-window trigger.
+      const windowComments = [
+        { id: 2, body: 'trigger', user: { login: 'user', type: 'User' }, in_reply_to_id: 1 },
+      ];
+      const cyclicAncestor = {
+        id: 1,
+        body: 'ancestor',
+        user: { login: 'user', type: 'User' },
+        in_reply_to_id: 2,
+      };
+
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes('/pulls/1/comments')) return mockResponse({ body: windowComments });
+        if (url.includes('/pulls/comments/1')) return mockResponse({ body: cyclicAncestor });
+        return mockResponse({ body: {} });
+      });
+
+      const thread = await helper.getReviewCommentThread(2, 1);
+
+      expect(thread.comments.map((c) => c.id)).toEqual([1, 2]);
+      expect(new Set(thread.comments.map((c) => c.id)).size).toBe(2);
+      // The window fetch plus a single direct fetch of the missing root only.
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('guards against cyclic in_reply_to_id chains in the direct walk (no prNumber)', async () => {
+      const leaf = {
+        id: 1,
+        body: 'a',
+        user: { login: 'user', type: 'User' },
+        in_reply_to_id: 2,
+      };
+      const other = {
+        id: 2,
+        body: 'b',
+        user: { login: 'user', type: 'User' },
+        in_reply_to_id: 1,
+      };
+
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes('/pulls/comments/1')) return mockResponse({ body: leaf });
+        if (url.includes('/pulls/comments/2')) return mockResponse({ body: other });
+        return mockResponse({ body: {} });
+      });
+
+      const thread = await helper.getReviewCommentThread(1);
+
+      expect(thread.comments.map((c) => c.id)).toEqual([2, 1]);
+      expect(new Set(thread.comments.map((c) => c.id)).size).toBe(2);
     });
   });
 
