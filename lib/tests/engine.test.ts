@@ -968,6 +968,492 @@ describe('ReviewEngine', () => {
     });
   });
 
+  describe('git blame awareness', () => {
+    const PR_COMMIT = 'f0e2a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c';
+    const OLD_COMMIT = 'a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3e';
+
+    function porcelainOutput(): string {
+      return [
+        `${OLD_COMMIT} 1 1 1`,
+        'author Alice',
+        'author-mail <alice@example.com>',
+        'author-time 1700000000',
+        'author-tz +0000',
+        'committer Alice',
+        'committer-mail <alice@example.com>',
+        'committer-time 1700000000',
+        'committer-tz +0000',
+        'summary Old code',
+        '\tpre-existing line',
+        `${PR_COMMIT} 1 2 1`,
+        'author Bob',
+        'author-mail <bob@example.com>',
+        'author-time 1720000000',
+        'author-tz +0000',
+        'committer Bob',
+        'committer-mail <bob@example.com>',
+        'committer-time 1720000000',
+        'committer-tz +0000',
+        'summary New code',
+        '\tnew line',
+      ].join('\n');
+    }
+
+    it('renders per-file blame annotations inside buildPRContextString', () => {
+      const pr = makePRContext({
+        changedFiles: [
+          {
+            path: 'src/test.ts',
+            status: 'modified' as const,
+            additions: 2,
+            deletions: 0,
+            patch: '@@ -1,2 +1,2 @@\n- old\n+ new',
+          },
+        ],
+      });
+      const blameData = new Map<string, Map<number, import('../src/types/index.js').BlameInfo>>([
+        [
+          'src/test.ts',
+          new Map([
+            [1, { commitSha: OLD_COMMIT, author: 'Alice', date: '2023-11-14', isInPRDiff: false }],
+            [2, { commitSha: PR_COMMIT, author: 'Bob', date: '2024-07-03', isInPRDiff: true }],
+          ]),
+        ],
+      ]);
+
+      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      const { context } = eng.buildPRContextString(pr, undefined, false, blameData);
+
+      expect(context).toContain('### Git Blame Annotations');
+      expect(context).toContain(
+        `- Line 1 — pre-existing @Alice, 2023-11-14, ${OLD_COMMIT.slice(0, 7)}`,
+      );
+      expect(context).toContain(
+        `- Line 2 — [PR CHANGE] @Bob, 2024-07-03, ${PR_COMMIT.slice(0, 7)}`,
+      );
+    });
+
+    it('collapses contiguous lines with identical blame into a range', () => {
+      const pr = makePRContext({
+        changedFiles: [
+          { path: 'src/a.ts', status: 'modified' as const, additions: 3, deletions: 0, patch: 'x' },
+        ],
+      });
+      const blameData = new Map([
+        [
+          'src/a.ts',
+          new Map([
+            [10, { commitSha: OLD_COMMIT, author: 'Alice', date: '2023-11-14', isInPRDiff: false }],
+            [11, { commitSha: OLD_COMMIT, author: 'Alice', date: '2023-11-14', isInPRDiff: false }],
+            [12, { commitSha: PR_COMMIT, author: 'Bob', date: '2024-07-03', isInPRDiff: true }],
+          ]),
+        ],
+      ]);
+
+      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      const { context } = eng.buildPRContextString(pr, undefined, false, blameData);
+
+      expect(context).toContain('- Lines 10-11 — pre-existing @Alice, 2023-11-14');
+      expect(context).toContain('- Line 12 — [PR CHANGE] @Bob, 2024-07-03');
+    });
+
+    it('injects blame annotations into the review context via reviewPR', async () => {
+      const pr = makePRContext({
+        baseSha: 'b'.repeat(40),
+        changedFiles: [
+          {
+            path: 'src/test.ts',
+            status: 'modified' as const,
+            additions: 2,
+            deletions: 0,
+            patch: '@@ -1,2 +1,2 @@\n- old\n+new\n+extra',
+          },
+        ],
+      });
+      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+
+      vi.mocked(cp.execFile).mockImplementation((_cmd, args, _opts, cb) => {
+        const callback = cb as (err: Error | null, stdout?: string) => void;
+        if (args[0] === 'rev-list') callback(null, PR_COMMIT);
+        else if (args[0] === 'blame') callback(null, porcelainOutput());
+        else callback(null, '');
+      });
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 100,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      await eng.reviewPR(pr);
+
+      const contextArg = mockBuildReviewPrompt.mock.calls[0][1];
+      expect(contextArg).toContain('### Git Blame Annotations');
+      expect(contextArg).toContain('[PR CHANGE]');
+      expect(contextArg).toContain('pre-existing');
+      expect(mockBuildReviewPrompt.mock.calls[0][2]).toMatchObject({ blameAware: true });
+    });
+
+    it('skips blame when includePreExisting enables full audit mode', async () => {
+      const pr = makePRContext({
+        changedFiles: [
+          {
+            path: 'src/test.ts',
+            status: 'modified' as const,
+            additions: 1,
+            deletions: 0,
+            patch: '@@ -1 +1 @@\n- old\n+new',
+          },
+        ],
+      });
+      const eng = new ReviewEngine(
+        makeConfig({ enableMCP: false, mcpServers: [], review: { includePreExisting: true } }),
+        mockAdapter,
+      );
+
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 100,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      await eng.reviewPR(pr);
+
+      const contextArg = mockBuildReviewPrompt.mock.calls[0][1];
+      expect(contextArg).not.toContain('### Git Blame Annotations');
+      expect(mockBuildReviewPrompt.mock.calls[0][2]).toMatchObject({ blameAware: false });
+    });
+
+    it('blames from the resolved repository root and at the head commit', async () => {
+      const pr = makePRContext({
+        baseSha: 'b'.repeat(40),
+        headSha: 'abcdef1234567890',
+        changedFiles: [
+          {
+            path: 'packages/app/src/test.ts',
+            status: 'modified' as const,
+            additions: 2,
+            deletions: 0,
+            patch: '@@ -1,2 +1,2 @@\n- old\n+new',
+          },
+        ],
+      });
+      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+
+      vi.mocked(cp.execFile).mockImplementation((_cmd, args, _opts, cb) => {
+        const callback = cb as (err: Error | null, stdout?: string) => void;
+        if (args[0] === 'rev-parse') callback(null, '/resolved/repo/root');
+        else if (args[0] === 'rev-list') callback(null, PR_COMMIT);
+        else if (args[0] === 'blame') callback(null, porcelainOutput());
+        else callback(null, '');
+      });
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 100,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      await eng.reviewPR(pr);
+
+      const blameCall = vi.mocked(cp.execFile).mock.calls.find((c) => c[1][0] === 'blame');
+      expect(blameCall).toBeDefined();
+      // Repo-root-relative paths are resolved against the git top-level, not workDir.
+      expect(blameCall![2]).toMatchObject({ cwd: '/resolved/repo/root' });
+      // Blame runs against the head commit so line numbers align with the patch.
+      expect(blameCall![1]).toContain('abcdef1234567890');
+    });
+
+    it('derives the per-file blame cap from the configured splitThreshold', async () => {
+      // A tiny configured splitThreshold means the 2-line hunk exceeds the cap,
+      // so blame is skipped entirely for the file (observable: no blame call).
+      const pr = makePRContext({
+        baseSha: 'b'.repeat(40),
+        changedFiles: [
+          {
+            path: 'src/test.ts',
+            status: 'modified' as const,
+            additions: 2,
+            deletions: 0,
+            patch: '@@ -1,2 +1,2 @@\n- old\n+new',
+          },
+        ],
+      });
+      const eng = new ReviewEngine(
+        makeConfig({
+          enableMCP: false,
+          mcpServers: [],
+          review: { reviewBudget: { enabled: true, summaryThreshold: 500, splitThreshold: 1 } },
+        }),
+        mockAdapter,
+      );
+
+      vi.mocked(cp.execFile).mockImplementation((_cmd, args, _opts, cb) => {
+        const callback = cb as (err: Error | null, stdout?: string) => void;
+        if (args[0] === 'rev-list') callback(null, PR_COMMIT);
+        else callback(null, '');
+      });
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 100,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      await eng.reviewPR(pr);
+
+      const blameCall = vi.mocked(cp.execFile).mock.calls.find((c) => c[1][0] === 'blame');
+      expect(blameCall).toBeUndefined();
+      const contextArg = mockBuildReviewPrompt.mock.calls[0][1];
+      expect(contextArg).not.toContain('### Git Blame Annotations');
+      expect(mockBuildReviewPrompt.mock.calls[0][2]).toMatchObject({ blameAware: false });
+    });
+
+    it('renders uncommitted lines as working-tree changes', () => {
+      const pr = makePRContext({
+        changedFiles: [
+          { path: 'src/a.ts', status: 'modified' as const, additions: 1, deletions: 0, patch: 'x' },
+        ],
+      });
+      const blameData = new Map<string, Map<number, import('../src/types/index.js').BlameInfo>>([
+        [
+          'src/a.ts',
+          new Map([
+            [5, { commitSha: '0'.repeat(40), author: 'Dev', date: '2023-11-14', isInPRDiff: true }],
+          ]),
+        ],
+      ]);
+      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      const { context } = eng.buildPRContextString(pr, undefined, false, blameData);
+      expect(context).toContain('- Line 5 — [PR CHANGE] @Dev, 2023-11-14, working tree');
+      expect(context).not.toContain('0000000');
+    });
+
+    it('escapes markdown-significant characters in author names', () => {
+      const pr = makePRContext({
+        changedFiles: [
+          { path: 'src/a.ts', status: 'modified' as const, additions: 1, deletions: 0, patch: 'x' },
+        ],
+      });
+      const blameData = new Map<string, Map<number, import('../src/types/index.js').BlameInfo>>([
+        [
+          'src/a.ts',
+          new Map([
+            [
+              3,
+              { commitSha: OLD_COMMIT, author: 'a*b[c]`d', date: '2023-11-14', isInPRDiff: false },
+            ],
+          ]),
+        ],
+      ]);
+      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      const { context } = eng.buildPRContextString(pr, undefined, false, blameData);
+      expect(context).toContain('@a\\*b\\[c\\]\\`d');
+    });
+
+    it('omits blame annotations for lines hidden by patch truncation', () => {
+      const body = Array.from({ length: 30 }, (_, i) => ` line${i + 1}`).join('\n');
+      const patch = '@@ -1,31 +1,31 @@\n' + body + '\n+newline';
+      const pr = makePRContext({
+        changedFiles: [
+          {
+            path: 'src/big.ts',
+            status: 'modified' as const,
+            additions: 1,
+            deletions: 0,
+            patch,
+          },
+        ],
+      });
+      const blameData = new Map<string, Map<number, import('../src/types/index.js').BlameInfo>>([
+        [
+          'src/big.ts',
+          new Map([
+            [1, { commitSha: OLD_COMMIT, author: 'Alice', date: '2023-11-14', isInPRDiff: false }],
+            [15, { commitSha: PR_COMMIT, author: 'Bob', date: '2024-07-03', isInPRDiff: true }],
+            [31, { commitSha: PR_COMMIT, author: 'Bob', date: '2024-07-03', isInPRDiff: true }],
+          ]),
+        ],
+      ]);
+      const eng = new ReviewEngine(
+        makeConfig({ enableMCP: false, mcpServers: [], maxLinesPerFile: 6 }),
+        mockAdapter,
+      );
+      const { context } = eng.buildPRContextString(pr, undefined, false, blameData);
+      expect(context).toContain('[Patch truncated:');
+      // Line 1 is inside the first 6 patch lines; 15 and 31 are not.
+      expect(context).toContain('- Line 1 — pre-existing @Alice');
+      expect(context).not.toContain('- Line 15 —');
+      expect(context).not.toContain('- Line 31 —');
+      expect(context).toContain(
+        'blame annotations for 2 line(s) past the truncated diff are omitted',
+      );
+    });
+
+    it('filters batch blame data down to each batch file set', async () => {
+      const pr = makePRContext({
+        baseSha: 'b'.repeat(40),
+        changedFiles: ['a', 'b', 'c', 'd'].map((name) => ({
+          path: `src/${name}.ts`,
+          status: 'modified' as const,
+          additions: 2,
+          deletions: 0,
+          patch: '@@ -1,2 +1,2 @@\n- old\n+new',
+        })),
+      });
+      const eng = new ReviewEngine(
+        makeConfig({ enableMCP: false, mcpServers: [], batchSize: 2 }),
+        mockAdapter,
+      );
+
+      vi.mocked(cp.execFile).mockImplementation((_cmd, args, _opts, cb) => {
+        const callback = cb as (err: Error | null, stdout?: string) => void;
+        if (args[0] === 'rev-list') callback(null, PR_COMMIT);
+        else if (args[0] === 'blame') callback(null, porcelainOutput());
+        else callback(null, '');
+      });
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 100,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+      mockMCPConnect.mockResolvedValue(undefined);
+
+      await eng.reviewPR(pr);
+
+      // Batch 0 covers a.ts/b.ts, batch 1 covers c.ts/d.ts. Each batch prompt
+      // only renders blame annotations for the files in that batch.
+      const batch0Context = mockBuildReviewPrompt.mock.calls[0][1];
+      const batch1Context = mockBuildReviewPrompt.mock.calls[1][1];
+      expect(batch0Context).toContain('**src/a.ts**');
+      expect(batch0Context).toContain('### Git Blame Annotations');
+      expect(batch0Context).not.toContain('**src/c.ts**');
+      expect(batch1Context).toContain('**src/c.ts**');
+      expect(batch1Context).toContain('### Git Blame Annotations');
+      expect(batch1Context).not.toContain('**src/a.ts**');
+    });
+
+    it('falls back to merge-base when baseSha is unavailable', async () => {
+      const pr = makePRContext({
+        baseRef: 'main',
+        baseSha: undefined,
+        changedFiles: [
+          {
+            path: 'src/test.ts',
+            status: 'modified' as const,
+            additions: 2,
+            deletions: 0,
+            patch: '@@ -1,2 +1,2 @@\n- old\n+new',
+          },
+        ],
+      });
+      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+
+      vi.mocked(cp.execFile).mockImplementation((_cmd, args, _opts, cb) => {
+        const callback = cb as (err: Error | null, stdout?: string) => void;
+        if (args[0] === 'merge-base') callback(null, 'MERGE_BASE_SHA');
+        else if (args[0] === 'rev-list') callback(null, PR_COMMIT);
+        else if (args[0] === 'blame') callback(null, porcelainOutput());
+        else callback(null, '');
+      });
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 100,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      await eng.reviewPR(pr);
+
+      const mergeBaseCall = vi.mocked(cp.execFile).mock.calls.find((c) => c[1][0] === 'merge-base');
+      expect(mergeBaseCall).toBeDefined();
+      const contextArg = mockBuildReviewPrompt.mock.calls[0][1];
+      expect(contextArg).toContain('### Git Blame Annotations');
+    });
+
+    it('treats the head commit as the PR scope when no base is resolvable', async () => {
+      const pr = makePRContext({
+        baseRef: '',
+        baseSha: undefined,
+        changedFiles: [
+          {
+            path: 'src/test.ts',
+            status: 'modified' as const,
+            additions: 2,
+            deletions: 0,
+            patch: '@@ -1,2 +1,2 @@\n- old\n+new',
+          },
+        ],
+      });
+      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+
+      vi.mocked(cp.execFile).mockImplementation((_cmd, args, _opts, cb) => {
+        const callback = cb as (err: Error | null, stdout?: string) => void;
+        if (args[0] === 'blame') callback(null, porcelainOutput());
+        else callback(null, '');
+      });
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 100,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      await eng.reviewPR(pr);
+
+      // Blame still runs, scoped to the head commit.
+      const blameCall = vi.mocked(cp.execFile).mock.calls.find((c) => c[1][0] === 'blame');
+      expect(blameCall).toBeDefined();
+      const contextArg = mockBuildReviewPrompt.mock.calls[0][1];
+      expect(contextArg).toContain('### Git Blame Annotations');
+    });
+
+    it('degrades gracefully when the PR commit scope cannot be resolved', async () => {
+      const pr = makePRContext({
+        baseSha: 'b'.repeat(40),
+        changedFiles: [
+          {
+            path: 'src/test.ts',
+            status: 'modified' as const,
+            additions: 2,
+            deletions: 0,
+            patch: '@@ -1,2 +1,2 @@\n- old\n+new',
+          },
+        ],
+      });
+      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+
+      vi.mocked(cp.execFile).mockImplementation((_cmd, _args, _opts, cb) => {
+        const callback = cb as (err: Error | null, stdout?: string) => void;
+        callback(new Error('shallow clone: commit not reachable'), '');
+      });
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 100,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      await eng.reviewPR(pr);
+
+      const blameCall = vi.mocked(cp.execFile).mock.calls.find((c) => c[1][0] === 'blame');
+      expect(blameCall).toBeUndefined();
+      const contextArg = mockBuildReviewPrompt.mock.calls[0][1];
+      expect(contextArg).not.toContain('### Git Blame Annotations');
+      expect(mockBuildReviewPrompt.mock.calls[0][2]).toMatchObject({ blameAware: false });
+    });
+  });
+
   describe('token budget / complexity heuristic', () => {
     it('simple file gets reduced context when token budget is enabled', async () => {
       const smallPatch = '+line 1\n+line 2';

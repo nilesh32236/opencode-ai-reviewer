@@ -23,6 +23,13 @@ export type {
 } from './opencode.js';
 export { GitHubHelper } from './utils/github.js';
 export { GitLabAdapter } from './utils/gitlab-adapter.js';
+export {
+  getGitBlame,
+  parseBlamePorcelain,
+  parsePatchHunks,
+  MAX_BLAME_LINES_PER_FILE,
+} from './utils/blame.js';
+export type { BlameRange, BlameAttribution, GetGitBlameOptions } from './utils/blame.js';
 export type {
   PlatformAdapter,
   ReviewPostResult,

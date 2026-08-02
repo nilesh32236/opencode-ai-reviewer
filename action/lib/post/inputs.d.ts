@@ -30,6 +30,8 @@ export interface ActionInputs {
     verificationModel?: string;
     /** Whether the meta-verification pass is enabled. */
     enableMetaVerification: boolean;
+    /** Whether pre-existing (non-PR) code is reviewed at full audit priority (default: false). */
+    includePreExisting: boolean;
     /** Model identifier for meta-review quality evaluation. */
     metaReviewModel?: string;
     /** Model identifier for PR explanation. */

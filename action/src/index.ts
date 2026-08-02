@@ -219,6 +219,7 @@ async function run(): Promise<void> {
         inline: loadedConfig?.review?.inline ?? inputs.reviewInline,
         enableMetaVerification:
           loadedConfig?.review?.enableMetaVerification ?? inputs.enableMetaVerification,
+        includePreExisting: loadedConfig?.review?.includePreExisting ?? inputs.includePreExisting,
         ...(loadedConfig?.review?.tokenBudget && { tokenBudget: loadedConfig.review.tokenBudget }),
         ...(loadedConfig?.review?.enableReachability !== undefined && {
           enableReachability: loadedConfig.review.enableReachability,

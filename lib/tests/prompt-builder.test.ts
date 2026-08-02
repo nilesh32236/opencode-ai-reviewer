@@ -463,5 +463,60 @@ describe('prompt-builder', () => {
         fs.unlinkSync(customFile);
       }
     });
+
+    it('injects the PR context into a custom prompt file', () => {
+      const customFile = path.join(process.cwd(), `.tmp-custom-prcontext-${Date.now()}.md`);
+      fs.writeFileSync(customFile, 'CUSTOM_REVIEW_PROMPT_CONTENT');
+      try {
+        const prompt = buildReviewPrompt(
+          { projectContext: '', reviewPromptFile: path.basename(customFile) },
+          'PR context',
+          {},
+        );
+        expect(prompt).toContain('CUSTOM_REVIEW_PROMPT_CONTENT');
+        expect(prompt).toContain('## PR & Issue Context');
+        expect(prompt).toContain('PR context');
+      } finally {
+        fs.unlinkSync(customFile);
+      }
+    });
+
+    it('appends the Git Blame Awareness section to a custom prompt file', () => {
+      const customFile = path.join(process.cwd(), `.tmp-custom-blame-${Date.now()}.md`);
+      fs.writeFileSync(customFile, 'CUSTOM_REVIEW_PROMPT_CONTENT');
+      try {
+        const prompt = buildReviewPrompt(
+          { projectContext: '', reviewPromptFile: path.basename(customFile) },
+          'PR context',
+          { blameAware: true },
+        );
+        expect(prompt).toContain('CUSTOM_REVIEW_PROMPT_CONTENT');
+        expect(prompt).toContain('## PR & Issue Context');
+        expect(prompt).toContain('## Git Blame Awareness');
+        expect(prompt).toContain('[PR CHANGE]');
+      } finally {
+        fs.unlinkSync(customFile);
+      }
+    });
+  });
+
+  describe('buildReviewPrompt git blame awareness', () => {
+    const baseInputs = { projectContext: '' };
+
+    it('injects the Git Blame Awareness section when blameAware is set', () => {
+      const prompt = buildReviewPrompt(baseInputs, 'PR context', { blameAware: true });
+      expect(prompt).toContain('## Git Blame Awareness');
+      expect(prompt).toContain('[PR CHANGE]');
+      expect(prompt).toContain('pre-existing');
+      expect(prompt).toContain(
+        'Prioritize findings on lines introduced in this PR (`[PR CHANGE]`)',
+      );
+    });
+
+    it('omits the Git Blame Awareness section when blameAware is not set', () => {
+      const prompt = buildReviewPrompt(baseInputs, 'PR context');
+      expect(prompt).not.toContain('## Git Blame Awareness');
+      expect(prompt).not.toContain('A line can be `pre-existing`');
+    });
   });
 });

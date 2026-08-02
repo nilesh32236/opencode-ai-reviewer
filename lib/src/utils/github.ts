@@ -261,7 +261,7 @@ export class GitHubHelper implements PlatformAdapter {
         title: string;
         body: string | null;
         head: { ref: string; sha: string };
-        base: { ref: string };
+        base: { ref: string; sha?: string };
         user: { login: string };
         labels: Array<{ name: string }>;
       }>(`/pulls/${number}`),
@@ -291,6 +291,7 @@ export class GitHubHelper implements PlatformAdapter {
       headRef: pr.head.ref,
       headSha: pr.head.sha,
       baseRef: pr.base.ref,
+      baseSha: pr.base.sha,
       author: pr.user.login,
       labels: pr.labels.map((l) => l.name),
       changedFiles: files.map((f) => ({
