@@ -1,0 +1,4 @@
+{"type":"summary","text":"审查通过，整体代码质量良好。"}
+{"type":"verdict","ready":false,"reasoning":"نظرة عامة: تحتاج الإصلاحات إلى مزيد من العمل."}
+{"type":"strength","file":"src/привет.ts","line":15,"message":"Отличная обработка ошибок 🎉"}
+{"type":"issue","severity":"critical","file":"src/emoji.ts","line":10,"message":"Family emoji 👨‍👩‍👧‍👦 preserved with ZWJ.","suggestion":"Привет мир 🌍"}

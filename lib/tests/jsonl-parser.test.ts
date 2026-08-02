@@ -1,4 +1,7 @@
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import fc from 'fast-check';
 import {
   buildInlineComments,
   parseJsonlFile,
@@ -6,6 +9,8 @@ import {
   stripMarkdownFences,
 } from '../src/jsonl-parser.js';
 import type { ReviewResult } from '../src/types/index.js';
+import { parseReviewOutput } from '../src/types/schemas.js';
+import { mulberry32, randomBytes } from './helpers/seeded-random.js';
 
 describe('jsonl-parser', () => {
   describe('parseJsonlString', () => {
@@ -288,6 +293,505 @@ describe('jsonl-parser', () => {
       const result = await parseJsonlFile('/nonexistent/path/file.jsonl');
       expect(result.summary).toBe('');
       expect(result.issues).toHaveLength(0);
+    });
+  });
+
+  describe('edge cases — malformed JSON', () => {
+    it('counts truncated JSON as a failed line', () => {
+      const result = parseJsonlString('{"type":"summary","text":"Truncated');
+      expect(result.failedLines).toBe(1);
+      expect(result.summary).toBe('');
+    });
+
+    it('counts JSON with a trailing comma as a failed line', () => {
+      const input = [
+        '{"type":"summary","text":"Good.",}',
+        '{"type":"verdict","ready":true,"reasoning":"OK"}',
+      ].join('\n');
+      const result = parseJsonlString(input);
+      expect(result.failedLines).toBe(1);
+      expect(result.verdict.ready).toBe(true);
+    });
+
+    it('counts unquoted string keys as a failed line', () => {
+      const result = parseJsonlString('{type:"summary",text:"Good."}');
+      expect(result.failedLines).toBe(1);
+      expect(result.summary).toBe('');
+    });
+
+    it('counts single-quoted JSON as a failed line', () => {
+      const result = parseJsonlString("{'type':'summary','text':'Good.'}");
+      expect(result.failedLines).toBe(1);
+    });
+
+    it('counts undefined literal values as a failed line', () => {
+      const result = parseJsonlString('{"type":"summary","text":undefined}');
+      expect(result.failedLines).toBe(1);
+    });
+
+    it('counts NaN numeric values as a failed line', () => {
+      const input =
+        '{"type":"issue","severity":"critical","file":"a.ts","line":NaN,"message":"bad"}';
+      const result = parseJsonlString(input);
+      expect(result.failedLines).toBe(1);
+      expect(result.issues).toHaveLength(0);
+    });
+
+    it('counts trailing garbage after valid JSON as a failed line', () => {
+      const result = parseJsonlString('{"type":"summary","text":"Good."} trailing garbage');
+      expect(result.failedLines).toBe(1);
+      expect(result.summary).toBe('');
+    });
+  });
+
+  describe('edge cases — missing/extra fields', () => {
+    it('rejects a summary with empty text', () => {
+      const result = parseJsonlString('{"type":"summary","text":""}');
+      expect(result.failedLines).toBe(1);
+      expect(result.summary).toBe('');
+    });
+
+    it('rejects a summary with missing text', () => {
+      const result = parseJsonlString('{"type":"summary"}');
+      expect(result.failedLines).toBe(1);
+    });
+
+    it('rejects a verdict with a non-boolean ready field', () => {
+      const result = parseJsonlString('{"type":"verdict","ready":"yes","reasoning":"reason"}');
+      expect(result.failedLines).toBe(1);
+      expect(result.verdict.ready).toBe(false);
+    });
+
+    it('rejects a strength with a missing message', () => {
+      const result = parseJsonlString('{"type":"strength","file":"a.ts"}');
+      expect(result.failedLines).toBe(1);
+      expect(result.strengths).toHaveLength(0);
+    });
+
+    it('rejects an issue with a missing severity', () => {
+      const result = parseJsonlString('{"type":"issue","file":"a.ts","line":1,"message":"x"}');
+      expect(result.failedLines).toBe(1);
+    });
+
+    it('rejects an issue with a missing line', () => {
+      const result = parseJsonlString(
+        '{"type":"issue","severity":"minor","file":"a.ts","message":"x"}',
+      );
+      expect(result.failedLines).toBe(1);
+    });
+
+    it('rejects an issue with a negative line', () => {
+      const result = parseJsonlString(
+        '{"type":"issue","severity":"minor","file":"a.ts","line":-1,"message":"x"}',
+      );
+      expect(result.failedLines).toBe(1);
+      expect(result.issues).toHaveLength(0);
+    });
+
+    it('accepts entries with extra unknown fields', () => {
+      const input = [
+        '{"type":"summary","text":"Good.","extra":"field","nested":{"a":1}}',
+        '{"type":"issue","severity":"minor","file":"a.ts","line":1,"message":"x","unknown":true}',
+      ].join('\n');
+      const result = parseJsonlString(input);
+      expect(result.failedLines).toBe(0);
+      expect(result.issues).toHaveLength(1);
+      expect(result.summary).toBe('Good.');
+    });
+
+    it('routes executive_summary entries to executiveSummary', () => {
+      const input = JSON.stringify({
+        type: 'executive_summary',
+        purpose: 'Adds auth middleware',
+        riskLevel: 'high',
+        riskRationale: 'Public endpoint without rate limiting',
+        breakingChanges: ['DB migration', 'Env var required'],
+      });
+      const result = parseJsonlString(input);
+      expect(result.failedLines).toBe(0);
+      expect(result.executiveSummary?.purpose).toBe('Adds auth middleware');
+      expect(result.executiveSummary?.riskLevel).toBe('high');
+      expect(result.executiveSummary?.breakingChanges).toEqual([
+        'DB migration',
+        'Env var required',
+      ]);
+    });
+
+    it('defaults malformed executive_summary fields', () => {
+      const input =
+        '{"type":"executive_summary","purpose":5,"riskLevel":"urgent","breakingChanges":[1,"ok"]}';
+      const result = parseJsonlString(input);
+      expect(result.failedLines).toBe(0);
+      expect(result.executiveSummary?.purpose).toBe('');
+      expect(result.executiveSummary?.riskLevel).toBe('low');
+      expect(result.executiveSummary?.breakingChanges).toEqual(['ok']);
+    });
+  });
+
+  describe('edge cases — unicode, emoji, encoding', () => {
+    it('preserves CJK characters', () => {
+      const result = parseJsonlString('{"type":"summary","text":"审查通过，整体代码质量良好。"}');
+      expect(result.summary).toContain('审查通过');
+    });
+
+    it('preserves Arabic characters', () => {
+      const result = parseJsonlString('{"type":"summary","text":"التعليمات البرمجية واضحة"}');
+      expect(result.summary).toBe('التعليمات البرمجية واضحة');
+    });
+
+    it('preserves Cyrillic characters', () => {
+      const result = parseJsonlString('{"type":"strength","message":"Отличная обработка ошибок"}');
+      expect(result.strengths[0].message).toBe('Отличная обработка ошибок');
+    });
+
+    it('preserves emoji in messages and suggestions', () => {
+      const input = JSON.stringify({
+        type: 'issue',
+        severity: 'minor',
+        file: 'a.ts',
+        line: 1,
+        message: 'Fix 🐛 please',
+        suggestion: 'Use ⚡️ here',
+      });
+      const result = parseJsonlString(input);
+      expect(result.issues).toHaveLength(1);
+      expect(result.issues[0].message).toBe('Fix 🐛 please');
+      expect(result.issues[0].suggestion).toBe('Use ⚡️ here');
+    });
+
+    it('preserves zero-width joiners in emoji sequences', () => {
+      const result = parseJsonlString(
+        '{"type":"summary","text":"Family 👨\u200d👩\u200d👧\u200d👦"}',
+      );
+      expect(result.summary).toBe('Family 👨\u200d👩\u200d👧\u200d👦');
+    });
+
+    it('skips lines containing only unicode whitespace', () => {
+      const input = ['\u00a0', '\u2003\u3000', '{"type":"summary","text":"Real."}'].join('\n');
+      const result = parseJsonlString(input);
+      expect(result.failedLines).toBe(0);
+      expect(result.summary).toBe('Real.');
+    });
+
+    it('treats a zero-width-space-only line as a failed line', () => {
+      const input = ['\u200b', '{"type":"summary","text":"Real."}'].join('\n');
+      const result = parseJsonlString(input);
+      expect(result.failedLines).toBe(1);
+      expect(result.summary).toBe('Real.');
+    });
+
+    it('strips a BOM prefix at the very start of the string', () => {
+      const input = '\uFEFF{"type":"summary","text":"BOM at start."}';
+      const result = parseJsonlString(input);
+      expect(result.failedLines).toBe(0);
+      expect(result.summary).toBe('BOM at start.');
+    });
+
+    it('fails only the line when a BOM prefixes a mid-content line', () => {
+      const input = [
+        '{"type":"summary","text":"First."}',
+        '\uFEFF{"type":"verdict","ready":true,"reasoning":"BOM on this line"}',
+        '{"type":"strength","message":"Last line survives."}',
+      ].join('\n');
+      const result = parseJsonlString(input);
+      expect(result.failedLines).toBe(1);
+      expect(result.summary).toBe('First.');
+      expect(result.verdict.ready).toBe(false);
+      expect(result.strengths).toHaveLength(1);
+    });
+  });
+
+  describe('edge cases — large input', () => {
+    it('parses a single line larger than 100KB', () => {
+      const longMessage = 'x'.repeat(100 * 1024);
+      const line = JSON.stringify({
+        type: 'issue',
+        severity: 'critical',
+        file: 'big.ts',
+        line: 1,
+        message: longMessage,
+      });
+      expect(line.length).toBeGreaterThan(100 * 1024);
+      const result = parseJsonlString(line);
+      expect(result.failedLines).toBe(0);
+      expect(result.issues).toHaveLength(1);
+      expect(result.issues[0].message.length).toBe(longMessage.length);
+    });
+
+    it('parses a file with more than 1000 valid lines', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-jsonl-test-'));
+      const filePath = path.join(tmpDir, 'large.jsonl');
+      const lines = Array.from({ length: 1200 }, (_, i) =>
+        JSON.stringify({
+          type: 'issue',
+          severity: i % 3 === 0 ? 'critical' : 'minor',
+          file: `src/file-${i % 10}.ts`,
+          line: (i % 100) + 1,
+          message: `Issue number ${i}`,
+        }),
+      );
+      fs.writeFileSync(filePath, lines.join('\n'));
+      try {
+        const result = await parseJsonlFile(filePath);
+        expect(result.failedLines).toBe(0);
+        expect(result.issues).toHaveLength(1200);
+        expect(result.stats.total).toBe(1200);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('parses a file with more than 1000 lines where some are invalid', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-jsonl-test-'));
+      const filePath = path.join(tmpDir, 'mixed.jsonl');
+      const lines: string[] = [];
+      for (let i = 0; i < 1200; i++) {
+        if (i % 50 === 0) {
+          lines.push('{not valid json');
+        } else {
+          lines.push(
+            JSON.stringify({
+              type: 'issue',
+              severity: 'minor',
+              file: 'a.ts',
+              line: 1,
+              message: `Issue ${i}`,
+            }),
+          );
+        }
+      }
+      fs.writeFileSync(filePath, lines.join('\n'));
+      try {
+        const result = await parseJsonlFile(filePath);
+        expect(result.issues).toHaveLength(1176);
+        expect(result.failedLines).toBe(24);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('edge cases — parseJsonlFile', () => {
+    it('returns an empty result for an empty file', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-jsonl-test-'));
+      const filePath = path.join(tmpDir, 'empty.jsonl');
+      fs.writeFileSync(filePath, '');
+      try {
+        const result = await parseJsonlFile(filePath);
+        expect(result.summary).toBe('');
+        expect(result.issues).toHaveLength(0);
+        expect(result.failedLines).toBe(0);
+        expect(result.stats.total).toBe(0);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('returns an empty result for a whitespace-only file', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-jsonl-test-'));
+      const filePath = path.join(tmpDir, 'whitespace.jsonl');
+      fs.writeFileSync(filePath, '\n\n   \n\t\n');
+      try {
+        const result = await parseJsonlFile(filePath);
+        expect(result.failedLines).toBe(0);
+        expect(result.summary).toBe('');
+        expect(result.issues).toHaveLength(0);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('returns an empty result for a file with only BOM and whitespace', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-jsonl-test-'));
+      const filePath = path.join(tmpDir, 'bom-only.jsonl');
+      fs.writeFileSync(filePath, '\uFEFF\n');
+      try {
+        const result = await parseJsonlFile(filePath);
+        expect(result.failedLines).toBe(0);
+        expect(result.summary).toBe('');
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('parses a BOM-prefixed fixture file', async () => {
+      const fixturePath = path.join(__dirname, 'fixtures/bom-prefixed.jsonl');
+      const result = await parseJsonlFile(fixturePath);
+      expect(result.failedLines).toBe(0);
+      expect(result.summary).toBe('BOM prefixed summary.');
+      expect(result.verdict.ready).toBe(true);
+    });
+
+    it('parses a unicode fixture file', async () => {
+      const fixturePath = path.join(__dirname, 'fixtures/unicode-sample.jsonl');
+      const result = await parseJsonlFile(fixturePath);
+      expect(result.failedLines).toBe(0);
+      expect(result.summary).toContain('审查通过');
+      expect(result.issues).toHaveLength(1);
+      expect(result.issues[0].message).toContain('👨\u200d👩\u200d👧\u200d👦');
+    });
+
+    it('returns an empty result for a file with only invalid lines', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-jsonl-test-'));
+      const filePath = path.join(tmpDir, 'invalid.jsonl');
+      fs.writeFileSync(filePath, ['not json', '{broken', 'still not json'].join('\n'));
+      try {
+        const result = await parseJsonlFile(filePath);
+        expect(result.failedLines).toBe(3);
+        expect(result.summary).toBe('');
+        expect(result.issues).toHaveLength(0);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('returns an empty result for a non-existent file (portable path)', async () => {
+      const fixturePath = path.join(__dirname, 'fixtures/does-not-exist.jsonl');
+      const result = await parseJsonlFile(fixturePath);
+      expect(result.summary).toBe('');
+      expect(result.issues).toHaveLength(0);
+      expect(result.failedLines).toBe(0);
+    });
+  });
+
+  describe('property-based schema validation', () => {
+    const PROPERTY_SEED = 0xc0ffee;
+
+    const validEntryArb = fc.oneof(
+      fc.record({
+        type: fc.constant('summary'),
+        text: fc.string({ minLength: 10, maxLength: 500 }),
+      }),
+      fc.record({
+        type: fc.constant('verdict'),
+        ready: fc.boolean(),
+        reasoning: fc.string({ minLength: 10, maxLength: 500 }),
+        autoFixable: fc.boolean(),
+        confidence: fc.constantFrom('high', 'medium', 'low'),
+      }),
+      fc.record({
+        type: fc.constant('strength'),
+        file: fc.string({ minLength: 1, maxLength: 200 }),
+        line: fc.integer({ min: 1, max: 100000 }),
+        message: fc.string({ minLength: 10, maxLength: 500 }),
+      }),
+      fc.record({
+        type: fc.constant('issue'),
+        severity: fc.constantFrom('critical', 'important', 'minor'),
+        file: fc.string({ minLength: 1, maxLength: 200 }),
+        line: fc.integer({ min: 1, max: 100000 }),
+        message: fc.string({ minLength: 10, maxLength: 500 }),
+      }),
+    );
+
+    it('parses every generated valid entry without failed lines', () => {
+      fc.assert(
+        fc.property(fc.array(validEntryArb, { minLength: 1, maxLength: 50 }), (entries) => {
+          const jsonl = entries.map((e) => JSON.stringify(e)).join('\n');
+          const result = parseJsonlString(jsonl);
+          expect(result.failedLines).toBe(0);
+          const expectedIssues = entries.filter((e) => e.type === 'issue').length;
+          const expectedStrengths = entries.filter((e) => e.type === 'strength').length;
+          expect(result.issues).toHaveLength(expectedIssues);
+          expect(result.strengths).toHaveLength(expectedStrengths);
+        }),
+        { seed: PROPERTY_SEED, numRuns: 100 },
+      );
+    });
+
+    it('preserves schema invariants on generated issue entries', () => {
+      fc.assert(
+        fc.property(fc.array(validEntryArb, { minLength: 1, maxLength: 50 }), (entries) => {
+          const jsonl = entries.map((e) => JSON.stringify(e)).join('\n');
+          const result = parseJsonlString(jsonl);
+          for (const issue of result.issues) {
+            expect(['critical', 'important', 'minor']).toContain(issue.severity);
+            expect(issue.line).toBeGreaterThanOrEqual(1);
+            expect(issue.file.length).toBeGreaterThan(0);
+          }
+        }),
+        { seed: PROPERTY_SEED, numRuns: 100 },
+      );
+    });
+
+    it('manual parser and Zod parser agree on valid entries', () => {
+      fc.assert(
+        fc.property(fc.array(validEntryArb, { minLength: 1, maxLength: 40 }), (entries) => {
+          const jsonl = entries.map((e) => JSON.stringify(e)).join('\n');
+          const manual = parseJsonlString(jsonl);
+          const zod = parseReviewOutput(jsonl);
+          expect(zod.invalid).toHaveLength(0);
+          expect(manual.issues).toHaveLength(zod.issues.length);
+          expect(manual.strengths).toHaveLength(zod.strengths.length);
+        }),
+        { seed: PROPERTY_SEED, numRuns: 50 },
+      );
+    });
+  });
+
+  describe('fuzz testing', () => {
+    const FUZZ_SEED = 42;
+
+    it('never throws on random byte sequences', () => {
+      const rand = mulberry32(FUZZ_SEED);
+      for (let i = 0; i < 200; i++) {
+        const input = randomBytes(rand, Math.floor(rand() * 4096));
+        expect(() => parseJsonlString(input)).not.toThrow();
+        expect(() => parseReviewOutput(input)).not.toThrow();
+      }
+    });
+
+    it('never throws on random truncations of valid JSONL', () => {
+      const validJsonl = [
+        JSON.stringify({ type: 'summary', text: 'A reasonable summary.' }),
+        JSON.stringify({ type: 'verdict', ready: true, reasoning: 'Everything looks fine.' }),
+        JSON.stringify({
+          type: 'issue',
+          severity: 'critical',
+          file: 'a.ts',
+          line: 42,
+          message: 'Null dereference.',
+        }),
+        JSON.stringify({
+          type: 'strength',
+          file: 'b.ts',
+          line: 7,
+          message: 'Clean error handling.',
+        }),
+      ].join('\n');
+
+      const result = parseJsonlString(validJsonl);
+      expect(result.failedLines).toBe(0);
+
+      const rand = mulberry32(FUZZ_SEED + 1);
+      for (let i = 0; i < 200; i++) {
+        const cut = Math.floor(rand() * validJsonl.length);
+        const truncated = validJsonl.slice(0, cut);
+        expect(() => parseJsonlString(truncated)).not.toThrow();
+        expect(() => parseReviewOutput(truncated)).not.toThrow();
+      }
+    });
+
+    it('never throws on binary garbage interleaved with valid lines', () => {
+      const validLine = JSON.stringify({
+        type: 'issue',
+        severity: 'minor',
+        file: 'a.ts',
+        line: 1,
+        message: 'Some finding.',
+      });
+      const rand = mulberry32(FUZZ_SEED + 2);
+      for (let i = 0; i < 100; i++) {
+        const parts: string[] = [];
+        const count = 1 + Math.floor(rand() * 10);
+        for (let j = 0; j < count; j++) {
+          parts.push(validLine);
+          parts.push(randomBytes(rand, Math.floor(rand() * 256)));
+        }
+        const input = parts.join('\n');
+        expect(() => parseJsonlString(input)).not.toThrow();
+        expect(() => parseReviewOutput(input)).not.toThrow();
+      }
     });
   });
 
