@@ -4,6 +4,10 @@
  */
 
 import { z } from 'zod';
+import { MODEL_STRING_REGEX } from '../utils/model-string.js';
+
+/** Error message shared by every model-field regex in AgentConfigSchema. */
+const MODEL_STRING_ERROR = 'Must be "provider/model-name" format (e.g. "openai/gpt-4o")';
 
 /** Zod schema validating severity levels. */
 export const SeveritySchema = z.enum(['critical', 'important', 'minor']);
@@ -269,15 +273,21 @@ export const PluggableSubscriberConfigSchema = z.object({
 /** Zod schema validating the full agent configuration, merging provided values with defaults. */
 export const AgentConfigSchema = z.object({
   platform: z.enum(['github', 'gitlab']).optional().default('github'),
-  reviewModel: z.string().default('opencode/deepseek-v4-flash-free'),
-  fixModel: z.string().default('opencode/deepseek-v4-flash-free'),
-  auditModel: z.string().optional(),
-  synthesisModel: z.string().optional(),
-  verificationModel: z.string().optional(),
-  metaReviewModel: z.string().optional(),
-  explanationModel: z.string().optional(),
-  conversationModel: z.string().optional(),
-  analysisModel: z.string().optional(),
+  reviewModel: z
+    .string()
+    .regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR)
+    .default('opencode/deepseek-v4-flash-free'),
+  fixModel: z
+    .string()
+    .regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR)
+    .default('opencode/deepseek-v4-flash-free'),
+  auditModel: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),
+  synthesisModel: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),
+  verificationModel: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),
+  metaReviewModel: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),
+  explanationModel: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),
+  conversationModel: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),
+  analysisModel: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),
   batchSize: z.number().int().min(1).max(10).default(3),
   maxLinesPerFile: z.number().int().min(0).max(5000).default(200),
   maxIterations: z.number().int().min(1).max(10).default(3),

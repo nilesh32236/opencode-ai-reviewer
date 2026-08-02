@@ -194,8 +194,13 @@ review:
 ```yaml
 # workflow YAML — under `with:` on the action step
 enable_meta_verification: "true"
-verification_model: "gpt-4o"
+verification_model: "openai/gpt-4o"
 ```
+
+> **Note:** all model inputs (`review_model`, `fix_model`, `audit_model`, `verification_model`,
+> etc.) must be in `provider/model-name` format (e.g. `openai/gpt-4o`, `anthropic/claude-sonnet-4`).
+> Malformed values are rejected before the OpenCode CLI is started; unrecognized providers are
+> passed through to the CLI, which is the authority on whether a provider/model is available.
 
 > **Note:** the meta-verification *model* cannot be set from `.opencode-reviewer.yml` — the
 > config file only toggles the pass (`review.enableMetaVerification`). Set the model via the

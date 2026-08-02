@@ -3,6 +3,7 @@ import {
   type ActionMode,
   type CostTrackingVerbosity,
   DEFAULT_ALLOWLIST,
+  validateModelString,
   validateRunChecksCommand,
 } from '@opencode-pr-agent/lib';
 
@@ -195,36 +196,101 @@ export function parseInputs(): ActionInputs {
   const opencodeVersion =
     core.getInput('opencode_version') || core.getInput('opencode-version') || 'latest';
 
-  const globalModel = core.getInput('model');
+  const mode = modeStr as ActionMode;
+  const globalModel = core.getInput('model').trim();
+
+  // GitHub Actions inputs are not trimmed by default, so normalize each model
+  // value before validation to avoid confusing "Invalid model format" errors
+  // for values with surrounding whitespace.
+  const modelInput = (name: string): string | undefined => {
+    const value = core.getInput(name).trim();
+    return value || undefined;
+  };
 
   const githubToken = core.getInput('github_token', { required: true });
   if (!githubToken) {
     throw new Error('github_token input is required but was empty');
   }
 
+  const reviewModel =
+    modelInput('review_model') || globalModel || 'opencode/deepseek-v4-flash-free';
+  const fixModel = modelInput('fix_model') || globalModel || 'opencode/deepseek-v4-flash-free';
+  const auditModel = modelInput('audit_model') || globalModel || undefined;
+  const synthesisModel = modelInput('synthesis_model') || globalModel || undefined;
+  const verificationModel = modelInput('verification_model') || globalModel || undefined;
+  const metaReviewModel = modelInput('meta_review_model') || globalModel || undefined;
+  const explanationModel = modelInput('explanation_model') || globalModel || undefined;
+  const conversationModel = modelInput('conversation_model') || globalModel || undefined;
+  const analysisModel = modelInput('analysis_model') || globalModel || undefined;
+
+  const enableMetaVerification = core.getInput('enable_meta_verification') === 'true';
+  const enableAudit = core.getInput('enable_audit') === 'true';
+
+  // Models for features that are active in the selected mode are hard-gated so
+  // an invalid value fails the action before any work starts. Models whose
+  // feature is disabled (or that the action never runs, e.g. conversation) only
+  // log a warning: a stale or deliberately unused value must not fail the whole
+  // action, and runOpenCode() remains the authoritative fail-fast gate for any
+  // model that is actually used.
+  const activeModel: Record<string, boolean> = {
+    reviewModel: true,
+    fixModel: true,
+    auditModel: mode === 'audit' || enableAudit,
+    synthesisModel: mode === 'review',
+    verificationModel: enableMetaVerification,
+    metaReviewModel: mode === 'review' || mode === 'fix' || mode === 'audit',
+    explanationModel: false,
+    conversationModel: false,
+    analysisModel: mode === 'analyze',
+  };
+
+  for (const [field, model] of Object.entries({
+    reviewModel,
+    fixModel,
+    auditModel,
+    synthesisModel,
+    verificationModel,
+    metaReviewModel,
+    explanationModel,
+    conversationModel,
+    analysisModel,
+  })) {
+    if (!model) continue;
+    try {
+      validateModelString(model);
+    } catch (error) {
+      if (activeModel[field]) throw error;
+      core.warning(
+        `Ignoring invalid ${field} "${model}" for a disabled feature: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
   return {
-    mode: modeStr as ActionMode,
+    mode,
     githubToken,
     openAiKey: core.getInput('openai_api_key') || undefined,
     anthropicKey: core.getInput('anthropic_api_key') || undefined,
     geminiKey: core.getInput('gemini_api_key') || undefined,
-    reviewModel: core.getInput('review_model') || globalModel || 'opencode/deepseek-v4-flash-free',
-    fixModel: core.getInput('fix_model') || globalModel || 'opencode/deepseek-v4-flash-free',
-    auditModel: core.getInput('audit_model') || globalModel || undefined,
-    synthesisModel: core.getInput('synthesis_model') || globalModel || undefined,
-    verificationModel: core.getInput('verification_model') || globalModel || undefined,
-    enableMetaVerification: core.getInput('enable_meta_verification') === 'true',
+    reviewModel,
+    fixModel,
+    auditModel,
+    synthesisModel,
+    verificationModel,
+    enableMetaVerification,
     includePreExisting: core.getInput('include_pre_existing') === 'true',
-    metaReviewModel: core.getInput('meta_review_model') || globalModel || undefined,
-    explanationModel: core.getInput('explanation_model') || globalModel || undefined,
-    conversationModel: core.getInput('conversation_model') || globalModel || undefined,
-    analysisModel: core.getInput('analysis_model') || globalModel || undefined,
+    metaReviewModel,
+    explanationModel,
+    conversationModel,
+    analysisModel,
     reviewPromptFile: core.getInput('review_prompt_file') || undefined,
     reviewPromptExtra: core.getInput('review_prompt_extra') || undefined,
     configFile: core.getInput('config') || undefined,
     enableFix: core.getInput('enable_fix') !== 'false',
     maxFixIterations,
-    enableAudit: core.getInput('enable_audit') === 'true',
+    enableAudit,
     auditTargetDir: core.getInput('audit_target_dir') || undefined,
     auditTargetDirs,
     maxFilesPerBatch,

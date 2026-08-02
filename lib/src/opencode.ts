@@ -12,6 +12,7 @@ import {
   parseChecksumFile,
   verifyChecksum,
 } from './utils/checksum.js';
+import { validateModelString } from './utils/model-string.js';
 import { withRetry } from './utils/retry.js';
 import {
   MINIMUM_OPENCODE_VERSION,
@@ -699,6 +700,12 @@ export function parseTokenUsage(output: string): number {
   return parseTokenUsageDetailed(output).totalTokens;
 }
 
+export {
+  KNOWN_PROVIDERS,
+  MODEL_STRING_REGEX,
+  validateModelString,
+} from './utils/model-string.js';
+
 /**
  * Execute the OpenCode CLI with a given prompt.
  * Spawns the binary with a sandboxed environment (only whitelisted env vars are forwarded)
@@ -706,7 +713,7 @@ export function parseTokenUsage(output: string): number {
  *
  * @param prompt - The prompt text to pass to OpenCode.
  * @param options - Execution options for the OpenCode process.
- * @param options.model - Model identifier (e.g. "gpt-4", "claude-3-opus").
+ * @param options.model - Model identifier (e.g. "openai/gpt-4", "anthropic/claude-sonnet-4").
  * @param options.workingDirectory - Working directory for the subprocess (default: cwd).
  * @param options.timeoutMinutes - Max runtime before forced termination (default: 20).
  * @param options.signal - Optional AbortSignal to cancel the OpenCode process externally.
@@ -736,6 +743,9 @@ export async function runOpenCode(
   promptTokens?: number;
   completionTokens?: number;
 }> {
+  validateModelString(options.model);
+  // Normalize whitespace-padded model values before they reach the CLI.
+  const model = options.model.trim();
   const binaryPath = opencodePath || (await setupOpenCode());
   // setupOpenCode() already validates (and throws on) an incompatible binary in
   // the same call, so only probe again when the binary was pre-set without
@@ -762,13 +772,11 @@ export async function runOpenCode(
     'run',
     '--auto', // approve all non-denied permissions automatically
     '--model',
-    options.model,
+    model,
     prompt,
   ];
 
-  core.info(
-    `Running OpenCode (model: ${options.model}, timeout: ${options.timeoutMinutes ?? 20}m)...`,
-  );
+  core.info(`Running OpenCode (model: ${model}, timeout: ${options.timeoutMinutes ?? 20}m)...`);
 
   // Forward configured API keys to OpenCode process environment.
   const githubToken = process.env.GITHUB_TOKEN || process.env.INPUT_GITHUB_TOKEN || '';

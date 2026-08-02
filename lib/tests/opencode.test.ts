@@ -1,3 +1,4 @@
+import * as core from '@actions/core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -128,6 +129,7 @@ import {
   resolveOpenCodePath,
   runOpenCode,
   setupOpenCode,
+  validateModelString,
 } from '../src/opencode.js';
 
 // Reset module-level OpenCode state (cached path / validation cache) between
@@ -405,11 +407,16 @@ describe('runOpenCode()', () => {
     );
   });
 
+  it('throws before spawning when the model string fails validation', async () => {
+    await expect(runOpenCode('test', { model: 'gpt-4' })).rejects.toThrow(/Invalid model format/);
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
+
   it('rejects with the health message when the installed binary is too old', async () => {
     mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
     mockVersionOutput('opencode v1.0.0\n');
 
-    await expect(runOpenCode('test', { model: 'gpt-4' })).rejects.toThrow(/1\.1\.1/);
+    await expect(runOpenCode('test', { model: 'openai/gpt-4' })).rejects.toThrow(/1\.1\.1/);
     expect(mockSpawn).not.toHaveBeenCalled();
   });
 
@@ -419,7 +426,7 @@ describe('runOpenCode()', () => {
 
     await resolveOpenCodePath();
 
-    await expect(runOpenCode('test', { model: 'gpt-4' })).rejects.toThrow(/1\.1\.1/);
+    await expect(runOpenCode('test', { model: 'openai/gpt-4' })).rejects.toThrow(/1\.1\.1/);
     expect(mockSpawn).not.toHaveBeenCalled();
   });
 
@@ -427,7 +434,7 @@ describe('runOpenCode()', () => {
     const proc = makeMockProcess();
     mockSpawn.mockReturnValue(proc);
 
-    const resultPromise = runOpenCode('test', { model: 'gpt-4' });
+    const resultPromise = runOpenCode('test', { model: 'openai/gpt-4' });
 
     await new Promise((resolve) => setImmediate(resolve));
     proc.emitClose(0);
@@ -443,7 +450,7 @@ describe('runOpenCode()', () => {
     mockSpawn.mockReturnValue(proc);
 
     const resultPromise = runOpenCode('review this PR', {
-      model: 'claude-sonnet-4',
+      model: 'anthropic/claude-sonnet-4',
       timeoutMinutes: 5,
     });
 
@@ -455,16 +462,36 @@ describe('runOpenCode()', () => {
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
     expect(mockSpawn).toHaveBeenCalledWith(
       expect.any(String),
-      expect.arrayContaining(['run', '--auto', '--model', 'claude-sonnet-4', 'review this PR']),
+      expect.arrayContaining([
+        'run',
+        '--auto',
+        '--model',
+        'anthropic/claude-sonnet-4',
+        'review this PR',
+      ]),
       expect.objectContaining({ stdio: ['ignore', 'pipe', 'pipe'] }),
     );
+  });
+
+  it('trims whitespace-padded model values before spawning', async () => {
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const resultPromise = runOpenCode('test', { model: '  openai/gpt-4o  ' });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    proc.emitClose(0);
+    await resultPromise;
+
+    const spawnCall = mockSpawn.mock.calls[0];
+    expect(spawnCall[1]).toEqual(expect.arrayContaining(['--model', 'openai/gpt-4o']));
   });
 
   it('returns failure on non-zero exit code', async () => {
     const proc = makeMockProcess();
     mockSpawn.mockReturnValue(proc);
 
-    const resultPromise = runOpenCode('test prompt', { model: 'gpt-4' });
+    const resultPromise = runOpenCode('test prompt', { model: 'openai/gpt-4' });
 
     await new Promise((resolve) => setImmediate(resolve));
     proc.emitClose(1);
@@ -477,7 +504,7 @@ describe('runOpenCode()', () => {
     const proc = makeMockProcess();
     mockSpawn.mockReturnValue(proc);
 
-    const resultPromise = runOpenCode('test prompt', { model: 'gpt-4' });
+    const resultPromise = runOpenCode('test prompt', { model: 'openai/gpt-4' });
 
     await new Promise((resolve) => setImmediate(resolve));
     proc.emitError(new Error('ENOENT'));
@@ -494,7 +521,7 @@ describe('runOpenCode()', () => {
       mockSpawn.mockReturnValue(proc);
 
       const resultPromise = runOpenCode('test prompt', {
-        model: 'gpt-4',
+        model: 'openai/gpt-4',
         timeoutMinutes: 0.001,
       });
 
@@ -529,7 +556,7 @@ describe('runOpenCode()', () => {
       mockSpawn.mockReturnValue(proc);
 
       const resultPromise = runOpenCode('test prompt', {
-        model: 'gpt-4',
+        model: 'openai/gpt-4',
         timeoutMinutes: 0.001,
       });
 
@@ -561,7 +588,7 @@ describe('runOpenCode()', () => {
       throw new Error('spawn error');
     });
 
-    await expect(runOpenCode('test', { model: 'gpt-4' })).rejects.toThrow('spawn error');
+    await expect(runOpenCode('test', { model: 'openai/gpt-4' })).rejects.toThrow('spawn error');
   });
 
   it('passes env vars from options', async () => {
@@ -569,7 +596,7 @@ describe('runOpenCode()', () => {
     mockSpawn.mockReturnValue(proc);
 
     const resultPromise = runOpenCode('test', {
-      model: 'gpt-4',
+      model: 'openai/gpt-4',
       env: { CUSTOM_VAR: 'custom-value' },
     });
 
@@ -587,7 +614,7 @@ describe('runOpenCode()', () => {
     const proc = makeMockProcess();
     mockSpawn.mockReturnValue(proc);
 
-    const resultPromise = runOpenCode('test', { model: 'gpt-4' });
+    const resultPromise = runOpenCode('test', { model: 'openai/gpt-4' });
 
     await new Promise((resolve) => setImmediate(resolve));
     proc.emitClose(0);
@@ -603,7 +630,7 @@ describe('runOpenCode()', () => {
     const proc = makeMockProcess();
     mockSpawn.mockReturnValue(proc);
 
-    const resultPromise = runOpenCode('test', { model: 'gpt-4' });
+    const resultPromise = runOpenCode('test', { model: 'openai/gpt-4' });
 
     await new Promise((resolve) => setImmediate(resolve));
     proc.emitClose(0);
@@ -612,6 +639,56 @@ describe('runOpenCode()', () => {
     const spawnCall = mockSpawn.mock.calls[0];
     const env = spawnCall[2].env;
     expect(env.OPENCODE_DISABLE_AUTOUPDATE).toBe('true');
+  });
+});
+
+describe('validateModelString()', () => {
+  it.each([
+    'opencode/deepseek-v4-flash-free',
+    'anthropic/claude-sonnet-4-20250514',
+    'openai/gpt-4o',
+    'google/gemini-2.0-flash',
+    'gemini/gemini-pro',
+    'groq/llama-3.3-70b-versatile',
+    'together/llama-3.1-8b-instruct',
+    'openrouter/anthropic/claude-3.5',
+    'mistral/mistral-large',
+    'xai/grok-4',
+  ])('accepts a valid model string: %s', (model) => {
+    expect(() => validateModelString(model)).not.toThrow();
+  });
+
+  it('accepts a valid model string with surrounding whitespace', () => {
+    expect(() => validateModelString('  openai/gpt-4o  ')).not.toThrow();
+  });
+
+  it('rejects an empty string', () => {
+    expect(() => validateModelString('')).toThrow(/Invalid model/);
+  });
+
+  it('rejects a model string missing the provider prefix', () => {
+    expect(() => validateModelString('gpt-4o')).toThrow(/Invalid model format/);
+  });
+
+  it('warns (without throwing) for a provider outside the known list', () => {
+    expect(() => validateModelString('custom-provider/custom-model')).not.toThrow();
+    expect(core.warning).toHaveBeenCalledWith(
+      expect.stringContaining('Unknown provider "custom-provider"'),
+    );
+  });
+
+  it('rejects characters that are not allowed', () => {
+    expect(() => validateModelString('openai/gpt 4o')).toThrow(/Invalid model format/);
+    expect(() => validateModelString('openai/gpt<4o>')).toThrow(/Invalid model format/);
+    expect(() => validateModelString('openai/')).toThrow(/Invalid model format/);
+  });
+
+  it.each(['openai/gpt-4/', 'openrouter/anthropic/'])('rejects a trailing slash: %s', (model) => {
+    expect(() => validateModelString(model)).toThrow(/Invalid model format/);
+  });
+
+  it('rejects a whitespace-only string', () => {
+    expect(() => validateModelString('   ')).toThrow(/Invalid model/);
   });
 });
 
