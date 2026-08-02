@@ -727,6 +727,26 @@ describe('jsonl-parser', () => {
         { seed: PROPERTY_SEED, numRuns: 50 },
       );
     });
+
+    it('documents the strictness gap on boundary inputs', () => {
+      // validEntryArb only samples the overlap region both parsers accept, so the
+      // strictness gap is never exercised by the property oracle above. These
+      // explicit assertions lock down the intentional asymmetry: the manual parser
+      // accepts shorter text that the Zod parseReviewOutput rejects.
+      const boundaryCases = [
+        '{"type":"summary","text":"short"}',
+        '{"type":"verdict","ready":true}',
+        '{"type":"strength","message":"four"}',
+        '{"type":"issue","severity":"minor","file":"a.ts","line":1,"message":"abc"}',
+      ];
+
+      for (const line of boundaryCases) {
+        expect(parseJsonlString(line).failedLines).toBe(0);
+        const zod = parseReviewOutput(line);
+        expect(zod.valid).toHaveLength(0);
+        expect(zod.invalid).toHaveLength(1);
+      }
+    });
   });
 
   describe('fuzz testing', () => {

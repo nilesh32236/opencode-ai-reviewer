@@ -150,6 +150,18 @@ describe('parseReviewOutput edge cases', () => {
     expect(result.executiveSummary?.breakingChanges).toEqual(['DB migration']);
   });
 
+  it('leniently accepts malformed executive_summary entries (mirrors manual parser)', () => {
+    const jsonl =
+      '{"type":"executive_summary","purpose":5,"riskLevel":"urgent","breakingChanges":[1,"ok"]}';
+    const result = parseReviewOutput(jsonl);
+    expect(result.valid.length).toBe(1);
+    expect(result.invalid.length).toBe(0);
+    expect(result.executiveSummary?.purpose).toBe('');
+    expect(result.executiveSummary?.riskLevel).toBe('low');
+    expect(result.executiveSummary?.riskRationale).toBe('');
+    expect(result.executiveSummary?.breakingChanges).toEqual(['ok']);
+  });
+
   it('parses a single line larger than 100KB', () => {
     const longMessage = 'x'.repeat(100 * 1024);
     const jsonl = JSON.stringify({

@@ -48,13 +48,25 @@ export const ReviewIssueSchema = z.object({
   category: z.string().optional(),
 });
 
-/** Zod schema validating a review executive summary entry. Mirrors the manual parser's handling of executive_summary findings. */
+/**
+ * Zod schema validating a review executive summary entry.
+ * Mirrors the manual parser's lenient handling (jsonl-parser.ts): a non-string
+ * purpose/riskRationale falls back to '', an unknown riskLevel falls back to
+ * 'low', and non-string breakingChanges entries are filtered out. This keeps
+ * parseReviewOutput and the manual/file parsers in agreement.
+ */
 export const ReviewExecutiveSummarySchema = z.object({
   type: z.literal('executive_summary'),
-  purpose: z.string(),
-  riskLevel: z.enum(['low', 'medium', 'high']),
-  riskRationale: z.string(),
-  breakingChanges: z.array(z.string()).default([]),
+  purpose: z.preprocess((v) => (typeof v === 'string' ? v : ''), z.string()),
+  riskLevel: z.preprocess(
+    (v) => (typeof v === 'string' && ['low', 'medium', 'high'].includes(v) ? v : 'low'),
+    z.enum(['low', 'medium', 'high']),
+  ),
+  riskRationale: z.preprocess((v) => (typeof v === 'string' ? v : ''), z.string()),
+  breakingChanges: z.preprocess(
+    (v) => (Array.isArray(v) ? v.filter((c: unknown) => typeof c === 'string') : []),
+    z.array(z.string()),
+  ),
 });
 
 /** Zod discriminated union for all review entry types. */
