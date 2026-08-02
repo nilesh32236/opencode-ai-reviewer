@@ -2,6 +2,32 @@ import type { ReviewResult } from '@opencode-pr-agent/lib';
 import { buildTokenUsageSection, formatIssueBullet } from '@opencode-pr-agent/lib';
 
 /**
+ * Render `code` inside a fenced code block using a fence delimiter longer than
+ * any run of backticks in the content, so embedded triple backticks cannot
+ * terminate the fence and corrupt the surrounding markdown.
+ * @param code - Code to fence.
+ * @param lang - Optional language tag.
+ * @returns The fenced code block.
+ */
+function fencedCodeBlock(code: string, lang = 'suggestion'): string {
+  const trimmed = code.trim();
+  let fence = '```';
+  const maxRun = (trimmed.match(/`+/g) ?? []).reduce((max, run) => Math.max(max, run.length), 0);
+  if (maxRun >= fence.length) {
+    fence = '`'.repeat(maxRun + 1);
+  }
+  return `${fence}${lang}\n${trimmed}\n${fence}`;
+}
+
+/** Escape backticks in content interpolated into inline code spans.
+ * @param value - Raw value.
+ * @returns A backtick-safe inline code body.
+ */
+function escapeInlineCode(value: string): string {
+  return value.replace(/`/g, '\\`');
+}
+
+/**
  * Format a review result as a GitHub-flavored markdown report.
  * @param result - Review result to render.
  * @returns A markdown string suitable for writing to a file.
@@ -28,6 +54,24 @@ export function formatMarkdown(result: ReviewResult): string {
   }
   lines.push('');
 
+  if (result.executiveSummary) {
+    const es = result.executiveSummary;
+    const riskEmoji = es.riskLevel === 'high' ? '🔴' : es.riskLevel === 'medium' ? '🟡' : '🟢';
+    lines.push('## Executive Summary');
+    lines.push('');
+    lines.push(`**Purpose:** ${es.purpose}`);
+    lines.push('');
+    lines.push(`**Risk:** ${riskEmoji} ${es.riskLevel.toUpperCase()} — ${es.riskRationale}`);
+    if (es.breakingChanges.length > 0) {
+      lines.push('');
+      lines.push('**Breaking Changes:**');
+      for (const bc of es.breakingChanges) {
+        lines.push(`- ⚠️ ${bc}`);
+      }
+    }
+    lines.push('');
+  }
+
   if (result.summary) {
     lines.push('## Summary');
     lines.push('');
@@ -53,9 +97,7 @@ export function formatMarkdown(result: ReviewResult): string {
       if (issue.suggestionCode) {
         lines.push('<details><summary>Show suggested fix</summary>');
         lines.push('');
-        lines.push('```suggestion');
-        lines.push(issue.suggestionCode.trim());
-        lines.push('```');
+        lines.push(fencedCodeBlock(issue.suggestionCode));
         lines.push('</details>');
       }
     }
@@ -67,7 +109,7 @@ export function formatMarkdown(result: ReviewResult): string {
     lines.push('');
     for (const strength of result.strengths) {
       const location = strength.file
-        ? `\`${strength.file}${strength.line ? `:${strength.line}` : ''}\``
+        ? `\`${escapeInlineCode(strength.file)}${strength.line ? `:${strength.line}` : ''}\``
         : '';
       lines.push(`- ${location ? `**${location}** — ` : ''}${strength.message}`);
     }

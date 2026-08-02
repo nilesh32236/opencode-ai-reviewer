@@ -5,6 +5,7 @@ import {
   parseGitDiff,
   parseGitDiffBlocks,
   parseGitNumstat,
+  runGitCommand,
   unquoteGitPath,
 } from '../src/git-diff.js';
 
@@ -92,6 +93,50 @@ describe('parseGitDiffBlocks', () => {
     expect(block.status).toBe('renamed');
     expect(block.path).toBe('new.ts');
   });
+
+  it('ignores `+++ ...` hunk content lines that are not path headers', () => {
+    const patch = [
+      'diff --git a/src/notes.md b/src/notes.md',
+      'index abc123..def456 100644',
+      '--- a/src/notes.md',
+      '+++ b/src/notes.md',
+      '@@ -1,3 +1,4 @@',
+      ' line1',
+      '+++ not a path header',
+      '+added',
+    ].join('\n');
+    const [block] = parseGitDiffBlocks(patch);
+    expect(block.path).toBe('src/notes.md');
+  });
+
+  it('parses C-quoted diff headers with embedded escapes', () => {
+    const patch = [
+      'diff --git "a/quote\\"d.txt" "b/quote\\"d.txt"',
+      'new file mode 100644',
+      'index 0000000..1234567',
+      '--- /dev/null',
+      '+++ "b/quote\\"d.txt"',
+      '@@ -0,0 +1 @@',
+      '+x',
+    ].join('\n');
+    const [block] = parseGitDiffBlocks(patch);
+    expect(block.status).toBe('added');
+    expect(block.path).toBe('quote"d.txt');
+  });
+
+  it('decodes git octal escapes for non-ASCII quoted paths', () => {
+    const patch = [
+      'diff --git "a/na\\303\\257ve.txt" "b/na\\303\\257ve.txt"',
+      'new file mode 100644',
+      'index 0000000..1234567',
+      '--- /dev/null',
+      '+++ "b/na\\303\\257ve.txt"',
+      '@@ -0,0 +1 @@',
+      '+x',
+    ].join('\n');
+    const [block] = parseGitDiffBlocks(patch);
+    expect(block.path).toBe('naïve.txt');
+  });
 });
 
 describe('parseGitNumstat', () => {
@@ -127,6 +172,30 @@ describe('unquoteGitPath', () => {
     expect(unquoteGitPath('"src/my file.ts"')).toBe('src/my file.ts');
     expect(unquoteGitPath('"a\\tb.ts"')).toBe('a\tb.ts');
   });
+
+  it('decodes git octal escapes as a fallback', () => {
+    expect(unquoteGitPath('"na\\303\\257ve.txt"')).toBe('naïve.txt');
+  });
+});
+
+describe('runGitCommand', () => {
+  it('runs git with quotePath=false and a large maxBuffer', () => {
+    execFileSyncMock.mockImplementation(
+      (
+        command: string,
+        args: readonly string[],
+        options: { maxBuffer?: number; timeout?: number },
+      ) => {
+        expect(command).toBe('git');
+        expect(args[0]).toBe('-c');
+        expect(args[1]).toBe('core.quotePath=false');
+        expect(options.maxBuffer).toBe(100 * 1024 * 1024);
+        expect(options.timeout).toBe(60_000);
+        return 'output';
+      },
+    );
+    expect(runGitCommand(['rev-parse', 'HEAD'])).toBe('output');
+  });
 });
 
 describe('parseGitDiff', () => {
@@ -157,7 +226,7 @@ describe('parseGitDiff', () => {
 
 describe('buildPRContextFromStagedDiff', () => {
   it('builds a PR context from the staged index diff', () => {
-    execFileSyncMock.mockImplementation((command: string, args: readonly string[]) => {
+    execFileSyncMock.mockImplementation((_command: string, args: readonly string[]) => {
       const joined = args.join(' ');
       if (joined.includes('--numstat')) return STAGED_NUMSTAT;
       if (joined.includes('config')) return 'Local Dev';
@@ -190,7 +259,7 @@ describe('buildPRContextFromBranchDiff', () => {
     ].join('\n');
     const BRANCH_NUMSTAT = '1\t1\tsrc/c.ts\n';
 
-    execFileSyncMock.mockImplementation((command: string, args: readonly string[]) => {
+    execFileSyncMock.mockImplementation((_command: string, args: readonly string[]) => {
       const joined = args.join(' ');
       if (joined.includes('--numstat')) return BRANCH_NUMSTAT;
       if (joined.includes('merge-base')) return 'mergebase'.padEnd(40, '0');
@@ -206,5 +275,12 @@ describe('buildPRContextFromBranchDiff', () => {
     expect(pr.changedFiles).toHaveLength(1);
     expect(pr.changedFiles[0].path).toBe('src/c.ts');
     expect(pr.baseSha).toBe('mergebase'.padEnd(40, '0'));
+  });
+
+  it('rejects dash-prefixed branch names before reaching git', () => {
+    expect(() => buildPRContextFromBranchDiff('--upload-pack=evil', { cwd: '/repo' })).toThrow(
+      /must not.*start with "-"/,
+    );
+    expect(() => buildPRContextFromBranchDiff('', { cwd: '/repo' })).toThrow(/empty/);
   });
 });

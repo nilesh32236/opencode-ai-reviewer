@@ -57,6 +57,23 @@ export function formatTerminal(result: ReviewResult): string {
   }
   lines.push('');
 
+  if (result.executiveSummary) {
+    const es = result.executiveSummary;
+    const risk =
+      es.riskLevel === 'high'
+        ? pc.red(pc.bold('HIGH'))
+        : es.riskLevel === 'medium'
+          ? pc.yellow(pc.bold('MEDIUM'))
+          : pc.green(pc.bold('LOW'));
+    lines.push(pc.bold('Executive Summary'));
+    lines.push(`${pc.dim('Purpose:')} ${es.purpose}`);
+    lines.push(`${pc.dim('Risk:')} ${risk} — ${es.riskRationale}`);
+    for (const bc of es.breakingChanges) {
+      lines.push(`${pc.yellow('⚠')} ${pc.dim('Breaking change:')} ${bc}`);
+    }
+    lines.push('');
+  }
+
   if (result.summary) {
     lines.push(pc.bold('Summary'));
     lines.push(result.summary.trim());

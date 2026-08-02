@@ -901,7 +901,10 @@ export async function runOpenCode(
 
   const childProcess = cp.spawn(binaryPath, args, {
     cwd,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    // Forward the caller's stdin when interactive (autoApprove off) so the
+    // user can approve tool permissions at the prompt. CI auto-approve runs
+    // keep stdin ignored, exactly as before.
+    stdio: autoApprove ? ['ignore', 'pipe', 'pipe'] : ['inherit', 'pipe', 'pipe'],
     env: safeEnv,
     detached: true,
   });

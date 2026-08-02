@@ -65,6 +65,8 @@ const MARKDOWN_OUTPUT_FILE = 'review-result.md';
 export async function runReviewCommand(options: ReviewCommandOptions): Promise<number> {
   Logger.setSink(plainSink);
 
+  const branch = options.branch;
+
   if (!isInsideGitWorkTree(options.cwd)) {
     process.stderr.write(`Not a git repository: ${options.cwd}\n`);
     return 1;
@@ -72,9 +74,20 @@ export async function runReviewCommand(options: ReviewCommandOptions): Promise<n
 
   let pr: PRContext;
   try {
-    pr = options.staged
-      ? buildPRContextFromStagedDiff({ cwd: options.cwd })
-      : buildPRContextFromBranchDiff(options.branch!, { cwd: options.cwd });
+    if (options.staged) {
+      pr = buildPRContextFromStagedDiff({ cwd: options.cwd });
+    } else {
+      // Branch mode requires an explicit branch; never pass `undefined` through
+      // to git, which would produce a confusing `git diff undefined...HEAD`
+      // error.
+      if (branch === undefined) {
+        process.stderr.write(
+          'Error: review requires either --staged (default) or --branch <name>.\n',
+        );
+        return 1;
+      }
+      pr = buildPRContextFromBranchDiff(branch, { cwd: options.cwd });
+    }
   } catch (err) {
     process.stderr.write(
       `Failed to read the git diff: ${sanitizeErrorMessage(err)}. ` +
@@ -97,6 +110,10 @@ export async function runReviewCommand(options: ReviewCommandOptions): Promise<n
   );
 
   const loadedConfig = loadConfig(options.cwd, 'github', options.configPath);
+  if (options.configPath && loadedConfig === null) {
+    process.stderr.write(`Failed to load config file: ${options.configPath}\n`);
+    return 1;
+  }
   const agentConfig = buildAgentConfig(loadedConfig, { model: options.model });
 
   try {
@@ -134,7 +151,10 @@ export async function runReviewCommand(options: ReviewCommandOptions): Promise<n
   }
 
   const hasContent = Boolean(
-    result.summary || result.issues.length > 0 || result.strengths.length > 0,
+    result.summary ||
+      result.issues.length > 0 ||
+      result.strengths.length > 0 ||
+      result.verdict?.reasoning,
   );
   if (!hasContent) {
     process.stderr.write(
