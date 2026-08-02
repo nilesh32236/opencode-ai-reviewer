@@ -2,6 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as core from '@actions/core';
 import type { PreviousFindingIteration, ReviewBudgetMode, ReviewIssue } from '../types/index.js';
+import { getLanguagePrompts } from './language/index.js';
+import type { SupportedLanguage } from './language/index.js';
 
 /** Input parameters for building a review prompt. */
 export interface PromptBuilderInputs {
@@ -34,6 +36,8 @@ export interface ReviewPromptOptions {
   codebaseIndexContext?: string;
   /** When true, the PR context includes per-file git blame annotations; the model is instructed to prioritize findings on lines introduced by this PR. */
   blameAware?: boolean;
+  /** Detected programming languages from the changed files; injects per-language review guidance when present. */
+  languages?: SupportedLanguage[];
 }
 
 /**
@@ -94,6 +98,7 @@ export function buildReviewPrompt(
   const effectiveTotalDiffLines = options.totalDiffLines ?? totalDiffLines;
   const codebaseIndexCtx = options.codebaseIndexContext;
   const blameAware = options.blameAware;
+  const languages = options.languages;
 
   if (inputs.reviewPromptFile) {
     const customPrompt = loadPromptFile(inputs.reviewPromptFile);
@@ -175,6 +180,13 @@ export function buildReviewPrompt(
   }
 
   sections.push('\n' + buildWhatToCheck());
+
+  if (languages && languages.length > 0) {
+    const languageSections = getLanguagePrompts(languages);
+    for (const section of languageSections) {
+      sections.push('\n' + section);
+    }
+  }
 
   sections.push('\n## Calibration');
   sections.push('');
