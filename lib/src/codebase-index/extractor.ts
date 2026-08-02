@@ -37,6 +37,8 @@ const LOCAL_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', 
 /**
  * Yield to the event loop. Used by the asynchronous extraction path so a large
  * repository walk/parse never blocks I/O or other work on the process.
+ *
+ * @returns A promise that resolves after the current event loop iteration.
  */
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
@@ -263,6 +265,10 @@ export class CodebaseExtractor {
    * Asynchronous counterpart of {@link resolveFiles}: resolves an explicit file
    * list or discovers every indexable file under `root`, yielding periodically
    * so the event loop is not blocked during large repository walks.
+   *
+   * @param root - Absolute path of the repository root.
+   * @param files - Optional explicit file list to resolve.
+   * @returns A promise resolving to the resolved or discovered absolute file paths.
    */
   private async resolveFilesAsync(root: string, files?: string[]): Promise<string[]> {
     if (!files || files.length === 0) return this.discoverFilesAsync(root);
