@@ -57,12 +57,61 @@ const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
   error: 3,
 };
 
+/** Destination for Logger output. Defaults to GitHub Actions core methods. */
+export interface LoggerSink {
+  /** Emit a debug-level message.
+   * @param message - The message to log.
+   */
+  debug(message: string): void;
+  /** Emit an info-level message.
+   * @param message - The message to log.
+   */
+  info(message: string): void;
+  /** Emit a warning-level message.
+   * @param message - The message to log.
+   */
+  warn(message: string): void;
+  /** Emit an error-level message.
+   * @param message - The message to log.
+   */
+  error(message: string): void;
+}
+
+/** Default sink routing through @actions/core (GitHub Actions command strings). */
+const ACTIONS_SINK: LoggerSink = {
+  debug: (message) => core.debug(message),
+  info: (message) => core.info(message),
+  warn: (message) => core.warning(message),
+  error: (message) => core.error(message),
+};
+
+let currentSink: LoggerSink = ACTIONS_SINK;
+
 /**
  * Structured logger with level filtering, context enrichment, and token sanitization.
- * Wraps GitHub Actions core logging methods.
+ * Wraps GitHub Actions core logging methods by default; a plain-text sink can be
+ * installed for local (non-CI) consumers such as the CLI.
  */
 export class Logger {
   private static defaultLevel: LogLevel = 'info';
+
+  /**
+   * Install a custom output sink for all Logger instances. The CLI uses this to
+   * route logs to plain console output so `::command::` GitHub Actions strings
+   * never leak into a local terminal. Pass an {@link LoggerSink} implementation.
+   * @param sink - The sink to use for all subsequent log calls.
+   */
+  static setSink(sink: LoggerSink): void {
+    currentSink = sink;
+  }
+
+  /**
+   * Restore the default GitHub Actions output sink. Useful for tests and for
+   * long-lived processes that toggle between CI and local output.
+   */
+  static resetSink(): void {
+    currentSink = ACTIONS_SINK;
+  }
 
   /**
    * Create a new Logger instance.
@@ -147,16 +196,16 @@ export class Logger {
 
     switch (level) {
       case 'debug':
-        core.debug(fullMessage);
+        currentSink.debug(fullMessage);
         break;
       case 'info':
-        core.info(fullMessage);
+        currentSink.info(fullMessage);
         break;
       case 'warn':
-        core.warning(fullMessage);
+        currentSink.warn(fullMessage);
         break;
       case 'error':
-        core.error(fullMessage);
+        currentSink.error(fullMessage);
         break;
     }
   }
