@@ -95,15 +95,27 @@ describe('parseReviewOutput edge cases', () => {
 
   it('rejects entries with missing required fields', () => {
     const jsonl = [
-      '{"type":"summary","text":"short"}',
+      '{"type":"summary"}',
       '{"type":"verdict","ready":true}',
       '{"type":"strength"}',
-      '{"type":"issue","severity":"minor","file":"a.ts","line":0,"message":"nope"}',
+      '{"type":"issue","severity":"minor"}',
     ].join('\n');
 
     const result = parseReviewOutput(jsonl);
 
     expect(result.invalid.length).toBe(4);
+    expect(result.valid.length).toBe(0);
+  });
+
+  it('rejects entries with invalid required field values', () => {
+    const jsonl = [
+      '{"type":"summary","text":"short"}',
+      '{"type":"issue","severity":"minor","file":"a.ts","line":0,"message":"nope"}',
+    ].join('\n');
+
+    const result = parseReviewOutput(jsonl);
+
+    expect(result.invalid.length).toBe(2);
     expect(result.valid.length).toBe(0);
   });
 

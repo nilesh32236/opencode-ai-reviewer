@@ -35,6 +35,15 @@ export function stripMarkdownFences(content: string): string {
  * Parse a JSONL file containing review findings and return a structured ReviewResult.
  * The file is read line-by-line; invalid or unparseable lines are counted but skipped.
  * Returns an empty result if the file does not exist.
+ *
+ * Line handling contract (shared with parseJsonlString and parseReviewOutput):
+ * - Each line is trimmed with `String.prototype.trim()` before parsing, so a UTF-8
+ *   BOM (U+FEFF) prefix on any line is removed and the line parses normally.
+ * - Lines that are blank after trimming are skipped entirely.
+ * - Zero-width characters such as U+200B (ZWSP) are NOT part of ECMAScript's
+ *   WhiteSpace set, so `.trim()` leaves them in place; a line consisting only of
+ *   such characters fails `JSON.parse` and is counted as a failed line.
+ *
  * @param filePath - Path to the JSONL file to parse.
  * @returns A Promise resolving to a ReviewResult with parsed findings.
  */
@@ -198,6 +207,15 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
 
 /**
  * Parse a JSONL string containing review findings and return a structured ReviewResult.
+ *
+ * Line handling contract (shared with parseJsonlFile and parseReviewOutput):
+ * - Each line is trimmed with `String.prototype.trim()` before parsing, so a UTF-8
+ *   BOM (U+FEFF) prefix on any line is removed and the line parses normally.
+ * - Lines that are blank after trimming are skipped entirely.
+ * - Zero-width characters such as U+200B (ZWSP) are NOT part of ECMAScript's
+ *   WhiteSpace set, so `.trim()` leaves them in place; a line consisting only of
+ *   such characters fails `JSON.parse` and is counted as a failed line.
+ *
  * @param content - The JSONL string to parse.
  * @returns A ReviewResult with parsed findings.
  */
@@ -222,6 +240,8 @@ export function parseJsonlString(content: string): ReviewResult {
     | undefined;
 
   for (const line of lines) {
+    // Trim before parse so BOM/whitespace-prefixed lines behave identically to
+    // parseJsonlFile and parseReviewOutput. rawLines stores the trimmed text.
     const trimmed = line.trim();
     rawLines.push(trimmed);
 

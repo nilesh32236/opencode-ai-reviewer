@@ -12,6 +12,27 @@ import type { ReviewResult } from '../src/types/index.js';
 import { parseReviewOutput } from '../src/types/schemas.js';
 import { mulberry32, randomBytes } from './helpers/seeded-random.js';
 
+/**
+ * Create a temp directory, write a JSONL file, run the callback with the file
+ * path, then remove the directory in a finally block. Portable across platforms
+ * via os.tmpdir()/path.join.
+ * @param contents - The file contents to write.
+ * @param fn - Callback receiving the temp file path; awaited so async tests can assert.
+ */
+async function withTempJsonlFile(
+  contents: string,
+  fn: (filePath: string) => Promise<void>,
+): Promise<void> {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-jsonl-test-'));
+  const filePath = path.join(tmpDir, 'input.jsonl');
+  fs.writeFileSync(filePath, contents);
+  try {
+    await fn(filePath);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 describe('jsonl-parser', () => {
   describe('parseJsonlString', () => {
     it('parses a complete valid JSONL with all finding types', () => {
@@ -473,6 +494,13 @@ describe('jsonl-parser', () => {
       expect(result.summary).toBe('Real.');
     });
 
+    // These three tests freeze in place incidental String.prototype.trim
+    // semantics rather than a bespoke parser rule: U+FEFF (BOM) is in ECMAScript's
+    // WhiteSpace set so it is trimmed and the line parses, while U+200B (ZWSP) is
+    // not, so a ZWSP-only line fails JSON.parse and counts as failed. The parser
+    // JSDoc (parseJsonlString/parseJsonlFile) documents this as the intended
+    // contract — do not "fix" the trimming strategy without updating that JSDoc
+    // and these assertions together.
     it('treats a zero-width-space-only line as a failed line', () => {
       const input = ['\u200b', '{"type":"summary","text":"Real."}'].join('\n');
       const result = parseJsonlString(input);
@@ -519,8 +547,6 @@ describe('jsonl-parser', () => {
     });
 
     it('parses a file with more than 1000 valid lines', async () => {
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-jsonl-test-'));
-      const filePath = path.join(tmpDir, 'large.jsonl');
       const lines = Array.from({ length: 1200 }, (_, i) =>
         JSON.stringify({
           type: 'issue',
@@ -530,20 +556,15 @@ describe('jsonl-parser', () => {
           message: `Issue number ${i}`,
         }),
       );
-      fs.writeFileSync(filePath, lines.join('\n'));
-      try {
+      await withTempJsonlFile(lines.join('\n'), async (filePath) => {
         const result = await parseJsonlFile(filePath);
         expect(result.failedLines).toBe(0);
         expect(result.issues).toHaveLength(1200);
         expect(result.stats.total).toBe(1200);
-      } finally {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-      }
+      });
     });
 
     it('parses a file with more than 1000 lines where some are invalid', async () => {
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-jsonl-test-'));
-      const filePath = path.join(tmpDir, 'mixed.jsonl');
       const lines: string[] = [];
       for (let i = 0; i < 1200; i++) {
         if (i % 50 === 0) {
@@ -560,58 +581,40 @@ describe('jsonl-parser', () => {
           );
         }
       }
-      fs.writeFileSync(filePath, lines.join('\n'));
-      try {
+      await withTempJsonlFile(lines.join('\n'), async (filePath) => {
         const result = await parseJsonlFile(filePath);
         expect(result.issues).toHaveLength(1176);
         expect(result.failedLines).toBe(24);
-      } finally {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-      }
+      });
     });
   });
 
   describe('edge cases — parseJsonlFile', () => {
     it('returns an empty result for an empty file', async () => {
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-jsonl-test-'));
-      const filePath = path.join(tmpDir, 'empty.jsonl');
-      fs.writeFileSync(filePath, '');
-      try {
+      await withTempJsonlFile('', async (filePath) => {
         const result = await parseJsonlFile(filePath);
         expect(result.summary).toBe('');
         expect(result.issues).toHaveLength(0);
         expect(result.failedLines).toBe(0);
         expect(result.stats.total).toBe(0);
-      } finally {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-      }
+      });
     });
 
     it('returns an empty result for a whitespace-only file', async () => {
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-jsonl-test-'));
-      const filePath = path.join(tmpDir, 'whitespace.jsonl');
-      fs.writeFileSync(filePath, '\n\n   \n\t\n');
-      try {
+      await withTempJsonlFile('\n\n   \n\t\n', async (filePath) => {
         const result = await parseJsonlFile(filePath);
         expect(result.failedLines).toBe(0);
         expect(result.summary).toBe('');
         expect(result.issues).toHaveLength(0);
-      } finally {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-      }
+      });
     });
 
     it('returns an empty result for a file with only BOM and whitespace', async () => {
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-jsonl-test-'));
-      const filePath = path.join(tmpDir, 'bom-only.jsonl');
-      fs.writeFileSync(filePath, '\uFEFF\n');
-      try {
+      await withTempJsonlFile('\uFEFF\n', async (filePath) => {
         const result = await parseJsonlFile(filePath);
         expect(result.failedLines).toBe(0);
         expect(result.summary).toBe('');
-      } finally {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-      }
+      });
     });
 
     it('parses a BOM-prefixed fixture file', async () => {
@@ -632,17 +635,15 @@ describe('jsonl-parser', () => {
     });
 
     it('returns an empty result for a file with only invalid lines', async () => {
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-jsonl-test-'));
-      const filePath = path.join(tmpDir, 'invalid.jsonl');
-      fs.writeFileSync(filePath, ['not json', '{broken', 'still not json'].join('\n'));
-      try {
-        const result = await parseJsonlFile(filePath);
-        expect(result.failedLines).toBe(3);
-        expect(result.summary).toBe('');
-        expect(result.issues).toHaveLength(0);
-      } finally {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-      }
+      await withTempJsonlFile(
+        ['not json', '{broken', 'still not json'].join('\n'),
+        async (filePath) => {
+          const result = await parseJsonlFile(filePath);
+          expect(result.failedLines).toBe(3);
+          expect(result.summary).toBe('');
+          expect(result.issues).toHaveLength(0);
+        },
+      );
     });
 
     it('returns an empty result for a non-existent file (portable path)', async () => {
@@ -657,10 +658,19 @@ describe('jsonl-parser', () => {
   describe('property-based schema validation', () => {
     const PROPERTY_SEED = 0xc0ffee;
 
+    // Generators keep entries inside the region both parsers accept: text/message
+    // must survive the manual parser's trim-based emptiness checks, and file must
+    // not be whitespace-only (the manual parser rejects it while Zod accepts it).
+    const nonBlankText = (minLength: number, maxLength: number) =>
+      fc.string({ minLength, maxLength }).filter((s) => s.trim().length > 0);
+    const fileString = fc
+      .string({ minLength: 1, maxLength: 200 })
+      .filter((s) => s.trim().length > 0);
+
     const validEntryArb = fc.oneof(
       fc.record({
         type: fc.constant('summary'),
-        text: fc.string({ minLength: 10, maxLength: 500 }),
+        text: nonBlankText(10, 500),
       }),
       fc.record({
         type: fc.constant('verdict'),
@@ -671,16 +681,32 @@ describe('jsonl-parser', () => {
       }),
       fc.record({
         type: fc.constant('strength'),
-        file: fc.string({ minLength: 1, maxLength: 200 }),
+        file: fileString,
         line: fc.integer({ min: 1, max: 100000 }),
-        message: fc.string({ minLength: 10, maxLength: 500 }),
+        message: nonBlankText(10, 500),
       }),
       fc.record({
         type: fc.constant('issue'),
         severity: fc.constantFrom('critical', 'important', 'minor'),
-        file: fc.string({ minLength: 1, maxLength: 200 }),
+        file: fileString,
         line: fc.integer({ min: 1, max: 100000 }),
         message: fc.string({ minLength: 10, maxLength: 500 }),
+      }),
+      // executive_summary incl. malformed-field variants (non-string purpose,
+      // unknown riskLevel, mixed breakingChanges) that both parsers accept leniently.
+      fc.record({
+        type: fc.constant('executive_summary'),
+        purpose: fc.oneof(
+          fc.string({ minLength: 1, maxLength: 200 }),
+          fc.constant(5),
+          fc.constant(null),
+        ),
+        riskLevel: fc.oneof(fc.constantFrom('low', 'medium', 'high'), fc.constant('urgent')),
+        riskRationale: fc.oneof(fc.string({ minLength: 1, maxLength: 200 }), fc.constant(42)),
+        breakingChanges: fc.oneof(
+          fc.array(fc.string({ minLength: 1, maxLength: 50 })),
+          fc.constant([1, 'ok']),
+        ),
       }),
     );
 
@@ -720,9 +746,46 @@ describe('jsonl-parser', () => {
           const jsonl = entries.map((e) => JSON.stringify(e)).join('\n');
           const manual = parseJsonlString(jsonl);
           const zod = parseReviewOutput(jsonl);
+
           expect(zod.invalid).toHaveLength(0);
-          expect(manual.issues).toHaveLength(zod.issues.length);
+          expect(manual.failedLines).toBe(0);
+
+          // summary — the manual parser trims text, Zod preserves it verbatim
+          expect(manual.summary).toBe(zod.summary?.trim() ?? '');
+
+          // verdict — compare the fields both parsers expose
+          expect(manual.verdict.ready).toBe(zod.verdict?.ready ?? false);
+          expect(manual.verdict.reasoning).toBe(zod.verdict?.reasoning.trim() ?? '');
+
+          // strengths — the manual parser normalizes optional file/line and trims message
           expect(manual.strengths).toHaveLength(zod.strengths.length);
+          manual.strengths.forEach((strength, i) => {
+            expect(strength.message).toBe(zod.strengths[i].message.trim());
+            expect(strength.file).toBe(zod.strengths[i].file ?? '');
+            expect(strength.line).toBe(zod.strengths[i].line ?? 0);
+          });
+
+          // issues — the manual parser trims file; compare the shared finding fields
+          expect(manual.issues).toHaveLength(zod.issues.length);
+          manual.issues.forEach((issue, i) => {
+            expect(issue.severity).toBe(zod.issues[i].severity);
+            expect(issue.file).toBe(zod.issues[i].file.trim());
+            expect(issue.line).toBe(zod.issues[i].line);
+            expect(issue.message).toBe(zod.issues[i].message);
+            expect(issue.confidence).toBe(zod.issues[i].confidence);
+            expect(issue.suggestion).toBe(zod.issues[i].suggestion);
+          });
+
+          // executive_summary — both parsers apply the same lenient defaults
+          if (zod.executiveSummary) {
+            expect(manual.executiveSummary).toBeDefined();
+            expect(manual.executiveSummary?.purpose).toBe(zod.executiveSummary.purpose);
+            expect(manual.executiveSummary?.riskLevel).toBe(zod.executiveSummary.riskLevel);
+            expect(manual.executiveSummary?.riskRationale).toBe(zod.executiveSummary.riskRationale);
+            expect(manual.executiveSummary?.breakingChanges).toEqual(
+              zod.executiveSummary.breakingChanges,
+            );
+          }
         }),
         { seed: PROPERTY_SEED, numRuns: 50 },
       );
