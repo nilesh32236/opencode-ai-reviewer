@@ -32,28 +32,28 @@ if [ "$NODE_VERSION" -lt 20 ]; then
 fi
 echo -e "  ${GREEN}Node.js $(node -v)${NC}"
 
-if ! command -v npm &> /dev/null; then
-  echo "ERROR: npm is not installed."
+if ! command -v pnpm &> /dev/null; then
+  echo "ERROR: pnpm is not installed. Install pnpm 10+ (e.g. via corepack or https://pnpm.io/installation)"
   exit 1
 fi
-echo -e "  ${GREEN}npm $(npm -v)${NC}"
+echo -e "  ${GREEN}pnpm $(pnpm -v)${NC}"
 echo ""
 
 # Install dependencies
 echo -e "${YELLOW}[2/5]${NC} Installing dependencies..."
-npm ci
+pnpm install --frozen-lockfile
 echo -e "  ${GREEN}Dependencies installed${NC}"
 echo ""
 
 # Build
 echo -e "${YELLOW}[3/5]${NC} Building action..."
-npm run build:all
+pnpm run build
 echo -e "  ${GREEN}Build complete${NC}"
 echo ""
 
 # Run tests
 echo -e "${YELLOW}[4/5]${NC} Running tests..."
-npm run test:unit -- --verbose
+pnpm run test -- --verbose
 echo -e "  ${GREEN}Tests passed${NC}"
 echo ""
 
@@ -76,7 +76,7 @@ echo "Next steps:"
 echo "  1. Test locally:     ./scripts/test-without-github.sh"
 echo "  2. Create a repo:    git init && git add . && git commit -m 'init'"
 echo "  3. Push to GitHub:   git remote add origin <repo-url> && git push -u origin main"
-echo "  4. Release:          npm run release && git push --follow-tags"
+echo "  4. Release:          pnpm run release && git push --follow-tags"
 echo ""
 echo "To use in another repo:"
 echo "  uses: <your-github-username>/opencode-ai-reviewer@v1"

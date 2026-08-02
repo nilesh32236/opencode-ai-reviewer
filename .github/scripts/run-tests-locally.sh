@@ -9,7 +9,7 @@
 #
 # Prerequisites:
 #   - Node.js 22+
-#   - npm
+#   - pnpm
 
 set -euo pipefail
 
@@ -25,7 +25,7 @@ echo ""
 # Install dependencies
 if [ ! -d "node_modules" ]; then
   echo "Installing dependencies..."
-  npm ci
+  pnpm install --frozen-lockfile
   echo ""
 fi
 

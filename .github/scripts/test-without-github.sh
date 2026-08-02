@@ -6,7 +6,7 @@
 #
 # Prerequisites:
 #   - Node.js 22+
-#   - npm
+#   - pnpm
 #   - Docker (optional, for containerized testing)
 #
 # Usage:
@@ -73,7 +73,7 @@ echo -e "${GREEN}  ✓ Smoke test passed${NC}"
 
 # ─── Step 5: Build Verification ───
 echo -e "${YELLOW}[5/5]${NC} Build verification..."
-npm run build:all 2>&1
+pnpm run build 2>&1
 test -f dist/index.js || { echo "dist/index.js missing!"; exit 1; }
 test -f dist/post/index.js || { echo "dist/post/index.js missing!"; exit 1; }
 echo -e "${GREEN}  ✓ Build OK${NC}"
