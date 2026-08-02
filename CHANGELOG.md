@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.28] — 2026-08-02
+
+
+### Fixed
+
+- self-heal CI failure (attempt 1) [`lint-error` — jsdoc/eslint docstring coverage violations (`jsdoc/require-returns`, `jsdoc/require-param`) failing the `verify docstring coverage` ci step (`pnpm doc:check`).] (#319) (#319)
+
+### Changed
+
+- [Autofix] No tests for JSONL parser edge cases (#320) (#320)
+- [Autofix] Issue 26: No codebase indexing - only diff context is used for review (#315) (#315)
+
+[v1.6.28]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.27...v1.6.28
+
 ## [v1.6.27] — 2026-08-02
 
 
