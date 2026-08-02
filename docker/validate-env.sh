@@ -5,6 +5,10 @@
 # Hard-fails when no GitHub credential is configured; warns about missing AI
 # provider keys (the default opencode/* model needs none). Kept as a shell
 # script so broken configs fail fast before Node boots.
+#
+# Mirrors lib/src/setup/engine.ts checkSecrets(): a GITHUB_TOKEN takes
+# precedence, so the GitHub App credential (APP_ID + private key) is only
+# required when no token is present.
 set -euo pipefail
 
 if [ -z "${GITHUB_TOKEN:-}" ] && [ -z "${APP_ID:-}" ]; then
@@ -13,7 +17,7 @@ if [ -z "${GITHUB_TOKEN:-}" ] && [ -z "${APP_ID:-}" ]; then
   exit 1
 fi
 
-if [ -n "${APP_ID:-}" ]; then
+if [ -n "${APP_ID:-}" ] && [ -z "${GITHUB_TOKEN:-}" ]; then
   if [ -z "${PRIVATE_KEY:-}" ] && [ -z "${APP_PRIVATE_KEY:-}" ] && [ -z "${PRIVATE_KEY_PATH:-}" ]; then
     echo "ERROR: APP_ID is set but no private key was found." >&2
     echo "  Set PRIVATE_KEY_PATH (or PRIVATE_KEY / APP_PRIVATE_KEY) for the GitHub App." >&2

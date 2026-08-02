@@ -82,11 +82,11 @@ LOG_LEVEL=debug REVIEW_MODEL=opencode/custom docker compose -f docker/docker-com
 
 ### Workspace Scripts
 
-The repo exposes convenience scripts that wrap the same compose file:
+The repo exposes convenience scripts that wrap the same compose file. They pass `--env-file .env` automatically when a root `.env` exists, and skip it otherwise, so they still work on a fresh clone:
 
 ```bash
-pnpm setup:local    # docker compose -f docker/docker-compose.yml --env-file .env up -d --build
-pnpm teardown:local # docker compose -f docker/docker-compose.yml --env-file .env down
+pnpm setup:local    # docker compose -f docker/docker-compose.yml [--env-file .env] up -d --build
+pnpm teardown:local # docker compose -f docker/docker-compose.yml [--env-file .env] down
 ```
 
 ---

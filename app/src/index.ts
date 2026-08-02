@@ -9,6 +9,11 @@ import type { Probot } from 'probot';
 import { registerSubscribers } from './subscribers/index.js';
 import { buildConfig } from './utils/config.js';
 
+const logLevel = process.env.LOG_LEVEL?.toLowerCase();
+if (logLevel === 'debug' || logLevel === 'info' || logLevel === 'warn' || logLevel === 'error') {
+  Logger.setDefaultLevel(logLevel);
+}
+
 const logger = new Logger('App');
 
 /**
