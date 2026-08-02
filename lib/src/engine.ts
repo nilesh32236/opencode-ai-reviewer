@@ -29,6 +29,7 @@ import {
   normalizeConversationConfig,
 } from './prompts/conversation.js';
 import { buildSelfHealPrompt } from './prompts/heal.js';
+import { detectLanguages } from './prompts/language/index.js';
 import { buildVerificationPrompt } from './prompts/verify.js';
 import type {
   AgentConfig,
@@ -793,6 +794,11 @@ export class ReviewEngine {
           totalDiffLines,
           codebaseIndexContext,
           blameAware: blameData !== undefined && blameData.size > 0,
+          languages: detectLanguages(
+            files
+              .map((f) => f?.path)
+              .filter((p): p is string => typeof p === 'string' && Boolean(p)),
+          ),
         },
       );
 
@@ -937,6 +943,11 @@ export class ReviewEngine {
               linterResults,
               codebaseIndexContext: batchCodebaseContext,
               blameAware: batchBlameData !== undefined && batchBlameData.size > 0,
+              languages: detectLanguages(
+                batch
+                  .map((f) => f?.path)
+                  .filter((p): p is string => typeof p === 'string' && Boolean(p)),
+              ),
             },
           );
 
