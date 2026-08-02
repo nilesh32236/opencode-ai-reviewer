@@ -699,6 +699,54 @@ export function parseTokenUsage(output: string): number {
   return parseTokenUsageDetailed(output).totalTokens;
 }
 
+/** Known model providers accepted by validateModelString(). */
+const KNOWN_PROVIDERS = [
+  'opencode',
+  'anthropic',
+  'openai',
+  'google',
+  'gemini',
+  'openrouter',
+  'together',
+  'groq',
+] as const;
+
+const MODEL_STRING_REGEX = /^[a-zA-Z][a-zA-Z0-9-]*\/[a-zA-Z0-9][a-zA-Z0-9_.\-+:/]+$/;
+
+/**
+ * Validate a model string before invoking the OpenCode CLI.
+ * Fails fast with a clear error when the model is empty, malformed
+ * (not "provider/model-name"), or uses an unrecognized provider, so an invalid
+ * configuration is reported before any CLI cold-start cost is incurred.
+ * @param model - The model identifier to validate (e.g. "anthropic/claude-sonnet-4-20250514").
+ * @throws {Error} When the model string fails validation.
+ */
+export function validateModelString(model: string): void {
+  if (!model || typeof model !== 'string') {
+    throw new Error(
+      `Invalid model: "${String(model)}". Model must be a non-empty string in "provider/model-name" format. ` +
+        `Examples: "anthropic/claude-sonnet-4-20250514", "openai/gpt-4o", "opencode/deepseek-v4-flash-free".`,
+    );
+  }
+
+  if (!MODEL_STRING_REGEX.test(model)) {
+    throw new Error(
+      `Invalid model format: "${model}". Model must match "provider/model-name" pattern. ` +
+        `Allowed characters: alphanumeric, hyphens, underscores, dots, colons, plus signs. ` +
+        `Examples: "anthropic/claude-sonnet-4-20250514", "openai/gpt-4o", "opencode/deepseek-v4-flash-free".`,
+    );
+  }
+
+  const provider = model.split('/')[0].toLowerCase();
+  if (!KNOWN_PROVIDERS.includes(provider as (typeof KNOWN_PROVIDERS)[number])) {
+    throw new Error(
+      `Unknown provider: "${provider}". Model string "${model}" uses an unrecognized provider. ` +
+        `Known providers: ${KNOWN_PROVIDERS.join(', ')}. ` +
+        `If "${provider}" is a valid provider, use a custom model list or update the known providers list.`,
+    );
+  }
+}
+
 /**
  * Execute the OpenCode CLI with a given prompt.
  * Spawns the binary with a sandboxed environment (only whitelisted env vars are forwarded)
@@ -706,7 +754,7 @@ export function parseTokenUsage(output: string): number {
  *
  * @param prompt - The prompt text to pass to OpenCode.
  * @param options - Execution options for the OpenCode process.
- * @param options.model - Model identifier (e.g. "gpt-4", "claude-3-opus").
+ * @param options.model - Model identifier (e.g. "openai/gpt-4", "anthropic/claude-sonnet-4").
  * @param options.workingDirectory - Working directory for the subprocess (default: cwd).
  * @param options.timeoutMinutes - Max runtime before forced termination (default: 20).
  * @param options.signal - Optional AbortSignal to cancel the OpenCode process externally.
@@ -736,6 +784,7 @@ export async function runOpenCode(
   promptTokens?: number;
   completionTokens?: number;
 }> {
+  validateModelString(options.model);
   const binaryPath = opencodePath || (await setupOpenCode());
   // setupOpenCode() already validates (and throws on) an incompatible binary in
   // the same call, so only probe again when the binary was pre-set without

@@ -266,11 +266,24 @@ export const PluggableSubscriberConfigSchema = z.object({
   path: z.string().min(1),
 });
 
+/**
+ * Regex validating the "provider/model-name" model string format. Allows the
+ * same character set as validateModelString() in opencode.ts so a malformed
+ * model fails config parsing instead of the CLI run.
+ */
+const MODEL_STRING_REGEX = /^[a-zA-Z][a-zA-Z0-9-]*\/[a-zA-Z0-9][a-zA-Z0-9_.\-+:/]+$/;
+
 /** Zod schema validating the full agent configuration, merging provided values with defaults. */
 export const AgentConfigSchema = z.object({
   platform: z.enum(['github', 'gitlab']).optional().default('github'),
-  reviewModel: z.string().default('opencode/deepseek-v4-flash-free'),
-  fixModel: z.string().default('opencode/deepseek-v4-flash-free'),
+  reviewModel: z
+    .string()
+    .regex(MODEL_STRING_REGEX, 'Must be "provider/model-name" format (e.g. "openai/gpt-4o")')
+    .default('opencode/deepseek-v4-flash-free'),
+  fixModel: z
+    .string()
+    .regex(MODEL_STRING_REGEX, 'Must be "provider/model-name" format (e.g. "openai/gpt-4o")')
+    .default('opencode/deepseek-v4-flash-free'),
   auditModel: z.string().optional(),
   synthesisModel: z.string().optional(),
   verificationModel: z.string().optional(),

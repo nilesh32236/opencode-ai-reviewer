@@ -3,6 +3,7 @@ import {
   type ActionMode,
   type CostTrackingVerbosity,
   DEFAULT_ALLOWLIST,
+  validateModelString,
   validateRunChecksCommand,
 } from '@opencode-pr-agent/lib';
 
@@ -202,23 +203,50 @@ export function parseInputs(): ActionInputs {
     throw new Error('github_token input is required but was empty');
   }
 
+  const reviewModel =
+    core.getInput('review_model') || globalModel || 'opencode/deepseek-v4-flash-free';
+  const fixModel = core.getInput('fix_model') || globalModel || 'opencode/deepseek-v4-flash-free';
+  const auditModel = core.getInput('audit_model') || globalModel || undefined;
+  const synthesisModel = core.getInput('synthesis_model') || globalModel || undefined;
+  const verificationModel = core.getInput('verification_model') || globalModel || undefined;
+  const metaReviewModel = core.getInput('meta_review_model') || globalModel || undefined;
+  const explanationModel = core.getInput('explanation_model') || globalModel || undefined;
+  const conversationModel = core.getInput('conversation_model') || globalModel || undefined;
+  const analysisModel = core.getInput('analysis_model') || globalModel || undefined;
+
+  for (const model of [
+    reviewModel,
+    fixModel,
+    auditModel,
+    synthesisModel,
+    verificationModel,
+    metaReviewModel,
+    explanationModel,
+    conversationModel,
+    analysisModel,
+  ]) {
+    if (model) {
+      validateModelString(model);
+    }
+  }
+
   return {
     mode: modeStr as ActionMode,
     githubToken,
     openAiKey: core.getInput('openai_api_key') || undefined,
     anthropicKey: core.getInput('anthropic_api_key') || undefined,
     geminiKey: core.getInput('gemini_api_key') || undefined,
-    reviewModel: core.getInput('review_model') || globalModel || 'opencode/deepseek-v4-flash-free',
-    fixModel: core.getInput('fix_model') || globalModel || 'opencode/deepseek-v4-flash-free',
-    auditModel: core.getInput('audit_model') || globalModel || undefined,
-    synthesisModel: core.getInput('synthesis_model') || globalModel || undefined,
-    verificationModel: core.getInput('verification_model') || globalModel || undefined,
+    reviewModel,
+    fixModel,
+    auditModel,
+    synthesisModel,
+    verificationModel,
     enableMetaVerification: core.getInput('enable_meta_verification') === 'true',
     includePreExisting: core.getInput('include_pre_existing') === 'true',
-    metaReviewModel: core.getInput('meta_review_model') || globalModel || undefined,
-    explanationModel: core.getInput('explanation_model') || globalModel || undefined,
-    conversationModel: core.getInput('conversation_model') || globalModel || undefined,
-    analysisModel: core.getInput('analysis_model') || globalModel || undefined,
+    metaReviewModel,
+    explanationModel,
+    conversationModel,
+    analysisModel,
     reviewPromptFile: core.getInput('review_prompt_file') || undefined,
     reviewPromptExtra: core.getInput('review_prompt_extra') || undefined,
     configFile: core.getInput('config') || undefined,

@@ -3,6 +3,7 @@ export * from './types/schemas.js';
 export {
   setupOpenCode,
   runOpenCode,
+  validateModelString,
   ensureOutputDir,
   configureGit,
   getGitStatus,
