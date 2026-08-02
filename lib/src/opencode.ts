@@ -932,8 +932,7 @@ export async function runOpenCode(
   // are NOT detached (they must share the caller's process group), so a signal
   // to the parent is delivered to the child too, and we additionally scrub the
   // child group in the SIGINT/SIGTERM handlers.
-  const interactive =
-    !autoApprove && Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  const interactive = !autoApprove && Boolean(process.stdin.isTTY && process.stdout.isTTY);
   const childProcess = cp.spawn(binaryPath, args, {
     cwd,
     stdio: autoApprove
