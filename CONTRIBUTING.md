@@ -5,6 +5,7 @@ Thank you for considering contributing! This document covers how to set up the p
 ## Table of Contents
 
 - [Quick Start](#quick-start)
+- [Docker Setup](#docker-setup)
 - [Project Structure](#project-structure)
 - [Code Conventions](#code-conventions)
 - [Running Tests / Lint / Typecheck](#running-tests--lint--typecheck)
@@ -26,6 +27,71 @@ pnpm test
 ```
 
 That's it. You should see all tests pass.
+
+---
+
+## Docker Setup
+
+Run the whole project (including a pinned OpenCode CLI) in a container via Docker Compose v2 (2.24+ recommended).
+
+### Prerequisites
+
+- Docker with the Compose v2 plugin
+- A root `.env` file created from the template:
+
+```bash
+cp .env.example .env
+```
+
+### Usage Modes
+
+A single service supports every mode; the variables you set in `.env` decide which one runs — no flags or extra commands are needed. Unused variables are ignored, so a minimal config starts fine.
+
+**Basic / Full mode** — same command; `Basic` needs only `GITHUB_TOKEN` + one AI provider key, `Full` adds all provider keys and model overrides (`REVIEW_MODEL`, `FIX_MODEL`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENCODE_API_KEY`, ...):
+
+```bash
+docker compose -f docker/docker-compose.yml up -d --build
+```
+
+**GitHub App mode** — `APP_ID` + `PRIVATE_KEY_PATH` (+ `WEBHOOK_SECRET`). The private key must be reachable inside the container, so uncomment the `volumes:` and `ports:` entries in `docker/docker-compose.yml` and mount the `.pem` file:
+
+```yaml
+volumes:
+  - /host/path/to/private-key.pem:/app/private-key.pem:ro
+ports:
+  - "3000:3000"
+```
+
+Then point `PRIVATE_KEY_PATH` at the mounted location (e.g. `/app/private-key.pem`).
+
+### Environment Variables
+
+The compose file references the root `.env` via `env_file: ../.env` and mirrors the most important variables inline with `${VAR:-default}` defaults. All documented variables (including `RATE_LIMIT_*` and `TYPECHECK_COMMANDS`) are read from `.env`. For a full list, see [`.env.example`](.env.example).
+
+Shell variables override `.env` values, e.g.:
+
+```bash
+GITHUB_TOKEN=ghp_xxx OPENAI_API_KEY=sk-xxx docker compose -f docker/docker-compose.yml up
+```
+
+If your shell does not export the variables, let Compose read the root `.env` for interpolation too:
+
+```bash
+docker compose -f docker/docker-compose.yml --env-file .env up -d --build
+```
+
+### Startup Validation
+
+`docker/validate-env.sh` runs before the app starts. It exits non-zero (failing fast) when no GitHub credential is set, and warns about missing AI provider keys — but does not fail, because the default `opencode/*` model needs no key.
+
+### Workspace Scripts
+
+The repo exposes convenience scripts that wrap the same compose file:
+
+```bash
+pnpm setup:local    # docker compose -f docker/docker-compose.yml up -d --build
+pnpm teardown:local # docker compose -f docker/docker-compose.yml down
+```
 
 ---
 

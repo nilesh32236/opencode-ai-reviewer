@@ -29,4 +29,6 @@ COPY . .
 
 RUN pnpm build
 
-CMD ["pnpm", "--filter", "app", "start"]
+RUN chmod +x docker/validate-env.sh
+
+CMD ["sh", "docker/validate-env.sh"]

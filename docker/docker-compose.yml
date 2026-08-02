@@ -1,8 +1,66 @@
+# OpenCode AI Reviewer — Docker Compose configuration.
+#
+# A single service supports all usage modes. The mode you run is determined by
+# the variables you set in the root `.env` file (see `.env.example`):
+#
+#   Basic (default) : GITHUB_TOKEN + at least one AI provider key
+#   Full            : all provider keys + model overrides (REVIEW_MODEL, FIX_MODEL, ...)
+#   GitHub App      : APP_ID + PRIVATE_KEY_PATH + WEBHOOK_SECRET
+#
+# Start with:
+#   cp .env.example .env          # then fill in your credentials
+#   docker compose -f docker/docker-compose.yml up -d --build
+#
+# Or via the workspace script:
+#   pnpm setup:local
+#
+# Notes:
+#   - `env_file: ../.env` loads the root `.env` into the container. `required:
+#     false` keeps `docker compose up` working even before you create `.env`.
+#   - The inline `environment:` block makes variables visible, applies
+#     `${VAR:-default}` defaults, and lets shell variables override `.env`
+#     (e.g. `GITHUB_TOKEN=x docker compose up`).
+#   - Unused variables are ignored, so a minimal config starts fine.
+
 services:
   opencode-reviewer:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+    env_file:
+      - path: ../.env
+        required: false
     environment:
-      - GITHUB_TOKEN=${GITHUB_TOKEN}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # GitHub credential: GITHUB_TOKEN (PAT) OR APP_ID + PRIVATE_KEY_PATH
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+      APP_ID: ${APP_ID}
+      PRIVATE_KEY_PATH: ${PRIVATE_KEY_PATH}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
+      # AI provider keys (at least one is expected for non-opencode/* models)
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      OPENCODE_API_KEY: ${OPENCODE_API_KEY}
+      # Agent configuration overrides
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      REVIEW_MODEL: ${REVIEW_MODEL:-opencode/deepseek-v4-flash-free}
+      FIX_MODEL: ${FIX_MODEL:-opencode/deepseek-v4-flash-free}
+      AUDIT_MODEL: ${AUDIT_MODEL}
+      SYNTHESIS_MODEL: ${SYNTHESIS_MODEL}
+      VERIFICATION_MODEL: ${VERIFICATION_MODEL}
+      META_REVIEW_MODEL: ${META_REVIEW_MODEL}
+      EXPLANATION_MODEL: ${EXPLANATION_MODEL}
+      CONVERSATION_MODEL: ${CONVERSATION_MODEL}
+      ANALYSIS_MODEL: ${ANALYSIS_MODEL}
+      BATCH_SIZE: ${BATCH_SIZE:-3}
+      MAX_ITERATIONS: ${MAX_ITERATIONS:-3}
+      PORT: ${PORT:-3000}
+      # All other variables (RATE_LIMIT_*, TYPECHECK_COMMANDS, ...) are read
+      # from the root `.env` via `env_file` above.
+    # GitHub App mode: expose the webhook port and mount the private key file.
+    # Uncomment and adjust the paths for your deployment:
+    # ports:
+    #   - "3000:3000"
+    # volumes:
+    #   - /host/path/to/private-key.pem:/app/private-key.pem:ro
+    restart: unless-stopped
