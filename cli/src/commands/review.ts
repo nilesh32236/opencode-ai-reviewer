@@ -167,12 +167,24 @@ export async function runReviewCommand(options: ReviewCommandOptions): Promise<n
   switch (options.output) {
     case 'json': {
       const outputPath = path.join(options.cwd, JSON_OUTPUT_FILE);
+      if (fs.existsSync(outputPath)) {
+        process.stderr.write(
+          `Refusing to overwrite existing ${outputPath}. Remove it or run in a fresh directory.\n`,
+        );
+        return 1;
+      }
       fs.writeFileSync(outputPath, `${formatJson(result)}\n`, 'utf-8');
       process.stdout.write(`Review written to ${outputPath}\n`);
       break;
     }
     case 'markdown': {
       const outputPath = path.join(options.cwd, MARKDOWN_OUTPUT_FILE);
+      if (fs.existsSync(outputPath)) {
+        process.stderr.write(
+          `Refusing to overwrite existing ${outputPath}. Remove it or run in a fresh directory.\n`,
+        );
+        return 1;
+      }
       fs.writeFileSync(outputPath, formatMarkdown(result), 'utf-8');
       process.stdout.write(`Review written to ${outputPath}\n`);
       break;

@@ -5,6 +5,48 @@ import { runReviewCommand } from './commands/review.js';
 import { HELP_TEXT, parseCliArgs } from './options.js';
 
 /**
+ * GitHub Actions workflow-command names that @actions/core emits to stdout as
+ * `::command::message` strings even when not running inside GitHub Actions.
+ * Only these known commands are filtered, so legitimate content that merely
+ * begins with `::` (e.g. a reviewed bash line like `::foo::bar`) passes through.
+ */
+const WORKFLOW_COMMAND_NAMES = new Set([
+  'error',
+  'warning',
+  'notice',
+  'debug',
+  'info',
+  'group',
+  'endgroup',
+  'add-mask',
+  'add-path',
+  'set-env',
+  'set-output',
+  'set-secret',
+  'stop-commands',
+]);
+
+/** Signature of a writable stream's `write` method. */
+type StdioWrite = (chunk: unknown, ...rest: unknown[]) => boolean;
+
+/**
+ * Reroute a chunk of CLI stdout/stderr so GitHub Actions workflow-command lines
+ * (`::level::message`, `::group::name`, ...) never leak into the local terminal.
+ * A workflow command is recognized by its `::`-delimited shape and known command
+ * name; when found, only its human-readable message portion is emitted. Any
+ * other line is returned unchanged, so legitimate content such as a diff line
+ * or bash transcript starting with `::` is preserved.
+ * @param chunk - Raw write chunk.
+ * @returns The cleaned text (message only for recognized workflow commands).
+ */
+function sanitizeOutputChunk(chunk: unknown): string {
+  const text = typeof chunk === 'string' ? chunk : String(chunk ?? '');
+  return text.replace(/^::([^ :]+)[^:]*::.*$/gm, (match, name: string) =>
+    WORKFLOW_COMMAND_NAMES.has(name) ? match.slice(match.indexOf('::', 2) + 2) : match,
+  );
+}
+
+/**
  * Strip GitHub Actions workflow-command lines (`::error::`, `::warning::`,
  * `::info::`, ...) from the CLI's stdout/stderr. lib code calls @actions/core
  * directly in many places, and @actions/core emits these `::command::` strings
@@ -12,17 +54,14 @@ import { HELP_TEXT, parseCliArgs } from './options.js';
  * local terminal output the CLI is designed to produce.
  */
 function installPlainOutputFilter(): void {
-  const stripCommands = (chunk: unknown): string => {
-    const text = typeof chunk === 'string' ? chunk : String(chunk);
-    return text.replace(/^::[^\n]*\n?/gm, '');
-  };
-  type StdioWrite = (chunk: unknown, ...rest: unknown[]) => boolean;
+  const route =
+    (write: StdioWrite): StdioWrite =>
+    (chunk: unknown, ...rest: unknown[]) =>
+      write(sanitizeOutputChunk(chunk), ...rest);
   const stdoutWrite = process.stdout.write.bind(process.stdout) as StdioWrite;
-  process.stdout.write = ((chunk: unknown, ...rest: unknown[]) =>
-    stdoutWrite(stripCommands(chunk), ...rest)) as typeof process.stdout.write;
+  process.stdout.write = route(stdoutWrite) as typeof process.stdout.write;
   const stderrWrite = process.stderr.write.bind(process.stderr) as StdioWrite;
-  process.stderr.write = ((chunk: unknown, ...rest: unknown[]) =>
-    stderrWrite(stripCommands(chunk), ...rest)) as typeof process.stderr.write;
+  process.stderr.write = route(stderrWrite) as typeof process.stderr.write;
 }
 
 installPlainOutputFilter();

@@ -157,6 +157,11 @@ describe('parseGitNumstat', () => {
     expect(map.has('src/old.ts')).toBe(false);
   });
 
+  it('decodes quoted rename paths so the new file matches the block path', () => {
+    const map = parseGitNumstat('2\t1\t"src/old file.ts" => "src/new file.ts"\n');
+    expect(map.get('src/new file.ts')).toEqual({ additions: 2, deletions: 1 });
+  });
+
   it('supports C-quoted paths with spaces', () => {
     const map = parseGitNumstat('1\t1\t"src/my file.ts"\n');
     expect(map.get('src/my file.ts')).toEqual({ additions: 1, deletions: 1 });

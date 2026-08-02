@@ -30,6 +30,11 @@ function formatIssueLine(issue: ReviewIssue): string {
   if (issue.suggestion) {
     lines.push(`     ${pc.dim('How to fix:')} ${issue.suggestion}`);
   }
+  if (issue.suggestionCode) {
+    for (const codeLine of issue.suggestionCode.trim().split('\n')) {
+      lines.push(`     ${pc.dim(codeLine)}`);
+    }
+  }
   return lines.join('\n');
 }
 

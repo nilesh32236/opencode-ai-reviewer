@@ -232,12 +232,14 @@ export function parseGitNumstat(
     if (parts.length < 3) continue;
     const additions = parseNumField(parts[0]);
     const deletions = parseNumField(parts[1]);
-    let path = unquoteGitPath(parts.slice(2).join('\t'));
-    // Renames are reported as "old path => new path" in numstat.
-    const arrowIndex = path.lastIndexOf(' => ');
-    if (arrowIndex !== -1) {
-      path = path.slice(arrowIndex + 4);
-    }
+    const rawPath = parts.slice(2).join('\t');
+    // Renames are reported as "old path => new path" in numstat. Split on the
+    // top-level ` => ` and decode only the new-path token: when the rename's
+    // paths contain special characters git quotes each side independently
+    // (`"old path" => "new path"`), so unquoting the full string first would
+    // leave a dangling quote that never matches the block path.
+    const arrowIndex = rawPath.lastIndexOf(' => ');
+    const path = unquoteGitPath(arrowIndex === -1 ? rawPath : rawPath.slice(arrowIndex + 4));
     result.set(path, { additions, deletions });
   }
   return result;

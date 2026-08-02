@@ -32,7 +32,10 @@ const OPTION_DEFINITIONS = {
   output: { type: 'string' as const, default: 'terminal' },
   config: { type: 'string' as const },
   model: { type: 'string' as const },
-  'timeout-minutes': { type: 'string' as const },
+  // Default matches HELP_TEXT and the engine's own 20-minute cap. Applying the
+  // default here makes the flag's effective value explicit so the CLI's promise
+  // in the help text is actually the value that governs execution.
+  'timeout-minutes': { type: 'string' as const, default: '20' },
   help: { type: 'boolean' as const, default: false, short: 'h' },
   version: { type: 'boolean' as const, default: false, short: 'v' },
 };
@@ -128,7 +131,7 @@ export function parseCliArgs(args: string[]): ParseCliResult {
       kind: 'error',
       code: 2,
       message: `Error: invalid output format "${output}" (expected ${VALID_OUTPUTS.join(', ')}).`,
-      showHelp: false,
+      showHelp: true,
     };
   }
 
@@ -142,7 +145,7 @@ export function parseCliArgs(args: string[]): ParseCliResult {
       kind: 'error',
       code: 2,
       message: `Error: invalid --timeout-minutes value "${timeoutRaw}".`,
-      showHelp: false,
+      showHelp: true,
     };
   }
 
@@ -151,7 +154,7 @@ export function parseCliArgs(args: string[]): ParseCliResult {
       kind: 'error',
       code: 2,
       message: 'Error: --staged and --branch are mutually exclusive.',
-      showHelp: false,
+      showHelp: true,
     };
   }
 

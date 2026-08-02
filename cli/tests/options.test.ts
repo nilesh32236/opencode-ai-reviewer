@@ -24,7 +24,7 @@ describe('parseCliArgs', () => {
       options: {
         staged: true,
         output: 'terminal',
-        timeoutMinutes: undefined,
+        timeoutMinutes: 20,
       },
     });
   });
