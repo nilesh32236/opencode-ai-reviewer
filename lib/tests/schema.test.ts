@@ -138,12 +138,16 @@ describe('parseReviewOutput edge cases', () => {
     expect(result.issues).toHaveLength(1);
   });
 
-  it('rejects executive_summary entries (not a valid Zod entry type)', () => {
+  it('accepts executive_summary entries and routes them to executiveSummary', () => {
     const jsonl =
-      '{"type":"executive_summary","purpose":"x","riskLevel":"low","riskRationale":"y","breakingChanges":[]}';
+      '{"type":"executive_summary","purpose":"Adds auth middleware","riskLevel":"high","riskRationale":"Public endpoint without rate limiting","breakingChanges":["DB migration"]}';
     const result = parseReviewOutput(jsonl);
-    expect(result.valid.length).toBe(0);
-    expect(result.invalid.length).toBe(1);
+    expect(result.valid.length).toBe(1);
+    expect(result.invalid.length).toBe(0);
+    expect(result.executiveSummary?.purpose).toBe('Adds auth middleware');
+    expect(result.executiveSummary?.riskLevel).toBe('high');
+    expect(result.executiveSummary?.riskRationale).toBe('Public endpoint without rate limiting');
+    expect(result.executiveSummary?.breakingChanges).toEqual(['DB migration']);
   });
 
   it('parses a single line larger than 100KB', () => {

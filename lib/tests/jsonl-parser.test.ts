@@ -487,16 +487,16 @@ describe('jsonl-parser', () => {
       expect(result.summary).toBe('BOM at start.');
     });
 
-    it('fails only the line when a BOM prefixes a mid-content line', () => {
+    it('accepts a BOM prefix on a mid-content line', () => {
       const input = [
         '{"type":"summary","text":"First."}',
         '\uFEFF{"type":"verdict","ready":true,"reasoning":"BOM on this line"}',
         '{"type":"strength","message":"Last line survives."}',
       ].join('\n');
       const result = parseJsonlString(input);
-      expect(result.failedLines).toBe(1);
+      expect(result.failedLines).toBe(0);
       expect(result.summary).toBe('First.');
-      expect(result.verdict.ready).toBe(false);
+      expect(result.verdict.ready).toBe(true);
       expect(result.strengths).toHaveLength(1);
     });
   });

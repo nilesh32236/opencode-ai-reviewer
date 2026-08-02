@@ -222,10 +222,11 @@ export function parseJsonlString(content: string): ReviewResult {
     | undefined;
 
   for (const line of lines) {
-    rawLines.push(line);
+    const trimmed = line.trim();
+    rawLines.push(trimmed);
 
     try {
-      const parsed = JSON.parse(line);
+      const parsed = JSON.parse(trimmed);
 
       // Handle executive_summary separately since it's not a standard FindingType
       if (parsed.type === 'executive_summary') {

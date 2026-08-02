@@ -48,12 +48,22 @@ export const ReviewIssueSchema = z.object({
   category: z.string().optional(),
 });
 
+/** Zod schema validating a review executive summary entry. Mirrors the manual parser's handling of executive_summary findings. */
+export const ReviewExecutiveSummarySchema = z.object({
+  type: z.literal('executive_summary'),
+  purpose: z.string(),
+  riskLevel: z.enum(['low', 'medium', 'high']),
+  riskRationale: z.string(),
+  breakingChanges: z.array(z.string()).default([]),
+});
+
 /** Zod discriminated union for all review entry types. */
 export const ReviewEntrySchema = z.discriminatedUnion('type', [
   ReviewSummarySchema,
   ReviewVerdictSchema,
   ReviewStrengthSchema,
   ReviewIssueSchema,
+  ReviewExecutiveSummarySchema,
 ]);
 
 // ─── Configuration Schema ─────────────────────────────────
@@ -285,6 +295,8 @@ export type ParsedReviewOutput = {
   summary?: string;
   /** Extracted verdict, if any */
   verdict?: { ready: boolean; reasoning: string };
+  /** Extracted executive summary, if any */
+  executiveSummary?: z.infer<typeof ReviewExecutiveSummarySchema>;
   /** Extracted strength findings */
   strengths: z.infer<typeof ReviewStrengthSchema>[];
   /** Extracted issue findings */
@@ -318,6 +330,7 @@ export function parseReviewOutput(jsonlContent: string): ParsedReviewOutput {
       if (parsed.type === 'summary') result.summary = parsed.text;
       if (parsed.type === 'verdict')
         result.verdict = { ready: parsed.ready, reasoning: parsed.reasoning };
+      if (parsed.type === 'executive_summary') result.executiveSummary = parsed;
       if (parsed.type === 'strength') result.strengths.push(parsed);
       if (parsed.type === 'issue') result.issues.push(parsed);
     } catch (err) {
