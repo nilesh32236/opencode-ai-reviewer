@@ -9,6 +9,11 @@ import type { Probot } from 'probot';
 import { registerSubscribers } from './subscribers/index.js';
 import { buildConfig } from './utils/config.js';
 
+const logLevel = process.env.LOG_LEVEL?.toLowerCase();
+if (logLevel === 'debug' || logLevel === 'info' || logLevel === 'warn' || logLevel === 'error') {
+  Logger.setDefaultLevel(logLevel);
+}
+
 const logger = new Logger('App');
 
 /**
@@ -19,6 +24,21 @@ const logger = new Logger('App');
 export default (app: Probot): void => {
   if (!process.env.GITHUB_TOKEN && !process.env.APP_ID) {
     throw new Error('GITHUB_TOKEN or APP_ID must be set for the GitHub App to start');
+  }
+
+  const hasProviderKey =
+    Boolean(process.env.OPENAI_API_KEY) ||
+    Boolean(process.env.INPUT_OPENAI_API_KEY) ||
+    Boolean(process.env.ANTHROPIC_API_KEY) ||
+    Boolean(process.env.INPUT_ANTHROPIC_API_KEY) ||
+    Boolean(process.env.GEMINI_API_KEY) ||
+    Boolean(process.env.INPUT_GEMINI_API_KEY) ||
+    Boolean(process.env.OPENCODE_API_KEY) ||
+    Boolean(process.env.INPUT_OPENCODE_API_KEY);
+  if (!hasProviderKey) {
+    logger.warn(
+      'No AI provider API key found — set at least one of OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, OPENCODE_API_KEY (unless using a default opencode/* model)',
+    );
   }
 
   const learningStore = new LearningStore();

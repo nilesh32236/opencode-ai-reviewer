@@ -1,8 +1,61 @@
+# OpenCode AI Reviewer — Docker Compose configuration.
+#
+# A single service supports all usage modes. The mode you run is determined by
+# the variables you set in the root `.env` file (see `.env.example`):
+#
+#   Basic (default) : GITHUB_TOKEN + at least one AI provider key
+#   Full            : all provider keys + model overrides (REVIEW_MODEL, FIX_MODEL, ...)
+#   GitHub App      : APP_ID + PRIVATE_KEY_PATH + WEBHOOK_SECRET
+#
+# Start with:
+#   cp .env.example .env          # then fill in your credentials
+#   docker compose -f docker/docker-compose.yml --env-file .env up -d --build
+#
+# Or via the workspace script:
+#   pnpm setup:local
+#
+# Notes:
+#   - `env_file: ../.env` loads the root `.env` into the container and is the
+#     SOLE source for credentials and every other variable. `required: false`
+#     keeps `docker compose config` working even before you create `.env`.
+#   - The inline `environment:` block only applies `${VAR:-default}` defaults
+#     (log level, models, batch/max-iteration limits, port) so a minimal
+#     config starts fine. Do NOT redeclare other variables here:
+#     `environment:` always overrides `env_file`, so a bare `${VAR}` that
+#     interpolates to an empty string would clobber the `.env` value.
+#   - The `environment:` block interpolates from the shell or the Compose
+#     project-directory `.env`, NOT from `env_file`. Pass `--env-file .env` so
+#     interpolation reads the same root `.env` values that `env_file` injects;
+#     otherwise the inline defaults apply. Shell variables still take
+#     precedence over `.env` for those six variables.
+#   - Unused variables are ignored, so a minimal config starts fine.
+
 services:
   opencode-reviewer:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+    env_file:
+      - path: ../.env
+        required: false
     environment:
-      - GITHUB_TOKEN=${GITHUB_TOKEN}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # Credentials (GITHUB_TOKEN, APP_ID, PRIVATE_KEY_PATH, WEBHOOK_SECRET,
+      # provider keys) and model overrides (AUDIT_/SYNTHESIS_/..._MODEL) are
+      # intentionally NOT listed here — they come solely from `env_file` so
+      # their `.env` values are never clobbered by empty interpolations. Only
+      # variables with sensible defaults are mirrored inline:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      REVIEW_MODEL: ${REVIEW_MODEL:-opencode/deepseek-v4-flash-free}
+      FIX_MODEL: ${FIX_MODEL:-opencode/deepseek-v4-flash-free}
+      BATCH_SIZE: ${BATCH_SIZE:-3}
+      MAX_ITERATIONS: ${MAX_ITERATIONS:-3}
+      PORT: ${PORT:-3000}
+    # GitHub App mode: expose the webhook port and mount the private key file.
+    # Uncomment and adjust the paths for your deployment:
+    # ports:
+    #   - "3000:3000"
+    # volumes:
+    #   - /host/path/to/private-key.pem:/app/private-key.pem:ro
+    # No restart policy: validate-env.sh fail-fasts (exit 1) on a bad config,
+    # so a restart policy would loop forever on the same error. Start the
+    # container again after fixing `.env`.
