@@ -11,7 +11,12 @@ import {
   loadAuditCategoryPrompt,
 } from '../src/prompts/builder.js';
 import { extractRelevantLogSnippet } from '../src/prompts/heal.js';
+import { goModule } from '../src/prompts/language/go.js';
 import { detectLanguages, getLanguagePrompts } from '../src/prompts/language/index.js';
+import type { LanguageModule } from '../src/prompts/language/index.js';
+import { pythonModule } from '../src/prompts/language/python.js';
+import { rustModule } from '../src/prompts/language/rust.js';
+import { typescriptModule } from '../src/prompts/language/typescript.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -581,6 +586,20 @@ describe('prompt-builder', () => {
       });
     });
 
+    describe('LanguageModule registration', () => {
+      it('validates each module language field matches its registry key', () => {
+        const modules: Array<{ key: string; module: LanguageModule }> = [
+          { key: 'rust', module: rustModule },
+          { key: 'python', module: pythonModule },
+          { key: 'typescript', module: typescriptModule },
+          { key: 'go', module: goModule },
+        ];
+        for (const { key, module } of modules) {
+          expect(module.language).toBe(key);
+        }
+      });
+    });
+
     describe('buildReviewPrompt language injection', () => {
       it('injects a language section when languages are provided', () => {
         const prompt = buildReviewPrompt(baseInputs, 'PR context', {
@@ -625,6 +644,41 @@ describe('prompt-builder', () => {
         expect(prompt).toContain('## What to Check');
         expect(prompt).toContain('## Calibration');
         expect(prompt).toContain('## Output Format: JSON Lines');
+      });
+
+      it('injects language sections into a custom prompt file when languages are provided', () => {
+        const customFile = path.join(process.cwd(), `.tmp-custom-lang-${Date.now()}.md`);
+        fs.writeFileSync(customFile, 'CUSTOM_REVIEW_PROMPT_CONTENT');
+        try {
+          const prompt = buildReviewPrompt(
+            { projectContext: '', reviewPromptFile: path.basename(customFile) },
+            'PR context',
+            { languages: ['rust', 'go'] },
+          );
+          expect(prompt).toContain('CUSTOM_REVIEW_PROMPT_CONTENT');
+          expect(prompt).toContain('## Rust-Specific Review Checklist');
+          expect(prompt).toContain('## Go-Specific Review Checklist');
+          expect(prompt).not.toContain('## Python-Specific Review Checklist');
+        } finally {
+          fs.unlinkSync(customFile);
+        }
+      });
+
+      it('omits language sections from a custom prompt file when no languages are provided', () => {
+        const customFile = path.join(process.cwd(), `.tmp-custom-nolang-${Date.now()}.md`);
+        fs.writeFileSync(customFile, 'CUSTOM_REVIEW_PROMPT_CONTENT');
+        try {
+          const prompt = buildReviewPrompt(
+            { projectContext: '', reviewPromptFile: path.basename(customFile) },
+            'PR context',
+            {},
+          );
+          expect(prompt).toContain('CUSTOM_REVIEW_PROMPT_CONTENT');
+          expect(prompt).not.toContain('## Rust-Specific Review Checklist');
+          expect(prompt).not.toContain('## Go-Specific Review Checklist');
+        } finally {
+          fs.unlinkSync(customFile);
+        }
       });
     });
   });

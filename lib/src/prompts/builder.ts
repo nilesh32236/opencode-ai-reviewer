@@ -110,6 +110,12 @@ export function buildReviewPrompt(
       if (blameAware) {
         sections.push(buildBlameAwarenessSection());
       }
+      if (languages && languages.length > 0) {
+        const languageSections = getLanguagePrompts(languages);
+        for (const section of languageSections) {
+          sections.push('\n' + section);
+        }
+      }
       if (inputs.reviewPromptExtra) {
         sections.push('\n## Additional Instructions');
         sections.push('');

@@ -42,7 +42,7 @@ This PR contains Go files. Apply the following Go-specific guidance in addition 
 
 **Security (Go ecosystem):**
 - Cryptographic randomness: \`math/rand\` for secrets/tokens/IDs — must use \`crypto/rand\`.
-- SQL injection via string concatenation/fmt building queries — require parameterized queries (\`?\\\` placeholders).
+- SQL injection via string concatenation/fmt building queries — require parameterized queries (\`?\` placeholders).
 - \`unsafe\` package usage without clear justification.
 - \`os/exec\`/shell invocation with untrusted input; path traversal in file operations.`,
 };

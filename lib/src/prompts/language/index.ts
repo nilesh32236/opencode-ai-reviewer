@@ -36,13 +36,26 @@ export const EXTENSION_TO_LANGUAGE: Record<string, SupportedLanguage> = {
   '.go': 'go',
 };
 
-/** Registry of available language modules, keyed by language name. */
+/**
+ * Registry of available language modules, keyed by language name.
+ * Each module's `language` field is validated against its registry key at
+ * module load so a mistyped registration fails fast instead of injecting
+ * guidance under the wrong heading.
+ */
 const LANGUAGE_MODULES: Record<SupportedLanguage, LanguageModule> = {
   rust: rustModule,
   python: pythonModule,
   typescript: typescriptModule,
   go: goModule,
 };
+
+for (const [key, module] of Object.entries(LANGUAGE_MODULES)) {
+  if (module.language !== key) {
+    throw new Error(
+      `Language module registration mismatch: registry key '${key}' != module.language '${module.language}'`,
+    );
+  }
+}
 
 /**
  * Detect the unique programming languages present in a list of file paths.
