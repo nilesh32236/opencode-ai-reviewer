@@ -11,6 +11,7 @@ import {
   buildPRContextFromStagedDiff,
   isInsideGitWorkTree,
   loadConfig,
+  runGitCommand,
   sanitizeErrorMessage,
   setOpenCodeRunMode,
   setupOpenCode,
@@ -55,6 +56,27 @@ const plainSink: LoggerSink = {
 /** Default file names for file-based output formats. */
 const JSON_OUTPUT_FILE = 'review-result.json';
 const MARKDOWN_OUTPUT_FILE = 'review-result.md';
+
+/**
+ * Resolve a non-conflicting output path for `filename` inside `dir`. When the
+ * default name already exists (e.g. from a previous run), a numeric suffix is
+ * appended (`review-result-2.md`, `review-result-3.md`, …) so an iterative
+ * reviewer never loses an earlier report and a re-run never dead-ends.
+ * @param dir - Directory to write into.
+ * @param filename - Desired base file name.
+ * @returns A path that does not currently exist.
+ */
+function resolveOutputPath(dir: string, filename: string): string {
+  const base = path.join(dir, filename);
+  if (!fs.existsSync(base)) return base;
+  const extension = path.extname(filename);
+  const stem = path.basename(filename, extension);
+  for (let i = 2; i < 200; i += 1) {
+    const candidate = path.join(dir, `${stem}-${i}${extension}`);
+    if (!fs.existsSync(candidate)) return candidate;
+  }
+  return base;
+}
 
 /**
  * Run a local review of staged changes or a branch diff, printing a colorized
@@ -114,7 +136,22 @@ export async function runReviewCommand(options: ReviewCommandOptions): Promise<n
     process.stderr.write(`Failed to load config file: ${options.configPath}\n`);
     return 1;
   }
-  const agentConfig = buildAgentConfig(loadedConfig, { model: options.model });
+  const agentConfig = buildAgentConfig(loadedConfig, {
+    model: options.model,
+    changedFiles: pr.changedFiles.map((f) => f.path),
+    headRef: pr.headRef,
+  });
+
+  // Run git from a git subdirectory emits repo-root-relative paths, so the
+  // engine's working directory (used to resolve diff paths, blame, and config
+  // search) must be the repository top-level, not the user's starting cwd.
+  let engineCwd = options.cwd;
+  try {
+    const root = runGitCommand(['rev-parse', '--show-toplevel'], options.cwd).trim();
+    if (root) engineCwd = root;
+  } catch {
+    /* fall back to options.cwd */
+  }
 
   try {
     await setupOpenCode();
@@ -143,7 +180,7 @@ export async function runReviewCommand(options: ReviewCommandOptions): Promise<n
       undefined,
       options.timeoutMinutes,
       undefined,
-      options.cwd,
+      engineCwd,
     );
   } catch (err) {
     process.stderr.write(`Review failed: ${sanitizeErrorMessage(err)}\n`);
@@ -166,25 +203,13 @@ export async function runReviewCommand(options: ReviewCommandOptions): Promise<n
 
   switch (options.output) {
     case 'json': {
-      const outputPath = path.join(options.cwd, JSON_OUTPUT_FILE);
-      if (fs.existsSync(outputPath)) {
-        process.stderr.write(
-          `Refusing to overwrite existing ${outputPath}. Remove it or run in a fresh directory.\n`,
-        );
-        return 1;
-      }
+      const outputPath = resolveOutputPath(options.cwd, JSON_OUTPUT_FILE);
       fs.writeFileSync(outputPath, `${formatJson(result)}\n`, 'utf-8');
       process.stdout.write(`Review written to ${outputPath}\n`);
       break;
     }
     case 'markdown': {
-      const outputPath = path.join(options.cwd, MARKDOWN_OUTPUT_FILE);
-      if (fs.existsSync(outputPath)) {
-        process.stderr.write(
-          `Refusing to overwrite existing ${outputPath}. Remove it or run in a fresh directory.\n`,
-        );
-        return 1;
-      }
+      const outputPath = resolveOutputPath(options.cwd, MARKDOWN_OUTPUT_FILE);
       fs.writeFileSync(outputPath, formatMarkdown(result), 'utf-8');
       process.stdout.write(`Review written to ${outputPath}\n`);
       break;

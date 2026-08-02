@@ -29,6 +29,13 @@ function escapeInlineCode(value: string): string {
 
 /**
  * Format a review result as a GitHub-flavored markdown report.
+ *
+ * Security note: model-generated strings (issue.message, suggestion,
+ * strength.message, summary, riskRationale, …) are interpolated verbatim and
+ * only explicitly escaped for code fences / inline backticks. The report is
+ * written to a local file and rendered as plain markdown by the user's editor,
+ * never passed through an untrusted-HTML renderer, so model output must stay
+ * out of any HTML-rendering context.
  * @param result - Review result to render.
  * @returns A markdown string suitable for writing to a file.
  */

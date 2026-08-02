@@ -104,12 +104,37 @@ function cleanupAskPassDirs(): void {
   }
 }
 
+/**
+ * OpenCode child processes currently being run by this process. Tracked so an
+ * interrupted/interrupted CI review can terminate its (detached, own-session)
+ * child group instead of leaving an orphaned `opencode` subprocess writing
+ * output and holding worktree locks after the parent has exited.
+ */
+const activeChildPids = new Set<number>();
+
+/** Send SIGTERM (taskkill on Windows) to every tracked child's process group. */
+function terminateAllActiveChildren(): void {
+  for (const pid of activeChildPids) {
+    try {
+      if (os.platform() === 'win32') {
+        cp.execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
+      } else {
+        process.kill(-pid, 'SIGTERM');
+      }
+    } catch {
+      /* ok — group may already be gone */
+    }
+  }
+}
+
 process.on('exit', cleanupAskPassDirs);
 process.on('SIGINT', () => {
+  terminateAllActiveChildren();
   cleanupAskPassDirs();
   process.exit(2);
 });
 process.on('SIGTERM', () => {
+  terminateAllActiveChildren();
   cleanupAskPassDirs();
   process.exit(15);
 });
@@ -899,14 +924,39 @@ export async function runOpenCode(
     options.opencodeConfig ?? runModeOverride?.opencodeConfig ?? buildCIConfig();
   safeEnv.OPENCODE_DISABLE_AUTOUPDATE = 'true';
 
+  // Interactive mode requires a real controlling terminal: opencode gates its
+  // permission-approval UI on a TTY, and the child must share the caller's
+  // session so Ctrl-C / SIGINT reach it. Only inherit stdio when both stdin and
+  // stdout are attached to a TTY; otherwise degrade to the non-interactive CI
+  // behavior (piped output for token parsing; stdin ignored). Interactive runs
+  // are NOT detached (they must share the caller's process group), so a signal
+  // to the parent is delivered to the child too, and we additionally scrub the
+  // child group in the SIGINT/SIGTERM handlers.
+  const interactive =
+    !autoApprove && Boolean(process.stdin.isTTY && process.stdout.isTTY);
   const childProcess = cp.spawn(binaryPath, args, {
     cwd,
-    // Forward the caller's stdin when interactive (autoApprove off) so the
-    // user can approve tool permissions at the prompt. CI auto-approve runs
-    // keep stdin ignored, exactly as before.
-    stdio: autoApprove ? ['ignore', 'pipe', 'pipe'] : ['inherit', 'pipe', 'pipe'],
+    stdio: autoApprove
+      ? ['ignore', 'pipe', 'pipe']
+      : interactive
+        ? ['inherit', 'inherit', 'inherit']
+        : ['inherit', 'pipe', 'pipe'],
     env: safeEnv,
-    detached: true,
+    detached: !interactive,
+  });
+
+  if (childProcess.pid !== undefined) {
+    activeChildPids.add(childProcess.pid);
+  }
+  childProcess.on('close', () => {
+    if (childProcess.pid !== undefined) {
+      activeChildPids.delete(childProcess.pid);
+    }
+  });
+  childProcess.on('error', () => {
+    if (childProcess.pid !== undefined) {
+      activeChildPids.delete(childProcess.pid);
+    }
   });
 
   // Cap retained output to prevent memory exhaustion on verbose or stuck runs.

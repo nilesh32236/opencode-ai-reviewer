@@ -2,6 +2,10 @@ import type { ReviewIssue, ReviewResult, Severity } from '@opencode-pr-agent/lib
 import { getSeverityBadge } from '@opencode-pr-agent/lib';
 import pc from 'picocolors';
 
+// Gate ANSI color on a real terminal so redirected/piped output (e.g.
+// `opencode-reviewer review > out.txt` or piping to jq/grep) stays clean.
+const color = pc.createColors(process.stdout.isTTY === true);
+
 /** Unicode badge used for a severity in terminal output.
  * @param severity - Severity of the issue.
  * @returns A colorized severity badge string.
@@ -9,11 +13,11 @@ import pc from 'picocolors';
 function severityBadge(severity: Severity): string {
   switch (severity) {
     case 'critical':
-      return pc.red(pc.bold('CRITICAL'));
+      return color.red(color.bold('CRITICAL'));
     case 'important':
-      return pc.yellow(pc.bold('IMPORTANT'));
+      return color.yellow(color.bold('IMPORTANT'));
     case 'minor':
-      return pc.cyan(pc.bold('MINOR'));
+      return color.cyan(color.bold('MINOR'));
   }
 }
 
@@ -22,17 +26,17 @@ function severityBadge(severity: Severity): string {
  * @returns A colorized multi-line issue string.
  */
 function formatIssueLine(issue: ReviewIssue): string {
-  const location = pc.dim(`${issue.file}:${issue.line}`);
-  const confidence = issue.confidence ? pc.dim(` [${issue.confidence}]`) : '';
+  const location = color.dim(`${issue.file}:${issue.line}`);
+  const confidence = issue.confidence ? color.dim(` [${issue.confidence}]`) : '';
   const lines: string[] = [
     `  ${getSeverityBadge(issue.severity)} ${severityBadge(issue.severity)} ${location} — ${issue.message}${confidence}`,
   ];
   if (issue.suggestion) {
-    lines.push(`     ${pc.dim('How to fix:')} ${issue.suggestion}`);
+    lines.push(`     ${color.dim('How to fix:')} ${issue.suggestion}`);
   }
   if (issue.suggestionCode) {
     for (const codeLine of issue.suggestionCode.trim().split('\n')) {
-      lines.push(`     ${pc.dim(codeLine)}`);
+      lines.push(`     ${color.dim(codeLine)}`);
     }
   }
   return lines.join('\n');
@@ -46,19 +50,19 @@ function formatIssueLine(issue: ReviewIssue): string {
 export function formatTerminal(result: ReviewResult): string {
   const lines: string[] = [];
 
-  lines.push(pc.bold('OpenCode AI Reviewer — Local Review'));
-  lines.push(pc.dim('────────────────────────────────────────'));
+  lines.push(color.bold('OpenCode AI Reviewer — Local Review'));
+  lines.push(color.dim('────────────────────────────────────────'));
   lines.push('');
 
   const readyLabel = result.verdict.ready
-    ? pc.green(pc.bold('READY'))
-    : pc.red(pc.bold('NOT READY'));
+    ? color.green(color.bold('READY'))
+    : color.red(color.bold('NOT READY'));
   const confidence = result.verdict.confidence
-    ? pc.dim(` (${result.verdict.confidence} confidence)`)
+    ? color.dim(` (${result.verdict.confidence} confidence)`)
     : '';
-  lines.push(`${pc.bold('Verdict:')} ${readyLabel}${confidence}`);
+  lines.push(`${color.bold('Verdict:')} ${readyLabel}${confidence}`);
   if (result.verdict.reasoning) {
-    lines.push(`${pc.bold('Reasoning:')} ${result.verdict.reasoning}`);
+    lines.push(`${color.bold('Reasoning:')} ${result.verdict.reasoning}`);
   }
   lines.push('');
 
@@ -66,32 +70,32 @@ export function formatTerminal(result: ReviewResult): string {
     const es = result.executiveSummary;
     const risk =
       es.riskLevel === 'high'
-        ? pc.red(pc.bold('HIGH'))
+        ? color.red(color.bold('HIGH'))
         : es.riskLevel === 'medium'
-          ? pc.yellow(pc.bold('MEDIUM'))
-          : pc.green(pc.bold('LOW'));
-    lines.push(pc.bold('Executive Summary'));
-    lines.push(`${pc.dim('Purpose:')} ${es.purpose}`);
-    lines.push(`${pc.dim('Risk:')} ${risk} — ${es.riskRationale}`);
+          ? color.yellow(color.bold('MEDIUM'))
+          : color.green(color.bold('LOW'));
+    lines.push(color.bold('Executive Summary'));
+    lines.push(`${color.dim('Purpose:')} ${es.purpose}`);
+    lines.push(`${color.dim('Risk:')} ${risk} — ${es.riskRationale}`);
     for (const bc of es.breakingChanges) {
-      lines.push(`${pc.yellow('⚠')} ${pc.dim('Breaking change:')} ${bc}`);
+      lines.push(`${color.yellow('⚠')} ${color.dim('Breaking change:')} ${bc}`);
     }
     lines.push('');
   }
 
   if (result.summary) {
-    lines.push(pc.bold('Summary'));
+    lines.push(color.bold('Summary'));
     lines.push(result.summary.trim());
     lines.push('');
   }
 
   if (result.issues.length > 0) {
     lines.push(
-      pc.bold(
+      color.bold(
         `Issues (${result.issues.length}) — ` +
-          `${pc.red(String(result.stats.critical))} critical, ` +
-          `${pc.yellow(String(result.stats.important))} important, ` +
-          `${pc.cyan(String(result.stats.minor))} minor`,
+          `${color.red(String(result.stats.critical))} critical, ` +
+          `${color.yellow(String(result.stats.important))} important, ` +
+          `${color.cyan(String(result.stats.minor))} minor`,
       ),
     );
     lines.push('');
@@ -102,13 +106,13 @@ export function formatTerminal(result: ReviewResult): string {
   }
 
   if (result.strengths.length > 0) {
-    lines.push(pc.bold(`Strengths (${result.strengths.length})`));
+    lines.push(color.bold(`Strengths (${result.strengths.length})`));
     lines.push('');
     for (const strength of result.strengths) {
       const location = strength.file
-        ? pc.dim(` ${strength.file}${strength.line ? `:${strength.line}` : ''}`)
+        ? color.dim(` ${strength.file}${strength.line ? `:${strength.line}` : ''}`)
         : '';
-      lines.push(`  ${pc.green('✓')}${location} — ${strength.message}`);
+      lines.push(`  ${color.green('✓')}${location} — ${strength.message}`);
     }
     lines.push('');
   }
@@ -122,13 +126,13 @@ export function formatTerminal(result: ReviewResult): string {
     if (usage.estimatedCost !== undefined) {
       parts.push(`estimated $${usage.estimatedCost.toFixed(4)}`);
     }
-    lines.push(pc.dim(`Usage: ${parts.join(' · ')}`));
+    lines.push(color.dim(`Usage: ${parts.join(' · ')}`));
     lines.push('');
   }
 
   if (result.failedBatches !== undefined && result.failedBatches > 0) {
     lines.push(
-      pc.yellow(`⚠ ${result.failedBatches} file batch(es) failed — findings may be missing`),
+      color.yellow(`⚠ ${result.failedBatches} file batch(es) failed — findings may be missing`),
     );
     lines.push('');
   }
