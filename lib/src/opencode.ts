@@ -12,6 +12,7 @@ import {
   parseChecksumFile,
   verifyChecksum,
 } from './utils/checksum.js';
+import { validateModelString } from './utils/model-string.js';
 import { withRetry } from './utils/retry.js';
 import {
   MINIMUM_OPENCODE_VERSION,
@@ -699,53 +700,11 @@ export function parseTokenUsage(output: string): number {
   return parseTokenUsageDetailed(output).totalTokens;
 }
 
-/** Known model providers accepted by validateModelString(). */
-const KNOWN_PROVIDERS = [
-  'opencode',
-  'anthropic',
-  'openai',
-  'google',
-  'gemini',
-  'openrouter',
-  'together',
-  'groq',
-] as const;
-
-const MODEL_STRING_REGEX = /^[a-zA-Z][a-zA-Z0-9-]*\/[a-zA-Z0-9][a-zA-Z0-9_.\-+:/]+$/;
-
-/**
- * Validate a model string before invoking the OpenCode CLI.
- * Fails fast with a clear error when the model is empty, malformed
- * (not "provider/model-name"), or uses an unrecognized provider, so an invalid
- * configuration is reported before any CLI cold-start cost is incurred.
- * @param model - The model identifier to validate (e.g. "anthropic/claude-sonnet-4-20250514").
- * @throws {Error} When the model string fails validation.
- */
-export function validateModelString(model: string): void {
-  if (!model || typeof model !== 'string') {
-    throw new Error(
-      `Invalid model: "${String(model)}". Model must be a non-empty string in "provider/model-name" format. ` +
-        `Examples: "anthropic/claude-sonnet-4-20250514", "openai/gpt-4o", "opencode/deepseek-v4-flash-free".`,
-    );
-  }
-
-  if (!MODEL_STRING_REGEX.test(model)) {
-    throw new Error(
-      `Invalid model format: "${model}". Model must match "provider/model-name" pattern. ` +
-        `Allowed characters: alphanumeric, hyphens, underscores, dots, colons, plus signs. ` +
-        `Examples: "anthropic/claude-sonnet-4-20250514", "openai/gpt-4o", "opencode/deepseek-v4-flash-free".`,
-    );
-  }
-
-  const provider = model.split('/')[0].toLowerCase();
-  if (!KNOWN_PROVIDERS.includes(provider as (typeof KNOWN_PROVIDERS)[number])) {
-    throw new Error(
-      `Unknown provider: "${provider}". Model string "${model}" uses an unrecognized provider. ` +
-        `Known providers: ${KNOWN_PROVIDERS.join(', ')}. ` +
-        `If "${provider}" is a valid provider, use a custom model list or update the known providers list.`,
-    );
-  }
-}
+export {
+  KNOWN_PROVIDERS,
+  MODEL_STRING_REGEX,
+  validateModelString,
+} from './utils/model-string.js';
 
 /**
  * Execute the OpenCode CLI with a given prompt.
@@ -785,6 +744,8 @@ export async function runOpenCode(
   completionTokens?: number;
 }> {
   validateModelString(options.model);
+  // Normalize whitespace-padded model values before they reach the CLI.
+  const model = options.model.trim();
   const binaryPath = opencodePath || (await setupOpenCode());
   // setupOpenCode() already validates (and throws on) an incompatible binary in
   // the same call, so only probe again when the binary was pre-set without
@@ -811,13 +772,11 @@ export async function runOpenCode(
     'run',
     '--auto', // approve all non-denied permissions automatically
     '--model',
-    options.model,
+    model,
     prompt,
   ];
 
-  core.info(
-    `Running OpenCode (model: ${options.model}, timeout: ${options.timeoutMinutes ?? 20}m)...`,
-  );
+  core.info(`Running OpenCode (model: ${model}, timeout: ${options.timeoutMinutes ?? 20}m)...`);
 
   // Forward configured API keys to OpenCode process environment.
   const githubToken = process.env.GITHUB_TOKEN || process.env.INPUT_GITHUB_TOKEN || '';

@@ -664,8 +664,26 @@ fix:
     });
 
     it('parses verificationModel when provided', () => {
-      const result = AgentConfigSchema.parse({ verificationModel: 'gpt-4o' });
-      expect(result.verificationModel).toBe('gpt-4o');
+      const result = AgentConfigSchema.parse({ verificationModel: 'openai/gpt-4o' });
+      expect(result.verificationModel).toBe('openai/gpt-4o');
+    });
+
+    it('rejects a reviewModel that is not in provider/model-name format', () => {
+      expect(() => AgentConfigSchema.parse({ reviewModel: 'gpt-4o' })).toThrow(
+        /provider\/model-name/,
+      );
+    });
+
+    it('rejects malformed optional model fields', () => {
+      expect(() => AgentConfigSchema.parse({ auditModel: 'claude-3-5-sonnet' })).toThrow(
+        /provider\/model-name/,
+      );
+      expect(() => AgentConfigSchema.parse({ verificationModel: 'gpt-4o' })).toThrow(
+        /provider\/model-name/,
+      );
+      expect(() => AgentConfigSchema.parse({ synthesisModel: 'openai/gpt-4/' })).toThrow(
+        /provider\/model-name/,
+      );
     });
 
     it('leaves verificationModel undefined when not provided (falls back to reviewModel)', () => {

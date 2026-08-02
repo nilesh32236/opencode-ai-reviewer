@@ -1,3 +1,4 @@
+import * as core from '@actions/core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -472,6 +473,20 @@ describe('runOpenCode()', () => {
     );
   });
 
+  it('trims whitespace-padded model values before spawning', async () => {
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const resultPromise = runOpenCode('test', { model: '  openai/gpt-4o  ' });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    proc.emitClose(0);
+    await resultPromise;
+
+    const spawnCall = mockSpawn.mock.calls[0];
+    expect(spawnCall[1]).toEqual(expect.arrayContaining(['--model', 'openai/gpt-4o']));
+  });
+
   it('returns failure on non-zero exit code', async () => {
     const proc = makeMockProcess();
     mockSpawn.mockReturnValue(proc);
@@ -637,8 +652,14 @@ describe('validateModelString()', () => {
     'groq/llama-3.3-70b-versatile',
     'together/llama-3.1-8b-instruct',
     'openrouter/anthropic/claude-3.5',
+    'mistral/mistral-large',
+    'xai/grok-4',
   ])('accepts a valid model string: %s', (model) => {
     expect(() => validateModelString(model)).not.toThrow();
+  });
+
+  it('accepts a valid model string with surrounding whitespace', () => {
+    expect(() => validateModelString('  openai/gpt-4o  ')).not.toThrow();
   });
 
   it('rejects an empty string', () => {
@@ -649,9 +670,10 @@ describe('validateModelString()', () => {
     expect(() => validateModelString('gpt-4o')).toThrow(/Invalid model format/);
   });
 
-  it('rejects an unknown provider', () => {
-    expect(() => validateModelString('unknown-provider/gpt-4o')).toThrow(
-      /Unknown provider: "unknown-provider"/,
+  it('warns (without throwing) for a provider outside the known list', () => {
+    expect(() => validateModelString('custom-provider/custom-model')).not.toThrow();
+    expect(core.warning).toHaveBeenCalledWith(
+      expect.stringContaining('Unknown provider "custom-provider"'),
     );
   });
 
@@ -661,8 +683,12 @@ describe('validateModelString()', () => {
     expect(() => validateModelString('openai/')).toThrow(/Invalid model format/);
   });
 
+  it.each(['openai/gpt-4/', 'openrouter/anthropic/'])('rejects a trailing slash: %s', (model) => {
+    expect(() => validateModelString(model)).toThrow(/Invalid model format/);
+  });
+
   it('rejects a whitespace-only string', () => {
-    expect(() => validateModelString('   ')).toThrow(/Invalid model format/);
+    expect(() => validateModelString('   ')).toThrow(/Invalid model/);
   });
 });
 

@@ -196,7 +196,16 @@ export function parseInputs(): ActionInputs {
   const opencodeVersion =
     core.getInput('opencode_version') || core.getInput('opencode-version') || 'latest';
 
-  const globalModel = core.getInput('model');
+  const mode = modeStr as ActionMode;
+  const globalModel = core.getInput('model').trim();
+
+  // GitHub Actions inputs are not trimmed by default, so normalize each model
+  // value before validation to avoid confusing "Invalid model format" errors
+  // for values with surrounding whitespace.
+  const modelInput = (name: string): string | undefined => {
+    const value = core.getInput(name).trim();
+    return value || undefined;
+  };
 
   const githubToken = core.getInput('github_token', { required: true });
   if (!githubToken) {
@@ -204,17 +213,38 @@ export function parseInputs(): ActionInputs {
   }
 
   const reviewModel =
-    core.getInput('review_model') || globalModel || 'opencode/deepseek-v4-flash-free';
-  const fixModel = core.getInput('fix_model') || globalModel || 'opencode/deepseek-v4-flash-free';
-  const auditModel = core.getInput('audit_model') || globalModel || undefined;
-  const synthesisModel = core.getInput('synthesis_model') || globalModel || undefined;
-  const verificationModel = core.getInput('verification_model') || globalModel || undefined;
-  const metaReviewModel = core.getInput('meta_review_model') || globalModel || undefined;
-  const explanationModel = core.getInput('explanation_model') || globalModel || undefined;
-  const conversationModel = core.getInput('conversation_model') || globalModel || undefined;
-  const analysisModel = core.getInput('analysis_model') || globalModel || undefined;
+    modelInput('review_model') || globalModel || 'opencode/deepseek-v4-flash-free';
+  const fixModel = modelInput('fix_model') || globalModel || 'opencode/deepseek-v4-flash-free';
+  const auditModel = modelInput('audit_model') || globalModel || undefined;
+  const synthesisModel = modelInput('synthesis_model') || globalModel || undefined;
+  const verificationModel = modelInput('verification_model') || globalModel || undefined;
+  const metaReviewModel = modelInput('meta_review_model') || globalModel || undefined;
+  const explanationModel = modelInput('explanation_model') || globalModel || undefined;
+  const conversationModel = modelInput('conversation_model') || globalModel || undefined;
+  const analysisModel = modelInput('analysis_model') || globalModel || undefined;
 
-  for (const model of [
+  const enableMetaVerification = core.getInput('enable_meta_verification') === 'true';
+  const enableAudit = core.getInput('enable_audit') === 'true';
+
+  // Models for features that are active in the selected mode are hard-gated so
+  // an invalid value fails the action before any work starts. Models whose
+  // feature is disabled (or that the action never runs, e.g. conversation) only
+  // log a warning: a stale or deliberately unused value must not fail the whole
+  // action, and runOpenCode() remains the authoritative fail-fast gate for any
+  // model that is actually used.
+  const activeModel: Record<string, boolean> = {
+    reviewModel: true,
+    fixModel: true,
+    auditModel: mode === 'audit' || enableAudit,
+    synthesisModel: mode === 'review',
+    verificationModel: enableMetaVerification,
+    metaReviewModel: mode === 'review' || mode === 'fix' || mode === 'audit',
+    explanationModel: false,
+    conversationModel: false,
+    analysisModel: mode === 'analyze',
+  };
+
+  for (const [field, model] of Object.entries({
     reviewModel,
     fixModel,
     auditModel,
@@ -224,14 +254,22 @@ export function parseInputs(): ActionInputs {
     explanationModel,
     conversationModel,
     analysisModel,
-  ]) {
-    if (model) {
+  })) {
+    if (!model) continue;
+    try {
       validateModelString(model);
+    } catch (error) {
+      if (activeModel[field]) throw error;
+      core.warning(
+        `Ignoring invalid ${field} "${model}" for a disabled feature: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
   }
 
   return {
-    mode: modeStr as ActionMode,
+    mode,
     githubToken,
     openAiKey: core.getInput('openai_api_key') || undefined,
     anthropicKey: core.getInput('anthropic_api_key') || undefined,
@@ -241,7 +279,7 @@ export function parseInputs(): ActionInputs {
     auditModel,
     synthesisModel,
     verificationModel,
-    enableMetaVerification: core.getInput('enable_meta_verification') === 'true',
+    enableMetaVerification,
     includePreExisting: core.getInput('include_pre_existing') === 'true',
     metaReviewModel,
     explanationModel,
@@ -252,7 +290,7 @@ export function parseInputs(): ActionInputs {
     configFile: core.getInput('config') || undefined,
     enableFix: core.getInput('enable_fix') !== 'false',
     maxFixIterations,
-    enableAudit: core.getInput('enable_audit') === 'true',
+    enableAudit,
     auditTargetDir: core.getInput('audit_target_dir') || undefined,
     auditTargetDirs,
     maxFilesPerBatch,
