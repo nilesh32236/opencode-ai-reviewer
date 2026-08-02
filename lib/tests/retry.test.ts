@@ -107,6 +107,116 @@ describe('withRetryAndTimeout', () => {
   });
 });
 
+describe('withRetry Retry-After handling', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('honors retryAfterSeconds property on the error', async () => {
+    vi.useFakeTimers();
+    const err = Object.assign(new Error('Rate limited'), { status: 429, retryAfterSeconds: 60 });
+    const fn = vi.fn().mockRejectedValueOnce(err).mockResolvedValue('ok');
+
+    const promise = withRetry(fn, { maxRetries: 2, baseDelayMs: 10 });
+
+    // Not yet retried while inside the 60s hint window.
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(fn).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(31_000);
+    await expect(promise).resolves.toBe('ok');
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it('honors retry-after header from a Headers instance', async () => {
+    vi.useFakeTimers();
+    const headers = new Headers();
+    headers.set('Retry-After', '5');
+    const err = Object.assign(new Error('Too many requests'), { status: 429, headers });
+    const fn = vi.fn().mockRejectedValueOnce(err).mockResolvedValue('ok');
+
+    const promise = withRetry(fn, { maxRetries: 2, baseDelayMs: 10 });
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fn).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await expect(promise).resolves.toBe('ok');
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it('honors retry-after header from a plain object record', async () => {
+    vi.useFakeTimers();
+    const err = Object.assign(new Error('Rate limited'), {
+      status: 429,
+      headers: { 'retry-after': '8' },
+    });
+    const fn = vi.fn().mockRejectedValueOnce(err).mockResolvedValue('ok');
+
+    const promise = withRetry(fn, { maxRetries: 2, baseDelayMs: 10 });
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(fn).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(7_000);
+    await expect(promise).resolves.toBe('ok');
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it('parses HTTP-date Retry-After values', async () => {
+    vi.useFakeTimers();
+    const retryAt = new Date(Date.now() + 3_000).toUTCString();
+    const err = Object.assign(new Error('Slow down'), {
+      status: 429,
+      headers: { 'Retry-After': retryAt },
+    });
+    const fn = vi.fn().mockRejectedValueOnce(err).mockResolvedValue('ok');
+
+    const promise = withRetry(fn, { maxRetries: 2, baseDelayMs: 10 });
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fn).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    await expect(promise).resolves.toBe('ok');
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it('clamps Retry-After hints to maxRetryAfterMs', async () => {
+    vi.useFakeTimers();
+    const err = Object.assign(new Error('Rate limited'), {
+      status: 429,
+      retryAfterSeconds: 10_000,
+    });
+    const fn = vi.fn().mockRejectedValueOnce(err).mockResolvedValue('ok');
+
+    const promise = withRetry(fn, {
+      maxRetries: 2,
+      baseDelayMs: 10,
+      maxRetryAfterMs: 1_000,
+    });
+
+    await vi.advanceTimersByTimeAsync(1_200);
+    await expect(promise).resolves.toBe('ok');
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it('falls back to exponential backoff when no hint is present', async () => {
+    vi.useFakeTimers();
+    const err = Object.assign(new Error('Server error'), { status: 502 });
+    const fn = vi.fn().mockRejectedValueOnce(err).mockResolvedValue('ok');
+
+    const promise = withRetry(fn, { maxRetries: 2, baseDelayMs: 100 });
+
+    await vi.advanceTimersByTimeAsync(50);
+    expect(fn).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(promise).resolves.toBe('ok');
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('withRetry signal support', () => {
   it('aborts retry loop when signal is already aborted', async () => {
     const controller = new AbortController();
