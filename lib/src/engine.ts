@@ -55,7 +55,8 @@ import type {
   TokenUsage,
 } from './types/index.js';
 import { PIPELINE_EVENT_TYPES } from './types/index.js';
-import { getGitBlame, parsePatchHunks } from './utils/blame.js';
+import { filterBlameToPatch, getGitBlame, parsePatchHunks } from './utils/blame.js';
+import { MAX_BLAME_LINES_PER_FILE, UNCOMMITTED_SHA } from './utils/blame.js';
 import type { BlameRange } from './utils/blame.js';
 import { computeReviewStats, filterFindings, severityRank } from './utils/filter-findings.js';
 import { Logger } from './utils/logger.js';
@@ -389,17 +390,28 @@ export class ReviewEngine {
     workDir: string,
   ): Promise<Map<string, Map<number, BlameInfo>>> {
     const blameData = new Map<string, Map<number, BlameInfo>>();
-    const prCommits = await this.getPRCommits(pr, workDir);
+    // Blame paths are repo-root-relative (from the platform API), so run git
+    // from the repository root — not the (possibly monorepo-subdirectory)
+    // working directory — mirroring the codebase-index path.
+    const repoRoot = await this.resolveCodebaseRoot(workDir);
+    const prCommits = await this.getPRCommits(pr, repoRoot);
     if (!prCommits) {
       core.warning('Skipping git blame enrichment: PR commit scope could not be resolved');
       return blameData;
     }
+    const maxLinesPerFile =
+      this.config.review.reviewBudget?.splitThreshold ?? MAX_BLAME_LINES_PER_FILE;
     for (const file of files) {
       if (!file?.path || !file.patch) continue;
       const ranges = parsePatchHunks(file.patch);
       if (ranges.length === 0) continue;
       try {
-        const blame = getGitBlame(file.path, ranges, { cwd: workDir, prCommits });
+        const blame = await getGitBlame(file.path, ranges, {
+          cwd: repoRoot,
+          prCommits,
+          headSha: pr.headSha,
+          maxLinesPerFile,
+        });
         if (blame.size > 0) blameData.set(file.path, blame);
       } catch (err) {
         core.warning(
@@ -435,8 +447,11 @@ export class ReviewEngine {
         j++;
       }
       const scope = info.isInPRDiff ? '[PR CHANGE]' : 'pre-existing';
-      const shortSha = info.commitSha.slice(0, 7);
-      const authorPart = info.author ? `@${info.author}` : 'unknown author';
+      // Uncommitted lines have no commit yet — render them as working-tree
+      // changes rather than a confusing all-zero SHA.
+      const shortSha =
+        info.commitSha === UNCOMMITTED_SHA ? 'working tree' : info.commitSha.slice(0, 7);
+      const authorPart = info.author ? `@${escapeMarkdown(info.author)}` : 'unknown author';
       const rangeStr =
         startLine === endLine ? `Line ${startLine}` : `Lines ${startLine}-${endLine}`;
       lines.push(
@@ -2921,7 +2936,8 @@ export class ReviewEngine {
       totalBaselineLines += baselineForFile;
       totalBudgetedLines += budgetedForFile;
 
-      if (effectiveCap > 0 && patchLineCount > effectiveCap) {
+      const patchTruncated = effectiveCap > 0 && patchLineCount > effectiveCap;
+      if (patchTruncated) {
         const truncated = patchLines.slice(0, effectiveCap).join('\n');
         const remaining = patchLineCount - effectiveCap;
         parts.push(`**${f.path}** (${patchLineCount} lines, showing first ${effectiveCap}):`);
@@ -2944,11 +2960,22 @@ export class ReviewEngine {
       }
       const fileBlame = blameData?.get(f.path);
       if (fileBlame && fileBlame.size > 0) {
-        const annotations = this.formatBlameAnnotations(fileBlame);
+        // Cap annotations to the lines actually shown in the diff so a
+        // truncated patch never cites ranges the model cannot see.
+        const displayedPatch = patchTruncated ? patchLines.slice(0, effectiveCap).join('\n') : '';
+        const { blame: visibleBlame, dropped } = patchTruncated
+          ? filterBlameToPatch(fileBlame, displayedPatch)
+          : { blame: fileBlame, dropped: 0 };
+        const annotations = this.formatBlameAnnotations(visibleBlame);
         if (annotations) {
           parts.push('');
           parts.push('### Git Blame Annotations');
           parts.push(annotations);
+          if (dropped > 0) {
+            parts.push(
+              `> Note: blame annotations for ${dropped} line(s) past the truncated diff are omitted.`,
+            );
+          }
         }
       }
       parts.push('');
@@ -2973,6 +3000,16 @@ export class ReviewEngine {
 }
 
 // ---- Linter helpers ----
+
+/**
+ * Escape markdown-significant characters so user-controlled values (e.g. git
+ * author names) cannot corrupt rendered bullets or inject markup.
+ * @param text - Raw value to escape.
+ * @returns The value with markdown-significant characters backslash-escaped.
+ */
+function escapeMarkdown(text: string): string {
+  return text.replace(/[\\`*_[\]|<>]/g, (m) => `\\${m}`);
+}
 
 /**
  * Map Ruff rule code prefix to a readable severity string.

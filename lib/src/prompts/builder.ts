@@ -98,12 +98,22 @@ export function buildReviewPrompt(
   if (inputs.reviewPromptFile) {
     const customPrompt = loadPromptFile(inputs.reviewPromptFile);
     if (customPrompt) {
-      let result =
-        customPrompt + (inputs.reviewPromptExtra ? '\n\n' + inputs.reviewPromptExtra : '');
-      if (effectiveBudgetMode && effectiveBudgetMode !== 'full') {
-        result += '\n\n' + buildBudgetBanner(effectiveBudgetMode, effectiveTotalDiffLines);
+      const sections: string[] = [customPrompt];
+      sections.push('\n## PR & Issue Context');
+      sections.push('');
+      sections.push(prContext);
+      if (blameAware) {
+        sections.push(buildBlameAwarenessSection());
       }
-      return result;
+      if (inputs.reviewPromptExtra) {
+        sections.push('\n## Additional Instructions');
+        sections.push('');
+        sections.push(inputs.reviewPromptExtra);
+      }
+      if (effectiveBudgetMode && effectiveBudgetMode !== 'full') {
+        sections.push('\n' + buildBudgetBanner(effectiveBudgetMode, effectiveTotalDiffLines));
+      }
+      return sections.join('\n');
     }
   }
 
@@ -274,25 +284,7 @@ export function buildReviewPrompt(
   }
 
   if (blameAware) {
-    sections.push('\n## Git Blame Awareness');
-    sections.push('');
-    sections.push(
-      'Each file diff is followed by a `### Git Blame Annotations` block mapping line ranges to their last modifying commit, author, and date. Use these tags to judge whether a pattern is newly introduced by this PR or predates it:',
-    );
-    sections.push('');
-    sections.push(
-      '- Lines tagged `[PR CHANGE]` were introduced or modified by this PR — flag issues here at their normal severity.',
-    );
-    sections.push(
-      '- Lines tagged `pre-existing` were last changed before this PR and were already reviewed/accepted in prior PRs — only report issues on them when they are critical (security, data loss, broken functionality). Deprioritize style, maintainability, and minor concerns on pre-existing lines.',
-    );
-    sections.push(
-      '- When deciding whether a pattern is newly introduced, rely on the blame tags rather than the diff position.',
-    );
-    sections.push('');
-    sections.push(
-      'A line can be `pre-existing` even when it appears in the diff as context. Blame tags are the source of truth for PR scope.',
-    );
+    sections.push(buildBlameAwarenessSection());
   }
 
   if (prevFindings && prevFindings.length > 0) {
@@ -771,6 +763,21 @@ This PR has ${lineCount} of changes. Focus your review on critical patterns only
   return `## Review Budget Mode: SPLIT RECOMMENDED
 
 This PR has ${lineCount} of changes. Check ONLY for critical security issues, breaking changes, and API misuse. You may report fewer issues than in full mode, but you MUST still emit structured \`summary\`, \`verdict\`, \`strength\`, and \`issue\` JSONL lines exactly as described in the Output Format section. A split recommendation is added to the final review automatically.`;
+}
+
+/**
+ * Build the Git Blame Awareness instruction section, injected into both the
+ * standard and custom-prompt review paths when blame annotations are present.
+ * @returns The markdown section (including leading newline).
+ */
+function buildBlameAwarenessSection(): string {
+  return `## Git Blame Awareness
+Most file diffs are followed by a \`### Git Blame Annotations\` block mapping line ranges to their last modifying commit, author, and date. Some files may lack annotations (e.g. files that exceed the per-file line cap or where git history is unavailable). Use these tags to judge whether a pattern is newly introduced by this PR or predates it:
+- Lines tagged \`[PR CHANGE]\` were introduced or modified by this PR — flag issues here at their normal severity.
+- Lines tagged \`pre-existing\` were last changed before this PR and were already reviewed/accepted in prior PRs — only report issues on them when they are critical (security, data loss, broken functionality). Deprioritize style, maintainability, and minor concerns on pre-existing lines.
+- When deciding whether a pattern is newly introduced, rely on the blame tags rather than the diff position.
+
+A line can be \`pre-existing\` even when it appears in the diff as context. Blame tags are the source of truth for PR scope.`;
 }
 
 function buildWhatToCheck(): string {

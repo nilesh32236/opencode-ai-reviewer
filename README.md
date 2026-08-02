@@ -131,6 +131,10 @@ Trigger it manually via the Actions tab (run the `setup.yml` workflow with *work
 
 **Outputs:** `review_summary`, `verdict`, `critical_count`, `important_count`, `minor_count`, `changes_made`.
 
+### Git Blame Awareness
+
+By default (`include_pre_existing: false`), reviews fetch `git blame` for each diff hunk and tag lines as `[PR CHANGE]` or `pre-existing`, so the model prioritizes findings on lines introduced by the PR. This requires enough checkout history to resolve the PR's commit range (`git merge-base` / `git rev-list <base>..<head>`), so use `fetch-depth: 0` in the `actions/checkout@v6` step. When history is unavailable the review degrades gracefully (blame is skipped, full-diff review continues unchanged).
+
 ### Inline Review Mode
 
 By default (`review_inline: true`), the reviewer posts findings as inline comments on the specific lines of the PR diff. Each inline comment includes:

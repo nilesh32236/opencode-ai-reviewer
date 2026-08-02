@@ -1,10 +1,14 @@
 import * as cp from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
+import type { BlameInfo } from '../src/types/index.js';
 import {
   MAX_BLAME_LINES_PER_FILE,
+  UNCOMMITTED_SHA,
+  filterBlameToPatch,
   getGitBlame,
   parseBlamePorcelain,
   parsePatchHunks,
+  parsePatchVisibleLines,
 } from '../src/utils/blame.js';
 
 vi.mock('@actions/core', () => ({
@@ -18,9 +22,17 @@ vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
   return {
     ...actual,
-    execFileSync: vi.fn(),
+    execFile: vi.fn(),
   };
 });
+
+function execFileCallback(
+  callback: (err: Error | null, stdout?: string) => void,
+  stdout = '',
+  err: Error | null = null,
+) {
+  callback(err, stdout);
+}
 
 describe('parsePatchHunks', () => {
   it('extracts new-file ranges from hunk headers', () => {
@@ -37,9 +49,48 @@ describe('parsePatchHunks', () => {
     expect(parsePatchHunks('@@ -1 +7 @@\n+a')).toEqual([{ start: 7, end: 7 }]);
   });
 
+  it('skips deletion-only hunks that have no new-file lines', () => {
+    expect(parsePatchHunks('@@ -1,5 +0,0 @@\n-a\n-b\n-c\n-d\n-e')).toEqual([]);
+    expect(parsePatchHunks('@@ -9,3 +9,0 @@\n-x\n-y\n-z')).toEqual([]);
+  });
+
+  it('keeps valid hunks even when a deletion-only hunk is present', () => {
+    const patch = ['@@ -1,5 +0,0 @@', '-a', '-b', '@@ -1,2 +1,2 @@', ' c', '+d'].join('\n');
+    expect(parsePatchHunks(patch)).toEqual([{ start: 1, end: 2 }]);
+  });
+
   it('returns an empty array for patches without hunks', () => {
     expect(parsePatchHunks('+a\n+b\n')).toEqual([]);
     expect(parsePatchHunks('')).toEqual([]);
+  });
+});
+
+describe('parsePatchVisibleLines', () => {
+  it('maps context and added lines to new-file line numbers', () => {
+    const patch = ['@@ -1,3 +1,3 @@', ' a', '-b', '+c'].join('\n');
+    expect(parsePatchVisibleLines(patch)).toEqual(new Set([1, 2]));
+  });
+
+  it('omits lines hidden by truncation and deletion-only hunks', () => {
+    const patch = ['@@ -1,5 +1,5 @@', ' a', '+b', '+c'].join('\n');
+    expect(parsePatchVisibleLines(patch)).toEqual(new Set([1, 2, 3]));
+    expect(parsePatchVisibleLines('@@ -1,5 +0,0 @@\n-a\n-b')).toEqual(new Set());
+  });
+});
+
+describe('filterBlameToPatch', () => {
+  it('keeps only lines visible in the given (truncated) patch', () => {
+    const blame = new Map<number, BlameInfo>([
+      [1, { commitSha: 'a', author: 'A', date: '2023-01-01', isInPRDiff: true }],
+      [2, { commitSha: 'b', author: 'B', date: '2023-01-02', isInPRDiff: false }],
+      [9, { commitSha: 'c', author: 'C', date: '2023-01-03', isInPRDiff: true }],
+    ]);
+    const { blame: kept, dropped } = filterBlameToPatch(
+      blame,
+      ['@@ -1,3 +1,3 @@', ' a', '+b', '+c'].join('\n'),
+    );
+    expect([...kept.keys()]).toEqual([1, 2]);
+    expect(dropped).toBe(1);
   });
 });
 
@@ -89,7 +140,7 @@ describe('parseBlamePorcelain', () => {
 
   it('handles uncommitted lines (all-zero SHA) and missing metadata', () => {
     const output = [
-      `${'0'.repeat(40)} 1 5 1`,
+      `${UNCOMMITTED_SHA} 1 5 1`,
       'author Dev',
       'author-mail <dev@example.com>',
       'author-time 1700000000',
@@ -103,7 +154,7 @@ describe('parseBlamePorcelain', () => {
     ].join('\n');
     const parsed = parseBlamePorcelain(output);
     expect(parsed.get(5)).toEqual({
-      commitSha: '0'.repeat(40),
+      commitSha: UNCOMMITTED_SHA,
       author: 'Dev',
       date: '2023-11-14',
     });
@@ -115,10 +166,16 @@ describe('getGitBlame', () => {
   const oldCommit = 'a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3e';
 
   beforeEach(() => {
-    vi.mocked(cp.execFileSync).mockReset();
+    vi.mocked(cp.execFile).mockReset();
   });
 
-  it('runs git blame over the requested ranges and marks PR commits', () => {
+  function mockStdout(stdout: string): void {
+    vi.mocked(cp.execFile).mockImplementation((_cmd, _args, _opts, cb) => {
+      execFileCallback(cb as (err: Error | null, stdout?: string) => void, stdout);
+    });
+  }
+
+  it('runs git blame over the requested ranges and marks PR commits', async () => {
     const porcelain = [
       `${oldCommit} 1 1 1`,
       'author Alice',
@@ -143,17 +200,18 @@ describe('getGitBlame', () => {
       'summary New',
       '\tnew line',
     ].join('\n');
-    vi.mocked(cp.execFileSync).mockReturnValue(porcelain as never);
+    mockStdout(porcelain);
 
-    const blame = getGitBlame('src/app.ts', [{ start: 1, end: 2 }], {
+    const blame = await getGitBlame('src/app.ts', [{ start: 1, end: 2 }], {
       cwd: '/repo',
       prCommits: new Set([prCommit]),
     });
 
-    expect(cp.execFileSync).toHaveBeenCalledWith(
+    expect(cp.execFile).toHaveBeenCalledWith(
       'git',
       ['blame', '--line-porcelain', '-L', '1,2', '--', 'src/app.ts'],
-      { encoding: 'utf-8', cwd: '/repo' },
+      { cwd: '/repo', encoding: 'utf-8', timeout: 30_000, maxBuffer: 10 * 1024 * 1024 },
+      expect.any(Function),
     );
     expect(blame.get(1)).toEqual({
       commitSha: oldCommit,
@@ -169,8 +227,26 @@ describe('getGitBlame', () => {
     });
   });
 
-  it('treats all lines as PR changes when no PR commit set is provided', () => {
-    vi.mocked(cp.execFileSync).mockReturnValue(
+  it('blames at the head commit when headSha is provided', async () => {
+    mockStdout(`${oldCommit} 1 3 1\nauthor Alice\n\tline\n`);
+    await getGitBlame('src/app.ts', [{ start: 3, end: 3 }], {
+      cwd: '/repo',
+      headSha: 'abc123',
+    });
+    const call = vi.mocked(cp.execFile).mock.calls[0];
+    expect(call[1]).toEqual([
+      'blame',
+      '--line-porcelain',
+      'abc123',
+      '-L',
+      '3,3',
+      '--',
+      'src/app.ts',
+    ]);
+  });
+
+  it('treats all lines as PR changes when no PR commit set is provided', async () => {
+    mockStdout(
       [
         `${oldCommit} 1 1 1`,
         'author Alice',
@@ -183,24 +259,36 @@ describe('getGitBlame', () => {
         'committer-tz +0000',
         'summary Old',
         '\told line',
-      ].join('\n') as never,
+      ].join('\n'),
     );
 
-    const blame = getGitBlame('src/app.ts', [{ start: 1, end: 1 }]);
+    const blame = await getGitBlame('src/app.ts', [{ start: 1, end: 1 }]);
     expect(blame.get(1)?.isInPRDiff).toBe(true);
   });
 
-  it('returns an empty map when the ranges are empty or exceed the cap', () => {
-    expect(getGitBlame('src/app.ts', [])).toEqual(new Map());
-    expect(getGitBlame('src/app.ts', [{ start: 1, end: MAX_BLAME_LINES_PER_FILE + 1 }])).toEqual(
-      new Map(),
-    );
+  it('returns an empty map when the ranges are empty or exceed the cap', async () => {
+    expect(await getGitBlame('src/app.ts', [])).toEqual(new Map());
+    expect(
+      await getGitBlame('src/app.ts', [{ start: 1, end: MAX_BLAME_LINES_PER_FILE + 1 }]),
+    ).toEqual(new Map());
   });
 
-  it('propagates git failures so callers can degrade gracefully', () => {
-    vi.mocked(cp.execFileSync).mockImplementation(() => {
-      throw new Error('fatal: no such path');
+  it('honors a caller-supplied maxLinesPerFile cap', async () => {
+    const blame = await getGitBlame('src/app.ts', [{ start: 1, end: 1500 }], {
+      maxLinesPerFile: 100,
     });
-    expect(() => getGitBlame('missing.ts', [{ start: 1, end: 1 }])).toThrow('no such path');
+    expect(blame).toEqual(new Map());
+    expect(cp.execFile).not.toHaveBeenCalled();
+  });
+
+  it('propagates git failures so callers can degrade gracefully', async () => {
+    vi.mocked(cp.execFile).mockImplementation((_cmd, _args, _opts, cb) => {
+      execFileCallback(
+        cb as (err: Error | null, stdout?: string) => void,
+        '',
+        new Error('fatal: no such path'),
+      );
+    });
+    await expect(getGitBlame('missing.ts', [{ start: 1, end: 1 }])).rejects.toThrow('no such path');
   });
 });
