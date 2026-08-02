@@ -113,6 +113,8 @@ export interface PRContext {
   headSha: string;
   /** Base target branch name */
   baseRef: string;
+  /** Git SHA of the base commit the PR branches from, when known. */
+  baseSha?: string;
   /** GitHub username of the PR author */
   author: string;
   /** List of label names attached to the PR */
@@ -135,6 +137,18 @@ export interface ChangedFile {
   deletions: number;
   /** Unified diff patch content, if available */
   patch?: string;
+}
+
+/** Git blame attribution for a single line of a changed file. */
+export interface BlameInfo {
+  /** Full commit SHA of the last modification to this line. */
+  commitSha: string;
+  /** Author of the last modification. */
+  author: string;
+  /** Date (YYYY-MM-DD) of the last modification. */
+  date: string;
+  /** Whether the line was introduced by a commit belonging to the current PR. */
+  isInPRDiff: boolean;
 }
 
 /** Context for a GitHub issue to be processed. */
@@ -406,6 +420,10 @@ export interface ReviewConfig {
   enableReachability: boolean;
   /** Whether to index the codebase and enrich the review prompt with cross-file context */
   enableCodebaseIndex?: boolean;
+  /** Whether to include pre-existing (non-PR) code in reviews at full audit priority.
+   * When false (default), git blame annotations are injected into the prompt so the
+   * model deprioritizes issues on lines that predate the PR. */
+  includePreExisting?: boolean;
   /** Token budget configuration for smart context allocation */
   tokenBudget?: TokenBudgetConfig;
   /** Budget-based review configuration for large PRs */
@@ -1029,6 +1047,8 @@ export interface PromptConfig {
     enableMetaVerification?: boolean;
     /** Enable codebase indexing for cross-file review context (default: true) */
     enableCodebaseIndex?: boolean;
+    /** Review pre-existing (non-PR) code at full audit priority (default: false) */
+    includePreExisting?: boolean;
     /** Budget-based review configuration for large PRs */
     budget?: {
       /** Enable budget-based review adaptation (default: true) */

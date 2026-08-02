@@ -17,6 +17,7 @@ project:
 
 review:
   enableReachability: true
+  # includePreExisting: true   # full-audit mode: review pre-existing (non-PR) code at full priority
   sensitivity:
     minSeverity: warning
     confidenceThreshold: low

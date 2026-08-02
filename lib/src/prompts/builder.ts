@@ -32,6 +32,8 @@ export interface ReviewPromptOptions {
   totalDiffLines?: number;
   /** Cross-file codebase context (exported symbols, imports, call graph) for the changed files. */
   codebaseIndexContext?: string;
+  /** When true, the PR context includes per-file git blame annotations; the model is instructed to prioritize findings on lines introduced by this PR. */
+  blameAware?: boolean;
 }
 
 /**
@@ -91,6 +93,7 @@ export function buildReviewPrompt(
   const effectiveBudgetMode = options.budgetMode ?? budgetMode;
   const effectiveTotalDiffLines = options.totalDiffLines ?? totalDiffLines;
   const codebaseIndexCtx = options.codebaseIndexContext;
+  const blameAware = options.blameAware;
 
   if (inputs.reviewPromptFile) {
     const customPrompt = loadPromptFile(inputs.reviewPromptFile);
@@ -270,6 +273,28 @@ export function buildReviewPrompt(
     sections.push(codebaseIndexCtx);
   }
 
+  if (blameAware) {
+    sections.push('\n## Git Blame Awareness');
+    sections.push('');
+    sections.push(
+      'Each file diff is followed by a `### Git Blame Annotations` block mapping line ranges to their last modifying commit, author, and date. Use these tags to judge whether a pattern is newly introduced by this PR or predates it:',
+    );
+    sections.push('');
+    sections.push(
+      '- Lines tagged `[PR CHANGE]` were introduced or modified by this PR — flag issues here at their normal severity.',
+    );
+    sections.push(
+      '- Lines tagged `pre-existing` were last changed before this PR and were already reviewed/accepted in prior PRs — only report issues on them when they are critical (security, data loss, broken functionality). Deprioritize style, maintainability, and minor concerns on pre-existing lines.',
+    );
+    sections.push(
+      '- When deciding whether a pattern is newly introduced, rely on the blame tags rather than the diff position.',
+    );
+    sections.push('');
+    sections.push(
+      'A line can be `pre-existing` even when it appears in the diff as context. Blame tags are the source of truth for PR scope.',
+    );
+  }
+
   if (prevFindings && prevFindings.length > 0) {
     sections.push('\n## Previous Review Iterations');
     sections.push('');
@@ -334,6 +359,11 @@ export function buildReviewPrompt(
   sections.push('- Categorize by actual severity');
   sections.push('- Acknowledge strengths before issues');
   sections.push('- Give a clear verdict');
+  if (blameAware) {
+    sections.push(
+      '- Prioritize findings on lines introduced in this PR (`[PR CHANGE]`); flag issues on pre-existing lines only when they are critical',
+    );
+  }
   sections.push('');
   sections.push("**DON'T:**");
   sections.push('- Say "looks good" without checking');

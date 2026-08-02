@@ -464,4 +464,24 @@ describe('prompt-builder', () => {
       }
     });
   });
+
+  describe('buildReviewPrompt git blame awareness', () => {
+    const baseInputs = { projectContext: '' };
+
+    it('injects the Git Blame Awareness section when blameAware is set', () => {
+      const prompt = buildReviewPrompt(baseInputs, 'PR context', { blameAware: true });
+      expect(prompt).toContain('## Git Blame Awareness');
+      expect(prompt).toContain('[PR CHANGE]');
+      expect(prompt).toContain('pre-existing');
+      expect(prompt).toContain(
+        'Prioritize findings on lines introduced in this PR (`[PR CHANGE]`)',
+      );
+    });
+
+    it('omits the Git Blame Awareness section when blameAware is not set', () => {
+      const prompt = buildReviewPrompt(baseInputs, 'PR context');
+      expect(prompt).not.toContain('## Git Blame Awareness');
+      expect(prompt).not.toContain('A line can be `pre-existing`');
+    });
+  });
 });

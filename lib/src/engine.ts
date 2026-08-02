@@ -32,6 +32,7 @@ import { buildSelfHealPrompt } from './prompts/heal.js';
 import { buildVerificationPrompt } from './prompts/verify.js';
 import type {
   AgentConfig,
+  BlameInfo,
   ConversationConfig,
   ConversationContext,
   ConversationState,
@@ -54,6 +55,8 @@ import type {
   TokenUsage,
 } from './types/index.js';
 import { PIPELINE_EVENT_TYPES } from './types/index.js';
+import { getGitBlame, parsePatchHunks } from './utils/blame.js';
+import type { BlameRange } from './utils/blame.js';
 import { computeReviewStats, filterFindings, severityRank } from './utils/filter-findings.js';
 import { Logger } from './utils/logger.js';
 import {
@@ -328,6 +331,123 @@ export class ReviewEngine {
   }
 
   /**
+   * Resolve the set of commit SHAs that belong to the current PR. Used to mark
+   * blamed lines as `[PR CHANGE]` by commit membership rather than diff position.
+   * Prefers the PR's base SHA (`baseSha`) when the platform exposes it; falls
+   * back to computing the merge-base against the base ref. Returns undefined
+   * when the PR scope cannot be determined so callers can skip blame entirely.
+   * @param pr - The PR context being reviewed.
+   * @param workDir - Working directory the git commands run in.
+   * @returns The set of PR commit SHAs, or undefined when unresolvable.
+   */
+  private async getPRCommits(pr: PRContext, workDir: string): Promise<Set<string> | undefined> {
+    const head = pr.headSha;
+    if (!head) return undefined;
+    try {
+      const base = pr.baseSha;
+      let range = '';
+      if (base) {
+        range = `${base}..${head}`;
+      } else if (pr.baseRef) {
+        const mergeBase = await this.execGit(['merge-base', head, pr.baseRef], workDir);
+        if (mergeBase) {
+          range = `${mergeBase}..${head}`;
+        }
+      }
+      if (!range) {
+        // No base available — treat the head commit itself as the PR scope.
+        return new Set([head]);
+      }
+      const revList = await this.execGit(['rev-list', range], workDir);
+      const commits = new Set<string>();
+      for (const line of revList.split('\n')) {
+        const sha = line.trim();
+        if (sha) commits.add(sha);
+      }
+      return commits.size > 0 ? commits : undefined;
+    } catch (err) {
+      core.warning(
+        `Could not resolve PR commit set: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * Fetch git blame annotations for the changed files, bounded to the diff hunk
+   * ranges shown in the review context. Best-effort: a failure or unresolved PR
+   * scope for any single file degrades to no blame for that file, never a failed
+   * review.
+   * @param pr - The PR context being reviewed.
+   * @param files - Changed files (already filtered by exclude patterns).
+   * @param workDir - Working directory the git commands run in.
+   * @returns Map of file path → line number → blame info.
+   */
+  private async buildBlameData(
+    pr: PRContext,
+    files: Array<{ path?: string; patch?: string }>,
+    workDir: string,
+  ): Promise<Map<string, Map<number, BlameInfo>>> {
+    const blameData = new Map<string, Map<number, BlameInfo>>();
+    const prCommits = await this.getPRCommits(pr, workDir);
+    if (!prCommits) {
+      core.warning('Skipping git blame enrichment: PR commit scope could not be resolved');
+      return blameData;
+    }
+    for (const file of files) {
+      if (!file?.path || !file.patch) continue;
+      const ranges = parsePatchHunks(file.patch);
+      if (ranges.length === 0) continue;
+      try {
+        const blame = getGitBlame(file.path, ranges, { cwd: workDir, prCommits });
+        if (blame.size > 0) blameData.set(file.path, blame);
+      } catch (err) {
+        core.warning(
+          `Git blame skipped for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    return blameData;
+  }
+
+  /**
+   * Format a per-file blame map into a compact markdown block that collapses
+   * contiguous lines sharing the same commit/scope into a single range line.
+   * @param blame - Line number → blame info for one file.
+   * @returns The formatted `### Git Blame Annotations` body, or '' when empty.
+   */
+  private formatBlameAnnotations(blame: Map<number, BlameInfo>): string {
+    if (blame.size === 0) return '';
+    const sorted = [...blame.entries()].sort((a, b) => a[0] - b[0]);
+    const lines: string[] = [];
+    let i = 0;
+    while (i < sorted.length) {
+      const [startLine, info] = sorted[i];
+      let endLine = startLine;
+      let j = i + 1;
+      while (
+        j < sorted.length &&
+        sorted[j][0] === endLine + 1 &&
+        sorted[j][1].commitSha === info.commitSha &&
+        sorted[j][1].isInPRDiff === info.isInPRDiff
+      ) {
+        endLine = sorted[j][0];
+        j++;
+      }
+      const scope = info.isInPRDiff ? '[PR CHANGE]' : 'pre-existing';
+      const shortSha = info.commitSha.slice(0, 7);
+      const authorPart = info.author ? `@${info.author}` : 'unknown author';
+      const rangeStr =
+        startLine === endLine ? `Line ${startLine}` : `Lines ${startLine}-${endLine}`;
+      lines.push(
+        `- ${rangeStr} — ${scope} ${authorPart}, ${info.date || 'unknown date'}, ${shortSha}`,
+      );
+      i = j;
+    }
+    return lines.join('\n');
+  }
+
+  /**
    * Build the injected cross-file codebase context for a set of changed files.
    * Filters out empty/missing paths and catches formatting failures so a
    * corrupt index can never fail the whole review — it degrades to a diff-only
@@ -566,7 +686,32 @@ export class ReviewEngine {
     }
 
     const tokenBudgetConfig = this.config.review.tokenBudget;
-    const { context: prContext, budgetMetrics } = this.buildPRContextString(pr, tokenBudgetConfig);
+
+    // Fetch git blame annotations for the changed files so the model can tell
+    // newly introduced lines from pre-existing code. Skipped entirely in
+    // full-audit mode (`includePreExisting`) and degrades gracefully (fail open)
+    // when git history is unavailable (e.g. shallow CI checkouts).
+    const includePreExisting = this.config.review.includePreExisting ?? false;
+    let blameData: Map<string, Map<number, BlameInfo>> | undefined;
+    if (!includePreExisting) {
+      try {
+        blameData = await this.buildBlameData(pr, files, workDir);
+        if (blameData.size > 0) {
+          core.info(`Git blame annotations fetched for ${blameData.size} file(s)`);
+        }
+      } catch (err) {
+        core.warning(
+          `Git blame enrichment skipped: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    const { context: prContext, budgetMetrics } = this.buildPRContextString(
+      pr,
+      tokenBudgetConfig,
+      false,
+      blameData,
+    );
     let openThreadsContext = '';
     try {
       openThreadsContext = await this.adapter.getOpenHumanThreads(pr.number);
@@ -632,6 +777,7 @@ export class ReviewEngine {
           budgetMode,
           totalDiffLines,
           codebaseIndexContext,
+          blameAware: blameData !== undefined && blameData.size > 0,
         },
       );
 
@@ -732,10 +878,23 @@ export class ReviewEngine {
             mkdirSync(batchDir, { recursive: true });
           }
           const batchPR = { ...pr, changedFiles: batch };
+          const batchBlameData: Map<string, Map<number, BlameInfo>> | undefined =
+            blameData && blameData.size > 0
+              ? new Map(
+                  batch
+                    .map((f) => f.path)
+                    .filter((p): p is string => Boolean(p))
+                    .flatMap((p) => {
+                      const info = blameData.get(p);
+                      return info !== undefined ? [[p, info] as const] : [];
+                    }),
+                )
+              : undefined;
           const { context: batchContext } = this.buildPRContextString(
             batchPR,
             tokenBudgetConfig,
             true,
+            batchBlameData,
           );
           const context = mcpDocs
             ? batchContext + '\n\n## Library Documentation\n' + mcpDocs
@@ -762,6 +921,7 @@ export class ReviewEngine {
               previousBotComments,
               linterResults,
               codebaseIndexContext: batchCodebaseContext,
+              blameAware: batchBlameData !== undefined && batchBlameData.size > 0,
             },
           );
 
@@ -2670,12 +2830,15 @@ export class ReviewEngine {
    * @param pr - Pull request context with changed files.
    * @param tokenBudgetConfig - Optional token budget configuration for per-file caps.
    * @param skipMetricsTracking - When true, skips collecting budget metrics.
+   * @param blameData - Optional git blame annotations keyed by file path, rendered
+   * as a per-file `### Git Blame Annotations` block after each diff.
    * @returns The markdown context string and optional token budget metrics.
    */
   buildPRContextString(
     pr: PRContext,
     tokenBudgetConfig?: TokenBudgetConfig,
     skipMetricsTracking = false,
+    blameData?: Map<string, Map<number, BlameInfo>>,
   ): { context: string; budgetMetrics?: TokenBudgetMetrics } {
     const parts: string[] = [];
     const maxLines = this.config.maxLinesPerFile;
@@ -2778,6 +2941,15 @@ export class ReviewEngine {
       }
       if (budgetSummaryLine) {
         parts.push(budgetSummaryLine);
+      }
+      const fileBlame = blameData?.get(f.path);
+      if (fileBlame && fileBlame.size > 0) {
+        const annotations = this.formatBlameAnnotations(fileBlame);
+        if (annotations) {
+          parts.push('');
+          parts.push('### Git Blame Annotations');
+          parts.push(annotations);
+        }
       }
       parts.push('');
     }

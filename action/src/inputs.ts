@@ -77,6 +77,8 @@ export interface ActionInputs {
   verificationModel?: string;
   /** Whether the meta-verification pass is enabled. */
   enableMetaVerification: boolean;
+  /** Whether pre-existing (non-PR) code is reviewed at full audit priority (default: false). */
+  includePreExisting: boolean;
   /** Model identifier for meta-review quality evaluation. */
   metaReviewModel?: string;
   /** Model identifier for PR explanation. */
@@ -212,6 +214,7 @@ export function parseInputs(): ActionInputs {
     synthesisModel: core.getInput('synthesis_model') || globalModel || undefined,
     verificationModel: core.getInput('verification_model') || globalModel || undefined,
     enableMetaVerification: core.getInput('enable_meta_verification') === 'true',
+    includePreExisting: core.getInput('include_pre_existing') === 'true',
     metaReviewModel: core.getInput('meta_review_model') || globalModel || undefined,
     explanationModel: core.getInput('explanation_model') || globalModel || undefined,
     conversationModel: core.getInput('conversation_model') || globalModel || undefined,

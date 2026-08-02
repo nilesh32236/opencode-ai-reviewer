@@ -193,6 +193,7 @@ export const ReviewConfigSchema = z.object({
   enableReachability: z.boolean().optional().default(true),
   enableMetaVerification: z.boolean().optional().default(false),
   enableCodebaseIndex: z.boolean().optional().default(true),
+  includePreExisting: z.boolean().optional().default(false),
   tokenBudget: TokenBudgetConfigSchema.optional(),
   reviewBudget: ReviewBudgetConfigSchema.default(ReviewBudgetConfigSchema.parse({})),
   costTracking: CostTrackingConfigSchema.optional(),
@@ -397,6 +398,7 @@ export const PromptConfigSchema = z.object({
       enableReachability: z.boolean().optional(),
       enableMetaVerification: z.boolean().optional(),
       enableCodebaseIndex: z.boolean().optional(),
+      includePreExisting: z.boolean().optional(),
       budget: z
         .object({
           enabled: z.boolean().optional(),

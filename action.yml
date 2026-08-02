@@ -58,6 +58,11 @@ inputs:
     required: false
     default: 'false'
 
+  include_pre_existing:
+    description: 'Review pre-existing (non-PR) code at full audit priority. When false (default), git blame annotations are injected so the reviewer deprioritizes issues on lines that predate the PR (also settable via review.includePreExisting in the config file)'
+    required: false
+    default: 'false'
+
   meta_review_model:
     description: 'Model to use for meta-review quality evaluation'
     required: false

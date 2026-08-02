@@ -46,6 +46,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     enableReachability: null,
     enableMetaVerification: null,
     enableCodebaseIndex: null,
+    includePreExisting: null,
     tokenBudget: null,
     budget: null,
     costTracking: null,
@@ -335,6 +336,9 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     }
     if (typeof config.review.enableCodebaseIndex === 'boolean') {
       result.review.enableCodebaseIndex = config.review.enableCodebaseIndex;
+    }
+    if (typeof config.review.includePreExisting === 'boolean') {
+      result.review.includePreExisting = config.review.includePreExisting;
     }
     if (config.review.tokenBudget && typeof config.review.tokenBudget === 'object') {
       const tb = config.review.tokenBudget;
