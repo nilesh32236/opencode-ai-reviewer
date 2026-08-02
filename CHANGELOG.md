@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.30] — 2026-08-02
+
+
+### Fixed
+
+- address issue #207 (#329) (#207
+#329)
+
+### Changed
+
+- [Autofix] Add CLI tool for local review outside of CI/CD (#328) (#328)
+- [Autofix] CONTRIBUTING.md references non-existent scripts (#327) (#327)
+- [Autofix] Issue 31: No language-specific review strategies (#326) (#326)
+
+[v1.6.30]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.29...v1.6.30
+
 ## [v1.6.29] — 2026-08-02
 
 
