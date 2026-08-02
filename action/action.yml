@@ -46,6 +46,10 @@ inputs:
     required: false
     default: 'opencode/deepseek-v4-flash-free'
 
+  verification_model:
+    description: 'Model to use for meta-verification (false-positive filtering); falls back to review_model when unset'
+    required: false
+
   review_prompt_file:
     description: 'Path to a custom review prompt file'
     required: false

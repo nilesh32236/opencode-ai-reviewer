@@ -128,3 +128,9 @@ export const SAMPLE_VERIFICATION_JSONL = [
   '{"type":"verification","issueIndex":1,"valid":false,"reasoning":"False positive — JWT lib handles expiration by default."}',
   '{"type":"verification","issueIndex":2,"valid":true,"reasoning":"Confirmed — unused import should be removed."}',
 ].join('\n');
+
+export const SAMPLE_VERIFICATION_ALL_INVALID_JSONL = [
+  '{"type":"verification","issueIndex":0,"valid":false,"reasoning":"False positive."}',
+  '{"type":"verification","issueIndex":1,"valid":false,"reasoning":"False positive."}',
+  '{"type":"verification","issueIndex":2,"valid":false,"reasoning":"False positive."}',
+].join('\n');

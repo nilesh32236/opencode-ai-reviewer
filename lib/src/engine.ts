@@ -1640,17 +1640,18 @@ export class ReviewEngine {
               }
             }
 
+            const keptCount = validIndices.size;
+            const agreementRate = (keptCount / enrichedResult.issues.length) * 100;
+            core.info(
+              `Verification agreement rate: ${agreementRate.toFixed(1)}% ` +
+                `(${keptCount}/${enrichedResult.issues.length} issues kept by verification model)`,
+            );
+
             if (validIndices.size > 0) {
               const verifiedIssues = enrichedResult.issues.filter((_, idx) =>
                 validIndices.has(idx),
               );
               const droppedCount = enrichedResult.issues.length - verifiedIssues.length;
-
-              const agreementRate = (verifiedIssues.length / enrichedResult.issues.length) * 100;
-              core.info(
-                `Verification agreement rate: ${agreementRate.toFixed(1)}% ` +
-                  `(${verifiedIssues.length}/${enrichedResult.issues.length} issues kept by verification model)`,
-              );
 
               if (droppedCount > 0) {
                 core.info(

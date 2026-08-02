@@ -9,6 +9,7 @@ import {
   SAMPLE_BATCH_B_JSONL,
   SAMPLE_SYNTHESIS_JSONL,
   SAMPLE_VALID_JSONL,
+  SAMPLE_VERIFICATION_ALL_INVALID_JSONL,
   SAMPLE_VERIFICATION_JSONL,
   makeAgentConfig,
   makePRContext,
@@ -541,6 +542,47 @@ describe('Review Pipeline Integration', () => {
       model: DEFAULT_CONFIG.reviewModel,
     });
     expect(result.issues).toHaveLength(2);
+  });
+
+  it('i4) meta-verification logs 0% agreement when every issue is rejected', async () => {
+    engine = new ReviewEngine(
+      makeAgentConfig({
+        enableMCP: false,
+        mcpServers: [],
+        review: {
+          ...DEFAULT_CONFIG.review,
+          enableMetaVerification: true,
+          skipLabels: DEFAULT_CONFIG.review.skipLabels,
+          skipActors: DEFAULT_CONFIG.review.skipActors,
+          inline: DEFAULT_CONFIG.review.inline,
+          requireVerdict: DEFAULT_CONFIG.review.requireVerdict,
+          commandTriggers: DEFAULT_CONFIG.review.commandTriggers,
+          excludePatterns: DEFAULT_CONFIG.review.excludePatterns,
+        },
+      }),
+      gh,
+    );
+    const pr = makePRContext();
+
+    fixtureQueue.push(
+      { content: SAMPLE_VALID_JSONL },
+      {
+        content: SAMPLE_VALID_JSONL,
+        verification: SAMPLE_VERIFICATION_ALL_INVALID_JSONL,
+      },
+    );
+
+    const result = await engine.reviewPR(pr);
+
+    // The agreement rate is logged even when the verification model drops every
+    // issue (0% agreement) — the exact signal monitoring must surface.
+    expect(vi.mocked(core.info)).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'Verification agreement rate: 0.0% (0/3 issues kept by verification model)',
+      ),
+    );
+    // All-rejected verification retains the enriched result (no valid entries)
+    expect(result.issues).toHaveLength(3);
   });
 
   it('j) file exclusion filters excluded files from batches', async () => {

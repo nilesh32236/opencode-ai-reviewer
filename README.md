@@ -181,18 +181,22 @@ a different provider family (e.g. Claude reviews + GPT verification, or vice ver
 maximize ensemble diversity:
 
 ```yaml
-# .opencode-reviewer.yml
+# .opencode-reviewer.yml — enables the meta-verification pass
 review:
   enableMetaVerification: true
+```
 
-# action inputs (workflow YAML)
+```yaml
+# workflow YAML — under `with:` on the action step
 verification_model: "gpt-4o"
 ```
 
-The action input is `verification_model`; the Probot app reads the `VERIFICATION_MODEL`
-environment variable. When unset, the pass falls back to `review_model`. Each
-verification pass logs the agreement rate (issues kept / issues reviewed) so you can
-monitor how much the two models agree.
+> **Note:** the meta-verification model cannot be set from `.opencode-reviewer.yml` — the
+> config file only toggles the pass (`review.enableMetaVerification`). Set the model via the
+> `verification_model` action input (workflow YAML) or the `VERIFICATION_MODEL` environment
+> variable (Probot app). When unset, the pass falls back to `review_model`. Each verification
+> pass logs the agreement rate (issues kept / issues reviewed) so you can monitor how much the
+> two models agree.
 
 ### Fix Configuration
 
