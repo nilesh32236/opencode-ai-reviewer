@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.29] — 2026-08-02
+
+
+### Fixed
+
+- address issue #215 (#325) (#215
+#325)
+
+### Changed
+
+- [Autofix] No validation that OpenCode model string is correct before running (#324) (#324)
+- [Autofix] Docker Compose file missing environment variables for full functionality (#323) (#323)
+- [Autofix] Issue 27: No commit history or git blame awareness in reviews (#322) (#322)
+- [Autofix] Issue 30: Meta-verification uses same model as review, amplifying model biases (#321) (#321)
+
+[v1.6.29]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.28...v1.6.29
+
 ## [v1.6.28] — 2026-08-02
 
 
