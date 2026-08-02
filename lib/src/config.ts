@@ -44,6 +44,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     inline: null,
     excludePatterns: null,
     enableReachability: null,
+    enableMetaVerification: null,
     enableCodebaseIndex: null,
     tokenBudget: null,
     budget: null,
@@ -328,6 +329,9 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     }
     if (typeof config.review.enableReachability === 'boolean') {
       result.review.enableReachability = config.review.enableReachability;
+    }
+    if (typeof config.review.enableMetaVerification === 'boolean') {
+      result.review.enableMetaVerification = config.review.enableMetaVerification;
     }
     if (typeof config.review.enableCodebaseIndex === 'boolean') {
       result.review.enableCodebaseIndex = config.review.enableCodebaseIndex;

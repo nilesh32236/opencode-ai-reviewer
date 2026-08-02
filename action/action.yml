@@ -50,6 +50,11 @@ inputs:
     description: 'Model to use for meta-verification (false-positive filtering); falls back to review_model when unset'
     required: false
 
+  enable_meta_verification:
+    description: 'Enable the meta-verification pass that drops false-positive findings (also settable via review.enableMetaVerification in the config file)'
+    required: false
+    default: 'false'
+
   review_prompt_file:
     description: 'Path to a custom review prompt file'
     required: false

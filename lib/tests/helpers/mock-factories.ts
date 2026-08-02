@@ -38,6 +38,27 @@ export function makeAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConf
   };
 }
 
+/**
+ * Build an AgentConfig with the meta-verification pass enabled, used by the
+ * review-pipeline integration tests. Individual toggles still default to
+ * DEFAULT_CONFIG.review values unless overridden.
+ *
+ * @param overrides - Optional AgentConfig overrides (e.g. `verificationModel`).
+ * @returns An AgentConfig with `review.enableMetaVerification` enabled.
+ */
+export function makeMetaVerificationConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
+  return makeAgentConfig({
+    enableMCP: false,
+    mcpServers: [],
+    ...overrides,
+    review: {
+      ...DEFAULT_CONFIG.review,
+      enableMetaVerification: true,
+      ...((overrides.review || {}) as Record<string, unknown>),
+    },
+  });
+}
+
 export function makeReviewResult(overrides: Partial<ReviewResult> = {}): ReviewResult {
   return {
     summary: 'Review summary.',

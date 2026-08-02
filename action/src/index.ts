@@ -217,6 +217,8 @@ async function run(): Promise<void> {
         ...(loadedConfig?.review?.skipLabels && { skipLabels: loadedConfig.review.skipLabels }),
         ...(loadedConfig?.review?.skipActors && { skipActors: loadedConfig.review.skipActors }),
         inline: loadedConfig?.review?.inline ?? inputs.reviewInline,
+        enableMetaVerification:
+          loadedConfig?.review?.enableMetaVerification ?? inputs.enableMetaVerification,
         ...(loadedConfig?.review?.tokenBudget && { tokenBudget: loadedConfig.review.tokenBudget }),
         ...(loadedConfig?.review?.enableReachability !== undefined && {
           enableReachability: loadedConfig.review.enableReachability,

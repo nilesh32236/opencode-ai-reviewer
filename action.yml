@@ -53,6 +53,11 @@ inputs:
     description: 'Model to use for meta-verification (false-positive filtering)'
     required: false
 
+  enable_meta_verification:
+    description: 'Enable the meta-verification pass that drops false-positive findings (also settable via review.enableMetaVerification in the config file)'
+    required: false
+    default: 'false'
+
   meta_review_model:
     description: 'Model to use for meta-review quality evaluation'
     required: false

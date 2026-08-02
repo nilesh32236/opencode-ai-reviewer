@@ -672,6 +672,16 @@ fix:
       const result = AgentConfigSchema.parse({});
       expect(result.verificationModel).toBeUndefined();
     });
+
+    it('defaults enableMetaVerification to false', () => {
+      const result = AgentConfigSchema.parse({});
+      expect(result.review.enableMetaVerification).toBe(false);
+    });
+
+    it('parses enableMetaVerification when provided', () => {
+      const result = AgentConfigSchema.parse({ review: { enableMetaVerification: true } });
+      expect(result.review.enableMetaVerification).toBe(true);
+    });
   });
 
   describe('costTracking config handling', () => {
@@ -826,6 +836,20 @@ fix:
       );
       expect(core.warning).not.toHaveBeenCalledWith(
         expect.stringContaining('Unknown config key "review.skipActors"'),
+      );
+    });
+
+    it('loads review.enableMetaVerification without unknown-key warnings', () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.opencode-reviewer.yml'),
+        `review:
+  enableMetaVerification: true
+`,
+      );
+      const config = loadConfig(tmpDir);
+      expect(config?.review?.enableMetaVerification).toBe(true);
+      expect(core.warning).not.toHaveBeenCalledWith(
+        expect.stringContaining('Unknown config key "review.enableMetaVerification"'),
       );
     });
 

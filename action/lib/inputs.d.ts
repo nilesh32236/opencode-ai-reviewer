@@ -28,6 +28,8 @@ export interface ActionInputs {
     synthesisModel?: string;
     /** Model identifier for meta-verification (false-positive filtering). */
     verificationModel?: string;
+    /** Whether the meta-verification pass is enabled. */
+    enableMetaVerification: boolean;
     /** Model identifier for meta-review quality evaluation. */
     metaReviewModel?: string;
     /** Model identifier for PR explanation. */

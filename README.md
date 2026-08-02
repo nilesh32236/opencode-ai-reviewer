@@ -105,6 +105,7 @@ Trigger it manually via the Actions tab (run the `setup.yml` workflow with *work
 | `fix_model`              | `opencode/deepseek-v4-flash-free`    | Model for auto-fix                             |
 | `audit_model`            | `opencode/deepseek-v4-flash-free`    | Model for codebase audit                       |
 | `verification_model`     | _(falls back to `review_model`)_     | Model for meta-verification (false-positive filtering) |
+| `enable_meta_verification` | `false`                            | Enable the meta-verification pass (also settable via `review.enableMetaVerification` in `.opencode-reviewer.yml`) |
 | `review_prompt_file`     | —                                    | Path to custom review prompt file              |
 | `review_prompt_extra`    | —                                    | Extra context appended to the review prompt    |
 | `enable_fix`             | `true`                               | Enable auto-fix mode                           |
@@ -188,15 +189,18 @@ review:
 
 ```yaml
 # workflow YAML — under `with:` on the action step
+enable_meta_verification: "true"
 verification_model: "gpt-4o"
 ```
 
-> **Note:** the meta-verification model cannot be set from `.opencode-reviewer.yml` — the
+> **Note:** the meta-verification *model* cannot be set from `.opencode-reviewer.yml` — the
 > config file only toggles the pass (`review.enableMetaVerification`). Set the model via the
 > `verification_model` action input (workflow YAML) or the `VERIFICATION_MODEL` environment
-> variable (Probot app). When unset, the pass falls back to `review_model`. Each verification
-> pass logs the agreement rate (issues kept / issues reviewed) so you can monitor how much the
-> two models agree.
+> variable (Probot app). The pass itself can be enabled from the config file
+> (`review.enableMetaVerification: true`), the `enable_meta_verification` action input, or the
+> `ENABLE_META_VERIFICATION` environment variable (Probot app). When the model is unset, the
+> pass falls back to `review_model`. Each verification pass logs the agreement rate (issues
+> kept / issues reviewed) so you can monitor how much the two models agree.
 
 ### Fix Configuration
 
