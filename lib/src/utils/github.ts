@@ -143,6 +143,8 @@ export class GitHubHelper implements PlatformAdapter {
               const truncatedBody = body.length > 500 ? body.slice(0, 500) + '...' : body;
               const err = new Error(`GitHub API ${res.status} on ${path}: ${truncatedBody}`);
               (err as Error & { status: number }).status = res.status;
+              // Attach headers so withRetry can honor a Retry-After hint on 429s.
+              (err as Error & { headers?: Headers }).headers = res.headers;
               throw err;
             }
 
@@ -1451,6 +1453,8 @@ export class GitHubHelper implements PlatformAdapter {
           const body = await response.text();
           const err = new Error(`GitHub GraphQL API ${response.status}: ${body}`);
           (err as Error & { status: number }).status = response.status;
+          // Attach headers so withRetry can honor a Retry-After hint on 429s.
+          (err as Error & { headers?: Headers }).headers = response.headers;
           throw err;
         }
 

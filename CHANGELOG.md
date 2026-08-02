@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.27] — 2026-08-02
+
+
+### Fixed
+
+- address issue #317 (#318) (#317
+#318)
+
+### Changed
+
+- [Self-Improvement] Autonomous Codebase Enhancement (#316) (#316)
+
+[v1.6.27]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.26...v1.6.27
+
 ## [v1.6.26] — 2026-08-01
 
 

@@ -1,5 +1,6 @@
 import { GitHubHelper, Logger } from '@opencode-pr-agent/lib';
 import type { GitHubEvent, Subscriber } from '@opencode-pr-agent/lib';
+import { isBotUser } from '../utils/bot.js';
 import { getToken } from '../utils/token.js';
 
 /**
@@ -21,7 +22,7 @@ export function createQuestionAnsweredSubscriber(): Subscriber {
         if (!comment || !issue) return;
         if (issue.pull_request) return;
         const user = comment.user as Record<string, string> | undefined;
-        if (user?.type === 'Bot') return;
+        if (isBotUser(user)) return;
 
         const labels = (issue.labels as Array<Record<string, string>>)?.map((l) => l.name) ?? [];
         if (!labels.includes('analysis:needs-input')) return;
@@ -37,8 +38,7 @@ export function createQuestionAnsweredSubscriber(): Subscriber {
         if (!questionsComment) return;
 
         const issueAuthor = (issue.user as Record<string, string> | undefined)?.login;
-        const actor = comment.user as Record<string, string> | undefined;
-        if (actor?.login && actor.login !== issueAuthor) return;
+        if (user?.login && user.login !== issueAuthor) return;
 
         await gh.setLabels(issueNumber, ['analysis:ready'], ['analysis:needs-input']);
         await gh.postOrUpdateComment(

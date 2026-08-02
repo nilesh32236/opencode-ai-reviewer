@@ -1,17 +1,27 @@
 import { Logger, parseCommand } from '@opencode-pr-agent/lib';
-import type { EventBus, GitHubEvent, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
+import type {
+  AgentConfig,
+  EventBus,
+  GitHubEvent,
+  RateLimiter,
+  Subscriber,
+} from '@opencode-pr-agent/lib';
 import { handleAudit } from '../handlers/audit.js';
-import { buildConfig } from '../utils/config.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
 /**
  * Create a subscriber that handles `/audit` commands on comments.
  * @param rateLimiter - The shared rate limiter for cost control.
+ * @param config - The resolved agent configuration (built once at startup).
  * @param eventBus - Optional event bus for publishing pipeline events.
  * @returns A subscriber object for the audit command.
  */
-export function createAuditSubscriber(rateLimiter: RateLimiter, eventBus?: EventBus): Subscriber {
+export function createAuditSubscriber(
+  rateLimiter: RateLimiter,
+  config: AgentConfig,
+  eventBus?: EventBus,
+): Subscriber {
   const logger = new Logger('AuditSubscriber');
   return {
     name: 'AuditSubscriber',
@@ -23,7 +33,6 @@ export function createAuditSubscriber(rateLimiter: RateLimiter, eventBus?: Event
         const auditComment = auditPayload.comment as Record<string, string> | undefined;
         const parsed = auditComment?.body ? parseCommand(auditComment.body) : null;
         if (!parsed || parsed.command !== 'audit') return;
-        const config = buildConfig();
         const auditIssue =
           auditPayload.issue && typeof auditPayload.issue === 'object'
             ? ((auditPayload.issue as Record<string, unknown>).number as number | undefined)

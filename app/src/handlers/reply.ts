@@ -39,7 +39,7 @@ export async function handleReply(
       return;
     }
 
-    const diffSnippet = await fetchDiffSnippet(gh, prNumber, thread.filePath, thread.lineNumber);
+    const diffSnippet = await fetchDiffSnippet(gh, prNumber, thread.filePath);
 
     const prompt = buildReplyPrompt(
       thread.filePath,
@@ -92,14 +92,12 @@ export async function handleReply(
  * @param gh - GitHub helper
  * @param prNumber - PR number
  * @param filePath - File path
- * @param _lineNumber - Line number
  * @returns A diff snippet string, or a fallback message if unavailable.
  */
 async function fetchDiffSnippet(
   gh: PlatformAdapter,
   prNumber: number,
   filePath: string,
-  _lineNumber?: number,
 ): Promise<string> {
   if (!filePath) return '(No file context available)';
   try {

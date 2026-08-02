@@ -1,5 +1,5 @@
 import { DEFAULT_CONFIG, getDefaultMCPServers, loadConfig } from '@opencode-pr-agent/lib';
-import type { AgentConfig } from '@opencode-pr-agent/lib';
+import type { AgentConfig, TokenBudgetConfig } from '@opencode-pr-agent/lib';
 
 /**
  * Parse an integer from an environment variable with a fallback.
@@ -22,6 +22,30 @@ function parseEnvInt(envVar: string | undefined, fallback: number): number {
  */
 function clampInt(value: number, min: number, max: number = Number.MAX_SAFE_INTEGER): number {
   return Math.max(min, Math.min(max, value));
+}
+
+/**
+ * Parse the TOKEN_BUDGET environment override into a TokenBudgetConfig.
+ * Unlike the other env overrides, TOKEN_BUDGET is free-form JSON, so guard the
+ * parse: a malformed value must degrade gracefully to the fallback (the
+ * default config) instead of throwing at buildConfig() time on every webhook.
+ * @param raw - Raw environment variable value (may be undefined).
+ * @param fallback - Default token budget config if raw is unset or invalid.
+ * @returns The parsed token budget config, or the fallback.
+ */
+function parseTokenBudgetEnv(
+  raw: string | undefined,
+  fallback: TokenBudgetConfig | undefined,
+): TokenBudgetConfig | undefined {
+  if (!raw) return fallback;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as TokenBudgetConfig)
+      : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 /**
@@ -59,7 +83,7 @@ export function buildConfig(): AgentConfig {
     review: {
       ...DEFAULT_CONFIG.review,
       inline: process.env.REVIEW_INLINE !== 'false',
-      ...(process.env.TOKEN_BUDGET ? { tokenBudget: JSON.parse(process.env.TOKEN_BUDGET) } : {}),
+      tokenBudget: parseTokenBudgetEnv(process.env.TOKEN_BUDGET, DEFAULT_CONFIG.review.tokenBudget),
       ...(process.env.ENABLE_REACHABILITY !== undefined
         ? { enableReachability: process.env.ENABLE_REACHABILITY !== 'false' }
         : {}),

@@ -3,6 +3,9 @@ import type { GitHubEvent, LearningStore, RateLimiter, Subscriber } from '@openc
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
+/** Number of prior reviews to scan when discovering recurring patterns. */
+const DISCOVER_WINDOW_DEFAULT = 2;
+
 /**
  * Create a subscriber that handles `/discover` commands to surface recurring review patterns.
  * @param learningStore - The learning store instance for pattern discovery.
@@ -31,7 +34,6 @@ export function createDiscoverSubscriber(
         const reservation = await checkRateLimit(rateLimiter, event, 'command', 'discover');
         if (!reservation) return;
 
-        const DISCOVER_WINDOW_DEFAULT = 2;
         const detector = new PatternDetector(learningStore);
         const patterns = await detector.discover(DISCOVER_WINDOW_DEFAULT);
 

@@ -1,13 +1,13 @@
 import { Logger, parseCommand } from '@opencode-pr-agent/lib';
-import type { GitHubEvent, Subscriber } from '@opencode-pr-agent/lib';
+import type { AgentConfig, GitHubEvent, Subscriber } from '@opencode-pr-agent/lib';
 import { handleCommand } from '../handlers/commands.js';
-import { buildConfig } from '../utils/config.js';
 
 /**
  * Create a subscriber that handles `/setup` commands on comments.
+ * @param config - The resolved agent configuration (built once at startup).
  * @returns A subscriber object for the setup command.
  */
-export function createSetupSubscriber(): Subscriber {
+export function createSetupSubscriber(config: AgentConfig): Subscriber {
   const logger = new Logger('SetupSubscriber');
   return {
     name: 'SetupSubscriber',
@@ -19,7 +19,6 @@ export function createSetupSubscriber(): Subscriber {
         const setupComment = setupPayload.comment as Record<string, string> | undefined;
         const parsed = setupComment?.body ? parseCommand(setupComment.body) : null;
         if (!parsed || parsed.command !== 'setup') return;
-        const config = buildConfig();
         const issueNumber = event.prNumber || 0;
         if (!issueNumber) return;
         // Pass the raw token (possibly empty) so the setup engine can produce a

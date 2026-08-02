@@ -1,4 +1,5 @@
 import type { GitHubEvent } from '@opencode-pr-agent/lib';
+import { DEFAULT_CONFIG } from '@opencode-pr-agent/lib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleCommand } from '../../src/handlers/commands.js';
 import { createSetupSubscriber } from '../../src/subscribers/setup.js';
@@ -39,7 +40,7 @@ describe('SetupSubscriber', () => {
   });
 
   it('triggers handleCommand with the parsed setup command on /setup', async () => {
-    const sub = createSetupSubscriber();
+    const sub = createSetupSubscriber(DEFAULT_CONFIG);
     await sub.handle(makeCommentEvent(123, '/setup'));
 
     expect(mockedHandleCommand).toHaveBeenCalledTimes(1);
@@ -55,7 +56,7 @@ describe('SetupSubscriber', () => {
   });
 
   it('triggers handleCommand on /oc setup', async () => {
-    const sub = createSetupSubscriber();
+    const sub = createSetupSubscriber(DEFAULT_CONFIG);
     await sub.handle(makeCommentEvent(456, '/oc setup'));
 
     expect(mockedHandleCommand).toHaveBeenCalledTimes(1);
@@ -66,7 +67,7 @@ describe('SetupSubscriber', () => {
   });
 
   it('handles review_comment.created events', async () => {
-    const sub = createSetupSubscriber();
+    const sub = createSetupSubscriber(DEFAULT_CONFIG);
     await sub.handle(
       makeCommentEvent(789, '/setup', {
         type: 'review_comment.created',
@@ -77,14 +78,14 @@ describe('SetupSubscriber', () => {
   });
 
   it('does not trigger for unrelated comments', async () => {
-    const sub = createSetupSubscriber();
+    const sub = createSetupSubscriber(DEFAULT_CONFIG);
     await sub.handle(makeCommentEvent(123, 'just a normal comment'));
 
     expect(mockedHandleCommand).not.toHaveBeenCalled();
   });
 
   it('does not trigger when the issue number is missing', async () => {
-    const sub = createSetupSubscriber();
+    const sub = createSetupSubscriber(DEFAULT_CONFIG);
     await sub.handle({
       type: 'comment.created',
       category: 'issue',
@@ -99,7 +100,7 @@ describe('SetupSubscriber', () => {
 
   it('passes an empty token when GITHUB_TOKEN is unset so the engine can report it', async () => {
     vi.stubEnv('GITHUB_TOKEN', '');
-    const sub = createSetupSubscriber();
+    const sub = createSetupSubscriber(DEFAULT_CONFIG);
     await sub.handle(makeCommentEvent(321, '/setup'));
 
     expect(mockedHandleCommand).toHaveBeenCalledTimes(1);
