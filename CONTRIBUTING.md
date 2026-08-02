@@ -8,7 +8,7 @@ Thank you for considering contributing! This document covers how to set up the p
 - [Docker Setup](#docker-setup)
 - [Project Structure](#project-structure)
 - [Code Conventions](#code-conventions)
-- [Running Tests / Lint / Typecheck](#running-tests--lint--typecheck)
+- [Setup and Verification Commands](#setup-and-verification-commands)
 - [Pull Request Process](#pull-request-process)
 - [How to Add a New Audit Category](#how-to-add-a-new-audit-category)
 
@@ -119,7 +119,7 @@ This is a **pnpm monorepo** with three packages (`lib`, `action`, `app`). The `a
 
 ---
 
-## Running Tests / Lint / Typecheck
+## Setup and Verification Commands
 
 | Command            | Description                        |
 | ------------------ | ---------------------------------- |
