@@ -16,6 +16,11 @@ export interface RetryOptions {
   operationName?: string;
   /** When true (default), retries unknown/statusless errors. Set false to never retry when status is 0. */
   retryUnknownStatus?: boolean;
+  /**
+   * Maximum delay in ms to honor a server-provided Retry-After hint.
+   * Hints larger than this are clamped. Default: 120000 (2 minutes).
+   */
+  maxRetryAfterMs?: number;
 }
 
 const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'signal'>> = {
@@ -25,6 +30,7 @@ const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'signal'>> = {
   retryableStatuses: [429, 500, 502, 503, 504],
   operationName: 'unknown',
   retryUnknownStatus: true,
+  maxRetryAfterMs: 120000,
 };
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -57,6 +63,9 @@ function isRetryable(status: number, retryableStatuses: number[]): boolean {
  * - Delay = min(baseDelayMs * 2^(attempt-1), maxDelayMs) + random 0-30% jitter
  * - Only retries on status codes in `retryableStatuses` (default: 429, 500, 502, 503, 504)
  * - For status=0 (network/unknown errors), retry is controlled by `retryUnknownStatus`
+ * - Honors a server-provided Retry-After hint (via `retryAfterSeconds` or the
+ *   `retry-after` response header on the error) by waiting at least that long,
+ *   clamped to `maxRetryAfterMs`
  * - Supports cancellation via AbortSignal
  *
  * @param fn - Async function to retry.
@@ -72,6 +81,7 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
     retryableStatuses,
     operationName,
     retryUnknownStatus,
+    maxRetryAfterMs,
   } = {
     ...DEFAULT_OPTIONS,
     ...options,
@@ -103,16 +113,110 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
         throw err;
       }
 
-      const delay = Math.min(baseDelayMs * 2 ** (attempt - 1), maxDelayMs);
-      const jitter = Math.random() * 0.3 * delay;
+      const backoffDelay = Math.min(baseDelayMs * 2 ** (attempt - 1), maxDelayMs);
+      const retryAfterMs = extractRetryAfterMs(err, maxRetryAfterMs);
+      const delay = Math.max(backoffDelay, retryAfterMs);
+      const jitter = Math.random() * 0.3 * backoffDelay;
+      const totalDelay = Math.min(delay + jitter, Math.max(maxDelayMs, maxRetryAfterMs));
+      const hint = retryAfterMs > 0 ? ' (Retry-After hint honored)' : '';
       core.warning(
-        `${opName}Retryable error (attempt ${attempt}/${maxRetries}): ${err instanceof Error ? err.message : err}. Retrying in ${Math.round((delay + jitter) / 1000)}s...`,
+        `${opName}Retryable error (attempt ${attempt}/${maxRetries}): ${err instanceof Error ? err.message : err}. Retrying in ${Math.round(totalDelay / 1000)}s${hint}...`,
       );
-      await sleep(delay + jitter, signal);
+      await sleep(totalDelay, signal);
     }
   }
 
   throw lastError;
+}
+
+/**
+ * Extract a Retry-After wait hint (in milliseconds) from a thrown error.
+ * Precedence: explicit `retryAfterSeconds` property, then the `retry-after`
+ * response header on `error.headers` (numeric seconds or an HTTP-date).
+ *
+ * @param err - The thrown value, which may carry `retryAfterSeconds` or `headers`.
+ * @param maxRetryAfterMs - Upper clamp for the returned hint.
+ * @returns A delay in milliseconds, or 0 when no hint is present.
+ */
+function extractRetryAfterMs(err: unknown, maxRetryAfterMs: number): number {
+  if (typeof err !== 'object' || err === null) {
+    return 0;
+  }
+  const candidate = err as { retryAfterSeconds?: unknown; headers?: unknown };
+
+  const fromProperty = toRetrySeconds(candidate.retryAfterSeconds);
+  if (fromProperty !== null) {
+    return Math.min(fromProperty * 1000, maxRetryAfterMs);
+  }
+
+  const rawHeader = getRetryAfterHeader(candidate.headers);
+  if (rawHeader !== null) {
+    const fromHeader = parseRetryAfterHeader(rawHeader);
+    if (fromHeader !== null) {
+      return Math.min(fromHeader * 1000, maxRetryAfterMs);
+    }
+  }
+
+  return 0;
+}
+
+/**
+ * Coerce a `retryAfterSeconds` value into a positive number of seconds.
+ *
+ * @param value - The candidate value (number or numeric string).
+ * @returns Seconds as a number, or null when the value is not usable.
+ */
+function toRetrySeconds(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+/**
+ * Read the `retry-after` header from a Headers instance or a plain record.
+ *
+ * @param headers - The headers attached to the thrown error, if any.
+ * @returns The raw header value, or null when absent.
+ */
+function getRetryAfterHeader(headers: unknown): string | null {
+  if (!headers) {
+    return null;
+  }
+  if (typeof Headers !== 'undefined' && headers instanceof Headers) {
+    return headers.get('retry-after');
+  }
+  if (typeof headers === 'object') {
+    const record = headers as Record<string, unknown>;
+    const value = record['retry-after'] ?? record['Retry-After'] ?? record['Retry-after'];
+    return typeof value === 'string' ? value : null;
+  }
+  return null;
+}
+
+/**
+ * Parse a Retry-After header value into a number of seconds.
+ * Supports both delta-seconds ("60") and HTTP-date formats.
+ *
+ * @param value - The raw Retry-After header value.
+ * @returns Seconds until retry, or null when the value cannot be parsed.
+ */
+function parseRetryAfterHeader(value: string): number | null {
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) {
+    return Number.parseInt(trimmed, 10);
+  }
+  const dateMs = Date.parse(trimmed);
+  if (!Number.isNaN(dateMs)) {
+    return Math.max(0, Math.ceil((dateMs - Date.now()) / 1000));
+  }
+  return null;
 }
 
 /**
