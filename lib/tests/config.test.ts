@@ -662,6 +662,16 @@ fix:
       expect(result.learning.patternDiscovery.minFrequency).toBe(3);
       expect(result.learning.patternDiscovery.windowSize).toBe(100);
     });
+
+    it('parses verificationModel when provided', () => {
+      const result = AgentConfigSchema.parse({ verificationModel: 'gpt-4o' });
+      expect(result.verificationModel).toBe('gpt-4o');
+    });
+
+    it('leaves verificationModel undefined when not provided (falls back to reviewModel)', () => {
+      const result = AgentConfigSchema.parse({});
+      expect(result.verificationModel).toBeUndefined();
+    });
   });
 
   describe('costTracking config handling', () => {

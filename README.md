@@ -104,6 +104,7 @@ Trigger it manually via the Actions tab (run the `setup.yml` workflow with *work
 | `review_model`           | `opencode/deepseek-v4-flash-free`    | Model for PR review                            |
 | `fix_model`              | `opencode/deepseek-v4-flash-free`    | Model for auto-fix                             |
 | `audit_model`            | `opencode/deepseek-v4-flash-free`    | Model for codebase audit                       |
+| `verification_model`     | _(falls back to `review_model`)_     | Model for meta-verification (false-positive filtering) |
 | `review_prompt_file`     | —                                    | Path to custom review prompt file              |
 | `review_prompt_extra`    | —                                    | Extra context appended to the review prompt    |
 | `enable_fix`             | `true`                               | Enable auto-fix mode                           |
@@ -169,6 +170,29 @@ overrides:
     review:
       inline: false    # summary-only for legacy code
 ```
+
+### Meta-Verification Configuration
+
+When `review.enableMetaVerification` is enabled, a second model pass re-checks the
+reviewed findings and drops false positives. By default this pass uses the same model
+as the review (`review_model`). To reduce the echo-chamber effect of a single model
+confirming its own mistakes, set `verification_model` to a *different* model — ideally
+a different provider family (e.g. Claude reviews + GPT verification, or vice versa) to
+maximize ensemble diversity:
+
+```yaml
+# .opencode-reviewer.yml
+review:
+  enableMetaVerification: true
+
+# action inputs (workflow YAML)
+verification_model: "gpt-4o"
+```
+
+The action input is `verification_model`; the Probot app reads the `VERIFICATION_MODEL`
+environment variable. When unset, the pass falls back to `review_model`. Each
+verification pass logs the agreement rate (issues kept / issues reviewed) so you can
+monitor how much the two models agree.
 
 ### Fix Configuration
 

@@ -1646,6 +1646,12 @@ export class ReviewEngine {
               );
               const droppedCount = enrichedResult.issues.length - verifiedIssues.length;
 
+              const agreementRate = (verifiedIssues.length / enrichedResult.issues.length) * 100;
+              core.info(
+                `Verification agreement rate: ${agreementRate.toFixed(1)}% ` +
+                  `(${verifiedIssues.length}/${enrichedResult.issues.length} issues kept by verification model)`,
+              );
+
               if (droppedCount > 0) {
                 core.info(
                   `Meta-verification dropped ${droppedCount} false-positive finding(s) (kept ${verifiedIssues.length})`,

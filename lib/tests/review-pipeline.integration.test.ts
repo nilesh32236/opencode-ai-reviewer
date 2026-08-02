@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as core from '@actions/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFIG } from '../src/types/index.js';
 import {
@@ -463,6 +464,83 @@ describe('Review Pipeline Integration', () => {
     expect(result.stats.total).toBe(2);
     expect(result.issues[0].message).toContain('hardcoded');
     expect(result.issues[1].message).toContain('Unused import');
+
+    // Agreement rate is logged as a quality metric (2 of 3 issues kept = 66.7%)
+    expect(vi.mocked(core.info)).toHaveBeenCalledWith(
+      expect.stringContaining('Verification agreement rate: 66.7%'),
+    );
+  });
+
+  it('i2) meta-verification uses verificationModel when configured', async () => {
+    const verificationModel = 'anthropic/claude-4-sonnet';
+    engine = new ReviewEngine(
+      makeAgentConfig({
+        enableMCP: false,
+        mcpServers: [],
+        verificationModel,
+        review: {
+          ...DEFAULT_CONFIG.review,
+          enableMetaVerification: true,
+          skipLabels: DEFAULT_CONFIG.review.skipLabels,
+          skipActors: DEFAULT_CONFIG.review.skipActors,
+          inline: DEFAULT_CONFIG.review.inline,
+          requireVerdict: DEFAULT_CONFIG.review.requireVerdict,
+          commandTriggers: DEFAULT_CONFIG.review.commandTriggers,
+          excludePatterns: DEFAULT_CONFIG.review.excludePatterns,
+        },
+      }),
+      gh,
+    );
+    const pr = makePRContext();
+
+    fixtureQueue.push(
+      { content: SAMPLE_VALID_JSONL },
+      { content: SAMPLE_VALID_JSONL, verification: SAMPLE_VERIFICATION_JSONL },
+    );
+
+    const result = await engine.reviewPR(pr);
+
+    expect(mockRunOpenCode).toHaveBeenCalledTimes(2);
+    // First call = batch review, second call = verification pass
+    expect(mockRunOpenCode.mock.calls[0][1]).toMatchObject({
+      model: DEFAULT_CONFIG.reviewModel,
+    });
+    expect(mockRunOpenCode.mock.calls[1][1]).toMatchObject({ model: verificationModel });
+    expect(result.issues).toHaveLength(2);
+  });
+
+  it('i3) meta-verification falls back to reviewModel when verificationModel unset', async () => {
+    engine = new ReviewEngine(
+      makeAgentConfig({
+        enableMCP: false,
+        mcpServers: [],
+        review: {
+          ...DEFAULT_CONFIG.review,
+          enableMetaVerification: true,
+          skipLabels: DEFAULT_CONFIG.review.skipLabels,
+          skipActors: DEFAULT_CONFIG.review.skipActors,
+          inline: DEFAULT_CONFIG.review.inline,
+          requireVerdict: DEFAULT_CONFIG.review.requireVerdict,
+          commandTriggers: DEFAULT_CONFIG.review.commandTriggers,
+          excludePatterns: DEFAULT_CONFIG.review.excludePatterns,
+        },
+      }),
+      gh,
+    );
+    const pr = makePRContext();
+
+    fixtureQueue.push(
+      { content: SAMPLE_VALID_JSONL },
+      { content: SAMPLE_VALID_JSONL, verification: SAMPLE_VERIFICATION_JSONL },
+    );
+
+    const result = await engine.reviewPR(pr);
+
+    expect(mockRunOpenCode).toHaveBeenCalledTimes(2);
+    expect(mockRunOpenCode.mock.calls[1][1]).toMatchObject({
+      model: DEFAULT_CONFIG.reviewModel,
+    });
+    expect(result.issues).toHaveLength(2);
   });
 
   it('j) file exclusion filters excluded files from batches', async () => {
