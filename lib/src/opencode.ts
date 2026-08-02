@@ -33,6 +33,55 @@ let validatedOpenCodePath: string | null = null;
 let cachedCIConfig: string | null = null;
 const askPassDirs: string[] = [];
 
+/** Overrides for how OpenCode CLI runs are invoked (used by the local CLI). */
+export interface OpenCodeRunMode {
+  /**
+   * Custom OpenCode config JSON injected as OPENCODE_CONFIG_CONTENT. Replaces the
+   * CI config (which clears MCP/plugins and forces every tool to allow).
+   */
+  opencodeConfig?: string;
+  /**
+   * Whether to pass `--auto` to auto-approve tool permissions. CI behavior is
+   * `true`; interactive local use should set this to `false` so the user can
+   * approve permissions at the prompt. Defaults to `true`.
+   */
+  autoApprove?: boolean;
+}
+
+let runModeOverride: OpenCodeRunMode | undefined;
+
+/**
+ * Configure how the OpenCode CLI is invoked for the current process.
+ *
+ * The GitHub Action and App never call this and keep the default CI behavior
+ * (`--auto` + CI config). The local CLI sets a mode with `autoApprove: false`
+ * and a non-CI config so interactive permission prompts are possible.
+ * @param mode - The run mode to apply, or `undefined` to restore CI defaults.
+ */
+export function setOpenCodeRunMode(mode: OpenCodeRunMode | undefined): void {
+  runModeOverride = mode;
+}
+
+/**
+ * Build the OpenCode config object for interactive local use.
+ *
+ * Unlike {@link buildCIConfig}, this keeps MCP servers and plugins enabled
+ * (nothing is cleared) so a developer's own opencode.json / plugins work
+ * locally, and it does not force every tool to "allow". Combined with
+ * `autoApprove: false` on `setOpenCodeRunMode`, tool usage is prompted for
+ * approval during a local review.
+ * @returns A JSON string of the local OpenCode config.
+ */
+export function buildLocalOpenCodeConfig(): string {
+  const config = {
+    $schema: 'https://opencode.ai/config.json',
+    // Disable auto-update and sharing — irrelevant for one-shot local reviews.
+    autoupdate: false,
+    share: 'disabled',
+  };
+  return JSON.stringify(config);
+}
+
 /**
  * Reset the module-level OpenCode state (cached binary path, validation cache,
  * and CI config cache). Used by tests and by long-lived processes that re-run
@@ -42,6 +91,7 @@ export function resetOpenCodeState(): void {
   opencodePath = null;
   validatedOpenCodePath = null;
   cachedCIConfig = null;
+  runModeOverride = undefined;
 }
 
 function cleanupAskPassDirs(): void {
@@ -720,6 +770,10 @@ export {
  * @param options.env - Additional environment variables to forward.
  * @param options.quiet - When true, suppress forwarding the process transcript to
  * stdout/stderr (output is still captured for parsing/returning).
+ * @param options.opencodeConfig - Custom OpenCode config JSON injected as
+ * OPENCODE_CONFIG_CONTENT. When set, replaces the CI config for this run.
+ * @param options.autoApprove - When true (default), pass `--auto` to auto-approve
+ * tool permissions. Set to false for interactive local use.
  * @returns Object indicating success, output text, wall-clock duration in ms, and tokens used.
  */
 export async function runOpenCode(
@@ -734,6 +788,10 @@ export async function runOpenCode(
     env?: Record<string, string>;
     /** When true, do not stream the transcript to the CI logs. */
     quiet?: boolean;
+    /** Custom OpenCode config JSON to inject as OPENCODE_CONFIG_CONTENT. */
+    opencodeConfig?: string;
+    /** Pass `--auto` to auto-approve tool permissions (default: true). */
+    autoApprove?: boolean;
   },
 ): Promise<{
   success: boolean;
@@ -768,13 +826,13 @@ export async function runOpenCode(
   // --auto  → auto-approves any permission that is not explicitly "deny".
   //           This is the documented CI mechanism for opencode run.
   //           Docs: https://opencode.ai/docs/permissions#auto-mode
-  const args = [
-    'run',
-    '--auto', // approve all non-denied permissions automatically
-    '--model',
-    model,
-    prompt,
-  ];
+  // The local CLI disables auto-approval so interactive permission prompts work.
+  const autoApprove = options.autoApprove ?? runModeOverride?.autoApprove ?? true;
+  const args = ['run'];
+  if (autoApprove) {
+    args.push('--auto');
+  }
+  args.push('--model', model, prompt);
 
   core.info(`Running OpenCode (model: ${model}, timeout: ${options.timeoutMinutes ?? 20}m)...`);
 
@@ -837,12 +895,16 @@ export async function runOpenCode(
       }
     }
   }
-  safeEnv.OPENCODE_CONFIG_CONTENT = buildCIConfig();
+  safeEnv.OPENCODE_CONFIG_CONTENT =
+    options.opencodeConfig ?? runModeOverride?.opencodeConfig ?? buildCIConfig();
   safeEnv.OPENCODE_DISABLE_AUTOUPDATE = 'true';
 
   const childProcess = cp.spawn(binaryPath, args, {
     cwd,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    // Forward the caller's stdin when interactive (autoApprove off) so the
+    // user can approve tool permissions at the prompt. CI auto-approve runs
+    // keep stdin ignored, exactly as before.
+    stdio: autoApprove ? ['ignore', 'pipe', 'pipe'] : ['inherit', 'pipe', 'pipe'],
     env: safeEnv,
     detached: true,
   });

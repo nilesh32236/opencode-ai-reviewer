@@ -14,6 +14,8 @@ export {
   checkHealth,
   parseOpenCodeVersion,
   isVersionCompatible,
+  setOpenCodeRunMode,
+  buildLocalOpenCodeConfig,
   MINIMUM_OPENCODE_VERSION,
 } from './opencode.js';
 export type {
@@ -21,6 +23,7 @@ export type {
   OpenCodeHealth,
   OpenCodeVersion,
   CheckHealthOptions,
+  OpenCodeRunMode,
 } from './opencode.js';
 export { GitHubHelper } from './utils/github.js';
 export { GitLabAdapter } from './utils/gitlab-adapter.js';
@@ -128,7 +131,18 @@ export {
 } from './utils/reachability.js';
 export type { ReachabilityResult } from './utils/reachability.js';
 export { Logger, sanitizeError, sanitizeErrorMessage } from './utils/logger.js';
-export type { LogLevel, LogContext } from './utils/logger.js';
+export type { LogLevel, LogContext, LoggerSink } from './utils/logger.js';
+export {
+  buildPRContextFromStagedDiff,
+  buildPRContextFromBranchDiff,
+  isInsideGitWorkTree,
+  parseGitDiff,
+  parseGitDiffBlocks,
+  parseGitNumstat,
+  unquoteGitPath,
+  runGitCommand,
+} from './git-diff.js';
+export type { LocalDiffOptions } from './git-diff.js';
 export {
   computeSha256,
   findChecksumAsset,
