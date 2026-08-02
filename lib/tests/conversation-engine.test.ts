@@ -59,6 +59,10 @@ vi.mock('fs', async () => {
       readFile: vi.fn(),
       unlink: vi.fn(),
       appendFile: vi.fn(),
+      // The async codebase-index walk uses the real async directory listing.
+      readdir: actual.promises.readdir,
+      stat: actual.promises.stat,
+      mkdir: actual.promises.mkdir,
     },
   };
 });

@@ -250,6 +250,31 @@ export class ReviewEngine {
   }
 
   /**
+   * Run a `git` command asynchronously. Used for the short, once-per-review
+   * probes in the codebase-index path so the review's event loop is not blocked
+   * (important for the long-running Probot App). Rejects when `execFile` is
+   * unavailable or the command fails — callers fall back gracefully.
+   * @param args - Git arguments (excluding the leading `git`).
+   * @param cwd - Directory the command runs in.
+   * @returns The trimmed stdout.
+   */
+  private async execGit(args: string[], cwd: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      if (typeof cp.execFile !== 'function') {
+        reject(new Error('execFile is not available'));
+        return;
+      }
+      cp.execFile('git', args, { cwd, encoding: 'utf-8' }, (err, stdout) => {
+        if (err) {
+          reject(err instanceof Error ? err : new Error(String(err)));
+          return;
+        }
+        resolve(String(stdout).trim());
+      });
+    });
+  }
+
+  /**
    * Resolve the repository root to index. Uses the git top-level so index
    * paths are repo-root-relative and match `ChangedFile.path`, even when the
    * working directory is a package subdirectory of a monorepo. Falls back to
@@ -257,14 +282,9 @@ export class ReviewEngine {
    * @param workDir - The directory the review runs in.
    * @returns The absolute repository root to build the codebase index from.
    */
-  private resolveCodebaseRoot(workDir: string): string {
+  private async resolveCodebaseRoot(workDir: string): Promise<string> {
     try {
-      const root = cp
-        .execFileSync('git', ['rev-parse', '--show-toplevel'], {
-          encoding: 'utf-8',
-          cwd: workDir,
-        })
-        .trim();
+      const root = await this.execGit(['rev-parse', '--show-toplevel'], workDir);
       if (root) return root;
     } catch {
       // Not a git checkout — index relative to the working directory.
@@ -282,15 +302,10 @@ export class ReviewEngine {
    * @param repoRoot - The repository root the index is built from.
    * @returns The cache key to store/load the index under.
    */
-  private codebaseIndexCacheKey(headSha: string, repoRoot: string): string {
+  private async codebaseIndexCacheKey(headSha: string, repoRoot: string): Promise<string> {
     try {
-      const porcelain = cp
-        .execFileSync('git', ['status', '--porcelain'], {
-          encoding: 'utf-8',
-          cwd: repoRoot,
-        })
-        .toString();
-      if (porcelain.trim() === '') return headSha;
+      const porcelain = await this.execGit(['status', '--porcelain'], repoRoot);
+      if (porcelain === '') return headSha;
       const digest = createHash('sha256').update(porcelain).digest('hex').slice(0, 16);
       return `${headSha}-${digest}`;
     } catch {
@@ -508,11 +523,11 @@ export class ReviewEngine {
     let codebaseIndexData: CodebaseIndexData | undefined;
     if (this.config.review.enableCodebaseIndex) {
       try {
-        const indexRoot = this.resolveCodebaseRoot(workDir);
+        const indexRoot = await this.resolveCodebaseRoot(workDir);
         const indexEngine = new CodebaseIndex(
           new CodebaseIndexCache(this.codebaseIndexCacheDir(indexRoot)),
         );
-        const cacheKey = this.codebaseIndexCacheKey(pr.headSha, indexRoot);
+        const cacheKey = await this.codebaseIndexCacheKey(pr.headSha, indexRoot);
         const startedAt = Date.now();
         codebaseIndexData = await indexEngine.buildOrLoad(indexRoot, cacheKey);
         const buildMs = Date.now() - startedAt;

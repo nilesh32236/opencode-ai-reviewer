@@ -151,10 +151,18 @@ vi.mock('@actions/core', () => ({
   debug: vi.fn(),
 }));
 
-vi.mock('node:child_process', () => ({
-  execFileSync: vi.fn(),
-  spawnSync: vi.fn(),
-}));
+vi.mock('node:child_process', async () => {
+  const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+  return {
+    execFileSync: vi.fn(),
+    spawnSync: vi.fn(),
+    // execFile backs the codebase-index async git probes. A default
+    // implementation is re-applied in beforeEach so the probes report an empty
+    // stdout (falling back to workDir, matching pre-async behavior) and never
+    // hang the review; individual tests override it with mockImplementation.
+    execFile: vi.fn(actual.execFile),
+  };
+});
 
 vi.mock('fs', async () => {
   const actual = await vi.importActual<typeof import('fs')>('fs');
@@ -164,6 +172,10 @@ vi.mock('fs', async () => {
       readFile: vi.fn(),
       unlink: vi.fn(),
       appendFile: vi.fn(),
+      // The async codebase-index walk uses the real async directory listing.
+      readdir: actual.promises.readdir,
+      stat: actual.promises.stat,
+      mkdir: actual.promises.mkdir,
     },
   };
 });
@@ -210,6 +222,13 @@ describe('ReviewEngine', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
+    // Default git probe behavior for the codebase-index path: report empty
+    // stdout so resolveCodebaseRoot falls back to the working directory (the
+    // pre-async behavior) and the cache key stays the bare headSha.
+    vi.mocked(cp.execFile).mockImplementation((_cmd, _args, _opts, cb) => {
+      const callback = cb as (err: Error | null, stdout?: string) => void;
+      callback(null, '');
+    });
     mockAdapter = createMockAdapter();
     engine = new ReviewEngine(makeConfig(), mockAdapter);
   });
@@ -508,12 +527,24 @@ describe('ReviewEngine', () => {
         "import { helper } from './util.js';\nexport function run(): void { helper(); }",
       );
       try {
-        vi.mocked(cp.execFileSync).mockImplementation(((_cmd: string, args: unknown) => {
+        vi.mocked(cp.execFile).mockImplementation(((
+          _cmd: string,
+          args: unknown,
+          _opts: unknown,
+          cb: unknown,
+        ) => {
           const argList = args as string[];
-          if (argList[0] === 'rev-parse') return `${repoRoot}\n`;
-          if (argList[0] === 'status') return '';
-          return '';
-        }) as typeof cp.execFileSync);
+          const callback = cb as (err: Error | null, stdout: string) => void;
+          if (argList[0] === 'rev-parse') {
+            callback(null, `${repoRoot}\n`);
+            return;
+          }
+          if (argList[0] === 'status') {
+            callback(null, '');
+            return;
+          }
+          callback(null, '');
+        }) as typeof cp.execFile);
 
         const monorepoPr = makePRContext({
           changedFiles: [

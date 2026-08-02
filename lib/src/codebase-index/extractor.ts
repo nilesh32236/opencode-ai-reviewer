@@ -35,6 +35,14 @@ const JS_EXTENSIONS = new Set(['.js', '.jsx', '.mjs', '.cjs']);
 const LOCAL_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
 
 /**
+ * Yield to the event loop. Used by the asynchronous extraction path so a large
+ * repository walk/parse never blocks I/O or other work on the process.
+ */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
  * Extraction options for the codebase extractor.
  */
 export interface CodebaseExtractorOptions {
@@ -82,52 +90,21 @@ export class CodebaseExtractor {
    * @returns The extracted codebase index (with an empty `refSha`).
    */
   extract(rootDir: string, files?: string[]): CodebaseIndexData {
-    const start = Date.now();
     const root = path.resolve(rootDir);
     const baseDir = this.workspaceDir ? path.resolve(this.workspaceDir) : root;
+    const start = Date.now();
 
-    const fileList = files && files.length > 0 ? files : undefined;
-    const absoluteFiles = this.resolveFiles(root, fileList);
+    const absoluteFiles = this.resolveFiles(root, files && files.length > 0 ? files : undefined);
 
     const symbols: IndexedSymbol[] = [];
     const imports: ImportEdge[] = [];
     const callGraph: CallGraphEdge[] = [];
 
     for (const file of absoluteFiles) {
-      if (!this.isIndexableFile(file)) continue;
-      const relativeFile = this.toRelative(baseDir, file);
-      if (this.includeGlobs.length > 0 && !this.matchesGlobs(relativeFile)) continue;
-      let content: string;
-      try {
-        content = fs.readFileSync(file, 'utf-8');
-      } catch {
-        continue;
-      }
-      const ext = path.extname(file).toLowerCase();
-      const isJs = JS_EXTENSIONS.has(ext);
-      const isTs = TS_EXTENSIONS.has(ext);
-      const sourceFile = this.parseSourceFile(file, content);
-      let fileImports: ImportEdge[] = [];
-      if (sourceFile) {
-        symbols.push(...this.extractSymbols(sourceFile, relativeFile));
-        fileImports = this.extractImports(sourceFile, relativeFile, file, baseDir);
-        imports.push(...fileImports);
-        callGraph.push(...this.extractCallGraph(sourceFile, relativeFile, fileImports));
-      }
-      // The TypeScript parser is error-tolerant and virtually never returns
-      // `undefined` for JS-family input, so the regex pass must run *in
-      // addition* to the AST pass — otherwise CommonJS `require()` /
-      // dynamic `import()` / `module.exports` symbols in .js/.mjs/.cjs files
-      // would never be indexed. TypeScript files get the same require()/
-      // import() coverage (those calls are not ImportDeclarations), but their
-      // exports are already handled by the AST pass. Regex results are masked
-      // against comments/strings, deduped against AST results, and capped per
-      // file so minified bundles cannot dominate the index.
-      if (!sourceFile || isJs || isTs) {
-        const regex = this.extractRegexBased(relativeFile, content, file, baseDir, fileImports);
-        if (isJs || !sourceFile) symbols.push(...regex.symbols);
-        imports.push(...regex.imports);
-      }
+      const result = this.extractFile(file, baseDir);
+      symbols.push(...result.symbols);
+      imports.push(...result.imports);
+      callGraph.push(...result.callGraph);
     }
 
     return {
@@ -138,6 +115,112 @@ export class CodebaseExtractor {
       workspace: this.detectWorkspace(root),
       buildTimeMs: Date.now() - start,
     };
+  }
+
+  /**
+   * Asynchronous variant of {@link extract}. Uses promise-based filesystem APIs
+   * for directory discovery and periodically yields to the event loop between
+   * file reads/parses, so a large repository walk never blocks I/O handling or
+   * concurrent reviews on a long-running process. Results are identical to the
+   * synchronous variant.
+   *
+   * @param rootDir - Absolute path of the repository root.
+   * @param files - Optional explicit file list to index.
+   * @returns A promise resolving to the extracted codebase index.
+   */
+  async extractAsync(rootDir: string, files?: string[]): Promise<CodebaseIndexData> {
+    const root = path.resolve(rootDir);
+    const baseDir = this.workspaceDir ? path.resolve(this.workspaceDir) : root;
+    const start = Date.now();
+
+    const absoluteFiles = await this.resolveFilesAsync(
+      root,
+      files && files.length > 0 ? files : undefined,
+    );
+
+    const symbols: IndexedSymbol[] = [];
+    const imports: ImportEdge[] = [];
+    const callGraph: CallGraphEdge[] = [];
+
+    for (let i = 0; i < absoluteFiles.length; i++) {
+      // Yield every 128 files so the event loop can service other work (webhook
+      // handling, concurrent reviews) during a multi-second repository walk.
+      if ((i & 127) === 0) await yieldToEventLoop();
+      const result = this.extractFile(absoluteFiles[i], baseDir);
+      symbols.push(...result.symbols);
+      imports.push(...result.imports);
+      callGraph.push(...result.callGraph);
+    }
+
+    return {
+      refSha: '',
+      symbols,
+      imports,
+      callGraph,
+      workspace: this.detectWorkspace(root),
+      buildTimeMs: Date.now() - start,
+    };
+  }
+
+  /**
+   * Extract symbols/imports/call edges for a single indexable file. Shared by
+   * the synchronous and asynchronous extraction paths.
+   *
+   * @param file - Absolute path of the file to index.
+   * @param baseDir - Base directory paths are reported relative to.
+   * @returns The per-file extraction result.
+   */
+  private extractFile(
+    file: string,
+    baseDir: string,
+  ): {
+    symbols: IndexedSymbol[];
+    imports: ImportEdge[];
+    callGraph: CallGraphEdge[];
+  } {
+    const symbols: IndexedSymbol[] = [];
+    const imports: ImportEdge[] = [];
+    const callGraph: CallGraphEdge[] = [];
+    if (!this.isIndexableFile(file)) return { symbols, imports, callGraph };
+    const relativeFile = this.toRelative(baseDir, file);
+    if (this.includeGlobs.length > 0 && !this.matchesGlobs(relativeFile)) {
+      return { symbols, imports, callGraph };
+    }
+    let content: string;
+    try {
+      content = fs.readFileSync(file, 'utf-8');
+    } catch {
+      return { symbols, imports, callGraph };
+    }
+    const ext = path.extname(file).toLowerCase();
+    const isJs = JS_EXTENSIONS.has(ext);
+    const isTs = TS_EXTENSIONS.has(ext);
+    const sourceFile = this.parseSourceFile(file, content);
+    let fileImports: ImportEdge[] = [];
+    if (sourceFile) {
+      symbols.push(...this.extractSymbols(sourceFile, relativeFile));
+      fileImports = this.extractImports(sourceFile, relativeFile, file, baseDir);
+      imports.push(...fileImports);
+      callGraph.push(...this.extractCallGraph(sourceFile, relativeFile, fileImports));
+    }
+    // The TypeScript parser is error-tolerant and virtually never returns
+    // `undefined` for JS-family input, so the regex pass must run *in
+    // addition* to the AST pass — otherwise CommonJS `require()` /
+    // dynamic `import()` / `module.exports` symbols in .js/.mjs/.cjs files
+    // would never be indexed. TypeScript files get the same require()/
+    // import() coverage AND the same `module.exports`/`exports.x` symbol
+    // coverage (those are not `export` keywords, so the AST pass alone misses
+    // CommonJS exports in mixed CJS/ESM .ts/.mts/.cts files; there is no
+    // name-collision risk since AST identifiers cannot be named `default`).
+    // Regex results are masked against comments/strings, deduped against AST
+    // results, and capped per file so minified bundles cannot dominate the
+    // index.
+    if (!sourceFile || isJs || isTs) {
+      const regex = this.extractRegexBased(relativeFile, content, file, baseDir, fileImports);
+      if (isJs || isTs || !sourceFile) symbols.push(...regex.symbols);
+      imports.push(...regex.imports);
+    }
+    return { symbols, imports, callGraph };
   }
 
   // ─── File discovery & parsing ───────────────────────────
@@ -173,6 +256,47 @@ export class CodebaseExtractor {
       }
     };
     walk(root);
+    return files;
+  }
+
+  /**
+   * Asynchronous counterpart of {@link resolveFiles}: resolves an explicit file
+   * list or discovers every indexable file under `root`, yielding periodically
+   * so the event loop is not blocked during large repository walks.
+   */
+  private async resolveFilesAsync(root: string, files?: string[]): Promise<string[]> {
+    if (!files || files.length === 0) return this.discoverFilesAsync(root);
+    const resolved: string[] = [];
+    for (const file of files) {
+      const abs = path.isAbsolute(file) ? file : path.resolve(root, file);
+      if (!resolved.includes(abs)) resolved.push(abs);
+    }
+    return resolved;
+  }
+
+  private async discoverFilesAsync(root: string): Promise<string[]> {
+    const files: string[] = [];
+    let visited = 0;
+    const walk = async (dir: string): Promise<void> => {
+      let entries: fs.Dirent[];
+      try {
+        entries = await fs.promises.readdir(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (entry.name.startsWith('.')) continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (EXCLUDED_DIRS.has(entry.name)) continue;
+          await walk(full);
+        } else if (entry.isFile() && this.isIndexableFile(full)) {
+          files.push(full);
+        }
+        if ((++visited & 127) === 0) await yieldToEventLoop();
+      }
+    };
+    await walk(root);
     return files;
   }
 
@@ -215,7 +339,25 @@ export class CodebaseExtractor {
       const column = pos.character + 1;
 
       if (ts.isFunctionDeclaration(statement)) {
-        if (!statement.name) continue;
+        if (!statement.name) {
+          // `export default function () {}` — an anonymous default-exported
+          // function declaration. Synthesize a `default` symbol so the default
+          // export is always represented (missing/renamed-default-export
+          // detection needs it).
+          if (this.hasModifier(statement, ts.SyntaxKind.DefaultKeyword)) {
+            symbols.push({
+              name: 'default',
+              file: relativeFile,
+              line,
+              column,
+              kind: 'function',
+              signature: this.serializeFunctionLike(statement),
+              isDefaultExport: true,
+              isExported: true,
+            });
+          }
+          continue;
+        }
         symbols.push({
           name: statement.name.text,
           file: relativeFile,
@@ -229,7 +371,21 @@ export class CodebaseExtractor {
             this.hasModifier(statement, ts.SyntaxKind.DefaultKeyword),
         });
       } else if (ts.isClassDeclaration(statement)) {
-        if (!statement.name) continue;
+        if (!statement.name) {
+          // `export default class {}` — an anonymous default-exported class.
+          if (this.hasModifier(statement, ts.SyntaxKind.DefaultKeyword)) {
+            symbols.push({
+              name: 'default',
+              file: relativeFile,
+              line,
+              column,
+              kind: 'class',
+              isDefaultExport: true,
+              isExported: true,
+            });
+          }
+          continue;
+        }
         symbols.push({
           name: statement.name.text,
           file: relativeFile,
@@ -310,6 +466,35 @@ export class CodebaseExtractor {
       if (defaultExportNames.has(symbol.name)) {
         symbol.isDefaultExport = true;
         symbol.isExported = true;
+      }
+    }
+
+    // `export default (function () {})`, `export default (() => {})`, and
+    // `export default (class {})` — anonymous default exports via expressions.
+    // No named symbol exists, so synthesize a `default` symbol that reflects
+    // the anonymous default export.
+    for (const statement of sourceFile.statements) {
+      if (!ts.isExportAssignment(statement) || statement.isExportEquals !== undefined) continue;
+      const expr = statement.expression;
+      if (ts.isFunctionExpression(expr) || ts.isArrowFunction(expr) || ts.isClassExpression(expr)) {
+        const hasName =
+          (ts.isFunctionExpression(expr) && Boolean(expr.name)) ||
+          (ts.isClassExpression(expr) && Boolean(expr.name));
+        if (hasName) continue;
+        const pos = sourceFile.getLineAndCharacterOfPosition(statement.getStart(sourceFile));
+        symbols.push({
+          name: 'default',
+          file: relativeFile,
+          line: pos.line + 1,
+          column: pos.character + 1,
+          kind: ts.isClassExpression(expr) ? 'class' : 'function',
+          signature:
+            ts.isFunctionExpression(expr) || ts.isArrowFunction(expr)
+              ? this.serializeFunctionLike(expr)
+              : undefined,
+          isDefaultExport: true,
+          isExported: true,
+        });
       }
     }
     return symbols;
@@ -471,9 +656,13 @@ export class CodebaseExtractor {
    * @returns True when the specifier is external (bare or a non-code asset).
    */
   private isExternalSpecifier(specifier: string): boolean {
-    if (!specifier.startsWith('.') && !specifier.startsWith('/')) return true;
+    // Strip the query string and fragment (`./icon.svg?url`, `./data.json?raw`)
+    // before classification so asset imports with Vite/Next suffix patterns are
+    // still treated as external and never reported as broken local imports.
+    const pathOnly = specifier.split(/[?#]/)[0];
+    if (!pathOnly.startsWith('.') && !pathOnly.startsWith('/')) return true;
     return /\.(json|css|scss|sass|less|styl|png|jpe?g|gif|svg|webp|avif|ico|woff2?|ttf|otf|eot|wasm|map|txt|md)$/i.test(
-      specifier,
+      pathOnly,
     );
   }
 
@@ -564,7 +753,16 @@ export class CodebaseExtractor {
       }
       const edge = importMap.get(name);
       if (edge?.targetFile) {
-        return { file: edge.targetFile, name: edge.sourceSymbolName ?? name };
+        // A default import binds the local alias (e.g. `build` for
+        // `import build from './x.js'`) but the callee's real symbol name in
+        // the target module is unknown without a type checker. Reference the
+        // module's default export explicitly instead of inventing a callee
+        // that does not exist there.
+        const resolvedName =
+          edge.importKind === 'default' && !edge.sourceSymbolName
+            ? '<default>'
+            : (edge.sourceSymbolName ?? name);
+        return { file: edge.targetFile, name: resolvedName };
       }
       return undefined;
     }
@@ -672,7 +870,10 @@ export class CodebaseExtractor {
     }
 
     // `module.exports = ...` and `exports.foo = ...` for CommonJS symbol names.
-    const exportRe = /(?:module\.)?exports(?:\.(\w+))?\s*=/g;
+    // The negative lookbehind requires a non-word/non-dot boundary before
+    // `exports` so `obj.exports = 2` or `fooexports.bar = 3` never produce
+    // phantom exported symbols.
+    const exportRe = /(?<![.\w])(?:module\.)?exports(?:\.(\w+))?\s*=/g;
     while ((match = exportRe.exec(masked)) !== null) {
       if (symbols.length >= CodebaseExtractor.MAX_REGEX_SYMBOLS_PER_FILE) break;
       const name = match[1] ?? 'default';

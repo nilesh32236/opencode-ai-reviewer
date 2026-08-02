@@ -331,6 +331,127 @@ describe('CodebaseIndex', () => {
     expect(context).not.toContain('data.json');
   });
 
+  it('does not flag query-string/fragment asset imports as broken local imports', async () => {
+    const dir = makeTempDir();
+    writeFixture(dir, {
+      'src/main.ts': `import './styles.css?inline';
+        import icon from './icon.svg?url';
+        import data from './data.json?raw';
+        import { missing } from './does-not-exist.js';
+        export const x = 1;`,
+    });
+    const engine = new CodebaseIndex();
+    const index = await engine.buildOrLoad(dir, 'sha');
+    const context = engine.formatContext(engine.getContextForFiles(index, ['src/main.ts']));
+
+    expect(context).toContain('Unresolved Local Imports');
+    expect(context).toContain('missing');
+    expect(context).not.toContain('styles.css');
+    expect(context).not.toContain('icon.svg');
+    expect(context).not.toContain('data.json');
+  });
+
+  it('does not extract phantom symbols from non-module exports assignments', async () => {
+    const dir = makeTempDir();
+    writeFixture(dir, {
+      'src/main.js': `const obj = {};
+        obj.exports = 2;
+        const fooexports = {};
+        fooexports.bar = 3;
+        module.exports = { real: true };
+        exports.extra = 1;`,
+    });
+    const engine = new CodebaseIndex();
+    const index = await engine.buildOrLoad(dir, 'sha');
+
+    const exported = index.symbols.filter((s) => s.file === 'src/main.js' && s.isExported);
+    expect(exported.map((s) => s.name)).toEqual(['default', 'extra']);
+  });
+
+  it('extracts CommonJS module.exports symbols from TypeScript files', async () => {
+    const dir = makeTempDir();
+    writeFixture(dir, {
+      'src/helper.ts': 'export function helper(): void {}',
+      'src/main.ts': `import { helper } from './helper.js';
+        const { extra } = require('./helper.js');
+        module.exports = { helper };`,
+    });
+    const engine = new CodebaseIndex();
+    const index = await engine.buildOrLoad(dir, 'sha');
+
+    const exported = index.symbols.filter((s) => s.file === 'src/main.ts' && s.isExported);
+    expect(exported.some((s) => s.name === 'default')).toBe(true);
+  });
+
+  it('records <default> for default-import call edges instead of the local alias', async () => {
+    const dir = makeTempDir();
+    writeFixture(dir, {
+      'src/impl.ts': 'export function main(): void {}',
+      'src/caller.ts': `import build from './impl.js';
+        export function run(): void { build(); }`,
+    });
+    const engine = new CodebaseIndex();
+    const index = await engine.buildOrLoad(dir, 'sha');
+
+    const edge = index.callGraph.find(
+      (e) => e.callerFile === 'src/caller.ts' && e.calleeFile === 'src/impl.ts',
+    );
+    expect(edge?.calleeFunction).toBe('<default>');
+  });
+
+  it('indexes anonymous default exports', async () => {
+    const dir = makeTempDir();
+    writeFixture(dir, {
+      'src/a.ts': 'export default function () {}',
+      'src/b.ts': 'export default class {}',
+      'src/c.tsx': 'export default () => 42;',
+    });
+    const engine = new CodebaseIndex();
+    const index = await engine.buildOrLoad(dir, 'sha');
+
+    const defaults = index.symbols.filter((s) => s.name === 'default' && s.isDefaultExport);
+    expect(defaults.some((s) => s.file === 'src/a.ts' && s.kind === 'function')).toBe(true);
+    expect(defaults.some((s) => s.file === 'src/b.ts' && s.kind === 'class')).toBe(true);
+    expect(defaults.some((s) => s.file === 'src/c.tsx' && s.kind === 'function')).toBe(true);
+  });
+
+  it('excludes intra-file call edges from cross-file caller/callee sections', async () => {
+    const dir = makeTempDir();
+    writeFixture(dir, {
+      'src/main.ts': `function local(): void {}
+        export function run(): void { local(); }`,
+      'src/other.ts': 'export const x = 1;',
+    });
+    const engine = new CodebaseIndex();
+    const index = await engine.buildOrLoad(dir, 'sha');
+
+    const context = engine.getContextForFiles(index, ['src/main.ts']);
+    // local() is called from run() within the same file — not a cross-file edge.
+    expect(context.affectedCallers.length).toBe(0);
+    expect(context.affectedCallees.length).toBe(0);
+  });
+
+  it('surfaces matching workspace packages in the formatted context', async () => {
+    const dir = makeTempDir();
+    writeFixture(dir, {
+      'package.json': JSON.stringify({ name: 'my-monorepo', workspaces: ['packages/*'] }),
+      'packages/core/src/index.ts': 'export const value = 1;',
+      'packages/app/src/index.ts': 'export const appValue = 2;',
+    });
+    const engine = new CodebaseIndex();
+    const index = await engine.buildOrLoad(dir, 'sha');
+
+    const context = engine.formatContext(
+      engine.getContextForFiles(index, ['packages/core/src/index.ts']),
+    );
+    expect(context).toContain('Workspace Packages');
+    expect(context).toContain('packages/*');
+
+    // A file outside any workspace package produces no workspace section.
+    const plain = engine.formatContext(engine.getContextForFiles(index, ['src/root.ts']));
+    expect(plain).not.toContain('Workspace Packages');
+  });
+
   it('extracts require() and dynamic import() edges from TypeScript files too', async () => {
     const dir = makeTempDir();
     writeFixture(dir, {

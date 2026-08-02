@@ -14,6 +14,11 @@ import type { CallGraphEdge, CodebaseIndexData, ImportEdge, IndexedSymbol } from
 export class CodebaseIndexCache {
   private readonly logger = new Logger('CodebaseIndexCache');
 
+  /** Maximum number of index entries kept per repository before the oldest are evicted. */
+  private static readonly MAX_CACHE_ENTRIES = 20;
+  /** Maximum age of a cache entry before it is evicted (7 days). */
+  private static readonly MAX_CACHE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
   /**
    * @param cacheDir - Directory where `<sha>.json` cache files are stored.
    */
@@ -67,6 +72,53 @@ export class CodebaseIndexCache {
       this.logger.debug(
         `Failed to persist codebase index cache: ${err instanceof Error ? err.message : String(err)}`,
       );
+    }
+    // Evict stale/over-cap entries so the long-running App does not accumulate
+    // one multi-MB JSON file per ref SHA forever.
+    this.prune();
+  }
+
+  /**
+   * Evict cache entries beyond the per-repository entry cap (by mtime, newest
+   * first) and any entry older than the TTL. Best-effort — failures never break
+   * a review.
+   */
+  private prune(): void {
+    let entries: Array<{ file: string; mtimeMs: number }>;
+    try {
+      entries = fs
+        .readdirSync(this.cacheDir, { withFileTypes: true })
+        .filter((e) => e.isFile() && e.name.endsWith('.json'))
+        .map((e) => {
+          const file = path.join(this.cacheDir, e.name);
+          const stat = fs.statSync(file);
+          return { file, mtimeMs: stat.mtimeMs };
+        })
+        .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    } catch (err) {
+      this.logger.debug(
+        `Failed to list codebase index cache for pruning: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
+    const cutoff = Date.now() - CodebaseIndexCache.MAX_CACHE_AGE_MS;
+    let removed = 0;
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      const stale = entry.mtimeMs < cutoff;
+      const overCap = i >= CodebaseIndexCache.MAX_CACHE_ENTRIES;
+      if (!stale && !overCap) continue;
+      try {
+        fs.unlinkSync(entry.file);
+        removed++;
+      } catch (err) {
+        this.logger.debug(
+          `Failed to evict stale codebase index cache entry: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    if (removed > 0) {
+      this.logger.debug(`Evicted ${removed} stale codebase index cache entrie(s)`);
     }
   }
 

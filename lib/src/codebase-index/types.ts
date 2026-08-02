@@ -101,4 +101,8 @@ export interface CodebaseContext {
   affectedCallers: CallGraphEdge[];
   /** Call edges where a changed file invokes a symbol defined elsewhere. */
   affectedCallees: CallGraphEdge[];
+  /** Monorepo workspace metadata, when one was detected for the indexed root. */
+  workspace?: WorkspaceInfo;
+  /** Workspace package globs that match at least one changed file. */
+  matchedWorkspaceGlobs?: string[];
 }

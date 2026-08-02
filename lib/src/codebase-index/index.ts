@@ -1,4 +1,5 @@
 import * as path from 'path';
+import { minimatch } from 'minimatch';
 import type { CodebaseIndexCache } from './cache.js';
 import { CodebaseExtractor } from './extractor.js';
 import type {
@@ -59,7 +60,7 @@ export class CodebaseIndex {
     this.rootDir = resolvedRoot;
     const cached = this.cache?.get(refSha);
     if (cached) return cached;
-    const data = this.extractor.extract(resolvedRoot);
+    const data = await this.extractor.extractAsync(resolvedRoot);
     const stamped: CodebaseIndexData = { ...data, refSha };
     this.cache?.set(refSha, stamped);
     return stamped;
@@ -105,6 +106,11 @@ export class CodebaseIndex {
     const affectedCallers: CallGraphEdge[] = [];
     const affectedCallees: CallGraphEdge[] = [];
     for (const edge of index.callGraph) {
+      // Intra-file calls (callerFile === calleeFile) are self-contained: they
+      // are neither external callers of a changed file nor callees defined
+      // outside it. Omit them from the cross-file sections so a change's blast
+      // radius is not overstated.
+      if (edge.callerFile === edge.calleeFile) continue;
       if (isChanged(edge.calleeFile)) {
         affectedCallers.push(edge);
       } else if (isChanged(edge.callerFile)) {
@@ -112,7 +118,38 @@ export class CodebaseIndex {
       }
     }
 
-    return { localSymbols, exportedSymbols, affectedImports, affectedCallers, affectedCallees };
+    // Consume the monorepo workspace detection: record which detected package
+    // globs contain at least one changed file so the prompt can surface
+    // workspace membership instead of carrying dead metadata.
+    let matchedWorkspaceGlobs: string[] | undefined;
+    const workspace = index.workspace;
+    if (workspace?.fileGlobs && workspace.fileGlobs.length > 0) {
+      const ancestorDirs = (file: string): string[] => {
+        const parts = file.split('/');
+        const dirs: string[] = [];
+        for (let i = parts.length - 1; i > 0; i--) {
+          dirs.push(parts.slice(0, i).join('/'));
+        }
+        return dirs;
+      };
+      const changedPaths = [...changedSet];
+      matchedWorkspaceGlobs = workspace.fileGlobs.filter((glob) =>
+        changedPaths.some(
+          (file) => minimatch(file, glob) || ancestorDirs(file).some((dir) => minimatch(dir, glob)),
+        ),
+      );
+      if (matchedWorkspaceGlobs.length === 0) matchedWorkspaceGlobs = undefined;
+    }
+
+    return {
+      localSymbols,
+      exportedSymbols,
+      affectedImports,
+      affectedCallers,
+      affectedCallees,
+      workspace,
+      matchedWorkspaceGlobs,
+    };
   }
 
   /**
@@ -123,13 +160,28 @@ export class CodebaseIndex {
    */
   formatContext(context: CodebaseContext): string {
     const parts: string[] = [];
+    const hasWorkspaceContext =
+      Boolean(context.workspace) &&
+      context.matchedWorkspaceGlobs !== undefined &&
+      context.matchedWorkspaceGlobs.length > 0;
     const empty =
       context.localSymbols.length === 0 &&
       context.exportedSymbols.length === 0 &&
       context.affectedImports.length === 0 &&
       context.affectedCallers.length === 0 &&
-      context.affectedCallees.length === 0;
+      context.affectedCallees.length === 0 &&
+      !hasWorkspaceContext;
     if (empty) return '';
+
+    if (hasWorkspaceContext) {
+      // Surface the monorepo workspace membership of the changed files.
+      const packages = context.matchedWorkspaceGlobs!;
+      parts.push('### Workspace Packages');
+      parts.push(
+        `Changed files belong to workspace packages: ${packages.map((p) => `\`${p}\``).join(', ')}`,
+      );
+      parts.push('');
+    }
 
     if (context.exportedSymbols.length > 0) {
       parts.push('### Exported Symbols in Changed Files');
