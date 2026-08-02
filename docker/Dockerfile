@@ -31,4 +31,4 @@ RUN pnpm build
 
 RUN chmod +x docker/validate-env.sh
 
-CMD ["sh", "docker/validate-env.sh"]
+CMD ["./docker/validate-env.sh"]

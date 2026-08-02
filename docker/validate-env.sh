@@ -29,8 +29,10 @@ if [ -n "${APP_ID:-}" ]; then
   fi
 fi
 
-if [ -z "${OPENAI_API_KEY:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ] && \
-   [ -z "${GEMINI_API_KEY:-}" ] && [ -z "${OPENCODE_API_KEY:-}" ]; then
+if [ -z "${OPENAI_API_KEY:-}" ] && [ -z "${INPUT_OPENAI_API_KEY:-}" ] && \
+   [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${INPUT_ANTHROPIC_API_KEY:-}" ] && \
+   [ -z "${GEMINI_API_KEY:-}" ] && [ -z "${INPUT_GEMINI_API_KEY:-}" ] && \
+   [ -z "${OPENCODE_API_KEY:-}" ] && [ -z "${INPUT_OPENCODE_API_KEY:-}" ]; then
   echo "WARNING: No AI provider API key is set." >&2
   echo "  Set at least one of OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, OPENCODE_API_KEY" >&2
   echo "  (unnecessary when using a default opencode/* model)." >&2

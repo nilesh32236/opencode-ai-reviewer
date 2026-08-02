@@ -9,17 +9,21 @@
 #
 # Start with:
 #   cp .env.example .env          # then fill in your credentials
-#   docker compose -f docker/docker-compose.yml up -d --build
+#   docker compose -f docker/docker-compose.yml --env-file .env up -d --build
 #
 # Or via the workspace script:
 #   pnpm setup:local
 #
 # Notes:
 #   - `env_file: ../.env` loads the root `.env` into the container. `required:
-#     false` keeps `docker compose up` working even before you create `.env`.
+#     false` keeps `docker compose config` working even before you create `.env`.
 #   - The inline `environment:` block makes variables visible, applies
 #     `${VAR:-default}` defaults, and lets shell variables override `.env`
 #     (e.g. `GITHUB_TOKEN=x docker compose up`).
+#   - The `environment:` block interpolates from the shell or the Compose
+#     project-directory `.env`, NOT from `env_file`. Pass `--env-file .env` so
+#     interpolation sees the same root `.env` values that `env_file` injects;
+#     otherwise empty interpolations overwrite `env_file` values.
 #   - Unused variables are ignored, so a minimal config starts fine.
 
 services:
@@ -63,4 +67,4 @@ services:
     #   - "3000:3000"
     # volumes:
     #   - /host/path/to/private-key.pem:/app/private-key.pem:ro
-    restart: unless-stopped
+    restart: on-failure:3
