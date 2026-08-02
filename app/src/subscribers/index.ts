@@ -41,17 +41,17 @@ export function registerSubscribers(
   const logger = new Logger('RateLimiter');
 
   const subscribers: Subscriber[] = [
-    createReviewSubscriber(learningStore, bus, rateLimiter),
-    createFixSubscriber(rateLimiter, bus),
-    createAuditSubscriber(rateLimiter, bus),
-    createAnalyzeSubscriber(rateLimiter, bus),
-    createAutoAnalyzeSubscriber(rateLimiter, bus),
+    createReviewSubscriber(learningStore, bus, rateLimiter, resolvedConfig),
+    createFixSubscriber(rateLimiter, resolvedConfig, bus),
+    createAuditSubscriber(rateLimiter, resolvedConfig, bus),
+    createAnalyzeSubscriber(rateLimiter, resolvedConfig, bus),
+    createAutoAnalyzeSubscriber(rateLimiter, resolvedConfig, bus),
     createQuestionAnsweredSubscriber(),
-    createReplySubscriber(rateLimiter),
-    createDismissSubscriber(learningStore),
-    createExplainSubscriber(rateLimiter, bus),
-    createConversationSubscriber(learningStore, rateLimiter, bus),
-    createSetupSubscriber(),
+    createReplySubscriber(rateLimiter, resolvedConfig),
+    createDismissSubscriber(learningStore, resolvedConfig),
+    createExplainSubscriber(rateLimiter, resolvedConfig, bus),
+    createConversationSubscriber(learningStore, rateLimiter, resolvedConfig, bus),
+    createSetupSubscriber(resolvedConfig),
     createAdminSubscriber(rateLimiter, resolvedConfig),
   ];
 

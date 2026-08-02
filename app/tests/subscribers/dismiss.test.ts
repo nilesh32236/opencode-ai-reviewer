@@ -1,4 +1,5 @@
 import type { GitHubEvent, LearningStore } from '@opencode-pr-agent/lib';
+import { DEFAULT_CONFIG } from '@opencode-pr-agent/lib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleDismissCommand } from '../../src/handlers/dismiss.js';
 import { createDismissSubscriber } from '../../src/subscribers/dismiss.js';
@@ -46,7 +47,7 @@ describe('DismissSubscriber', () => {
   });
 
   it('triggers the dismiss handler for a /dismiss reply', async () => {
-    const sub = createDismissSubscriber(store);
+    const sub = createDismissSubscriber(store, DEFAULT_CONFIG);
 
     await sub.handle(makeEvent('/dismiss false_positive'));
 
@@ -63,7 +64,7 @@ describe('DismissSubscriber', () => {
   });
 
   it('does not trigger for non-dismiss comments', async () => {
-    const sub = createDismissSubscriber(store);
+    const sub = createDismissSubscriber(store, DEFAULT_CONFIG);
 
     await sub.handle(makeEvent('Looks good to me!'));
 
@@ -71,7 +72,7 @@ describe('DismissSubscriber', () => {
   });
 
   it('does not trigger for other slash commands', async () => {
-    const sub = createDismissSubscriber(store);
+    const sub = createDismissSubscriber(store, DEFAULT_CONFIG);
 
     await sub.handle(makeEvent('/fix'));
 
@@ -79,7 +80,7 @@ describe('DismissSubscriber', () => {
   });
 
   it('does not trigger for bot-authored comments', async () => {
-    const sub = createDismissSubscriber(store);
+    const sub = createDismissSubscriber(store, DEFAULT_CONFIG);
 
     await sub.handle(
       makeEvent('/dismiss false_positive', {
@@ -96,7 +97,7 @@ describe('DismissSubscriber', () => {
   });
 
   it('does not trigger without an in_reply_to_id', async () => {
-    const sub = createDismissSubscriber(store);
+    const sub = createDismissSubscriber(store, DEFAULT_CONFIG);
 
     await sub.handle(
       makeEvent('/dismiss false_positive', {
@@ -112,7 +113,7 @@ describe('DismissSubscriber', () => {
   });
 
   it('does not trigger for unprivileged commenters', async () => {
-    const sub = createDismissSubscriber(store);
+    const sub = createDismissSubscriber(store, DEFAULT_CONFIG);
 
     await sub.handle(
       makeEvent('/dismiss false_positive', {

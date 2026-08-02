@@ -1,18 +1,26 @@
 import { Logger } from '@opencode-pr-agent/lib';
-import type { EventBus, GitHubEvent, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
+import type {
+  AgentConfig,
+  EventBus,
+  GitHubEvent,
+  RateLimiter,
+  Subscriber,
+} from '@opencode-pr-agent/lib';
 import { handleCommand } from '../handlers/commands.js';
-import { buildConfig } from '../utils/config.js';
+import { isBotUser } from '../utils/bot.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
 /**
  * Create a subscriber that auto-analyzes newly opened issues with the `needs-analysis` label.
  * @param rateLimiter - The shared rate limiter for cost control.
+ * @param config - The resolved agent configuration (built once at startup).
  * @param eventBus - Optional event bus for publishing pipeline events.
  * @returns A subscriber object for auto-analysis.
  */
 export function createAutoAnalyzeSubscriber(
   rateLimiter: RateLimiter,
+  config: AgentConfig,
   eventBus?: EventBus,
 ): Subscriber {
   const logger = new Logger('AutoAnalyzeSubscriber');
@@ -28,12 +36,11 @@ export function createAutoAnalyzeSubscriber(
         if (issue.pull_request) return;
 
         const user = issue.user as Record<string, string> | undefined;
-        if (user?.type === 'Bot') return;
+        if (isBotUser(user)) return;
 
         const issueNumber = (issue.number as number) || 0;
         if (!issueNumber) return;
 
-        const config = buildConfig();
         const issueLabels =
           (issue.labels as Array<Record<string, string>>)?.map((l) => l.name) || [];
         const skipLabels = ['wontfix', 'duplicate', 'invalid', 'spam'];

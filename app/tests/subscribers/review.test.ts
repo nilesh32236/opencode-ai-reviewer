@@ -1,5 +1,5 @@
 import type { EventBus, GitHubEvent, LearningStore } from '@opencode-pr-agent/lib';
-import { EventBus as RealEventBus } from '@opencode-pr-agent/lib';
+import { DEFAULT_CONFIG, EventBus as RealEventBus } from '@opencode-pr-agent/lib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handlePRReview } from '../../src/handlers/pr-review.js';
 import { createReviewSubscriber } from '../../src/subscribers/review.js';
@@ -40,7 +40,7 @@ describe('ReviewSubscriber', () => {
 
   it('passes the top-level before SHA to handlePRReview on pr.synchronize', async () => {
     const bus: EventBus = new RealEventBus();
-    const sub = createReviewSubscriber({} as LearningStore, bus);
+    const sub = createReviewSubscriber({} as LearningStore, bus, undefined, DEFAULT_CONFIG);
 
     await sub.handle(makeSynchronizeEvent(42, { before: 'abcdef123456' }));
 
@@ -59,7 +59,7 @@ describe('ReviewSubscriber', () => {
 
   it('falls back to pull_request.before when the top-level before is missing', async () => {
     const bus: EventBus = new RealEventBus();
-    const sub = createReviewSubscriber({} as LearningStore, bus);
+    const sub = createReviewSubscriber({} as LearningStore, bus, undefined, DEFAULT_CONFIG);
 
     await sub.handle(
       makeSynchronizeEvent(7, {

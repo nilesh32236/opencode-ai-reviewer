@@ -1,17 +1,27 @@
 import { Logger, parseCommand } from '@opencode-pr-agent/lib';
-import type { EventBus, GitHubEvent, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
+import type {
+  AgentConfig,
+  EventBus,
+  GitHubEvent,
+  RateLimiter,
+  Subscriber,
+} from '@opencode-pr-agent/lib';
 import { handleCommand } from '../handlers/commands.js';
-import { buildConfig } from '../utils/config.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
 /**
  * Create a subscriber that handles `/analyze` commands on comments.
  * @param rateLimiter - The shared rate limiter for cost control.
+ * @param config - The resolved agent configuration (built once at startup).
  * @param eventBus - Optional event bus for publishing pipeline events.
  * @returns A subscriber object for the analyze command.
  */
-export function createAnalyzeSubscriber(rateLimiter: RateLimiter, eventBus?: EventBus): Subscriber {
+export function createAnalyzeSubscriber(
+  rateLimiter: RateLimiter,
+  config: AgentConfig,
+  eventBus?: EventBus,
+): Subscriber {
   const logger = new Logger('AnalyzeSubscriber');
   return {
     name: 'AnalyzeSubscriber',
@@ -23,7 +33,6 @@ export function createAnalyzeSubscriber(rateLimiter: RateLimiter, eventBus?: Eve
         const analyzeComment = analyzePayload.comment as Record<string, string> | undefined;
         const parsed = analyzeComment?.body ? parseCommand(analyzeComment.body) : null;
         if (!parsed || parsed.command !== 'analyze') return;
-        const config = buildConfig();
         const issueNumber = event.prNumber || 0;
         if (!issueNumber) return;
         const reservation = await checkRateLimit(rateLimiter, event, 'command', 'analyze');
