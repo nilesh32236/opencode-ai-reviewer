@@ -1,5 +1,6 @@
 import { Logger, parseCommand } from '@opencode-pr-agent/lib';
 import type {
+  AgentConfig,
   EventBus,
   GitHubEvent,
   LearningStore,
@@ -7,7 +8,7 @@ import type {
   Subscriber,
 } from '@opencode-pr-agent/lib';
 import { handlePRReview } from '../handlers/pr-review.js';
-import { buildConfig } from '../utils/config.js';
+import { isBotUser } from '../utils/bot.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
@@ -16,12 +17,14 @@ import { getToken } from '../utils/token.js';
  * @param learningStore - The learning store instance for review context.
  * @param bus - The event bus used by the review engine to publish pipeline events.
  * @param rateLimiter - The shared rate limiter for cost control.
+ * @param config - The resolved agent configuration (built once at startup).
  * @returns A subscriber object for the review command.
  */
 export function createReviewSubscriber(
   learningStore: LearningStore,
   bus: EventBus,
   rateLimiter: RateLimiter,
+  config: AgentConfig,
 ): Subscriber {
   const logger = new Logger('ReviewSubscriber');
   return {
@@ -43,13 +46,12 @@ export function createReviewSubscriber(
         const prLabels = pullRequest?.labels as Array<Record<string, string>> | undefined;
 
         if (event.type === 'pr.opened' || event.type === 'pr.synchronize') {
-          if (prUser?.login === 'github-actions[bot]') return;
+          if (isBotUser(prUser)) return;
           const labels = prLabels?.map((l) => l.name) || [];
           if (labels.some((l) => ['autofix', 'autofix:approved', 'autofix:merged'].includes(l)))
             return;
         }
 
-        const config = buildConfig();
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;
 

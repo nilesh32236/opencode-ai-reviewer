@@ -79,16 +79,16 @@ export async function handlePRReview(
       | undefined;
     try {
       const threads = await gh.getBotReviewThreads(prNumber);
-      previousBotComments = threads
-        .filter((t) => t.firstComment)
-        .map((t) => ({
-          file: t.firstComment!.filePath,
-          line: t.firstComment!.lineNumber,
-          body: t.firstComment!.body,
-          commentId: t.firstComment!.databaseId,
-        }));
+      previousBotComments = threads.map((t) => ({
+        file: t.firstComment.filePath,
+        line: t.firstComment.lineNumber,
+        body: t.firstComment.body,
+        commentId: t.firstComment.databaseId,
+      }));
     } catch (err) {
-      logger.warn(`Failed to fetch previous bot comments: ${err}`);
+      logger.warn(
+        `Failed to fetch previous bot comments: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
 
     let result: ReviewResult;

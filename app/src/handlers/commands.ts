@@ -23,9 +23,13 @@ import {
   postBlockingQuestions,
   sanitizeErrorMessage,
 } from '@opencode-pr-agent/lib';
+import { isBotLogin } from '../utils/bot.js';
 import { handleAudit } from './audit.js';
 import { handleAutofixLoop } from './autofix.js';
 import { handlePRReview } from './pr-review.js';
+
+/** Module-scope logger for helper functions that have no per-call context. */
+const logger = new Logger('Command');
 
 /**
  * Handle a slash command (fix/review/audit/analyze): clone the repo, execute
@@ -152,7 +156,6 @@ export async function handleCommand(
               gh,
               issueNumber,
               repo,
-              token,
               config,
               tempDir,
               gitEnv,
@@ -389,7 +392,6 @@ async function createAutofixPR(
   gh: PlatformAdapter,
   issueNumber: number,
   repo: string,
-  _token: string,
   config: AgentConfig,
   tempDir: string,
   gitEnv?: Record<string, string>,
@@ -642,11 +644,11 @@ async function checkForUnansweredQuestions(
 
     const repliesAfter = issue.comments
       .slice(questionsCommentIdx + 1)
-      .filter((c) => !c.author.includes('[bot]'));
+      .filter((c) => !isBotLogin(c.author));
 
     return repliesAfter.length === 0;
   } catch (err) {
-    new Logger('Command').warn(
+    logger.warn(
       `Failed to check unanswered questions for #${issueNumber}: ${err instanceof Error ? err.message : String(err)}`,
     );
     return true;
@@ -659,7 +661,7 @@ function buildQAContext(comments: Array<{ author: string; body: string }>): stri
   );
   if (questionsIdx === -1) return '';
 
-  const answers = comments.slice(questionsIdx + 1).filter((c) => !c.author.includes('[bot]'));
+  const answers = comments.slice(questionsIdx + 1).filter((c) => !isBotLogin(c.author));
   if (answers.length === 0) return '';
 
   const lines = ['### Q&A Context (from issue discussion)'];

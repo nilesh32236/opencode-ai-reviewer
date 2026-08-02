@@ -1,4 +1,5 @@
 import type { GitHubEvent } from '@opencode-pr-agent/lib';
+import { DEFAULT_CONFIG } from '@opencode-pr-agent/lib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleCommand } from '../../src/handlers/commands.js';
 import { createFixSubscriber } from '../../src/subscribers/fix.js';
@@ -37,7 +38,7 @@ describe('FixSubscriber', () => {
   });
 
   it('triggers the fix command when an issue is labeled autofix-trigger', async () => {
-    const sub = createFixSubscriber();
+    const sub = createFixSubscriber(undefined, DEFAULT_CONFIG);
 
     await sub.handle(makeLabeledEvent(123, ['autofix-trigger']));
 
@@ -55,7 +56,7 @@ describe('FixSubscriber', () => {
   });
 
   it('does not trigger the fix command for unrelated labels', async () => {
-    const sub = createFixSubscriber();
+    const sub = createFixSubscriber(undefined, DEFAULT_CONFIG);
 
     await sub.handle(makeLabeledEvent(124, ['bug']));
 
@@ -63,7 +64,7 @@ describe('FixSubscriber', () => {
   });
 
   it('does not trigger the fix command when the labeled item is a pull request', async () => {
-    const sub = createFixSubscriber();
+    const sub = createFixSubscriber(undefined, DEFAULT_CONFIG);
 
     await sub.handle({
       type: 'issue.labeled',

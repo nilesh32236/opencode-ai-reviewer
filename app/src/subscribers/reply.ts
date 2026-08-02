@@ -1,16 +1,17 @@
 import { Logger, parseCommand } from '@opencode-pr-agent/lib';
-import type { GitHubEvent, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
+import type { AgentConfig, GitHubEvent, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
 import { handleReply } from '../handlers/reply.js';
-import { buildConfig } from '../utils/config.js';
+import { isBotUser } from '../utils/bot.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
 /**
  * Create a subscriber that handles reply-to-review comments.
  * @param rateLimiter - The shared rate limiter for cost control.
+ * @param config - The resolved agent configuration (built once at startup).
  * @returns A subscriber object for the reply event.
  */
-export function createReplySubscriber(rateLimiter: RateLimiter): Subscriber {
+export function createReplySubscriber(rateLimiter: RateLimiter, config: AgentConfig): Subscriber {
   const logger = new Logger('ReplySubscriber');
   return {
     name: 'ReplySubscriber',
@@ -23,7 +24,7 @@ export function createReplySubscriber(rateLimiter: RateLimiter): Subscriber {
         if (!comment) return;
 
         const user = comment.user as Record<string, unknown> | undefined;
-        if (user?.type === 'Bot') return;
+        if (isBotUser(user)) return;
 
         const parentId = comment.in_reply_to_id as number | undefined;
         if (!parentId) return;
@@ -38,7 +39,6 @@ export function createReplySubscriber(rateLimiter: RateLimiter): Subscriber {
 
         // A reply that @mentions the bot is handled by ConversationSubscriber,
         // so defer here to avoid double LLM calls and double rate-limit charges.
-        const config = buildConfig();
         const mentionHandle = config.conversation.mentionHandle ?? '';
         if (
           config.conversation.enabled &&

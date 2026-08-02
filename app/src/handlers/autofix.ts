@@ -111,15 +111,17 @@ export async function handleAutofixLoop(
       try {
         const botThreads = await gh.getBotReviewThreads(prNumber);
         previousBotComments = botThreads
-          .filter((t) => !t.isResolved && t.firstComment)
+          .filter((t) => !t.isResolved)
           .map((t) => ({
-            file: t.firstComment!.filePath,
-            line: t.firstComment!.lineNumber,
-            body: t.firstComment!.body,
-            commentId: t.firstComment!.databaseId,
+            file: t.firstComment.filePath,
+            line: t.firstComment.lineNumber,
+            body: t.firstComment.body,
+            commentId: t.firstComment.databaseId,
           }));
       } catch (err) {
-        logger.warn(`Could not fetch previous bot comments: ${err}`);
+        logger.warn(
+          `Could not fetch previous bot comments: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
 
       const reviewWorkingDir = workingDir || process.cwd();
@@ -332,7 +334,9 @@ export async function handleAutofixLoop(
             await gh.updateMR(prNumber, { body: updatedBody });
             logger.info(`Updated PR #${prNumber} description with latest fix summary`);
           } catch (updateErr) {
-            logger.warn(`Could not update PR description: ${updateErr}`);
+            logger.warn(
+              `Could not update PR description: ${updateErr instanceof Error ? updateErr.message : String(updateErr)}`,
+            );
           }
         }
       } catch (err) {

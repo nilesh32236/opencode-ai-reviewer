@@ -2,6 +2,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { ConversationStateManager, Logger } from '@opencode-pr-agent/lib';
 import type {
+  AgentConfig,
   EventBus,
   GitHubEvent,
   LearningStore,
@@ -9,7 +10,7 @@ import type {
   Subscriber,
 } from '@opencode-pr-agent/lib';
 import { handleConversation } from '../handlers/conversation.js';
-import { buildConfig } from '../utils/config.js';
+import { isBotLogin } from '../utils/bot.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
@@ -23,12 +24,14 @@ import { getToken } from '../utils/token.js';
  *
  * @param learningStore - The learning store instance for context and patterns.
  * @param rateLimiter - The shared rate limiter for cost control.
+ * @param config - The resolved agent configuration (built once at startup).
  * @param eventBus - Optional event bus for publishing pipeline events.
  * @returns A subscriber object for conversation handling.
  */
 export function createConversationSubscriber(
   learningStore: LearningStore,
   rateLimiter: RateLimiter,
+  config: AgentConfig,
   eventBus?: EventBus,
 ): Subscriber {
   const logger = new Logger('ConversationSubscriber');
@@ -44,7 +47,6 @@ export function createConversationSubscriber(
         const convBody = (convComment?.body as string) || '';
         const convUser = (convComment?.user as Record<string, string>)?.login || '';
 
-        const config = buildConfig();
         if (!config.conversation.enabled) return;
 
         const mentionHandle = config.conversation.mentionHandle;
@@ -52,7 +54,7 @@ export function createConversationSubscriber(
         if (!convBody.toLowerCase().includes(`@${mentionHandle.toLowerCase()}`)) return;
 
         if (
-          convUser.includes('[bot]') ||
+          isBotLogin(convUser) ||
           convUser.includes('github-actions') ||
           convUser.toLowerCase().includes(mentionHandle.toLowerCase())
         ) {

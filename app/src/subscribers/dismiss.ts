@@ -1,7 +1,7 @@
 import { Logger, parseCommand } from '@opencode-pr-agent/lib';
-import type { GitHubEvent, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
+import type { AgentConfig, GitHubEvent, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
 import { handleDismissCommand, isPrivilegedAuthor } from '../handlers/dismiss.js';
-import { buildConfig } from '../utils/config.js';
+import { isBotUser } from '../utils/bot.js';
 import { getToken } from '../utils/token.js';
 
 /**
@@ -14,9 +14,13 @@ import { getToken } from '../utils/token.js';
  * shared learning store, so unprivileged commenters on public PRs must not be
  * able to trigger it.
  * @param learningStore - The learning store used to persist dismissal feedback.
+ * @param config - The resolved agent configuration (built once at startup).
  * @returns A subscriber object for the dismiss event.
  */
-export function createDismissSubscriber(learningStore: LearningStore): Subscriber {
+export function createDismissSubscriber(
+  learningStore: LearningStore,
+  config: AgentConfig,
+): Subscriber {
   const logger = new Logger('DismissSubscriber');
   return {
     name: 'DismissSubscriber',
@@ -29,7 +33,7 @@ export function createDismissSubscriber(learningStore: LearningStore): Subscribe
         if (!comment) return;
 
         const user = comment.user as Record<string, unknown> | undefined;
-        if (user?.type === 'Bot') return;
+        if (isBotUser(user)) return;
 
         const parentId = comment.in_reply_to_id as number | undefined;
         if (!parentId) return;
@@ -52,7 +56,6 @@ export function createDismissSubscriber(learningStore: LearningStore): Subscribe
           return;
         }
 
-        const config = buildConfig();
         await handleDismissCommand(
           prNumber,
           event.repo || '',

@@ -1,4 +1,5 @@
 import type { GitHubEvent } from '@opencode-pr-agent/lib';
+import { DEFAULT_CONFIG } from '@opencode-pr-agent/lib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleReply } from '../../src/handlers/reply.js';
 import { createReplySubscriber } from '../../src/subscribers/reply.js';
@@ -39,7 +40,7 @@ describe('ReplySubscriber', () => {
   });
 
   it('handles a non-command reply conversationally', async () => {
-    const sub = createReplySubscriber();
+    const sub = createReplySubscriber(undefined, DEFAULT_CONFIG);
 
     await sub.handle(makeEvent('Could you clarify why this is an issue?'));
 
@@ -52,7 +53,7 @@ describe('ReplySubscriber', () => {
   });
 
   it('skips /dismiss replies (handled by the dismiss subscriber)', async () => {
-    const sub = createReplySubscriber();
+    const sub = createReplySubscriber(undefined, DEFAULT_CONFIG);
 
     await sub.handle(makeEvent('/dismiss false_positive'));
 
@@ -60,7 +61,7 @@ describe('ReplySubscriber', () => {
   });
 
   it('still handles other slash commands conversationally', async () => {
-    const sub = createReplySubscriber();
+    const sub = createReplySubscriber(undefined, DEFAULT_CONFIG);
 
     await sub.handle(makeEvent('/help'));
 
