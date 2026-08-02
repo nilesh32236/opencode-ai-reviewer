@@ -404,6 +404,8 @@ export interface ReviewConfig {
   suppressLowConfidence?: boolean;
   /** Whether to enable lightweight reachability analysis on security findings */
   enableReachability: boolean;
+  /** Whether to index the codebase and enrich the review prompt with cross-file context */
+  enableCodebaseIndex?: boolean;
   /** Token budget configuration for smart context allocation */
   tokenBudget?: TokenBudgetConfig;
   /** Budget-based review configuration for large PRs */
@@ -1023,6 +1025,8 @@ export interface PromptConfig {
     tokenBudget?: TokenBudgetConfig;
     /** Enable lightweight reachability analysis on security findings (default: true) */
     enableReachability?: boolean;
+    /** Enable codebase indexing for cross-file review context (default: true) */
+    enableCodebaseIndex?: boolean;
     /** Budget-based review configuration for large PRs */
     budget?: {
       /** Enable budget-based review adaptation (default: true) */
@@ -1174,6 +1178,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     enableMetaVerification: false,
     suppressLowConfidence: false,
     enableReachability: true,
+    enableCodebaseIndex: true,
     tokenBudget: {
       enabled: false,
       maxLinesComplex: 200,

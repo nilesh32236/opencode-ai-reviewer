@@ -1,9 +1,12 @@
 import { promises as fs, existsSync, mkdirSync, readFileSync } from 'fs';
 import * as cp from 'node:child_process';
+import { createHash } from 'node:crypto';
 import * as os from 'os';
 import * as path from 'path';
 import * as core from '@actions/core';
 import { minimatch } from 'minimatch';
+import { CodebaseIndex, CodebaseIndexCache } from './codebase-index/index.js';
+import type { CodebaseIndexData } from './codebase-index/types.js';
 import { conversationThreadId } from './conversation/state.js';
 import type { ConversationStateManager } from './conversation/state.js';
 import type { EventBus } from './event-bus/bus.js';
@@ -247,6 +250,114 @@ export class ReviewEngine {
   }
 
   /**
+   * Run a `git` command asynchronously. Used for the short, once-per-review
+   * probes in the codebase-index path so the review's event loop is not blocked
+   * (important for the long-running Probot App). Rejects when `execFile` is
+   * unavailable or the command fails — callers fall back gracefully.
+   * @param args - Git arguments (excluding the leading `git`).
+   * @param cwd - Directory the command runs in.
+   * @returns The trimmed stdout.
+   */
+  private async execGit(args: string[], cwd: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      if (typeof cp.execFile !== 'function') {
+        reject(new Error('execFile is not available'));
+        return;
+      }
+      cp.execFile('git', args, { cwd, encoding: 'utf-8' }, (err, stdout) => {
+        if (err) {
+          reject(err instanceof Error ? err : new Error(String(err)));
+          return;
+        }
+        resolve(String(stdout).trim());
+      });
+    });
+  }
+
+  /**
+   * Resolve the repository root to index. Uses the git top-level so index
+   * paths are repo-root-relative and match `ChangedFile.path`, even when the
+   * working directory is a package subdirectory of a monorepo. Falls back to
+   * `workDir` when the directory is not a git checkout.
+   * @param workDir - The directory the review runs in.
+   * @returns The absolute repository root to build the codebase index from.
+   */
+  private async resolveCodebaseRoot(workDir: string): Promise<string> {
+    try {
+      const root = await this.execGit(['rev-parse', '--show-toplevel'], workDir);
+      if (root) return root;
+    } catch {
+      // Not a git checkout — index relative to the working directory.
+    }
+    return workDir;
+  }
+
+  /**
+   * Derive the codebase-index cache key. Keying solely on `headSha` would serve
+   * a stale index during the autofix loop, where the working tree changes
+   * between re-reviews of the same ref. A working-tree fingerprint (hash of
+   * `git status --porcelain`) makes the cache invalidate whenever the tree
+   * changes; a clean checkout keeps the stable `headSha` key.
+   * @param headSha - The PR head SHA.
+   * @param repoRoot - The repository root the index is built from.
+   * @returns The cache key to store/load the index under.
+   */
+  private async codebaseIndexCacheKey(headSha: string, repoRoot: string): Promise<string> {
+    try {
+      const porcelain = await this.execGit(['status', '--porcelain'], repoRoot);
+      if (porcelain === '') return headSha;
+      const digest = createHash('sha256').update(porcelain).digest('hex').slice(0, 16);
+      return `${headSha}-${digest}`;
+    } catch {
+      return headSha;
+    }
+  }
+
+  /**
+   * Resolve the codebase-index cache directory. The cache is stored OUTSIDE the
+   * git checkout (under the OS temp dir, namespaced by the repository root) so
+   * attacker-controlled PR content committed to the tree can never be loaded as
+   * a trusted index, and so CI runs on a fresh checkout do not write (and
+   * potentially commit) multi-MB JSON inside the workspace.
+   * @param repoRoot - The repository root the index is built from.
+   * @returns The absolute cache directory for this repository.
+   */
+  private codebaseIndexCacheDir(repoRoot: string): string {
+    const digest = createHash('sha256').update(path.resolve(repoRoot)).digest('hex').slice(0, 16);
+    return path.join(os.tmpdir(), 'opencode-codebase-index', digest);
+  }
+
+  /**
+   * Build the injected cross-file codebase context for a set of changed files.
+   * Filters out empty/missing paths and catches formatting failures so a
+   * corrupt index can never fail the whole review — it degrades to a diff-only
+   * review instead.
+   * @param index - The codebase index engine (undefined when disabled/failed).
+   * @param data - The loaded index data (undefined when disabled/failed).
+   * @param files - Changed files to derive context for.
+   * @returns The formatted cross-file markdown context, or '' when unavailable.
+   */
+  private formatCodebaseContext(
+    index: CodebaseIndex | undefined,
+    data: CodebaseIndexData | undefined,
+    files: Array<{ path?: string }>,
+  ): string {
+    if (!index || !data) return '';
+    const paths = files
+      .map((f) => f?.path)
+      .filter((p): p is string => typeof p === 'string' && Boolean(p));
+    if (paths.length === 0) return '';
+    try {
+      return index.formatContext(index.getContextForFiles(data, paths));
+    } catch (err) {
+      core.warning(
+        `Codebase index context skipped: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return '';
+    }
+  }
+
+  /**
    * Resolve the model for a specific pipeline stage, falling back to reviewModel.
    * @param stageField - Optional per-stage model field name from AgentConfig.
    * @returns The resolved model string.
@@ -401,6 +512,43 @@ export class ReviewEngine {
       );
     }
 
+    // Build a ref-keyed codebase index and extract cross-file context for the
+    // changed files. Non-critical: indexing failures degrade gracefully to a
+    // review without cross-file context. This runs only after the exclude /
+    // skip early-returns so fully-excluded reviews never pay the indexing cost.
+    // The index is rooted at the git repo top-level so index-relative file
+    // paths match the repo-root-relative `ChangedFile.path` values even when
+    // `workDir` is a package subdirectory of a monorepo.
+    let codebaseIndex: CodebaseIndex | undefined;
+    let codebaseIndexData: CodebaseIndexData | undefined;
+    if (this.config.review.enableCodebaseIndex) {
+      try {
+        const indexRoot = await this.resolveCodebaseRoot(workDir);
+        const indexEngine = new CodebaseIndex(
+          new CodebaseIndexCache(this.codebaseIndexCacheDir(indexRoot)),
+        );
+        const cacheKey = await this.codebaseIndexCacheKey(pr.headSha, indexRoot);
+        const startedAt = Date.now();
+        codebaseIndexData = await indexEngine.buildOrLoad(indexRoot, cacheKey);
+        const buildMs = Date.now() - startedAt;
+        codebaseIndex = indexEngine;
+        core.info(
+          `Codebase index ready: ${codebaseIndexData.symbols.length} symbols, ` +
+            `${codebaseIndexData.imports.length} imports, ${codebaseIndexData.callGraph.length} call edges ` +
+            `(built in ${buildMs}ms)`,
+        );
+        if (buildMs > 5000) {
+          core.warning(
+            `Codebase index build took ${buildMs}ms (>5s) — consider excluding non-source directories`,
+          );
+        }
+      } catch (err) {
+        core.warning(
+          `Codebase index build skipped: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
     // Calculate total diff size for budget mode selection. Diff lines are derived
     // from the always-accurate additions/deletions counters (the patch field can
     // be null for binary files and truncated/omitted for very large files).
@@ -462,6 +610,11 @@ export class ReviewEngine {
 
     // If PR is small enough for a single batch, skip concurrent processing
     if (files.length <= batchSize) {
+      const codebaseIndexContext = this.formatCodebaseContext(
+        codebaseIndex,
+        codebaseIndexData,
+        files,
+      );
       const prompt = buildReviewPrompt(
         {
           projectContext: this.config.projectContext.description || undefined,
@@ -478,6 +631,7 @@ export class ReviewEngine {
           linterResults,
           budgetMode,
           totalDiffLines,
+          codebaseIndexContext,
         },
       );
 
@@ -587,6 +741,12 @@ export class ReviewEngine {
             ? batchContext + '\n\n## Library Documentation\n' + mcpDocs
             : batchContext;
 
+          const batchCodebaseContext = this.formatCodebaseContext(
+            codebaseIndex,
+            codebaseIndexData,
+            batch,
+          );
+
           const prompt = buildReviewPrompt(
             {
               projectContext: this.config.projectContext.description || undefined,
@@ -601,6 +761,7 @@ export class ReviewEngine {
               deltaContext,
               previousBotComments,
               linterResults,
+              codebaseIndexContext: batchCodebaseContext,
             },
           );
 

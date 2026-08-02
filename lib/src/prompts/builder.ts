@@ -30,6 +30,8 @@ export interface ReviewPromptOptions {
   budgetMode?: ReviewBudgetMode;
   /** Total diff line count reported in the budget banner. */
   totalDiffLines?: number;
+  /** Cross-file codebase context (exported symbols, imports, call graph) for the changed files. */
+  codebaseIndexContext?: string;
 }
 
 /**
@@ -45,6 +47,9 @@ export interface ReviewPromptOptions {
  * @param budgetMode - Optional budget review mode selected from PR diff size (legacy positional; prefer options).
  * @param totalDiffLines - Optional total diff line count used for budget banners (legacy positional; prefer options).
  * @returns The assembled review prompt string.
+ *
+ * Cross-file context can be supplied via `options.codebaseIndexContext` and is
+ * injected as a dedicated `## Codebase Context (Cross-File Analysis)` section.
  */
 export function buildReviewPrompt(
   inputs: PromptBuilderInputs,
@@ -85,6 +90,7 @@ export function buildReviewPrompt(
   const linterRes = options.linterResults ?? linterResults;
   const effectiveBudgetMode = options.budgetMode ?? budgetMode;
   const effectiveTotalDiffLines = options.totalDiffLines ?? totalDiffLines;
+  const codebaseIndexCtx = options.codebaseIndexContext;
 
   if (inputs.reviewPromptFile) {
     const customPrompt = loadPromptFile(inputs.reviewPromptFile);
@@ -252,6 +258,16 @@ export function buildReviewPrompt(
     for (const lesson of lessons) {
       sections.push(`- ${lesson}`);
     }
+  }
+
+  if (codebaseIndexCtx && effectiveBudgetMode !== 'split') {
+    sections.push('\n## Codebase Context (Cross-File Analysis)');
+    sections.push('');
+    sections.push(
+      'The following cross-file relationships were detected. Use this context to detect import issues, duplicate symbols, missing exports, and broken callers across the codebase:',
+    );
+    sections.push('');
+    sections.push(codebaseIndexCtx);
   }
 
   if (prevFindings && prevFindings.length > 0) {

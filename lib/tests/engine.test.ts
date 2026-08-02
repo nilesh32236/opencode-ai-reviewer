@@ -1,3 +1,5 @@
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentConfig, PRContext, ReviewResult } from '../src/types/index.js';
 import { DEFAULT_CONFIG } from '../src/types/index.js';
@@ -149,10 +151,18 @@ vi.mock('@actions/core', () => ({
   debug: vi.fn(),
 }));
 
-vi.mock('node:child_process', () => ({
-  execFileSync: vi.fn(),
-  spawnSync: vi.fn(),
-}));
+vi.mock('node:child_process', async () => {
+  const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+  return {
+    execFileSync: vi.fn(),
+    spawnSync: vi.fn(),
+    // execFile backs the codebase-index async git probes. A default
+    // implementation is re-applied in beforeEach so the probes report an empty
+    // stdout (falling back to workDir, matching pre-async behavior) and never
+    // hang the review; individual tests override it with mockImplementation.
+    execFile: vi.fn(actual.execFile),
+  };
+});
 
 vi.mock('fs', async () => {
   const actual = await vi.importActual<typeof import('fs')>('fs');
@@ -162,6 +172,10 @@ vi.mock('fs', async () => {
       readFile: vi.fn(),
       unlink: vi.fn(),
       appendFile: vi.fn(),
+      // The async codebase-index walk uses the real async directory listing.
+      readdir: actual.promises.readdir,
+      stat: actual.promises.stat,
+      mkdir: actual.promises.mkdir,
     },
   };
 });
@@ -208,6 +222,13 @@ describe('ReviewEngine', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
+    // Default git probe behavior for the codebase-index path: report empty
+    // stdout so resolveCodebaseRoot falls back to the working directory (the
+    // pre-async behavior) and the cache key stays the bare headSha.
+    vi.mocked(cp.execFile).mockImplementation((_cmd, _args, _opts, cb) => {
+      const callback = cb as (err: Error | null, stdout?: string) => void;
+      callback(null, '');
+    });
     mockAdapter = createMockAdapter();
     engine = new ReviewEngine(makeConfig(), mockAdapter);
   });
@@ -491,6 +512,76 @@ describe('ReviewEngine', () => {
         expect(result.issues).toHaveLength(1);
         expect(result.stats.total).toBe(1);
       });
+    });
+
+    it('builds the codebase index from the git repo root so cross-file context matches in a monorepo subdirectory', async () => {
+      // Repo-root-relative ChangedFile.path values (e.g. "packages/app/src/util.ts")
+      // only match index entries when the index is rooted at the git top-level,
+      // not at the working directory (packages/app).
+      const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codebase-repo-'));
+      const appDir = path.join(repoRoot, 'packages', 'app');
+      fs.mkdirSync(path.join(appDir, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(appDir, 'src', 'util.ts'), 'export function helper(): void {}');
+      fs.writeFileSync(
+        path.join(appDir, 'src', 'consumer.ts'),
+        "import { helper } from './util.js';\nexport function run(): void { helper(); }",
+      );
+      try {
+        vi.mocked(cp.execFile).mockImplementation(((
+          _cmd: string,
+          args: unknown,
+          _opts: unknown,
+          cb: unknown,
+        ) => {
+          const argList = args as string[];
+          const callback = cb as (err: Error | null, stdout: string) => void;
+          if (argList[0] === 'rev-parse') {
+            callback(null, `${repoRoot}\n`);
+            return;
+          }
+          if (argList[0] === 'status') {
+            callback(null, '');
+            return;
+          }
+          callback(null, '');
+        }) as typeof cp.execFile);
+
+        const monorepoPr = makePRContext({
+          changedFiles: [
+            {
+              path: 'packages/app/src/util.ts',
+              status: 'modified',
+              additions: 1,
+              deletions: 0,
+            },
+          ],
+        });
+        const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+        mockRunOpenCode.mockResolvedValue({
+          success: true,
+          output: '',
+          durationMs: 1000,
+          tokensUsed: 100,
+        });
+        mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+        await eng.reviewPR(
+          monorepoPr,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          appDir,
+        );
+
+        const optionsArg = mockBuildReviewPrompt.mock.calls[0][2] as {
+          codebaseIndexContext?: string;
+        };
+        expect(optionsArg.codebaseIndexContext ?? '').toContain('helper');
+      } finally {
+        fs.rmSync(repoRoot, { recursive: true, force: true });
+      }
     });
   });
 
