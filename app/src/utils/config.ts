@@ -87,6 +87,9 @@ export function buildConfig(): AgentConfig {
       ...(process.env.ENABLE_REACHABILITY !== undefined
         ? { enableReachability: process.env.ENABLE_REACHABILITY !== 'false' }
         : {}),
+      ...(process.env.ENABLE_META_VERIFICATION !== undefined
+        ? { enableMetaVerification: process.env.ENABLE_META_VERIFICATION !== 'false' }
+        : {}),
       ...(process.env.ENABLE_CODEBASE_INDEX !== undefined
         ? { enableCodebaseIndex: process.env.ENABLE_CODEBASE_INDEX !== 'false' }
         : {}),
@@ -219,8 +222,9 @@ export function buildConfig(): AgentConfig {
  * tuning is applied here at the point where a repo working directory exists.
  *
  * Only the `review.sensitivity` / `review.categories` / `review.enableCodebaseIndex`
- * fields are merged (the engine filters findings off those fields and respects
- * the codebase-index toggle); all other config-file sections remain Action-only.
+ * / `review.enableMetaVerification` fields are merged (the engine filters findings
+ * off those fields and respects the codebase-index / meta-verification toggles);
+ * all other config-file sections remain Action-only.
  * Unknown/malformed config files degrade gracefully to the
  * base config so a broken repo config never breaks the review.
  *
@@ -234,7 +238,15 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const sensitivity = repoConfig?.review?.sensitivity;
   const categories = repoConfig?.review?.categories;
   const enableCodebaseIndex = repoConfig?.review?.enableCodebaseIndex;
-  if (!sensitivity && !categories && enableCodebaseIndex === undefined) return baseConfig;
+  const enableMetaVerification = repoConfig?.review?.enableMetaVerification;
+  if (
+    !sensitivity &&
+    !categories &&
+    enableCodebaseIndex === undefined &&
+    enableMetaVerification === undefined
+  ) {
+    return baseConfig;
+  }
   return {
     ...baseConfig,
     review: {
@@ -247,6 +259,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       }),
       ...(categories && { categories }),
       ...(enableCodebaseIndex !== undefined && { enableCodebaseIndex }),
+      ...(enableMetaVerification !== undefined && { enableMetaVerification }),
     },
   };
 }

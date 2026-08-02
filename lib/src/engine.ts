@@ -1616,11 +1616,14 @@ export class ReviewEngine {
 
         if (runResult.success) {
           const outputPath = path.join(workDir, '.opencode', 'verification-output.jsonl');
-          if (existsSync(outputPath)) {
+          if (!existsSync(outputPath)) {
+            core.warning('Meta-verification output file not found, retaining enriched result');
+          } else {
             const content = await fs.readFile(outputPath, 'utf-8');
             const lines = content.split('\n').filter((l) => l.trim());
 
             const validIndices = new Set<number>();
+            let parsedCount = 0;
             for (const line of lines) {
               try {
                 const parsed = JSON.parse(line.trim());
@@ -1631,6 +1634,7 @@ export class ReviewEngine {
                   parsed.issueIndex >= 0 &&
                   parsed.issueIndex < enrichedResult.issues.length
                 ) {
+                  parsedCount++;
                   if (parsed.valid === true) {
                     validIndices.add(parsed.issueIndex);
                   }
@@ -1640,42 +1644,55 @@ export class ReviewEngine {
               }
             }
 
-            if (validIndices.size > 0) {
-              const verifiedIssues = enrichedResult.issues.filter((_, idx) =>
-                validIndices.has(idx),
+            if (parsedCount === 0) {
+              core.warning(
+                'Meta-verification produced no usable verification output, retaining enriched result',
               );
-              const droppedCount = enrichedResult.issues.length - verifiedIssues.length;
+            } else {
+              const keptCount = validIndices.size;
+              const agreementRate = (keptCount / enrichedResult.issues.length) * 100;
+              core.info(
+                `Verification agreement rate: ${agreementRate.toFixed(1)}% ` +
+                  `(${keptCount}/${enrichedResult.issues.length} issues kept by verification model)`,
+              );
 
-              if (droppedCount > 0) {
+              if (validIndices.size > 0) {
+                const verifiedIssues = enrichedResult.issues.filter((_, idx) =>
+                  validIndices.has(idx),
+                );
+                const droppedCount = enrichedResult.issues.length - verifiedIssues.length;
+
+                if (droppedCount > 0) {
+                  core.info(
+                    `Meta-verification dropped ${droppedCount} false-positive finding(s) (kept ${verifiedIssues.length})`,
+                  );
+                }
+
+                const counts = verifiedIssues.reduce(
+                  (acc, i) => {
+                    if (i.severity === 'critical') acc.critical++;
+                    else if (i.severity === 'important') acc.important++;
+                    else if (i.severity === 'minor') acc.minor++;
+                    return acc;
+                  },
+                  { critical: 0, important: 0, minor: 0 },
+                );
+
+                enrichedResult = {
+                  ...enrichedResult,
+                  issues: verifiedIssues,
+                  stats: {
+                    total: verifiedIssues.length,
+                    critical: counts.critical,
+                    important: counts.important,
+                    minor: counts.minor,
+                  },
+                };
+              } else {
                 core.info(
-                  `Meta-verification dropped ${droppedCount} false-positive finding(s) (kept ${verifiedIssues.length})`,
+                  'Meta-verification produced no valid verification entries — retaining enriched result',
                 );
               }
-
-              const counts = verifiedIssues.reduce(
-                (acc, i) => {
-                  if (i.severity === 'critical') acc.critical++;
-                  else if (i.severity === 'important') acc.important++;
-                  else if (i.severity === 'minor') acc.minor++;
-                  return acc;
-                },
-                { critical: 0, important: 0, minor: 0 },
-              );
-
-              enrichedResult = {
-                ...enrichedResult,
-                issues: verifiedIssues,
-                stats: {
-                  total: verifiedIssues.length,
-                  critical: counts.critical,
-                  important: counts.important,
-                  minor: counts.minor,
-                },
-              };
-            } else {
-              core.info(
-                'Meta-verification produced no valid verification entries — retaining enriched result',
-              );
             }
           }
         } else {

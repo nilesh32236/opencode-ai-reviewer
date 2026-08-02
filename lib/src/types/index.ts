@@ -1025,6 +1025,8 @@ export interface PromptConfig {
     tokenBudget?: TokenBudgetConfig;
     /** Enable lightweight reachability analysis on security findings (default: true) */
     enableReachability?: boolean;
+    /** Enable the meta-verification pass that drops false-positive findings (default: false) */
+    enableMetaVerification?: boolean;
     /** Enable codebase indexing for cross-file review context (default: true) */
     enableCodebaseIndex?: boolean;
     /** Budget-based review configuration for large PRs */

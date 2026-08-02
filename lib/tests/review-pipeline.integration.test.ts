@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as core from '@actions/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFIG } from '../src/types/index.js';
 import {
@@ -8,8 +9,10 @@ import {
   SAMPLE_BATCH_B_JSONL,
   SAMPLE_SYNTHESIS_JSONL,
   SAMPLE_VALID_JSONL,
+  SAMPLE_VERIFICATION_ALL_INVALID_JSONL,
   SAMPLE_VERIFICATION_JSONL,
   makeAgentConfig,
+  makeMetaVerificationConfig,
   makePRContext,
 } from './helpers/mock-factories.js';
 
@@ -60,6 +63,24 @@ vi.mock('node:child_process', () => ({
 
 import { ReviewEngine } from '../src/engine.js';
 import { GitHubHelper } from '../src/utils/github.js';
+
+interface RunOpenCodeOptions {
+  model: string;
+  workingDirectory?: string;
+}
+
+/**
+ * Locate the meta-verification runOpenCode call semantically (by prompt marker)
+ * instead of by call position, so the assertion stays correct even if the
+ * pipeline gains an intermediate opencode stage (e.g. a synthesis pass).
+ */
+function findVerificationCall(): { prompt: string; options: RunOpenCodeOptions } | undefined {
+  const call = mockRunOpenCode.mock.calls.find(
+    (c) => typeof c[0] === 'string' && c[0].includes('# Verification Pass'),
+  );
+  if (!call) return undefined;
+  return { prompt: call[0] as string, options: call[1] as RunOpenCodeOptions };
+}
 
 describe('Review Pipeline Integration', () => {
   let engine: ReviewEngine;
@@ -426,23 +447,7 @@ describe('Review Pipeline Integration', () => {
   });
 
   it('i) meta-verification loop filters false positives', async () => {
-    engine = new ReviewEngine(
-      makeAgentConfig({
-        enableMCP: false,
-        mcpServers: [],
-        review: {
-          ...DEFAULT_CONFIG.review,
-          enableMetaVerification: true,
-          skipLabels: DEFAULT_CONFIG.review.skipLabels,
-          skipActors: DEFAULT_CONFIG.review.skipActors,
-          inline: DEFAULT_CONFIG.review.inline,
-          requireVerdict: DEFAULT_CONFIG.review.requireVerdict,
-          commandTriggers: DEFAULT_CONFIG.review.commandTriggers,
-          excludePatterns: DEFAULT_CONFIG.review.excludePatterns,
-        },
-      }),
-      gh,
-    );
+    engine = new ReviewEngine(makeMetaVerificationConfig(), gh);
     const pr = makePRContext();
 
     fixtureQueue.push(
@@ -463,6 +468,122 @@ describe('Review Pipeline Integration', () => {
     expect(result.stats.total).toBe(2);
     expect(result.issues[0].message).toContain('hardcoded');
     expect(result.issues[1].message).toContain('Unused import');
+
+    // Agreement rate is logged as a quality metric (2 of 3 issues kept = 66.7%)
+    expect(vi.mocked(core.info)).toHaveBeenCalledWith(
+      expect.stringContaining('Verification agreement rate: 66.7%'),
+    );
+  });
+
+  it('i2) meta-verification uses verificationModel when configured', async () => {
+    const verificationModel = 'anthropic/claude-4-sonnet';
+    engine = new ReviewEngine(makeMetaVerificationConfig({ verificationModel }), gh);
+    const pr = makePRContext();
+
+    fixtureQueue.push(
+      { content: SAMPLE_VALID_JSONL },
+      { content: SAMPLE_VALID_JSONL, verification: SAMPLE_VERIFICATION_JSONL },
+    );
+
+    const result = await engine.reviewPR(pr);
+
+    expect(mockRunOpenCode).toHaveBeenCalledTimes(2);
+    // First call = batch review, verification pass located semantically
+    expect(mockRunOpenCode.mock.calls[0][1]).toMatchObject({
+      model: DEFAULT_CONFIG.reviewModel,
+    });
+    expect(findVerificationCall()?.options.model).toBe(verificationModel);
+    expect(result.issues).toHaveLength(2);
+  });
+
+  it('i3) meta-verification falls back to reviewModel when verificationModel unset', async () => {
+    engine = new ReviewEngine(makeMetaVerificationConfig(), gh);
+    const pr = makePRContext();
+
+    fixtureQueue.push(
+      { content: SAMPLE_VALID_JSONL },
+      { content: SAMPLE_VALID_JSONL, verification: SAMPLE_VERIFICATION_JSONL },
+    );
+
+    const result = await engine.reviewPR(pr);
+
+    expect(mockRunOpenCode).toHaveBeenCalledTimes(2);
+    expect(findVerificationCall()?.options.model).toBe(DEFAULT_CONFIG.reviewModel);
+    expect(result.issues).toHaveLength(2);
+  });
+
+  it('i4) meta-verification logs 0% agreement when every issue is rejected', async () => {
+    engine = new ReviewEngine(makeMetaVerificationConfig(), gh);
+    const pr = makePRContext();
+
+    fixtureQueue.push(
+      { content: SAMPLE_VALID_JSONL },
+      {
+        content: SAMPLE_VALID_JSONL,
+        verification: SAMPLE_VERIFICATION_ALL_INVALID_JSONL,
+      },
+    );
+
+    const result = await engine.reviewPR(pr);
+
+    // The agreement rate is logged even when the verification model drops every
+    // issue (0% agreement) — the exact signal monitoring must surface.
+    expect(vi.mocked(core.info)).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'Verification agreement rate: 0.0% (0/3 issues kept by verification model)',
+      ),
+    );
+    // All-rejected verification retains the enriched result (no valid entries)
+    expect(result.issues).toHaveLength(3);
+  });
+
+  it('i5) meta-verification warns (no agreement rate) when output file is missing', async () => {
+    engine = new ReviewEngine(makeMetaVerificationConfig(), gh);
+    const pr = makePRContext();
+
+    fixtureQueue.push(
+      { content: SAMPLE_VALID_JSONL },
+      // Verification pass succeeds but never writes verification-output.jsonl
+      { content: SAMPLE_VALID_JSONL },
+    );
+
+    const result = await engine.reviewPR(pr);
+
+    expect(mockRunOpenCode).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(core.warning)).toHaveBeenCalledWith(
+      expect.stringContaining('Meta-verification output file not found'),
+    );
+    // A missing output must not fabricate a misleading agreement-rate line.
+    expect(vi.mocked(core.info)).not.toHaveBeenCalledWith(
+      expect.stringContaining('Verification agreement rate'),
+    );
+    expect(result.issues).toHaveLength(3);
+  });
+
+  it('i6) meta-verification warns (no agreement rate) when output has no usable entries', async () => {
+    engine = new ReviewEngine(makeMetaVerificationConfig(), gh);
+    const pr = makePRContext();
+
+    fixtureQueue.push(
+      { content: SAMPLE_VALID_JSONL },
+      {
+        content: SAMPLE_VALID_JSONL,
+        verification:
+          'this is not valid json\n{"type":"strength","file":"x.ts","line":1,"message":"ok"}',
+      },
+    );
+
+    const result = await engine.reviewPR(pr);
+
+    expect(mockRunOpenCode).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(core.warning)).toHaveBeenCalledWith(
+      expect.stringContaining('Meta-verification produced no usable verification output'),
+    );
+    // Malformed output is not conflated with the model actively rejecting findings.
+    expect(vi.mocked(core.info)).not.toHaveBeenCalledWith(
+      expect.stringContaining('Verification agreement rate'),
+    );
+    expect(result.issues).toHaveLength(3);
   });
 
   it('j) file exclusion filters excluded files from batches', async () => {

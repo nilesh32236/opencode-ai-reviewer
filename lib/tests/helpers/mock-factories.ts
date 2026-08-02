@@ -38,6 +38,27 @@ export function makeAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConf
   };
 }
 
+/**
+ * Build an AgentConfig with the meta-verification pass enabled, used by the
+ * review-pipeline integration tests. Individual toggles still default to
+ * DEFAULT_CONFIG.review values unless overridden.
+ *
+ * @param overrides - Optional AgentConfig overrides (e.g. `verificationModel`).
+ * @returns An AgentConfig with `review.enableMetaVerification` enabled.
+ */
+export function makeMetaVerificationConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
+  return makeAgentConfig({
+    enableMCP: false,
+    mcpServers: [],
+    ...overrides,
+    review: {
+      ...DEFAULT_CONFIG.review,
+      enableMetaVerification: true,
+      ...((overrides.review || {}) as Record<string, unknown>),
+    },
+  });
+}
+
 export function makeReviewResult(overrides: Partial<ReviewResult> = {}): ReviewResult {
   return {
     summary: 'Review summary.',
@@ -127,4 +148,10 @@ export const SAMPLE_VERIFICATION_JSONL = [
   '{"type":"verification","issueIndex":0,"valid":true,"reasoning":"Confirmed — hardcoded secret is a real issue."}',
   '{"type":"verification","issueIndex":1,"valid":false,"reasoning":"False positive — JWT lib handles expiration by default."}',
   '{"type":"verification","issueIndex":2,"valid":true,"reasoning":"Confirmed — unused import should be removed."}',
+].join('\n');
+
+export const SAMPLE_VERIFICATION_ALL_INVALID_JSONL = [
+  '{"type":"verification","issueIndex":0,"valid":false,"reasoning":"False positive."}',
+  '{"type":"verification","issueIndex":1,"valid":false,"reasoning":"False positive."}',
+  '{"type":"verification","issueIndex":2,"valid":false,"reasoning":"False positive."}',
 ].join('\n');
