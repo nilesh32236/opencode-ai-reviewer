@@ -66,12 +66,14 @@ Then point `PRIVATE_KEY_PATH` at the mounted location (e.g. `/app/private-key.pe
 
 ### Environment Variables
 
-The compose file references the root `.env` via `env_file: ../.env` and mirrors the most important variables inline with `${VAR:-default}` defaults. All documented variables (including `RATE_LIMIT_*` and `TYPECHECK_COMMANDS`) are read from `.env`. For a full list, see [`.env.example`](.env.example).
+The compose file loads the root `.env` via `env_file: ../.env`, which is the **sole source** for credentials and every other variable (including `RATE_LIMIT_*` and `TYPECHECK_COMMANDS`). For a full list, see [`.env.example`](.env.example).
 
-`--env-file .env` makes Compose use the root `.env` for interpolating the `${VAR}` / `${VAR:-default}` entries in the `environment:` block. Without it, those entries interpolate from the shell or the project-directory `.env` (defaults to `docker/`), so empty interpolations would overwrite the values loaded via `env_file`. Shell variables still take precedence over `.env` values, e.g.:
+Only six variables are mirrored inline with `${VAR:-default}` defaults (`LOG_LEVEL`, `REVIEW_MODEL`, `FIX_MODEL`, `BATCH_SIZE`, `MAX_ITERATIONS`, `PORT`) so the container starts with sane values even for a minimal `.env`. Nothing else is redeclared in the `environment:` block, because `environment:` always overrides `env_file` — a bare `${VAR}` interpolated to an empty string would clobber the `.env` value.
+
+`--env-file .env` makes Compose interpolate those six entries from the root `.env` instead of the shell or the project-directory `.env` (defaults to `docker/`), so your custom values are honored. Shell variables still take precedence over `.env` for those six variables, e.g.:
 
 ```bash
-GITHUB_TOKEN=ghp_xxx OPENAI_API_KEY=sk-xxx docker compose -f docker/docker-compose.yml --env-file .env up
+LOG_LEVEL=debug REVIEW_MODEL=opencode/custom docker compose -f docker/docker-compose.yml --env-file .env up
 ```
 
 ### Startup Validation
