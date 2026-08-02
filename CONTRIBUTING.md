@@ -123,6 +123,7 @@ This is a **pnpm monorepo** with three packages (`lib`, `action`, `app`). The `a
 
 | Command            | Description                        |
 | ------------------ | ---------------------------------- |
+| `pnpm install`     | Install all workspace dependencies |
 | `pnpm build`       | Compile all packages recursively   |
 | `pnpm test`        | Run all unit tests (Vitest)        |
 | `pnpm lint`        | Check code style with Biome        |
