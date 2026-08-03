@@ -276,14 +276,79 @@ describe('runAudit (action wrapper)', () => {
       mockGh,
     );
 
+    // The reserved characters are normalized to hyphens and a deterministic
+    // hash of the original category is appended so colliding slugs stay unique.
     expect(mockPaginate).toHaveBeenCalledWith(
-      '/issues?state=open&labels=audit:my-audit-prompt',
+      '/issues?state=open&labels=audit:my-audit-prompt-jexvst',
       expect.anything(),
     );
     expect(mockCreateIssue).toHaveBeenCalledWith(
-      expect.stringContaining('[Audit:my-audit-prompt]'),
+      expect.stringContaining('[Audit:my-audit-prompt-jexvst]'),
       expect.any(String),
-      expect.arrayContaining(['audit:my-audit-prompt']),
+      expect.arrayContaining(['audit:my-audit-prompt-jexvst']),
+    );
+  });
+
+  it('keeps distinct categories that normalize to the same slug separate', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'auth & access.md'), '# Auth access prompt');
+    fs.writeFileSync(path.join(tmpDir, 'auth # access.md'), '# Auth access prompt 2');
+    mockCreateIssue.mockResolvedValue({
+      number: 60,
+      url: 'https://github.com/owner/repo/issues/60',
+    });
+
+    const auditConfig = makeConfig({
+      audit: {
+        promptsDir: tmpDir,
+        targetDirs: [],
+        autoFix: true,
+        triggerLabel: 'autofix-trigger',
+        issueSeverityThreshold: 'important',
+      },
+    } as AgentConfig);
+
+    mockGetInput.mockImplementation((name: string) => {
+      if (name === 'audit-prompts-dir') {
+        return tmpDir;
+      }
+      if (name === 'audit-prompt-name') {
+        return 'auth & access';
+      }
+      return '';
+    });
+    await runAudit(makeInputs({ auditCreateIssues: true }), auditConfig, mockEngine, mockGh);
+
+    mockGetInput.mockImplementation((name: string) => {
+      if (name === 'audit-prompts-dir') {
+        return tmpDir;
+      }
+      if (name === 'audit-prompt-name') {
+        return 'auth # access';
+      }
+      return '';
+    });
+    await runAudit(makeInputs({ auditCreateIssues: true }), auditConfig, mockEngine, mockGh);
+
+    // "auth & access" and "auth # access" both normalize to "auth-access", so
+    // the deterministic hash suffix must keep them from sharing a label, query,
+    // title prefix, or issue.
+    expect(mockPaginate).toHaveBeenCalledWith(
+      '/issues?state=open&labels=audit:auth-access-bvdrze',
+      expect.anything(),
+    );
+    expect(mockPaginate).toHaveBeenCalledWith(
+      '/issues?state=open&labels=audit:auth-access-rb556v',
+      expect.anything(),
+    );
+    expect(mockCreateIssue).toHaveBeenCalledWith(
+      expect.stringContaining('[Audit:auth-access-bvdrze]'),
+      expect.any(String),
+      expect.arrayContaining(['audit:auth-access-bvdrze']),
+    );
+    expect(mockCreateIssue).toHaveBeenCalledWith(
+      expect.stringContaining('[Audit:auth-access-rb556v]'),
+      expect.any(String),
+      expect.arrayContaining(['audit:auth-access-rb556v']),
     );
   });
 

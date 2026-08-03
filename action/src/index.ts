@@ -10,6 +10,7 @@ import {
   GitHubHelper,
   GitLabAdapter,
   LearningStore,
+  Logger,
   type MCPServerConfig,
   MCPServerConfigSchema,
   type PlatformAdapter,
@@ -45,12 +46,14 @@ class StateCacheManager {
   private readonly cacheKeyPrefix: string;
   private readonly repo: string;
   private readonly branch: string;
+  private readonly logger: Logger;
 
   constructor(cacheKeyPrefix: string, repo?: string, branch?: string) {
     this.cacheKeyPrefix = cacheKeyPrefix;
     this.stateDir = path.resolve(process.cwd(), '.opencode');
     this.repo = repo || `${github.context.repo.owner}/${github.context.repo.repo}`;
     this.branch = branch || github.context.ref.replace('refs/heads/', '');
+    this.logger = new Logger('StateCache', { repo: this.repo, branch: this.branch });
   }
 
   private getLearningDbMtime(): number {
@@ -80,7 +83,12 @@ class StateCacheManager {
         core.info('No cached learning state found — starting fresh');
       }
     } catch (error) {
-      core.warning(sanitize(`Failed to restore learning state cache: ${error}`));
+      const message = `Failed to restore learning state cache: ${error}`;
+      core.warning(sanitize(message));
+      this.logger.warn('Failed to restore learning state cache', {
+        operation: 'cache.restore',
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
 
     this.learningDbMtimeMs = this.getLearningDbMtime();
@@ -109,7 +117,12 @@ class StateCacheManager {
       await saveCache([this.stateDir], cacheKey);
       core.info(`Saved learning state to cache key: ${cacheKey}`);
     } catch (error) {
-      core.warning(sanitize(`Failed to save learning state cache: ${error}`));
+      const message = `Failed to save learning state cache: ${error}`;
+      core.warning(sanitize(message));
+      this.logger.warn('Failed to save learning state cache', {
+        operation: 'cache.save',
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 }
@@ -176,7 +189,12 @@ async function run(): Promise<void> {
           if (result.success) {
             mcpServers = result.data;
           } else {
-            core.warning(sanitize(`Invalid MCP servers config: ${result.error.message}`));
+            const message = `Invalid MCP servers config: ${result.error.message}`;
+            core.warning(sanitize(message));
+            new Logger('MCP').warn('Invalid MCP servers config', {
+              operation: 'mcp.validation',
+              error: result.error.message,
+            });
           }
         } catch {
           core.warning('Invalid MCP servers JSON, using defaults');
@@ -386,7 +404,7 @@ async function run(): Promise<void> {
             if (isPr) {
               await runAutofixLoop(inputs, config, engine, gh, repo, token);
             } else if (issueNum && !isPr) {
-              await runFixIssue(inputs, config, engine, gh, repo, token, gitEmail);
+              await runFixIssue(inputs, config, engine, gh, repo, token);
             } else if (inputs.enableFix) {
               await runAutofixLoop(inputs, config, engine, gh, repo, token);
             } else {
@@ -416,7 +434,7 @@ async function run(): Promise<void> {
         try {
           await learningStore.close();
         } catch (err) {
-          core.warning(`Failed to close learning store: ${err}`);
+          core.warning(sanitize(`Failed to close learning store: ${err}`));
         }
       }
     }

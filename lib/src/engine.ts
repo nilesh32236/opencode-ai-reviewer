@@ -68,6 +68,7 @@ import {
   detectRubyLibraries,
 } from './utils/manifest-detector.js';
 import { analyzeBatchReachability } from './utils/reachability.js';
+import { sanitizeString } from './utils/sanitize.js';
 
 /** Maximum number of batch chunks processed concurrently by `reviewPR`. */
 export const MAX_BATCH_CONCURRENCY = 8;
@@ -607,7 +608,11 @@ export class ReviewEngine {
           mcpDocs = await this.getCachedMcpDocs(libraries);
         }
       } catch (err) {
-        core.warning(`MCP enrichment skipped: ${err instanceof Error ? err.message : String(err)}`);
+        core.warning(
+          sanitizeString(
+            `MCP enrichment skipped: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+        );
       }
     }
 
@@ -1206,7 +1211,11 @@ export class ReviewEngine {
           mcpDocs = await this.getCachedMcpDocs(libraries);
         }
       } catch (err) {
-        core.warning(`MCP enrichment skipped: ${err instanceof Error ? err.message : String(err)}`);
+        core.warning(
+          sanitizeString(
+            `MCP enrichment skipped: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+        );
       }
     }
 
@@ -1342,7 +1351,11 @@ export class ReviewEngine {
           mcpDocs = await this.getCachedMcpDocs(libraries);
         }
       } catch (err) {
-        core.warning(`MCP enrichment skipped: ${err instanceof Error ? err.message : String(err)}`);
+        core.warning(
+          sanitizeString(
+            `MCP enrichment skipped: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+        );
       }
     }
 

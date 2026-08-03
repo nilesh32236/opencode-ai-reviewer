@@ -261,6 +261,23 @@ These values can also be set via environment variables (`CONVERSATION_MAX_TURNS`
 
 The reviewer uses MCP (Model Context Protocol) servers for context enrichment. Both local (stdio) and remote (HTTP SSE) servers are supported.
 
+### Action Input (`mcp-servers`)
+
+When running as a GitHub Action, trusted servers can be configured directly via the `mcp-servers` input (used only when `enable_mcp: 'true'`) as a JSON array, e.g.:
+
+```yaml
+- uses: nilesh32236/opencode-ai-reviewer@v1
+  with:
+    enable_mcp: 'true'
+    mcp-servers: |
+      [
+        { "name": "context7", "type": "local", "command": ["npx", "-y", "--quiet", "@upstash/context7-mcp"] },
+        { "name": "my-remote-mcp", "type": "remote", "url": "https://mcp.example.com/sse", "environment": { "Authorization": "Bearer ${MCP_AUTH_TOKEN}" } }
+      ]
+```
+
+Each entry is validated against the `MCPServerConfig` schema (`name`, `type` `"local"`/`"remote"`, `command[]`, `url`, `environment`, `timeoutMs`, `allowedTools[]`). **SECURITY:** any enabled server receives `GITHUB_TOKEN` as an env var and is fetched from npm at runtime — only configure trusted servers.
+
 ### Local Servers
 
 ```yaml

@@ -160,8 +160,6 @@ export async function runFix(
  * @param gh - GitHub API helper.
  * @param _repo - Repository string (owner/repo).
  * @param _token - GitHub authentication token.
- * @param gitEmail - Git author email configured for the bot (used to verify that
- * an existing `autofix/issue-N` branch is bot-authored before reusing it).
  */
 export async function runFixIssue(
   inputs: ActionInputs,
@@ -170,7 +168,6 @@ export async function runFixIssue(
   gh: PlatformAdapter,
   _repo: string,
   _token: string,
-  gitEmail: string,
 ): Promise<void> {
   const issueNumber = await resolvePrNumber();
   if (!issueNumber) {
@@ -193,36 +190,16 @@ export async function runFixIssue(
   const branchName = `autofix/issue-${issueNumber}`;
 
   const defaultBranch = await gh.getDefaultBranch();
-  const existingRef = await exec
-    .getExecOutput('git', ['rev-parse', '--verify', `origin/${branchName}`], {
-      ignoreReturnCode: true,
-    })
-    .catch(() => ({ exitCode: 1, stdout: '', stderr: '' }));
 
-  if (existingRef.exitCode === 0) {
-    // Only reuse the existing deterministic `autofix/issue-N` branch when its
-    // tip is bot-authored. A stale or attacker-seeded branch under that name
-    // (any collaborator with push access can create it) must never become the
-    // base of the fix PR, since it is later force-pushed. Recreate from the
-    // default branch otherwise.
-    const tipEmail = await exec
-      .getExecOutput('git', ['log', '-1', '--format=%ae', `origin/${branchName}`], {
-        ignoreReturnCode: true,
-      })
-      .then((r) => (r.exitCode === 0 ? r.stdout.trim() : ''))
-      .catch(() => '');
-
-    if (tipEmail === gitEmail) {
-      await exec.exec('git', ['checkout', '-B', branchName, `origin/${branchName}`]);
-    } else {
-      core.info(
-        `Branch ${branchName} is not bot-authored (tip ${tipEmail || 'unknown'}) — recreating from ${defaultBranch}`,
-      );
-      await exec.exec('git', ['checkout', '-b', branchName, `origin/${defaultBranch}`]);
-    }
-  } else {
-    await exec.exec('git', ['checkout', '-b', branchName, `origin/${defaultBranch}`]);
-  }
+  // Always recreate the deterministic `autofix/issue-N` branch from the
+  // repository's default branch. A branch under that name can be created by any
+  // collaborator with push access, and git author emails are self-asserted and
+  // forgeable — they cannot establish trusted ownership of a branch. Since the
+  // fix is force-pushed later, reusing an existing branch could make
+  // attacker-seeded content the base of the fix PR, so it is never reused. `-B`
+  // also force-resets any stale local branch of the same name instead of
+  // failing, which keeps re-triggered /fix runs robust on self-hosted runners.
+  await exec.exec('git', ['checkout', '-B', branchName, `origin/${defaultBranch}`]);
 
   let issueContext = await gh.gatherContext({ issueNumber });
 

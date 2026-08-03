@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import type { AgentConfig, PRContext, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
+import { Logger } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { resolvePrNumber, sanitize } from './utils.js';
 
@@ -81,7 +82,13 @@ export async function runReview(
         commentId: t.firstComment!.databaseId,
       }));
   } catch (err) {
-    core.warning(sanitize(`Failed to fetch previous review comments: ${err}`));
+    const message = `Failed to fetch previous review comments: ${err}`;
+    core.warning(sanitize(message));
+    new Logger('Review').warn('Failed to fetch previous review comments', {
+      operation: 'review.threads',
+      prNumber,
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 
   const result = await engine.reviewPR(

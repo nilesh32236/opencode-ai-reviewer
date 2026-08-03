@@ -1,7 +1,12 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as core from '@actions/core';
-import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
+import {
+  type AgentConfig,
+  Logger,
+  type PlatformAdapter,
+  type ReviewEngine,
+} from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { sanitize } from './utils.js';
 
@@ -20,6 +25,47 @@ const lastAuditIssueByCategory = new Map<string, number>();
  */
 export function resetAuditIssueRegistry(): void {
   lastAuditIssueByCategory.clear();
+}
+
+/**
+ * Short deterministic hash of a string, used to disambiguate audit category
+ * slugs that normalize to the same value. Stable across processes and runs.
+ * @param input - The string to hash.
+ * @returns A short lowercase base-36 hash.
+ */
+function categoryHash(input: string): string {
+  let hash = 0;
+  for (let i = 0; i < input.length; i++) {
+    hash = (hash * 31 + input.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash).toString(36);
+}
+
+/**
+ * Normalize an audit category into a URL- and label-safe slug. The category is
+ * derived from the `audit-prompt-name` input or prompt filenames, so it may
+ * contain spaces, &, #, or other characters GitHub disallows in labels. The
+ * slug is lowercased, has reserved-character runs and leading/trailing hyphens
+ * trimmed, and is truncated so `audit:` + slug stays under GitHub's
+ * 50-character label limit. When normalization actually transforms the
+ * category, a short deterministic hash of the original is appended so distinct
+ * categories that collapse to the same slug (e.g. "auth & access" vs
+ * "auth # access") keep separate labels, titles, update markers, and dedup
+ * registry keys. Categories that are already valid lowercase slugs are
+ * returned unchanged to keep existing labels/titles stable.
+ * @param category - The raw audit category string.
+ * @returns The canonical, collision-resistant slug (never empty).
+ */
+function normalizeAuditCategory(category: string): string {
+  const slug = category
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '');
+  if (slug === category) return slug;
+  const base = slug || 'uncategorized';
+  const suffix = categoryHash(category);
+  return `${base.slice(0, 44 - suffix.length - 1)}-${suffix}`.slice(0, 44);
 }
 
 /**
@@ -113,8 +159,10 @@ export async function runAudit(
   // the GitHub API. The category is derived from the audit-prompt-name input or
   // prompt filenames, so it may contain spaces, &, #, or other reserved
   // characters that would otherwise produce a malformed API query or an
-  // invalid label name (GitHub disallows spaces in labels).
-  const safeCategory = category.replace(/[^a-zA-Z0-9._-]/g, '-').replace(/-{2,}/g, '-');
+  // invalid label name (GitHub disallows spaces in labels). A deterministic
+  // hash is appended when normalization transforms the category so distinct
+  // categories that collapse to the same slug never share a label/issue.
+  const safeCategory = normalizeAuditCategory(category);
   const auditTarget =
     allTargetDirs.length > 0
       ? allTargetDirs[Math.floor(Math.random() * allTargetDirs.length)]
@@ -141,7 +189,7 @@ export async function runAudit(
       labels.push('autofix-trigger');
     }
 
-    const issueBody = buildAuditIssueBody(category, auditTarget, result);
+    const issueBody = buildAuditIssueBody(safeCategory, auditTarget, result);
     const titlePrefix = `[Audit:${safeCategory}]`;
     const title = `${titlePrefix} ${result.stats.critical} critical, ${result.stats.important} important, ${result.stats.minor} minor`;
 
@@ -177,6 +225,11 @@ export async function runAudit(
       core.info(
         `Audit category ${safeCategory} already has open issue #${existingIssueNumber} — updating existing issue`,
       );
+      new Logger('Audit').info('Updating existing audit issue', {
+        operation: 'audit.update',
+        category: safeCategory,
+        issueNumber: existingIssueNumber,
+      });
       try {
         await gh.postOrUpdateComment(
           existingIssueNumber,
@@ -224,6 +277,9 @@ function buildAuditIssueBody(
     }>;
   },
 ): string {
+  // `category` is the canonical safe slug (see normalizeAuditCategory), matching
+  // the label, title prefix, and update marker so the public body header never
+  // diverges from — or interpolates raw untrusted text into — the issue.
   const lines: string[] = [
     '<!-- audit-issue -->',
     '',
