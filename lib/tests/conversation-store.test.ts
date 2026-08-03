@@ -182,4 +182,100 @@ describe('LearningStore conversation sessions', () => {
     expect(session?.already_closed).toBe(1);
     expect(session?.turn_count).toBe(1);
   });
+
+  it('updateConversationSession clears nullable columns when null is passed', async () => {
+    const sessionId = await store.getOrCreateConversationSession({
+      id: 'org/repo/42/issue',
+      prNumber: 42,
+      repo: 'org/repo',
+      isReviewComment: false,
+      lastFileRef: 'src/foo.ts',
+      lastLineRef: 42,
+      summarySnapshot: 'old snapshot',
+      summarizedCount: 3,
+    });
+    await store.updateConversationSession(sessionId, {
+      lastFileRef: null,
+      lastLineRef: null,
+      summarySnapshot: null,
+      summarizedCount: null,
+    });
+    const session = await store.getConversationSession(sessionId);
+    expect(session?.last_file_ref).toBeNull();
+    expect(session?.last_line_ref).toBeNull();
+    expect(session?.summary_snapshot).toBeNull();
+    expect(session?.summarized_count).toBeNull();
+  });
+
+  it('getConversationTurns returns user before assistant for distinct turn numbers', async () => {
+    const sessionId = await store.getOrCreateConversationSession({
+      id: 'org/repo/42/issue',
+      prNumber: 42,
+      repo: 'org/repo',
+      isReviewComment: false,
+    });
+    // Mirrors persistSessionState: user rows get 2n-1, assistant rows 2n, so a
+    // user question always precedes its assistant answer regardless of the
+    // insertion order.
+    await store.addConversationTurn({
+      sessionId,
+      turnNumber: 4,
+      role: 'assistant',
+      body: 'answer',
+    });
+    await store.addConversationTurn({
+      sessionId,
+      turnNumber: 3,
+      role: 'user',
+      body: 'question',
+    });
+    await store.addConversationTurn({
+      sessionId,
+      turnNumber: 5,
+      role: 'user',
+      body: 'next question',
+    });
+
+    const turns = await store.getConversationTurns(sessionId);
+    expect(turns.map((t) => t.turn_number)).toEqual([3, 4, 5]);
+    expect(turns.map((t) => t.role)).toEqual(['user', 'assistant', 'user']);
+  });
+
+  it('cleanupConversations removes idle sessions and their turns', async () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const staleId = await store.getOrCreateConversationSession({
+      id: 'org/repo/1/issue',
+      prNumber: 1,
+      repo: 'org/repo',
+      isReviewComment: false,
+      lastActivityTimestamp: now - 40 * DAY_MS,
+    });
+    const freshId = await store.getOrCreateConversationSession({
+      id: 'org/repo/2/issue',
+      prNumber: 2,
+      repo: 'org/repo',
+      isReviewComment: false,
+    });
+    await store.addConversationTurn({
+      sessionId: staleId,
+      turnNumber: 1,
+      role: 'user',
+      body: 'stale question',
+    });
+    await store.addConversationTurn({
+      sessionId: freshId,
+      turnNumber: 1,
+      role: 'user',
+      body: 'fresh question',
+    });
+
+    const deleted = await store.cleanupConversations(now - 30 * DAY_MS);
+
+    expect(deleted).toBeGreaterThanOrEqual(2);
+    expect(await store.getConversationSession(staleId)).toBeNull();
+    expect(await store.getConversationTurns(staleId)).toHaveLength(0);
+    expect(await store.getConversationSession(freshId)).not.toBeNull();
+    expect(await store.getConversationTurns(freshId)).toHaveLength(1);
+  });
 });

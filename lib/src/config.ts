@@ -90,6 +90,8 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     slidingWindowSize: null,
     contextTokenBudget: null,
     summarizationModel: null,
+    askCommandEnabled: null,
+    maxCodeReferences: null,
   },
   overrides: null,
   linters: null,

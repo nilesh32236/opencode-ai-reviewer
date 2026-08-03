@@ -113,7 +113,12 @@ export interface ConversationSessionInput {
   lastActivityTimestamp?: number;
 }
 
-/** Patch applied to an existing conversation session after a turn. */
+/**
+ * Patch applied to an existing conversation session after a turn.
+ * Only keys explicitly set are written (matching the JSON backend): `undefined`
+ * keeps the stored value, while a non-undefined value — including `null` for the
+ * nullable columns — clears it. All backends honor this contract.
+ */
 export type ConversationSessionPatch = Pick<
   ConversationSessionInput,
   | 'turnCount'
@@ -518,6 +523,15 @@ export interface LearningRepository {
    * @returns Array of turn rows.
    */
   getConversationTurns(sessionId: string, limit?: number): Promise<ConversationTurnRow[]>;
+  /**
+   * Delete conversation sessions idle for longer than the given threshold,
+   * along with their turns. Intended to bound storage and PII retention via a
+   * periodic/scheduled cleanup job.
+   * @param olderThanMs - Sessions with last activity before this epoch
+   * millisecond timestamp are deleted.
+   * @returns Number of deleted rows (turns + sessions).
+   */
+  cleanupConversations(olderThanMs: number): Promise<number>;
 }
 
 /** Per-PR finding statistics. */

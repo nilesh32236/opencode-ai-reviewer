@@ -120,10 +120,22 @@ export function extractCodeReferences(body: string): CodeReference[] {
   let match: RegExpExecArray | null;
   while ((match = CODE_REF_RE.exec(body)) !== null) {
     const file = match[1];
-    // Skip URLs: either the token carries a scheme, or the match is anchored
-    // right after `://` (e.g. `https://example.com/file.ts:42`).
-    const urlPrefix = body.slice(Math.max(0, match.index - 3), match.index);
-    if (file.includes('://') || urlPrefix === '://' || /^[a-z]+:/i.test(file)) continue;
+    // Scan back to the start of the token containing the match so URLs
+    // (`https://example.com/file.ts:42`, `https://host:8080/x.ts:42`) and
+    // email addresses (`alice@example.com:42`) are rejected even when the
+    // match is not anchored immediately after the scheme.
+    let tokenStart = match.index;
+    while (tokenStart > 0 && !/[\s([<"'`,]/.test(body[tokenStart - 1])) {
+      tokenStart--;
+    }
+    const token = body.slice(tokenStart, match.index) + file;
+    if (
+      /^[a-z][a-z0-9+.-]*:\/\//i.test(token) ||
+      /^[a-z][a-z0-9+.-]*:/i.test(token) ||
+      /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9.-]+\.[a-z]{2,}/i.test(token)
+    ) {
+      continue;
+    }
     const line = Number.parseInt(match[2], 10);
     const endLine = match[3] ? Number.parseInt(match[3], 10) : undefined;
     refs.push({
@@ -188,6 +200,44 @@ export function resolveCodeReferences(
     });
   }
   return resolved;
+}
+
+/** Unified diff hunk header regex: extracts the new-file start line and line count. */
+const PATCH_HUNK_RE = /^@@\s+-[0-9,]+\s+\+([0-9]+)(?:,([0-9]+))?\s+@@/;
+
+/**
+ * Select the patch region that contains a referenced line range so the model
+ * can answer about lines outside the triggering hunk. Returns the hunk block
+ * whose new-file range covers `refLine..refEndLine`, truncated to 800
+ * characters, or the first 800 characters of the patch when no hunk covers the
+ * reference (mirroring the previous behavior).
+ *
+ * @param patch - Unified diff patch content for a changed file.
+ * @param refLine - Referenced starting line (1-indexed, new file).
+ * @param refEndLine - Referenced end line, when a range was given.
+ * @returns The selected patch window.
+ */
+function selectPatchWindow(patch: string, refLine?: number, refEndLine?: number): string {
+  if (!patch) return '';
+  if (refLine !== undefined) {
+    const lines = patch.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const m = PATCH_HUNK_RE.exec(lines[i]);
+      if (!m) continue;
+      const start = Number.parseInt(m[1], 10);
+      const count = m[2] !== undefined ? Number.parseInt(m[2], 10) : 1;
+      const hunkEnd = start + Math.max(count, 1) - 1;
+      if (start <= refLine && (refEndLine ?? refLine) <= hunkEnd) {
+        let block = lines[i];
+        for (let j = i + 1; j < lines.length; j++) {
+          if (/^@@\s+/.test(lines[j])) break;
+          block += `\n${lines[j]}`;
+        }
+        return block.slice(0, 800);
+      }
+    }
+  }
+  return patch.slice(0, 800);
 }
 
 /**
@@ -300,7 +350,7 @@ export function buildConversationPrompt(
         sections.push('');
         if (changedFile?.patch) {
           sections.push('```diff');
-          sections.push(changedFile.patch.slice(0, 800));
+          sections.push(selectPatchWindow(changedFile.patch, ref.line, ref.endLine));
           sections.push('```');
         } else {
           sections.push(

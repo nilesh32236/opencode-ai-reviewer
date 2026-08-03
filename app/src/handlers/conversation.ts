@@ -11,6 +11,7 @@ import type {
   PlatformAdapter,
 } from '@opencode-pr-agent/lib';
 import {
+  ASK_COMMAND_PATTERN,
   GitHubHelper,
   GitLabAdapter,
   Logger,
@@ -214,6 +215,15 @@ export async function handleConversation(
 
     if (signal?.aborted) return;
 
+    // Already-closed threads return '' as a silent no-op — do not post a
+    // duplicate close message or an empty comment. Skip persistence too so
+    // closed-thread no-ops do not insert junk turn rows or refresh the
+    // session's activity timestamp.
+    if (!response) {
+      logger.info(`Conversation ${commentId} returned no response — skipping post`);
+      return;
+    }
+
     // Persist the post-turn state and turns so the conversation survives
     // restarts. Non-critical — failures must never fail the turn.
     if (learningStore) {
@@ -226,13 +236,6 @@ export async function handleConversation(
         response,
         codeReferences[0],
       );
-    }
-
-    // Already-closed threads return '' as a silent no-op — do not post a
-    // duplicate close message or an empty comment.
-    if (!response) {
-      logger.info(`Conversation ${commentId} returned no response — skipping post`);
-      return;
     }
 
     // Post the response as a reply
@@ -269,15 +272,25 @@ export async function handleConversation(
  * Writes the updated ConversationState (turn count, summary snapshot, close
  * flag) plus the user question and assistant reply as turn rows.
  *
+ * The user and assistant rows get distinct, monotonically increasing turn
+ * numbers derived from the post-turn in-memory state (`latest.turnCount`),
+ * which is serialized per thread inside `ConversationStateManager.withThreadLock`.
+ * Deriving the number from the post-turn state — rather than a pre-read count —
+ * means two concurrent webhooks on the same thread cannot reuse the same
+ * numbers for different exchanges.
+ *
  * @param learningStore - Learning store used for persistence.
  * @param sessionId - Session id to update.
- * @param priorTurnCount - Completed turn count before this turn.
+ * @param priorTurnCount - Completed turn count before this turn (fallback when
+ * no in-memory state manager is present).
  * @param stateManager - In-memory state manager carrying the post-turn state.
  * @param lastUserMessage - Latest user message (may have been stripped of /ask).
  * @param response - Assistant reply text.
  * @param firstRef - First resolved code reference, when any.
+ *
+ * Exported for unit testing.
  */
-async function persistSessionState(
+export async function persistSessionState(
   learningStore: LearningStore,
   sessionId: string,
   priorTurnCount: number,
@@ -287,9 +300,12 @@ async function persistSessionState(
   firstRef: CodeReference | undefined,
 ): Promise<void> {
   const latest = stateManager?.getState(sessionId);
+  const turnNumber = latest?.turnCount ?? priorTurnCount + 1;
+  const userTurnNumber = turnNumber * 2 - 1;
+  const assistantTurnNumber = userTurnNumber + 1;
   try {
     await learningStore.updateConversationSession(sessionId, {
-      turnCount: latest?.turnCount ?? priorTurnCount,
+      turnCount: turnNumber,
       lastActivityTimestamp: latest?.lastActivityTimestamp,
       summarySnapshot: latest?.summarySnapshot,
       summarizedCount: latest?.summarizedCount,
@@ -297,7 +313,6 @@ async function persistSessionState(
       lastFileRef: firstRef?.file,
       lastLineRef: firstRef?.line,
     });
-    const userTurnNumber = priorTurnCount + 1;
     if (lastUserMessage) {
       await learningStore.addConversationTurn({
         sessionId,
@@ -311,7 +326,7 @@ async function persistSessionState(
     if (response) {
       await learningStore.addConversationTurn({
         sessionId,
-        turnNumber: userTurnNumber,
+        turnNumber: assistantTurnNumber,
         role: 'assistant',
         body: response,
         fileRef: firstRef?.file,
@@ -326,18 +341,37 @@ async function persistSessionState(
 }
 
 /**
+ * Line pattern matching a `/ask` (or `/oc ask`) command with a capture group for
+ * the remainder of the line. Built from the shared `ASK_COMMAND_PATTERN` so it
+ * rejects hyphenated lookalikes (`/ask-me`) exactly like `parseCommand`.
+ */
+const ASK_LINE_PATTERN = new RegExp(`${ASK_COMMAND_PATTERN.source}\\s*(.*)$`, 'i');
+
+/**
  * Extract the question text that follows an `/ask` command in a comment body.
- * Only line-anchored commands count (matching `parseCommand`). Returns the
- * trimmed remainder, or null when the body does not start with `/ask`.
+ * Only line-anchored commands count (matching `parseCommand`). Multi-line
+ * questions keep their continuation lines (stopping at a blank line), and a
+ * bare `/ask` with nothing after it returns null so no LLM turn is spent on an
+ * empty question.
  *
  * @param body - Comment body to scan.
- * @returns The question text, or null when no `/ask` command is present.
+ * @returns The question text, or null when no `/ask` command (with content) is present.
+ *
+ * Exported for unit testing.
  */
-function extractAskQuestion(body: string): string | null {
+export function extractAskQuestion(body: string): string | null {
   if (parseCommand(body)?.command !== 'ask') return null;
-  for (const line of body.split('\n')) {
-    const match = line.match(/^\s*\/(?:oc\s+)?ask\b\s*(.*)$/i);
-    if (match) return match[1].trim() || null;
+  const lines = body.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const match = lines[i].match(ASK_LINE_PATTERN);
+    if (!match) continue;
+    const continuation: string[] = [];
+    for (const line of lines.slice(i + 1)) {
+      if (line.trim() === '') break;
+      continuation.push(line);
+    }
+    const question = [match[1].trim(), ...continuation].filter(Boolean).join('\n');
+    return question || null;
   }
   return null;
 }

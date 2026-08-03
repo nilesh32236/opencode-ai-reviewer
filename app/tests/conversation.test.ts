@@ -1,8 +1,11 @@
-import type { PlatformAdapter } from '@opencode-pr-agent/lib';
+import { ConversationStateManager } from '@opencode-pr-agent/lib';
+import type { LearningStore, PlatformAdapter } from '@opencode-pr-agent/lib';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  extractAskQuestion,
   gatherIssueCommentThread,
   gatherReviewCommentThread,
+  persistSessionState,
 } from '../src/handlers/conversation.js';
 
 const MENTION = '@bot';
@@ -270,5 +273,122 @@ describe('conversation thread gathering', () => {
 
       expect(result.thread.map((m) => m.body)).toEqual(['c8', 'c9']);
     });
+  });
+});
+
+describe('extractAskQuestion', () => {
+  it('extracts the question from an /ask line', () => {
+    expect(extractAskQuestion('/ask why is this null?')).toBe('why is this null?');
+  });
+
+  it('supports the /oc ask prefix', () => {
+    expect(extractAskQuestion('/oc ask what does this do?')).toBe('what does this do?');
+  });
+
+  it('keeps continuation lines of a multi-line question', () => {
+    const body = '/ask why does this fail\nand how do I fix it?';
+    expect(extractAskQuestion(body)).toBe('why does this fail\nand how do I fix it?');
+  });
+
+  it('supports a question on the line below a bare /ask', () => {
+    const body = '/ask\nwhy does this fail?';
+    expect(extractAskQuestion(body)).toBe('why does this fail?');
+  });
+
+  it('stops the question at a blank line', () => {
+    const body = '/ask why does this fail\n\np.s. unrelated note';
+    expect(extractAskQuestion(body)).toBe('why does this fail');
+  });
+
+  it('returns null for a bare /ask with no content', () => {
+    expect(extractAskQuestion('/ask')).toBeNull();
+    expect(extractAskQuestion('/ask   ')).toBeNull();
+  });
+
+  it('rejects /ask lookalikes such as /ask-me-anything', () => {
+    expect(extractAskQuestion('/ask-me-anything why?')).toBeNull();
+  });
+
+  it('returns null when the body is not an /ask command', () => {
+    expect(extractAskQuestion('just a comment')).toBeNull();
+  });
+});
+
+describe('persistSessionState', () => {
+  function makeFakeStore() {
+    const calls = {
+      updates: [] as Array<{ id: string; patch: Record<string, unknown> }>,
+      turns: [] as Array<Record<string, unknown>>,
+    };
+    const store = {
+      updateConversationSession: vi.fn(async (id: string, patch: unknown) => {
+        calls.updates.push({ id, patch: patch as Record<string, unknown> });
+      }),
+      addConversationTurn: vi.fn(async (input: unknown) => {
+        calls.turns.push(input as Record<string, unknown>);
+        return 'turn-id';
+      }),
+    } as unknown as LearningStore;
+    return { store, calls };
+  }
+
+  it('allocates distinct ordered turn numbers from the post-turn state', async () => {
+    const { store, calls } = makeFakeStore();
+    const manager = new ConversationStateManager();
+    const state = manager.getOrCreateState('org/repo/42/issue');
+    manager.updateState(state);
+    manager.updateState(state);
+
+    await persistSessionState(
+      store,
+      'org/repo/42/issue',
+      1,
+      manager,
+      { role: 'user', body: 'question', author: 'alice' },
+      'answer',
+      undefined,
+    );
+
+    expect(calls.updates[0].patch.turnCount).toBe(2);
+    expect(calls.turns.map((t) => t.role)).toEqual(['user', 'assistant']);
+    expect(calls.turns[0].turnNumber).toBe(3);
+    expect(calls.turns[1].turnNumber).toBe(4);
+  });
+
+  it('falls back to priorTurnCount when no state manager is present', async () => {
+    const { store, calls } = makeFakeStore();
+
+    await persistSessionState(
+      store,
+      'org/repo/42/issue',
+      0,
+      undefined,
+      { role: 'user', body: 'question', author: 'alice' },
+      'answer',
+      undefined,
+    );
+
+    expect(calls.updates[0].patch.turnCount).toBe(1);
+    expect(calls.turns[0].turnNumber).toBe(1);
+    expect(calls.turns[1].turnNumber).toBe(2);
+  });
+
+  it('records the first code reference on both rows', async () => {
+    const { store, calls } = makeFakeStore();
+    const ref = { file: 'src/foo.ts', line: 42 };
+
+    await persistSessionState(
+      store,
+      'org/repo/42/issue',
+      0,
+      undefined,
+      { role: 'user', body: 'question', author: 'alice' },
+      'answer',
+      ref,
+    );
+
+    expect(calls.turns[0].fileRef).toBe('src/foo.ts');
+    expect(calls.turns[0].lineRef).toBe(42);
+    expect(calls.turns[1].fileRef).toBe('src/foo.ts');
   });
 });

@@ -82,6 +82,14 @@ export function registerSubscribers(
     logger.warn(`Rate limiter cleanup failed: ${msg}`);
   });
 
+  // Prune idle conversation sessions/turns once at startup so stored user and
+  // assistant message bodies do not accumulate without bound.
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  learningStore.cleanupConversations(Date.now() - 30 * DAY_MS).catch((err) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn(`Conversation cleanup failed: ${msg}`);
+  });
+
   bus.registerAll(subscribers);
 
   return subscribers;

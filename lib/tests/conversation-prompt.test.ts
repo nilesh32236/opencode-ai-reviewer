@@ -86,6 +86,16 @@ describe('extractCodeReferences', () => {
     expect(extractCodeReferences('see https://example.com/file.ts:42 for docs')).toEqual([]);
   });
 
+  it('ignores references inside URLs with ports', () => {
+    expect(extractCodeReferences('see https://host:8080/x.ts:42 for docs')).toEqual([]);
+    expect(extractCodeReferences('deploy docs at http://example.com/src/foo.ts:1')).toEqual([]);
+  });
+
+  it('ignores email-like tokens', () => {
+    expect(extractCodeReferences('ping alice@example.com:42 with the question')).toEqual([]);
+    expect(extractCodeReferences('mailto:bob@corp.dev:7')).toEqual([]);
+  });
+
   it('ignores non-file tokens like version numbers', () => {
     expect(extractCodeReferences('version 1.0:5 is fine')).toEqual([]);
   });
@@ -175,5 +185,62 @@ describe('buildConversationPrompt with code references', () => {
   it('omits the section for an empty references array', () => {
     const prompt = buildConversationPrompt(makeContext({ codeReferences: [] }));
     expect(prompt).not.toContain('## Referenced Code');
+  });
+});
+
+describe('buildConversationPrompt referenced-code patch window', () => {
+  const multiHunkPatch = [
+    '@@ -1,3 +1,3 @@',
+    '-a',
+    '+b',
+    ' c',
+    ' d',
+    '@@ -40,3 +40,3 @@',
+    '-x',
+    '+y',
+    ' z',
+    ' w',
+  ].join('\n');
+
+  it('renders the hunk covering the referenced line instead of the patch head', () => {
+    const context = makeContext({
+      prContext: {
+        ...BASE_PR,
+        changedFiles: [
+          {
+            path: 'src/foo.ts',
+            status: 'modified',
+            additions: 6,
+            deletions: 2,
+            patch: multiHunkPatch,
+          },
+        ],
+      },
+      codeReferences: [{ file: 'src/foo.ts', line: 41 }],
+    });
+    const prompt = buildConversationPrompt(context);
+    expect(prompt).toContain('@@ -40,3 +40,3 @@');
+    expect(prompt).toContain('+y');
+    expect(prompt).not.toContain('+b');
+  });
+
+  it('falls back to the patch head when the referenced line is not in any hunk', () => {
+    const context = makeContext({
+      prContext: {
+        ...BASE_PR,
+        changedFiles: [
+          {
+            path: 'src/foo.ts',
+            status: 'modified',
+            additions: 6,
+            deletions: 2,
+            patch: multiHunkPatch,
+          },
+        ],
+      },
+      codeReferences: [{ file: 'src/foo.ts', line: 100 }],
+    });
+    const prompt = buildConversationPrompt(context);
+    expect(prompt).toContain('+b');
   });
 });

@@ -1312,7 +1312,9 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   * Retrieve persisted turns for a session, ordered by turn number.
+   * Retrieve persisted turns for a session, ordered by turn number with the
+   * same deterministic tiebreak as the SQL backends (created-at, then role) so
+   * the user row of an exchange always precedes its assistant row.
    * @param sessionId - Session id to load turns for.
    * @param limit - Maximum number of turns to return (default: 100).
    * @returns Array of turn rows.
@@ -1320,7 +1322,37 @@ export class JsonDatabase implements LearningRepository {
   async getConversationTurns(sessionId: string, limit = 100): Promise<ConversationTurnRow[]> {
     return this.data.conversation_turns
       .filter((t) => t.session_id === sessionId)
-      .sort((a, b) => a.turn_number - b.turn_number)
+      .sort((a, b) => {
+        if (a.turn_number !== b.turn_number) return a.turn_number - b.turn_number;
+        if (a.created_at !== b.created_at) return a.created_at < b.created_at ? -1 : 1;
+        return a.role === b.role ? 0 : a.role > b.role ? -1 : 1;
+      })
       .slice(0, limit);
+  }
+
+  /**
+   * Delete conversation sessions idle for longer than the given threshold,
+   * along with their turns.
+   * @param olderThanMs - Sessions with last activity before this epoch
+   * millisecond timestamp are deleted.
+   * @returns Number of deleted rows (turns + sessions).
+   */
+  async cleanupConversations(olderThanMs: number): Promise<number> {
+    const staleIds = new Set(
+      this.data.conversation_sessions
+        .filter((s) => s.last_activity_timestamp < olderThanMs)
+        .map((s) => s.id),
+    );
+    if (staleIds.size === 0) return 0;
+    const before = this.data.conversation_turns.length + this.data.conversation_sessions.length;
+    this.data.conversation_turns = this.data.conversation_turns.filter(
+      (t) => !staleIds.has(t.session_id),
+    );
+    this.data.conversation_sessions = this.data.conversation_sessions.filter(
+      (s) => !staleIds.has(s.id),
+    );
+    const after = this.data.conversation_turns.length + this.data.conversation_sessions.length;
+    this.save();
+    return before - after;
   }
 }

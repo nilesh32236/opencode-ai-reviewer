@@ -829,4 +829,23 @@ export class LearningStore {
       return [];
     }
   }
+
+  /**
+   * Delete conversation sessions idle for longer than the given threshold,
+   * along with their turns. Safe to call from a periodic cleanup job.
+   *
+   * @param olderThanMs - Sessions with last activity before this epoch
+   * millisecond timestamp are deleted.
+   * @returns Number of deleted rows (0 on store failure).
+   */
+  async cleanupConversations(olderThanMs: number): Promise<number> {
+    try {
+      const repo = await this.repoPromise;
+      return await repo.cleanupConversations(olderThanMs);
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.warn('Failed to cleanup conversations', err);
+      return 0;
+    }
+  }
 }

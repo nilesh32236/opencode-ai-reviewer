@@ -526,6 +526,7 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
    * Update a persisted conversation session with post-turn state.
    * @param id - Session id to update.
    * @param patch - State fields to write.
+   * @returns A promise that resolves when the session is updated.
    */
   async updateConversationSession(id: string, patch: ConversationSessionPatch): Promise<void> {
     return this.db.updateConversationSession(id, patch);
@@ -548,5 +549,16 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
    */
   async getConversationTurns(sessionId: string, limit?: number): Promise<ConversationTurnRow[]> {
     return this.db.getConversationTurns(sessionId, limit);
+  }
+
+  /**
+   * Delete conversation sessions idle for longer than the given threshold,
+   * along with their turns.
+   * @param olderThanMs - Sessions with last activity before this epoch
+   * millisecond timestamp are deleted.
+   * @returns Number of deleted rows (turns + sessions).
+   */
+  async cleanupConversations(olderThanMs: number): Promise<number> {
+    return this.db.cleanupConversations(olderThanMs);
   }
 }

@@ -35,10 +35,14 @@ export function createReplySubscriber(rateLimiter: RateLimiter, config: AgentCon
         // /dismiss is handled by its dedicated review-thread subscriber; other
         // slash commands have no such subscriber and should still get the
         // conversational reply. /ask is routed through ConversationSubscriber
-        // (which handles the command with or without an @mention), so defer
-        // here to avoid double LLM calls and double rate-limit charges.
+        // (which handles the command with or without an @mention), but only
+        // when the feature is actually active — so defer here only in that
+        // case to avoid double LLM calls and double rate-limit charges.
+        // Otherwise fall through so the reply still gets a response.
         const parsedCommand = parseCommand(body)?.command;
-        if (parsedCommand === 'dismiss' || parsedCommand === 'ask') return;
+        const askEnabled =
+          config.conversation.enabled && config.conversation.askCommandEnabled !== false;
+        if (parsedCommand === 'dismiss' || (parsedCommand === 'ask' && askEnabled)) return;
 
         // A reply that @mentions the bot is handled by ConversationSubscriber,
         // so defer here to avoid double LLM calls and double rate-limit charges.
