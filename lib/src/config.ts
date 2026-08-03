@@ -90,6 +90,8 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     slidingWindowSize: null,
     contextTokenBudget: null,
     summarizationModel: null,
+    askCommandEnabled: null,
+    maxCodeReferences: null,
   },
   overrides: null,
   linters: null,
@@ -582,11 +584,19 @@ export function validateConfig(config: PromptConfig): PromptConfig {
       typeof conv.summarizationModel === 'string' && conv.summarizationModel.trim() !== ''
         ? conv.summarizationModel.trim()
         : undefined;
+    const askCommandEnabled =
+      typeof conv.askCommandEnabled === 'boolean' ? conv.askCommandEnabled : undefined;
+    const maxCodeReferences =
+      typeof conv.maxCodeReferences === 'number' && Number.isFinite(conv.maxCodeReferences)
+        ? Math.min(Math.max(Math.round(conv.maxCodeReferences), 1), 20)
+        : undefined;
     if (
       maxTurns !== undefined ||
       slidingWindowSize !== undefined ||
       contextTokenBudget !== undefined ||
-      summarizationModel !== undefined
+      summarizationModel !== undefined ||
+      askCommandEnabled !== undefined ||
+      maxCodeReferences !== undefined
     ) {
       result.conversation = {};
       if (maxTurns !== undefined) result.conversation.maxTurns = maxTurns;
@@ -596,6 +606,12 @@ export function validateConfig(config: PromptConfig): PromptConfig {
         result.conversation.contextTokenBudget = contextTokenBudget;
       if (summarizationModel !== undefined) {
         result.conversation.summarizationModel = summarizationModel;
+      }
+      if (askCommandEnabled !== undefined) {
+        result.conversation.askCommandEnabled = askCommandEnabled;
+      }
+      if (maxCodeReferences !== undefined) {
+        result.conversation.maxCodeReferences = maxCodeReferences;
       }
     }
   }

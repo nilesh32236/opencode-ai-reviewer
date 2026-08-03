@@ -219,6 +219,51 @@ export async function applyMigrations(runner: MigrationRunner): Promise<void> {
     await runner.exec(
       `CREATE INDEX IF NOT EXISTS idx_rate_limits_created ON rate_limits(created_at)`,
     );
+
+    // Persisted multi-turn conversation state for the /ask + @mention flows.
+    // Each row mirrors the in-memory ConversationState (turn count, summary
+    // snapshot, auto-close flag) plus the anchor that identifies the thread, so
+    // the sliding-window/summarization machinery survives app restarts.
+    await runner.exec(`
+      CREATE TABLE IF NOT EXISTS conversation_sessions (
+        id TEXT PRIMARY KEY,
+        pr_number INTEGER NOT NULL,
+        repo TEXT NOT NULL,
+        thread_root_comment_id INTEGER,
+        is_review_comment INTEGER NOT NULL DEFAULT 0,
+        turn_count INTEGER NOT NULL DEFAULT 0,
+        token_budget_used INTEGER NOT NULL DEFAULT 0,
+        last_file_ref TEXT,
+        last_line_ref INTEGER,
+        summary_snapshot TEXT,
+        summarized_count INTEGER,
+        already_closed INTEGER NOT NULL DEFAULT 0,
+        last_activity_timestamp INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    await runner.exec(
+      `CREATE INDEX IF NOT EXISTS idx_conv_sessions_pr ON conversation_sessions(pr_number, repo)`,
+    );
+
+    await runner.exec(`
+      CREATE TABLE IF NOT EXISTS conversation_turns (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        turn_number INTEGER NOT NULL,
+        role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+        body TEXT NOT NULL,
+        file_ref TEXT,
+        line_ref INTEGER,
+        tokens_used INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (session_id) REFERENCES conversation_sessions(id)
+      );
+    `);
+    await runner.exec(
+      `CREATE INDEX IF NOT EXISTS idx_conv_turns_session ON conversation_turns(session_id, turn_number)`,
+    );
   } catch (err) {
     const logger = new Logger('LearningStore');
     logger.error('Migration failed', err);

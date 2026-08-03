@@ -370,6 +370,59 @@ describe('ConversationStateManager', () => {
     expect(state.alreadyClosed).toBe(true);
     expect(state.turnCount).toBe(1);
   });
+
+  it('getState returns undefined for untracked threads', () => {
+    const manager = new ConversationStateManager();
+    expect(manager.getState('untracked')).toBeUndefined();
+  });
+
+  it('restoreState seeds a persisted state that getOrCreateState returns', () => {
+    const manager = new ConversationStateManager();
+    const now = Date.now();
+    manager.restoreState({
+      threadId: 'org/repo/42/issue',
+      turnCount: 7,
+      lastActivityTimestamp: now,
+      summarySnapshot: 'agreed on approach',
+      summarizedCount: 4,
+      alreadyClosed: false,
+    });
+    const state = manager.getOrCreateState('org/repo/42/issue');
+    expect(state.turnCount).toBe(7);
+    expect(state.summarySnapshot).toBe('agreed on approach');
+    expect(state.summarizedCount).toBe(4);
+    expect(state.lastActivityTimestamp).toBe(now);
+    expect(manager.getState('org/repo/42/issue')).toBe(state);
+  });
+
+  it('restoreState preserves the alreadyClosed flag', () => {
+    const manager = new ConversationStateManager();
+    manager.restoreState({
+      threadId: 'closed-thread',
+      turnCount: 50,
+      lastActivityTimestamp: Date.now(),
+      alreadyClosed: true,
+    });
+    expect(manager.getOrCreateState('closed-thread').alreadyClosed).toBe(true);
+  });
+
+  it('restoreState does not clobber an existing in-memory state', () => {
+    const manager = new ConversationStateManager();
+    const live = manager.getOrCreateState('live');
+    live.turnCount = 3;
+    manager.restoreState({ threadId: 'live', turnCount: 99, lastActivityTimestamp: Date.now() });
+    expect(manager.getState('live')?.turnCount).toBe(3);
+  });
+
+  it('restoreState ignores states without a thread id', () => {
+    const manager = new ConversationStateManager();
+    manager.restoreState({
+      threadId: '',
+      turnCount: 1,
+      lastActivityTimestamp: Date.now(),
+    });
+    expect(manager.getState('')).toBeUndefined();
+  });
 });
 
 describe('conversationThreadId', () => {

@@ -1,4 +1,6 @@
 import {
+  type ChangedFile,
+  type CodeReference,
   type ConversationConfig,
   type ConversationContext,
   type ConversationMessage,
@@ -97,6 +99,148 @@ export function normalizeConversationConfig(config?: ConversationConfig): Conver
 }
 
 /**
+ * Regex matching `file:line` and `file:start-end` code references. Requires a
+ * file-like token containing a dot extension that starts with a letter (so
+ * version numbers like `1.0:5` and bare `word:10` are rejected) and a line
+ * number. The path may include `/`, `.`, `@`, `-`, and `_` separators.
+ */
+const CODE_REF_RE = /\b([A-Za-z0-9_@./-]+\.(?:[A-Za-z]\w{0,15})):(\d+)(?:-(\d+))?/g;
+
+/**
+ * Extract `file:line` and `file:start-end` code references from a message body.
+ * References inside URLs or schema prefixes (e.g. `https://…`) are skipped.
+ *
+ * @param body - The message body to scan.
+ * @returns Array of extracted code references in the order they appear.
+ */
+export function extractCodeReferences(body: string): CodeReference[] {
+  if (!body) return [];
+  const refs: CodeReference[] = [];
+  CODE_REF_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = CODE_REF_RE.exec(body)) !== null) {
+    const file = match[1];
+    // Scan back to the start of the token containing the match so URLs
+    // (`https://example.com/file.ts:42`, `https://host:8080/x.ts:42`) and
+    // email addresses (`alice@example.com:42`) are rejected even when the
+    // match is not anchored immediately after the scheme.
+    let tokenStart = match.index;
+    while (tokenStart > 0 && !/[\s([<"'`,]/.test(body[tokenStart - 1])) {
+      tokenStart--;
+    }
+    const token = body.slice(tokenStart, match.index) + file;
+    if (
+      /^[a-z][a-z0-9+.-]*:\/\//i.test(token) ||
+      /^[a-z][a-z0-9+.-]*:/i.test(token) ||
+      /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9.-]+\.[a-z]{2,}/i.test(token)
+    ) {
+      continue;
+    }
+    const line = Number.parseInt(match[2], 10);
+    const endLine = match[3] ? Number.parseInt(match[3], 10) : undefined;
+    refs.push({
+      file,
+      line,
+      ...(endLine !== undefined && endLine > line ? { endLine } : {}),
+    });
+  }
+  return refs;
+}
+
+/**
+ * Resolve a set of extracted code references against the PR's changed files.
+ * A reference is kept when its file path matches a changed file exactly (by
+ * path) or by basename. Duplicate file references are collapsed, and only the
+ * first `maxRefs` distinct files are retained to bound the injected context.
+ *
+ * @param refs - Raw code references extracted from a message.
+ * @param changedFiles - Changed files of the PR (for validation).
+ * @param maxRefs - Maximum number of distinct files to retain (default: 5).
+ * @returns References that point at files present in the PR diff.
+ */
+export function resolveCodeReferences(
+  refs: CodeReference[],
+  changedFiles: ChangedFile[],
+  maxRefs = 5,
+): CodeReference[] {
+  if (!refs || refs.length === 0) return [];
+  const changed = changedFiles || [];
+  const byPath = new Map(changed.map((f) => [f.path, f]));
+  const byBasename = new Map<string, ChangedFile[]>();
+  for (const f of changed) {
+    const base = f.path.split('/').pop();
+    if (!base) continue;
+    const list = byBasename.get(base) ?? [];
+    list.push(f);
+    byBasename.set(base, list);
+  }
+
+  const resolved: CodeReference[] = [];
+  const seenFiles = new Set<string>();
+  for (const ref of refs) {
+    if (resolved.length >= maxRefs) break;
+    let target: ChangedFile | undefined = byPath.get(ref.file);
+    if (!target) {
+      const base = ref.file.split('/').pop();
+      const candidates = base ? (byBasename.get(base) ?? []) : [];
+      // Ambiguous basenames (multiple changed files sharing a name) are dropped
+      // rather than guessing the wrong file.
+      target = candidates.length === 1 ? candidates[0] : undefined;
+    }
+    if (!target) continue;
+    const canonical = target.path;
+    if (seenFiles.has(canonical)) continue;
+    seenFiles.add(canonical);
+    resolved.push({
+      file: canonical,
+      line: ref.line,
+      ...(ref.endLine !== undefined && ref.endLine > (ref.line ?? 0)
+        ? { endLine: ref.endLine }
+        : {}),
+    });
+  }
+  return resolved;
+}
+
+/** Unified diff hunk header regex: extracts the new-file start line and line count. */
+const PATCH_HUNK_RE = /^@@\s+-[0-9,]+\s+\+([0-9]+)(?:,([0-9]+))?\s+@@/;
+
+/**
+ * Select the patch region that contains a referenced line range so the model
+ * can answer about lines outside the triggering hunk. Returns the hunk block
+ * whose new-file range covers `refLine..refEndLine`, truncated to 800
+ * characters, or the first 800 characters of the patch when no hunk covers the
+ * reference (mirroring the previous behavior).
+ *
+ * @param patch - Unified diff patch content for a changed file.
+ * @param refLine - Referenced starting line (1-indexed, new file).
+ * @param refEndLine - Referenced end line, when a range was given.
+ * @returns The selected patch window.
+ */
+function selectPatchWindow(patch: string, refLine?: number, refEndLine?: number): string {
+  if (!patch) return '';
+  if (refLine !== undefined) {
+    const lines = patch.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const m = PATCH_HUNK_RE.exec(lines[i]);
+      if (!m) continue;
+      const start = Number.parseInt(m[1], 10);
+      const count = m[2] !== undefined ? Number.parseInt(m[2], 10) : 1;
+      const hunkEnd = start + Math.max(count, 1) - 1;
+      if (start <= refLine && (refEndLine ?? refLine) <= hunkEnd) {
+        let block = lines[i];
+        for (let j = i + 1; j < lines.length; j++) {
+          if (/^@@\s+/.test(lines[j])) break;
+          block += `\n${lines[j]}`;
+        }
+        return block.slice(0, 800);
+      }
+    }
+  }
+  return patch.slice(0, 800);
+}
+
+/**
  * Estimate the current 1-indexed turn number from tracked state, falling back
  * to counting assistant messages in the thread when state is unavailable.
  * @param thread - Full conversation thread.
@@ -185,6 +329,36 @@ export function buildConversationPrompt(
       sections.push(context.diffHunk);
       sections.push('```');
       sections.push('');
+    }
+
+    // Resolved code references from the latest message (e.g. `src/foo.ts:42`).
+    // Render the referenced file(s) and, when available, the matching PR diff
+    // patch so the model can answer about lines outside the triggering hunk.
+    if (context.codeReferences && context.codeReferences.length > 0) {
+      sections.push('## Referenced Code');
+      sections.push('');
+      sections.push(
+        'The developer referenced the following file(s) with `file:line` syntax. Use these for context:',
+      );
+      sections.push('');
+      const changedFiles = context.prContext.changedFiles || [];
+      for (const ref of context.codeReferences) {
+        const changedFile = changedFiles.find((f) => f.path === ref.file);
+        const range =
+          ref.endLine !== undefined ? `${ref.line}-${ref.endLine}` : `${ref.line ?? '?'}`;
+        sections.push(`### \`${ref.file}:${range}\``);
+        sections.push('');
+        if (changedFile?.patch) {
+          sections.push('```diff');
+          sections.push(selectPatchWindow(changedFile.patch, ref.line, ref.endLine));
+          sections.push('```');
+        } else {
+          sections.push(
+            '_(No diff available for this file in the PR — treat it as external context.)_',
+          );
+        }
+        sections.push('');
+      }
     }
 
     // Sliding window: split the thread into older messages (summarized) and the

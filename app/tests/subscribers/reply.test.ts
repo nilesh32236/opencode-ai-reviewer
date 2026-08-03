@@ -67,4 +67,44 @@ describe('ReplySubscriber', () => {
 
     expect(mockedHandleReply).toHaveBeenCalledTimes(1);
   });
+
+  it('defers /ask replies when the ask command is enabled', async () => {
+    const sub = createReplySubscriber(undefined, DEFAULT_CONFIG);
+
+    await sub.handle(makeEvent('/ask why is this null?'));
+
+    expect(mockedHandleReply).not.toHaveBeenCalled();
+  });
+
+  it('does not defer /ask replies when askCommandEnabled is false', async () => {
+    const config = {
+      ...DEFAULT_CONFIG,
+      conversation: { ...DEFAULT_CONFIG.conversation, askCommandEnabled: false },
+    };
+    const sub = createReplySubscriber(undefined, config);
+
+    await sub.handle(makeEvent('/ask why is this null?'));
+
+    expect(mockedHandleReply).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not defer /ask replies when conversation mode is disabled', async () => {
+    const config = {
+      ...DEFAULT_CONFIG,
+      conversation: { ...DEFAULT_CONFIG.conversation, enabled: false },
+    };
+    const sub = createReplySubscriber(undefined, config);
+
+    await sub.handle(makeEvent('/ask why is this null?'));
+
+    expect(mockedHandleReply).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not defer /ask-me-anything (rejected by the command pattern)', async () => {
+    const sub = createReplySubscriber(undefined, DEFAULT_CONFIG);
+
+    await sub.handle(makeEvent('/ask-me-anything'));
+
+    expect(mockedHandleReply).toHaveBeenCalledTimes(1);
+  });
 });

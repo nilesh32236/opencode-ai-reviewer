@@ -101,6 +101,11 @@ export type {
   ReviewMetricsRow,
   SeverityDistribution,
   ReviewMetricsReport,
+  ConversationSessionInput,
+  ConversationSessionPatch,
+  ConversationSessionRow,
+  ConversationTurnInput,
+  ConversationTurnRow,
 } from './learning/types.js';
 export { MetricsService } from './analytics/metrics.js';
 export { getDbPath } from './learning/schema.js';
@@ -178,6 +183,8 @@ export {
   buildConversationSummaryPrompt,
   detectIntent,
   normalizeConversationConfig,
+  extractCodeReferences,
+  resolveCodeReferences,
 } from './prompts/conversation.js';
 export { buildSelfHealPrompt, extractRelevantLogSnippet } from './prompts/heal.js';
 export type { SelfHealPromptInputs } from './prompts/heal.js';
@@ -199,7 +206,7 @@ export {
 export type { AnalysisPlanResult } from './utils/analyze-parser.js';
 export { buildAutofixPRBody } from './utils/pr-body.js';
 export type { PRBodyOptions } from './utils/pr-body.js';
-export { parseCommand } from './utils/command-match.js';
+export { parseCommand, ASK_COMMAND_PATTERN } from './utils/command-match.js';
 export type { ParsedCommand } from './utils/command-match.js';
 export { RateLimiter } from './utils/rate-limiter.js';
 export type {

@@ -12,12 +12,21 @@ export interface ParsedCommand {
   raw: string;
 }
 
+/**
+ * Base `\/ask` command pattern. Rejects hyphenated lookalikes like `/ask-me`
+ * by requiring that the character after `ask` is not a letter, digit,
+ * underscore, or hyphen. Shared by `parseCommand` and the conversation
+ * handler's `extractAskQuestion` so both sites agree on what counts as `/ask`.
+ */
+export const ASK_COMMAND_PATTERN = /^\s*\/(?:oc\s+)?ask(?![A-Za-z0-9_-])/i;
+
 const COMMAND_PATTERNS: Array<{ name: string; regex: RegExp }> = [
   { name: 'review', regex: /^\s*\/(?:oc\s+)?review\b/i },
   { name: 'fix', regex: /^\s*\/(?:oc\s+)?fix\b/i },
   { name: 'audit', regex: /^\s*\/(?:oc\s+)?audit\b/i },
   { name: 'analyze', regex: /^\s*\/(?:oc\s+)?analy[sz]e\b/i },
   { name: 'explain', regex: /^\s*\/(?:oc\s+)?explain\b/i },
+  { name: 'ask', regex: ASK_COMMAND_PATTERN },
   { name: 'discover', regex: /^\s*\/(?:oc\s+)?discover\b/i },
   { name: 'dismiss', regex: /^\s*\/(?:oc\s+)?dismiss\b/i },
   { name: 'reconcile-comments', regex: /^\s*\/(?:oc\s+)?reconcile-comments\b/i },

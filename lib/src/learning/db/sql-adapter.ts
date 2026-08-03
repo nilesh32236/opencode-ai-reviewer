@@ -6,6 +6,11 @@ import { Logger } from '../../utils/logger.js';
 import { JsonDatabase, SUPPRESSING_DISMISS_SIGNALS } from '../json-db.js';
 import { deriveFileExtensions, generateId } from '../schema.js';
 import type {
+  ConversationSessionInput,
+  ConversationSessionPatch,
+  ConversationSessionRow,
+  ConversationTurnInput,
+  ConversationTurnRow,
   CustomRuleRow,
   FeedbackBreakdown,
   FeedbackInput,
@@ -1087,6 +1092,166 @@ export abstract class SqlAdapter implements LearningRepository {
       new Date(olderThanMs).toISOString(),
     ]);
     return res.changes;
+  }
+
+  // ─── Conversation sessions ──────────────────────────────
+
+  /**
+   * Create a persisted conversation session when none exists for the id.
+   * Existing rows are left untouched (INSERT OR IGNORE semantics).
+   * @param input - Session anchor and initial state.
+   * @returns The deterministic session id.
+   */
+  async getOrCreateConversationSession(input: ConversationSessionInput): Promise<string> {
+    const now = new Date().toISOString();
+    await this.run(
+      `INSERT OR IGNORE INTO conversation_sessions (
+         id, pr_number, repo, thread_root_comment_id, is_review_comment,
+         turn_count, token_budget_used, last_file_ref, last_line_ref,
+         summary_snapshot, summarized_count, already_closed,
+         last_activity_timestamp, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.id,
+        input.prNumber,
+        input.repo,
+        input.threadRootCommentId ?? null,
+        input.isReviewComment ? 1 : 0,
+        input.turnCount ?? 0,
+        input.tokenBudgetUsed ?? 0,
+        input.lastFileRef ?? null,
+        input.lastLineRef ?? null,
+        input.summarySnapshot ?? null,
+        input.summarizedCount ?? null,
+        input.alreadyClosed ? 1 : 0,
+        input.lastActivityTimestamp ?? Date.now(),
+        now,
+        now,
+      ],
+    );
+    return input.id;
+  }
+
+  /**
+   * Retrieve a persisted conversation session by id.
+   * @param id - Deterministic session id.
+   * @returns The session row, or null when no session exists.
+   */
+  async getConversationSession(id: string): Promise<ConversationSessionRow | null> {
+    const row = await this.get<ConversationSessionRow>(
+      'SELECT * FROM conversation_sessions WHERE id = ?',
+      [id],
+    );
+    return row ?? null;
+  }
+
+  /**
+   * Update a persisted conversation session with post-turn state.
+   * Only the keys explicitly present in the patch are written, matching the
+   * JSON backend semantics: `undefined` keeps the stored value, while a
+   * non-undefined value (including `null`) is written as-is so nullable columns
+   * like `last_file_ref` / `summary_snapshot` can be cleared.
+   * @param id - Session id to update.
+   * @param patch - State fields to write (undefined = keep, null = clear).
+   */
+  async updateConversationSession(id: string, patch: ConversationSessionPatch): Promise<void> {
+    const sets: string[] = [];
+    const values: unknown[] = [];
+    if (patch.turnCount !== undefined) {
+      sets.push('turn_count = ?');
+      values.push(patch.turnCount);
+    }
+    if (patch.tokenBudgetUsed !== undefined) {
+      sets.push('token_budget_used = ?');
+      values.push(patch.tokenBudgetUsed);
+    }
+    if (patch.lastFileRef !== undefined) {
+      sets.push('last_file_ref = ?');
+      values.push(patch.lastFileRef);
+    }
+    if (patch.lastLineRef !== undefined) {
+      sets.push('last_line_ref = ?');
+      values.push(patch.lastLineRef);
+    }
+    if (patch.summarySnapshot !== undefined) {
+      sets.push('summary_snapshot = ?');
+      values.push(patch.summarySnapshot);
+    }
+    if (patch.summarizedCount !== undefined) {
+      sets.push('summarized_count = ?');
+      values.push(patch.summarizedCount);
+    }
+    if (patch.alreadyClosed !== undefined) {
+      sets.push('already_closed = ?');
+      values.push(patch.alreadyClosed ? 1 : 0);
+    }
+    if (patch.lastActivityTimestamp !== undefined) {
+      sets.push('last_activity_timestamp = ?');
+      values.push(patch.lastActivityTimestamp);
+    }
+    if (sets.length === 0) return;
+    sets.push('updated_at = ?');
+    values.push(new Date().toISOString(), id);
+    await this.run(`UPDATE conversation_sessions SET ${sets.join(', ')} WHERE id = ?`, values);
+  }
+
+  /**
+   * Record a single conversation turn.
+   * @param input - Turn data (session id, turn number, role, body).
+   * @returns The generated turn id.
+   */
+  async addConversationTurn(input: ConversationTurnInput): Promise<string> {
+    const id = generateId();
+    await this.run(
+      `INSERT INTO conversation_turns (id, session_id, turn_number, role, body, file_ref, line_ref, tokens_used, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        input.sessionId,
+        input.turnNumber,
+        input.role,
+        input.body,
+        input.fileRef ?? null,
+        input.lineRef ?? null,
+        input.tokensUsed ?? 0,
+        new Date().toISOString(),
+      ],
+    );
+    return id;
+  }
+
+  /**
+   * Retrieve persisted turns for a session, ordered by turn number with a
+   * deterministic tiebreak (created-at, then role) so the user row of an
+   * exchange always precedes its assistant row.
+   * @param sessionId - Session id to load turns for.
+   * @param limit - Maximum number of turns to return (default: 100).
+   * @returns Array of turn rows.
+   */
+  async getConversationTurns(sessionId: string, limit = 100): Promise<ConversationTurnRow[]> {
+    return this.all<ConversationTurnRow>(
+      'SELECT * FROM conversation_turns WHERE session_id = ? ORDER BY turn_number ASC, created_at ASC, role DESC LIMIT ?',
+      [sessionId, limit],
+    );
+  }
+
+  /**
+   * Delete conversation sessions idle for longer than the given threshold,
+   * along with their turns (removed first so foreign keys stay satisfied).
+   * @param olderThanMs - Sessions with last activity before this epoch
+   * millisecond timestamp are deleted.
+   * @returns Number of deleted rows (turns + sessions).
+   */
+  async cleanupConversations(olderThanMs: number): Promise<number> {
+    const turns = await this.run(
+      `DELETE FROM conversation_turns WHERE session_id IN (SELECT id FROM conversation_sessions WHERE last_activity_timestamp < ?)`,
+      [olderThanMs],
+    );
+    const sessions = await this.run(
+      `DELETE FROM conversation_sessions WHERE last_activity_timestamp < ?`,
+      [olderThanMs],
+    );
+    return turns.changes + sessions.changes;
   }
 }
 

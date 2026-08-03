@@ -472,6 +472,8 @@ export const PromptConfigSchema = z.object({
       slidingWindowSize: z.number().int().min(1).max(500).optional(),
       contextTokenBudget: z.number().int().min(1000).max(1000000).optional(),
       summarizationModel: z.string().optional(),
+      askCommandEnabled: z.boolean().optional(),
+      maxCodeReferences: z.number().int().min(1).max(20).optional(),
     })
     .optional(),
   overrides: z.array(ConfigOverrideSchema).optional(),

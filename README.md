@@ -232,7 +232,7 @@ The `checkAllowlist` option controls which programs are allowed in `runChecks`. 
 
 ### Conversation Configuration
 
-Long-running `@mention` conversations are kept within the model's context window via a sliding window, summarization, and a hard turn limit:
+Long-running `@mention` conversations — and `/ask` follow-up questions — are kept within the model's context window via a sliding window, summarization, and a hard turn limit:
 
 ```yaml
 conversation:
@@ -240,12 +240,18 @@ conversation:
   slidingWindowSize: 20        # most-recent messages kept in full; older ones are summarized
   contextTokenBudget: 32000    # estimated-token budget for the conversation prompt (~75% of the model limit)
   summarizationModel: ~        # optional model override for summarization passes (defaults to conversation/review model)
+  askCommandEnabled: true      # enable /ask follow-up questions (no @mention required)
+  maxCodeReferences: 5         # max file:line references resolved into context per message
 ```
 
 - **`maxTurns`** — once reached, the conversation is auto-closed with a clear message instead of growing unbounded.
 - **`slidingWindowSize`** — messages older than this window are condensed into a summary snapshot rather than dropped.
 - **`contextTokenBudget`** — the conversation prompt is trimmed (recent-window size reduced) to stay within this budget, logs estimated token usage against it, and warns when approaching it. Align it with the context window of your `conversationModel`/`reviewModel` (e.g. raise it for 128K-token models).
 - **`summarizationModel`** — optional model used for the summarization passes that condense older messages; defaults to the conversation/review model.
+- **`askCommandEnabled`** — when enabled, `/ask <question>` in a PR comment triggers a conversation even without an `@mention`. Set to `false` to keep `/ask` disabled.
+- **`maxCodeReferences`** — maximum number of `file:line` references (e.g. `src/foo.ts:42`) resolved against the PR diff and injected into the prompt per message.
+
+Conversation session state (turn count, sliding-window summary, auto-close flag) is persisted per thread in the learning store, so `@mention` and `/ask` threads survive app restarts and continue where they left off.
 
 These values can also be set via environment variables (`CONVERSATION_MAX_TURNS`, `CONVERSATION_SLIDING_WINDOW_SIZE`, `CONVERSATION_CONTEXT_TOKEN_BUDGET`, `CONVERSATION_SUMMARIZATION_MODEL`) for the Probot app.
 

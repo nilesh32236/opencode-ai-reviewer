@@ -5,6 +5,11 @@ import type { LearningQuality } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
 import { deriveFileExtensions, generateId } from './schema.js';
 import type {
+  ConversationSessionInput,
+  ConversationSessionPatch,
+  ConversationSessionRow,
+  ConversationTurnInput,
+  ConversationTurnRow,
   FeedbackBreakdown,
   FeedbackInput,
   FindingInput,
@@ -128,6 +133,8 @@ export class JsonDatabase implements LearningRepository {
     meta_review_counter: MetaReviewCounterRow[];
     review_metrics?: ReviewMetricsRow[];
     rate_limits: RateLimitRow[];
+    conversation_sessions: ConversationSessionRow[];
+    conversation_turns: ConversationTurnRow[];
   };
   private filePath: string;
   private inTransaction = false;
@@ -148,10 +155,18 @@ export class JsonDatabase implements LearningRepository {
       prompt_overrides: [],
       meta_review_counter: [],
       rate_limits: [],
+      conversation_sessions: [],
+      conversation_turns: [],
     };
     this.load();
     if (this.data.rate_limits === undefined) {
       this.data.rate_limits = [];
+    }
+    if (this.data.conversation_sessions === undefined) {
+      this.data.conversation_sessions = [];
+    }
+    if (this.data.conversation_turns === undefined) {
+      this.data.conversation_turns = [];
     }
     if (this.data.meta_review_counter.length === 0) {
       this.data.meta_review_counter.push({ id: 1, count: 0 });
@@ -1208,5 +1223,136 @@ export class JsonDatabase implements LearningRepository {
     });
     this.save();
     return before - this.data.rate_limits.length;
+  }
+
+  // ─── Conversation sessions ──────────────────────────────
+
+  /**
+   * Create a persisted conversation session when none exists for the id.
+   * Existing rows are left untouched.
+   * @param input - Session anchor and initial state.
+   * @returns The deterministic session id.
+   */
+  async getOrCreateConversationSession(input: ConversationSessionInput): Promise<string> {
+    const existing = this.data.conversation_sessions.find((s) => s.id === input.id);
+    if (!existing) {
+      this.data.conversation_sessions.push({
+        id: input.id,
+        pr_number: input.prNumber,
+        repo: input.repo,
+        thread_root_comment_id: input.threadRootCommentId ?? null,
+        is_review_comment: input.isReviewComment ? 1 : 0,
+        turn_count: input.turnCount ?? 0,
+        token_budget_used: input.tokenBudgetUsed ?? 0,
+        last_file_ref: input.lastFileRef ?? null,
+        last_line_ref: input.lastLineRef ?? null,
+        summary_snapshot: input.summarySnapshot ?? null,
+        summarized_count: input.summarizedCount ?? null,
+        already_closed: input.alreadyClosed ? 1 : 0,
+        last_activity_timestamp: input.lastActivityTimestamp ?? Date.now(),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+      this.save();
+    }
+    return input.id;
+  }
+
+  /**
+   * Retrieve a persisted conversation session by id.
+   * @param id - Deterministic session id.
+   * @returns The session row, or null when no session exists.
+   */
+  async getConversationSession(id: string): Promise<ConversationSessionRow | null> {
+    return this.data.conversation_sessions.find((s) => s.id === id) ?? null;
+  }
+
+  /**
+   * Update a persisted conversation session with post-turn state.
+   * @param id - Session id to update.
+   * @param patch - State fields to write (null-safe merge).
+   */
+  async updateConversationSession(id: string, patch: ConversationSessionPatch): Promise<void> {
+    const session = this.data.conversation_sessions.find((s) => s.id === id);
+    if (!session) return;
+    if (patch.turnCount !== undefined) session.turn_count = patch.turnCount;
+    if (patch.tokenBudgetUsed !== undefined) session.token_budget_used = patch.tokenBudgetUsed;
+    if (patch.lastFileRef !== undefined) session.last_file_ref = patch.lastFileRef;
+    if (patch.lastLineRef !== undefined) session.last_line_ref = patch.lastLineRef;
+    if (patch.summarySnapshot !== undefined) session.summary_snapshot = patch.summarySnapshot;
+    if (patch.summarizedCount !== undefined) session.summarized_count = patch.summarizedCount;
+    if (patch.alreadyClosed !== undefined) session.already_closed = patch.alreadyClosed ? 1 : 0;
+    if (patch.lastActivityTimestamp !== undefined) {
+      session.last_activity_timestamp = patch.lastActivityTimestamp;
+    }
+    session.updated_at = new Date().toISOString();
+    this.save();
+  }
+
+  /**
+   * Record a single conversation turn.
+   * @param input - Turn data (session id, turn number, role, body).
+   * @returns The generated turn id.
+   */
+  async addConversationTurn(input: ConversationTurnInput): Promise<string> {
+    const id = generateId();
+    this.data.conversation_turns.push({
+      id,
+      session_id: input.sessionId,
+      turn_number: input.turnNumber,
+      role: input.role,
+      body: input.body,
+      file_ref: input.fileRef ?? null,
+      line_ref: input.lineRef ?? null,
+      tokens_used: input.tokensUsed ?? 0,
+      created_at: new Date().toISOString(),
+    });
+    this.save();
+    return id;
+  }
+
+  /**
+   * Retrieve persisted turns for a session, ordered by turn number with the
+   * same deterministic tiebreak as the SQL backends (created-at, then role) so
+   * the user row of an exchange always precedes its assistant row.
+   * @param sessionId - Session id to load turns for.
+   * @param limit - Maximum number of turns to return (default: 100).
+   * @returns Array of turn rows.
+   */
+  async getConversationTurns(sessionId: string, limit = 100): Promise<ConversationTurnRow[]> {
+    return this.data.conversation_turns
+      .filter((t) => t.session_id === sessionId)
+      .sort((a, b) => {
+        if (a.turn_number !== b.turn_number) return a.turn_number - b.turn_number;
+        if (a.created_at !== b.created_at) return a.created_at < b.created_at ? -1 : 1;
+        return a.role === b.role ? 0 : a.role > b.role ? -1 : 1;
+      })
+      .slice(0, limit);
+  }
+
+  /**
+   * Delete conversation sessions idle for longer than the given threshold,
+   * along with their turns.
+   * @param olderThanMs - Sessions with last activity before this epoch
+   * millisecond timestamp are deleted.
+   * @returns Number of deleted rows (turns + sessions).
+   */
+  async cleanupConversations(olderThanMs: number): Promise<number> {
+    const staleIds = new Set(
+      this.data.conversation_sessions
+        .filter((s) => s.last_activity_timestamp < olderThanMs)
+        .map((s) => s.id),
+    );
+    if (staleIds.size === 0) return 0;
+    const before = this.data.conversation_turns.length + this.data.conversation_sessions.length;
+    this.data.conversation_turns = this.data.conversation_turns.filter(
+      (t) => !staleIds.has(t.session_id),
+    );
+    this.data.conversation_sessions = this.data.conversation_sessions.filter(
+      (s) => !staleIds.has(s.id),
+    );
+    const after = this.data.conversation_turns.length + this.data.conversation_sessions.length;
+    this.save();
+    return before - after;
   }
 }
