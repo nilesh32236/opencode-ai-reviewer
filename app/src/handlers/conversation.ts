@@ -1,7 +1,9 @@
 import type {
   AgentConfig,
+  CodeReference,
   ConversationContext,
   ConversationMessage,
+  ConversationState,
   ConversationStateManager,
   EventBus,
   LearningStore,
@@ -14,14 +16,23 @@ import {
   Logger,
   ReviewEngine,
   detectIntent,
+  extractCodeReferences,
   gatherReviewThread,
+  parseCommand,
+  resolveCodeReferences,
 } from '@opencode-pr-agent/lib';
 import { mergeRepoConfig } from '../utils/config.js';
 
 /**
- * Handle an interactive conversation triggered by an @mention in a PR comment.
- * Gathers the conversation thread context, detects intent, runs the conversation
+ * Handle an interactive conversation triggered by an @mention or an `/ask`
+ * command in a PR comment. Gathers the conversation thread context, detects
+ * intent, resolves any `file:line` code references, runs the conversation
  * through the review engine, and posts the response as a reply comment.
+ *
+ * When a `learningStore` is available, the conversation session (turn count,
+ * sliding-window summary snapshot, auto-close flag) is persisted per thread so
+ * the state survives app restarts: it is restored into the in-memory
+ * `ConversationStateManager` before the turn and written back afterward.
  *
  * @param commentId - ID of the comment that triggered the mention.
  * @param prNumber - PR number the comment belongs to.
@@ -29,7 +40,7 @@ import { mergeRepoConfig } from '../utils/config.js';
  * @param token - GitHub API token.
  * @param config - Agent configuration.
  * @param isReviewComment - Whether the comment is an inline review comment (vs. issue comment).
- * @param learningStore - Optional learning store for the engine.
+ * @param learningStore - Optional learning store for the engine and session persistence.
  * @param signal - Optional abort signal for cancellation.
  * @param tempDir - Optional temporary working directory.
  * @param stateManager - Optional conversation state manager for context window management.
@@ -67,6 +78,9 @@ export async function handleConversation(
   let thread: ConversationMessage[] = [];
   let filePath: string | undefined;
   let diffHunk: string | undefined;
+  // Root comment id anchors the persisted session for inline review threads so
+  // every reply in the same thread shares one session (not one per trigger).
+  let threadRootCommentId: number | undefined;
   const mentionHandle = config.conversation.mentionHandle;
 
   if (isReviewComment) {
@@ -81,6 +95,7 @@ export async function handleConversation(
     thread = threadResult.thread;
     filePath = threadResult.filePath;
     diffHunk = threadResult.diffHunk;
+    threadRootCommentId = threadResult.rootCommentId ?? commentId;
   } else {
     // For issue comments, fetch the comment thread on the PR. Accumulate up to
     // the configured sliding-window size so long issue threads can actually
@@ -102,22 +117,87 @@ export async function handleConversation(
     return;
   }
 
+  // Normalize the latest user message: strip an `/ask` command prefix (keeping
+  // the question text) and extract any `file:line` code references.
+  const lastUserIndex = thread.reduce((acc, m, i) => (m.role === 'user' ? i : acc), -1);
+  let codeReferences: CodeReference[] = [];
+  if (lastUserIndex >= 0) {
+    const latest = thread[lastUserIndex];
+    const askQuestion = extractAskQuestion(latest.body);
+    if (askQuestion !== null) {
+      latest.body = askQuestion;
+      logger.info(`Detected /ask command on comment ${commentId}`);
+    }
+    const rawRefs = extractCodeReferences(latest.body);
+    codeReferences = resolveCodeReferences(
+      rawRefs,
+      pr.changedFiles,
+      config.conversation.maxCodeReferences ?? 5,
+    );
+    if (codeReferences.length > 0) {
+      logger.info(
+        `Resolved ${codeReferences.length} code reference(s): ${codeReferences
+          .map((r) => `${r.file}:${r.line ?? ''}`)
+          .join(', ')}`,
+      );
+    }
+  }
+
   // Get the user's latest message for intent detection
   const lastUserMessage = [...thread].reverse().find((m) => m.role === 'user');
   const intent = lastUserMessage ? detectIntent(lastUserMessage.body) : 'general';
 
+  // Session identity stays PR-scoped (repo + pr + thread anchor) so multi-turn
+  // /ask and @mention conversations persist across restarts. Inline review
+  // threads anchor on the thread root; issue threads anchor on the PR itself.
+  const sessionId = `${repo}/${prNumber}/${filePath || 'issue'}${
+    isReviewComment ? `#${threadRootCommentId ?? commentId}` : ''
+  }`;
+
   const context: ConversationContext = {
-    // Include the triggering comment id for review-comment threads so each
-    // distinct discussion tracks its own turns/summary instead of sharing a
-    // single state across every inline thread on the same file.
-    threadId: `${repo}/${prNumber}/${filePath || 'issue'}${isReviewComment ? `#${commentId}` : ''}`,
+    threadId: sessionId,
     repo,
     filePath,
     diffHunk,
     thread,
     prContext: pr,
     intent,
+    codeReferences,
   };
+
+  // Restore any persisted session state into the in-memory manager so the
+  // sliding window / summarization machinery continues where it left off.
+  let priorTurnCount = 0;
+  if (learningStore && stateManager) {
+    try {
+      await learningStore.getOrCreateConversationSession({
+        id: sessionId,
+        prNumber,
+        repo,
+        threadRootCommentId: isReviewComment ? threadRootCommentId : undefined,
+        isReviewComment,
+        turnCount: 0,
+      });
+      const session = await learningStore.getConversationSession(sessionId);
+      if (session) {
+        priorTurnCount = session.turn_count ?? 0;
+        const persisted: ConversationState = {
+          threadId: sessionId,
+          turnCount: session.turn_count ?? 0,
+          lastActivityTimestamp: session.last_activity_timestamp || Date.now(),
+          summarySnapshot: session.summary_snapshot ?? undefined,
+          summarizedCount: session.summarized_count ?? undefined,
+          alreadyClosed: Boolean(session.already_closed),
+        };
+        stateManager.restoreState(persisted);
+        logger.info(`Restored conversation session ${sessionId} (turn ${priorTurnCount + 1})`);
+      }
+    } catch (err) {
+      logger.warn(
+        `Failed to restore conversation session: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  }
 
   // Run through the engine
   const engine = new ReviewEngine(
@@ -133,6 +213,20 @@ export async function handleConversation(
     const response = await engine.runConversation(context, undefined, tempDir, stateManager);
 
     if (signal?.aborted) return;
+
+    // Persist the post-turn state and turns so the conversation survives
+    // restarts. Non-critical — failures must never fail the turn.
+    if (learningStore) {
+      await persistSessionState(
+        learningStore,
+        sessionId,
+        priorTurnCount,
+        stateManager,
+        lastUserMessage,
+        response,
+        codeReferences[0],
+      );
+    }
 
     // Already-closed threads return '' as a silent no-op — do not post a
     // duplicate close message or an empty comment.
@@ -170,12 +264,92 @@ export async function handleConversation(
   }
 }
 
+/**
+ * Persist the conversation session state and turns after a successful turn.
+ * Writes the updated ConversationState (turn count, summary snapshot, close
+ * flag) plus the user question and assistant reply as turn rows.
+ *
+ * @param learningStore - Learning store used for persistence.
+ * @param sessionId - Session id to update.
+ * @param priorTurnCount - Completed turn count before this turn.
+ * @param stateManager - In-memory state manager carrying the post-turn state.
+ * @param lastUserMessage - Latest user message (may have been stripped of /ask).
+ * @param response - Assistant reply text.
+ * @param firstRef - First resolved code reference, when any.
+ */
+async function persistSessionState(
+  learningStore: LearningStore,
+  sessionId: string,
+  priorTurnCount: number,
+  stateManager: ConversationStateManager | undefined,
+  lastUserMessage: ConversationMessage | undefined,
+  response: string,
+  firstRef: CodeReference | undefined,
+): Promise<void> {
+  const latest = stateManager?.getState(sessionId);
+  try {
+    await learningStore.updateConversationSession(sessionId, {
+      turnCount: latest?.turnCount ?? priorTurnCount,
+      lastActivityTimestamp: latest?.lastActivityTimestamp,
+      summarySnapshot: latest?.summarySnapshot,
+      summarizedCount: latest?.summarizedCount,
+      alreadyClosed: latest?.alreadyClosed,
+      lastFileRef: firstRef?.file,
+      lastLineRef: firstRef?.line,
+    });
+    const userTurnNumber = priorTurnCount + 1;
+    if (lastUserMessage) {
+      await learningStore.addConversationTurn({
+        sessionId,
+        turnNumber: userTurnNumber,
+        role: 'user',
+        body: lastUserMessage.body,
+        fileRef: firstRef?.file,
+        lineRef: firstRef?.line,
+      });
+    }
+    if (response) {
+      await learningStore.addConversationTurn({
+        sessionId,
+        turnNumber: userTurnNumber,
+        role: 'assistant',
+        body: response,
+        fileRef: firstRef?.file,
+        lineRef: firstRef?.line,
+      });
+    }
+  } catch (err) {
+    new Logger('Conversation').warn(
+      `Failed to persist conversation session state: ${err instanceof Error ? err.message : err}`,
+    );
+  }
+}
+
+/**
+ * Extract the question text that follows an `/ask` command in a comment body.
+ * Only line-anchored commands count (matching `parseCommand`). Returns the
+ * trimmed remainder, or null when the body does not start with `/ask`.
+ *
+ * @param body - Comment body to scan.
+ * @returns The question text, or null when no `/ask` command is present.
+ */
+function extractAskQuestion(body: string): string | null {
+  if (parseCommand(body)?.command !== 'ask') return null;
+  for (const line of body.split('\n')) {
+    const match = line.match(/^\s*\/(?:oc\s+)?ask\b\s*(.*)$/i);
+    if (match) return match[1].trim() || null;
+  }
+  return null;
+}
+
 // ─── Thread Gathering Helpers ────────────────────────────────────
 
 interface ReviewCommentThread {
   thread: ConversationMessage[];
   filePath?: string;
   diffHunk?: string;
+  /** Id of the thread root comment (used to anchor the persisted session). */
+  rootCommentId?: number;
 }
 
 interface IssueCommentThread {
@@ -235,6 +409,7 @@ export async function gatherReviewCommentThread(
     thread,
     filePath,
     diffHunk,
+    rootCommentId: chain[0]?.id,
   };
 }
 

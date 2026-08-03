@@ -6,6 +6,11 @@ import { Logger } from '../../utils/logger.js';
 import { JsonDatabase, SUPPRESSING_DISMISS_SIGNALS } from '../json-db.js';
 import { deriveFileExtensions, generateId } from '../schema.js';
 import type {
+  ConversationSessionInput,
+  ConversationSessionPatch,
+  ConversationSessionRow,
+  ConversationTurnInput,
+  ConversationTurnRow,
   CustomRuleRow,
   FeedbackBreakdown,
   FeedbackInput,
@@ -1087,6 +1092,128 @@ export abstract class SqlAdapter implements LearningRepository {
       new Date(olderThanMs).toISOString(),
     ]);
     return res.changes;
+  }
+
+  // ─── Conversation sessions ──────────────────────────────
+
+  /**
+   * Create a persisted conversation session when none exists for the id.
+   * Existing rows are left untouched (INSERT OR IGNORE semantics).
+   * @param input - Session anchor and initial state.
+   * @returns The deterministic session id.
+   */
+  async getOrCreateConversationSession(input: ConversationSessionInput): Promise<string> {
+    const now = new Date().toISOString();
+    await this.run(
+      `INSERT OR IGNORE INTO conversation_sessions (
+         id, pr_number, repo, thread_root_comment_id, is_review_comment,
+         turn_count, token_budget_used, last_file_ref, last_line_ref,
+         summary_snapshot, summarized_count, already_closed,
+         last_activity_timestamp, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.id,
+        input.prNumber,
+        input.repo,
+        input.threadRootCommentId ?? null,
+        input.isReviewComment ? 1 : 0,
+        input.turnCount ?? 0,
+        input.tokenBudgetUsed ?? 0,
+        input.lastFileRef ?? null,
+        input.lastLineRef ?? null,
+        input.summarySnapshot ?? null,
+        input.summarizedCount ?? null,
+        input.alreadyClosed ? 1 : 0,
+        input.lastActivityTimestamp ?? Date.now(),
+        now,
+        now,
+      ],
+    );
+    return input.id;
+  }
+
+  /**
+   * Retrieve a persisted conversation session by id.
+   * @param id - Deterministic session id.
+   * @returns The session row, or null when no session exists.
+   */
+  async getConversationSession(id: string): Promise<ConversationSessionRow | null> {
+    const row = await this.get<ConversationSessionRow>(
+      'SELECT * FROM conversation_sessions WHERE id = ?',
+      [id],
+    );
+    return row ?? null;
+  }
+
+  /**
+   * Update a persisted conversation session with post-turn state.
+   * @param id - Session id to update.
+   * @param patch - State fields to write (null-safe merge).
+   */
+  async updateConversationSession(id: string, patch: ConversationSessionPatch): Promise<void> {
+    await this.run(
+      `UPDATE conversation_sessions SET
+         turn_count = COALESCE(?, turn_count),
+         token_budget_used = COALESCE(?, token_budget_used),
+         last_file_ref = COALESCE(?, last_file_ref),
+         last_line_ref = COALESCE(?, last_line_ref),
+         summary_snapshot = COALESCE(?, summary_snapshot),
+         summarized_count = COALESCE(?, summarized_count),
+         already_closed = COALESCE(?, already_closed),
+         last_activity_timestamp = COALESCE(?, last_activity_timestamp),
+         updated_at = ?
+       WHERE id = ?`,
+      [
+        patch.turnCount ?? null,
+        patch.tokenBudgetUsed ?? null,
+        patch.lastFileRef ?? null,
+        patch.lastLineRef ?? null,
+        patch.summarySnapshot ?? null,
+        patch.summarizedCount ?? null,
+        patch.alreadyClosed === undefined ? null : patch.alreadyClosed ? 1 : 0,
+        patch.lastActivityTimestamp ?? null,
+        new Date().toISOString(),
+        id,
+      ],
+    );
+  }
+
+  /**
+   * Record a single conversation turn.
+   * @param input - Turn data (session id, turn number, role, body).
+   * @returns The generated turn id.
+   */
+  async addConversationTurn(input: ConversationTurnInput): Promise<string> {
+    const id = generateId();
+    await this.run(
+      `INSERT INTO conversation_turns (id, session_id, turn_number, role, body, file_ref, line_ref, tokens_used, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        input.sessionId,
+        input.turnNumber,
+        input.role,
+        input.body,
+        input.fileRef ?? null,
+        input.lineRef ?? null,
+        input.tokensUsed ?? 0,
+        new Date().toISOString(),
+      ],
+    );
+    return id;
+  }
+
+  /**
+   * Retrieve persisted turns for a session, ordered by turn number.
+   * @param sessionId - Session id to load turns for.
+   * @param limit - Maximum number of turns to return (default: 100).
+   * @returns Array of turn rows.
+   */
+  async getConversationTurns(sessionId: string, limit = 100): Promise<ConversationTurnRow[]> {
+    return this.all<ConversationTurnRow>(
+      'SELECT * FROM conversation_turns WHERE session_id = ? ORDER BY turn_number ASC LIMIT ?',
+      [sessionId, limit],
+    );
   }
 }
 

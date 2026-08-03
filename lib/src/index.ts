@@ -101,6 +101,11 @@ export type {
   ReviewMetricsRow,
   SeverityDistribution,
   ReviewMetricsReport,
+  ConversationSessionInput,
+  ConversationSessionPatch,
+  ConversationSessionRow,
+  ConversationTurnInput,
+  ConversationTurnRow,
 } from './learning/types.js';
 export { MetricsService } from './analytics/metrics.js';
 export { getDbPath } from './learning/schema.js';
@@ -178,6 +183,8 @@ export {
   buildConversationSummaryPrompt,
   detectIntent,
   normalizeConversationConfig,
+  extractCodeReferences,
+  resolveCodeReferences,
 } from './prompts/conversation.js';
 export { buildSelfHealPrompt, extractRelevantLogSnippet } from './prompts/heal.js';
 export type { SelfHealPromptInputs } from './prompts/heal.js';

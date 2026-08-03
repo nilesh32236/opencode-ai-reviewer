@@ -83,6 +83,99 @@ export interface RateLimitRow {
   created_at: string;
 }
 
+/** Input data for creating a persisted conversation session (upsert by id). */
+export interface ConversationSessionInput {
+  /** Deterministic session id (repo/pr/thread anchor) used as the upsert key. */
+  id: string;
+  /** PR number the session belongs to. */
+  prNumber: number;
+  /** Repository in owner/repo format. */
+  repo: string;
+  /** Thread root comment id, for inline review-comment threads. */
+  threadRootCommentId?: number;
+  /** Whether the session anchors on an inline review comment thread. */
+  isReviewComment: boolean;
+  /** Number of assistant turns completed (default: 0). */
+  turnCount?: number;
+  /** Cumulative estimated tokens consumed by the session (default: 0). */
+  tokenBudgetUsed?: number;
+  /** Last file reference mentioned in the thread. */
+  lastFileRef?: string;
+  /** Last line reference mentioned in the thread. */
+  lastLineRef?: number;
+  /** Persisted sliding-window summary snapshot. */
+  summarySnapshot?: string;
+  /** Number of older messages covered by the summary snapshot. */
+  summarizedCount?: number;
+  /** Whether the thread has already been auto-closed. */
+  alreadyClosed?: boolean;
+  /** Epoch millisecond timestamp of the last activity. */
+  lastActivityTimestamp?: number;
+}
+
+/** Patch applied to an existing conversation session after a turn. */
+export type ConversationSessionPatch = Pick<
+  ConversationSessionInput,
+  | 'turnCount'
+  | 'tokenBudgetUsed'
+  | 'lastFileRef'
+  | 'lastLineRef'
+  | 'summarySnapshot'
+  | 'summarizedCount'
+  | 'alreadyClosed'
+  | 'lastActivityTimestamp'
+>;
+
+/** A persisted conversation session row. */
+export interface ConversationSessionRow {
+  id: string;
+  pr_number: number;
+  repo: string;
+  thread_root_comment_id: number | null;
+  is_review_comment: number;
+  turn_count: number;
+  token_budget_used: number;
+  last_file_ref: string | null;
+  last_line_ref: number | null;
+  summary_snapshot: string | null;
+  summarized_count: number | null;
+  already_closed: number;
+  last_activity_timestamp: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Input data for recording a single conversation turn. */
+export interface ConversationTurnInput {
+  /** Session id the turn belongs to. */
+  sessionId: string;
+  /** 1-indexed turn number within the session. */
+  turnNumber: number;
+  /** Message role. */
+  role: 'user' | 'assistant';
+  /** Message body (markdown). */
+  body: string;
+  /** Optional file reference mentioned in the message. */
+  fileRef?: string;
+  /** Optional line reference mentioned in the message. */
+  lineRef?: number;
+  /** Optional estimated tokens consumed by the turn. */
+  tokensUsed?: number;
+}
+
+/** A persisted conversation turn row. */
+export interface ConversationTurnRow {
+  id: string;
+  session_id: string;
+  turn_number: number;
+  role: string;
+  body: string;
+  file_ref: string | null;
+  line_ref: number | null;
+  tokens_used: number;
+  created_at: string;
+}
+
 /**
  * Repository interface for the learning store.
  * Implementations can back this with SQLite, PostgreSQL, MySQL, or JSON.
@@ -391,6 +484,40 @@ export interface LearningRepository {
    * @returns Number of deleted rows.
    */
   cleanupRateLimits(olderThanMs: number): Promise<number>;
+
+  /**
+   * Create a persisted conversation session when none exists for the id, or
+   * return the id of the existing session. Existing rows are never modified.
+   * @param input - Session anchor and initial state.
+   * @returns The session id (the deterministic `input.id`).
+   */
+  getOrCreateConversationSession(input: ConversationSessionInput): Promise<string>;
+  /**
+   * Retrieve a persisted conversation session by id.
+   * @param id - Deterministic session id.
+   * @returns The session row, or null when no session exists.
+   */
+  getConversationSession(id: string): Promise<ConversationSessionRow | null>;
+  /**
+   * Update a persisted conversation session with post-turn state.
+   * @param id - Session id to update.
+   * @param patch - State fields to write (null-safe merge).
+   * @returns Promise that resolves when the session is updated.
+   */
+  updateConversationSession(id: string, patch: ConversationSessionPatch): Promise<void>;
+  /**
+   * Record a single conversation turn.
+   * @param input - Turn data (session id, turn number, role, body).
+   * @returns The generated turn id.
+   */
+  addConversationTurn(input: ConversationTurnInput): Promise<string>;
+  /**
+   * Retrieve persisted turns for a session, ordered by turn number.
+   * @param sessionId - Session id to load turns for.
+   * @param limit - Maximum number of turns to return (default: 100).
+   * @returns Array of turn rows.
+   */
+  getConversationTurns(sessionId: string, limit?: number): Promise<ConversationTurnRow[]>;
 }
 
 /** Per-PR finding statistics. */

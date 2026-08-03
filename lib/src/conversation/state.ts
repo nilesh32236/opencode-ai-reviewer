@@ -90,6 +90,36 @@ export class ConversationStateManager {
   }
 
   /**
+   * Return the currently tracked state for a thread, without creating one.
+   * @param threadId - Unique conversation thread identifier.
+   * @returns The tracked state, or undefined when the thread is not tracked.
+   */
+  getState(threadId: string): ConversationState | undefined {
+    return this.states.get(threadId);
+  }
+
+  /**
+   * Restore a previously persisted conversation state so a thread's turn
+   * count, summary snapshot, and auto-close flag survive an app restart. Only
+   * applies when the thread is not already tracked in memory (fresh state wins
+   * over stale persisted state).
+   *
+   * @param state - Persisted conversation state to seed the manager with.
+   */
+  restoreState(state: ConversationState): void {
+    if (!state || !state.threadId) return;
+    if (this.states.has(state.threadId)) return;
+    this.states.set(state.threadId, {
+      threadId: state.threadId,
+      turnCount: state.turnCount ?? 0,
+      lastActivityTimestamp: state.lastActivityTimestamp ?? Date.now(),
+      summarySnapshot: state.summarySnapshot,
+      summarizedCount: state.summarizedCount,
+      alreadyClosed: state.alreadyClosed,
+    });
+  }
+
+  /**
    * Serialize an async operation per thread so concurrent webhook turns for the
    * same thread cannot interleave state transitions (turn counting, summary
    * writes). Operations for different threads run concurrently.

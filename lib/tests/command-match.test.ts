@@ -9,6 +9,7 @@ describe('parseCommand', () => {
     expect(parseCommand('/analyze')?.command).toBe('analyze');
     expect(parseCommand('/analyse')?.command).toBe('analyze');
     expect(parseCommand('/explain')?.command).toBe('explain');
+    expect(parseCommand('/ask')?.command).toBe('ask');
     expect(parseCommand('/setup')?.command).toBe('setup');
     expect(parseCommand('/dismiss')?.command).toBe('dismiss');
     expect(parseCommand('/oc setup')?.command).toBe('setup');
@@ -80,5 +81,39 @@ describe('parseCommand', () => {
   it('returns null for non-command strings', () => {
     expect(parseCommand('')).toBeNull();
     expect(parseCommand('Just a regular comment')).toBeNull();
+  });
+
+  describe('/ask', () => {
+    it('parses a bare /ask command', () => {
+      const res = parseCommand('/ask');
+      expect(res?.command).toBe('ask');
+      expect(res?.args).toEqual([]);
+    });
+
+    it('parses /ask with a question as positional args', () => {
+      const res = parseCommand('/ask why is this null?');
+      expect(res?.command).toBe('ask');
+      expect(res?.args).toEqual(['why', 'is', 'this', 'null?']);
+    });
+
+    it('parses /ask with a file:line code reference', () => {
+      const res = parseCommand('/ask src/foo.ts:42 why is this null?');
+      expect(res?.command).toBe('ask');
+      expect(res?.args[0]).toBe('src/foo.ts:42');
+    });
+
+    it('parses /oc ask with the /oc prefix', () => {
+      expect(parseCommand('/oc ask what does this do?')?.command).toBe('ask');
+      expect(parseCommand('  /oc ask explain')?.command).toBe('ask');
+    });
+
+    it('rejects partial word matches', () => {
+      expect(parseCommand('/ask-me-anything')).toBeNull();
+    });
+
+    it('finds /ask on a line within a multi-line body', () => {
+      const res = parseCommand('Hello,\n\n/ask explain this function\n\nThanks!');
+      expect(res?.command).toBe('ask');
+    });
   });
 });

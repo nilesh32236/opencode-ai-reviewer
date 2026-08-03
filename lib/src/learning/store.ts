@@ -4,6 +4,11 @@ import { withRetry } from '../utils/retry.js';
 import { connectDb } from './db/index.js';
 import { applyMigrations, getDbPath } from './schema.js';
 import type {
+  ConversationSessionInput,
+  ConversationSessionPatch,
+  ConversationSessionRow,
+  ConversationTurnInput,
+  ConversationTurnRow,
   CustomRuleRow,
   FeedbackBreakdown,
   FindingInput,
@@ -732,6 +737,96 @@ export class LearningStore {
       const logger = new Logger('LearningStore');
       logger.error('Rate-limit cleanup failed, returning 0', err);
       return 0;
+    }
+  }
+
+  /**
+   * Create a persisted conversation session when none exists for the id.
+   * Existing rows are left untouched. Errors are logged but not thrown
+   * (graceful degradation — persistence is never on the conversation hot path).
+   *
+   * @param input - Session anchor and initial state.
+   * @returns The deterministic session id, or an empty string on store failure.
+   */
+  async getOrCreateConversationSession(input: ConversationSessionInput): Promise<string> {
+    try {
+      const repo = await this.repoPromise;
+      return await repo.getOrCreateConversationSession(input);
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.warn('Failed to get-or-create conversation session', err);
+      return '';
+    }
+  }
+
+  /**
+   * Retrieve a persisted conversation session by id.
+   *
+   * @param id - Deterministic session id.
+   * @returns The session row, or null when missing or on store failure.
+   */
+  async getConversationSession(id: string): Promise<ConversationSessionRow | null> {
+    if (!id) return null;
+    try {
+      const repo = await this.repoPromise;
+      return await repo.getConversationSession(id);
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.warn('Failed to get conversation session', err);
+      return null;
+    }
+  }
+
+  /**
+   * Update a persisted conversation session with post-turn state.
+   *
+   * @param id - Session id to update.
+   * @param patch - State fields to write.
+   */
+  async updateConversationSession(id: string, patch: ConversationSessionPatch): Promise<void> {
+    if (!id) return;
+    try {
+      const repo = await this.repoPromise;
+      await repo.updateConversationSession(id, patch);
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.warn('Failed to update conversation session', err);
+    }
+  }
+
+  /**
+   * Record a single conversation turn.
+   *
+   * @param input - Turn data.
+   * @returns The generated turn id, or an empty string on store failure.
+   */
+  async addConversationTurn(input: ConversationTurnInput): Promise<string> {
+    try {
+      const repo = await this.repoPromise;
+      return await repo.addConversationTurn(input);
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.warn('Failed to record conversation turn', err);
+      return '';
+    }
+  }
+
+  /**
+   * Retrieve persisted turns for a session, ordered by turn number.
+   *
+   * @param sessionId - Session id to load turns for.
+   * @param limit - Maximum number of turns to return (default: 100).
+   * @returns Array of turn rows (empty on store failure).
+   */
+  async getConversationTurns(sessionId: string, limit = 100): Promise<ConversationTurnRow[]> {
+    if (!sessionId) return [];
+    try {
+      const repo = await this.repoPromise;
+      return await repo.getConversationTurns(sessionId, limit);
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.warn('Failed to get conversation turns', err);
+      return [];
     }
   }
 }

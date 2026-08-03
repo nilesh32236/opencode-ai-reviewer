@@ -1,6 +1,11 @@
 import type { LearningQuality } from '../../types/index.js';
 import type { JsonDatabase } from '../json-db.js';
 import type {
+  ConversationSessionInput,
+  ConversationSessionPatch,
+  ConversationSessionRow,
+  ConversationTurnInput,
+  ConversationTurnRow,
   CustomRuleRow,
   FeedbackBreakdown,
   FeedbackInput,
@@ -497,5 +502,51 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
    */
   async cleanupRateLimits(olderThanMs: number): Promise<number> {
     return this.db.cleanupRateLimits(olderThanMs);
+  }
+
+  /**
+   * Create a persisted conversation session when none exists for the id.
+   * @param input - Session anchor and initial state.
+   * @returns The deterministic session id.
+   */
+  async getOrCreateConversationSession(input: ConversationSessionInput): Promise<string> {
+    return this.db.getOrCreateConversationSession(input);
+  }
+
+  /**
+   * Retrieve a persisted conversation session by id.
+   * @param id - Deterministic session id.
+   * @returns The session row, or null when no session exists.
+   */
+  async getConversationSession(id: string): Promise<ConversationSessionRow | null> {
+    return this.db.getConversationSession(id);
+  }
+
+  /**
+   * Update a persisted conversation session with post-turn state.
+   * @param id - Session id to update.
+   * @param patch - State fields to write.
+   */
+  async updateConversationSession(id: string, patch: ConversationSessionPatch): Promise<void> {
+    return this.db.updateConversationSession(id, patch);
+  }
+
+  /**
+   * Record a single conversation turn.
+   * @param input - Turn data.
+   * @returns The generated turn id.
+   */
+  async addConversationTurn(input: ConversationTurnInput): Promise<string> {
+    return this.db.addConversationTurn(input);
+  }
+
+  /**
+   * Retrieve persisted turns for a session, ordered by turn number.
+   * @param sessionId - Session id to load turns for.
+   * @param limit - Maximum number of turns to return.
+   * @returns Array of turn rows.
+   */
+  async getConversationTurns(sessionId: string, limit?: number): Promise<ConversationTurnRow[]> {
+    return this.db.getConversationTurns(sessionId, limit);
   }
 }

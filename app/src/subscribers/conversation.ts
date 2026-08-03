@@ -1,6 +1,6 @@
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { ConversationStateManager, Logger } from '@opencode-pr-agent/lib';
+import { ConversationStateManager, Logger, parseCommand } from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
   EventBus,
@@ -15,12 +15,20 @@ import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
 /**
- * Create a subscriber that handles @mention conversations on PRs and issues.
+ * Create a subscriber that handles @mention conversations and `/ask` follow-up
+ * questions on PRs.
  *
  * A long-lived `ConversationStateManager` is owned by the subscriber so tracked
  * state (turn count, summary snapshots) survives across individual webhook
  * turns — otherwise every @mention would start with empty state and the sliding
- * window/summarization logic would never accumulate.
+ * window/summarization logic would never accumulate. Persisted per-thread
+ * session state in the learning store is restored into this manager on each
+ * turn so it also survives app restarts.
+ *
+ * The `/ask` command (when enabled via `config.conversation.askCommandEnabled`)
+ * triggers a conversation even without an @mention. Both entry points flow
+ * through the same `handleConversation` so session state is always captured
+ * (Option A — unified conversation pipeline).
  *
  * @param learningStore - The learning store instance for context and patterns.
  * @param rateLimiter - The shared rate limiter for cost control.
@@ -51,7 +59,12 @@ export function createConversationSubscriber(
 
         const mentionHandle = config.conversation.mentionHandle;
 
-        if (!convBody.toLowerCase().includes(`@${mentionHandle.toLowerCase()}`)) return;
+        const mentioned = convBody.toLowerCase().includes(`@${mentionHandle.toLowerCase()}`);
+        const askEnabled = config.conversation.askCommandEnabled !== false;
+        const isAsk = askEnabled && parseCommand(convBody)?.command === 'ask';
+
+        // /ask works without an @mention; everything else requires the mention.
+        if (!mentioned && !isAsk) return;
 
         if (
           isBotLogin(convUser) ||
@@ -69,7 +82,8 @@ export function createConversationSubscriber(
 
         const isReviewComment = event.type === 'review_comment.created';
 
-        const reservation = await checkRateLimit(rateLimiter, event, 'interactive', 'conversation');
+        const action = isAsk ? 'ask' : 'conversation';
+        const reservation = await checkRateLimit(rateLimiter, event, 'interactive', action);
         if (!reservation) return;
 
         // Each conversation gets its own scratch directory under the OS temp dir
@@ -94,7 +108,7 @@ export function createConversationSubscriber(
           conversationStateManager,
           eventBus,
         );
-        await recordRateLimit(rateLimiter, event, 'interactive', 'conversation', reservation);
+        await recordRateLimit(rateLimiter, event, 'interactive', action, reservation);
       } catch (err) {
         logger.error(
           `ConversationSubscriber failed for repo ${event.repo}: ${err instanceof Error ? err.message : err}`,

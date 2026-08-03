@@ -451,6 +451,10 @@ export interface ConversationConfig {
   contextTokenBudget: number;
   /** Optional model override for summarization calls (defaults to conversation/review model) */
   summarizationModel?: string;
+  /** Whether the `/ask` follow-up command is enabled (default: true). */
+  askCommandEnabled?: boolean;
+  /** Maximum code references resolved into context from a single message (default: 5). */
+  maxCodeReferences?: number;
 }
 
 /** Tier of a rate-limited action. */
@@ -483,6 +487,16 @@ export interface RateLimitingConfig {
 /** Intent of a conversation interaction. */
 export type ConversationIntent = 'explain' | 'fix' | 'general';
 
+/** A `file:line` code reference extracted from a conversation message. */
+export interface CodeReference {
+  /** File path relative to repo root (e.g. `src/foo.ts`). */
+  file: string;
+  /** Single line number, when referenced as `file:line`. */
+  line?: number;
+  /** End line of a range, when referenced as `file:start-end`. */
+  endLine?: number;
+}
+
 /** A single message in a conversation thread. */
 export interface ConversationMessage {
   /** Role of the message author */
@@ -509,6 +523,8 @@ export interface ConversationContext {
   prContext: PRContext;
   /** Detected intent of the user's request */
   intent: ConversationIntent;
+  /** Resolved `file:line` code references mentioned in the latest message. */
+  codeReferences?: CodeReference[];
 }
 
 /**
@@ -1135,6 +1151,10 @@ export interface PromptConfig {
     contextTokenBudget?: number;
     /** Optional model override for summarization calls */
     summarizationModel?: string;
+    /** Whether the `/ask` follow-up command is enabled (default: true) */
+    askCommandEnabled?: boolean;
+    /** Maximum code references resolved into context from a single message (default: 5) */
+    maxCodeReferences?: number;
   };
   /** Per-path and per-branch config overrides */
   overrides?: ConfigOverride[];
@@ -1155,6 +1175,8 @@ export const DEFAULT_CONVERSATION_CONFIG: ConversationConfig = {
   maxTurns: 50,
   slidingWindowSize: 20,
   contextTokenBudget: 32000,
+  askCommandEnabled: true,
+  maxCodeReferences: 5,
 };
 
 export const DEFAULT_CONFIG: AgentConfig = {

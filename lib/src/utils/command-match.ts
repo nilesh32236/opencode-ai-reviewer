@@ -18,6 +18,7 @@ const COMMAND_PATTERNS: Array<{ name: string; regex: RegExp }> = [
   { name: 'audit', regex: /^\s*\/(?:oc\s+)?audit\b/i },
   { name: 'analyze', regex: /^\s*\/(?:oc\s+)?analy[sz]e\b/i },
   { name: 'explain', regex: /^\s*\/(?:oc\s+)?explain\b/i },
+  { name: 'ask', regex: /^\s*\/(?:oc\s+)?ask(?![A-Za-z0-9_-])/i },
   { name: 'discover', regex: /^\s*\/(?:oc\s+)?discover\b/i },
   { name: 'dismiss', regex: /^\s*\/(?:oc\s+)?dismiss\b/i },
   { name: 'reconcile-comments', regex: /^\s*\/(?:oc\s+)?reconcile-comments\b/i },
