@@ -404,7 +404,7 @@ async function run(): Promise<void> {
             if (isPr) {
               await runAutofixLoop(inputs, config, engine, gh, repo, token);
             } else if (issueNum && !isPr) {
-              await runFixIssue(inputs, config, engine, gh, repo, token);
+              await runFixIssue(inputs, config, engine, gh, repo, gitEmail);
             } else if (inputs.enableFix) {
               await runAutofixLoop(inputs, config, engine, gh, repo, token);
             } else {

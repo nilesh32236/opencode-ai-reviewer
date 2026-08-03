@@ -18,9 +18,11 @@ export declare function runFix(inputs: ActionInputs, config: AgentConfig, engine
  * @param engine - Review engine instance.
  * @param gh - GitHub API helper.
  * @param _repo - Repository string (owner/repo).
- * @param _token - GitHub authentication token.
+ * @param gitEmail - Configured bot commit author email, used to verify that an
+ *   existing `autofix/issue-N` branch tip was authored by this bot before it is
+ *   reused (see `configureGit`).
  */
-export declare function runFixIssue(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, _repo: string, _token: string): Promise<void>;
+export declare function runFixIssue(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, _repo: string, gitEmail: string): Promise<void>;
 /**
  * Run the complete review-fix loop on a PR. Iterates up to config.maxIterations:
  * reviews the PR, applies fixes, runs optional verification, and posts
