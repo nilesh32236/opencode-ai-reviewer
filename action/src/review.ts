@@ -81,7 +81,7 @@ export async function runReview(
         commentId: t.firstComment!.databaseId,
       }));
   } catch (err) {
-    core.warning(`Failed to fetch previous review comments: ${err}`);
+    core.warning(sanitize(`Failed to fetch previous review comments: ${err}`));
   }
 
   const result = await engine.reviewPR(

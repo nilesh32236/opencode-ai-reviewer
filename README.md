@@ -115,7 +115,7 @@ Trigger it manually via the Actions tab (run the `setup.yml` workflow with *work
 | `max_files_per_batch`    | `3`                                  | Files per sub-agent batch                      |
 | `max_lines_per_file`     | `500`                                | Max lines per file included in context         |
 | `project_context`        | —                                    | Project description for review prompts         |
-| `enable_mcp`             | `true`                               | Enable MCP servers for context enrichment      |
+| `enable_mcp`             | `false`                              | Enable MCP servers for context enrichment. **Security:** any enabled MCP server receives `GITHUB_TOKEN` as an env var and is fetched from npm at runtime — only configure trusted servers via the `mcp-servers` input. |
 | `include_strengths`      | `true`                               | Include positive feedback in output            |
 | `review_comment_summary` | `true`                               | Post a summary comment on the PR               |
 | `review_inline`          | `true`                               | Post findings as inline review comments on the PR diff (set to `false` for summary-only)

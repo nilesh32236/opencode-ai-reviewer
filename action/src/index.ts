@@ -80,7 +80,7 @@ class StateCacheManager {
         core.info('No cached learning state found — starting fresh');
       }
     } catch (error) {
-      core.warning(`Failed to restore learning state cache: ${error}`);
+      core.warning(sanitize(`Failed to restore learning state cache: ${error}`));
     }
 
     this.learningDbMtimeMs = this.getLearningDbMtime();
@@ -109,7 +109,7 @@ class StateCacheManager {
       await saveCache([this.stateDir], cacheKey);
       core.info(`Saved learning state to cache key: ${cacheKey}`);
     } catch (error) {
-      core.warning(`Failed to save learning state cache: ${error}`);
+      core.warning(sanitize(`Failed to save learning state cache: ${error}`));
     }
   }
 }
@@ -176,7 +176,7 @@ async function run(): Promise<void> {
           if (result.success) {
             mcpServers = result.data;
           } else {
-            core.warning(`Invalid MCP servers config: ${result.error.message}`);
+            core.warning(sanitize(`Invalid MCP servers config: ${result.error.message}`));
           }
         } catch {
           core.warning('Invalid MCP servers JSON, using defaults');
@@ -386,7 +386,7 @@ async function run(): Promise<void> {
             if (isPr) {
               await runAutofixLoop(inputs, config, engine, gh, repo, token);
             } else if (issueNum && !isPr) {
-              await runFixIssue(inputs, config, engine, gh, repo, token);
+              await runFixIssue(inputs, config, engine, gh, repo, token, gitEmail);
             } else if (inputs.enableFix) {
               await runAutofixLoop(inputs, config, engine, gh, repo, token);
             } else {

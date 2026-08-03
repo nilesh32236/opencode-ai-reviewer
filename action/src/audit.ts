@@ -109,6 +109,12 @@ export async function runAudit(
     ...inputs.auditTargetDirs,
     ...config.audit.targetDirs,
   ];
+  // Normalize the category into a URL- and label-safe slug before it reaches
+  // the GitHub API. The category is derived from the audit-prompt-name input or
+  // prompt filenames, so it may contain spaces, &, #, or other reserved
+  // characters that would otherwise produce a malformed API query or an
+  // invalid label name (GitHub disallows spaces in labels).
+  const safeCategory = category.replace(/[^a-zA-Z0-9._-]/g, '-').replace(/-{2,}/g, '-');
   const auditTarget =
     allTargetDirs.length > 0
       ? allTargetDirs[Math.floor(Math.random() * allTargetDirs.length)]
@@ -123,7 +129,7 @@ export async function runAudit(
   }
 
   if (inputs.auditCreateIssues && (result.stats.critical > 0 || result.stats.important > 0)) {
-    const labels = [...inputs.auditLabels, `audit:${category}`];
+    const labels = [...inputs.auditLabels, `audit:${safeCategory}`];
 
     if (result.stats.critical > 0) {
       labels.push('audit:critical');
@@ -136,14 +142,14 @@ export async function runAudit(
     }
 
     const issueBody = buildAuditIssueBody(category, auditTarget, result);
-    const titlePrefix = `[Audit:${category}]`;
+    const titlePrefix = `[Audit:${safeCategory}]`;
     const title = `${titlePrefix} ${result.stats.critical} critical, ${result.stats.important} important, ${result.stats.minor} minor`;
 
     let existingIssueNumber: number | undefined;
     try {
       const issueState = process.env.PLATFORM === 'gitlab' ? 'opened' : 'open';
       const openAuditIssues = (await gh.paginate(
-        `/issues?state=${issueState}&labels=audit:${category}`,
+        `/issues?state=${issueState}&labels=audit:${encodeURIComponent(safeCategory)}`,
         { perPage: 100, maxPages: 10, throwOnError: true },
       )) as Array<{ number: number; title: string }>;
       const match = openAuditIssues.find((issue: { number: number; title: string }) =>
@@ -164,20 +170,20 @@ export async function runAudit(
       // fallback write fails (handled in the create branch below). To bound
       // duplicate accumulation during a search outage, reuse the last issue this
       // process tracked for the category when one is known.
-      existingIssueNumber = lastAuditIssueByCategory.get(category);
+      existingIssueNumber = lastAuditIssueByCategory.get(safeCategory);
     }
 
     if (existingIssueNumber) {
       core.info(
-        `Audit category ${category} already has open issue #${existingIssueNumber} — updating existing issue`,
+        `Audit category ${safeCategory} already has open issue #${existingIssueNumber} — updating existing issue`,
       );
       try {
         await gh.postOrUpdateComment(
           existingIssueNumber,
-          `<!-- audit-update-${category} -->`,
+          `<!-- audit-update-${safeCategory} -->`,
           issueBody,
         );
-        lastAuditIssueByCategory.set(category, existingIssueNumber);
+        lastAuditIssueByCategory.set(safeCategory, existingIssueNumber);
         core.setOutput('issue-number', String(existingIssueNumber));
       } catch (err) {
         core.warning(sanitize(`Failed to update existing audit issue: ${String(err)}`));
@@ -187,7 +193,7 @@ export async function runAudit(
       try {
         const issue = await gh.createIssue(title, issueBody, labels);
         if (issue) {
-          lastAuditIssueByCategory.set(category, issue.number);
+          lastAuditIssueByCategory.set(safeCategory, issue.number);
           core.setOutput('issue-number', String(issue.number));
           core.info(`Created issue #${issue.number}: ${issue.url}`);
         } else {

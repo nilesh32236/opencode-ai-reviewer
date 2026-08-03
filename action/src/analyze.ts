@@ -59,7 +59,7 @@ export async function runAnalyze(
     await gh.postOrUpdateComment(
       issueNumber,
       '<!-- issue-analysis-error -->',
-      `❌ **Analysis Failed**: ${message}`,
+      `❌ **Analysis Failed**: ${sanitize(message)}`,
     );
   }
 }

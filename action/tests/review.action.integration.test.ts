@@ -388,4 +388,38 @@ describe('runReview (action wrapper)', () => {
     expect(mockSaveState).not.toHaveBeenCalledWith('token_usage', expect.anything());
     expect(mockSaveState).not.toHaveBeenCalledWith('cost', expect.anything());
   });
+
+  it('sanitizes the warning when fetching previous review threads fails', async () => {
+    const pr = makePRContext();
+    mockGetPR.mockResolvedValue(pr);
+    const secret = 'sk-ant-api03secretkeyvalue1234567890abcdefghijkl';
+    mockGetBotReviewThreads.mockRejectedValue(new Error(`GraphQL error: ${secret}`));
+    mockReviewPR.mockResolvedValue({
+      summary: '## Review\nGood PR.',
+      verdict: { ready: true, reasoning: 'LGTM', autoFixable: false, confidence: 'high' },
+      strengths: [],
+      issues: [],
+      stats: { total: 0, critical: 0, important: 0, minor: 0 },
+    });
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+
+    await runReview(
+      makeInputs(),
+      makeConfig({ enableMCP: false, mcpServers: [] }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+    );
+
+    expect(mockWarning).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to fetch previous review comments'),
+    );
+    expect(mockWarning).toHaveBeenCalledWith(expect.stringContaining('[REDACTED_ANTHROPIC_KEY]'));
+    expect(mockWarning).toHaveBeenCalledWith(expect.not.stringContaining(secret));
+  });
 });

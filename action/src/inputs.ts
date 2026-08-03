@@ -296,7 +296,7 @@ export function parseInputs(): ActionInputs {
     maxFilesPerBatch,
     maxLinesPerFile,
     projectContext: core.getInput('project_context') || undefined,
-    enableMCP: core.getInput('enable_mcp') !== 'false',
+    enableMCP: core.getInput('enable_mcp') === 'true',
     includeStrengths: core.getInput('include_strengths') !== 'false',
     reviewCommentSummary: core.getInput('review_comment_summary') !== 'false',
     runChecksAfterFix: core.getInput('run_checks_after_fix') || undefined,

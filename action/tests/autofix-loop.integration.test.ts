@@ -29,6 +29,8 @@ const {
   mockCreatePR,
   mockGetDefaultBranch,
   mockGetIssue,
+  mockExec,
+  mockGetExecOutput,
 } = vi.hoisted(() => {
   const _mockGetInput = vi.fn();
   const _mockSetOutput = vi.fn();
@@ -56,6 +58,13 @@ const {
   const _mockCreatePR = vi.fn();
   const _mockGetDefaultBranch = vi.fn();
   const _mockGetIssue = vi.fn();
+  const _mockExec = vi.fn().mockResolvedValue(0);
+  const _mockGetExecOutput = vi.fn().mockImplementation(async (cmd: string, args: string[]) => {
+    if (cmd === 'git' && args.includes('status')) {
+      return { exitCode: 0, stdout: 'M src/fix.ts', stderr: '' };
+    }
+    return { exitCode: 0, stdout: '', stderr: '' };
+  });
   return {
     mockGetInput: _mockGetInput,
     mockSetOutput: _mockSetOutput,
@@ -83,6 +92,8 @@ const {
     mockCreatePR: _mockCreatePR,
     mockGetDefaultBranch: _mockGetDefaultBranch,
     mockGetIssue: _mockGetIssue,
+    mockExec: _mockExec,
+    mockGetExecOutput: _mockGetExecOutput,
   };
 });
 
@@ -106,13 +117,8 @@ vi.mock('@actions/github', () => ({
 }));
 
 vi.mock('@actions/exec', () => ({
-  exec: vi.fn().mockResolvedValue(0),
-  getExecOutput: vi.fn().mockImplementation(async (cmd: string, args: string[]) => {
-    if (cmd === 'git' && args.includes('status')) {
-      return { exitCode: 0, stdout: 'M src/fix.ts', stderr: '' };
-    }
-    return { exitCode: 0, stdout: '', stderr: '' };
-  }),
+  exec: mockExec,
+  getExecOutput: mockGetExecOutput,
 }));
 
 import { runAutofixLoop, runFixIssue } from '../src/fix.js';
@@ -393,6 +399,18 @@ describe('runFixIssue', () => {
     mockEnsureLabels.mockResolvedValue(undefined);
     mockCreatePR.mockResolvedValue({ number: 99, url: 'https://github.com/owner/repo/pull/99' });
     mockAddLabels.mockResolvedValue(undefined);
+    mockGetExecOutput.mockImplementation(async (cmd: string, args: string[]) => {
+      if (cmd === 'git' && args.includes('status')) {
+        return { exitCode: 0, stdout: 'M src/fix.ts', stderr: '' };
+      }
+      if (cmd === 'git' && args.includes('log')) {
+        return { exitCode: 0, stdout: 'bot@users.noreply.github.com', stderr: '' };
+      }
+      if (cmd === 'git' && args.includes('rev-parse')) {
+        return { exitCode: 0, stdout: 'abc123', stderr: '' };
+      }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    });
   });
 
   it('creates PR from issue and adds autofix label to the created PR', async () => {
@@ -403,6 +421,7 @@ describe('runFixIssue', () => {
       mockGh,
       'owner/repo',
       'token',
+      'bot@users.noreply.github.com',
     );
 
     expect(mockCreatePR).toHaveBeenCalledWith(
@@ -414,5 +433,55 @@ describe('runFixIssue', () => {
     expect(mockAddLabels).toHaveBeenCalledWith(99, ['autofix']);
     expect(mockSetOutput).toHaveBeenCalledWith('pr_url', 'https://github.com/owner/repo/pull/99');
     expect(mockSetOutput).toHaveBeenCalledWith('changes_made', 'true');
+  });
+
+  it('reuses the existing autofix branch when its tip is bot-authored', async () => {
+    await runFixIssue(
+      makeInputs({ mode: 'fix' }),
+      makeConfig({ timeoutMinutes: 20 }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+      'token',
+      'bot@users.noreply.github.com',
+    );
+
+    expect(mockExec).toHaveBeenCalledWith('git', [
+      'checkout',
+      '-B',
+      'autofix/issue-42',
+      'origin/autofix/issue-42',
+    ]);
+    expect(mockCreatePR).toHaveBeenCalled();
+  });
+
+  it('recreates the branch from the default branch when the existing tip is not bot-authored', async () => {
+    mockGetExecOutput.mockImplementation(async (cmd: string, args: string[]) => {
+      if (cmd === 'git' && args.includes('log')) {
+        return { exitCode: 0, stdout: 'attacker@example.com', stderr: '' };
+      }
+      if (cmd === 'git' && args.includes('status')) {
+        return { exitCode: 0, stdout: 'M src/fix.ts', stderr: '' };
+      }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    });
+
+    await runFixIssue(
+      makeInputs({ mode: 'fix' }),
+      makeConfig({ timeoutMinutes: 20 }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+      'token',
+      'bot@users.noreply.github.com',
+    );
+
+    expect(mockExec).toHaveBeenCalledWith('git', [
+      'checkout',
+      '-b',
+      'autofix/issue-42',
+      'origin/main',
+    ]);
+    expect(mockCreatePR).toHaveBeenCalled();
   });
 });

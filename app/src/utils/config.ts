@@ -67,11 +67,9 @@ export function buildConfig(): AgentConfig {
     batchSize: parseEnvInt(process.env.BATCH_SIZE, 3),
     maxLinesPerFile: parseEnvInt(process.env.MAX_LINES_PER_FILE, 200),
     maxIterations: parseEnvInt(process.env.MAX_ITERATIONS, 3),
-    enableMCP: process.env.ENABLE_MCP !== 'false',
+    enableMCP: process.env.ENABLE_MCP === 'true',
     mcpServers:
-      process.env.ENABLE_MCP !== 'false'
-        ? getDefaultMCPServers(process.env.GITHUB_TOKEN || '')
-        : [],
+      process.env.ENABLE_MCP === 'true' ? getDefaultMCPServers(process.env.GITHUB_TOKEN || '') : [],
     projectContext: {
       description: process.env.PROJECT_DESCRIPTION || '',
       conventionsPath: process.env.CONVENTIONS_PATH || undefined,

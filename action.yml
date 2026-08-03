@@ -126,9 +126,9 @@ inputs:
     required: false
 
   enable_mcp:
-    description: 'Enable MCP servers for context enrichment'
+    description: 'Enable MCP servers for context enrichment. SECURITY: any enabled MCP server receives GITHUB_TOKEN as an environment variable and is fetched from npm at runtime — only configure trusted servers via the mcp-servers input.'
     required: false
-    default: 'true'
+    default: 'false'
 
   include_strengths:
     description: 'Include positive feedback in review output'

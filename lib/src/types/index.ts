@@ -1194,7 +1194,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   maxLinesPerFile: 200,
   maxIterations: 3,
   timeoutMinutes: 20,
-  enableMCP: true,
+  enableMCP: false,
   mcpServers: [],
   projectContext: {
     description: '',

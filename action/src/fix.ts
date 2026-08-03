@@ -160,6 +160,8 @@ export async function runFix(
  * @param gh - GitHub API helper.
  * @param _repo - Repository string (owner/repo).
  * @param _token - GitHub authentication token.
+ * @param gitEmail - Git author email configured for the bot (used to verify that
+ * an existing `autofix/issue-N` branch is bot-authored before reusing it).
  */
 export async function runFixIssue(
   inputs: ActionInputs,
@@ -168,6 +170,7 @@ export async function runFixIssue(
   gh: PlatformAdapter,
   _repo: string,
   _token: string,
+  gitEmail: string,
 ): Promise<void> {
   const issueNumber = await resolvePrNumber();
   if (!issueNumber) {
@@ -197,7 +200,26 @@ export async function runFixIssue(
     .catch(() => ({ exitCode: 1, stdout: '', stderr: '' }));
 
   if (existingRef.exitCode === 0) {
-    await exec.exec('git', ['checkout', '-B', branchName, `origin/${branchName}`]);
+    // Only reuse the existing deterministic `autofix/issue-N` branch when its
+    // tip is bot-authored. A stale or attacker-seeded branch under that name
+    // (any collaborator with push access can create it) must never become the
+    // base of the fix PR, since it is later force-pushed. Recreate from the
+    // default branch otherwise.
+    const tipEmail = await exec
+      .getExecOutput('git', ['log', '-1', '--format=%ae', `origin/${branchName}`], {
+        ignoreReturnCode: true,
+      })
+      .then((r) => (r.exitCode === 0 ? r.stdout.trim() : ''))
+      .catch(() => '');
+
+    if (tipEmail === gitEmail) {
+      await exec.exec('git', ['checkout', '-B', branchName, `origin/${branchName}`]);
+    } else {
+      core.info(
+        `Branch ${branchName} is not bot-authored (tip ${tipEmail || 'unknown'}) — recreating from ${defaultBranch}`,
+      );
+      await exec.exec('git', ['checkout', '-b', branchName, `origin/${defaultBranch}`]);
+    }
   } else {
     await exec.exec('git', ['checkout', '-b', branchName, `origin/${defaultBranch}`]);
   }

@@ -245,6 +245,48 @@ describe('runAudit (action wrapper)', () => {
     );
   });
 
+  it('slugs audit categories containing reserved characters before building query and labels', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'my audit&prompt.md'), '# Custom audit prompt');
+    mockGetInput.mockImplementation((name: string) => {
+      if (name === 'audit-prompts-dir') {
+        return tmpDir;
+      }
+      if (name === 'audit-prompt-name') {
+        return 'my audit&prompt';
+      }
+      return '';
+    });
+    mockCreateIssue.mockResolvedValue({
+      number: 50,
+      url: 'https://github.com/owner/repo/issues/50',
+    });
+
+    await runAudit(
+      makeInputs({ auditCreateIssues: true }),
+      makeConfig({
+        audit: {
+          promptsDir: tmpDir,
+          targetDirs: [],
+          autoFix: true,
+          triggerLabel: 'autofix-trigger',
+          issueSeverityThreshold: 'important',
+        },
+      } as AgentConfig),
+      mockEngine,
+      mockGh,
+    );
+
+    expect(mockPaginate).toHaveBeenCalledWith(
+      '/issues?state=open&labels=audit:my-audit-prompt',
+      expect.anything(),
+    );
+    expect(mockCreateIssue).toHaveBeenCalledWith(
+      expect.stringContaining('[Audit:my-audit-prompt]'),
+      expect.any(String),
+      expect.arrayContaining(['audit:my-audit-prompt']),
+    );
+  });
+
   it('skips issue creation when no critical or important findings exist', async () => {
     mockRunAudit.mockResolvedValue({
       summary: 'All good',
