@@ -130,6 +130,10 @@ export interface LoggerSink {
    * @param message - The message to log.
    */
   error(message: string): void;
+  /** Emit a structured NDJSON line (includes a trailing newline).
+   * @param line - The complete, sanitized NDJSON record to write.
+   */
+  structured(line: string): void;
 }
 
 /** Default sink routing through @actions/core (GitHub Actions command strings). */
@@ -138,6 +142,9 @@ const ACTIONS_SINK: LoggerSink = {
   info: (message) => core.info(message),
   warn: (message) => core.warning(message),
   error: (message) => core.error(message),
+  // Structured records are intentionally NOT wrapped in `::` Actions commands so
+  // log aggregators can parse the raw NDJSON line from stdout.
+  structured: (line) => process.stdout.write(line),
 };
 
 let currentSink: LoggerSink = ACTIONS_SINK;
@@ -206,7 +213,9 @@ export class Logger {
    */
   static getEffectiveLevel(): LogLevel {
     const envLevel = (process.env.LOG_LEVEL ?? '').toLowerCase();
-    if (envLevel in LOG_LEVEL_PRIORITY) return envLevel as LogLevel;
+    if (Object.prototype.hasOwnProperty.call(LOG_LEVEL_PRIORITY, envLevel)) {
+      return envLevel as LogLevel;
+    }
     return Logger.defaultLevel;
   }
 
@@ -386,8 +395,10 @@ export class Logger {
         correlationId: this.correlationId,
       });
     }
-    // Redact credentials even in JSON output, then write a newline-delimited record.
-    process.stdout.write(`${sanitizeError(line)}\n`);
+    // Redact credentials even in JSON output, then emit a newline-delimited
+    // record through the configured sink (like human-format calls) so custom
+    // sinks keep JSON output consistent with the LoggerSink contract.
+    currentSink.structured(`${sanitizeError(line)}\n`);
   }
 
   private buildStructuredEntry(level: LogLevel, message: string, data?: unknown): StructuredLogEntry {
@@ -399,8 +410,8 @@ export class Logger {
       correlationId: this.correlationId,
     };
 
-    const entryRecord = entry as Record<string, unknown>;
-    const contextRecord = this.context as Record<string, unknown>;
+    const entryRecord = entry as unknown as Record<string, unknown>;
+    const contextRecord = this.context as unknown as Record<string, unknown>;
     for (const key of STRUCTURED_FIELDS) {
       const value = contextRecord[key];
       if (value !== undefined) {
@@ -408,26 +419,31 @@ export class Logger {
       }
     }
 
-    if (data !== undefined && typeof data === 'object' && data !== null && !(data instanceof Error)) {
-      const dataRecord = data as Record<string, unknown>;
-      for (const key of STRUCTURED_FIELDS) {
-        const value = dataRecord[key];
-        if (value !== undefined && entryRecord[key] === undefined) {
-          entryRecord[key] = value;
+    if (data !== undefined && data !== null) {
+      if (isPlainObject(data)) {
+        const dataRecord = data;
+        for (const key of STRUCTURED_FIELDS) {
+          const value = dataRecord[key];
+          if (value !== undefined && entryRecord[key] === undefined) {
+            entryRecord[key] = value;
+          }
         }
+        const extra = Object.fromEntries(
+          Object.entries(dataRecord).filter(
+            ([k]) => !(STRUCTURED_FIELDS as readonly string[]).includes(k),
+          ),
+        );
+        if (Object.keys(extra).length > 0) {
+          entry.data = extra;
+        }
+      } else if (data instanceof Error) {
+        entry.data = { error: data.stack || data.message };
+      } else {
+        // Date, array, primitive, etc. — leave as-is so natively serializable
+        // values (Date → ISO string, array → JSON array) round-trip correctly
+        // instead of being mangled as a pseudo-record.
+        entry.data = data;
       }
-      const extra = Object.fromEntries(
-        Object.entries(dataRecord).filter(
-          ([k]) => !(STRUCTURED_FIELDS as readonly string[]).includes(k),
-        ),
-      );
-      if (Object.keys(extra).length > 0) {
-        entry.data = extra;
-      }
-    } else if (data instanceof Error) {
-      entry.data = { error: data.stack || data.message };
-    } else if (data !== undefined) {
-      entry.data = data;
     }
 
     return entry;
@@ -445,8 +461,10 @@ export class Logger {
     if (this.context.prNumber) parts.push(`pr#${this.context.prNumber}`);
     if (this.context.repo) parts.push(`${this.context.repo}`);
     if (this.context.eventType) parts.push(`${this.context.eventType}`);
+    // correlationId is already rendered as the short `corr=` prefix above;
+    // emitting it again from the generic loop would duplicate the trace ID.
     for (const [k, v] of Object.entries(this.context)) {
-      if (!['prNumber', 'repo', 'eventType'].includes(k) && v !== undefined) {
+      if (!['prNumber', 'repo', 'eventType', 'correlationId'].includes(k) && v !== undefined) {
         parts.push(`${k}=${v}`);
       }
     }
@@ -457,15 +475,7 @@ export class Logger {
     if (typeof data === 'string') return data;
     if (data instanceof Error) return data.stack || data.message;
     try {
-      const seen = new WeakSet<object>();
-      return JSON.stringify(data, (_key: string, value: unknown) => {
-        if (typeof value === 'object' && value !== null) {
-          if (seen.has(value)) return '[Circular]';
-          seen.add(value);
-          if (value instanceof Error) return value.stack || value.message;
-        }
-        return value;
-      });
+      return safeJsonStringify(data);
     } catch {
       return String(data);
     }
@@ -473,17 +483,38 @@ export class Logger {
 }
 
 /**
+ * Check whether a value is a plain object (Object.prototype or null prototype).
+ * Arrays, Date, Map, etc. are not treated as key/value records.
+ * @param value - The value to test.
+ * @returns True when the value is a plain object.
+ */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
  * Serialize a value to JSON while safely handling circular references and
- * Error instances (rendered as their stack/message).
+ * Error instances (rendered as their stack/message). Only the current ancestry
+ * (parent chain) is tracked, so a shared non-circular reference is serialized
+ * on each occurrence instead of being misreported as '[Circular]'.
  * @param value - The value to serialize.
  * @returns A JSON string.
  */
 function safeJsonStringify(value: unknown): string {
-  const seen = new WeakSet<object>();
-  return JSON.stringify(value, (_key: string, item: unknown) => {
+  const ancestors: object[] = [];
+  return JSON.stringify(value, function (this: unknown, _key: string, item: unknown) {
     if (typeof item === 'object' && item !== null) {
-      if (seen.has(item)) return '[Circular]';
-      seen.add(item);
+      // The replacer's `this` is the parent object/array being traversed.
+      // Prune ancestors that are no longer on the current path, then check the
+      // remaining chain for a true cycle.
+      const parent = this;
+      while (ancestors.length > 0 && ancestors[ancestors.length - 1] !== parent) {
+        ancestors.pop();
+      }
+      if (ancestors.includes(item)) return '[Circular]';
+      ancestors.push(item);
       if (item instanceof Error) return item.stack || item.message;
     }
     return item;

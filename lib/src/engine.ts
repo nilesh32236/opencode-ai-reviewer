@@ -150,6 +150,12 @@ export class ReviewEngine {
     this.adapter = adapter;
     this.mcp = new MCPManager(config.mcpServers);
     this.logger = new Logger('ReviewEngine', { correlationId });
+    // Resolve the effective correlation ID exactly once and reuse it for both
+    // the engine's own log lines and pipeline event publishing. Without this,
+    // a non-App invocation (e.g. the GitHub Action) leaves `this.correlationId`
+    // undefined while the logger falls back to its own generated UUID, so
+    // published events would not share the engine logs' trace ID.
+    this.correlationId = this.logger.getCorrelationId();
   }
 
   /**

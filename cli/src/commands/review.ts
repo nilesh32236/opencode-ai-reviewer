@@ -50,6 +50,8 @@ const plainSink: LoggerSink = {
   info: (message) => process.stdout.write(`${message}\n`),
   warn: (message) => process.stdout.write(`${message}\n`),
   error: (message) => process.stderr.write(`${message}\n`),
+  // Structured NDJSON records are emitted raw (they must stay parseable).
+  structured: (line) => process.stdout.write(line),
 };
 
 /** Default file names for file-based output formats. */
