@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.32] — 2026-08-04
+
+
+### Fixed
+
+- address issue #331 — MCP opt-in, sanitization, audit slug, safe autofix branch reuse (#332) (#331
+#332)
+
+[v1.6.32]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.31...v1.6.32
+
 ## [v1.6.31] — 2026-08-04
 
 
