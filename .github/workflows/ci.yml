@@ -43,6 +43,15 @@ jobs:
             exit 1
           fi
 
+      - name: Check no native build artifacts committed
+        run: |
+          NATIVE=$(git ls-files 'action/lib/**/*.node')
+          if [ -n "$NATIVE" ]; then
+            echo "ERROR: Native build artifacts committed (e.g. better_sqlite3.node). These are platform-specific and must be built during CI, not stored in source control:" >&2
+            echo "$NATIVE" >&2
+            exit 1
+          fi
+
       - name: Build lib
         run: pnpm --filter @opencode-pr-agent/lib build
 
