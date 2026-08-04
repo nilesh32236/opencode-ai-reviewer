@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.31] — 2026-08-04
+
+
+### Fixed
+
+- self-heal CI failure (attempt 1) [lint-error] (#335) (#335)
+
+### Changed
+
+- [Autofix] [Audit:code-quality-conventions] 0 critical, 10 important, 0 minor (#334) (#334)
+- [Autofix] Issue 36: No interactive PR chat / follow-up question capability (#330) (#330)
+
+[v1.6.31]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.30...v1.6.31
+
 ## [Unreleased]
 
 ### Breaking Changes
