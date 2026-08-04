@@ -401,7 +401,11 @@ export class Logger {
     currentSink.structured(`${sanitizeError(line)}\n`);
   }
 
-  private buildStructuredEntry(level: LogLevel, message: string, data?: unknown): StructuredLogEntry {
+  private buildStructuredEntry(
+    level: LogLevel,
+    message: string,
+    data?: unknown,
+  ): StructuredLogEntry {
     const entry: StructuredLogEntry = {
       timestamp: new Date().toISOString(),
       level,
@@ -506,11 +510,7 @@ function safeJsonStringify(value: unknown): string {
   const ancestors: object[] = [];
   return JSON.stringify(value, function (this: unknown, _key: string, item: unknown) {
     if (typeof item === 'object' && item !== null) {
-      // The replacer's `this` is the parent object/array being traversed.
-      // Prune ancestors that are no longer on the current path, then check the
-      // remaining chain for a true cycle.
-      const parent = this;
-      while (ancestors.length > 0 && ancestors[ancestors.length - 1] !== parent) {
+      while (ancestors.length > 0 && ancestors[ancestors.length - 1] !== this) {
         ancestors.pop();
       }
       if (ancestors.includes(item)) return '[Circular]';

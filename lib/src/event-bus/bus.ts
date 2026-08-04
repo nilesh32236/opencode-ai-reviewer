@@ -152,10 +152,10 @@ export class EventBus {
       await work();
 
       if (timedOut) {
-        logger.warn(
-          `Subscriber ${sub.name} completed after timeout (${SUBSCRIBER_TIMEOUT_MS}ms)`,
-          { prNumber: event.prNumber, repo: event.repo },
-        );
+        logger.warn(`Subscriber ${sub.name} completed after timeout (${SUBSCRIBER_TIMEOUT_MS}ms)`, {
+          prNumber: event.prNumber,
+          repo: event.repo,
+        });
         return;
       }
 
@@ -173,10 +173,10 @@ export class EventBus {
       );
 
       if (cb && cb.getState() === 'OPEN') {
-        logger.warn(
-          `Subscriber ${sub.name} circuit is now OPEN — will be skipped on next event`,
-          { prNumber: event.prNumber, repo: event.repo },
-        );
+        logger.warn(`Subscriber ${sub.name} circuit is now OPEN — will be skipped on next event`, {
+          prNumber: event.prNumber,
+          repo: event.repo,
+        });
       }
     } finally {
       clearTimeout(timeoutHandle);

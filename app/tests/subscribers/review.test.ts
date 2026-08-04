@@ -54,6 +54,7 @@ describe('ReviewSubscriber', () => {
       undefined,
       'abcdef123456',
       bus,
+      undefined,
     );
   });
 
@@ -81,6 +82,7 @@ describe('ReviewSubscriber', () => {
       undefined,
       'fallbacksha123',
       bus,
+      undefined,
     );
   });
 });
