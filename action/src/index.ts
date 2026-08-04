@@ -457,13 +457,38 @@ async function run(): Promise<void> {
         github.context.payload.issue?.number ||
         'unknown';
     core.setFailed(
-      `Action failed (mode: ${mode}, pr/issue: ${prNumber}): ${sanitize(error instanceof Error ? error.message : String(error))}`,
+      `Action failed (mode: ${mode}, pr/issue: ${prNumber}): ${sanitize(withDownloadRemediation(error instanceof Error ? error.message : String(error)))}`,
     );
   } finally {
     if (inputs?.enableStateCache && cacheManager) {
       await cacheManager.save();
     }
   }
+}
+
+const DOWNLOAD_FAILURE_PATTERNS = [
+  /failed to download/i,
+  /could not find asset/i,
+  /release .* not found/i,
+  /download timed out/i,
+  /checksum (mismatch|verification)/i,
+  /network error/i,
+];
+
+/**
+ * Append a concise remediation hint when an error indicates an OpenCode binary
+ * download failure and the underlying message does not already contain next
+ * steps (e.g. errors thrown outside `setupOpenCode`'s download wrapper).
+ * @param message - The error message about to be surfaced via core.setFailed.
+ * @returns The message, with a download-remediation hint appended when relevant.
+ */
+function withDownloadRemediation(message: string): string {
+  const isDownloadFailure = DOWNLOAD_FAILURE_PATTERNS.some((re) => re.test(message));
+  const hasRemediation = /re-run the workflow|next steps|firewall|proxy/i.test(message);
+  if (isDownloadFailure && !hasRemediation) {
+    return `${message}\n\nIf this is a transient network or GitHub server error, re-run the workflow to retry. For checksum errors, clear the action cache and re-run.`;
+  }
+  return message;
 }
 
 run();
