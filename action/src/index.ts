@@ -217,6 +217,9 @@ async function run(): Promise<void> {
         ...(loadedConfig?.review?.skipLabels && { skipLabels: loadedConfig.review.skipLabels }),
         ...(loadedConfig?.review?.skipActors && { skipActors: loadedConfig.review.skipActors }),
         inline: loadedConfig?.review?.inline ?? inputs.reviewInline,
+        ...(loadedConfig?.review?.suppressLowConfidence !== undefined && {
+          suppressLowConfidence: loadedConfig.review.suppressLowConfidence,
+        }),
         enableMetaVerification:
           loadedConfig?.review?.enableMetaVerification ?? inputs.enableMetaVerification,
         includePreExisting: loadedConfig?.review?.includePreExisting ?? inputs.includePreExisting,

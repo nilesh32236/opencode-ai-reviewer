@@ -1,5 +1,5 @@
 import type { LearningFeedback, LearningQuality, RateLimitTier } from '../types/index.js';
-import type { CustomRuleRow, FindingRow, PatternRow, ReviewQualityRow } from './json-db.js';
+import type { CustomRuleRow, FindingRow, PatternRow, ReviewQualityRow } from './rows.js';
 
 export type { CustomRuleRow, FindingRow, PatternRow, ReviewQualityRow };
 export type { RateLimitTier };

@@ -42,6 +42,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     extraContext: null,
     customRules: null,
     inline: null,
+    suppressLowConfidence: null,
     excludePatterns: null,
     enableReachability: null,
     enableMetaVerification: null,
@@ -324,6 +325,9 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     }
     if (typeof config.review.inline === 'boolean') {
       result.review.inline = config.review.inline;
+    }
+    if (typeof config.review.suppressLowConfidence === 'boolean') {
+      result.review.suppressLowConfidence = config.review.suppressLowConfidence;
     }
     if (Array.isArray(config.review.excludePatterns)) {
       result.review.excludePatterns = config.review.excludePatterns.filter(

@@ -22,9 +22,9 @@ import {
   REVIEW_MARKER,
   ReviewEngine,
   buildAutofixPRBody,
+  buildAutofixStatusBody,
   buildFixBody,
   buildReadyBody,
-  buildReviewBody,
   configureGit,
   resolveFixedComments,
   validateRefName,
@@ -210,7 +210,7 @@ export async function handleAutofixLoop(
         await gh.postOrUpdateComment(
           prNumber,
           REVIEW_MARKER,
-          buildReviewBody(history, config.maxIterations, 'reviewing', result),
+          buildAutofixStatusBody(history, config.maxIterations, 'reviewing', result),
         );
       } catch (err) {
         logger.error(
@@ -283,7 +283,7 @@ export async function handleAutofixLoop(
           await gh.postOrUpdateComment(
             prNumber,
             REVIEW_MARKER,
-            buildReviewBody(history, config.maxIterations, 'no-changes', result),
+            buildAutofixStatusBody(history, config.maxIterations, 'no-changes', result),
           );
         } catch (err) {
           logger.error(
@@ -347,7 +347,7 @@ export async function handleAutofixLoop(
           await gh.postOrUpdateComment(
             prNumber,
             REVIEW_MARKER,
-            buildReviewBody(history, config.maxIterations, 'reviewing', result),
+            buildAutofixStatusBody(history, config.maxIterations, 'reviewing', result),
           );
         } catch (postErr) {
           logger.error(
@@ -475,7 +475,7 @@ export async function handleAutofixLoop(
         await gh.postOrUpdateComment(
           prNumber,
           REVIEW_MARKER,
-          buildReviewBody(history, config.maxIterations, 'max-iterations'),
+          buildAutofixStatusBody(history, config.maxIterations, 'max-iterations'),
         );
       } catch (err) {
         logger.error(

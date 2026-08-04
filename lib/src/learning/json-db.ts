@@ -3,6 +3,7 @@ import * as fsPromises from 'node:fs/promises';
 import * as path from 'path';
 import type { LearningQuality } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
+import type { CustomRuleRow, FindingRow, PatternRow, ReviewQualityRow } from './rows.js';
 import { deriveFileExtensions, generateId } from './schema.js';
 import type {
   ConversationSessionInput,
@@ -25,22 +26,6 @@ import type {
   TelemetryStats,
 } from './types.js';
 
-/** Database row for a code review finding. */
-export interface FindingRow {
-  id: string;
-  pr_number: number;
-  type: string;
-  severity?: string;
-  file?: string;
-  line?: number;
-  message: string;
-  suggestion?: string;
-  duration_ms?: number;
-  tokens_used?: number;
-  comment_id?: number;
-  created_at: string;
-}
-
 interface FeedbackRow {
   id: string;
   finding_id: string;
@@ -48,39 +33,6 @@ interface FeedbackRow {
   signal_value?: string;
   pr_number: number;
   created_at: string;
-}
-
-/** Database row for review quality metrics. */
-export interface ReviewQualityRow {
-  id: string;
-  pr_number: number;
-  actionability_score: number;
-  accuracy_score: number;
-  coverage_score: number;
-  consistency_score: number;
-  duration_ms?: number;
-  tokens_used?: number;
-  created_at: string;
-}
-
-/** Database row for a detected pattern. */
-export interface PatternRow {
-  id: string;
-  pattern_key: string;
-  message_cluster: string;
-  frequency: number;
-  file_types?: string;
-  first_seen: string;
-  last_seen: string;
-}
-
-/** Database row for a custom review rule. */
-export interface CustomRuleRow {
-  id: string;
-  rule_text: string;
-  source: string;
-  status: string;
-  approved_at?: string;
 }
 
 interface PromptOverrideRow {
