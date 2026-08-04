@@ -28,6 +28,15 @@ import { runAnalyze } from './analyze.js';
 import { runAudit } from './audit.js';
 import { runAutofixLoop, runFix, runFixIssue } from './fix.js';
 import { type ActionInputs, parseInputs } from './inputs.js';
+
+// The GitHub Action defaults to human-readable logs because CI already captures
+// stdout and `::`-prefixed core commands render nicely in the Actions UI.
+// Structured NDJSON is opt-in via the `LOG_FORMAT=json` env var; it is never
+// forced by NODE_ENV here so action logs stay readable unless explicitly
+// configured otherwise.
+if (!process.env.LOG_FORMAT) {
+  process.env.LOG_FORMAT = 'human';
+}
 import { runPost } from './post.js';
 import { runReview } from './review.js';
 import { runSelfHeal } from './self-heal.js';

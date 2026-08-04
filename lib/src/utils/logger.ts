@@ -1,8 +1,12 @@
+import { randomUUID } from 'node:crypto';
 import * as core from '@actions/core';
 import { sanitizeString } from './sanitize.js';
 
 /** Log levels supported by Logger, ordered by increasing severity. */
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
+
+/** Output format for log messages: human-readable or structured NDJSON. */
+export type LogFormat = 'human' | 'json';
 
 /**
  * Sanitize an error for secure logging.
@@ -47,15 +51,66 @@ export interface LogContext {
   eventType?: string;
   /** File path associated with the log entry */
   file?: string;
+  /** Correlation ID used to trace a single review request across subsystems */
+  correlationId?: string;
+  /** LLM model identifier used for the operation */
+  model?: string;
+  /** Wall-clock duration of the operation in milliseconds */
+  durationMs?: number;
+  /** Number of tokens consumed by the operation */
+  tokensUsed?: number;
   [key: string]: unknown;
 }
 
 const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
+  trace: -1,
   debug: 0,
   info: 1,
   warn: 2,
   error: 3,
+  fatal: 4,
 };
+
+/**
+ * A single structured log entry serialized as one line of NDJSON (newline-delimited JSON).
+ * Known fields are kept at the top level so log aggregators can filter on them.
+ */
+export interface StructuredLogEntry {
+  /** ISO 8601 timestamp of the log entry */
+  timestamp: string;
+  /** Severity level of the entry */
+  level: LogLevel;
+  /** Component name that produced the entry */
+  name: string;
+  /** Human-readable message */
+  message: string;
+  /** Correlation ID for tracing a single request across subsystems */
+  correlationId?: string;
+  /** PR number associated with the entry */
+  prNumber?: number;
+  /** Repository in owner/repo format */
+  repo?: string;
+  /** GitHub event type */
+  eventType?: string;
+  /** LLM model identifier */
+  model?: string;
+  /** Wall-clock duration in milliseconds */
+  durationMs?: number;
+  /** Number of tokens consumed */
+  tokensUsed?: number;
+  /** Arbitrary extra structured data not covered by the fields above */
+  data?: unknown;
+}
+
+/** Known structured fields promoted to the top level of NDJSON entries. */
+const STRUCTURED_FIELDS = [
+  'prNumber',
+  'repo',
+  'eventType',
+  'model',
+  'durationMs',
+  'tokensUsed',
+] as const;
 
 /** Destination for Logger output. Defaults to GitHub Actions core methods. */
 export interface LoggerSink {
@@ -94,6 +149,8 @@ let currentSink: LoggerSink = ACTIONS_SINK;
  */
 export class Logger {
   private static defaultLevel: LogLevel = 'info';
+  private static rootCorrelationId: string | null = null;
+  private readonly correlationId: string;
 
   /**
    * Install a custom output sink for all Logger instances. The CLI uses this to
@@ -114,6 +171,59 @@ export class Logger {
   }
 
   /**
+   * Generate a new correlation ID (UUID v4) for tracing a single request.
+   * @returns A fresh UUID string.
+   */
+  static generateCorrelationId(): string {
+    return randomUUID();
+  }
+
+  /**
+   * Set the process-wide root correlation ID. When set, any Logger created
+   * without an explicit `correlationId` in its context inherits this value.
+   * Single-shot processes (e.g. the GitHub Action) call this once so every
+   * subsystem shares one trace ID.
+   * @param id - Optional correlation ID; a new UUID is generated when omitted.
+   * @returns The active root correlation ID.
+   */
+  static setRootCorrelationId(id?: string): string {
+    Logger.rootCorrelationId = id ?? Logger.generateCorrelationId();
+    return Logger.rootCorrelationId;
+  }
+
+  /**
+   * Get the current process-wide root correlation ID, if any.
+   * @returns The root correlation ID, or null when none is set.
+   */
+  static getRootCorrelationId(): string | null {
+    return Logger.rootCorrelationId;
+  }
+
+  /**
+   * Resolve the effective log level threshold. Prefers the validated `LOG_LEVEL`
+   * environment variable and falls back to the programmatic default.
+   * @returns The effective minimum log level.
+   */
+  static getEffectiveLevel(): LogLevel {
+    const envLevel = (process.env.LOG_LEVEL ?? '').toLowerCase();
+    if (envLevel in LOG_LEVEL_PRIORITY) return envLevel as LogLevel;
+    return Logger.defaultLevel;
+  }
+
+  /**
+   * Resolve the output format. An explicit `LOG_FORMAT` value always wins;
+   * otherwise structured JSON is used when `NODE_ENV=production`.
+   * @returns `'json'` or `'human'`.
+   */
+  static getFormat(): LogFormat {
+    const format = (process.env.LOG_FORMAT ?? '').toLowerCase();
+    if (format === 'json') return 'json';
+    if (format === 'human') return 'human';
+    if (process.env.NODE_ENV === 'production') return 'json';
+    return 'human';
+  }
+
+  /**
    * Create a new Logger instance.
    *
    * @param name - Component name for log identification.
@@ -122,10 +232,14 @@ export class Logger {
   constructor(
     private name: string,
     private context: LogContext = {},
-  ) {}
+  ) {
+    this.correlationId =
+      context.correlationId ?? Logger.rootCorrelationId ?? Logger.generateCorrelationId();
+  }
 
   /**
-   * Set the global default log level threshold. Messages below this level are suppressed.
+   * Set the global default log level threshold. Messages below this level are
+   * suppressed. A `LOG_LEVEL` env var takes precedence over this value.
    *
    * @param level - Minimum log level to output.
    */
@@ -135,13 +249,37 @@ export class Logger {
 
   /**
    * Create a child logger with merged context.
-   * The child inherits the parent's name and context, merged with the provided extra context.
+   * The child inherits the parent's name and context, merged with the provided
+   * extra context. The parent's correlation ID is propagated unless the child
+   * explicitly overrides it.
    *
    * @param extraContext - Additional context to merge.
    * @returns A new Logger instance with merged context.
    */
   child(extraContext: LogContext): Logger {
-    return new Logger(this.name, { ...this.context, ...extraContext });
+    const merged: LogContext = { ...this.context, ...extraContext };
+    if (extraContext.correlationId === undefined) {
+      merged.correlationId = this.correlationId;
+    }
+    return new Logger(this.name, merged);
+  }
+
+  /**
+   * Get the correlation ID resolved for this logger instance.
+   * @returns The correlation ID (UUID) carried by this logger.
+   */
+  getCorrelationId(): string {
+    return this.correlationId;
+  }
+
+  /**
+   * Log a trace-level message (finest granularity; typically suppressed).
+   *
+   * @param message - The message to log.
+   * @param data - Optional structured data to include.
+   */
+  trace(message: string, data?: unknown): void {
+    this.log('trace', message, data);
   }
 
   /**
@@ -184,8 +322,23 @@ export class Logger {
     this.log('error', message, data);
   }
 
+  /**
+   * Log a fatal-level message (unrecoverable errors).
+   *
+   * @param message - The message to log.
+   * @param data - Optional structured data to include.
+   */
+  fatal(message: string, data?: unknown): void {
+    this.log('fatal', message, data);
+  }
+
   private log(level: LogLevel, message: string, data?: unknown): void {
-    if (LOG_LEVEL_PRIORITY[level] < LOG_LEVEL_PRIORITY[Logger.defaultLevel]) return;
+    if (LOG_LEVEL_PRIORITY[level] < LOG_LEVEL_PRIORITY[Logger.getEffectiveLevel()]) return;
+
+    if (Logger.getFormat() === 'json') {
+      this.writeStructured(level, message, data);
+      return;
+    }
 
     const prefix = this.buildPrefix(level);
     const rawMessage = data
@@ -195,6 +348,7 @@ export class Logger {
     const fullMessage = sanitizeError(rawMessage);
 
     switch (level) {
+      case 'trace':
       case 'debug':
         currentSink.debug(fullMessage);
         break;
@@ -205,9 +359,78 @@ export class Logger {
         currentSink.warn(fullMessage);
         break;
       case 'error':
+      case 'fatal':
         currentSink.error(fullMessage);
         break;
     }
+  }
+
+  /**
+   * Emit a structured NDJSON line to stdout (machine-parseable, filterable).
+   * Known fields are promoted to the top level; extra data is nested under `data`.
+   * @param level - The log level.
+   * @param message - The human-readable message.
+   * @param data - Optional structured data to include.
+   */
+  private writeStructured(level: LogLevel, message: string, data?: unknown): void {
+    const entry = this.buildStructuredEntry(level, message, data);
+    let line: string;
+    try {
+      line = safeJsonStringify(entry);
+    } catch {
+      line = JSON.stringify({
+        timestamp: entry.timestamp,
+        level: entry.level,
+        name: entry.name,
+        message: sanitizeError(message),
+        correlationId: this.correlationId,
+      });
+    }
+    // Redact credentials even in JSON output, then write a newline-delimited record.
+    process.stdout.write(`${sanitizeError(line)}\n`);
+  }
+
+  private buildStructuredEntry(level: LogLevel, message: string, data?: unknown): StructuredLogEntry {
+    const entry: StructuredLogEntry = {
+      timestamp: new Date().toISOString(),
+      level,
+      name: this.name,
+      message: typeof data === 'string' ? `${message} ${data}` : message,
+      correlationId: this.correlationId,
+    };
+
+    const entryRecord = entry as Record<string, unknown>;
+    const contextRecord = this.context as Record<string, unknown>;
+    for (const key of STRUCTURED_FIELDS) {
+      const value = contextRecord[key];
+      if (value !== undefined) {
+        entryRecord[key] = value;
+      }
+    }
+
+    if (data !== undefined && typeof data === 'object' && data !== null && !(data instanceof Error)) {
+      const dataRecord = data as Record<string, unknown>;
+      for (const key of STRUCTURED_FIELDS) {
+        const value = dataRecord[key];
+        if (value !== undefined && entryRecord[key] === undefined) {
+          entryRecord[key] = value;
+        }
+      }
+      const extra = Object.fromEntries(
+        Object.entries(dataRecord).filter(
+          ([k]) => !(STRUCTURED_FIELDS as readonly string[]).includes(k),
+        ),
+      );
+      if (Object.keys(extra).length > 0) {
+        entry.data = extra;
+      }
+    } else if (data instanceof Error) {
+      entry.data = { error: data.stack || data.message };
+    } else if (data !== undefined) {
+      entry.data = data;
+    }
+
+    return entry;
   }
 
   private buildPrefix(level: LogLevel): string {
@@ -217,8 +440,8 @@ export class Logger {
   }
 
   private formatContext(): string {
-    if (Object.keys(this.context).length === 0) return '';
     const parts: string[] = [];
+    if (this.correlationId) parts.push(`corr=${this.correlationId.slice(0, 8)}`);
     if (this.context.prNumber) parts.push(`pr#${this.context.prNumber}`);
     if (this.context.repo) parts.push(`${this.context.repo}`);
     if (this.context.eventType) parts.push(`${this.context.eventType}`);
@@ -247,4 +470,22 @@ export class Logger {
       return String(data);
     }
   }
+}
+
+/**
+ * Serialize a value to JSON while safely handling circular references and
+ * Error instances (rendered as their stack/message).
+ * @param value - The value to serialize.
+ * @returns A JSON string.
+ */
+function safeJsonStringify(value: unknown): string {
+  const seen = new WeakSet<object>();
+  return JSON.stringify(value, (_key: string, item: unknown) => {
+    if (typeof item === 'object' && item !== null) {
+      if (seen.has(item)) return '[Circular]';
+      seen.add(item);
+      if (item instanceof Error) return item.stack || item.message;
+    }
+    return item;
+  });
 }

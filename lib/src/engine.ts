@@ -136,6 +136,7 @@ export class ReviewEngine {
    * @param eventBus - Optional event bus for publishing pipeline lifecycle events.
    * @param repo - Optional repository in "owner/repo" format, included on published
    * pipeline events for attribution in audit logs and downstream consumers.
+   * @param correlationId - Optional correlation ID tracing this run across subsystems.
    */
   constructor(
     config: AgentConfig,
@@ -143,11 +144,12 @@ export class ReviewEngine {
     private learningStore?: LearningStore,
     private eventBus?: EventBus,
     private repo?: string,
+    private correlationId?: string,
   ) {
     this.config = config;
     this.adapter = adapter;
     this.mcp = new MCPManager(config.mcpServers);
-    this.logger = new Logger('ReviewEngine');
+    this.logger = new Logger('ReviewEngine', { correlationId });
   }
 
   /**
@@ -189,10 +191,12 @@ export class ReviewEngine {
         timestamp: eventPayload.timestamp,
         prNumber,
         repo: this.repo ?? numbered.repo,
+        correlationId: this.correlationId,
       })
       .catch((err) => {
         this.logger.warn(
           `Failed to publish ${type} event: ${err instanceof Error ? err.message : String(err)}`,
+          { correlationId: this.correlationId },
         );
       });
   }
@@ -2301,6 +2305,13 @@ export class ReviewEngine {
       } catch (err) {
         this.logger.warn(
           `Failed to record telemetry: ${err instanceof Error ? err.message : String(err)}`,
+          {
+            prNumber,
+            durationMs,
+            tokensUsed,
+            model,
+            correlationId: this.correlationId,
+          },
         );
       }
     }

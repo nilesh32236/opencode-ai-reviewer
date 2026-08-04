@@ -1474,6 +1474,8 @@ export interface GitHubEvent {
   repo?: string;
   /** PR number, if applicable */
   prNumber?: number;
+  /** Correlation ID tracing this event (and downstream work) across subsystems */
+  correlationId?: string;
 }
 
 /** A subscriber that listens for specific event types on the event bus. */

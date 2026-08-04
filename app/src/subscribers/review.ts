@@ -80,6 +80,7 @@ export function createReviewSubscriber(
           undefined,
           previousHeadSha,
           bus,
+          event.correlationId,
         );
         if (result) {
           await recordRateLimit(

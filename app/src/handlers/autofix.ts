@@ -46,6 +46,7 @@ import { mergeRepoConfig } from '../utils/config.js';
  * @param checkAllowlist - Optional list of allowed check commands.
  * @param signal - Optional abort signal
  * @param eventBus - Optional event bus for publishing pipeline events.
+ * @param correlationId - Optional correlation ID for tracing this request.
  */
 export async function handleAutofixLoop(
   prNumber: number,
@@ -58,14 +59,22 @@ export async function handleAutofixLoop(
   checkAllowlist?: string[],
   signal?: AbortSignal,
   eventBus?: EventBus,
+  correlationId?: string,
 ): Promise<void> {
   if (signal?.aborted) return;
-  const logger = new Logger('Autofix', { prNumber, repo });
+  const logger = new Logger('Autofix', { prNumber, repo, correlationId });
   logger.info(`Starting autofix loop for PR #${prNumber} in ${repo}`);
 
   const gh: PlatformAdapter =
     config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
-  const engine = new ReviewEngine(mergeRepoConfig(config, tempDir), gh, undefined, eventBus, repo);
+  const engine = new ReviewEngine(
+    mergeRepoConfig(config, tempDir),
+    gh,
+    undefined,
+    eventBus,
+    repo,
+    correlationId,
+  );
   const history: IterationRecord[] = [];
   const previousFindings: PreviousFindingIteration[] = [];
   let approved = false;
