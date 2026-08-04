@@ -23,6 +23,8 @@ npm-debug.log*
 .opencode/learning.db
 .opencode/learning.db-wal
 .opencode/learning.db-shm
+# Native build artifacts (compiled at build time, never committed)
+action/lib/build/
 lib/tests/.test-*
 # Compiled test artifacts
 lib/tests/*.test.js
