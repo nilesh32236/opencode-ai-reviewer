@@ -134,7 +134,7 @@ jobs:
 
       - name: Run self-heal
         if: steps.check-existing.outputs.existing_pr == '' && steps.capture-logs.outputs.logs_captured == 'true'
-        uses: ./action
+        uses: ./
         with:
           mode: self-heal
           model: 'opencode/deepseek-v4-flash-free'

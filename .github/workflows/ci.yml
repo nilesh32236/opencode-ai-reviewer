@@ -67,6 +67,18 @@ jobs:
           test -f action/lib/index.js || { echo "action/lib/index.js missing!"; exit 1; }
           echo "Build artifacts verified."
 
+      - name: Check no duplicate action.yml
+        run: |
+          DUPES=$(find . -name 'action.yml' -not -path './action.yml' \
+            -not -path './node_modules/*' -not -path '*/node_modules/*' \
+            -not -path './.git/*' 2>/dev/null)
+          if [ -n "$DUPES" ]; then
+            echo "ERROR: duplicate action.yml files found. The root action.yml is the single source of truth." >&2
+            echo "$DUPES" >&2
+            exit 1
+          fi
+          echo "No duplicate action.yml files found."
+
   coverage:
     needs: test
     runs-on: ubuntu-latest

@@ -345,7 +345,7 @@ jobs:
 
       - name: Fallback Inline Fix for Issue
         if: steps.process-prs.outputs.has_open_prs != 'true' && steps.process-issue.outputs.processed == 'true' && steps.process-issue.outputs.issue_number != ''
-        uses: ./action
+        uses: ./
         with:
           mode: fix
           model: 'opencode/deepseek-v4-flash-free'

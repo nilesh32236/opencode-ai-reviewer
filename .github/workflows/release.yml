@@ -340,7 +340,7 @@ jobs:
           generate_release_notes: true
           files: |
             action/lib/index.js
-            action/action.yml
+            action.yml
             action/package.json
             README.md
             LICENSE

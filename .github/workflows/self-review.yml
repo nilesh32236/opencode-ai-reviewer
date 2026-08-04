@@ -104,7 +104,7 @@ jobs:
           ref: ${{ steps.resolve-ref.outputs.ref }}
           token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
 
-      - uses: ./action
+      - uses: ./
         with:
           mode: review
           model: 'opencode/deepseek-v4-flash-free'
@@ -174,7 +174,7 @@ jobs:
           npm install -g pnpm
           pnpm install
 
-      - uses: ./action
+      - uses: ./
         with:
           mode: fix
           model: 'opencode/deepseek-v4-flash-free'
@@ -207,7 +207,7 @@ jobs:
           gh label create "autofix" --force --color "243cd4" 2>/dev/null || true
           gh label create "autofix-trigger" --force --color "c2e0c6" --description "Triggers autofix workflow on issues" 2>/dev/null || true
 
-      - uses: ./action
+      - uses: ./
         with:
           mode: audit
           model: 'opencode/deepseek-v4-flash-free'
@@ -234,7 +234,7 @@ jobs:
           fetch-depth: 1
           token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
 
-      - uses: ./action
+      - uses: ./
         with:
           mode: analyze
           model: 'opencode/deepseek-v4-flash-free'
@@ -280,7 +280,7 @@ jobs:
           gh label create "autofix:ready" --force --color "0e8a16" --description "Approved — ready to merge" 2>/dev/null || true
           gh label create "autofix:needs-manual-review" --force --color "d93f0b" --description "Max iterations reached" 2>/dev/null || true
 
-      - uses: ./action
+      - uses: ./
         with:
           mode: fix
           model: 'opencode/deepseek-v4-flash-free'
