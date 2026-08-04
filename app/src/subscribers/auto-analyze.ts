@@ -61,6 +61,7 @@ export function createAutoAnalyzeSubscriber(
           undefined,
           signal,
           eventBus,
+          event.correlationId,
         );
         await recordRateLimit(rateLimiter, event, 'command', 'analyze', reservation);
       } catch (err) {

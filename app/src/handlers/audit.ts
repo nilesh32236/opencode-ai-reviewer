@@ -17,6 +17,7 @@ import { mergeRepoConfig } from '../utils/config.js';
  * @param signal - Optional abort signal.
  * @param issueNumber - Optional issue/PR number that triggered the audit; used to post a failure comment.
  * @param eventBus - Optional event bus for publishing pipeline events.
+ * @param correlationId - Optional correlation ID for tracing this request.
  */
 export async function handleAudit(
   repo: string,
@@ -28,8 +29,9 @@ export async function handleAudit(
   signal?: AbortSignal,
   issueNumber?: number,
   eventBus?: EventBus,
+  correlationId?: string,
 ): Promise<void> {
-  const logger = new Logger('Audit', { repo });
+  const logger = new Logger('Audit', { repo, correlationId });
   logger.info(`Starting audit for ${repo}${targetDir ? ` targeting ${targetDir}` : ''}`);
 
   if (signal?.aborted) return;
@@ -109,7 +111,14 @@ export async function handleAudit(
     return;
   }
 
-  const engine = new ReviewEngine(mergeRepoConfig(config, tempDir), gh, undefined, eventBus, repo);
+  const engine = new ReviewEngine(
+    mergeRepoConfig(config, tempDir),
+    gh,
+    undefined,
+    eventBus,
+    repo,
+    correlationId,
+  );
 
   try {
     const auditWorkingDir = tempDir || process.cwd();

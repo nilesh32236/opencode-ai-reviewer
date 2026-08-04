@@ -43,6 +43,7 @@ const logger = new Logger('Command');
  * @param parsed - Optional parsed command (for flags like --force).
  * @param signal - Optional abort signal
  * @param eventBus - Optional event bus for publishing pipeline events.
+ * @param correlationId - Optional correlation ID for tracing this request.
  */
 export async function handleCommand(
   command: 'fix' | 'review' | 'audit' | 'analyze' | 'explain' | 'setup',
@@ -53,8 +54,9 @@ export async function handleCommand(
   parsed?: ParsedCommand,
   signal?: AbortSignal,
   eventBus?: EventBus,
+  correlationId?: string,
 ): Promise<void> {
-  const logger = new Logger('Command', { repo, prNumber: issueNumber });
+  const logger = new Logger('Command', { repo, prNumber: issueNumber, correlationId });
   const gh: PlatformAdapter =
     config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
 
@@ -94,12 +96,12 @@ export async function handleCommand(
 
     switch (command) {
       case 'analyze': {
-        await handleAnalyzeCommand(issueNumber, repo, token, config, tempDir, eventBus);
+        await handleAnalyzeCommand(issueNumber, repo, token, config, tempDir, eventBus, correlationId);
         break;
       }
 
       case 'explain': {
-        await handleExplainCommand(issueNumber, repo, token, config, tempDir, eventBus);
+        await handleExplainCommand(issueNumber, repo, token, config, tempDir, eventBus, correlationId);
         break;
       }
 
@@ -114,6 +116,7 @@ export async function handleCommand(
             tempDir,
             undefined,
             eventBus,
+            correlationId,
           );
         }
         break;
@@ -124,33 +127,31 @@ export async function handleCommand(
         const force = parsed?.flags?.force === true;
         const isPR = await gh.isMR(issueNumber);
         if (isPR) {
-          await handleAutofixLoop(
-            issueNumber,
+          await handleAutofixLoop({
+            prNumber: issueNumber,
             repo,
             token,
             config,
-            undefined,
             tempDir,
-            gitEnv,
-            undefined,
+            initialGitEnv: gitEnv,
             signal,
             eventBus,
-          );
+            correlationId,
+          });
         } else {
           const existingPR = await findExistingAutofixPR(gh, issueNumber);
           if (existingPR) {
-            await handleAutofixLoop(
-              existingPR,
+            await handleAutofixLoop({
+              prNumber: existingPR,
               repo,
               token,
               config,
-              undefined,
               tempDir,
-              gitEnv,
-              undefined,
+              initialGitEnv: gitEnv,
               signal,
               eventBus,
-            );
+              correlationId,
+            });
           } else {
             const newPR = await createAutofixPR(
               gh,
@@ -162,20 +163,20 @@ export async function handleCommand(
               signal,
               force,
               eventBus,
+              correlationId,
             );
             if (newPR) {
-              await handleAutofixLoop(
-                newPR,
+              await handleAutofixLoop({
+                prNumber: newPR,
                 repo,
                 token,
                 config,
-                undefined,
                 tempDir,
-                gitEnv,
-                undefined,
+                initialGitEnv: gitEnv,
                 signal,
                 eventBus,
-              );
+                correlationId,
+              });
             }
           }
         }
@@ -193,6 +194,7 @@ export async function handleCommand(
           undefined,
           issueNumber,
           eventBus,
+          correlationId,
         );
         break;
       }
@@ -220,6 +222,7 @@ export async function handleCommand(
  * @param config - Agent configuration.
  * @param tempDir - Temporary working directory.
  * @param eventBus - Optional event bus for publishing pipeline events.
+ * @param correlationId - Optional correlation ID for tracing this request.
  */
 export async function handleAnalyzeCommand(
   issueNumber: number,
@@ -228,13 +231,14 @@ export async function handleAnalyzeCommand(
   config: AgentConfig,
   tempDir: string,
   eventBus?: EventBus,
+  correlationId?: string,
 ): Promise<void> {
-  const logger = new Logger('Command:Analyze', { repo, prNumber: issueNumber });
+  const logger = new Logger('Command:Analyze', { repo, prNumber: issueNumber, correlationId });
   logger.info(`Analyzing issue #${issueNumber}`);
 
   const gh: PlatformAdapter =
     config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
-  const engine = new ReviewEngine(config, gh, undefined, eventBus, repo);
+  const engine = new ReviewEngine(config, gh, undefined, eventBus, repo, correlationId);
 
   try {
     const issueContext = await gh.gatherContext({ issueNumber });
@@ -274,6 +278,7 @@ export async function handleAnalyzeCommand(
  * @param config - Agent configuration.
  * @param tempDir - Temporary working directory.
  * @param eventBus - Optional event bus for publishing pipeline events.
+ * @param correlationId - Optional correlation ID for tracing this request.
  */
 export async function handleExplainCommand(
   issueNumber: number,
@@ -282,13 +287,14 @@ export async function handleExplainCommand(
   config: AgentConfig,
   tempDir: string,
   eventBus?: EventBus,
+  correlationId?: string,
 ): Promise<void> {
-  const logger = new Logger('Command:Explain', { repo, prNumber: issueNumber });
+  const logger = new Logger('Command:Explain', { repo, prNumber: issueNumber, correlationId });
   logger.info(`Explaining PR #${issueNumber}`);
 
   const gh: PlatformAdapter =
     config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
-  const engine = new ReviewEngine(config, gh, undefined, eventBus, repo);
+  const engine = new ReviewEngine(config, gh, undefined, eventBus, repo, correlationId);
 
   try {
     const pr = await gh.getMR(issueNumber);
@@ -398,8 +404,9 @@ async function createAutofixPR(
   signal?: AbortSignal,
   force = false,
   eventBus?: EventBus,
+  correlationId?: string,
 ): Promise<number | null> {
-  const logger = new Logger('Command', { repo, prNumber: issueNumber });
+  const logger = new Logger('Command', { repo, prNumber: issueNumber, correlationId });
   logger.info(`Fix triggered for issue #${issueNumber}`);
 
   if (signal?.aborted) return null;
@@ -416,7 +423,7 @@ async function createAutofixPR(
     timeout: 120_000,
     ...(gitEnv ? { env: { ...process.env, ...gitEnv } } : {}),
   };
-  const engine = new ReviewEngine(config, gh, undefined, eventBus, repo);
+  const engine = new ReviewEngine(config, gh, undefined, eventBus, repo, correlationId);
   const branchName = `autofix/issue-${issueNumber}`;
 
   try {

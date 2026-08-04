@@ -53,6 +53,7 @@ export function createAuditSubscriber(
           signal,
           auditIssue,
           eventBus,
+          event.correlationId,
         );
         await recordRateLimit(rateLimiter, event, 'command', 'audit', reservation);
       } catch (err) {

@@ -46,6 +46,7 @@ import { mergeRepoConfig } from '../utils/config.js';
  * @param tempDir - Optional temporary working directory.
  * @param stateManager - Optional conversation state manager for context window management.
  * @param eventBus - Optional event bus for publishing pipeline events.
+ * @param correlationId - Optional correlation ID for tracing this request.
  */
 export async function handleConversation(
   commentId: number,
@@ -59,8 +60,9 @@ export async function handleConversation(
   tempDir?: string,
   stateManager?: ConversationStateManager,
   eventBus?: EventBus,
+  correlationId?: string,
 ): Promise<void> {
-  const logger = new Logger('Conversation', { prNumber, repo });
+  const logger = new Logger('Conversation', { prNumber, repo, correlationId });
   logger.info(`Handling conversation for comment ${commentId} on PR #${prNumber}`);
 
   const gh: PlatformAdapter =
@@ -207,6 +209,7 @@ export async function handleConversation(
     learningStore,
     eventBus,
     repo,
+    correlationId,
   );
   try {
     if (signal?.aborted) return;

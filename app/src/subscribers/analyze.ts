@@ -46,6 +46,7 @@ export function createAnalyzeSubscriber(
           undefined,
           signal,
           eventBus,
+          event.correlationId,
         );
         await recordRateLimit(rateLimiter, event, 'command', 'analyze', reservation);
       } catch (err) {

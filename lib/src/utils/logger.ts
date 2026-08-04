@@ -112,6 +112,9 @@ const STRUCTURED_FIELDS = [
   'tokensUsed',
 ] as const;
 
+/** Keys whose string values should be fully redacted in structured output. */
+const SECRET_KEY_PATTERN = /(TOKEN|API[_-]?KEY|SECRET|PASSWORD|AUTHORIZATION)/i;
+
 /** Destination for Logger output. Defaults to GitHub Actions core methods. */
 export interface LoggerSink {
   /** Emit a debug-level message.
@@ -131,9 +134,11 @@ export interface LoggerSink {
    */
   error(message: string): void;
   /** Emit a structured NDJSON line (includes a trailing newline).
+   * Optional so pre-existing custom sinks (which predate structured output)
+   * keep compiling; when absent, Logger falls back to a plain stdout write.
    * @param line - The complete, sanitized NDJSON record to write.
    */
-  structured(line: string): void;
+  structured?(line: string): void;
 }
 
 /** Default sink routing through @actions/core (GitHub Actions command strings). */
@@ -383,22 +388,27 @@ export class Logger {
    */
   private writeStructured(level: LogLevel, message: string, data?: unknown): void {
     const entry = this.buildStructuredEntry(level, message, data);
-    let line: string;
-    try {
-      line = safeJsonStringify(entry);
-    } catch {
-      line = JSON.stringify({
-        timestamp: entry.timestamp,
-        level: entry.level,
-        name: entry.name,
-        message: sanitizeError(message),
-        correlationId: this.correlationId,
-      });
+    // Redact credentials BEFORE JSON serialization so the regex-based sanitizer
+    // can never alter the JSON structure (a data key literally named e.g.
+    // GITHUB_TOKEN must not corrupt the machine-parseable record).
+    entry.message = sanitizeError(entry.message);
+    if (isPlainObject(entry.data)) {
+      for (const [k, v] of Object.entries(entry.data)) {
+        if (typeof v !== 'string') continue;
+        // Values under credential-shaped keys are fully redacted (their secrets
+        // may not match a token pattern); everything else is pattern-scrubbed.
+        entry.data[k] = SECRET_KEY_PATTERN.test(k) ? '[REDACTED]' : sanitizeError(v);
+      }
     }
-    // Redact credentials even in JSON output, then emit a newline-delimited
-    // record through the configured sink (like human-format calls) so custom
-    // sinks keep JSON output consistent with the LoggerSink contract.
-    currentSink.structured(`${sanitizeError(line)}\n`);
+    const line = `${safeJsonStringify(entry)}\n`;
+    // Route through the configured sink when one provides structured output so
+    // custom sinks keep JSON records consistent with the LoggerSink contract;
+    // otherwise fall back to a plain stdout write.
+    if (typeof currentSink.structured === 'function') {
+      currentSink.structured(line);
+    } else {
+      process.stdout.write(line);
+    }
   }
 
   private buildStructuredEntry(
@@ -426,16 +436,19 @@ export class Logger {
     if (data !== undefined && data !== null) {
       if (isPlainObject(data)) {
         const dataRecord = data;
+        const promoted = new Set<string>();
         for (const key of STRUCTURED_FIELDS) {
           const value = dataRecord[key];
           if (value !== undefined && entryRecord[key] === undefined) {
             entryRecord[key] = value;
+            promoted.add(key);
           }
         }
+        // Keep every non-promoted key in `extra` — including a structured field
+        // that conflicts with an existing entry value (e.g. `model` already set
+        // from context) so it is never silently dropped from the record.
         const extra = Object.fromEntries(
-          Object.entries(dataRecord).filter(
-            ([k]) => !(STRUCTURED_FIELDS as readonly string[]).includes(k),
-          ),
+          Object.entries(dataRecord).filter(([k]) => !promoted.has(k)),
         );
         if (Object.keys(extra).length > 0) {
           entry.data = extra;
