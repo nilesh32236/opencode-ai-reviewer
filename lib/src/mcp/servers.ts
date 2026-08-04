@@ -2,10 +2,12 @@
  * Pre-configured MCP server definitions.
  * Users can import these and merge with their own configs.
  *
- * SECURITY: MCP server subprocesses (npx commands) receive environment variables
- * including CONTEXT7_API_KEY and GITHUB_TOKEN. These are visible to any npm
- * package executed by the MCP server. Only use trusted MCP server packages
- * and consider running MCP servers in a sandboxed environment.
+ * SECURITY: Local MCP server subprocesses (npx commands) receive only an
+ * allowlisted subset of the parent environment (see filterEnv in client.ts)
+ * plus the explicit `environment` overrides below, which include CONTEXT7_API_KEY
+ * and GITHUB_TOKEN. These credentials are visible to any npm package executed by
+ * the MCP server. Only use trusted MCP server packages and consider running MCP
+ * servers in a sandboxed environment.
  */
 
 import type { MCPServerConfig } from '../types/index.js';

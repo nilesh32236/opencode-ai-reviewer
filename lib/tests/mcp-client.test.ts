@@ -262,6 +262,138 @@ describe('MCPManager', () => {
     });
   });
 
+  // ─── connect() env filtering ─────────────────────────────────────────────
+
+  describe('connect() env filtering', () => {
+    const originalEnv: Record<string, string | undefined> = {};
+
+    beforeEach(() => {
+      for (const key of Object.keys(process.env)) {
+        originalEnv[key] = process.env[key];
+      }
+      process.env.PATH = '/usr/bin:/bin';
+      process.env.HOME = '/home/user';
+      process.env.GITHUB_TOKEN = 'super-secret-token';
+      process.env.OPENAI_API_KEY = 'sk-secret';
+      process.env.ACTIONS_RUNTIME_TOKEN = 'runtime-token-secret';
+      process.env.npm_config_registry = 'https://registry.npmjs.org/';
+      process.env.CUSTOM_APP_VAR = 'custom-value';
+      mockConnect.mockResolvedValue(undefined);
+      mockListTools.mockResolvedValue({ tools: [{ name: 'search' }] });
+    });
+
+    afterEach(() => {
+      for (const key of Object.keys(process.env)) {
+        if (originalEnv[key] === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = originalEnv[key];
+        }
+      }
+    });
+
+    function transportEnv(): Record<string, string> {
+      // Pick the last StdioClientTransport construction so the helper stays
+      // robust against retry paths where the transport is recreated.
+      const calls = mockStdioTransportCtor.mock.calls;
+      const opts = calls[calls.length - 1]?.[0] as { env?: Record<string, string> } | undefined;
+      return opts?.env ?? {};
+    }
+
+    it('passes only the default allowlisted env vars by default', async () => {
+      const manager = new MCPManager([makeConfig()]);
+      await manager.connect();
+
+      const env = transportEnv();
+      expect(env.PATH).toBe('/usr/bin:/bin');
+      expect(env.HOME).toBe('/home/user');
+      expect(env.GITHUB_TOKEN).toBeUndefined();
+      expect(env.OPENAI_API_KEY).toBeUndefined();
+      expect(env.CUSTOM_APP_VAR).toBeUndefined();
+    });
+
+    it('excludes secrets like GITHUB_TOKEN when not allowlisted', async () => {
+      const manager = new MCPManager([makeConfig()]);
+      await manager.connect();
+
+      const env = transportEnv();
+      expect(env.GITHUB_TOKEN).toBeUndefined();
+      expect(env.OPENAI_API_KEY).toBeUndefined();
+    });
+
+    it('always merges explicit server.environment vars on top', async () => {
+      const manager = new MCPManager([makeConfig({ environment: { FOO: 'bar' } })]);
+      await manager.connect();
+
+      const env = transportEnv();
+      expect(env.FOO).toBe('bar');
+      expect(env.PATH).toBe('/usr/bin:/bin');
+    });
+
+    it('supports custom per-server allowedEnv', async () => {
+      const manager = new MCPManager([makeConfig({ allowedEnv: ['PATH', 'CUSTOM_APP_VAR'] })]);
+      await manager.connect();
+
+      const env = transportEnv();
+      expect(env.PATH).toBe('/usr/bin:/bin');
+      expect(env.CUSTOM_APP_VAR).toBe('custom-value');
+      expect(env.HOME).toBeUndefined();
+      expect(env.GITHUB_TOKEN).toBeUndefined();
+    });
+
+    it('treats an explicit empty allowedEnv as forwarding no parent vars', async () => {
+      const manager = new MCPManager([makeConfig({ allowedEnv: [], environment: {} })]);
+      await manager.connect();
+
+      const env = transportEnv();
+      expect(env).toEqual({});
+      expect(env.PATH).toBeUndefined();
+      expect(env.HOME).toBeUndefined();
+      expect(env.GITHUB_TOKEN).toBeUndefined();
+    });
+
+    it('still merges explicit server.environment when allowedEnv is empty', async () => {
+      const manager = new MCPManager([makeConfig({ allowedEnv: [], environment: { FOO: 'bar' } })]);
+      await manager.connect();
+
+      const env = transportEnv();
+      expect(env.FOO).toBe('bar');
+      expect(env.PATH).toBeUndefined();
+      expect(env.GITHUB_TOKEN).toBeUndefined();
+    });
+
+    it('excludes ambient CI secrets like ACTIONS_RUNTIME_TOKEN and npm_config tokens', async () => {
+      const manager = new MCPManager([makeConfig()]);
+      await manager.connect();
+
+      const env = transportEnv();
+      expect(env.ACTIONS_RUNTIME_TOKEN).toBeUndefined();
+      expect(env.npm_config_registry).toBeUndefined();
+      expect(env.OPENAI_API_KEY).toBeUndefined();
+    });
+
+    it('lets server.environment override an allowlisted key', async () => {
+      const manager = new MCPManager([
+        makeConfig({ environment: { PATH: '/custom/path', FOO: 'bar' } }),
+      ]);
+      await manager.connect();
+
+      const env = transportEnv();
+      expect(env.PATH).toBe('/custom/path');
+      expect(env.FOO).toBe('bar');
+    });
+
+    it('forwards a secret when explicitly allowlisted via custom allowedEnv', async () => {
+      const manager = new MCPManager([makeConfig({ allowedEnv: ['PATH', 'GITHUB_TOKEN'] })]);
+      await manager.connect();
+
+      const env = transportEnv();
+      expect(env.GITHUB_TOKEN).toBe('super-secret-token');
+      expect(env.PATH).toBe('/usr/bin:/bin');
+      expect(env.HOME).toBeUndefined();
+    });
+  });
+
   // ─── disconnect() ────────────────────────────────────────────────────────
 
   describe('disconnect()', () => {
