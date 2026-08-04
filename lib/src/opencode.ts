@@ -366,6 +366,76 @@ async function fetchWithRetry(url: string, retries = 3, token?: string): Promise
 }
 
 /**
+ * Build an actionable, user-facing error message for a failed OpenCode binary
+ * download, classifying the underlying cause (network, HTTP status, checksum
+ * mismatch, or unknown) so users get guidance on how to recover instead of a
+ * raw stack trace.
+ * @param error - The error thrown during download (network, HTTP, or checksum).
+ * @param version - The semver tag of the OpenCode release being downloaded.
+ * @param downloadUrl - The asset URL that failed to download.
+ * @returns A human-friendly message explaining the failure and next steps.
+ */
+function classifyDownloadError(error: unknown, version: string, downloadUrl: string): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const lower = message.toLowerCase();
+
+  if (
+    /checksum mismatch|does not match|integrity check|hash.*(mismatch|does not match)/i.test(
+      message,
+    )
+  ) {
+    return (
+      `The downloaded OpenCode binary (${version}) failed checksum verification.\n` +
+      `Details: ${message}\n` +
+      `This usually indicates a corrupted download or an intercepted network transfer. ` +
+      `Re-run the workflow to retry with a fresh download; if the error persists, ` +
+      `contact support or verify the release assets at:\n${downloadUrl}`
+    );
+  }
+
+  if (
+    /timed out|timeout|fetch failed|network|econnrefused|econnreset|enotfound|etimedout|eai_again|socket/i.test(
+      lower,
+    )
+  ) {
+    return (
+      `Failed to download the OpenCode binary (${version}) — network error.\n` +
+      `Details: ${message}\n` +
+      `Download URL: ${downloadUrl}\n` +
+      `Check your network connectivity and firewall/proxy settings, then re-run the workflow.`
+    );
+  }
+
+  const http4xx = message.match(/HTTP (4\d\d)/i);
+  if (http4xx) {
+    return (
+      `Failed to download the OpenCode binary (${version}) — HTTP ${http4xx[1]}.\n` +
+      `Details: ${message}\n` +
+      `Download URL: ${downloadUrl}\n` +
+      `Verify that the requested version tag exists and that the release assets are ` +
+      `publicly accessible, then re-run the workflow.`
+    );
+  }
+
+  const http5xx = message.match(/HTTP (5\d\d)/i);
+  if (http5xx) {
+    return (
+      `Failed to download the OpenCode binary (${version}) — HTTP ${http5xx[1]}.\n` +
+      `Details: ${message}\n` +
+      `Download URL: ${downloadUrl}\n` +
+      `This looks like a transient server error on GitHub's side — re-run the workflow to retry.`
+    );
+  }
+
+  return (
+    `Failed to download the OpenCode binary (${version}).\n` +
+    `Details: ${message}\n` +
+    `Download URL: ${downloadUrl}\n` +
+    `Please re-run the workflow to retry; if the issue persists, contact support.`
+  );
+}
+
+/**
  * Ensure the OpenCode CLI binary is available.
  * Checks PATH first; if not found, downloads and caches the specified version.
  * @param version - Version tag to download (defaults to 'latest').
@@ -492,44 +562,54 @@ export async function setupOpenCode(
 
   const asset = releaseAssets.find((a) => a.name === assetName);
   if (!asset) {
-    throw new Error(
-      `Could not find asset "${assetName}" in release ${release.tag_name || version}`,
-    );
+    const message = `Could not find asset "${assetName}" in release ${release.tag_name || version}`;
+    core.error(message);
+    throw new Error(message);
   }
 
   core.info(`Downloading from: ${asset.browser_download_url}`);
-  const { cachedPath } = await withRetry(
-    async () => {
-      let downloadTimeoutHandle: ReturnType<typeof setTimeout> | undefined = undefined;
-      const dlPath = await Promise.race([
-        tc.downloadTool(asset.browser_download_url),
-        new Promise<never>((_, reject) => {
-          downloadTimeoutHandle = setTimeout(
-            () => reject(new Error('Download timed out after 120s')),
-            120_000,
-          );
-        }),
-      ]).finally(() => downloadTimeoutHandle !== undefined && clearTimeout(downloadTimeoutHandle));
+  let cachedPath: string;
+  try {
+    const result = await withRetry(
+      async () => {
+        let downloadTimeoutHandle: ReturnType<typeof setTimeout> | undefined = undefined;
+        const dlPath = await Promise.race([
+          tc.downloadTool(asset.browser_download_url),
+          new Promise<never>((_, reject) => {
+            downloadTimeoutHandle = setTimeout(
+              () => reject(new Error('Download timed out after 120s')),
+              120_000,
+            );
+          }),
+        ]).finally(
+          () => downloadTimeoutHandle !== undefined && clearTimeout(downloadTimeoutHandle),
+        );
 
-      await verifyDownloadedArchive(
-        dlPath,
-        releaseAssets,
-        assetName,
-        release.tag_name || version,
-        arch,
-      );
+        await verifyDownloadedArchive(
+          dlPath,
+          releaseAssets,
+          assetName,
+          release.tag_name || version,
+          arch,
+        );
 
-      let extPath: string;
-      if (extension === 'zip') {
-        extPath = await tc.extractZip(dlPath);
-      } else {
-        extPath = await tc.extractTar(dlPath);
-      }
-      const cachePath = await tc.cacheDir(extPath, 'opencode', semver);
-      return { cachedPath: cachePath };
-    },
-    { maxRetries: 3, baseDelayMs: 2000 },
-  );
+        let extPath: string;
+        if (extension === 'zip') {
+          extPath = await tc.extractZip(dlPath);
+        } else {
+          extPath = await tc.extractTar(dlPath);
+        }
+        const cachePath = await tc.cacheDir(extPath, 'opencode', semver);
+        return { cachedPath: cachePath };
+      },
+      { maxRetries: 3, baseDelayMs: 2000 },
+    );
+    cachedPath = result.cachedPath;
+  } catch (error) {
+    const message = classifyDownloadError(error, semver, asset.browser_download_url);
+    core.error(message);
+    throw new Error(message);
+  }
 
   const binName = platform === 'win32' ? 'opencode.exe' : 'opencode';
   const binPath = path.join(cachedPath, binName);

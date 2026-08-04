@@ -1000,6 +1000,89 @@ describe('setupOpenCode()', () => {
     await expect(setupOpenCode('v1.2.0')).rejects.toThrow(/below the minimum/);
     expect(mockDownloadTool).not.toHaveBeenCalled();
   });
+
+  it('produces an actionable error message when the download times out', async () => {
+    mockIoWhich.mockResolvedValue(null);
+    mockToolFind.mockReturnValue('');
+    mockDownloadTool.mockRejectedValue(new Error('Download timed out after 120s'));
+
+    const promise = setupOpenCode('v1.2.0');
+
+    await expect(promise).rejects.toThrow(/network error/i);
+    await expect(promise).rejects.toThrow(/re-run the workflow/i);
+    await expect(promise).rejects.toThrow(/https:\/\/example\.com/);
+    expect(core.error).toHaveBeenCalledWith(
+      expect.stringContaining('Download timed out after 120s'),
+    );
+  });
+
+  it('produces an actionable error message on an HTTP 5xx download failure', async () => {
+    mockIoWhich.mockResolvedValue(null);
+    mockToolFind.mockReturnValue('');
+    mockDownloadTool.mockRejectedValue(new Error('HTTP 503: Service Unavailable'));
+
+    const promise = setupOpenCode('v1.2.0');
+
+    await expect(promise).rejects.toThrow(/HTTP 503/);
+    await expect(promise).rejects.toThrow(/transient server error/i);
+    await expect(promise).rejects.toThrow(/re-run the workflow/i);
+  });
+
+  it('produces an actionable error message on an HTTP 4xx download failure', async () => {
+    mockIoWhich.mockResolvedValue(null);
+    mockToolFind.mockReturnValue('');
+    mockDownloadTool.mockRejectedValue(new Error('HTTP 404: Not Found'));
+
+    const promise = setupOpenCode('v1.2.0');
+
+    await expect(promise).rejects.toThrow(/HTTP 404/);
+    await expect(promise).rejects.toThrow(/version tag exists/i);
+  });
+
+  it('produces an actionable error message on a checksum mismatch', async () => {
+    mockIoWhich.mockResolvedValue(null);
+    mockToolFind.mockReturnValue('');
+    mockDownloadTool.mockResolvedValue('/tmp/opencode.tar.gz');
+    mockCacheDir.mockResolvedValue('/tmp/opencode-cached');
+
+    mockFindChecksumAsset.mockReturnValue({
+      name: 'opencode-linux-x64.tar.gz.sha256',
+      browser_download_url: 'https://example.com/checksum.sha256',
+    });
+    mockParseChecksumFile.mockReturnValue('expected-hash-value');
+    mockVerifyChecksum.mockRejectedValue(new Error('Checksum mismatch'));
+
+    const promise = setupOpenCode('v1.2.0');
+
+    await expect(promise).rejects.toThrow(/failed checksum verification/i);
+    await expect(promise).rejects.toThrow(/corrupted download/i);
+    await expect(promise).rejects.toThrow(/re-run the workflow/i);
+  });
+
+  it('produces an actionable error message when the release asset is missing', async () => {
+    mockIoWhich.mockResolvedValue(null);
+    mockToolFind.mockReturnValue('');
+    mockFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          tag_name: 'v1.2.0',
+          assets: [
+            {
+              name: 'some-other-asset.tar.gz',
+              browser_download_url: 'https://example.com/other.tar.gz',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const promise = setupOpenCode('v1.2.0');
+
+    await expect(promise).rejects.toThrow(/Could not find asset/i);
+    expect(core.error).toHaveBeenCalledWith(expect.stringContaining('Could not find asset'));
+    expect(mockDownloadTool).not.toHaveBeenCalled();
+  });
 });
 
 describe('configureGit()', () => {
