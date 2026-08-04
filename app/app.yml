@@ -9,8 +9,22 @@ default_events:
   - issues
   - label
 
+# Permission notes (least-privilege breakdown):
+#
+# GitHub App installation tokens are scoped to the MAXIMUM permissions the app
+# declares; they cannot be narrowed per webhook. The values below therefore
+# list the overall maximum the app needs. Per-mode requirements:
+#
+#   ReviewSubscriber (/review)          -> contents: read
+#   AuditSubscriber (/audit)            -> contents: read
+#   AnalyzeSubscriber (/analyze)        -> contents: read
+#   FixSubscriber (/fix, autofix)       -> contents: write   (ONLY mode needing write)
+#
+# `issues: write` and `pull_requests: write` are required by both read-only and
+# autofix modes (for comments and PR/issue updates). `contents: write` is only
+# exercised by autofix — review/audit/analyze operate with `contents: read`.
 default_permissions:
-  pull_requests: write
-  issues: write
-  contents: write
-  metadata: read
+  pull_requests: write   # required for review + autofix (PR comments/updates)
+  issues: write          # required for review + audit (issue comments/tracking)
+  contents: write        # ONLY required for autofix (FixSubscriber); review/audit need read
+  metadata: read         # required for repo/org lookup in all modes

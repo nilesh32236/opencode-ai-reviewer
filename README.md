@@ -358,6 +358,25 @@ The App listens for webhooks and works like the Action but runs as a hosted serv
    - Contents: **write**
    - Metadata: **read**
 2. Subscribe to events: `pull_request`, `pull_request_review_comment`, `issue_comment`, `issues`, `label`.
+
+> **Least-privilege note.** A GitHub App installation token is scoped to the
+> *maximum* permissions declared by the app and cannot be narrowed per webhook —
+> `app/app.yml` therefore lists the overall maximum. Per-mode requirements are:
+>
+> | Mode | Contents | Issues | Pull requests |
+> |------|----------|--------|---------------|
+> | Review (`/review`) | read | write | write |
+> | Audit (`/audit`) | read | write | write |
+> | Analyze (`/analyze`) | read | write | write |
+> | Autofix (`/fix`) | **write** | write | write |
+>
+> Only **autofix** (`FixSubscriber`) exercises `contents: write`; the read-only
+> modes operate with `contents: read`. If you never plan to use autofix you may
+> grant the App `contents: read` instead — the comparison with the reusable
+> workflows confirms this split: [`review.yml`](.github/workflows/review.yml)
+> and [`audit.yml`](.github/workflows/audit.yml) use `contents: read`, while
+> [`autofix.yml`](.github/workflows/autofix.yml) uses `contents: write`.
+
 3. Generate a **private key** and note your **App ID**.
 4. Configure environment variables (or a `.env` file):
 
