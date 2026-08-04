@@ -460,6 +460,10 @@ describe('runFixIssue', () => {
       'autofix/issue-42',
       'origin/main',
     ]);
+    // The recreated branch deliberately replaces any remote content, so the push
+    // uses plain --force (never failing with "stale info" when the runner's
+    // shallow checkout has no tracking ref for the branch).
+    expect(mockExec).toHaveBeenCalledWith('git', ['push', 'origin', 'autofix/issue-42', '--force']);
     expect(mockCreatePR).toHaveBeenCalled();
   });
 
@@ -491,14 +495,16 @@ describe('runFixIssue', () => {
       'autofix/issue-42',
       'origin/main',
     ]);
+    expect(mockExec).toHaveBeenCalledWith('git', ['push', 'origin', 'autofix/issue-42', '--force']);
     expect(mockCreatePR).toHaveBeenCalled();
   });
 
   it('reuses the existing autofix branch when its tip is authored by the bot', async () => {
     // The `origin/autofix/issue-42` tip commit is authored by the configured bot
-    // email (the bot's own unmerged autofix PR). Reusing it lets a re-triggered
-    // /fix update the existing PR instead of resetting it, and is safe because
-    // the tip is bot-authored (verified against gitEmail from configureGit).
+    // email (the stable bot identity from `git_user_email` or the fixed bot
+    // fallback). Reusing it lets a re-triggered /fix update the existing PR
+    // instead of resetting it; --force-with-lease guards the push against a
+    // concurrent remote update.
     mockGetExecOutput.mockImplementation(async (cmd: string, args: string[]) => {
       if (cmd === 'git' && args.includes('status')) {
         return { exitCode: 0, stdout: 'M src/fix.ts', stderr: '' };
@@ -523,6 +529,12 @@ describe('runFixIssue', () => {
       '-B',
       'autofix/issue-42',
       'origin/autofix/issue-42',
+    ]);
+    expect(mockExec).toHaveBeenCalledWith('git', [
+      'push',
+      'origin',
+      'autofix/issue-42',
+      '--force-with-lease',
     ]);
     expect(mockCreatePR).toHaveBeenCalled();
   });

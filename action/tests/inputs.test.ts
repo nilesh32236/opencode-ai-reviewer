@@ -105,4 +105,10 @@ describe('parseInputs() enable_mcp default', () => {
     const inputs = parseInputs();
     expect(inputs.enableMCP).toBe(false);
   });
+
+  it('accepts case-insensitive and trimmed "true" values', () => {
+    setInputs({ ...BASE_INPUTS, enable_mcp: ' TRUE ' });
+    const inputs = parseInputs();
+    expect(inputs.enableMCP).toBe(true);
+  });
 });

@@ -352,6 +352,54 @@ describe('runAudit (action wrapper)', () => {
     );
   });
 
+  it('truncates an audit category that is already a valid slug but exceeds the label limit', async () => {
+    // A prompt name that is already a valid lowercase slug but longer than 44
+    // characters must still be truncated, otherwise `audit:` + slug exceeds
+    // GitHub's 50-character label limit and issue creation fails with a 422.
+    const longName = `${'security-conventions'.repeat(3)}check`; // 60-char valid slug
+    fs.writeFileSync(path.join(tmpDir, `${longName}.md`), '# Long audit prompt');
+    mockGetInput.mockImplementation((name: string) => {
+      if (name === 'audit-prompts-dir') {
+        return tmpDir;
+      }
+      if (name === 'audit-prompt-name') {
+        return longName;
+      }
+      return '';
+    });
+    mockCreateIssue.mockResolvedValue({
+      number: 61,
+      url: 'https://github.com/owner/repo/issues/61',
+    });
+
+    await runAudit(
+      makeInputs({ auditCreateIssues: true }),
+      makeConfig({
+        audit: {
+          promptsDir: tmpDir,
+          targetDirs: [],
+          autoFix: true,
+          triggerLabel: 'autofix-trigger',
+          issueSeverityThreshold: 'important',
+        },
+      } as AgentConfig),
+      mockEngine,
+      mockGh,
+    );
+
+    const truncated = longName.slice(0, 44);
+    expect(truncated.length).toBe(44);
+    expect(mockPaginate).toHaveBeenCalledWith(
+      `/issues?state=open&labels=audit:${truncated}`,
+      expect.anything(),
+    );
+    expect(mockCreateIssue).toHaveBeenCalledWith(
+      expect.stringContaining(`[Audit:${truncated}]`),
+      expect.any(String),
+      expect.arrayContaining([`audit:${truncated}`]),
+    );
+  });
+
   it('skips issue creation when no critical or important findings exist', async () => {
     mockRunAudit.mockResolvedValue({
       summary: 'All good',

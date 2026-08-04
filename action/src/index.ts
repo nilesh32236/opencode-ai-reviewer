@@ -172,11 +172,19 @@ async function run(): Promise<void> {
       (platform === 'gitlab'
         ? process.env.GITLAB_USER_LOGIN || 'opencode-reviewer[bot]'
         : process.env.GITHUB_ACTOR || 'opencode-ai-reviewer[bot]');
+    // Pin the commit author email to a stable bot identity (overridable via the
+    // `git_user_email` input). Deriving it from the triggering actor would make
+    // the autofix branch-reuse gate in `runFixIssue` depend on which human
+    // triggered `/fix`, so a re-trigger by a different actor would discard the
+    // bot's in-progress branch. The fixed bot email keeps the comparison stable
+    // across actors and makes the bot's own autofix commits consistently
+    // attributed. This is a reuse heuristic, not a security boundary — git
+    // author emails are self-asserted and forgeable.
     const gitEmail =
       core.getInput('git_user_email') ||
       (platform === 'gitlab'
-        ? `${process.env.GITLAB_USER_LOGIN || 'opencode-reviewer[bot]'}@noreply.gitlab.com`
-        : `${process.env.GITHUB_ACTOR || 'opencode-ai-reviewer[bot]'}@users.noreply.github.com`);
+        ? 'opencode-reviewer[bot]@noreply.gitlab.com'
+        : 'opencode-ai-reviewer[bot]@users.noreply.github.com');
     configureGit(gitUser, gitEmail, token);
 
     let mcpServers: MCPServerConfig[] = [];

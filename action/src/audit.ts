@@ -52,7 +52,8 @@ function categoryHash(input: string): string {
  * categories that collapse to the same slug (e.g. "auth & access" vs
  * "auth # access") keep separate labels, titles, update markers, and dedup
  * registry keys. Categories that are already valid lowercase slugs are
- * returned unchanged to keep existing labels/titles stable.
+ * truncated to the same 44-character cap (otherwise a long valid slug would
+ * still exceed GitHub's label limit).
  * @param category - The raw audit category string.
  * @returns The canonical, collision-resistant slug (never empty).
  */
@@ -62,7 +63,7 @@ function normalizeAuditCategory(category: string): string {
     .replace(/[^a-z0-9._-]/g, '-')
     .replace(/-{2,}/g, '-')
     .replace(/^-+|-+$/g, '');
-  if (slug === category) return slug;
+  if (slug === category) return slug.slice(0, 44);
   const base = slug || 'uncategorized';
   const suffix = categoryHash(category);
   return `${base.slice(0, 44 - suffix.length - 1)}-${suffix}`.slice(0, 44);
