@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.36] — 2026-08-04
+
+
+### Fixed
+
+- address issue #176 (#341) (#176
+#341)
+
+### Changed
+
+- [Autofix] Binary .node file committed in action/lib/build/Release/better_sqlite3.node (#340) (#340)
+
+[v1.6.36]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.35...v1.6.36
+
 ## [v1.6.35] — 2026-08-04
 
 
