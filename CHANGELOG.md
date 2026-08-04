@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.34] — 2026-08-04
+
+
+### Fixed
+
+- address issue #169 (#337) (#169
+#337)
+
+[v1.6.34]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.33...v1.6.34
+
 ## [v1.6.33] — 2026-08-04
 
 
