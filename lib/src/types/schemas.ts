@@ -92,7 +92,14 @@ export const MCPServerConfigSchema = z.object({
   environment: z.record(z.string()).optional(),
   timeoutMs: z.number().int().positive().optional(),
   allowedTools: z.array(z.string()).optional(),
-  allowedEnv: z.array(z.string()).optional(),
+  allowedEnv: z
+    .array(z.string())
+    .optional()
+    .describe(
+      'Allowlist of parent env var names forwarded to a local MCP subprocess. Keys are ' +
+        'case-sensitive. Unset → built-in safe default; empty array → no parent vars ' +
+        'forwarded; `environment` always overrides.',
+    ),
 });
 
 /** Zod schema validating project context configuration. */

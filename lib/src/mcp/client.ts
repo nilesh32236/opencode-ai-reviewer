@@ -22,9 +22,12 @@ import { estimateTokens } from '../utils/token-estimate.js';
 /**
  * Default safe allowlist of environment variables forwarded to local MCP
  * subprocesses. Excludes credentials (GITHUB_TOKEN, API keys, etc.) and other
- * secrets by default. Per-server overrides are possible via `allowedEnv`.
+ * secrets by default. Includes common network/proxy, CI, and cross-platform
+ * (Unix + Windows) runtime variables so locally spawned servers keep working
+ * without leaking secrets. Per-server overrides are possible via `allowedEnv`.
  */
 const DEFAULT_MCP_ALLOWED_ENV = [
+  // Runtime path & shell
   'PATH',
   'HOME',
   'USER',
@@ -37,22 +40,56 @@ const DEFAULT_MCP_ALLOWED_ENV = [
   'LC_ALL',
   'SHELL',
   'TERM',
+  // Network / proxy (needed for servers behind corporate proxies)
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'ALL_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+  'all_proxy',
+  // CI context (non-secret)
+  'CI',
+  'GITHUB_WORKSPACE',
+  'GITHUB_REPOSITORY',
+  // Windows-essential vars (user home / system dirs for spawned subprocesses)
+  'USERPROFILE',
+  'USERNAME',
+  'SystemRoot',
+  'SYSTEMROOT',
+  'PATHEXT',
+  'ComSpec',
+  'APPDATA',
 ];
 
 /**
  * Filter the parent process environment down to an allowlisted subset before
  * handing it to a local MCP subprocess.
- * Uses the server's `allowedEnv` (falls back to the built-in safe default when
- * unset or empty) and always merges the server's explicit `environment` on top.
+ * Uses the server's `allowedEnv` when set — an explicit empty array forwards no
+ * parent variables (the least-privilege option) — and otherwise falls back to
+ * the built-in safe default. Keys must exactly match the environment variable
+ * names and are case-sensitive on POSIX, so a warning is logged when a custom
+ * `allowedEnv` key is not present in the parent environment (likely a typo).
+ * The server's explicit `environment` vars are always merged on top afterward.
  * @param server - MCP server configuration
  * @returns A sanitized env object safe to pass to a subprocess
  */
 function filterEnv(server: MCPServerConfig): Record<string, string> {
-  const allowlist = server.allowedEnv?.length ? server.allowedEnv : DEFAULT_MCP_ALLOWED_ENV;
+  const custom = server.allowedEnv !== undefined;
+  const allowlist: readonly string[] = server.allowedEnv ?? DEFAULT_MCP_ALLOWED_ENV;
   const filtered: Record<string, string> = {};
+  const logger = new Logger('MCPManager');
   for (const key of allowlist) {
     const value = process.env[key];
-    if (value !== undefined) filtered[key] = value;
+    if (value !== undefined) {
+      filtered[key] = value;
+    } else if (custom) {
+      logger.warn(
+        `MCP server "${server.name}": allowedEnv key "${key}" is not set in the parent ` +
+          'environment — check for typos or case mismatches (env var names are case-sensitive).',
+      );
+    }
   }
   return filtered;
 }

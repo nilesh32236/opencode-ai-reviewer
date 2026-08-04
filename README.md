@@ -115,7 +115,7 @@ Trigger it manually via the Actions tab (run the `setup.yml` workflow with *work
 | `max_files_per_batch`    | `3`                                  | Files per sub-agent batch                      |
 | `max_lines_per_file`     | `500`                                | Max lines per file included in context         |
 | `project_context`        | —                                    | Project description for review prompts         |
-| `enable_mcp`             | `false`                              | Enable MCP servers for context enrichment. **Security:** any enabled MCP server receives `GITHUB_TOKEN` as an env var and is fetched from npm at runtime — only configure trusted servers via the `mcp-servers` input. |
+| `enable_mcp`             | `false`                              | Enable MCP servers for context enrichment. **Security:** local MCP servers are spawned from npm at runtime and receive only an allowlisted subset of the parent environment (credentials such as `GITHUB_TOKEN` are NOT forwarded unless you pass them explicitly via `environment`/`allowedEnv`) — only configure trusted servers via the `mcp-servers` input. |
 | `include_strengths`      | `true`                               | Include positive feedback in output            |
 | `review_comment_summary` | `true`                               | Post a summary comment on the PR               |
 | `review_inline`          | `true`                               | Post findings as inline review comments on the PR diff (set to `false` for summary-only)
@@ -276,7 +276,7 @@ When running as a GitHub Action, trusted servers can be configured directly via 
       ]
 ```
 
-Each entry is validated against the `MCPServerConfig` schema (`name`, `type` `"local"`/`"remote"`, `command[]`, `url`, `environment`, `timeoutMs`, `allowedTools[]`). **SECURITY:** any enabled server receives `GITHUB_TOKEN` as an env var and is fetched from npm at runtime — only configure trusted servers.
+Each entry is validated against the `MCPServerConfig` schema (`name`, `type` `"local"`/`"remote"`, `command[]`, `url`, `environment`, `timeoutMs`, `allowedTools[]`, `allowedEnv[]`). **SECURITY:** local MCP servers are spawned from npm at runtime. They receive only a built-in allowlisted subset of the parent environment (PATH, HOME, proxy/CI and platform vars — no credentials); any credential a server needs must be passed explicitly via `environment`, or via `allowedEnv[]` to forward specific parent env vars by name (keys are case-sensitive; an empty `allowedEnv` forwards no parent vars). Only configure trusted servers.
 
 ### Local Servers
 
