@@ -19,7 +19,10 @@ export const REVIEW_MARKER = '<!-- autofix-review -->';
 export const FIX_MARKER = '<!-- autofix-applied -->';
 
 /**
- * Build the autofix review status body for a PR comment.
+ * Build the Markdown status body for an autofix run, summarizing the iteration
+ * history and, when a current review result is supplied, its issues and strengths.
+ * The `phase` argument drives the status line: 'reviewing' (in progress),
+ * 'approved', 'no-changes', or 'max-iterations' (manual review required).
  * @param history - The iteration history records.
  * @param maxIterations - Maximum allowed iterations.
  * @param phase - Current review phase.

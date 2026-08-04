@@ -257,24 +257,11 @@ fix:
       expect(result.review?.inline).toBeUndefined();
     });
 
-    it('passes through review.requireVerdict, commandTriggers, and suppressLowConfidence', () => {
+    it('passes through review.suppressLowConfidence', () => {
       const result = validateConfig({
-        review: {
-          requireVerdict: false,
-          commandTriggers: ['/oc', '/custom'],
-          suppressLowConfidence: true,
-        },
+        review: { suppressLowConfidence: true },
       } as never);
-      expect(result.review?.requireVerdict).toBe(false);
-      expect(result.review?.commandTriggers).toEqual(['/oc', '/custom']);
       expect(result.review?.suppressLowConfidence).toBe(true);
-    });
-
-    it('filters non-string commandTriggers entries', () => {
-      const result = validateConfig({
-        review: { commandTriggers: ['/oc', null, 42] },
-      } as never);
-      expect(result.review?.commandTriggers).toEqual(['/oc']);
     });
 
     it('skips review.suppressLowConfidence when not a boolean', () => {
@@ -896,26 +883,18 @@ fix:
       );
     });
 
-    it('loads requireVerdict, commandTriggers, and suppressLowConfidence end-to-end', () => {
+    it('loads review.suppressLowConfidence end-to-end', () => {
       fs.writeFileSync(
         path.join(tmpDir, '.opencode-reviewer.yml'),
         `review:
-  requireVerdict: false
-  commandTriggers:
-    - /oc
-    - /custom
   suppressLowConfidence: true
 `,
       );
       const config = loadConfig(tmpDir);
-      expect(config?.review?.requireVerdict).toBe(false);
-      expect(config?.review?.commandTriggers).toEqual(['/oc', '/custom']);
       expect(config?.review?.suppressLowConfidence).toBe(true);
-      for (const key of ['requireVerdict', 'commandTriggers', 'suppressLowConfidence']) {
-        expect(core.warning).not.toHaveBeenCalledWith(
-          expect.stringContaining(`Unknown config key "review.${key}"`),
-        );
-      }
+      expect(core.warning).not.toHaveBeenCalledWith(
+        expect.stringContaining('Unknown config key "review.suppressLowConfidence"'),
+      );
     });
 
     it('rejects invalid minSeverity values', () => {

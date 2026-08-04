@@ -65,17 +65,11 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
   });
 
   const parsePromise = (async () => {
-    const rawLines: string[] = [];
-
+    const state = new JsonlParserState();
     for await (const line of rl) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      if (trimmed.startsWith('```')) continue;
-
-      rawLines.push(trimmed);
+      state.addLine(line);
     }
-
-    return parseJsonlLines(rawLines);
+    return state.finish();
   })();
 
   try {
@@ -107,30 +101,41 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
  */
 export function parseJsonlString(content: string): ReviewResult {
   const sanitized = stripMarkdownFences(content);
-  const lines = sanitized.split('\n').filter((line) => line.trim().length > 0);
-  return parseJsonlLines(lines);
+  const state = new JsonlParserState();
+  for (const line of sanitized.split('\n')) {
+    state.addLine(line);
+  }
+  return state.finish();
 }
 
 /**
- * Shared per-line JSONL processing used by both `parseJsonlFile` and
- * `parseJsonlString`. Each line is trimmed, blank/fence lines are skipped,
- * and valid entries are mapped into a structured ReviewResult while malformed
- * lines are counted. Keeping this in one place ensures the file and string
- * entry points cannot silently diverge in line-handling rules.
+ * Incremental JSONL parser state shared by `parseJsonlFile` and
+ * `parseJsonlString`. Accepted lines are fed in via {@link addLine} — trimming,
+ * blank/fence skipping, and finding validation happen per line — and the
+ * accumulated findings are materialized once with {@link finish}. Feeding the
+ * streamed lines directly into the state avoids buffering every accepted raw
+ * line before parsing, so a large file keeps only one live `rawLines` array
+ * (the previous design held two copies for the lifetime of the parse).
  *
- * @param lines - Raw JSONL lines (may include surrounding whitespace).
- * @returns A ReviewResult with parsed findings.
+ * Line handling contract (shared by both entry points):
+ * - Each line is trimmed with `String.prototype.trim()` before parsing, so a UTF-8
+ *   BOM (U+FEFF) prefix on any line is removed and the line parses normally.
+ * - Lines that are blank after trimming are skipped entirely.
+ * - Lines that begin with a markdown fence (```) are skipped.
+ * - Zero-width characters such as U+200B (ZWSP) are NOT part of ECMAScript's
+ *   WhiteSpace set, so `.trim()` leaves them in place; a line consisting only of
+ *   such characters fails `JSON.parse` and is counted as a failed line.
  */
-export function parseJsonlLines(lines: string[]): ReviewResult {
-  const rawLines: string[] = [];
-  let failedLines = 0;
+class JsonlParserState {
+  private readonly rawLines: string[] = [];
+  private failedLines = 0;
 
-  let summary: SummaryFinding | null = null;
-  let verdict: VerdictFinding | null = null;
-  const strengths: StrengthFinding[] = [];
-  const issues: IssueFinding[] = [];
+  private summary: SummaryFinding | null = null;
+  private verdict: VerdictFinding | null = null;
+  private readonly strengths: StrengthFinding[] = [];
+  private readonly issues: IssueFinding[] = [];
 
-  let executiveSummary:
+  private executiveSummary:
     | {
         purpose: string;
         riskLevel: 'low' | 'medium' | 'high';
@@ -139,21 +144,25 @@ export function parseJsonlLines(lines: string[]): ReviewResult {
       }
     | undefined;
 
-  for (const line of lines) {
+  /**
+   * Feed a single raw JSONL line into the parser state.
+   * @param line - Raw line (may include surrounding whitespace or a BOM prefix).
+   */
+  addLine(line: string): void {
     // Trim before parse so BOM/whitespace-prefixed lines behave identically
     // across both entry points. rawLines stores the trimmed text.
     const trimmed = line.trim();
-    if (!trimmed) continue;
-    if (trimmed.startsWith('```')) continue;
+    if (!trimmed) return;
+    if (trimmed.startsWith('```')) return;
 
-    rawLines.push(trimmed);
+    this.rawLines.push(trimmed);
 
     try {
       const parsed = JSON.parse(trimmed);
 
       // Handle executive_summary separately since it's not a standard FindingType
       if (parsed.type === 'executive_summary') {
-        executiveSummary = {
+        this.executiveSummary = {
           purpose: typeof parsed.purpose === 'string' ? parsed.purpose : '',
           riskLevel:
             typeof parsed.riskLevel === 'string' &&
@@ -165,92 +174,98 @@ export function parseJsonlLines(lines: string[]): ReviewResult {
             ? parsed.breakingChanges.filter((c: unknown) => typeof c === 'string')
             : [],
         };
-        continue;
+        return;
       }
 
       const finding = validateAndNormalize(parsed);
 
       switch (finding.type) {
         case 'summary':
-          summary = finding as SummaryFinding;
+          this.summary = finding as SummaryFinding;
           break;
         case 'verdict':
-          verdict = finding as VerdictFinding;
+          this.verdict = finding as VerdictFinding;
           break;
         case 'strength':
-          strengths.push(finding as StrengthFinding);
+          this.strengths.push(finding as StrengthFinding);
           break;
         case 'issue':
-          issues.push(finding as IssueFinding);
+          this.issues.push(finding as IssueFinding);
           break;
       }
     } catch {
-      failedLines++;
+      this.failedLines++;
     }
   }
 
-  const counts = issues.reduce(
-    (acc, i) => {
-      if (i.severity === 'critical') acc.critical++;
-      else if (i.severity === 'important') acc.important++;
-      else if (i.severity === 'minor') acc.minor++;
-      return acc;
-    },
-    { critical: 0, important: 0, minor: 0 },
-  );
+  /**
+   * Materialize the accumulated state into a structured ReviewResult.
+   * @returns A ReviewResult with parsed findings.
+   */
+  finish(): ReviewResult {
+    const counts = this.issues.reduce(
+      (acc, i) => {
+        if (i.severity === 'critical') acc.critical++;
+        else if (i.severity === 'important') acc.important++;
+        else if (i.severity === 'minor') acc.minor++;
+        return acc;
+      },
+      { critical: 0, important: 0, minor: 0 },
+    );
 
-  const confidenceCounts = issues.reduce(
-    (acc, i) => {
-      if (i.confidence === 'high') acc.highConfidence++;
-      else if (i.confidence === 'medium') acc.mediumConfidence++;
-      else if (i.confidence === 'low') acc.lowConfidence++;
-      return acc;
-    },
-    { highConfidence: 0, mediumConfidence: 0, lowConfidence: 0 },
-  );
+    const confidenceCounts = this.issues.reduce(
+      (acc, i) => {
+        if (i.confidence === 'high') acc.highConfidence++;
+        else if (i.confidence === 'medium') acc.mediumConfidence++;
+        else if (i.confidence === 'low') acc.lowConfidence++;
+        return acc;
+      },
+      { highConfidence: 0, mediumConfidence: 0, lowConfidence: 0 },
+    );
 
-  return {
-    summary: summary?.text || '',
-    verdict: {
-      ready: verdict?.ready ?? false,
-      reasoning: verdict?.reasoning || '',
-      autoFixable: verdict?.autoFixable ?? false,
-      confidence: verdict?.confidence || 'low',
-    },
-    strengths: strengths.map((s) => ({
-      type: 'strength' as const,
-      file: s.file || '',
-      line: s.line || 0,
-      message: s.message,
-    })),
-    issues: issues.map((i) => ({
-      type: 'issue' as const,
-      severity: i.severity,
-      file: i.file,
-      line: i.line,
-      message: i.message,
-      suggestion: i.suggestion,
-      suggestionCode: i.suggestionCode,
-      inline: i.inline,
-      previouslyReported: i.previouslyReported,
-      theoreticalRisk: i.theoreticalRisk,
-      entryPointPath: i.entryPointPath,
-      confidence: i.confidence,
-      category: i.category,
-    })),
-    stats: {
-      total: issues.length,
-      critical: counts.critical,
-      important: counts.important,
-      minor: counts.minor,
-      highConfidence: confidenceCounts.highConfidence || undefined,
-      mediumConfidence: confidenceCounts.mediumConfidence || undefined,
-      lowConfidence: confidenceCounts.lowConfidence || undefined,
-    },
-    rawLines,
-    failedLines,
-    executiveSummary,
-  };
+    return {
+      summary: this.summary?.text || '',
+      verdict: {
+        ready: this.verdict?.ready ?? false,
+        reasoning: this.verdict?.reasoning || '',
+        autoFixable: this.verdict?.autoFixable ?? false,
+        confidence: this.verdict?.confidence || 'low',
+      },
+      strengths: this.strengths.map((s) => ({
+        type: 'strength' as const,
+        file: s.file || '',
+        line: s.line || 0,
+        message: s.message,
+      })),
+      issues: this.issues.map((i) => ({
+        type: 'issue' as const,
+        severity: i.severity,
+        file: i.file,
+        line: i.line,
+        message: i.message,
+        suggestion: i.suggestion,
+        suggestionCode: i.suggestionCode,
+        inline: i.inline,
+        previouslyReported: i.previouslyReported,
+        theoreticalRisk: i.theoreticalRisk,
+        entryPointPath: i.entryPointPath,
+        confidence: i.confidence,
+        category: i.category,
+      })),
+      stats: {
+        total: this.issues.length,
+        critical: counts.critical,
+        important: counts.important,
+        minor: counts.minor,
+        highConfidence: confidenceCounts.highConfidence || undefined,
+        mediumConfidence: confidenceCounts.mediumConfidence || undefined,
+        lowConfidence: confidenceCounts.lowConfidence || undefined,
+      },
+      rawLines: this.rawLines,
+      failedLines: this.failedLines,
+      executiveSummary: this.executiveSummary,
+    };
+  }
 }
 
 /**

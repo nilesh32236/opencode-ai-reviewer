@@ -57,6 +57,16 @@ describe('prompt-builder', () => {
     expect(prompt).toContain('Always handle async errors');
   });
 
+  it('supports the legacy string[] lessons shorthand', () => {
+    const prompt = buildReviewPrompt({ maxFilesPerBatch: 3 }, '## PR Context\n...', [
+      'Always handle async errors',
+      'Use strict equality checks',
+    ]);
+    expect(prompt).toContain('## Historical Lessons');
+    expect(prompt).toContain('Always handle async errors');
+    expect(prompt).toContain('Use strict equality checks');
+  });
+
   it('buildFixPrompt returns a non-empty string', () => {
     const prompt = buildFixPrompt(
       { reviewPromptFile: '', reviewPromptExtra: '', maxFilesPerBatch: 3, projectContext: '' },

@@ -217,12 +217,6 @@ async function run(): Promise<void> {
         ...(loadedConfig?.review?.skipLabels && { skipLabels: loadedConfig.review.skipLabels }),
         ...(loadedConfig?.review?.skipActors && { skipActors: loadedConfig.review.skipActors }),
         inline: loadedConfig?.review?.inline ?? inputs.reviewInline,
-        ...(loadedConfig?.review?.requireVerdict !== undefined && {
-          requireVerdict: loadedConfig.review.requireVerdict,
-        }),
-        ...(loadedConfig?.review?.commandTriggers !== undefined && {
-          commandTriggers: loadedConfig.review.commandTriggers,
-        }),
         ...(loadedConfig?.review?.suppressLowConfidence !== undefined && {
           suppressLowConfidence: loadedConfig.review.suppressLowConfidence,
         }),

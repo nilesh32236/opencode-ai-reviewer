@@ -222,9 +222,10 @@ export function buildConfig(): AgentConfig {
  * tuning is applied here at the point where a repo working directory exists.
  *
  * Only the `review.sensitivity` / `review.categories` / `review.enableCodebaseIndex`
- * / `review.enableMetaVerification` fields are merged (the engine filters findings
- * off those fields and respects the codebase-index / meta-verification toggles);
- * all other config-file sections remain Action-only.
+ * / `review.enableMetaVerification` / `review.suppressLowConfidence` fields are merged
+ * (the engine filters findings off those fields and respects the codebase-index /
+ * meta-verification / low-confidence-suppression toggles); all other config-file
+ * sections remain Action-only.
  * Unknown/malformed config files degrade gracefully to the
  * base config so a broken repo config never breaks the review.
  *

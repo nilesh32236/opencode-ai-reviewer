@@ -342,8 +342,6 @@ export const PromptConfigSchema = z.object({
       extraContext: z.string().optional(),
       customRules: z.array(z.string()).optional(),
       inline: z.boolean().optional(),
-      requireVerdict: z.boolean().optional(),
-      commandTriggers: z.array(z.string()).optional(),
       suppressLowConfidence: z.boolean().optional(),
       excludePatterns: z.array(z.string()).optional(),
       tokenBudget: TokenBudgetConfigSchema.optional(),

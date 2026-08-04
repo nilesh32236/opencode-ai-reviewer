@@ -42,8 +42,6 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     extraContext: null,
     customRules: null,
     inline: null,
-    requireVerdict: null,
-    commandTriggers: null,
     suppressLowConfidence: null,
     excludePatterns: null,
     enableReachability: null,
@@ -327,14 +325,6 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     }
     if (typeof config.review.inline === 'boolean') {
       result.review.inline = config.review.inline;
-    }
-    if (typeof config.review.requireVerdict === 'boolean') {
-      result.review.requireVerdict = config.review.requireVerdict;
-    }
-    if (Array.isArray(config.review.commandTriggers)) {
-      result.review.commandTriggers = config.review.commandTriggers.filter(
-        (c) => typeof c === 'string',
-      );
     }
     if (typeof config.review.suppressLowConfidence === 'boolean') {
       result.review.suppressLowConfidence = config.review.suppressLowConfidence;

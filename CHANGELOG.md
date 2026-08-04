@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [Unreleased]
+
+### Breaking Changes
+
+- Removed the `parseReviewOutput` helper and `ParsedReviewOutput` type from the public `@opencode-pr-agent/lib` surface. They were dead code (no in-repo consumers) superseded by the canonical `parseJsonlString` / `parseJsonlFile` parsers.
+
+---
+
 ## [v1.6.30] — 2026-08-02
 
 

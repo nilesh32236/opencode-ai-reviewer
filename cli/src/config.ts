@@ -60,6 +60,9 @@ export function buildAgentConfig(
         skipActors: loadedConfig.review.skipActors,
       }),
       inline: loadedConfig?.review?.inline ?? DEFAULT_CONFIG.review.inline,
+      ...(loadedConfig?.review?.suppressLowConfidence !== undefined && {
+        suppressLowConfidence: loadedConfig.review.suppressLowConfidence,
+      }),
       ...(loadedConfig?.review?.excludePatterns !== undefined && {
         excludePatterns: loadedConfig.review.excludePatterns,
       }),
