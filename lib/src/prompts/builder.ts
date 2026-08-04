@@ -44,14 +44,8 @@ export interface ReviewPromptOptions {
  * Build the review prompt string from inputs and PR context.
  * @param inputs - Configuration inputs including optional custom prompt file, project context, etc.
  * @param prContext - The PR context string describing the pull request.
- * @param optionsOrLessons - Optional ReviewPromptOptions object or lessons array.
- * @param previousFindings - Optional findings from previous fix iterations (legacy positional; prefer options).
- * @param falsePositiveRules - Optional false positive suppression rules (legacy positional; prefer options).
- * @param deltaContext - Optional delta diff string for incremental reviews (legacy positional; prefer options).
- * @param previousBotComments - Optional previous bot review comments to avoid re-reporting (legacy positional; prefer options).
- * @param linterResults - Optional linter results for context (legacy positional; prefer options).
- * @param budgetMode - Optional budget review mode selected from PR diff size (legacy positional; prefer options).
- * @param totalDiffLines - Optional total diff line count used for budget banners (legacy positional; prefer options).
+ * @param optionsOrLessons - Optional ReviewPromptOptions object, or a legacy
+ * lessons array (shorthand for `{ lessons: [...] }`).
  * @returns The assembled review prompt string.
  *
  * Cross-file context can be supplied via `options.codebaseIndexContext` and is
@@ -61,41 +55,19 @@ export function buildReviewPrompt(
   inputs: PromptBuilderInputs,
   prContext: string,
   optionsOrLessons?: ReviewPromptOptions | string[],
-  previousFindings?: PreviousFindingIteration[],
-  falsePositiveRules?: string[],
-  deltaContext?: string,
-  previousBotComments?: Array<{
-    file: string;
-    line: number | null;
-    body: string;
-    commentId: number;
-  }>,
-  linterResults?: import('../types/index.js').LinterResult[],
-  budgetMode?: ReviewBudgetMode,
-  totalDiffLines?: number,
 ): string {
   const options: ReviewPromptOptions = Array.isArray(optionsOrLessons)
-    ? {
-        lessons: optionsOrLessons,
-        previousFindings,
-        falsePositiveRules,
-        deltaContext,
-      }
-    : {
-        ...(optionsOrLessons || {}),
-        previousFindings,
-        falsePositiveRules,
-        deltaContext,
-      };
+    ? { lessons: optionsOrLessons }
+    : (optionsOrLessons ?? {});
 
   const lessons = options.lessons;
   const prevFindings = options.previousFindings;
   const fpRules = options.falsePositiveRules;
   const deltaCtx = options.deltaContext;
-  const prevBotComments = options.previousBotComments ?? previousBotComments;
-  const linterRes = options.linterResults ?? linterResults;
-  const effectiveBudgetMode = options.budgetMode ?? budgetMode;
-  const effectiveTotalDiffLines = options.totalDiffLines ?? totalDiffLines;
+  const prevBotComments = options.previousBotComments;
+  const linterRes = options.linterResults;
+  const effectiveBudgetMode = options.budgetMode;
+  const effectiveTotalDiffLines = options.totalDiffLines;
   const codebaseIndexCtx = options.codebaseIndexContext;
   const blameAware = options.blameAware;
   const languages = options.languages;

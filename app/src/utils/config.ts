@@ -239,11 +239,13 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const categories = repoConfig?.review?.categories;
   const enableCodebaseIndex = repoConfig?.review?.enableCodebaseIndex;
   const enableMetaVerification = repoConfig?.review?.enableMetaVerification;
+  const suppressLowConfidence = repoConfig?.review?.suppressLowConfidence;
   if (
     !sensitivity &&
     !categories &&
     enableCodebaseIndex === undefined &&
-    enableMetaVerification === undefined
+    enableMetaVerification === undefined &&
+    suppressLowConfidence === undefined
   ) {
     return baseConfig;
   }
@@ -260,6 +262,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       ...(categories && { categories }),
       ...(enableCodebaseIndex !== undefined && { enableCodebaseIndex }),
       ...(enableMetaVerification !== undefined && { enableMetaVerification }),
+      ...(suppressLowConfidence !== undefined && { suppressLowConfidence }),
     },
   };
 }

@@ -1053,6 +1053,12 @@ export interface PromptConfig {
     customRules?: string[];
     /** Post findings as inline review comments (default: true) */
     inline?: boolean;
+    /** Whether to require a verdict (default: true) */
+    requireVerdict?: boolean;
+    /** Command triggers (e.g., /oc, /review) */
+    commandTriggers?: string[];
+    /** Suppress low-confidence findings from review output (default: false) */
+    suppressLowConfidence?: boolean;
     /** Patterns to exclude from review */
     excludePatterns?: string[];
     /** Token budget configuration for smart context allocation */

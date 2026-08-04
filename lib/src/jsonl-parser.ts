@@ -36,10 +36,11 @@ export function stripMarkdownFences(content: string): string {
  * The file is read line-by-line; invalid or unparseable lines are counted but skipped.
  * Returns an empty result if the file does not exist.
  *
- * Line handling contract (shared with parseJsonlString and parseReviewOutput):
+ * Line handling contract (shared with parseJsonlString):
  * - Each line is trimmed with `String.prototype.trim()` before parsing, so a UTF-8
  *   BOM (U+FEFF) prefix on any line is removed and the line parses normally.
  * - Lines that are blank after trimming are skipped entirely.
+ * - Lines that begin with a markdown fence (```) are skipped.
  * - Zero-width characters such as U+200B (ZWSP) are NOT part of ECMAScript's
  *   WhiteSpace set, so `.trim()` leaves them in place; a line consisting only of
  *   such characters fails `JSON.parse` and is counted as a failed line.
@@ -65,21 +66,6 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
 
   const parsePromise = (async () => {
     const rawLines: string[] = [];
-    let failedLines = 0;
-
-    let summary: SummaryFinding | null = null;
-    let verdict: VerdictFinding | null = null;
-    const strengths: StrengthFinding[] = [];
-    const issues: IssueFinding[] = [];
-
-    let executiveSummary:
-      | {
-          purpose: string;
-          riskLevel: 'low' | 'medium' | 'high';
-          riskRationale: string;
-          breakingChanges: string[];
-        }
-      | undefined;
 
     for await (const line of rl) {
       const trimmed = line.trim();
@@ -87,109 +73,9 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
       if (trimmed.startsWith('```')) continue;
 
       rawLines.push(trimmed);
-
-      try {
-        const parsed = JSON.parse(trimmed);
-
-        if (parsed.type === 'executive_summary') {
-          executiveSummary = {
-            purpose: typeof parsed.purpose === 'string' ? parsed.purpose : '',
-            riskLevel:
-              typeof parsed.riskLevel === 'string' &&
-              ['low', 'medium', 'high'].includes(parsed.riskLevel)
-                ? (parsed.riskLevel as 'low' | 'medium' | 'high')
-                : 'low',
-            riskRationale: typeof parsed.riskRationale === 'string' ? parsed.riskRationale : '',
-            breakingChanges: Array.isArray(parsed.breakingChanges)
-              ? parsed.breakingChanges.filter((c: unknown) => typeof c === 'string')
-              : [],
-          };
-          continue;
-        }
-
-        const finding = validateAndNormalize(parsed);
-
-        switch (finding.type) {
-          case 'summary':
-            summary = finding as SummaryFinding;
-            break;
-          case 'verdict':
-            verdict = finding as VerdictFinding;
-            break;
-          case 'strength':
-            strengths.push(finding as StrengthFinding);
-            break;
-          case 'issue':
-            issues.push(finding as IssueFinding);
-            break;
-        }
-      } catch {
-        failedLines++;
-      }
     }
 
-    const counts = issues.reduce(
-      (acc, i) => {
-        if (i.severity === 'critical') acc.critical++;
-        else if (i.severity === 'important') acc.important++;
-        else if (i.severity === 'minor') acc.minor++;
-        return acc;
-      },
-      { critical: 0, important: 0, minor: 0 },
-    );
-
-    const confidenceCounts = issues.reduce(
-      (acc, i) => {
-        if (i.confidence === 'high') acc.highConfidence++;
-        else if (i.confidence === 'medium') acc.mediumConfidence++;
-        else if (i.confidence === 'low') acc.lowConfidence++;
-        return acc;
-      },
-      { highConfidence: 0, mediumConfidence: 0, lowConfidence: 0 },
-    );
-
-    return {
-      summary: summary?.text || '',
-      verdict: {
-        ready: verdict?.ready ?? false,
-        reasoning: verdict?.reasoning || '',
-        autoFixable: verdict?.autoFixable ?? false,
-        confidence: verdict?.confidence || 'low',
-      },
-      strengths: strengths.map((s) => ({
-        type: 'strength' as const,
-        file: s.file || '',
-        line: s.line || 0,
-        message: s.message,
-      })),
-      issues: issues.map((i) => ({
-        type: 'issue' as const,
-        severity: i.severity,
-        file: i.file,
-        line: i.line,
-        message: i.message,
-        suggestion: i.suggestion,
-        suggestionCode: i.suggestionCode,
-        inline: i.inline,
-        previouslyReported: i.previouslyReported,
-        theoreticalRisk: i.theoreticalRisk,
-        entryPointPath: i.entryPointPath,
-        confidence: i.confidence,
-        category: i.category,
-      })),
-      stats: {
-        total: issues.length,
-        critical: counts.critical,
-        important: counts.important,
-        minor: counts.minor,
-        highConfidence: confidenceCounts.highConfidence || undefined,
-        mediumConfidence: confidenceCounts.mediumConfidence || undefined,
-        lowConfidence: confidenceCounts.lowConfidence || undefined,
-      },
-      rawLines,
-      failedLines,
-      executiveSummary,
-    };
+    return parseJsonlLines(rawLines);
   })();
 
   try {
@@ -208,7 +94,7 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
 /**
  * Parse a JSONL string containing review findings and return a structured ReviewResult.
  *
- * Line handling contract (shared with parseJsonlFile and parseReviewOutput):
+ * Line handling contract (shared with parseJsonlFile):
  * - Each line is trimmed with `String.prototype.trim()` before parsing, so a UTF-8
  *   BOM (U+FEFF) prefix on any line is removed and the line parses normally.
  * - Lines that are blank after trimming are skipped entirely.
@@ -222,6 +108,20 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
 export function parseJsonlString(content: string): ReviewResult {
   const sanitized = stripMarkdownFences(content);
   const lines = sanitized.split('\n').filter((line) => line.trim().length > 0);
+  return parseJsonlLines(lines);
+}
+
+/**
+ * Shared per-line JSONL processing used by both `parseJsonlFile` and
+ * `parseJsonlString`. Each line is trimmed, blank/fence lines are skipped,
+ * and valid entries are mapped into a structured ReviewResult while malformed
+ * lines are counted. Keeping this in one place ensures the file and string
+ * entry points cannot silently diverge in line-handling rules.
+ *
+ * @param lines - Raw JSONL lines (may include surrounding whitespace).
+ * @returns A ReviewResult with parsed findings.
+ */
+export function parseJsonlLines(lines: string[]): ReviewResult {
   const rawLines: string[] = [];
   let failedLines = 0;
 
@@ -240,9 +140,12 @@ export function parseJsonlString(content: string): ReviewResult {
     | undefined;
 
   for (const line of lines) {
-    // Trim before parse so BOM/whitespace-prefixed lines behave identically to
-    // parseJsonlFile and parseReviewOutput. rawLines stores the trimmed text.
+    // Trim before parse so BOM/whitespace-prefixed lines behave identically
+    // across both entry points. rawLines stores the trimmed text.
     const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith('```')) continue;
+
     rawLines.push(trimmed);
 
     try {

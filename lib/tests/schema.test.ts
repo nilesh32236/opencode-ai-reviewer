@@ -1,25 +1,25 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { parseJsonlString } from '../src/jsonl-parser.js';
 import {
   AgentConfigSchema,
   ReviewBudgetConfigSchema,
-  parseReviewOutput,
+  ReviewEntrySchema,
 } from '../src/types/schemas.js';
 import { mulberry32, randomBytes } from './helpers/seeded-random.js';
 
-describe('parseReviewOutput', () => {
+describe('parseJsonlString (canonical JSONL parser)', () => {
   it('parses valid JSONL with all entry types', () => {
     const jsonl = `{"type":"summary","text":"Good PR overall."}
 {"type":"verdict","ready":true,"reasoning":"No issues found."}
 {"type":"strength","file":"src/foo.ts","line":10,"message":"Clean code."}
 {"type":"issue","severity":"minor","file":"src/foo.ts","line":20,"message":"Use const.","suggestion":"Replace let with const.","inline":true}`;
 
-    const result = parseReviewOutput(jsonl);
+    const result = parseJsonlString(jsonl);
 
-    expect(result.valid.length).toBe(4);
-    expect(result.invalid.length).toBe(0);
+    expect(result.failedLines).toBe(0);
     expect(result.summary).toBe('Good PR overall.');
-    expect(result.verdict?.ready).toBe(true);
+    expect(result.verdict.ready).toBe(true);
     expect(result.strengths.length).toBe(1);
     expect(result.issues.length).toBe(1);
     expect(result.issues[0].severity).toBe('minor');
@@ -30,41 +30,37 @@ describe('parseReviewOutput', () => {
 {invalid json}
 {"type":"verdict","ready":false,"reasoning":"Has issues."}`;
 
-    const result = parseReviewOutput(jsonl);
+    const result = parseJsonlString(jsonl);
 
-    expect(result.valid.length).toBe(2);
-    expect(result.invalid.length).toBe(1);
-    expect(result.invalid[0].line).toBe(2);
+    expect(result.failedLines).toBe(1);
     expect(result.summary).toBe('Valid summary.');
   });
 
   it('handles empty content', () => {
-    const result = parseReviewOutput('');
+    const result = parseJsonlString('');
 
-    expect(result.valid.length).toBe(0);
-    expect(result.invalid.length).toBe(0);
-    expect(result.summary).toBeUndefined();
-    expect(result.verdict).toBeUndefined();
+    expect(result.failedLines).toBe(0);
+    expect(result.summary).toBe('');
+    expect(result.verdict.ready).toBe(false);
   });
 
   it('parses strength without file or line', () => {
     const jsonl = `{"type":"strength","message":"Great overall structure."}`;
-    const result = parseReviewOutput(jsonl);
-    expect(result.valid.length).toBe(1);
-    expect(result.invalid.length).toBe(0);
+    const result = parseJsonlString(jsonl);
+    expect(result.failedLines).toBe(0);
     expect(result.strengths[0].message).toBe('Great overall structure.');
-    expect(result.strengths[0].file).toBeUndefined();
-    expect(result.strengths[0].line).toBeUndefined();
+    expect(result.strengths[0].file).toBe('');
+    expect(result.strengths[0].line).toBe(0);
   });
 
   it('parses sample fixture file correctly', () => {
     const fixturePath = path.join(__dirname, 'fixtures/sample-review-output.jsonl');
     const content = fs.readFileSync(fixturePath, 'utf-8');
 
-    const result = parseReviewOutput(content);
+    const result = parseJsonlString(content);
 
     expect(result.summary).toContain('JWT authentication');
-    expect(result.verdict?.ready).toBe(false);
+    expect(result.verdict.ready).toBe(false);
     expect(result.strengths.length).toBe(2);
     expect(result.issues.length).toBe(3);
 
@@ -77,8 +73,8 @@ describe('parseReviewOutput', () => {
   });
 });
 
-describe('parseReviewOutput edge cases', () => {
-  it('counts each type of malformed JSON as invalid', () => {
+describe('parseJsonlString edge cases', () => {
+  it('counts each type of malformed JSON as failed', () => {
     const jsonl = [
       '{"type":"summary","text":"Truncated',
       '{type:"summary",text:"Unquoted"}',
@@ -87,48 +83,46 @@ describe('parseReviewOutput edge cases', () => {
       '{"type":"summary","text":"Good."} trailing',
     ].join('\n');
 
-    const result = parseReviewOutput(jsonl);
+    const result = parseJsonlString(jsonl);
 
-    expect(result.valid.length).toBe(0);
-    expect(result.invalid.length).toBe(5);
+    expect(result.summary).toBe('');
+    expect(result.failedLines).toBe(5);
   });
 
-  it('rejects entries with missing required fields', () => {
-    const jsonl = [
+  it('ReviewEntrySchema rejects entries with missing required fields', () => {
+    const entries = [
       '{"type":"summary"}',
       '{"type":"verdict","ready":true}',
       '{"type":"strength"}',
       '{"type":"issue","severity":"minor"}',
-    ].join('\n');
+    ];
 
-    const result = parseReviewOutput(jsonl);
-
-    expect(result.invalid.length).toBe(4);
-    expect(result.valid.length).toBe(0);
+    for (const entry of entries) {
+      expect(ReviewEntrySchema.safeParse(JSON.parse(entry)).success).toBe(false);
+    }
   });
 
-  it('rejects entries with invalid required field values', () => {
-    const jsonl = [
+  it('ReviewEntrySchema rejects entries with invalid required field values', () => {
+    const entries = [
       '{"type":"summary","text":"short"}',
       '{"type":"issue","severity":"minor","file":"a.ts","line":0,"message":"nope"}',
-    ].join('\n');
+    ];
 
-    const result = parseReviewOutput(jsonl);
-
-    expect(result.invalid.length).toBe(2);
-    expect(result.valid.length).toBe(0);
+    for (const entry of entries) {
+      expect(ReviewEntrySchema.safeParse(JSON.parse(entry)).success).toBe(false);
+    }
   });
 
   it('preserves unicode content', () => {
     const jsonl = '{"type":"summary","text":"审查通过，整体代码质量良好。"}';
-    const result = parseReviewOutput(jsonl);
+    const result = parseJsonlString(jsonl);
     expect(result.summary).toBe('审查通过，整体代码质量良好。');
   });
 
   it('handles a BOM prefix on the first line', () => {
     const jsonl = '\uFEFF{"type":"summary","text":"BOM handled by parser."}';
-    const result = parseReviewOutput(jsonl);
-    expect(result.invalid.length).toBe(0);
+    const result = parseJsonlString(jsonl);
+    expect(result.failedLines).toBe(0);
     expect(result.summary).toBe('BOM handled by parser.');
   });
 
@@ -137,25 +131,24 @@ describe('parseReviewOutput edge cases', () => {
       '{"type":"summary","text":"First line works."}',
       '\uFEFF{"type":"verdict","ready":true,"reasoning":"Verdict after BOM."}',
     ].join('\n');
-    const result = parseReviewOutput(jsonl);
-    expect(result.valid.length).toBe(2);
-    expect(result.verdict?.ready).toBe(true);
+    const result = parseJsonlString(jsonl);
+    expect(result.failedLines).toBe(0);
+    expect(result.verdict.ready).toBe(true);
   });
 
-  it('tolerates extra unknown fields (Zod strips unknown keys)', () => {
+  it('tolerates extra unknown fields', () => {
     const jsonl =
       '{"type":"issue","severity":"minor","file":"a.ts","line":1,"message":"Real issue here.","extra":"x","nested":{"a":1}}';
-    const result = parseReviewOutput(jsonl);
-    expect(result.invalid.length).toBe(0);
+    const result = parseJsonlString(jsonl);
+    expect(result.failedLines).toBe(0);
     expect(result.issues).toHaveLength(1);
   });
 
   it('accepts executive_summary entries and routes them to executiveSummary', () => {
     const jsonl =
       '{"type":"executive_summary","purpose":"Adds auth middleware","riskLevel":"high","riskRationale":"Public endpoint without rate limiting","breakingChanges":["DB migration"]}';
-    const result = parseReviewOutput(jsonl);
-    expect(result.valid.length).toBe(1);
-    expect(result.invalid.length).toBe(0);
+    const result = parseJsonlString(jsonl);
+    expect(result.failedLines).toBe(0);
     expect(result.executiveSummary?.purpose).toBe('Adds auth middleware');
     expect(result.executiveSummary?.riskLevel).toBe('high');
     expect(result.executiveSummary?.riskRationale).toBe('Public endpoint without rate limiting');
@@ -165,9 +158,8 @@ describe('parseReviewOutput edge cases', () => {
   it('leniently accepts malformed executive_summary entries (mirrors manual parser)', () => {
     const jsonl =
       '{"type":"executive_summary","purpose":5,"riskLevel":"urgent","breakingChanges":[1,"ok"]}';
-    const result = parseReviewOutput(jsonl);
-    expect(result.valid.length).toBe(1);
-    expect(result.invalid.length).toBe(0);
+    const result = parseJsonlString(jsonl);
+    expect(result.failedLines).toBe(0);
     expect(result.executiveSummary?.purpose).toBe('');
     expect(result.executiveSummary?.riskLevel).toBe('low');
     expect(result.executiveSummary?.riskRationale).toBe('');
@@ -183,8 +175,8 @@ describe('parseReviewOutput edge cases', () => {
       line: 1,
       message: longMessage,
     });
-    const result = parseReviewOutput(jsonl);
-    expect(result.valid.length).toBe(1);
+    const result = parseJsonlString(jsonl);
+    expect(result.failedLines).toBe(0);
     expect(result.issues[0].message.length).toBe(longMessage.length);
   });
 
@@ -192,7 +184,7 @@ describe('parseReviewOutput edge cases', () => {
     const rand = mulberry32(0xfeedface);
     for (let i = 0; i < 200; i++) {
       const input = randomBytes(rand, Math.floor(rand() * 4096));
-      expect(() => parseReviewOutput(input)).not.toThrow();
+      expect(() => parseJsonlString(input)).not.toThrow();
     }
   });
 });

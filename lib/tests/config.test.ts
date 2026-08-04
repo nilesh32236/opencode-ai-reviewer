@@ -257,6 +257,31 @@ fix:
       expect(result.review?.inline).toBeUndefined();
     });
 
+    it('passes through review.requireVerdict, commandTriggers, and suppressLowConfidence', () => {
+      const result = validateConfig({
+        review: {
+          requireVerdict: false,
+          commandTriggers: ['/oc', '/custom'],
+          suppressLowConfidence: true,
+        },
+      } as never);
+      expect(result.review?.requireVerdict).toBe(false);
+      expect(result.review?.commandTriggers).toEqual(['/oc', '/custom']);
+      expect(result.review?.suppressLowConfidence).toBe(true);
+    });
+
+    it('filters non-string commandTriggers entries', () => {
+      const result = validateConfig({
+        review: { commandTriggers: ['/oc', null, 42] },
+      } as never);
+      expect(result.review?.commandTriggers).toEqual(['/oc']);
+    });
+
+    it('skips review.suppressLowConfidence when not a boolean', () => {
+      const result = validateConfig({ review: { suppressLowConfidence: 'yes' } } as never);
+      expect(result.review?.suppressLowConfidence).toBeUndefined();
+    });
+
     it('passes through review.budget values', () => {
       const result = validateConfig({
         review: { budget: { enabled: false, summaryThreshold: 200, splitThreshold: 800 } },
@@ -869,6 +894,28 @@ fix:
       expect(core.warning).not.toHaveBeenCalledWith(
         expect.stringContaining('Unknown config key "review.enableMetaVerification"'),
       );
+    });
+
+    it('loads requireVerdict, commandTriggers, and suppressLowConfidence end-to-end', () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.opencode-reviewer.yml'),
+        `review:
+  requireVerdict: false
+  commandTriggers:
+    - /oc
+    - /custom
+  suppressLowConfidence: true
+`,
+      );
+      const config = loadConfig(tmpDir);
+      expect(config?.review?.requireVerdict).toBe(false);
+      expect(config?.review?.commandTriggers).toEqual(['/oc', '/custom']);
+      expect(config?.review?.suppressLowConfidence).toBe(true);
+      for (const key of ['requireVerdict', 'commandTriggers', 'suppressLowConfidence']) {
+        expect(core.warning).not.toHaveBeenCalledWith(
+          expect.stringContaining(`Unknown config key "review.${key}"`),
+        );
+      }
     });
 
     it('rejects invalid minSeverity values', () => {

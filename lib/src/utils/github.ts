@@ -13,7 +13,7 @@ import type {
 } from '../types/index.js';
 import { CircuitBreaker } from './circuit-breaker.js';
 import { getLabelColor } from './label-color.js';
-import { withRetry, withRetryAndTimeout } from './retry.js';
+import { withRetry } from './retry.js';
 import type { RetryOptions } from './retry.js';
 import { buildReviewBody } from './review-body.js';
 import { gatherReviewThread } from './review-thread.js';

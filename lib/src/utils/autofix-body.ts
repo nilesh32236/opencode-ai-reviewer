@@ -26,7 +26,7 @@ export const FIX_MARKER = '<!-- autofix-applied -->';
  * @param current - Optional current review result.
  * @returns A markdown string with the review status and issue summary.
  */
-export function buildReviewBody(
+export function buildAutofixStatusBody(
   history: IterationRecord[],
   maxIterations: number,
   phase: 'reviewing' | 'approved' | 'no-changes' | 'max-iterations',
