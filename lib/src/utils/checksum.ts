@@ -1,6 +1,5 @@
 import * as crypto from 'crypto';
 import * as fs from 'fs';
-import * as core from '@actions/core';
 
 /**
  * Compute the SHA-256 hex digest of a file by streaming its contents.

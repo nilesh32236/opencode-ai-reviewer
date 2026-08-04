@@ -50,12 +50,21 @@ describe('prompt-builder', () => {
   });
 
   it('injects learning lessons when provided', () => {
+    const prompt = buildReviewPrompt({ maxFilesPerBatch: 3 }, '## PR Context\n...', {
+      lessons: ['Always handle async errors', 'Use strict equality checks'],
+    });
+    expect(prompt).toContain('## Historical Lessons');
+    expect(prompt).toContain('Always handle async errors');
+  });
+
+  it('supports the legacy string[] lessons shorthand', () => {
     const prompt = buildReviewPrompt({ maxFilesPerBatch: 3 }, '## PR Context\n...', [
       'Always handle async errors',
       'Use strict equality checks',
     ]);
     expect(prompt).toContain('## Historical Lessons');
     expect(prompt).toContain('Always handle async errors');
+    expect(prompt).toContain('Use strict equality checks');
   });
 
   it('buildFixPrompt returns a non-empty string', () => {
@@ -229,16 +238,7 @@ describe('prompt-builder', () => {
         },
       ];
 
-      const prompt = buildReviewPrompt(
-        { projectContext: '' },
-        'PR context',
-        [],
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        linterResults,
-      );
+      const prompt = buildReviewPrompt({ projectContext: '' }, 'PR context', { linterResults });
 
       expect(prompt).toContain('## Linter Results');
       expect(prompt).toContain('eslint');
@@ -255,16 +255,9 @@ describe('prompt-builder', () => {
     });
 
     it('omits linter results section when empty array', () => {
-      const prompt = buildReviewPrompt(
-        { projectContext: '' },
-        'PR context',
-        [],
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        [],
-      );
+      const prompt = buildReviewPrompt({ projectContext: '' }, 'PR context', {
+        linterResults: [],
+      });
 
       expect(prompt).not.toContain('## Linter Results');
     });
@@ -291,16 +284,7 @@ describe('prompt-builder', () => {
         },
       ];
 
-      const prompt = buildReviewPrompt(
-        { projectContext: '' },
-        'PR context',
-        [],
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        linterResults,
-      );
+      const prompt = buildReviewPrompt({ projectContext: '' }, 'PR context', { linterResults });
 
       // First 50 findings shown
       expect(prompt).toContain('finding 1');

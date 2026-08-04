@@ -4,9 +4,6 @@ export type { LearningRepository };
 
 /**
  * Low-level database adapter interface.
- * @deprecated Use `LearningRepository` instead. This interface will be removed
- * in a future release. Callers should migrate to `LearningRepository` methods
- * directly. Tracked in #123.
  */
 export interface DbAdapter {
   /**

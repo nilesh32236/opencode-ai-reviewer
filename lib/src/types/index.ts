@@ -1053,6 +1053,8 @@ export interface PromptConfig {
     customRules?: string[];
     /** Post findings as inline review comments (default: true) */
     inline?: boolean;
+    /** Suppress low-confidence findings from review output (default: false) */
+    suppressLowConfidence?: boolean;
     /** Patterns to exclude from review */
     excludePatterns?: string[];
     /** Token budget configuration for smart context allocation */

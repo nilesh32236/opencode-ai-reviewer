@@ -257,6 +257,18 @@ fix:
       expect(result.review?.inline).toBeUndefined();
     });
 
+    it('passes through review.suppressLowConfidence', () => {
+      const result = validateConfig({
+        review: { suppressLowConfidence: true },
+      } as never);
+      expect(result.review?.suppressLowConfidence).toBe(true);
+    });
+
+    it('skips review.suppressLowConfidence when not a boolean', () => {
+      const result = validateConfig({ review: { suppressLowConfidence: 'yes' } } as never);
+      expect(result.review?.suppressLowConfidence).toBeUndefined();
+    });
+
     it('passes through review.budget values', () => {
       const result = validateConfig({
         review: { budget: { enabled: false, summaryThreshold: 200, splitThreshold: 800 } },
@@ -868,6 +880,20 @@ fix:
       expect(config?.review?.enableMetaVerification).toBe(true);
       expect(core.warning).not.toHaveBeenCalledWith(
         expect.stringContaining('Unknown config key "review.enableMetaVerification"'),
+      );
+    });
+
+    it('loads review.suppressLowConfidence end-to-end', () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.opencode-reviewer.yml'),
+        `review:
+  suppressLowConfidence: true
+`,
+      );
+      const config = loadConfig(tmpDir);
+      expect(config?.review?.suppressLowConfidence).toBe(true);
+      expect(core.warning).not.toHaveBeenCalledWith(
+        expect.stringContaining('Unknown config key "review.suppressLowConfidence"'),
       );
     });
 

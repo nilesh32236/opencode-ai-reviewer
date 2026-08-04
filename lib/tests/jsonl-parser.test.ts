@@ -9,7 +9,6 @@ import {
   stripMarkdownFences,
 } from '../src/jsonl-parser.js';
 import type { ReviewResult } from '../src/types/index.js';
-import { parseReviewOutput } from '../src/types/schemas.js';
 import { mulberry32, randomBytes } from './helpers/seeded-random.js';
 
 /**
@@ -740,62 +739,9 @@ describe('jsonl-parser', () => {
       );
     });
 
-    it('manual parser and Zod parser agree on valid entries', () => {
-      fc.assert(
-        fc.property(fc.array(validEntryArb, { minLength: 1, maxLength: 40 }), (entries) => {
-          const jsonl = entries.map((e) => JSON.stringify(e)).join('\n');
-          const manual = parseJsonlString(jsonl);
-          const zod = parseReviewOutput(jsonl);
-
-          expect(zod.invalid).toHaveLength(0);
-          expect(manual.failedLines).toBe(0);
-
-          // summary — the manual parser trims text, Zod preserves it verbatim
-          expect(manual.summary).toBe(zod.summary?.trim() ?? '');
-
-          // verdict — compare the fields both parsers expose
-          expect(manual.verdict.ready).toBe(zod.verdict?.ready ?? false);
-          expect(manual.verdict.reasoning).toBe(zod.verdict?.reasoning.trim() ?? '');
-
-          // strengths — the manual parser normalizes optional file/line and trims message
-          expect(manual.strengths).toHaveLength(zod.strengths.length);
-          manual.strengths.forEach((strength, i) => {
-            expect(strength.message).toBe(zod.strengths[i].message.trim());
-            expect(strength.file).toBe(zod.strengths[i].file ?? '');
-            expect(strength.line).toBe(zod.strengths[i].line ?? 0);
-          });
-
-          // issues — the manual parser trims file; compare the shared finding fields
-          expect(manual.issues).toHaveLength(zod.issues.length);
-          manual.issues.forEach((issue, i) => {
-            expect(issue.severity).toBe(zod.issues[i].severity);
-            expect(issue.file).toBe(zod.issues[i].file.trim());
-            expect(issue.line).toBe(zod.issues[i].line);
-            expect(issue.message).toBe(zod.issues[i].message);
-            expect(issue.confidence).toBe(zod.issues[i].confidence);
-            expect(issue.suggestion).toBe(zod.issues[i].suggestion);
-          });
-
-          // executive_summary — both parsers apply the same lenient defaults
-          if (zod.executiveSummary) {
-            expect(manual.executiveSummary).toBeDefined();
-            expect(manual.executiveSummary?.purpose).toBe(zod.executiveSummary.purpose);
-            expect(manual.executiveSummary?.riskLevel).toBe(zod.executiveSummary.riskLevel);
-            expect(manual.executiveSummary?.riskRationale).toBe(zod.executiveSummary.riskRationale);
-            expect(manual.executiveSummary?.breakingChanges).toEqual(
-              zod.executiveSummary.breakingChanges,
-            );
-          }
-        }),
-        { seed: PROPERTY_SEED, numRuns: 50 },
-      );
-    });
-
-    it('documents the strictness gap on boundary inputs', () => {
-      // validEntryArb only samples the overlap region both parsers accept, so the
-      // strictness gap is never exercised by the property oracle above. These
-      // explicit assertions lock down the intentional asymmetry: the manual parser
-      // accepts shorter text that the Zod parseReviewOutput rejects.
+    it('accepts boundary-short text fields (non-empty, not min-length)', () => {
+      // The manual parser accepts any non-empty text/message; the strict
+      // min-length rules belonged to the removed zod parseReviewOutput.
       const boundaryCases = [
         '{"type":"summary","text":"short"}',
         '{"type":"verdict","ready":true}',
@@ -805,9 +751,6 @@ describe('jsonl-parser', () => {
 
       for (const line of boundaryCases) {
         expect(parseJsonlString(line).failedLines).toBe(0);
-        const zod = parseReviewOutput(line);
-        expect(zod.valid).toHaveLength(0);
-        expect(zod.invalid).toHaveLength(1);
       }
     });
   });
@@ -820,7 +763,6 @@ describe('jsonl-parser', () => {
       for (let i = 0; i < 200; i++) {
         const input = randomBytes(rand, Math.floor(rand() * 4096));
         expect(() => parseJsonlString(input)).not.toThrow();
-        expect(() => parseReviewOutput(input)).not.toThrow();
       }
     });
 
@@ -851,7 +793,6 @@ describe('jsonl-parser', () => {
         const cut = Math.floor(rand() * validJsonl.length);
         const truncated = validJsonl.slice(0, cut);
         expect(() => parseJsonlString(truncated)).not.toThrow();
-        expect(() => parseReviewOutput(truncated)).not.toThrow();
       }
     });
 
@@ -873,7 +814,6 @@ describe('jsonl-parser', () => {
         }
         const input = parts.join('\n');
         expect(() => parseJsonlString(input)).not.toThrow();
-        expect(() => parseReviewOutput(input)).not.toThrow();
       }
     });
   });

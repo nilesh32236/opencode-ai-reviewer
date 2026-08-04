@@ -13,9 +13,9 @@ import {
   type IterationRecord,
   REVIEW_MARKER,
   buildAutofixPRBody,
+  buildAutofixStatusBody,
   buildFixBody,
   buildReadyBody,
-  buildReviewBody,
   markAnalysisReady,
   parseAnalysisPlan,
   postBlockingQuestions,
@@ -544,7 +544,7 @@ export async function runAutofixLoop(
       await gh.postOrUpdateComment(
         prNumber,
         REVIEW_MARKER,
-        buildReviewBody(history, config.maxIterations, 'reviewing', result),
+        buildAutofixStatusBody(history, config.maxIterations, 'reviewing', result),
       );
     } catch (err) {
       core.warning(
@@ -592,7 +592,7 @@ export async function runAutofixLoop(
         await gh.postOrUpdateComment(
           prNumber,
           REVIEW_MARKER,
-          buildReviewBody(history, config.maxIterations, 'no-changes', result),
+          buildAutofixStatusBody(history, config.maxIterations, 'no-changes', result),
         );
       } catch (err) {
         core.warning(
@@ -641,7 +641,7 @@ export async function runAutofixLoop(
         await gh.postOrUpdateComment(
           prNumber,
           REVIEW_MARKER,
-          buildReviewBody(history, config.maxIterations, 'reviewing', result),
+          buildAutofixStatusBody(history, config.maxIterations, 'reviewing', result),
         );
       } catch (postErr) {
         core.warning(
@@ -731,7 +731,7 @@ export async function runAutofixLoop(
       try {
         await gh.createComment(
           prNumber,
-          `<!-- autofix-max-iterations -->\n\n${buildReviewBody(history, config.maxIterations, 'max-iterations')}`,
+          `<!-- autofix-max-iterations -->\n\n${buildAutofixStatusBody(history, config.maxIterations, 'max-iterations')}`,
         );
       } catch (err) {
         core.warning(

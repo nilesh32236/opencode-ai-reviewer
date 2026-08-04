@@ -193,7 +193,7 @@ export {
   IterationRecord,
   REVIEW_MARKER,
   FIX_MARKER,
-  buildReviewBody,
+  buildAutofixStatusBody,
   buildFixBody,
   buildReadyBody,
 } from './utils/autofix-body.js';
