@@ -26,7 +26,7 @@ $(cat "$BODY_FILE")"
 
 # Find existing comment with this marker
 EXISTING_ID=$(gh api "repos/${REPO}/issues/${ISSUE_NUM}/comments" \
-  --jq ".[] | select(.body | startswith(\"${MARKER}\")) | .id" | head -1)
+  | jq --arg marker "$MARKER" '.[] | select(.body | startswith($marker)) | .id' | head -1)
 
 if [ -n "$EXISTING_ID" ]; then
   jq -n --rawfile body <(echo "$MARKED_BODY") '{body: $body}' | \
