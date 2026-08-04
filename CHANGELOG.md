@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.35] — 2026-08-04
+
+
+### Fixed
+
+- address issue #173 (#339) (#173
+#339)
+
+### Changed
+
+- [Autofix] MCP servers receive GITHUB_TOKEN and API keys as environment variables (#338) (#338)
+
+[v1.6.35]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.34...v1.6.35
+
 ## [v1.6.34] — 2026-08-04
 
 
