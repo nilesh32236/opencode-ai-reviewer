@@ -29,6 +29,8 @@ const {
   mockCreatePR,
   mockGetDefaultBranch,
   mockGetIssue,
+  mockExec,
+  mockGetExecOutput,
 } = vi.hoisted(() => {
   const _mockGetInput = vi.fn();
   const _mockSetOutput = vi.fn();
@@ -56,6 +58,13 @@ const {
   const _mockCreatePR = vi.fn();
   const _mockGetDefaultBranch = vi.fn();
   const _mockGetIssue = vi.fn();
+  const _mockExec = vi.fn().mockResolvedValue(0);
+  const _mockGetExecOutput = vi.fn().mockImplementation(async (cmd: string, args: string[]) => {
+    if (cmd === 'git' && args.includes('status')) {
+      return { exitCode: 0, stdout: 'M src/fix.ts', stderr: '' };
+    }
+    return { exitCode: 0, stdout: '', stderr: '' };
+  });
   return {
     mockGetInput: _mockGetInput,
     mockSetOutput: _mockSetOutput,
@@ -83,6 +92,8 @@ const {
     mockCreatePR: _mockCreatePR,
     mockGetDefaultBranch: _mockGetDefaultBranch,
     mockGetIssue: _mockGetIssue,
+    mockExec: _mockExec,
+    mockGetExecOutput: _mockGetExecOutput,
   };
 });
 
@@ -106,13 +117,8 @@ vi.mock('@actions/github', () => ({
 }));
 
 vi.mock('@actions/exec', () => ({
-  exec: vi.fn().mockResolvedValue(0),
-  getExecOutput: vi.fn().mockImplementation(async (cmd: string, args: string[]) => {
-    if (cmd === 'git' && args.includes('status')) {
-      return { exitCode: 0, stdout: 'M src/fix.ts', stderr: '' };
-    }
-    return { exitCode: 0, stdout: '', stderr: '' };
-  }),
+  exec: mockExec,
+  getExecOutput: mockGetExecOutput,
 }));
 
 import { runAutofixLoop, runFixIssue } from '../src/fix.js';
@@ -393,7 +399,15 @@ describe('runFixIssue', () => {
     mockEnsureLabels.mockResolvedValue(undefined);
     mockCreatePR.mockResolvedValue({ number: 99, url: 'https://github.com/owner/repo/pull/99' });
     mockAddLabels.mockResolvedValue(undefined);
+    mockGetExecOutput.mockImplementation(async (cmd: string, args: string[]) => {
+      if (cmd === 'git' && args.includes('status')) {
+        return { exitCode: 0, stdout: 'M src/fix.ts', stderr: '' };
+      }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    });
   });
+
+  const botEmail = 'opencode-ai-reviewer[bot]@users.noreply.github.com';
 
   it('creates PR from issue and adds autofix label to the created PR', async () => {
     await runFixIssue(
@@ -402,7 +416,7 @@ describe('runFixIssue', () => {
       mockEngine,
       mockGh,
       'owner/repo',
-      'token',
+      botEmail,
     );
 
     expect(mockCreatePR).toHaveBeenCalledWith(
@@ -414,5 +428,114 @@ describe('runFixIssue', () => {
     expect(mockAddLabels).toHaveBeenCalledWith(99, ['autofix']);
     expect(mockSetOutput).toHaveBeenCalledWith('pr_url', 'https://github.com/owner/repo/pull/99');
     expect(mockSetOutput).toHaveBeenCalledWith('changes_made', 'true');
+  });
+
+  it('recreates the autofix branch from the default branch when an existing branch was authored by someone else', async () => {
+    // An `origin/autofix/issue-42` ref exists, but its tip commit was authored
+    // by a non-bot user. The branch must not be reused: an existing branch under
+    // that deterministic name may have been seeded by any collaborator, so it is
+    // recreated from the default branch instead.
+    mockGetExecOutput.mockImplementation(async (cmd: string, args: string[]) => {
+      if (cmd === 'git' && args.includes('status')) {
+        return { exitCode: 0, stdout: 'M src/fix.ts', stderr: '' };
+      }
+      if (cmd === 'git' && args.includes('log')) {
+        return { exitCode: 0, stdout: 'attacker@example.com', stderr: '' };
+      }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    });
+
+    await runFixIssue(
+      makeInputs({ mode: 'fix' }),
+      makeConfig({ timeoutMinutes: 20 }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+      botEmail,
+    );
+
+    expect(mockExec).toHaveBeenCalledWith('git', [
+      'checkout',
+      '-B',
+      'autofix/issue-42',
+      'origin/main',
+    ]);
+    // The recreated branch deliberately replaces any remote content, so the push
+    // uses plain --force (never failing with "stale info" when the runner's
+    // shallow checkout has no tracking ref for the branch).
+    expect(mockExec).toHaveBeenCalledWith('git', ['push', 'origin', 'autofix/issue-42', '--force']);
+    expect(mockCreatePR).toHaveBeenCalled();
+  });
+
+  it('recreates the autofix branch from the default branch when no existing branch is present', async () => {
+    // Self-contained mock: no existing `origin/autofix/issue-42` ref, so `git
+    // log` fails and the branch is recreated from the default branch.
+    mockGetExecOutput.mockImplementation(async (cmd: string, args: string[]) => {
+      if (cmd === 'git' && args.includes('status')) {
+        return { exitCode: 0, stdout: 'M src/fix.ts', stderr: '' };
+      }
+      if (cmd === 'git' && args.includes('log')) {
+        return { exitCode: 1, stdout: '', stderr: 'fatal: ambiguous argument' };
+      }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    });
+
+    await runFixIssue(
+      makeInputs({ mode: 'fix' }),
+      makeConfig({ timeoutMinutes: 20 }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+      botEmail,
+    );
+
+    expect(mockExec).toHaveBeenCalledWith('git', [
+      'checkout',
+      '-B',
+      'autofix/issue-42',
+      'origin/main',
+    ]);
+    expect(mockExec).toHaveBeenCalledWith('git', ['push', 'origin', 'autofix/issue-42', '--force']);
+    expect(mockCreatePR).toHaveBeenCalled();
+  });
+
+  it('reuses the existing autofix branch when its tip is authored by the bot', async () => {
+    // The `origin/autofix/issue-42` tip commit is authored by the configured bot
+    // email (the stable bot identity from `git_user_email` or the fixed bot
+    // fallback). Reusing it lets a re-triggered /fix update the existing PR
+    // instead of resetting it; --force-with-lease guards the push against a
+    // concurrent remote update.
+    mockGetExecOutput.mockImplementation(async (cmd: string, args: string[]) => {
+      if (cmd === 'git' && args.includes('status')) {
+        return { exitCode: 0, stdout: 'M src/fix.ts', stderr: '' };
+      }
+      if (cmd === 'git' && args.includes('log')) {
+        return { exitCode: 0, stdout: botEmail, stderr: '' };
+      }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    });
+
+    await runFixIssue(
+      makeInputs({ mode: 'fix' }),
+      makeConfig({ timeoutMinutes: 20 }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+      botEmail,
+    );
+
+    expect(mockExec).toHaveBeenCalledWith('git', [
+      'checkout',
+      '-B',
+      'autofix/issue-42',
+      'origin/autofix/issue-42',
+    ]);
+    expect(mockExec).toHaveBeenCalledWith('git', [
+      'push',
+      'origin',
+      'autofix/issue-42',
+      '--force-with-lease',
+    ]);
+    expect(mockCreatePR).toHaveBeenCalled();
   });
 });

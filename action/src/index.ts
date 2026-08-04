@@ -10,6 +10,7 @@ import {
   GitHubHelper,
   GitLabAdapter,
   LearningStore,
+  Logger,
   type MCPServerConfig,
   MCPServerConfigSchema,
   type PlatformAdapter,
@@ -45,12 +46,14 @@ class StateCacheManager {
   private readonly cacheKeyPrefix: string;
   private readonly repo: string;
   private readonly branch: string;
+  private readonly logger: Logger;
 
   constructor(cacheKeyPrefix: string, repo?: string, branch?: string) {
     this.cacheKeyPrefix = cacheKeyPrefix;
     this.stateDir = path.resolve(process.cwd(), '.opencode');
     this.repo = repo || `${github.context.repo.owner}/${github.context.repo.repo}`;
     this.branch = branch || github.context.ref.replace('refs/heads/', '');
+    this.logger = new Logger('StateCache', { repo: this.repo, branch: this.branch });
   }
 
   private getLearningDbMtime(): number {
@@ -80,7 +83,12 @@ class StateCacheManager {
         core.info('No cached learning state found — starting fresh');
       }
     } catch (error) {
-      core.warning(`Failed to restore learning state cache: ${error}`);
+      const message = `Failed to restore learning state cache: ${error}`;
+      core.warning(sanitize(message));
+      this.logger.warn('Failed to restore learning state cache', {
+        operation: 'cache.restore',
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
 
     this.learningDbMtimeMs = this.getLearningDbMtime();
@@ -109,7 +117,12 @@ class StateCacheManager {
       await saveCache([this.stateDir], cacheKey);
       core.info(`Saved learning state to cache key: ${cacheKey}`);
     } catch (error) {
-      core.warning(`Failed to save learning state cache: ${error}`);
+      const message = `Failed to save learning state cache: ${error}`;
+      core.warning(sanitize(message));
+      this.logger.warn('Failed to save learning state cache', {
+        operation: 'cache.save',
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 }
@@ -159,11 +172,19 @@ async function run(): Promise<void> {
       (platform === 'gitlab'
         ? process.env.GITLAB_USER_LOGIN || 'opencode-reviewer[bot]'
         : process.env.GITHUB_ACTOR || 'opencode-ai-reviewer[bot]');
+    // Pin the commit author email to a stable bot identity (overridable via the
+    // `git_user_email` input). Deriving it from the triggering actor would make
+    // the autofix branch-reuse gate in `runFixIssue` depend on which human
+    // triggered `/fix`, so a re-trigger by a different actor would discard the
+    // bot's in-progress branch. The fixed bot email keeps the comparison stable
+    // across actors and makes the bot's own autofix commits consistently
+    // attributed. This is a reuse heuristic, not a security boundary — git
+    // author emails are self-asserted and forgeable.
     const gitEmail =
       core.getInput('git_user_email') ||
       (platform === 'gitlab'
-        ? `${process.env.GITLAB_USER_LOGIN || 'opencode-reviewer[bot]'}@noreply.gitlab.com`
-        : `${process.env.GITHUB_ACTOR || 'opencode-ai-reviewer[bot]'}@users.noreply.github.com`);
+        ? 'opencode-reviewer[bot]@noreply.gitlab.com'
+        : 'opencode-ai-reviewer[bot]@users.noreply.github.com');
     configureGit(gitUser, gitEmail, token);
 
     let mcpServers: MCPServerConfig[] = [];
@@ -176,7 +197,12 @@ async function run(): Promise<void> {
           if (result.success) {
             mcpServers = result.data;
           } else {
-            core.warning(`Invalid MCP servers config: ${result.error.message}`);
+            const message = `Invalid MCP servers config: ${result.error.message}`;
+            core.warning(sanitize(message));
+            new Logger('MCP').warn('Invalid MCP servers config', {
+              operation: 'mcp.validation',
+              error: result.error.message,
+            });
           }
         } catch {
           core.warning('Invalid MCP servers JSON, using defaults');
@@ -389,7 +415,7 @@ async function run(): Promise<void> {
             if (isPr) {
               await runAutofixLoop(inputs, config, engine, gh, repo, token);
             } else if (issueNum && !isPr) {
-              await runFixIssue(inputs, config, engine, gh, repo, token);
+              await runFixIssue(inputs, config, engine, gh, repo, gitEmail);
             } else if (inputs.enableFix) {
               await runAutofixLoop(inputs, config, engine, gh, repo, token);
             } else {
@@ -419,7 +445,7 @@ async function run(): Promise<void> {
         try {
           await learningStore.close();
         } catch (err) {
-          core.warning(`Failed to close learning store: ${err}`);
+          core.warning(sanitize(`Failed to close learning store: ${err}`));
         }
       }
     }

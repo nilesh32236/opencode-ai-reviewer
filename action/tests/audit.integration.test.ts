@@ -245,6 +245,161 @@ describe('runAudit (action wrapper)', () => {
     );
   });
 
+  it('slugs audit categories containing reserved characters before building query and labels', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'my audit&prompt.md'), '# Custom audit prompt');
+    mockGetInput.mockImplementation((name: string) => {
+      if (name === 'audit-prompts-dir') {
+        return tmpDir;
+      }
+      if (name === 'audit-prompt-name') {
+        return 'my audit&prompt';
+      }
+      return '';
+    });
+    mockCreateIssue.mockResolvedValue({
+      number: 50,
+      url: 'https://github.com/owner/repo/issues/50',
+    });
+
+    await runAudit(
+      makeInputs({ auditCreateIssues: true }),
+      makeConfig({
+        audit: {
+          promptsDir: tmpDir,
+          targetDirs: [],
+          autoFix: true,
+          triggerLabel: 'autofix-trigger',
+          issueSeverityThreshold: 'important',
+        },
+      } as AgentConfig),
+      mockEngine,
+      mockGh,
+    );
+
+    // The reserved characters are normalized to hyphens and a deterministic
+    // hash of the original category is appended so colliding slugs stay unique.
+    expect(mockPaginate).toHaveBeenCalledWith(
+      '/issues?state=open&labels=audit:my-audit-prompt-jexvst',
+      expect.anything(),
+    );
+    expect(mockCreateIssue).toHaveBeenCalledWith(
+      expect.stringContaining('[Audit:my-audit-prompt-jexvst]'),
+      expect.any(String),
+      expect.arrayContaining(['audit:my-audit-prompt-jexvst']),
+    );
+  });
+
+  it('keeps distinct categories that normalize to the same slug separate', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'auth & access.md'), '# Auth access prompt');
+    fs.writeFileSync(path.join(tmpDir, 'auth # access.md'), '# Auth access prompt 2');
+    mockCreateIssue.mockResolvedValue({
+      number: 60,
+      url: 'https://github.com/owner/repo/issues/60',
+    });
+
+    const auditConfig = makeConfig({
+      audit: {
+        promptsDir: tmpDir,
+        targetDirs: [],
+        autoFix: true,
+        triggerLabel: 'autofix-trigger',
+        issueSeverityThreshold: 'important',
+      },
+    } as AgentConfig);
+
+    mockGetInput.mockImplementation((name: string) => {
+      if (name === 'audit-prompts-dir') {
+        return tmpDir;
+      }
+      if (name === 'audit-prompt-name') {
+        return 'auth & access';
+      }
+      return '';
+    });
+    await runAudit(makeInputs({ auditCreateIssues: true }), auditConfig, mockEngine, mockGh);
+
+    mockGetInput.mockImplementation((name: string) => {
+      if (name === 'audit-prompts-dir') {
+        return tmpDir;
+      }
+      if (name === 'audit-prompt-name') {
+        return 'auth # access';
+      }
+      return '';
+    });
+    await runAudit(makeInputs({ auditCreateIssues: true }), auditConfig, mockEngine, mockGh);
+
+    // "auth & access" and "auth # access" both normalize to "auth-access", so
+    // the deterministic hash suffix must keep them from sharing a label, query,
+    // title prefix, or issue.
+    expect(mockPaginate).toHaveBeenCalledWith(
+      '/issues?state=open&labels=audit:auth-access-bvdrze',
+      expect.anything(),
+    );
+    expect(mockPaginate).toHaveBeenCalledWith(
+      '/issues?state=open&labels=audit:auth-access-rb556v',
+      expect.anything(),
+    );
+    expect(mockCreateIssue).toHaveBeenCalledWith(
+      expect.stringContaining('[Audit:auth-access-bvdrze]'),
+      expect.any(String),
+      expect.arrayContaining(['audit:auth-access-bvdrze']),
+    );
+    expect(mockCreateIssue).toHaveBeenCalledWith(
+      expect.stringContaining('[Audit:auth-access-rb556v]'),
+      expect.any(String),
+      expect.arrayContaining(['audit:auth-access-rb556v']),
+    );
+  });
+
+  it('truncates an audit category that is already a valid slug but exceeds the label limit', async () => {
+    // A prompt name that is already a valid lowercase slug but longer than 44
+    // characters must still be truncated, otherwise `audit:` + slug exceeds
+    // GitHub's 50-character label limit and issue creation fails with a 422.
+    const longName = `${'security-conventions'.repeat(3)}check`; // 60-char valid slug
+    fs.writeFileSync(path.join(tmpDir, `${longName}.md`), '# Long audit prompt');
+    mockGetInput.mockImplementation((name: string) => {
+      if (name === 'audit-prompts-dir') {
+        return tmpDir;
+      }
+      if (name === 'audit-prompt-name') {
+        return longName;
+      }
+      return '';
+    });
+    mockCreateIssue.mockResolvedValue({
+      number: 61,
+      url: 'https://github.com/owner/repo/issues/61',
+    });
+
+    await runAudit(
+      makeInputs({ auditCreateIssues: true }),
+      makeConfig({
+        audit: {
+          promptsDir: tmpDir,
+          targetDirs: [],
+          autoFix: true,
+          triggerLabel: 'autofix-trigger',
+          issueSeverityThreshold: 'important',
+        },
+      } as AgentConfig),
+      mockEngine,
+      mockGh,
+    );
+
+    const truncated = longName.slice(0, 44);
+    expect(truncated.length).toBe(44);
+    expect(mockPaginate).toHaveBeenCalledWith(
+      `/issues?state=open&labels=audit:${truncated}`,
+      expect.anything(),
+    );
+    expect(mockCreateIssue).toHaveBeenCalledWith(
+      expect.stringContaining(`[Audit:${truncated}]`),
+      expect.any(String),
+      expect.arrayContaining([`audit:${truncated}`]),
+    );
+  });
+
   it('skips issue creation when no critical or important findings exist', async () => {
     mockRunAudit.mockResolvedValue({
       summary: 'All good',

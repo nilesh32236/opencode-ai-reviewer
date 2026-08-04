@@ -82,3 +82,33 @@ describe('parseInputs() model validation', () => {
     expect(inputs.reviewModel).toBe('custom-provider/custom-model');
   });
 });
+
+describe('parseInputs() enable_mcp default', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('disables MCP by default (opt-in)', () => {
+    setInputs(BASE_INPUTS);
+    const inputs = parseInputs();
+    expect(inputs.enableMCP).toBe(false);
+  });
+
+  it('enables MCP only when enable_mcp is explicitly "true"', () => {
+    setInputs({ ...BASE_INPUTS, enable_mcp: 'true' });
+    const inputs = parseInputs();
+    expect(inputs.enableMCP).toBe(true);
+  });
+
+  it('treats any non-"true" value as disabled', () => {
+    setInputs({ ...BASE_INPUTS, enable_mcp: 'yes' });
+    const inputs = parseInputs();
+    expect(inputs.enableMCP).toBe(false);
+  });
+
+  it('accepts case-insensitive and trimmed "true" values', () => {
+    setInputs({ ...BASE_INPUTS, enable_mcp: ' TRUE ' });
+    const inputs = parseInputs();
+    expect(inputs.enableMCP).toBe(true);
+  });
+});

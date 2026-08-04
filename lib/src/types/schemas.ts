@@ -292,7 +292,7 @@ export const AgentConfigSchema = z.object({
   batchSize: z.number().int().min(1).max(10).default(3),
   maxLinesPerFile: z.number().int().min(0).max(5000).default(200),
   maxIterations: z.number().int().min(1).max(10).default(3),
-  enableMCP: z.boolean().default(true),
+  enableMCP: z.boolean().default(false),
   mcpServers: z.array(MCPServerConfigSchema).default([]),
   projectContext: ProjectContextConfigSchema.default({
     description: '',

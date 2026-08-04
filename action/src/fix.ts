@@ -159,7 +159,9 @@ export async function runFix(
  * @param engine - Review engine instance.
  * @param gh - GitHub API helper.
  * @param _repo - Repository string (owner/repo).
- * @param _token - GitHub authentication token.
+ * @param gitEmail - Configured bot commit author email, used to verify that an
+ *   existing `autofix/issue-N` branch tip was authored by this bot before it is
+ *   reused (see `configureGit`).
  */
 export async function runFixIssue(
   inputs: ActionInputs,
@@ -167,7 +169,7 @@ export async function runFixIssue(
   engine: ReviewEngine,
   gh: PlatformAdapter,
   _repo: string,
-  _token: string,
+  gitEmail: string,
 ): Promise<void> {
   const issueNumber = await resolvePrNumber();
   if (!issueNumber) {
@@ -190,16 +192,33 @@ export async function runFixIssue(
   const branchName = `autofix/issue-${issueNumber}`;
 
   const defaultBranch = await gh.getDefaultBranch();
-  const existingRef = await exec
-    .getExecOutput('git', ['rev-parse', '--verify', `origin/${branchName}`], {
+
+  // Reuse an existing `origin/${branchName}` only when its tip commit was
+  // authored by this bot (the configured git email). Any collaborator with push
+  // access can create a branch under the deterministic `autofix/issue-N` name,
+  // so reusing an unverified branch would make attacker-seeded content the base
+  // of the fix PR (which is force-pushed below). A bot-authored tip is safe to
+  // reuse, which preserves the update-PR flow when `/fix` is re-triggered
+  // before the previous autofix PR merges. Any other tip (or no existing
+  // branch) is recreated from the repository's default branch. `-B` also
+  // force-resets any stale local branch of the same name instead of failing,
+  // which keeps re-triggered /fix runs robust on self-hosted runners. Note this
+  // email check is a stale-branch-reuse heuristic, not a security boundary —
+  // git author emails are self-asserted and forgeable, so an attacker can pass
+  // it; the recreate-from-default path below is the actual security control.
+  let reuseBotBranch = false;
+  const tipEmail = await exec
+    .getExecOutput('git', ['log', '-1', '--format=%ae', `origin/${branchName}`], {
       ignoreReturnCode: true,
     })
-    .catch(() => ({ exitCode: 1, stdout: '', stderr: '' }));
+    .then((r) => (r.exitCode === 0 ? r.stdout.trim() : ''))
+    .catch(() => '');
 
-  if (existingRef.exitCode === 0) {
+  if (tipEmail === gitEmail) {
+    reuseBotBranch = true;
     await exec.exec('git', ['checkout', '-B', branchName, `origin/${branchName}`]);
   } else {
-    await exec.exec('git', ['checkout', '-b', branchName, `origin/${defaultBranch}`]);
+    await exec.exec('git', ['checkout', '-B', branchName, `origin/${defaultBranch}`]);
   }
 
   let issueContext = await gh.gatherContext({ issueNumber });
@@ -312,7 +331,15 @@ export async function runFixIssue(
   await exec.exec('git', ['add', '-A']);
   await exec.exec('git', ['commit', '-m', `fix: address issue #${issueNumber}`]);
   try {
-    await exec.exec('git', ['push', 'origin', branchName, '--force-with-lease']);
+    if (reuseBotBranch) {
+      // Reusing a bot-authored branch: guard against a concurrent remote update.
+      await exec.exec('git', ['push', 'origin', branchName, '--force-with-lease']);
+    } else {
+      // Recreating from the trusted default branch: the remote tip is being
+      // deliberately replaced, so plain --force avoids a "stale info" rejection
+      // on runners whose shallow checkout has no tracking ref for the branch.
+      await exec.exec('git', ['push', 'origin', branchName, '--force']);
+    }
   } catch (err) {
     core.warning(sanitize(`Git push failed: ${err instanceof Error ? err.message : err}`));
     core.setFailed(sanitize(`Git push failed: ${err instanceof Error ? err.message : err}`));

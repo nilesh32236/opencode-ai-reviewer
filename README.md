@@ -115,7 +115,7 @@ Trigger it manually via the Actions tab (run the `setup.yml` workflow with *work
 | `max_files_per_batch`    | `3`                                  | Files per sub-agent batch                      |
 | `max_lines_per_file`     | `500`                                | Max lines per file included in context         |
 | `project_context`        | —                                    | Project description for review prompts         |
-| `enable_mcp`             | `true`                               | Enable MCP servers for context enrichment      |
+| `enable_mcp`             | `false`                              | Enable MCP servers for context enrichment. **Security:** any enabled MCP server receives `GITHUB_TOKEN` as an env var and is fetched from npm at runtime — only configure trusted servers via the `mcp-servers` input. |
 | `include_strengths`      | `true`                               | Include positive feedback in output            |
 | `review_comment_summary` | `true`                               | Post a summary comment on the PR               |
 | `review_inline`          | `true`                               | Post findings as inline review comments on the PR diff (set to `false` for summary-only)
@@ -260,6 +260,23 @@ These values can also be set via environment variables (`CONVERSATION_MAX_TURNS`
 ## MCP Server Configuration
 
 The reviewer uses MCP (Model Context Protocol) servers for context enrichment. Both local (stdio) and remote (HTTP SSE) servers are supported.
+
+### Action Input (`mcp-servers`)
+
+When running as a GitHub Action, trusted servers can be configured directly via the `mcp-servers` input (used only when `enable_mcp: 'true'`) as a JSON array, e.g.:
+
+```yaml
+- uses: nilesh32236/opencode-ai-reviewer@v1
+  with:
+    enable_mcp: 'true'
+    mcp-servers: |
+      [
+        { "name": "context7", "type": "local", "command": ["npx", "-y", "--quiet", "@upstash/context7-mcp"] },
+        { "name": "my-remote-mcp", "type": "remote", "url": "https://mcp.example.com/sse", "environment": { "Authorization": "Bearer ${MCP_AUTH_TOKEN}" } }
+      ]
+```
+
+Each entry is validated against the `MCPServerConfig` schema (`name`, `type` `"local"`/`"remote"`, `command[]`, `url`, `environment`, `timeoutMs`, `allowedTools[]`). **SECURITY:** any enabled server receives `GITHUB_TOKEN` as an env var and is fetched from npm at runtime — only configure trusted servers.
 
 ### Local Servers
 

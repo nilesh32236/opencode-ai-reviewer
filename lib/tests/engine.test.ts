@@ -239,6 +239,7 @@ describe('ReviewEngine', () => {
     it('returns review result on success', async () => {
       const engWithMCP = new ReviewEngine(
         makeConfig({
+          enableMCP: true,
           mcpServers: [{ name: 'context7', type: 'local', command: ['node', 'server.js'] }],
         }),
         mockAdapter,
@@ -780,6 +781,7 @@ describe('ReviewEngine', () => {
     it('returns analysis plan markdown on success', async () => {
       const engWithMCP = new ReviewEngine(
         makeConfig({
+          enableMCP: true,
           mcpServers: [{ name: 'context7', type: 'local', command: ['node', 'server.js'] }],
         }),
         mockAdapter,
