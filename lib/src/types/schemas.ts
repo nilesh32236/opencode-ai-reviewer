@@ -92,6 +92,7 @@ export const MCPServerConfigSchema = z.object({
   environment: z.record(z.string()).optional(),
   timeoutMs: z.number().int().positive().optional(),
   allowedTools: z.array(z.string()).optional(),
+  allowedEnv: z.array(z.string()).optional(),
 });
 
 /** Zod schema validating project context configuration. */

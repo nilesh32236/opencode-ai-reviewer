@@ -20,6 +20,44 @@ import { withRetry } from '../utils/retry.js';
 import { estimateTokens } from '../utils/token-estimate.js';
 
 /**
+ * Default safe allowlist of environment variables forwarded to local MCP
+ * subprocesses. Excludes credentials (GITHUB_TOKEN, API keys, etc.) and other
+ * secrets by default. Per-server overrides are possible via `allowedEnv`.
+ */
+const DEFAULT_MCP_ALLOWED_ENV = [
+  'PATH',
+  'HOME',
+  'USER',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+  'NODE_PATH',
+  'NODE_OPTIONS',
+  'LANG',
+  'LC_ALL',
+  'SHELL',
+  'TERM',
+];
+
+/**
+ * Filter the parent process environment down to an allowlisted subset before
+ * handing it to a local MCP subprocess.
+ * Uses the server's `allowedEnv` (falls back to the built-in safe default when
+ * unset or empty) and always merges the server's explicit `environment` on top.
+ * @param server - MCP server configuration
+ * @returns A sanitized env object safe to pass to a subprocess
+ */
+function filterEnv(server: MCPServerConfig): Record<string, string> {
+  const allowlist = server.allowedEnv?.length ? server.allowedEnv : DEFAULT_MCP_ALLOWED_ENV;
+  const filtered: Record<string, string> = {};
+  for (const key of allowlist) {
+    const value = process.env[key];
+    if (value !== undefined) filtered[key] = value;
+  }
+  return filtered;
+}
+
+/**
  * Manages connections to MCP (Model Context Protocol) servers.
  * Supports local (stdio) and remote (SSE) transports and provides
  * unified methods for querying context and library documentation.
@@ -58,7 +96,7 @@ export class MCPManager {
               new StdioClientTransport({
                 command: cmd[0],
                 args: cmd.slice(1),
-                env: { ...process.env, ...server.environment } as Record<string, string>,
+                env: { ...filterEnv(server), ...server.environment } as Record<string, string>,
               }),
           );
         }

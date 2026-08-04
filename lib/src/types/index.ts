@@ -279,6 +279,9 @@ export interface MCPServerConfig {
   timeoutMs?: number;
   /** Whitelist of allowed tool name patterns. Defaults to ['resolve', 'search'] if unset */
   allowedTools?: string[];
+  /** Allowlist of env var names forwarded from the parent process to a local subprocess.
+   * Defaults to a built-in safe set if unset or empty; `environment` vars are always merged on top. */
+  allowedEnv?: string[];
 }
 
 /** Project-level context config fed into review prompts. */
