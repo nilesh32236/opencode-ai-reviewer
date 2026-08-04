@@ -7,7 +7,7 @@ branding:
 
 inputs:
   mode:
-    description: 'Action mode: review, fix, audit, post, analyze, or self-heal'
+    description: 'Action mode: review, fix, audit, post, analyze, self-heal, or setup'
     required: true
     default: 'review'
 
@@ -87,6 +87,10 @@ inputs:
     description: 'Extra context to append to the review prompt'
     required: false
 
+  config:
+    description: 'Path to a custom config file (overrides .opencode-reviewer.yml discovery)'
+    required: false
+
   enable_fix:
     description: 'Enable auto-fix mode'
     required: false
@@ -140,6 +144,11 @@ inputs:
     required: false
     default: 'true'
 
+  review_inline:
+    description: 'Post findings as inline review comments on the PR diff (false = summary comment only)'
+    required: false
+    default: 'true'
+
   review_comment_summary:
     description: 'Include a summary comment on the PR'
     required: false
@@ -176,6 +185,11 @@ inputs:
     description: 'OpenCode CLI version to use (e.g. "latest" or a specific tag like "v0.1.0")'
     required: false
     default: 'latest'
+
+  probe_all_models:
+    description: 'In setup mode, probe every configured model (review, fix, audit, etc.) instead of only the review model'
+    required: false
+    default: 'false'
 
   git_user_name:
     description: 'Git user name for commits (default: GITHUB_ACTOR)'
@@ -242,6 +256,10 @@ outputs:
     description: 'URL of the created self-heal PR'
   verification_passed:
     description: 'Whether verification passed in the self-heal workflow'
+  setup_passed:
+    description: 'Whether the setup validation passed (setup mode)'
+  setup_report:
+    description: 'Markdown setup validation report (setup mode)'
   token_usage:
     description: 'Total tokens consumed during the review (when cost_tracking_enabled=true)'
   cost:
