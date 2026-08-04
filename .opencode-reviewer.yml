@@ -18,6 +18,7 @@ project:
 review:
   enableReachability: true
   # includePreExisting: true   # full-audit mode: review pre-existing (non-PR) code at full priority
+  # failOnSeverity: critical   # fail the action/check run when findings at or above this severity exist: off | critical | important | minor
   sensitivity:
     minSeverity: warning
     confidenceThreshold: low

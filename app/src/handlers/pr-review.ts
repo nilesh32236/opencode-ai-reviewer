@@ -12,6 +12,7 @@ import {
   Logger,
   ReviewEngine,
   sanitizeErrorMessage,
+  shouldFailOnSeverity,
 } from '@opencode-pr-agent/lib';
 import { mergeRepoConfig } from '../utils/config.js';
 import { handleAutofixLoop } from './autofix.js';
@@ -175,6 +176,37 @@ export async function handlePRReview(
       }
     } else {
       logger.warn(`Failed to post review to PR #${prNumber}`, { prNumber, repo });
+    }
+
+    // Report a check run so branch protection can consume the review outcome as
+    // a required status check. Always create the check run when the feature is
+    // enabled (success on clean reviews, failure when the threshold is
+    // exceeded) so it is a reliable green/red indicator instead of appearing
+    // only on failure. `failOnSeverity: 'off'` disables check runs entirely,
+    // preserving the pre-integration behavior.
+    if (config.platform === 'github' && config.review.failOnSeverity !== 'off') {
+      try {
+        const threshold = config.review.failOnSeverity;
+        const failed = shouldFailOnSeverity(result.stats, threshold);
+        const summary = failed
+          ? `Found ${result.stats.critical} critical, ${result.stats.important} important, ${result.stats.minor} minor issue(s)`
+          : 'No issues above the fail-on-severity threshold found';
+        await gh.createCheckRun(
+          'OpenCode AI Reviewer',
+          pr.headSha,
+          failed ? 'failure' : 'success',
+          {
+            title: failed ? 'Issues found' : 'All clear',
+            summary,
+            text: result.summary,
+          },
+        );
+        logger.info(
+          `Created check run for PR #${prNumber} with conclusion: ${failed ? 'failure' : 'success'}`,
+        );
+      } catch (err) {
+        logger.warn(`Failed to create check run: ${err instanceof Error ? err.message : err}`);
+      }
     }
 
     if (

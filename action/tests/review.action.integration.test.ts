@@ -422,4 +422,141 @@ describe('runReview (action wrapper)', () => {
     expect(mockWarning).toHaveBeenCalledWith(expect.stringContaining('[REDACTED_ANTHROPIC_KEY]'));
     expect(mockWarning).toHaveBeenCalledWith(expect.not.stringContaining(secret));
   });
+
+  it('fails the action when critical issues are found with the default threshold', async () => {
+    const pr = makePRContext();
+    mockGetPR.mockResolvedValue(pr);
+    mockReviewPR.mockResolvedValue({
+      summary: 'Found issues.',
+      verdict: { ready: false, reasoning: 'Issues', autoFixable: false, confidence: 'medium' },
+      strengths: [],
+      issues: [
+        {
+          type: 'issue',
+          severity: 'critical',
+          file: 'src/bug.ts',
+          line: 10,
+          message: 'Critical bug',
+          inline: true,
+        },
+      ],
+      stats: { total: 1, critical: 1, important: 0, minor: 0 },
+    });
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+
+    await runReview(
+      makeInputs(),
+      makeConfig({ enableMCP: false, mcpServers: [] }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+    );
+
+    expect(mockSetFailed).toHaveBeenCalledWith(
+      expect.stringContaining('at or above severity "critical" threshold'),
+    );
+  });
+
+  it('does not fail the action when no finding reaches the configured threshold', async () => {
+    const pr = makePRContext();
+    mockGetPR.mockResolvedValue(pr);
+    mockReviewPR.mockResolvedValue({
+      summary: 'Minor nit only.',
+      verdict: { ready: true, reasoning: 'LGTM', autoFixable: false, confidence: 'high' },
+      strengths: [],
+      issues: [],
+      stats: { total: 1, critical: 0, important: 0, minor: 1 },
+    });
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+
+    await runReview(
+      makeInputs(),
+      makeConfig({ enableMCP: false, mcpServers: [] }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+    );
+
+    expect(mockSetFailed).not.toHaveBeenCalled();
+  });
+
+  it('fails the action on important+critical findings when threshold is important', async () => {
+    const pr = makePRContext();
+    mockGetPR.mockResolvedValue(pr);
+    mockReviewPR.mockResolvedValue({
+      summary: 'Important issue.',
+      verdict: { ready: false, reasoning: 'Issues', autoFixable: false, confidence: 'medium' },
+      strengths: [],
+      issues: [],
+      stats: { total: 1, critical: 0, important: 1, minor: 0 },
+    });
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+
+    const config = makeConfig({
+      enableMCP: false,
+      mcpServers: [],
+      review: { ...DEFAULT_CONFIG.review, failOnSeverity: 'important' },
+    });
+
+    await runReview(
+      makeInputs({ reviewModel: config.reviewModel, fixModel: config.fixModel }),
+      config,
+      mockEngine,
+      mockGh,
+      'owner/repo',
+    );
+
+    expect(mockSetFailed).toHaveBeenCalledWith(
+      expect.stringContaining('at or above severity "important" threshold'),
+    );
+  });
+
+  it('preserves existing behavior when failOnSeverity is off', async () => {
+    const pr = makePRContext();
+    mockGetPR.mockResolvedValue(pr);
+    mockReviewPR.mockResolvedValue({
+      summary: 'Critical issue.',
+      verdict: { ready: false, reasoning: 'Issues', autoFixable: false, confidence: 'medium' },
+      strengths: [],
+      issues: [],
+      stats: { total: 1, critical: 1, important: 0, minor: 0 },
+    });
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+
+    const config = makeConfig({
+      enableMCP: false,
+      mcpServers: [],
+      review: { ...DEFAULT_CONFIG.review, failOnSeverity: 'off' },
+    });
+
+    await runReview(
+      makeInputs({ reviewModel: config.reviewModel, fixModel: config.fixModel }),
+      config,
+      mockEngine,
+      mockGh,
+      'owner/repo',
+    );
+
+    expect(mockSetFailed).not.toHaveBeenCalled();
+  });
 });

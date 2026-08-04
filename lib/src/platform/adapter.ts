@@ -181,6 +181,33 @@ export interface PlatformAdapter {
     suppressLowConfidence?: boolean,
   ): Promise<ReviewPostResult>;
   /**
+   * Create a check run for a commit via the Checks API (GitHub only).
+   * Used to surface a conclusion that branch protection can enforce as a
+   * required status check. Other platforms implement this as a no-op.
+   * @param name - Name of the check run.
+   * @param headSha - SHA of the commit to attach the check run to.
+   * @param conclusion - Check run conclusion.
+   * @param output - Optional check run output with title, summary, and text.
+   * @returns Promise resolving to the created check run id.
+   */
+  createCheckRun(
+    name: string,
+    headSha: string,
+    conclusion: 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required',
+    output?: { title: string; summary: string; text?: string },
+  ): Promise<{ id: number }>;
+  /**
+   * Update an existing check run's conclusion and/or output (GitHub only).
+   * @param checkRunId - ID of the check run to update.
+   * @param conclusion - Updated check run conclusion.
+   * @param output - Optional updated check run output.
+   */
+  updateCheckRun(
+    checkRunId: number,
+    conclusion: 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required',
+    output?: { title: string; summary: string; text?: string },
+  ): Promise<void>;
+  /**
    * Post or update a marker-based comment.
    * @param issueNumber - Issue number.
    * @param marker - Marker string to identify the comment.

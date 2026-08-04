@@ -212,6 +212,7 @@ export const ReviewConfigSchema = z.object({
   costTracking: CostTrackingConfigSchema.optional(),
   sensitivity: ReviewSensitivitySchema.optional(),
   categories: z.record(CategoryOverrideSchema).optional(),
+  failOnSeverity: z.enum(['off', 'critical', 'important', 'minor']).default('critical'),
 });
 
 /** Zod schema validating audit configuration. */
@@ -367,6 +368,7 @@ export const PromptConfigSchema = z.object({
       costTracking: CostTrackingConfigSchema.optional(),
       sensitivity: ReviewSensitivitySchema.optional(),
       categories: z.record(CategoryOverrideSchema).optional(),
+      failOnSeverity: z.enum(['off', 'critical', 'important', 'minor']).optional(),
     })
     .optional(),
   fix: z

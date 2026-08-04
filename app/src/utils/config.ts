@@ -1,5 +1,26 @@
 import { DEFAULT_CONFIG, getDefaultMCPServers, loadConfig } from '@opencode-pr-agent/lib';
-import type { AgentConfig, TokenBudgetConfig } from '@opencode-pr-agent/lib';
+import type { AgentConfig, FailOnSeverity, TokenBudgetConfig } from '@opencode-pr-agent/lib';
+
+const FAIL_ON_SEVERITY_VALUES: readonly FailOnSeverity[] = [
+  'off',
+  'critical',
+  'important',
+  'minor',
+];
+
+/**
+ * Parse the FAIL_ON_SEVERITY environment override into a FailOnSeverity value.
+ * Invalid or unset values degrade gracefully to the default ('critical') so a
+ * stale env var can never break the app at startup.
+ * @param raw - Raw environment variable value (may be undefined).
+ * @returns A valid FailOnSeverity value (default: 'critical').
+ */
+function parseFailOnSeverityEnv(raw: string | undefined): FailOnSeverity {
+  if (raw && FAIL_ON_SEVERITY_VALUES.includes(raw as FailOnSeverity)) {
+    return raw as FailOnSeverity;
+  }
+  return 'critical';
+}
 
 /**
  * Parse an integer from an environment variable with a fallback.
@@ -83,6 +104,7 @@ export function buildConfig(): AgentConfig {
     review: {
       ...DEFAULT_CONFIG.review,
       inline: process.env.REVIEW_INLINE !== 'false',
+      failOnSeverity: parseFailOnSeverityEnv(process.env.FAIL_ON_SEVERITY),
       tokenBudget: parseTokenBudgetEnv(process.env.TOKEN_BUDGET, DEFAULT_CONFIG.review.tokenBudget),
       ...(process.env.ENABLE_REACHABILITY !== undefined
         ? { enableReachability: process.env.ENABLE_REACHABILITY !== 'false' }

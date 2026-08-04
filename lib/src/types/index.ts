@@ -403,6 +403,10 @@ export interface ReviewSensitivityConfig {
   ignorePatterns?: string[];
 }
 
+/** Severity threshold for failing the action/check run when findings at or above
+ * this severity are found. `'off'` disables failure from findings entirely. */
+export type FailOnSeverity = 'off' | 'critical' | 'important' | 'minor';
+
 /** Main review configuration controlling what is reviewed and how findings are reported. */
 export interface ReviewConfig {
   /** Skip review for PRs with these labels */
@@ -439,6 +443,9 @@ export interface ReviewConfig {
   sensitivity?: ReviewSensitivityConfig;
   /** Per-category overrides for review sensitivity */
   categories?: Record<string, CategoryOverride>;
+  /** Severity threshold at or above which the action/check run fails
+   * (default: 'critical'). Use 'off' to never fail from findings. */
+  failOnSeverity: FailOnSeverity;
 }
 
 // ─── Conversation / @mention ─────────────────────────────
@@ -1087,6 +1094,9 @@ export interface PromptConfig {
     sensitivity?: ReviewSensitivityConfig;
     /** Per-category overrides for review sensitivity */
     categories?: Record<string, CategoryOverride>;
+    /** Severity threshold at or above which the action/check run fails
+     * (default: 'critical'). Use 'off' to never fail from findings. */
+    failOnSeverity?: FailOnSeverity;
   };
   /** Fix prompt configuration */
   fix?: {
@@ -1250,6 +1260,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
       minSeverity: 'warning',
       confidenceThreshold: 'low',
     },
+    failOnSeverity: 'critical',
   },
   audit: {
     promptsDir: '.audit-prompts',

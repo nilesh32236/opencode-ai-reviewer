@@ -154,6 +154,11 @@ inputs:
     required: false
     default: 'true'
 
+  fail_on_severity:
+    description: 'Severity threshold for failing the action: "off", "critical", "important", or "minor". When set, the action exits with 1 if any finding meets or exceeds this severity. Works with branch protection required status checks.'
+    required: false
+    default: 'critical'
+
   run_checks_after_fix:
     description: 'Commands to run after fix (e.g. npm run lint)'
     required: false

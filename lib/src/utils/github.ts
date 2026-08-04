@@ -594,6 +594,57 @@ export class GitHubHelper implements PlatformAdapter {
   // ─── Review Operations ──────────────────────────────────
 
   /**
+   * Create a check run for a commit via the Checks API. Check runs surface a
+   * conclusion ('success' | 'failure' | 'neutral' | ...) that GitHub branch
+   * protection can consume as a required status check.
+   * @param name - Name of the check run (e.g. "OpenCode AI Reviewer").
+   * @param headSha - SHA of the commit to attach the check run to.
+   * @param conclusion - Check run conclusion.
+   * @param output - Optional check run output with title, summary, and text.
+   * @returns The created check run id.
+   */
+  async createCheckRun(
+    name: string,
+    headSha: string,
+    conclusion: 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required',
+    output?: { title: string; summary: string; text?: string },
+  ): Promise<{ id: number }> {
+    return this.api<{ id: number }>('/check-runs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        head_sha: headSha,
+        status: 'completed',
+        conclusion,
+        output,
+      }),
+    });
+  }
+
+  /**
+   * Update an existing check run's conclusion and/or output.
+   * @param checkRunId - ID of the check run to update.
+   * @param conclusion - Updated check run conclusion.
+   * @param output - Optional updated check run output.
+   */
+  async updateCheckRun(
+    checkRunId: number,
+    conclusion: 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required',
+    output?: { title: string; summary: string; text?: string },
+  ): Promise<void> {
+    await this.api(`/check-runs/${checkRunId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: 'completed',
+        conclusion,
+        output,
+      }),
+    });
+  }
+
+  /**
    * Post a review on a pull request with optional inline comments.
    * Posts the body first, then each inline comment individually so that
    * a single out-of-diff comment does not fail the entire review.

@@ -498,6 +498,38 @@ export class GitLabAdapter implements PlatformAdapter {
   // ─── Review Operations ──────────────────────────────────
 
   /**
+   * Create a check run for a commit. GitLab has no Checks-API equivalent, so
+   * this is a no-op used to satisfy the shared PlatformAdapter interface.
+   * @param _name - Check run name (unused).
+   * @param _headSha - Commit SHA (unused).
+   * @param _conclusion - Check run conclusion (unused).
+   * @param _output - Optional output (unused).
+   * @returns Resolves to a sentinel id of 0.
+   */
+  async createCheckRun(
+    _name: string,
+    _headSha: string,
+    _conclusion: 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required',
+    _output?: { title: string; summary: string; text?: string },
+  ): Promise<{ id: number }> {
+    return { id: 0 };
+  }
+
+  /**
+   * Update an existing check run. No-op on GitLab (see `createCheckRun`).
+   * @param _checkRunId - Check run id (unused).
+   * @param _conclusion - Updated conclusion (unused).
+   * @param _output - Optional updated output (unused).
+   */
+  async updateCheckRun(
+    _checkRunId: number,
+    _conclusion: 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required',
+    _output?: { title: string; summary: string; text?: string },
+  ): Promise<void> {
+    return;
+  }
+
+  /**
    * Post review.
    * @param mrNumber
    * @param _commitSha

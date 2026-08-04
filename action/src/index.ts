@@ -243,6 +243,7 @@ async function run(): Promise<void> {
         ...(loadedConfig?.review?.skipLabels && { skipLabels: loadedConfig.review.skipLabels }),
         ...(loadedConfig?.review?.skipActors && { skipActors: loadedConfig.review.skipActors }),
         inline: loadedConfig?.review?.inline ?? inputs.reviewInline,
+        failOnSeverity: loadedConfig?.review?.failOnSeverity ?? inputs.failOnSeverity,
         ...(loadedConfig?.review?.suppressLowConfidence !== undefined && {
           suppressLowConfidence: loadedConfig.review.suppressLowConfidence,
         }),

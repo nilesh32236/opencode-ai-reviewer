@@ -61,3 +61,23 @@ describe('buildConfig TOKEN_BUDGET override', () => {
     expect(buildConfig().review.tokenBudget).toEqual(TOKEN_BUDGET_DEFAULT);
   });
 });
+
+describe('buildConfig FAIL_ON_SEVERITY override', () => {
+  afterEach(() => {
+    process.env.FAIL_ON_SEVERITY = undefined;
+  });
+
+  it('defaults failOnSeverity to critical', () => {
+    expect(buildConfig().review.failOnSeverity).toBe('critical');
+  });
+
+  it('honors a valid FAIL_ON_SEVERITY value', () => {
+    process.env.FAIL_ON_SEVERITY = 'important';
+    expect(buildConfig().review.failOnSeverity).toBe('important');
+  });
+
+  it('degrades gracefully to critical for an invalid FAIL_ON_SEVERITY value', () => {
+    process.env.FAIL_ON_SEVERITY = 'blocker';
+    expect(buildConfig().review.failOnSeverity).toBe('critical');
+  });
+});
