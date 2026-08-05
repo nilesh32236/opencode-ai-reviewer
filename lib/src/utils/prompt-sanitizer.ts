@@ -54,6 +54,15 @@ function truncationSuffix(maxLength: number): string {
 }
 
 /**
+ * Whether a code point is a disallowed control char (C0 or DEL, excluding tab/newline).
+ * @param code - The Unicode code point to check.
+ * @returns True when the code point is a disallowed control character.
+ */
+function isDisallowedControl(code: number): boolean {
+  return (code < 0x20 || code === 0x7f) && code !== 0x09 && code !== 0x0a;
+}
+
+/**
  * Strip C0 control characters and DEL (U+007F), preserving tab (`\t`) and
  * newline (`\n`). The common path — input with no control characters — returns
  * the original string without allocating, so large contexts (e.g. multi-file
@@ -64,21 +73,15 @@ function truncationSuffix(maxLength: number): string {
 function stripControlCharacters(text: string): string {
   let first = -1;
   for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
-    if (code < 0x20 || code === 0x7f) {
-      if (code !== 0x09 && code !== 0x0a) {
-        first = i;
-        break;
-      }
+    if (isDisallowedControl(text.charCodeAt(i))) {
+      first = i;
+      break;
     }
   }
   if (first === -1) return text;
   const out: string[] = [text.slice(0, first)];
   for (let i = first; i < text.length; i++) {
-    const code = text.charCodeAt(i);
-    const isTabOrNewline = code === 0x09 || code === 0x0a;
-    const isC0OrDel = code < 0x20 || code === 0x7f;
-    if (isC0OrDel && !isTabOrNewline) continue;
+    if (isDisallowedControl(text.charCodeAt(i))) continue;
     out.push(text[i]);
   }
   return out.join('');
