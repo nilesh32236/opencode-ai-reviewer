@@ -16,8 +16,13 @@ const SECONDARY_HASH_SALT = 0x85ebca6b;
 /**
  * Cache for token sets to avoid re-tokenization of identical messages.
  * This significantly improves performance when the same message appears multiple times.
+ * Bounded by {@link MAX_TOKEN_CACHE_ENTRIES} with FIFO eviction to avoid unbounded
+ * memory growth in long-running processes.
  */
 const tokenSetCache = new Map<string, Set<string>>();
+
+/** Maximum number of token sets retained in the cache before FIFO eviction. */
+const MAX_TOKEN_CACHE_ENTRIES = 10_000;
 
 /**
  * FNV-1a style 32-bit string hash with a Murmur3-style finalizer for good
@@ -77,7 +82,11 @@ export function tokenizeMessage(message: string): Set<string> {
       .filter((t) => t.length > 2),
   );
 
-  // Cache the result
+  // Cache the result (with FIFO eviction at the cap)
+  if (tokenSetCache.size >= MAX_TOKEN_CACHE_ENTRIES) {
+    const oldest = tokenSetCache.keys().next().value;
+    if (oldest !== undefined) tokenSetCache.delete(oldest);
+  }
   tokenSetCache.set(message, tokens);
   return tokens;
 }
@@ -97,6 +106,9 @@ export function clearTokenCache(): void {
  * identical signatures.
  *
  * Optimized version using Uint32Array for better memory efficiency and performance.
+ * Note: unlike `computeMinHashSignature` in `minhash.ts` (which returns `number[]`),
+ * this variant returns a `Uint32Array`. Callers swapping imports should prefer the
+ * typed array (Array.from / spread convert it to `number[]` if needed).
  * @param tokens - Set of tokens to summarize.
  * @param numHashes - Number of hash functions (signature length).
  * @returns Array of `numHashes` minimum hash values as Uint32Array.
@@ -198,26 +210,12 @@ export function lshCandidates(
     // Generate candidate pairs from buckets with 2+ items
     for (const bucket of bucketMap.values()) {
       if (bucket.length < 2) continue;
-
-      // For small buckets, use nested loops
-      if (bucket.length <= 10) {
-        for (let a = 0; a < bucket.length; a++) {
-          for (let b = a + 1; b < bucket.length; b++) {
-            const i = bucket[a];
-            const j = bucket[b];
-            const key = i < j ? `${i}:${j}` : `${j}:${i}`;
-            pairKeys.add(key);
-          }
-        }
-      } else {
-        // For larger buckets, use a more efficient approach
-        // Sort first to enable early termination in Jaccard verification
-        bucket.sort((a, b) => a - b);
-        for (let a = 0; a < bucket.length; a++) {
-          for (let b = a + 1; b < bucket.length; b++) {
-            const key = `${bucket[a]}:${bucket[b]}`;
-            pairKeys.add(key);
-          }
+      for (let a = 0; a < bucket.length; a++) {
+        for (let b = a + 1; b < bucket.length; b++) {
+          const i = bucket[a];
+          const j = bucket[b];
+          const key = i < j ? `${i}:${j}` : `${j}:${i}`;
+          pairKeys.add(key);
         }
       }
     }
@@ -319,11 +317,18 @@ export function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
 
 /**
  * Jaccard similarity with early termination.
- * Stops early if the maximum possible similarity is below the threshold.
+ * Stops early once the worst-case similarity (no further matches) is at least
+ * the threshold. The returned value on the early-exit path is a lower bound in
+ * [threshold, exact] — never above the exact score — which is safe for
+ * threshold decisions but is not the exact similarity; callers that need the
+ * precise value should use {@link jaccardSimilarity}.
+ * Note: two empty sets return 0 (matching `jaccardSimilarity`), even though 0
+ * is below any positive threshold.
  * @param a - First set.
  * @param b - Second set.
  * @param threshold - Minimum similarity threshold.
- * @returns The Jaccard similarity score, or -1 if below threshold.
+ * @returns A similarity score in [threshold, exact] when above the threshold,
+ * or -1 if below it.
  */
 export function jaccardSimilarityWithThreshold(
   a: Set<string>,
@@ -341,15 +346,13 @@ export function jaccardSimilarityWithThreshold(
   }
 
   let intersectionSize = 0;
-  const maxPossibleIntersection = smallerSet.size;
-  const minRequiredIntersection = Math.ceil(
-    threshold * (a.size + b.size - maxPossibleIntersection),
-  );
+  const minRequiredIntersection = Math.ceil((threshold * (a.size + b.size)) / (1 + threshold));
 
   for (const item of smallerSet) {
     if (largerSet.has(item)) {
       intersectionSize++;
-      // Early termination: if we can't reach the threshold even with all remaining matches
+      // Early termination: once the worst-case Jaccard (assuming no further
+      // matches) is already >= threshold, the true similarity is too.
       if (intersectionSize >= minRequiredIntersection) {
         const unionSize = a.size + b.size - intersectionSize;
         return intersectionSize / unionSize;

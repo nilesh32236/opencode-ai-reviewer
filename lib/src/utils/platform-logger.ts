@@ -9,6 +9,8 @@
  */
 
 import type { LogContext, LogLevel } from './logger.js';
+import { LOG_LEVEL_PRIORITY } from './logger.js';
+import { sanitizeString } from './sanitize.js';
 
 /** Shape of the optional `@actions/core` module used for GitHub Actions output. */
 type GitHubCoreModule = typeof import('@actions/core');
@@ -132,22 +134,144 @@ export function createPlatformLogger(context: string, level?: LogLevel): Platfor
 }
 
 /**
+ * Base implementation of {@link PlatformLogger} sharing the formatting and
+ * level-filtering logic between the console and GitHub Actions variants.
+ */
+abstract class BasePlatformLogger implements PlatformLogger {
+  protected level: LogLevel;
+  protected context: LogContext;
+  protected readonly name: string;
+
+  /**
+   * Create a platform logger.
+   * @param name - The logger name shown in formatted output.
+   * @param level - Optional initial log level.
+   * @param context - Optional initial logging context.
+   */
+  constructor(name: string, level?: LogLevel, context: LogContext = {}) {
+    this.name = name;
+    this.level = level ?? 'info';
+    this.context = context;
+  }
+
+  /**
+   * Emit a fully formatted, already-sanitized line to the platform sink.
+   * @param level - The log level.
+   * @param formatted - The formatted line to emit.
+   */
+  protected abstract emit(level: LogLevel, formatted: string): void;
+
+  /**
+   * Create a child logger inheriting this logger's name, level, and context.
+   * @param context - Additional context for the child logger.
+   * @returns A child logger with merged context.
+   */
+  abstract child(context: LogContext): PlatformLogger;
+
+  /**
+   * Format a message, merging an optional per-call context over the base context.
+   * @param level - The log level.
+   * @param message - The message to format.
+   * @param data - Optional structured data to include.
+   * @param context - Optional per-call context merged over the base context.
+   * @returns The formatted message line.
+   */
+  protected formatMessage(
+    level: LogLevel,
+    message: string,
+    data?: unknown,
+    context?: LogContext,
+  ): string {
+    const timestamp = new Date().toISOString();
+    const contextStr = this.formatContext(context);
+    const dataStr = data !== undefined ? ` ${this.formatData(data)}` : '';
+    return `[${timestamp}] [${level.toUpperCase()}] [${this.name}]${contextStr} ${message}${dataStr}`;
+  }
+
+  private formatContext(context?: LogContext): string {
+    const merged = { ...this.context, ...context };
+    const parts: string[] = [];
+    if (merged.correlationId) parts.push(`corr=${merged.correlationId.slice(0, 8)}`);
+    if (merged.prNumber) parts.push(`pr#${merged.prNumber}`);
+    if (merged.repo) parts.push(`${merged.repo}`);
+    if (merged.eventType) parts.push(`${merged.eventType}`);
+    for (const [k, v] of Object.entries(merged)) {
+      if (!['prNumber', 'repo', 'eventType', 'correlationId'].includes(k) && v !== undefined) {
+        parts.push(`${k}=${v}`);
+      }
+    }
+    return parts.length > 0 ? ` [${parts.join(' ')}]` : '';
+  }
+
+  private formatData(data: unknown): string {
+    if (typeof data === 'string') return data;
+    if (data instanceof Error) return data.stack || data.message;
+    try {
+      return JSON.stringify(data);
+    } catch {
+      return String(data);
+    }
+  }
+
+  private log(level: LogLevel, message: string, data?: unknown, context?: LogContext): void {
+    if (LOG_LEVEL_PRIORITY[level] < LOG_LEVEL_PRIORITY[this.level]) return;
+
+    // Redact credentials/PII before emitting, mirroring Logger.log.
+    const formatted = this.formatMessage(level, message, data, context);
+    this.emit(level, sanitizeString(formatted));
+  }
+
+  trace(message: string, data?: unknown, context?: LogContext): void {
+    this.log('trace', message, data, context);
+  }
+
+  debug(message: string, data?: unknown, context?: LogContext): void {
+    this.log('debug', message, data, context);
+  }
+
+  info(message: string, data?: unknown, context?: LogContext): void {
+    this.log('info', message, data, context);
+  }
+
+  warn(message: string, data?: unknown, context?: LogContext): void {
+    this.log('warn', message, data, context);
+  }
+
+  error(message: string, data?: unknown, context?: LogContext): void {
+    this.log('error', message, data, context);
+  }
+
+  fatal(message: string, data?: unknown, context?: LogContext): void {
+    this.log('fatal', message, data, context);
+  }
+
+  isLevelEnabled(level: LogLevel): boolean {
+    return LOG_LEVEL_PRIORITY[level] >= LOG_LEVEL_PRIORITY[this.level];
+  }
+
+  getLevel(): LogLevel {
+    return this.level;
+  }
+
+  setLevel(level: LogLevel): void {
+    this.level = level;
+  }
+}
+
+/**
  * Console implementation of PlatformLogger for CLI and development environments.
  */
-export class ConsolePlatformLogger implements PlatformLogger {
-  private level: LogLevel = 'info';
-  private context: LogContext = {};
-  private readonly name: string;
+export class ConsolePlatformLogger extends BasePlatformLogger {
   private readonly useColors: boolean;
 
   /**
    * Create a console platform logger.
    * @param name - The logger name shown in formatted output.
    * @param level - Optional initial log level.
+   * @param context - Optional initial logging context.
    */
-  constructor(name: string, level?: LogLevel) {
-    this.name = name;
-    this.level = level ?? 'info';
+  constructor(name: string, level?: LogLevel, context: LogContext = {}) {
+    super(name, level, context);
     this.useColors = process.stdout.isTTY;
   }
 
@@ -168,57 +292,16 @@ export class ConsolePlatformLogger implements PlatformLogger {
     return `${color}${message}${reset}`;
   }
 
-  private formatMessage(level: LogLevel, message: string, data?: unknown): string {
-    const timestamp = new Date().toISOString();
-    const contextStr = this.formatContext();
-    const dataStr = data ? ` ${this.formatData(data)}` : '';
-    return `[${timestamp}] [${level.toUpperCase()}] [${this.name}]${contextStr} ${message}${dataStr}`;
-  }
-
-  private formatContext(): string {
-    const parts: string[] = [];
-    if (this.context.correlationId) parts.push(`corr=${this.context.correlationId.slice(0, 8)}`);
-    if (this.context.prNumber) parts.push(`pr#${this.context.prNumber}`);
-    if (this.context.repo) parts.push(`${this.context.repo}`);
-    if (this.context.eventType) parts.push(`${this.context.eventType}`);
-    for (const [k, v] of Object.entries(this.context)) {
-      if (!['prNumber', 'repo', 'eventType', 'correlationId'].includes(k) && v !== undefined) {
-        parts.push(`${k}=${v}`);
-      }
-    }
-    return parts.length > 0 ? ` [${parts.join(' ')}]` : '';
-  }
-
-  private formatData(data: unknown): string {
-    if (typeof data === 'string') return data;
-    if (data instanceof Error) return data.stack || data.message;
-    try {
-      return JSON.stringify(data);
-    } catch {
-      return String(data);
-    }
-  }
-
-  private log(level: LogLevel, message: string, data?: unknown): void {
-    const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
-      trace: -1,
-      debug: 0,
-      info: 1,
-      warn: 2,
-      error: 3,
-      fatal: 4,
-    };
-
-    if (LOG_LEVEL_PRIORITY[level] < LOG_LEVEL_PRIORITY[this.level]) return;
-
-    const formatted = this.formatMessage(level, message, data);
+  /**
+   * Emit the formatted line to stdout/stderr, applying ANSI colors.
+   * @param level - The log level.
+   * @param formatted - The formatted, sanitized line to emit.
+   */
+  protected emit(level: LogLevel, formatted: string): void {
     const colored = this.colorize(level, formatted);
-
     switch (level) {
       case 'trace':
       case 'debug':
-        console.log(colored);
-        break;
       case 'info':
         console.log(colored);
         break;
@@ -232,53 +315,16 @@ export class ConsolePlatformLogger implements PlatformLogger {
     }
   }
 
-  trace(message: string, data?: unknown, context?: LogContext): void {
-    this.log('trace', message, data);
-  }
-
-  debug(message: string, data?: unknown, context?: LogContext): void {
-    this.log('debug', message, data);
-  }
-
-  info(message: string, data?: unknown, context?: LogContext): void {
-    this.log('info', message, data);
-  }
-
-  warn(message: string, data?: unknown, context?: LogContext): void {
-    this.log('warn', message, data);
-  }
-
-  error(message: string, data?: unknown, context?: LogContext): void {
-    this.log('error', message, data);
-  }
-
-  fatal(message: string, data?: unknown, context?: LogContext): void {
-    this.log('fatal', message, data);
-  }
-
-  isLevelEnabled(level: LogLevel): boolean {
-    const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
-      trace: -1,
-      debug: 0,
-      info: 1,
-      warn: 2,
-      error: 3,
-      fatal: 4,
-    };
-    return LOG_LEVEL_PRIORITY[level] >= LOG_LEVEL_PRIORITY[this.level];
-  }
-
-  getLevel(): LogLevel {
-    return this.level;
-  }
-
-  setLevel(level: LogLevel): void {
-    this.level = level;
-  }
-
+  /**
+   * Create a child console logger with merged context.
+   * @param context - Additional context for the child logger.
+   * @returns A child console logger.
+   */
   child(context: LogContext): PlatformLogger {
-    const merged = { ...this.context, ...context };
-    return new ConsolePlatformLogger(this.name, this.level);
+    return new ConsolePlatformLogger(this.name, this.level, {
+      ...this.context,
+      ...context,
+    });
   }
 }
 
@@ -286,21 +332,17 @@ export class ConsolePlatformLogger implements PlatformLogger {
  * GitHub Actions implementation of PlatformLogger.
  * Uses @actions/core for output, maintaining compatibility with existing code.
  */
-export class GitHubActionsPlatformLogger implements PlatformLogger {
-  private level: LogLevel = 'info';
-  private context: LogContext = {};
+export class GitHubActionsPlatformLogger extends BasePlatformLogger {
   private static coreModule: GitHubCoreModule | null = null;
 
   /**
    * Create a GitHub Actions platform logger.
    * @param name - The logger name shown in formatted output.
    * @param level - Optional initial log level.
+   * @param context - Optional initial logging context.
    */
-  constructor(
-    private readonly name: string,
-    level?: LogLevel,
-  ) {
-    if (level) this.level = level;
+  constructor(name: string, level?: LogLevel, context: LogContext = {}) {
+    super(name, level, context);
     this.getCore();
   }
 
@@ -308,7 +350,13 @@ export class GitHubActionsPlatformLogger implements PlatformLogger {
     if (!GitHubActionsPlatformLogger.coreModule) {
       try {
         GitHubActionsPlatformLogger.coreModule = require('@actions/core') as GitHubCoreModule;
-      } catch {
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        console.warn(
+          sanitizeString(
+            `[platform-logger] @actions/core unavailable, falling back to console: ${reason}`,
+          ),
+        );
         // Fall back to console if @actions/core is not available
         GitHubActionsPlatformLogger.coreModule = {
           debug: (msg: string) => console.log(`[DEBUG] ${msg}`),
@@ -321,52 +369,13 @@ export class GitHubActionsPlatformLogger implements PlatformLogger {
     return GitHubActionsPlatformLogger.coreModule;
   }
 
-  private formatMessage(level: LogLevel, message: string, data?: unknown): string {
-    const timestamp = new Date().toISOString();
-    const contextStr = this.formatContext();
-    const dataStr = data ? ` ${this.formatData(data)}` : '';
-    return `[${timestamp}] [${level.toUpperCase()}] [${this.name}]${contextStr} ${message}${dataStr}`;
-  }
-
-  private formatContext(): string {
-    const parts: string[] = [];
-    if (this.context.correlationId) parts.push(`corr=${this.context.correlationId.slice(0, 8)}`);
-    if (this.context.prNumber) parts.push(`pr#${this.context.prNumber}`);
-    if (this.context.repo) parts.push(`${this.context.repo}`);
-    if (this.context.eventType) parts.push(`${this.context.eventType}`);
-    for (const [k, v] of Object.entries(this.context)) {
-      if (!['prNumber', 'repo', 'eventType', 'correlationId'].includes(k) && v !== undefined) {
-        parts.push(`${k}=${v}`);
-      }
-    }
-    return parts.length > 0 ? ` [${parts.join(' ')}]` : '';
-  }
-
-  private formatData(data: unknown): string {
-    if (typeof data === 'string') return data;
-    if (data instanceof Error) return data.stack || data.message;
-    try {
-      return JSON.stringify(data);
-    } catch {
-      return String(data);
-    }
-  }
-
-  private log(level: LogLevel, message: string, data?: unknown): void {
-    const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
-      trace: -1,
-      debug: 0,
-      info: 1,
-      warn: 2,
-      error: 3,
-      fatal: 4,
-    };
-
-    if (LOG_LEVEL_PRIORITY[level] < LOG_LEVEL_PRIORITY[this.level]) return;
-
-    const formatted = this.formatMessage(level, message, data);
+  /**
+   * Emit the formatted line through the GitHub Actions core API.
+   * @param level - The log level.
+   * @param formatted - The formatted, sanitized line to emit.
+   */
+  protected emit(level: LogLevel, formatted: string): void {
     const core = this.getCore();
-
     switch (level) {
       case 'trace':
       case 'debug':
@@ -385,53 +394,16 @@ export class GitHubActionsPlatformLogger implements PlatformLogger {
     }
   }
 
-  trace(message: string, data?: unknown, context?: LogContext): void {
-    this.log('trace', message, data);
-  }
-
-  debug(message: string, data?: unknown, context?: LogContext): void {
-    this.log('debug', message, data);
-  }
-
-  info(message: string, data?: unknown, context?: LogContext): void {
-    this.log('info', message, data);
-  }
-
-  warn(message: string, data?: unknown, context?: LogContext): void {
-    this.log('warn', message, data);
-  }
-
-  error(message: string, data?: unknown, context?: LogContext): void {
-    this.log('error', message, data);
-  }
-
-  fatal(message: string, data?: unknown, context?: LogContext): void {
-    this.log('fatal', message, data);
-  }
-
-  isLevelEnabled(level: LogLevel): boolean {
-    const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
-      trace: -1,
-      debug: 0,
-      info: 1,
-      warn: 2,
-      error: 3,
-      fatal: 4,
-    };
-    return LOG_LEVEL_PRIORITY[level] >= LOG_LEVEL_PRIORITY[this.level];
-  }
-
-  getLevel(): LogLevel {
-    return this.level;
-  }
-
-  setLevel(level: LogLevel): void {
-    this.level = level;
-  }
-
+  /**
+   * Create a child GitHub Actions logger with merged context.
+   * @param context - Additional context for the child logger.
+   * @returns A child GitHub Actions logger.
+   */
   child(context: LogContext): PlatformLogger {
-    const merged = { ...this.context, ...context };
-    return new GitHubActionsPlatformLogger(this.name, this.level);
+    return new GitHubActionsPlatformLogger(this.name, this.level, {
+      ...this.context,
+      ...context,
+    });
   }
 }
 
@@ -463,30 +435,45 @@ export function createGitHubActionsPlatformLogger(
  * Useful for testing or when logging should be suppressed.
  */
 export class NullPlatformLogger implements PlatformLogger {
-  trace(): void {}
-  debug(): void {}
-  info(): void {}
-  warn(): void {}
-  error(): void {}
-  fatal(): void {}
-  isLevelEnabled(): boolean {
-    return false;
+  private level: LogLevel = 'fatal';
+
+  /**
+   * Create a null platform logger.
+   * @param _name - Ignored; the logger emits nothing.
+   * @param level - Optional initial log level (defaults to 'fatal').
+   */
+  constructor(_name?: string, level?: LogLevel) {
+    if (level) this.level = level;
+  }
+
+  trace(_message: string, _data?: unknown, _context?: LogContext): void {}
+  debug(_message: string, _data?: unknown, _context?: LogContext): void {}
+  info(_message: string, _data?: unknown, _context?: LogContext): void {}
+  warn(_message: string, _data?: unknown, _context?: LogContext): void {}
+  error(_message: string, _data?: unknown, _context?: LogContext): void {}
+  fatal(_message: string, _data?: unknown, _context?: LogContext): void {}
+  isLevelEnabled(level: LogLevel): boolean {
+    return LOG_LEVEL_PRIORITY[level] >= LOG_LEVEL_PRIORITY[this.level];
   }
   getLevel(): LogLevel {
-    return 'fatal';
+    return this.level;
   }
-  setLevel(): void {}
-  child(): PlatformLogger {
+  setLevel(level: LogLevel): void {
+    this.level = level;
+  }
+  child(_context: LogContext): PlatformLogger {
     return this;
   }
 }
 
 /**
  * Factory function for creating null platform loggers.
+ * @param _context - Ignored; the logger emits nothing.
+ * @param level - Optional initial log level.
  * @returns A no-op platform logger.
  */
-export function createNullPlatformLogger(): PlatformLogger {
-  return new NullPlatformLogger();
+export function createNullPlatformLogger(_context?: string, level?: LogLevel): PlatformLogger {
+  return new NullPlatformLogger(_context, level);
 }
 
 // Re-export types
