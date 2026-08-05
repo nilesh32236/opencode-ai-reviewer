@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { StateCacheManager } from '../src/state-cache.js';
+import { StateCacheManager, buildCacheKey } from '../src/state-cache.js';
 
 const { mockRestoreCache, mockSaveCache, mockInfo, mockWarning } = vi.hoisted(() => {
   const _mockRestoreCache = vi.fn().mockResolvedValue(undefined);
@@ -73,6 +73,17 @@ describe('StateCacheManager mtime comparison (issue #188 regression)', () => {
     expect(mockSaveCache).not.toHaveBeenCalled();
   });
 
+  it('skips the cache save when the db mtime changes by exactly 1ms (inclusive epsilon)', async () => {
+    const dbPath = makeDb();
+    const manager = makeManager(dbPath);
+    await manager.restore();
+
+    setMtime(dbPath, FIXED_MTIME_MS + 1);
+    await manager.save();
+
+    expect(mockSaveCache).not.toHaveBeenCalled();
+  });
+
   it('saves the cache when the db mtime changes by more than 1ms', async () => {
     const dbPath = makeDb();
     const manager = makeManager(dbPath);
@@ -83,5 +94,12 @@ describe('StateCacheManager mtime comparison (issue #188 regression)', () => {
 
     expect(mockSaveCache).toHaveBeenCalledTimes(1);
     expect(mockSaveCache).toHaveBeenCalledWith([path.dirname(dbPath)], expect.any(String));
+  });
+
+  it('builds a distinct cache key per branch (GitLab branch isolation)', () => {
+    const keyFor = (branch: string) => buildCacheKey('state', 'group/project', branch);
+    expect(keyFor('main')).not.toBe(keyFor('feature/foo'));
+    expect(keyFor('main')).toBe('state-group/project-main');
+    expect(keyFor('feature/foo')).toBe('state-group/project-feature/foo');
   });
 });

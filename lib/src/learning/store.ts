@@ -506,6 +506,21 @@ export class LearningStore {
   }
 
   /**
+   * Retrieve the feedback signals recorded for a single finding.
+   *
+   * @param findingId - The finding ID to query feedback for.
+   * @returns Array of feedback signals for that finding (empty when none).
+   */
+  async getFeedbackForFinding(findingId: string): Promise<LearningFeedback[]> {
+    try {
+      const repo = await this.repoPromise;
+      return await repo.getFeedbackForFinding(findingId);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * Retrieve review latency statistics.
    *
    * @param sinceDays - Optional filter to only include reviews from the last N days.
