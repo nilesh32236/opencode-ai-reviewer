@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.7.1] — 2026-08-05
+
+
+### Fixed
+
+- self-heal CI failure (attempt 1) [`lint-error` — eslint (jsdoc plugin) docstring coverage errors failing the ci "verify docstring coverage" step (`pnpm doc:check`).] (#348) (#348)
+
+[v1.7.1]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.7.0...v1.7.1
+
 ## [v1.7.0] — 2026-08-05
 
 ### Added
