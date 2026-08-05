@@ -542,7 +542,12 @@ describe('ReviewEngine', () => {
           makeConfig({
             multiAgent: {
               enabled: true,
-              agents: { security: { enabled: true } },
+              agents: {
+                security: { enabled: true },
+                performance: { enabled: false },
+                quality: { enabled: false },
+                logic: { enabled: false },
+              },
               synthesis,
             },
           }),
@@ -571,12 +576,14 @@ describe('ReviewEngine', () => {
 
       it('falls back to merged findings when the synthesis pass fails', async () => {
         const eng = makeMultiAgentEngine();
-        mockRunOpenCode.mockImplementation(async (_prompt, opts?: { workingDirectory?: string }) => {
-          if (opts?.workingDirectory?.includes('agent-security')) {
-            return { success: true, output: '', durationMs: 500, tokensUsed: 10 };
-          }
-          return { success: false, output: '', durationMs: 300, tokensUsed: 5 };
-        });
+        mockRunOpenCode.mockImplementation(
+          async (_prompt, opts?: { workingDirectory?: string }) => {
+            if (opts?.workingDirectory?.includes('agent-security')) {
+              return { success: true, output: '', durationMs: 500, tokensUsed: 10 };
+            }
+            return { success: false, output: '', durationMs: 300, tokensUsed: 5 };
+          },
+        );
         vi.mocked(fs.promises.readFile).mockImplementation(async () => agentOutput);
 
         const result = await eng.reviewPR(agentPr);

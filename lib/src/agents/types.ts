@@ -3,7 +3,7 @@
 // existing OpenCode subprocess infrastructure — they are not separate
 // processes or services (see issue #200, Option A).
 
-import type { PromptBuilderInputs } from '../types/index.js';
+import type { PromptBuilderInputs } from '../prompts/builder.js';
 
 export type { AgentCategory, AgentResult } from '../types/index.js';
 

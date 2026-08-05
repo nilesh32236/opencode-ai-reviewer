@@ -155,7 +155,7 @@ function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
         const record = parsed as Record<string, unknown>;
         if (record.type === 'issue') {
           const confidence = normalizeAgentConfidence(record.confidence);
-          const stamped = {
+          const stamped: Record<string, unknown> = {
             ...record,
             agent: typeof record.agent === 'string' ? record.agent : agent,
           };
