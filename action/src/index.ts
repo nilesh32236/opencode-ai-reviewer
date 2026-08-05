@@ -25,6 +25,7 @@ import {
 } from '@opencode-pr-agent/lib';
 import { runAnalyze } from './analyze.js';
 import { runAudit } from './audit.js';
+import { runDocs } from './docs.js';
 import { runAutofixLoop, runFix, runFixIssue } from './fix.js';
 import { type ActionInputs, parseInputs } from './inputs.js';
 import { runPost } from './post.js';
@@ -156,6 +157,7 @@ async function run(): Promise<void> {
       explanationModel: inputs.explanationModel,
       conversationModel: inputs.conversationModel,
       analysisModel: inputs.analysisModel,
+      docsModel: inputs.docsModel,
       batchSize: inputs.maxFilesPerBatch,
       maxLinesPerFile: inputs.maxLinesPerFile,
       maxIterations: loadedConfig?.fix?.maxIterations ?? inputs.maxFixIterations,
@@ -261,6 +263,10 @@ async function run(): Promise<void> {
             ? loadedConfig.audit.autoFix
             : DEFAULT_CONFIG.audit.autoFix,
       },
+      docs: {
+        enabled: loadedConfig?.docs?.enabled ?? DEFAULT_CONFIG.docs?.enabled ?? false,
+        style: loadedConfig?.docs?.style ?? inputs.docStyle ?? DEFAULT_CONFIG.docs?.style ?? 'auto',
+      },
       learning: loadedConfig?.learning
         ? {
             enabled: loadedConfig.learning.enabled ?? DEFAULT_CONFIG.learning.enabled,
@@ -363,6 +369,9 @@ async function run(): Promise<void> {
           break;
         case 'audit':
           await runAudit(inputs, config, engine, gh);
+          break;
+        case 'docs':
+          await runDocs(inputs, config, engine, gh);
           break;
         case 'self-heal':
           await runSelfHeal(inputs, config, engine, gh, repo, token);

@@ -195,6 +195,17 @@ export interface ReviewComment {
 /** Supported Git hosting platforms. */
 export type Platform = 'github' | 'gitlab';
 
+/** Documentation comment style supported by the `/docs` command. */
+export type DocStyle = 'jsdoc' | 'tsdoc' | 'rest' | 'doxygen' | 'numpy' | 'auto';
+
+/** Configuration for the `/docs` documentation-generation command. */
+export interface DocsConfig {
+  /** Whether the docs command is enabled (default: false). */
+  enabled: boolean;
+  /** Doc comment style to fall back to when a file has no existing convention (default: 'auto'). */
+  style: DocStyle;
+}
+
 /** Top-level agent configuration for reviews, fixes, audits, and learning. */
 export interface AgentConfig {
   /** Platform to use (github or gitlab, defaults to github). */
@@ -205,6 +216,8 @@ export interface AgentConfig {
   fixModel: string;
   /** Model to use for audit */
   auditModel?: string;
+  /** Model to use for documentation generation */
+  docsModel?: string;
   /** Model to use for synthesis of collated batch results */
   synthesisModel?: string;
   /** Model to use for meta-verification (false-positive filtering) */
@@ -235,6 +248,8 @@ export interface AgentConfig {
   review: ReviewConfig;
   /** Audit behavior */
   audit: AuditConfig;
+  /** Documentation generation behavior */
+  docs?: DocsConfig;
   /** Learning behavior */
   learning: LearningConfig;
   /** Conversation / @mention behavior */
@@ -1031,7 +1046,15 @@ export interface PromptContext {
 
 // ─── Action Mode ──────────────────────────────────────────
 /** Operating mode of the action/app. */
-export type ActionMode = 'review' | 'fix' | 'audit' | 'post' | 'analyze' | 'self-heal' | 'setup';
+export type ActionMode =
+  | 'review'
+  | 'fix'
+  | 'audit'
+  | 'post'
+  | 'analyze'
+  | 'self-heal'
+  | 'setup'
+  | 'docs';
 
 // ─── Issue Details ────────────────────────────────────────
 /** Details of a GitHub issue. */
@@ -1227,6 +1250,8 @@ export interface PromptConfig {
     /** Whether to auto-apply fixes */
     autoFix?: boolean;
   };
+  /** Documentation generation configuration */
+  docs?: DocsConfig;
   /** Learning configuration */
   learning?: {
     /** Whether learning is enabled */
@@ -1322,6 +1347,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   explanationModel: undefined,
   conversationModel: undefined,
   analysisModel: undefined,
+  docsModel: undefined,
   batchSize: 3,
   maxLinesPerFile: 200,
   maxIterations: 3,
@@ -1384,6 +1410,10 @@ export const DEFAULT_CONFIG: AgentConfig = {
     triggerLabel: 'autofix-trigger',
     issueSeverityThreshold: 'minor',
   },
+  docs: {
+    enabled: false,
+    style: 'auto',
+  },
   learning: {
     enabled: true,
     feedbackSignals: ['dismissed', 'reaction', 'disputed_comment'],
@@ -1435,6 +1465,8 @@ export const PIPELINE_EVENT_TYPES = {
   FIX_COMPLETED: 'fix.completed',
   AUDIT_STARTED: 'audit.started',
   AUDIT_COMPLETED: 'audit.completed',
+  DOCS_STARTED: 'docs.started',
+  DOCS_COMPLETED: 'docs.completed',
   ANALYZE_STARTED: 'analyze.started',
   ANALYZE_COMPLETED: 'analyze.completed',
   EXPLAIN_STARTED: 'explain.started',
@@ -1528,6 +1560,26 @@ export interface AuditCompletedPayload extends PipelineEventPayload {
   issuesCount?: number;
 }
 
+/** Payload for a `docs.started` event. */
+export interface DocsStartedPayload extends PipelineEventPayload {
+  /** PR number being documented. */
+  prNumber?: number;
+  /** Doc style requested for the run. */
+  docStyle?: string;
+}
+
+/** Payload for a `docs.completed` event. */
+export interface DocsCompletedPayload extends PipelineEventPayload {
+  /** PR number that was documented. */
+  prNumber?: number;
+  /** Whether any documentation changes were made. */
+  changesMade?: boolean;
+  /** Files modified by the documentation pass. */
+  filesChanged?: string[];
+  /** Doc style used for the run. */
+  docStyle?: string;
+}
+
 /** Payload for an `analyze.started` event. */
 export interface AnalyzeStartedPayload extends PipelineEventPayload {
   /** Issue number being analyzed. */
@@ -1580,6 +1632,8 @@ export type PipelineEventPayloadMap = {
   'fix.completed': FixCompletedPayload;
   'audit.started': AuditStartedPayload;
   'audit.completed': AuditCompletedPayload;
+  'docs.started': DocsStartedPayload;
+  'docs.completed': DocsCompletedPayload;
   'analyze.started': AnalyzeStartedPayload;
   'analyze.completed': AnalyzeCompletedPayload;
   'explain.started': ExplainStartedPayload;

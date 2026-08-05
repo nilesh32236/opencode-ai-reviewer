@@ -3,6 +3,7 @@ import {
   type ActionMode,
   type CostTrackingVerbosity,
   DEFAULT_ALLOWLIST,
+  type DocStyle,
   type FailOnSeverity,
   validateModelString,
   validateRunChecksCommand,
@@ -16,6 +17,16 @@ const VALID_MODES: ActionMode[] = [
   'analyze',
   'self-heal',
   'setup',
+  'docs',
+];
+
+const VALID_DOC_STYLES: readonly DocStyle[] = [
+  'jsdoc',
+  'tsdoc',
+  'rest',
+  'doxygen',
+  'numpy',
+  'auto',
 ];
 
 const VALID_FAIL_ON_SEVERITIES: readonly FailOnSeverity[] = [
@@ -96,6 +107,10 @@ export interface ActionInputs {
   conversationModel?: string;
   /** Model identifier for issue analysis. */
   analysisModel?: string;
+  /** Model identifier for documentation generation. */
+  docsModel?: string;
+  /** Doc comment style for the /docs command ('auto' infers per file). */
+  docStyle: DocStyle;
   /** Optional path to a custom review prompt file. */
   reviewPromptFile?: string;
   /** Optional extra instructions appended to the review prompt. */
@@ -234,6 +249,17 @@ export function parseInputs(): ActionInputs {
   const explanationModel = modelInput('explanation_model') || globalModel || undefined;
   const conversationModel = modelInput('conversation_model') || globalModel || undefined;
   const analysisModel = modelInput('analysis_model') || globalModel || undefined;
+  const docsModel = modelInput('docs_model') || globalModel || undefined;
+
+  const docStyleRaw = core.getInput('doc_style').trim().toLowerCase();
+  if (docStyleRaw !== '' && !(VALID_DOC_STYLES as readonly string[]).includes(docStyleRaw)) {
+    throw new Error(
+      `Invalid doc_style: "${docStyleRaw}". Must be one of: ${VALID_DOC_STYLES.join(', ')}`,
+    );
+  }
+  const docStyle: DocStyle = (VALID_DOC_STYLES as readonly string[]).includes(docStyleRaw)
+    ? (docStyleRaw as DocStyle)
+    : 'auto';
 
   const enableMetaVerification = core.getInput('enable_meta_verification') === 'true';
   const enableAudit = core.getInput('enable_audit') === 'true';
@@ -264,6 +290,7 @@ export function parseInputs(): ActionInputs {
     explanationModel: false,
     conversationModel: false,
     analysisModel: mode === 'analyze',
+    docsModel: mode === 'docs',
   };
 
   for (const [field, model] of Object.entries({
@@ -276,6 +303,7 @@ export function parseInputs(): ActionInputs {
     explanationModel,
     conversationModel,
     analysisModel,
+    docsModel,
   })) {
     if (!model) continue;
     try {
@@ -307,6 +335,8 @@ export function parseInputs(): ActionInputs {
     explanationModel,
     conversationModel,
     analysisModel,
+    docsModel,
+    docStyle,
     reviewPromptFile: core.getInput('review_prompt_file') || undefined,
     reviewPromptExtra: core.getInput('review_prompt_extra') || undefined,
     configFile: core.getInput('config') || undefined,

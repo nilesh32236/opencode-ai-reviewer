@@ -886,6 +886,52 @@ multiAgent:
     });
   });
 
+  describe('docs config handling', () => {
+    it('parses docsModel when provided', () => {
+      const result = AgentConfigSchema.parse({ docsModel: 'anthropic/claude-3-5-sonnet' });
+      expect(result.docsModel).toBe('anthropic/claude-3-5-sonnet');
+    });
+
+    it('leaves docsModel undefined when not provided (falls back to reviewModel)', () => {
+      const result = AgentConfigSchema.parse({});
+      expect(result.docsModel).toBeUndefined();
+    });
+
+    it('rejects a malformed docsModel', () => {
+      expect(() => AgentConfigSchema.parse({ docsModel: 'claude-3-5-sonnet' })).toThrow(
+        /provider\/model-name/,
+      );
+    });
+
+    it('parses docs section with default style', () => {
+      const result = AgentConfigSchema.parse({ docs: { enabled: true } });
+      expect(result.docs?.enabled).toBe(true);
+      expect(result.docs?.style).toBe('auto');
+    });
+
+    it('parses an explicit doc style', () => {
+      const result = AgentConfigSchema.parse({ docs: { enabled: true, style: 'tsdoc' } });
+      expect(result.docs?.style).toBe('tsdoc');
+    });
+
+    it('rejects an invalid doc style', () => {
+      expect(() => AgentConfigSchema.parse({ docs: { enabled: true, style: 'yaml' } })).toThrow(
+        /jsdoc|tsdoc/,
+      );
+    });
+
+    it('DEFAULT_CONFIG provides docs defaults', () => {
+      expect(DEFAULT_CONFIG.docs).toEqual({ enabled: false, style: 'auto' });
+      expect(DEFAULT_CONFIG.docsModel).toBeUndefined();
+    });
+
+    it('validateConfig keeps a valid docs section', () => {
+      const result = validateConfig({ docs: { enabled: true, style: 'tsdoc' } } as never);
+      expect(result.docs?.enabled).toBe(true);
+      expect(result.docs?.style).toBe('tsdoc');
+    });
+  });
+
   describe('costTracking config handling', () => {
     it('keeps enabled/verbosity unset for a partial costTracking section (rates only)', () => {
       const result = validateConfig({

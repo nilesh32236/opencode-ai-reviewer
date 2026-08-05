@@ -15,6 +15,7 @@ const TEST_ARTIFACTS = [
 const EXPECTED_SUBSCRIBERS = [
   'ReviewSubscriber',
   'FixSubscriber',
+  'DocsSubscriber',
   'AuditSubscriber',
   'AnalyzeSubscriber',
   'AutoAnalyzeSubscriber',

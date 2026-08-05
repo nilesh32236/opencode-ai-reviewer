@@ -1,5 +1,10 @@
 import { DEFAULT_CONFIG, getDefaultMCPServers, loadConfig } from '@opencode-pr-agent/lib';
-import type { AgentConfig, FailOnSeverity, TokenBudgetConfig } from '@opencode-pr-agent/lib';
+import type {
+  AgentConfig,
+  DocStyle,
+  FailOnSeverity,
+  TokenBudgetConfig,
+} from '@opencode-pr-agent/lib';
 
 const FAIL_ON_SEVERITY_VALUES: readonly FailOnSeverity[] = [
   'off',
@@ -88,6 +93,7 @@ export function buildConfig(): AgentConfig {
     explanationModel: process.env.EXPLANATION_MODEL || undefined,
     conversationModel: process.env.CONVERSATION_MODEL || undefined,
     analysisModel: process.env.ANALYSIS_MODEL || undefined,
+    docsModel: process.env.DOCS_MODEL || undefined,
     batchSize: parseEnvInt(process.env.BATCH_SIZE, 3),
     maxLinesPerFile: parseEnvInt(process.env.MAX_LINES_PER_FILE, 200),
     maxIterations: parseEnvInt(process.env.MAX_ITERATIONS, 3),
@@ -103,6 +109,10 @@ export function buildConfig(): AgentConfig {
         ? process.env.TYPECHECK_COMMANDS.split(',')
         : [],
       lintCommands: process.env.LINT_COMMANDS ? process.env.LINT_COMMANDS.split(',') : [],
+    },
+    docs: {
+      enabled: process.env.DOCS_ENABLED === 'true',
+      style: (process.env.DOCS_STYLE || 'auto') as DocStyle,
     },
     review: {
       ...DEFAULT_CONFIG.review,

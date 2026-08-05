@@ -7,6 +7,7 @@ import type {
   AgentCategory,
   CategoryOverride,
   ConfigOverride,
+  DocsConfig,
   LinterConfig,
   MultiAgentAgentConfig,
   MultiAgentConfig,
@@ -80,6 +81,10 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     targetDirs: null,
     createIssues: null,
     autoFix: null,
+  },
+  docs: {
+    enabled: null,
+    style: null,
   },
   learning: {
     enabled: null,
@@ -563,6 +568,24 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     }
   }
 
+  if (config.docs && typeof config.docs === 'object') {
+    const d = config.docs;
+    const docs: DocsConfig = { enabled: false, style: 'auto' };
+    if (typeof d.enabled === 'boolean') {
+      docs.enabled = d.enabled;
+    }
+    if (
+      typeof d.style === 'string' &&
+      ['jsdoc', 'tsdoc', 'rest', 'doxygen', 'numpy', 'auto'].includes(d.style)
+    ) {
+      docs.style = d.style as DocsConfig['style'];
+    } else if (typeof d.style !== 'undefined') {
+      core.warning(`Invalid docs.style "${String(d.style)}" — falling back to "auto"`);
+      docs.style = 'auto';
+    }
+    result.docs = docs;
+  }
+
   if (config.learning) {
     const rawInterval = config.learning.metaReview?.interval;
     const rawMinFindings = config.learning.metaReview?.minFindingsForReview;
@@ -841,6 +864,12 @@ function extractDefaultsFromConfig(config: PromptConfig): Record<string, unknown
   }
   if (config.audit?.autoFix === false) {
     defaults.audit_auto_fix = 'false';
+  }
+  if (config.docs?.style) {
+    defaults.docs_style = config.docs.style;
+  }
+  if (config.docs?.enabled !== undefined) {
+    defaults.docs_enabled = String(config.docs.enabled);
   }
   if (config.linters?.length) {
     defaults.linters = JSON.stringify(config.linters);

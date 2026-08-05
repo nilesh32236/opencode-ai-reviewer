@@ -224,6 +224,15 @@ export const AuditConfigSchema = z.object({
   issueSeverityThreshold: SeveritySchema.default('minor'),
 });
 
+/** Supported documentation comment styles. */
+export const DOC_STYLES = ['jsdoc', 'tsdoc', 'rest', 'doxygen', 'numpy', 'auto'] as const;
+
+/** Zod schema validating the `/docs` documentation-generation configuration. */
+export const DocsConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  style: z.enum(DOC_STYLES).default('auto'),
+});
+
 /** Zod schema validating learning configuration with nested meta-review and pattern discovery defaults. */
 export const LearningConfigSchema = z.object({
   enabled: z.boolean().default(true),
@@ -375,6 +384,7 @@ export const AgentConfigSchema = z.object({
     .regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR)
     .default('opencode/deepseek-v4-flash-free'),
   auditModel: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),
+  docsModel: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),
   synthesisModel: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),
   verificationModel: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),
   metaReviewModel: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),
@@ -393,6 +403,7 @@ export const AgentConfigSchema = z.object({
   }),
   review: ReviewConfigSchema.default({}),
   audit: AuditConfigSchema.default({}),
+  docs: DocsConfigSchema.default({}),
   learning: LearningConfigSchema.default({}),
   linters: z.array(LinterConfigSchema).default([]),
   rateLimiting: RateLimitingConfigSchema.default(RateLimitingConfigSchema.parse({})),
@@ -473,6 +484,7 @@ export const PromptConfigSchema = z.object({
       autoFix: z.boolean().optional(),
     })
     .optional(),
+  docs: DocsConfigSchema.optional(),
   learning: z
     .object({
       enabled: z.boolean().optional(),

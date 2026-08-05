@@ -7,7 +7,7 @@ branding:
 
 inputs:
   mode:
-    description: 'Action mode: review, fix, audit, post, analyze, self-heal, or setup'
+    description: 'Action mode: review, fix, audit, post, analyze, self-heal, setup, or docs'
     required: true
     default: 'review'
 
@@ -78,6 +78,15 @@ inputs:
   analysis_model:
     description: 'Model to use for issue analysis'
     required: false
+
+  docs_model:
+    description: 'Model to use for documentation generation (mode=docs)'
+    required: false
+
+  doc_style:
+    description: 'Doc comment style for the docs mode: jsdoc, tsdoc, rest, doxygen, numpy, or auto (infer per file, default)'
+    required: false
+    default: 'auto'
 
   review_prompt_file:
     description: 'Path to a custom review prompt file'

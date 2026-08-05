@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
 import {
   buildAnalyzePrompt,
+  buildDocsPrompt,
   buildFixPrompt,
   buildReplyPrompt,
   buildReviewPrompt,
@@ -84,6 +85,53 @@ describe('prompt-builder', () => {
       2,
     );
     expect(prompt).toContain('2');
+  });
+
+  describe('buildDocsPrompt', () => {
+    it('returns a non-empty string', () => {
+      const prompt = buildDocsPrompt(
+        { reviewPromptFile: '', reviewPromptExtra: '', maxFilesPerBatch: 3, projectContext: '' },
+        'PR context with changed code',
+      );
+      expect(prompt).toBeTruthy();
+      expect(typeof prompt).toBe('string');
+      expect(prompt.length).toBeGreaterThan(50);
+    });
+
+    it('includes the PR context', () => {
+      const prContext = 'Test PR context with specific details';
+      const prompt = buildDocsPrompt({ projectContext: '' }, prContext);
+      expect(prompt).toContain(prContext);
+    });
+
+    it('instructs the agent to only document changed code', () => {
+      const prompt = buildDocsPrompt({ projectContext: '' }, 'PR context');
+      expect(prompt).toMatch(/only.*changed/i);
+      expect(prompt).toContain('.docs-summary.md');
+    });
+
+    it('instructs the agent to preserve existing documentation', () => {
+      const prompt = buildDocsPrompt({ projectContext: '' }, 'PR context');
+      expect(prompt).toMatch(/do not modify.*(existing|correct)/i);
+      expect(prompt).toMatch(/preserve existing/i);
+    });
+
+    it('renders the requested doc style', () => {
+      const prompt = buildDocsPrompt({ projectContext: '' }, 'PR context', 'tsdoc');
+      expect(prompt).toContain('tsdoc');
+    });
+
+    it('defaults to inferring the style when auto', () => {
+      const prompt = buildDocsPrompt({ projectContext: '' }, 'PR context', 'auto');
+      expect(prompt).toContain('infer');
+    });
+
+    it('includes critical rules forbidding git push and PR creation', () => {
+      const prompt = buildDocsPrompt({ projectContext: '' }, 'PR context');
+      expect(prompt).toContain('git commit');
+      expect(prompt).toContain('git push');
+      expect(prompt).toContain('gh pr create');
+    });
   });
 
   describe('buildAnalyzePrompt', () => {

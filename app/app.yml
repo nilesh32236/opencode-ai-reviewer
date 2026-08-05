@@ -18,16 +18,18 @@ default_events:
 #   ReviewSubscriber (/review)          -> contents: read
 #   AuditSubscriber (/audit)            -> contents: read
 #   AnalyzeSubscriber (/analyze)        -> contents: read
-#   FixSubscriber (/fix, autofix)       -> contents: write   (ONLY mode needing write)
+#   FixSubscriber (/fix, autofix)       -> contents: write
+#   DocsSubscriber (/docs)              -> contents: write   (opens a docs PR from a branch)
 #
 # `issues: write` and `pull_requests: write` are required by both read-only and
 # autofix modes (for comments and PR/issue updates). `contents: write` is only
-# exercised by autofix — review/audit/analyze operate with `contents: read`.
+# exercised by autofix and the docs command — review/audit/analyze operate with
+# `contents: read`.
 # `checks: write` is required for the branch-protection check run (Checks API);
 # existing installs must approve the newly requested permission when upgrading.
 default_permissions:
-  pull_requests: write   # required for review + autofix (PR comments/updates)
+  pull_requests: write   # required for review + autofix + docs (PR comments/updates)
   issues: write          # required for review + audit (issue comments/tracking)
-  contents: write        # ONLY required for autofix (FixSubscriber); review/audit need read
+  contents: write        # ONLY required for autofix (FixSubscriber) and /docs (DocsSubscriber); review/audit need read
   metadata: read         # required for repo/org lookup in all modes
   checks: write          # required for the OpenCode AI Reviewer check run (branch protection)

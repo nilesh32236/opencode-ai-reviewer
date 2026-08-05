@@ -11,6 +11,7 @@ describe('parseCommand', () => {
     expect(parseCommand('/explain')?.command).toBe('explain');
     expect(parseCommand('/ask')?.command).toBe('ask');
     expect(parseCommand('/setup')?.command).toBe('setup');
+    expect(parseCommand('/docs')?.command).toBe('docs');
     expect(parseCommand('/dismiss')?.command).toBe('dismiss');
     expect(parseCommand('/oc setup')?.command).toBe('setup');
   });
@@ -19,6 +20,18 @@ describe('parseCommand', () => {
     expect(parseCommand('/oc fix')?.command).toBe('fix');
     expect(parseCommand('/oc analyze')?.command).toBe('analyze');
     expect(parseCommand('  /oc review')?.command).toBe('review');
+    expect(parseCommand('/oc docs')?.command).toBe('docs');
+  });
+
+  it('parses /docs style flag', () => {
+    const res = parseCommand('/docs --style=tsdoc');
+    expect(res?.command).toBe('docs');
+    expect(res?.flags.style).toBe('tsdoc');
+  });
+
+  it('rejects partial /docs word matches', () => {
+    expect(parseCommand('/documentation')).toBeNull();
+    expect(parseCommand('please document this /docs later')).toBeNull();
   });
 
   it('parses flags correctly', () => {
