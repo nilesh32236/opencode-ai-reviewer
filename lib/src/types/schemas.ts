@@ -310,7 +310,7 @@ export const NotificationsConfigSchema = z
     slack: SlackConfigSchema.optional(),
     teams: TeamsConfigSchema.optional(),
   })
-  .catch({} as never);
+  .catch({ enabled: false, minSeverity: 'critical' });
 
 /** Zod schema validating the full agent configuration, merging provided values with defaults. */
 export const AgentConfigSchema = z.object({

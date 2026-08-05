@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import type { AgentConfig, PRContext, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
 import {
+  GitLabAdapter,
   Logger,
   countAtOrAboveSeverity,
   sendNotification,
@@ -134,17 +135,22 @@ export async function runReview(
   // Best-effort Slack/Teams notification with the review summary. Non-critical:
   // a webhook failure must never fail the action, so sendNotification swallows
   // its own errors and is additionally guarded against unexpected throws here.
-  try {
-    await sendNotification(result, config.notifications, {
-      number: prNumber,
-      title: pr.title,
-      repo,
-    });
-  } catch (err) {
-    new Logger('Review').warn(
-      `Failed to send review notification: ${err instanceof Error ? err.message : String(err)}`,
-      { operation: 'review.notify', prNumber },
-    );
+  // Only notify about a review that actually reached the pull request; the
+  // message links to the PR, so a link to a PR without a review is misleading.
+  if (reviewResult.success) {
+    try {
+      await sendNotification(result, config.notifications, {
+        number: prNumber,
+        title: pr.title,
+        repo,
+        platform: gh instanceof GitLabAdapter ? 'gitlab' : 'github',
+      });
+    } catch (err) {
+      new Logger('Review').warn(
+        `Failed to send review notification: ${err instanceof Error ? err.message : String(err)}`,
+        { operation: 'review.notify', prNumber },
+      );
+    }
   }
 
   core.setOutput('review_summary', result.summary);

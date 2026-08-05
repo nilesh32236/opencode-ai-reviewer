@@ -196,7 +196,17 @@ export {
   resolveWebhookUrl,
   defaultPrUrl,
 } from './utils/notifier.js';
-export type { NotificationContext, SlackBlock, SendNotificationOptions } from './utils/notifier.js';
+export type {
+  NotificationContext,
+  SlackBlock,
+  SendNotificationOptions,
+  TeamsAttachment,
+  TeamsCardBodyElement,
+  TeamsCardContent,
+  TeamsFactSet,
+  TeamsMessage,
+  TeamsTextBlock,
+} from './utils/notifier.js';
 export {
   buildConversationPrompt,
   buildConversationSummaryPrompt,

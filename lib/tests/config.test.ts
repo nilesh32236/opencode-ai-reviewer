@@ -125,8 +125,10 @@ fix:
       );
       const config = loadConfig(tmpDir);
       expect(config).not.toBeNull();
-      expect(config!.notifications?.enabled).toBeUndefined();
-      expect(config!.notifications?.minSeverity).toBeUndefined();
+      // A malformed notifications block degrades to the schema defaults instead
+      // of failing the whole config parse.
+      expect(config!.notifications?.enabled).toBe(false);
+      expect(config!.notifications?.minSeverity).toBe('critical');
       expect(config!.notifications?.slack).toBeUndefined();
     });
   });

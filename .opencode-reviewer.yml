@@ -82,7 +82,7 @@ learning:
 #   enabled: true
 #   minSeverity: critical   # only notify when critical findings exist (default: critical)
 #   slack:
-#     # webhook_url: https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXX
+#     # webhookUrl: https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXX
 #     channel: "#code-reviews"
 #   teams:
-#     # webhook_url: https://outlook.office.com/webhook/XXXX-XXXX-XXXX-XXXX
+#     # webhookUrl: https://outlook.office.com/webhook/XXXX-XXXX-XXXX-XXXX

@@ -10,6 +10,7 @@ import {
   resolveWebhookUrl,
   sendNotification,
 } from '../src/utils/notifier.js';
+import type { TeamsFactSet, TeamsTextBlock } from '../src/utils/notifier.js';
 
 vi.mock('@actions/core', () => {
   const warning = vi.fn();
@@ -18,12 +19,29 @@ vi.mock('@actions/core', () => {
   return { warning, info, debug };
 });
 
-vi.mock('../src/utils/retry.js', () => ({
-  withRetry: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-  withRetryAndTimeout: vi.fn(async (fn: (signal: AbortSignal) => Promise<unknown>) =>
-    fn(new AbortController().signal),
-  ),
-}));
+// Most tests use a pass-through retry so webhook behavior is isolated. The
+// flag lets a dedicated test exercise the real withRetryAndTimeout policy
+// (retry counts for permanent 4xx vs transient network errors).
+const retryUseReal = vi.hoisted(() => ({ enabled: false }));
+
+vi.mock('../src/utils/retry.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/utils/retry.js')>();
+  return {
+    withRetry: vi.fn(async (fn: () => Promise<unknown>) =>
+      retryUseReal.enabled ? actual.withRetry(fn) : fn(),
+    ),
+    withRetryAndTimeout: vi.fn(
+      async (
+        fn: (signal: AbortSignal) => Promise<unknown>,
+        timeoutMs: number,
+        options?: { operationName?: string; maxRetries?: number },
+      ) =>
+        retryUseReal.enabled
+          ? actual.withRetryAndTimeout(fn, timeoutMs, options)
+          : fn(new AbortController().signal),
+    ),
+  };
+});
 
 function makeIssue(severity: ReviewIssue['severity'], message: string): ReviewIssue {
   return {
@@ -140,6 +158,12 @@ describe('defaultPrUrl', () => {
   it('builds a GitHub PR URL from repo and number', () => {
     expect(defaultPrUrl(CONTEXT)).toBe('https://github.com/owner/repo/pull/42');
   });
+
+  it('builds a GitLab MR URL when the platform is gitlab', () => {
+    expect(defaultPrUrl({ ...CONTEXT, platform: 'gitlab' })).toBe(
+      'https://gitlab.com/owner/repo/-/merge_requests/42',
+    );
+  });
 });
 
 describe('formatSlackMessage', () => {
@@ -152,7 +176,8 @@ describe('formatSlackMessage', () => {
 
     expect(payload.blocks[0].type).toBe('section');
     const headerText = (payload.blocks[0].text as { text: string }).text;
-    expect(headerText).toContain('#42 Fix the thing');
+    expect(headerText).toContain('#42');
+    expect(headerText).toContain('Fix the thing');
     expect(headerText).toContain('https://github.com/owner/repo/pull/42');
 
     const fields = payload.blocks[1].fields as Array<{ text: string }>;
@@ -182,6 +207,43 @@ describe('formatSlackMessage', () => {
     const types = payload.blocks.map((b) => b.type);
     expect(types).toEqual(['section', 'section', 'divider']);
   });
+
+  it('escapes mrkdwn metacharacters in the PR title', () => {
+    const result = makeResult([makeIssue('critical', 'x')]);
+    const payload = formatSlackMessage(result, {
+      ...CONTEXT,
+      title: 'Evil <https://evil.com|click> & more',
+    });
+    const headerText = (payload.blocks[0].text as { text: string }).text;
+    expect(headerText).toContain('Evil &lt;https://evil.com|click&gt; &amp; more');
+    expect(headerText).not.toContain('<https://evil.com|click>');
+  });
+
+  it('escapes mrkdwn metacharacters in finding messages', () => {
+    const result = makeResult([makeIssue('critical', 'Inject <b> & check')]);
+    const payload = formatSlackMessage(result, CONTEXT);
+    const text = (payload.blocks[2].text as { text: string }).text;
+    expect(text).toContain('Inject &lt;b&gt; &amp; check');
+  });
+
+  it('does not truncate short top-findings text', () => {
+    const result = makeResult([makeIssue('critical', 'short message')]);
+    const payload = formatSlackMessage(result, CONTEXT);
+    const text = (payload.blocks[2].text as { text: string }).text;
+    expect(text).toContain('short message');
+  });
+
+  it('truncates top-findings text that exceeds the Slack section limit', () => {
+    const longMessage = 'x'.repeat(5000);
+    const result = makeResult([
+      makeIssue('critical', longMessage),
+      makeIssue('important', longMessage),
+    ]);
+    const payload = formatSlackMessage(result, CONTEXT);
+    const text = (payload.blocks[2].text as { text: string }).text;
+    expect(text.length).toBeLessThanOrEqual(2900);
+    expect(text.endsWith('…')).toBe(true);
+  });
 });
 
 describe('formatTeamsMessage', () => {
@@ -191,31 +253,34 @@ describe('formatTeamsMessage', () => {
 
     const attachment = payload.attachments[0];
     expect(attachment.contentType).toBe('application/vnd.microsoft.card.adaptive');
-    const card = attachment.content as Record<string, unknown>;
+    const card = attachment.content;
 
-    const textBlocks = card.body as Array<{ type: string; text?: string }>;
-    const header = textBlocks.find((b) => (b.text ?? '').includes('OpenCode AI Reviewer'));
+    const header = card.body.find(
+      (b): b is TeamsTextBlock =>
+        b.type === 'TextBlock' && (b.text ?? '').includes('OpenCode AI Reviewer'),
+    );
     expect(header?.text).toContain('#42');
 
-    const facts = (
-      card.body as Array<{ type: string; facts?: Array<{ title: string; value: string }> }>
-    ).find((b) => b.type === 'FactSet')?.facts;
-    expect(facts?.find((f) => f.title === 'Verdict')?.value).toBe('⛔ Changes requested');
-    expect(facts?.find((f) => f.title === 'Critical')?.value).toBe('1');
+    const factSet = card.body.find((b): b is TeamsFactSet => b.type === 'FactSet');
+    expect(factSet?.facts.find((f) => f.title === 'Verdict')?.value).toBe('⛔ Changes requested');
+    expect(factSet?.facts.find((f) => f.title === 'Critical')?.value).toBe('1');
 
+    const textBlocks = card.body.filter((b): b is TeamsTextBlock => b.type === 'TextBlock');
     const findingsText = textBlocks.map((b) => b.text ?? '').join('\n');
     expect(findingsText).toContain('Secrets in repo');
 
-    const actions = card.actions as Array<{ type: string; url: string }>;
+    const actions = card.actions ?? [];
     expect(actions[0].type).toBe('Action.OpenUrl');
     expect(actions[0].url).toBe('https://github.com/owner/repo/pull/42');
   });
 
   it('omits top findings when no issues exist', () => {
     const payload = formatTeamsMessage(makeResult([]), CONTEXT);
-    const card = payload.attachments[0].content as Record<string, unknown>;
-    const textBlocks = card.body as Array<{ type: string; text?: string }>;
-    const allText = textBlocks.map((b) => b.text ?? '').join('\n');
+    const card = payload.attachments[0].content;
+    const allText = card.body
+      .filter((b): b is TeamsTextBlock => b.type === 'TextBlock')
+      .map((b) => b.text ?? '')
+      .join('\n');
     expect(allText).not.toContain('Top findings');
   });
 });
@@ -258,11 +323,78 @@ describe('postToWebhook', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('returns false for http URLs without calling fetch', async () => {
+    const ok = await postToWebhook('http://hooks.slack.com/services/T/B/S', {});
+    expect(ok).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('returns false for private, loopback, and metadata hosts', async () => {
+    for (const url of [
+      'https://localhost/hook',
+      'https://127.0.0.1/hook',
+      'https://10.0.0.1/hook',
+      'https://192.168.1.1/hook',
+      'https://169.254.169.254/latest/meta-data',
+      'https://foo.internal/hook',
+    ]) {
+      const ok = await postToWebhook(url, {});
+      expect(ok).toBe(false);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('returns false when fetch rejects', async () => {
     fetchMock.mockRejectedValue(new TypeError('fetch failed'));
     const ok = await postToWebhook('https://hooks.slack.com/services/T/B/S', {});
     expect(ok).toBe(false);
   });
+
+  it('treats a 2xx response with a rejected body as a failure', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: vi.fn().mockResolvedValue(JSON.stringify({ ok: false, error: 'invalid_blocks' })),
+    } as unknown as Response);
+    const ok = await postToWebhook('https://hooks.slack.com/services/T/B/REJECT', {});
+    expect(ok).toBe(false);
+  });
+
+  it('treats a non-JSON 2xx body (e.g. Slack "ok") as a success', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: vi.fn().mockResolvedValue('ok'),
+    } as unknown as Response);
+    const ok = await postToWebhook('https://hooks.slack.com/services/T/B/PLAINTEXT', {});
+    expect(ok).toBe(true);
+  });
+
+  it('does not retry permanent 4xx responses but retries transient network errors', async () => {
+    retryUseReal.enabled = true;
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    try {
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        text: vi.fn().mockResolvedValue('bad'),
+      } as unknown as Response);
+      await postToWebhook('https://hooks.slack.com/services/T/B/PERMANENT', {});
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      fetchMock.mockReset();
+      fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+      await postToWebhook('https://hooks.slack.com/services/T/B/TRANSIENT', {});
+      // Unknown-status network errors are retried up to the configured 3 attempts.
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    } finally {
+      retryUseReal.enabled = false;
+      vi.restoreAllMocks();
+    }
+  }, 15_000);
 });
 
 describe('sendNotification', () => {
@@ -315,6 +447,21 @@ describe('sendNotification', () => {
     const urls = fetchMock.mock.calls.map((c) => c[0]);
     expect(urls).toContain('https://hooks.slack.com/services/T/B/S');
     expect(urls).toContain('https://outlook.office.com/webhook/T');
+  });
+
+  it('includes the configured Slack channel override in the payload', async () => {
+    fetchMock.mockResolvedValue(mockOkResponse());
+    await sendNotification(
+      makeResult([makeIssue('critical', 'x')]),
+      {
+        enabled: true,
+        slack: { webhookUrl: 'https://hooks.slack.com/services/T/B/S', channel: '#code-reviews' },
+      },
+      CONTEXT,
+    );
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(String(init.body)) as { channel?: string };
+    expect(body.channel).toBe('#code-reviews');
   });
 
   it('gives env webhook URLs precedence over the config file values', async () => {

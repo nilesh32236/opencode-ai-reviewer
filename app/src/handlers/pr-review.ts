@@ -269,20 +269,22 @@ export async function handlePRReview(
         );
       }
 
-      // Best-effort Slack/Teams notification with the review summary. Non-critical:
-      // a webhook failure must never break the review flow, so sendNotification
-      // swallows its own errors and is additionally guarded against throws here.
-      try {
-        await sendNotification(result, effectiveConfig.notifications, {
-          number: prNumber,
-          title: pr.title,
-          repo,
-        });
-      } catch (err) {
+      // Best-effort Slack/Teams notification with the review summary.
+      // Intentionally fire-and-forget: it is a non-critical side channel, so
+      // the check run that branch protection consumes must never wait on
+      // Slack/Teams delivery. sendNotification swallows its own errors; the
+      // defensive catch keeps an unexpected throw from surfacing as an
+      // unhandled rejection on the handler path.
+      void sendNotification(result, effectiveConfig.notifications, {
+        number: prNumber,
+        title: pr.title,
+        repo,
+        platform: gh instanceof GitLabAdapter ? 'gitlab' : 'github',
+      }).catch((err) => {
         logger.warn(
           `Failed to send review notification: ${err instanceof Error ? err.message : String(err)}`,
         );
-      }
+      });
     } else {
       logger.warn(`Failed to post review to PR #${prNumber}`, { prNumber, repo });
       // A review that was not actually posted must not gate merges as a
