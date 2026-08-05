@@ -9,7 +9,32 @@ import type { SupportedLanguage } from './language/index.js';
 
 const MAX_PROMPT_BYTES = 200 * 1024;
 const PROMPT_TRUNCATION_MARKER = '... [prompt truncated at 200KB cap]';
+// Cap for the codebase cross-file index section. It is the largest unbounded
+// context input (built from the whole repo's symbol/import graph) and the
+// most likely to push an assembled prompt over MAX_PROMPT_BYTES. Pre-capping it
+// keeps the instruction tail — Output Format, Critical Rules, Additional
+// Instructions — intact instead of relying on the whole-prompt tail truncation
+// below, which would drop those framing instructions first.
+const MAX_CODEBASE_INDEX_BYTES = 96 * 1024;
 const logger = new Logger('prompt-builder');
+
+/**
+ * Truncate a string to a UTF-8 byte budget on a code-point boundary so
+ * multibyte characters are never split (an orphan lead byte would otherwise
+ * decode to U+FFFD). Returns the original string when it already fits.
+ */
+function truncateUtf8Bytes(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
+  let charCount = 0;
+  let runningBytes = 0;
+  for (const codePoint of text) {
+    const cpBytes = Buffer.byteLength(codePoint, 'utf8');
+    if (runningBytes + cpBytes > maxBytes) break;
+    runningBytes += cpBytes;
+    charCount++;
+  }
+  return text.slice(0, charCount);
+}
 
 /**
  * Enforce the prompt byte cap. Both the cap check and the truncation operate on
@@ -23,18 +48,7 @@ function capPromptLength(prompt: string): string {
   if (totalBytes <= MAX_PROMPT_BYTES) return prompt;
   logger.warn(`Review prompt exceeds ${MAX_PROMPT_BYTES} byte cap, truncating tail`);
   const budgetBytes = MAX_PROMPT_BYTES - markerBytes;
-  // Truncate the source string at a code-point boundary whose re-encoding into
-  // UTF-8 fits the byte budget. Iterating full code points (rather than slicing
-  // raw bytes) avoids orphan lead bytes that would otherwise decode to U+FFFD.
-  let charCount = 0;
-  let runningBytes = 0;
-  for (const codePoint of prompt) {
-    const cpBytes = Buffer.byteLength(codePoint, 'utf8');
-    if (runningBytes + cpBytes > budgetBytes) break;
-    runningBytes += cpBytes;
-    charCount++;
-  }
-  const prefix = prompt.slice(0, charCount);
+  const prefix = truncateUtf8Bytes(prompt, budgetBytes);
   return `${prefix}\n${PROMPT_TRUNCATION_MARKER}`;
 }
 
@@ -303,7 +317,12 @@ export function buildReviewPrompt(
       'The following cross-file relationships were detected. Use this context to detect import issues, duplicate symbols, missing exports, and broken callers across the codebase:',
     );
     sections.push('');
-    sections.push(codebaseIndexCtx);
+    const codebaseCtx = truncateUtf8Bytes(codebaseIndexCtx, MAX_CODEBASE_INDEX_BYTES);
+    sections.push(codebaseCtx);
+    if (codebaseCtx.length < codebaseIndexCtx.length) {
+      sections.push('');
+      sections.push('... [codebase context truncated at 96KB cap]');
+    }
   }
 
   if (blameAware) {
