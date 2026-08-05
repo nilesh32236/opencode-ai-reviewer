@@ -832,7 +832,7 @@ describe('setupOpenCode()', () => {
     const prevToken = process.env.GITHUB_TOKEN;
     process.env.GITHUB_TOKEN = 'some-token';
     try {
-      const result = await setupOpenCode('v1.2.0');
+      const result = await setupOpenCode('v1.2.0', 'some-token');
       expect(result).toBe('/tmp/opencode-cached/opencode');
     } finally {
       if (prevToken === undefined) {

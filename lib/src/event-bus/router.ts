@@ -57,6 +57,9 @@ export class EventRouter {
         ? (payload as { repository?: { full_name?: string } }).repository?.full_name
         : undefined;
     const prNumber = extractPRNumber(payload);
+    // One correlation ID per incoming webhook so every downstream log line
+    // (subscriber → engine → pipeline event) can be traced back to it.
+    const correlationId = Logger.generateCorrelationId();
 
     const event: GitHubEvent = {
       type,
@@ -65,12 +68,13 @@ export class EventRouter {
       timestamp: Date.now(),
       repo,
       prNumber,
+      correlationId,
     };
 
     try {
       await this.bus.publish(event);
     } catch (err) {
-      const logger = new Logger('EventRouter', { eventType: type, repo });
+      const logger = new Logger('EventRouter', { eventType: type, repo, correlationId });
       logger.error(`Failed to publish event ${type}`, err);
     }
   }

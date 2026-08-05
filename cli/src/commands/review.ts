@@ -50,6 +50,8 @@ const plainSink: LoggerSink = {
   info: (message) => process.stdout.write(`${message}\n`),
   warn: (message) => process.stdout.write(`${message}\n`),
   error: (message) => process.stderr.write(`${message}\n`),
+  // Structured NDJSON records are emitted raw (they must stay parseable).
+  structured: (line) => process.stdout.write(line),
 };
 
 /** Default file names for file-based output formats. */
@@ -64,6 +66,10 @@ const MARKDOWN_OUTPUT_FILE = 'review-result.md';
  */
 export async function runReviewCommand(options: ReviewCommandOptions): Promise<number> {
   Logger.setSink(plainSink);
+  // Keep local terminal output human-readable; JSON is opt-in via LOG_FORMAT.
+  if (!process.env.LOG_FORMAT) {
+    process.env.LOG_FORMAT = 'human';
+  }
 
   const branch = options.branch;
 

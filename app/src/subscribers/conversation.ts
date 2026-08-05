@@ -107,6 +107,7 @@ export function createConversationSubscriber(
           convWorkDir,
           conversationStateManager,
           eventBus,
+          event.correlationId,
         );
         await recordRateLimit(rateLimiter, event, 'interactive', action, reservation);
       } catch (err) {

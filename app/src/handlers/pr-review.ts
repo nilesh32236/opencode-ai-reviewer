@@ -36,6 +36,7 @@ const REVIEW_IN_PROGRESS_MARKER = '<!-- review-in-progress -->';
  * @param tempDir - Optional temporary working directory.
  * @param previousHeadSha - Optional previous HEAD sha
  * @param eventBus - Optional event bus for publishing pipeline events.
+ * @param correlationId - Optional correlation ID for tracing this request.
  * @returns The review result or null if review was skipped or failed.
  */
 export async function handlePRReview(
@@ -47,8 +48,9 @@ export async function handlePRReview(
   tempDir?: string,
   previousHeadSha?: string,
   eventBus?: EventBus,
+  correlationId?: string,
 ): Promise<ReviewResult | null> {
-  const logger = new Logger('PRReview', { prNumber, repo });
+  const logger = new Logger('PRReview', { prNumber, repo, correlationId });
   logger.info(
     `Starting review for PR #${prNumber}${previousHeadSha ? ` (delta from ${previousHeadSha.slice(0, 7)})` : ''}`,
   );
@@ -115,6 +117,7 @@ export async function handlePRReview(
     learningStore,
     eventBus,
     repo,
+    correlationId,
   );
 
   try {
@@ -257,7 +260,15 @@ export async function handlePRReview(
         `Review agent confirmed issues are auto-fixable with high confidence. Launching handleAutofixLoop...`,
       );
       try {
-        await handleAutofixLoop(prNumber, repo, token, config, undefined, tempDir);
+        await handleAutofixLoop({
+          prNumber,
+          repo,
+          token,
+          config,
+          tempDir,
+          eventBus,
+          correlationId,
+        });
       } catch (err) {
         logger.error(
           `Autofix loop failed for PR #${prNumber}: ${err instanceof Error ? err.message : err}`,

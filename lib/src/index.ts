@@ -136,7 +136,13 @@ export {
 } from './utils/reachability.js';
 export type { ReachabilityResult } from './utils/reachability.js';
 export { Logger, sanitizeError, sanitizeErrorMessage } from './utils/logger.js';
-export type { LogLevel, LogContext, LoggerSink } from './utils/logger.js';
+export type {
+  LogLevel,
+  LogContext,
+  LoggerSink,
+  LogFormat,
+  StructuredLogEntry,
+} from './utils/logger.js';
 export {
   buildPRContextFromStagedDiff,
   buildPRContextFromBranchDiff,

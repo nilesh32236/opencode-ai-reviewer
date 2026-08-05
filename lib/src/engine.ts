@@ -3,7 +3,6 @@ import * as cp from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as os from 'os';
 import * as path from 'path';
-import * as core from '@actions/core';
 import { minimatch } from 'minimatch';
 import { CodebaseIndex, CodebaseIndexCache } from './codebase-index/index.js';
 import type { CodebaseIndexData } from './codebase-index/types.js';
@@ -136,6 +135,7 @@ export class ReviewEngine {
    * @param eventBus - Optional event bus for publishing pipeline lifecycle events.
    * @param repo - Optional repository in "owner/repo" format, included on published
    * pipeline events for attribution in audit logs and downstream consumers.
+   * @param correlationId - Optional correlation ID tracing this run across subsystems.
    */
   constructor(
     config: AgentConfig,
@@ -143,11 +143,18 @@ export class ReviewEngine {
     private learningStore?: LearningStore,
     private eventBus?: EventBus,
     private repo?: string,
+    private correlationId?: string,
   ) {
     this.config = config;
     this.adapter = adapter;
     this.mcp = new MCPManager(config.mcpServers);
-    this.logger = new Logger('ReviewEngine');
+    this.logger = new Logger('ReviewEngine', { correlationId });
+    // Resolve the effective correlation ID exactly once and reuse it for both
+    // the engine's own log lines and pipeline event publishing. Without this,
+    // a non-App invocation (e.g. the GitHub Action) leaves `this.correlationId`
+    // undefined while the logger falls back to its own generated UUID, so
+    // published events would not share the engine logs' trace ID.
+    this.correlationId = this.logger.getCorrelationId();
   }
 
   /**
@@ -189,6 +196,7 @@ export class ReviewEngine {
         timestamp: eventPayload.timestamp,
         prNumber,
         repo: this.repo ?? numbered.repo,
+        correlationId: this.correlationId,
       })
       .catch((err) => {
         this.logger.warn(
@@ -369,7 +377,7 @@ export class ReviewEngine {
       }
       return commits.size > 0 ? commits : undefined;
     } catch (err) {
-      core.warning(
+      this.logger.warn(
         `Could not resolve PR commit set: ${err instanceof Error ? err.message : String(err)}`,
       );
       return undefined;
@@ -398,7 +406,7 @@ export class ReviewEngine {
     const repoRoot = await this.resolveCodebaseRoot(workDir);
     const prCommits = await this.getPRCommits(pr, repoRoot);
     if (!prCommits) {
-      core.warning('Skipping git blame enrichment: PR commit scope could not be resolved');
+      this.logger.warn('Skipping git blame enrichment: PR commit scope could not be resolved');
       return blameData;
     }
     const maxLinesPerFile =
@@ -416,7 +424,7 @@ export class ReviewEngine {
         });
         if (blame.size > 0) blameData.set(file.path, blame);
       } catch (err) {
-        core.warning(
+        this.logger.warn(
           `Git blame skipped for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
@@ -487,7 +495,7 @@ export class ReviewEngine {
     try {
       return index.formatContext(index.getContextForFiles(data, paths));
     } catch (err) {
-      core.warning(
+      this.logger.warn(
         `Codebase index context skipped: ${err instanceof Error ? err.message : String(err)}`,
       );
       return '';
@@ -608,7 +616,7 @@ export class ReviewEngine {
           mcpDocs = await this.getCachedMcpDocs(libraries);
         }
       } catch (err) {
-        core.warning(
+        this.logger.warn(
           sanitizeString(
             `MCP enrichment skipped: ${err instanceof Error ? err.message : String(err)}`,
           ),
@@ -625,7 +633,7 @@ export class ReviewEngine {
       try {
         deltaContext = await this.adapter.getDiffSince(previousHeadSha, pr.headSha || pr.headRef);
       } catch (err) {
-        core.warning(
+        this.logger.warn(
           `Failed to fetch delta diff since ${previousHeadSha}: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
@@ -642,13 +650,13 @@ export class ReviewEngine {
         : pr.changedFiles;
 
     if (files.length === 0 && pr.changedFiles.length > 0) {
-      core.info(
+      this.logger.info(
         `All ${pr.changedFiles.length} changed file(s) matched exclude patterns — skipping review`,
       );
       return emptyResult();
     }
     if (files.length < pr.changedFiles.length) {
-      core.info(
+      this.logger.info(
         `Excluded ${pr.changedFiles.length - files.length} file(s) from review by exclude patterns`,
       );
     }
@@ -673,18 +681,18 @@ export class ReviewEngine {
         codebaseIndexData = await indexEngine.buildOrLoad(indexRoot, cacheKey);
         const buildMs = Date.now() - startedAt;
         codebaseIndex = indexEngine;
-        core.info(
+        this.logger.info(
           `Codebase index ready: ${codebaseIndexData.symbols.length} symbols, ` +
             `${codebaseIndexData.imports.length} imports, ${codebaseIndexData.callGraph.length} call edges ` +
             `(built in ${buildMs}ms)`,
         );
         if (buildMs > 5000) {
-          core.warning(
+          this.logger.warn(
             `Codebase index build took ${buildMs}ms (>5s) — consider excluding non-source directories`,
           );
         }
       } catch (err) {
-        core.warning(
+        this.logger.warn(
           `Codebase index build skipped: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
@@ -701,9 +709,9 @@ export class ReviewEngine {
     if (!isIncremental) {
       totalDiffLines = files.reduce((sum, f) => sum + (f.additions || 0) + (f.deletions || 0), 0);
       budgetMode = this.determineBudgetMode(totalDiffLines);
-      core.info(`Review budget mode: ${budgetMode} (total diff: ~${totalDiffLines} lines)`);
+      this.logger.info(`Review budget mode: ${budgetMode} (total diff: ~${totalDiffLines} lines)`);
     } else {
-      core.info('Skipping review budget adaptation for incremental (delta) review');
+      this.logger.info('Skipping review budget adaptation for incremental (delta) review');
     }
 
     const tokenBudgetConfig = this.config.review.tokenBudget;
@@ -718,10 +726,10 @@ export class ReviewEngine {
       try {
         blameData = await this.buildBlameData(pr, files, workDir);
         if (blameData.size > 0) {
-          core.info(`Git blame annotations fetched for ${blameData.size} file(s)`);
+          this.logger.info(`Git blame annotations fetched for ${blameData.size} file(s)`);
         }
       } catch (err) {
-        core.warning(
+        this.logger.warn(
           `Git blame enrichment skipped: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
@@ -737,7 +745,7 @@ export class ReviewEngine {
     try {
       openThreadsContext = await this.adapter.getOpenHumanThreads(pr.number);
     } catch (err) {
-      core.warning(
+      this.logger.warn(
         `Failed to fetch open human threads: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
@@ -758,14 +766,14 @@ export class ReviewEngine {
       try {
         lessons = await this.getRelevantLessons(filePaths);
       } catch (err) {
-        core.warning(
+        this.logger.warn(
           `Failed to get learning store lessons: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
       try {
         falsePositiveRules = await this.learningStore.getFalsePositiveRules(filePaths);
       } catch (err) {
-        core.warning(
+        this.logger.warn(
           `Failed to get false-positive rules: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
@@ -826,7 +834,7 @@ export class ReviewEngine {
       );
 
       if (!runResult.success) {
-        core.warning('OpenCode review execution failed, returning fallback empty result');
+        this.logger.warn('OpenCode review execution failed, returning fallback empty result');
         const r = emptyResult();
         r.verdict.reasoning = 'Review execution failed';
         return this.applyBudgetModeBanner(r, budgetMode, totalDiffLines);
@@ -865,7 +873,7 @@ export class ReviewEngine {
           totalDiffLines,
         );
       } catch {
-        core.warning(`Failed to parse review output at ${outputPath}, returning empty result`);
+        this.logger.warn(`Failed to parse review output at ${outputPath}, returning empty result`);
         const r = emptyResult();
         r.verdict.reasoning = 'Failed to parse review output';
         return this.applyBudgetModeBanner(r, budgetMode, totalDiffLines);
@@ -966,7 +974,7 @@ export class ReviewEngine {
           });
 
           if (!runResult.success) {
-            core.warning(`Batch ${idx} review execution failed, returning empty result`);
+            this.logger.warn(`Batch ${idx} review execution failed, returning empty result`);
             return {
               durationMs: runResult.durationMs,
               tokensUsed: runResult.tokensUsed,
@@ -988,7 +996,7 @@ export class ReviewEngine {
               result: parsed,
             };
           } catch {
-            core.warning(`Failed to parse batch ${idx} review output, returning empty result`);
+            this.logger.warn(`Failed to parse batch ${idx} review output, returning empty result`);
             return {
               durationMs: runResult.durationMs,
               tokensUsed: runResult.tokensUsed,
@@ -1073,7 +1081,7 @@ export class ReviewEngine {
     };
 
     if (!synthesisResult.success) {
-      core.warning('Synthesis pass failed, falling back to merged batch results');
+      this.logger.warn('Synthesis pass failed, falling back to merged batch results');
       if (tokenBudgetConfig?.enabled) {
         this.logTokenSavings(
           this.computeTokenBudgetMetrics(files, tokenBudgetConfig, this.config.maxLinesPerFile),
@@ -1139,7 +1147,7 @@ export class ReviewEngine {
         totalDiffLines,
       );
     } catch {
-      core.warning('Synthesis output parse failed, falling back to merged batch results');
+      this.logger.warn('Synthesis output parse failed, falling back to merged batch results');
       const fallback = this.buildFallbackResult(
         dedupIssues(allIssues),
         allStrengths,
@@ -1211,7 +1219,7 @@ export class ReviewEngine {
           mcpDocs = await this.getCachedMcpDocs(libraries);
         }
       } catch (err) {
-        core.warning(
+        this.logger.warn(
           sanitizeString(
             `MCP enrichment skipped: ${err instanceof Error ? err.message : String(err)}`,
           ),
@@ -1248,7 +1256,7 @@ export class ReviewEngine {
       workingDirectory,
     );
     if (!fixRunResult.success) {
-      core.warning(
+      this.logger.warn(
         'OpenCode fix execution failed or timed out. Checking for partial changes on disk...',
       );
       // Give filesystem time to flush writes from the killed process
@@ -1273,14 +1281,14 @@ export class ReviewEngine {
         stuckReason = stuckContent;
         await fs.unlink(path.join(workDir, '.fix-stuck.md'));
       } catch {
-        core.debug('No .fix-stuck.md — proceeding normally');
+        this.logger.debug('No .fix-stuck.md — proceeding normally');
       }
 
       try {
         summary = await fs.readFile(path.join(workDir, '.fix-summary.md'), 'utf-8');
         await fs.unlink(path.join(workDir, '.fix-summary.md'));
       } catch {
-        core.debug('No .fix-summary.md — proceeding normally');
+        this.logger.debug('No .fix-summary.md — proceeding normally');
       }
 
       if (changesMade) {
@@ -1294,11 +1302,11 @@ export class ReviewEngine {
             .trim();
           filesChanged = raw ? raw.split('\n') : [];
         } catch {
-          core.warning('Could not get git diff to determine changed files');
+          this.logger.warn('Could not get git diff to determine changed files');
         }
       }
     } catch (err) {
-      core.warning(
+      this.logger.warn(
         `Error reading fix results after OpenCode: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
@@ -1351,7 +1359,7 @@ export class ReviewEngine {
           mcpDocs = await this.getCachedMcpDocs(libraries);
         }
       } catch (err) {
-        core.warning(
+        this.logger.warn(
           sanitizeString(
             `MCP enrichment skipped: ${err instanceof Error ? err.message : String(err)}`,
           ),
@@ -1386,7 +1394,7 @@ export class ReviewEngine {
       workingDirectory,
     );
     if (!auditRunResult.success) {
-      core.warning('OpenCode audit execution failed, returning fallback empty result');
+      this.logger.warn('OpenCode audit execution failed, returning fallback empty result');
       const r = emptyResult();
       r.verdict.reasoning = 'Audit execution failed';
       this.publishCompleted(PIPELINE_EVENT_TYPES.AUDIT_COMPLETED, {
@@ -1418,7 +1426,7 @@ export class ReviewEngine {
       });
       return filteredResult;
     } catch {
-      core.warning(`Failed to parse audit output at ${outputPath}, returning empty result`);
+      this.logger.warn(`Failed to parse audit output at ${outputPath}, returning empty result`);
       const r = emptyResult();
       r.verdict.reasoning = 'Failed to parse audit output';
       this.publishCompleted(PIPELINE_EVENT_TYPES.AUDIT_COMPLETED, {
@@ -1476,7 +1484,7 @@ export class ReviewEngine {
     );
 
     if (!runResult.success) {
-      core.warning('OpenCode analyze execution failed or timed out.');
+      this.logger.warn('OpenCode analyze execution failed or timed out.');
       this.publishCompleted(PIPELINE_EVENT_TYPES.ANALYZE_COMPLETED, {
         issueNumber,
         modelUsed: this.resolveModel('analysisModel'),
@@ -1500,7 +1508,7 @@ export class ReviewEngine {
         });
         return runResult.output.trim();
       }
-      core.warning(`Could not read analysis plan from ${planPath}: ${String(err)}`);
+      this.logger.warn(`Could not read analysis plan from ${planPath}: ${String(err)}`);
       this.publishCompleted(PIPELINE_EVENT_TYPES.ANALYZE_COMPLETED, {
         issueNumber,
         modelUsed: this.resolveModel('analysisModel'),
@@ -1719,7 +1727,7 @@ export class ReviewEngine {
       defaultCategory,
     });
     if (dropped > 0) {
-      core.info(`Sensitivity filter dropped ${dropped} finding(s) (kept ${issues.length})`);
+      this.logger.info(`Sensitivity filter dropped ${dropped} finding(s) (kept ${issues.length})`);
     }
     // Always apply the filter output so `category` normalization and severity
     // ordering are consistent regardless of whether any finding was dropped.
@@ -1767,7 +1775,7 @@ export class ReviewEngine {
 
         const theoreticalCount = enrichedIssues.filter((i) => i.theoreticalRisk).length;
         if (theoreticalCount > 0) {
-          core.info(
+          this.logger.info(
             `Reachability analysis: ${theoreticalCount} finding(s) tagged as theoretical risk (not reachable from user input)`,
           );
         }
@@ -1783,7 +1791,7 @@ export class ReviewEngine {
           },
         };
       } catch (err) {
-        core.warning(
+        this.logger.warn(
           `Reachability analysis failed: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
@@ -1816,7 +1824,7 @@ export class ReviewEngine {
         if (runResult.success) {
           const outputPath = path.join(workDir, '.opencode', 'verification-output.jsonl');
           if (!existsSync(outputPath)) {
-            core.warning('Meta-verification output file not found, retaining enriched result');
+            this.logger.warn('Meta-verification output file not found, retaining enriched result');
           } else {
             const content = await fs.readFile(outputPath, 'utf-8');
             const lines = content.split('\n').filter((l) => l.trim());
@@ -1844,13 +1852,13 @@ export class ReviewEngine {
             }
 
             if (parsedCount === 0) {
-              core.warning(
+              this.logger.warn(
                 'Meta-verification produced no usable verification output, retaining enriched result',
               );
             } else {
               const keptCount = validIndices.size;
               const agreementRate = (keptCount / enrichedResult.issues.length) * 100;
-              core.info(
+              this.logger.info(
                 `Verification agreement rate: ${agreementRate.toFixed(1)}% ` +
                   `(${keptCount}/${enrichedResult.issues.length} issues kept by verification model)`,
               );
@@ -1862,7 +1870,7 @@ export class ReviewEngine {
                 const droppedCount = enrichedResult.issues.length - verifiedIssues.length;
 
                 if (droppedCount > 0) {
-                  core.info(
+                  this.logger.info(
                     `Meta-verification dropped ${droppedCount} false-positive finding(s) (kept ${verifiedIssues.length})`,
                   );
                 }
@@ -1888,17 +1896,17 @@ export class ReviewEngine {
                   },
                 };
               } else {
-                core.info(
+                this.logger.info(
                   'Meta-verification produced no valid verification entries — retaining enriched result',
                 );
               }
             }
           }
         } else {
-          core.warning('Meta-verification pass failed, returning enriched result');
+          this.logger.warn('Meta-verification pass failed, returning enriched result');
         }
       } catch (err) {
-        core.warning(
+        this.logger.warn(
           `Meta-verification failed: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
@@ -1910,7 +1918,7 @@ export class ReviewEngine {
       const filteredIssues = enrichedResult.issues.filter((i) => i.confidence !== 'low');
       if (filteredIssues.length < beforeCount) {
         const droppedLowConfidence = beforeCount - filteredIssues.length;
-        core.info(
+        this.logger.info(
           `Low-confidence suppression dropped ${droppedLowConfidence} finding(s) (kept ${filteredIssues.length})`,
         );
         const counts = filteredIssues.reduce(
@@ -2206,11 +2214,11 @@ export class ReviewEngine {
 
     const mcpTask = this.mcp
       .disconnect()
-      .catch(() => core.warning('MCP disconnect failed during cleanup'));
+      .catch(() => this.logger.warn('MCP disconnect failed during cleanup'));
 
     const storeTask = this.learningStore
       ?.close()
-      .catch(() => core.warning('LearningStore close failed during cleanup'));
+      .catch(() => this.logger.warn('LearningStore close failed during cleanup'));
 
     const tasks = [mcpTask];
     if (storeTask) tasks.push(storeTask);
@@ -2224,7 +2232,7 @@ export class ReviewEngine {
 
     if (result === 'timeout') {
       const elapsed = Date.now() - start;
-      core.warning(
+      this.logger.warn(
         `Cleanup did not finish within ${timeoutMs}ms (took ${elapsed}ms) — MCP/learning store may still be shutting down in background`,
       );
     }
@@ -2301,6 +2309,12 @@ export class ReviewEngine {
       } catch (err) {
         this.logger.warn(
           `Failed to record telemetry: ${err instanceof Error ? err.message : String(err)}`,
+          {
+            prNumber,
+            durationMs,
+            tokensUsed,
+            model,
+          },
         );
       }
     }
@@ -2538,20 +2552,20 @@ export class ReviewEngine {
         };
 
         if (spawnError) {
-          core.debug(`Linter "${result.tool}" spawn error: ${spawnError.message}`);
+          this.logger.debug(`Linter "${result.tool}" spawn error: ${spawnError.message}`);
         }
         if (stderr) {
           const truncated = stderr.length > 500 ? stderr.slice(0, 500) + '...' : stderr;
-          core.debug(`Linter "${result.tool}" stderr: ${truncated}`);
+          this.logger.debug(`Linter "${result.tool}" stderr: ${truncated}`);
         }
 
-        core.info(
+        this.logger.info(
           `Linter "${result.tool}" finished in ${duration}ms with exit code ${status} (${result.findings.length} findings)`,
         );
 
         results.push(result);
       } catch (err) {
-        core.warning(
+        this.logger.warn(
           `Linter "${linterConfig.command}" failed: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
@@ -2692,7 +2706,7 @@ export class ReviewEngine {
           match.message &&
           issue.message.toLowerCase().includes(match.message.toLowerCase().slice(0, 20));
         if (msgOverlap) {
-          core.debug(`Suppressing AI finding at ${key} — matches linter output`);
+          this.logger.debug(`Suppressing AI finding at ${key} — matches linter output`);
           return false;
         }
       }
@@ -2701,7 +2715,7 @@ export class ReviewEngine {
 
     const dropped = issues.length - filtered.length;
     if (dropped > 0) {
-      core.info(
+      this.logger.info(
         `Hybrid analysis suppressed ${dropped} finding(s) that overlap with configured linters`,
       );
     }
@@ -2748,7 +2762,7 @@ export class ReviewEngine {
     const savedLines = metrics.baselineLines - metrics.budgetedLines;
     const savedPercent =
       savedLines > 0 ? ((savedLines / metrics.baselineLines) * 100).toFixed(1) : '0.0';
-    core.info(
+    this.logger.info(
       `Token savings: ~${savedLines} lines (${savedPercent}%) — ${metrics.simpleCount} simple, ${metrics.mediumCount} medium, ${metrics.complexCount} complex`,
     );
   }

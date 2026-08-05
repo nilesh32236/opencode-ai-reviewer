@@ -62,6 +62,7 @@ export function createFixSubscriber(
           parsed ?? undefined,
           signal,
           eventBus,
+          event.correlationId,
         );
         await recordRateLimit(rateLimiter, event, 'command', 'fix', reservation);
       } catch (err) {

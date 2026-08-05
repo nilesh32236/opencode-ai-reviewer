@@ -24,7 +24,17 @@ export function createSetupSubscriber(config: AgentConfig): Subscriber {
         // Pass the raw token (possibly empty) so the setup engine can produce a
         // diagnostic report instead of aborting the flow before it starts.
         const token = process.env.GITHUB_TOKEN || '';
-        await handleCommand('setup', issueNumber, event.repo || '', token, config, parsed, signal);
+        await handleCommand(
+          'setup',
+          issueNumber,
+          event.repo || '',
+          token,
+          config,
+          parsed,
+          signal,
+          undefined,
+          event.correlationId,
+        );
       } catch (err) {
         logger.error(
           `SetupSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${err instanceof Error ? err.message : err}`,

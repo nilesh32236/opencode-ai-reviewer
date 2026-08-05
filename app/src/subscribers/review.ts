@@ -80,6 +80,7 @@ export function createReviewSubscriber(
           undefined,
           previousHeadSha,
           bus,
+          event.correlationId,
         );
         if (result) {
           await recordRateLimit(
@@ -92,7 +93,9 @@ export function createReviewSubscriber(
           );
         }
       } catch (err) {
-        logger.error(`ReviewSubscriber failed: ${err instanceof Error ? err.message : err}`);
+        logger.error(`ReviewSubscriber failed: ${err instanceof Error ? err.message : err}`, {
+          correlationId: event.correlationId,
+        });
       }
     },
   };

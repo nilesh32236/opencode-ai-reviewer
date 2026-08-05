@@ -33,39 +33,69 @@ import {
 import { mergeRepoConfig } from '../utils/config.js';
 
 /**
+ * Options for {@link handleAutofixLoop}. A single options object (instead of a
+ * growing positional parameter list) keeps call sites self-documenting and
+ * type-checked when optional fields are added or reordered.
+ */
+export interface AutofixLoopOptions {
+  /** The PR number to review/fix. */
+  prNumber: number;
+  /** Repository string (owner/repo). */
+  repo: string;
+  /** GitHub authentication token. */
+  token: string;
+  /** Agent configuration. */
+  config: AgentConfig;
+  /** Optional verification command to run after each fix. */
+  runChecksAfterFix?: string;
+  /** Optional temporary working directory with cloned repo. */
+  tempDir?: string;
+  /** Optional Git environment variables (for auth). */
+  initialGitEnv?: Record<string, string>;
+  /** Optional list of allowed check commands. */
+  checkAllowlist?: string[];
+  /** Optional abort signal. */
+  signal?: AbortSignal;
+  /** Optional event bus for publishing pipeline events. */
+  eventBus?: EventBus;
+  /** Optional correlation ID for tracing this request. */
+  correlationId?: string;
+}
+
+/**
  * Run the complete review-fix loop on a PR from the Probot app context.
  * Iterates up to config.maxIterations: reviews, applies fixes, runs
  * optional verification commands, and posts status comments.
- * @param prNumber - The PR number.
- * @param repo - Repository string (owner/repo).
- * @param token - GitHub authentication token.
- * @param config - Agent configuration.
- * @param runChecksAfterFix - Optional verification command to run after each fix.
- * @param tempDir - Optional temporary working directory with cloned repo.
- * @param initialGitEnv - Optional Git environment variables (for auth).
- * @param checkAllowlist - Optional list of allowed check commands.
- * @param signal - Optional abort signal
- * @param eventBus - Optional event bus for publishing pipeline events.
+ * @param options - Options controlling the review-fix loop.
  */
-export async function handleAutofixLoop(
-  prNumber: number,
-  repo: string,
-  token: string,
-  config: AgentConfig,
-  runChecksAfterFix?: string,
-  tempDir?: string,
-  initialGitEnv?: Record<string, string>,
-  checkAllowlist?: string[],
-  signal?: AbortSignal,
-  eventBus?: EventBus,
-): Promise<void> {
+export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<void> {
+  const {
+    prNumber,
+    repo,
+    token,
+    config,
+    runChecksAfterFix,
+    tempDir,
+    initialGitEnv,
+    checkAllowlist,
+    signal,
+    eventBus,
+    correlationId,
+  } = options;
   if (signal?.aborted) return;
-  const logger = new Logger('Autofix', { prNumber, repo });
+  const logger = new Logger('Autofix', { prNumber, repo, correlationId });
   logger.info(`Starting autofix loop for PR #${prNumber} in ${repo}`);
 
   const gh: PlatformAdapter =
     config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
-  const engine = new ReviewEngine(mergeRepoConfig(config, tempDir), gh, undefined, eventBus, repo);
+  const engine = new ReviewEngine(
+    mergeRepoConfig(config, tempDir),
+    gh,
+    undefined,
+    eventBus,
+    repo,
+    correlationId,
+  );
   const history: IterationRecord[] = [];
   const previousFindings: PreviousFindingIteration[] = [];
   let approved = false;

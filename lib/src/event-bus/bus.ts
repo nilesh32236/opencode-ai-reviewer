@@ -106,9 +106,17 @@ export class EventBus {
   private async executeSubscriber(sub: Subscriber, event: GitHubEvent): Promise<void> {
     const health = this.subscriberHealth.get(sub.name);
     const cb = this.circuitBreakers.get(sub.name);
+    // Child logger carries the event's correlation ID so subscriber-level logs
+    // stay traceable to the originating webhook.
+    const logger = this.logger.child({
+      correlationId: event.correlationId,
+      prNumber: event.prNumber,
+      repo: event.repo,
+      eventType: event.type,
+    });
 
     if (cb && cb.getState() === 'OPEN') {
-      this.logger.warn(`Subscriber ${sub.name} circuit is OPEN — skipping`, {
+      logger.warn(`Subscriber ${sub.name} circuit is OPEN — skipping`, {
         prNumber: event.prNumber,
         repo: event.repo,
       });
@@ -128,7 +136,7 @@ export class EventBus {
     timeoutHandle = setTimeout(() => {
       timedOut = true;
       abortController.abort();
-      this.logger.warn(`Subscriber ${sub.name} timed out after ${SUBSCRIBER_TIMEOUT_MS}ms`, {
+      logger.warn(`Subscriber ${sub.name} timed out after ${SUBSCRIBER_TIMEOUT_MS}ms`, {
         prNumber: event.prNumber,
         repo: event.repo,
       });
@@ -144,10 +152,10 @@ export class EventBus {
       await work();
 
       if (timedOut) {
-        this.logger.warn(
-          `Subscriber ${sub.name} completed after timeout (${SUBSCRIBER_TIMEOUT_MS}ms)`,
-          { prNumber: event.prNumber, repo: event.repo },
-        );
+        logger.warn(`Subscriber ${sub.name} completed after timeout (${SUBSCRIBER_TIMEOUT_MS}ms)`, {
+          prNumber: event.prNumber,
+          repo: event.repo,
+        });
         return;
       }
 
@@ -159,16 +167,16 @@ export class EventBus {
         health.failedCalls++;
         health.lastError = err instanceof Error ? err.message : String(err);
       }
-      this.logger.warn(
+      logger.warn(
         `Subscriber ${sub.name} failed on ${event.type}: ${err instanceof Error ? err.message : err}`,
         { prNumber: event.prNumber, repo: event.repo },
       );
 
       if (cb && cb.getState() === 'OPEN') {
-        this.logger.warn(
-          `Subscriber ${sub.name} circuit is now OPEN — will be skipped on next event`,
-          { prNumber: event.prNumber, repo: event.repo },
-        );
+        logger.warn(`Subscriber ${sub.name} circuit is now OPEN — will be skipped on next event`, {
+          prNumber: event.prNumber,
+          repo: event.repo,
+        });
       }
     } finally {
       clearTimeout(timeoutHandle);

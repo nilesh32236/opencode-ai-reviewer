@@ -52,6 +52,7 @@ describe('FixSubscriber', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
     );
   });
 

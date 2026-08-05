@@ -128,6 +128,21 @@ class StateCacheManager {
 }
 
 async function run(): Promise<void> {
+  // The GitHub Action defaults to human-readable logs because CI already
+  // captures stdout and `::`-prefixed core commands render nicely in the
+  // Actions UI. Structured NDJSON is opt-in via the `LOG_FORMAT=json` env var;
+  // it is never forced by NODE_ENV here so action logs stay readable unless
+  // explicitly configured otherwise. Set at the top of the entrypoint so the
+  // format is resolved before any Logger is constructed (module-scope mutation
+  // between imports would rely on ESM import hoisting and could be reordered).
+  if (!process.env.LOG_FORMAT) {
+    process.env.LOG_FORMAT = 'human';
+  }
+
+  // One-shot process: seed a single process-wide trace ID so every subsystem
+  // logger (cache manager, MCP, metrics, engine, bus) shares one correlation ID.
+  const correlationId = Logger.setRootCorrelationId();
+
   let inputs: ActionInputs | undefined;
   let engine: ReviewEngine | undefined;
   let cacheManager: StateCacheManager | undefined;
@@ -397,7 +412,7 @@ async function run(): Promise<void> {
 
       const gh: PlatformAdapter =
         platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
-      engine = new ReviewEngine(config, gh, learningStore, eventBus, repo);
+      engine = new ReviewEngine(config, gh, learningStore, eventBus, repo, correlationId);
 
       switch (inputs.mode) {
         case 'analyze':
