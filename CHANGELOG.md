@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.38] — 2026-08-05
+
+
+### Fixed
+
+- address issue #202 (branch protection as required status check) (#344) (#202
+#344)
+
+[v1.6.38]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.37...v1.6.38
+
 ## [v1.6.37] — 2026-08-04
 
 
