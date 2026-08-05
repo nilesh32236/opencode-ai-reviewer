@@ -112,3 +112,35 @@ describe('parseInputs() enable_mcp default', () => {
     expect(inputs.enableMCP).toBe(true);
   });
 });
+
+describe('parseInputs() fail_on_severity', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('defaults to off when the input is omitted', () => {
+    setInputs(BASE_INPUTS);
+    const inputs = parseInputs();
+    expect(inputs.failOnSeverity).toBe('off');
+    expect(inputs.failOnSeverityExplicit).toBe(false);
+  });
+
+  it('accepts every valid severity value', () => {
+    for (const value of ['off', 'critical', 'important', 'minor']) {
+      setInputs({ ...BASE_INPUTS, fail_on_severity: value });
+      const inputs = parseInputs();
+      expect(inputs.failOnSeverity).toBe(value);
+      expect(inputs.failOnSeverityExplicit).toBe(true);
+    }
+  });
+
+  it('trims surrounding whitespace and lowercases', () => {
+    setInputs({ ...BASE_INPUTS, fail_on_severity: ' Critical ' });
+    expect(parseInputs().failOnSeverity).toBe('critical');
+  });
+
+  it('rejects an invalid severity value', () => {
+    setInputs({ ...BASE_INPUTS, fail_on_severity: 'blocker' });
+    expect(() => parseInputs()).toThrow(/Invalid fail_on_severity/);
+  });
+});

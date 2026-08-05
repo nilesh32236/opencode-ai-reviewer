@@ -1,5 +1,26 @@
 import { DEFAULT_CONFIG, getDefaultMCPServers, loadConfig } from '@opencode-pr-agent/lib';
-import type { AgentConfig, TokenBudgetConfig } from '@opencode-pr-agent/lib';
+import type { AgentConfig, FailOnSeverity, TokenBudgetConfig } from '@opencode-pr-agent/lib';
+
+const FAIL_ON_SEVERITY_VALUES: readonly FailOnSeverity[] = [
+  'off',
+  'critical',
+  'important',
+  'minor',
+];
+
+/**
+ * Parse the FAIL_ON_SEVERITY environment override into a FailOnSeverity value.
+ * Invalid or unset values degrade gracefully to the default ('off') so a
+ * stale env var can never break the app at startup.
+ * @param raw - Raw environment variable value (may be undefined).
+ * @returns A valid FailOnSeverity value (default: 'off').
+ */
+function parseFailOnSeverityEnv(raw: string | undefined): FailOnSeverity {
+  if (raw && FAIL_ON_SEVERITY_VALUES.includes(raw as FailOnSeverity)) {
+    return raw as FailOnSeverity;
+  }
+  return 'off';
+}
 
 /**
  * Parse an integer from an environment variable with a fallback.
@@ -83,6 +104,7 @@ export function buildConfig(): AgentConfig {
     review: {
       ...DEFAULT_CONFIG.review,
       inline: process.env.REVIEW_INLINE !== 'false',
+      failOnSeverity: parseFailOnSeverityEnv(process.env.FAIL_ON_SEVERITY),
       tokenBudget: parseTokenBudgetEnv(process.env.TOKEN_BUDGET, DEFAULT_CONFIG.review.tokenBudget),
       ...(process.env.ENABLE_REACHABILITY !== undefined
         ? { enableReachability: process.env.ENABLE_REACHABILITY !== 'false' }
@@ -216,15 +238,17 @@ export function buildConfig(): AgentConfig {
 }
 
 /**
- * Merge a repository's `.opencode-reviewer.yml` sensitivity settings into the
+ * Merge a repository's `.opencode-reviewer.yml` review settings into the
  * base agent configuration. The App builds a server-global config from env
- * vars + defaults (no per-repo context at startup), so per-repo sensitivity
- * tuning is applied here at the point where a repo working directory exists.
+ * vars + defaults (no per-repo context at startup), so per-repo tuning
+ * is applied here at the point where a repo working directory exists.
  *
  * Only the `review.sensitivity` / `review.categories` / `review.enableCodebaseIndex`
- * / `review.enableMetaVerification` / `review.suppressLowConfidence` fields are merged
+ * / `review.enableMetaVerification` / `review.suppressLowConfidence` /
+ * `review.failOnSeverity` fields are merged
  * (the engine filters findings off those fields and respects the codebase-index /
- * meta-verification / low-confidence-suppression toggles); all other config-file
+ * meta-verification / low-confidence-suppression toggles, and the check-run
+ * gate reads the effective threshold); all other config-file
  * sections remain Action-only.
  * Unknown/malformed config files degrade gracefully to the
  * base config so a broken repo config never breaks the review.
@@ -241,12 +265,14 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const enableCodebaseIndex = repoConfig?.review?.enableCodebaseIndex;
   const enableMetaVerification = repoConfig?.review?.enableMetaVerification;
   const suppressLowConfidence = repoConfig?.review?.suppressLowConfidence;
+  const failOnSeverity = repoConfig?.review?.failOnSeverity;
   if (
     !sensitivity &&
     !categories &&
     enableCodebaseIndex === undefined &&
     enableMetaVerification === undefined &&
-    suppressLowConfidence === undefined
+    suppressLowConfidence === undefined &&
+    failOnSeverity === undefined
   ) {
     return baseConfig;
   }
@@ -264,6 +290,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       ...(enableCodebaseIndex !== undefined && { enableCodebaseIndex }),
       ...(enableMetaVerification !== undefined && { enableMetaVerification }),
       ...(suppressLowConfidence !== undefined && { suppressLowConfidence }),
+      ...(failOnSeverity !== undefined && { failOnSeverity }),
     },
   };
 }

@@ -182,6 +182,26 @@ export class LocalAdapter implements PlatformAdapter {
   }
 
   /**
+   * Create a check run for a commit. No-op in local CLI mode (no Checks API).
+   * @param _name - Check run name.
+   * @param _headSha - Commit SHA.
+   * @param _conclusion - Check run conclusion.
+   * @param _output - Optional output.
+   * @param _output.title - Output title.
+   * @param _output.summary - Output summary.
+   * @param _output.text - Optional output details.
+   * @returns A sentinel id of 0.
+   */
+  async createCheckRun(
+    _name: string,
+    _headSha: string,
+    _conclusion: 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required',
+    _output?: { title: string; summary: string; text?: string },
+  ): Promise<{ id: number }> {
+    return { id: 0 };
+  }
+
+  /**
    * Post or update a marker-based comment.
    * @param _issueNumber - Issue number.
    * @param _marker - Marker string.

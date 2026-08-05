@@ -48,6 +48,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     enableMetaVerification: null,
     enableCodebaseIndex: null,
     includePreExisting: null,
+    failOnSeverity: null,
     tokenBudget: null,
     budget: null,
     costTracking: null,
@@ -345,6 +346,14 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     }
     if (typeof config.review.includePreExisting === 'boolean') {
       result.review.includePreExisting = config.review.includePreExisting;
+    }
+    if (
+      config.review.failOnSeverity === 'off' ||
+      config.review.failOnSeverity === 'critical' ||
+      config.review.failOnSeverity === 'important' ||
+      config.review.failOnSeverity === 'minor'
+    ) {
+      result.review.failOnSeverity = config.review.failOnSeverity;
     }
     if (config.review.tokenBudget && typeof config.review.tokenBudget === 'object') {
       const tb = config.review.tokenBudget;

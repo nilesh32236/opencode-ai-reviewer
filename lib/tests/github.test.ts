@@ -1789,4 +1789,29 @@ diff --git a/deleted.ts b/deleted.ts
       expect(callUrl).toContain('https://custom.api.com');
     });
   });
+
+  describe('createCheckRun', () => {
+    it('creates a check run with the given conclusion and output', async () => {
+      fetchMock.mockResolvedValue(mockResponse({ body: { id: 77 } }));
+
+      const result = await helper.createCheckRun('OpenCode AI Reviewer', 'abc123', 'failure', {
+        title: 'Issues found',
+        summary: '2 issues',
+        text: 'details',
+      });
+
+      expect(result).toEqual({ id: 77 });
+      const url = fetchMock.mock.calls[0][0] as string;
+      expect(url).toContain('/repos/owner/repo/check-runs');
+      const [, options] = fetchMock.mock.calls[0];
+      const body = JSON.parse((options as RequestInit).body as string);
+      expect(body).toEqual({
+        name: 'OpenCode AI Reviewer',
+        head_sha: 'abc123',
+        status: 'completed',
+        conclusion: 'failure',
+        output: { title: 'Issues found', summary: '2 issues', text: 'details' },
+      });
+    });
+  });
 });
