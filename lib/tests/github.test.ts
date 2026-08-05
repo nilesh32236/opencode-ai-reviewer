@@ -1814,26 +1814,4 @@ diff --git a/deleted.ts b/deleted.ts
       });
     });
   });
-
-  describe('updateCheckRun', () => {
-    it('patches the check run with an updated conclusion and output', async () => {
-      fetchMock.mockResolvedValue(mockResponse({ body: {} }));
-
-      await helper.updateCheckRun(77, 'success', {
-        title: 'All clear',
-        summary: 'No issues',
-      });
-
-      const url = fetchMock.mock.calls[0][0] as string;
-      expect(url).toContain('/repos/owner/repo/check-runs/77');
-      const [, options] = fetchMock.mock.calls[0];
-      expect((options as RequestInit).method).toBe('PATCH');
-      const body = JSON.parse((options as RequestInit).body as string);
-      expect(body).toEqual({
-        status: 'completed',
-        conclusion: 'success',
-        output: { title: 'All clear', summary: 'No issues' },
-      });
-    });
-  });
 });

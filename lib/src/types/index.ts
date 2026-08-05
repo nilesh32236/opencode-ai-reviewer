@@ -1260,7 +1260,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
       minSeverity: 'warning',
       confidenceThreshold: 'low',
     },
-    failOnSeverity: 'critical',
+    failOnSeverity: 'off',
   },
   audit: {
     promptsDir: '.audit-prompts',

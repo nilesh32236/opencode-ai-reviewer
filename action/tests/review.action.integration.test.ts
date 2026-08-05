@@ -423,7 +423,7 @@ describe('runReview (action wrapper)', () => {
     expect(mockWarning).toHaveBeenCalledWith(expect.not.stringContaining(secret));
   });
 
-  it('fails the action when critical issues are found with the default threshold', async () => {
+  it('fails the action when critical issues are found at the critical threshold', async () => {
     const pr = makePRContext();
     mockGetPR.mockResolvedValue(pr);
     mockReviewPR.mockResolvedValue({
@@ -451,7 +451,11 @@ describe('runReview (action wrapper)', () => {
 
     await runReview(
       makeInputs(),
-      makeConfig({ enableMCP: false, mcpServers: [] }),
+      makeConfig({
+        enableMCP: false,
+        mcpServers: [],
+        review: { ...DEFAULT_CONFIG.review, failOnSeverity: 'critical' },
+      }),
       mockEngine,
       mockGh,
       'owner/repo',

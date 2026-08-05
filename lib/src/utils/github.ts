@@ -600,7 +600,10 @@ export class GitHubHelper implements PlatformAdapter {
    * @param name - Name of the check run (e.g. "OpenCode AI Reviewer").
    * @param headSha - SHA of the commit to attach the check run to.
    * @param conclusion - Check run conclusion.
-   * @param output - Optional check run output with title, summary, and text.
+   * @param output - Optional check run output.
+   * @param output.title - Check run output title.
+   * @param output.summary - Check run output summary.
+   * @param output.text - Optional detailed output text.
    * @returns The created check run id.
    */
   async createCheckRun(
@@ -615,28 +618,6 @@ export class GitHubHelper implements PlatformAdapter {
       body: JSON.stringify({
         name,
         head_sha: headSha,
-        status: 'completed',
-        conclusion,
-        output,
-      }),
-    });
-  }
-
-  /**
-   * Update an existing check run's conclusion and/or output.
-   * @param checkRunId - ID of the check run to update.
-   * @param conclusion - Updated check run conclusion.
-   * @param output - Optional updated check run output.
-   */
-  async updateCheckRun(
-    checkRunId: number,
-    conclusion: 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required',
-    output?: { title: string; summary: string; text?: string },
-  ): Promise<void> {
-    await this.api(`/check-runs/${checkRunId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
         status: 'completed',
         conclusion,
         output,

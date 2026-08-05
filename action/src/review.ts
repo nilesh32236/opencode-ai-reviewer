@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import type { AgentConfig, PRContext, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
-import { Logger, countAtOrAboveSeverity } from '@opencode-pr-agent/lib';
+import { Logger, countAtOrAboveSeverity, shouldFailOnSeverity } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { resolvePrNumber, sanitize } from './utils.js';
 
@@ -134,11 +134,12 @@ export async function runReview(
 
   // Fail the action when the severity threshold is exceeded. This is what makes
   // the job usable as a required status check in branch protection rules.
-  if (config.review.failOnSeverity !== 'off') {
-    const totalAtOrAbove = countAtOrAboveSeverity(result.stats, config.review.failOnSeverity);
-    if (totalAtOrAbove > 0) {
+  if (shouldFailOnSeverity(result.stats, config.review.failOnSeverity)) {
+    const threshold = config.review.failOnSeverity;
+    if (threshold !== 'off') {
+      const totalAtOrAbove = countAtOrAboveSeverity(result.stats, threshold);
       core.setFailed(
-        `Found ${totalAtOrAbove} issue(s) at or above severity "${config.review.failOnSeverity}" threshold — action failed`,
+        `Found ${totalAtOrAbove} issue(s) at or above severity "${threshold}" threshold — action failed`,
       );
     }
   }

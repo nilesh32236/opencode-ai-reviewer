@@ -504,6 +504,9 @@ export class GitLabAdapter implements PlatformAdapter {
    * @param _headSha - Commit SHA (unused).
    * @param _conclusion - Check run conclusion (unused).
    * @param _output - Optional output (unused).
+   * @param _output.title - Output title (unused).
+   * @param _output.summary - Output summary (unused).
+   * @param _output.text - Optional output details (unused).
    * @returns Resolves to a sentinel id of 0.
    */
   async createCheckRun(
@@ -513,20 +516,6 @@ export class GitLabAdapter implements PlatformAdapter {
     _output?: { title: string; summary: string; text?: string },
   ): Promise<{ id: number }> {
     return { id: 0 };
-  }
-
-  /**
-   * Update an existing check run. No-op on GitLab (see `createCheckRun`).
-   * @param _checkRunId - Check run id (unused).
-   * @param _conclusion - Updated conclusion (unused).
-   * @param _output - Optional updated output (unused).
-   */
-  async updateCheckRun(
-    _checkRunId: number,
-    _conclusion: 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required',
-    _output?: { title: string; summary: string; text?: string },
-  ): Promise<void> {
-    return;
   }
 
   /**

@@ -23,6 +23,11 @@ const REVIEW_IN_PROGRESS_MARKER = '<!-- review-in-progress -->';
  * Handle a PR review: fetch the PR, check skip conditions, run the review
  * engine, post the review to GitHub, optionally trigger autofix, and
  * store findings in the learning store.
+ *
+ * When `config.review.failOnSeverity` is enabled on GitHub, an
+ * "OpenCode AI Reviewer" check run is reported on every terminal path where the
+ * head SHA is known (neutral/failure on skip/errors, success/failure on the
+ * completed review) so branch protection never waits on a pending check.
  * @param prNumber - The PR number.
  * @param repo - Repository string (owner/repo).
  * @param token - GitHub authentication token.
@@ -51,17 +56,56 @@ export async function handlePRReview(
   const gh: PlatformAdapter =
     config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
 
+  // Report a check run so branch protection can consume the review outcome as
+  // a required status check. It is emitted on every terminal path where the
+  // head SHA is known (skip, engine failure, empty result, post failure) with a
+  // 'neutral'/'failure' conclusion so a required check never hangs pending.
+  // `failOnSeverity: 'off'` disables check runs entirely, preserving the
+  // pre-integration behavior.
+  const reportCheckRun = async (
+    headSha: string,
+    conclusion: 'success' | 'failure' | 'neutral',
+    title: string,
+    summary: string,
+    text?: string,
+  ): Promise<void> => {
+    if (config.platform !== 'github' || config.review.failOnSeverity === 'off') return;
+    try {
+      // The Checks API rejects output text over 65535 bytes; an oversized
+      // model-generated summary must never prevent the check from appearing.
+      const safeText = text && text.length > 60000 ? text.slice(0, 60000) : text;
+      await gh.createCheckRun('OpenCode AI Reviewer', headSha, conclusion, {
+        title,
+        summary,
+        ...(safeText ? { text: safeText } : {}),
+      });
+      logger.info(`Created check run for PR #${prNumber} with conclusion: ${conclusion}`);
+    } catch (err) {
+      // Surface failures (e.g. 403 missing checks permission, 422 oversized
+      // payload) as errors so the feature never fails silently under branch
+      // protection.
+      logger.error(`Failed to create check run: ${err instanceof Error ? err.message : err}`);
+    }
+  };
+
   let pr: PRContext;
   try {
     pr = await gh.getMR(prNumber);
   } catch (err) {
     logger.error(`Failed to get PR #${prNumber}: ${err instanceof Error ? err.message : err}`);
+    // No head SHA is available here, so a check run cannot be attached to a commit.
     return null;
   }
 
   const hasSkipLabel = pr.labels.some((l) => config.review.skipLabels.includes(l));
   if (hasSkipLabel) {
     logger.info(`PR #${prNumber} has skip label — skipping`);
+    await reportCheckRun(
+      pr.headSha,
+      'neutral',
+      'Review skipped',
+      `PR #${prNumber} carries a configured skip label — no review was performed.`,
+    );
     return null;
   }
 
@@ -132,11 +176,23 @@ export async function handlePRReview(
           `Failed to post review-failure comment: ${commentErr instanceof Error ? commentErr.message : commentErr}`,
         );
       }
+      await reportCheckRun(
+        pr.headSha,
+        'failure',
+        'Review failed',
+        'The review engine could not complete the review for this commit.',
+      );
       return null;
     }
 
     if (!result.summary && result.issues.length === 0 && result.strengths.length === 0) {
       logger.warn(`Review returned no meaningful content for PR #${prNumber}`, { prNumber, repo });
+      await reportCheckRun(
+        pr.headSha,
+        'neutral',
+        'No meaningful content',
+        'The review returned no meaningful findings, so no conclusion is reported.',
+      );
       return null;
     }
 
@@ -158,6 +214,12 @@ export async function handlePRReview(
           `Failed to post review-failure comment: ${commentErr instanceof Error ? commentErr.message : commentErr}`,
         );
       }
+      await reportCheckRun(
+        pr.headSha,
+        'failure',
+        'Review could not be posted',
+        'The review could not be posted to the pull request.',
+      );
       return null;
     }
 
@@ -176,37 +238,14 @@ export async function handlePRReview(
       }
     } else {
       logger.warn(`Failed to post review to PR #${prNumber}`, { prNumber, repo });
-    }
-
-    // Report a check run so branch protection can consume the review outcome as
-    // a required status check. Always create the check run when the feature is
-    // enabled (success on clean reviews, failure when the threshold is
-    // exceeded) so it is a reliable green/red indicator instead of appearing
-    // only on failure. `failOnSeverity: 'off'` disables check runs entirely,
-    // preserving the pre-integration behavior.
-    if (config.platform === 'github' && config.review.failOnSeverity !== 'off') {
-      try {
-        const threshold = config.review.failOnSeverity;
-        const failed = shouldFailOnSeverity(result.stats, threshold);
-        const summary = failed
-          ? `Found ${result.stats.critical} critical, ${result.stats.important} important, ${result.stats.minor} minor issue(s)`
-          : 'No issues above the fail-on-severity threshold found';
-        await gh.createCheckRun(
-          'OpenCode AI Reviewer',
-          pr.headSha,
-          failed ? 'failure' : 'success',
-          {
-            title: failed ? 'Issues found' : 'All clear',
-            summary,
-            text: result.summary,
-          },
-        );
-        logger.info(
-          `Created check run for PR #${prNumber} with conclusion: ${failed ? 'failure' : 'success'}`,
-        );
-      } catch (err) {
-        logger.warn(`Failed to create check run: ${err instanceof Error ? err.message : err}`);
-      }
+      // A review that was not actually posted must not gate merges as a
+      // 'success'/'failure'; report neutral so branch protection does not block.
+      await reportCheckRun(
+        pr.headSha,
+        'neutral',
+        'Review could not be posted',
+        'The review could not be posted to the pull request; conclusion is neutral.',
+      );
     }
 
     if (
@@ -224,6 +263,30 @@ export async function handlePRReview(
           `Autofix loop failed for PR #${prNumber}: ${err instanceof Error ? err.message : err}`,
         );
       }
+    }
+
+    // Report the review-outcome check run AFTER the autofix loop so the
+    // conclusion is attached to the final reviewed head SHA. If autofix pushed
+    // a new commit, refetch the MR to attach the check to the current head
+    // rather than the pre-fix SHA. Only the successful-review path gets a
+    // threshold-based 'success'/'failure' conclusion.
+    if (reviewResult.success) {
+      const finalHeadSha = await gh
+        .getMR(prNumber)
+        .then((m) => m.headSha)
+        .catch(() => pr.headSha);
+      const threshold = config.review.failOnSeverity;
+      const failed = shouldFailOnSeverity(result.stats, threshold);
+      const summary = failed
+        ? `Found ${result.stats.critical} critical, ${result.stats.important} important, ${result.stats.minor} minor issue(s)`
+        : 'No issues above the fail-on-severity threshold found';
+      await reportCheckRun(
+        finalHeadSha,
+        failed ? 'failure' : 'success',
+        failed ? 'Issues found' : 'All clear',
+        summary,
+        result.summary,
+      );
     }
 
     if (learningStore) {

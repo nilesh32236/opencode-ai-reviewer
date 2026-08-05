@@ -23,7 +23,7 @@ describe('shouldFailOnSeverity', () => {
     expect(shouldFailOnSeverity(MIXED, 'off')).toBe(false);
   });
 
-  it('fails when critical findings exist at the default threshold', () => {
+  it('fails when critical findings exist at the critical threshold', () => {
     expect(shouldFailOnSeverity(MIXED, 'critical')).toBe(true);
   });
 

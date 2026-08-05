@@ -30,6 +30,7 @@ const {
 });
 
 const mockGitHubHelperCtor = vi.fn();
+const mockGitLabAdapterCtor = vi.fn();
 const mockReviewEngineCtor = vi.fn();
 const mockMergeRepoConfig = vi.fn();
 
@@ -40,6 +41,16 @@ vi.mock('@opencode-pr-agent/lib', async (importOriginal) => {
     GitHubHelper: class {
       constructor(...args: unknown[]) {
         mockGitHubHelperCtor(...args);
+      }
+      getMR = mockGetMR;
+      getBotReviewThreads = mockGetBotReviewThreads;
+      postOrUpdateComment = mockPostOrUpdateComment;
+      postReview = mockPostReview;
+      createCheckRun = mockCreateCheckRun;
+    },
+    GitLabAdapter: class {
+      constructor(...args: unknown[]) {
+        mockGitLabAdapterCtor(...args);
       }
       getMR = mockGetMR;
       getBotReviewThreads = mockGetBotReviewThreads;
@@ -71,6 +82,7 @@ function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {
     ...DEFAULT_CONFIG,
     platform: 'github',
+    review: { ...DEFAULT_CONFIG.review, failOnSeverity: 'critical' },
     ...overrides,
   };
 }
@@ -112,7 +124,7 @@ describe('handlePRReview check run reporting', () => {
     );
   });
 
-  it('creates a failure check run when critical findings exist (default threshold)', async () => {
+  it('creates a failure check run when critical findings exist (critical threshold)', async () => {
     mockReviewPR.mockResolvedValue({
       ...cleanReview(),
       issues: [
@@ -135,6 +147,41 @@ describe('handlePRReview check run reporting', () => {
       'abc123',
       'failure',
       expect.objectContaining({ title: 'Issues found' }),
+    );
+  });
+
+  it('truncates an oversized summary passed as check run text', async () => {
+    const longSummary = 'x'.repeat(100_000);
+    mockReviewPR.mockResolvedValue({ ...cleanReview(), summary: longSummary });
+
+    await handlePRReview(42, 'owner/repo', 'token', makeConfig());
+
+    const call = mockCreateCheckRun.mock.calls[0] as unknown[];
+    const output = call[3] as { text?: string };
+    expect(output.text?.length).toBe(60_000);
+  });
+
+  it('reports a neutral check run when the PR carries a skip label', async () => {
+    mockGetMR.mockResolvedValue({ ...makePR(), labels: ['skip-review'] });
+
+    await handlePRReview(
+      42,
+      'owner/repo',
+      'token',
+      makeConfig({
+        review: {
+          ...DEFAULT_CONFIG.review,
+          failOnSeverity: 'critical',
+          skipLabels: ['skip-review'],
+        },
+      }),
+    );
+
+    expect(mockCreateCheckRun).toHaveBeenCalledWith(
+      'OpenCode AI Reviewer',
+      'abc123',
+      'neutral',
+      expect.objectContaining({ title: 'Review skipped' }),
     );
   });
 
@@ -164,6 +211,7 @@ describe('handlePRReview check run reporting', () => {
       makeConfig({ platform: 'gitlab' } as AgentConfig),
     );
 
+    expect(mockGitLabAdapterCtor).toHaveBeenCalled();
     expect(mockCreateCheckRun).not.toHaveBeenCalled();
   });
 });

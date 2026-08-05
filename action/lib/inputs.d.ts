@@ -88,8 +88,10 @@ export interface ActionInputs {
     timeoutMinutes: number;
     /** Whether to post review comments inline on the diff. */
     reviewInline: boolean;
-    /** Severity threshold at or above which the action fails (default: 'critical'). */
+    /** Severity threshold at or above which the action fails (default: 'off'). */
     failOnSeverity: FailOnSeverity;
+    /** Whether the fail_on_severity input was explicitly set by the workflow. */
+    failOnSeverityExplicit: boolean;
     /** Whether the learning state cache is enabled. */
     enableStateCache: boolean;
     /** Cache key prefix for learning state storage. */

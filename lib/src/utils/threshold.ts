@@ -1,6 +1,6 @@
 import type { FailOnSeverity } from '../types/index.js';
 
-/** Stats slice used by the severity-threshold logic (shared by review and audit). */
+/** Stats slice used by the severity-threshold logic (shared by the Action and App review paths). */
 export interface SeverityStats {
   critical: number;
   important: number;
@@ -26,6 +26,8 @@ export function countAtOrAboveSeverity(
       return stats.critical + stats.important;
     case 'minor':
       return stats.critical + stats.important + stats.minor;
+    default:
+      throw new Error(`Unknown fail-on severity threshold: ${String(threshold)}`);
   }
 }
 
@@ -34,7 +36,7 @@ export function countAtOrAboveSeverity(
  * based on a severity threshold. `'off'` never fails from findings (preserving
  * the pre-integration behavior).
  * @param stats - Finding counts by severity.
- * @param threshold - Severity threshold (default 'critical').
+ * @param threshold - Severity threshold (default 'off').
  * @returns True when at least one finding is at or above the threshold.
  */
 export function shouldFailOnSeverity(stats: SeverityStats, threshold: FailOnSeverity): boolean {

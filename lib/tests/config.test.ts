@@ -1060,13 +1060,13 @@ unknownSection: true
   });
 
   describe('failOnSeverity config handling', () => {
-    it('DEFAULT_CONFIG ships failOnSeverity defaulting to critical', () => {
-      expect(DEFAULT_CONFIG.review.failOnSeverity).toBe('critical');
+    it('DEFAULT_CONFIG ships failOnSeverity defaulting to off', () => {
+      expect(DEFAULT_CONFIG.review.failOnSeverity).toBe('off');
     });
 
-    it('AgentConfigSchema defaults failOnSeverity to critical', () => {
+    it('AgentConfigSchema defaults failOnSeverity to off', () => {
       const result = AgentConfigSchema.parse({});
-      expect(result.review.failOnSeverity).toBe('critical');
+      expect(result.review.failOnSeverity).toBe('off');
     });
 
     it('AgentConfigSchema accepts every valid failOnSeverity value', () => {
@@ -1085,15 +1085,20 @@ unknownSection: true
   failOnSeverity: important
 `;
       const dirWithValue = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-fos-'));
-      fs.writeFileSync(path.join(dirWithValue, '.opencode-reviewer.yml'), withValue);
-      expect(loadConfig(dirWithValue)?.review?.failOnSeverity).toBe('important');
-
       const dirOmitted = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-fos-'));
-      fs.writeFileSync(
-        path.join(dirOmitted, '.opencode-reviewer.yml'),
-        'review:\n  inline: true\n',
-      );
-      expect(loadConfig(dirOmitted)?.review?.failOnSeverity).toBeUndefined();
+      try {
+        fs.writeFileSync(path.join(dirWithValue, '.opencode-reviewer.yml'), withValue);
+        expect(loadConfig(dirWithValue)?.review?.failOnSeverity).toBe('important');
+
+        fs.writeFileSync(
+          path.join(dirOmitted, '.opencode-reviewer.yml'),
+          'review:\n  inline: true\n',
+        );
+        expect(loadConfig(dirOmitted)?.review?.failOnSeverity).toBeUndefined();
+      } finally {
+        fs.rmSync(dirWithValue, { recursive: true, force: true });
+        fs.rmSync(dirOmitted, { recursive: true, force: true });
+      }
     });
   });
 });

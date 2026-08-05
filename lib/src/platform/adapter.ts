@@ -187,7 +187,10 @@ export interface PlatformAdapter {
    * @param name - Name of the check run.
    * @param headSha - SHA of the commit to attach the check run to.
    * @param conclusion - Check run conclusion.
-   * @param output - Optional check run output with title, summary, and text.
+   * @param output - Optional check run output.
+   * @param output.title - Check run output title.
+   * @param output.summary - Check run output summary.
+   * @param output.text - Optional detailed output text.
    * @returns Promise resolving to the created check run id.
    */
   createCheckRun(
@@ -196,17 +199,6 @@ export interface PlatformAdapter {
     conclusion: 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required',
     output?: { title: string; summary: string; text?: string },
   ): Promise<{ id: number }>;
-  /**
-   * Update an existing check run's conclusion and/or output (GitHub only).
-   * @param checkRunId - ID of the check run to update.
-   * @param conclusion - Updated check run conclusion.
-   * @param output - Optional updated check run output.
-   */
-  updateCheckRun(
-    checkRunId: number,
-    conclusion: 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required',
-    output?: { title: string; summary: string; text?: string },
-  ): Promise<void>;
   /**
    * Post or update a marker-based comment.
    * @param issueNumber - Issue number.

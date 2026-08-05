@@ -144,8 +144,10 @@ export interface ActionInputs {
   timeoutMinutes: number;
   /** Whether to post review comments inline on the diff. */
   reviewInline: boolean;
-  /** Severity threshold at or above which the action fails (default: 'critical'). */
+  /** Severity threshold at or above which the action fails (default: 'off'). */
   failOnSeverity: FailOnSeverity;
+  /** Whether the fail_on_severity input was explicitly set by the workflow. */
+  failOnSeverityExplicit: boolean;
   /** Whether the learning state cache is enabled. */
   enableStateCache: boolean;
   /** Cache key prefix for learning state storage. */
@@ -236,13 +238,15 @@ export function parseInputs(): ActionInputs {
   const enableMetaVerification = core.getInput('enable_meta_verification') === 'true';
   const enableAudit = core.getInput('enable_audit') === 'true';
 
-  const failOnSeverityRaw = (core.getInput('fail_on_severity') || 'critical').trim();
+  const failOnSeverityInput = core.getInput('fail_on_severity');
+  const failOnSeverityRaw = (failOnSeverityInput || 'off').trim().toLowerCase();
   if (!VALID_FAIL_ON_SEVERITIES.includes(failOnSeverityRaw as FailOnSeverity)) {
     throw new Error(
       `Invalid fail_on_severity: "${failOnSeverityRaw}". Must be one of: ${VALID_FAIL_ON_SEVERITIES.join(', ')}`,
     );
   }
   const failOnSeverity = failOnSeverityRaw as FailOnSeverity;
+  const failOnSeverityExplicit = failOnSeverityInput.trim() !== '';
 
   // Models for features that are active in the selected mode are hard-gated so
   // an invalid value fails the action before any work starts. Models whose
@@ -328,6 +332,7 @@ export function parseInputs(): ActionInputs {
     timeoutMinutes: parseTimeoutMinutes(core.getInput('timeout_minutes')),
     reviewInline: core.getInput('review_inline') !== 'false',
     failOnSeverity,
+    failOnSeverityExplicit,
     enableStateCache: core.getInput('enable_state_cache') !== 'false',
     stateCacheKey: core.getInput('state_cache_key') || 'opencode-learning-state',
     ciFailureLogs: core.getInput('ci_failure_logs') || undefined,
