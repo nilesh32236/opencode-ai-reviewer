@@ -19,6 +19,22 @@ For details on the agent's internal architecture, execution loops, and prompt de
 
 ---
 
+## 🗺️ Project Roadmap
+
+The project has an active development roadmap with clear milestones and strategic direction. For detailed information, see:
+
+- **[ROADMAP.md](docs/ROADMAP.md)** - Comprehensive strategic roadmap with milestones, success metrics, and technical architecture evolution
+- **[TIMELINE.md](docs/TIMELINE.md)** - Visual timeline, sprint planning, and detailed quarterly breakdown
+- **[PROJECT-PLAN.md](docs/PROJECT-PLAN.md)** - Project plan summary with contribution opportunities and KPIs
+- **[ROADMAP-SUMMARY.md](docs/ROADMAP-SUMMARY.md)** - One-page overview for stakeholders
+- **[IMPROVEMENT-PLAN.md](IMPROVEMENT-PLAN.md)** - Detailed improvement phases currently being implemented
+
+**Current Status**: v1.7.1 (Stable) → v2.0.0 (September 2026)  
+**Next Major Release**: v2.0.0 with core improvements from Phases 1-5  
+**Long-term Vision**: Enterprise-grade AI development platform (v3.0.0)
+
+---
+
 ## Quick Start — GitHub Action
 
 ### Option A: Shipped Reusable Workflow (Recommended)
