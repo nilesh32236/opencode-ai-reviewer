@@ -22,6 +22,9 @@ const logger = new Logger('prompt-builder');
  * Truncate a string to a UTF-8 byte budget on a code-point boundary so
  * multibyte characters are never split (an orphan lead byte would otherwise
  * decode to U+FFFD). Returns the original string when it already fits.
+ * @param text - The string to truncate.
+ * @param maxBytes - Maximum number of UTF-8 bytes allowed.
+ * @returns The truncated string, or the original when it already fits.
  */
 function truncateUtf8Bytes(text: string, maxBytes: number): string {
   if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
@@ -41,6 +44,9 @@ function truncateUtf8Bytes(text: string, maxBytes: number): string {
  * UTF-8 encoded bytes (not UTF-16 code units), and truncation lands on a code
  * point boundary so multibyte characters are never split. The marker is
  * accounted for in the byte budget.
+ * @param prompt - The assembled prompt string.
+ * @returns The prompt, truncated at the byte cap with the truncation marker
+ * appended when it exceeds the budget.
  */
 function capPromptLength(prompt: string): string {
   const markerBytes = Buffer.byteLength(PROMPT_TRUNCATION_MARKER, 'utf8') + 1;
@@ -66,6 +72,10 @@ const MAX_CODE_SNIPPET_BYTES = 32 * 1024;
 /**
  * Bound a variable section to a byte budget, appending a truncation marker
  * when the section is cut so callers can tell the content was capped.
+ * @param text - The section content to bound.
+ * @param maxBytes - Maximum number of UTF-8 bytes allowed for the section.
+ * @param label - Human-readable name used in the truncation marker.
+ * @returns The section, truncated to the byte budget with a marker when capped.
  */
 function boundSection(text: string, maxBytes: number, label: string): string {
   if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
