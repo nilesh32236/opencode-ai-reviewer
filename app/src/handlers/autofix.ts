@@ -99,7 +99,6 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
   const history: IterationRecord[] = [];
   const previousFindings: PreviousFindingIteration[] = [];
   let approved = false;
-  let verificationPassed = false;
 
   let gitEnv = initialGitEnv;
   let ownTempDir: string | undefined;
@@ -123,6 +122,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
   }
   try {
     for (let i = 0; i < config.maxIterations; i++) {
+      let verificationPassed = false;
       logger.info(`=== Autofix iteration ${i + 1}/${config.maxIterations} ===`);
 
       let pr: PRContext;
@@ -351,24 +351,6 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
             nodeId: c.nodeId,
           })),
         });
-        if (fixResult.summary) {
-          try {
-            const updatedBody = buildAutofixPRBody({
-              issueNumber: pr.linkedIssue ?? undefined,
-              issueTitle: pr.title,
-              fixSummary: fixResult.summary,
-              filesChanged: fixResult.filesChanged ?? [],
-              branchName: pr.headRef,
-              hasTests: verificationPassed,
-            });
-            await gh.updateMR(prNumber, { body: updatedBody });
-            logger.info(`Updated PR #${prNumber} description with latest fix summary`);
-          } catch (updateErr) {
-            logger.warn(
-              `Could not update PR description: ${updateErr instanceof Error ? updateErr.message : String(updateErr)}`,
-            );
-          }
-        }
       } catch (err) {
         logger.error(
           `Git operations failed in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
@@ -476,6 +458,25 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
               }
             }
           }
+        }
+      }
+
+      if (fixResult.summary) {
+        try {
+          const updatedBody = buildAutofixPRBody({
+            issueNumber: pr.linkedIssue ?? undefined,
+            issueTitle: pr.title,
+            fixSummary: fixResult.summary,
+            filesChanged: fixResult.filesChanged ?? [],
+            branchName: pr.headRef,
+            hasTests: verificationPassed,
+          });
+          await gh.updateMR(prNumber, { body: updatedBody });
+          logger.info(`Updated PR #${prNumber} description with latest fix summary`);
+        } catch (updateErr) {
+          logger.warn(
+            `Could not update PR description: ${updateErr instanceof Error ? updateErr.message : String(updateErr)}`,
+          );
         }
       }
 

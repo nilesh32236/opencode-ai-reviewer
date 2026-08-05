@@ -14,8 +14,19 @@ import type { MCPServerConfig } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
 
 /**
+ * Exact pinned versions of MCP server npm packages.
+ * Pinning prevents `npx` from auto-installing the latest release, mitigating
+ * supply-chain attacks via compromised or typosquatted packages (audit 4.2).
+ */
+export const MCP_PACKAGE_VERSIONS: Readonly<Record<string, string>> = {
+  '@upstash/context7-mcp': '3.2.5',
+  '@modelcontextprotocol/server-github': '2025.4.8',
+};
+
+/**
  * Context7 MCP server — resolves latest library documentation.
  * Reduces false positives in reviews by providing current API info.
+ * Package version is pinned to mitigate supply-chain attacks (audit 4.2).
  *
  * Setup: npm install -g @upstash/context7-mcp
  *
@@ -29,7 +40,12 @@ export function context7Server(): MCPServerConfig {
   return {
     name: 'context7',
     type: 'local',
-    command: ['npx', '-y', '--quiet', '@upstash/context7-mcp'],
+    command: [
+      'npx',
+      '-y',
+      '--quiet',
+      `@upstash/context7-mcp@${MCP_PACKAGE_VERSIONS['@upstash/context7-mcp']}`,
+    ],
     environment: {
       CONTEXT7_API_KEY: apiKey,
     },
@@ -39,13 +55,19 @@ export function context7Server(): MCPServerConfig {
 /**
  * GitHub MCP server — provides repository-aware context.
  * Reads files, searches code, understands PR structure.
+ * Package version is pinned to mitigate supply-chain attacks (audit 4.2).
  * @param token - GitHub personal access token for authentication
  * @returns MCPServerConfig for the GitHub MCP server
  */
 export const githubMCPServer = (token: string): MCPServerConfig => ({
   name: 'github',
   type: 'local',
-  command: ['npx', '-y', '--quiet', '@modelcontextprotocol/server-github'],
+  command: [
+    'npx',
+    '-y',
+    '--quiet',
+    `@modelcontextprotocol/server-github@${MCP_PACKAGE_VERSIONS['@modelcontextprotocol/server-github']}`,
+  ],
   environment: {
     GITHUB_TOKEN: token,
   },

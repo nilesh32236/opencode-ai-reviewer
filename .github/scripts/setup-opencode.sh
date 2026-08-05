@@ -51,8 +51,8 @@ opencode --version 2>&1 || true
 echo "OpenCode installed at: $(which opencode)"
 
 # Configure git for OpenCode
-git config --global user.name "${GIT_USER_NAME:-opencode-ai-reviewer[bot]}"
-git config --global user.email "${GIT_USER_EMAIL:-opencode-ai-reviewer[bot]@users.noreply.github.com}"
+git config --local user.name "${GIT_USER_NAME:-opencode-ai-reviewer[bot]}"
+git config --local user.email "${GIT_USER_EMAIL:-opencode-ai-reviewer[bot]@users.noreply.github.com}"
 
 # Ensure .opencode directory exists
 mkdir -p .opencode

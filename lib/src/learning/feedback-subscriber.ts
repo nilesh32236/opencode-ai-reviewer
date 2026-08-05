@@ -236,7 +236,14 @@ export class FeedbackSubscriber implements Subscriber {
    */
   private async handleCommentCreated(event: GitHubEvent): Promise<void> {
     const payload = event.payload as {
-      comment?: { body?: string; in_reply_to_id?: number | null };
+      comment?: {
+        body?: string;
+        in_reply_to_id?: number | null;
+        path?: string;
+        line?: number;
+        start_line?: number;
+        original_line?: number;
+      };
       issue?: { number?: number };
     };
     const body = payload?.comment?.body || '';
@@ -260,8 +267,6 @@ export class FeedbackSubscriber implements Subscriber {
     const isDispute = DISPUTE_KEYWORDS.some((kw) => lower.includes(kw));
     if (!isDispute) return;
 
-    this.lastProcessedAt.set(prNumber, now);
-
     let findings: FindingRow[];
     try {
       findings = await this.store.getFindings(prNumber, MAX_FINDINGS);
@@ -273,13 +278,34 @@ export class FeedbackSubscriber implements Subscriber {
     if (findings.length === 0) return;
 
     const refs = parseFileLineRefs(body);
+    if (refs.length === 0 && payload.comment?.path) {
+      // Derive a scope from the replied-to review-comment's location. GitHub
+      // populates `line` (and `start_line` for multi-line ranges) on thread
+      // comments; comments on the file/diff header or on outdated positions
+      // may only carry `original_line`. Fall back through those fields. When
+      // a positive line is available, scope to that line. When only `path` is
+      // known (file-only), use unbounded line bounds so any finding on that
+      // file still matches — never encode an absent line as the sentinel 0,
+      // which would silently drop real findings whose line is always > 0.
+      const commentLine =
+        payload.comment.line ?? payload.comment.original_line ?? payload.comment.start_line;
+      const lineIsPositive = Number.isInteger(commentLine) && (commentLine as number) > 0;
+      refs.push({
+        file: payload.comment.path,
+        startLine: lineIsPositive ? (commentLine as number) : Number.MIN_SAFE_INTEGER,
+        endLine: lineIsPositive ? (commentLine as number) : Number.MAX_SAFE_INTEGER,
+      });
+    }
+    if (refs.length === 0) return;
     const validFindings = findings.filter(
-      (f) =>
-        f.id &&
-        typeof f.id === 'string' &&
-        (refs.length === 0 || refs.some((ref) => matchesFileLineRef(f, ref))),
+      (f) => f.id && typeof f.id === 'string' && refs.some((ref) => matchesFileLineRef(f, ref)),
     );
     if (validFindings.length === 0) return;
+    // Record the debounce timestamp only after we have confirmed matching
+    // findings for a valid scope. An earlier placement would let unscoped
+    // disputes consume the debounce window and silently drop a subsequent
+    // scoped dispute that arrived within debounceMs.
+    this.lastProcessedAt.set(prNumber, now);
     try {
       await this.store.recordFeedbackBatch(
         validFindings.map((f) => ({
