@@ -165,16 +165,20 @@ fix:
 multiAgent:
   enabled: true
   agents:
+    security:
+      enabled: true
     secuirty:
       enabled: true
 `,
       );
       const config = loadConfig(tmpDir);
       expect(config).not.toBeNull();
-      // The typo'd key degrades the multiAgent block to defaults instead of
-      // discarding the whole config (review settings survive).
+      // The typo'd key is dropped (not applied) while valid sibling entries and
+      // the master switch survive — the feature stays enabled.
       expect(config!.review?.systemPrompt).toBe('still loaded');
-      expect(config!.multiAgent?.enabled).toBe(false);
+      expect(config!.multiAgent?.enabled).toBe(true);
+      expect(config!.multiAgent?.agents?.security?.enabled).toBe(true);
+      expect(config!.multiAgent?.agents?.secuirty).toBeUndefined();
     });
   });
 

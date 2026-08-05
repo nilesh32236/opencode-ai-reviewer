@@ -183,7 +183,7 @@ function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
 function toAgentResult(result: ReviewResult, agent: AgentCategory, rawOutput: string): AgentResult {
   const findings: AgentFinding[] = result.issues.map((issue) => ({
     ...issue,
-    agent: (issue as AgentFinding).agent ?? agent,
+    agent: issue.agent ?? agent,
   }));
   return {
     agent,
@@ -192,6 +192,7 @@ function toAgentResult(result: ReviewResult, agent: AgentCategory, rawOutput: st
     rawOutput,
     durationMs: 0,
     tokensUsed: 0,
+    failedLines: result.failedLines,
     success: true,
   };
 }
@@ -354,6 +355,7 @@ class JsonlParserState {
         entryPointPath: i.entryPointPath,
         confidence: i.confidence,
         category: i.category,
+        agent: i.agent,
       })),
       stats: {
         total: this.issues.length,
@@ -463,6 +465,11 @@ function validateAndNormalize(obj: Record<string, unknown>): Finding {
             ? (obj.confidence as 'high' | 'medium' | 'low')
             : undefined,
         category: typeof obj.category === 'string' ? obj.category : undefined,
+        agent:
+          typeof obj.agent === 'string' &&
+          ['security', 'performance', 'quality', 'logic'].includes(obj.agent)
+            ? (obj.agent as AgentCategory)
+            : undefined,
       } as IssueFinding;
     }
 

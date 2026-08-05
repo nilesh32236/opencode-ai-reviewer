@@ -5,7 +5,7 @@
 // Every prompt instructs the model to emit JSON Lines with an `agent` field on
 // each `issue` so downstream parsing and synthesis can attribute findings.
 
-import { loadPromptFile } from '../prompts/builder.js';
+import { buildBudgetBanner, capPromptLength, loadPromptFile } from '../prompts/builder.js';
 import type { AgentCategory } from '../types/index.js';
 import { sanitizePromptInput } from '../utils/prompt-sanitizer.js';
 import type { AgentPromptContext } from './types.js';
@@ -157,6 +157,11 @@ function buildAgentPrompt(context: AgentPromptContext, category: AgentCategory):
   sections.push('');
   sections.push(AGENT_TAIL);
 
+  if (context.budgetMode && context.budgetMode !== 'full') {
+    sections.push('');
+    sections.push(buildBudgetBanner(context.budgetMode, context.totalDiffLines));
+  }
+
   if (context.inputs.reviewPromptExtra) {
     sections.push('');
     sections.push('## Additional Instructions');
@@ -164,7 +169,7 @@ function buildAgentPrompt(context: AgentPromptContext, category: AgentCategory):
     sections.push(context.inputs.reviewPromptExtra);
   }
 
-  return sections.join('\n');
+  return capPromptLength(sections.join('\n'));
 }
 
 function capitalize(value: string): string {

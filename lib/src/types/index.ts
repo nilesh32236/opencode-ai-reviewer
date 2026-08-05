@@ -72,6 +72,8 @@ export interface ReviewIssue {
   confidence?: 'high' | 'medium' | 'low';
   /** Category of the finding (e.g. security, performance); defaults to 'general'. */
   category?: string;
+  /** Specialized agent that reported this finding (set on the multi-agent path). */
+  agent?: AgentCategory;
 }
 
 /** Previous fix iteration data for tracking progress across fix cycles. */
@@ -296,6 +298,8 @@ export interface AgentResult {
   strengths: ReviewStrength[];
   /** Raw JSONL output produced by the agent. */
   rawOutput: string;
+  /** Number of malformed/parse-failed JSONL lines in the agent's output. */
+  failedLines?: number;
   /** Wall-clock duration of the agent run in milliseconds. */
   durationMs: number;
   /** Total tokens consumed by the agent run. */
@@ -811,6 +815,8 @@ export interface IssueFinding extends BaseFinding {
   confidence?: 'high' | 'medium' | 'low';
   /** Category of the finding (e.g. security, performance); defaults to 'general'. */
   category?: string;
+  /** Specialized agent that reported this finding (parsed from the JSONL `agent` field). */
+  agent?: AgentCategory;
 }
 
 /** An executive summary finding in JSONL format. */
@@ -890,6 +896,8 @@ export interface ReviewResult {
   failedLines?: number;
   /** Number of file batches whose review failed (review is partial when > 0) */
   failedBatches?: number;
+  /** Number of specialized agents that failed (multi-agent path; partial when > 0) */
+  failedAgents?: number;
   /** Optional executive summary with risk assessment */
   executiveSummary?: ExecutiveSummary;
   /** Optional token usage / cost data accumulated for this run (server-side, not AI-derived) */

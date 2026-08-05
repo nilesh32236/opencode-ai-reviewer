@@ -79,6 +79,7 @@ import {
   detectPythonLibraries,
   detectRubyLibraries,
 } from './utils/manifest-detector.js';
+import { validateModelString } from './utils/model-string.js';
 import { analyzeBatchReachability } from './utils/reachability.js';
 import { sanitizeString } from './utils/sanitize.js';
 
@@ -808,6 +809,7 @@ export class ReviewEngine {
         files,
         baseContext,
         mcpDocs,
+        openThreadsContext,
         workDir,
         promptFile,
         promptExtra,
@@ -1235,12 +1237,26 @@ export class ReviewEngine {
 
   /**
    * Resolve the effective model for a specialized agent, preferring the
-   * per-agent override, then the review model.
+   * per-agent override, then the review model. The per-agent override is
+   * validated at dispatch time: a malformed override (e.g. 'gpt-4o' with no
+   * provider prefix) degrades to `reviewModel` with a warning instead of
+   * throwing from `runOpenCode` and aborting the whole review.
    * @param category - The agent category.
    * @returns The resolved model string.
    */
   private resolveAgentModel(category: AgentCategory): string {
-    return this.config.multiAgent?.agents?.[category]?.model ?? this.config.reviewModel;
+    const override = this.config.multiAgent?.agents?.[category]?.model;
+    if (override) {
+      try {
+        validateModelString(override);
+        return override;
+      } catch (err) {
+        this.logger.warn(
+          `Agent "${category}" model "${override}" is invalid, falling back to reviewModel: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    return this.config.reviewModel;
   }
 
   /**
@@ -1250,10 +1266,16 @@ export class ReviewEngine {
    * review. Always returns through `verifyReviewResult` so reachability,
    * meta-verification, sensitivity filtering, and budget banners apply
    * identically to the legacy path.
+   *
+   * Active agents are dispatched concurrently (each agent runs its own file
+   * batches under a bounded per-agent concurrency limit), so up to four
+   * specialized agents review in parallel instead of serially — output files
+   * are namespaced per agent/batch so no collisions occur.
    * @param pr - The PR context being reviewed.
    * @param files - Changed files (already filtered by exclude patterns).
    * @param baseContext - The assembled PR/base context string (MCP + open threads).
    * @param mcpDocs - MCP library documentation ('' when disabled/failed).
+   * @param openThreadsContext - Open human-thread discussion context ('' when none/failed).
    * @param workDir - Working directory the review runs in.
    * @param promptFile - Optional custom review prompt file path.
    * @param promptExtra - Optional extra instructions appended to each agent prompt.
@@ -1277,6 +1299,7 @@ export class ReviewEngine {
     files: PRContext['changedFiles'],
     baseContext: string,
     mcpDocs: string,
+    openThreadsContext: string,
     workDir: string,
     promptFile?: string,
     promptExtra?: string,
@@ -1304,40 +1327,44 @@ export class ReviewEngine {
       `Multi-agent review: dispatching ${categories.length} specialized agent(s): ${categories.join(', ')}`,
     );
 
-    // Run agents sequentially so per-agent output files cannot collide and the
-    // accumulated telemetry stays attributable per agent. Each agent reviews
-    // the full file set (batched internally) with its own focused prompt.
-    const agentResults: AgentResult[] = [];
-    for (const category of categories) {
-      this.logger.info(`Running ${category} review agent...`);
-      const result = await this.runAgentCategory(
-        category,
-        files,
-        pr,
-        baseContext,
-        mcpDocs,
-        workDir,
-        promptFile,
-        promptExtra,
-        timeoutMinutes,
-        tokenBudgetConfig,
-        blameData,
-        codebaseIndex,
-        codebaseIndexData,
-        lessons,
-        falsePositiveRules,
-        deltaContext,
-        previousFindings,
-        previousBotComments,
-      );
+    // Dispatch all active agents concurrently. Each agent writes to its own
+    // `.opencode/agent-<category>/batch-<idx>` output directory, so the agents
+    // cannot collide; concurrency is bounded inside each agent by a per-agent
+    // batch limit that keeps the aggregate under MAX_BATCH_CONCURRENCY.
+    const agentResults: AgentResult[] = await Promise.all(
+      categories.map((category) =>
+        this.runAgentCategory(
+          category,
+          files,
+          pr,
+          mcpDocs,
+          openThreadsContext,
+          workDir,
+          promptFile,
+          promptExtra,
+          timeoutMinutes,
+          tokenBudgetConfig,
+          blameData,
+          codebaseIndex,
+          codebaseIndexData,
+          lessons,
+          falsePositiveRules,
+          deltaContext,
+          previousFindings,
+          previousBotComments,
+          budgetMode,
+          totalDiffLines,
+        ),
+      ),
+    );
+    for (const result of agentResults) {
       if (result.success) {
         this.logger.info(
-          `Agent "${category}" found ${result.findings.length} issue(s) and ${result.strengths.length} strength(s) in ${result.durationMs}ms`,
+          `Agent "${result.agent}" found ${result.findings.length} issue(s) and ${result.strengths.length} strength(s) in ${result.durationMs}ms`,
         );
       } else {
-        this.logger.warn(`Agent "${category}" failed: ${result.error ?? 'unknown error'}`);
+        this.logger.warn(`Agent "${result.agent}" failed: ${result.error ?? 'unknown error'}`);
       }
-      agentResults.push(result);
     }
 
     const result = await this.synthesizeAgentFindings(
@@ -1346,6 +1373,8 @@ export class ReviewEngine {
       workDir,
       timeoutMinutes,
       linterResults,
+      promptFile,
+      promptExtra,
     );
 
     return await this.verifyReviewResult(
@@ -1365,11 +1394,17 @@ export class ReviewEngine {
    * batch is dispatched to `runOpenCode` with the agent's focused prompt in an
    * isolated working directory, and the accumulated output is parsed into one
    * AgentResult attributed to the agent's category.
+   *
+   * Batches run concurrently under a bounded limit that keeps the aggregate
+   * across all active agents under `MAX_BATCH_CONCURRENCY`. A batch whose
+   * `runOpenCode` invocation throws or reports failure is marked failed and the
+   * remaining batches still run, so a per-agent model typo or CLI outage can
+   * never abort the whole review.
    * @param category - The agent category to run.
    * @param files - Changed files the agent reviews.
    * @param pr - The PR context being reviewed.
-   * @param _baseContext - Reserved; agent context is built per-batch from `pr`.
    * @param mcpDocs - MCP library documentation ('' when disabled/failed).
+   * @param openThreadsContext - Open human-thread discussion context ('' when none/failed).
    * @param workDir - Working directory the review runs in.
    * @param promptFile - Optional review-level custom prompt file path (the per-agent
    * `multiAgent.agents.<category>.promptFile` takes precedence when set).
@@ -1384,14 +1419,16 @@ export class ReviewEngine {
    * @param deltaContext - Optional incremental review context.
    * @param previousFindings - Optional findings from previous fix iterations.
    * @param previousBotComments - Optional previous bot review comments.
+   * @param budgetMode - Optional budget review mode forwarded into the agent prompt.
+   * @param totalDiffLines - Optional total diff line count for the budget banner.
    * @returns The structured AgentResult for this category.
    */
   private async runAgentCategory(
     category: AgentCategory,
     files: PRContext['changedFiles'],
     pr: PRContext,
-    _baseContext: string,
     mcpDocs: string,
+    openThreadsContext: string,
     workDir: string,
     promptFile?: string,
     promptExtra?: string,
@@ -1410,6 +1447,8 @@ export class ReviewEngine {
       body: string;
       commentId: number;
     }>,
+    budgetMode?: ReviewBudgetMode,
+    totalDiffLines?: number,
   ): Promise<AgentResult> {
     const agentConfig = this.config.multiAgent?.agents?.[category] as
       | MultiAgentAgentConfig
@@ -1431,8 +1470,27 @@ export class ReviewEngine {
     let success = true;
     let error: string | undefined;
 
-    for (let idx = 0; idx < fileBatches.length; idx++) {
-      const batch = fileBatches[idx];
+    // Bound the per-agent batch concurrency so the aggregate across concurrently
+    // running agents stays under MAX_BATCH_CONCURRENCY (mirroring the legacy
+    // single-agent path's cap).
+    const activeCategories = Math.max(1, this.getActiveAgentCategories().length);
+    const concurrencyLimit = Math.min(
+      os.cpus().length || 4,
+      fileBatches.length,
+      Math.max(1, Math.floor(MAX_BATCH_CONCURRENCY / activeCategories)),
+    );
+
+    const runBatch = async (
+      batch: (typeof files)[number][],
+      idx: number,
+    ): Promise<{
+      raw: string;
+      tokensUsed: number;
+      promptTokens?: number;
+      completionTokens?: number;
+      failed: boolean;
+      error?: string;
+    }> => {
       const batchDir = path.join(workDir, '.opencode', `agent-${category}`, `batch-${idx}`);
       if (!existsSync(batchDir)) {
         mkdirSync(batchDir, { recursive: true });
@@ -1471,6 +1529,7 @@ export class ReviewEngine {
         prContext: this.buildAgentBatchContext(
           batchContext,
           mcpDocs,
+          openThreadsContext,
           batchCodebaseContext,
           deltaContext,
           lessons,
@@ -1478,6 +1537,8 @@ export class ReviewEngine {
           previousFindings,
           previousBotComments,
         ),
+        budgetMode,
+        totalDiffLines,
       };
 
       const promptBuilder = AGENT_PROMPT_BUILDERS[category] ?? buildSecurityPrompt;
@@ -1486,32 +1547,82 @@ export class ReviewEngine {
       const outputPath = path.join(batchDir, 'review-output.jsonl');
       ensureOutputDir(outputPath);
 
+      // runOpenCode throws synchronously on a malformed model string and can
+      // reject on setup/health-check failures. Treat a thrown/rejected call as a
+      // failed batch so a single bad batch never aborts the whole review.
       const runResult = await runOpenCode(prompt, {
         model,
         timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
         workingDirectory: batchDir,
+      }).catch((err: unknown) => {
+        this.logger.warn(
+          `Agent ${category} batch ${idx} threw: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return {
+          success: false,
+          output: '',
+          durationMs: 0,
+          tokensUsed: 0,
+          promptTokens: undefined,
+          completionTokens: undefined,
+        };
       });
-
-      accumulatedTokensUsed += runResult.tokensUsed;
-      accumulatedPromptTokens += runResult.promptTokens ?? 0;
-      accumulatedCompletionTokens += runResult.completionTokens ?? 0;
 
       if (!runResult.success) {
         this.logger.warn(`Agent ${category} batch ${idx} execution failed`);
-        success = false;
-        error = `Agent batch ${idx} execution failed`;
-        continue;
+        return {
+          raw: '',
+          tokensUsed: runResult.tokensUsed,
+          promptTokens: runResult.promptTokens,
+          completionTokens: runResult.completionTokens,
+          failed: true,
+          error: `Agent batch ${idx} execution failed`,
+        };
       }
 
       try {
         const content = await fs.readFile(outputPath, 'utf-8');
-        if (content.trim()) {
-          rawBatches.push(content);
-        }
+        return {
+          raw: content.trim() ? content : '',
+          tokensUsed: runResult.tokensUsed,
+          promptTokens: runResult.promptTokens,
+          completionTokens: runResult.completionTokens,
+          failed: false,
+        };
       } catch (err) {
         this.logger.warn(`Agent ${category} batch ${idx} output missing`);
-        success = false;
-        error = err instanceof Error ? err.message : String(err);
+        return {
+          raw: '',
+          tokensUsed: runResult.tokensUsed,
+          promptTokens: runResult.promptTokens,
+          completionTokens: runResult.completionTokens,
+          failed: true,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    };
+
+    const chunkCount = computeChunkDelays(fileBatches.length, concurrencyLimit) + 1;
+    for (let chunk = 0; chunk < chunkCount; chunk++) {
+      if (chunk > 0) {
+        await new Promise((r) => setTimeout(r, INTER_CHUNK_DELAY_MS));
+      }
+      const batchStart = chunk * concurrencyLimit;
+      const chunkBatches = fileBatches.slice(batchStart, batchStart + concurrencyLimit);
+      const chunkOutputs = await Promise.all(
+        chunkBatches.map((batch, chunkOffset) => runBatch(batch, batchStart + chunkOffset)),
+      );
+      for (const batchResult of chunkOutputs) {
+        accumulatedTokensUsed += batchResult.tokensUsed;
+        accumulatedPromptTokens += batchResult.promptTokens ?? 0;
+        accumulatedCompletionTokens += batchResult.completionTokens ?? 0;
+        if (batchResult.raw) {
+          rawBatches.push(batchResult.raw);
+        }
+        if (batchResult.failed) {
+          success = false;
+          error = error ?? batchResult.error;
+        }
       }
     }
 
@@ -1541,6 +1652,7 @@ export class ReviewEngine {
       findings: parsed.findings,
       strengths: parsed.strengths,
       rawOutput,
+      failedLines: parsed.failedLines,
       durationMs: Date.now() - agentStart,
       tokensUsed: accumulatedTokensUsed,
       success,
@@ -1551,11 +1663,13 @@ export class ReviewEngine {
   /**
    * Assemble the enriched context string injected into a specialized agent's
    * prompt for one file batch. Combines the batch PR context (with blame
-   * annotations), MCP library docs, codebase index context, delta context,
-   * learning lessons, false-positive rules, and previous iteration findings so
-   * the agent reviews with the same enrichment the legacy path provides.
+   * annotations), MCP library docs, open human-thread context, codebase index
+   * context, delta context, learning lessons, false-positive rules, and
+   * previous iteration findings so the agent reviews with the same enrichment
+   * the legacy path provides.
    * @param batchContext - The batch PR context string.
    * @param mcpDocs - MCP library documentation ('' when disabled/failed).
+   * @param openThreadsContext - Open human-thread discussion context ('' when none/failed).
    * @param codebaseIndexContext - Cross-file codebase context ('' when unavailable).
    * @param deltaContext - Optional incremental review context.
    * @param lessons - Optional learning-store lessons.
@@ -1567,6 +1681,7 @@ export class ReviewEngine {
   private buildAgentBatchContext(
     batchContext: string,
     mcpDocs: string,
+    openThreadsContext: string,
     codebaseIndexContext: string,
     deltaContext?: string,
     lessons?: string[],
@@ -1583,6 +1698,11 @@ export class ReviewEngine {
 
     if (mcpDocs) {
       parts.push('\n\n## Library Documentation\n\n' + mcpDocs);
+    }
+    if (openThreadsContext) {
+      // Mirror the legacy baseContext assembly, which appends open human-thread
+      // context verbatim so agents respect unresolved discussion threads.
+      parts.push('\n\n' + openThreadsContext);
     }
     if (codebaseIndexContext) {
       parts.push('\n\n## Codebase Context (Cross-File Analysis)\n\n' + codebaseIndexContext);
@@ -1652,11 +1772,17 @@ export class ReviewEngine {
    * per-agent findings; on synthesis failure or output-parse failure, falls back
    * to a deterministic merged + deduplicated result so a synthesis-model outage
    * can never fail the whole review.
+   *
+   * When every agent failed (model outage, timeout, malformed output), the
+   * resulting review is forced to a failed verdict (`ready: false`) — a PR that
+   * was never actually reviewed must never be reported as clean and merge-ready.
    * @param prNumber - PR number being reviewed.
    * @param agentResults - Findings from each specialized agent.
    * @param workDir - Working directory the review runs in.
    * @param timeoutMinutes - Optional per-run timeout override.
    * @param linterResults - Results from configured linters (deduped post-synthesis).
+   * @param promptFile - Optional review-level custom prompt file path forwarded to the synthesis prompt.
+   * @param promptExtra - Optional extra instructions forwarded to the synthesis prompt.
    * @returns The consolidated ReviewResult.
    */
   private async synthesizeAgentFindings(
@@ -1665,6 +1791,8 @@ export class ReviewEngine {
     workDir: string,
     timeoutMinutes?: number,
     linterResults: LinterResult[] = [],
+    promptFile?: string,
+    promptExtra?: string,
   ): Promise<ReviewResult> {
     const allFindings: AgentFinding[] = agentResults.flatMap((r) => r.findings);
     const allStrengths: ReviewStrength[] = agentResults.flatMap((r) => r.strengths);
@@ -1672,21 +1800,40 @@ export class ReviewEngine {
       .map((r) => r.rawOutput)
       .filter((raw) => typeof raw === 'string' && raw.length > 0);
     const failedAgents = agentResults.filter((r) => !r.success).length;
+    const totalFailedLines = agentResults.reduce((sum, r) => sum + (r.failedLines ?? 0), 0);
+    const allFailed = failedAgents === agentResults.length && agentResults.length > 0;
 
     const dedupIssues = (issues: ReviewIssue[]): ReviewIssue[] => {
       if (linterResults.length === 0) return issues;
       return this.deduplicateAgainstLinters(issues, linterResults, workDir);
     };
 
+    // Force a failed verdict when every agent failed, regardless of which
+    // consolidation path runs, so an unreviewed PR is never green-lit.
+    const forceFailedVerdict = (result: ReviewResult): ReviewResult => {
+      if (!allFailed) return result;
+      return {
+        ...result,
+        verdict: { ...result.verdict, ready: false, autoFixable: false },
+      };
+    };
+
     const synthesisEnabled = this.config.multiAgent?.synthesis?.enabled !== false;
     if (!synthesisEnabled || allFindings.length === 0) {
-      const reasoning = allFindings.length === 0 ? 'No issues found' : 'Merged agent findings';
-      return this.buildAgentFallbackResult(
-        dedupIssues(this.deduplicateAgentFindings(allFindings)),
-        allStrengths,
-        allRawLines,
-        reasoning,
-        failedAgents,
+      const reasoning = allFailed
+        ? 'All review agents failed'
+        : allFindings.length === 0
+          ? 'No issues found'
+          : 'Merged agent findings';
+      return forceFailedVerdict(
+        this.buildAgentFallbackResult(
+          dedupIssues(this.deduplicateAgentFindings(allFindings)),
+          allStrengths,
+          allRawLines,
+          totalFailedLines,
+          reasoning,
+          failedAgents,
+        ),
       );
     }
 
@@ -1703,7 +1850,11 @@ export class ReviewEngine {
       )
       .join('\n');
     const synthesisPrompt = buildMultiAgentSynthesisPrompt(
-      { projectContext: this.config.projectContext.description || undefined },
+      {
+        projectContext: this.config.projectContext.description || undefined,
+        reviewPromptFile: promptFile,
+        reviewPromptExtra: promptExtra,
+      },
       findingsJsonl,
     );
     const synthesisModel =
@@ -1728,22 +1879,36 @@ export class ReviewEngine {
 
     if (!synthesisResult.success) {
       this.logger.warn('Multi-agent synthesis pass failed, falling back to merged agent results');
-      return this.buildAgentFallbackResult(
-        dedupIssues(this.deduplicateAgentFindings(allFindings)),
-        allStrengths,
-        allRawLines,
-        'Synthesis failed, using merged agent results',
-        failedAgents,
+      return forceFailedVerdict(
+        this.buildAgentFallbackResult(
+          dedupIssues(this.deduplicateAgentFindings(allFindings)),
+          allStrengths,
+          allRawLines,
+          totalFailedLines,
+          'Synthesis failed, using merged agent results',
+          failedAgents,
+        ),
       );
     }
 
     try {
       const parsed = await parseJsonlFile(finalOutputPath);
+      // Preserve per-agent strengths on the synthesis-success path by merging
+      // them (deduplicated by message) so agent-reported strengths survive
+      // regardless of which consolidation path runs.
+      const mergedStrengths = [...parsed.strengths, ...allStrengths].filter(
+        (s, i, arr) => arr.findIndex((x) => x.message === s.message) === i,
+      );
+      let finalResult: ReviewResult = {
+        ...parsed,
+        strengths: mergedStrengths,
+        ...(failedAgents > 0 ? { failedAgents } : {}),
+      };
       if (linterResults.length > 0) {
         const deduped = this.deduplicateAgainstLinters(parsed.issues, linterResults, workDir);
         if (deduped.length < parsed.issues.length) {
-          return {
-            ...parsed,
+          finalResult = {
+            ...finalResult,
             issues: deduped,
             stats: {
               total: deduped.length,
@@ -1751,21 +1916,23 @@ export class ReviewEngine {
               important: deduped.filter((i) => i.severity === 'important').length,
               minor: deduped.filter((i) => i.severity === 'minor').length,
             },
-            ...(failedAgents > 0 ? { failedBatches: failedAgents } : {}),
           };
         }
       }
-      return failedAgents > 0 ? { ...parsed, failedBatches: failedAgents } : parsed;
+      return forceFailedVerdict(finalResult);
     } catch (err) {
       this.logger.warn(
         `Multi-agent synthesis output parse failed, falling back to merged agent results: ${err instanceof Error ? err.message : String(err)}`,
       );
-      return this.buildAgentFallbackResult(
-        dedupIssues(this.deduplicateAgentFindings(allFindings)),
-        allStrengths,
-        allRawLines,
-        'Synthesis output parse failed, using merged agent results',
-        failedAgents,
+      return forceFailedVerdict(
+        this.buildAgentFallbackResult(
+          dedupIssues(this.deduplicateAgentFindings(allFindings)),
+          allStrengths,
+          allRawLines,
+          totalFailedLines,
+          'Synthesis output parse failed, using merged agent results',
+          failedAgents,
+        ),
       );
     }
   }
@@ -1811,10 +1978,12 @@ export class ReviewEngine {
   /**
    * Build a fallback ReviewResult from merged agent findings when the synthesis
    * agent is disabled or fails. Mirrors `buildFallbackResult` but attributes
-   * partial-failure counts to agents instead of batches.
+   * partial-failure counts to agents instead of batches, and reports the real
+   * malformed-line count instead of hardcoding 0.
    * @param issues - Merged, deduplicated issues.
    * @param strengths - Merged strengths.
    * @param rawLines - Raw agent JSONL lines.
+   * @param failedLines - Number of malformed/parse-failed JSONL lines across all agents.
    * @param reasoning - Verdict reasoning string.
    * @param failedAgents - Number of agents that failed.
    * @returns The fallback ReviewResult.
@@ -1823,6 +1992,7 @@ export class ReviewEngine {
     issues: ReviewIssue[],
     strengths: ReviewStrength[],
     rawLines: string[],
+    failedLines: number,
     reasoning: string,
     failedAgents = 0,
   ): ReviewResult {
@@ -1846,8 +2016,8 @@ export class ReviewEngine {
         minor: issues.filter((i) => i.severity === 'minor').length,
       },
       rawLines,
-      failedLines: 0,
-      failedBatches: failedAgents,
+      failedLines,
+      failedAgents,
     };
   }
 

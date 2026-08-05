@@ -93,6 +93,10 @@ learning:
 # legacy single-agent review path stays unchanged. When enabled, each specialized
 # agent runs independently with its own focused prompt; findings are consolidated
 # by the synthesis agent into one final review.
+#
+# Agents run concurrently (each namespaced under .opencode/agent-<category>/), and
+# the budget-mode banner (review.reviewBudget.summary/splitThreshold) is applied to
+# each agent prompt so large-PR cost adaptation matches the legacy path.
 # multiAgent:
 #   enabled: true
 #   agents:

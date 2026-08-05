@@ -97,15 +97,20 @@ describe('MultiAgentConfigSchema', () => {
     expect(result.synthesis.model).toBe('openai/gpt-4o');
   });
 
-  it('degrades to defaults on an unknown/mistyped agent-category key', () => {
-    // A single typo (e.g. `secuirty:`) must not fail the whole parse; it
-    // degrades to the defaults, mirroring NotificationsConfigSchema.
+  it('drops only the mistyped agent-category key instead of degrading the whole block', () => {
+    // A single typo (e.g. `secuirty:`) must not fail the parse NOR silently
+    // disable the feature; the offending key is dropped while valid sibling
+    // entries and `enabled: true` are preserved.
     expect(
       MultiAgentConfigSchema.parse({
         enabled: true,
-        agents: { secuirty: { enabled: true } },
+        agents: { secuirty: { enabled: true }, security: { enabled: true } },
       }),
-    ).toEqual({ enabled: false, agents: {}, synthesis: { enabled: true } });
+    ).toEqual({
+      enabled: true,
+      agents: { security: { enabled: true } },
+      synthesis: { enabled: true },
+    });
   });
 
   it('does not fail when a partial agent config omits optional fields', () => {

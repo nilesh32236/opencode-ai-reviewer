@@ -84,6 +84,28 @@ describe('specialized agent prompt builders', () => {
     expect(xCount).toBeLessThanOrEqual(50_100);
   });
 
+  it('injects the budget banner when budgetMode is summary/split', () => {
+    const summary = buildSecurityPrompt(
+      makeAgentContext({ budgetMode: 'summary', totalDiffLines: 700 }),
+    );
+    expect(summary).toContain('## Review Budget Mode: SUMMARY');
+    const split = buildPerformancePrompt(
+      makeAgentContext({ budgetMode: 'split', totalDiffLines: 1500 }),
+    );
+    expect(split).toContain('## Review Budget Mode: SPLIT RECOMMENDED');
+    const full = buildQualityPrompt(makeAgentContext({ budgetMode: 'full' }));
+    expect(full).not.toContain('## Review Budget Mode');
+  });
+
+  it('caps the assembled agent prompt at the 200KB prompt-length limit', () => {
+    // Only prContext is pre-capped at 50k chars; unbounded inputs like a large
+    // projectContext must still be cut by the whole-prompt 200KB cap.
+    const huge = 'y'.repeat(300_000);
+    const prompt = buildLogicPrompt(makeAgentContext({ inputs: { projectContext: huge } }));
+    expect(prompt.length).toBeLessThan(204_800 + 200);
+    expect(prompt).toContain('... [prompt truncated at 200KB cap]');
+  });
+
   it('exported builders share the same generic prompt structure', () => {
     const security = buildSecurityPrompt(makeAgentContext());
     const performance = buildPerformancePrompt(makeAgentContext());
@@ -115,10 +137,10 @@ describe('parseAgentJsonlString', () => {
     expect(result.agent).toBe('security');
   });
 
-  it('attributes findings to the passed agent category regardless of inline agent field', () => {
-    // The shared parser drops unknown per-issue fields (like an inline `agent`),
-    // so attribution is per-agent-result: every finding is stamped with the
-    // agent category that produced the run.
+  it('preserves an explicit inline agent field from the model output', () => {
+    // The shared parser now retains the per-issue `agent` field, so a model that
+    // correctly labels which category it is reporting keeps that attribution
+    // instead of always falling back to the invoked run category.
     const content = JSON.stringify({
       type: 'issue',
       severity: 'important',
@@ -129,7 +151,7 @@ describe('parseAgentJsonlString', () => {
     });
     const result = parseAgentJsonlString(content, 'security');
     expect(result.findings).toHaveLength(1);
-    expect(result.findings[0].agent).toBe('security');
+    expect(result.findings[0].agent).toBe('performance');
   });
 
   it('coerces numeric confidence values into the canonical string union', () => {

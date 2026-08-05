@@ -638,6 +638,168 @@ describe('ReviewEngine', () => {
           fs.unlinkSync(customFile);
         }
       });
+
+      it('continues past a thrown runOpenCode and reports the all-failed run as not ready', async () => {
+        const eng = makeMultiAgentEngine();
+        mockRunOpenCode.mockRejectedValue(new Error('model outage'));
+        vi.mocked(fs.promises.readFile).mockResolvedValue('');
+
+        const result = await eng.reviewPR(agentPr);
+
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(1); // agent only — no synthesis on empty findings
+        expect(result.verdict.ready).toBe(false);
+        expect(result.verdict.reasoning).toBe('All review agents failed');
+        expect(result.failedAgents).toBe(1);
+        expect(result.summary).toBe('No issues found');
+      });
+
+      it('reports an all-agents-failed run as not ready instead of clean', async () => {
+        const eng = makeMultiAgentEngine({ enabled: false });
+        mockRunOpenCode.mockResolvedValue({
+          success: false,
+          output: '',
+          durationMs: 500,
+          tokensUsed: 10,
+        });
+        vi.mocked(fs.promises.readFile).mockResolvedValue('');
+
+        const result = await eng.reviewPR(agentPr);
+
+        expect(result.verdict.ready).toBe(false);
+        expect(result.verdict.reasoning).toBe('All review agents failed');
+        expect(result.failedAgents).toBe(1);
+      });
+
+      it('falls back to the reviewModel when the per-agent model override is malformed', async () => {
+        const eng = new ReviewEngine(
+          makeConfig({
+            multiAgent: {
+              enabled: true,
+              agents: { security: { enabled: true, model: 'gpt-4o' } },
+              synthesis: { enabled: false },
+            },
+          }),
+          mockAdapter,
+        );
+        let capturedModel = '';
+        mockRunOpenCode.mockImplementation(async (_p: string, opts?: { model?: string }) => {
+          capturedModel = opts?.model ?? '';
+          return { success: true, output: '', durationMs: 500, tokensUsed: 10 };
+        });
+        vi.mocked(fs.promises.readFile).mockResolvedValue('{"type":"summary","text":"clean"}\n');
+
+        await eng.reviewPR(agentPr);
+
+        expect(capturedModel).toBe(DEFAULT_CONFIG.reviewModel);
+      });
+
+      it('forwards open human-thread context into the agent prompt', async () => {
+        const eng = makeMultiAgentEngine({ enabled: false });
+        vi.mocked(mockAdapter.getOpenHumanThreads).mockResolvedValue(
+          '## Open Review Threads (Unresolved)\n\n### Thread on `src/test.ts:1`\nAlready fixed in a later commit.',
+        );
+        let capturedPrompt = '';
+        mockRunOpenCode.mockImplementation(
+          async (p: string, opts?: { workingDirectory?: string }) => {
+            if (opts?.workingDirectory?.includes('agent-security')) {
+              capturedPrompt = p;
+            }
+            return { success: true, output: '', durationMs: 500, tokensUsed: 10 };
+          },
+        );
+        vi.mocked(fs.promises.readFile).mockImplementation(async () => agentOutput);
+
+        await eng.reviewPR(agentPr);
+
+        expect(capturedPrompt).toContain('## Open Review Threads (Unresolved)');
+        expect(capturedPrompt).toContain('Already fixed in a later commit.');
+      });
+
+      it('merges per-agent strengths into the synthesis-success result', async () => {
+        const eng = makeMultiAgentEngine();
+        const agentOutputWithStrength = [
+          JSON.stringify({ type: 'summary', text: 'security pass' }),
+          JSON.stringify({
+            type: 'strength',
+            file: 'src/test.ts',
+            line: 1,
+            message: 'Clear error handling',
+          }),
+          JSON.stringify({
+            type: 'issue',
+            severity: 'critical',
+            file: 'src/test.ts',
+            line: 42,
+            message: 'SQL injection',
+            agent: 'security',
+          }),
+        ].join('\n');
+        mockRunOpenCode.mockImplementation(
+          async (_prompt, opts?: { workingDirectory?: string }) => {
+            if (opts?.workingDirectory?.includes('agent-security')) {
+              return { success: true, output: '', durationMs: 500, tokensUsed: 10 };
+            }
+            return { success: true, output: '', durationMs: 300, tokensUsed: 5 };
+          },
+        );
+        vi.mocked(fs.promises.readFile).mockImplementation(async () => agentOutputWithStrength);
+        mockParseJsonlFile.mockResolvedValue({
+          ...mockEmptyResult(),
+          summary: 'synthesized',
+          strengths: [
+            { type: 'strength', file: 'src/test.ts', line: 1, message: 'Clear error handling' },
+          ],
+          issues: [
+            {
+              type: 'issue',
+              severity: 'critical',
+              file: 'src/test.ts',
+              line: 42,
+              message: 'SQL injection',
+              category: 'security',
+            },
+          ],
+          verdict: {
+            ready: false,
+            reasoning: 'issue found',
+            autoFixable: true,
+            confidence: 'high',
+          },
+        });
+
+        const result = await eng.reviewPR(agentPr);
+
+        expect(result.strengths).toHaveLength(1); // deduplicated by message
+        expect(result.strengths[0].message).toBe('Clear error handling');
+        expect(result.issues).toHaveLength(1);
+      });
+
+      it('forwards the review-level promptFile and promptExtra into the synthesis pass', async () => {
+        const customFile = path.join(process.cwd(), `.tmp-agent-synthesis-${Date.now()}.md`);
+        fs.writeFileSync(customFile, 'CUSTOM_SYNTHESIS_PROMPT');
+        let synthesisPrompt = '';
+        try {
+          const eng = makeMultiAgentEngine();
+          mockRunOpenCode.mockImplementation(
+            async (p: string, opts?: { workingDirectory?: string }) => {
+              if (!opts?.workingDirectory?.includes('agent-security')) {
+                synthesisPrompt = p;
+              }
+              return { success: true, output: '', durationMs: 500, tokensUsed: 10 };
+            },
+          );
+          vi.mocked(fs.promises.readFile).mockImplementation(async () => agentOutput);
+          mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+          await eng.reviewPR(agentPr, 0, path.basename(customFile), 'SYNTHESIS_EXTRA');
+
+          expect(synthesisPrompt.startsWith('CUSTOM_SYNTHESIS_PROMPT')).toBe(true);
+          expect(synthesisPrompt).toContain('SYNTHESIS_EXTRA');
+          expect(synthesisPrompt).toContain('## Additional Instructions');
+        } finally {
+          fs.unlinkSync(customFile);
+        }
+      });
     });
 
     it('builds the codebase index from the git repo root so cross-file context matches in a monorepo subdirectory', async () => {

@@ -292,19 +292,33 @@ export const MultiAgentAgentConfigSchema = z.object({
   promptFile: z.string().optional(),
 });
 
+/** Known specialized-agent category keys accepted in the multiAgent.agents record. */
+const AGENT_CATEGORY_KEYS = ['security', 'performance', 'quality', 'logic'] as const;
+
 /**
  * Zod schema validating the multi-agent review architecture configuration.
- * Multi-agent mode is opt-in and non-critical, so the whole block is wrapped in
- * `.catch(...)` (mirroring `NotificationsConfigSchema`): a single mistyped
- * agent-category key (e.g. `secuirty:`) must degrade to the defaults instead of
- * failing the entire config parse and silently discarding unrelated review
- * settings.
+ * Multi-agent mode is opt-in and non-critical. The `agents` record is keyed
+ * leniently (any string) and filtered to known categories in a transform so a
+ * single mistyped agent-category key (e.g. `secuirty:`) drops only the offending
+ * block instead of failing the whole parse — mirroring `validateConfig`'s skip
+ * behavior. The outer `.catch(...)` (mirroring `NotificationsConfigSchema`)
+ * still guards a fully malformed `multiAgent:` section so unrelated review
+ * settings are never silently discarded.
  */
 export const MultiAgentConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
     agents: z
-      .record(z.enum(['security', 'performance', 'quality', 'logic']), MultiAgentAgentConfigSchema)
+      .record(MultiAgentAgentConfigSchema)
+      .transform((agents: Record<string, z.infer<typeof MultiAgentAgentConfigSchema>>) => {
+        const filtered: Record<string, z.infer<typeof MultiAgentAgentConfigSchema>> = {};
+        for (const [key, value] of Object.entries(agents)) {
+          if ((AGENT_CATEGORY_KEYS as readonly string[]).includes(key)) {
+            filtered[key] = value;
+          }
+        }
+        return filtered;
+      })
       .default({}),
     synthesis: z
       .object({

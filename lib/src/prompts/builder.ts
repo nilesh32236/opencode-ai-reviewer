@@ -23,7 +23,7 @@ const logger = new Logger('prompt-builder');
  * multibyte characters are never split (an orphan lead byte would otherwise
  * decode to U+FFFD). Returns the original string when it already fits.
  */
-function truncateUtf8Bytes(text: string, maxBytes: number): string {
+export function truncateUtf8Bytes(text: string, maxBytes: number): string {
   if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
   let charCount = 0;
   let runningBytes = 0;
@@ -42,7 +42,7 @@ function truncateUtf8Bytes(text: string, maxBytes: number): string {
  * point boundary so multibyte characters are never split. The marker is
  * accounted for in the byte budget.
  */
-function capPromptLength(prompt: string): string {
+export function capPromptLength(prompt: string): string {
   const markerBytes = Buffer.byteLength(PROMPT_TRUNCATION_MARKER, 'utf8') + 1;
   const totalBytes = Buffer.byteLength(prompt, 'utf8');
   if (totalBytes <= MAX_PROMPT_BYTES) return prompt;
@@ -804,7 +804,7 @@ export function listAuditCategories(promptsDir?: string): string[] {
   return Array.from(categories).sort();
 }
 
-function buildBudgetBanner(budgetMode: ReviewBudgetMode, totalDiffLines?: number): string {
+export function buildBudgetBanner(budgetMode: ReviewBudgetMode, totalDiffLines?: number): string {
   const lineCount =
     totalDiffLines !== undefined ? `~${totalDiffLines} lines` : 'a very large number of lines';
   if (budgetMode === 'summary') {
@@ -945,7 +945,14 @@ ${buildOutputFormat()}`;
  * overlapping findings across agents, prioritize by severity × confidence, and
  * preserve each issue's originating category for downstream filtering.
  *
- * @param inputs - Configuration inputs including project context.
+ * Custom review instructions are honored consistently with the specialized
+ * agents: a configured `reviewPromptFile` is loaded and prepended (mirroring
+ * `buildReviewPrompt`), and `reviewPromptExtra` is appended as additional
+ * instructions so a user's custom guidance applies to the consolidation pass as
+ * well as the agents that produced the findings.
+ *
+ * @param inputs - Configuration inputs including project context and optional
+ * custom review prompt file / extra instructions.
  * @param findingsJsonl - JSONL text of per-agent findings, where each `issue`
  * line carries an `agent` field identifying its originating specialized agent.
  * @returns The assembled multi-agent synthesis prompt string.
@@ -955,8 +962,17 @@ export function buildMultiAgentSynthesisPrompt(
   findingsJsonl: string,
 ): string {
   const projectContext = inputs.projectContext || getDefaultProjectContext();
+  const sections: string[] = [];
 
-  return `You are a Senior Code Reviewer tasked with synthesizing findings from specialized review agents into a final consolidated report.
+  if (inputs.reviewPromptFile) {
+    const customPrompt = loadPromptFile(inputs.reviewPromptFile);
+    if (customPrompt) {
+      sections.push(customPrompt);
+      sections.push('');
+    }
+  }
+
+  sections.push(`You are a Senior Code Reviewer tasked with synthesizing findings from specialized review agents into a final consolidated report.
 
 ## Project Context
 ${projectContext}
@@ -984,7 +1000,15 @@ ${findingsJsonl}
 - Maintain severity categorization (critical, important, minor)
 
 ## Output Format: JSON Lines
-${buildOutputFormat()}`;
+${buildOutputFormat()}`);
+
+  if (inputs.reviewPromptExtra) {
+    sections.push('\n## Additional Instructions');
+    sections.push('');
+    sections.push(inputs.reviewPromptExtra);
+  }
+
+  return sections.join('\n');
 }
 
 function getDefaultProjectContext(): string {
