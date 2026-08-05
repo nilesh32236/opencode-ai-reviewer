@@ -10,6 +10,7 @@ const {
   mockCreateCheckRun,
   mockReviewPR,
   mockCleanup,
+  mockMergeRepoConfig,
 } = vi.hoisted(() => {
   const _mockGetMR = vi.fn();
   const _mockGetBotReviewThreads = vi.fn();
@@ -18,6 +19,7 @@ const {
   const _mockCreateCheckRun = vi.fn();
   const _mockReviewPR = vi.fn();
   const _mockCleanup = vi.fn();
+  const _mockMergeRepoConfig = vi.fn();
   return {
     mockGetMR: _mockGetMR,
     mockGetBotReviewThreads: _mockGetBotReviewThreads,
@@ -26,13 +28,13 @@ const {
     mockCreateCheckRun: _mockCreateCheckRun,
     mockReviewPR: _mockReviewPR,
     mockCleanup: _mockCleanup,
+    mockMergeRepoConfig: _mockMergeRepoConfig,
   };
 });
 
 const mockGitHubHelperCtor = vi.fn();
 const mockGitLabAdapterCtor = vi.fn();
 const mockReviewEngineCtor = vi.fn();
-const mockMergeRepoConfig = vi.fn();
 
 vi.mock('@opencode-pr-agent/lib', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@opencode-pr-agent/lib')>();
@@ -68,11 +70,11 @@ vi.mock('@opencode-pr-agent/lib', async (importOriginal) => {
   };
 });
 
-vi.mock('../src/utils/config.js', () => ({
+vi.mock('../../src/utils/config.js', () => ({
   mergeRepoConfig: mockMergeRepoConfig,
 }));
 
-vi.mock('../src/handlers/autofix.js', () => ({
+vi.mock('../../src/handlers/autofix.js', () => ({
   handleAutofixLoop: vi.fn(),
 }));
 
@@ -111,6 +113,7 @@ describe('handlePRReview check run reporting', () => {
     mockCreateCheckRun.mockResolvedValue({ id: 77 });
     mockReviewPR.mockResolvedValue(cleanReview());
     mockCleanup.mockResolvedValue(undefined);
+    mockMergeRepoConfig.mockImplementation((c: AgentConfig) => c);
   });
 
   it('creates a success check run when no finding reaches the threshold', async () => {
@@ -150,6 +153,32 @@ describe('handlePRReview check run reporting', () => {
     );
   });
 
+  it('uses the merged repository failOnSeverity for the check-run gate', async () => {
+    // The base config disables the gate; the repo's merged config enables it.
+    mockMergeRepoConfig.mockImplementation((c: AgentConfig) => ({
+      ...c,
+      review: { ...c.review, failOnSeverity: 'critical' },
+    }));
+    mockReviewPR.mockResolvedValue({
+      ...cleanReview(),
+      stats: { total: 1, critical: 1, important: 0, minor: 0 },
+    });
+
+    await handlePRReview(
+      42,
+      'owner/repo',
+      'token',
+      makeConfig({ review: { ...DEFAULT_CONFIG.review, failOnSeverity: 'off' } }),
+    );
+
+    expect(mockCreateCheckRun).toHaveBeenCalledWith(
+      'OpenCode AI Reviewer',
+      'abc123',
+      'failure',
+      expect.objectContaining({ title: 'Issues found' }),
+    );
+  });
+
   it('truncates an oversized summary passed as check run text', async () => {
     const longSummary = 'x'.repeat(100_000);
     mockReviewPR.mockResolvedValue({ ...cleanReview(), summary: longSummary });
@@ -159,6 +188,20 @@ describe('handlePRReview check run reporting', () => {
     const call = mockCreateCheckRun.mock.calls[0] as unknown[];
     const output = call[3] as { text?: string };
     expect(output.text?.length).toBe(60_000);
+  });
+
+  it('truncates multi-byte check run text by UTF-8 bytes, not code units', async () => {
+    // 30001 two-byte characters = 60002 bytes but only 30001 code units, which
+    // would slip past a code-unit cap while still exceeding the byte limit.
+    const longSummary = 'é'.repeat(30_001);
+    mockReviewPR.mockResolvedValue({ ...cleanReview(), summary: longSummary });
+
+    await handlePRReview(42, 'owner/repo', 'token', makeConfig());
+
+    const call = mockCreateCheckRun.mock.calls[0] as unknown[];
+    const output = call[3] as { text?: string };
+    expect(Buffer.byteLength(output.text ?? '', 'utf8')).toBeLessThanOrEqual(60_000);
+    expect(Buffer.from(output.text ?? '', 'utf8').toString('utf8')).toBe(output.text);
   });
 
   it('reports a neutral check run when the PR carries a skip label', async () => {

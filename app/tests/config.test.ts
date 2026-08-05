@@ -83,6 +83,13 @@ describe('buildConfig FAIL_ON_SEVERITY override', () => {
     expect(buildConfig().review.failOnSeverity).toBe('important');
   });
 
+  it('normalizes case and surrounding whitespace in FAIL_ON_SEVERITY', () => {
+    process.env.FAIL_ON_SEVERITY = ' CRITICAL ';
+    expect(buildConfig().review.failOnSeverity).toBe('critical');
+    process.env.FAIL_ON_SEVERITY = 'off';
+    expect(buildConfig().review.failOnSeverity).toBe('off');
+  });
+
   it('degrades gracefully to off for an invalid FAIL_ON_SEVERITY value', () => {
     process.env.FAIL_ON_SEVERITY = 'blocker';
     expect(buildConfig().review.failOnSeverity).toBe('off');

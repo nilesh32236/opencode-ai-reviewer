@@ -19,6 +19,27 @@ import { handleAutofixLoop } from './autofix.js';
 /** Marker identifying the "review in progress" status comment on a PR. */
 const REVIEW_IN_PROGRESS_MARKER = '<!-- review-in-progress -->';
 
+/** Safety bound for check-run output text (GitHub caps it at 65535 bytes). */
+const MAX_CHECK_TEXT_BYTES = 60_000;
+
+/**
+ * Truncate a string so its UTF-8 encoding fits within `maxBytes` while keeping
+ * the result valid UTF-8 (never splits a multi-byte character). The Checks API
+ * limits output text in bytes, so code-unit length alone is insufficient.
+ * @param text - The text to truncate.
+ * @param maxBytes - Maximum UTF-8 byte length (defaults to the check limit).
+ * @returns The truncated text, or the original when it already fits.
+ */
+function truncateToUtf8Bytes(text: string, maxBytes: number = MAX_CHECK_TEXT_BYTES): string {
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
+  let truncated = '';
+  for (const ch of text) {
+    if (Buffer.byteLength(truncated + ch, 'utf8') > maxBytes) break;
+    truncated += ch;
+  }
+  return truncated;
+}
+
 /**
  * Handle a PR review: fetch the PR, check skip conditions, run the review
  * engine, post the review to GitHub, optionally trigger autofix, and
@@ -58,6 +79,12 @@ export async function handlePRReview(
   const gh: PlatformAdapter =
     config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
 
+  // Resolve the effective configuration once: per-repo `.opencode-reviewer.yml`
+  // overrides (including `review.failOnSeverity`) must drive both the engine and
+  // the check-run gate so a repo value can enable/select the gate, not only
+  // review processing.
+  const effectiveConfig = mergeRepoConfig(config, tempDir);
+
   // Report a check run so branch protection can consume the review outcome as
   // a required status check. It is emitted on every terminal path where the
   // head SHA is known (skip, engine failure, empty result, post failure) with a
@@ -71,11 +98,12 @@ export async function handlePRReview(
     summary: string,
     text?: string,
   ): Promise<void> => {
-    if (config.platform !== 'github' || config.review.failOnSeverity === 'off') return;
+    if (config.platform !== 'github' || effectiveConfig.review.failOnSeverity === 'off') return;
     try {
-      // The Checks API rejects output text over 65535 bytes; an oversized
-      // model-generated summary must never prevent the check from appearing.
-      const safeText = text && text.length > 60000 ? text.slice(0, 60000) : text;
+      // The Checks API rejects output text over 65535 bytes (not code units), so
+      // an oversized model-generated summary must never prevent the check from
+      // appearing. Truncate by UTF-8 byte length while preserving valid UTF-8.
+      const safeText = truncateToUtf8Bytes(text ?? '', MAX_CHECK_TEXT_BYTES) || undefined;
       await gh.createCheckRun('OpenCode AI Reviewer', headSha, conclusion, {
         title,
         summary,
@@ -112,7 +140,7 @@ export async function handlePRReview(
   }
 
   const engine = new ReviewEngine(
-    mergeRepoConfig(config, tempDir),
+    effectiveConfig,
     gh,
     learningStore,
     eventBus,
@@ -276,23 +304,18 @@ export async function handlePRReview(
       }
     }
 
-    // Report the review-outcome check run AFTER the autofix loop so the
-    // conclusion is attached to the final reviewed head SHA. If autofix pushed
-    // a new commit, refetch the MR to attach the check to the current head
-    // rather than the pre-fix SHA. Only the successful-review path gets a
-    // threshold-based 'success'/'failure' conclusion.
+    // Report the review-outcome check run AFTER the autofix loop, attached to
+    // the SHA that was actually reviewed (`pr.headSha`). If autofix pushes a new
+    // commit, never attach this pre-fix result to the new head — the subsequent
+    // push event triggers a fresh review that reports a check for that SHA.
     if (reviewResult.success) {
-      const finalHeadSha = await gh
-        .getMR(prNumber)
-        .then((m) => m.headSha)
-        .catch(() => pr.headSha);
-      const threshold = config.review.failOnSeverity;
+      const threshold = effectiveConfig.review.failOnSeverity;
       const failed = shouldFailOnSeverity(result.stats, threshold);
       const summary = failed
         ? `Found ${result.stats.critical} critical, ${result.stats.important} important, ${result.stats.minor} minor issue(s)`
         : 'No issues above the fail-on-severity threshold found';
       await reportCheckRun(
-        finalHeadSha,
+        pr.headSha,
         failed ? 'failure' : 'success',
         failed ? 'Issues found' : 'All clear',
         summary,
