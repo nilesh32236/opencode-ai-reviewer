@@ -10,14 +10,17 @@ const FAIL_ON_SEVERITY_VALUES: readonly FailOnSeverity[] = [
 
 /**
  * Parse the FAIL_ON_SEVERITY environment override into a FailOnSeverity value.
+ * The raw value is normalized (trimmed, lowercased) so uppercase or whitespace-
+ * padded values resolve correctly instead of silently disabling the gate.
  * Invalid or unset values degrade gracefully to the default ('off') so a
  * stale env var can never break the app at startup.
  * @param raw - Raw environment variable value (may be undefined).
  * @returns A valid FailOnSeverity value (default: 'off').
  */
 function parseFailOnSeverityEnv(raw: string | undefined): FailOnSeverity {
-  if (raw && FAIL_ON_SEVERITY_VALUES.includes(raw as FailOnSeverity)) {
-    return raw as FailOnSeverity;
+  const value = raw?.trim().toLowerCase();
+  if (value && FAIL_ON_SEVERITY_VALUES.includes(value as FailOnSeverity)) {
+    return value as FailOnSeverity;
   }
   return 'off';
 }
