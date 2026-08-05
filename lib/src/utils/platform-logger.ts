@@ -178,17 +178,6 @@ abstract class BasePlatformLogger implements PlatformLogger {
   abstract child(context: LogContext): PlatformLogger;
 
   /**
-   * Format a message into the shared line layout.
-   * @param level - The log level.
-   * @param message - The message to format.
-   * @param data - Optional structured data to include.
-   * @returns The formatted message line.
-   */
-  protected formatMessage(level: LogLevel, message: string, data?: unknown): string {
-    return this.formatMessageWithContext(level, message, data);
-  }
-
-  /**
    * Format a message, merging an optional per-call context over the base context.
    * @param level - The log level.
    * @param message - The message to format.
@@ -196,7 +185,7 @@ abstract class BasePlatformLogger implements PlatformLogger {
    * @param context - Optional per-call context merged over the base context.
    * @returns The formatted message line.
    */
-  protected formatMessageWithContext(
+  protected formatMessage(
     level: LogLevel,
     message: string,
     data?: unknown,
@@ -237,9 +226,7 @@ abstract class BasePlatformLogger implements PlatformLogger {
     if (LOG_LEVEL_PRIORITY[level] < LOG_LEVEL_PRIORITY[this.level]) return;
 
     // Redact credentials/PII before emitting, mirroring Logger.log.
-    const formatted = context
-      ? this.formatMessageWithContext(level, message, data, context)
-      : this.formatMessage(level, message, data);
+    const formatted = this.formatMessage(level, message, data, context);
     this.emit(level, sanitizeString(formatted));
   }
 
@@ -373,8 +360,11 @@ export class GitHubActionsPlatformLogger extends BasePlatformLogger {
       try {
         GitHubActionsPlatformLogger.coreModule = require('@actions/core') as GitHubCoreModule;
       } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
         console.warn(
-          `[platform-logger] @actions/core unavailable, falling back to console: ${err instanceof Error ? err.message : String(err)}`,
+          sanitizeString(
+            `[platform-logger] @actions/core unavailable, falling back to console: ${reason}`,
+          ),
         );
         // Fall back to console if @actions/core is not available
         GitHubActionsPlatformLogger.coreModule = {
