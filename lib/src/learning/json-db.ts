@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as fsPromises from 'node:fs/promises';
 import * as path from 'path';
 import type { LearningQuality } from '../types/index.js';
+import type { LearningFeedback } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
 import type { CustomRuleRow, FindingRow, PatternRow, ReviewQualityRow } from './rows.js';
 import { deriveFileExtensions, generateId } from './schema.js';
@@ -844,6 +845,23 @@ export class JsonDatabase implements LearningRepository {
       acceptedCount: feedbacks.length - dismissedCount - disputedCount,
       bySignalType,
     };
+  }
+
+  /**
+   * Retrieve the feedback signals recorded for a single finding.
+   * @param findingId - The finding ID to query feedback for.
+   * @returns Array of feedback signals for that finding (empty when none).
+   */
+  async getFeedbackForFinding(findingId: string): Promise<LearningFeedback[]> {
+    return this.data.feedback
+      .filter((f) => f.finding_id === findingId)
+      .map((f) => ({
+        findingId: f.finding_id,
+        signalType: f.signal_type as LearningFeedback['signalType'],
+        signalValue: f.signal_value ?? '',
+        prNumber: f.pr_number,
+        createdAt: f.created_at,
+      }));
   }
 
   /**

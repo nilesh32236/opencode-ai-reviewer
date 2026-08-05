@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import { createRequire } from 'node:module';
 import * as path from 'path';
 import type { LearningQuality } from '../../types/index.js';
+import type { LearningFeedback } from '../../types/index.js';
 import { Logger } from '../../utils/logger.js';
 import { JsonDatabase, SUPPRESSING_DISMISS_SIGNALS } from '../json-db.js';
 import { deriveFileExtensions, generateId } from '../schema.js';
@@ -750,6 +751,28 @@ export abstract class SqlAdapter implements LearningRepository {
       acceptedCount: totalFeedback - dismissedCount - disputedCount,
       bySignalType,
     };
+  }
+
+  /**
+   * Retrieve the feedback signals recorded for a single finding.
+   * @param findingId - The finding ID to query feedback for.
+   * @returns Array of feedback signals for that finding (empty when none).
+   */
+  async getFeedbackForFinding(findingId: string): Promise<LearningFeedback[]> {
+    const rows = await this.all<{
+      finding_id: string;
+      signal_type: string;
+      signal_value: string | null;
+      pr_number: number;
+      created_at: string;
+    }>('SELECT * FROM feedback WHERE finding_id = ?', [findingId]);
+    return rows.map((r) => ({
+      findingId: r.finding_id,
+      signalType: r.signal_type as LearningFeedback['signalType'],
+      signalValue: r.signal_value ?? '',
+      prNumber: r.pr_number,
+      createdAt: r.created_at,
+    }));
   }
 
   /**

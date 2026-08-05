@@ -227,6 +227,27 @@ ${pemEnd}`;
     expect(findings[0].redactedValue).not.toContain('onlyPasswordHere');
   });
 
+  it('redacts the full password when it contains embedded colons', () => {
+    const conn = 'postgres://user:part1:part2@db.example:5432/app';
+    const findings = detectSecrets(`uri = "${conn}"`);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].type).toBe('connection-string');
+    // The whole password (including the colon-split second segment) must be
+    // redacted — neither `part1` nor `part2` may survive in the output.
+    expect(findings[0].redactedValue).not.toContain('part1');
+    expect(findings[0].redactedValue).not.toContain('part2');
+    expect(findings[0].redactedValue).toContain('part');
+    expect(findings[0].redactedValue.endsWith('@')).toBe(true);
+  });
+
+  it('still detects a user-only connection string without a password', () => {
+    const conn = 'mongodb://replicaset@cluster.example.net/';
+    const findings = detectSecrets(`uri = "${conn}"`);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].type).toBe('connection-string');
+    expect(findings[0].redactedValue).toBe('mongodb://replicaset@');
+  });
+
   it('returns findings in deterministic source order (line then column)', () => {
     // Two secrets on line 2 (openai FIRST in source, AWS SECOND) — the old
     // implementation returned [aws, openai] because of SECRET_PATTERNS array
