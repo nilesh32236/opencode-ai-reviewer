@@ -245,6 +245,8 @@ export interface AgentConfig {
   eventLogging?: EventLoggingConfig;
   /** Pluggable event subscribers to register at startup. */
   eventSubscribers?: PluggableSubscriberConfig[];
+  /** Webhook notification configuration for Slack/Teams. */
+  notifications?: NotificationsConfig;
 }
 
 /** Configuration for the built-in event logging subscriber. */
@@ -261,6 +263,32 @@ export interface PluggableSubscriberConfig {
   name: string;
   /** Module path exporting the subscriber (default, `subscriber`, or `createSubscriber` export). */
   path: string;
+}
+
+/** Configuration for Slack incoming-webhook notifications. */
+export interface SlackConfig {
+  /** Slack incoming webhook URL (e.g. https://hooks.slack.com/services/...). */
+  webhookUrl?: string;
+  /** Optional channel override (e.g. "#code-reviews"). */
+  channel?: string;
+}
+
+/** Configuration for Microsoft Teams incoming-webhook notifications. */
+export interface TeamsConfig {
+  /** Teams Office 365 connector or workflow webhook URL. */
+  webhookUrl?: string;
+}
+
+/** Configuration for webhook-based review notifications to Slack/Teams. */
+export interface NotificationsConfig {
+  /** Master switch; notifications are only sent when explicitly enabled (default: false). */
+  enabled?: boolean;
+  /** Minimum severity required before a notification is sent (default: 'critical'). */
+  minSeverity?: Severity;
+  /** Slack incoming-webhook settings. */
+  slack?: SlackConfig;
+  /** Microsoft Teams webhook settings. */
+  teams?: TeamsConfig;
 }
 
 /** Configuration for an MCP server used for context enrichment. */
@@ -1181,6 +1209,8 @@ export interface PromptConfig {
   eventLogging?: EventLoggingConfig;
   /** Pluggable event subscribers to register at startup. */
   eventSubscribers?: PluggableSubscriberConfig[];
+  /** Webhook notification configuration for Slack/Teams. */
+  notifications?: NotificationsConfig;
 }
 
 // ─── Defaults ─────────────────────────────────────────────
@@ -1194,6 +1224,12 @@ export const DEFAULT_CONVERSATION_CONFIG: ConversationConfig = {
   contextTokenBudget: 32000,
   askCommandEnabled: true,
   maxCodeReferences: 5,
+};
+
+/** Default values for webhook notifications (opt-in and low-noise by default). */
+export const DEFAULT_NOTIFICATIONS_CONFIG: NotificationsConfig = {
+  enabled: false,
+  minSeverity: 'critical',
 };
 
 export const DEFAULT_CONFIG: AgentConfig = {
@@ -1304,6 +1340,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     path: '.opencode/events.ndjson',
   },
   eventSubscribers: [],
+  notifications: DEFAULT_NOTIFICATIONS_CONFIG,
 };
 
 // ─── Event Bus ───────────────────────────────────────────

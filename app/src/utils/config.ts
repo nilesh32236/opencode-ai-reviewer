@@ -248,10 +248,11 @@ export function buildConfig(): AgentConfig {
  *
  * Only the `review.sensitivity` / `review.categories` / `review.enableCodebaseIndex`
  * / `review.enableMetaVerification` / `review.suppressLowConfidence` /
- * `review.failOnSeverity` fields are merged
+ * `review.failOnSeverity` fields and the `notifications` section are merged
  * (the engine filters findings off those fields and respects the codebase-index /
- * meta-verification / low-confidence-suppression toggles, and the check-run
- * gate reads the effective threshold); all other config-file
+ * meta-verification / low-confidence-suppression toggles, the check-run
+ * gate reads the effective threshold, and the notifier reads the effective
+ * notification settings); all other config-file
  * sections remain Action-only.
  * Unknown/malformed config files degrade gracefully to the
  * base config so a broken repo config never breaks the review.
@@ -269,13 +270,15 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const enableMetaVerification = repoConfig?.review?.enableMetaVerification;
   const suppressLowConfidence = repoConfig?.review?.suppressLowConfidence;
   const failOnSeverity = repoConfig?.review?.failOnSeverity;
+  const notifications = repoConfig?.notifications;
   if (
     !sensitivity &&
     !categories &&
     enableCodebaseIndex === undefined &&
     enableMetaVerification === undefined &&
     suppressLowConfidence === undefined &&
-    failOnSeverity === undefined
+    failOnSeverity === undefined &&
+    !notifications
   ) {
     return baseConfig;
   }
@@ -295,5 +298,17 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       ...(suppressLowConfidence !== undefined && { suppressLowConfidence }),
       ...(failOnSeverity !== undefined && { failOnSeverity }),
     },
+    ...(notifications && {
+      notifications: {
+        ...baseConfig.notifications,
+        ...notifications,
+        ...(notifications.slack && {
+          slack: { ...baseConfig.notifications?.slack, ...notifications.slack },
+        }),
+        ...(notifications.teams && {
+          teams: { ...baseConfig.notifications?.teams, ...notifications.teams },
+        }),
+      },
+    }),
   };
 }
