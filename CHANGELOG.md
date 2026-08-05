@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- add `/docs` command to generate documentation comments for code changed in a PR and open a documentation PR; supports `docs.style`/`docs.enabled` config and a `docs` action mode with `docs_model`/`docs_style` inputs (#199)
+
+---
+
 ## [v1.7.1] — 2026-08-05
 
 

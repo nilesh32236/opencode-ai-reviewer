@@ -30,13 +30,8 @@ export async function runDocs(
   const pr = await gh.getMR(prNumber);
   const contextMarkdown = await gh.gatherContext({ prNumber });
 
-  const docsResult = await engine.runDocs(
-    pr,
-    contextMarkdown,
-    undefined,
-    undefined,
-    inputs.docStyle,
-  );
+  const docStyle = config.docs?.style ?? inputs.docStyle;
+  const docsResult = await engine.runDocs(pr, contextMarkdown, undefined, undefined, docStyle);
 
   let changesMade = false;
   if (docsResult?.changesMade) {

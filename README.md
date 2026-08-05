@@ -92,7 +92,7 @@ jobs:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
 ```
 
-The Action runs `review` mode by default. Other modes: `fix`, `audit`, `analyze`, `post`, `self-heal`, `setup`.
+The Action runs `review` mode by default. Other modes: `fix`, `audit`, `analyze`, `post`, `self-heal`, `setup`, `docs`.
 
 ### Setup Wizard (`setup` mode)
 
@@ -106,13 +106,36 @@ New to the reviewer? Run the setup validation before your first real review. It 
 
 Trigger it manually via the Actions tab (run the `setup.yml` workflow with *workflow_dispatch*), or comment `/setup` on any issue. The report is posted as an issue comment and to the job summary; the `setup_passed` output lets downstream steps gate on the result. See [docs/setup-flow.md](docs/setup-flow.md) for details.
 
+### Docs Command (`/docs`) and `docs` mode
+
+Comments `/docs` on a PR to add documentation comments (JSDoc/TSDoc, etc.) for the code changed in that PR. The docs agent:
+
+1. Reads the PR diff and identifies changed functions, methods, classes, and exported types/consts.
+2. Adds accurate doc comments (`@param`, `@returns`, exceptions, and a summary) for undocumented or incomplete changed code only.
+3. Respects each file's existing documentation convention; only falls back to the configured style when a file has none.
+4. **Never modifies existing, correct doc comments** or changes any code behavior.
+
+It then opens a dedicated documentation PR from a `docs/issue-N` branch (the source PR's branch is left untouched), labeled `docs`.
+
+- Force a style per invocation: `/docs --style=tsdoc`.
+- In the Action, run `mode: docs` to push the generated docs directly onto the PR's head branch from CI.
+
+```yaml
+# .opencode-reviewer.yml
+docs:
+  enabled: true           # opt-in flag for the docs command
+  style: auto             # jsdoc | tsdoc | rest | doxygen | numpy | auto (infer per file, default)
+```
+
+`docs.style` accepts `jsdoc`, `tsdoc`, `rest`, `doxygen`, `numpy`, or `auto` (default — the model infers each file's existing convention and falls back to JSDoc). An optional `docs_model` (Action input / `DOCS_MODEL` env / `docsModel` config) selects the model for documentation generation.
+
 ---
 
 ## Configuration Reference
 
 | Input                    | Default                              | Description                                    |
 | ------------------------ | ------------------------------------ | ---------------------------------------------- |
-| `mode`                   | `review`                             | One of: `review`, `fix`, `audit`, `analyze`, `post`, `self-heal`, `setup` |
+| `mode`                   | `review`                             | One of: `review`, `fix`, `audit`, `analyze`, `post`, `self-heal`, `setup`, `docs` |
 | `github_token`           | _(required)_                         | GitHub token for API access                    |
 | `openai_api_key`         | —                                    | OpenAI API key — supply via `${{ secrets.OPENAI_API_KEY }}` |
 | `anthropic_api_key`      | —                                    | Anthropic API key — supply via `${{ secrets.ANTHROPIC_API_KEY }}` |
@@ -120,6 +143,8 @@ Trigger it manually via the Actions tab (run the `setup.yml` workflow with *work
 | `review_model`           | `opencode/deepseek-v4-flash-free`    | Model for PR review                            |
 | `fix_model`              | `opencode/deepseek-v4-flash-free`    | Model for auto-fix                             |
 | `audit_model`            | `opencode/deepseek-v4-flash-free`    | Model for codebase audit                       |
+| `docs_model`             | _(falls back to `review_model`)_     | Model for documentation generation (`docs` mode) |
+| `docs_style`             | `auto`                               | Doc comment style for `docs` mode: `jsdoc`, `tsdoc`, `rest`, `doxygen`, `numpy`, or `auto` (infer per file, default) |
 | `verification_model`     | _(falls back to `review_model`)_     | Model for meta-verification (false-positive filtering) |
 | `enable_meta_verification` | `false`                            | Enable the meta-verification pass (also settable via `review.enableMetaVerification` in `.opencode-reviewer.yml`) |
 | `review_prompt_file`     | —                                    | Path to custom review prompt file              |
@@ -442,10 +467,12 @@ The App listens for webhooks and works like the Action but runs as a hosted serv
 > | Audit (`/audit`) | read | write | write |
 > | Analyze (`/analyze`) | read | write | write |
 > | Autofix (`/fix`) | **write** | write | write |
+> | Docs (`/docs`) | **write** | write | write |
 >
-> Only **autofix** (`FixSubscriber`) exercises `contents: write`; the read-only
-> modes operate with `contents: read`. If you never plan to use autofix you may
-> grant the App `contents: read` instead — the comparison with the reusable
+> Only **autofix** (`FixSubscriber`) and **docs** (`DocsSubscriber`) exercise
+> `contents: write`; the read-only modes operate with `contents: read`. If you
+> never plan to use autofix or the `/docs` command you may grant the App
+> `contents: read` instead — the comparison with the reusable
 > workflows confirms this split: [`review.yml`](.github/workflows/review.yml)
 > and [`audit.yml`](.github/workflows/audit.yml) use `contents: read`, while
 > [`autofix.yml`](.github/workflows/autofix.yml) uses `contents: write`.
@@ -479,6 +506,7 @@ The app listens for these commands in PR/issue comments:
 - `/fix` — trigger auto-fix
 - `/audit` — trigger codebase audit
 - `/analyze` — analyze an issue and generate an implementation plan
+- `/docs` — generate documentation comments for code changed in a PR and open a documentation PR (style via `/docs --style=tsdoc`)
 
 ---
 
