@@ -4,6 +4,33 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.7.0] — 2026-08-05
+
+### Added
+
+- add secret/credential detection utility (#198) (#198)
+
+### Fixed
+
+- address bugs #186, #187, #188 reported in audit
+
+### Changed
+
+- Merge branch 'fixes/audit-and-bugs'
+- fix(review): address CodeRabbit follow-up findings on PR #347
+- Audit security fixes + bug fixes #186 #187 #188 + secret detection (#198) (#347) (#186
+#187
+#188
+#198
+#347)
+- merge: main into fixes/audit-and-bugs (resolve bundle conflicts)
+- fix(builder): pre-cap codebase index so instruction tail survives
+- fix(review): address CodeRabbit + review-agent findings on PR #347
+- [Autofix] Add Slack/Teams notification integration for review summaries (#346) (#346)
+- fix(audit): security hardening per deep audit findings
+
+[v1.7.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.40...v1.7.0
+
 ## [v1.6.40] — 2026-08-05
 
 
