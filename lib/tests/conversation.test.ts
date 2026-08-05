@@ -78,8 +78,8 @@ describe('estimateTokens', () => {
   });
 
   it('keeps a length-based floor for symbol-free content', () => {
-    expect(estimateTokens('a'.repeat(400))).toBe(67);
-    expect(estimateTokens('a'.repeat(401))).toBe(67);
+    expect(estimateTokens('a'.repeat(400))).toBe(100);
+    expect(estimateTokens('a'.repeat(401))).toBe(101);
   });
 });
 

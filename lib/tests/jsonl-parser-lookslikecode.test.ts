@@ -43,8 +43,28 @@ describe('looksLikeCode heuristic', () => {
     expect(rendersAsCodeBlock('Use the new fetch() API')).toBe(false);
   });
 
-  it('returns true for a strong keyword match alone', () => {
+  it('returns true for a strong keyword combined with weak symbol matches', () => {
     expect(rendersAsCodeBlock('const x = 1;')).toBe(true);
+  });
+
+  it('returns true for a standalone "return;" statement (keyword + semicolon)', () => {
+    expect(rendersAsCodeBlock('return;')).toBe(true);
+  });
+
+  it('returns true for "return;" rendered through buildInlineComments (suggestion block)', () => {
+    expect(commentBodyFor('return;')).toContain('```suggestion');
+  });
+
+  it('returns false for prose that starts with a keyword but lacks other code patterns', () => {
+    expect(rendersAsCodeBlock('if you have any questions, please ask')).toBe(false);
+  });
+
+  it('returns false for "return the result to the caller" (keyword without other patterns)', () => {
+    expect(rendersAsCodeBlock('return the result to the caller')).toBe(false);
+  });
+
+  it('returns false for "type the key name into the form" (keyword without other patterns)', () => {
+    expect(rendersAsCodeBlock('type the key name into the form')).toBe(false);
   });
 
   it('returns true for multiple matches (keyword + braces + parens + semicolon)', () => {

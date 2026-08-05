@@ -87,25 +87,32 @@ const SECRET_PATTERNS: { name: string; pattern: RegExp; type: string }[] = [
     type: 'stripe-live-secret-key',
   },
   {
-    name: 'Stripe live publishable key',
-    pattern: /pk_live_[A-Za-z0-9]{24,}/,
-    type: 'stripe-live-publishable-key',
-  },
-  {
     name: 'Private key',
     pattern: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----/,
     type: 'private-key',
   },
-  {
-    name: 'Connection string with password',
-    pattern: /(?:postgres|mysql|mongodb|redis|amqp)s?:\/\/\S+:\S+@/,
-    type: 'connection-string',
-  },
 ];
+
+// Connection strings with embedded passwords. Captures the password portion
+// between `://[user:]` and `@host` so the redactor can target just the
+// secret instead of leaking up to 3 password characters from the tail of
+// the surrounding match. Supports `+srv` schemes (e.g. mongodb+srv://) and
+// empty-username forms (redis://:password@host).
+const CONNECTION_STRING_PATTERN =
+  /(?:postgres|mysql|mongodb|redis|amqp)(?:\+srv)?:\/\/(?:[^\s:@/]+(?::[^\s:@/]+)?@|:[^\s:@/]+@)/;
+
+// Pre-compiled global regexes used in the per-line scan, built once from
+// SECRET_PATTERNS instead of constructing a new RegExp for each input line.
+const GLOBAL_SECRET_PATTERNS: { type: string; regex: RegExp }[] = SECRET_PATTERNS.map((p) => ({
+  type: p.type,
+  regex: new RegExp(p.pattern.source, 'g'),
+}));
+const GLOBAL_CONNECTION_STRING_REGEX = new RegExp(CONNECTION_STRING_PATTERN.source, 'g');
 
 const ELLIPSIS = '…';
 const PRIVATE_KEY_REDACTION = '[REDACTED PRIVATE KEY]';
 const HIGH_ENTROPY_TOKEN = /[A-Za-z0-9+/=]+/g;
+const GLOBAL_HIGH_ENTROPY_REGEX = new RegExp(HIGH_ENTROPY_TOKEN.source, 'g');
 
 /**
  * Compute the base-2 Shannon entropy of a string's characters.
@@ -153,58 +160,114 @@ export function detectSecrets(text: string, options: SecretDetectOptions = {}): 
   const minEntropy = options.minEntropy ?? 4.5;
   const allowlist = options.allowlist ?? [];
 
-  const findings: SecretFinding[] = [];
+  // Each candidate finding carries both the redacted and the raw value; the
+  // raw value is discarded only at the final filter step so allowlist entries
+  // supplied as either form (raw token or redacted) suppress any finding.
+  const candidates: Array<SecretFinding & { rawValue: string }> = [];
   const namedSpans: { line: number; start: number; end: number }[] = [];
   const lines = text.split('\n');
 
+  // Named-pattern scan (uses pre-compiled global regexes; lastIndex reset).
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const lineNumber = i + 1;
-    for (const pattern of SECRET_PATTERNS) {
-      const regex = new RegExp(pattern.pattern.source, 'g');
-      for (const match of line.matchAll(regex)) {
+    for (const entry of GLOBAL_SECRET_PATTERNS) {
+      entry.regex.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = entry.regex.exec(line)) !== null) {
         const fullMatch = match[0];
         const rawValue = match[1] ?? fullMatch;
         const index = match.index ?? 0;
         const redactedValue =
-          pattern.type === 'private-key' ? PRIVATE_KEY_REDACTION : redactValue(rawValue);
-        findings.push({
-          type: pattern.type,
+          entry.type === 'private-key' ? PRIVATE_KEY_REDACTION : redactValue(rawValue);
+        candidates.push({
+          type: entry.type,
           line: lineNumber,
           column: index,
           redactedValue,
           severity: 'critical',
-          fingerprint: computeFingerprint(pattern.type, redactedValue, lineNumber),
+          fingerprint: computeFingerprint(entry.type, redactedValue, lineNumber),
+          rawValue,
         });
         namedSpans.push({ line: lineNumber, start: index, end: index + fullMatch.length });
+        if (fullMatch.length === 0) entry.regex.lastIndex++; // avoid infinite loop
       }
     }
   }
 
+  // Connection-string scan with password-only redaction. The regex matches
+  // the full scheme+user+password+`@`; we redact ONLY the password portion
+  // (between `://`s `:password@`) so the surrounding match tail does not
+  // leak up to 3 secret characters as it did when redacting the whole match.
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const lineNumber = i + 1;
-    for (const match of line.matchAll(HIGH_ENTROPY_TOKEN)) {
-      const token = match[0];
+    GLOBAL_CONNECTION_STRING_REGEX.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = GLOBAL_CONNECTION_STRING_REGEX.exec(line)) !== null) {
+      const fullMatch = match[0];
+      const index = match.index ?? 0;
+      const schemeEnd = fullMatch.indexOf('://') + 3;
+      const atIdx = fullMatch.lastIndexOf('@');
+      // password is between the last ':' before '@' (or schemeEnd for empty user)
+      let colonIdx = fullMatch.lastIndexOf(':', atIdx - 1);
+      if (colonIdx < schemeEnd) colonIdx = schemeEnd - 1; // scheme `://` colon; treat schemeEnd as start
+      const passwordStart = (colonIdx === schemeEnd - 1 ? schemeEnd : colonIdx + 1) ?? schemeEnd;
+      const passwordEnd = atIdx;
+      const password = fullMatch.slice(passwordStart, passwordEnd);
+      const redactedPassword = redactValue(password);
+      const redactedValue = `${fullMatch.slice(0, passwordStart)}${redactedPassword}@`;
+      candidates.push({
+        type: 'connection-string',
+        line: lineNumber,
+        column: index,
+        redactedValue,
+        severity: 'critical',
+        fingerprint: computeFingerprint('connection-string', redactedValue, lineNumber),
+        rawValue: fullMatch,
+      });
+      namedSpans.push({ line: lineNumber, start: index, end: index + fullMatch.length });
+      if (fullMatch.length === 0) GLOBAL_CONNECTION_STRING_REGEX.lastIndex++;
+    }
+  }
+
+  // Generic high-entropy scan. Excludes spans already covered by named matches.
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const lineNumber = i + 1;
+    GLOBAL_HIGH_ENTROPY_REGEX.lastIndex = 0;
+    let tokenMatch: RegExpExecArray | null;
+    while ((tokenMatch = GLOBAL_HIGH_ENTROPY_REGEX.exec(line)) !== null) {
+      const token = tokenMatch[0];
       if (token.length < minLength) continue;
       if (allowlist.includes(token)) continue;
-      const index = match.index ?? 0;
+      const index = tokenMatch.index ?? 0;
       const overlapsNamed = namedSpans.some(
         (span) => span.line === lineNumber && index >= span.start && index < span.end,
       );
       if (overlapsNamed) continue;
       if (shannonEntropy(token) <= minEntropy) continue;
       const redactedValue = redactValue(token);
-      findings.push({
+      candidates.push({
         type: 'generic-high-entropy',
         line: lineNumber,
         column: index,
         redactedValue,
         severity: 'critical',
         fingerprint: computeFingerprint('generic-high-entropy', redactedValue, lineNumber),
+        rawValue: token,
       });
     }
   }
 
-  return findings.filter((finding) => !allowlist.includes(finding.redactedValue));
+  // Final allowlist filter: a finding is suppressed when either its raw token
+  // or its redacted representation appears in the allowlist.
+  const findings = candidates.filter(
+    (c) => !allowlist.includes(c.rawValue) && !allowlist.includes(c.redactedValue),
+  );
+
+  // Deterministic source-order output: by line, then column. Strip the raw
+  // value before returning so caller never sees the plaintext secret.
+  findings.sort((a, b) => a.line - b.line || a.column - b.column);
+  return findings.map(({ rawValue: _raw, ...finding }) => finding);
 }

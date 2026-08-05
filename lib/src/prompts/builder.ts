@@ -11,11 +11,31 @@ const MAX_PROMPT_BYTES = 200 * 1024;
 const PROMPT_TRUNCATION_MARKER = '... [prompt truncated at 200KB cap]';
 const logger = new Logger('prompt-builder');
 
+/**
+ * Enforce the prompt byte cap. Both the cap check and the truncation operate on
+ * UTF-8 encoded bytes (not UTF-16 code units), and truncation lands on a code
+ * point boundary so multibyte characters are never split. The marker is
+ * accounted for in the byte budget.
+ */
 function capPromptLength(prompt: string): string {
-  if (prompt.length <= MAX_PROMPT_BYTES) return prompt;
+  const markerBytes = Buffer.byteLength(PROMPT_TRUNCATION_MARKER, 'utf8') + 1;
+  const totalBytes = Buffer.byteLength(prompt, 'utf8');
+  if (totalBytes <= MAX_PROMPT_BYTES) return prompt;
   logger.warn(`Review prompt exceeds ${MAX_PROMPT_BYTES} byte cap, truncating tail`);
-  const budget = MAX_PROMPT_BYTES - PROMPT_TRUNCATION_MARKER.length - 1;
-  return `${prompt.slice(0, budget)}\n${PROMPT_TRUNCATION_MARKER}`;
+  const budgetBytes = MAX_PROMPT_BYTES - markerBytes;
+  // Truncate the source string at a code-point boundary whose re-encoding into
+  // UTF-8 fits the byte budget. Iterating full code points (rather than slicing
+  // raw bytes) avoids orphan lead bytes that would otherwise decode to U+FFFD.
+  let charCount = 0;
+  let runningBytes = 0;
+  for (const codePoint of prompt) {
+    const cpBytes = Buffer.byteLength(codePoint, 'utf8');
+    if (runningBytes + cpBytes > budgetBytes) break;
+    runningBytes += cpBytes;
+    charCount++;
+  }
+  const prefix = prompt.slice(0, charCount);
+  return `${prefix}\n${PROMPT_TRUNCATION_MARKER}`;
 }
 
 /** Input parameters for building a review prompt. */
@@ -402,6 +422,10 @@ export function buildFixPrompt(
 ): string {
   const projectContext = inputs.projectContext || getDefaultProjectContext();
   const fixIterations = inputs.maxFixIterations ?? 3;
+  const safeContext = sanitizePromptInput(context, { maxLength: 50_000 });
+  const safeVerificationError = verificationError
+    ? sanitizePromptInput(verificationError, { maxLength: 20_000 })
+    : '';
 
   let issuesSection = '';
   if (issues && issues.length > 0) {
@@ -418,12 +442,12 @@ export function buildFixPrompt(
 
 ## Issue & Thread Context (Includes Title, Body, Comments, and Implementation Plan)
 
-${context}
+${safeContext}
 ${issuesSection}
 ## Project Context
 
 ${projectContext}
-${verificationError ? `\n## Verification Errors from Previous Attempt\n\`\`\`\n${verificationError}\n\`\`\`\n` : ''}
+${verificationError ? `\n## Verification Errors from Previous Attempt\n\`\`\`\n${safeVerificationError}\n\`\`\`\n` : ''}
 ## Step-by-Step Execution Instructions
 
 1. **Review the Context**:
@@ -541,21 +565,23 @@ export function buildReplyPrompt(
 
   sections.push('## Original Review Comment');
   sections.push('');
-  sections.push(originalComment);
+  sections.push(sanitizePromptInput(originalComment, { maxLength: 10_000 }));
   sections.push('');
 
   if (threadHistory.length > 1) {
     sections.push('## Thread History');
     sections.push('');
     for (const entry of threadHistory.slice(0, -1)) {
-      sections.push(`**@${entry.author}:** ${entry.body}`);
+      sections.push(
+        `**@${entry.author}:** ${sanitizePromptInput(entry.body, { maxLength: 10_000 })}`,
+      );
       sections.push('');
     }
   }
 
   sections.push("## Developer's Question");
   sections.push('');
-  sections.push(userQuestion);
+  sections.push(sanitizePromptInput(userQuestion, { maxLength: 10_000 }));
   sections.push('');
 
   sections.push('## Instructions');
@@ -595,12 +621,13 @@ export function buildAnalyzePrompt(
   projectContextStr?: string,
 ): string {
   const projContext = projectContextStr || inputs.projectContext || getDefaultProjectContext();
+  const safeIssueContext = sanitizePromptInput(issueContext, { maxLength: 50_000 });
 
   return `You are a Principal Software Architect and Lead Developer. Your task is to analyze a GitHub Issue against the codebase and formulate a precise, actionable Implementation Plan before any code is modified.
 
 ## Issue & Repository Context
 
-${issueContext}
+${safeIssueContext}
 
 ## Project Context
 ${projContext}
@@ -914,12 +941,13 @@ Default checks apply:
  */
 export function buildExplainPrompt(inputs: PromptBuilderInputs, prContext: string): string {
   const projectContext = inputs.projectContext || getDefaultProjectContext();
+  const safePrContext = sanitizePromptInput(prContext, { maxLength: 50_000 });
 
   return `You are a Senior Software Engineer explaining a pull request to a team.
 
 ## PR & Issue Context
 
-${prContext}
+${safePrContext}
 
 ## Project Context
 ${projectContext}

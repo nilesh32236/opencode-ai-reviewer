@@ -1,6 +1,5 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { restoreCache, saveCache } from '@actions/cache';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import {
@@ -32,100 +31,8 @@ import { runPost } from './post.js';
 import { runReview } from './review.js';
 import { runSelfHeal } from './self-heal.js';
 import { runSetup } from './setup.js';
+import { StateCacheManager } from './state-cache.js';
 import { sanitize } from './utils.js';
-
-function buildCacheKey(prefix: string, repo?: string, branch?: string): string {
-  const repoNwo = repo || `${github.context.repo.owner}/${github.context.repo.repo}`;
-  const branchRef = branch || github.context.ref.replace('refs/heads/', '');
-  return `${prefix}-${repoNwo}-${branchRef}`;
-}
-
-class StateCacheManager {
-  private learningDbMtimeMs = 0;
-  private readonly stateDir: string;
-  private readonly cacheKeyPrefix: string;
-  private readonly repo: string;
-  private readonly branch: string;
-  private readonly logger: Logger;
-
-  constructor(cacheKeyPrefix: string, repo?: string, branch?: string) {
-    this.cacheKeyPrefix = cacheKeyPrefix;
-    this.stateDir = path.resolve(process.cwd(), '.opencode');
-    this.repo = repo || `${github.context.repo.owner}/${github.context.repo.repo}`;
-    this.branch = branch || github.context.ref.replace('refs/heads/', '');
-    this.logger = new Logger('StateCache', { repo: this.repo, branch: this.branch });
-  }
-
-  private getLearningDbMtime(): number {
-    const dbPath = path.join(this.stateDir, 'learning.db');
-    try {
-      return fs.statSync(dbPath).mtimeMs;
-    } catch {
-      return 0;
-    }
-  }
-
-  async restore(): Promise<void> {
-    if (fs.existsSync(this.stateDir)) {
-      core.info('.opencode/ directory already exists — skipping cache restore');
-      this.learningDbMtimeMs = this.getLearningDbMtime();
-      return;
-    }
-
-    core.info('Restoring learning state from cache...');
-    const primaryKey = buildCacheKey(this.cacheKeyPrefix, this.repo, this.branch);
-    const restoreKeys = [`${this.cacheKeyPrefix}-${this.repo}-`];
-    try {
-      const cacheKey = await restoreCache([this.stateDir], primaryKey, restoreKeys);
-      if (cacheKey) {
-        core.info(`Restored learning state from cache key: ${cacheKey}`);
-      } else {
-        core.info('No cached learning state found — starting fresh');
-      }
-    } catch (error) {
-      const message = `Failed to restore learning state cache: ${error}`;
-      core.warning(sanitize(message));
-      this.logger.warn('Failed to restore learning state cache', {
-        operation: 'cache.restore',
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-
-    this.learningDbMtimeMs = this.getLearningDbMtime();
-  }
-
-  async save(): Promise<void> {
-    if (!fs.existsSync(this.stateDir)) {
-      core.info('No learning state directory found — skipping cache save');
-      return;
-    }
-
-    const dbPath = path.join(this.stateDir, 'learning.db');
-    if (!fs.existsSync(dbPath)) {
-      core.info('No learning.db found — skipping cache save');
-      return;
-    }
-
-    const currentMtime = this.getLearningDbMtime();
-    if (currentMtime > 0 && Math.abs(currentMtime - this.learningDbMtimeMs) < 1) {
-      core.info('Learning state unchanged — skipping cache save');
-      return;
-    }
-
-    const cacheKey = buildCacheKey(this.cacheKeyPrefix, this.repo, this.branch);
-    try {
-      await saveCache([this.stateDir], cacheKey);
-      core.info(`Saved learning state to cache key: ${cacheKey}`);
-    } catch (error) {
-      const message = `Failed to save learning state cache: ${error}`;
-      core.warning(sanitize(message));
-      this.logger.warn('Failed to save learning state cache', {
-        operation: 'cache.save',
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-}
 
 async function run(): Promise<void> {
   // The GitHub Action defaults to human-readable logs because CI already
@@ -173,7 +80,7 @@ async function run(): Promise<void> {
         : core.getInput('repo') || `${github.context.repo.owner}/${github.context.repo.repo}`;
 
     if (inputs.enableStateCache) {
-      cacheManager = new StateCacheManager(inputs.stateCacheKey, repo);
+      cacheManager = new StateCacheManager(inputs.stateCacheKey, { repo });
       await cacheManager.restore();
     }
 

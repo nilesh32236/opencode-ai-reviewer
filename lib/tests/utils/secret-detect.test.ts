@@ -168,4 +168,74 @@ ${pemEnd}`;
     expect(a[0].fingerprint).toBe(b[0].fingerprint);
     expect(a[0].fingerprint).not.toBe(c[1].fingerprint);
   });
+
+  it('suppresses a named-pattern finding when the RAW token is in the allowlist', () => {
+    const findings = detectSecrets(`const token = "${GITHUB_PAT}"`, {
+      allowlist: [GITHUB_PAT],
+    });
+    expect(findings).toEqual([]);
+  });
+
+  it('does not classify a Stripe publishable key (pk_live_) as a secret', () => {
+    const publishable = ['pk_live_', '1234567890', 'abcdefghijklmnopqrstuvwxyz'].join('');
+    const findings = detectSecrets(`const pub = "${publishable}"`);
+    expect(findings.map((f) => f.type)).not.toContain('stripe-live-publishable-key');
+  });
+
+  it('detects an Anthropic API key (sk-ant-) without also matching openai-api-key', () => {
+    const anthropic = ['sk-ant-', 'AbCdEfGhIjKlMnOpQrStUvWxYz', '0123456789'].join('');
+    const findings = detectSecrets(`const key = "${anthropic}"`);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].type).toBe('anthropic-api-key');
+    expect(findings.map((f) => f.type)).not.toContain('openai-api-key');
+  });
+
+  it('detects a Google API key', () => {
+    const google = ['AIza', 'SyDr3mKbCdEfGhIjKlMnOpQrStUv', 'WXYZabcdefghi'].join('');
+    const findings = detectSecrets(`const g = "${google}"`);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].type).toBe('google-api-key');
+  });
+
+  it('detects a GitHub installation token (ghs_ prefix) as github-pat', () => {
+    const ghs = ['ghs_', 'aBcDeFgHiJkLmNOpQrStUvWxYz', '0123456789'].join('');
+    const findings = detectSecrets(`const t = "${ghs}"`);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].type).toBe('github-pat');
+  });
+
+  it('detects a mongodb+srv connection string with embedded password and redacts only the password', () => {
+    const conn = 'mongodb+srv://admin:superSecret123@cluster.example.net/';
+    const findings = detectSecrets(`uri = "${conn}"`);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].type).toBe('connection-string');
+    // The redacted value should preserve the scheme+user and host tail, but
+    // the password portion between `://`s `:` and `@` must be redacted.
+    expect(findings[0].redactedValue.startsWith('mongodb+srv://admin:')).toBe(true);
+    expect(findings[0].redactedValue.endsWith('@')).toBe(true);
+    expect(findings[0].redactedValue).not.toContain('superSecret123');
+    // Password first 4 + last 4 should appear in the redacted form.
+    expect(findings[0].redactedValue).toContain('supe');
+    expect(findings[0].redactedValue).toContain('t123');
+  });
+
+  it('detects a redis://:password@host (empty-username) connection string', () => {
+    const conn = 'redis://:onlyPasswordHere@redis.example:6379';
+    const findings = detectSecrets(`uri = "${conn}"`);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].type).toBe('connection-string');
+    expect(findings[0].redactedValue).not.toContain('onlyPasswordHere');
+  });
+
+  it('returns findings in deterministic source order (line then column)', () => {
+    // Two secrets on line 2 (openai FIRST in source, AWS SECOND) — the old
+    // implementation returned [aws, openai] because of SECRET_PATTERNS array
+    // order. After the fix, output is sorted by (line, column).
+    const text = `line 1: clean\n${OPENAI_KEY} then later ${AWS_ACCESS_KEY}`;
+    const findings = detectSecrets(text);
+    expect(findings).toHaveLength(2);
+    expect(findings[0].column).toBeLessThan(findings[1].column);
+    expect(findings[0].line).toBe(2);
+    expect(findings[1].line).toBe(2);
+  });
 });

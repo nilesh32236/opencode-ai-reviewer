@@ -21,4 +21,18 @@ describe('buildReviewPrompt prompt sanitization', () => {
     expect(prompt.length).toBeLessThanOrEqual(200 * 1024);
     expect(prompt).toContain('prompt truncated');
   });
+
+  it('enforces the 200KB cap in UTF-8 bytes for multibyte content (never splits a code point)', () => {
+    // Each '€' is 3 UTF-8 bytes; build a payload large enough to exceed 200KB
+    // once encoded even if its UTF-16 length is below the cap.
+    const multibyte = '€'.repeat(100 * 1024);
+    const giantCodeContext = multibyte;
+    const prompt = buildReviewPrompt({ projectContext: '' }, 'small PR body', {
+      codebaseIndexContext: giantCodeContext,
+    });
+    expect(Buffer.byteLength(prompt, 'utf8')).toBeLessThanOrEqual(200 * 1024);
+    expect(prompt).toContain('prompt truncated');
+    // Sanity: the prompt should still decode as valid UTF-8 (no orphan bytes).
+    expect(() => Buffer.from(prompt, 'utf8').toString('utf8')).not.toThrow();
+  });
 });
