@@ -26,6 +26,7 @@ describe('ConsolePlatformLogger', () => {
     const parent = new ConsolePlatformLogger('Test', 'info', { repo: 'owner/repo' });
     const child = parent.child({ prNumber: 42 });
     child.info('with context');
+    expect(spy).toHaveBeenCalledTimes(1);
     const line = String(spy.mock.calls[0][0]);
     expect(line).toContain('owner/repo');
     expect(line).toContain('pr#42');
@@ -35,6 +36,7 @@ describe('ConsolePlatformLogger', () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const logger = new ConsolePlatformLogger('Test');
     logger.info('with per-call context', undefined, { prNumber: 7 });
+    expect(spy).toHaveBeenCalledTimes(1);
     expect(String(spy.mock.calls[0][0])).toContain('pr#7');
   });
 
@@ -42,9 +44,10 @@ describe('ConsolePlatformLogger', () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const logger = new ConsolePlatformLogger('Test');
     logger.info('token is ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop');
-    expect(String(spy.mock.calls[0][0])).not.toContain(
-      'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop',
-    );
+    expect(spy).toHaveBeenCalledTimes(1);
+    const line = String(spy.mock.calls[0][0]);
+    expect(line).not.toContain('ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop');
+    expect(line).toContain('[REDACTED_GITHUB_TOKEN]');
   });
 
   it('respects setLevel for level filtering', () => {
@@ -72,6 +75,32 @@ describe('GitHubActionsPlatformLogger', () => {
     logger.info('hello');
     expect(core.info).toHaveBeenCalledTimes(1);
   });
+
+  it('routes debug, warn, and error to the matching core methods', async () => {
+    const core = await import('@actions/core');
+    const debugSpy = vi.spyOn(core, 'debug').mockImplementation(() => {});
+    const warningSpy = vi.spyOn(core, 'warning').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(core, 'error').mockImplementation(() => {});
+    const logger = new GitHubActionsPlatformLogger('Test', 'debug');
+    logger.debug('d');
+    logger.warn('w');
+    logger.error('e');
+    expect(debugSpy).toHaveBeenCalledTimes(1);
+    expect(warningSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('child() inherits and merges the parent context', async () => {
+    const core = await import('@actions/core');
+    const infoSpy = vi.spyOn(core, 'info').mockImplementation(() => {});
+    const parent = new GitHubActionsPlatformLogger('Test', 'info', { repo: 'owner/repo' });
+    const child = parent.child({ prNumber: 42 });
+    child.info('with context');
+    expect(infoSpy).toHaveBeenCalledTimes(1);
+    const line = String(infoSpy.mock.calls[0][0]);
+    expect(line).toContain('owner/repo');
+    expect(line).toContain('pr#42');
+  });
 });
 
 describe('NullPlatformLogger', () => {
@@ -81,6 +110,12 @@ describe('NullPlatformLogger', () => {
     expect(logger.isLevelEnabled('fatal')).toBe(true);
     expect(logger.isLevelEnabled('info')).toBe(false);
     logger.setLevel('info');
+    expect(logger.isLevelEnabled('info')).toBe(true);
+  });
+
+  it('honours the level supplied to the factory', () => {
+    const logger = createNullPlatformLogger('ctx', 'debug');
+    expect(logger.getLevel()).toBe('debug');
     expect(logger.isLevelEnabled('info')).toBe(true);
   });
 });

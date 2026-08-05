@@ -83,4 +83,16 @@ describe('tokenizeMessage cache', () => {
     expect(second).toBe(first);
     clearTokenCache();
   });
+
+  it('evicts the oldest token set at the cache limit', () => {
+    clearTokenCache();
+    const first = tokenizeMessage('first cached message');
+
+    for (let index = 0; index < 10_000; index++) {
+      tokenizeMessage(`unique cached message ${index}`);
+    }
+
+    expect(tokenizeMessage('first cached message')).not.toBe(first);
+    clearTokenCache();
+  });
 });
