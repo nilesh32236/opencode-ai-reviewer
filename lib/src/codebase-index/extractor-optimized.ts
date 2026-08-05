@@ -1,9 +1,9 @@
 import * as fs from 'fs';
+import { cpus } from 'node:os';
+import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import * as path from 'path';
 import { minimatch } from 'minimatch';
 import * as ts from 'typescript';
-import { cpus } from 'node:os';
-import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import type {
   CallGraphEdge,
   CodebaseIndexData,
@@ -83,12 +83,12 @@ function createWorkerThread() {
           workspaceDir: message.baseDir,
           includeGlobs: message.includeGlobs,
         });
-        
+
         // Restore resolution cache
         extractor.resolutionCache = new Map(message.resolutionCache);
-        
+
         const result = extractor.extractFile(message.file, message.baseDir);
-        
+
         const response: ExtractWorkerResult = {
           type: 'result',
           file: message.file,
@@ -96,7 +96,7 @@ function createWorkerThread() {
           imports: result.imports,
           callGraph: result.callGraph,
         };
-        
+
         parentPort?.postMessage(response);
       } catch (err) {
         parentPort?.postMessage({
@@ -260,6 +260,11 @@ export class CodebaseExtractor {
 
   /**
    * Parallel file extraction using worker threads.
+   * @param root - Root directory being indexed.
+   * @param baseDir - Base directory paths are reported relative to.
+   * @param files - Absolute paths of the files to extract.
+   * @param start - Monotonic start timestamp for build-time measurement.
+   * @returns The accumulated codebase index data.
    */
   private async extractAsyncParallel(
     root: string,
@@ -270,28 +275,28 @@ export class CodebaseExtractor {
     const symbols: IndexedSymbol[] = [];
     const imports: ImportEdge[] = [];
     const callGraph: CallGraphEdge[] = [];
-    
+
     const batchSize = this.parallelism;
     const totalBatches = Math.ceil(files.length / batchSize);
-    
+
     // Process files in batches to avoid overwhelming the system
     for (let batch = 0; batch < totalBatches; batch++) {
       const batchStart = batch * batchSize;
       const batchEnd = Math.min(batchStart + batchSize, files.length);
       const batchFiles = files.slice(batchStart, batchEnd);
-      
+
       const batchPromises = batchFiles.map(async (file) => {
         return this.extractFileAsync(file, baseDir);
       });
-      
+
       const batchResults = await Promise.all(batchPromises);
-      
+
       for (const result of batchResults) {
         symbols.push(...result.symbols);
         imports.push(...result.imports);
         callGraph.push(...result.callGraph);
       }
-      
+
       // Yield to event loop between batches
       if (batch < totalBatches - 1) {
         await yieldToEventLoop();
@@ -310,11 +315,11 @@ export class CodebaseExtractor {
 
   /**
    * Extract a single file asynchronously.
+   * @param file - Absolute path of the file to index.
+   * @param baseDir - Base directory paths are reported relative to.
+   * @returns The per-file extraction result.
    */
-  private async extractFileAsync(
-    file: string,
-    baseDir: string,
-  ): Promise<FileExtractionResult> {
+  private async extractFileAsync(file: string, baseDir: string): Promise<FileExtractionResult> {
     // Check file size before processing
     try {
       const stats = await fs.promises.stat(file);
@@ -339,24 +344,11 @@ export class CodebaseExtractor {
    * @param baseDir - Base directory paths are reported relative to.
    * @returns The per-file extraction result.
    */
-  private extractFile(
-    file: string,
-    baseDir: string,
-  ): FileExtractionResult {
+  public extractFile(file: string, baseDir: string): FileExtractionResult {
     const symbols: IndexedSymbol[] = [];
     const imports: ImportEdge[] = [];
     const callGraph: CallGraphEdge[] = [];
-    
-    // Check file size synchronously for the sync path
-    try {
-      const stats = fs.statSync(file);
-      if (stats.size > this.maxFileSize) {
-        return { symbols, imports, callGraph };
-      }
-    } catch {
-      return { symbols, imports, callGraph };
-    }
-    
+
     if (!this.isIndexableFile(file)) return { symbols, imports, callGraph };
     const relativeFile = this.toRelative(baseDir, file);
     if (this.includeGlobs.length > 0 && !this.matchesGlobs(relativeFile)) {
@@ -364,7 +356,16 @@ export class CodebaseExtractor {
     }
     let content: string;
     try {
-      content = fs.readFileSync(file, 'utf-8');
+      const fd = fs.openSync(file, 'r');
+      try {
+        const stats = fs.fstatSync(fd);
+        if (stats.size > this.maxFileSize) {
+          return { symbols, imports, callGraph };
+        }
+        content = fs.readFileSync(fd, 'utf-8');
+      } finally {
+        fs.closeSync(fd);
+      }
     } catch {
       return { symbols, imports, callGraph };
     }

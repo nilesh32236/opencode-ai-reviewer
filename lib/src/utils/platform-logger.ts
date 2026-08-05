@@ -2,47 +2,94 @@
  * Platform-agnostic logging abstraction layer.
  * This module provides a unified logging interface that can be used throughout the
  * core library without depending on specific platform implementations.
- * 
+ *
  * The existing Logger class in logger.ts is platform-specific (GitHub Actions).
  * This module provides an abstraction that allows the core library to use logging
  * without importing @actions/core directly.
  */
 
-import { LogLevel, LogContext } from './logger.js';
+import type { LogContext, LogLevel } from './logger.js';
+
+/** Shape of the optional `@actions/core` module used for GitHub Actions output. */
+type GitHubCoreModule = typeof import('@actions/core');
 
 /**
  * Abstract logger interface for platform-agnostic logging.
  * Implementations can route to different platforms (GitHub Actions, CLI, web, etc.).
  */
 export interface PlatformLogger {
-  /** Log a trace-level message. */
+  /**
+   * Log a trace-level message.
+   * @param message - The message to log.
+   * @param data - Optional structured data to include.
+   * @param context - Optional logging context.
+   */
   trace(message: string, data?: unknown, context?: LogContext): void;
-  
-  /** Log a debug-level message. */
+
+  /**
+   * Log a debug-level message.
+   * @param message - The message to log.
+   * @param data - Optional structured data to include.
+   * @param context - Optional logging context.
+   */
   debug(message: string, data?: unknown, context?: LogContext): void;
-  
-  /** Log an info-level message. */
+
+  /**
+   * Log an info-level message.
+   * @param message - The message to log.
+   * @param data - Optional structured data to include.
+   * @param context - Optional logging context.
+   */
   info(message: string, data?: unknown, context?: LogContext): void;
-  
-  /** Log a warning-level message. */
+
+  /**
+   * Log a warning-level message.
+   * @param message - The message to log.
+   * @param data - Optional structured data to include.
+   * @param context - Optional logging context.
+   */
   warn(message: string, data?: unknown, context?: LogContext): void;
-  
-  /** Log an error-level message. */
+
+  /**
+   * Log an error-level message.
+   * @param message - The message to log.
+   * @param data - Optional structured data to include.
+   * @param context - Optional logging context.
+   */
   error(message: string, data?: unknown, context?: LogContext): void;
-  
-  /** Log a fatal-level message. */
+
+  /**
+   * Log a fatal-level message.
+   * @param message - The message to log.
+   * @param data - Optional structured data to include.
+   * @param context - Optional logging context.
+   */
   fatal(message: string, data?: unknown, context?: LogContext): void;
-  
-  /** Check if a log level is enabled. */
+
+  /**
+   * Check if a log level is enabled.
+   * @param level - The log level to check.
+   * @returns True when the given level is enabled.
+   */
   isLevelEnabled(level: LogLevel): boolean;
-  
-  /** Get the current log level. */
+
+  /**
+   * Get the current log level.
+   * @returns The current log level.
+   */
   getLevel(): LogLevel;
-  
-  /** Set the log level. */
+
+  /**
+   * Set the log level.
+   * @param level - The log level to set.
+   */
   setLevel(level: LogLevel): void;
-  
-  /** Create a child logger with additional context. */
+
+  /**
+   * Create a child logger with additional context.
+   * @param context - Additional context for the child logger.
+   * @returns A child logger with merged context.
+   */
   child(context: LogContext): PlatformLogger;
 }
 
@@ -60,6 +107,7 @@ let globalLoggerFactory: PlatformLoggerFactory = createConsolePlatformLogger;
 /**
  * Set the global platform logger factory.
  * Call this during application initialization to configure platform-specific logging.
+ * @param factory - The factory to use when creating platform loggers.
  */
 export function setPlatformLoggerFactory(factory: PlatformLoggerFactory): void {
   globalLoggerFactory = factory;
@@ -67,6 +115,7 @@ export function setPlatformLoggerFactory(factory: PlatformLoggerFactory): void {
 
 /**
  * Get the global platform logger factory.
+ * @returns The currently configured platform logger factory.
  */
 export function getPlatformLoggerFactory(): PlatformLoggerFactory {
   return globalLoggerFactory;
@@ -74,6 +123,9 @@ export function getPlatformLoggerFactory(): PlatformLoggerFactory {
 
 /**
  * Create a platform logger with the specified context.
+ * @param context - The logger context/name.
+ * @param level - Optional initial log level.
+ * @returns A platform logger instance.
  */
 export function createPlatformLogger(context: string, level?: LogLevel): PlatformLogger {
   return globalLoggerFactory(context, level);
@@ -85,9 +137,18 @@ export function createPlatformLogger(context: string, level?: LogLevel): Platfor
 export class ConsolePlatformLogger implements PlatformLogger {
   private level: LogLevel = 'info';
   private context: LogContext = {};
+  private readonly name: string;
+  private readonly useColors: boolean;
 
-  constructor(private readonly name: string, level?: LogLevel) {
-    if (level) this.level = level;
+  /**
+   * Create a console platform logger.
+   * @param name - The logger name shown in formatted output.
+   * @param level - Optional initial log level.
+   */
+  constructor(name: string, level?: LogLevel) {
+    this.name = name;
+    this.level = level ?? 'info';
+    this.useColors = process.stdout.isTTY;
   }
 
   private static readonly COLORS = {
@@ -99,14 +160,6 @@ export class ConsolePlatformLogger implements PlatformLogger {
     fatal: '\x1b[35m',
     reset: '\x1b[0m',
   };
-
-  private readonly useColors: boolean;
-
-  constructor(name: string, level?: LogLevel) {
-    this.name = name;
-    this.level = level ?? 'info';
-    this.useColors = process.stdout.isTTY;
-  }
 
   private colorize(level: LogLevel, message: string): string {
     if (!this.useColors) return message;
@@ -155,12 +208,12 @@ export class ConsolePlatformLogger implements PlatformLogger {
       error: 3,
       fatal: 4,
     };
-    
+
     if (LOG_LEVEL_PRIORITY[level] < LOG_LEVEL_PRIORITY[this.level]) return;
-    
+
     const formatted = this.formatMessage(level, message, data);
     const colored = this.colorize(level, formatted);
-    
+
     switch (level) {
       case 'trace':
       case 'debug':
@@ -236,17 +289,25 @@ export class ConsolePlatformLogger implements PlatformLogger {
 export class GitHubActionsPlatformLogger implements PlatformLogger {
   private level: LogLevel = 'info';
   private context: LogContext = {};
-  private static coreModule: typeof import('@actions/core') | null = null;
+  private static coreModule: GitHubCoreModule | null = null;
 
-  constructor(private readonly name: string, level?: LogLevel) {
+  /**
+   * Create a GitHub Actions platform logger.
+   * @param name - The logger name shown in formatted output.
+   * @param level - Optional initial log level.
+   */
+  constructor(
+    private readonly name: string,
+    level?: LogLevel,
+  ) {
     if (level) this.level = level;
     this.getCore();
   }
 
-  private getCore(): typeof import('@actions/core') {
+  private getCore(): GitHubCoreModule {
     if (!GitHubActionsPlatformLogger.coreModule) {
       try {
-        GitHubActionsPlatformLogger.coreModule = require('@actions/core') as typeof import('@actions/core');
+        GitHubActionsPlatformLogger.coreModule = require('@actions/core') as GitHubCoreModule;
       } catch {
         // Fall back to console if @actions/core is not available
         GitHubActionsPlatformLogger.coreModule = {
@@ -254,7 +315,7 @@ export class GitHubActionsPlatformLogger implements PlatformLogger {
           info: (msg: string) => console.log(`[INFO] ${msg}`),
           warning: (msg: string) => console.warn(`[WARNING] ${msg}`),
           error: (msg: string) => console.error(`[ERROR] ${msg}`),
-        } as unknown as typeof import('@actions/core');
+        } as unknown as GitHubCoreModule;
       }
     }
     return GitHubActionsPlatformLogger.coreModule;
@@ -300,12 +361,12 @@ export class GitHubActionsPlatformLogger implements PlatformLogger {
       error: 3,
       fatal: 4,
     };
-    
+
     if (LOG_LEVEL_PRIORITY[level] < LOG_LEVEL_PRIORITY[this.level]) return;
-    
+
     const formatted = this.formatMessage(level, message, data);
     const core = this.getCore();
-    
+
     switch (level) {
       case 'trace':
       case 'debug':
@@ -376,6 +437,9 @@ export class GitHubActionsPlatformLogger implements PlatformLogger {
 
 /**
  * Factory function for creating console platform loggers.
+ * @param context - The logger context/name.
+ * @param level - Optional initial log level.
+ * @returns A console-backed platform logger.
  */
 export function createConsolePlatformLogger(context: string, level?: LogLevel): PlatformLogger {
   return new ConsolePlatformLogger(context, level);
@@ -383,8 +447,14 @@ export function createConsolePlatformLogger(context: string, level?: LogLevel): 
 
 /**
  * Factory function for creating GitHub Actions platform loggers.
+ * @param context - The logger context/name.
+ * @param level - Optional initial log level.
+ * @returns A GitHub Actions-backed platform logger.
  */
-export function createGitHubActionsPlatformLogger(context: string, level?: LogLevel): PlatformLogger {
+export function createGitHubActionsPlatformLogger(
+  context: string,
+  level?: LogLevel,
+): PlatformLogger {
   return new GitHubActionsPlatformLogger(context, level);
 }
 
@@ -399,14 +469,21 @@ export class NullPlatformLogger implements PlatformLogger {
   warn(): void {}
   error(): void {}
   fatal(): void {}
-  isLevelEnabled(): boolean { return false; }
-  getLevel(): LogLevel { return 'fatal'; }
+  isLevelEnabled(): boolean {
+    return false;
+  }
+  getLevel(): LogLevel {
+    return 'fatal';
+  }
   setLevel(): void {}
-  child(): PlatformLogger { return this; }
+  child(): PlatformLogger {
+    return this;
+  }
 }
 
 /**
  * Factory function for creating null platform loggers.
+ * @returns A no-op platform logger.
  */
 export function createNullPlatformLogger(): PlatformLogger {
   return new NullPlatformLogger();

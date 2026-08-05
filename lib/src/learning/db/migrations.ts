@@ -151,16 +151,18 @@ export const MIGRATIONS: Migration[] = [
 /**
  * Get the current migration version from the database.
  * @param repo - The database repository.
+ * @param repo.get - Run a query returning an optional single row.
+ * @param repo.run - Execute a write statement.
  * @returns The current migration version.
  */
-export async function getCurrentMigrationVersion(repo: { 
+export async function getCurrentMigrationVersion(repo: {
   get: <T>(sql: string, params?: unknown[]) => Promise<T | undefined>;
   run: (sql: string, params?: unknown[]) => Promise<{ changes: number }>;
 }): Promise<number> {
   try {
     // Try to get the migration version from the schema_migrations table
     const row = await repo.get<{ version: number }>(
-      'SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1'
+      'SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1',
     );
     return row?.version ?? 0;
   } catch {
@@ -172,25 +174,27 @@ export async function getCurrentMigrationVersion(repo: {
 /**
  * Record a migration version in the database.
  * @param repo - The database repository.
+ * @param repo.run - Execute a write statement.
  * @param version - The migration version to record.
  */
 export async function recordMigrationVersion(
   repo: { run: (sql: string, params?: unknown[]) => Promise<{ changes: number }> },
-  version: number
+  version: number,
 ): Promise<void> {
   await repo.run(
     `INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, datetime('now'))`,
-    [version]
+    [version],
   );
 }
 
 /**
  * Initialize the schema_migrations table if it doesn't exist.
  * @param repo - The database repository.
+ * @param repo.run - Execute a write statement.
  */
-export async function initializeMigrationsTable(
-  repo: { run: (sql: string, params?: unknown[]) => Promise<{ changes: number }> }
-): Promise<void> {
+export async function initializeMigrationsTable(repo: {
+  run: (sql: string, params?: unknown[]) => Promise<{ changes: number }>;
+}): Promise<void> {
   await repo.run(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version INTEGER PRIMARY KEY,
@@ -202,15 +206,18 @@ export async function initializeMigrationsTable(
 /**
  * Apply all pending migrations to the database.
  * @param repo - The database repository.
+ * @param repo.run - Execute a write statement.
+ * @param repo.get - Run a query returning an optional single row.
+ * @param repo.transaction - Run a function inside a transaction.
  * @returns The number of migrations applied.
  */
-export async function applyMigrations(repo: { 
+export async function applyMigrations(repo: {
   run: (sql: string, params?: unknown[]) => Promise<{ changes: number }>;
   get: <T>(sql: string, params?: unknown[]) => Promise<T | undefined>;
   transaction: <T>(fn: () => Promise<T>) => Promise<T>;
 }): Promise<number> {
   await initializeMigrationsTable(repo);
-  
+
   const currentVersion = await getCurrentMigrationVersion(repo);
   let migrationsApplied = 0;
 
@@ -224,7 +231,10 @@ export async function applyMigrations(repo: {
         migrationsApplied++;
       } catch (err) {
         // Log error but continue with other migrations
-        console.error(`Failed to apply migration ${migration.version}: ${migration.description}`, err);
+        console.error(
+          `Failed to apply migration ${migration.version}: ${migration.description}`,
+          err,
+        );
       }
     }
   }
@@ -235,16 +245,17 @@ export async function applyMigrations(repo: {
 /**
  * Get all migrations that have been applied.
  * @param repo - The database repository.
+ * @param repo.all - Run a query returning all rows.
  * @returns Array of applied migration versions.
  */
-export async function getAppliedMigrations(repo: { 
+export async function getAppliedMigrations(repo: {
   all: <T>(sql: string, params?: unknown[]) => Promise<T[]>;
 }): Promise<number[]> {
   try {
     const rows = await repo.all<{ version: number }>(
-      'SELECT version FROM schema_migrations ORDER BY version ASC'
+      'SELECT version FROM schema_migrations ORDER BY version ASC',
     );
-    return rows.map(row => row.version);
+    return rows.map((row) => row.version);
   } catch {
     return [];
   }
@@ -253,22 +264,24 @@ export async function getAppliedMigrations(repo: {
 /**
  * Get all pending migrations (not yet applied).
  * @param repo - The database repository.
+ * @param repo.all - Run a query returning all rows.
  * @returns Array of pending migrations.
  */
-export async function getPendingMigrations(repo: { 
+export async function getPendingMigrations(repo: {
   all: <T>(sql: string, params?: unknown[]) => Promise<T[]>;
 }): Promise<Migration[]> {
   const applied = await getAppliedMigrations(repo);
   const appliedSet = new Set(applied);
-  return MIGRATIONS.filter(m => !appliedSet.has(m.version));
+  return MIGRATIONS.filter((m) => !appliedSet.has(m.version));
 }
 
 /**
  * Check if all migrations have been applied.
  * @param repo - The database repository.
+ * @param repo.all - Run a query returning all rows.
  * @returns True if all migrations have been applied.
  */
-export async function areAllMigrationsApplied(repo: { 
+export async function areAllMigrationsApplied(repo: {
   all: <T>(sql: string, params?: unknown[]) => Promise<T[]>;
 }): Promise<boolean> {
   const pending = await getPendingMigrations(repo);
@@ -278,6 +291,7 @@ export async function areAllMigrationsApplied(repo: {
 /**
  * Get the SQL for creating the schema_migrations table.
  * Can be used for initial schema setup.
+ * @returns The SQL statement that creates the schema_migrations table.
  */
 export function getSchemaMigrationsTableSQL(): string {
   return `

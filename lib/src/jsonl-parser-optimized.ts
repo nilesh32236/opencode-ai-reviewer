@@ -93,7 +93,7 @@ class CircularLineBuffer {
     if (this.count < this.maxSize) {
       return this.buffer.slice(0, this.count);
     }
-    
+
     // Return all elements in order
     const result: string[] = [];
     for (let i = 0; i < this.maxSize; i++) {
@@ -261,7 +261,6 @@ class JsonlParserState {
       rawLines: this.rawLines.toArray(),
       failedLines: this.failedLines,
       executiveSummary: this.executiveSummary,
-      truncated: this.truncated,
     };
   }
 
@@ -279,10 +278,7 @@ class JsonlParserState {
  * @param maxLines - Maximum number of lines to process (default: unlimited).
  * @returns A Promise resolving to a ReviewResult with parsed findings.
  */
-export async function parseJsonlFile(
-  filePath: string,
-  maxLines?: number,
-): Promise<ReviewResult> {
+export async function parseJsonlFile(filePath: string, maxLines?: number): Promise<ReviewResult> {
   const absolutePath = path.resolve(filePath);
 
   // Check file size before processing
@@ -315,7 +311,7 @@ export async function parseJsonlFile(
   const parsePromise = (async () => {
     const state = new JsonlParserState(maxLines);
     let lineCount = 0;
-    
+
     for await (const line of rl) {
       if (maxLines && lineCount >= maxLines) {
         state.markTruncated();
@@ -323,10 +319,10 @@ export async function parseJsonlFile(
       }
       state.addLine(line);
       lineCount++;
-      
+
       // Periodically yield to event loop for large files
       if (lineCount % 1000 === 0) {
-        await new Promise(resolve => setImmediate(resolve));
+        await new Promise((resolve) => setImmediate(resolve));
       }
     }
     return state.finish();
@@ -347,11 +343,11 @@ export async function parseJsonlFile(
 
 /**
  * Parse a very large JSONL file with streaming and line limiting.
+ * @param filePath - Path to the JSONL file to parse.
+ * @param maxLines - Maximum number of lines to process.
+ * @returns A Promise resolving to a ReviewResult with parsed findings.
  */
-async function parseJsonlFileStreaming(
-  filePath: string,
-  maxLines: number,
-): Promise<ReviewResult> {
+async function parseJsonlFileStreaming(filePath: string, maxLines: number): Promise<ReviewResult> {
   const stream = fs.createReadStream(filePath, { encoding: 'utf-8', highWaterMark: 64 * 1024 });
   const rl = readline.createInterface({
     input: stream,
@@ -361,7 +357,7 @@ async function parseJsonlFileStreaming(
   try {
     const state = new JsonlParserState(maxLines);
     let lineCount = 0;
-    
+
     for await (const line of rl) {
       if (lineCount >= maxLines) {
         state.markTruncated();
@@ -369,12 +365,12 @@ async function parseJsonlFileStreaming(
       }
       state.addLine(line);
       lineCount++;
-      
+
       if (lineCount % 1000 === 0) {
-        await new Promise(resolve => setImmediate(resolve));
+        await new Promise((resolve) => setImmediate(resolve));
       }
     }
-    
+
     return state.finish();
   } finally {
     rl.close();
@@ -390,24 +386,21 @@ async function parseJsonlFileStreaming(
  * @param maxLines - Maximum number of lines to process.
  * @returns A ReviewResult with parsed findings.
  */
-export function parseJsonlString(
-  content: string,
-  maxLines?: number,
-): ReviewResult {
+export function parseJsonlString(content: string, maxLines?: number): ReviewResult {
   const sanitized = stripMarkdownFences(content);
   const state = new JsonlParserState(maxLines);
-  
+
   const lines = sanitized.split('\n');
   const limit = maxLines ?? lines.length;
-  
+
   for (let i = 0; i < Math.min(lines.length, limit); i++) {
     state.addLine(lines[i]);
   }
-  
+
   if (lines.length > limit) {
     state.markTruncated();
   }
-  
+
   return state.finish();
 }
 
@@ -543,8 +536,10 @@ export function buildInlineComments(
     })
     .map((issue) => {
       const builder = new StringBuilder();
-      builder.append(`${getSeverityBadge(issue.severity)} **${issue.severity.toUpperCase()}**: ${issue.message}${formatConfidenceLabel(issue.confidence)}`);
-      
+      builder.append(
+        `${getSeverityBadge(issue.severity)} **${issue.severity.toUpperCase()}**: ${issue.message}${formatConfidenceLabel(issue.confidence)}`,
+      );
+
       if (issue.suggestion) {
         builder.append(`\n\n> \ud83d\udca1 **How to fix:** ${issue.suggestion}`);
       }
@@ -567,7 +562,7 @@ export function buildInlineComments(
           builder.append(`\n\n\`\`\`suggestion\n${suggestion}\n\`\`\``);
         }
       }
-      
+
       return {
         path: issue.file.replace(/^\//, ''),
         line: issue.line,

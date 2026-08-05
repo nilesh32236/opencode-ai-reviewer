@@ -64,11 +64,11 @@ export function tokenizeMessage(message: string): Set<string> {
   if (tokens) {
     return tokens;
   }
-  
+
   // Tokenize: lowercase, remove non-alphanumeric, split on whitespace, filter short tokens
   const NON_ALPHANUMERIC_REGEX = /[^a-z0-9\s]/g;
   const WHITESPACE_REGEX = /\s+/;
-  
+
   tokens = new Set(
     message
       .toLowerCase()
@@ -76,7 +76,7 @@ export function tokenizeMessage(message: string): Set<string> {
       .split(WHITESPACE_REGEX)
       .filter((t) => t.length > 2),
   );
-  
+
   // Cache the result
   tokenSetCache.set(message, tokens);
   return tokens;
@@ -95,7 +95,7 @@ export function clearTokenCache(): void {
  * tokens of `primary + k * secondary (mod 2^32)`, which approximates k
  * independent pseudo-random permutations. Identical token sets produce
  * identical signatures.
- * 
+ *
  * Optimized version using Uint32Array for better memory efficiency and performance.
  * @param tokens - Set of tokens to summarize.
  * @param numHashes - Number of hash functions (signature length).
@@ -109,12 +109,12 @@ export function computeMinHashSignature(
 
   // Use Uint32Array for better memory efficiency
   const signature = new Uint32Array(numHashes).fill(0xffffffff);
-  
+
   for (const token of tokens) {
     const base = mix32(token);
     const primary = (base ^ PRIMARY_HASH_SALT) >>> 0;
     const secondary = (Math.imul(base ^ SECONDARY_HASH_SALT, 0xc2b2ae35) >>> 0) | 1;
-    
+
     // Loop unrolling for better performance
     // Process 4 hash functions at a time to reduce loop overhead
     for (let k = 0; k < numHashes; k += 4) {
@@ -122,7 +122,7 @@ export function computeMinHashSignature(
       const hash1 = (primary + Math.imul(k + 1, secondary)) >>> 0;
       const hash2 = (primary + Math.imul(k + 2, secondary)) >>> 0;
       const hash3 = (primary + Math.imul(k + 3, secondary)) >>> 0;
-      
+
       if (hash0 < signature[k]) signature[k] = hash0;
       if (k + 1 < numHashes && hash1 < signature[k + 1]) signature[k + 1] = hash1;
       if (k + 2 < numHashes && hash2 < signature[k + 2]) signature[k + 2] = hash2;
@@ -153,7 +153,7 @@ export function computeMinHashSignatureArray(
  * Bucket keys are 32-bit integer hashes of the band rows — rare key collisions
  * only add spurious candidates, which exact Jaccard verification discards.
  * Returns a deduplicated set of index pairs `(i, j)` with `i < j`.
- * 
+ *
  * Optimized with early termination and better bucket key computation.
  * @param signatures - MinHash signatures, one per item.
  * @param bands - Number of bands to split each signature into.
@@ -198,7 +198,7 @@ export function lshCandidates(
     // Generate candidate pairs from buckets with 2+ items
     for (const bucket of bucketMap.values()) {
       if (bucket.length < 2) continue;
-      
+
       // For small buckets, use nested loops
       if (bucket.length <= 10) {
         for (let a = 0; a < bucket.length; a++) {
@@ -342,8 +342,10 @@ export function jaccardSimilarityWithThreshold(
 
   let intersectionSize = 0;
   const maxPossibleIntersection = smallerSet.size;
-  const minRequiredIntersection = Math.ceil(threshold * (a.size + b.size - maxPossibleIntersection));
-  
+  const minRequiredIntersection = Math.ceil(
+    threshold * (a.size + b.size - maxPossibleIntersection),
+  );
+
   for (const item of smallerSet) {
     if (largerSet.has(item)) {
       intersectionSize++;
