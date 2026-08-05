@@ -236,7 +236,12 @@ export class FeedbackSubscriber implements Subscriber {
    */
   private async handleCommentCreated(event: GitHubEvent): Promise<void> {
     const payload = event.payload as {
-      comment?: { body?: string; in_reply_to_id?: number | null };
+      comment?: {
+        body?: string;
+        in_reply_to_id?: number | null;
+        path?: string;
+        line?: number;
+      };
       issue?: { number?: number };
     };
     const body = payload?.comment?.body || '';
@@ -273,11 +278,16 @@ export class FeedbackSubscriber implements Subscriber {
     if (findings.length === 0) return;
 
     const refs = parseFileLineRefs(body);
+    if (refs.length === 0 && payload.comment?.path) {
+      refs.push({
+        file: payload.comment.path,
+        startLine: payload.comment.line ?? 0,
+        endLine: payload.comment.line ?? 0,
+      });
+    }
+    if (refs.length === 0) return;
     const validFindings = findings.filter(
-      (f) =>
-        f.id &&
-        typeof f.id === 'string' &&
-        (refs.length === 0 || refs.some((ref) => matchesFileLineRef(f, ref))),
+      (f) => f.id && typeof f.id === 'string' && refs.some((ref) => matchesFileLineRef(f, ref)),
     );
     if (validFindings.length === 0) return;
     try {

@@ -99,7 +99,6 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
   const history: IterationRecord[] = [];
   const previousFindings: PreviousFindingIteration[] = [];
   let approved = false;
-  let verificationPassed = false;
 
   let gitEnv = initialGitEnv;
   let ownTempDir: string | undefined;
@@ -123,6 +122,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
   }
   try {
     for (let i = 0; i < config.maxIterations; i++) {
+      let verificationPassed = false;
       logger.info(`=== Autofix iteration ${i + 1}/${config.maxIterations} ===`);
 
       let pr: PRContext;

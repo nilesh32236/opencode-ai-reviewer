@@ -82,13 +82,20 @@ describe('FeedbackSubscriber', () => {
       prNumber: 1,
       type: 'issue',
       message: 'test',
+      file: 'src/foo.ts',
+      line: 10,
     });
 
     await subscriber.handle({
       type: 'comment.created',
       category: 'comment',
       payload: {
-        comment: { body: 'This is a false positive, not an issue', in_reply_to_id: 42 },
+        comment: {
+          body: 'This is a false positive, not an issue',
+          in_reply_to_id: 42,
+          path: 'src/foo.ts',
+          line: 10,
+        },
         issue: { number: 1 },
       },
       timestamp: Date.now(),
@@ -104,13 +111,20 @@ describe('FeedbackSubscriber', () => {
       prNumber: 1,
       type: 'issue',
       message: 'test',
+      file: 'src/foo.ts',
+      line: 10,
     });
 
     await subscriber.handle({
       type: 'comment.created',
       category: 'comment',
       payload: {
-        comment: { body: '/dismiss false positive', in_reply_to_id: 42 },
+        comment: {
+          body: '/dismiss false positive',
+          in_reply_to_id: 42,
+          path: 'src/foo.ts',
+          line: 10,
+        },
         issue: { number: 1 },
       },
       timestamp: Date.now(),
@@ -126,13 +140,20 @@ describe('FeedbackSubscriber', () => {
       prNumber: 1,
       type: 'issue',
       message: 'test',
+      file: 'src/foo.ts',
+      line: 10,
     });
 
     await subscriber.handle({
       type: 'comment.created',
       category: 'comment',
       payload: {
-        comment: { body: 'Looks good to me!', in_reply_to_id: 42 },
+        comment: {
+          body: 'Looks good to me!',
+          in_reply_to_id: 42,
+          path: 'src/foo.ts',
+          line: 10,
+        },
         issue: { number: 1 },
       },
       timestamp: Date.now(),
@@ -171,6 +192,8 @@ describe('FeedbackSubscriber', () => {
         prNumber: 1,
         type: 'issue',
         message: `finding ${i}`,
+        file: 'src/foo.ts',
+        line: 10,
       });
     }
 
@@ -178,7 +201,12 @@ describe('FeedbackSubscriber', () => {
       type: 'comment.created',
       category: 'comment',
       payload: {
-        comment: { body: 'This is wrong', in_reply_to_id: 42 },
+        comment: {
+          body: 'This is wrong',
+          in_reply_to_id: 42,
+          path: 'src/foo.ts',
+          line: 10,
+        },
         issue: { number: 1 },
       },
       timestamp: Date.now(),
@@ -194,13 +222,20 @@ describe('FeedbackSubscriber', () => {
       prNumber: 1,
       type: 'issue',
       message: 'test',
+      file: 'src/foo.ts',
+      line: 10,
     });
 
     const event = {
       type: 'comment.created' as const,
       category: 'comment' as const,
       payload: {
-        comment: { body: 'This is wrong', in_reply_to_id: 42 },
+        comment: {
+          body: 'This is wrong',
+          in_reply_to_id: 42,
+          path: 'src/foo.ts',
+          line: 10,
+        },
         issue: { number: 1 },
       },
       timestamp: Date.now(),
@@ -296,12 +331,23 @@ describe('FeedbackSubscriber', () => {
       const s = new LearningStore(dbPath);
       const sub = new FeedbackSubscriber(s);
 
-      await s.recordFinding({ prNumber: 1, type: 'issue', message: 'test' });
+      await s.recordFinding({
+        prNumber: 1,
+        type: 'issue',
+        message: 'test',
+        file: `src/kw_${i}.ts`,
+        line: i + 1,
+      });
       await sub.handle({
         type: 'comment.created',
         category: 'comment',
         payload: {
-          comment: { body: kw, in_reply_to_id: 42 },
+          comment: {
+            body: kw,
+            in_reply_to_id: 42,
+            path: `src/kw_${i}.ts`,
+            line: i + 1,
+          },
           issue: { number: 1 },
         },
         timestamp: Date.now(),
@@ -321,6 +367,71 @@ describe('FeedbackSubscriber', () => {
         /* ok */
       }
     }
+  });
+
+  it('does NOT mark findings when no scope (path/line or file:line refs) is available', async () => {
+    for (let i = 0; i < 5; i++) {
+      await store.recordFinding({
+        prNumber: 1,
+        type: 'issue',
+        message: `finding ${i}`,
+        file: `src/file_${i}.ts`,
+        line: 10,
+      });
+    }
+
+    await subscriber.handle({
+      type: 'comment.created',
+      category: 'comment',
+      payload: {
+        comment: {
+          body: 'This is wrong and a false positive',
+          in_reply_to_id: 42,
+        },
+        issue: { number: 1 },
+      },
+      timestamp: Date.now(),
+      prNumber: 1,
+    });
+
+    const breakdown = await store.getFeedbackBreakdown();
+    expect(breakdown.disputedCount).toBe(0);
+  });
+
+  it('marks only the finding matching the comment path/line', async () => {
+    await store.recordFinding({
+      prNumber: 1,
+      type: 'issue',
+      message: 'matching',
+      file: 'src/match.ts',
+      line: 42,
+    });
+    await store.recordFinding({
+      prNumber: 1,
+      type: 'issue',
+      message: 'unrelated',
+      file: 'src/other.ts',
+      line: 10,
+    });
+
+    await subscriber.handle({
+      type: 'comment.created',
+      category: 'comment',
+      payload: {
+        comment: {
+          body: 'this is wrong',
+          in_reply_to_id: 42,
+          path: 'src/match.ts',
+          line: 42,
+        },
+        issue: { number: 1 },
+      },
+      timestamp: Date.now(),
+      prNumber: 1,
+    });
+
+    const breakdown = await store.getFeedbackBreakdown();
+    expect(breakdown.disputedCount).toBe(1);
   });
 
   it('dispatches to correct handler based on event type', async () => {

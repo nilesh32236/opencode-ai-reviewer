@@ -107,7 +107,7 @@ class StateCacheManager {
     }
 
     const currentMtime = this.getLearningDbMtime();
-    if (currentMtime > 0 && currentMtime === this.learningDbMtimeMs) {
+    if (currentMtime > 0 && Math.abs(currentMtime - this.learningDbMtimeMs) < 1) {
       core.info('Learning state unchanged — skipping cache save');
       return;
     }
