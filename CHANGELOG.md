@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.6.39] — 2026-08-05
+
+
+### Fixed
+
+- address issue #178 (structured logging & correlation IDs) (#343) (#178
+#343)
+
+[v1.6.39]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.6.38...v1.6.39
+
 ## [v1.6.38] — 2026-08-05
 
 
