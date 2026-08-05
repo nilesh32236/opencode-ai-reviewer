@@ -4,19 +4,19 @@ import { createHash } from 'node:crypto';
 import * as os from 'os';
 import * as path from 'path';
 import { minimatch } from 'minimatch';
+import {
+  AGENT_PROMPT_BUILDERS,
+  buildLogicPrompt,
+  buildPerformancePrompt,
+  buildQualityPrompt,
+  buildSecurityPrompt,
+} from './agents/index.js';
+import type { AgentPromptContext } from './agents/index.js';
 import { CodebaseIndex, CodebaseIndexCache } from './codebase-index/index.js';
 import type { CodebaseIndexData } from './codebase-index/types.js';
 import { conversationThreadId } from './conversation/state.js';
 import type { ConversationStateManager } from './conversation/state.js';
 import type { EventBus } from './event-bus/bus.js';
-import {
-  AGENT_PROMPT_BUILDERS,
-  buildSecurityPrompt,
-  buildPerformancePrompt,
-  buildQualityPrompt,
-  buildLogicPrompt,
-} from './agents/index.js';
-import type { AgentPromptContext } from './agents/index.js';
 import { emptyResult, parseAgentJsonlString, parseJsonlFile } from './jsonl-parser.js';
 import type { LearningStore } from './learning/store.js';
 import { MCPManager } from './mcp/client.js';
@@ -41,8 +41,8 @@ import { detectLanguages } from './prompts/language/index.js';
 import { buildVerificationPrompt } from './prompts/verify.js';
 import type {
   AgentCategory,
-  AgentFinding,
   AgentConfig,
+  AgentFinding,
   AgentResult,
   BlameInfo,
   ConversationConfig,
@@ -1368,7 +1368,7 @@ export class ReviewEngine {
    * @param category - The agent category to run.
    * @param files - Changed files the agent reviews.
    * @param pr - The PR context being reviewed.
-   * @param baseContext - The assembled PR/base context string.
+   * @param _baseContext - Reserved; agent context is built per-batch from `pr`.
    * @param mcpDocs - MCP library documentation ('' when disabled/failed).
    * @param workDir - Working directory the review runs in.
    * @param promptFile - Optional review-level custom prompt file path (the per-agent
@@ -1390,7 +1390,7 @@ export class ReviewEngine {
     category: AgentCategory,
     files: PRContext['changedFiles'],
     pr: PRContext,
-    baseContext: string,
+    _baseContext: string,
     mcpDocs: string,
     workDir: string,
     promptFile?: string,
@@ -1522,8 +1522,7 @@ export class ReviewEngine {
       accumulatedTokensUsed,
       {
         promptTokens: accumulatedPromptTokens > 0 ? accumulatedPromptTokens : undefined,
-        completionTokens:
-          accumulatedCompletionTokens > 0 ? accumulatedCompletionTokens : undefined,
+        completionTokens: accumulatedCompletionTokens > 0 ? accumulatedCompletionTokens : undefined,
       },
       model,
       workDir,
@@ -1606,7 +1605,9 @@ export class ReviewEngine {
       }
     }
     if (lessons && lessons.length > 0) {
-      parts.push('\n\n## Historical Lessons\n\nThe following patterns were detected in similar code in past reviews:');
+      parts.push(
+        '\n\n## Historical Lessons\n\nThe following patterns were detected in similar code in past reviews:',
+      );
       for (const lesson of lessons) {
         parts.push(`- ${lesson}`);
       }
@@ -1624,9 +1625,7 @@ export class ReviewEngine {
         }
         parts.push('Previously reported issues:');
         for (const issue of pf.issues) {
-          const tag = issue.previouslyReported
-            ? ' (previously reported — verify fixed)'
-            : '';
+          const tag = issue.previouslyReported ? ' (previously reported — verify fixed)' : '';
           parts.push(
             `- **${issue.severity.toUpperCase()}:** ${issue.file}:${issue.line} — ${issue.message}${tag}`,
           );
@@ -1638,11 +1637,8 @@ export class ReviewEngine {
         '\n\n## Previously Reported Issues (Auto-Tracking)\n\nThe following issues were reported in previous reviews on this PR. Do NOT re-report issues that have been fixed:',
       );
       for (const comment of previousBotComments) {
-        const location =
-          comment.line != null ? `${comment.file}:${comment.line}` : comment.file;
-        const snippet = sanitizeString(
-          comment.body.split('\n')[0].substring(0, 200),
-        );
+        const location = comment.line != null ? `${comment.file}:${comment.line}` : comment.file;
+        const snippet = sanitizeString(comment.body.split('\n')[0].substring(0, 200));
         parts.push(`- **${location}** — ${snippet}`);
       }
     }
@@ -1731,9 +1727,7 @@ export class ReviewEngine {
     );
 
     if (!synthesisResult.success) {
-      this.logger.warn(
-        'Multi-agent synthesis pass failed, falling back to merged agent results',
-      );
+      this.logger.warn('Multi-agent synthesis pass failed, falling back to merged agent results');
       return this.buildAgentFallbackResult(
         dedupIssues(this.deduplicateAgentFindings(allFindings)),
         allStrengths,
@@ -1746,11 +1740,7 @@ export class ReviewEngine {
     try {
       const parsed = await parseJsonlFile(finalOutputPath);
       if (linterResults.length > 0) {
-        const deduped = this.deduplicateAgainstLinters(
-          parsed.issues,
-          linterResults,
-          workDir,
-        );
+        const deduped = this.deduplicateAgainstLinters(parsed.issues, linterResults, workDir);
         if (deduped.length < parsed.issues.length) {
           return {
             ...parsed,

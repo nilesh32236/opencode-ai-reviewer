@@ -131,6 +131,51 @@ fix:
       expect(config!.notifications?.minSeverity).toBe('critical');
       expect(config!.notifications?.slack).toBeUndefined();
     });
+
+    it('parses a valid multiAgent block with per-agent and synthesis settings', () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.opencode-reviewer.yml'),
+        `multiAgent:
+  enabled: true
+  agents:
+    security:
+      model: "openai/gpt-4o"
+      promptFile: "prompts/sec.md"
+    quality:
+      enabled: false
+  synthesis:
+    enabled: true
+    model: "openai/gpt-4o"
+`,
+      );
+      const config = loadConfig(tmpDir);
+      expect(config).not.toBeNull();
+      expect(config!.multiAgent?.enabled).toBe(true);
+      expect(config!.multiAgent?.agents?.security?.model).toBe('openai/gpt-4o');
+      expect(config!.multiAgent?.agents?.security?.promptFile).toBe('prompts/sec.md');
+      expect(config!.multiAgent?.agents?.quality?.enabled).toBe(false);
+      expect(config!.multiAgent?.synthesis?.model).toBe('openai/gpt-4o');
+    });
+
+    it('keeps the config parse alive when multiAgent has a mistyped category key', () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.opencode-reviewer.yml'),
+        `review:
+  systemPrompt: "still loaded"
+multiAgent:
+  enabled: true
+  agents:
+    secuirty:
+      enabled: true
+`,
+      );
+      const config = loadConfig(tmpDir);
+      expect(config).not.toBeNull();
+      // The typo'd key degrades the multiAgent block to defaults instead of
+      // discarding the whole config (review settings survive).
+      expect(config!.review?.systemPrompt).toBe('still loaded');
+      expect(config!.multiAgent?.enabled).toBe(false);
+    });
   });
 
   describe('mergeConfigWithInputs', () => {
@@ -720,6 +765,61 @@ fix:
       } as never);
       expect(result.overrides).toHaveLength(1);
       expect(result.overrides![0].path).toBe('src/');
+    });
+  });
+
+  describe('multiAgent config handling', () => {
+    it('normalizes enabled flag and skips unknown agent-category keys', () => {
+      const result = validateConfig({
+        multiAgent: {
+          enabled: true,
+          agents: {
+            security: { enabled: true },
+            bogus: { enabled: true },
+          },
+        },
+      } as never);
+      expect(result.multiAgent?.enabled).toBe(true);
+      expect(result.multiAgent?.agents?.security?.enabled).toBe(true);
+      expect(result.multiAgent?.agents?.bogus).toBeUndefined();
+    });
+
+    it('applies defaults to partial agent configs', () => {
+      const result = validateConfig({
+        multiAgent: {
+          enabled: true,
+          agents: {
+            quality: { model: 'openai/gpt-4o' },
+          },
+        },
+      } as never);
+      expect(result.multiAgent?.agents?.quality?.enabled).toBe(true);
+      expect(result.multiAgent?.agents?.quality?.model).toBe('openai/gpt-4o');
+    });
+
+    it('normalizes non-boolean enabled values to defaults', () => {
+      const result = validateConfig({
+        multiAgent: { enabled: 'yes', agents: {} },
+      } as never);
+      expect(result.multiAgent?.enabled).toBe(false);
+    });
+
+    it('defaults synthesis.enabled to true when omitted', () => {
+      const result = validateConfig({ multiAgent: { enabled: true } } as never);
+      expect(result.multiAgent?.synthesis?.enabled).toBe(true);
+    });
+
+    it('trims per-agent model and promptFile values', () => {
+      const result = validateConfig({
+        multiAgent: {
+          enabled: true,
+          agents: {
+            security: { model: ' openai/gpt-4o ', promptFile: ' prompts/sec.md ' },
+          },
+        },
+      } as never);
+      expect(result.multiAgent?.agents?.security?.model).toBe('openai/gpt-4o');
+      expect(result.multiAgent?.agents?.security?.promptFile).toBe('prompts/sec.md');
     });
   });
 

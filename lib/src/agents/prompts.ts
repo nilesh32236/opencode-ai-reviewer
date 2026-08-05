@@ -5,8 +5,8 @@
 // Every prompt instructs the model to emit JSON Lines with an `agent` field on
 // each `issue` so downstream parsing and synthesis can attribute findings.
 
-import type { AgentCategory } from '../types/index.js';
 import { loadPromptFile } from '../prompts/builder.js';
+import type { AgentCategory } from '../types/index.js';
 import { sanitizePromptInput } from '../utils/prompt-sanitizer.js';
 import type { AgentPromptContext } from './types.js';
 
@@ -212,12 +212,10 @@ export function buildLogicPrompt(context: AgentPromptContext): string {
 }
 
 /** Map of agent category → its prompt builder. */
-export const AGENT_PROMPT_BUILDERS: Record<
-  AgentCategory,
-  (context: AgentPromptContext) => string
-> = {
-  security: buildSecurityPrompt,
-  performance: buildPerformancePrompt,
-  quality: buildQualityPrompt,
-  logic: buildLogicPrompt,
-};
+export const AGENT_PROMPT_BUILDERS: Record<AgentCategory, (context: AgentPromptContext) => string> =
+  {
+    security: buildSecurityPrompt,
+    performance: buildPerformancePrompt,
+    quality: buildQualityPrompt,
+    logic: buildLogicPrompt,
+  };

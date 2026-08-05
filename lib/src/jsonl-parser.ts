@@ -119,9 +119,7 @@ export function parseJsonlString(content: string): ReviewResult {
  * @param value - The raw confidence value (string, number, or undefined).
  * @returns The normalized confidence, or undefined when unrecognizable.
  */
-export function normalizeAgentConfidence(
-  value: unknown,
-): 'high' | 'medium' | 'low' | undefined {
+export function normalizeAgentConfidence(value: unknown): 'high' | 'medium' | 'low' | undefined {
   if (typeof value === 'string' && ['high', 'medium', 'low'].includes(value)) {
     return value as 'high' | 'medium' | 'low';
   }

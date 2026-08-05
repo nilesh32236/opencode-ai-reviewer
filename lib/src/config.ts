@@ -121,11 +121,13 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
   },
   multiAgent: {
     enabled: null,
-    agents: [{
-      enabled: null,
-      model: null,
-      promptFile: null,
-    }],
+    agents: [
+      {
+        enabled: null,
+        model: null,
+        promptFile: null,
+      },
+    ],
     synthesis: {
       enabled: null,
       model: null,
@@ -771,8 +773,7 @@ export function validateConfig(config: PromptConfig): PromptConfig {
       enabled: typeof ma.enabled === 'boolean' ? ma.enabled : false,
       agents: {},
       synthesis: {
-        enabled:
-          typeof ma.synthesis?.enabled === 'boolean' ? ma.synthesis.enabled : true,
+        enabled: typeof ma.synthesis?.enabled === 'boolean' ? ma.synthesis.enabled : true,
         ...(typeof ma.synthesis?.model === 'string' && ma.synthesis.model.trim() !== ''
           ? { model: ma.synthesis.model.trim() }
           : {}),

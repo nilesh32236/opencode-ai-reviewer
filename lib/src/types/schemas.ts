@@ -304,10 +304,7 @@ export const MultiAgentConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
     agents: z
-      .record(
-        z.enum(['security', 'performance', 'quality', 'logic']),
-        MultiAgentAgentConfigSchema,
-      )
+      .record(z.enum(['security', 'performance', 'quality', 'logic']), MultiAgentAgentConfigSchema)
       .default({}),
     synthesis: z
       .object({
