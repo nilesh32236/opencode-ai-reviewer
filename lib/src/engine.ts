@@ -4,12 +4,20 @@ import { createHash } from 'node:crypto';
 import * as os from 'os';
 import * as path from 'path';
 import { minimatch } from 'minimatch';
+import {
+  AGENT_PROMPT_BUILDERS,
+  buildLogicPrompt,
+  buildPerformancePrompt,
+  buildQualityPrompt,
+  buildSecurityPrompt,
+} from './agents/index.js';
+import type { AgentPromptContext } from './agents/index.js';
 import { CodebaseIndex, CodebaseIndexCache } from './codebase-index/index.js';
 import type { CodebaseIndexData } from './codebase-index/types.js';
 import { conversationThreadId } from './conversation/state.js';
 import type { ConversationStateManager } from './conversation/state.js';
 import type { EventBus } from './event-bus/bus.js';
-import { emptyResult, parseJsonlFile } from './jsonl-parser.js';
+import { emptyResult, parseAgentJsonlString, parseJsonlFile } from './jsonl-parser.js';
 import type { LearningStore } from './learning/store.js';
 import { MCPManager } from './mcp/client.js';
 import { ensureOutputDir, getGitStatus, runOpenCode } from './opencode.js';
@@ -19,6 +27,7 @@ import {
   buildAuditPrompt,
   buildExplainPrompt,
   buildFixPrompt,
+  buildMultiAgentSynthesisPrompt,
   buildReviewPrompt,
   buildSynthesisPrompt,
 } from './prompts/builder.js';
@@ -31,7 +40,10 @@ import { buildSelfHealPrompt } from './prompts/heal.js';
 import { detectLanguages } from './prompts/language/index.js';
 import { buildVerificationPrompt } from './prompts/verify.js';
 import type {
+  AgentCategory,
   AgentConfig,
+  AgentFinding,
+  AgentResult,
   BlameInfo,
   ConversationConfig,
   ConversationContext,
@@ -40,6 +52,7 @@ import type {
   LinterConfig,
   LinterFinding,
   LinterResult,
+  MultiAgentAgentConfig,
   PRContext,
   PipelineEventPayload,
   PipelineEventPayloadMap,
@@ -66,6 +79,7 @@ import {
   detectPythonLibraries,
   detectRubyLibraries,
 } from './utils/manifest-detector.js';
+import { validateModelString } from './utils/model-string.js';
 import { analyzeBatchReachability } from './utils/reachability.js';
 import { sanitizeString } from './utils/sanitize.js';
 
@@ -74,6 +88,9 @@ export const MAX_BATCH_CONCURRENCY = 8;
 
 /** Fixed inter-chunk backoff delay in milliseconds between concurrent chunks. */
 export const INTER_CHUNK_DELAY_MS = 150;
+
+/** Canonical dispatch order of the specialized review agents. */
+export const AGENT_ORDER = ['security', 'performance', 'quality', 'logic'] as const;
 
 /**
  * Fallback USD cost rates per 1K tokens for a few well-known models.
@@ -782,6 +799,36 @@ export class ReviewEngine {
     // Run configured linters as pre-processing step
     const linterResults = await this.runLinters(files, workDir);
 
+    // Multi-agent review path (opt-in): dispatch specialized agents (security,
+    // performance, quality, logic) each with its own focused prompt, then
+    // consolidate their findings through the synthesis agent. Falls back to the
+    // legacy single-agent/batch path when multi-agent mode is disabled.
+    if (this.getActiveAgentCategories().length > 0) {
+      return await this.runMultiAgentReview(
+        pr,
+        files,
+        baseContext,
+        mcpDocs,
+        openThreadsContext,
+        workDir,
+        promptFile,
+        promptExtra,
+        timeoutMinutes,
+        tokenBudgetConfig,
+        blameData,
+        codebaseIndex,
+        codebaseIndexData,
+        linterResults,
+        budgetMode,
+        totalDiffLines,
+        lessons,
+        falsePositiveRules,
+        deltaContext,
+        previousFindings,
+        previousBotComments,
+      );
+    }
+
     // If PR is small enough for a single batch, skip concurrent processing
     if (files.length <= batchSize) {
       const codebaseIndexContext = this.formatCodebaseContext(
@@ -1172,6 +1219,856 @@ export class ReviewEngine {
         totalDiffLines,
       );
     }
+  }
+
+  /**
+   * Resolve the set of specialized agent categories that participate in a
+   * multi-agent review. Agents listed in config with `enabled: false` are
+   * excluded; unlisted categories default to enabled. Returns an empty array
+   * when multi-agent mode is disabled — the legacy review path then runs.
+   * @returns The active agent categories, or [] when multi-agent is disabled.
+   */
+  private getActiveAgentCategories(): AgentCategory[] {
+    const multiAgent = this.config.multiAgent;
+    if (!multiAgent?.enabled) return [];
+    const agents = multiAgent.agents ?? {};
+    return AGENT_ORDER.filter((category) => agents[category]?.enabled !== false);
+  }
+
+  /**
+   * Resolve the effective model for a specialized agent, preferring the
+   * per-agent override, then the review model. The per-agent override is
+   * validated at dispatch time: a malformed override (e.g. 'gpt-4o' with no
+   * provider prefix) degrades to `reviewModel` with a warning instead of
+   * throwing from `runOpenCode` and aborting the whole review.
+   * @param category - The agent category.
+   * @returns The resolved model string.
+   */
+  private resolveAgentModel(category: AgentCategory): string {
+    const override = this.config.multiAgent?.agents?.[category]?.model;
+    if (override) {
+      try {
+        validateModelString(override);
+        return override;
+      } catch (err) {
+        this.logger.warn(
+          `Agent "${category}" model "${override}" is invalid, falling back to reviewModel: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    return this.config.reviewModel;
+  }
+
+  /**
+   * Orchestrate the multi-agent review path: dispatch every active specialized
+   * agent over the changed files, collect their findings, then run the
+   * synthesis agent to deduplicate, prioritize, and consolidate the final
+   * review. Always returns through `verifyReviewResult` so reachability,
+   * meta-verification, sensitivity filtering, and budget banners apply
+   * identically to the legacy path.
+   *
+   * Active agents are dispatched concurrently (each agent runs its own file
+   * batches under a bounded per-agent concurrency limit), so up to four
+   * specialized agents review in parallel instead of serially — output files
+   * are namespaced per agent/batch so no collisions occur.
+   * @param pr - The PR context being reviewed.
+   * @param files - Changed files (already filtered by exclude patterns).
+   * @param baseContext - The assembled PR/base context string (MCP + open threads).
+   * @param mcpDocs - MCP library documentation ('' when disabled/failed).
+   * @param openThreadsContext - Open human-thread discussion context ('' when none/failed).
+   * @param workDir - Working directory the review runs in.
+   * @param promptFile - Optional custom review prompt file path.
+   * @param promptExtra - Optional extra instructions appended to each agent prompt.
+   * @param timeoutMinutes - Optional per-run timeout override.
+   * @param tokenBudgetConfig - Optional token budget config for per-file context caps.
+   * @param blameData - Optional git blame annotations keyed by file path.
+   * @param codebaseIndex - Optional codebase index engine for cross-file context.
+   * @param codebaseIndexData - Optional loaded index data.
+   * @param linterResults - Results from configured linters.
+   * @param budgetMode - Selected budget review mode.
+   * @param totalDiffLines - Optional total diff line count.
+   * @param lessons - Optional learning-store lessons.
+   * @param falsePositiveRules - Optional false-positive suppression rules.
+   * @param deltaContext - Optional incremental review context.
+   * @param previousFindings - Optional findings from previous fix iterations.
+   * @param previousBotComments - Optional previous bot review comments.
+   * @returns The consolidated, verified ReviewResult.
+   */
+  private async runMultiAgentReview(
+    pr: PRContext,
+    files: PRContext['changedFiles'],
+    baseContext: string,
+    mcpDocs: string,
+    openThreadsContext: string,
+    workDir: string,
+    promptFile?: string,
+    promptExtra?: string,
+    timeoutMinutes?: number,
+    tokenBudgetConfig?: TokenBudgetConfig,
+    blameData?: Map<string, Map<number, BlameInfo>>,
+    codebaseIndex?: CodebaseIndex,
+    codebaseIndexData?: CodebaseIndexData,
+    linterResults: LinterResult[] = [],
+    budgetMode?: ReviewBudgetMode,
+    totalDiffLines?: number,
+    lessons?: string[],
+    falsePositiveRules?: string[],
+    deltaContext?: string,
+    previousFindings?: PreviousFindingIteration[],
+    previousBotComments?: Array<{
+      file: string;
+      line: number | null;
+      body: string;
+      commentId: number;
+    }>,
+  ): Promise<ReviewResult> {
+    const categories = this.getActiveAgentCategories();
+    this.logger.info(
+      `Multi-agent review: dispatching ${categories.length} specialized agent(s): ${categories.join(', ')}`,
+    );
+
+    // Dispatch all active agents concurrently. Each agent writes to its own
+    // `.opencode/agent-<category>/batch-<idx>` output directory, so the agents
+    // cannot collide; concurrency is bounded inside each agent by a per-agent
+    // batch limit that keeps the aggregate under MAX_BATCH_CONCURRENCY.
+    const settled = await Promise.allSettled(
+      categories.map((category) =>
+        this.runAgentCategory(
+          category,
+          files,
+          pr,
+          mcpDocs,
+          openThreadsContext,
+          workDir,
+          promptFile,
+          promptExtra,
+          timeoutMinutes,
+          tokenBudgetConfig,
+          blameData,
+          codebaseIndex,
+          codebaseIndexData,
+          lessons,
+          falsePositiveRules,
+          deltaContext,
+          previousFindings,
+          previousBotComments,
+          budgetMode,
+          totalDiffLines,
+        ),
+      ),
+    );
+    const agentResults: AgentResult[] = settled.map((outcome, idx) => {
+      if (outcome.status === 'fulfilled') return outcome.value;
+      const category = categories[idx];
+      const message =
+        outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
+      this.logger.warn(`Agent "${category}" rejected: ${message}`);
+      return {
+        agent: category,
+        findings: [],
+        strengths: [],
+        rawOutput: '',
+        durationMs: 0,
+        tokensUsed: 0,
+        success: false,
+        error: message,
+      };
+    });
+    for (const result of agentResults) {
+      if (result.success) {
+        this.logger.info(
+          `Agent "${result.agent}" found ${result.findings.length} issue(s) and ${result.strengths.length} strength(s) in ${result.durationMs}ms`,
+        );
+      } else {
+        this.logger.warn(`Agent "${result.agent}" failed: ${result.error ?? 'unknown error'}`);
+      }
+    }
+
+    const result = await this.synthesizeAgentFindings(
+      pr.number,
+      agentResults,
+      workDir,
+      timeoutMinutes,
+      linterResults,
+      promptFile,
+      promptExtra,
+    );
+
+    return await this.verifyReviewResult(
+      result,
+      baseContext,
+      workDir,
+      timeoutMinutes,
+      pr.number,
+      budgetMode,
+      totalDiffLines,
+    );
+  }
+
+  /**
+   * Run a single specialized agent over the changed files. Files are split into
+   * batches of `batchSize` (reusing the legacy batch infrastructure), each
+   * batch is dispatched to `runOpenCode` with the agent's focused prompt in an
+   * isolated working directory, and the accumulated output is parsed into one
+   * AgentResult attributed to the agent's category.
+   *
+   * Batches run concurrently under a bounded limit that keeps the aggregate
+   * across all active agents under `MAX_BATCH_CONCURRENCY`. A batch whose
+   * `runOpenCode` invocation throws or reports failure is marked failed and the
+   * remaining batches still run, so a per-agent model typo or CLI outage can
+   * never abort the whole review.
+   * @param category - The agent category to run.
+   * @param files - Changed files the agent reviews.
+   * @param pr - The PR context being reviewed.
+   * @param mcpDocs - MCP library documentation ('' when disabled/failed).
+   * @param openThreadsContext - Open human-thread discussion context ('' when none/failed).
+   * @param workDir - Working directory the review runs in.
+   * @param promptFile - Optional review-level custom prompt file path (the per-agent
+   * `multiAgent.agents.<category>.promptFile` takes precedence when set).
+   * @param promptExtra - Optional extra instructions appended to the agent prompt.
+   * @param timeoutMinutes - Optional per-run timeout override.
+   * @param tokenBudgetConfig - Optional token budget config.
+   * @param blameData - Optional git blame annotations keyed by file path.
+   * @param codebaseIndex - Optional codebase index engine.
+   * @param codebaseIndexData - Optional loaded index data.
+   * @param lessons - Optional learning-store lessons.
+   * @param falsePositiveRules - Optional false-positive suppression rules.
+   * @param deltaContext - Optional incremental review context.
+   * @param previousFindings - Optional findings from previous fix iterations.
+   * @param previousBotComments - Optional previous bot review comments.
+   * @param budgetMode - Optional budget review mode forwarded into the agent prompt.
+   * @param totalDiffLines - Optional total diff line count for the budget banner.
+   * @returns The structured AgentResult for this category.
+   */
+  private async runAgentCategory(
+    category: AgentCategory,
+    files: PRContext['changedFiles'],
+    pr: PRContext,
+    mcpDocs: string,
+    openThreadsContext: string,
+    workDir: string,
+    promptFile?: string,
+    promptExtra?: string,
+    timeoutMinutes?: number,
+    tokenBudgetConfig?: TokenBudgetConfig,
+    blameData?: Map<string, Map<number, BlameInfo>>,
+    codebaseIndex?: CodebaseIndex,
+    codebaseIndexData?: CodebaseIndexData,
+    lessons?: string[],
+    falsePositiveRules?: string[],
+    deltaContext?: string,
+    previousFindings?: PreviousFindingIteration[],
+    previousBotComments?: Array<{
+      file: string;
+      line: number | null;
+      body: string;
+      commentId: number;
+    }>,
+    budgetMode?: ReviewBudgetMode,
+    totalDiffLines?: number,
+  ): Promise<AgentResult> {
+    const agentConfig = this.config.multiAgent?.agents?.[category] as
+      | MultiAgentAgentConfig
+      | undefined;
+    const model = this.resolveAgentModel(category);
+    const agentPromptFile = agentConfig?.promptFile;
+    const batchSize = this.config.batchSize || 3;
+
+    const fileBatches: Array<(typeof files)[number][]> = [];
+    for (let i = 0; i < files.length; i += batchSize) {
+      fileBatches.push(files.slice(i, i + batchSize));
+    }
+
+    const agentStart = Date.now();
+    let accumulatedTokensUsed = 0;
+    let accumulatedPromptTokens = 0;
+    let accumulatedCompletionTokens = 0;
+    const rawBatches: string[] = [];
+    let success = true;
+    let error: string | undefined;
+
+    // Bound the per-agent batch concurrency so the aggregate across concurrently
+    // running agents stays under MAX_BATCH_CONCURRENCY (mirroring the legacy
+    // single-agent path's cap).
+    const activeCategories = Math.max(1, this.getActiveAgentCategories().length);
+    const concurrencyLimit = Math.min(
+      os.cpus().length || 4,
+      fileBatches.length,
+      Math.max(1, Math.floor(MAX_BATCH_CONCURRENCY / activeCategories)),
+    );
+
+    const runBatch = async (
+      batch: (typeof files)[number][],
+      idx: number,
+    ): Promise<{
+      raw: string;
+      tokensUsed: number;
+      promptTokens?: number;
+      completionTokens?: number;
+      failed: boolean;
+      error?: string;
+    }> => {
+      const batchDir = path.join(workDir, '.opencode', `agent-${category}`, `batch-${idx}`);
+      if (!existsSync(batchDir)) {
+        mkdirSync(batchDir, { recursive: true });
+      }
+
+      const batchPR = { ...pr, changedFiles: batch };
+      const batchBlameData: Map<string, Map<number, BlameInfo>> | undefined =
+        blameData && blameData.size > 0
+          ? new Map(
+              batch
+                .map((f) => f.path)
+                .filter((p): p is string => Boolean(p))
+                .flatMap((p) => {
+                  const info = blameData.get(p);
+                  return info !== undefined ? [[p, info] as const] : [];
+                }),
+            )
+          : undefined;
+      const { context: batchContext } = this.buildPRContextString(
+        batchPR,
+        tokenBudgetConfig,
+        true,
+        batchBlameData,
+      );
+      const batchCodebaseContext = this.formatCodebaseContext(
+        codebaseIndex,
+        codebaseIndexData,
+        batch,
+      );
+      const agentContext: AgentPromptContext = {
+        inputs: {
+          projectContext: this.config.projectContext.description || undefined,
+          reviewPromptFile: agentPromptFile ?? promptFile,
+          reviewPromptExtra: promptExtra,
+        },
+        prContext: this.buildAgentBatchContext(
+          batchContext,
+          mcpDocs,
+          openThreadsContext,
+          batchCodebaseContext,
+          deltaContext,
+          lessons,
+          falsePositiveRules,
+          previousFindings,
+          previousBotComments,
+        ),
+        budgetMode,
+        totalDiffLines,
+      };
+
+      const promptBuilder = AGENT_PROMPT_BUILDERS[category] ?? buildSecurityPrompt;
+      const prompt = promptBuilder(agentContext);
+
+      const outputPath = path.join(batchDir, 'review-output.jsonl');
+      ensureOutputDir(outputPath);
+
+      // runOpenCode throws synchronously on a malformed model string and can
+      // reject on setup/health-check failures. Treat a thrown/rejected call as a
+      // failed batch so a single bad batch never aborts the whole review.
+      const runResult = await runOpenCode(prompt, {
+        model,
+        timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+        workingDirectory: batchDir,
+      }).catch((err: unknown) => {
+        this.logger.warn(
+          `Agent ${category} batch ${idx} threw: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return {
+          success: false,
+          output: '',
+          durationMs: 0,
+          tokensUsed: 0,
+          promptTokens: undefined,
+          completionTokens: undefined,
+        };
+      });
+
+      if (!runResult.success) {
+        this.logger.warn(`Agent ${category} batch ${idx} execution failed`);
+        return {
+          raw: '',
+          tokensUsed: runResult.tokensUsed,
+          promptTokens: runResult.promptTokens,
+          completionTokens: runResult.completionTokens,
+          failed: true,
+          error: `Agent batch ${idx} execution failed`,
+        };
+      }
+
+      try {
+        const content = await fs.readFile(outputPath, 'utf-8');
+        return {
+          raw: content.trim() ? content : '',
+          tokensUsed: runResult.tokensUsed,
+          promptTokens: runResult.promptTokens,
+          completionTokens: runResult.completionTokens,
+          failed: false,
+        };
+      } catch (err) {
+        this.logger.warn(`Agent ${category} batch ${idx} output missing`);
+        return {
+          raw: '',
+          tokensUsed: runResult.tokensUsed,
+          promptTokens: runResult.promptTokens,
+          completionTokens: runResult.completionTokens,
+          failed: true,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    };
+
+    const chunkCount = computeChunkDelays(fileBatches.length, concurrencyLimit) + 1;
+    for (let chunk = 0; chunk < chunkCount; chunk++) {
+      if (chunk > 0) {
+        await new Promise((r) => setTimeout(r, INTER_CHUNK_DELAY_MS));
+      }
+      const batchStart = chunk * concurrencyLimit;
+      const chunkBatches = fileBatches.slice(batchStart, batchStart + concurrencyLimit);
+      const chunkOutputs = await Promise.all(
+        chunkBatches.map((batch, chunkOffset) => runBatch(batch, batchStart + chunkOffset)),
+      );
+      for (const batchResult of chunkOutputs) {
+        accumulatedTokensUsed += batchResult.tokensUsed;
+        accumulatedPromptTokens += batchResult.promptTokens ?? 0;
+        accumulatedCompletionTokens += batchResult.completionTokens ?? 0;
+        if (batchResult.raw) {
+          rawBatches.push(batchResult.raw);
+        }
+        if (batchResult.failed) {
+          success = false;
+          error = error ?? batchResult.error;
+        }
+      }
+    }
+
+    // Record the agent's aggregated telemetry (all batches, one entry).
+    await this.recordTelemetry(
+      pr.number,
+      Date.now() - agentStart,
+      accumulatedTokensUsed,
+      {
+        promptTokens: accumulatedPromptTokens > 0 ? accumulatedPromptTokens : undefined,
+        completionTokens: accumulatedCompletionTokens > 0 ? accumulatedCompletionTokens : undefined,
+      },
+      model,
+      workDir,
+    );
+
+    const parsed = parseAgentJsonlString(rawBatches.join('\n'), category);
+    const rawOutput = rawBatches.join('\n');
+
+    if (success && rawOutput.trim().length === 0 && parsed.findings.length === 0) {
+      success = false;
+      error = 'Agent produced no output';
+    }
+
+    return {
+      agent: category,
+      findings: parsed.findings,
+      strengths: parsed.strengths,
+      rawOutput,
+      failedLines: parsed.failedLines,
+      durationMs: Date.now() - agentStart,
+      tokensUsed: accumulatedTokensUsed,
+      success,
+      error,
+    };
+  }
+
+  /**
+   * Assemble the enriched context string injected into a specialized agent's
+   * prompt for one file batch. Combines the batch PR context (with blame
+   * annotations), MCP library docs, open human-thread context, codebase index
+   * context, delta context, learning lessons, false-positive rules, and
+   * previous iteration findings so the agent reviews with the same enrichment
+   * the legacy path provides.
+   * @param batchContext - The batch PR context string.
+   * @param mcpDocs - MCP library documentation ('' when disabled/failed).
+   * @param openThreadsContext - Open human-thread discussion context ('' when none/failed).
+   * @param codebaseIndexContext - Cross-file codebase context ('' when unavailable).
+   * @param deltaContext - Optional incremental review context.
+   * @param lessons - Optional learning-store lessons.
+   * @param falsePositiveRules - Optional false-positive suppression rules.
+   * @param previousFindings - Optional findings from previous fix iterations.
+   * @param previousBotComments - Optional previous bot review comments.
+   * @returns The enriched context string.
+   */
+  private buildAgentBatchContext(
+    batchContext: string,
+    mcpDocs: string,
+    openThreadsContext: string,
+    codebaseIndexContext: string,
+    deltaContext?: string,
+    lessons?: string[],
+    falsePositiveRules?: string[],
+    previousFindings?: PreviousFindingIteration[],
+    previousBotComments?: Array<{
+      file: string;
+      line: number | null;
+      body: string;
+      commentId: number;
+    }>,
+  ): string {
+    const parts: string[] = [batchContext];
+
+    if (mcpDocs) {
+      parts.push('\n\n## Library Documentation\n\n' + mcpDocs);
+    }
+    if (openThreadsContext) {
+      // Mirror the legacy baseContext assembly, which appends open human-thread
+      // context verbatim so agents respect unresolved discussion threads.
+      parts.push('\n\n' + openThreadsContext);
+    }
+    if (codebaseIndexContext) {
+      parts.push('\n\n## Codebase Context (Cross-File Analysis)\n\n' + codebaseIndexContext);
+    }
+    if (deltaContext) {
+      // Mirror the legacy buildReviewPrompt cap: truncate the delta diff to
+      // 5000 chars on a hunk or newline boundary so a large diff cannot push
+      // the later enrichment sections past the agent prompt length cap.
+      let truncatedDelta = deltaContext;
+      if (deltaContext.length > 5000) {
+        const slice = deltaContext.slice(0, 5000);
+        const lastHunk = slice.lastIndexOf('\n@@');
+        const lastNewline = slice.lastIndexOf('\n');
+        const boundary = lastHunk > 0 ? lastHunk : lastNewline > 0 ? lastNewline : 5000;
+        truncatedDelta = `${slice.slice(0, boundary)}\n... (truncated)`;
+      }
+      parts.push(
+        '\n\n## Incremental Review (Delta Changes)\n\n' +
+          'This is a follow-up review for new commits pushed since the last review pass.\n\n' +
+          '```diff\n' +
+          truncatedDelta +
+          '\n```',
+      );
+    }
+    if (falsePositiveRules && falsePositiveRules.length > 0) {
+      parts.push(
+        '\n\n## False Positive Suppression Rules\n\nThe following patterns were previously flagged but dismissed by human reviewers as intentional or not actual issues. DO NOT flag these patterns again:',
+      );
+      for (const rule of falsePositiveRules) {
+        parts.push(`- ${rule}`);
+      }
+    }
+    if (lessons && lessons.length > 0) {
+      parts.push(
+        '\n\n## Historical Lessons\n\nThe following patterns were detected in similar code in past reviews:',
+      );
+      for (const lesson of lessons) {
+        parts.push(`- ${lesson}`);
+      }
+    }
+    if (previousFindings && previousFindings.length > 0) {
+      parts.push(
+        '\n\n## Previous Review Iterations\n\n' +
+          'This is not the first review of this PR. Report only issues that are STILL present.',
+      );
+      for (const pf of previousFindings) {
+        parts.push(`\n### Iteration ${pf.iteration}`);
+        if (pf.fixSummary) parts.push(`Fix summary: ${pf.fixSummary}`);
+        if (pf.filesChanged && pf.filesChanged.length > 0) {
+          parts.push(`Files changed: \`${pf.filesChanged.join('`, `')}\``);
+        }
+        parts.push('Previously reported issues:');
+        for (const issue of pf.issues) {
+          const tag = issue.previouslyReported ? ' (previously reported — verify fixed)' : '';
+          parts.push(
+            `- **${issue.severity.toUpperCase()}:** ${issue.file}:${issue.line} — ${issue.message}${tag}`,
+          );
+        }
+      }
+    }
+    if (previousBotComments && previousBotComments.length > 0) {
+      parts.push(
+        '\n\n## Previously Reported Issues (Auto-Tracking)\n\nThe following issues were reported in previous reviews on this PR. Do NOT re-report issues that have been fixed:',
+      );
+      for (const comment of previousBotComments) {
+        const location = comment.line != null ? `${comment.file}:${comment.line}` : comment.file;
+        const snippet = sanitizeString(comment.body.split('\n')[0].substring(0, 200));
+        parts.push(`- **${location}** — ${snippet}`);
+      }
+    }
+
+    return parts.join('\n');
+  }
+
+  /**
+   * Consolidate findings from all specialized agents into a final ReviewResult.
+   * Runs the synthesis agent (always, when enabled) with a JSONL payload of
+   * per-agent findings; on synthesis failure or output-parse failure, falls back
+   * to a deterministic merged + deduplicated result so a synthesis-model outage
+   * can never fail the whole review.
+   *
+   * When every agent failed (model outage, timeout, malformed output), the
+   * resulting review is forced to a failed verdict (`ready: false`) — a PR that
+   * was never actually reviewed must never be reported as clean and merge-ready.
+   * @param prNumber - PR number being reviewed.
+   * @param agentResults - Findings from each specialized agent.
+   * @param workDir - Working directory the review runs in.
+   * @param timeoutMinutes - Optional per-run timeout override.
+   * @param linterResults - Results from configured linters (deduped post-synthesis).
+   * @param promptFile - Optional review-level custom prompt file path forwarded to the synthesis prompt.
+   * @param promptExtra - Optional extra instructions forwarded to the synthesis prompt.
+   * @returns The consolidated ReviewResult.
+   */
+  private async synthesizeAgentFindings(
+    prNumber: number,
+    agentResults: AgentResult[],
+    workDir: string,
+    timeoutMinutes?: number,
+    linterResults: LinterResult[] = [],
+    promptFile?: string,
+    promptExtra?: string,
+  ): Promise<ReviewResult> {
+    const allFindings: AgentFinding[] = agentResults.flatMap((r) => r.findings);
+    const allStrengths: ReviewStrength[] = agentResults.flatMap((r) => r.strengths);
+    const allRawLines: string[] = agentResults
+      .map((r) => r.rawOutput)
+      .filter((raw) => typeof raw === 'string' && raw.length > 0);
+    const failedAgents = agentResults.filter((r) => !r.success).length;
+    const totalFailedLines = agentResults.reduce((sum, r) => sum + (r.failedLines ?? 0), 0);
+    const allFailed = failedAgents === agentResults.length && agentResults.length > 0;
+
+    const dedupIssues = (issues: ReviewIssue[]): ReviewIssue[] => {
+      if (linterResults.length === 0) return issues;
+      return this.deduplicateAgainstLinters(issues, linterResults, workDir);
+    };
+
+    // Force a failed verdict when every agent failed, regardless of which
+    // consolidation path runs, so an unreviewed PR is never green-lit.
+    const forceFailedVerdict = (result: ReviewResult): ReviewResult => {
+      if (!allFailed) return result;
+      return {
+        ...result,
+        verdict: { ...result.verdict, ready: false, autoFixable: false },
+      };
+    };
+
+    const synthesisEnabled = this.config.multiAgent?.synthesis?.enabled !== false;
+    if (!synthesisEnabled || allFindings.length === 0) {
+      const reasoning = allFailed
+        ? 'All review agents failed'
+        : allFindings.length === 0
+          ? 'No issues found'
+          : 'Merged agent findings';
+      return forceFailedVerdict(
+        this.buildAgentFallbackResult(
+          dedupIssues(this.deduplicateAgentFindings(allFindings)),
+          allStrengths,
+          allRawLines,
+          totalFailedLines,
+          reasoning,
+          failedAgents,
+        ),
+      );
+    }
+
+    // Serialize per-agent findings (each issue carries its originating agent)
+    // and hand them to the synthesis agent for dedup, prioritization, and
+    // consolidated formatting.
+    const findingsJsonl = allFindings
+      .map((f) =>
+        JSON.stringify({
+          ...f,
+          agent: f.agent,
+          category: f.agent,
+        }),
+      )
+      .join('\n');
+    const synthesisPrompt = buildMultiAgentSynthesisPrompt(
+      {
+        projectContext: this.config.projectContext.description || undefined,
+        reviewPromptFile: promptFile,
+        reviewPromptExtra: promptExtra,
+      },
+      findingsJsonl,
+    );
+    const synthesisModelOverride = this.config.multiAgent?.synthesis?.model;
+    let synthesisModel = this.resolveModel('synthesisModel');
+    if (synthesisModelOverride) {
+      try {
+        validateModelString(synthesisModelOverride);
+        synthesisModel = synthesisModelOverride;
+      } catch (err) {
+        this.logger.warn(
+          `Synthesis model "${synthesisModelOverride}" is invalid, falling back to the synthesis/review model: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    const finalOutputPath = path.join(workDir, 'review-output.jsonl');
+    ensureOutputDir(finalOutputPath);
+
+    const synthesisResult = await runOpenCode(synthesisPrompt, {
+      model: synthesisModel,
+      timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+      workingDirectory: workDir,
+    }).catch((err: unknown) => {
+      this.logger.warn(
+        `Multi-agent synthesis run threw: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return {
+        success: false,
+        output: '',
+        durationMs: 0,
+        tokensUsed: 0,
+        promptTokens: undefined,
+        completionTokens: undefined,
+      };
+    });
+    await this.recordTelemetry(
+      prNumber,
+      synthesisResult.durationMs,
+      synthesisResult.tokensUsed,
+      synthesisResult,
+      synthesisModel,
+      workDir,
+    );
+
+    if (!synthesisResult.success) {
+      this.logger.warn('Multi-agent synthesis pass failed, falling back to merged agent results');
+      return forceFailedVerdict(
+        this.buildAgentFallbackResult(
+          dedupIssues(this.deduplicateAgentFindings(allFindings)),
+          allStrengths,
+          allRawLines,
+          totalFailedLines,
+          'Synthesis failed, using merged agent results',
+          failedAgents,
+        ),
+      );
+    }
+
+    try {
+      const parsed = await parseJsonlFile(finalOutputPath);
+      // Preserve per-agent strengths on the synthesis-success path by merging
+      // them (deduplicated by message) so agent-reported strengths survive
+      // regardless of which consolidation path runs.
+      const mergedStrengths = [...parsed.strengths, ...allStrengths].filter(
+        (s, i, arr) => arr.findIndex((x) => x.message === s.message) === i,
+      );
+      let finalResult: ReviewResult = {
+        ...parsed,
+        strengths: mergedStrengths,
+        ...(failedAgents > 0 ? { failedAgents } : {}),
+      };
+      if (linterResults.length > 0) {
+        const deduped = this.deduplicateAgainstLinters(parsed.issues, linterResults, workDir);
+        if (deduped.length < parsed.issues.length) {
+          finalResult = {
+            ...finalResult,
+            issues: deduped,
+            stats: {
+              total: deduped.length,
+              critical: deduped.filter((i) => i.severity === 'critical').length,
+              important: deduped.filter((i) => i.severity === 'important').length,
+              minor: deduped.filter((i) => i.severity === 'minor').length,
+            },
+          };
+        }
+      }
+      return forceFailedVerdict(finalResult);
+    } catch (err) {
+      this.logger.warn(
+        `Multi-agent synthesis output parse failed, falling back to merged agent results: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return forceFailedVerdict(
+        this.buildAgentFallbackResult(
+          dedupIssues(this.deduplicateAgentFindings(allFindings)),
+          allStrengths,
+          allRawLines,
+          totalFailedLines,
+          'Synthesis output parse failed, using merged agent results',
+          failedAgents,
+        ),
+      );
+    }
+  }
+
+  /**
+   * Deterministically deduplicate findings across agents. Two findings are
+   * considered the same when they share file, line, and message (case
+   * insensitive). When duplicates are found, the higher-confidence finding is
+   * kept; ties resolve to the higher severity. This runs as a pre-merge pass for
+   * fallback results and complements the synthesis agent's LLM dedup.
+   * @param findings - Raw findings from all specialized agents.
+   * @returns The deduplicated findings.
+   */
+  private deduplicateAgentFindings(findings: AgentFinding[]): AgentFinding[] {
+    const confidenceRank: Record<'high' | 'medium' | 'low', number> = {
+      high: 3,
+      medium: 2,
+      low: 1,
+    };
+    const seen = new Map<string, AgentFinding>();
+    for (const finding of findings) {
+      const messageKey = (finding.message || '').trim().toLowerCase();
+      const key = `${finding.file}:${finding.line}:${messageKey}`;
+      const existing = seen.get(key);
+      if (!existing) {
+        seen.set(key, finding);
+        continue;
+      }
+      const newConfidence = confidenceRank[finding.confidence ?? 'low'] ?? 1;
+      const existingConfidence = confidenceRank[existing.confidence ?? 'low'] ?? 1;
+      const newSeverity = severityRank(finding.severity);
+      const existingSeverity = severityRank(existing.severity);
+      if (
+        newConfidence > existingConfidence ||
+        (newConfidence === existingConfidence && newSeverity > existingSeverity)
+      ) {
+        seen.set(key, finding);
+      }
+    }
+    return [...seen.values()];
+  }
+
+  /**
+   * Build a fallback ReviewResult from merged agent findings when the synthesis
+   * agent is disabled or fails. Mirrors `buildFallbackResult` but attributes
+   * partial-failure counts to agents instead of batches, and reports the real
+   * malformed-line count instead of hardcoding 0.
+   * @param issues - Merged, deduplicated issues.
+   * @param strengths - Merged strengths.
+   * @param rawLines - Raw agent JSONL lines.
+   * @param failedLines - Number of malformed/parse-failed JSONL lines across all agents.
+   * @param reasoning - Verdict reasoning string.
+   * @param failedAgents - Number of agents that failed.
+   * @returns The fallback ReviewResult.
+   */
+  private buildAgentFallbackResult(
+    issues: ReviewIssue[],
+    strengths: ReviewStrength[],
+    rawLines: string[],
+    failedLines: number,
+    reasoning: string,
+    failedAgents = 0,
+  ): ReviewResult {
+    return {
+      summary:
+        issues.length > 0
+          ? `Found ${issues.length} issues across specialized agents`
+          : 'No issues found',
+      verdict: {
+        ready: issues.length === 0,
+        reasoning,
+        autoFixable: false,
+        confidence: 'medium' as const,
+      },
+      strengths,
+      issues,
+      stats: {
+        total: issues.length,
+        critical: issues.filter((i) => i.severity === 'critical').length,
+        important: issues.filter((i) => i.severity === 'important').length,
+        minor: issues.filter((i) => i.severity === 'minor').length,
+      },
+      rawLines,
+      failedLines,
+      failedAgents,
+    };
   }
 
   /**

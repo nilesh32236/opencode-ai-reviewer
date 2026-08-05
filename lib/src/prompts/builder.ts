@@ -26,7 +26,7 @@ const logger = new Logger('prompt-builder');
  * @param maxBytes - Maximum number of UTF-8 bytes allowed.
  * @returns The truncated string, or the original when it already fits.
  */
-function truncateUtf8Bytes(text: string, maxBytes: number): string {
+export function truncateUtf8Bytes(text: string, maxBytes: number): string {
   if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
   let sliceEnd = 0;
   let runningBytes = 0;
@@ -48,7 +48,7 @@ function truncateUtf8Bytes(text: string, maxBytes: number): string {
  * @returns The prompt, truncated at the byte cap with the truncation marker
  * appended when it exceeds the budget.
  */
-function capPromptLength(prompt: string): string {
+export function capPromptLength(prompt: string): string {
   const markerBytes = Buffer.byteLength(PROMPT_TRUNCATION_MARKER, 'utf8') + 1;
   const totalBytes = Buffer.byteLength(prompt, 'utf8');
   if (totalBytes <= MAX_PROMPT_BYTES) return prompt;
@@ -864,7 +864,15 @@ export function listAuditCategories(promptsDir?: string): string[] {
   return Array.from(categories).sort();
 }
 
-function buildBudgetBanner(budgetMode: ReviewBudgetMode, totalDiffLines?: number): string {
+/**
+ * Build the budget-mode banner instructing the model how to adapt its review
+ * depth for large diffs. Used by both the legacy review path and the
+ * multi-agent path.
+ * @param budgetMode - The active review budget mode ('summary' or 'split').
+ * @param totalDiffLines - Approximate total changed lines, when known.
+ * @returns The budget-mode banner string.
+ */
+export function buildBudgetBanner(budgetMode: ReviewBudgetMode, totalDiffLines?: number): string {
   const lineCount =
     totalDiffLines !== undefined ? `~${totalDiffLines} lines` : 'a very large number of lines';
   if (budgetMode === 'summary') {
@@ -996,6 +1004,79 @@ ${findingsJsonl}
 
 ## Output Format: JSON Lines
 ${buildOutputFormat()}`;
+}
+
+/**
+ * Build a multi-agent synthesis prompt that consolidates findings from
+ * specialized review agents (security, performance, quality, logic) into a
+ * single coherent final review. Instructs the synthesis agent to deduplicate
+ * overlapping findings across agents, prioritize by severity × confidence, and
+ * preserve each issue's originating category for downstream filtering.
+ *
+ * Custom review instructions are honored consistently with the specialized
+ * agents: a configured `reviewPromptFile` is loaded and prepended (mirroring
+ * `buildReviewPrompt`), and `reviewPromptExtra` is appended as additional
+ * instructions so a user's custom guidance applies to the consolidation pass as
+ * well as the agents that produced the findings.
+ *
+ * @param inputs - Configuration inputs including project context and optional
+ * custom review prompt file / extra instructions.
+ * @param findingsJsonl - JSONL text of per-agent findings, where each `issue`
+ * line carries an `agent` field identifying its originating specialized agent.
+ * @returns The assembled multi-agent synthesis prompt string.
+ */
+export function buildMultiAgentSynthesisPrompt(
+  inputs: PromptBuilderInputs,
+  findingsJsonl: string,
+): string {
+  const projectContext = inputs.projectContext || getDefaultProjectContext();
+  const sections: string[] = [];
+
+  if (inputs.reviewPromptFile) {
+    const customPrompt = loadPromptFile(inputs.reviewPromptFile);
+    if (customPrompt) {
+      sections.push(customPrompt);
+      sections.push('');
+    }
+  }
+
+  sections.push(`You are a Senior Code Reviewer tasked with synthesizing findings from specialized review agents into a final consolidated report.
+
+## Project Context
+${projectContext}
+
+## Agent Review Findings
+The following are findings from parallel specialized review agents (security, performance, code quality, and logic), each of which reviewed the same pull request with a single narrow focus. Your task is to:
+
+1. **Deduplicate** identical or overlapping findings across agents (same file, line, and message, or the same root cause described from different angles)
+2. **Prioritize** findings by severity × confidence (critical + high-confidence first, low-confidence minor overlaps can be dropped)
+3. **Consolidate** findings into a coherent overall summary and verdict
+4. Ensure the output strictly conforms to the JSON Lines schema
+
+### Agent Findings (JSONL, each issue tagged with its originating "agent"):
+${findingsJsonl}
+
+## Instructions
+- Review all findings and remove any duplicates (same file, line, and message)
+- Merge related findings into single, well-written issues
+- Prioritize: keep high-severity/high-confidence findings, collapse low-value overlaps
+- Preserve each issue's originating agent via the \`category\` field on every \`issue\` line (e.g. "security", "performance", "quality", "logic")
+- Write exactly ONE \`executive_summary\` line with purpose, riskLevel ("low"/"medium"/"high"), riskRationale, and breakingChanges (array of strings)
+- Write exactly ONE \`summary\` line with a brief overall assessment
+- Write exactly ONE \`verdict\` line with the final decision
+- Write zero or more \`strength\` and \`issue\` lines
+- Maintain severity categorization (critical, important, minor)
+
+## Output Format: JSON Lines
+${buildOutputFormat()}`);
+
+  if (inputs.reviewPromptExtra) {
+    sections.push('\n## Additional Instructions');
+    sections.push('');
+    sections.push(inputs.reviewPromptExtra);
+  }
+
+  return capPromptLength(sections.join('\n'));
 }
 
 function getDefaultProjectContext(): string {

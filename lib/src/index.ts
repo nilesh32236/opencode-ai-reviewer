@@ -45,6 +45,8 @@ export {
   emptyResult,
   parseJsonlFile,
   parseJsonlString,
+  parseAgentJsonlString,
+  normalizeAgentConfidence,
   buildInlineComments,
 } from './jsonl-parser.js';
 export type { InlineComment } from './jsonl-parser.js';
@@ -64,11 +66,21 @@ export {
   buildAuditPrompt,
   buildReplyPrompt,
   buildExplainPrompt,
+  buildSynthesisPrompt,
+  buildMultiAgentSynthesisPrompt,
   loadPromptFile,
   loadAuditCategoryPrompt,
   listAuditCategories,
 } from './prompts/builder.js';
-export { ReviewEngine } from './engine.js';
+export {
+  AGENT_PROMPT_BUILDERS,
+  buildSecurityPrompt,
+  buildPerformancePrompt,
+  buildQualityPrompt,
+  buildLogicPrompt,
+} from './agents/index.js';
+export type { AgentPromptContext } from './agents/index.js';
+export { ReviewEngine, AGENT_ORDER } from './engine.js';
 export { SetupEngine } from './setup/engine.js';
 export { CodebaseIndex } from './codebase-index/index.js';
 export { CodebaseIndexCache } from './codebase-index/cache.js';

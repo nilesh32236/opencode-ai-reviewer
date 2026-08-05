@@ -281,6 +281,57 @@ export const PluggableSubscriberConfigSchema = z.object({
 });
 
 /**
+ * Zod schema validating a single specialized agent's configuration.
+ * Per-agent model fields are intentionally stringly-typed (no provider/model
+ * regex) so a custom model id can never fail the whole config parse; model
+ * validity is enforced at dispatch time by the OpenCode CLI.
+ */
+export const MultiAgentAgentConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  model: z.string().optional(),
+  promptFile: z.string().optional(),
+});
+
+/** Known specialized-agent category keys accepted in the multiAgent.agents record. */
+const AGENT_CATEGORY_KEYS = ['security', 'performance', 'quality', 'logic'] as const;
+
+/**
+ * Zod schema validating the multi-agent review architecture configuration.
+ * Multi-agent mode is opt-in and non-critical. The `agents` record is keyed
+ * leniently (any string) and filtered to known categories in a transform so a
+ * single mistyped agent-category key (e.g. `secuirty:`) drops only the offending
+ * block instead of failing the whole parse — mirroring `validateConfig`'s skip
+ * behavior. The outer `.catch(...)` (mirroring `NotificationsConfigSchema`)
+ * still guards a fully malformed `multiAgent:` section so unrelated review
+ * settings are never silently discarded.
+ */
+export const MultiAgentConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    agents: z
+      .record(z.string(), z.unknown())
+      .transform((agents: Record<string, unknown>) => {
+        const filtered: Record<string, z.infer<typeof MultiAgentAgentConfigSchema>> = {};
+        for (const [key, value] of Object.entries(agents)) {
+          if (!(AGENT_CATEGORY_KEYS as readonly string[]).includes(key)) continue;
+          const parsed = MultiAgentAgentConfigSchema.safeParse(value);
+          if (parsed.success) {
+            filtered[key] = parsed.data;
+          }
+        }
+        return filtered;
+      })
+      .default({}),
+    synthesis: z
+      .object({
+        enabled: z.boolean().default(true),
+        model: z.string().optional(),
+      })
+      .default({ enabled: true }),
+  })
+  .catch({ enabled: false, agents: {}, synthesis: { enabled: true } });
+
+/**
  * Zod schema validating Slack incoming-webhook notification configuration.
  * Webhook URLs are intentionally lenient (plain strings) so a placeholder or
  * env-injected value in `.opencode-reviewer.yml` can never fail the whole
@@ -348,6 +399,7 @@ export const AgentConfigSchema = z.object({
   eventLogging: EventLoggingConfigSchema.default(EventLoggingConfigSchema.parse({})),
   eventSubscribers: z.array(PluggableSubscriberConfigSchema).default([]),
   notifications: NotificationsConfigSchema.default(NotificationsConfigSchema.parse({})),
+  multiAgent: MultiAgentConfigSchema.default(MultiAgentConfigSchema.parse({})),
 });
 
 // ─── Prompt Config Schema (YAML config file) ──────────────
@@ -464,4 +516,5 @@ export const PromptConfigSchema = z.object({
   eventLogging: EventLoggingConfigSchema.optional(),
   eventSubscribers: z.array(PluggableSubscriberConfigSchema).optional(),
   notifications: NotificationsConfigSchema.optional(),
+  multiAgent: MultiAgentConfigSchema.optional(),
 });
