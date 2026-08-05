@@ -1331,7 +1331,7 @@ export class ReviewEngine {
     // `.opencode/agent-<category>/batch-<idx>` output directory, so the agents
     // cannot collide; concurrency is bounded inside each agent by a per-agent
     // batch limit that keeps the aggregate under MAX_BATCH_CONCURRENCY.
-    const agentResults: AgentResult[] = await Promise.all(
+    const settled = await Promise.allSettled(
       categories.map((category) =>
         this.runAgentCategory(
           category,
@@ -1357,6 +1357,23 @@ export class ReviewEngine {
         ),
       ),
     );
+    const agentResults: AgentResult[] = settled.map((outcome, idx) => {
+      if (outcome.status === 'fulfilled') return outcome.value;
+      const category = categories[idx];
+      const message =
+        outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
+      this.logger.warn(`Agent "${category}" rejected: ${message}`);
+      return {
+        agent: category,
+        findings: [],
+        strengths: [],
+        rawOutput: '',
+        durationMs: 0,
+        tokensUsed: 0,
+        success: false,
+        error: message,
+      };
+    });
     for (const result of agentResults) {
       if (result.success) {
         this.logger.info(
@@ -1708,11 +1725,22 @@ export class ReviewEngine {
       parts.push('\n\n## Codebase Context (Cross-File Analysis)\n\n' + codebaseIndexContext);
     }
     if (deltaContext) {
+      // Mirror the legacy buildReviewPrompt cap: truncate the delta diff to
+      // 5000 chars on a hunk or newline boundary so a large diff cannot push
+      // the later enrichment sections past the agent prompt length cap.
+      let truncatedDelta = deltaContext;
+      if (deltaContext.length > 5000) {
+        const slice = deltaContext.slice(0, 5000);
+        const lastHunk = slice.lastIndexOf('\n@@');
+        const lastNewline = slice.lastIndexOf('\n');
+        const boundary = lastHunk > 0 ? lastHunk : lastNewline > 0 ? lastNewline : 5000;
+        truncatedDelta = `${slice.slice(0, boundary)}\n... (truncated)`;
+      }
       parts.push(
         '\n\n## Incremental Review (Delta Changes)\n\n' +
           'This is a follow-up review for new commits pushed since the last review pass.\n\n' +
           '```diff\n' +
-          deltaContext +
+          truncatedDelta +
           '\n```',
       );
     }
@@ -1857,8 +1885,18 @@ export class ReviewEngine {
       },
       findingsJsonl,
     );
-    const synthesisModel =
-      this.config.multiAgent?.synthesis?.model ?? this.resolveModel('synthesisModel');
+    const synthesisModelOverride = this.config.multiAgent?.synthesis?.model;
+    let synthesisModel = this.resolveModel('synthesisModel');
+    if (synthesisModelOverride) {
+      try {
+        validateModelString(synthesisModelOverride);
+        synthesisModel = synthesisModelOverride;
+      } catch (err) {
+        this.logger.warn(
+          `Synthesis model "${synthesisModelOverride}" is invalid, falling back to the synthesis/review model: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
 
     const finalOutputPath = path.join(workDir, 'review-output.jsonl');
     ensureOutputDir(finalOutputPath);
@@ -1867,6 +1905,18 @@ export class ReviewEngine {
       model: synthesisModel,
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory: workDir,
+    }).catch((err: unknown) => {
+      this.logger.warn(
+        `Multi-agent synthesis run threw: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return {
+        success: false,
+        output: '',
+        durationMs: 0,
+        tokensUsed: 0,
+        promptTokens: undefined,
+        completionTokens: undefined,
+      };
     });
     await this.recordTelemetry(
       prNumber,

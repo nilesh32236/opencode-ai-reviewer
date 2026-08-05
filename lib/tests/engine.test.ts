@@ -693,6 +693,65 @@ describe('ReviewEngine', () => {
         expect(capturedModel).toBe(DEFAULT_CONFIG.reviewModel);
       });
 
+      it('deduplicates overlapping findings from two concurrent agents, keeping the higher confidence', async () => {
+        const eng = new ReviewEngine(
+          makeConfig({
+            multiAgent: {
+              enabled: true,
+              agents: {
+                security: { enabled: true },
+                performance: { enabled: false },
+                quality: { enabled: false },
+                logic: { enabled: true },
+              },
+              synthesis: { enabled: false },
+            },
+          }),
+          mockAdapter,
+        );
+        const securityOutput = [
+          JSON.stringify({ type: 'summary', text: 'security pass' }),
+          JSON.stringify({
+            type: 'issue',
+            severity: 'important',
+            file: 'src/test.ts',
+            line: 42,
+            message: 'SQL injection risk',
+            agent: 'security',
+            confidence: 'medium',
+          }),
+        ].join('\n');
+        const logicOutput = [
+          JSON.stringify({ type: 'summary', text: 'logic pass' }),
+          JSON.stringify({
+            type: 'issue',
+            severity: 'critical',
+            file: 'src/test.ts',
+            line: 42,
+            message: 'SQL injection risk',
+            agent: 'logic',
+            confidence: 'high',
+          }),
+        ].join('\n');
+        mockRunOpenCode.mockResolvedValue({
+          success: true,
+          output: '',
+          durationMs: 500,
+          tokensUsed: 10,
+        });
+        vi.mocked(fs.promises.readFile).mockImplementation(async (path: string) => {
+          return path.includes('agent-logic') ? logicOutput : securityOutput;
+        });
+
+        const result = await eng.reviewPR(agentPr);
+
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(2); // security + logic, no synthesis
+        expect(result.issues).toHaveLength(1);
+        expect(result.issues[0].message).toBe('SQL injection risk');
+        expect(result.issues[0].agent).toBe('logic');
+        expect(result.issues[0].confidence).toBe('high');
+      });
+
       it('forwards open human-thread context into the agent prompt', async () => {
         const eng = makeMultiAgentEngine({ enabled: false });
         vi.mocked(mockAdapter.getOpenHumanThreads).mockResolvedValue(

@@ -10,12 +10,20 @@ import type { AgentCategory } from '../types/index.js';
 import { sanitizePromptInput } from '../utils/prompt-sanitizer.js';
 import type { AgentPromptContext } from './types.js';
 
-/** Role line injected at the top of every agent prompt. */
+/**
+ * Build the role line injected at the top of every agent prompt.
+ * @param category - The agent category defining the specialization.
+ * @returns The role line for the agent.
+ */
 function buildRole(category: AgentCategory): string {
   return `You are the ${capitalize(category)} Review Agent, a Senior Code Reviewer specializing in ${category}. Review the pull request below with a deep focus on ${category}. Do NOT spread your attention across other review categories — concentrate exclusively on your specialization and report only findings that fall within it.`;
 }
 
-/** Domain-specific "what to check" focus for each agent. */
+/**
+ * Build the domain-specific "what to check" focus section for an agent.
+ * @param category - The agent category selecting the focus instructions.
+ * @returns The focus section for the agent.
+ */
 function buildFocus(category: AgentCategory): string {
   switch (category) {
     case 'security':
@@ -67,7 +75,11 @@ Check for:
   }
 }
 
-/** Output format section shared by every agent prompt. */
+/**
+ * Build the JSON Lines output-format section shared by every agent prompt.
+ * @param agent - The agent category that will author the JSONL output.
+ * @returns The output-format section for the agent.
+ */
 function buildAgentOutputFormat(agent: AgentCategory): string {
   return `## Output Format: JSON Lines
 

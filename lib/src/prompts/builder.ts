@@ -864,6 +864,14 @@ export function listAuditCategories(promptsDir?: string): string[] {
   return Array.from(categories).sort();
 }
 
+/**
+ * Build the budget-mode banner instructing the model how to adapt its review
+ * depth for large diffs. Used by both the legacy review path and the
+ * multi-agent path.
+ * @param budgetMode - The active review budget mode ('summary' or 'split').
+ * @param totalDiffLines - Approximate total changed lines, when known.
+ * @returns The budget-mode banner string.
+ */
 export function buildBudgetBanner(budgetMode: ReviewBudgetMode, totalDiffLines?: number): string {
   const lineCount =
     totalDiffLines !== undefined ? `~${totalDiffLines} lines` : 'a very large number of lines';
@@ -1068,7 +1076,7 @@ ${buildOutputFormat()}`);
     sections.push(inputs.reviewPromptExtra);
   }
 
-  return sections.join('\n');
+  return capPromptLength(sections.join('\n'));
 }
 
 function getDefaultProjectContext(): string {

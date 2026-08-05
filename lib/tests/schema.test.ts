@@ -119,6 +119,7 @@ describe('MultiAgentConfigSchema', () => {
       agents: { security: {} },
     });
     expect(result.enabled).toBe(true);
+    expect(result.agents?.security?.enabled).toBe(true);
   });
 });
 

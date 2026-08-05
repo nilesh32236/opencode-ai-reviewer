@@ -95,8 +95,8 @@ learning:
 # by the synthesis agent into one final review.
 #
 # Agents run concurrently (each namespaced under .opencode/agent-<category>/), and
-# the budget-mode banner (review.reviewBudget.summary/splitThreshold) is applied to
-# each agent prompt so large-PR cost adaptation matches the legacy path.
+# the budget-mode banner (review.budget.summaryThreshold / review.budget.splitThreshold)
+# is applied to each agent prompt so large-PR cost adaptation matches the legacy path.
 # multiAgent:
 #   enabled: true
 #   agents:

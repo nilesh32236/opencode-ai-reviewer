@@ -178,7 +178,7 @@ multiAgent:
       expect(config!.review?.systemPrompt).toBe('still loaded');
       expect(config!.multiAgent?.enabled).toBe(true);
       expect(config!.multiAgent?.agents?.security?.enabled).toBe(true);
-      expect(config!.multiAgent?.agents?.secuirty).toBeUndefined();
+      expect('secuirty' in (config!.multiAgent?.agents ?? {})).toBe(false);
     });
   });
 
@@ -785,7 +785,7 @@ multiAgent:
       } as never);
       expect(result.multiAgent?.enabled).toBe(true);
       expect(result.multiAgent?.agents?.security?.enabled).toBe(true);
-      expect(result.multiAgent?.agents?.bogus).toBeUndefined();
+      expect('bogus' in (result.multiAgent?.agents ?? {})).toBe(false);
     });
 
     it('applies defaults to partial agent configs', () => {

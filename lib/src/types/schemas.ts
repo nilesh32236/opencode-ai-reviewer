@@ -309,12 +309,14 @@ export const MultiAgentConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
     agents: z
-      .record(MultiAgentAgentConfigSchema)
-      .transform((agents: Record<string, z.infer<typeof MultiAgentAgentConfigSchema>>) => {
+      .record(z.string(), z.unknown())
+      .transform((agents: Record<string, unknown>) => {
         const filtered: Record<string, z.infer<typeof MultiAgentAgentConfigSchema>> = {};
         for (const [key, value] of Object.entries(agents)) {
-          if ((AGENT_CATEGORY_KEYS as readonly string[]).includes(key)) {
-            filtered[key] = value;
+          if (!(AGENT_CATEGORY_KEYS as readonly string[]).includes(key)) continue;
+          const parsed = MultiAgentAgentConfigSchema.safeParse(value);
+          if (parsed.success) {
+            filtered[key] = parsed.data;
           }
         }
         return filtered;
