@@ -292,22 +292,31 @@ export const MultiAgentAgentConfigSchema = z.object({
   promptFile: z.string().optional(),
 });
 
-/** Zod schema validating the multi-agent review architecture configuration. */
-export const MultiAgentConfigSchema = z.object({
-  enabled: z.boolean().default(false),
-  agents: z
-    .record(
-      z.enum(['security', 'performance', 'quality', 'logic']),
-      MultiAgentAgentConfigSchema,
-    )
-    .default({}),
-  synthesis: z
-    .object({
-      enabled: z.boolean().default(true),
-      model: z.string().optional(),
-    })
-    .default({ enabled: true }),
-});
+/**
+ * Zod schema validating the multi-agent review architecture configuration.
+ * Multi-agent mode is opt-in and non-critical, so the whole block is wrapped in
+ * `.catch(...)` (mirroring `NotificationsConfigSchema`): a single mistyped
+ * agent-category key (e.g. `secuirty:`) must degrade to the defaults instead of
+ * failing the entire config parse and silently discarding unrelated review
+ * settings.
+ */
+export const MultiAgentConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    agents: z
+      .record(
+        z.enum(['security', 'performance', 'quality', 'logic']),
+        MultiAgentAgentConfigSchema,
+      )
+      .default({}),
+    synthesis: z
+      .object({
+        enabled: z.boolean().default(true),
+        model: z.string().optional(),
+      })
+      .default({ enabled: true }),
+  })
+  .catch({ enabled: false, agents: {}, synthesis: { enabled: true } });
 
 /**
  * Zod schema validating Slack incoming-webhook notification configuration.

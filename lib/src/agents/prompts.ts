@@ -6,12 +6,13 @@
 // each `issue` so downstream parsing and synthesis can attribute findings.
 
 import type { AgentCategory } from '../types/index.js';
+import { loadPromptFile } from '../prompts/builder.js';
 import { sanitizePromptInput } from '../utils/prompt-sanitizer.js';
 import type { AgentPromptContext } from './types.js';
 
 /** Role line injected at the top of every agent prompt. */
-function buildRole(category: AgentCategory, specialization: string): string {
-  return `You are the ${capitalize(category)} Review Agent, a Senior Code Reviewer specializing in ${specialization}. Review the pull request below with a deep focus on ${specialization}. Do NOT spread your attention across other review categories — concentrate exclusively on your specialization and report only findings that fall within it.`;
+function buildRole(category: AgentCategory): string {
+  return `You are the ${capitalize(category)} Review Agent, a Senior Code Reviewer specializing in ${category}. Review the pull request below with a deep focus on ${category}. Do NOT spread your attention across other review categories — concentrate exclusively on your specialization and report only findings that fall within it.`;
 }
 
 /** Domain-specific "what to check" focus for each agent. */
@@ -116,26 +117,45 @@ const AGENT_TAIL = `## Calibration
 
 /**
  * Compose a specialized agent prompt from the role, focus, context, and the
- * agent-specific JSONL output format.
+ * agent-specific JSONL output format. When a custom prompt file is configured
+ * (per-agent `multiAgent.agents.<category>.promptFile`, or the review-level
+ * `promptFile`), it is loaded and prepended before the agent's focus sections,
+ * mirroring `buildReviewPrompt`.
  * @param context - The agent prompt context (inputs + PR context string).
  * @param category - The agent category being run.
  * @returns The assembled agent prompt string.
  */
 function buildAgentPrompt(context: AgentPromptContext, category: AgentCategory): string {
   const prContext = sanitizePromptInput(context.prContext, { maxLength: 50_000 });
-  const sections: string[] = [
-    buildRole(category, category),
-    '',
-    '## PR & Issue Context',
-    '',
-    prContext,
-    '',
-    buildFocus(category),
-    '',
-    buildAgentOutputFormat(category),
-    '',
-    AGENT_TAIL,
-  ];
+  const sections: string[] = [];
+
+  if (context.inputs.reviewPromptFile) {
+    const customPrompt = loadPromptFile(context.inputs.reviewPromptFile);
+    if (customPrompt) {
+      sections.push(customPrompt);
+      sections.push('');
+    }
+  }
+
+  sections.push(buildRole(category));
+  sections.push('');
+  sections.push('## PR & Issue Context');
+  sections.push('');
+  sections.push(prContext);
+
+  if (context.inputs.projectContext) {
+    sections.push('');
+    sections.push('## Project Context');
+    sections.push('');
+    sections.push(context.inputs.projectContext);
+  }
+
+  sections.push('');
+  sections.push(buildFocus(category));
+  sections.push('');
+  sections.push(buildAgentOutputFormat(category));
+  sections.push('');
+  sections.push(AGENT_TAIL);
 
   if (context.inputs.reviewPromptExtra) {
     sections.push('');

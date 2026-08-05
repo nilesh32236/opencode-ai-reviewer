@@ -809,6 +809,8 @@ export class ReviewEngine {
         baseContext,
         mcpDocs,
         workDir,
+        promptFile,
+        promptExtra,
         timeoutMinutes,
         tokenBudgetConfig,
         blameData,
@@ -1253,6 +1255,8 @@ export class ReviewEngine {
    * @param baseContext - The assembled PR/base context string (MCP + open threads).
    * @param mcpDocs - MCP library documentation ('' when disabled/failed).
    * @param workDir - Working directory the review runs in.
+   * @param promptFile - Optional custom review prompt file path.
+   * @param promptExtra - Optional extra instructions appended to each agent prompt.
    * @param timeoutMinutes - Optional per-run timeout override.
    * @param tokenBudgetConfig - Optional token budget config for per-file context caps.
    * @param blameData - Optional git blame annotations keyed by file path.
@@ -1263,7 +1267,7 @@ export class ReviewEngine {
    * @param totalDiffLines - Optional total diff line count.
    * @param lessons - Optional learning-store lessons.
    * @param falsePositiveRules - Optional false-positive suppression rules.
-   * @param deltaContext - Optional incremental (delta) review context.
+   * @param deltaContext - Optional incremental review context.
    * @param previousFindings - Optional findings from previous fix iterations.
    * @param previousBotComments - Optional previous bot review comments.
    * @returns The consolidated, verified ReviewResult.
@@ -1274,6 +1278,8 @@ export class ReviewEngine {
     baseContext: string,
     mcpDocs: string,
     workDir: string,
+    promptFile?: string,
+    promptExtra?: string,
     timeoutMinutes?: number,
     tokenBudgetConfig?: TokenBudgetConfig,
     blameData?: Map<string, Map<number, BlameInfo>>,
@@ -1311,6 +1317,8 @@ export class ReviewEngine {
         baseContext,
         mcpDocs,
         workDir,
+        promptFile,
+        promptExtra,
         timeoutMinutes,
         tokenBudgetConfig,
         blameData,
@@ -1363,6 +1371,9 @@ export class ReviewEngine {
    * @param baseContext - The assembled PR/base context string.
    * @param mcpDocs - MCP library documentation ('' when disabled/failed).
    * @param workDir - Working directory the review runs in.
+   * @param promptFile - Optional review-level custom prompt file path (the per-agent
+   * `multiAgent.agents.<category>.promptFile` takes precedence when set).
+   * @param promptExtra - Optional extra instructions appended to the agent prompt.
    * @param timeoutMinutes - Optional per-run timeout override.
    * @param tokenBudgetConfig - Optional token budget config.
    * @param blameData - Optional git blame annotations keyed by file path.
@@ -1382,6 +1393,8 @@ export class ReviewEngine {
     baseContext: string,
     mcpDocs: string,
     workDir: string,
+    promptFile?: string,
+    promptExtra?: string,
     timeoutMinutes?: number,
     tokenBudgetConfig?: TokenBudgetConfig,
     blameData?: Map<string, Map<number, BlameInfo>>,
@@ -1402,7 +1415,7 @@ export class ReviewEngine {
       | MultiAgentAgentConfig
       | undefined;
     const model = this.resolveAgentModel(category);
-    const promptFile = agentConfig?.promptFile;
+    const agentPromptFile = agentConfig?.promptFile;
     const batchSize = this.config.batchSize || 3;
 
     const fileBatches: Array<(typeof files)[number][]> = [];
@@ -1452,8 +1465,8 @@ export class ReviewEngine {
       const agentContext: AgentPromptContext = {
         inputs: {
           projectContext: this.config.projectContext.description || undefined,
-          reviewPromptFile: promptFile,
-          reviewPromptExtra: undefined,
+          reviewPromptFile: agentPromptFile ?? promptFile,
+          reviewPromptExtra: promptExtra,
         },
         prContext: this.buildAgentBatchContext(
           batchContext,

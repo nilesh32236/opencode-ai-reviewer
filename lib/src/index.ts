@@ -45,7 +45,6 @@ export {
   emptyResult,
   parseJsonlFile,
   parseJsonlString,
-  parseAgentJsonlFile,
   parseAgentJsonlString,
   normalizeAgentConfidence,
   buildInlineComments,
@@ -80,7 +79,7 @@ export {
   buildQualityPrompt,
   buildLogicPrompt,
 } from './agents/index.js';
-export type { AgentPromptContext, SpecializedAgent, AgentRunner } from './agents/index.js';
+export type { AgentPromptContext } from './agents/index.js';
 export { ReviewEngine, AGENT_ORDER } from './engine.js';
 export { SetupEngine } from './setup/engine.js';
 export { CodebaseIndex } from './codebase-index/index.js';

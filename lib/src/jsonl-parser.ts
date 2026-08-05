@@ -214,34 +214,6 @@ export function parseAgentJsonlString(content: string, agent: AgentCategory): Ag
 }
 
 /**
- * Parse a JSONL file containing a specialized agent's review findings into an
- * AgentResult. Returns an unsuccessful AgentResult when the file cannot be read.
- * @param filePath - Path to the agent's JSONL output file.
- * @param agent - The agent category that produced this output.
- * @returns The structured AgentResult (success: false when the file is missing).
- */
-export async function parseAgentJsonlFile(
-  filePath: string,
-  agent: AgentCategory,
-): Promise<AgentResult> {
-  try {
-    const content = await fs.readFile(path.resolve(filePath), 'utf-8');
-    return parseAgentJsonlString(content, agent);
-  } catch (err) {
-    return {
-      agent,
-      findings: [],
-      strengths: [],
-      rawOutput: '',
-      durationMs: 0,
-      tokensUsed: 0,
-      success: false,
-      error: err instanceof Error ? err.message : String(err),
-    };
-  }
-}
-
-/**
  * Incremental JSONL parser state shared by `parseJsonlFile` and
  * `parseJsonlString`. Accepted lines are fed in via {@link addLine} — trimming,
  * blank/fence skipping, and finding validation happen per line — and the
