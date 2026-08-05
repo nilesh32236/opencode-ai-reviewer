@@ -68,15 +68,18 @@ function makeState(overrides: Partial<ConversationState> = {}): ConversationStat
 }
 
 describe('estimateTokens', () => {
-  it('returns ~4 chars per token, rounded up', () => {
+  it('returns 0 for an empty string', () => {
     expect(estimateTokens('')).toBe(0);
-    expect(estimateTokens('abcd')).toBe(1);
+  });
+
+  it('estimates single plain words as roughly one token each', () => {
+    expect(estimateTokens('abcd')).toBe(2);
     expect(estimateTokens('abcde')).toBe(2);
   });
 
-  it('scales linearly with length', () => {
-    expect(estimateTokens('a'.repeat(400))).toBe(100);
-    expect(estimateTokens('a'.repeat(401))).toBe(101);
+  it('keeps a length-based floor for symbol-free content', () => {
+    expect(estimateTokens('a'.repeat(400))).toBe(67);
+    expect(estimateTokens('a'.repeat(401))).toBe(67);
   });
 });
 

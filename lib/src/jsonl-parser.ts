@@ -435,10 +435,13 @@ export function buildInlineComments(
     });
 }
 
-// Common code indicators for heuristics
-const CODE_PATTERNS = [
+// Declaration keywords that strongly indicate code when present on their own.
+const STRONG_KEYWORD_PATTERN =
+  /^(const|let|var|import|export|return|if|else|for|while|async|await|function|class|interface|type|enum)\s/;
+
+// Weak code indicators that can also appear in natural language.
+const WEAK_CODE_PATTERNS = [
   /[{};()=]/, // Syntax characters
-  /^(const|let|var|import|export|return|if|else|for|while|async|await|function|class)\s/,
   /^\s*\/\//, // Comments
   /\.\w+\(/, // Method calls
   /=>\s*/, // Arrow functions
@@ -448,10 +451,18 @@ const CODE_PATTERNS = [
 
 /**
  * Heuristic to determine if a suggestion string looks like code rather than
- * a natural language description. Checks for common code patterns.
+ * a natural language description. A suggestion is treated as code when at
+ * least two code patterns match, or when exactly one pattern matches and it
+ * is a strong declaration-keyword pattern. A single weak symbol match (for
+ * example parentheses) is insufficient on its own.
  * @param suggestion - The suggestion string to evaluate.
  * @returns True if the suggestion contains code-like patterns.
  */
 function looksLikeCode(suggestion: string): boolean {
-  return CODE_PATTERNS.some((p) => p.test(suggestion));
+  const strongKeywordMatch = STRONG_KEYWORD_PATTERN.test(suggestion);
+  let matchCount = strongKeywordMatch ? 1 : 0;
+  for (const pattern of WEAK_CODE_PATTERNS) {
+    if (pattern.test(suggestion)) matchCount++;
+  }
+  return matchCount >= 2 || (matchCount === 1 && strongKeywordMatch);
 }

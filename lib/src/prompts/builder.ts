@@ -2,8 +2,21 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as core from '@actions/core';
 import type { PreviousFindingIteration, ReviewBudgetMode, ReviewIssue } from '../types/index.js';
+import { Logger } from '../utils/logger.js';
+import { sanitizePromptInput } from '../utils/prompt-sanitizer.js';
 import { getLanguagePrompts } from './language/index.js';
 import type { SupportedLanguage } from './language/index.js';
+
+const MAX_PROMPT_BYTES = 200 * 1024;
+const PROMPT_TRUNCATION_MARKER = '... [prompt truncated at 200KB cap]';
+const logger = new Logger('prompt-builder');
+
+function capPromptLength(prompt: string): string {
+  if (prompt.length <= MAX_PROMPT_BYTES) return prompt;
+  logger.warn(`Review prompt exceeds ${MAX_PROMPT_BYTES} byte cap, truncating tail`);
+  const budget = MAX_PROMPT_BYTES - PROMPT_TRUNCATION_MARKER.length - 1;
+  return `${prompt.slice(0, budget)}\n${PROMPT_TRUNCATION_MARKER}`;
+}
 
 /** Input parameters for building a review prompt. */
 export interface PromptBuilderInputs {
@@ -78,7 +91,7 @@ export function buildReviewPrompt(
       const sections: string[] = [customPrompt];
       sections.push('\n## PR & Issue Context');
       sections.push('');
-      sections.push(prContext);
+      sections.push(sanitizePromptInput(prContext, { maxLength: 50_000 }));
       if (blameAware) {
         sections.push(buildBlameAwarenessSection());
       }
@@ -96,7 +109,7 @@ export function buildReviewPrompt(
       if (effectiveBudgetMode && effectiveBudgetMode !== 'full') {
         sections.push('\n' + buildBudgetBanner(effectiveBudgetMode, effectiveTotalDiffLines));
       }
-      return sections.join('\n');
+      return capPromptLength(sections.join('\n'));
     }
   }
 
@@ -109,7 +122,7 @@ export function buildReviewPrompt(
 
   sections.push('\n## PR & Issue Context');
   sections.push('');
-  sections.push(prContext);
+  sections.push(sanitizePromptInput(prContext, { maxLength: 50_000 }));
 
   if (deltaCtx) {
     sections.push('\n## Incremental Review (Delta Changes)');
@@ -321,7 +334,10 @@ export function buildReviewPrompt(
     sections.push('');
     for (const comment of prevBotComments) {
       const location = comment.line != null ? `${comment.file}:${comment.line}` : comment.file;
-      sections.push(`- **${location}** — ${comment.body.split('\n')[0].substring(0, 200)}`);
+      const snippet = sanitizePromptInput(comment.body.split('\n')[0].substring(0, 200), {
+        maxLength: 50_000,
+      });
+      sections.push(`- **${location}** — ${snippet}`);
     }
     sections.push('');
     sections.push(
@@ -362,7 +378,7 @@ export function buildReviewPrompt(
     sections.push(inputs.reviewPromptExtra);
   }
 
-  return sections.join('\n');
+  return capPromptLength(sections.join('\n'));
 }
 
 /**
