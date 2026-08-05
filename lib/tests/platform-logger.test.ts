@@ -3,8 +3,10 @@ import {
   ConsolePlatformLogger,
   GitHubActionsPlatformLogger,
   NullPlatformLogger,
+  createConsolePlatformLogger,
   createNullPlatformLogger,
   createPlatformLogger,
+  getPlatformLoggerFactory,
   setPlatformLoggerFactory,
 } from '../src/utils/platform-logger.js';
 
@@ -121,9 +123,19 @@ describe('NullPlatformLogger', () => {
 });
 
 describe('createPlatformLogger', () => {
+  afterEach(() => {
+    setPlatformLoggerFactory(createConsolePlatformLogger);
+  });
+
   it('uses the configured factory', () => {
+    const original = getPlatformLoggerFactory();
     setPlatformLoggerFactory((context, level) => new NullPlatformLogger(context, level));
     const logger = createPlatformLogger('ctx');
     expect(logger).toBeInstanceOf(NullPlatformLogger);
+    expect(getPlatformLoggerFactory()).not.toBe(original);
+  });
+
+  it('restores the default factory after the configured factory is replaced', () => {
+    expect(getPlatformLoggerFactory()).toBe(createConsolePlatformLogger);
   });
 });

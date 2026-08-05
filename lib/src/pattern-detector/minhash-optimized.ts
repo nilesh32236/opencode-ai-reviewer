@@ -317,11 +317,18 @@ export function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
 
 /**
  * Jaccard similarity with early termination.
- * Stops early if the maximum possible similarity is below the threshold.
+ * Stops early once the worst-case similarity (no further matches) is at least
+ * the threshold. The returned value on the early-exit path is a lower bound in
+ * [threshold, exact] — never above the exact score — which is safe for
+ * threshold decisions but is not the exact similarity; callers that need the
+ * precise value should use {@link jaccardSimilarity}.
+ * Note: two empty sets return 0 (matching `jaccardSimilarity`), even though 0
+ * is below any positive threshold.
  * @param a - First set.
  * @param b - Second set.
  * @param threshold - Minimum similarity threshold.
- * @returns The Jaccard similarity score, or -1 if below threshold.
+ * @returns A similarity score in [threshold, exact] when above the threshold,
+ * or -1 if below it.
  */
 export function jaccardSimilarityWithThreshold(
   a: Set<string>,

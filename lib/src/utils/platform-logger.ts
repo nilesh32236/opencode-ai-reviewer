@@ -9,20 +9,11 @@
  */
 
 import type { LogContext, LogLevel } from './logger.js';
+import { LOG_LEVEL_PRIORITY } from './logger.js';
 import { sanitizeString } from './sanitize.js';
 
 /** Shape of the optional `@actions/core` module used for GitHub Actions output. */
 type GitHubCoreModule = typeof import('@actions/core');
-
-/** Numeric ordering of log levels used for level comparisons. */
-const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
-  trace: -1,
-  debug: 0,
-  info: 1,
-  warn: 2,
-  error: 3,
-  fatal: 4,
-};
 
 /**
  * Abstract logger interface for platform-agnostic logging.
@@ -193,7 +184,7 @@ abstract class BasePlatformLogger implements PlatformLogger {
   ): string {
     const timestamp = new Date().toISOString();
     const contextStr = this.formatContext(context);
-    const dataStr = data ? ` ${this.formatData(data)}` : '';
+    const dataStr = data !== undefined ? ` ${this.formatData(data)}` : '';
     return `[${timestamp}] [${level.toUpperCase()}] [${this.name}]${contextStr} ${message}${dataStr}`;
   }
 

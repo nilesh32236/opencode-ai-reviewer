@@ -62,7 +62,11 @@ export interface LogContext {
   [key: string]: unknown;
 }
 
-const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
+/**
+ * Numeric ordering of log levels used for level filtering and comparison.
+ * Single source of truth shared with the platform loggers.
+ */
+export const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
   trace: -1,
   debug: 0,
   info: 1,

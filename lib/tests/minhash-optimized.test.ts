@@ -40,6 +40,8 @@ describe('jaccardSimilarityWithThreshold', () => {
   });
 
   it('handles empty sets and near-1 thresholds without crashing', () => {
+    // Two empty sets return 0 (matching jaccardSimilarity's 0/0 convention),
+    // which is below any positive threshold — documented in the function JSDoc.
     expect(jaccardSimilarityWithThreshold(new Set(), new Set(), 0.9)).toBe(0);
     const a = new Set(['foo', 'bar']);
     expect(jaccardSimilarityWithThreshold(a, new Set(), 0.9)).toBe(-1);
