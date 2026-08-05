@@ -53,9 +53,28 @@ function truncationSuffix(maxLength: number): string {
   return `… (truncated at ${maxLength} chars)`;
 }
 
+/**
+ * Strip C0 control characters and DEL (U+007F), preserving tab (`\t`) and
+ * newline (`\n`). The common path — input with no control characters — returns
+ * the original string without allocating, so large contexts (e.g. multi-file
+ * PR diffs) are not copied character-by-character.
+ * @param text - The string to strip.
+ * @returns The string with disallowed control characters removed.
+ */
 function stripControlCharacters(text: string): string {
-  const out: string[] = [];
+  let first = -1;
   for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) {
+      if (code !== 0x09 && code !== 0x0a) {
+        first = i;
+        break;
+      }
+    }
+  }
+  if (first === -1) return text;
+  const out: string[] = [text.slice(0, first)];
+  for (let i = first; i < text.length; i++) {
     const code = text.charCodeAt(i);
     const isTabOrNewline = code === 0x09 || code === 0x0a;
     const isC0OrDel = code < 0x20 || code === 0x7f;
