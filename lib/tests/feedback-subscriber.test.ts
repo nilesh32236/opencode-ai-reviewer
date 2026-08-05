@@ -399,14 +399,14 @@ describe('FeedbackSubscriber', () => {
   });
 
   it('marks only the finding matching the comment path/line', async () => {
-    const _matchingId = await store.recordFinding({
+    const matchingId = await store.recordFinding({
       prNumber: 1,
       type: 'issue',
       message: 'matching',
       file: 'src/match.ts',
       line: 42,
     });
-    const _unrelatedId = await store.recordFinding({
+    const unrelatedId = await store.recordFinding({
       prNumber: 1,
       type: 'issue',
       message: 'unrelated',
@@ -434,24 +434,28 @@ describe('FeedbackSubscriber', () => {
     // on `src/other.ts` is NOT marked, even though both exist for the same PR.
     const breakdown = await store.getFeedbackBreakdown();
     expect(breakdown.disputedCount).toBe(1);
+    const matchingFeedback = await store.getFeedbackForFinding(matchingId);
+    expect(matchingFeedback.some((f) => f.signalType === 'disputed_comment')).toBe(true);
+    const unrelatedFeedback = await store.getFeedbackForFinding(unrelatedId);
+    expect(unrelatedFeedback).toHaveLength(0);
   });
 
   it('matches all findings on the file when line is absent (file-only scope)', async () => {
-    await store.recordFinding({
+    const anyAId = await store.recordFinding({
       prNumber: 1,
       type: 'issue',
       message: 'a',
       file: 'src/any.ts',
       line: 5,
     });
-    await store.recordFinding({
+    const anyBId = await store.recordFinding({
       prNumber: 1,
       type: 'issue',
       message: 'b',
       file: 'src/any.ts',
       line: 200,
     });
-    await store.recordFinding({
+    const otherId = await store.recordFinding({
       prNumber: 1,
       type: 'issue',
       message: 'unrelated file',
@@ -476,6 +480,14 @@ describe('FeedbackSubscriber', () => {
 
     const breakdown = await store.getFeedbackBreakdown();
     expect(breakdown.disputedCount).toBe(2);
+    // Both findings on the referenced file are disputed; the finding on the
+    // other file is not.
+    for (const id of [anyAId, anyBId]) {
+      const feedback = await store.getFeedbackForFinding(id);
+      expect(feedback.some((f) => f.signalType === 'disputed_comment')).toBe(true);
+    }
+    const otherFeedback = await store.getFeedbackForFinding(otherId);
+    expect(otherFeedback).toHaveLength(0);
   });
 
   it('does not consume the debounce window for an unscoped dispute (reprocessing is allowed)', async () => {

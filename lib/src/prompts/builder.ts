@@ -28,15 +28,15 @@ const logger = new Logger('prompt-builder');
  */
 function truncateUtf8Bytes(text: string, maxBytes: number): string {
   if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
-  let charCount = 0;
+  let sliceEnd = 0;
   let runningBytes = 0;
   for (const codePoint of text) {
     const cpBytes = Buffer.byteLength(codePoint, 'utf8');
     if (runningBytes + cpBytes > maxBytes) break;
     runningBytes += cpBytes;
-    charCount++;
+    sliceEnd += codePoint.length;
   }
-  return text.slice(0, charCount);
+  return text.slice(0, sliceEnd);
 }
 
 /**
@@ -56,6 +56,31 @@ function capPromptLength(prompt: string): string {
   const budgetBytes = MAX_PROMPT_BYTES - markerBytes;
   const prefix = truncateUtf8Bytes(prompt, budgetBytes);
   return `${prefix}\n${PROMPT_TRUNCATION_MARKER}`;
+}
+
+// Per-section byte budgets for the builders that assemble a fixed instruction
+// tail around variable context. Each variable section is pre-capped so the
+// aggregate stays within MAX_PROMPT_BYTES without ever tail-truncating the
+// terminal instructions (Step-by-Step, CRITICAL RULES, Output Format, etc.).
+const MAX_CONTEXT_SECTION_BYTES = 64 * 1024;
+const MAX_ISSUES_SECTION_BYTES = 48 * 1024;
+const MAX_PROJECT_CONTEXT_SECTION_BYTES = 32 * 1024;
+const MAX_VERIFICATION_ERROR_BYTES = 16 * 1024;
+const MAX_THREAD_HISTORY_BYTES = 48 * 1024;
+const MAX_CODE_SNIPPET_BYTES = 32 * 1024;
+
+/**
+ * Bound a variable section to a byte budget, appending a truncation marker
+ * when the section is cut so callers can tell the content was capped.
+ * @param text - The section content to bound.
+ * @param maxBytes - Maximum number of UTF-8 bytes allowed for the section.
+ * @param label - Human-readable name used in the truncation marker.
+ * @returns The section, truncated to the byte budget with a marker when capped.
+ */
+function boundSection(text: string, maxBytes: number, label: string): string {
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
+  const bounded = truncateUtf8Bytes(text, maxBytes);
+  return `${bounded}\n... [${label} truncated at ${Math.round(maxBytes / 1024)}KB cap]`;
 }
 
 /** Input parameters for building a review prompt. */
@@ -447,9 +472,17 @@ export function buildFixPrompt(
 ): string {
   const projectContext = inputs.projectContext || getDefaultProjectContext();
   const fixIterations = inputs.maxFixIterations ?? 3;
-  const safeContext = sanitizePromptInput(context, { maxLength: 50_000 });
+  const safeContext = boundSection(
+    sanitizePromptInput(context, { maxLength: 50_000 }),
+    MAX_CONTEXT_SECTION_BYTES,
+    'issue & thread context',
+  );
   const safeVerificationError = verificationError
-    ? sanitizePromptInput(verificationError, { maxLength: 20_000 })
+    ? boundSection(
+        sanitizePromptInput(verificationError, { maxLength: 20_000 }),
+        MAX_VERIFICATION_ERROR_BYTES,
+        'verification errors',
+      )
     : '';
 
   let issuesSection = '';
@@ -462,6 +495,12 @@ export function buildFixPrompt(
       }
     }
   }
+  issuesSection = boundSection(issuesSection, MAX_ISSUES_SECTION_BYTES, 'issues to fix');
+  const boundedProjectContext = boundSection(
+    projectContext,
+    MAX_PROJECT_CONTEXT_SECTION_BYTES,
+    'project context',
+  );
 
   return `You are an Expert Software Engineer tasked with implementing a code fix for a GitHub Issue.
 
@@ -471,7 +510,7 @@ ${safeContext}
 ${issuesSection}
 ## Project Context
 
-${projectContext}
+${boundedProjectContext}
 ${verificationError ? `\n## Verification Errors from Previous Attempt\n\`\`\`\n${safeVerificationError}\n\`\`\`\n` : ''}
 ## Step-by-Step Execution Instructions
 
@@ -584,7 +623,13 @@ export function buildReplyPrompt(
   );
   sections.push('');
   sections.push('```');
-  sections.push(codeSnippet || '(No code snippet available)');
+  sections.push(
+    boundSection(
+      codeSnippet || '(No code snippet available)',
+      MAX_CODE_SNIPPET_BYTES,
+      'code snippet',
+    ),
+  );
   sections.push('```');
   sections.push('');
 
@@ -596,12 +641,12 @@ export function buildReplyPrompt(
   if (threadHistory.length > 1) {
     sections.push('## Thread History');
     sections.push('');
+    let historyText = '';
     for (const entry of threadHistory.slice(0, -1)) {
-      sections.push(
-        `**@${entry.author}:** ${sanitizePromptInput(entry.body, { maxLength: 10_000 })}`,
-      );
-      sections.push('');
+      historyText += `**@${entry.author}:** ${sanitizePromptInput(entry.body, { maxLength: 10_000 })}\n`;
+      historyText += '\n';
     }
+    sections.push(boundSection(historyText, MAX_THREAD_HISTORY_BYTES, 'thread history'));
   }
 
   sections.push("## Developer's Question");
@@ -627,7 +672,7 @@ export function buildReplyPrompt(
     '- Do NOT ask the developer to mark anything as resolved or take any GitHub actions.',
   );
 
-  return sections.join('\n');
+  return capPromptLength(sections.join('\n'));
 }
 
 /**
@@ -645,10 +690,18 @@ export function buildAnalyzePrompt(
   issueContext: string,
   projectContextStr?: string,
 ): string {
-  const projContext = projectContextStr || inputs.projectContext || getDefaultProjectContext();
-  const safeIssueContext = sanitizePromptInput(issueContext, { maxLength: 50_000 });
+  const projContext = boundSection(
+    projectContextStr || inputs.projectContext || getDefaultProjectContext(),
+    MAX_PROJECT_CONTEXT_SECTION_BYTES,
+    'project context',
+  );
+  const safeIssueContext = boundSection(
+    sanitizePromptInput(issueContext, { maxLength: 50_000 }),
+    MAX_CONTEXT_SECTION_BYTES,
+    'issue & repository context',
+  );
 
-  return `You are a Principal Software Architect and Lead Developer. Your task is to analyze a GitHub Issue against the codebase and formulate a precise, actionable Implementation Plan before any code is modified.
+  return capPromptLength(`You are a Principal Software Architect and Lead Developer. Your task is to analyze a GitHub Issue against the codebase and formulate a precise, actionable Implementation Plan before any code is modified.
 
 ## Issue & Repository Context
 
@@ -715,11 +768,12 @@ HIGH
 **CRITICAL RULES:**
 - Do NOT run \`git commit\`, \`git push\`, or modify any source code files — this is a read-only analysis phase.
 - Write the final markdown report to \`.opencode/analysis-plan.md\`.
-- Ensure all file paths referenced actually exist in the codebase.`;
+- Ensure all file paths referenced actually exist in the codebase.`);
 }
 
 /**
  * Load a custom prompt file from the workspace directory.
+}
  * Validates that the file path resolves within the workspace for security.
  *
  * @param filePath - Path relative to the workspace root.
@@ -965,17 +1019,25 @@ Default checks apply:
  * @returns The assembled explain prompt string.
  */
 export function buildExplainPrompt(inputs: PromptBuilderInputs, prContext: string): string {
-  const projectContext = inputs.projectContext || getDefaultProjectContext();
-  const safePrContext = sanitizePromptInput(prContext, { maxLength: 50_000 });
+  const boundedProjectContext = boundSection(
+    inputs.projectContext || getDefaultProjectContext(),
+    MAX_PROJECT_CONTEXT_SECTION_BYTES,
+    'project context',
+  );
+  const safePrContext = boundSection(
+    sanitizePromptInput(prContext, { maxLength: 50_000 }),
+    MAX_CONTEXT_SECTION_BYTES,
+    'PR & issue context',
+  );
 
-  return `You are a Senior Software Engineer explaining a pull request to a team.
+  return capPromptLength(`You are a Senior Software Engineer explaining a pull request to a team.
 
 ## PR & Issue Context
 
 ${safePrContext}
 
 ## Project Context
-${projectContext}
+${boundedProjectContext}
 
 ## Instructions
 
@@ -1003,5 +1065,5 @@ Does this PR affect the overall architecture? If so, explain how.
 
 ## Output Format
 Write your response as a single markdown document directly to \`.opencode/explain-output.md\`.
-Do NOT wrap in JSON. Be concise but thorough.`;
+Do NOT wrap in JSON. Be concise but thorough.`);
 }
