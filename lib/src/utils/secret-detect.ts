@@ -97,9 +97,13 @@ const SECRET_PATTERNS: { name: string; pattern: RegExp; type: string }[] = [
 // between `://[user:]` and `@host` so the redactor can target just the
 // secret instead of leaking up to 3 password characters from the tail of
 // the surrounding match. Supports `+srv` schemes (e.g. mongodb+srv://) and
-// empty-username forms (redis://:password@host).
+// empty-username forms (redis://:password@host). The password character class
+// deliberately allows embedded colons so `user:part1:part2@` redacts the full
+// password; capture group 1 is the password for `user:password@`, group 2 for
+// the empty-username `:password@` form, and a password-less `user@` match
+// carries neither group.
 const CONNECTION_STRING_PATTERN =
-  /(?:postgres|mysql|mongodb|redis|amqp)(?:\+srv)?:\/\/(?:[^\s:@/]+(?::[^\s:@/]+)?@|:[^\s:@/]+@)/;
+  /(?:postgres|mysql|mongodb|redis|amqp)(?:\+srv)?:\/\/(?:[^\s:@/]+:([^\s@/]+)@|:([^\s@/]+)@|[^\s:@/]+@)/;
 
 // Pre-compiled global regexes used in the per-line scan, built once from
 // SECRET_PATTERNS instead of constructing a new RegExp for each input line.
@@ -197,8 +201,10 @@ export function detectSecrets(text: string, options: SecretDetectOptions = {}): 
 
   // Connection-string scan with password-only redaction. The regex matches
   // the full scheme+user+password+`@`; we redact ONLY the password portion
-  // (between `://`s `:password@`) so the surrounding match tail does not
-  // leak up to 3 secret characters as it did when redacting the whole match.
+  // so the surrounding match tail does not leak up to 3 secret characters as
+  // it did when redacting the whole match. The password position is derived
+  // from the captured password group (whose character class allows embedded
+  // colons), never from searching for the final colon before `@`.
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const lineNumber = i + 1;
@@ -207,16 +213,18 @@ export function detectSecrets(text: string, options: SecretDetectOptions = {}): 
     while ((match = GLOBAL_CONNECTION_STRING_REGEX.exec(line)) !== null) {
       const fullMatch = match[0];
       const index = match.index ?? 0;
-      const schemeEnd = fullMatch.indexOf('://') + 3;
       const atIdx = fullMatch.lastIndexOf('@');
-      // password is between the last ':' before '@' (or schemeEnd for empty user)
-      let colonIdx = fullMatch.lastIndexOf(':', atIdx - 1);
-      if (colonIdx < schemeEnd) colonIdx = schemeEnd - 1; // scheme `://` colon; treat schemeEnd as start
-      const passwordStart = (colonIdx === schemeEnd - 1 ? schemeEnd : colonIdx + 1) ?? schemeEnd;
-      const passwordEnd = atIdx;
-      const password = fullMatch.slice(passwordStart, passwordEnd);
-      const redactedPassword = redactValue(password);
-      const redactedValue = `${fullMatch.slice(0, passwordStart)}${redactedPassword}@`;
+      const password = match[1] ?? match[2];
+      let redactedValue: string;
+      if (password !== undefined) {
+        // password occupies the span ending at `@`; its length gives the
+        // start offset so a password containing `:` is fully covered.
+        const passwordStart = atIdx - password.length;
+        const redactedPassword = redactValue(password);
+        redactedValue = `${fullMatch.slice(0, passwordStart)}${redactedPassword}@`;
+      } else {
+        redactedValue = fullMatch;
+      }
       candidates.push({
         type: 'connection-string',
         line: lineNumber,
