@@ -12,6 +12,7 @@ import {
   Logger,
   ReviewEngine,
   sanitizeErrorMessage,
+  sendNotification,
   shouldFailOnSeverity,
 } from '@opencode-pr-agent/lib';
 import { mergeRepoConfig } from '../utils/config.js';
@@ -265,6 +266,21 @@ export async function handlePRReview(
       } catch (err) {
         logger.warn(
           `Failed to post review-complete comment: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+
+      // Best-effort Slack/Teams notification with the review summary. Non-critical:
+      // a webhook failure must never break the review flow, so sendNotification
+      // swallows its own errors and is additionally guarded against throws here.
+      try {
+        await sendNotification(result, effectiveConfig.notifications, {
+          number: prNumber,
+          title: pr.title,
+          repo,
+        });
+      } catch (err) {
+        logger.warn(
+          `Failed to send review notification: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     } else {

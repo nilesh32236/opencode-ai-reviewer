@@ -9,6 +9,6 @@ import type { ActionInputs } from './inputs.js';
  * @param config - Full agent configuration.
  * @param engine - Review engine instance.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
- * @param _repo - Repository string (owner/repo).
+ * @param repo - Repository string (owner/repo).
  */
-export declare function runReview(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, _repo: string): Promise<void>;
+export declare function runReview(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, repo: string): Promise<void>;

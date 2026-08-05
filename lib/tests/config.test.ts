@@ -92,6 +92,43 @@ fix:
       const config = loadConfig(tmpDir);
       expect(config!.review?.systemPrompt).toBe('github config');
     });
+
+    it('parses notifications section with defaults applied', () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.opencode-reviewer.yml'),
+        `notifications:
+  enabled: true
+  slack:
+    channel: "#code-reviews"
+  teams:
+    webhookUrl: https://outlook.office.com/webhook/T
+`,
+      );
+      const config = loadConfig(tmpDir);
+      expect(config).not.toBeNull();
+      expect(config!.notifications?.enabled).toBe(true);
+      // minSeverity defaults to 'critical' via the schema.
+      expect(config!.notifications?.minSeverity).toBe('critical');
+      expect(config!.notifications?.slack?.channel).toBe('#code-reviews');
+      expect(config!.notifications?.teams?.webhookUrl).toBe('https://outlook.office.com/webhook/T');
+    });
+
+    it('drops invalid notifications fields gracefully', () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.opencode-reviewer.yml'),
+        `notifications:
+  enabled: "not-a-boolean"
+  minSeverity: bogus
+  slack:
+    webhookUrl: 12345
+`,
+      );
+      const config = loadConfig(tmpDir);
+      expect(config).not.toBeNull();
+      expect(config!.notifications?.enabled).toBeUndefined();
+      expect(config!.notifications?.minSeverity).toBeUndefined();
+      expect(config!.notifications?.slack).toBeUndefined();
+    });
   });
 
   describe('mergeConfigWithInputs', () => {
@@ -294,6 +331,35 @@ fix:
         review: { budget: { summaryThreshold: 900, splitThreshold: 100 } },
       } as never);
       expect(result.review?.budget?.splitThreshold).toBe(900);
+    });
+
+    it('passes through notifications fields', () => {
+      const result = validateConfig({
+        notifications: {
+          enabled: true,
+          minSeverity: 'important',
+          slack: { webhookUrl: 'https://hooks.slack.com/services/T/B/S', channel: '#reviews' },
+          teams: { webhookUrl: 'https://outlook.office.com/webhook/T' },
+        },
+      } as never);
+      expect(result.notifications).toEqual({
+        enabled: true,
+        minSeverity: 'important',
+        slack: { webhookUrl: 'https://hooks.slack.com/services/T/B/S', channel: '#reviews' },
+        teams: { webhookUrl: 'https://outlook.office.com/webhook/T' },
+      });
+    });
+
+    it('skips invalid notifications values', () => {
+      const result = validateConfig({
+        notifications: {
+          enabled: 'yes',
+          minSeverity: 'urgent',
+          slack: { webhookUrl: '' },
+          teams: { webhookUrl: 42 },
+        },
+      } as never);
+      expect(result.notifications).toBeUndefined();
     });
 
     it('returns empty object for empty config', () => {

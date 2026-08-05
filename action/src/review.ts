@@ -1,7 +1,12 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import type { AgentConfig, PRContext, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
-import { Logger, countAtOrAboveSeverity, shouldFailOnSeverity } from '@opencode-pr-agent/lib';
+import {
+  Logger,
+  countAtOrAboveSeverity,
+  sendNotification,
+  shouldFailOnSeverity,
+} from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { resolvePrNumber, sanitize } from './utils.js';
 
@@ -14,14 +19,14 @@ import { resolvePrNumber, sanitize } from './utils.js';
  * @param config - Full agent configuration.
  * @param engine - Review engine instance.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
- * @param _repo - Repository string (owner/repo).
+ * @param repo - Repository string (owner/repo).
  */
 export async function runReview(
   inputs: ActionInputs,
   config: AgentConfig,
   engine: ReviewEngine,
   gh: PlatformAdapter,
-  _repo: string,
+  repo: string,
 ): Promise<void> {
   let prNumber = await resolvePrNumber();
 
@@ -124,6 +129,22 @@ export async function runReview(
         issue.commentId = comment.commentId;
       }
     }
+  }
+
+  // Best-effort Slack/Teams notification with the review summary. Non-critical:
+  // a webhook failure must never fail the action, so sendNotification swallows
+  // its own errors and is additionally guarded against unexpected throws here.
+  try {
+    await sendNotification(result, config.notifications, {
+      number: prNumber,
+      title: pr.title,
+      repo,
+    });
+  } catch (err) {
+    new Logger('Review').warn(
+      `Failed to send review notification: ${err instanceof Error ? err.message : String(err)}`,
+      { operation: 'review.notify', prNumber },
+    );
   }
 
   core.setOutput('review_summary', result.summary);

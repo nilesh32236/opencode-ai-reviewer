@@ -280,6 +280,38 @@ export const PluggableSubscriberConfigSchema = z.object({
   path: z.string().min(1),
 });
 
+/**
+ * Zod schema validating Slack incoming-webhook notification configuration.
+ * Webhook URLs are intentionally lenient (plain strings) so a placeholder or
+ * env-injected value in `.opencode-reviewer.yml` can never fail the whole
+ * config parse; URL validity is enforced at dispatch time by the notifier.
+ */
+export const SlackConfigSchema = z.object({
+  webhookUrl: z.string().optional(),
+  channel: z.string().optional(),
+});
+
+/** Zod schema validating Microsoft Teams webhook notification configuration. */
+export const TeamsConfigSchema = z.object({
+  webhookUrl: z.string().optional(),
+});
+
+/**
+ * Zod schema validating webhook notification configuration.
+ * Notifications are an opt-in, non-critical side channel, so the whole block is
+ * wrapped in `.catch({})` (mirroring `CostTrackingConfigSchema`): a malformed
+ * `notifications:` section must degrade to the defaults instead of failing the
+ * entire config parse and silently discarding unrelated review settings.
+ */
+export const NotificationsConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    minSeverity: SeveritySchema.default('critical'),
+    slack: SlackConfigSchema.optional(),
+    teams: TeamsConfigSchema.optional(),
+  })
+  .catch({} as never);
+
 /** Zod schema validating the full agent configuration, merging provided values with defaults. */
 export const AgentConfigSchema = z.object({
   platform: z.enum(['github', 'gitlab']).optional().default('github'),
@@ -315,6 +347,7 @@ export const AgentConfigSchema = z.object({
   rateLimiting: RateLimitingConfigSchema.default(RateLimitingConfigSchema.parse({})),
   eventLogging: EventLoggingConfigSchema.default(EventLoggingConfigSchema.parse({})),
   eventSubscribers: z.array(PluggableSubscriberConfigSchema).default([]),
+  notifications: NotificationsConfigSchema.default(NotificationsConfigSchema.parse({})),
 });
 
 // ─── Prompt Config Schema (YAML config file) ──────────────
@@ -430,4 +463,5 @@ export const PromptConfigSchema = z.object({
   linters: z.array(LinterConfigSchema).optional(),
   eventLogging: EventLoggingConfigSchema.optional(),
   eventSubscribers: z.array(PluggableSubscriberConfigSchema).optional(),
+  notifications: NotificationsConfigSchema.optional(),
 });
