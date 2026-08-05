@@ -7,8 +7,11 @@ import type {
   CategoryOverride,
   ConfigOverride,
   LinterConfig,
+  NotificationsConfig,
   PromptConfig,
   ReviewSensitivityConfig,
+  SlackConfig,
+  TeamsConfig,
 } from './types/index.js';
 import type { Platform } from './types/index.js';
 import { PromptConfigSchema } from './types/schemas.js';
@@ -102,6 +105,17 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     path: null,
   },
   eventSubscribers: null,
+  notifications: {
+    enabled: null,
+    minSeverity: null,
+    slack: {
+      webhookUrl: null,
+      channel: null,
+    },
+    teams: {
+      webhookUrl: null,
+    },
+  },
 };
 
 /**
@@ -695,6 +709,45 @@ export function validateConfig(config: PromptConfig): PromptConfig {
           s.path.trim() !== '',
       )
       .map((s) => ({ name: s.name.trim(), path: s.path.trim() }));
+  }
+
+  if (config.notifications && typeof config.notifications === 'object') {
+    const n = config.notifications;
+    const notifications: NotificationsConfig = {};
+    if (typeof n.enabled === 'boolean') {
+      notifications.enabled = n.enabled;
+    }
+    if (
+      n.minSeverity === 'critical' ||
+      n.minSeverity === 'important' ||
+      n.minSeverity === 'minor'
+    ) {
+      notifications.minSeverity = n.minSeverity;
+    }
+    if (n.slack && typeof n.slack === 'object') {
+      const slack: SlackConfig = {};
+      if (typeof n.slack.webhookUrl === 'string' && n.slack.webhookUrl.trim() !== '') {
+        slack.webhookUrl = n.slack.webhookUrl.trim();
+      }
+      if (typeof n.slack.channel === 'string' && n.slack.channel.trim() !== '') {
+        slack.channel = n.slack.channel.trim();
+      }
+      if (Object.keys(slack).length > 0) {
+        notifications.slack = slack;
+      }
+    }
+    if (n.teams && typeof n.teams === 'object') {
+      const teams: TeamsConfig = {};
+      if (typeof n.teams.webhookUrl === 'string' && n.teams.webhookUrl.trim() !== '') {
+        teams.webhookUrl = n.teams.webhookUrl.trim();
+      }
+      if (Object.keys(teams).length > 0) {
+        notifications.teams = teams;
+      }
+    }
+    if (Object.keys(notifications).length > 0) {
+      result.notifications = notifications;
+    }
   }
 
   return result;

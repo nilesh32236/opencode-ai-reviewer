@@ -70,3 +70,19 @@ learning:
     enabled: true
     minFrequency: 3
     windowSize: 100
+
+# Optional webhook notifications for review summaries (Slack / Microsoft Teams).
+# Fully opt-in: notifications are only sent when `enabled: true` and a review
+# contains at least one finding at or above `minSeverity` (critical | important | minor).
+# SECURITY: webhook URLs are bearer credentials. Prefer injecting them via the
+# SLACK_WEBHOOK_URL / TEAMS_WEBHOOK_URL env secrets (Action workflow env or App
+# server env) — those take precedence over any value placed here, and this file
+# is PR-editable, so values committed here are visible to every fork/clone.
+# notifications:
+#   enabled: true
+#   minSeverity: critical   # only notify when critical findings exist (default: critical)
+#   slack:
+#     # webhookUrl: https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXX
+#     channel: "#code-reviews"
+#   teams:
+#     # webhookUrl: https://outlook.office.com/webhook/XXXX-XXXX-XXXX-XXXX

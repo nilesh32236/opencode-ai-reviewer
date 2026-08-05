@@ -195,6 +195,27 @@ export * from './utils/validation.js';
 export { countAtOrAboveSeverity, shouldFailOnSeverity } from './utils/threshold.js';
 export type { SeverityStats } from './utils/threshold.js';
 export {
+  sendNotification,
+  formatSlackMessage,
+  formatTeamsMessage,
+  postToWebhook,
+  getTopFindings,
+  meetsSeverityThreshold,
+  resolveWebhookUrl,
+  defaultPrUrl,
+} from './utils/notifier.js';
+export type {
+  NotificationContext,
+  SlackBlock,
+  SendNotificationOptions,
+  TeamsAttachment,
+  TeamsCardBodyElement,
+  TeamsCardContent,
+  TeamsFactSet,
+  TeamsMessage,
+  TeamsTextBlock,
+} from './utils/notifier.js';
+export {
   buildConversationPrompt,
   buildConversationSummaryPrompt,
   detectIntent,

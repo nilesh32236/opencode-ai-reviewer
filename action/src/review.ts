@@ -1,7 +1,13 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import type { AgentConfig, PRContext, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
-import { Logger, countAtOrAboveSeverity, shouldFailOnSeverity } from '@opencode-pr-agent/lib';
+import {
+  GitLabAdapter,
+  Logger,
+  countAtOrAboveSeverity,
+  sendNotification,
+  shouldFailOnSeverity,
+} from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { resolvePrNumber, sanitize } from './utils.js';
 
@@ -14,14 +20,14 @@ import { resolvePrNumber, sanitize } from './utils.js';
  * @param config - Full agent configuration.
  * @param engine - Review engine instance.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
- * @param _repo - Repository string (owner/repo).
+ * @param repo - Repository string (owner/repo).
  */
 export async function runReview(
   inputs: ActionInputs,
   config: AgentConfig,
   engine: ReviewEngine,
   gh: PlatformAdapter,
-  _repo: string,
+  repo: string,
 ): Promise<void> {
   let prNumber = await resolvePrNumber();
 
@@ -123,6 +129,27 @@ export async function runReview(
       if (comment) {
         issue.commentId = comment.commentId;
       }
+    }
+  }
+
+  // Best-effort Slack/Teams notification with the review summary. Non-critical:
+  // a webhook failure must never fail the action, so sendNotification swallows
+  // its own errors and is additionally guarded against unexpected throws here.
+  // Only notify about a review that actually reached the pull request; the
+  // message links to the PR, so a link to a PR without a review is misleading.
+  if (reviewResult.success) {
+    try {
+      await sendNotification(result, config.notifications, {
+        number: prNumber,
+        title: pr.title,
+        repo,
+        platform: gh instanceof GitLabAdapter ? 'gitlab' : 'github',
+      });
+    } catch (err) {
+      new Logger('Review').warn(
+        `Failed to send review notification: ${err instanceof Error ? err.message : String(err)}`,
+        { operation: 'review.notify', prNumber },
+      );
     }
   }
 
