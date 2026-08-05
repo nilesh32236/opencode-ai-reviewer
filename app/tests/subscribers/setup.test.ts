@@ -52,6 +52,8 @@ describe('SetupSubscriber', () => {
       expect.any(Object),
       expect.objectContaining({ command: 'setup' }),
       undefined,
+      undefined,
+      undefined,
     );
   });
 

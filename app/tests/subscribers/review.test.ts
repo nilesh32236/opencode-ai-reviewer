@@ -17,6 +17,7 @@ function makeSynchronizeEvent(prNumber: number, payload: Record<string, unknown>
     timestamp: Date.now(),
     repo: 'owner/repo',
     prNumber,
+    correlationId: 'event-corr-id',
     payload: {
       pull_request: {
         number: prNumber,
@@ -54,7 +55,7 @@ describe('ReviewSubscriber', () => {
       undefined,
       'abcdef123456',
       bus,
-      undefined,
+      'event-corr-id',
     );
   });
 
@@ -82,7 +83,7 @@ describe('ReviewSubscriber', () => {
       undefined,
       'fallbacksha123',
       bus,
-      undefined,
+      'event-corr-id',
     );
   });
 });

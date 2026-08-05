@@ -66,6 +66,7 @@ export interface AutofixLoopOptions {
  * Run the complete review-fix loop on a PR from the Probot app context.
  * Iterates up to config.maxIterations: reviews, applies fixes, runs
  * optional verification commands, and posts status comments.
+ * @param options - Options controlling the review-fix loop.
  */
 export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<void> {
   const {

@@ -96,12 +96,28 @@ export async function handleCommand(
 
     switch (command) {
       case 'analyze': {
-        await handleAnalyzeCommand(issueNumber, repo, token, config, tempDir, eventBus, correlationId);
+        await handleAnalyzeCommand(
+          issueNumber,
+          repo,
+          token,
+          config,
+          tempDir,
+          eventBus,
+          correlationId,
+        );
         break;
       }
 
       case 'explain': {
-        await handleExplainCommand(issueNumber, repo, token, config, tempDir, eventBus, correlationId);
+        await handleExplainCommand(
+          issueNumber,
+          repo,
+          token,
+          config,
+          tempDir,
+          eventBus,
+          correlationId,
+        );
         break;
       }
 

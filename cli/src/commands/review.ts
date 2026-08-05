@@ -66,6 +66,10 @@ const MARKDOWN_OUTPUT_FILE = 'review-result.md';
  */
 export async function runReviewCommand(options: ReviewCommandOptions): Promise<number> {
   Logger.setSink(plainSink);
+  // Keep local terminal output human-readable; JSON is opt-in via LOG_FORMAT.
+  if (!process.env.LOG_FORMAT) {
+    process.env.LOG_FORMAT = 'human';
+  }
 
   const branch = options.branch;
 

@@ -82,7 +82,7 @@ describe('Logger', () => {
       });
       logger.info('hello world', { model: 'gpt-4', extra: 'x' });
     } finally {
-      delete process.env.LOG_FORMAT;
+      process.env.LOG_FORMAT = '';
       Logger.resetSink();
     }
 
@@ -114,7 +114,7 @@ describe('Logger', () => {
       const logger = new Logger('Test', { model: 'from-context' });
       logger.info('msg', { model: 'from-data', note: 'kept' });
     } finally {
-      delete process.env.LOG_FORMAT;
+      process.env.LOG_FORMAT = '';
       Logger.resetSink();
     }
 
@@ -145,7 +145,7 @@ describe('Logger', () => {
         path: '/tmp/file',
       });
     } finally {
-      delete process.env.LOG_FORMAT;
+      process.env.LOG_FORMAT = '';
       Logger.resetSink();
     }
 
@@ -161,20 +161,18 @@ describe('Logger', () => {
 
   it('falls back to a plain stdout write when the sink lacks structured()', () => {
     Logger.setDefaultLevel('trace');
-    const stdoutSpy = vi
-      .spyOn(process.stdout, 'write')
-      .mockImplementation(() => true);
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     Logger.setSink({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {} });
     process.env.LOG_FORMAT = 'json';
     try {
       const logger = new Logger('Test', { correlationId: 'c2' });
       expect(() => logger.info('structured without sink method')).not.toThrow();
+      expect(stdoutSpy).toHaveBeenCalled();
     } finally {
-      delete process.env.LOG_FORMAT;
+      process.env.LOG_FORMAT = '';
       Logger.resetSink();
       stdoutSpy.mockRestore();
     }
-    expect(stdoutSpy).toHaveBeenCalled();
   });
 
   it('child() propagates the parent correlation id unless overridden', () => {
