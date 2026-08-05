@@ -184,6 +184,8 @@ export {
 } from './pattern-detector/minhash.js';
 export { RuleApprovalSubscriber } from './pattern-detector/rule-approval.js';
 export * from './utils/validation.js';
+export { countAtOrAboveSeverity, shouldFailOnSeverity } from './utils/threshold.js';
+export type { SeverityStats } from './utils/threshold.js';
 export {
   buildConversationPrompt,
   buildConversationSummaryPrompt,

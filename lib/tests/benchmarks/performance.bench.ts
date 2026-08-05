@@ -106,6 +106,7 @@ function makeBenchmarkAdapter(): PlatformAdapter {
     listComments: async () => [],
     postComment: async () => {},
     postReview: async () => ({ success: true, method: 'full' }),
+    createCheckRun: async () => ({ id: 1 }),
     postOrUpdateComment: async () => ({ action: 'created', commentId: 1 }),
     createComment: async () => ({ id: 1 }),
     replyToReviewComment: async () => ({ id: 1 }),

@@ -119,6 +119,7 @@ Trigger it manually via the Actions tab (run the `setup.yml` workflow with *work
 | `include_strengths`      | `true`                               | Include positive feedback in output            |
 | `review_comment_summary` | `true`                               | Post a summary comment on the PR               |
 | `review_inline`          | `true`                               | Post findings as inline review comments on the PR diff (set to `false` for summary-only)
+| `fail_on_severity`       | `off`                               | Opt-in CI gate: fail the action (exit code 1) when findings at or above this severity exist: `off`, `critical`, `important`, or `minor`. Defaults to `off` (never fails from findings) so existing installs are unaffected — set a threshold to opt in. See [Branch Protection](#branch-protection-required-status-check). |
 | `run_checks_after_fix`   | —                                    | Commands to run after fix (e.g. `npm run lint`) |
 > **Security:** Commands are validated against an allowlist (`fix.checkAllowlist` in `.opencode-reviewer.yml`, default `[pnpm, npm, yarn, node]`) to prevent shell injection. Add only trusted programs to the allowlist.
 | `audit_prompt_file`      | —                                    | Path to custom audit prompt file               |
@@ -175,6 +176,62 @@ overrides:
     review:
       inline: false    # summary-only for legacy code
 ```
+
+### Branch Protection (Required Status Check)
+
+The reviewer can act as a CI quality gate. When findings meet or exceed the configured
+severity threshold, the action exits with code `1` (and the GitHub App reports a failing
+check run via the Checks API), so branch protection can block the merge.
+
+The gate is **opt-in** — it defaults to `off` so existing installs are unaffected. Set the
+threshold with the `fail_on_severity` input:
+
+```yaml
+- uses: opencode-ai/opencode-ai-reviewer@v1
+  with:
+    mode: review
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    fail_on_severity: critical   # off | critical | important | minor (default: off — opt-in)
+```
+
+- `critical`: fails only when critical findings exist.
+- `important`: fails when important or critical findings exist.
+- `minor`: fails when any finding exists.
+- `off` (default): never fails from findings (preserves the legacy behavior).
+
+> **Security:** when set as a workflow input, `fail_on_severity` is authoritative and takes
+> precedence over the repository's `.opencode-reviewer.yml`, so a PR cannot disable its own
+> gate by editing that file. When the input is omitted, the repo value applies.
+
+The same knob is available per-repository via `.opencode-reviewer.yml` (used when the
+workflow input is not set):
+
+```yaml
+review:
+  failOnSeverity: important
+```
+
+For the GitHub App, set the `FAIL_ON_SEVERITY` environment variable (default `off`).
+Unless set to `off`, the App always creates a check run named **OpenCode AI Reviewer** on the
+PR head commit — `success` when the review is clean, `failure` when the threshold is
+exceeded — so it can be used as a reliable required status check. Setting
+`FAIL_ON_SEVERITY=off` disables check runs entirely.
+
+> **Note:** the App's check runs require the `checks: write` permission. Existing App
+> installs must approve this permission when upgrading (re-run `app.yml` / re-install).
+
+**To enforce it in GitHub:**
+
+1. Go to **Settings → Branches → Add branch protection rule** for the target branch (e.g. `main`).
+2. Enable **Require status checks to pass before merging**.
+3. In the status checks search box, select the check/job created by your workflow. For the
+   GitHub Action, this is the workflow's job name; for the GitHub App, select the
+   **OpenCode AI Reviewer** check run.
+4. Optionally enable **Require branches to be up to date** and **Do not allow bypassing
+   the above settings**.
+
+> **Note:** check runs are only created for GitHub (`platform: github`). GitLab installs
+> rely on the action's exit code for their CI gate instead.
 
 ### Meta-Verification Configuration
 

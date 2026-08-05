@@ -23,8 +23,11 @@ default_events:
 # `issues: write` and `pull_requests: write` are required by both read-only and
 # autofix modes (for comments and PR/issue updates). `contents: write` is only
 # exercised by autofix — review/audit/analyze operate with `contents: read`.
+# `checks: write` is required for the branch-protection check run (Checks API);
+# existing installs must approve the newly requested permission when upgrading.
 default_permissions:
   pull_requests: write   # required for review + autofix (PR comments/updates)
   issues: write          # required for review + audit (issue comments/tracking)
   contents: write        # ONLY required for autofix (FixSubscriber); review/audit need read
   metadata: read         # required for repo/org lookup in all modes
+  checks: write          # required for the OpenCode AI Reviewer check run (branch protection)

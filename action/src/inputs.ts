@@ -3,6 +3,7 @@ import {
   type ActionMode,
   type CostTrackingVerbosity,
   DEFAULT_ALLOWLIST,
+  type FailOnSeverity,
   validateModelString,
   validateRunChecksCommand,
 } from '@opencode-pr-agent/lib';
@@ -15,6 +16,13 @@ const VALID_MODES: ActionMode[] = [
   'analyze',
   'self-heal',
   'setup',
+];
+
+const VALID_FAIL_ON_SEVERITIES: readonly FailOnSeverity[] = [
+  'off',
+  'critical',
+  'important',
+  'minor',
 ];
 
 export { DEFAULT_ALLOWLIST, validateRunChecksCommand };
@@ -136,6 +144,10 @@ export interface ActionInputs {
   timeoutMinutes: number;
   /** Whether to post review comments inline on the diff. */
   reviewInline: boolean;
+  /** Severity threshold at or above which the action fails (default: 'off'). */
+  failOnSeverity: FailOnSeverity;
+  /** Whether the fail_on_severity input was explicitly set by the workflow. */
+  failOnSeverityExplicit: boolean;
   /** Whether the learning state cache is enabled. */
   enableStateCache: boolean;
   /** Cache key prefix for learning state storage. */
@@ -226,6 +238,16 @@ export function parseInputs(): ActionInputs {
   const enableMetaVerification = core.getInput('enable_meta_verification') === 'true';
   const enableAudit = core.getInput('enable_audit') === 'true';
 
+  const failOnSeverityInput = core.getInput('fail_on_severity');
+  const failOnSeverityRaw = (failOnSeverityInput || 'off').trim().toLowerCase();
+  if (!VALID_FAIL_ON_SEVERITIES.includes(failOnSeverityRaw as FailOnSeverity)) {
+    throw new Error(
+      `Invalid fail_on_severity: "${failOnSeverityRaw}". Must be one of: ${VALID_FAIL_ON_SEVERITIES.join(', ')}`,
+    );
+  }
+  const failOnSeverity = failOnSeverityRaw as FailOnSeverity;
+  const failOnSeverityExplicit = failOnSeverityInput.trim() !== '';
+
   // Models for features that are active in the selected mode are hard-gated so
   // an invalid value fails the action before any work starts. Models whose
   // feature is disabled (or that the action never runs, e.g. conversation) only
@@ -309,6 +331,8 @@ export function parseInputs(): ActionInputs {
     probeAllModels: core.getInput('probe_all_models') === 'true',
     timeoutMinutes: parseTimeoutMinutes(core.getInput('timeout_minutes')),
     reviewInline: core.getInput('review_inline') !== 'false',
+    failOnSeverity,
+    failOnSeverityExplicit,
     enableStateCache: core.getInput('enable_state_cache') !== 'false',
     stateCacheKey: core.getInput('state_cache_key') || 'opencode-learning-state',
     ciFailureLogs: core.getInput('ci_failure_logs') || undefined,

@@ -61,3 +61,30 @@ describe('buildConfig TOKEN_BUDGET override', () => {
     expect(buildConfig().review.tokenBudget).toEqual(TOKEN_BUDGET_DEFAULT);
   });
 });
+
+describe('buildConfig FAIL_ON_SEVERITY override', () => {
+  const ORIGINAL_FAIL_ON_SEVERITY = process.env.FAIL_ON_SEVERITY;
+
+  afterEach(() => {
+    if (ORIGINAL_FAIL_ON_SEVERITY === undefined) {
+      process.env.FAIL_ON_SEVERITY = '';
+    } else {
+      process.env.FAIL_ON_SEVERITY = ORIGINAL_FAIL_ON_SEVERITY;
+    }
+  });
+
+  it('defaults failOnSeverity to off', () => {
+    process.env.FAIL_ON_SEVERITY = '';
+    expect(buildConfig().review.failOnSeverity).toBe('off');
+  });
+
+  it('honors a valid FAIL_ON_SEVERITY value', () => {
+    process.env.FAIL_ON_SEVERITY = 'important';
+    expect(buildConfig().review.failOnSeverity).toBe('important');
+  });
+
+  it('degrades gracefully to off for an invalid FAIL_ON_SEVERITY value', () => {
+    process.env.FAIL_ON_SEVERITY = 'blocker';
+    expect(buildConfig().review.failOnSeverity).toBe('off');
+  });
+});
