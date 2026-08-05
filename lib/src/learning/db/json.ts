@@ -1,4 +1,5 @@
 import type { LearningQuality } from '../../types/index.js';
+import type { LearningFeedback } from '../../types/index.js';
 import type { JsonDatabase } from '../json-db.js';
 import type {
   ConversationSessionInput,
@@ -370,6 +371,15 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
    */
   async getFeedbackBreakdown(sinceDays?: number): Promise<FeedbackBreakdown> {
     return this.db.getFeedbackBreakdown(sinceDays);
+  }
+
+  /**
+   * Retrieve the feedback signals recorded for a single finding.
+   * @param findingId - The finding ID to query feedback for.
+   * @returns Array of feedback signals for that finding (empty when none).
+   */
+  async getFeedbackForFinding(findingId: string): Promise<LearningFeedback[]> {
+    return this.db.getFeedbackForFinding(findingId);
   }
 
   /**

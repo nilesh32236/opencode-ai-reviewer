@@ -100,6 +100,13 @@ export function buildReviewBody(result: ReviewResult): string {
     lines.push('');
   }
 
+  if (result.failedAgents !== undefined && result.failedAgents > 0) {
+    lines.push(
+      `> ⚠️ **Partial review** — ${result.failedAgents} agent(s) failed; findings may be missing.`,
+    );
+    lines.push('');
+  }
+
   if (result.executiveSummary) {
     const es = result.executiveSummary;
     const riskEmoji = es.riskLevel === 'high' ? '🔴' : es.riskLevel === 'medium' ? '🟡' : '🟢';

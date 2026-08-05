@@ -80,7 +80,15 @@ async function run(): Promise<void> {
         : core.getInput('repo') || `${github.context.repo.owner}/${github.context.repo.repo}`;
 
     if (inputs.enableStateCache) {
-      cacheManager = new StateCacheManager(inputs.stateCacheKey, { repo });
+      // On GitLab the GitHub Actions context is not populated, so the branch
+      // ref used in the cache key must come from GitLab CI's CI_COMMIT_REF_NAME
+      // (distinct branches then produce distinct cache keys). On GitHub the
+      // StateCacheManager falls back to the Actions context ref.
+      const cacheBranch = platform === 'gitlab' ? process.env.CI_COMMIT_REF_NAME : undefined;
+      cacheManager = new StateCacheManager(inputs.stateCacheKey, {
+        repo,
+        ...(cacheBranch && { branch: cacheBranch }),
+      });
       await cacheManager.restore();
     }
 
@@ -300,6 +308,7 @@ async function run(): Promise<void> {
       eventLogging: loadedConfig?.eventLogging ?? DEFAULT_CONFIG.eventLogging,
       eventSubscribers: loadedConfig?.eventSubscribers ?? DEFAULT_CONFIG.eventSubscribers,
       notifications: loadedConfig?.notifications ?? DEFAULT_CONFIG.notifications,
+      multiAgent: loadedConfig?.multiAgent ?? DEFAULT_CONFIG.multiAgent,
     };
 
     const learningStore = new LearningStore();

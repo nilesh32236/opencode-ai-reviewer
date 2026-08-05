@@ -40,4 +40,17 @@ describe('buildReviewPrompt prompt sanitization', () => {
     // Sanity: the prompt should still decode as valid UTF-8 (no orphan bytes).
     expect(() => Buffer.from(prompt, 'utf8').toString('utf8')).not.toThrow();
   });
+
+  it('keeps astral code points intact when truncating on a byte budget', () => {
+    // 😀 is 4 UTF-8 bytes but 2 UTF-16 code units; truncation must land after
+    // the full surrogate pair, never between the two halves (which would
+    // decode to U+FFFD).
+    const astral = `start ${'😀'.repeat(40 * 1024)} end`;
+    const prompt = buildReviewPrompt({ projectContext: '' }, 'small PR body', {
+      codebaseIndexContext: astral,
+    });
+    expect(Buffer.byteLength(prompt, 'utf8')).toBeLessThanOrEqual(200 * 1024);
+    expect(prompt).not.toContain('\uFFFD');
+    expect(prompt).toContain('codebase context truncated');
+  });
 });

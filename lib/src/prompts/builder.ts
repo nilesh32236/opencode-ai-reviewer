@@ -22,18 +22,21 @@ const logger = new Logger('prompt-builder');
  * Truncate a string to a UTF-8 byte budget on a code-point boundary so
  * multibyte characters are never split (an orphan lead byte would otherwise
  * decode to U+FFFD). Returns the original string when it already fits.
+ * @param text - The string to truncate.
+ * @param maxBytes - Maximum number of UTF-8 bytes allowed.
+ * @returns The truncated string, or the original when it already fits.
  */
-function truncateUtf8Bytes(text: string, maxBytes: number): string {
+export function truncateUtf8Bytes(text: string, maxBytes: number): string {
   if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
-  let charCount = 0;
+  let sliceEnd = 0;
   let runningBytes = 0;
   for (const codePoint of text) {
     const cpBytes = Buffer.byteLength(codePoint, 'utf8');
     if (runningBytes + cpBytes > maxBytes) break;
     runningBytes += cpBytes;
-    charCount++;
+    sliceEnd += codePoint.length;
   }
-  return text.slice(0, charCount);
+  return text.slice(0, sliceEnd);
 }
 
 /**
@@ -41,8 +44,11 @@ function truncateUtf8Bytes(text: string, maxBytes: number): string {
  * UTF-8 encoded bytes (not UTF-16 code units), and truncation lands on a code
  * point boundary so multibyte characters are never split. The marker is
  * accounted for in the byte budget.
+ * @param prompt - The assembled prompt string.
+ * @returns The prompt, truncated at the byte cap with the truncation marker
+ * appended when it exceeds the budget.
  */
-function capPromptLength(prompt: string): string {
+export function capPromptLength(prompt: string): string {
   const markerBytes = Buffer.byteLength(PROMPT_TRUNCATION_MARKER, 'utf8') + 1;
   const totalBytes = Buffer.byteLength(prompt, 'utf8');
   if (totalBytes <= MAX_PROMPT_BYTES) return prompt;
@@ -50,6 +56,31 @@ function capPromptLength(prompt: string): string {
   const budgetBytes = MAX_PROMPT_BYTES - markerBytes;
   const prefix = truncateUtf8Bytes(prompt, budgetBytes);
   return `${prefix}\n${PROMPT_TRUNCATION_MARKER}`;
+}
+
+// Per-section byte budgets for the builders that assemble a fixed instruction
+// tail around variable context. Each variable section is pre-capped so the
+// aggregate stays within MAX_PROMPT_BYTES without ever tail-truncating the
+// terminal instructions (Step-by-Step, CRITICAL RULES, Output Format, etc.).
+const MAX_CONTEXT_SECTION_BYTES = 64 * 1024;
+const MAX_ISSUES_SECTION_BYTES = 48 * 1024;
+const MAX_PROJECT_CONTEXT_SECTION_BYTES = 32 * 1024;
+const MAX_VERIFICATION_ERROR_BYTES = 16 * 1024;
+const MAX_THREAD_HISTORY_BYTES = 48 * 1024;
+const MAX_CODE_SNIPPET_BYTES = 32 * 1024;
+
+/**
+ * Bound a variable section to a byte budget, appending a truncation marker
+ * when the section is cut so callers can tell the content was capped.
+ * @param text - The section content to bound.
+ * @param maxBytes - Maximum number of UTF-8 bytes allowed for the section.
+ * @param label - Human-readable name used in the truncation marker.
+ * @returns The section, truncated to the byte budget with a marker when capped.
+ */
+function boundSection(text: string, maxBytes: number, label: string): string {
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
+  const bounded = truncateUtf8Bytes(text, maxBytes);
+  return `${bounded}\n... [${label} truncated at ${Math.round(maxBytes / 1024)}KB cap]`;
 }
 
 /** Input parameters for building a review prompt. */
@@ -441,9 +472,17 @@ export function buildFixPrompt(
 ): string {
   const projectContext = inputs.projectContext || getDefaultProjectContext();
   const fixIterations = inputs.maxFixIterations ?? 3;
-  const safeContext = sanitizePromptInput(context, { maxLength: 50_000 });
+  const safeContext = boundSection(
+    sanitizePromptInput(context, { maxLength: 50_000 }),
+    MAX_CONTEXT_SECTION_BYTES,
+    'issue & thread context',
+  );
   const safeVerificationError = verificationError
-    ? sanitizePromptInput(verificationError, { maxLength: 20_000 })
+    ? boundSection(
+        sanitizePromptInput(verificationError, { maxLength: 20_000 }),
+        MAX_VERIFICATION_ERROR_BYTES,
+        'verification errors',
+      )
     : '';
 
   let issuesSection = '';
@@ -456,6 +495,12 @@ export function buildFixPrompt(
       }
     }
   }
+  issuesSection = boundSection(issuesSection, MAX_ISSUES_SECTION_BYTES, 'issues to fix');
+  const boundedProjectContext = boundSection(
+    projectContext,
+    MAX_PROJECT_CONTEXT_SECTION_BYTES,
+    'project context',
+  );
 
   return `You are an Expert Software Engineer tasked with implementing a code fix for a GitHub Issue.
 
@@ -465,7 +510,7 @@ ${safeContext}
 ${issuesSection}
 ## Project Context
 
-${projectContext}
+${boundedProjectContext}
 ${verificationError ? `\n## Verification Errors from Previous Attempt\n\`\`\`\n${safeVerificationError}\n\`\`\`\n` : ''}
 ## Step-by-Step Execution Instructions
 
@@ -578,7 +623,13 @@ export function buildReplyPrompt(
   );
   sections.push('');
   sections.push('```');
-  sections.push(codeSnippet || '(No code snippet available)');
+  sections.push(
+    boundSection(
+      codeSnippet || '(No code snippet available)',
+      MAX_CODE_SNIPPET_BYTES,
+      'code snippet',
+    ),
+  );
   sections.push('```');
   sections.push('');
 
@@ -590,12 +641,12 @@ export function buildReplyPrompt(
   if (threadHistory.length > 1) {
     sections.push('## Thread History');
     sections.push('');
+    let historyText = '';
     for (const entry of threadHistory.slice(0, -1)) {
-      sections.push(
-        `**@${entry.author}:** ${sanitizePromptInput(entry.body, { maxLength: 10_000 })}`,
-      );
-      sections.push('');
+      historyText += `**@${entry.author}:** ${sanitizePromptInput(entry.body, { maxLength: 10_000 })}\n`;
+      historyText += '\n';
     }
+    sections.push(boundSection(historyText, MAX_THREAD_HISTORY_BYTES, 'thread history'));
   }
 
   sections.push("## Developer's Question");
@@ -621,7 +672,7 @@ export function buildReplyPrompt(
     '- Do NOT ask the developer to mark anything as resolved or take any GitHub actions.',
   );
 
-  return sections.join('\n');
+  return capPromptLength(sections.join('\n'));
 }
 
 /**
@@ -639,10 +690,18 @@ export function buildAnalyzePrompt(
   issueContext: string,
   projectContextStr?: string,
 ): string {
-  const projContext = projectContextStr || inputs.projectContext || getDefaultProjectContext();
-  const safeIssueContext = sanitizePromptInput(issueContext, { maxLength: 50_000 });
+  const projContext = boundSection(
+    projectContextStr || inputs.projectContext || getDefaultProjectContext(),
+    MAX_PROJECT_CONTEXT_SECTION_BYTES,
+    'project context',
+  );
+  const safeIssueContext = boundSection(
+    sanitizePromptInput(issueContext, { maxLength: 50_000 }),
+    MAX_CONTEXT_SECTION_BYTES,
+    'issue & repository context',
+  );
 
-  return `You are a Principal Software Architect and Lead Developer. Your task is to analyze a GitHub Issue against the codebase and formulate a precise, actionable Implementation Plan before any code is modified.
+  return capPromptLength(`You are a Principal Software Architect and Lead Developer. Your task is to analyze a GitHub Issue against the codebase and formulate a precise, actionable Implementation Plan before any code is modified.
 
 ## Issue & Repository Context
 
@@ -709,11 +768,12 @@ HIGH
 **CRITICAL RULES:**
 - Do NOT run \`git commit\`, \`git push\`, or modify any source code files — this is a read-only analysis phase.
 - Write the final markdown report to \`.opencode/analysis-plan.md\`.
-- Ensure all file paths referenced actually exist in the codebase.`;
+- Ensure all file paths referenced actually exist in the codebase.`);
 }
 
 /**
  * Load a custom prompt file from the workspace directory.
+}
  * Validates that the file path resolves within the workspace for security.
  *
  * @param filePath - Path relative to the workspace root.
@@ -804,7 +864,15 @@ export function listAuditCategories(promptsDir?: string): string[] {
   return Array.from(categories).sort();
 }
 
-function buildBudgetBanner(budgetMode: ReviewBudgetMode, totalDiffLines?: number): string {
+/**
+ * Build the budget-mode banner instructing the model how to adapt its review
+ * depth for large diffs. Used by both the legacy review path and the
+ * multi-agent path.
+ * @param budgetMode - The active review budget mode ('summary' or 'split').
+ * @param totalDiffLines - Approximate total changed lines, when known.
+ * @returns The budget-mode banner string.
+ */
+export function buildBudgetBanner(budgetMode: ReviewBudgetMode, totalDiffLines?: number): string {
   const lineCount =
     totalDiffLines !== undefined ? `~${totalDiffLines} lines` : 'a very large number of lines';
   if (budgetMode === 'summary') {
@@ -938,6 +1006,79 @@ ${findingsJsonl}
 ${buildOutputFormat()}`;
 }
 
+/**
+ * Build a multi-agent synthesis prompt that consolidates findings from
+ * specialized review agents (security, performance, quality, logic) into a
+ * single coherent final review. Instructs the synthesis agent to deduplicate
+ * overlapping findings across agents, prioritize by severity × confidence, and
+ * preserve each issue's originating category for downstream filtering.
+ *
+ * Custom review instructions are honored consistently with the specialized
+ * agents: a configured `reviewPromptFile` is loaded and prepended (mirroring
+ * `buildReviewPrompt`), and `reviewPromptExtra` is appended as additional
+ * instructions so a user's custom guidance applies to the consolidation pass as
+ * well as the agents that produced the findings.
+ *
+ * @param inputs - Configuration inputs including project context and optional
+ * custom review prompt file / extra instructions.
+ * @param findingsJsonl - JSONL text of per-agent findings, where each `issue`
+ * line carries an `agent` field identifying its originating specialized agent.
+ * @returns The assembled multi-agent synthesis prompt string.
+ */
+export function buildMultiAgentSynthesisPrompt(
+  inputs: PromptBuilderInputs,
+  findingsJsonl: string,
+): string {
+  const projectContext = inputs.projectContext || getDefaultProjectContext();
+  const sections: string[] = [];
+
+  if (inputs.reviewPromptFile) {
+    const customPrompt = loadPromptFile(inputs.reviewPromptFile);
+    if (customPrompt) {
+      sections.push(customPrompt);
+      sections.push('');
+    }
+  }
+
+  sections.push(`You are a Senior Code Reviewer tasked with synthesizing findings from specialized review agents into a final consolidated report.
+
+## Project Context
+${projectContext}
+
+## Agent Review Findings
+The following are findings from parallel specialized review agents (security, performance, code quality, and logic), each of which reviewed the same pull request with a single narrow focus. Your task is to:
+
+1. **Deduplicate** identical or overlapping findings across agents (same file, line, and message, or the same root cause described from different angles)
+2. **Prioritize** findings by severity × confidence (critical + high-confidence first, low-confidence minor overlaps can be dropped)
+3. **Consolidate** findings into a coherent overall summary and verdict
+4. Ensure the output strictly conforms to the JSON Lines schema
+
+### Agent Findings (JSONL, each issue tagged with its originating "agent"):
+${findingsJsonl}
+
+## Instructions
+- Review all findings and remove any duplicates (same file, line, and message)
+- Merge related findings into single, well-written issues
+- Prioritize: keep high-severity/high-confidence findings, collapse low-value overlaps
+- Preserve each issue's originating agent via the \`category\` field on every \`issue\` line (e.g. "security", "performance", "quality", "logic")
+- Write exactly ONE \`executive_summary\` line with purpose, riskLevel ("low"/"medium"/"high"), riskRationale, and breakingChanges (array of strings)
+- Write exactly ONE \`summary\` line with a brief overall assessment
+- Write exactly ONE \`verdict\` line with the final decision
+- Write zero or more \`strength\` and \`issue\` lines
+- Maintain severity categorization (critical, important, minor)
+
+## Output Format: JSON Lines
+${buildOutputFormat()}`);
+
+  if (inputs.reviewPromptExtra) {
+    sections.push('\n## Additional Instructions');
+    sections.push('');
+    sections.push(inputs.reviewPromptExtra);
+  }
+
+  return capPromptLength(sections.join('\n'));
+}
+
 function getDefaultProjectContext(): string {
   return `Configure project context via the \`project_context\` input or a \`.opencode-reviewer.yml\` config file.
 
@@ -959,17 +1100,25 @@ Default checks apply:
  * @returns The assembled explain prompt string.
  */
 export function buildExplainPrompt(inputs: PromptBuilderInputs, prContext: string): string {
-  const projectContext = inputs.projectContext || getDefaultProjectContext();
-  const safePrContext = sanitizePromptInput(prContext, { maxLength: 50_000 });
+  const boundedProjectContext = boundSection(
+    inputs.projectContext || getDefaultProjectContext(),
+    MAX_PROJECT_CONTEXT_SECTION_BYTES,
+    'project context',
+  );
+  const safePrContext = boundSection(
+    sanitizePromptInput(prContext, { maxLength: 50_000 }),
+    MAX_CONTEXT_SECTION_BYTES,
+    'PR & issue context',
+  );
 
-  return `You are a Senior Software Engineer explaining a pull request to a team.
+  return capPromptLength(`You are a Senior Software Engineer explaining a pull request to a team.
 
 ## PR & Issue Context
 
 ${safePrContext}
 
 ## Project Context
-${projectContext}
+${boundedProjectContext}
 
 ## Instructions
 
@@ -997,5 +1146,5 @@ Does this PR affect the overall architecture? If so, explain how.
 
 ## Output Format
 Write your response as a single markdown document directly to \`.opencode/explain-output.md\`.
-Do NOT wrap in JSON. Be concise but thorough.`;
+Do NOT wrap in JSON. Be concise but thorough.`);
 }

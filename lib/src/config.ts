@@ -4,9 +4,12 @@ import * as core from '@actions/core';
 import yaml from 'js-yaml';
 import { minimatch } from 'minimatch';
 import type {
+  AgentCategory,
   CategoryOverride,
   ConfigOverride,
   LinterConfig,
+  MultiAgentAgentConfig,
+  MultiAgentConfig,
   NotificationsConfig,
   PromptConfig,
   ReviewSensitivityConfig,
@@ -114,6 +117,20 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     },
     teams: {
       webhookUrl: null,
+    },
+  },
+  multiAgent: {
+    enabled: null,
+    agents: [
+      {
+        enabled: null,
+        model: null,
+        promptFile: null,
+      },
+    ],
+    synthesis: {
+      enabled: null,
+      model: null,
     },
   },
 };
@@ -748,6 +765,42 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     if (Object.keys(notifications).length > 0) {
       result.notifications = notifications;
     }
+  }
+
+  if (config.multiAgent && typeof config.multiAgent === 'object') {
+    const ma = config.multiAgent;
+    const multiAgent: MultiAgentConfig = {
+      enabled: typeof ma.enabled === 'boolean' ? ma.enabled : false,
+      agents: {},
+      synthesis: {
+        enabled: typeof ma.synthesis?.enabled === 'boolean' ? ma.synthesis.enabled : true,
+        ...(typeof ma.synthesis?.model === 'string' && ma.synthesis.model.trim() !== ''
+          ? { model: ma.synthesis.model.trim() }
+          : {}),
+      },
+    };
+    if (ma.agents && typeof ma.agents === 'object') {
+      for (const [category, agent] of Object.entries(ma.agents)) {
+        if (
+          !['security', 'performance', 'quality', 'logic'].includes(category) ||
+          !agent ||
+          typeof agent !== 'object'
+        ) {
+          continue;
+        }
+        const validatedAgent: MultiAgentAgentConfig = {
+          enabled: typeof agent.enabled === 'boolean' ? agent.enabled : true,
+          ...(typeof agent.model === 'string' && agent.model.trim() !== ''
+            ? { model: agent.model.trim() }
+            : {}),
+          ...(typeof agent.promptFile === 'string' && agent.promptFile.trim() !== ''
+            ? { promptFile: agent.promptFile.trim() }
+            : {}),
+        };
+        multiAgent.agents[category as AgentCategory] = validatedAgent;
+      }
+    }
+    result.multiAgent = multiAgent;
   }
 
   return result;

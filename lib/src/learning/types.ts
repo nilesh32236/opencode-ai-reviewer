@@ -389,6 +389,12 @@ export interface LearningRepository {
    */
   getFeedbackBreakdown(sinceDays?: number): Promise<FeedbackBreakdown>;
   /**
+   * Retrieve the feedback signals recorded for a single finding.
+   * @param findingId - The finding ID to query feedback for.
+   * @returns Array of feedback signals for that finding (empty when none).
+   */
+  getFeedbackForFinding(findingId: string): Promise<LearningFeedback[]>;
+  /**
    * Retrieve review latency statistics (time from PR creation to review).
    * @param sinceDays - Optional filter to only include reviews from the last N days.
    * @returns LatencyStats with avg, min, max, and median latency.
