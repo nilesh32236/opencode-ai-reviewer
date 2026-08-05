@@ -247,7 +247,76 @@ export interface AgentConfig {
   eventSubscribers?: PluggableSubscriberConfig[];
   /** Webhook notification configuration for Slack/Teams. */
   notifications?: NotificationsConfig;
+  /** Multi-agent review architecture with specialized agents (opt-in, default disabled). */
+  multiAgent?: MultiAgentConfig;
 }
+
+// ─── Multi-Agent Architecture ────────────────────────────
+/** Domain category of a specialized review agent. */
+export type AgentCategory = 'security' | 'performance' | 'quality' | 'logic';
+
+/** Per-agent runtime configuration. */
+export interface MultiAgentAgentConfig {
+  /** Whether this agent participates in multi-agent reviews (default: true). */
+  enabled: boolean;
+  /** Optional model override for this agent (defaults to `reviewModel`). */
+  model?: string;
+  /** Optional path to a custom prompt file that replaces the built-in agent prompt. */
+  promptFile?: string;
+}
+
+/** Configuration for the multi-agent review architecture. */
+export interface MultiAgentConfig {
+  /** Master switch; multi-agent mode is opt-in (default: false). */
+  enabled: boolean;
+  /** Per-category agent configuration. Unlisted categories are enabled by default. */
+  agents: Partial<Record<AgentCategory, MultiAgentAgentConfig>>;
+  /** Synthesis agent that consolidates per-agent findings into the final review. */
+  synthesis: {
+    /** Whether the synthesis pass runs (default: true — always consolidate). */
+    enabled: boolean;
+    /** Optional model override for the synthesis agent (defaults to `synthesisModel`). */
+    model?: string;
+  };
+}
+
+/** A review finding attributed to a specific specialized agent. */
+export interface AgentFinding extends ReviewIssue {
+  /** The specialized agent category that produced this finding. */
+  agent: AgentCategory;
+}
+
+/** The outcome of a single specialized agent's review pass. */
+export interface AgentResult {
+  /** The agent category that produced this result. */
+  agent: AgentCategory;
+  /** Findings reported by the agent (each carries its originating agent). */
+  findings: AgentFinding[];
+  /** Strengths reported by the agent. */
+  strengths: ReviewStrength[];
+  /** Raw JSONL output produced by the agent. */
+  rawOutput: string;
+  /** Wall-clock duration of the agent run in milliseconds. */
+  durationMs: number;
+  /** Total tokens consumed by the agent run. */
+  tokensUsed: number;
+  /** Whether the agent run completed successfully. */
+  success: boolean;
+  /** Error message when the agent run failed. */
+  error?: string;
+}
+
+/** Default multi-agent configuration (opt-in, all agents enabled when active). */
+export const DEFAULT_MULTI_AGENT_CONFIG: MultiAgentConfig = {
+  enabled: false,
+  agents: {
+    security: { enabled: true },
+    performance: { enabled: true },
+    quality: { enabled: true },
+    logic: { enabled: true },
+  },
+  synthesis: { enabled: true },
+};
 
 /** Configuration for the built-in event logging subscriber. */
 export interface EventLoggingConfig {
@@ -1211,6 +1280,8 @@ export interface PromptConfig {
   eventSubscribers?: PluggableSubscriberConfig[];
   /** Webhook notification configuration for Slack/Teams. */
   notifications?: NotificationsConfig;
+  /** Multi-agent review architecture configuration (default: disabled). */
+  multiAgent?: MultiAgentConfig;
 }
 
 // ─── Defaults ─────────────────────────────────────────────
@@ -1341,6 +1412,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   },
   eventSubscribers: [],
   notifications: DEFAULT_NOTIFICATIONS_CONFIG,
+  multiAgent: DEFAULT_MULTI_AGENT_CONFIG,
 };
 
 // ─── Event Bus ───────────────────────────────────────────

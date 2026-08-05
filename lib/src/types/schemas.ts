@@ -281,6 +281,35 @@ export const PluggableSubscriberConfigSchema = z.object({
 });
 
 /**
+ * Zod schema validating a single specialized agent's configuration.
+ * Per-agent model fields are intentionally stringly-typed (no provider/model
+ * regex) so a custom model id can never fail the whole config parse; model
+ * validity is enforced at dispatch time by the OpenCode CLI.
+ */
+export const MultiAgentAgentConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  model: z.string().optional(),
+  promptFile: z.string().optional(),
+});
+
+/** Zod schema validating the multi-agent review architecture configuration. */
+export const MultiAgentConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  agents: z
+    .record(
+      z.enum(['security', 'performance', 'quality', 'logic']),
+      MultiAgentAgentConfigSchema,
+    )
+    .default({}),
+  synthesis: z
+    .object({
+      enabled: z.boolean().default(true),
+      model: z.string().optional(),
+    })
+    .default({ enabled: true }),
+});
+
+/**
  * Zod schema validating Slack incoming-webhook notification configuration.
  * Webhook URLs are intentionally lenient (plain strings) so a placeholder or
  * env-injected value in `.opencode-reviewer.yml` can never fail the whole
@@ -348,6 +377,7 @@ export const AgentConfigSchema = z.object({
   eventLogging: EventLoggingConfigSchema.default(EventLoggingConfigSchema.parse({})),
   eventSubscribers: z.array(PluggableSubscriberConfigSchema).default([]),
   notifications: NotificationsConfigSchema.default(NotificationsConfigSchema.parse({})),
+  multiAgent: MultiAgentConfigSchema.default(MultiAgentConfigSchema.parse({})),
 });
 
 // ─── Prompt Config Schema (YAML config file) ──────────────
@@ -464,4 +494,5 @@ export const PromptConfigSchema = z.object({
   eventLogging: EventLoggingConfigSchema.optional(),
   eventSubscribers: z.array(PluggableSubscriberConfigSchema).optional(),
   notifications: NotificationsConfigSchema.optional(),
+  multiAgent: MultiAgentConfigSchema.optional(),
 });

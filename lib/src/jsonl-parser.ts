@@ -2,6 +2,9 @@ import * as fs from 'fs';
 import * as readline from 'node:readline';
 import * as path from 'path';
 import type {
+  AgentCategory,
+  AgentFinding,
+  AgentResult,
   Finding,
   FindingType,
   IssueFinding,
@@ -106,6 +109,136 @@ export function parseJsonlString(content: string): ReviewResult {
     state.addLine(line);
   }
   return state.finish();
+}
+
+/**
+ * Coerce a raw `confidence` value from an agent's output into the canonical
+ * string union. Accepts the string forms ('high' | 'medium' | 'low') directly
+ * and converts numeric 0-1 confidence into a banded string. Returns undefined
+ * for anything unrecognizable so the field can be dropped by the shared parser.
+ * @param value - The raw confidence value (string, number, or undefined).
+ * @returns The normalized confidence, or undefined when unrecognizable.
+ */
+export function normalizeAgentConfidence(
+  value: unknown,
+): 'high' | 'medium' | 'low' | undefined {
+  if (typeof value === 'string' && ['high', 'medium', 'low'].includes(value)) {
+    return value as 'high' | 'medium' | 'low';
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    if (value >= 0.8) return 'high';
+    if (value >= 0.5) return 'medium';
+    return 'low';
+  }
+  return undefined;
+}
+
+/**
+ * Preprocess agent JSONL content so the shared parser can consume it:
+ * - stamps the originating `agent` category on every `issue` line (preferring
+ *   an explicit `agent` field from the model output when present)
+ * - coerces numeric `confidence` (0-1) into the string union
+ * Malformed lines are left untouched and counted as failed lines downstream.
+ * @param content - Raw agent JSONL content.
+ * @param agent - The agent category to stamp when the output omits it.
+ * @returns The preprocessed JSONL content.
+ */
+function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
+  const lines: string[] = [];
+  for (const rawLine of content.split('\n')) {
+    const trimmed = rawLine.trim();
+    if (!trimmed || trimmed.startsWith('```')) {
+      lines.push(rawLine);
+      continue;
+    }
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const record = parsed as Record<string, unknown>;
+        if (record.type === 'issue') {
+          const confidence = normalizeAgentConfidence(record.confidence);
+          const stamped = {
+            ...record,
+            agent: typeof record.agent === 'string' ? record.agent : agent,
+          };
+          if (confidence !== undefined) stamped.confidence = confidence;
+          lines.push(JSON.stringify(stamped));
+          continue;
+        }
+      }
+    } catch {
+      // Leave unparseable lines as-is; the shared parser counts them as failed.
+    }
+    lines.push(rawLine);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Convert a parsed ReviewResult into an AgentResult for the given agent,
+ * stamping the agent category onto each finding.
+ * @param result - The parsed review result.
+ * @param agent - The agent category that produced this output.
+ * @param rawOutput - The raw JSONL content the result was parsed from.
+ * @returns The structured AgentResult.
+ */
+function toAgentResult(result: ReviewResult, agent: AgentCategory, rawOutput: string): AgentResult {
+  const findings: AgentFinding[] = result.issues.map((issue) => ({
+    ...issue,
+    agent: (issue as AgentFinding).agent ?? agent,
+  }));
+  return {
+    agent,
+    findings,
+    strengths: result.strengths,
+    rawOutput,
+    durationMs: 0,
+    tokensUsed: 0,
+    success: true,
+  };
+}
+
+/**
+ * Parse a JSONL string containing a specialized agent's review findings into
+ * an AgentResult. Accepts findings with or without an explicit `agent` field
+ * (the provided category is stamped on when absent) and coerces numeric
+ * confidence values into the canonical string union.
+ * @param content - The agent's JSONL output.
+ * @param agent - The agent category that produced this output.
+ * @returns The structured AgentResult.
+ */
+export function parseAgentJsonlString(content: string, agent: AgentCategory): AgentResult {
+  const processed = preprocessAgentJsonl(content, agent);
+  const result = parseJsonlString(processed);
+  return toAgentResult(result, agent, content);
+}
+
+/**
+ * Parse a JSONL file containing a specialized agent's review findings into an
+ * AgentResult. Returns an unsuccessful AgentResult when the file cannot be read.
+ * @param filePath - Path to the agent's JSONL output file.
+ * @param agent - The agent category that produced this output.
+ * @returns The structured AgentResult (success: false when the file is missing).
+ */
+export async function parseAgentJsonlFile(
+  filePath: string,
+  agent: AgentCategory,
+): Promise<AgentResult> {
+  try {
+    const content = await fs.readFile(path.resolve(filePath), 'utf-8');
+    return parseAgentJsonlString(content, agent);
+  } catch (err) {
+    return {
+      agent,
+      findings: [],
+      strengths: [],
+      rawOutput: '',
+      durationMs: 0,
+      tokensUsed: 0,
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 /**

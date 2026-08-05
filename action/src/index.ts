@@ -300,6 +300,7 @@ async function run(): Promise<void> {
       eventLogging: loadedConfig?.eventLogging ?? DEFAULT_CONFIG.eventLogging,
       eventSubscribers: loadedConfig?.eventSubscribers ?? DEFAULT_CONFIG.eventSubscribers,
       notifications: loadedConfig?.notifications ?? DEFAULT_CONFIG.notifications,
+      multiAgent: loadedConfig?.multiAgent ?? DEFAULT_CONFIG.multiAgent,
     };
 
     const learningStore = new LearningStore();

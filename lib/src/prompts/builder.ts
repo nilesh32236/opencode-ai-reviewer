@@ -938,6 +938,55 @@ ${findingsJsonl}
 ${buildOutputFormat()}`;
 }
 
+/**
+ * Build a multi-agent synthesis prompt that consolidates findings from
+ * specialized review agents (security, performance, quality, logic) into a
+ * single coherent final review. Instructs the synthesis agent to deduplicate
+ * overlapping findings across agents, prioritize by severity × confidence, and
+ * preserve each issue's originating category for downstream filtering.
+ *
+ * @param inputs - Configuration inputs including project context.
+ * @param findingsJsonl - JSONL text of per-agent findings, where each `issue`
+ * line carries an `agent` field identifying its originating specialized agent.
+ * @returns The assembled multi-agent synthesis prompt string.
+ */
+export function buildMultiAgentSynthesisPrompt(
+  inputs: PromptBuilderInputs,
+  findingsJsonl: string,
+): string {
+  const projectContext = inputs.projectContext || getDefaultProjectContext();
+
+  return `You are a Senior Code Reviewer tasked with synthesizing findings from specialized review agents into a final consolidated report.
+
+## Project Context
+${projectContext}
+
+## Agent Review Findings
+The following are findings from parallel specialized review agents (security, performance, code quality, and logic), each of which reviewed the same pull request with a single narrow focus. Your task is to:
+
+1. **Deduplicate** identical or overlapping findings across agents (same file, line, and message, or the same root cause described from different angles)
+2. **Prioritize** findings by severity × confidence (critical + high-confidence first, low-confidence minor overlaps can be dropped)
+3. **Consolidate** findings into a coherent overall summary and verdict
+4. Ensure the output strictly conforms to the JSON Lines schema
+
+### Agent Findings (JSONL, each issue tagged with its originating "agent"):
+${findingsJsonl}
+
+## Instructions
+- Review all findings and remove any duplicates (same file, line, and message)
+- Merge related findings into single, well-written issues
+- Prioritize: keep high-severity/high-confidence findings, collapse low-value overlaps
+- Preserve each issue's originating agent via the \`category\` field on every \`issue\` line (e.g. "security", "performance", "quality", "logic")
+- Write exactly ONE \`executive_summary\` line with purpose, riskLevel ("low"/"medium"/"high"), riskRationale, and breakingChanges (array of strings)
+- Write exactly ONE \`summary\` line with a brief overall assessment
+- Write exactly ONE \`verdict\` line with the final decision
+- Write zero or more \`strength\` and \`issue\` lines
+- Maintain severity categorization (critical, important, minor)
+
+## Output Format: JSON Lines
+${buildOutputFormat()}`;
+}
+
 function getDefaultProjectContext(): string {
   return `Configure project context via the \`project_context\` input or a \`.opencode-reviewer.yml\` config file.
 
