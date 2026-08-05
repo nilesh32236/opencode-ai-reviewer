@@ -1,6 +1,6 @@
 # OpenCode AI Reviewer - Project Roadmap
 
-> **Version:** 2.0.0  
+> **Version:** 1.0.0  
 > **Last Updated:** 2026-08-05  
 > **Status:** Active Development  
 > **Current Version:** v1.7.1
@@ -318,14 +318,14 @@ Become the most reliable, customizable, and developer-friendly AI code review sy
 ### Version History
 | Version | Date | Major Changes |
 |---------|------|---------------|
-| v1.0.0 | 2025-01 | Initial release |
-| v1.1.0 | 2025-02 | Basic review and fix capabilities |
-| v1.2.0 | 2025-03 | Audit mode added |
-| v1.3.0 | 2025-04 | MCP integration |
-| v1.4.0 | 2025-05 | Multi-provider support |
-| v1.5.0 | 2025-06 | GitHub App support |
-| v1.6.0 | 2025-07 | State persistence |
-| v1.7.0 | 2026-08 | Security fixes, bug fixes |
+| v1.0.0 | 2026-07-17 | Initial release |
+| v1.1.0 | 2026-07-21 | Basic review and fix capabilities |
+| v1.2.0 | 2026-07-25 | Audit mode added |
+| v1.3.0 | 2026-07-25 | MCP integration |
+| v1.4.0 | 2026-07-26 | Multi-provider support |
+| v1.5.0 | 2026-07-26 | GitHub App support |
+| v1.6.0 | 2026-07-29 | State persistence |
+| v1.7.0 | 2026-08-05 | Security fixes, bug fixes |
 | v1.7.1 | 2026-08-05 | Self-heal CI fixes |
 
 ### Planned Releases
@@ -443,6 +443,9 @@ Become the most reliable, customizable, and developer-friendly AI code review sy
 ---
 
 ## 📈 Success Metrics & KPIs
+
+> **Note**: "Current" figures are **directional estimates** for planning purposes,
+> not verified telemetry. Confirm against real data before use in external materials.
 
 ### Technical Metrics
 | Metric | Current | Target (v2.0) | Target (v3.0) |

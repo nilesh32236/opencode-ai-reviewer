@@ -9,23 +9,16 @@
 ## 📅 Visual Timeline Overview
 
 ```
-2025
-├── Q1 (Jan-Mar)
-│   ├── v1.0.0 - Initial Release
-│   ├── v1.1.0 - Basic Review & Fix
-│   └── v1.2.0 - Audit Mode
-│
-├── Q2 (Apr-Jun)
-│   ├── v1.3.0 - MCP Integration
-│   ├── v1.4.0 - Multi-Provider Support
-│   └── v1.5.0 - GitHub App Support
-│
-└── Q3-Q4 (Jul-Dec)
-    ├── v1.6.0 - State Persistence
-    └── v1.7.0 - Security Fixes
-
 2026
 ├── Q3 (Jul-Sep) - CURRENT FOCUS
+│   ├── v1.0.0 - Initial Release (Jul 17)
+│   ├── v1.1.0 - Basic Review & Fix (Jul 21)
+│   ├── v1.2.0 - Audit Mode (Jul 25)
+│   ├── v1.3.0 - MCP Integration (Jul 25)
+│   ├── v1.4.0 - Multi-Provider Support (Jul 26)
+│   ├── v1.5.0 - GitHub App Support (Jul 26)
+│   ├── v1.6.0 - State Persistence (Jul 29)
+│   ├── v1.7.0 - Security Fixes (Aug 5)
 │   ├── v1.7.1 - Self-Heal CI Fixes (Aug 5)
 │   ├── 🎯 M1: Core Improvements (Phase 1-5)
 │   │   ├── Phase 1: PR Review Context & Resolution (Aug)
@@ -401,8 +394,8 @@ Sprint 1 - August 11-24, 2026
 ### Communication
 - **GitHub Issues**: Bug reports and feature requests
 - **GitHub Discussions**: General questions and discussions
-- **Discord**: Real-time chat and community building
-- **Email**: support@opencode.ai (for enterprise support)
+- **Discord**: Real-time chat and community building _(invite link TBD)_
+- **Email**: support@opencode.ai _(placeholder)_
 
 ### Documentation
 - **Main Docs**: README.md and docs/

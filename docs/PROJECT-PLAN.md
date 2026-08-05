@@ -91,12 +91,12 @@ opencode-ai-reviewer/
 **Timeline**: September 2026
 
 **Key Features**:
-- ✅ PR review context awareness
-- ✅ Proper issue resolution
-- ✅ Actionable fix suggestions
-- ✅ Auto-analysis on issue open
-- ✅ Question workflow for fixes
-- ✅ Improved PR body generation
+- 🔲 PR review context awareness
+- 🔲 Proper issue resolution
+- 🔲 Actionable fix suggestions
+- 🔲 Auto-analysis on issue open
+- 🔲 Question workflow for fixes
+- 🔲 Improved PR body generation
 
 **Breaking Changes**:
 - Review prompt format updates
@@ -106,6 +106,9 @@ opencode-ai-reviewer/
 ---
 
 ## 📊 Project Health Metrics
+
+> **Note**: The "Current State" figures below are **directional estimates** for
+> planning purposes, not verified telemetry. Confirm against real data before use.
 
 ### Current State (August 2026)
 
@@ -162,10 +165,10 @@ opencode-ai-reviewer/
 **Theme**: "Core Excellence"
 
 **Objectives**:
-1. ✅ Complete all 5 improvement phases
-2. ✅ Release v2.0.0
-3. ✅ Achieve 90% user satisfaction
-4. ✅ Reduce false positive rate to 8%
+1. 🔲 Complete all 5 improvement phases
+2. 🔲 Release v2.0.0
+3. 🔲 Achieve 90% user satisfaction
+4. 🔲 Reduce false positive rate to 8%
 
 **Deliverables**:
 - v2.0.0 release
@@ -185,10 +188,10 @@ opencode-ai-reviewer/
 **Theme**: "Performance & Intelligence"
 
 **Objectives**:
-1. ✅ Release v2.1.0 with performance improvements
-2. ✅ Implement adaptive review depth
-3. ✅ Enhance context understanding
-4. ✅ Achieve 5K active users
+1. 🔲 Release v2.1.0 with performance improvements
+2. 🔲 Implement adaptive review depth
+3. 🔲 Enhance context understanding
+4. 🔲 Achieve 5K active users
 
 **Deliverables**:
 - v2.1.0 release
@@ -208,10 +211,10 @@ opencode-ai-reviewer/
 **Theme**: "Platform Maturity"
 
 **Objectives**:
-1. ✅ Release v2.2.0 and v2.3.0
-2. ✅ Launch plugin architecture
-3. ✅ Achieve enterprise readiness
-4. ✅ Reach 20K active users
+1. 🔲 Release v2.2.0 and v2.3.0
+2. 🔲 Launch plugin architecture
+3. 🔲 Achieve enterprise readiness
+4. 🔲 Reach 20K active users
 
 **Deliverables**:
 - v2.2.0 and v2.3.0 releases
@@ -374,12 +377,12 @@ opencode-ai-reviewer/
 ### For Advanced Contributors
 1. **[IMPROVEMENT-PLAN.md](../IMPROVEMENT-PLAN.md)** - Detailed improvement phases
 2. **[docs/improvement/](./improvement/)** - Phase-specific documents
-3. **[.github/workflows/](.github/workflows/)** - CI/CD workflows
-4. **[lib/src/](lib/src/)** - Core engine code
+3. **[.github/workflows/](../.github/workflows/)** - CI/CD workflows
+4. **[lib/src/](../lib/src/)** - Core engine code
 
 ### For Users
 1. **[README.md](../README.md)** - Quick start guide
-2. **[examples/](examples/)** - Example workflows
+2. **[examples/](../examples/)** - Example workflows
 3. **[docs/](docs/)** - Additional documentation
 
 ---
@@ -394,10 +397,10 @@ opencode-ai-reviewer/
 - [Contribution Guide](../CONTRIBUTING.md)
 
 ### Code
-- [Core Library (lib/)](lib/)
-- [GitHub Action (action/)](action/)
-- [Probot App (app/)](app/)
-- [CLI (cli/)](cli/)
+- [Core Library (lib/)](../lib/)
+- [GitHub Action (action/)](../action/)
+- [Probot App (app/)](../app/)
+- [CLI (cli/)](../cli/)
 
 ### Community
 - [GitHub Issues](https://github.com/nilesh32236/opencode-ai-reviewer/issues)
@@ -440,5 +443,5 @@ opencode-ai-reviewer/
 **Need Help?**
 - Check the [documentation](../README.md)
 - Ask in [GitHub Discussions](https://github.com/nilesh32236/opencode-ai-reviewer/discussions)
-- Join our [Discord community](https://discord.gg/opencode)
-- Email: support@opencode.ai
+- Join our Discord community _(invite link TBD)_
+- Email: support@opencode.ai _(placeholder)_

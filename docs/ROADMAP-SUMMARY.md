@@ -27,19 +27,19 @@
 ## 🚀 Major Milestones Timeline
 
 ```
-2025                    2026                          2027                    
-┌─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┐
-│ Q1  │ Q2  │ Q3  │ Q4  │ Q1  │ Q2  │ Q3  │ Q4  │ Q1  │ Q2  │ Q3  │
-├─────┼─────┼─────┼─────┼─────┼─────┼─────┼─────┼─────┼─────┼─────┤
-│v1.0 │v1.1 │v1.2 │v1.3 │v1.4 │v1.5 │v1.6 │v1.7 │     │     │     │
-│     │     │     │     │     │     │     │v1.7.1│     │     │     │
-├─────┼─────┼─────┼─────┼─────┼─────┼─────┼─────┼─────┼─────┼─────┤
-│     │     │     │     │     │     │     │ 🎯  │ 🎯  │ 🎯  │ 🎯  │
-│     │     │     │     │     │     │     │ M1  │ M2  │ M4  │ M8  │
-│     │     │     │     │     │     │     │     │ M3  │ M5  │     │
-├─────┼─────┼─────┼─────┼─────┼─────┼─────┼─────┼─────┼─────┼─────┤
-│     │     │     │     │     │     │     │v2.0│v2.1│v2.2│v3.0│
-└─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┘
+                    2026                        2027               
+┌─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┐
+│ Q3  │ Q4  │ Q1  │ Q2  │ Q3  │ Q1  │ Q2  │ Q3  │ Q4  │
+├─────┼─────┼─────┼─────┼─────┼─────┼─────┼─────┼─────┤
+│v1.0-│     │     │     │     │     │     │     │     │
+│v1.7.1│     │     │     │     │     │     │     │     │
+├─────┼─────┼─────┼─────┼─────┼─────┼─────┼─────┼─────┤
+│ 🎯  │ 🎯  │ 🎯  │ 🎯  │     │     │     │     │     │
+│ M1  │ M2  │ M4  │ M6  │     │     │     │     │     │
+│     │ M3  │ M5  │ M7  │     │     │     │     │     │
+├─────┼─────┼─────┼─────┼─────┼─────┼─────┼─────┼─────┤
+│v2.0│v2.1│v2.2│v2.3│v3.0│     │     │     │     │
+└─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┘
 
 Legend:
   M1 = Core Improvements (Phase 1-5)
@@ -47,12 +47,18 @@ Legend:
   M3 = Enhanced Context & Intelligence  
   M4 = Developer Experience
   M5 = Security & Compliance
+  M6 = Extensibility & Integrations
+  M7 = Advanced Features
   M8 = Platform Maturity
 ```
 
 ---
 
 ## 📊 Current Status Dashboard
+
+> **Note**: The metrics below are **directional estimates** for planning purposes,
+> not verified telemetry. Confirm them against real data (test coverage reports,
+> GitHub stars/API, dependency scans) before using them in external materials.
 
 ### 🟢 Healthy
 - **Stability**: Production-ready, actively maintained
@@ -219,8 +225,8 @@ Legend:
 ### 💻 Code
 - [GitHub Repository](https://github.com/nilesh32236/opencode-ai-reviewer)
 - [GitHub Action](https://github.com/marketplace/actions/opencode-ai-reviewer)
-- [Core Library](lib/)
-- [GitHub App](app/)
+- [Core Library](../lib/)
+- [GitHub App](../app/)
 
 ### 👥 Community
 - [GitHub Issues](https://github.com/nilesh32236/opencode-ai-reviewer/issues)
@@ -259,14 +265,18 @@ Legend:
 - **Discussions**: [GitHub Discussions](https://github.com/nilesh32236/opencode-ai-reviewer/discussions)
 
 ### Community
-- **Discord**: [Join our community](https://discord.gg/opencode)
-- **Twitter**: [@opencode_ai](https://twitter.com/opencode_ai)
-- **Email**: support@opencode.ai
+- **Discord**: _placeholder_ (official invite TBD)
+- **Twitter**: _placeholder_ (@opencode_ai)
+- **Email**: _placeholder_ (support@opencode.ai)
 
 ### Enterprise
-- **Sales**: sales@opencode.ai
-- **Support**: support@opencode.ai
-- **Documentation**: [Enterprise Guide](https://docs.opencode.ai/enterprise)
+- **Sales**: _placeholder_ (sales@opencode.ai)
+- **Support**: _placeholder_ (support@opencode.ai)
+- **Documentation**: _placeholder_ ([Enterprise Guide](https://docs.opencode.ai/enterprise))
+
+> **Note**: The opencode.ai contact channels above are placeholders for future official
+> channels. For now, use the verified GitHub Issues and Discussions links in the
+> Development section.
 
 ---
 
