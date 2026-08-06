@@ -813,6 +813,111 @@ describe('LLM provider support', () => {
     expect(env.AZURE_OPENAI_API_KEY).toBe('azure-key');
     expect(env.AZURE_OPENAI_API_VERSION).toBe('2024-02-15-preview');
   });
+
+  it('forwards only allowlisted {env:VAR} references into the subprocess env', async () => {
+    process.env.LLM_API_KEY = 'allowed-secret';
+    process.env.INTERNAL_LLM_KEY = 'should-not-leak';
+    setLLMProviderConfig({
+      providers: {
+        gateway: {
+          type: 'openai-compatible',
+          baseUrl: 'https://llm.corp.example/v1',
+          apiKey: '{env:LLM_API_KEY}',
+        },
+      },
+    });
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const resultPromise = runOpenCode('test', { model: 'gateway/qwen3-coder' });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    proc.emitClose(0);
+    await resultPromise;
+
+    const spawnCall = mockSpawn.mock.calls[0];
+    const env = spawnCall[2].env;
+    expect(env.LLM_API_KEY).toBe('allowed-secret');
+    expect(env.INTERNAL_LLM_KEY).toBeUndefined();
+  });
+
+  it('warns and skips a {env:VAR} reference that is not on the forwarded allowlist', async () => {
+    process.env.INTERNAL_LLM_KEY = 'secret';
+    setLLMProviderConfig({
+      providers: {
+        gateway: {
+          type: 'openai-compatible',
+          baseUrl: 'https://llm.corp.example/v1',
+          apiKey: '{env:INTERNAL_LLM_KEY}',
+        },
+      },
+    });
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const resultPromise = runOpenCode('test', { model: 'gateway/qwen3-coder' });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    proc.emitClose(0);
+    await resultPromise;
+
+    expect(core.warning).toHaveBeenCalledWith(
+      expect.stringContaining('not on the allowlist'),
+    );
+    const env = mockSpawn.mock.calls[0][2].env;
+    expect(env.INTERNAL_LLM_KEY).toBeUndefined();
+  });
+
+  it('merges env-var providers into a config-file provider instead of replacing it', () => {
+    process.env.OLLAMA_MODEL = 'codellama';
+    process.env.OLLAMA_BASE_URL = 'http://ollama.corp:11434/v1';
+    const map = buildLLMProviderMap({
+      providers: {
+        ollama: {
+          type: 'ollama',
+          baseUrl: 'http://localhost:11434/v1',
+          models: ['llama3'],
+        },
+      },
+    });
+    expect(map).toEqual({
+      ollama: {
+        npm: '@ai-sdk/openai-compatible',
+        options: { baseURL: 'http://localhost:11434/v1' },
+        models: { llama3: {}, codellama: {} },
+      },
+    });
+  });
+
+  it('warns when an openai-compatible provider apiKey is a literal value', () => {
+    buildLLMProviderMap({
+      providers: {
+        gateway: {
+          type: 'openai-compatible',
+          baseUrl: 'https://llm.corp.example/v1',
+          apiKey: 'literal-secret',
+        },
+      },
+    });
+    expect(core.warning).toHaveBeenCalledWith(
+      expect.stringContaining('literal value and will be embedded'),
+    );
+  });
+
+  it('does not warn when the openai-compatible provider apiKey uses {env:VAR}', () => {
+    buildLLMProviderMap({
+      providers: {
+        gateway: {
+          type: 'openai-compatible',
+          baseUrl: 'https://llm.corp.example/v1',
+          apiKey: '{env:LLM_API_KEY}',
+        },
+      },
+    });
+    expect(core.warning).not.toHaveBeenCalledWith(
+      expect.stringContaining('literal value and will be embedded'),
+    );
+  });
 });
 
 describe('validateModelString()', () => {

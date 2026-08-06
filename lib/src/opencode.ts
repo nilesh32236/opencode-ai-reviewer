@@ -761,6 +761,33 @@ const LLM_OPENAI_COMPATIBLE_ADAPTER = '@ai-sdk/openai-compatible';
 export const DEFAULT_OLLAMA_BASE_URL = 'http://localhost:11434/v1';
 
 /**
+ * Allowlist of environment variable names that may be referenced from an LLM
+ * provider config via the OpenCode `{env:VAR}` substitution syntax and
+ * forwarded into the sandboxed OpenCode subprocess.
+ *
+ * The `llm:` block is repo-controlled, so without this allowlist a
+ * compromised/third-party config could reference and exfiltrate an arbitrary
+ * parent env var (e.g. `{env:GITHUB_TOKEN}`) into a subprocess that renders
+ * repo content into prompts/logs. Only credential names relevant to the
+ * supported LLM providers are forwarded; any other reference is skipped (with
+ * a warning) and the CLI's `{env:VAR}` expansion would then yield an empty
+ * value for that variable.
+ */
+const LLM_REF_ALLOWLIST = new Set([
+  'LLM_API_KEY',
+  'LLM_BASE_URL',
+  'LLM_MODEL',
+  'OPENAI_API_KEY',
+  'OLLAMA_API_KEY',
+  'OLLAMA_BASE_URL',
+  'OLLAMA_MODEL',
+  'AZURE_OPENAI_API_KEY',
+  'AZURE_OPENAI_ENDPOINT',
+  'AZURE_RESOURCE_NAME',
+  'AZURE_OPENAI_API_VERSION',
+]);
+
+/**
  * Build an `@ai-sdk/openai-compatible` provider entry for the OpenCode CLI
  * `provider` map. Returns `undefined` when no usable base URL is configured.
  * @param provider - The OpenAI-compatible / Ollama provider configuration.
@@ -778,7 +805,18 @@ function buildCompatibleProviderEntry(
     // performs its own "{env:...}" substitution at runtime; runOpenCode forwards
     // the referenced variables into the subprocess environment via
     // applyLLMEnvVarReferences so the reference always resolves.
-    options.apiKey = provider.apiKey.trim();
+    const apiKey = provider.apiKey.trim();
+    options.apiKey = apiKey;
+    // A literal (non-{env:...}) key is serialized into OPENCODE_CONFIG_CONTENT
+    // itself, which leaks the secret into the injected config. Warn so authors
+    // move to the "{env:VAR}" reference form (or an env-var-provided key).
+    if (!/^\{env:[^}]+\}$/.test(apiKey)) {
+      core.warning(
+        'LLM provider apiKey is a literal value and will be embedded in OPENCODE_CONFIG_CONTENT. ' +
+          'Prefer the "{env:VAR_NAME}" reference syntax so the secret is forwarded via the ' +
+          'subprocess environment instead of the injected config.',
+      );
+    }
   }
   const modelNames = [...(provider.models ?? []), provider.model ?? '']
     .map((m) => m.trim())
@@ -824,21 +862,67 @@ export function buildLLMProviderMap(
     if (process.env.LLM_API_KEY?.trim()) options.apiKey = '{env:LLM_API_KEY}';
     const models: Record<string, Record<string, never>> = {};
     if (process.env.LLM_MODEL?.trim()) models[process.env.LLM_MODEL.trim()] = {};
-    providers['custom-openai'] = { npm: LLM_OPENAI_COMPATIBLE_ADAPTER, options, models };
+    providers['custom-openai'] = mergeEnvProviderEntry(providers['custom-openai'], {
+      npm: LLM_OPENAI_COMPATIBLE_ADAPTER,
+      options,
+      models,
+    });
   }
 
   // Env-var path for Ollama local models (OLLAMA_MODEL selects the model).
   const ollamaModel = process.env.OLLAMA_MODEL?.trim();
   if (ollamaModel) {
-    providers.ollama = {
+    providers.ollama = mergeEnvProviderEntry(providers.ollama, {
       npm: LLM_OPENAI_COMPATIBLE_ADAPTER,
       options: { baseURL: process.env.OLLAMA_BASE_URL?.trim() || DEFAULT_OLLAMA_BASE_URL },
       models: { [ollamaModel]: {} },
-    };
+    });
   }
 
   if (Object.keys(providers).length === 0) return undefined;
   return providers;
+}
+
+/**
+ * Merge an env-var-derived provider entry into an existing config-file entry
+ * with the same id, filling only unset fields instead of replacing the whole
+ * entry. This prevents the env path from silently dropping a config-declared
+ * `baseUrl` / model list (e.g. a repo config `ollama` block with a custom
+ * base URL re-pointed at localhost just because `OLLAMA_MODEL` is set).
+ * @param existing - The config-file provider entry, or `undefined`.
+ * @param envEntry - The provider entry built from environment variables.
+ * @returns The merged provider entry.
+ */
+function mergeEnvProviderEntry(
+  existing: Record<string, unknown> | undefined,
+  envEntry: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!existing) return envEntry;
+  const existingOptions =
+    existing.options && typeof existing.options === 'object'
+      ? (existing.options as Record<string, string>)
+      : {};
+  const envOptions =
+    envEntry.options && typeof envEntry.options === 'object'
+      ? (envEntry.options as Record<string, string>)
+      : {};
+  const mergedOptions: Record<string, string> = { ...existingOptions };
+  for (const [key, value] of Object.entries(envOptions)) {
+    if (mergedOptions[key] === undefined) mergedOptions[key] = value;
+  }
+  const existingModels =
+    existing.models && typeof existing.models === 'object'
+      ? (existing.models as Record<string, unknown>)
+      : {};
+  const envModels =
+    envEntry.models && typeof envEntry.models === 'object'
+      ? (envEntry.models as Record<string, unknown>)
+      : {};
+  return {
+    npm: envEntry.npm,
+    options: mergedOptions,
+    models: { ...existingModels, ...envModels },
+  };
 }
 
 /**
@@ -891,6 +975,12 @@ function applyLLMEnvOverrides(safeEnv: Record<string, string>, llm: LLMConfig | 
  * only works when the referenced variable is present in the subprocess
  * environment — a sandboxed safeEnv forwards just a small allowlist, so any
  * variable a config file references must be forwarded explicitly.
+ *
+ * Forwarding is restricted to {@link LLM_REF_ALLOWLIST}: the `llm:` block is
+ * repo-controlled, and referencing an arbitrary parent env var (e.g.
+ * `{env:GITHUB_TOKEN}`) would widen the exfiltration surface beyond the fixed
+ * `WHITELISTED_KEYS`. References outside the allowlist are skipped and warn, so
+ * the author knows the referenced variable will not resolve in the subprocess.
  * @param safeEnv - The environment being built for the OpenCode subprocess.
  * @param llm - The custom LLM provider configuration (may be `undefined`).
  */
@@ -915,6 +1005,14 @@ function applyLLMEnvVarReferences(
   };
   visit(llm);
   for (const name of references) {
+    if (!LLM_REF_ALLOWLIST.has(name)) {
+      core.warning(
+        `Skipping LLM {env:${name}} reference: "${name}" is not on the allowlist of ` +
+          `forwarded variables (${[...LLM_REF_ALLOWLIST].join(', ')}). The referenced value ` +
+          `will be empty inside the OpenCode subprocess.`,
+      );
+      continue;
+    }
     const value = process.env[name];
     if (value !== undefined) safeEnv[name] = value;
   }

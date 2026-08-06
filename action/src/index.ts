@@ -8,14 +8,11 @@ import {
   EventBus,
   GitHubHelper,
   GitLabAdapter,
-  type LLMConfig,
-  type LLMProviderConfig,
   LearningStore,
   Logger,
   type MCPServerConfig,
   MCPServerConfigSchema,
   type PlatformAdapter,
-  type PromptConfig,
   ReviewEngine,
   TelemetrySubscriber,
   configureGit,
@@ -31,77 +28,13 @@ import { runAudit } from './audit.js';
 import { runDocs } from './docs.js';
 import { runAutofixLoop, runFix, runFixIssue } from './fix.js';
 import { type ActionInputs, parseInputs } from './inputs.js';
+import { buildLLMConfig } from './llm.js';
 import { runPost } from './post.js';
 import { runReview } from './review.js';
 import { runSelfHeal } from './self-heal.js';
 import { runSetup } from './setup.js';
 import { StateCacheManager } from './state-cache.js';
 import { sanitize } from './utils.js';
-
-/**
- * Build the custom LLM provider configuration for the review engine by merging
- * the `.opencode-reviewer.yml` `llm:` section with the dedicated action inputs.
- * Action inputs take precedence over config-file providers with the same id.
- * Configuring an Azure deployment name or Bedrock model id also defaults the
- * provider so bare model names resolve to "azure/<deployment>" /
- * "amazon-bedrock/<model-id>" (a single-config-change provider selection).
- * @param inputs - Parsed action inputs (may lack LLM fields).
- * @param loadedConfig - Parsed config file, or null.
- * @returns An LLMConfig, or undefined when nothing is configured.
- */
-function buildLLMConfig(
-  inputs: ActionInputs,
-  loadedConfig: PromptConfig | null,
-): LLMConfig | undefined {
-  const providers: Record<string, LLMProviderConfig> = {
-    ...(loadedConfig?.llm?.providers ?? {}),
-  };
-  if (inputs.llmBaseUrl) {
-    // Register the OpenAI-compatible provider under the same id ('custom-openai')
-    // used by every other path (env vars, docs, model selection) so the
-    // documented "custom-openai/<model>" model id resolves for action inputs too.
-    providers['custom-openai'] = {
-      type: 'openai-compatible',
-      baseUrl: inputs.llmBaseUrl,
-      ...(inputs.llmApiKey && { apiKey: inputs.llmApiKey }),
-    };
-  }
-  if (inputs.ollamaBaseUrl || inputs.ollamaModel) {
-    providers.ollama = {
-      type: 'ollama',
-      ...(inputs.ollamaBaseUrl && { baseUrl: inputs.ollamaBaseUrl }),
-      ...(inputs.ollamaModel && { model: inputs.ollamaModel }),
-    };
-  }
-  if (inputs.azureEndpoint || inputs.azureKey || inputs.azureDeployment) {
-    providers.azure = {
-      type: 'azure',
-      ...(inputs.azureEndpoint && { endpoint: inputs.azureEndpoint }),
-      ...(inputs.azureKey && { apiKey: inputs.azureKey }),
-      ...(inputs.azureDeployment && { deployment: inputs.azureDeployment }),
-    };
-  }
-  if (inputs.bedrockModelId || inputs.bedrockRegion) {
-    providers.bedrock = {
-      type: 'bedrock',
-      ...(inputs.bedrockModelId && { modelId: inputs.bedrockModelId }),
-      ...(inputs.bedrockRegion && { region: inputs.bedrockRegion }),
-    };
-  }
-
-  let defaultProvider =
-    inputs.llmDefaultProvider || loadedConfig?.llm?.defaultProvider || undefined;
-  if (!defaultProvider) {
-    if (inputs.azureDeployment) defaultProvider = 'azure';
-    else if (inputs.bedrockModelId) defaultProvider = 'amazon-bedrock';
-  }
-
-  if (Object.keys(providers).length === 0 && !defaultProvider) return undefined;
-  const llm: LLMConfig = {};
-  if (defaultProvider) llm.defaultProvider = defaultProvider;
-  if (Object.keys(providers).length > 0) llm.providers = providers;
-  return llm;
-}
 
 async function run(): Promise<void> {
   // The GitHub Action defaults to human-readable logs because CI already
@@ -132,7 +65,12 @@ async function run(): Promise<void> {
     const platform = (process.env.PLATFORM || 'github') as string as 'github' | 'gitlab';
     const loadedConfig = loadConfig(undefined, platform, core.getInput('config') || undefined);
 
-    const inputs = parseInputs(loadedConfig?.llm?.defaultProvider);
+    // Assign into the outer function-scoped `inputs` (declared above the try)
+    // rather than shadowing it: the outer `finally` block saves the learning
+    // cache based on `inputs.enableStateCache`, so a shadowing local would
+    // leave the outer variable undefined and `cacheManager.save()` would never
+    // run on default-configured runs.
+    inputs = parseInputs(loadedConfig?.llm);
 
     if (platform === 'gitlab') {
       if (!process.env.CI_PROJECT_NAMESPACE || !process.env.CI_PROJECT_NAME) {

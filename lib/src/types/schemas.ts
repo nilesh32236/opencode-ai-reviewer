@@ -287,18 +287,29 @@ export const LLMProviderConfigSchema = z.object({
  * malformed `llm:` block falls back to an empty provider map (mirroring
  * `NotificationsConfigSchema`) instead of failing the whole config parse.
  *
- * Provider entries are accepted leniently (`z.any()`) so a single invalid
- * provider (e.g. an unsupported `type`) never wipes the whole block — the
- * record only fails per entry, falling back to `{}`, and valid peers survive.
- * Dropping invalid providers is the single responsibility of
+ * Provider entries are validated with {@link LLMProviderConfigSchema}; a single
+ * invalid provider (e.g. an unsupported `type` or a mistyped field) neutralizes
+ * only that entry (falling back to `{}`) while valid peers and `defaultProvider`
+ * survive. Dropping invalid providers is the single responsibility of
  * `validateConfig()` in config.ts, which warns when it drops one.
  */
+/** Inferred output type of {@link LLMProviderConfigSchema}. */
+type LLMProviderConfigSchemaOutput = z.infer<typeof LLMProviderConfigSchema>;
+/** Per-entry fallback for a provider that fails {@link LLMProviderConfigSchema}. */
+const LLMProviderFallback = {} as LLMProviderConfigSchemaOutput;
+
 export const LLMConfigSchema = z
   .object({
     defaultProvider: z.string().optional(),
-    providers: z.record(z.string(), z.any().catch({})).optional().default({}),
+    providers: z
+      .record(z.string(), LLMProviderConfigSchema.catch(LLMProviderFallback))
+      .optional()
+      .default({}),
   })
-  .catch({ providers: {} });
+  .catch(({ input }) => ({
+    defaultProvider: (input as { defaultProvider?: string } | undefined)?.defaultProvider,
+    providers: {},
+  }));
 
 /** Zod schema validating rate limiting configuration. */
 export const RateLimitingConfigSchema = z.object({

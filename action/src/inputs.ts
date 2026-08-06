@@ -7,6 +7,7 @@ import {
   type DocStyle,
   type FailOnSeverity,
   isDocStyle,
+  type LLMConfig,
   validateModelString,
   validateRunChecksCommand,
 } from '@opencode-pr-agent/lib';
@@ -199,13 +200,15 @@ export interface ActionInputs {
 /**
  * Parse and validate all GitHub Action inputs from workflow environment.
  *
- * @param configDefaultProvider - The `.opencode-reviewer.yml` `llm.defaultProvider`
- * (when one is configured). Used as a fallback when the `llm_default_provider`
- * action input is unset, so a workflow author who relies on the config file's
- * default provider gets bare model names resolved (and validated) correctly.
+ * @param configLlm - The `.opencode-reviewer.yml` `llm:` block (when one is
+ * configured). Its `defaultProvider` is used as a fallback when the
+ * `llm_default_provider` action input is unset, and its provider entries
+ * (Azure `deployment` / Bedrock `modelId`) are used to route bare model names
+ * when a provider is configured solely via the config file, so the workflow
+ * author gets bare model names resolved (and validated) correctly.
  * @returns A fully populated ActionInputs object.
  */
-export function parseInputs(configDefaultProvider?: string): ActionInputs {
+export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   const modeStr = core.getInput('mode', { required: true }).toLowerCase().trim();
   if (!VALID_MODES.includes(modeStr as ActionMode)) {
     throw new Error(`Invalid mode: "${modeStr}". Must be one of: ${VALID_MODES.join(', ')}`);
@@ -265,12 +268,23 @@ export function parseInputs(configDefaultProvider?: string): ActionInputs {
   const llmDefaultProviderInput = modelInput('llm_default_provider');
   const azureDeploymentInput = modelInput('azure_deployment_name');
   const bedrockModelIdInput = modelInput('aws_bedrock_model_id');
+  // Provider entries may be configured solely via the config file (e.g.
+  // `llm.providers.azure.deployment`), so mirror the lib-side resolveModel
+  // lookup: use the config-file deployment/model id as a fallback when no
+  // matching action input is supplied.
+  const configAzureDeployment = Object.values(configLlm?.providers ?? {})
+    .find((p) => p?.type === 'azure' && p.deployment?.trim())
+    ?.deployment?.trim();
+  const configBedrockModelId = Object.values(configLlm?.providers ?? {})
+    .find((p) => p?.type === 'bedrock' && p.modelId?.trim())
+    ?.modelId?.trim();
+  const configDefaultProvider = configLlm?.defaultProvider;
   const effectiveDefaultProvider =
     llmDefaultProviderInput || configDefaultProvider
       ? (llmDefaultProviderInput || configDefaultProvider)!
-      : azureDeploymentInput
+      : azureDeploymentInput || configAzureDeployment
         ? 'azure'
-        : bedrockModelIdInput
+        : bedrockModelIdInput || configBedrockModelId
           ? 'amazon-bedrock'
           : undefined;
   const resolveModel = (value: string | undefined): string | undefined => {
@@ -281,11 +295,13 @@ export function parseInputs(configDefaultProvider?: string): ActionInputs {
     const provider = effectiveDefaultProvider.trim();
     // Azure/Bedrock deployments are addressed by the deployment/model id, not
     // the bare model name: "llama3" + azure deployment "my-dep" → "azure/my-dep".
-    if (provider === 'azure' && azureDeploymentInput?.trim()) {
-      return `azure/${azureDeploymentInput.trim()}`;
+    if (provider === 'azure') {
+      const deployment = azureDeploymentInput?.trim() || configAzureDeployment;
+      if (deployment) return `azure/${deployment}`;
     }
-    if (provider === 'amazon-bedrock' && bedrockModelIdInput?.trim()) {
-      return `amazon-bedrock/${bedrockModelIdInput.trim()}`;
+    if (provider === 'amazon-bedrock') {
+      const modelId = bedrockModelIdInput?.trim() || configBedrockModelId;
+      if (modelId) return `amazon-bedrock/${modelId}`;
     }
     return `${provider}/${trimmed}`;
   };
