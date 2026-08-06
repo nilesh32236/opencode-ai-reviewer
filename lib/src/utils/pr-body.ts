@@ -1,12 +1,13 @@
 import type { DocStyle } from '../types/index.js';
 
 /**
- * Escape backticks in a file path so it renders as a single inline code span.
+ * Escape backslashes and backticks in a file path so it renders as a single
+ * inline code span even when the path contains either character.
  * @param file - File path to escape.
- * @returns The path with any backticks escaped.
+ * @returns The path with backslashes doubled and backticks escaped.
  */
 function escapeCodeSpan(file: string): string {
-  return file.replace(/`/g, '\\`');
+  return file.replace(/\\/g, '\\\\').replace(/`/g, '\\`');
 }
 
 /**

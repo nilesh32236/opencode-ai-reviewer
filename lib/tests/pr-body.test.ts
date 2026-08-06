@@ -88,13 +88,14 @@ describe('buildDocsPRBody', () => {
     const body = buildDocsPRBody({
       prNumber: 199,
       prTitle: 'Add `docs` [generation] (final)',
-      filesChanged: ['src/odd`file.ts', 'src/normal.ts'],
+      filesChanged: ['src/odd`file.ts', 'src/back\\slash.ts', 'src/normal.ts'],
       branchName: 'docs/issue-199',
       docStyle: 'tsdoc',
     });
 
     expect(body).toContain('Add \\`docs\\` \\[generation\\] \\(final\\)');
     expect(body).toContain('- `src/odd\\`file.ts`');
+    expect(body).toContain('- `src/back\\\\slash.ts`');
     expect(body).toContain('- `src/normal.ts`');
   });
 });
