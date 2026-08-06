@@ -96,6 +96,10 @@ export interface ActionInputs {
     failOnSeverity: FailOnSeverity;
     /** Whether the fail_on_severity input was explicitly set by the workflow. */
     failOnSeverityExplicit: boolean;
+    /** Workflow-level override for the secret-scan CI gate (secrets_fail_ci input). */
+    secretsFailCI?: boolean;
+    /** Whether the secrets_fail_ci input was explicitly set by the workflow. */
+    secretsFailCIExplicit: boolean;
     /** Whether the learning state cache is enabled. */
     enableStateCache: boolean;
     /** Cache key prefix for learning state storage. */

@@ -5,6 +5,7 @@ import * as github from '@actions/github';
 import {
   type AgentConfig,
   DEFAULT_CONFIG,
+  DEFAULT_SECRET_DETECTOR_CONFIG,
   EventBus,
   GitHubHelper,
   GitLabAdapter,
@@ -316,12 +317,14 @@ async function run(): Promise<void> {
       notifications: loadedConfig?.notifications ?? DEFAULT_CONFIG.notifications,
       multiAgent: loadedConfig?.multiAgent ?? DEFAULT_CONFIG.multiAgent,
       secrets: {
-        ...(loadedConfig?.secrets ?? DEFAULT_CONFIG.secrets),
+        ...(loadedConfig?.secrets ?? DEFAULT_SECRET_DETECTOR_CONFIG),
         // When the workflow explicitly sets secrets_fail_ci it is authoritative
         // so a PR cannot disable its own security gate by editing
         // .opencode-reviewer.yml. Only when the input is omitted does the repo
         // config value (or the default) apply.
-        ...(inputs.secretsFailCIExplicit && { failCI: inputs.secretsFailCI }),
+        failCI: inputs.secretsFailCIExplicit
+          ? (inputs.secretsFailCI ?? false)
+          : (loadedConfig?.secrets ?? DEFAULT_SECRET_DETECTOR_CONFIG).failCI,
       },
     };
 

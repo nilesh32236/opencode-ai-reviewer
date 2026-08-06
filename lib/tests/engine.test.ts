@@ -1267,20 +1267,17 @@ describe('ReviewEngine', () => {
         const mockHandle = (content: Buffer) => ({
           read: vi
             .fn()
-            .mockImplementation(
-              async (buffer: Buffer, offset: number, length: number) => {
-                const bytes = content.subarray(0, length);
-                bytes.copy(buffer, offset);
-                return { bytesRead: bytes.length };
-              },
-            ),
+            .mockImplementation(async (buffer: Buffer, offset: number, length: number) => {
+              const bytes = content.subarray(0, length);
+              bytes.copy(buffer, offset);
+              return { bytesRead: bytes.length };
+            }),
           close: vi.fn().mockResolvedValue(undefined),
         });
-        vi.mocked(fs.promises.open).mockImplementation(
-          async (p: string | URL | number) =>
-            String(p).includes('config.ts')
-              ? mockHandle(Buffer.from(`const t = "${GITHUB_PAT}"`))
-              : mockHandle(Buffer.alloc(0)),
+        vi.mocked(fs.promises.open).mockImplementation(async (p: string | URL | number) =>
+          String(p).includes('config.ts')
+            ? mockHandle(Buffer.from(`const t = "${GITHUB_PAT}"`))
+            : mockHandle(Buffer.alloc(0)),
         );
 
         const result = await engine.runAudit('audit prompt', 'src', 'security', undefined, tmp);

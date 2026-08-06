@@ -313,8 +313,10 @@ ${pemEnd}`;
   it('keeps a global-flag /g allowlist regex reusable across matching tokens', () => {
     // A `/g` (or `/y`) regex tracks `lastIndex` across `test()` calls; without
     // a reset the second token below would be missed and falsely blocked.
-    const patA = ['ghp_', 'aBcDeFgHiJkLmNOpQrStUvWxYz', 'AAAA1111'].join('');
-    const patB = ['ghp_', 'aBcDeFgHiJkLmNOpQrStUvWxYz', 'BBBB2222'].join('');
+    // Both tokens are full-length (36+ chars after `ghp_`) so they are detected
+    // as github-pat and the allowlist regex matches them.
+    const patA = ['ghp_', 'aBcDeFgHiJkLmNOpQrStUvWxYz', 'AAAA1111', 'CCCC'].join('');
+    const patB = ['ghp_', 'aBcDeFgHiJkLmNOpQrStUvWxYz', 'BBBB2222', 'DDDD'].join('');
     const findings = detectSecrets(`a = "${patA}"\nb = "${patB}"`, {
       allowlist: ['/ghp_[A-Za-z0-9]{36,}/g'],
     });
@@ -343,9 +345,7 @@ describe('mergeSecretFindings', () => {
     expect(issue.confidence).toBe('high');
     expect(issue.category).toBe('security');
     // Friendly labels are used instead of internal detector type identifiers.
-    expect(issue.message).toBe(
-      'Hardcoded GitHub personal access token detected: ghp_…6789',
-    );
+    expect(issue.message).toBe('Hardcoded GitHub personal access token detected: ghp_…6789');
     // The raw secret must never leak into the issue.
     expect(issue.message).not.toContain(GITHUB_PAT);
     expect(issue.suggestion).toContain('environment variable');

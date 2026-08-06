@@ -89,6 +89,9 @@ secrets:
     # Committed GitHub Action build output (bundled) trips the generic
     # high-entropy detector; the sources live under action/src.
     - "action/lib/**"
+    # Test suites intentionally embed fake secrets to exercise detection; they
+    # are the scanner's own fixtures, not real credentials.
+    - "**/tests/**"
 
 # Optional webhook notifications for review summaries (Slack / Microsoft Teams).
 # Fully opt-in: notifications are only sent when `enabled: true` and a review

@@ -924,7 +924,10 @@ export class ReviewEngine {
         // The deterministic secret scan is model-independent: run it on fallback
         // paths too so hardcoded credentials still surface (and secrets.failCI
         // can still gate) even when the review model is unavailable.
-        r = this.mergeSecretIssues(r, await this.scanFilesForSecrets(files, workDir).catch(() => []));
+        r = this.mergeSecretIssues(
+          r,
+          await this.scanFilesForSecrets(files, workDir).catch(() => []),
+        );
         return this.applyBudgetModeBanner(r, budgetMode, totalDiffLines);
       }
 
@@ -965,7 +968,10 @@ export class ReviewEngine {
         this.logger.warn(`Failed to parse review output at ${outputPath}, returning empty result`);
         let r = emptyResult();
         r.verdict.reasoning = 'Failed to parse review output';
-        r = this.mergeSecretIssues(r, await this.scanFilesForSecrets(files, workDir).catch(() => []));
+        r = this.mergeSecretIssues(
+          r,
+          await this.scanFilesForSecrets(files, workDir).catch(() => []),
+        );
         return this.applyBudgetModeBanner(r, budgetMode, totalDiffLines);
       }
     }

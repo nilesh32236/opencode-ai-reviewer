@@ -306,9 +306,7 @@ export const SecretsConfigSchema = z.preprocess(
     // Mirror the runtime defaults so a partial `secrets:` block still inherits
     // the checksum/lockfile exclusions (a partial block must not silently scan
     // manifests that the fully-default configuration would skip).
-    excludePatterns: z
-      .array(z.string())
-      .catch(DEFAULT_SECRET_DETECTOR_CONFIG.excludePatterns),
+    excludePatterns: z.array(z.string()).catch(DEFAULT_SECRET_DETECTOR_CONFIG.excludePatterns),
   }),
 );
 
