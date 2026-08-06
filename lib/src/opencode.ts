@@ -773,14 +773,12 @@ function buildCompatibleProviderEntry(
   if (!baseURL) return undefined;
   const options: Record<string, string> = { baseURL };
   if (provider.apiKey?.trim()) {
-    // Expand {env:VAR} references against the parent process env so secrets
-    // referenced from the config file (e.g. "{env:INTERNAL_LLM_KEY}") resolve
-    // even though only a small whitelist of env vars is forwarded to the CLI
-    // subprocess. Unresolvable references are preserved verbatim so the CLI's
-    // own {env:...} substitution (for whitelisted vars) still applies.
-    options.apiKey = provider.apiKey
-      .trim()
-      .replace(/^\{env:([^}]+)\}$/, (_, name: string) => process.env[name] ?? `{env:${name}}`);
+    // Keep the apiKey verbatim (including any "{env:VAR}" reference) so a raw
+    // secret is never baked into the injected OPENCODE_CONFIG_CONTENT. The CLI
+    // performs its own "{env:...}" substitution at runtime; runOpenCode forwards
+    // the referenced variables into the subprocess environment via
+    // applyLLMEnvVarReferences so the reference always resolves.
+    options.apiKey = provider.apiKey.trim();
   }
   const modelNames = [...(provider.models ?? []), provider.model ?? '']
     .map((m) => m.trim())
@@ -879,6 +877,46 @@ function applyLLMEnvOverrides(safeEnv: Record<string, string>, llm: LLMConfig | 
         safeEnv.AWS_REGION = provider.region.trim();
       }
     }
+  }
+}
+
+/**
+ * Forward any environment variables referenced via the OpenCode `{env:VAR}`
+ * substitution syntax in the LLM provider configuration to the OpenCode
+ * subprocess environment.
+ *
+ * Provider entries keep `{env:VAR}` references verbatim (never expanding them
+ * against the parent process env), so the secret never appears in the injected
+ * `OPENCODE_CONFIG_CONTENT`. The CLI expands the reference at runtime, which
+ * only works when the referenced variable is present in the subprocess
+ * environment — a sandboxed safeEnv forwards just a small allowlist, so any
+ * variable a config file references must be forwarded explicitly.
+ * @param safeEnv - The environment being built for the OpenCode subprocess.
+ * @param llm - The custom LLM provider configuration (may be `undefined`).
+ */
+function applyLLMEnvVarReferences(
+  safeEnv: Record<string, string>,
+  llm: LLMConfig | undefined,
+): void {
+  const references = new Set<string>();
+  const visit = (value: unknown): void => {
+    if (typeof value === 'string') {
+      const match = /^\{env:([^}]+)\}$/.exec(value.trim());
+      if (match) references.add(match[1]);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (value && typeof value === 'object') {
+      for (const item of Object.values(value)) visit(item);
+    }
+  };
+  visit(llm);
+  for (const name of references) {
+    const value = process.env[name];
+    if (value !== undefined) safeEnv[name] = value;
   }
 }
 
@@ -1214,6 +1252,10 @@ export async function runOpenCode(
   // Azure / Bedrock config blocks provide the standard AZURE_* / AWS_* vars
   // when they are not already present in the environment.
   applyLLMEnvOverrides(safeEnv, llm);
+  // Provider entries reference secrets via "{env:VAR}" without expanding them
+  // into OPENCODE_CONFIG_CONTENT; forward the referenced variables so the CLI's
+  // own substitution resolves them inside the sandboxed subprocess environment.
+  applyLLMEnvVarReferences(safeEnv, llm);
   safeEnv.OPENCODE_CONFIG_CONTENT = mergeLLMProviderConfig(
     options.opencodeConfig ?? runModeOverride?.opencodeConfig ?? buildCIConfig(),
     llm,
