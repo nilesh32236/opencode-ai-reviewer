@@ -41,6 +41,7 @@ import {
 import { buildSelfHealPrompt } from './prompts/heal.js';
 import { detectLanguages } from './prompts/language/index.js';
 import { buildVerificationPrompt } from './prompts/verify.js';
+import { runSCAScan } from './sca/index.js';
 import type {
   AgentCategory,
   AgentConfig,
@@ -71,7 +72,7 @@ import type {
   TokenUsage,
 } from './types/index.js';
 import { PIPELINE_EVENT_TYPES } from './types/index.js';
-import { DEFAULT_SECRET_DETECTOR_CONFIG } from './types/index.js';
+import { DEFAULT_SCA_CONFIG, DEFAULT_SECRET_DETECTOR_CONFIG } from './types/index.js';
 import { filterBlameToPatch, getGitBlame, parsePatchHunks } from './utils/blame.js';
 import { MAX_BLAME_LINES_PER_FILE, UNCOMMITTED_SHA } from './utils/blame.js';
 import type { BlameRange } from './utils/blame.js';
@@ -102,6 +103,14 @@ export const INTER_CHUNK_DELAY_MS = 150;
  * (or binary) files are truncated before the regex/entropy pass.
  */
 const MAX_SECRET_SCAN_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Overall wall-clock deadline for the deterministic SCA scan. The scan is
+ * best-effort and runs on the review critical path, so a slow or unreachable
+ * api.osv.dev must never block a review for minutes: the scan is aborted at
+ * this deadline and degrades to no findings.
+ */
+const SCA_SCAN_DEADLINE_MS = 30_000;
 
 /** Canonical dispatch order of the specialized review agents. */
 export const AGENT_ORDER = ['security', 'performance', 'quality', 'logic'] as const;
@@ -700,10 +709,48 @@ export class ReviewEngine {
           })
         : pr.changedFiles;
 
+    // Deterministic Software Composition Analysis (SCA) pass. Runs before the
+    // "all files excluded" early-return so a PR that only touches lock files
+    // still yields dependency findings. Reads the UNFILTERED changed-file list
+    // because lock files are excluded from LLM review by default — dependency
+    // changes would otherwise never surface. Best-effort: any failure (advisory
+    // API unreachable, parse errors) degrades gracefully to no findings.
+    let scaIssues: ReviewIssue[] = [];
+    const scaConfig = this.config.sca ?? DEFAULT_SCA_CONFIG;
+    if (scaConfig.enabled) {
+      try {
+        scaIssues = await runSCAScan(
+          pr.changedFiles,
+          workDir,
+          {
+            enabled: scaConfig.enabled,
+            minSeverity: scaConfig.minSeverity,
+            lockFilePatterns: scaConfig.lockFilePatterns,
+            excludePatterns: scaConfig.excludePatterns,
+            deadlineMs: SCA_SCAN_DEADLINE_MS,
+          },
+          this.logger,
+        );
+        if (scaIssues.length > 0) {
+          this.logger.info(
+            `SCA flagged ${scaIssues.length} known vulnerable dependency(ies) in the changed lock files`,
+          );
+        }
+      } catch (err) {
+        this.logger.warn(`SCA scan failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
     if (files.length === 0 && pr.changedFiles.length > 0) {
       this.logger.info(
         `All ${pr.changedFiles.length} changed file(s) matched exclude patterns — skipping review`,
       );
+      // Even when every source file is excluded, deterministic SCA findings on
+      // the excluded lock files still surface (a lock-file-only PR is the
+      // primary SCA use case).
+      if (scaIssues.length > 0) {
+        return this.mergeScaIssues(emptyResult(), scaIssues);
+      }
       return emptyResult();
     }
     if (files.length < pr.changedFiles.length) {
@@ -860,6 +907,7 @@ export class ReviewEngine {
         deltaContext,
         previousFindings,
         previousBotComments,
+        scaIssues,
       );
     }
 
@@ -918,7 +966,8 @@ export class ReviewEngine {
         this.logger.warn('OpenCode review execution failed, returning fallback empty result');
         const r = emptyResult();
         r.verdict.reasoning = 'Review execution failed';
-        return this.applyBudgetModeBanner(r, budgetMode, totalDiffLines);
+        const withSca = scaIssues.length > 0 ? this.mergeScaIssues(r, scaIssues) : r;
+        return this.applyBudgetModeBanner(withSca, budgetMode, totalDiffLines);
       }
 
       try {
@@ -953,12 +1002,14 @@ export class ReviewEngine {
           budgetMode,
           totalDiffLines,
           files,
+          scaIssues,
         );
       } catch {
         this.logger.warn(`Failed to parse review output at ${outputPath}, returning empty result`);
         const r = emptyResult();
         r.verdict.reasoning = 'Failed to parse review output';
-        return this.applyBudgetModeBanner(r, budgetMode, totalDiffLines);
+        const withSca = scaIssues.length > 0 ? this.mergeScaIssues(r, scaIssues) : r;
+        return this.applyBudgetModeBanner(withSca, budgetMode, totalDiffLines);
       }
     }
 
@@ -1187,6 +1238,7 @@ export class ReviewEngine {
         budgetMode,
         totalDiffLines,
         files,
+        scaIssues,
       );
     }
 
@@ -1229,6 +1281,7 @@ export class ReviewEngine {
         budgetMode,
         totalDiffLines,
         files,
+        scaIssues,
       );
     } catch {
       this.logger.warn('Synthesis output parse failed, falling back to merged batch results');
@@ -1255,6 +1308,7 @@ export class ReviewEngine {
         budgetMode,
         totalDiffLines,
         files,
+        scaIssues,
       );
     }
   }
@@ -1330,6 +1384,7 @@ export class ReviewEngine {
    * @param deltaContext - Optional incremental review context.
    * @param previousFindings - Optional findings from previous fix iterations.
    * @param previousBotComments - Optional previous bot review comments.
+   * @param scaIssues - Optional SCA findings merged into the verified result.
    * @returns The consolidated, verified ReviewResult.
    */
   private async runMultiAgentReview(
@@ -1359,6 +1414,7 @@ export class ReviewEngine {
       body: string;
       commentId: number;
     }>,
+    scaIssues?: ReviewIssue[],
   ): Promise<ReviewResult> {
     const categories = this.getActiveAgentCategories();
     this.logger.info(
@@ -1441,6 +1497,7 @@ export class ReviewEngine {
       budgetMode,
       totalDiffLines,
       files,
+      scaIssues,
     );
   }
 
@@ -2933,6 +2990,29 @@ export class ReviewEngine {
   }
 
   /**
+   * Merge Software Composition Analysis (SCA) issues into a result, recomputing
+   * severity stats so the severity-based CI gate and count outputs reflect the
+   * vulnerable dependency findings. Mirrors {@link mergeSecretIssues}.
+   *
+   * @param result - Result to merge into.
+   * @param scaIssues - SCA review issues to append.
+   * @returns The merged result (unchanged when `scaIssues` is empty).
+   */
+  private mergeScaIssues(result: ReviewResult, scaIssues: ReviewIssue[]): ReviewResult {
+    if (scaIssues.length === 0) return result;
+    const allIssues = [...result.issues, ...scaIssues];
+    return {
+      ...result,
+      issues: allIssues,
+      stats: computeReviewStats(allIssues),
+      // A vulnerable dependency is a blocking finding: the result is never
+      // "ready to merge" while SCA issues are present, even when the LLM pass
+      // otherwise returned a clean verdict.
+      verdict: { ...result.verdict, ready: false },
+    };
+  }
+
+  /**
    * Apply the sensitivity filter to a review result, dropping findings that
    * fall below the configured severity, confidence, or count thresholds.
    *
@@ -2979,6 +3059,7 @@ export class ReviewEngine {
     budgetMode?: ReviewBudgetMode,
     totalDiffLines?: number,
     files?: PRContext['changedFiles'],
+    scaIssues?: ReviewIssue[],
   ): Promise<ReviewResult> {
     let enrichedResult = result;
 
@@ -3204,6 +3285,14 @@ export class ReviewEngine {
           );
         }
       }
+    }
+
+    // Deterministic SCA findings merge after every LLM-based pass and the
+    // sensitivity filter, mirroring the secret scan above, so a known
+    // vulnerable dependency can never be downgraded or dropped by reachability,
+    // meta-verification, or per-repository sensitivity settings.
+    if (scaIssues && scaIssues.length > 0) {
+      enrichedResult = this.mergeScaIssues(enrichedResult, scaIssues);
     }
 
     if (budgetMode && totalDiffLines !== undefined) {

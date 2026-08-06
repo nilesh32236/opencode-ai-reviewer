@@ -1,7 +1,7 @@
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AgentConfig, PRContext, ReviewResult } from '../src/types/index.js';
+import type { AgentConfig, PRContext, ReviewIssue, ReviewResult } from '../src/types/index.js';
 import { DEFAULT_CONFIG } from '../src/types/index.js';
 
 const {
@@ -12,6 +12,7 @@ const {
   mockRunOpenCode,
   mockParseJsonlFile,
   mockEmptyResult,
+  mockRunSCAScan,
   mockBuildReviewPrompt,
   mockBuildFixPrompt,
   mockBuildAuditPrompt,
@@ -29,6 +30,7 @@ const {
   const _mockGitHubGetOpenHumanThreads = vi.fn().mockResolvedValue('');
   const _mockRunOpenCode = vi.fn();
   const _mockParseJsonlFile = vi.fn();
+  const _mockRunSCAScan = vi.fn().mockResolvedValue([]);
   const _mockEmptyResult = vi.fn(() => ({
     summary: '',
     verdict: { ready: false, reasoning: '', autoFixable: false, confidence: 'low' as const },
@@ -105,6 +107,7 @@ const {
     mockRunOpenCode: _mockRunOpenCode,
     mockParseJsonlFile: _mockParseJsonlFile,
     mockEmptyResult: _mockEmptyResult,
+    mockRunSCAScan: _mockRunSCAScan,
     mockBuildReviewPrompt: _mockBuildReviewPrompt,
     mockBuildFixPrompt: _mockBuildFixPrompt,
     mockBuildAuditPrompt: _mockBuildAuditPrompt,
@@ -142,6 +145,13 @@ vi.mock('../src/jsonl-parser.js', async (importOriginal) => {
     emptyResult: mockEmptyResult,
   };
 });
+
+// Deterministic SCA pass is mocked so engine-level tests can assert the merge
+// behavior without real OSV network calls.
+vi.mock('../src/sca/index.js', () => ({
+  runSCAScan: mockRunSCAScan,
+  scaVulnerabilityToIssue: vi.fn((v: unknown) => v),
+}));
 
 vi.mock('../src/prompts/builder.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/prompts/builder.js')>();
@@ -241,6 +251,8 @@ describe('ReviewEngine', () => {
       const callback = cb as (err: Error | null, stdout?: string) => void;
       callback(null, '');
     });
+    // Deterministic SCA defaults to no findings unless a test overrides it.
+    mockRunSCAScan.mockResolvedValue([]);
     mockAdapter = createMockAdapter();
     engine = new ReviewEngine(makeConfig(), mockAdapter);
   });
@@ -331,6 +343,79 @@ describe('ReviewEngine', () => {
 
       expect(result.verdict).toBeDefined();
       expect(result.summary).toBeDefined();
+    });
+
+    it('merges SCA findings into a clean review result and blocks the verdict', async () => {
+      const scaIssue: ReviewIssue = {
+        type: 'issue',
+        severity: 'critical',
+        file: 'package-lock.json',
+        line: 5,
+        message: 'Known vulnerability CVE-2021-23337 affects lodash@4.17.20.',
+        suggestion: 'Upgrade lodash to 4.17.21.',
+        inline: true,
+        confidence: 'high',
+        category: 'security',
+      };
+      mockMCPConnect.mockResolvedValue(undefined);
+      mockRunSCAScan.mockResolvedValue([scaIssue]);
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 500,
+      });
+      mockParseJsonlFile.mockResolvedValue({
+        summary: 'Clean PR',
+        verdict: { ready: true, reasoning: 'No issues', autoFixable: false, confidence: 'high' },
+        strengths: [],
+        issues: [],
+        stats: { total: 0, critical: 0, important: 0, minor: 0 },
+        rawLines: [],
+        failedLines: 0,
+      });
+
+      const result = await engine.reviewPR(pr);
+
+      expect(mockRunSCAScan).toHaveBeenCalledWith(
+        pr.changedFiles,
+        expect.any(String),
+        expect.objectContaining({ enabled: true, deadlineMs: expect.any(Number) }),
+        expect.anything(),
+      );
+      // The SCA finding survives verifyReviewResult and is merged with the
+      // recomputed stats, forcing verdict.ready to false.
+      expect(result.issues).toContainEqual(scaIssue);
+      expect(result.stats.total).toBe(1);
+      expect(result.stats.critical).toBe(1);
+      expect(result.verdict.ready).toBe(false);
+    });
+
+    it('leaves a clean result untouched when SCA finds nothing', async () => {
+      mockMCPConnect.mockResolvedValue(undefined);
+      mockRunSCAScan.mockResolvedValue([]);
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 500,
+      });
+      mockParseJsonlFile.mockResolvedValue({
+        summary: 'Clean PR',
+        verdict: { ready: true, reasoning: 'No issues', autoFixable: false, confidence: 'high' },
+        strengths: [],
+        issues: [],
+        stats: { total: 0, critical: 0, important: 0, minor: 0 },
+        rawLines: [],
+        failedLines: 0,
+      });
+
+      const result = await engine.reviewPR(pr);
+
+      expect(mockRunSCAScan).toHaveBeenCalled();
+      expect(result.verdict.ready).toBe(true);
+      expect(result.issues).toEqual([]);
+      expect(result.stats).toEqual({ total: 0, critical: 0, important: 0, minor: 0 });
     });
 
     it('handles learning store failure gracefully', async () => {

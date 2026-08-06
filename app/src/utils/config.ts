@@ -282,11 +282,13 @@ export function buildConfig(): AgentConfig {
  *
  * Only the `review.sensitivity` / `review.categories` / `review.enableCodebaseIndex`
  * / `review.enableMetaVerification` / `review.suppressLowConfidence` /
- * `review.failOnSeverity` fields and the `notifications` section are merged
+ * `review.failOnSeverity` fields, the `notifications`, `secrets`, `llm`,
+ * and `sca` sections are merged
  * (the engine filters findings off those fields and respects the codebase-index /
  * meta-verification / low-confidence-suppression toggles, the check-run
- * gate reads the effective threshold, and the notifier reads the effective
- * notification settings); all other config-file
+ * gate reads the effective threshold, the notifier reads the effective
+ * notification settings, and the SCA pass reads the effective dependency-vuln
+ * settings); all other config-file
  * sections remain Action-only.
  * Unknown/malformed config files degrade gracefully to the
  * base config so a broken repo config never breaks the review.
@@ -307,6 +309,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const notifications = repoConfig?.notifications;
   const secrets = repoConfig?.secrets;
   const llm = repoConfig?.llm;
+  const sca = repoConfig?.sca;
   if (
     !sensitivity &&
     !categories &&
@@ -316,7 +319,8 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
     failOnSeverity === undefined &&
     !notifications &&
     !secrets &&
-    !llm
+    !llm &&
+    !sca
   ) {
     return baseConfig;
   }
@@ -364,6 +368,15 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
         ...(llm.providers && {
           providers: { ...baseConfig.llm?.providers, ...llm.providers },
         }),
+      },
+    }),
+    // Mirror the secrets merge so app-hosted repos can disable or tune SCA via
+    // `.opencode-reviewer.yml` instead of silently defaulting to enabled with
+    // outbound OSV calls on every lock-file PR.
+    ...(sca && {
+      sca: {
+        ...baseConfig.sca,
+        ...sca,
       },
     }),
   };

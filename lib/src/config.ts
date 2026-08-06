@@ -16,11 +16,14 @@ import type {
   NotificationsConfig,
   PromptConfig,
   ReviewSensitivityConfig,
+  SCAConfig,
+  Severity,
   SlackConfig,
   TeamsConfig,
 } from './types/index.js';
 import type { Platform } from './types/index.js';
 import { isDocStyle } from './types/index.js';
+import { DEFAULT_SCA_CONFIG, DEFAULT_SCA_LOCK_FILE_PATTERNS } from './types/index.js';
 import { PromptConfigSchema } from './types/schemas.js';
 import { DEFAULT_ALLOWLIST } from './utils/command.js';
 import { Logger } from './utils/logger.js';
@@ -148,6 +151,12 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     minLength: null,
     allowlist: null,
     failCI: null,
+    excludePatterns: null,
+  },
+  sca: {
+    enabled: null,
+    minSeverity: null,
+    lockFilePatterns: null,
     excludePatterns: null,
   },
   llm: {
@@ -875,6 +884,27 @@ export function validateConfig(config: PromptConfig): PromptConfig {
         ? s.excludePatterns.filter((p): p is string => typeof p === 'string')
         : [],
     };
+  }
+
+  if (config.sca && typeof config.sca === 'object') {
+    const raw = config.sca;
+    const minSeverity =
+      raw.minSeverity === 'critical' ||
+      raw.minSeverity === 'important' ||
+      raw.minSeverity === 'minor'
+        ? (raw.minSeverity as Severity)
+        : DEFAULT_SCA_CONFIG.minSeverity;
+    const scaConfig: SCAConfig = {
+      enabled: typeof raw.enabled === 'boolean' ? raw.enabled : DEFAULT_SCA_CONFIG.enabled,
+      minSeverity,
+      lockFilePatterns: Array.isArray(raw.lockFilePatterns)
+        ? raw.lockFilePatterns.filter((p): p is string => typeof p === 'string')
+        : DEFAULT_SCA_LOCK_FILE_PATTERNS,
+      excludePatterns: Array.isArray(raw.excludePatterns)
+        ? raw.excludePatterns.filter((p): p is string => typeof p === 'string')
+        : [],
+    };
+    result.sca = scaConfig;
   }
 
   if (config.llm && typeof config.llm === 'object') {

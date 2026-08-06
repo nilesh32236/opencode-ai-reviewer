@@ -5,7 +5,7 @@
 
 import { z } from 'zod';
 import { MODEL_STRING_REGEX } from '../utils/model-string.js';
-import { DOC_STYLES } from './index.js';
+import { DEFAULT_SCA_LOCK_FILE_PATTERNS, DOC_STYLES } from './index.js';
 
 /** Error message shared by every model-field regex in AgentConfigSchema. */
 const MODEL_STRING_ERROR = 'Must be "provider/model-name" format (e.g. "openai/gpt-4o")';
@@ -355,6 +355,26 @@ export const SecretsConfigSchema = z
     excludePatterns: [],
   });
 
+/**
+ * Zod schema validating deterministic Software Composition Analysis (SCA)
+ * configuration. All fields are optional with safe defaults; a malformed
+ * `sca:` block falls back to defaults (mirroring `SecretsConfigSchema`) so a
+ * broken section never fails the whole config parse.
+ */
+export const SCAConfigSchema = z
+  .object({
+    enabled: z.boolean().optional().default(true),
+    minSeverity: SeveritySchema.optional().default('important'),
+    lockFilePatterns: z.array(z.string()).optional().default(DEFAULT_SCA_LOCK_FILE_PATTERNS),
+    excludePatterns: z.array(z.string()).optional().default([]),
+  })
+  .catch({
+    enabled: true,
+    minSeverity: 'important',
+    lockFilePatterns: DEFAULT_SCA_LOCK_FILE_PATTERNS,
+    excludePatterns: [],
+  });
+
 /** Zod schema validating a pluggable event subscriber configuration entry. */
 export const PluggableSubscriberConfigSchema = z.object({
   name: z.string().min(1),
@@ -484,6 +504,7 @@ export const AgentConfigSchema = z.object({
   notifications: NotificationsConfigSchema.default(NotificationsConfigSchema.parse({})),
   multiAgent: MultiAgentConfigSchema.default(MultiAgentConfigSchema.parse({})),
   secrets: SecretsConfigSchema.default(SecretsConfigSchema.parse({})),
+  sca: SCAConfigSchema.default(SCAConfigSchema.parse({})),
   llm: LLMConfigSchema.optional(),
 });
 
@@ -604,5 +625,6 @@ export const PromptConfigSchema = z.object({
   notifications: NotificationsConfigSchema.optional(),
   multiAgent: MultiAgentConfigSchema.optional(),
   secrets: SecretsConfigSchema.optional(),
+  sca: SCAConfigSchema.optional(),
   llm: LLMConfigSchema.optional(),
 });

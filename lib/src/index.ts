@@ -146,6 +146,22 @@ export { sanitizeString } from './utils/sanitize.js';
 export { sanitizePromptInput } from './utils/prompt-sanitizer.js';
 export { detectSecrets, shannonEntropy, mergeSecretFindings } from './utils/secret-detect.js';
 export type { SecretFinding, SecretDetectOptions } from './utils/secret-detect.js';
+export { runSCAScan, scaVulnerabilityToIssue } from './sca/index.js';
+export {
+  detectLockFileType,
+  extractChangedDependencies,
+  parsePatchLines,
+} from './sca/lockfile.js';
+export type { LockFileType, PatchLine, ExtractOptions } from './sca/lockfile.js';
+export {
+  queryOSV,
+  buildBatchQueries,
+  severityFromCvss,
+  severityFromOsvLabel,
+  extractCveIds,
+  extractFixedVersion,
+} from './sca/osv-client.js';
+export type { SCAScanOptions } from './sca/types.js';
 export { getLabelColor } from './utils/label-color.js';
 export {
   buildTokenUsageSection,
