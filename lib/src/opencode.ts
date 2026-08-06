@@ -71,9 +71,13 @@ export function setOpenCodeRunMode(mode: OpenCodeRunMode | undefined): void {
  * The declared provider map is merged into the injected OpenCode config
  * (`OPENCODE_CONFIG_CONTENT`), custom Azure/Bedrock settings are translated
  * into the standard `AZURE_*` / `AWS_*` env vars, and a configured
- * `defaultProvider` prefixes bare model names. Called once at engine
- * construction so every {@link runOpenCode} invocation uses the same provider
- * configuration.
+ * `defaultProvider` prefixes bare model names.
+ *
+ * This sets a module-level default that is used by {@link runOpenCode} runs
+ * that do not pass an explicit `llm` option. Long-lived processes that handle
+ * concurrent runs with different provider configs (the Probot App) should pass
+ * `llm` per run instead of relying on this shared global, which can be
+ * overwritten by a subsequently constructed engine.
  * @param llm - The custom LLM provider configuration, or `undefined` to clear.
  */
 export function setLLMProviderConfig(llm: LLMConfig | undefined): void {
@@ -768,7 +772,16 @@ function buildCompatibleProviderEntry(
   const baseURL = provider.baseUrl?.trim();
   if (!baseURL) return undefined;
   const options: Record<string, string> = { baseURL };
-  if (provider.apiKey?.trim()) options.apiKey = provider.apiKey.trim();
+  if (provider.apiKey?.trim()) {
+    // Expand {env:VAR} references against the parent process env so secrets
+    // referenced from the config file (e.g. "{env:INTERNAL_LLM_KEY}") resolve
+    // even though only a small whitelist of env vars is forwarded to the CLI
+    // subprocess. Unresolvable references are preserved verbatim so the CLI's
+    // own {env:...} substitution (for whitelisted vars) still applies.
+    options.apiKey = provider.apiKey
+      .trim()
+      .replace(/^\{env:([^}]+)\}$/, (_, name: string) => process.env[name] ?? `{env:${name}}`);
+  }
   const modelNames = [...(provider.models ?? []), provider.model ?? '']
     .map((m) => m.trim())
     .filter(Boolean);
@@ -848,7 +861,15 @@ function applyLLMEnvOverrides(safeEnv: Record<string, string>, llm: LLMConfig | 
         safeEnv.AZURE_RESOURCE_NAME = provider.resourceName.trim();
       }
       if (provider.apiKey?.trim() && !safeEnv.AZURE_OPENAI_API_KEY) {
-        safeEnv.AZURE_OPENAI_API_KEY = provider.apiKey.trim();
+        // Resolve {env:VAR} references against the parent process env before
+        // injecting into the env var. Env vars are read directly by the CLI
+        // (no {env:...} substitution), so an unresolved reference must not be
+        // copied verbatim — that would make AZURE_OPENAI_API_KEY self-reference
+        // the literal placeholder and never yield a real key.
+        const apiKey = provider.apiKey
+          .trim()
+          .replace(/^\{env:([^}]+)\}$/, (_, name: string) => process.env[name] ?? '');
+        if (apiKey) safeEnv.AZURE_OPENAI_API_KEY = apiKey;
       }
       if (provider.apiVersion?.trim() && !safeEnv.AZURE_OPENAI_API_VERSION) {
         safeEnv.AZURE_OPENAI_API_VERSION = provider.apiVersion.trim();
@@ -865,10 +886,11 @@ function applyLLMEnvOverrides(safeEnv: Record<string, string>, llm: LLMConfig | 
  * Merge the built LLM provider map into a base OpenCode config JSON string,
  * preserving any existing `provider` keys (e.g. a caller-supplied custom config).
  * @param baseConfig - The base OpenCode config JSON (CI or custom).
+ * @param llm - The custom LLM provider configuration (may be `undefined`).
  * @returns The config JSON with the provider map merged in.
  */
-function mergeLLMProviderConfig(baseConfig: string): string {
-  const providerMap = buildLLMProviderMap(llmProviderConfig);
+function mergeLLMProviderConfig(baseConfig: string, llm: LLMConfig | undefined): string {
+  const providerMap = buildLLMProviderMap(llm);
   if (!providerMap) return baseConfig;
   try {
     const parsed = JSON.parse(baseConfig) as Record<string, unknown>;
@@ -886,16 +908,34 @@ function mergeLLMProviderConfig(baseConfig: string): string {
 /**
  * Resolve a model string, prefixing a configured default provider when the
  * model is bare (has no "provider/" prefix).
+ *
+ * When the default provider is Azure or AWS Bedrock and the matching provider
+ * block declares a `deployment` / `modelId`, a bare model resolves to
+ * "azure/<deployment>" / "amazon-bedrock/<model-id>" so a single config change
+ * (endpoint + key + deployment) selects the hosted model. Otherwise a bare
+ * model is prefixed with the default provider (e.g. "ollama/llama3").
  * @param model - The raw model string.
- * @param defaultProvider - Optional provider used to prefix bare model names.
+ * @param llm - The custom LLM provider configuration (may be `undefined`).
  * @returns The resolved "provider/model" model string.
  */
-function resolveModel(model: string, defaultProvider: string | undefined): string {
+function resolveModel(model: string, llm: LLMConfig | undefined): string {
   const trimmed = model.trim();
-  if (trimmed && !trimmed.includes('/') && defaultProvider?.trim()) {
-    return `${defaultProvider.trim()}/${trimmed}`;
+  if (!trimmed || trimmed.includes('/')) return trimmed;
+  const defaultProvider = llm?.defaultProvider?.trim();
+  if (!defaultProvider) return trimmed;
+  if (defaultProvider === 'azure') {
+    const deployment = Object.values(llm?.providers ?? {})
+      .find((p) => p?.type === 'azure' && p.deployment?.trim())
+      ?.deployment?.trim();
+    if (deployment) return `azure/${deployment}`;
   }
-  return trimmed;
+  if (defaultProvider === 'amazon-bedrock') {
+    const modelId = Object.values(llm?.providers ?? {})
+      .find((p) => p?.type === 'bedrock' && p.modelId?.trim())
+      ?.modelId?.trim();
+    if (modelId) return `amazon-bedrock/${modelId}`;
+  }
+  return `${defaultProvider}/${trimmed}`;
 }
 
 /**
@@ -1021,6 +1061,10 @@ export {
  * OPENCODE_CONFIG_CONTENT. When set, replaces the CI config for this run.
  * @param options.autoApprove - When true (default), pass `--auto` to auto-approve
  * tool permissions. Set to false for interactive local use.
+ * @param options.llm - Custom LLM provider configuration for this run. When
+ * provided, it is used instead of the module-level config set via
+ * {@link setLLMProviderConfig}, so long-lived processes can dispatch concurrent
+ * runs with per-engine provider configs without racing a shared global.
  * @returns Object indicating success, output text, wall-clock duration in ms, and tokens used.
  */
 export async function runOpenCode(
@@ -1039,6 +1083,8 @@ export async function runOpenCode(
     opencodeConfig?: string;
     /** Pass `--auto` to auto-approve tool permissions (default: true). */
     autoApprove?: boolean;
+    /** Custom LLM provider configuration for this run (see JSDoc above). */
+    llm?: LLMConfig;
   },
 ): Promise<{
   success: boolean;
@@ -1048,11 +1094,15 @@ export async function runOpenCode(
   promptTokens?: number;
   completionTokens?: number;
 }> {
-  validateModelString(resolveModel(options.model, llmProviderConfig?.defaultProvider));
+  // Explicit per-run config wins; the module global is only a fallback for
+  // legacy callers that never pass `llm`. Engines always pass their own config
+  // so concurrent runs never observe another engine's providers.
+  const llm = options.llm ?? llmProviderConfig;
+  validateModelString(resolveModel(options.model, llm));
   // Normalize whitespace-padded model values before they reach the CLI. A bare
   // model name is prefixed with the configured default LLM provider so
   // "llama3" + defaultProvider "ollama" resolves to "ollama/llama3".
-  const model = resolveModel(options.model, llmProviderConfig?.defaultProvider);
+  const model = resolveModel(options.model, llm);
   const binaryPath = opencodePath || (await setupOpenCode());
   // setupOpenCode() already validates (and throws on) an incompatible binary in
   // the same call, so only probe again when the binary was pre-set without
@@ -1163,9 +1213,10 @@ export async function runOpenCode(
   }
   // Azure / Bedrock config blocks provide the standard AZURE_* / AWS_* vars
   // when they are not already present in the environment.
-  applyLLMEnvOverrides(safeEnv, llmProviderConfig);
+  applyLLMEnvOverrides(safeEnv, llm);
   safeEnv.OPENCODE_CONFIG_CONTENT = mergeLLMProviderConfig(
     options.opencodeConfig ?? runModeOverride?.opencodeConfig ?? buildCIConfig(),
+    llm,
   );
   safeEnv.OPENCODE_DISABLE_AUTOUPDATE = 'true';
 

@@ -198,9 +198,14 @@ export interface ActionInputs {
 
 /**
  * Parse and validate all GitHub Action inputs from workflow environment.
+ *
+ * @param configDefaultProvider - The `.opencode-reviewer.yml` `llm.defaultProvider`
+ * (when one is configured). Used as a fallback when the `llm_default_provider`
+ * action input is unset, so a workflow author who relies on the config file's
+ * default provider gets bare model names resolved (and validated) correctly.
  * @returns A fully populated ActionInputs object.
  */
-export function parseInputs(): ActionInputs {
+export function parseInputs(configDefaultProvider?: string): ActionInputs {
   const modeStr = core.getInput('mode', { required: true }).toLowerCase().trim();
   if (!VALID_MODES.includes(modeStr as ActionMode)) {
     throw new Error(`Invalid mode: "${modeStr}". Must be one of: ${VALID_MODES.join(', ')}`);
@@ -254,14 +259,35 @@ export function parseInputs(): ActionInputs {
 
   // A configured default LLM provider lets workflow authors write bare model
   // names (e.g. "llama3") that resolve to "ollama/llama3" before validation.
-  const llmDefaultProvider = modelInput('llm_default_provider');
+  // The action input wins over the config file's llm.defaultProvider; when
+  // neither is set but an Azure deployment / Bedrock model id is given, the
+  // provider is inferred so a bare model routes to the hosted deployment.
+  const llmDefaultProviderInput = modelInput('llm_default_provider');
+  const azureDeploymentInput = modelInput('azure_deployment_name');
+  const bedrockModelIdInput = modelInput('aws_bedrock_model_id');
+  const effectiveDefaultProvider =
+    llmDefaultProviderInput || configDefaultProvider
+      ? (llmDefaultProviderInput || configDefaultProvider)!
+      : azureDeploymentInput
+        ? 'azure'
+        : bedrockModelIdInput
+          ? 'amazon-bedrock'
+          : undefined;
   const resolveModel = (value: string | undefined): string | undefined => {
     if (!value) return value;
     const trimmed = value.trim();
-    if (!trimmed.includes('/') && llmDefaultProvider) {
-      return `${llmDefaultProvider}/${trimmed}`;
+    if (trimmed.includes('/')) return trimmed;
+    if (!effectiveDefaultProvider?.trim()) return trimmed;
+    const provider = effectiveDefaultProvider.trim();
+    // Azure/Bedrock deployments are addressed by the deployment/model id, not
+    // the bare model name: "llama3" + azure deployment "my-dep" → "azure/my-dep".
+    if (provider === 'azure' && azureDeploymentInput?.trim()) {
+      return `azure/${azureDeploymentInput.trim()}`;
     }
-    return trimmed;
+    if (provider === 'amazon-bedrock' && bedrockModelIdInput?.trim()) {
+      return `amazon-bedrock/${bedrockModelIdInput.trim()}`;
+    }
+    return `${provider}/${trimmed}`;
   };
 
   const reviewModel =
@@ -351,7 +377,7 @@ export function parseInputs(): ActionInputs {
     openAiKey: core.getInput('openai_api_key') || undefined,
     anthropicKey: core.getInput('anthropic_api_key') || undefined,
     geminiKey: core.getInput('gemini_api_key') || undefined,
-    llmDefaultProvider,
+    llmDefaultProvider: llmDefaultProviderInput,
     llmBaseUrl: core.getInput('llm_base_url') || undefined,
     llmApiKey: core.getInput('llm_api_key') || undefined,
     ollamaBaseUrl: core.getInput('ollama_base_url') || undefined,

@@ -286,11 +286,17 @@ export const LLMProviderConfigSchema = z.object({
  * Custom LLM hosting is a non-critical, opt-in enterprise feature, so a fully
  * malformed `llm:` block falls back to an empty provider map (mirroring
  * `NotificationsConfigSchema`) instead of failing the whole config parse.
+ *
+ * Provider entries are accepted leniently (`z.any()`) so a single invalid
+ * provider (e.g. an unsupported `type`) never wipes the whole block — the
+ * record only fails per entry, falling back to `{}`, and valid peers survive.
+ * Dropping invalid providers is the single responsibility of
+ * `validateConfig()` in config.ts, which warns when it drops one.
  */
 export const LLMConfigSchema = z
   .object({
     defaultProvider: z.string().optional(),
-    providers: z.record(z.string(), LLMProviderConfigSchema).optional().default({}),
+    providers: z.record(z.string(), z.any().catch({})).optional().default({}),
   })
   .catch({ providers: {} });
 

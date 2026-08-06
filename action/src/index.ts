@@ -57,7 +57,10 @@ function buildLLMConfig(
     ...(loadedConfig?.llm?.providers ?? {}),
   };
   if (inputs.llmBaseUrl) {
-    providers.custom = {
+    // Register the OpenAI-compatible provider under the same id ('custom-openai')
+    // used by every other path (env vars, docs, model selection) so the
+    // documented "custom-openai/<model>" model id resolves for action inputs too.
+    providers['custom-openai'] = {
       type: 'openai-compatible',
       baseUrl: inputs.llmBaseUrl,
       ...(inputs.llmApiKey && { apiKey: inputs.llmApiKey }),
@@ -121,10 +124,15 @@ async function run(): Promise<void> {
   let cacheManager: StateCacheManager | undefined;
 
   try {
-    inputs = parseInputs();
-
+    // Load the config file before parsing inputs so the config file's
+    // `llm.defaultProvider` can drive bare-model resolution/validation for the
+    // model inputs (parseInputs would otherwise fail a bare "llama3" before the
+    // config default provider could ever apply). The configFile input is read
+    // directly here; parseInputs re-reads it for the ActionInputs.configFile field.
     const platform = (process.env.PLATFORM || 'github') as string as 'github' | 'gitlab';
-    const loadedConfig = loadConfig(undefined, platform, inputs.configFile);
+    const loadedConfig = loadConfig(undefined, platform, core.getInput('config') || undefined);
+
+    const inputs = parseInputs(loadedConfig?.llm?.defaultProvider);
 
     if (platform === 'gitlab') {
       if (!process.env.CI_PROJECT_NAMESPACE || !process.env.CI_PROJECT_NAME) {

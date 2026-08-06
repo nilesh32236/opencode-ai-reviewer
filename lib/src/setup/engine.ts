@@ -371,6 +371,7 @@ export class SetupEngine {
               timeoutMinutes: 1,
               signal,
               quiet: true,
+              llm: this.config.llm,
             });
             const guard = new Promise<never>((_, reject) => {
               timer = setTimeout(

@@ -358,6 +358,12 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       llm: {
         ...baseConfig.llm,
         ...llm,
+        // Deep-merge the provider map by key (mirroring the nested
+        // notifications.slack/teams merge) so a repo's providers extend rather
+        // than replace the base provider map.
+        ...(llm.providers && {
+          providers: { ...baseConfig.llm?.providers, ...llm.providers },
+        }),
       },
     }),
   };

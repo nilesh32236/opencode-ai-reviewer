@@ -887,12 +887,19 @@ export function validateConfig(config: PromptConfig): PromptConfig {
       const providers: Record<string, LLMProviderConfig> = {};
       const knownTypes = ['openai-compatible', 'azure', 'bedrock', 'ollama'] as const;
       for (const [id, provider] of Object.entries(raw.providers)) {
-        if (
-          !provider ||
-          typeof provider !== 'object' ||
-          !provider.type ||
-          !(knownTypes as readonly string[]).includes(provider.type)
-        ) {
+        if (!provider || typeof provider !== 'object') {
+          continue;
+        }
+        if (!provider.type || !(knownTypes as readonly string[]).includes(provider.type)) {
+          // An invalid provider is dropped per-entry (not the whole llm block),
+          // with a warning so a silently deactivated custom-LLM config stays
+          // observable in CI logs instead of failing at runtime with a confusing
+          // "model not found".
+          core.warning(
+            `Ignoring LLM provider "${id}": type "${String(
+              (provider as { type?: unknown }).type ?? '(none)',
+            )}" is not one of ${knownTypes.join(', ')}`,
+          );
           continue;
         }
         const validated: LLMProviderConfig = {
@@ -915,7 +922,9 @@ export function validateConfig(config: PromptConfig): PromptConfig {
           }
         }
         if (Array.isArray(provider.models)) {
-          const models = provider.models.filter((m): m is string => typeof m === 'string');
+          const models = provider.models
+            .filter((m): m is string => typeof m === 'string' && m.trim() !== '')
+            .map((m) => m.trim());
           if (models.length > 0) validated.models = models;
         }
         providers[id] = validated;

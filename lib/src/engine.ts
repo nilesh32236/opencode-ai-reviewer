@@ -21,7 +21,7 @@ import type { EventBus } from './event-bus/bus.js';
 import { emptyResult, parseAgentJsonlString, parseJsonlFile } from './jsonl-parser.js';
 import type { LearningStore } from './learning/store.js';
 import { MCPManager } from './mcp/client.js';
-import { ensureOutputDir, getGitStatus, runOpenCode, setLLMProviderConfig } from './opencode.js';
+import { ensureOutputDir, getGitStatus, runOpenCode } from './opencode.js';
 import type { PlatformAdapter } from './platform/adapter.js';
 import {
   buildAnalyzePrompt,
@@ -186,9 +186,25 @@ export class ReviewEngine {
     // undefined while the logger falls back to its own generated UUID, so
     // published events would not share the engine logs' trace ID.
     this.correlationId = this.logger.getCorrelationId();
-    // Apply custom LLM providers (self-hosted OpenAI-compatible, Azure,
-    // Bedrock, Ollama) to every OpenCode CLI run dispatched by this engine.
-    setLLMProviderConfig(config.llm);
+  }
+
+  /**
+   * Run OpenCode with this engine's custom LLM provider configuration.
+   *
+   * Passing `llm` explicitly per run avoids the module-level LLM config global
+   * in opencode.ts, which a long-lived multi-repo process would otherwise race:
+   * the last-constructed engine's provider map would leak into in-flight runs of
+   * other engines. The engine always supplies its own config (even when empty)
+   * so concurrent runs are isolated from each other.
+   * @param prompt - The prompt text to pass to OpenCode.
+   * @param options - Execution options forwarded to {@link runOpenCode}.
+   * @returns The {@link runOpenCode} result promise.
+   */
+  private runLLM(
+    prompt: string,
+    options: Omit<Parameters<typeof runOpenCode>[1], 'llm'>,
+  ): ReturnType<typeof runOpenCode> {
+    return runOpenCode(prompt, { ...options, llm: this.config.llm ?? {} });
   }
 
   /**
@@ -883,7 +899,7 @@ export class ReviewEngine {
       const outputPath = path.join(workDir, 'review-output.jsonl');
       ensureOutputDir(outputPath);
 
-      const runResult = await runOpenCode(prompt, {
+      const runResult = await this.runLLM(prompt, {
         model: this.config.reviewModel,
         timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
         workingDirectory: workDir,
@@ -1033,7 +1049,7 @@ export class ReviewEngine {
           const outputPath = path.join(batchDir, 'review-output.jsonl');
           ensureOutputDir(outputPath);
 
-          const runResult = await runOpenCode(prompt, {
+          const runResult = await this.runLLM(prompt, {
             model: this.config.reviewModel,
             timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
             workingDirectory: batchDir,
@@ -1124,7 +1140,7 @@ export class ReviewEngine {
     const finalOutputPath = path.join(workDir, 'review-output.jsonl');
     ensureOutputDir(finalOutputPath);
 
-    const synthesisResult = await runOpenCode(synthesisPrompt, {
+    const synthesisResult = await this.runLLM(synthesisPrompt, {
       model: this.resolveModel('synthesisModel'),
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory: workDir,
@@ -1590,7 +1606,7 @@ export class ReviewEngine {
       // runOpenCode throws synchronously on a malformed model string and can
       // reject on setup/health-check failures. Treat a thrown/rejected call as a
       // failed batch so a single bad batch never aborts the whole review.
-      const runResult = await runOpenCode(prompt, {
+      const runResult = await this.runLLM(prompt, {
         model,
         timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
         workingDirectory: batchDir,
@@ -1924,7 +1940,7 @@ export class ReviewEngine {
     const finalOutputPath = path.join(workDir, 'review-output.jsonl');
     ensureOutputDir(finalOutputPath);
 
-    const synthesisResult = await runOpenCode(synthesisPrompt, {
+    const synthesisResult = await this.runLLM(synthesisPrompt, {
       model: synthesisModel,
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory: workDir,
@@ -2162,7 +2178,7 @@ export class ReviewEngine {
       verificationError,
     );
 
-    const fixRunResult = await runOpenCode(prompt, {
+    const fixRunResult = await this.runLLM(prompt, {
       model: this.config.fixModel,
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory,
@@ -2300,7 +2316,7 @@ export class ReviewEngine {
       category,
     );
 
-    const auditRunResult = await runOpenCode(prompt, {
+    const auditRunResult = await this.runLLM(prompt, {
       model: this.resolveModel('auditModel'),
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory,
@@ -2410,7 +2426,7 @@ export class ReviewEngine {
       issueContextMarkdown,
     );
 
-    const runResult = await runOpenCode(prompt, {
+    const runResult = await this.runLLM(prompt, {
       model: this.resolveModel('analysisModel'),
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory: workDir,
@@ -2496,7 +2512,7 @@ export class ReviewEngine {
     const diagnosisPath = path.join(workDir, '.opencode', 'heal-diagnosis.md');
     ensureOutputDir(diagnosisPath);
 
-    const runResult = await runOpenCode(prompt, {
+    const runResult = await this.runLLM(prompt, {
       model: this.config.fixModel,
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory: workDir,
@@ -2603,7 +2619,7 @@ export class ReviewEngine {
       prContext,
     );
 
-    const runResult = await runOpenCode(prompt, {
+    const runResult = await this.runLLM(prompt, {
       model: this.resolveModel('explanationModel'),
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory: workDir,
@@ -2703,7 +2719,7 @@ export class ReviewEngine {
     // documentation changes on disk.
     const runResult = await withRetry(
       () =>
-        runOpenCode(prompt, {
+        this.runLLM(prompt, {
           model: this.resolveModel('docsModel'),
           timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
           workingDirectory,
@@ -3022,7 +3038,7 @@ export class ReviewEngine {
           enrichedResult.issues,
         );
 
-        const runResult = await runOpenCode(prompt, {
+        const runResult = await this.runLLM(prompt, {
           model: this.resolveModel('verificationModel'),
           timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
           workingDirectory: workDir,
@@ -3265,7 +3281,7 @@ export class ReviewEngine {
 
       const prompt = buildConversationPrompt(context, conversationConfig, state);
 
-      const runResult = await runOpenCode(prompt, {
+      const runResult = await this.runLLM(prompt, {
         model: this.resolveModel('conversationModel'),
         timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
         workingDirectory: workDir,
@@ -3415,7 +3431,7 @@ export class ReviewEngine {
     this.logger.info(
       `Summarizing ${newMessages.length} new older conversation messages (${context.prContext.number})`,
     );
-    const runResult = await runOpenCode(summaryPrompt, {
+    const runResult = await this.runLLM(summaryPrompt, {
       model: config.summarizationModel ?? this.resolveModel('conversationModel'),
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory: workDir,

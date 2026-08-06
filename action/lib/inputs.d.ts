@@ -137,6 +137,11 @@ export interface ActionInputs {
 }
 /**
  * Parse and validate all GitHub Action inputs from workflow environment.
+ *
+ * @param configDefaultProvider - The `.opencode-reviewer.yml` `llm.defaultProvider`
+ * (when one is configured). Used as a fallback when the `llm_default_provider`
+ * action input is unset, so a workflow author who relies on the config file's
+ * default provider gets bare model names resolved (and validated) correctly.
  * @returns A fully populated ActionInputs object.
  */
-export declare function parseInputs(): ActionInputs;
+export declare function parseInputs(configDefaultProvider?: string): ActionInputs;

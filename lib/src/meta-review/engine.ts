@@ -2,7 +2,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as core from '@actions/core';
 import type { LearningStore } from '../learning/store.js';
-import { runOpenCode, setLLMProviderConfig } from '../opencode.js';
+import { runOpenCode } from '../opencode.js';
 import type { PatternDetector } from '../pattern-detector/engine.js';
 import type { AgentConfig, GitHubEvent, Subscriber } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
@@ -25,8 +25,9 @@ export class MetaReviewEngine {
     private patternDetector?: PatternDetector,
     private config?: AgentConfig,
   ) {
-    // Apply custom LLM providers to meta-review OpenCode runs as well.
-    setLLMProviderConfig(config?.llm);
+    // Custom LLM providers are passed explicitly to runOpenCode below (rather
+    // than a module global) so meta-review runs never clobber or observe the
+    // provider config of a concurrently constructed ReviewEngine.
   }
 
   /**
@@ -78,6 +79,7 @@ export class MetaReviewEngine {
         this.config?.reviewModel ??
         'opencode/deepseek-v4-flash-free',
       signal,
+      llm: this.config?.llm,
     });
     if (!metaRunResult.success) {
       new Logger('MetaReviewEngine').warn(

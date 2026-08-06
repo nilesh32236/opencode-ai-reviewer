@@ -54,6 +54,7 @@ export async function handleReply(
     const result = await runOpenCode(prompt, {
       model: config.conversationModel ?? config.reviewModel,
       timeoutMinutes: 5,
+      llm: config.llm,
     });
 
     if (!result.success || !result.output.trim()) {
