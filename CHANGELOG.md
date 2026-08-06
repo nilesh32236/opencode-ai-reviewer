@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.8.0] — 2026-08-06
+
+### Added
+
+- add documentation generation capability for changed code (#354) (#354)
+
+### Changed
+
+- fix(review): resolve PR #350 review findings in optimized modules (#353) (#350
+#353)
+- docs: add comprehensive project roadmap with key milestones (#352) (#352)
+- [Self-Heal] Fix CI failure in CI (Check performance budgets) (#351) (#351)
+- feat(performance): comprehensive optimizations for codebase indexing and pattern detection (#350) (#350)
+- [Autofix] Add multi-agent review architecture with specialized agents (#349) (#349)
+
+[v1.8.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.7.1...v1.8.0
+
 ## [Unreleased]
 
 ### Added
