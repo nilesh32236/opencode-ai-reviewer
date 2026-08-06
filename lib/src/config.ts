@@ -8,6 +8,8 @@ import type {
   CategoryOverride,
   ConfigOverride,
   DocsConfig,
+  LLMConfig,
+  LLMProviderConfig,
   LinterConfig,
   MultiAgentAgentConfig,
   MultiAgentConfig,
@@ -147,6 +149,24 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     allowlist: null,
     failCI: null,
     excludePatterns: null,
+  },
+  llm: {
+    defaultProvider: null,
+    providers: [
+      {
+        type: null,
+        baseUrl: null,
+        apiKey: null,
+        endpoint: null,
+        resourceName: null,
+        apiVersion: null,
+        deployment: null,
+        modelId: null,
+        region: null,
+        model: null,
+        models: null,
+      },
+    ],
   },
 };
 
@@ -855,6 +875,107 @@ export function validateConfig(config: PromptConfig): PromptConfig {
         ? s.excludePatterns.filter((p): p is string => typeof p === 'string')
         : [],
     };
+  }
+
+  if (config.llm && typeof config.llm === 'object') {
+    const raw = config.llm;
+    const llmConfig: LLMConfig = {};
+    let providers: Record<string, LLMProviderConfig> = {};
+    if (typeof raw.defaultProvider === 'string' && raw.defaultProvider.trim() !== '') {
+      llmConfig.defaultProvider = raw.defaultProvider.trim();
+    }
+    if (raw.providers && typeof raw.providers === 'object') {
+      providers = {};
+      const knownTypes = ['openai-compatible', 'azure', 'bedrock', 'ollama'] as const;
+      for (const [id, provider] of Object.entries(raw.providers)) {
+        if (!provider || typeof provider !== 'object') {
+          continue;
+        }
+        if (!provider.type || !(knownTypes as readonly string[]).includes(provider.type)) {
+          // An invalid provider is dropped per-entry (not the whole llm block),
+          // with a warning so a silently deactivated custom-LLM config stays
+          // observable in CI logs instead of failing at runtime with a confusing
+          // "model not found".
+          core.warning(
+            `Ignoring LLM provider "${id}": type "${String(
+              (provider as { type?: unknown }).type ?? '(none)',
+            )}" is not one of ${knownTypes.join(', ')}`,
+          );
+          continue;
+        }
+        const validated: LLMProviderConfig = {
+          type: provider.type as LLMProviderConfig['type'],
+        };
+        const fieldNames = [
+          'baseUrl',
+          'apiKey',
+          'endpoint',
+          'resourceName',
+          'apiVersion',
+          'deployment',
+          'modelId',
+          'region',
+          'model',
+        ] as const;
+        for (const field of fieldNames) {
+          const value = provider[field];
+          if (typeof value === 'string') {
+            if (value.trim() !== '') validated[field] = value.trim();
+          } else if (value !== undefined && value !== null) {
+            // A known field with a non-string value would otherwise be silently
+            // dropped, later surfacing as an opaque 401/auth failure.
+            core.warning(
+              `Ignoring LLM provider "${id}" field "${field}": expected a string, got ${typeof value}.`,
+            );
+          }
+        }
+        if (Array.isArray(provider.models)) {
+          const models = provider.models
+            .filter((m): m is string => typeof m === 'string' && m.trim() !== '')
+            .map((m) => m.trim());
+          if (models.length > 0) validated.models = models;
+        }
+        // Warn about providers that lack the minimum fields their type needs,
+        // so the eventual "model not found"/auth failure is surfaced early.
+        const type = provider.type as LLMProviderConfig['type'];
+        if (type === 'openai-compatible' && !validated.baseUrl) {
+          core.warning(
+            `LLM provider "${id}" (openai-compatible) has no baseUrl and will not be usable.`,
+          );
+        } else if (type === 'azure') {
+          if (!validated.endpoint && !validated.resourceName) {
+            core.warning(
+              `LLM provider "${id}" (azure) is missing endpoint/resourceName and cannot reach the API.`,
+            );
+          }
+          if (!validated.deployment) {
+            core.warning(
+              `LLM provider "${id}" (azure) is missing a deployment name; bare models will not route to an Azure deployment.`,
+            );
+          }
+        } else if (type === 'bedrock' && !validated.modelId) {
+          core.warning(`LLM provider "${id}" (bedrock) is missing a modelId and cannot be used.`);
+        }
+        providers[id] = validated;
+      }
+      if (Object.keys(providers).length > 0) llmConfig.providers = providers;
+    }
+    if (llmConfig.defaultProvider !== undefined) {
+      const knownIds = ['ollama', 'azure', 'amazon-bedrock', 'custom-openai'];
+      const providerKeys = Object.keys(providers);
+      if (
+        !knownIds.includes(llmConfig.defaultProvider) &&
+        !providerKeys.includes(llmConfig.defaultProvider)
+      ) {
+        core.warning(
+          `Ignoring invalid llm.defaultProvider "${llmConfig.defaultProvider}": expected one of ` +
+            `${knownIds.join(', ')} or a provider key in the providers map (${providerKeys.join(', ') || 'none'}).`,
+        );
+      }
+    }
+    if (llmConfig.defaultProvider !== undefined || llmConfig.providers !== undefined) {
+      result.llm = llmConfig;
+    }
   }
 
   return result;

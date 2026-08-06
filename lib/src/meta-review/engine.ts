@@ -24,7 +24,11 @@ export class MetaReviewEngine {
     private store: LearningStore,
     private patternDetector?: PatternDetector,
     private config?: AgentConfig,
-  ) {}
+  ) {
+    // Custom LLM providers are passed explicitly to runOpenCode below (rather
+    // than a module global) so meta-review runs never clobber or observe the
+    // provider config of a concurrently constructed ReviewEngine.
+  }
 
   /**
    * Execute a meta-review: build the prompt, run the LLM, parse results,
@@ -75,6 +79,7 @@ export class MetaReviewEngine {
         this.config?.reviewModel ??
         'opencode/deepseek-v4-flash-free',
       signal,
+      llm: this.config?.llm,
     });
     if (!metaRunResult.success) {
       new Logger('MetaReviewEngine').warn(

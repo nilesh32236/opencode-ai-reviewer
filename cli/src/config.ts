@@ -103,6 +103,7 @@ export function buildAgentConfig(
       enabled: false,
     },
     linters: loadedConfig?.linters || [],
+    llm: loadedConfig?.llm,
     rateLimiting: {
       ...DEFAULT_CONFIG.rateLimiting,
       enabled: false,

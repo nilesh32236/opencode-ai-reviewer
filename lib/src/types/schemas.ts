@@ -261,6 +261,56 @@ export const LinterConfigSchema = z.object({
   timeout: z.number().int().positive().optional(),
 });
 
+/**
+ * Zod schema validating a single custom LLM provider entry.
+ * All fields are optional strings; validity of URLs/keys is enforced when the
+ * provider map is built for the OpenCode CLI, never at config-parse time, so a
+ * placeholder or env-injected value can never fail the whole config parse.
+ */
+export const LLMProviderConfigSchema = z.object({
+  type: z.enum(['openai-compatible', 'azure', 'bedrock', 'ollama']),
+  baseUrl: z.string().optional(),
+  apiKey: z.string().optional(),
+  endpoint: z.string().optional(),
+  resourceName: z.string().optional(),
+  apiVersion: z.string().optional(),
+  deployment: z.string().optional(),
+  modelId: z.string().optional(),
+  region: z.string().optional(),
+  model: z.string().optional(),
+  models: z.array(z.string()).optional(),
+});
+
+/**
+ * Zod schema validating the custom LLM provider configuration section.
+ * Custom LLM hosting is a non-critical, opt-in enterprise feature, so a fully
+ * malformed `llm:` block falls back to an empty provider map (mirroring
+ * `NotificationsConfigSchema`) instead of failing the whole config parse.
+ *
+ * Provider entries are validated with {@link LLMProviderConfigSchema}; a single
+ * invalid provider (e.g. an unsupported `type` or a mistyped field) neutralizes
+ * only that entry (falling back to `{}`) while valid peers and `defaultProvider`
+ * survive. Dropping invalid providers is the single responsibility of
+ * `validateConfig()` in config.ts, which warns when it drops one.
+ */
+/** Inferred output type of {@link LLMProviderConfigSchema}. */
+type LLMProviderConfigSchemaOutput = z.infer<typeof LLMProviderConfigSchema>;
+/** Per-entry fallback for a provider that fails {@link LLMProviderConfigSchema}. */
+const LLMProviderFallback = {} as LLMProviderConfigSchemaOutput;
+
+export const LLMConfigSchema = z
+  .object({
+    defaultProvider: z.string().optional(),
+    providers: z
+      .record(z.string(), LLMProviderConfigSchema.catch(LLMProviderFallback))
+      .optional()
+      .default({}),
+  })
+  .catch(({ input }) => ({
+    defaultProvider: (input as { defaultProvider?: string } | undefined)?.defaultProvider,
+    providers: {},
+  }));
+
 /** Zod schema validating rate limiting configuration. */
 export const RateLimitingConfigSchema = z.object({
   enabled: z.boolean().default(true),
@@ -434,6 +484,7 @@ export const AgentConfigSchema = z.object({
   notifications: NotificationsConfigSchema.default(NotificationsConfigSchema.parse({})),
   multiAgent: MultiAgentConfigSchema.default(MultiAgentConfigSchema.parse({})),
   secrets: SecretsConfigSchema.default(SecretsConfigSchema.parse({})),
+  llm: LLMConfigSchema.optional(),
 });
 
 // ─── Prompt Config Schema (YAML config file) ──────────────
@@ -553,4 +604,5 @@ export const PromptConfigSchema = z.object({
   notifications: NotificationsConfigSchema.optional(),
   multiAgent: MultiAgentConfigSchema.optional(),
   secrets: SecretsConfigSchema.optional(),
+  llm: LLMConfigSchema.optional(),
 });

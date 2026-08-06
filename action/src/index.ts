@@ -28,6 +28,7 @@ import { runAudit } from './audit.js';
 import { runDocs } from './docs.js';
 import { runAutofixLoop, runFix, runFixIssue } from './fix.js';
 import { type ActionInputs, parseInputs } from './inputs.js';
+import { buildLLMConfig } from './llm.js';
 import { runPost } from './post.js';
 import { runReview } from './review.js';
 import { runSelfHeal } from './self-heal.js';
@@ -56,10 +57,20 @@ async function run(): Promise<void> {
   let cacheManager: StateCacheManager | undefined;
 
   try {
-    inputs = parseInputs();
-
+    // Load the config file before parsing inputs so the config file's
+    // `llm.defaultProvider` can drive bare-model resolution/validation for the
+    // model inputs (parseInputs would otherwise fail a bare "llama3" before the
+    // config default provider could ever apply). The configFile input is read
+    // directly here; parseInputs re-reads it for the ActionInputs.configFile field.
     const platform = (process.env.PLATFORM || 'github') as string as 'github' | 'gitlab';
-    const loadedConfig = loadConfig(undefined, platform, inputs.configFile);
+    const loadedConfig = loadConfig(undefined, platform, core.getInput('config') || undefined);
+
+    // Assign into the outer function-scoped `inputs` (declared above the try)
+    // rather than shadowing it: the outer `finally` block saves the learning
+    // cache based on `inputs.enableStateCache`, so a shadowing local would
+    // leave the outer variable undefined and `cacheManager.save()` would never
+    // run on default-configured runs.
+    inputs = parseInputs(loadedConfig?.llm);
 
     if (platform === 'gitlab') {
       if (!process.env.CI_PROJECT_NAMESPACE || !process.env.CI_PROJECT_NAME) {
@@ -316,6 +327,7 @@ async function run(): Promise<void> {
       notifications: loadedConfig?.notifications ?? DEFAULT_CONFIG.notifications,
       multiAgent: loadedConfig?.multiAgent ?? DEFAULT_CONFIG.multiAgent,
       secrets: loadedConfig?.secrets ?? DEFAULT_CONFIG.secrets,
+      llm: buildLLMConfig(inputs, loadedConfig),
     };
 
     const learningStore = new LearningStore();

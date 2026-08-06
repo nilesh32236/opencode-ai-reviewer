@@ -1433,4 +1433,151 @@ unknownSection: true
       }
     });
   });
+
+  describe('validateConfig llm', () => {
+    it('parses a full llm provider map', () => {
+      const result = validateConfig({
+        llm: {
+          defaultProvider: 'ollama',
+          providers: {
+            ollama: {
+              type: 'ollama',
+              baseUrl: 'http://localhost:11434/v1',
+              models: ['llama3', 'codellama'],
+            },
+            gateway: {
+              type: 'openai-compatible',
+              baseUrl: 'https://llm.corp.example/v1',
+              apiKey: '{env:INTERNAL_LLM_KEY}',
+              models: ['qwen3-coder'],
+            },
+          },
+        },
+      } as never);
+      expect(result.llm?.defaultProvider).toBe('ollama');
+      expect(result.llm?.providers).toEqual({
+        ollama: {
+          type: 'ollama',
+          baseUrl: 'http://localhost:11434/v1',
+          models: ['llama3', 'codellama'],
+        },
+        gateway: {
+          type: 'openai-compatible',
+          baseUrl: 'https://llm.corp.example/v1',
+          apiKey: '{env:INTERNAL_LLM_KEY}',
+          models: ['qwen3-coder'],
+        },
+      });
+    });
+
+    it('drops providers without a valid type', () => {
+      const result = validateConfig({
+        llm: {
+          providers: {
+            bad: { baseUrl: 'https://example.com/v1' },
+            ok: { type: 'ollama', baseUrl: 'http://localhost:11434/v1' },
+          },
+        },
+      } as never);
+      expect(result.llm?.providers).toEqual({
+        ok: { type: 'ollama', baseUrl: 'http://localhost:11434/v1' },
+      });
+    });
+
+    it('trims string fields and filters non-string model names', () => {
+      const result = validateConfig({
+        llm: {
+          defaultProvider: '  azure ',
+          providers: {
+            azure: {
+              type: 'azure',
+              endpoint: ' https://my-resource.openai.azure.com ',
+              apiKey: ' key ',
+              apiVersion: ' 2024-02-15-preview ',
+              deployment: ' my-deployment ',
+              models: ['model-a', 42, null, 'model-b'],
+            },
+          },
+        },
+      } as never);
+      expect(result.llm?.defaultProvider).toBe('azure');
+      expect(result.llm?.providers?.azure).toEqual({
+        type: 'azure',
+        endpoint: 'https://my-resource.openai.azure.com',
+        apiKey: 'key',
+        apiVersion: '2024-02-15-preview',
+        deployment: 'my-deployment',
+        models: ['model-a', 'model-b'],
+      });
+    });
+
+    it('keeps bedrock provider with model id and region', () => {
+      const result = validateConfig({
+        llm: {
+          providers: {
+            bedrock: {
+              type: 'bedrock',
+              modelId: 'us.anthropic.claude-sonnet-4-5-v2:0',
+              region: 'us-east-1',
+            },
+          },
+        },
+      } as never);
+      expect(result.llm?.providers?.bedrock).toEqual({
+        type: 'bedrock',
+        modelId: 'us.anthropic.claude-sonnet-4-5-v2:0',
+        region: 'us-east-1',
+      });
+    });
+
+    it('omits llm when nothing valid is configured', () => {
+      const result = validateConfig({ llm: { providers: {} } } as never);
+      expect(result.llm).toBeUndefined();
+    });
+
+    it('loads an llm section from YAML and warns on unknown keys', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-llm-'));
+      try {
+        fs.writeFileSync(
+          path.join(dir, '.opencode-reviewer.yml'),
+          `llm:
+  defaultProvider: ollama
+  providers:
+    ollama:
+      type: ollama
+      models:
+        - llama3
+  bogusSection: true
+`,
+        );
+        const config = loadConfig(dir);
+        expect(config?.llm?.defaultProvider).toBe('ollama');
+        expect(config?.llm?.providers?.ollama?.models).toEqual(['llama3']);
+        expect(vi.mocked(core.warning)).toHaveBeenCalledWith(
+          expect.stringContaining('Unknown config key "llm.bogusSection"'),
+        );
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('degrades a malformed llm block without failing the whole config', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-llm-bad-'));
+      try {
+        fs.writeFileSync(
+          path.join(dir, '.opencode-reviewer.yml'),
+          `llm: "not-an-object"
+review:
+  systemPrompt: "still parsed"
+`,
+        );
+        const config = loadConfig(dir);
+        expect(config).not.toBeNull();
+        expect(config?.review?.systemPrompt).toBe('still parsed');
+        expect(config?.llm).toBeUndefined();
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
 });

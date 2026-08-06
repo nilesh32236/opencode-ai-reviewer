@@ -191,3 +191,78 @@ describe('parseInputs() docs mode', () => {
     expect(inputs.docsModel).toBe('openai/gpt-4o');
   });
 });
+
+describe('parseInputs() LLM model resolution', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('prefixes a bare model with llm_default_provider', () => {
+    setInputs({ ...BASE_INPUTS, llm_default_provider: 'ollama', review_model: 'llama3' });
+    const inputs = parseInputs();
+    expect(inputs.reviewModel).toBe('ollama/llama3');
+  });
+
+  it('falls back to the config file defaultProvider for a bare model', () => {
+    setInputs({ ...BASE_INPUTS, review_model: 'llama3' });
+    const inputs = parseInputs({ defaultProvider: 'ollama', providers: {} });
+    expect(inputs.reviewModel).toBe('ollama/llama3');
+  });
+
+  it('the action llm_default_provider input wins over the config defaultProvider', () => {
+    setInputs({ ...BASE_INPUTS, llm_default_provider: 'azure', review_model: 'llama3' });
+    const inputs = parseInputs({ defaultProvider: 'ollama', providers: {} });
+    expect(inputs.reviewModel).toBe('azure/llama3');
+  });
+
+  it('routes a bare model to the config-file azure deployment', () => {
+    setInputs({ ...BASE_INPUTS, review_model: 'llama3' });
+    const inputs = parseInputs({
+      defaultProvider: 'azure',
+      providers: { azure: { type: 'azure', deployment: 'my-deployment' } },
+    });
+    expect(inputs.reviewModel).toBe('azure/my-deployment');
+  });
+
+  it('the azure_deployment_name action input wins over the config deployment', () => {
+    setInputs({ ...BASE_INPUTS, azure_deployment_name: 'input-dep', review_model: 'llama3' });
+    const inputs = parseInputs({
+      defaultProvider: 'azure',
+      providers: { azure: { type: 'azure', deployment: 'config-dep' } },
+    });
+    expect(inputs.reviewModel).toBe('azure/input-dep');
+  });
+
+  it('infer azure provider from a config-file azure provider with a bare model', () => {
+    setInputs({ ...BASE_INPUTS, review_model: 'llama3' });
+    const inputs = parseInputs({
+      providers: { azure: { type: 'azure', deployment: 'my-deployment' } },
+    });
+    expect(inputs.reviewModel).toBe('azure/my-deployment');
+  });
+
+  it('routes a bare model to the config-file bedrock model id', () => {
+    setInputs({ ...BASE_INPUTS, review_model: 'llama3' });
+    const inputs = parseInputs({
+      defaultProvider: 'amazon-bedrock',
+      providers: {
+        bedrock: { type: 'bedrock', modelId: 'us.mistral.mistral-large', region: 'us-east-1' },
+      },
+    });
+    expect(inputs.reviewModel).toBe('amazon-bedrock/us.mistral.mistral-large');
+  });
+
+  it('infer bedrock provider from a config-file model id with a bare model', () => {
+    setInputs({ ...BASE_INPUTS, review_model: 'llama3' });
+    const inputs = parseInputs({
+      providers: { bedrock: { type: 'bedrock', modelId: 'us.mistral.mistral-large' } },
+    });
+    expect(inputs.reviewModel).toBe('amazon-bedrock/us.mistral.mistral-large');
+  });
+
+  it('leaves an already-prefixed model unchanged even with a default provider', () => {
+    setInputs({ ...BASE_INPUTS, llm_default_provider: 'ollama', review_model: 'openai/gpt-4o' });
+    const inputs = parseInputs();
+    expect(inputs.reviewModel).toBe('openai/gpt-4o');
+  });
+});

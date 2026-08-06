@@ -1,4 +1,4 @@
-import { type ActionMode, type CostTrackingVerbosity, DEFAULT_ALLOWLIST, type DocStyle, type FailOnSeverity, validateRunChecksCommand } from '@opencode-pr-agent/lib';
+import { type ActionMode, type CostTrackingVerbosity, DEFAULT_ALLOWLIST, type DocStyle, type FailOnSeverity, type LLMConfig, validateRunChecksCommand } from '@opencode-pr-agent/lib';
 export { DEFAULT_ALLOWLIST, validateRunChecksCommand };
 /**
  * Parse and validate a timeout value from a raw string.
@@ -18,6 +18,26 @@ export interface ActionInputs {
     anthropicKey?: string;
     /** Optional Google Gemini API key. */
     geminiKey?: string;
+    /** Optional default LLM provider used to prefix bare model names. */
+    llmDefaultProvider?: string;
+    /** Optional custom base URL for an OpenAI-compatible API. */
+    llmBaseUrl?: string;
+    /** Optional API key for the custom OpenAI-compatible base URL. */
+    llmApiKey?: string;
+    /** Optional Ollama base URL (default: http://localhost:11434/v1). */
+    ollamaBaseUrl?: string;
+    /** Optional Ollama model name. */
+    ollamaModel?: string;
+    /** Optional Azure OpenAI endpoint URL. */
+    azureEndpoint?: string;
+    /** Optional Azure OpenAI API key. */
+    azureKey?: string;
+    /** Optional Azure OpenAI deployment name. */
+    azureDeployment?: string;
+    /** Optional AWS Bedrock model ID. */
+    bedrockModelId?: string;
+    /** Optional AWS region for Bedrock. */
+    bedrockRegion?: string;
     /** Model identifier for review operations. */
     reviewModel: string;
     /** Model identifier for fix operations. */
@@ -117,6 +137,13 @@ export interface ActionInputs {
 }
 /**
  * Parse and validate all GitHub Action inputs from workflow environment.
+ *
+ * @param configLlm - The `.opencode-reviewer.yml` `llm:` block (when one is
+ * configured). Its `defaultProvider` is used as a fallback when the
+ * `llm_default_provider` action input is unset, and its provider entries
+ * (Azure `deployment` / Bedrock `modelId`) are used to route bare model names
+ * when a provider is configured solely via the config file, so the workflow
+ * author gets bare model names resolved (and validated) correctly.
  * @returns A fully populated ActionInputs object.
  */
-export declare function parseInputs(): ActionInputs;
+export declare function parseInputs(configLlm?: LLMConfig): ActionInputs;

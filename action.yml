@@ -31,6 +31,46 @@ inputs:
     description: 'Google Gemini API key'
     required: false
 
+  llm_default_provider:
+    description: 'Default LLM provider used to prefix bare model names (e.g. "ollama" makes model "llama3" resolve to "ollama/llama3")'
+    required: false
+
+  llm_base_url:
+    description: 'Custom base URL for an OpenAI-compatible API (e.g. a self-hosted gateway: https://llm.corp.example/v1). Select models as "custom-openai/<model>".'
+    required: false
+
+  llm_api_key:
+    description: 'API key for the custom OpenAI-compatible base URL (llm_base_url)'
+    required: false
+
+  ollama_base_url:
+    description: 'Ollama base URL (default: http://localhost:11434/v1). Select models as "ollama/<model>".'
+    required: false
+
+  ollama_model:
+    description: 'Ollama model name (e.g. llama3, codellama). Shorthand that configures the ollama provider with this single model.'
+    required: false
+
+  azure_openai_endpoint:
+    description: 'Azure OpenAI endpoint URL (e.g. https://my-resource.openai.azure.com). Select deployments as "azure/<deployment-name>".'
+    required: false
+
+  azure_openai_key:
+    description: 'Azure OpenAI API key'
+    required: false
+
+  azure_deployment_name:
+    description: 'Azure OpenAI deployment name (used as the model id via "azure/<deployment-name>")'
+    required: false
+
+  aws_bedrock_model_id:
+    description: 'AWS Bedrock model ID (e.g. us.anthropic.claude-sonnet-4-5-v2:0). Select models as "amazon-bedrock/<model-id>".'
+    required: false
+
+  aws_region:
+    description: 'AWS region for Bedrock (mapped to the standard AWS_REGION env var)'
+    required: false
+
   review_model:
     description: 'Model to use for PR review'
     required: false
