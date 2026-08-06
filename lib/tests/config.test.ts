@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as core from '@actions/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig, mergeConfigWithInputs, resolveConfig, validateConfig } from '../src/config.js';
-import { DEFAULT_CONFIG } from '../src/types/index.js';
+import { DEFAULT_CONFIG, DEFAULT_SECRET_DETECTOR_CONFIG } from '../src/types/index.js';
 import { AgentConfigSchema, CostTrackingConfigSchema } from '../src/types/schemas.js';
 
 vi.mock('@actions/core', () => {
@@ -1328,7 +1328,17 @@ unknownSection: true
         minLength: 32,
         allowlist: [],
         failCI: false,
-        excludePatterns: [],
+        excludePatterns: [
+          '**/go.sum',
+          '**/npm-shrinkwrap.json',
+          '**/Cargo.lock',
+          '**/poetry.lock',
+          '**/pnpm-lock.yaml',
+          '**/package-lock.json',
+          '**/yarn.lock',
+          '**/*.lock',
+          '**/*.lockb',
+        ],
       });
     });
 
@@ -1340,7 +1350,8 @@ unknownSection: true
         minLength: 32,
         allowlist: [],
         failCI: false,
-        excludePatterns: [],
+        // A partial block still inherits the checksum/lockfile exclusions.
+        excludePatterns: DEFAULT_SECRET_DETECTOR_CONFIG.excludePatterns,
       });
     });
 
@@ -1370,6 +1381,40 @@ unknownSection: true
       expect(result.secrets.enabled).toBe(true);
       expect(result.secrets.entropyThreshold).toBe(4.5);
       expect(result.secrets.allowlist).toEqual([]);
+    });
+
+    it('AgentConfigSchema resets only the malformed field, keeping the rest', () => {
+      const result = AgentConfigSchema.parse({
+        secrets: { enabled: false, entropyThreshold: 'high', failCI: true },
+      });
+      expect(result.secrets.enabled).toBe(false);
+      expect(result.secrets.entropyThreshold).toBe(4.5);
+      expect(result.secrets.failCI).toBe(true);
+    });
+
+    it('AgentConfigSchema treats a non-object secrets value as an explicit disable', () => {
+      for (const value of [false, null]) {
+        const result = AgentConfigSchema.parse({ secrets: value });
+        expect(result.secrets.enabled).toBe(false);
+      }
+    });
+
+    it('loadConfig treats `secrets: false` as an explicit disable', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-secrets-disabled-'));
+      try {
+        fs.writeFileSync(path.join(dir, '.opencode-reviewer.yml'), 'secrets: false\n');
+        const config = loadConfig(dir);
+        expect(config?.secrets?.enabled).toBe(false);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('validateConfig disables the scanner for a non-object secrets value', () => {
+      const result = validateConfig({
+        secrets: false,
+      } as unknown as Parameters<typeof validateConfig>[0]);
+      expect(result.secrets?.enabled).toBe(false);
     });
 
     it('loadConfig parses a full secrets block from YAML', () => {

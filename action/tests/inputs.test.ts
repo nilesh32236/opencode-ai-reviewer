@@ -145,6 +145,33 @@ describe('parseInputs() fail_on_severity', () => {
   });
 });
 
+describe('parseInputs() secrets_fail_ci', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('is undefined (not explicit) when the input is omitted', () => {
+    setInputs(BASE_INPUTS);
+    const inputs = parseInputs();
+    expect(inputs.secretsFailCI).toBeUndefined();
+    expect(inputs.secretsFailCIExplicit).toBe(false);
+  });
+
+  it('parses an explicit true value', () => {
+    setInputs({ ...BASE_INPUTS, secrets_fail_ci: 'true' });
+    const inputs = parseInputs();
+    expect(inputs.secretsFailCI).toBe(true);
+    expect(inputs.secretsFailCIExplicit).toBe(true);
+  });
+
+  it('parses an explicit false value', () => {
+    setInputs({ ...BASE_INPUTS, secrets_fail_ci: 'false' });
+    const inputs = parseInputs();
+    expect(inputs.secretsFailCI).toBe(false);
+    expect(inputs.secretsFailCIExplicit).toBe(true);
+  });
+});
+
 describe('parseInputs() docs mode', () => {
   beforeEach(() => {
     vi.clearAllMocks();

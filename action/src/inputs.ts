@@ -156,6 +156,10 @@ export interface ActionInputs {
   failOnSeverity: FailOnSeverity;
   /** Whether the fail_on_severity input was explicitly set by the workflow. */
   failOnSeverityExplicit: boolean;
+  /** Workflow-level override for the secret-scan CI gate (secrets_fail_ci input). */
+  secretsFailCI?: boolean;
+  /** Whether the secrets_fail_ci input was explicitly set by the workflow. */
+  secretsFailCIExplicit: boolean;
   /** Whether the learning state cache is enabled. */
   enableStateCache: boolean;
   /** Cache key prefix for learning state storage. */
@@ -265,6 +269,10 @@ export function parseInputs(): ActionInputs {
   const failOnSeverity = failOnSeverityRaw as FailOnSeverity;
   const failOnSeverityExplicit = failOnSeverityInput.trim() !== '';
 
+  const secretsFailCIInput = core.getInput('secrets_fail_ci');
+  const secretsFailCIExplicit = secretsFailCIInput.trim() !== '';
+  const secretsFailCI = secretsFailCIExplicit ? secretsFailCIInput.trim() === 'true' : undefined;
+
   // Models for features that are active in the selected mode are hard-gated so
   // an invalid value fails the action before any work starts. Models whose
   // feature is disabled (or that the action never runs, e.g. conversation) only
@@ -354,6 +362,8 @@ export function parseInputs(): ActionInputs {
     reviewInline: core.getInput('review_inline') !== 'false',
     failOnSeverity,
     failOnSeverityExplicit,
+    secretsFailCI,
+    secretsFailCIExplicit,
     enableStateCache: core.getInput('enable_state_cache') !== 'false',
     stateCacheKey: core.getInput('state_cache_key') || 'opencode-learning-state',
     ciFailureLogs: core.getInput('ci_failure_logs') || undefined,

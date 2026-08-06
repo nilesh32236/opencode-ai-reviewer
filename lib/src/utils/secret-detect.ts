@@ -119,6 +119,22 @@ const PRIVATE_KEY_REDACTION = '[REDACTED PRIVATE KEY]';
 const HIGH_ENTROPY_TOKEN = /[A-Za-z0-9+/=]+/g;
 const GLOBAL_HIGH_ENTROPY_REGEX = new RegExp(HIGH_ENTROPY_TOKEN.source, 'g');
 
+/** User-facing labels for detected secret types, used in issue messages. */
+const SECRET_TYPE_LABELS: Record<string, string> = {
+  'aws-access-key-id': 'AWS access key ID',
+  'aws-secret-access-key': 'AWS secret access key',
+  'github-pat': 'GitHub personal access token',
+  'github-fine-grained-pat': 'GitHub fine-grained personal access token',
+  'openai-api-key': 'OpenAI API key',
+  'anthropic-api-key': 'Anthropic API key',
+  'slack-token': 'Slack token',
+  'google-api-key': 'Google API key',
+  'stripe-live-secret-key': 'Stripe live secret key',
+  'private-key': 'private key',
+  'connection-string': 'connection string with embedded password',
+  'generic-high-entropy': 'high-entropy token',
+};
+
 /**
  * Compute the base-2 Shannon entropy of a string's characters.
  * Returns `0` for empty or single-character-distribution inputs.
@@ -141,7 +157,11 @@ export function shannonEntropy(s: string): number {
 }
 
 function redactValue(value: string): string {
-  if (value.length <= 8) return value;
+  if (value.length <= 8) {
+    // Never emit a short secret verbatim — the whole value is recoverable from
+    // its first 4 + last 4 chars, so short values are masked entirely.
+    return `${value.slice(0, 1)}${ELLIPSIS}`;
+  }
   return `${value.slice(0, 4)}${ELLIPSIS}${value.slice(-4)}`;
 }
 
@@ -190,13 +210,21 @@ function compileAllowlist(allowlist: string[]): CompiledAllowlistEntry[] {
  *
  * @param rawValue - The full raw token (never returned to callers).
  * @param redactedValue - The redacted representation used in public output.
- * @param allowlist - Raw allowlist entries.
+ * @param compiledAllowlist - Allowlist entries compiled once per scan.
  * @returns True when the token should be suppressed.
  */
-function isAllowlisted(rawValue: string, redactedValue: string, allowlist: string[]): boolean {
-  if (allowlist.length === 0) return false;
-  return compileAllowlist(allowlist).some((entry) => {
+function isAllowlisted(
+  rawValue: string,
+  redactedValue: string,
+  compiledAllowlist: CompiledAllowlistEntry[],
+): boolean {
+  if (compiledAllowlist.length === 0) return false;
+  return compiledAllowlist.some((entry) => {
     if (entry.kind === 'regex') {
+      // Global/sticky regexes track `lastIndex` across `test()` calls, so a
+      // prior match would shift the next starting position and could miss a
+      // token that still matches. Reset before each test to keep them reusable.
+      entry.regex.lastIndex = 0;
       return entry.regex.test(rawValue) || entry.regex.test(redactedValue);
     }
     return rawValue.includes(entry.value) || redactedValue.includes(entry.value);
@@ -218,6 +246,9 @@ export function detectSecrets(text: string, options: SecretDetectOptions = {}): 
   const minLength = options.minLength ?? 32;
   const minEntropy = options.minEntropy ?? 4.5;
   const allowlist = options.allowlist ?? [];
+  // Compile the allowlist once per scan instead of per candidate: user-supplied
+  // regexes are recompiled only here, keeping per-match cost O(1) per entry.
+  const compiledAllowlist = compileAllowlist(allowlist);
 
   // Each candidate finding carries both the redacted and the raw value; the
   // raw value is discarded only at the final filter step so allowlist entries
@@ -270,16 +301,18 @@ export function detectSecrets(text: string, options: SecretDetectOptions = {}): 
       const index = match.index ?? 0;
       const atIdx = fullMatch.lastIndexOf('@');
       const password = match[1] ?? match[2];
-      let redactedValue: string;
-      if (password !== undefined) {
-        // password occupies the span ending at `@`; its length gives the
-        // start offset so a password containing `:` is fully covered.
-        const passwordStart = atIdx - password.length;
-        const redactedPassword = redactValue(password);
-        redactedValue = `${fullMatch.slice(0, passwordStart)}${redactedPassword}@`;
-      } else {
-        redactedValue = fullMatch;
+      if (password === undefined) {
+        // A user-only URI (no embedded password) carries no credential to leak;
+        // skip it so a plain `mongodb://replicaset@host/` is not a blocking
+        // critical finding.
+        if (fullMatch.length === 0) GLOBAL_CONNECTION_STRING_REGEX.lastIndex++;
+        continue;
       }
+      // password occupies the span ending at `@`; its length gives the
+      // start offset so a password containing `:` is fully covered.
+      const passwordStart = atIdx - password.length;
+      const redactedPassword = redactValue(password);
+      const redactedValue = `${fullMatch.slice(0, passwordStart)}${redactedPassword}@`;
       candidates.push({
         type: 'connection-string',
         line: lineNumber,
@@ -326,7 +359,9 @@ export function detectSecrets(text: string, options: SecretDetectOptions = {}): 
   // or its redacted representation matches an allowlist entry (literal
   // substring or `/regex/`). This is the single suppression point for named
   // patterns, connection strings, and high-entropy candidates alike.
-  const findings = candidates.filter((c) => !isAllowlisted(c.rawValue, c.redactedValue, allowlist));
+  const findings = candidates.filter(
+    (c) => !isAllowlisted(c.rawValue, c.redactedValue, compiledAllowlist),
+  );
 
   // Deterministic source-order output: by line, then column. Strip the raw
   // value before returning so caller never sees the plaintext secret.
@@ -353,12 +388,15 @@ export function mergeSecretFindings(file: string, secrets: SecretFinding[]): Rev
     severity: 'critical' as const,
     file,
     line: finding.line,
-    message: `Hardcoded ${finding.type} detected: ${finding.redactedValue}`,
+    message: `Hardcoded ${SECRET_TYPE_LABELS[finding.type] ?? finding.type} detected: ${
+      finding.redactedValue
+    }`,
     suggestion:
       'Move the secret to an environment variable or a secret manager (e.g. GitHub ' +
       'Secrets, Vault, AWS Secrets Manager) and rotate the leaked credential.',
     inline: true,
     confidence: 'high' as const,
     category: 'security',
+    secretFingerprint: finding.fingerprint,
   }));
 }

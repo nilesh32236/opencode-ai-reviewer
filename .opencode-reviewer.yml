@@ -73,18 +73,22 @@ learning:
 
 # Deterministic hardcoded secret / credential scanning. Runs on every review and
 # audit pass and reports findings as blocking critical inline comments.
-# `failOnSeverity: critical` (or `secrets.failCI: true`) turns it into a CI gate.
+# `failOnSeverity: critical` (or `secrets.failCI: true`, or the `secrets_fail_ci`
+# Action input) turns it into a CI gate.
 secrets:
   enabled: true
   entropyThreshold: 4.5   # Shannon entropy floor for generic high-entropy strings
   minLength: 32           # minimum token length for high-entropy detection
   failCI: false           # dedicated action-failing gate (findings are critical either way)
   allowlist:
-    - "1234567890abcdef"      # literal substring match against the raw token or its redacted form
-    - "/example-token-[a-z]+/"  # /regex/ entries are compiled as regular expressions
+    # - "1234567890abcdef"        # literal substring match against the raw token or its redacted form
+    # - "/example-token-[a-z]+/"  # /regex/ entries are compiled as regular expressions
   excludePatterns:
     - "**/*.md"
-    - "**/test/**"
+    - "**/test/fixtures/**"
+    # Committed GitHub Action build output (bundled) trips the generic
+    # high-entropy detector; the sources live under action/src.
+    - "action/lib/**"
 
 # Optional webhook notifications for review summaries (Slack / Microsoft Teams).
 # Fully opt-in: notifications are only sent when `enabled: true` and a review

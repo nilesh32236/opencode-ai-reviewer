@@ -65,6 +65,7 @@ import type {
   ReviewIssue,
   ReviewResult,
   ReviewStrength,
+  SecretDetectorConfig,
   SelfHealResult,
   TokenBudgetConfig,
   TokenBudgetMetrics,
@@ -102,6 +103,22 @@ export const INTER_CHUNK_DELAY_MS = 150;
  * (or binary) files are truncated before the regex/entropy pass.
  */
 const MAX_SECRET_SCAN_BYTES = 2 * 1024 * 1024;
+
+/** Directory names never traversed by the deterministic secret scan. */
+const SECRET_SCAN_SKIP_DIRS = new Set([
+  '.git',
+  '.opencode',
+  'node_modules',
+  'dist',
+  'build',
+  'coverage',
+  'vendor',
+  '.venv',
+  'target',
+]);
+
+/** Maximum number of secret findings merged from a single scan pass. */
+const MAX_SECRET_FINDINGS = 200;
 
 /** Canonical dispatch order of the specialized review agents. */
 export const AGENT_ORDER = ['security', 'performance', 'quality', 'logic'] as const;
@@ -186,6 +203,11 @@ export class ReviewEngine {
     // undefined while the logger falls back to its own generated UUID, so
     // published events would not share the engine logs' trace ID.
     this.correlationId = this.logger.getCorrelationId();
+  }
+
+  /** Resolved secret-detector configuration, falling back to library defaults. */
+  private get secretConfig(): SecretDetectorConfig {
+    return this.config.secrets ?? DEFAULT_SECRET_DETECTOR_CONFIG;
   }
 
   /**
@@ -897,8 +919,12 @@ export class ReviewEngine {
 
       if (!runResult.success) {
         this.logger.warn('OpenCode review execution failed, returning fallback empty result');
-        const r = emptyResult();
+        let r = emptyResult();
         r.verdict.reasoning = 'Review execution failed';
+        // The deterministic secret scan is model-independent: run it on fallback
+        // paths too so hardcoded credentials still surface (and secrets.failCI
+        // can still gate) even when the review model is unavailable.
+        r = this.mergeSecretIssues(r, await this.scanFilesForSecrets(files, workDir).catch(() => []));
         return this.applyBudgetModeBanner(r, budgetMode, totalDiffLines);
       }
 
@@ -937,8 +963,9 @@ export class ReviewEngine {
         );
       } catch {
         this.logger.warn(`Failed to parse review output at ${outputPath}, returning empty result`);
-        const r = emptyResult();
+        let r = emptyResult();
         r.verdict.reasoning = 'Failed to parse review output';
+        r = this.mergeSecretIssues(r, await this.scanFilesForSecrets(files, workDir).catch(() => []));
         return this.applyBudgetModeBanner(r, budgetMode, totalDiffLines);
       }
     }
@@ -2340,7 +2367,7 @@ export class ReviewEngine {
       // regardless of focus areas or finding caps configured for LLM findings.
       // Best-effort: a scan failure degrades to the filtered result.
       let finalResult = filteredResult;
-      const secretConfig = this.config.secrets ?? DEFAULT_SECRET_DETECTOR_CONFIG;
+      const secretConfig = this.secretConfig;
       if (secretConfig.enabled) {
         try {
           const secretIssues = await this.scanDirectoryForSecrets(targetDir, workingDirectory);
@@ -2787,10 +2814,21 @@ export class ReviewEngine {
     fullPath: string,
     options: SecretDetectOptions,
   ): Promise<SecretFinding[]> {
-    const buffer = await fs.readFile(fullPath);
-    if (buffer.length === 0) return [];
-    if (buffer.subarray(0, 8192).includes(0)) return [];
-    return detectSecrets(buffer.subarray(0, MAX_SECRET_SCAN_BYTES).toString('utf-8'), options);
+    // Read at most MAX_SECRET_SCAN_BYTES through a file handle instead of
+    // buffering the whole file: a single large committed file must not inflate
+    // peak heap (or throw ERR_FS_FILE_TOO_LARGE) before the size cap applies.
+    // The handle is closed in `finally` so a detector throw cannot leak it.
+    const handle = await fs.open(fullPath, 'r');
+    try {
+      const buffer = Buffer.allocUnsafe(MAX_SECRET_SCAN_BYTES);
+      const { bytesRead } = await handle.read(buffer, 0, MAX_SECRET_SCAN_BYTES, 0);
+      if (bytesRead === 0) return [];
+      const scanned = buffer.subarray(0, bytesRead);
+      if (scanned.subarray(0, 8192).includes(0)) return [];
+      return detectSecrets(scanned.toString('utf-8'), options);
+    } finally {
+      await handle.close();
+    }
   }
 
   /**
@@ -2807,7 +2845,8 @@ export class ReviewEngine {
     files: PRContext['changedFiles'],
     workDir: string,
   ): Promise<ReviewIssue[]> {
-    const secretConfig = this.config.secrets ?? DEFAULT_SECRET_DETECTOR_CONFIG;
+    if (!this.secretConfig.enabled) return [];
+    const secretConfig = this.secretConfig;
     const options: SecretDetectOptions = {
       minEntropy: secretConfig.entropyThreshold,
       minLength: secretConfig.minLength,
@@ -2846,7 +2885,8 @@ export class ReviewEngine {
     targetDir: string,
     workingDirectory?: string,
   ): Promise<ReviewIssue[]> {
-    const secretConfig = this.config.secrets ?? DEFAULT_SECRET_DETECTOR_CONFIG;
+    if (!this.secretConfig.enabled) return [];
+    const secretConfig = this.secretConfig;
     const options: SecretDetectOptions = {
       minEntropy: secretConfig.entropyThreshold,
       minLength: secretConfig.minLength,
@@ -2861,6 +2901,14 @@ export class ReviewEngine {
     const issues: ReviewIssue[] = [];
     const queue: string[] = [root];
     while (queue.length > 0) {
+      // Bound the merged findings so a checked-in bundle or vendored tree
+      // cannot produce an unbounded list of critical inline comments.
+      if (issues.length >= MAX_SECRET_FINDINGS) {
+        this.logger.warn(
+          `Secret scan stopped after ${MAX_SECRET_FINDINGS} finding(s) — narrow secrets.excludePatterns`,
+        );
+        break;
+      }
       const dir = queue.pop()!;
       let entries: Dirent[];
       try {
@@ -2871,18 +2919,14 @@ export class ReviewEngine {
       for (const entry of entries) {
         const full = path.join(dir, entry.name);
         if (entry.isDirectory()) {
-          if (
-            entry.name === '.git' ||
-            entry.name === 'node_modules' ||
-            entry.name === '.opencode'
-          ) {
-            continue;
-          }
+          if (SECRET_SCAN_SKIP_DIRS.has(entry.name)) continue;
           queue.push(full);
           continue;
         }
         if (!entry.isFile()) continue;
-        const rel = path.relative(repoRoot, full);
+        // minimatch patterns use forward slashes; normalize the repo-relative
+        // path so exclusions also match on Windows separators.
+        const rel = path.relative(repoRoot, full).split(path.sep).join('/');
         if (excludePatterns.some((pattern) => minimatch(rel, pattern))) continue;
         try {
           const findings = await this.detectSecretsFromFile(full, options);
@@ -3169,7 +3213,7 @@ export class ReviewEngine {
     // gate through the recomputed stats. Best-effort: a scan failure degrades
     // gracefully to the already-processed result.
     if (files && files.length > 0) {
-      const secretConfig = this.config.secrets ?? DEFAULT_SECRET_DETECTOR_CONFIG;
+      const secretConfig = this.secretConfig;
       if (secretConfig.enabled) {
         try {
           const secretIssues = await this.scanFilesForSecrets(files, workDir);

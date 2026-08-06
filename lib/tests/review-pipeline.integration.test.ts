@@ -318,6 +318,39 @@ describe('Review Pipeline Integration', () => {
     expect(result.stats.total).toBe(0);
   });
 
+  it('c2) secret scan still reports hardcoded credentials when the model fails', async () => {
+    const GITHUB_PAT = ['ghp_', 'aBcDeFgHiJkLmNOpQrStUvWxYz', '0123456789'].join('');
+    fs.mkdirSync(path.join(workDir, 'src'), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, 'src/fallback.ts'),
+      `const token = "${GITHUB_PAT}";`,
+      'utf-8',
+    );
+    engine = new ReviewEngine(makeAgentConfig({ enableMCP: false, mcpServers: [] }), gh);
+    const pr = makePRContext({
+      changedFiles: [
+        {
+          path: 'src/fallback.ts',
+          status: 'added',
+          additions: 1,
+          deletions: 0,
+          patch: '@@ -0,0 +1 @@\n+const token = "…";',
+        },
+      ],
+    });
+
+    fixtureQueue.push({ content: undefined, success: false });
+
+    const result = await engine.reviewPR(pr);
+
+    expect(result.verdict.reasoning).toBe('Review execution failed');
+    const secretIssue = result.issues.find((i) => i.message.startsWith('Hardcoded'));
+    expect(secretIssue).toBeDefined();
+    expect(secretIssue!.file).toBe('src/fallback.ts');
+    expect(secretIssue!.message).not.toContain(GITHUB_PAT);
+    expect(result.stats.critical).toBe(1);
+  });
+
   it('d) OpenCode CLI failure — synthesis failure', async () => {
     const pr = makePRContext({
       changedFiles: Array.from({ length: 7 }, (_, i) => ({
@@ -785,10 +818,23 @@ export default apiToken;
       `const token = "${GITHUB_PAT}";`,
       'utf-8',
     );
+    // Not matched by excludePatterns — only the allowlist can suppress this one.
+    fs.writeFileSync(
+      path.join(workDir, 'src/allowlisted.ts'),
+      `const token = "${GITHUB_PAT}";`,
+      'utf-8',
+    );
     const pr = makePRContext({
       changedFiles: [
         {
           path: 'src/secrets.example.ts',
+          status: 'added',
+          additions: 1,
+          deletions: 0,
+          patch: '@@ -0,0 +1 @@\n+const token = "…";',
+        },
+        {
+          path: 'src/allowlisted.ts',
           status: 'added',
           additions: 1,
           deletions: 0,

@@ -5,7 +5,7 @@
 
 import { z } from 'zod';
 import { MODEL_STRING_REGEX } from '../utils/model-string.js';
-import { DOC_STYLES } from './index.js';
+import { DEFAULT_SECRET_DETECTOR_CONFIG, DOC_STYLES } from './index.js';
 
 /** Error message shared by every model-field regex in AgentConfigSchema. */
 const MODEL_STRING_ERROR = 'Must be "provider/model-name" format (e.g. "openai/gpt-4o")';
@@ -283,27 +283,34 @@ export const EventLoggingConfigSchema = z.object({
 
 /**
  * Zod schema validating deterministic hardcoded secret / credential scanning
- * configuration. All fields are optional with safe defaults; a malformed
- * `secrets:` block falls back to defaults (mirroring `CostTrackingConfigSchema`)
- * so a broken section never fails the whole config parse.
+ * configuration. Each field independently falls back to its default via
+ * `.catch()`, so a single malformed field (e.g. `entropyThreshold: "high"`)
+ * resets only that field instead of discarding the whole `secrets:` block.
+ * A non-object value (`false`, `null`, a string, or an array) is treated as an
+ * explicit disable — the natural way to turn the feature off — rather than
+ * silently parsing to fully-enabled defaults.
  */
-export const SecretsConfigSchema = z
-  .object({
-    enabled: z.boolean().optional().default(true),
-    entropyThreshold: z.number().min(0).max(8).optional().default(4.5),
-    minLength: z.number().int().min(1).max(1024).optional().default(32),
-    allowlist: z.array(z.string()).optional().default([]),
-    failCI: z.boolean().optional().default(false),
-    excludePatterns: z.array(z.string()).optional().default([]),
-  })
-  .catch({
-    enabled: true,
-    entropyThreshold: 4.5,
-    minLength: 32,
-    allowlist: [],
-    failCI: false,
-    excludePatterns: [],
-  });
+export const SecretsConfigSchema = z.preprocess(
+  (value) => {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      return { enabled: false };
+    }
+    return value;
+  },
+  z.object({
+    enabled: z.boolean().catch(true),
+    entropyThreshold: z.number().min(0).max(8).catch(4.5),
+    minLength: z.number().int().min(1).max(1024).catch(32),
+    allowlist: z.array(z.string()).catch([]),
+    failCI: z.boolean().catch(false),
+    // Mirror the runtime defaults so a partial `secrets:` block still inherits
+    // the checksum/lockfile exclusions (a partial block must not silently scan
+    // manifests that the fully-default configuration would skip).
+    excludePatterns: z
+      .array(z.string())
+      .catch(DEFAULT_SECRET_DETECTOR_CONFIG.excludePatterns),
+  }),
+);
 
 /** Zod schema validating a pluggable event subscriber configuration entry. */
 export const PluggableSubscriberConfigSchema = z.object({

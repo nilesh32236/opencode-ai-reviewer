@@ -244,12 +244,20 @@ ${pemEnd}`;
     expect(findings[0].redactedValue.endsWith('@')).toBe(true);
   });
 
-  it('still detects a user-only connection string without a password', () => {
+  it('does not flag a user-only connection string without a password', () => {
+    // A credential-less URI (no embedded password) is not a secret; it must
+    // not produce a blocking critical finding.
     const conn = 'mongodb://replicaset@cluster.example.net/';
     const findings = detectSecrets(`uri = "${conn}"`);
+    expect(findings).toEqual([]);
+  });
+
+  it('masks a short password so it never appears verbatim in the redacted value', () => {
+    const conn = 'postgres://root:secret@db:5432/app';
+    const findings = detectSecrets(`uri = "${conn}"`);
     expect(findings).toHaveLength(1);
-    expect(findings[0].type).toBe('connection-string');
-    expect(findings[0].redactedValue).toBe('mongodb://replicaset@');
+    expect(findings[0].redactedValue).not.toContain('secret');
+    expect(findings[0].redactedValue).toMatch(/^postgres:\/\/root:s…@/);
   });
 
   it('returns findings in deterministic source order (line then column)', () => {
@@ -302,6 +310,17 @@ ${pemEnd}`;
     expect(findings[0].type).toBe('github-pat');
   });
 
+  it('keeps a global-flag /g allowlist regex reusable across matching tokens', () => {
+    // A `/g` (or `/y`) regex tracks `lastIndex` across `test()` calls; without
+    // a reset the second token below would be missed and falsely blocked.
+    const patA = ['ghp_', 'aBcDeFgHiJkLmNOpQrStUvWxYz', 'AAAA1111'].join('');
+    const patB = ['ghp_', 'aBcDeFgHiJkLmNOpQrStUvWxYz', 'BBBB2222'].join('');
+    const findings = detectSecrets(`a = "${patA}"\nb = "${patB}"`, {
+      allowlist: ['/ghp_[A-Za-z0-9]{36,}/g'],
+    });
+    expect(findings).toEqual([]);
+  });
+
   it('keeps a finding when the allowlist entry does not match anything', () => {
     const findings = detectSecrets(`token = "${GITHUB_PAT}"`, { allowlist: ['nope-'] });
     expect(findings).toHaveLength(1);
@@ -323,10 +342,23 @@ describe('mergeSecretFindings', () => {
     expect(issue.inline).toBe(true);
     expect(issue.confidence).toBe('high');
     expect(issue.category).toBe('security');
-    expect(issue.message).toBe('Hardcoded github-pat detected: ghp_…6789');
+    // Friendly labels are used instead of internal detector type identifiers.
+    expect(issue.message).toBe(
+      'Hardcoded GitHub personal access token detected: ghp_…6789',
+    );
     // The raw secret must never leak into the issue.
     expect(issue.message).not.toContain(GITHUB_PAT);
     expect(issue.suggestion).toContain('environment variable');
+    // The structured discriminator marks this as a scanner finding.
+    expect(issue.secretFingerprint).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it('uses friendly labels for internal detector types', () => {
+    const findings = detectSecrets(`token = "${AWS_SECRET}"`);
+    const generic = findings.find((f) => f.type === 'generic-high-entropy');
+    expect(generic).toBeDefined();
+    const issues = mergeSecretFindings('src/config.ts', [generic!]);
+    expect(issues[0].message).toMatch(/^Hardcoded high-entropy token detected: /);
   });
 
   it('returns an empty array for no findings', () => {

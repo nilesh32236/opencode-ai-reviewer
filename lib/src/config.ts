@@ -19,6 +19,7 @@ import type {
 } from './types/index.js';
 import type { Platform } from './types/index.js';
 import { isDocStyle } from './types/index.js';
+import { DEFAULT_SECRET_DETECTOR_CONFIG } from './types/index.js';
 import { PromptConfigSchema } from './types/schemas.js';
 import { DEFAULT_ALLOWLIST } from './utils/command.js';
 import { Logger } from './utils/logger.js';
@@ -833,7 +834,7 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     result.multiAgent = multiAgent;
   }
 
-  if (config.secrets && typeof config.secrets === 'object') {
+  if (config.secrets && typeof config.secrets === 'object' && !Array.isArray(config.secrets)) {
     const s = config.secrets;
     const entropyThreshold =
       typeof s.entropyThreshold === 'number' && Number.isFinite(s.entropyThreshold)
@@ -855,6 +856,10 @@ export function validateConfig(config: PromptConfig): PromptConfig {
         ? s.excludePatterns.filter((p): p is string => typeof p === 'string')
         : [],
     };
+  } else if (config.secrets !== undefined) {
+    // A non-object value (false/null/string) explicitly disables the scanner
+    // instead of silently running with fully-enabled defaults.
+    result.secrets = { ...DEFAULT_SECRET_DETECTOR_CONFIG, enabled: false };
   }
 
   return result;

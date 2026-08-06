@@ -563,4 +563,93 @@ describe('runReview (action wrapper)', () => {
 
     expect(mockSetFailed).not.toHaveBeenCalled();
   });
+
+  it('fails via the dedicated gate when a scanner finding and secrets.failCI are set', async () => {
+    const pr = makePRContext();
+    mockGetPR.mockResolvedValue(pr);
+    mockReviewPR.mockResolvedValue({
+      summary: 'No LLM findings.',
+      verdict: { ready: true, reasoning: 'LGTM', autoFixable: false, confidence: 'high' },
+      strengths: [],
+      issues: [
+        {
+          type: 'issue',
+          severity: 'critical',
+          file: 'src/config.ts',
+          line: 1,
+          message: 'Hardcoded GitHub personal access token detected: ghp_…6789',
+          inline: true,
+          confidence: 'high',
+          category: 'security',
+          secretFingerprint: 'a1b2c3d4e5f60718',
+        },
+      ],
+      stats: { total: 1, critical: 1, important: 0, minor: 0 },
+    });
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+
+    await runReview(
+      makeInputs(),
+      makeConfig({
+        enableMCP: false,
+        mcpServers: [],
+        secrets: { ...DEFAULT_CONFIG.secrets, failCI: true },
+      }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+    );
+
+    expect(mockSetFailed).toHaveBeenCalledWith(
+      'Hardcoded secrets detected in PR. See review comments for details.',
+    );
+  });
+
+  it('does not trip the failCI gate on an LLM finding whose message starts with "Hardcoded"', async () => {
+    const pr = makePRContext();
+    mockGetPR.mockResolvedValue(pr);
+    mockReviewPR.mockResolvedValue({
+      summary: 'LLM finding.',
+      verdict: { ready: false, reasoning: 'Issues', autoFixable: false, confidence: 'medium' },
+      strengths: [],
+      issues: [
+        {
+          type: 'issue',
+          severity: 'important',
+          file: 'src/retry.ts',
+          line: 3,
+          message: 'Hardcoded timeout value in the retry loop',
+          inline: true,
+          confidence: 'medium',
+          category: 'performance',
+        },
+      ],
+      stats: { total: 1, critical: 0, important: 1, minor: 0 },
+    });
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+
+    await runReview(
+      makeInputs(),
+      makeConfig({
+        enableMCP: false,
+        mcpServers: [],
+        secrets: { ...DEFAULT_CONFIG.secrets, failCI: true },
+      }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+    );
+
+    expect(mockSetFailed).not.toHaveBeenCalled();
+  });
 });

@@ -315,7 +315,14 @@ async function run(): Promise<void> {
       eventSubscribers: loadedConfig?.eventSubscribers ?? DEFAULT_CONFIG.eventSubscribers,
       notifications: loadedConfig?.notifications ?? DEFAULT_CONFIG.notifications,
       multiAgent: loadedConfig?.multiAgent ?? DEFAULT_CONFIG.multiAgent,
-      secrets: loadedConfig?.secrets ?? DEFAULT_CONFIG.secrets,
+      secrets: {
+        ...(loadedConfig?.secrets ?? DEFAULT_CONFIG.secrets),
+        // When the workflow explicitly sets secrets_fail_ci it is authoritative
+        // so a PR cannot disable its own security gate by editing
+        // .opencode-reviewer.yml. Only when the input is omitted does the repo
+        // config value (or the default) apply.
+        ...(inputs.secretsFailCIExplicit && { failCI: inputs.secretsFailCI }),
+      },
     };
 
     const learningStore = new LearningStore();

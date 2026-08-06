@@ -168,6 +168,10 @@ inputs:
     required: false
     default: 'off'
 
+  secrets_fail_ci:
+    description: 'When "true", fail the action if the deterministic secret scanner detects any hardcoded credential. This workflow-level input takes precedence over the repo config value (secrets.failCI) so a PR cannot disable its own security gate from inside .opencode-reviewer.yml. Defaults to the repo config / "false".'
+    required: false
+
   run_checks_after_fix:
     description: 'Commands to run after fix (e.g. npm run lint)'
     required: false

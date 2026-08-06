@@ -74,6 +74,10 @@ export interface ReviewIssue {
   category?: string;
   /** Specialized agent that reported this finding (set on the multi-agent path). */
   agent?: AgentCategory;
+  /** Stable identifier set when the finding comes from the deterministic secret
+   * scanner. Used as a structured discriminator so consumers can gate on
+   * scanner findings without matching on message wording. */
+  secretFingerprint?: string;
 }
 
 /** Previous fix iteration data for tracking progress across fix cycles. */
@@ -1383,7 +1387,20 @@ export const DEFAULT_SECRET_DETECTOR_CONFIG: SecretDetectorConfig = {
   minLength: 32,
   allowlist: [],
   failCI: false,
-  excludePatterns: [],
+  // Checksum/lockfile manifests are deterministic integrity data that trip the
+  // generic high-entropy detector; they are excluded by default so bumped
+  // dependency graphs do not produce bogus blocking critical findings.
+  excludePatterns: [
+    '**/go.sum',
+    '**/npm-shrinkwrap.json',
+    '**/Cargo.lock',
+    '**/poetry.lock',
+    '**/pnpm-lock.yaml',
+    '**/package-lock.json',
+    '**/yarn.lock',
+    '**/*.lock',
+    '**/*.lockb',
+  ],
 };
 
 export const DEFAULT_CONFIG: AgentConfig = {

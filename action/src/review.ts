@@ -174,8 +174,11 @@ export async function runReview(
   // Optional dedicated gate: fail the action whenever the deterministic secret
   // scanner flagged a hardcoded credential, independent of failOnSeverity.
   // Secrets are reported as critical findings, so `failOnSeverity: critical`
-  // also covers this without the dedicated toggle.
-  if (config.secrets?.failCI && result.issues.some((i) => i.message.startsWith('Hardcoded'))) {
+  // also covers this without the dedicated toggle. The gate matches the
+  // structured `secretFingerprint` discriminator (not message wording) so an
+  // LLM finding that happens to start with "Hardcoded" cannot trip it and a
+  // message-format change cannot silently disable it.
+  if (config.secrets?.failCI && result.issues.some((i) => i.secretFingerprint !== undefined)) {
     core.setFailed('Hardcoded secrets detected in PR. See review comments for details.');
   }
 

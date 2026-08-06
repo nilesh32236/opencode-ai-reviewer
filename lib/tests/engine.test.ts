@@ -184,6 +184,8 @@ vi.mock('fs', async () => {
       readFile: vi.fn(),
       unlink: vi.fn(),
       appendFile: vi.fn(),
+      // The deterministic secret scan opens each file through a handle.
+      open: vi.fn(),
       // The async codebase-index walk uses the real async directory listing.
       readdir: actual.promises.readdir,
       stat: actual.promises.stat,
@@ -1260,12 +1262,26 @@ describe('ReviewEngine', () => {
       try {
         fs.mkdirSync(path.join(tmp, 'src'), { recursive: true });
         fs.writeFileSync(path.join(tmp, 'src', 'config.ts'), `const t = "${GITHUB_PAT}"`, 'utf-8');
-        // Route the (mocked) readFile so only our fixture carries a secret.
-        vi.mocked(fs.promises.readFile).mockImplementation(async (p: string | URL | number) => {
-          const full = String(p);
-          if (full.includes('config.ts')) return Buffer.from(`const t = "${GITHUB_PAT}"`);
-          return Buffer.from('');
+        // The scanner reads through an open FileHandle (capped read); route the
+        // (mocked) handle so only our fixture carries a secret.
+        const mockHandle = (content: Buffer) => ({
+          read: vi
+            .fn()
+            .mockImplementation(
+              async (buffer: Buffer, offset: number, length: number) => {
+                const bytes = content.subarray(0, length);
+                bytes.copy(buffer, offset);
+                return { bytesRead: bytes.length };
+              },
+            ),
+          close: vi.fn().mockResolvedValue(undefined),
         });
+        vi.mocked(fs.promises.open).mockImplementation(
+          async (p: string | URL | number) =>
+            String(p).includes('config.ts')
+              ? mockHandle(Buffer.from(`const t = "${GITHUB_PAT}"`))
+              : mockHandle(Buffer.alloc(0)),
+        );
 
         const result = await engine.runAudit('audit prompt', 'src', 'security', undefined, tmp);
 
