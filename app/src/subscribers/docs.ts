@@ -13,13 +13,14 @@ import { getToken } from '../utils/token.js';
 
 /**
  * Create a subscriber that handles `/docs` commands on PRs.
- * @param rateLimiter - The shared rate limiter for cost control.
+ * @param rateLimiter - The shared rate limiter for cost control (null when
+ * rate limiting is unavailable, matching the `checkRateLimit` contract).
  * @param config - The resolved agent configuration (built once at startup).
  * @param eventBus - Optional event bus for publishing pipeline events.
  * @returns A subscriber object for the docs command.
  */
 export function createDocsSubscriber(
-  rateLimiter: RateLimiter,
+  rateLimiter: RateLimiter | null,
   config: AgentConfig,
   eventBus?: EventBus,
 ): Subscriber {
@@ -41,6 +42,11 @@ export function createDocsSubscriber(
 
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;
+
+        if (config.docs?.enabled === false) {
+          logger.info(`Skipping /docs for ${event.repo}#${prNumber} — docs disabled`);
+          return;
+        }
 
         const reservation = await checkRateLimit(rateLimiter, event, 'command', 'docs');
         if (!reservation) return;

@@ -71,4 +71,30 @@ describe('buildDocsPRBody', () => {
     expect(body).toContain('The documentation agent added doc comments');
     expect(body).toContain('- Please verify the documentation renders correctly before merging');
   });
+
+  it('omits the doc style section for the auto style', () => {
+    const body = buildDocsPRBody({
+      prNumber: 199,
+      prTitle: 'Add docs generation',
+      filesChanged: ['lib/src/engine.ts'],
+      branchName: 'docs/issue-199',
+      docStyle: 'auto',
+    });
+
+    expect(body).not.toContain('## Doc Style');
+  });
+
+  it('escapes markdown metacharacters in the PR title and file paths', () => {
+    const body = buildDocsPRBody({
+      prNumber: 199,
+      prTitle: 'Add `docs` [generation] (final)',
+      filesChanged: ['src/odd`file.ts', 'src/normal.ts'],
+      branchName: 'docs/issue-199',
+      docStyle: 'tsdoc',
+    });
+
+    expect(body).toContain('Add \\`docs\\` \\[generation\\] \\(final\\)');
+    expect(body).toContain('- `src/odd\\`file.ts`');
+    expect(body).toContain('- `src/normal.ts`');
+  });
 });

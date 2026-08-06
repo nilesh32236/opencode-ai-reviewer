@@ -115,19 +115,19 @@ Comments `/docs` on a PR to add documentation comments (JSDoc/TSDoc, etc.) for t
 3. Respects each file's existing documentation convention; only falls back to the configured style when a file has none.
 4. **Never modifies existing, correct doc comments** or changes any code behavior.
 
-It then opens a dedicated documentation PR from a `docs/issue-N` branch (the source PR's branch is left untouched), labeled `docs`.
+It then opens a dedicated documentation PR from a `docs/issue-N` branch (the source PR's branch is left untouched), labeled `docs`. The docs branch is created from the source PR's **head**, so newly-added and modified files are documented as they exist on the PR — not the base branch.
 
 - Force a style per invocation: `/docs --style=tsdoc`.
-- In the Action, run `mode: docs` to push the generated docs directly onto the PR's head branch from CI.
+- In the Action, run `mode: docs` to push the generated docs directly onto the PR's head branch from CI. `mode: docs` pushes to the repo, so the workflow job needs `permissions: contents: write` (read-only `contents: read` is fine for modes that do not push).
 
 ```yaml
 # .opencode-reviewer.yml
 docs:
-  enabled: true           # opt-in flag for the docs command
+  enabled: true           # opt-in flag: gates the /docs command and `docs` mode (default: false)
   style: auto             # jsdoc | tsdoc | rest | doxygen | numpy | auto (infer per file, default)
 ```
 
-`docs.style` accepts `jsdoc`, `tsdoc`, `rest`, `doxygen`, `numpy`, or `auto` (default — the model infers each file's existing convention and falls back to JSDoc). An optional `docs_model` (Action input / `DOCS_MODEL` env / `docsModel` config) selects the model for documentation generation.
+`docs.enabled` gates the `/docs` command (App) and `docs` mode (Action); `docs.style` accepts `jsdoc`, `tsdoc`, `rest`, `doxygen`, `numpy`, or `auto` (default — the model infers each file's existing convention and falls back to JSDoc). An optional `docs_model` (Action input / `DOCS_MODEL` env / `docsModel` config) selects the model for documentation generation.
 
 ---
 

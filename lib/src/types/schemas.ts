@@ -5,6 +5,7 @@
 
 import { z } from 'zod';
 import { MODEL_STRING_REGEX } from '../utils/model-string.js';
+import { DOC_STYLES } from './index.js';
 
 /** Error message shared by every model-field regex in AgentConfigSchema. */
 const MODEL_STRING_ERROR = 'Must be "provider/model-name" format (e.g. "openai/gpt-4o")';
@@ -223,9 +224,6 @@ export const AuditConfigSchema = z.object({
   triggerLabel: z.string().default('autofix-trigger'),
   issueSeverityThreshold: SeveritySchema.default('minor'),
 });
-
-/** Supported documentation comment styles. */
-export const DOC_STYLES = ['jsdoc', 'tsdoc', 'rest', 'doxygen', 'numpy', 'auto'] as const;
 
 /** Zod schema validating the `/docs` documentation-generation configuration. */
 export const DocsConfigSchema = z.object({

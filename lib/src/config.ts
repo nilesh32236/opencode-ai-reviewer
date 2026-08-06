@@ -18,6 +18,7 @@ import type {
   TeamsConfig,
 } from './types/index.js';
 import type { Platform } from './types/index.js';
+import { isDocStyle } from './types/index.js';
 import { PromptConfigSchema } from './types/schemas.js';
 import { DEFAULT_ALLOWLIST } from './utils/command.js';
 
@@ -574,11 +575,8 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     if (typeof d.enabled === 'boolean') {
       docs.enabled = d.enabled;
     }
-    if (
-      typeof d.style === 'string' &&
-      ['jsdoc', 'tsdoc', 'rest', 'doxygen', 'numpy', 'auto'].includes(d.style)
-    ) {
-      docs.style = d.style as DocsConfig['style'];
+    if (typeof d.style === 'string' && isDocStyle(d.style)) {
+      docs.style = d.style;
     } else if (typeof d.style !== 'undefined') {
       core.warning(`Invalid docs.style "${String(d.style)}" — falling back to "auto"`);
       docs.style = 'auto';

@@ -83,6 +83,7 @@ import {
 } from './utils/manifest-detector.js';
 import { validateModelString } from './utils/model-string.js';
 import { analyzeBatchReachability } from './utils/reachability.js';
+import { withRetry } from './utils/retry.js';
 import { sanitizeString } from './utils/sanitize.js';
 
 /** Maximum number of batch chunks processed concurrently by `reviewPR`. */
@@ -2648,11 +2649,20 @@ export class ReviewEngine {
       effectiveDocStyle,
     );
 
-    const runResult = await runOpenCode(prompt, {
-      model: this.resolveModel('docsModel'),
-      timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
-      workingDirectory,
-    });
+    // runOpenCode reports timeouts and mid-run failures as `success: false`
+    // rather than throwing, so retrying is idempotency-safe: withRetry only
+    // re-invokes on thrown (pre-spawn) failures such as a transient binary
+    // download or health probe, never after a run that may have left partial
+    // documentation changes on disk.
+    const runResult = await withRetry(
+      () =>
+        runOpenCode(prompt, {
+          model: this.resolveModel('docsModel'),
+          timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+          workingDirectory,
+        }),
+      { operationName: 'docs' },
+    );
     await this.recordTelemetry(
       pr.number,
       runResult.durationMs,
@@ -2676,15 +2686,19 @@ export class ReviewEngine {
     let summary: string | undefined;
 
     try {
-      const status = getGitStatus(workDir);
-      changesMade = status.trim().length > 0;
-
+      // Consume the summary marker file before inspecting git status so a
+      // workspace where the agent only wrote `.docs-summary.md` (no real doc
+      // changes) does not register as a documentation change and trigger a
+      // commit with nothing but the summary file.
       try {
         summary = await fs.readFile(path.join(workDir, '.docs-summary.md'), 'utf-8');
         await fs.unlink(path.join(workDir, '.docs-summary.md'));
       } catch {
         this.logger.debug('No .docs-summary.md — proceeding normally');
       }
+
+      const status = getGitStatus(workDir);
+      changesMade = status.trim().length > 0;
 
       if (changesMade) {
         try {

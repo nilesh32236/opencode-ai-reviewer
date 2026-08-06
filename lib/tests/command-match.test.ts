@@ -32,6 +32,10 @@ describe('parseCommand', () => {
   it('rejects partial /docs word matches', () => {
     expect(parseCommand('/documentation')).toBeNull();
     expect(parseCommand('please document this /docs later')).toBeNull();
+    expect(parseCommand('/docs.ts')).toBeNull();
+    expect(parseCommand('/docs-something')).toBeNull();
+    expect(parseCommand('/docs_more')).toBeNull();
+    expect(parseCommand('/docs9')).toBeNull();
   });
 
   it('parses flags correctly', () => {

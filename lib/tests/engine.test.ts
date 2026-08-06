@@ -1130,6 +1130,33 @@ describe('ReviewEngine', () => {
 
       expect(result.changesMade).toBe(true);
     });
+
+    it('does not report changes when only .docs-summary.md was written', async () => {
+      const mockedGetGitStatus = vi.mocked(getGitStatus);
+      const fsPromises = fs.promises;
+      let summaryUnlinked = false;
+      vi.mocked(fsPromises.unlink).mockImplementation(async (path: string) => {
+        if (String(path).includes('.docs-summary.md')) summaryUnlinked = true;
+        return undefined;
+      });
+      vi.mocked(fsPromises.readFile).mockImplementation(async (path: string) => {
+        if (String(path).includes('.docs-summary.md')) return 'Summary only';
+        throw new Error('ENOENT');
+      });
+      // Simulate a workspace whose only untracked file is the summary marker:
+      // once the engine removes it, git status is clean. If the engine checked
+      // status before consuming the marker, the untracked file would report a
+      // change that does not exist after cleanup.
+      mockedGetGitStatus.mockImplementation(() => (summaryUnlinked ? '' : '?? .docs-summary.md\n'));
+
+      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
+
+      const result = await engine.runDocs(pr, contextMarkdown);
+
+      expect(result.changesMade).toBe(false);
+      expect(result.filesChanged).toEqual([]);
+      expect(result.summary).toBe('Summary only');
+    });
   });
 
   describe('runAudit()', () => {

@@ -371,6 +371,10 @@ async function run(): Promise<void> {
           await runAudit(inputs, config, engine, gh);
           break;
         case 'docs':
+          if (config.docs?.enabled === false) {
+            core.info('Skipping docs mode — docs generation is disabled (docs.enabled: false)');
+            break;
+          }
           await runDocs(inputs, config, engine, gh);
           break;
         case 'self-heal':

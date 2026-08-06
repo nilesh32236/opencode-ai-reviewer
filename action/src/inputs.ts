@@ -3,8 +3,10 @@ import {
   type ActionMode,
   type CostTrackingVerbosity,
   DEFAULT_ALLOWLIST,
+  DOC_STYLES,
   type DocStyle,
   type FailOnSeverity,
+  isDocStyle,
   validateModelString,
   validateRunChecksCommand,
 } from '@opencode-pr-agent/lib';
@@ -18,15 +20,6 @@ const VALID_MODES: ActionMode[] = [
   'self-heal',
   'setup',
   'docs',
-];
-
-const VALID_DOC_STYLES: readonly DocStyle[] = [
-  'jsdoc',
-  'tsdoc',
-  'rest',
-  'doxygen',
-  'numpy',
-  'auto',
 ];
 
 const VALID_FAIL_ON_SEVERITIES: readonly FailOnSeverity[] = [
@@ -252,14 +245,12 @@ export function parseInputs(): ActionInputs {
   const docsModel = modelInput('docs_model') || globalModel || undefined;
 
   const docStyleRaw = core.getInput('doc_style').trim().toLowerCase();
-  if (docStyleRaw !== '' && !(VALID_DOC_STYLES as readonly string[]).includes(docStyleRaw)) {
+  if (docStyleRaw !== '' && !isDocStyle(docStyleRaw)) {
     throw new Error(
-      `Invalid doc_style: "${docStyleRaw}". Must be one of: ${VALID_DOC_STYLES.join(', ')}`,
+      `Invalid doc_style: "${docStyleRaw}". Must be one of: ${DOC_STYLES.join(', ')}`,
     );
   }
-  const docStyle: DocStyle = (VALID_DOC_STYLES as readonly string[]).includes(docStyleRaw)
-    ? (docStyleRaw as DocStyle)
-    : 'auto';
+  const docStyle: DocStyle = isDocStyle(docStyleRaw) ? docStyleRaw : 'auto';
 
   const enableMetaVerification = core.getInput('enable_meta_verification') === 'true';
   const enableAudit = core.getInput('enable_audit') === 'true';

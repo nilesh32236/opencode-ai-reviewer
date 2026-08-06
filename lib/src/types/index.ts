@@ -195,8 +195,20 @@ export interface ReviewComment {
 /** Supported Git hosting platforms. */
 export type Platform = 'github' | 'gitlab';
 
+/** Supported documentation comment styles. */
+export const DOC_STYLES = ['jsdoc', 'tsdoc', 'rest', 'doxygen', 'numpy', 'auto'] as const;
+
 /** Documentation comment style supported by the `/docs` command. */
-export type DocStyle = 'jsdoc' | 'tsdoc' | 'rest' | 'doxygen' | 'numpy' | 'auto';
+export type DocStyle = (typeof DOC_STYLES)[number];
+
+/**
+ * Check whether a value is a supported documentation style.
+ * @param value - Candidate style value.
+ * @returns True when the value is a `DocStyle`.
+ */
+export function isDocStyle(value: unknown): value is DocStyle {
+  return typeof value === 'string' && (DOC_STYLES as readonly string[]).includes(value);
+}
 
 /** Configuration for the `/docs` documentation-generation command. */
 export interface DocsConfig {
@@ -1565,7 +1577,7 @@ export interface DocsStartedPayload extends PipelineEventPayload {
   /** PR number being documented. */
   prNumber?: number;
   /** Doc style requested for the run. */
-  docStyle?: string;
+  docStyle?: DocStyle;
 }
 
 /** Payload for a `docs.completed` event. */
@@ -1577,7 +1589,7 @@ export interface DocsCompletedPayload extends PipelineEventPayload {
   /** Files modified by the documentation pass. */
   filesChanged?: string[];
   /** Doc style used for the run. */
-  docStyle?: string;
+  docStyle?: DocStyle;
 }
 
 /** Payload for an `analyze.started` event. */

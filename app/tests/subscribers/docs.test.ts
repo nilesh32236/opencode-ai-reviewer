@@ -1,4 +1,4 @@
-import type { GitHubEvent } from '@opencode-pr-agent/lib';
+import type { AgentConfig, GitHubEvent } from '@opencode-pr-agent/lib';
 import { DEFAULT_CONFIG } from '@opencode-pr-agent/lib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleCommand } from '../../src/handlers/commands.js';
@@ -9,6 +9,8 @@ vi.mock('../../src/handlers/commands.js', () => ({
 }));
 
 const mockedHandleCommand = vi.mocked(handleCommand);
+
+const originalToken = process.env.GITHUB_TOKEN;
 
 function makeCommentEvent(body: string): GitHubEvent {
   return {
@@ -23,6 +25,13 @@ function makeCommentEvent(body: string): GitHubEvent {
   };
 }
 
+function makeEnabledConfig(): AgentConfig {
+  return {
+    ...DEFAULT_CONFIG,
+    docs: { enabled: true, style: 'auto' },
+  };
+}
+
 describe('DocsSubscriber', () => {
   beforeEach(() => {
     process.env.GITHUB_TOKEN = 'test-token';
@@ -31,11 +40,18 @@ describe('DocsSubscriber', () => {
   });
 
   afterEach(() => {
-    process.env.GITHUB_TOKEN = undefined;
+    if (originalToken === undefined) {
+      // Deleting via a computed key fully unsets the variable; assigning
+      // `undefined` would store the literal string "undefined".
+      const tokenKey = 'GITHUB_TOKEN';
+      delete process.env[tokenKey];
+    } else {
+      process.env.GITHUB_TOKEN = originalToken;
+    }
   });
 
   it('triggers the docs command on /docs', async () => {
-    const sub = createDocsSubscriber(undefined, DEFAULT_CONFIG);
+    const sub = createDocsSubscriber(null, makeEnabledConfig());
 
     await sub.handle(makeCommentEvent('/docs'));
 
@@ -54,7 +70,7 @@ describe('DocsSubscriber', () => {
   });
 
   it('triggers the docs command with a parsed style flag', async () => {
-    const sub = createDocsSubscriber(undefined, DEFAULT_CONFIG);
+    const sub = createDocsSubscriber(null, makeEnabledConfig());
 
     await sub.handle(makeCommentEvent('/docs --style=tsdoc'));
 
@@ -76,7 +92,7 @@ describe('DocsSubscriber', () => {
   });
 
   it('does not trigger the docs command for unrelated comments', async () => {
-    const sub = createDocsSubscriber(undefined, DEFAULT_CONFIG);
+    const sub = createDocsSubscriber(null, makeEnabledConfig());
 
     await sub.handle(makeCommentEvent('lgtm'));
 
@@ -84,9 +100,17 @@ describe('DocsSubscriber', () => {
   });
 
   it('does not trigger the docs command for other slash commands', async () => {
-    const sub = createDocsSubscriber(undefined, DEFAULT_CONFIG);
+    const sub = createDocsSubscriber(null, makeEnabledConfig());
 
     await sub.handle(makeCommentEvent('/review'));
+
+    expect(mockedHandleCommand).not.toHaveBeenCalled();
+  });
+
+  it('skips the docs command when docs generation is disabled', async () => {
+    const sub = createDocsSubscriber(null, DEFAULT_CONFIG);
+
+    await sub.handle(makeCommentEvent('/docs'));
 
     expect(mockedHandleCommand).not.toHaveBeenCalled();
   });

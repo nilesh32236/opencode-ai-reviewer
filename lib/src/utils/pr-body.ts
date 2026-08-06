@@ -1,3 +1,25 @@
+import type { DocStyle } from '../types/index.js';
+
+/**
+ * Escape backticks in a file path so it renders as a single inline code span.
+ * @param file - File path to escape.
+ * @returns The path with any backticks escaped.
+ */
+function escapeCodeSpan(file: string): string {
+  return file.replace(/`/g, '\\`');
+}
+
+/**
+ * Escape markdown metacharacters in untrusted user text (e.g. a source PR
+ * title) so it cannot break out of prose or inject links, images, or code
+ * spans into the auto-created docs PR body.
+ * @param text - Untrusted text.
+ * @returns The text with markdown metacharacters backslash-escaped.
+ */
+function escapeMarkdownText(text: string): string {
+  return text.replace(/([`*_\[\]()#!<>~|\\])/g, '\\$1');
+}
+
 /** Configuration options for constructing automated fix pull request descriptions. */
 export interface PRBodyOptions {
   /** Issue number being fixed (undefined when no linked issue exists). */
@@ -90,7 +112,7 @@ export interface DocsPRBodyOptions {
   /** Branch name created for the docs PR. */
   branchName: string;
   /** Doc style used for the generated comments. */
-  docStyle?: string;
+  docStyle?: DocStyle;
 }
 
 /**
@@ -106,7 +128,7 @@ export function buildDocsPRBody(opts: DocsPRBodyOptions): string {
   lines.push(`## Adds documentation for #${opts.prNumber}`);
   lines.push('');
   lines.push(
-    `This PR adds documentation comments for the code changed in PR #${opts.prNumber} ("${opts.prTitle}").`,
+    `This PR adds documentation comments for the code changed in PR #${opts.prNumber} ("${escapeMarkdownText(opts.prTitle)}").`,
   );
   lines.push('');
 
@@ -125,7 +147,7 @@ export function buildDocsPRBody(opts: DocsPRBodyOptions): string {
     lines.push('## Files Changed');
     lines.push('');
     for (const f of opts.filesChanged) {
-      lines.push(`- \`${f}\``);
+      lines.push(`- \`${escapeCodeSpan(f)}\``);
     }
     lines.push('');
   }

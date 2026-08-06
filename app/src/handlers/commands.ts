@@ -20,6 +20,7 @@ import {
   buildAutofixPRBody,
   buildDocsPRBody,
   configureGit,
+  isDocStyle,
   markAnalysisReady,
   parseAnalysisPlan,
   postBlockingQuestions,
@@ -218,6 +219,10 @@ export async function handleCommand(
       }
 
       case 'docs': {
+        if (!(await gh.isMR(issueNumber))) {
+          logger.info(`Ignoring /docs on #${issueNumber}: not a pull request`);
+          break;
+        }
         await handleDocsCommand(
           gh,
           issueNumber,
@@ -416,33 +421,34 @@ export async function handleDocsCommand(
     }
 
     const defaultBranch = await gh.getDefaultBranch();
+    // Base the docs branch on the source PR's head so the changed code the PR
+    // adds or modifies is on disk before the docs engine runs. Creating it from
+    // the default branch would document pre-PR revisions and miss newly-added
+    // files entirely. The source PR's own branch is left untouched.
+    const pr = await gh.getMR(issueNumber);
+    const baseRef = pr.headRef || defaultBranch;
 
     if (signal?.aborted) return;
 
     if (branchExists) {
       execFileSync('git', ['checkout', '-B', branchName, `origin/${branchName}`], gitOpts);
       logger.info(`Checked out existing branch ${branchName}`);
-      execFileSync('git', ['pull', '--rebase', 'origin', defaultBranch], gitOpts);
+      execFileSync('git', ['pull', '--rebase', 'origin', baseRef], gitOpts);
     } else {
-      execFileSync('git', ['checkout', '-b', branchName, `origin/${defaultBranch}`], gitOpts);
-      logger.info(`Created branch ${branchName} from ${defaultBranch}`);
+      execFileSync('git', ['checkout', '-b', branchName, `origin/${baseRef}`], gitOpts);
+      logger.info(`Created branch ${branchName} from ${baseRef}`);
     }
 
-    const pr = await gh.getMR(issueNumber);
     const contextMarkdown = await gh.gatherContext({ prNumber: issueNumber });
 
     if (signal?.aborted) return;
 
     const styleFlag = typeof parsed?.flags?.style === 'string' ? parsed.flags.style : undefined;
-    const validStyles: readonly DocStyle[] = ['jsdoc', 'tsdoc', 'rest', 'doxygen', 'numpy', 'auto'];
-    const styleIsValid =
-      styleFlag !== undefined && (validStyles as readonly string[]).includes(styleFlag);
+    const styleIsValid = styleFlag !== undefined && isDocStyle(styleFlag);
     if (styleFlag !== undefined && !styleIsValid) {
       logger.warn(`Ignoring invalid docs style flag "${styleFlag}" — using configured style`);
     }
-    const docStyle: DocStyle | undefined = styleIsValid
-      ? (styleFlag as DocStyle)
-      : config.docs?.style;
+    const docStyle: DocStyle | undefined = styleIsValid ? styleFlag : config.docs?.style;
     const docsResult = await engine.runDocs(pr, contextMarkdown, tempDir, undefined, docStyle);
 
     if (signal?.aborted) return;

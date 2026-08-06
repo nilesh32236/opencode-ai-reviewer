@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
-import { validateRefName } from '@opencode-pr-agent/lib';
+import { validateRefName, withRetry } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { resolvePrNumber, sanitize } from './utils.js';
 
@@ -10,10 +10,20 @@ import { resolvePrNumber, sanitize } from './utils.js';
  * docs engine to add documentation comments to changed code, and push the
  * generated docs directly onto the PR's head branch (mirrors the Action's fix
  * mode behavior).
+ *
+ * Honors `config.docs.enabled` and returns early without touching the PR when
+ * docs generation is disabled. Platform reads (`getMR`, `gatherContext`) are
+ * retried on transient failures. Git publishing failures are rethrown so the
+ * action fails loudly, and `changes_made` is only reported true after the push
+ * actually reaches the PR.
+ *
  * @param inputs - Parsed action inputs.
  * @param config - Full agent configuration.
  * @param engine - Review engine instance.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
+ * @returns A promise that resolves once docs generation and (on success) the
+ * push to the PR head branch complete. Rejects when the PR cannot be resolved,
+ * platform reads fail after retries, or the git commit/push fails.
  */
 export async function runDocs(
   inputs: ActionInputs,
@@ -21,14 +31,21 @@ export async function runDocs(
   engine: ReviewEngine,
   gh: PlatformAdapter,
 ): Promise<void> {
+  if (config.docs?.enabled === false) {
+    core.info('Skipping docs mode — docs generation is disabled (docs.enabled: false)');
+    return;
+  }
+
   const prNumber = await resolvePrNumber();
   if (prNumber === null) {
     core.setFailed('Could not determine PR number for docs');
     return;
   }
 
-  const pr = await gh.getMR(prNumber);
-  const contextMarkdown = await gh.gatherContext({ prNumber });
+  const pr = await withRetry(() => gh.getMR(prNumber), { operationName: 'docs.getMR' });
+  const contextMarkdown = await withRetry(() => gh.gatherContext({ prNumber }), {
+    operationName: 'docs.gatherContext',
+  });
 
   const docStyle = config.docs?.style ?? inputs.docStyle;
   const docsResult = await engine.runDocs(pr, contextMarkdown, undefined, undefined, docStyle);
@@ -40,11 +57,15 @@ export async function runDocs(
       await exec.exec('git', ['commit', '-m', `docs: add API documentation for #${prNumber}`]);
       validateRefName(pr.headRef);
       await exec.exec('git', ['push', 'origin', pr.headRef]);
+      changesMade = true;
     } catch (err) {
-      core.warning(sanitize(`Git operations failed: ${err instanceof Error ? err.message : err}`));
+      const message = sanitize(
+        `Git operations failed: ${err instanceof Error ? err.message : err}`,
+      );
+      core.setFailed(message);
+      throw err;
     }
-    changesMade = true;
   }
 
-  core.setOutput('changes_made', String(changesMade ?? false));
+  core.setOutput('changes_made', String(changesMade));
 }
