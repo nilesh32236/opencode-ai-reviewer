@@ -2620,6 +2620,13 @@ export class ReviewEngine {
     timeoutMinutes?: number,
     docStyle?: DocStyle,
   ): Promise<FixResult> {
+    // Enforce the docs.enabled flag here so every caller (Action docs mode and
+    // the App /docs handler) is blocked before resetting telemetry, publishing
+    // DOCS_STARTED, or invoking the model when documentation is disabled.
+    if (this.config.docs?.enabled === false) {
+      this.logger.info('Docs generation is disabled (docs.enabled: false) — skipping');
+      return { changesMade: false, filesChanged: [], summary: undefined };
+    }
     // Reset telemetry so the reported usage reflects only this docs invocation.
     this.telemetry = null;
     const effectiveDocStyle = docStyle ?? this.config.docs?.style ?? 'auto';

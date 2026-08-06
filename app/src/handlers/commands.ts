@@ -359,7 +359,8 @@ export async function handleExplainCommand(
 /**
  * Handle a docs command: generate documentation for the code changed in a PR
  * and open a dedicated documentation PR from a `docs/issue-N` branch (mirrors
- * the autofix flow — the source PR's branch is left untouched).
+ * the autofix flow — the source PR's branch is left untouched). Posts
+ * in-progress, no-changes, docs-PR-link, and error comments to the source PR.
  * @param gh - Platform adapter.
  * @param issueNumber - The PR number to document.
  * @param repo - Repository string (owner/repo).
@@ -370,6 +371,8 @@ export async function handleExplainCommand(
  * @param eventBus - Optional event bus for publishing pipeline events.
  * @param correlationId - Optional correlation ID for tracing this request.
  * @param parsed - Optional parsed command (for flags like --style=tsdoc).
+ * @returns A promise that resolves once docs generation, branch setup, and PR
+ * creation (or an error comment) complete.
  */
 export async function handleDocsCommand(
   gh: PlatformAdapter,
@@ -428,15 +431,38 @@ export async function handleDocsCommand(
     const pr = await gh.getMR(issueNumber);
     const baseRef = pr.headRef || defaultBranch;
 
+    // Fork-backed PRs keep the head branch on the fork, not on origin. Resolve
+    // the head repo (when it differs from the target repo) and fetch the head
+    // branch from that remote so the checkout/rebase below references a real
+    // ref instead of assuming `origin/<headRef>`.
+    let forkRemote: string | undefined;
+    if (pr.headRepoFullName && pr.headRepoFullName !== repo) {
+      try {
+        execFileSync(
+          'git',
+          ['remote', 'add', 'fork', `https://github.com/${pr.headRepoFullName}.git`],
+          gitOpts,
+        );
+        execFileSync('git', ['fetch', 'fork', baseRef], gitOpts);
+        forkRemote = 'fork';
+        logger.info(`Fetched docs base branch ${baseRef} from fork ${pr.headRepoFullName}`);
+      } catch (err) {
+        logger.warn(
+          `Could not fetch docs base branch from fork ${pr.headRepoFullName}: ${err instanceof Error ? err.message : String(err)} — falling back to origin`,
+        );
+      }
+    }
+
     if (signal?.aborted) return;
 
     if (branchExists) {
       execFileSync('git', ['checkout', '-B', branchName, `origin/${branchName}`], gitOpts);
       logger.info(`Checked out existing branch ${branchName}`);
-      execFileSync('git', ['pull', '--rebase', 'origin', baseRef], gitOpts);
+      execFileSync('git', ['pull', '--rebase', forkRemote ?? 'origin', baseRef], gitOpts);
     } else {
-      execFileSync('git', ['checkout', '-b', branchName, `origin/${baseRef}`], gitOpts);
-      logger.info(`Created branch ${branchName} from ${baseRef}`);
+      const startRef = forkRemote ? `${forkRemote}/${baseRef}` : `origin/${baseRef}`;
+      execFileSync('git', ['checkout', '-b', branchName, startRef], gitOpts);
+      logger.info(`Created branch ${branchName} from ${startRef}`);
     }
 
     const contextMarkdown = await gh.gatherContext({ prNumber: issueNumber });
@@ -511,6 +537,34 @@ export async function handleDocsCommand(
           issueNumber,
           '<!-- docs-pr-link -->',
           `📝 Docs PR created: ${newPR.url}`,
+        );
+      } catch (err) {
+        logger.warn(
+          `Failed to post docs PR link comment: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+      return;
+    }
+
+    // A re-run of /docs pushes new changes to the existing docs/issue-N branch
+    // before we reach this point, so createPR fails because a PR already exists
+    // for that branch. Reuse the previously-linked docs PR instead of reporting
+    // an error to the source PR.
+    const existingPR = await findExistingDocsPR(gh, issueNumber);
+    if (existingPR) {
+      logger.info(`Reusing existing docs PR #${existingPR.number}: ${existingPR.url}`);
+      try {
+        await gh.addLabels(existingPR.number, ['docs']);
+      } catch (err) {
+        logger.warn(
+          `Failed to label docs PR #${existingPR.number}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+      try {
+        await gh.postOrUpdateComment(
+          issueNumber,
+          '<!-- docs-pr-link -->',
+          `📝 Docs PR: ${existingPR.url}`,
         );
       } catch (err) {
         logger.warn(
@@ -612,6 +666,29 @@ async function findExistingAutofixPR(
   } catch (err) {
     logger.debug(
       `Failed to find existing autofix PR for issue ${issueNumber}: ${err instanceof Error ? err.message : err}`,
+    );
+  }
+  return null;
+}
+
+async function findExistingDocsPR(
+  gh: PlatformAdapter,
+  issueNumber: number,
+): Promise<{ number: number; url: string } | null> {
+  const logger = new Logger('Command', { prNumber: issueNumber });
+  try {
+    const issue = await gh.getIssue(issueNumber);
+    for (const comment of issue.comments) {
+      if (comment.body?.startsWith('<!-- docs-pr-link -->')) {
+        const match = comment.body.match(/(https:\/\/github\.com\/[^\s)]+\/pull\/(\d+))/);
+        if (match) {
+          return { number: Number.parseInt(match[2], 10), url: match[1] };
+        }
+      }
+    }
+  } catch (err) {
+    logger.debug(
+      `Failed to find existing docs PR for issue ${issueNumber}: ${err instanceof Error ? err.message : err}`,
     );
   }
   return null;

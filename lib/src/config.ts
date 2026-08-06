@@ -21,6 +21,7 @@ import type { Platform } from './types/index.js';
 import { isDocStyle } from './types/index.js';
 import { PromptConfigSchema } from './types/schemas.js';
 import { DEFAULT_ALLOWLIST } from './utils/command.js';
+import { Logger } from './utils/logger.js';
 
 /**
  * Shape descriptor used to detect unknown keys in a raw config object.
@@ -578,7 +579,7 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     if (typeof d.style === 'string' && isDocStyle(d.style)) {
       docs.style = d.style;
     } else if (typeof d.style !== 'undefined') {
-      core.warning(`Invalid docs.style "${String(d.style)}" — falling back to "auto"`);
+      new Logger('Config').warn(`Invalid docs.style "${String(d.style)}" — falling back to "auto"`);
       docs.style = 'auto';
     }
     result.docs = docs;

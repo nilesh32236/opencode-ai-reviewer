@@ -1058,6 +1058,15 @@ describe('ReviewEngine', () => {
     const pr = makePRContext({
       changedFiles: [{ path: 'src/example.ts', status: 'modified', additions: 20, deletions: 0 }],
     });
+    // runDocs gates on docs.enabled, so exercise it with the flag enabled.
+    let docsEngine: ReviewEngine;
+
+    beforeEach(() => {
+      docsEngine = new ReviewEngine(
+        makeConfig({ docs: { enabled: true, style: 'auto' } }),
+        mockAdapter,
+      );
+    });
 
     it('returns FixResult with changes on success', async () => {
       const mockedGetGitStatus = vi.mocked(getGitStatus);
@@ -1065,7 +1074,7 @@ describe('ReviewEngine', () => {
 
       mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 2000 });
 
-      const result = await engine.runDocs(pr, contextMarkdown);
+      const result = await docsEngine.runDocs(pr, contextMarkdown);
 
       expect(result.changesMade).toBe(true);
       expect(mockBuildDocsPrompt).toHaveBeenCalled();
@@ -1081,7 +1090,7 @@ describe('ReviewEngine', () => {
 
       mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 2000 });
 
-      const result = await engine.runDocs(pr, contextMarkdown);
+      const result = await docsEngine.runDocs(pr, contextMarkdown);
 
       expect(result.changesMade).toBe(false);
       expect(result.filesChanged).toEqual([]);
@@ -1100,7 +1109,7 @@ describe('ReviewEngine', () => {
       });
       vi.mocked(fsPromises.unlink).mockResolvedValue(undefined);
 
-      const result = await engine.runDocs(pr, contextMarkdown);
+      const result = await docsEngine.runDocs(pr, contextMarkdown);
 
       expect(result.summary).toBe('Documented the changed API');
     });
@@ -1111,7 +1120,7 @@ describe('ReviewEngine', () => {
 
       mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
 
-      await engine.runDocs(pr, contextMarkdown, undefined, undefined, 'tsdoc');
+      await docsEngine.runDocs(pr, contextMarkdown, undefined, undefined, 'tsdoc');
 
       expect(mockBuildDocsPrompt).toHaveBeenCalledWith(
         expect.anything(),
@@ -1126,9 +1135,20 @@ describe('ReviewEngine', () => {
 
       mockRunOpenCode.mockResolvedValue({ success: false, output: '', durationMs: 3000 });
 
-      const result = await engine.runDocs(pr, contextMarkdown);
+      const result = await docsEngine.runDocs(pr, contextMarkdown);
 
       expect(result.changesMade).toBe(true);
+    });
+
+    it('skips the run entirely when docs are disabled', async () => {
+      const disabledEngine = new ReviewEngine(makeConfig(), mockAdapter);
+
+      const result = await disabledEngine.runDocs(pr, contextMarkdown);
+
+      expect(result.changesMade).toBe(false);
+      expect(result.filesChanged).toEqual([]);
+      expect(result.summary).toBeUndefined();
+      expect(mockRunOpenCode).not.toHaveBeenCalled();
     });
 
     it('does not report changes when only .docs-summary.md was written', async () => {
@@ -1151,7 +1171,7 @@ describe('ReviewEngine', () => {
 
       mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
 
-      const result = await engine.runDocs(pr, contextMarkdown);
+      const result = await docsEngine.runDocs(pr, contextMarkdown);
 
       expect(result.changesMade).toBe(false);
       expect(result.filesChanged).toEqual([]);

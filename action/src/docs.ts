@@ -12,18 +12,20 @@ import { resolvePrNumber, sanitize } from './utils.js';
  * mode behavior).
  *
  * Honors `config.docs.enabled` and returns early without touching the PR when
- * docs generation is disabled. Platform reads (`getMR`, `gatherContext`) are
- * retried on transient failures. Git publishing failures are rethrown so the
- * action fails loudly, and `changes_made` is only reported true after the push
- * actually reaches the PR.
+ * docs generation is disabled. Platform reads (`isMR`, `getMR`, `gatherContext`)
+ * are retried on transient failures. Git publishing failures are rethrown so
+ * the action fails loudly, and `changes_made` is only reported true after the
+ * push actually reaches the PR.
  *
  * @param inputs - Parsed action inputs.
  * @param config - Full agent configuration.
  * @param engine - Review engine instance.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @returns A promise that resolves once docs generation and (on success) the
- * push to the PR head branch complete. Rejects when the PR cannot be resolved,
- * platform reads fail after retries, or the git commit/push fails.
+ * push to the PR head branch complete. When the PR number cannot be resolved,
+ * the target is not a pull request, or docs are disabled, the function reports
+ * failure/skip via `core` and returns early instead of rejecting. Rejects only
+ * when platform reads fail after retries or the git commit/push fails.
  */
 export async function runDocs(
   inputs: ActionInputs,
@@ -39,6 +41,12 @@ export async function runDocs(
   const prNumber = await resolvePrNumber();
   if (prNumber === null) {
     core.setFailed('Could not determine PR number for docs');
+    return;
+  }
+
+  const isMr = await withRetry(() => gh.isMR(prNumber), { operationName: 'docs.isMR' });
+  if (!isMr) {
+    core.setFailed(`Docs mode requires a pull request, but #${prNumber} is not a PR`);
     return;
   }
 

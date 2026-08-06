@@ -111,6 +111,9 @@ export interface PRContext {
   body: string;
   /** Head branch name */
   headRef: string;
+  /** Full name (owner/repo) of the repository hosting the head branch, when
+   * known. Differs from the base repo for fork-backed pull requests. */
+  headRepoFullName?: string;
   /** Git SHA of the head commit */
   headSha: string;
   /** Base target branch name */
