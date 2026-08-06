@@ -208,6 +208,16 @@ inputs:
     required: false
     default: 'off'
 
+  sca_enabled:
+    description: 'Enable deterministic dependency vulnerability (Software Composition Analysis) checking. When a PR modifies a supported lock file (package-lock.json, yarn.lock, pnpm-lock.yaml, Cargo.lock, requirements.txt, go.sum, Gemfile.lock), changed dependencies are queried against the OSV advisory database and known vulnerabilities are reported as inline security findings. Requires outbound access to api.osv.dev; failures degrade gracefully. Defaults to "true".'
+    required: false
+    default: 'true'
+
+  sca_min_severity:
+    description: 'Minimum severity ("critical", "important", or "minor") for Software Composition Analysis findings. Findings below this threshold are suppressed. Defaults to "important".'
+    required: false
+    default: 'important'
+
   run_checks_after_fix:
     description: 'Commands to run after fix (e.g. npm run lint)'
     required: false

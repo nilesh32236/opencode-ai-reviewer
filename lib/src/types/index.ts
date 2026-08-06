@@ -344,6 +344,8 @@ export interface AgentConfig {
   multiAgent?: MultiAgentConfig;
   /** Deterministic hardcoded secret / credential scanning (default: enabled). */
   secrets?: SecretDetectorConfig;
+  /** Deterministic Software Composition Analysis (SCA) of changed dependency lock files (default: enabled). */
+  sca?: SCAConfig;
   /** Custom LLM providers (self-hosted OpenAI-compatible, Azure, Bedrock, Ollama). */
   llm?: LLMConfig;
 }
@@ -664,6 +666,66 @@ export interface SecretDetectorConfig {
    * review `excludePatterns`). */
   excludePatterns: string[];
 }
+
+/** Ecosystem identifier used when querying the OSV advisory database. */
+export type Ecosystem = 'npm' | 'pypi' | 'crates.io' | 'go' | 'rubygems';
+
+/** A single dependency resolved from a changed lock file. */
+export interface SCADependency {
+  /** Repo-relative path of the lock file the dependency was parsed from. */
+  file: string;
+  /** 1-based line number in the new-file where the dependency/version appears. */
+  line: number;
+  /** Package name as it appears in the lock file. */
+  name: string;
+  /** Exact pinned version detected in the lock file. */
+  version: string;
+  /** OSV ecosystem the package belongs to. */
+  ecosystem: Ecosystem;
+}
+
+/** A known vulnerability returned by the OSV advisory database for a dependency. */
+export interface SCAVulnerability {
+  /** The changed dependency this advisory applies to. */
+  dependency: SCADependency;
+  /** OSV advisory ID (e.g. `GHSA-xxxx-xxxx-xxxx`). */
+  id: string;
+  /** CVE IDs aliased by this advisory (empty when only a GHSA id exists). */
+  cveIds: string[];
+  /** Human-readable advisory summary from OSV. */
+  summary: string;
+  /** Project severity derived from the CVSS score / database severity. */
+  severity: Severity;
+  /** Raw CVSS v3 score when the advisory carries one. */
+  cvssScore?: number;
+  /** Best-known patched version for the affected dependency, when known. */
+  fixedVersion?: string;
+  /** Advisory reference URLs. */
+  references: string[];
+}
+
+/** Configuration for deterministic Software Composition Analysis (SCA). */
+export interface SCAConfig {
+  /** Whether the SCA pass runs during review when lock files change (default: true). */
+  enabled: boolean;
+  /** Minimum severity at or above which findings are reported (default: 'important'). */
+  minSeverity: Severity;
+  /** Glob patterns identifying dependency lock files to scan. */
+  lockFilePatterns: string[];
+  /** Glob patterns for lock files to skip during the SCA scan. */
+  excludePatterns: string[];
+}
+
+/** Default glob patterns for the lock files supported by the SCA pass. */
+export const DEFAULT_SCA_LOCK_FILE_PATTERNS: string[] = [
+  '**/package-lock.json',
+  '**/yarn.lock',
+  '**/pnpm-lock.yaml',
+  '**/Cargo.lock',
+  '**/requirements.txt',
+  '**/go.sum',
+  '**/Gemfile.lock',
+];
 
 // ─── Conversation / @mention ─────────────────────────────
 /** Configuration for the interactive conversation / @mention feature. */
@@ -1416,6 +1478,8 @@ export interface PromptConfig {
   notifications?: NotificationsConfig;
   /** Deterministic hardcoded secret / credential scanning (default: enabled). */
   secrets?: SecretDetectorConfig;
+  /** Deterministic Software Composition Analysis (SCA) of changed lock files (default: enabled). */
+  sca?: SCAConfig;
   /** Multi-agent review architecture configuration (default: disabled). */
   multiAgent?: MultiAgentConfig;
   /** Custom LLM providers (self-hosted OpenAI-compatible, Azure, Bedrock, Ollama). */
@@ -1448,6 +1512,14 @@ export const DEFAULT_SECRET_DETECTOR_CONFIG: SecretDetectorConfig = {
   minLength: 32,
   allowlist: [],
   failCI: false,
+  excludePatterns: [],
+};
+
+/** Default values for deterministic Software Composition Analysis (SCA). */
+export const DEFAULT_SCA_CONFIG: SCAConfig = {
+  enabled: true,
+  minSeverity: 'important',
+  lockFilePatterns: DEFAULT_SCA_LOCK_FILE_PATTERNS,
   excludePatterns: [],
 };
 
@@ -1567,6 +1639,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   notifications: DEFAULT_NOTIFICATIONS_CONFIG,
   multiAgent: DEFAULT_MULTI_AGENT_CONFIG,
   secrets: DEFAULT_SECRET_DETECTOR_CONFIG,
+  sca: DEFAULT_SCA_CONFIG,
 };
 
 // ─── Event Bus ───────────────────────────────────────────

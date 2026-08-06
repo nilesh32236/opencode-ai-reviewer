@@ -327,6 +327,21 @@ async function run(): Promise<void> {
       notifications: loadedConfig?.notifications ?? DEFAULT_CONFIG.notifications,
       multiAgent: loadedConfig?.multiAgent ?? DEFAULT_CONFIG.multiAgent,
       secrets: loadedConfig?.secrets ?? DEFAULT_CONFIG.secrets,
+      // Explicit workflow inputs are authoritative so a PR cannot silently
+      // disable SCA by editing .opencode-reviewer.yml; only when an input is
+      // omitted does the repo config value (or input default) apply.
+      sca: {
+        enabled: inputs.scaEnabledExplicit
+          ? inputs.scaEnabled
+          : (loadedConfig?.sca?.enabled ?? inputs.scaEnabled),
+        minSeverity: inputs.scaMinSeverityExplicit
+          ? inputs.scaMinSeverity
+          : (loadedConfig?.sca?.minSeverity ?? inputs.scaMinSeverity),
+        lockFilePatterns:
+          loadedConfig?.sca?.lockFilePatterns ?? DEFAULT_CONFIG.sca?.lockFilePatterns ?? [],
+        excludePatterns:
+          loadedConfig?.sca?.excludePatterns ?? DEFAULT_CONFIG.sca?.excludePatterns ?? [],
+      },
       llm: buildLLMConfig(inputs, loadedConfig),
     };
 

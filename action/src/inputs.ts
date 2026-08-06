@@ -7,6 +7,7 @@ import {
   type DocStyle,
   type FailOnSeverity,
   type LLMConfig,
+  type Severity,
   isDocStyle,
   validateModelString,
   validateRunChecksCommand,
@@ -29,6 +30,8 @@ const VALID_FAIL_ON_SEVERITIES: readonly FailOnSeverity[] = [
   'important',
   'minor',
 ];
+
+const VALID_SCA_SEVERITIES: readonly Severity[] = ['critical', 'important', 'minor'];
 
 export { DEFAULT_ALLOWLIST, validateRunChecksCommand };
 /**
@@ -195,6 +198,14 @@ export interface ActionInputs {
   costTrackingInputCostPer1K?: number;
   /** Cost per 1K output tokens (USD) for cost estimation. */
   costTrackingOutputCostPer1K?: number;
+  /** Whether the deterministic dependency vulnerability (SCA) scan runs (default: true). */
+  scaEnabled: boolean;
+  /** Minimum severity for SCA findings (critical | important | minor, default: important). */
+  scaMinSeverity: Severity;
+  /** Whether the sca_enabled input was explicitly set by the workflow. */
+  scaEnabledExplicit: boolean;
+  /** Whether the sca_min_severity input was explicitly set by the workflow. */
+  scaMinSeverityExplicit: boolean;
 }
 
 /**
@@ -343,6 +354,20 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   const failOnSeverity = failOnSeverityRaw as FailOnSeverity;
   const failOnSeverityExplicit = failOnSeverityInput.trim() !== '';
 
+  const scaEnabledInput = core.getInput('sca_enabled');
+  const scaEnabled = scaEnabledInput === '' ? true : scaEnabledInput === 'true';
+  const scaEnabledExplicit = scaEnabledInput.trim() !== '';
+
+  const scaMinSeverityInput = core.getInput('sca_min_severity');
+  const scaMinSeverityRaw = (scaMinSeverityInput || 'important').trim().toLowerCase();
+  if (!VALID_SCA_SEVERITIES.includes(scaMinSeverityRaw as Severity)) {
+    throw new Error(
+      `Invalid sca_min_severity: "${scaMinSeverityRaw}". Must be one of: ${VALID_SCA_SEVERITIES.join(', ')}`,
+    );
+  }
+  const scaMinSeverity = scaMinSeverityRaw as Severity;
+  const scaMinSeverityExplicit = scaMinSeverityInput.trim() !== '';
+
   // Models for features that are active in the selected mode are hard-gated so
   // an invalid value fails the action before any work starts. Models whose
   // feature is disabled (or that the action never runs, e.g. conversation) only
@@ -453,5 +478,9 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     ),
     costTrackingInputCostPer1K: parseCostRate(core.getInput('cost_tracking_input_cost_per_1k')),
     costTrackingOutputCostPer1K: parseCostRate(core.getInput('cost_tracking_output_cost_per_1k')),
+    scaEnabled,
+    scaMinSeverity,
+    scaEnabledExplicit,
+    scaMinSeverityExplicit,
   };
 }

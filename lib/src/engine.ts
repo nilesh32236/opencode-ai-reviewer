@@ -71,7 +71,8 @@ import type {
   TokenUsage,
 } from './types/index.js';
 import { PIPELINE_EVENT_TYPES } from './types/index.js';
-import { DEFAULT_SECRET_DETECTOR_CONFIG } from './types/index.js';
+import { DEFAULT_SCA_CONFIG, DEFAULT_SECRET_DETECTOR_CONFIG } from './types/index.js';
+import { runSCAScan } from './sca/index.js';
 import { filterBlameToPatch, getGitBlame, parsePatchHunks } from './utils/blame.js';
 import { MAX_BLAME_LINES_PER_FILE, UNCOMMITTED_SHA } from './utils/blame.js';
 import type { BlameRange } from './utils/blame.js';
@@ -700,10 +701,49 @@ export class ReviewEngine {
           })
         : pr.changedFiles;
 
+    // Deterministic Software Composition Analysis (SCA) pass. Runs before the
+    // "all files excluded" early-return so a PR that only touches lock files
+    // still yields dependency findings. Reads the UNFILTERED changed-file list
+    // because lock files are excluded from LLM review by default — dependency
+    // changes would otherwise never surface. Best-effort: any failure (advisory
+    // API unreachable, parse errors) degrades gracefully to no findings.
+    let scaIssues: ReviewIssue[] = [];
+    const scaConfig = this.config.sca ?? DEFAULT_SCA_CONFIG;
+    if (scaConfig.enabled) {
+      try {
+        scaIssues = await runSCAScan(
+          pr.changedFiles,
+          workDir,
+          {
+            enabled: scaConfig.enabled,
+            minSeverity: scaConfig.minSeverity,
+            lockFilePatterns: scaConfig.lockFilePatterns,
+            excludePatterns: scaConfig.excludePatterns,
+          },
+          this.logger,
+        );
+        if (scaIssues.length > 0) {
+          this.logger.info(
+            `SCA flagged ${scaIssues.length} known vulnerable dependency(ies) in the changed lock files`,
+          );
+        }
+      } catch (err) {
+        this.logger.warn(
+          `SCA scan failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
     if (files.length === 0 && pr.changedFiles.length > 0) {
       this.logger.info(
         `All ${pr.changedFiles.length} changed file(s) matched exclude patterns — skipping review`,
       );
+      // Even when every source file is excluded, deterministic SCA findings on
+      // the excluded lock files still surface (a lock-file-only PR is the
+      // primary SCA use case).
+      if (scaIssues.length > 0) {
+        return this.mergeScaIssues(emptyResult(), scaIssues);
+      }
       return emptyResult();
     }
     if (files.length < pr.changedFiles.length) {
@@ -953,6 +993,7 @@ export class ReviewEngine {
           budgetMode,
           totalDiffLines,
           files,
+          scaIssues,
         );
       } catch {
         this.logger.warn(`Failed to parse review output at ${outputPath}, returning empty result`);
@@ -1187,6 +1228,7 @@ export class ReviewEngine {
         budgetMode,
         totalDiffLines,
         files,
+        scaIssues,
       );
     }
 
@@ -1229,6 +1271,7 @@ export class ReviewEngine {
         budgetMode,
         totalDiffLines,
         files,
+        scaIssues,
       );
     } catch {
       this.logger.warn('Synthesis output parse failed, falling back to merged batch results');
@@ -1255,6 +1298,7 @@ export class ReviewEngine {
         budgetMode,
         totalDiffLines,
         files,
+        scaIssues,
       );
     }
   }
@@ -1441,6 +1485,7 @@ export class ReviewEngine {
       budgetMode,
       totalDiffLines,
       files,
+      scaIssues,
     );
   }
 
@@ -2933,6 +2978,21 @@ export class ReviewEngine {
   }
 
   /**
+   * Merge Software Composition Analysis (SCA) issues into a result, recomputing
+   * severity stats so the severity-based CI gate and count outputs reflect the
+   * vulnerable dependency findings. Mirrors {@link mergeSecretIssues}.
+   *
+   * @param result - Result to merge into.
+   * @param scaIssues - SCA review issues to append.
+   * @returns The merged result (unchanged when `scaIssues` is empty).
+   */
+  private mergeScaIssues(result: ReviewResult, scaIssues: ReviewIssue[]): ReviewResult {
+    if (scaIssues.length === 0) return result;
+    const allIssues = [...result.issues, ...scaIssues];
+    return { ...result, issues: allIssues, stats: computeReviewStats(allIssues) };
+  }
+
+  /**
    * Apply the sensitivity filter to a review result, dropping findings that
    * fall below the configured severity, confidence, or count thresholds.
    *
@@ -2979,6 +3039,7 @@ export class ReviewEngine {
     budgetMode?: ReviewBudgetMode,
     totalDiffLines?: number,
     files?: PRContext['changedFiles'],
+    scaIssues?: ReviewIssue[],
   ): Promise<ReviewResult> {
     let enrichedResult = result;
 
@@ -3204,6 +3265,14 @@ export class ReviewEngine {
           );
         }
       }
+    }
+
+    // Deterministic SCA findings merge after every LLM-based pass and the
+    // sensitivity filter, mirroring the secret scan above, so a known
+    // vulnerable dependency can never be downgraded or dropped by reachability,
+    // meta-verification, or per-repository sensitivity settings.
+    if (scaIssues && scaIssues.length > 0) {
+      enrichedResult = this.mergeScaIssues(enrichedResult, scaIssues);
     }
 
     if (budgetMode && totalDiffLines !== undefined) {
