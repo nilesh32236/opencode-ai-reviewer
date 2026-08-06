@@ -78,6 +78,26 @@ export interface ActionInputs {
   anthropicKey?: string;
   /** Optional Google Gemini API key. */
   geminiKey?: string;
+  /** Optional default LLM provider used to prefix bare model names. */
+  llmDefaultProvider?: string;
+  /** Optional custom base URL for an OpenAI-compatible API. */
+  llmBaseUrl?: string;
+  /** Optional API key for the custom OpenAI-compatible base URL. */
+  llmApiKey?: string;
+  /** Optional Ollama base URL (default: http://localhost:11434/v1). */
+  ollamaBaseUrl?: string;
+  /** Optional Ollama model name. */
+  ollamaModel?: string;
+  /** Optional Azure OpenAI endpoint URL. */
+  azureEndpoint?: string;
+  /** Optional Azure OpenAI API key. */
+  azureKey?: string;
+  /** Optional Azure OpenAI deployment name. */
+  azureDeployment?: string;
+  /** Optional AWS Bedrock model ID. */
+  bedrockModelId?: string;
+  /** Optional AWS region for Bedrock. */
+  bedrockRegion?: string;
   /** Model identifier for review operations. */
   reviewModel: string;
   /** Model identifier for fix operations. */
@@ -232,17 +252,33 @@ export function parseInputs(): ActionInputs {
     throw new Error('github_token input is required but was empty');
   }
 
+  // A configured default LLM provider lets workflow authors write bare model
+  // names (e.g. "llama3") that resolve to "ollama/llama3" before validation.
+  const llmDefaultProvider = modelInput('llm_default_provider');
+  const resolveModel = (value: string | undefined): string | undefined => {
+    if (!value) return value;
+    const trimmed = value.trim();
+    if (!trimmed.includes('/') && llmDefaultProvider) {
+      return `${llmDefaultProvider}/${trimmed}`;
+    }
+    return trimmed;
+  };
+
   const reviewModel =
-    modelInput('review_model') || globalModel || 'opencode/deepseek-v4-flash-free';
-  const fixModel = modelInput('fix_model') || globalModel || 'opencode/deepseek-v4-flash-free';
-  const auditModel = modelInput('audit_model') || globalModel || undefined;
-  const synthesisModel = modelInput('synthesis_model') || globalModel || undefined;
-  const verificationModel = modelInput('verification_model') || globalModel || undefined;
-  const metaReviewModel = modelInput('meta_review_model') || globalModel || undefined;
-  const explanationModel = modelInput('explanation_model') || globalModel || undefined;
-  const conversationModel = modelInput('conversation_model') || globalModel || undefined;
-  const analysisModel = modelInput('analysis_model') || globalModel || undefined;
-  const docsModel = modelInput('docs_model') || globalModel || undefined;
+    resolveModel(modelInput('review_model') || globalModel) || 'opencode/deepseek-v4-flash-free';
+  const fixModel =
+    resolveModel(modelInput('fix_model') || globalModel) || 'opencode/deepseek-v4-flash-free';
+  const auditModel = resolveModel(modelInput('audit_model') || globalModel) || undefined;
+  const synthesisModel = resolveModel(modelInput('synthesis_model') || globalModel) || undefined;
+  const verificationModel =
+    resolveModel(modelInput('verification_model') || globalModel) || undefined;
+  const metaReviewModel = resolveModel(modelInput('meta_review_model') || globalModel) || undefined;
+  const explanationModel =
+    resolveModel(modelInput('explanation_model') || globalModel) || undefined;
+  const conversationModel =
+    resolveModel(modelInput('conversation_model') || globalModel) || undefined;
+  const analysisModel = resolveModel(modelInput('analysis_model') || globalModel) || undefined;
+  const docsModel = resolveModel(modelInput('docs_model') || globalModel) || undefined;
 
   const docStyleRaw = core.getInput('doc_style').trim().toLowerCase();
   if (docStyleRaw !== '' && !isDocStyle(docStyleRaw)) {
@@ -315,6 +351,16 @@ export function parseInputs(): ActionInputs {
     openAiKey: core.getInput('openai_api_key') || undefined,
     anthropicKey: core.getInput('anthropic_api_key') || undefined,
     geminiKey: core.getInput('gemini_api_key') || undefined,
+    llmDefaultProvider,
+    llmBaseUrl: core.getInput('llm_base_url') || undefined,
+    llmApiKey: core.getInput('llm_api_key') || undefined,
+    ollamaBaseUrl: core.getInput('ollama_base_url') || undefined,
+    ollamaModel: core.getInput('ollama_model') || undefined,
+    azureEndpoint: core.getInput('azure_openai_endpoint') || undefined,
+    azureKey: core.getInput('azure_openai_key') || undefined,
+    azureDeployment: core.getInput('azure_deployment_name') || undefined,
+    bedrockModelId: core.getInput('aws_bedrock_model_id') || undefined,
+    bedrockRegion: core.getInput('aws_region') || undefined,
     reviewModel,
     fixModel,
     auditModel,

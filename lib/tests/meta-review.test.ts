@@ -6,6 +6,7 @@ import { MetaReviewEngine, MetaReviewSubscriber } from '../src/meta-review/engin
 
 vi.mock('../src/opencode.js', () => ({
   runOpenCode: vi.fn().mockResolvedValue({ success: true, output: '', durationMs: 0 }),
+  setLLMProviderConfig: vi.fn(),
 }));
 
 const TEST_DB = path.join(__dirname, '.test-meta.db');

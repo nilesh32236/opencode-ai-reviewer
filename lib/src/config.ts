@@ -8,6 +8,8 @@ import type {
   CategoryOverride,
   ConfigOverride,
   DocsConfig,
+  LLMConfig,
+  LLMProviderConfig,
   LinterConfig,
   MultiAgentAgentConfig,
   MultiAgentConfig,
@@ -147,6 +149,24 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     allowlist: null,
     failCI: null,
     excludePatterns: null,
+  },
+  llm: {
+    defaultProvider: null,
+    providers: [
+      {
+        type: null,
+        baseUrl: null,
+        apiKey: null,
+        endpoint: null,
+        resourceName: null,
+        apiVersion: null,
+        deployment: null,
+        modelId: null,
+        region: null,
+        model: null,
+        models: null,
+      },
+    ],
   },
 };
 
@@ -855,6 +875,56 @@ export function validateConfig(config: PromptConfig): PromptConfig {
         ? s.excludePatterns.filter((p): p is string => typeof p === 'string')
         : [],
     };
+  }
+
+  if (config.llm && typeof config.llm === 'object') {
+    const raw = config.llm;
+    const llmConfig: LLMConfig = {};
+    if (typeof raw.defaultProvider === 'string' && raw.defaultProvider.trim() !== '') {
+      llmConfig.defaultProvider = raw.defaultProvider.trim();
+    }
+    if (raw.providers && typeof raw.providers === 'object') {
+      const providers: Record<string, LLMProviderConfig> = {};
+      const knownTypes = ['openai-compatible', 'azure', 'bedrock', 'ollama'] as const;
+      for (const [id, provider] of Object.entries(raw.providers)) {
+        if (
+          !provider ||
+          typeof provider !== 'object' ||
+          !provider.type ||
+          !(knownTypes as readonly string[]).includes(provider.type)
+        ) {
+          continue;
+        }
+        const validated: LLMProviderConfig = {
+          type: provider.type as LLMProviderConfig['type'],
+        };
+        for (const field of [
+          'baseUrl',
+          'apiKey',
+          'endpoint',
+          'resourceName',
+          'apiVersion',
+          'deployment',
+          'modelId',
+          'region',
+          'model',
+        ] as const) {
+          const value = provider[field];
+          if (typeof value === 'string' && value.trim() !== '') {
+            validated[field] = value.trim();
+          }
+        }
+        if (Array.isArray(provider.models)) {
+          const models = provider.models.filter((m): m is string => typeof m === 'string');
+          if (models.length > 0) validated.models = models;
+        }
+        providers[id] = validated;
+      }
+      if (Object.keys(providers).length > 0) llmConfig.providers = providers;
+    }
+    if (llmConfig.defaultProvider !== undefined || llmConfig.providers !== undefined) {
+      result.llm = llmConfig;
+    }
   }
 
   return result;

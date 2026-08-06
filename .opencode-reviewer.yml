@@ -127,3 +127,40 @@ secrets:
 #   synthesis:
 #     enabled: true
 #     # model: ""   # optional synthesis model override (defaults to synthesisModel/reviewModel)
+
+# Optional custom LLM model hosting for self-hosted / enterprise providers
+# (OpenAI-compatible APIs, Azure OpenAI, AWS Bedrock, Ollama). Declared
+# providers are injected into the OpenCode CLI config; `defaultProvider` is an
+# optional convenience that prefixes bare model names (e.g. "llama3" with
+# defaultProvider "ollama" resolves to "ollama/llama3"). Secrets may reference
+# env vars via the OpenCode `{env:VAR}` substitution syntax so they are never
+# committed to this PR-editable file.
+#
+# Model selection stays on the existing model inputs (review_model / fix_model /
+# audit_model / model): Azure deployments route via "azure/<deployment-name>",
+# Bedrock via "amazon-bedrock/<model-id>", Ollama/custom via "ollama/<model>"
+# / "custom-openai/<model>".
+# llm:
+#   defaultProvider: ollama          # optional; prefixes bare model names
+#   providers:
+#     ollama:
+#       type: ollama
+#       baseUrl: "http://localhost:11434/v1"
+#       models:
+#         - llama3
+#     gateway:                       # arbitrary id, matches the CLI provider key
+#       type: openai-compatible
+#       baseUrl: "https://llm.corp.example/v1"
+#       apiKey: "{env:INTERNAL_LLM_KEY}"
+#       models:
+#         - qwen3-coder
+#     azure:
+#       type: azure
+#       endpoint: "https://my-resource.openai.azure.com"
+#       apiKey: "{env:AZURE_OPENAI_API_KEY}"
+#       apiVersion: "2024-02-15-preview"
+#       deployment: my-deployment
+#     bedrock:
+#       type: bedrock
+#       modelId: "us.anthropic.claude-sonnet-4-5-v2:0"
+#       region: "us-east-1"

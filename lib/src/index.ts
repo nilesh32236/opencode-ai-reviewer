@@ -15,7 +15,9 @@ export {
   parseOpenCodeVersion,
   isVersionCompatible,
   setOpenCodeRunMode,
+  setLLMProviderConfig,
   buildLocalOpenCodeConfig,
+  buildLLMProviderMap,
   MINIMUM_OPENCODE_VERSION,
 } from './opencode.js';
 export type {

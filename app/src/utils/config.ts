@@ -306,6 +306,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const failOnSeverity = repoConfig?.review?.failOnSeverity;
   const notifications = repoConfig?.notifications;
   const secrets = repoConfig?.secrets;
+  const llm = repoConfig?.llm;
   if (
     !sensitivity &&
     !categories &&
@@ -314,7 +315,8 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
     suppressLowConfidence === undefined &&
     failOnSeverity === undefined &&
     !notifications &&
-    !secrets
+    !secrets &&
+    !llm
   ) {
     return baseConfig;
   }
@@ -350,6 +352,12 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       secrets: {
         ...baseConfig.secrets,
         ...secrets,
+      },
+    }),
+    ...(llm && {
+      llm: {
+        ...baseConfig.llm,
+        ...llm,
       },
     }),
   };

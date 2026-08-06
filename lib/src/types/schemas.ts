@@ -261,6 +261,39 @@ export const LinterConfigSchema = z.object({
   timeout: z.number().int().positive().optional(),
 });
 
+/**
+ * Zod schema validating a single custom LLM provider entry.
+ * All fields are optional strings; validity of URLs/keys is enforced when the
+ * provider map is built for the OpenCode CLI, never at config-parse time, so a
+ * placeholder or env-injected value can never fail the whole config parse.
+ */
+export const LLMProviderConfigSchema = z.object({
+  type: z.enum(['openai-compatible', 'azure', 'bedrock', 'ollama']),
+  baseUrl: z.string().optional(),
+  apiKey: z.string().optional(),
+  endpoint: z.string().optional(),
+  resourceName: z.string().optional(),
+  apiVersion: z.string().optional(),
+  deployment: z.string().optional(),
+  modelId: z.string().optional(),
+  region: z.string().optional(),
+  model: z.string().optional(),
+  models: z.array(z.string()).optional(),
+});
+
+/**
+ * Zod schema validating the custom LLM provider configuration section.
+ * Custom LLM hosting is a non-critical, opt-in enterprise feature, so a fully
+ * malformed `llm:` block falls back to an empty provider map (mirroring
+ * `NotificationsConfigSchema`) instead of failing the whole config parse.
+ */
+export const LLMConfigSchema = z
+  .object({
+    defaultProvider: z.string().optional(),
+    providers: z.record(z.string(), LLMProviderConfigSchema).optional().default({}),
+  })
+  .catch({ providers: {} });
+
 /** Zod schema validating rate limiting configuration. */
 export const RateLimitingConfigSchema = z.object({
   enabled: z.boolean().default(true),
@@ -434,6 +467,7 @@ export const AgentConfigSchema = z.object({
   notifications: NotificationsConfigSchema.default(NotificationsConfigSchema.parse({})),
   multiAgent: MultiAgentConfigSchema.default(MultiAgentConfigSchema.parse({})),
   secrets: SecretsConfigSchema.default(SecretsConfigSchema.parse({})),
+  llm: LLMConfigSchema.optional(),
 });
 
 // ─── Prompt Config Schema (YAML config file) ──────────────
@@ -553,4 +587,5 @@ export const PromptConfigSchema = z.object({
   notifications: NotificationsConfigSchema.optional(),
   multiAgent: MultiAgentConfigSchema.optional(),
   secrets: SecretsConfigSchema.optional(),
+  llm: LLMConfigSchema.optional(),
 });

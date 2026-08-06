@@ -8,11 +8,14 @@ import {
   EventBus,
   GitHubHelper,
   GitLabAdapter,
+  type LLMConfig,
+  type LLMProviderConfig,
   LearningStore,
   Logger,
   type MCPServerConfig,
   MCPServerConfigSchema,
   type PlatformAdapter,
+  type PromptConfig,
   ReviewEngine,
   TelemetrySubscriber,
   configureGit,
@@ -34,6 +37,68 @@ import { runSelfHeal } from './self-heal.js';
 import { runSetup } from './setup.js';
 import { StateCacheManager } from './state-cache.js';
 import { sanitize } from './utils.js';
+
+/**
+ * Build the custom LLM provider configuration for the review engine by merging
+ * the `.opencode-reviewer.yml` `llm:` section with the dedicated action inputs.
+ * Action inputs take precedence over config-file providers with the same id.
+ * Configuring an Azure deployment name or Bedrock model id also defaults the
+ * provider so bare model names resolve to "azure/<deployment>" /
+ * "amazon-bedrock/<model-id>" (a single-config-change provider selection).
+ * @param inputs - Parsed action inputs (may lack LLM fields).
+ * @param loadedConfig - Parsed config file, or null.
+ * @returns An LLMConfig, or undefined when nothing is configured.
+ */
+function buildLLMConfig(
+  inputs: ActionInputs,
+  loadedConfig: PromptConfig | null,
+): LLMConfig | undefined {
+  const providers: Record<string, LLMProviderConfig> = {
+    ...(loadedConfig?.llm?.providers ?? {}),
+  };
+  if (inputs.llmBaseUrl) {
+    providers.custom = {
+      type: 'openai-compatible',
+      baseUrl: inputs.llmBaseUrl,
+      ...(inputs.llmApiKey && { apiKey: inputs.llmApiKey }),
+    };
+  }
+  if (inputs.ollamaBaseUrl || inputs.ollamaModel) {
+    providers.ollama = {
+      type: 'ollama',
+      ...(inputs.ollamaBaseUrl && { baseUrl: inputs.ollamaBaseUrl }),
+      ...(inputs.ollamaModel && { model: inputs.ollamaModel }),
+    };
+  }
+  if (inputs.azureEndpoint || inputs.azureKey || inputs.azureDeployment) {
+    providers.azure = {
+      type: 'azure',
+      ...(inputs.azureEndpoint && { endpoint: inputs.azureEndpoint }),
+      ...(inputs.azureKey && { apiKey: inputs.azureKey }),
+      ...(inputs.azureDeployment && { deployment: inputs.azureDeployment }),
+    };
+  }
+  if (inputs.bedrockModelId || inputs.bedrockRegion) {
+    providers.bedrock = {
+      type: 'bedrock',
+      ...(inputs.bedrockModelId && { modelId: inputs.bedrockModelId }),
+      ...(inputs.bedrockRegion && { region: inputs.bedrockRegion }),
+    };
+  }
+
+  let defaultProvider =
+    inputs.llmDefaultProvider || loadedConfig?.llm?.defaultProvider || undefined;
+  if (!defaultProvider) {
+    if (inputs.azureDeployment) defaultProvider = 'azure';
+    else if (inputs.bedrockModelId) defaultProvider = 'amazon-bedrock';
+  }
+
+  if (Object.keys(providers).length === 0 && !defaultProvider) return undefined;
+  const llm: LLMConfig = {};
+  if (defaultProvider) llm.defaultProvider = defaultProvider;
+  if (Object.keys(providers).length > 0) llm.providers = providers;
+  return llm;
+}
 
 async function run(): Promise<void> {
   // The GitHub Action defaults to human-readable logs because CI already
@@ -316,6 +381,7 @@ async function run(): Promise<void> {
       notifications: loadedConfig?.notifications ?? DEFAULT_CONFIG.notifications,
       multiAgent: loadedConfig?.multiAgent ?? DEFAULT_CONFIG.multiAgent,
       secrets: loadedConfig?.secrets ?? DEFAULT_CONFIG.secrets,
+      llm: buildLLMConfig(inputs, loadedConfig),
     };
 
     const learningStore = new LearningStore();

@@ -24,6 +24,27 @@ const MODEL_PROVIDER_KEYS: Array<{ label: string; envs: string[] }> = [
   },
   { label: 'Gemini (GEMINI_API_KEY)', envs: ['GEMINI_API_KEY', 'INPUT_GEMINI_API_KEY'] },
   { label: 'OpenCode (OPENCODE_API_KEY)', envs: ['OPENCODE_API_KEY', 'INPUT_OPENCODE_API_KEY'] },
+  {
+    label: 'Azure OpenAI (AZURE_OPENAI_API_KEY)',
+    envs: ['AZURE_OPENAI_API_KEY', 'AZURE_OPENAI_ENDPOINT', 'AZURE_RESOURCE_NAME'],
+  },
+  {
+    label: 'AWS Bedrock (AWS_ACCESS_KEY_ID / AWS_PROFILE / AWS_ROLE_ARN)',
+    envs: [
+      'AWS_ACCESS_KEY_ID',
+      'AWS_SECRET_ACCESS_KEY',
+      'AWS_SESSION_TOKEN',
+      'AWS_PROFILE',
+      'AWS_BEARER_TOKEN_BEDROCK',
+      'AWS_WEB_IDENTITY_TOKEN_FILE',
+      'AWS_ROLE_ARN',
+    ],
+  },
+  { label: 'Ollama (OLLAMA_MODEL)', envs: ['OLLAMA_MODEL'] },
+  {
+    label: 'Custom OpenAI-compatible (LLM_BASE_URL)',
+    envs: ['LLM_BASE_URL', 'LLM_API_KEY'],
+  },
 ];
 
 /**

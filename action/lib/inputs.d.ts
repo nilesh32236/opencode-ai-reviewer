@@ -18,6 +18,26 @@ export interface ActionInputs {
     anthropicKey?: string;
     /** Optional Google Gemini API key. */
     geminiKey?: string;
+    /** Optional default LLM provider used to prefix bare model names. */
+    llmDefaultProvider?: string;
+    /** Optional custom base URL for an OpenAI-compatible API. */
+    llmBaseUrl?: string;
+    /** Optional API key for the custom OpenAI-compatible base URL. */
+    llmApiKey?: string;
+    /** Optional Ollama base URL (default: http://localhost:11434/v1). */
+    ollamaBaseUrl?: string;
+    /** Optional Ollama model name. */
+    ollamaModel?: string;
+    /** Optional Azure OpenAI endpoint URL. */
+    azureEndpoint?: string;
+    /** Optional Azure OpenAI API key. */
+    azureKey?: string;
+    /** Optional Azure OpenAI deployment name. */
+    azureDeployment?: string;
+    /** Optional AWS Bedrock model ID. */
+    bedrockModelId?: string;
+    /** Optional AWS region for Bedrock. */
+    bedrockRegion?: string;
     /** Model identifier for review operations. */
     reviewModel: string;
     /** Model identifier for fix operations. */

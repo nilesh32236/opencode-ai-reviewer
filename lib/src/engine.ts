@@ -21,7 +21,7 @@ import type { EventBus } from './event-bus/bus.js';
 import { emptyResult, parseAgentJsonlString, parseJsonlFile } from './jsonl-parser.js';
 import type { LearningStore } from './learning/store.js';
 import { MCPManager } from './mcp/client.js';
-import { ensureOutputDir, getGitStatus, runOpenCode } from './opencode.js';
+import { ensureOutputDir, getGitStatus, runOpenCode, setLLMProviderConfig } from './opencode.js';
 import type { PlatformAdapter } from './platform/adapter.js';
 import {
   buildAnalyzePrompt,
@@ -186,6 +186,9 @@ export class ReviewEngine {
     // undefined while the logger falls back to its own generated UUID, so
     // published events would not share the engine logs' trace ID.
     this.correlationId = this.logger.getCorrelationId();
+    // Apply custom LLM providers (self-hosted OpenAI-compatible, Azure,
+    // Bedrock, Ollama) to every OpenCode CLI run dispatched by this engine.
+    setLLMProviderConfig(config.llm);
   }
 
   /**

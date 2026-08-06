@@ -221,6 +221,67 @@ export interface DocsConfig {
   style: DocStyle;
 }
 
+// ─── Custom LLM Providers ───────────────────────────────
+/** Supported custom LLM provider types. */
+export type LLMProviderType = 'openai-compatible' | 'azure' | 'bedrock' | 'ollama';
+
+/**
+ * Configuration for a single custom LLM provider.
+ *
+ * `openai-compatible` and `ollama` providers are injected into the OpenCode
+ * CLI config (`OPENCODE_CONFIG_CONTENT`) as a `provider` map entry backed by
+ * the `@ai-sdk/openai-compatible` adapter, so any OpenAI-compatible API
+ * (self-hosted gateways, Ollama, vLLM, etc.) works out of the box. `azure` and
+ * `bedrock` use the CLI's built-in providers: their settings are translated
+ * into the standard `AZURE_*` / `AWS_*` environment variables the CLI and AI
+ * SDK already read.
+ */
+export interface LLMProviderConfig {
+  /** Provider type. */
+  type: LLMProviderType;
+  /** Custom base URL for OpenAI-compatible APIs (e.g. "https://llm.corp.example/v1"). */
+  baseUrl?: string;
+  /**
+   * API key. May reference an environment variable via the OpenCode CLI
+   * `{env:VAR_NAME}` substitution syntax to avoid committing secrets to the
+   * config file (e.g. "{env:INTERNAL_LLM_KEY}").
+   */
+  apiKey?: string;
+  /** Azure OpenAI endpoint URL (e.g. "https://my-resource.openai.azure.com"). */
+  endpoint?: string;
+  /** Azure OpenAI resource name (alternative to a full endpoint URL). */
+  resourceName?: string;
+  /** Azure OpenAI API version (default: "2024-02-15-preview"). */
+  apiVersion?: string;
+  /** Azure OpenAI deployment name (used as the model id via "azure/<deployment>"). */
+  deployment?: string;
+  /** AWS Bedrock model ID (e.g. "us.anthropic.claude-sonnet-4-5-v2:0"). */
+  modelId?: string;
+  /** AWS region for Bedrock (defaults to the AWS_REGION env var). */
+  region?: string;
+  /** Ollama model name (e.g. "llama3", "codellama"). */
+  model?: string;
+  /** Model names exposed by this provider (OpenAI-compatible / Ollama). */
+  models?: string[];
+}
+
+/**
+ * Configuration for custom LLM providers.
+ *
+ * Declares a map of provider id → provider configuration, mirroring the
+ * OpenCode CLI's `provider` config section so a single provider (or several)
+ * can serve any OpenAI-compatible, Azure, Bedrock, or Ollama model. The
+ * `defaultProvider` is an optional convenience that prefixes bare model names
+ * (e.g. model "llama3" with defaultProvider "ollama" resolves to
+ * "ollama/llama3").
+ */
+export interface LLMConfig {
+  /** Optional provider used to prefix bare model names (e.g. "ollama", "azure"). */
+  defaultProvider?: string;
+  /** Map of provider id → provider configuration. */
+  providers?: Record<string, LLMProviderConfig>;
+}
+
 /** Top-level agent configuration for reviews, fixes, audits, and learning. */
 export interface AgentConfig {
   /** Platform to use (github or gitlab, defaults to github). */
@@ -283,6 +344,8 @@ export interface AgentConfig {
   multiAgent?: MultiAgentConfig;
   /** Deterministic hardcoded secret / credential scanning (default: enabled). */
   secrets?: SecretDetectorConfig;
+  /** Custom LLM providers (self-hosted OpenAI-compatible, Azure, Bedrock, Ollama). */
+  llm?: LLMConfig;
 }
 
 // ─── Multi-Agent Architecture ────────────────────────────
@@ -1355,6 +1418,8 @@ export interface PromptConfig {
   secrets?: SecretDetectorConfig;
   /** Multi-agent review architecture configuration (default: disabled). */
   multiAgent?: MultiAgentConfig;
+  /** Custom LLM providers (self-hosted OpenAI-compatible, Azure, Bedrock, Ollama). */
+  llm?: LLMConfig;
 }
 
 // ─── Defaults ─────────────────────────────────────────────
