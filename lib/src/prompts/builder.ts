@@ -1,7 +1,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as core from '@actions/core';
-import type { PreviousFindingIteration, ReviewBudgetMode, ReviewIssue } from '../types/index.js';
+import type {
+  DocStyle,
+  PreviousFindingIteration,
+  ReviewBudgetMode,
+  ReviewIssue,
+} from '../types/index.js';
 import { Logger } from '../utils/logger.js';
 import { sanitizePromptInput } from '../utils/prompt-sanitizer.js';
 import { getLanguagePrompts } from './language/index.js';
@@ -539,6 +544,87 @@ ${verificationError ? `\n## Verification Errors from Previous Attempt\n\`\`\`\n$
 - Strictly follow any explicit instructions provided by human maintainers in the comment thread.
 - Keep fixes minimal and target only the issue described.
 - If you cannot complete the fix, write the reason to \`.fix-stuck.md\` and stop.`;
+}
+
+/**
+ * Build the documentation-generation prompt for the `/docs` command.
+ * Instructs the LLM to identify changed functions, methods, and classes in a PR
+ * that lack or have incomplete doc comments and to add JSDoc/TSDoc (or another
+ * configured style) documentation for them without touching existing, correct
+ * documentation.
+ *
+ * @param inputs - Configuration inputs.
+ * @param context - Full context (PR description, comments, diffs, etc.).
+ * @param docStyle - Doc comment style to fall back to when a file has no
+ * existing convention ('auto' asks the model to infer per-file).
+ * @returns The assembled docs prompt string.
+ */
+export function buildDocsPrompt(
+  inputs: PromptBuilderInputs,
+  context: string,
+  docStyle: DocStyle = 'auto',
+): string {
+  const projectContext = inputs.projectContext || getDefaultProjectContext();
+  const safeContext = boundSection(
+    sanitizePromptInput(context, { maxLength: 50_000 }),
+    MAX_CONTEXT_SECTION_BYTES,
+    'PR & issue context',
+  );
+  const boundedProjectContext = boundSection(
+    projectContext,
+    MAX_PROJECT_CONTEXT_SECTION_BYTES,
+    'project context',
+  );
+
+  const styleLine =
+    docStyle === 'auto'
+      ? "infer each file's existing convention (JSDoc, TSDoc, etc.) and fall back to JSDoc when a file has no existing doc comments"
+      : `use the \`${docStyle}\` doc comment style for new comments (matching the repository's existing convention when one exists)`;
+
+  return `You are an Expert Software Engineer specializing in API documentation. Your task is to add accurate documentation comments to the code changed in this pull request.
+
+## PR & Issue Context
+
+${safeContext}
+
+## Project Context
+
+${boundedProjectContext}
+
+## Documentation Style
+
+- Match each file's existing documentation convention where one is present.
+- For new comments, ${styleLine}.
+- Supported styles: JSDoc (\`/** ... */\`), TSDoc (\`/** ... */\` with \`@param\`/\`@returns\`/type tags), reStructuredText (\`#:\` docstrings), Doxygen, and NumPy-style docstrings.
+
+## Step-by-Step Execution Instructions
+
+1. **Read the PR context and diff**: Identify the files changed in this PR and which functions, methods, classes, exported types, and exported constants were introduced or modified.
+
+2. **Open changed source files**: Use the \`read\` tool to inspect each changed source file. When reading TypeScript files, note that relative imports ending in \`.js\` (e.g. \`./conversation.js\`) map to \`.ts\` files on disk — always use the \`.ts\` extension when opening source files.
+
+3. **Identify undocumented / under-documented code**: For each changed function, method, class, exported type, or exported constant, determine whether it already has a complete, accurate doc comment. Focus on changed code only — do not document pre-existing code that was not touched by this PR.
+
+4. **Generate documentation comments** describing:
+   - A one-line summary of what the symbol does.
+   - Parameters (via \`@param\` or equivalent for the active style).
+   - Return value (via \`@returns\` or equivalent).
+   - Exceptions/errors that can be thrown.
+   - Usage notes only when they add value.
+
+5. **Preserve existing documentation**: Do NOT modify, rewrite, or remove existing doc comments that are already accurate. Only add missing doc comments or complete incomplete ones on changed code.
+
+6. **Summarize (REQUIRED)**: Write a clear summary of what you documented to \`.docs-summary.md\`. Include:
+   - **### What Was Done**: 1-3 sentences describing what documentation was added and why.
+   - **### Approach**: Technical explanation of how you chose which code to document and which style to use.
+   - **### Key Changes**: Bullet points of files documented and the reason for each.
+
+## CRITICAL RULES
+- Only add/complete documentation for code changed in this PR. Do not document untouched pre-existing code.
+- Do NOT modify existing, correct doc comments.
+- Do NOT change any code behavior, logic, or formatting unrelated to documentation.
+- Do NOT run \`git commit\`, \`git push\`, or \`gh pr create\`.
+- Write the summary file to \`.docs-summary.md\` in the current working directory.`;
 }
 
 /**

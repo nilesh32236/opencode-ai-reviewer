@@ -5,6 +5,7 @@ import os from 'os';
 import path from 'path';
 import type {
   AgentConfig,
+  DocStyle,
   EventBus,
   PRContext,
   ParsedCommand,
@@ -17,7 +18,9 @@ import {
   ReviewEngine,
   SetupEngine,
   buildAutofixPRBody,
+  buildDocsPRBody,
   configureGit,
+  isDocStyle,
   markAnalysisReady,
   parseAnalysisPlan,
   postBlockingQuestions,
@@ -46,7 +49,7 @@ const logger = new Logger('Command');
  * @param correlationId - Optional correlation ID for tracing this request.
  */
 export async function handleCommand(
-  command: 'fix' | 'review' | 'audit' | 'analyze' | 'explain' | 'setup',
+  command: 'fix' | 'review' | 'audit' | 'analyze' | 'explain' | 'setup' | 'docs',
   issueNumber: number,
   repo: string,
   token: string,
@@ -215,6 +218,26 @@ export async function handleCommand(
         break;
       }
 
+      case 'docs': {
+        if (!(await gh.isMR(issueNumber))) {
+          logger.info(`Ignoring /docs on #${issueNumber}: not a pull request`);
+          break;
+        }
+        await handleDocsCommand(
+          gh,
+          issueNumber,
+          repo,
+          config,
+          tempDir,
+          gitEnv,
+          signal,
+          eventBus,
+          correlationId,
+          parsed,
+        );
+        break;
+      }
+
       case 'setup': {
         await handleSetup(issueNumber, repo, token, config, tempDir);
         break;
@@ -334,6 +357,244 @@ export async function handleExplainCommand(
 }
 
 /**
+ * Handle a docs command: generate documentation for the code changed in a PR
+ * and open a dedicated documentation PR from a `docs/issue-N` branch (mirrors
+ * the autofix flow — the source PR's branch is left untouched). Posts
+ * in-progress, no-changes, docs-PR-link, and error comments to the source PR.
+ * @param gh - Platform adapter.
+ * @param issueNumber - The PR number to document.
+ * @param repo - Repository string (owner/repo).
+ * @param config - Agent configuration.
+ * @param tempDir - Temporary working directory containing the cloned repo.
+ * @param gitEnv - Git environment variables for authenticated git commands.
+ * @param signal - Optional abort signal.
+ * @param eventBus - Optional event bus for publishing pipeline events.
+ * @param correlationId - Optional correlation ID for tracing this request.
+ * @param parsed - Optional parsed command (for flags like --style=tsdoc).
+ * @returns A promise that resolves once docs generation, branch setup, and PR
+ * creation (or an error comment) complete.
+ */
+export async function handleDocsCommand(
+  gh: PlatformAdapter,
+  issueNumber: number,
+  repo: string,
+  config: AgentConfig,
+  tempDir: string,
+  gitEnv?: Record<string, string>,
+  signal?: AbortSignal,
+  eventBus?: EventBus,
+  correlationId?: string,
+  parsed?: ParsedCommand,
+): Promise<void> {
+  const logger = new Logger('Command:Docs', { repo, prNumber: issueNumber, correlationId });
+  logger.info(`Docs triggered for PR #${issueNumber}`);
+
+  const gitOpts: ExecFileSyncOptions = {
+    stdio: 'pipe',
+    cwd: tempDir,
+    timeout: 120_000,
+    ...(gitEnv ? { env: { ...process.env, ...gitEnv } } : {}),
+  };
+  const engine = new ReviewEngine(config, gh, undefined, eventBus, repo, correlationId);
+  const branchName = `docs/issue-${issueNumber}`;
+
+  try {
+    if (signal?.aborted) return;
+
+    await gh.postOrUpdateComment(
+      issueNumber,
+      '<!-- docs-in-progress -->',
+      '📝 **Docs generation in progress...** The docs agent is identifying changed code that lacks documentation and generating comments. This may take a few minutes.',
+    );
+
+    try {
+      execFileSync('git', ['fetch', 'origin'], gitOpts);
+    } catch (err) {
+      logger.warn(
+        `Git fetch failed: ${err instanceof Error ? err.message : String(err)} — continuing with local state`,
+      );
+    }
+
+    let branchExists = false;
+    try {
+      execFileSync('git', ['rev-parse', '--verify', `origin/${branchName}`], gitOpts);
+      branchExists = true;
+    } catch {
+      branchExists = false;
+    }
+
+    const defaultBranch = await gh.getDefaultBranch();
+    // Base the docs branch on the source PR's head so the changed code the PR
+    // adds or modifies is on disk before the docs engine runs. Creating it from
+    // the default branch would document pre-PR revisions and miss newly-added
+    // files entirely. The source PR's own branch is left untouched.
+    const pr = await gh.getMR(issueNumber);
+    const baseRef = pr.headRef || defaultBranch;
+
+    // Fork-backed PRs keep the head branch on the fork, not on origin. Resolve
+    // the head repo (when it differs from the target repo) and fetch the head
+    // branch from that remote so the checkout/rebase below references a real
+    // ref instead of assuming `origin/<headRef>`.
+    let forkRemote: string | undefined;
+    if (pr.headRepoFullName && pr.headRepoFullName !== repo) {
+      try {
+        execFileSync(
+          'git',
+          ['remote', 'add', 'fork', `https://github.com/${pr.headRepoFullName}.git`],
+          gitOpts,
+        );
+        execFileSync('git', ['fetch', 'fork', baseRef], gitOpts);
+        forkRemote = 'fork';
+        logger.info(`Fetched docs base branch ${baseRef} from fork ${pr.headRepoFullName}`);
+      } catch (err) {
+        logger.warn(
+          `Could not fetch docs base branch from fork ${pr.headRepoFullName}: ${err instanceof Error ? err.message : String(err)} — falling back to origin`,
+        );
+      }
+    }
+
+    if (signal?.aborted) return;
+
+    if (branchExists) {
+      execFileSync('git', ['checkout', '-B', branchName, `origin/${branchName}`], gitOpts);
+      logger.info(`Checked out existing branch ${branchName}`);
+      execFileSync('git', ['pull', '--rebase', forkRemote ?? 'origin', baseRef], gitOpts);
+    } else {
+      const startRef = forkRemote ? `${forkRemote}/${baseRef}` : `origin/${baseRef}`;
+      execFileSync('git', ['checkout', '-b', branchName, startRef], gitOpts);
+      logger.info(`Created branch ${branchName} from ${startRef}`);
+    }
+
+    const contextMarkdown = await gh.gatherContext({ prNumber: issueNumber });
+
+    if (signal?.aborted) return;
+
+    const styleFlag = typeof parsed?.flags?.style === 'string' ? parsed.flags.style : undefined;
+    const styleIsValid = styleFlag !== undefined && isDocStyle(styleFlag);
+    if (styleFlag !== undefined && !styleIsValid) {
+      logger.warn(`Ignoring invalid docs style flag "${styleFlag}" — using configured style`);
+    }
+    const docStyle: DocStyle | undefined = styleIsValid ? styleFlag : config.docs?.style;
+    const docsResult = await engine.runDocs(pr, contextMarkdown, tempDir, undefined, docStyle);
+
+    if (signal?.aborted) return;
+
+    if (!docsResult?.changesMade) {
+      logger.info('No documentation changes made by docs agent');
+      await gh.postOrUpdateComment(
+        issueNumber,
+        '<!-- docs-no-changes -->',
+        '🔍 No documentation changes were needed — the changed code is already documented.',
+      );
+      return;
+    }
+
+    execFileSync('git', ['add', '-A'], gitOpts);
+    execFileSync(
+      'git',
+      ['commit', '-m', `docs: add API documentation for #${issueNumber}`],
+      gitOpts,
+    );
+
+    try {
+      execFileSync('git', ['push', 'origin', branchName, '--force-with-lease'], gitOpts);
+    } catch (err) {
+      logger.error(`Git push failed: ${err instanceof Error ? err.message : err}`);
+      await gh.postOrUpdateComment(
+        issueNumber,
+        '<!-- docs-error -->',
+        `❌ Docs push failed: ${sanitizeErrorMessage(err)}`,
+      );
+      return;
+    }
+
+    if (signal?.aborted) return;
+
+    const prTitle = `[Docs] ${pr.title}`;
+    const prBody = buildDocsPRBody({
+      prNumber: issueNumber,
+      prTitle: pr.title,
+      docsSummary: docsResult.summary,
+      filesChanged: docsResult.filesChanged ?? [],
+      branchName,
+      docStyle,
+    });
+
+    await gh.ensureLabels(['docs']);
+
+    const newPR = await gh.createPR(prTitle, prBody, branchName, defaultBranch);
+    if (newPR) {
+      logger.info(`Created docs PR #${newPR.number}: ${newPR.url}`);
+      try {
+        await gh.addLabels(newPR.number, ['docs']);
+      } catch (err) {
+        logger.warn(
+          `Failed to label docs PR #${newPR.number}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+      try {
+        await gh.postOrUpdateComment(
+          issueNumber,
+          '<!-- docs-pr-link -->',
+          `📝 Docs PR created: ${newPR.url}`,
+        );
+      } catch (err) {
+        logger.warn(
+          `Failed to post docs PR link comment: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+      return;
+    }
+
+    // A re-run of /docs pushes new changes to the existing docs/issue-N branch
+    // before we reach this point, so createPR fails because a PR already exists
+    // for that branch. Reuse the previously-linked docs PR instead of reporting
+    // an error to the source PR.
+    const existingPR = await findExistingDocsPR(gh, issueNumber);
+    if (existingPR) {
+      logger.info(`Reusing existing docs PR #${existingPR.number}: ${existingPR.url}`);
+      try {
+        await gh.addLabels(existingPR.number, ['docs']);
+      } catch (err) {
+        logger.warn(
+          `Failed to label docs PR #${existingPR.number}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+      try {
+        await gh.postOrUpdateComment(
+          issueNumber,
+          '<!-- docs-pr-link -->',
+          `📝 Docs PR: ${existingPR.url}`,
+        );
+      } catch (err) {
+        logger.warn(
+          `Failed to post docs PR link comment: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+      return;
+    }
+
+    logger.error('Failed to create PR via GitHub API');
+    await gh.postOrUpdateComment(
+      issueNumber,
+      '<!-- docs-error -->',
+      `❌ Failed to create docs PR from branch \`${branchName}\`. A PR may already exist from this branch or the API rejected the request.`,
+    );
+  } catch (err) {
+    logger.error(
+      `Docs PR creation failed for PR #${issueNumber}: ${err instanceof Error ? err.message : err}`,
+    );
+    await gh.postOrUpdateComment(
+      issueNumber,
+      '<!-- docs-error -->',
+      `❌ **Docs generation failed**: ${sanitizeErrorMessage(err)}`,
+    );
+  } finally {
+    await engine.cleanup();
+  }
+}
+
+/**
  * Handle a setup command: run the pre-flight validation checks against the
  * cloned workspace and post the markdown report as a comment on the issue.
  * @param issueNumber - The issue/PR number that triggered the setup.
@@ -405,6 +666,29 @@ async function findExistingAutofixPR(
   } catch (err) {
     logger.debug(
       `Failed to find existing autofix PR for issue ${issueNumber}: ${err instanceof Error ? err.message : err}`,
+    );
+  }
+  return null;
+}
+
+async function findExistingDocsPR(
+  gh: PlatformAdapter,
+  issueNumber: number,
+): Promise<{ number: number; url: string } | null> {
+  const logger = new Logger('Command', { prNumber: issueNumber });
+  try {
+    const issue = await gh.getIssue(issueNumber);
+    for (const comment of issue.comments) {
+      if (comment.body?.startsWith('<!-- docs-pr-link -->')) {
+        const match = comment.body.match(/(https:\/\/github\.com\/[^\s)]+\/pull\/(\d+))/);
+        if (match) {
+          return { number: Number.parseInt(match[2], 10), url: match[1] };
+        }
+      }
+    }
+  } catch (err) {
+    logger.debug(
+      `Failed to find existing docs PR for issue ${issueNumber}: ${err instanceof Error ? err.message : err}`,
     );
   }
   return null;

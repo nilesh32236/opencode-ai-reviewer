@@ -1,4 +1,4 @@
-import { type ActionMode, type CostTrackingVerbosity, DEFAULT_ALLOWLIST, type FailOnSeverity, validateRunChecksCommand } from '@opencode-pr-agent/lib';
+import { type ActionMode, type CostTrackingVerbosity, DEFAULT_ALLOWLIST, type DocStyle, type FailOnSeverity, validateRunChecksCommand } from '@opencode-pr-agent/lib';
 export { DEFAULT_ALLOWLIST, validateRunChecksCommand };
 /**
  * Parse and validate a timeout value from a raw string.
@@ -40,6 +40,10 @@ export interface ActionInputs {
     conversationModel?: string;
     /** Model identifier for issue analysis. */
     analysisModel?: string;
+    /** Model identifier for documentation generation. */
+    docsModel?: string;
+    /** Doc comment style for the /docs command ('auto' infers per file). */
+    docStyle: DocStyle;
     /** Optional path to a custom review prompt file. */
     reviewPromptFile?: string;
     /** Optional extra instructions appended to the review prompt. */

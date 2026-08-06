@@ -144,3 +144,50 @@ describe('parseInputs() fail_on_severity', () => {
     expect(() => parseInputs()).toThrow(/Invalid fail_on_severity/);
   });
 });
+
+describe('parseInputs() docs mode', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('accepts docs as a valid mode', () => {
+    setInputs({ ...BASE_INPUTS, mode: 'docs' });
+    const inputs = parseInputs();
+    expect(inputs.mode).toBe('docs');
+  });
+
+  it('parses doc_style with a default of auto', () => {
+    setInputs({ ...BASE_INPUTS, mode: 'docs' });
+    const inputs = parseInputs();
+    expect(inputs.docStyle).toBe('auto');
+  });
+
+  it('parses an explicit doc_style', () => {
+    setInputs({ ...BASE_INPUTS, mode: 'docs', doc_style: 'tsdoc' });
+    const inputs = parseInputs();
+    expect(inputs.docStyle).toBe('tsdoc');
+  });
+
+  it('rejects an invalid doc_style', () => {
+    setInputs({ ...BASE_INPUTS, mode: 'docs', doc_style: 'yaml' });
+    expect(() => parseInputs()).toThrow(/Invalid doc_style/);
+  });
+
+  it('rejects an invalid docs_model when mode is docs', () => {
+    setInputs({ ...BASE_INPUTS, mode: 'docs', docs_model: 'gpt-4o' });
+    expect(() => parseInputs()).toThrow(/Invalid model format/);
+  });
+
+  it('warns (does not throw) for an invalid docs_model in review mode', () => {
+    setInputs({ ...BASE_INPUTS, docs_model: 'gpt-4o' });
+    const inputs = parseInputs();
+    expect(inputs.docsModel).toBe('gpt-4o');
+    expect(mockWarning).toHaveBeenCalledWith(expect.stringContaining('disabled feature'));
+  });
+
+  it('falls back docs_model to the global model when omitted', () => {
+    setInputs({ ...BASE_INPUTS, mode: 'docs', model: 'openai/gpt-4o' });
+    const inputs = parseInputs();
+    expect(inputs.docsModel).toBe('openai/gpt-4o');
+  });
+});

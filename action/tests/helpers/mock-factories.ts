@@ -45,6 +45,7 @@ export function makeInputs(overrides: Partial<ActionInputs> = {}): ActionInputs 
     enableAudit: false,
     auditTargetDirs: [],
     auditLabels: ['audit'],
+    docStyle: 'auto',
     ...overrides,
   };
 }

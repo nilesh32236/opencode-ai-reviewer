@@ -260,7 +260,7 @@ export class GitHubHelper implements PlatformAdapter {
         number: number;
         title: string;
         body: string | null;
-        head: { ref: string; sha: string };
+        head: { ref: string; sha: string; repo?: { full_name: string } | null };
         base: { ref: string; sha?: string };
         user: { login: string };
         labels: Array<{ name: string }>;
@@ -289,6 +289,7 @@ export class GitHubHelper implements PlatformAdapter {
       title: pr.title,
       body: pr.body || '',
       headRef: pr.head.ref,
+      headRepoFullName: pr.head.repo?.full_name,
       headSha: pr.head.sha,
       baseRef: pr.base.ref,
       baseSha: pr.base.sha,

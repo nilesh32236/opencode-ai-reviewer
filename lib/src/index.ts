@@ -64,6 +64,7 @@ export {
   buildReviewPrompt,
   buildFixPrompt,
   buildAuditPrompt,
+  buildDocsPrompt,
   buildReplyPrompt,
   buildExplainPrompt,
   buildSynthesisPrompt,
@@ -255,6 +256,8 @@ export {
 export type { AnalysisPlanResult } from './utils/analyze-parser.js';
 export { buildAutofixPRBody } from './utils/pr-body.js';
 export type { PRBodyOptions } from './utils/pr-body.js';
+export { buildDocsPRBody } from './utils/pr-body.js';
+export type { DocsPRBodyOptions } from './utils/pr-body.js';
 export { parseCommand, ASK_COMMAND_PATTERN } from './utils/command-match.js';
 export type { ParsedCommand } from './utils/command-match.js';
 export { RateLimiter } from './utils/rate-limiter.js';

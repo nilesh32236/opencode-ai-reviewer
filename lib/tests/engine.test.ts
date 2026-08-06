@@ -16,6 +16,7 @@ const {
   mockBuildFixPrompt,
   mockBuildAuditPrompt,
   mockBuildAnalyzePrompt,
+  mockBuildDocsPrompt,
   mockBuildSynthesisPrompt,
   MockMCPManager,
   createMockAdapter,
@@ -41,6 +42,7 @@ const {
   const _mockBuildFixPrompt = vi.fn(() => 'fix prompt');
   const _mockBuildAuditPrompt = vi.fn(() => 'audit prompt');
   const _mockBuildAnalyzePrompt = vi.fn(() => 'analyze prompt');
+  const _mockBuildDocsPrompt = vi.fn(() => 'docs prompt');
   const _mockBuildSynthesisPrompt = vi.fn(() => 'synthesis prompt');
 
   class _MockMCPManager {
@@ -107,6 +109,7 @@ const {
     mockBuildFixPrompt: _mockBuildFixPrompt,
     mockBuildAuditPrompt: _mockBuildAuditPrompt,
     mockBuildAnalyzePrompt: _mockBuildAnalyzePrompt,
+    mockBuildDocsPrompt: _mockBuildDocsPrompt,
     mockBuildSynthesisPrompt: _mockBuildSynthesisPrompt,
     MockMCPManager: _MockMCPManager,
     createMockAdapter: _createMockAdapter,
@@ -148,6 +151,7 @@ vi.mock('../src/prompts/builder.js', async (importOriginal) => {
     buildFixPrompt: mockBuildFixPrompt,
     buildAuditPrompt: mockBuildAuditPrompt,
     buildAnalyzePrompt: mockBuildAnalyzePrompt,
+    buildDocsPrompt: mockBuildDocsPrompt,
     buildSynthesisPrompt: mockBuildSynthesisPrompt,
   };
 });
@@ -1046,6 +1050,132 @@ describe('ReviewEngine', () => {
 
       expect(result.stuck).toBe(false);
       expect(result.summary).toBeUndefined();
+    });
+  });
+
+  describe('runDocs()', () => {
+    const contextMarkdown = '## PR Context\nSome context';
+    const pr = makePRContext({
+      changedFiles: [{ path: 'src/example.ts', status: 'modified', additions: 20, deletions: 0 }],
+    });
+    // runDocs gates on docs.enabled, so exercise it with the flag enabled.
+    let docsEngine: ReviewEngine;
+
+    beforeEach(() => {
+      docsEngine = new ReviewEngine(
+        makeConfig({ docs: { enabled: true, style: 'auto' } }),
+        mockAdapter,
+      );
+    });
+
+    it('returns FixResult with changes on success', async () => {
+      const mockedGetGitStatus = vi.mocked(getGitStatus);
+      mockedGetGitStatus.mockReturnValue(' M src/example.ts\n');
+
+      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 2000 });
+
+      const result = await docsEngine.runDocs(pr, contextMarkdown);
+
+      expect(result.changesMade).toBe(true);
+      expect(mockBuildDocsPrompt).toHaveBeenCalled();
+      expect(mockRunOpenCode).toHaveBeenCalledWith(
+        'docs prompt',
+        expect.objectContaining({ model: DEFAULT_CONFIG.reviewModel }),
+      );
+    });
+
+    it('returns changesMade=false when no git changes', async () => {
+      const mockedGetGitStatus = vi.mocked(getGitStatus);
+      mockedGetGitStatus.mockReturnValue('');
+
+      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 2000 });
+
+      const result = await docsEngine.runDocs(pr, contextMarkdown);
+
+      expect(result.changesMade).toBe(false);
+      expect(result.filesChanged).toEqual([]);
+    });
+
+    it('reads .docs-summary.md if present', async () => {
+      const mockedGetGitStatus = vi.mocked(getGitStatus);
+      mockedGetGitStatus.mockReturnValue(' M src/example.ts\n');
+
+      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
+
+      const fsPromises = fs.promises;
+      vi.mocked(fsPromises.readFile).mockImplementation(async (path: string) => {
+        if (path.includes('.docs-summary.md')) return 'Documented the changed API';
+        throw new Error('ENOENT');
+      });
+      vi.mocked(fsPromises.unlink).mockResolvedValue(undefined);
+
+      const result = await docsEngine.runDocs(pr, contextMarkdown);
+
+      expect(result.summary).toBe('Documented the changed API');
+    });
+
+    it('passes the doc style to the prompt builder', async () => {
+      const mockedGetGitStatus = vi.mocked(getGitStatus);
+      mockedGetGitStatus.mockReturnValue('');
+
+      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
+
+      await docsEngine.runDocs(pr, contextMarkdown, undefined, undefined, 'tsdoc');
+
+      expect(mockBuildDocsPrompt).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        'tsdoc',
+      );
+    });
+
+    it('handles runOpenCode failure and checks partial output', async () => {
+      const mockedGetGitStatus = vi.mocked(getGitStatus);
+      mockedGetGitStatus.mockReturnValue(' M src/example.ts\n');
+
+      mockRunOpenCode.mockResolvedValue({ success: false, output: '', durationMs: 3000 });
+
+      const result = await docsEngine.runDocs(pr, contextMarkdown);
+
+      expect(result.changesMade).toBe(true);
+    });
+
+    it('skips the run entirely when docs are disabled', async () => {
+      const disabledEngine = new ReviewEngine(makeConfig(), mockAdapter);
+
+      const result = await disabledEngine.runDocs(pr, contextMarkdown);
+
+      expect(result.changesMade).toBe(false);
+      expect(result.filesChanged).toEqual([]);
+      expect(result.summary).toBeUndefined();
+      expect(mockRunOpenCode).not.toHaveBeenCalled();
+    });
+
+    it('does not report changes when only .docs-summary.md was written', async () => {
+      const mockedGetGitStatus = vi.mocked(getGitStatus);
+      const fsPromises = fs.promises;
+      let summaryUnlinked = false;
+      vi.mocked(fsPromises.unlink).mockImplementation(async (path: string) => {
+        if (String(path).includes('.docs-summary.md')) summaryUnlinked = true;
+        return undefined;
+      });
+      vi.mocked(fsPromises.readFile).mockImplementation(async (path: string) => {
+        if (String(path).includes('.docs-summary.md')) return 'Summary only';
+        throw new Error('ENOENT');
+      });
+      // Simulate a workspace whose only untracked file is the summary marker:
+      // once the engine removes it, git status is clean. If the engine checked
+      // status before consuming the marker, the untracked file would report a
+      // change that does not exist after cleanup.
+      mockedGetGitStatus.mockImplementation(() => (summaryUnlinked ? '' : '?? .docs-summary.md\n'));
+
+      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
+
+      const result = await docsEngine.runDocs(pr, contextMarkdown);
+
+      expect(result.changesMade).toBe(false);
+      expect(result.filesChanged).toEqual([]);
+      expect(result.summary).toBe('Summary only');
     });
   });
 

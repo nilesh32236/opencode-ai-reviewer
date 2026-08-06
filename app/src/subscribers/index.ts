@@ -16,6 +16,7 @@ import { createAutoAnalyzeSubscriber } from './auto-analyze.js';
 import { createConversationSubscriber } from './conversation.js';
 import { createDiscoverSubscriber } from './discover.js';
 import { createDismissSubscriber } from './dismiss.js';
+import { createDocsSubscriber } from './docs.js';
 import { createExplainSubscriber } from './explain.js';
 import { createFixSubscriber } from './fix.js';
 import { createMetricsSubscriber } from './metrics.js';
@@ -43,6 +44,7 @@ export function registerSubscribers(
   const subscribers: Subscriber[] = [
     createReviewSubscriber(learningStore, bus, rateLimiter, resolvedConfig),
     createFixSubscriber(rateLimiter, resolvedConfig, bus),
+    createDocsSubscriber(rateLimiter, resolvedConfig, bus),
     createAuditSubscriber(rateLimiter, resolvedConfig, bus),
     createAnalyzeSubscriber(rateLimiter, resolvedConfig, bus),
     createAutoAnalyzeSubscriber(rateLimiter, resolvedConfig, bus),

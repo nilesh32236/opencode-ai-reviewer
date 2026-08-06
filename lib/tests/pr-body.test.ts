@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildAutofixPRBody } from '../src/utils/pr-body.js';
+import { buildAutofixPRBody, buildDocsPRBody } from '../src/utils/pr-body.js';
 
 describe('buildAutofixPRBody', () => {
   it('builds PR body with fix summary and changed files', () => {
@@ -36,5 +36,66 @@ describe('buildAutofixPRBody', () => {
     expect(body).toContain('## Fixes #10');
     expect(body).toContain('The fix agent applied changes to address the issue.');
     expect(body).toContain('- Please verify the fix manually before merging');
+  });
+});
+
+describe('buildDocsPRBody', () => {
+  it('builds docs PR body with summary and changed files', () => {
+    const body = buildDocsPRBody({
+      prNumber: 199,
+      prTitle: 'Add docs generation',
+      docsSummary: 'Added JSDoc to the changed API surface',
+      filesChanged: ['lib/src/engine.ts'],
+      branchName: 'docs/issue-199',
+      docStyle: 'tsdoc',
+    });
+
+    expect(body).toContain('## Adds documentation for #199');
+    expect(body).toContain('## What Was Documented');
+    expect(body).toContain('Added JSDoc to the changed API surface');
+    expect(body).toContain('- `lib/src/engine.ts`');
+    expect(body).toContain('## Doc Style');
+    expect(body).toContain('`tsdoc`');
+    expect(body).toContain('docs/issue-199');
+  });
+
+  it('provides fallback text when docsSummary is empty', () => {
+    const body = buildDocsPRBody({
+      prNumber: 199,
+      prTitle: 'Add docs generation',
+      filesChanged: ['lib/src/engine.ts'],
+      branchName: 'docs/issue-199',
+    });
+
+    expect(body).toContain('## Adds documentation for #199');
+    expect(body).toContain('The documentation agent added doc comments');
+    expect(body).toContain('- Please verify the documentation renders correctly before merging');
+  });
+
+  it('omits the doc style section for the auto style', () => {
+    const body = buildDocsPRBody({
+      prNumber: 199,
+      prTitle: 'Add docs generation',
+      filesChanged: ['lib/src/engine.ts'],
+      branchName: 'docs/issue-199',
+      docStyle: 'auto',
+    });
+
+    expect(body).not.toContain('## Doc Style');
+  });
+
+  it('escapes markdown metacharacters in the PR title and file paths', () => {
+    const body = buildDocsPRBody({
+      prNumber: 199,
+      prTitle: 'Add `docs` [generation] (final)',
+      filesChanged: ['src/odd`file.ts', 'src/back\\slash.ts', 'src/normal.ts'],
+      branchName: 'docs/issue-199',
+      docStyle: 'tsdoc',
+    });
+
+    expect(body).toContain('Add \\`docs\\` \\[generation\\] \\(final\\)');
+    expect(body).toContain('- `src/odd\\`file.ts`');
+    expect(body).toContain('- `src/back\\\\slash.ts`');
+    expect(body).toContain('- `src/normal.ts`');
   });
 });

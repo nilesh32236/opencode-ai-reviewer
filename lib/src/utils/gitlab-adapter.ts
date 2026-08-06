@@ -205,6 +205,7 @@ export class GitLabAdapter implements PlatformAdapter {
         source_branch: string;
         sha: string;
         target_branch: string;
+        source_project?: { path_with_namespace?: string } | null;
         author: { username: string };
         labels: string[];
       }>(`/merge_requests/${number}`),
@@ -238,6 +239,7 @@ export class GitLabAdapter implements PlatformAdapter {
       title: mr.title,
       body: mr.description || '',
       headRef: mr.source_branch,
+      headRepoFullName: mr.source_project?.path_with_namespace,
       headSha: mr.sha,
       baseRef: mr.target_branch,
       author: mr.author.username,

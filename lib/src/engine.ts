@@ -25,6 +25,7 @@ import type { PlatformAdapter } from './platform/adapter.js';
 import {
   buildAnalyzePrompt,
   buildAuditPrompt,
+  buildDocsPrompt,
   buildExplainPrompt,
   buildFixPrompt,
   buildMultiAgentSynthesisPrompt,
@@ -48,6 +49,7 @@ import type {
   ConversationConfig,
   ConversationContext,
   ConversationState,
+  DocStyle,
   FixResult,
   LinterConfig,
   LinterFinding,
@@ -81,6 +83,7 @@ import {
 } from './utils/manifest-detector.js';
 import { validateModelString } from './utils/model-string.js';
 import { analyzeBatchReachability } from './utils/reachability.js';
+import { withRetry } from './utils/retry.js';
 import { sanitizeString } from './utils/sanitize.js';
 
 /** Maximum number of batch chunks processed concurrently by `reviewPR`. */
@@ -528,6 +531,7 @@ export class ReviewEngine {
     stageField: keyof Pick<
       AgentConfig,
       | 'auditModel'
+      | 'docsModel'
       | 'synthesisModel'
       | 'verificationModel'
       | 'metaReviewModel'
@@ -2595,6 +2599,143 @@ export class ReviewEngine {
       });
       return '⚠️ **Explanation Failed**: Could not read explanation from `.opencode/explain-output.md`.';
     }
+  }
+
+  /**
+   * Run the documentation-generation workflow for a PR.
+   * Builds a docs prompt from the PR context, runs OpenCode CLI to add
+   * documentation comments to changed code, and detects changes on disk.
+   *
+   * @param pr - The PR context object.
+   * @param contextMarkdown - PR context as markdown string (description, comments, diffs).
+   * @param workingDirectory - Optional working directory for cloned repo (tempDir).
+   * @param timeoutMinutes - Optional timeout override (defaults to config.timeoutMinutes).
+   * @param docStyle - Optional doc style override (defaults to config.docs?.style or 'auto').
+   * @returns FixResult indicating whether documentation changes were made.
+   */
+  async runDocs(
+    pr: PRContext,
+    contextMarkdown: string,
+    workingDirectory?: string,
+    timeoutMinutes?: number,
+    docStyle?: DocStyle,
+  ): Promise<FixResult> {
+    // Enforce the docs.enabled flag here so every caller (Action docs mode and
+    // the App /docs handler) is blocked before resetting telemetry, publishing
+    // DOCS_STARTED, or invoking the model when documentation is disabled.
+    if (this.config.docs?.enabled === false) {
+      this.logger.info('Docs generation is disabled (docs.enabled: false) — skipping');
+      return { changesMade: false, filesChanged: [], summary: undefined };
+    }
+    // Reset telemetry so the reported usage reflects only this docs invocation.
+    this.telemetry = null;
+    const effectiveDocStyle = docStyle ?? this.config.docs?.style ?? 'auto';
+    this.publishEvent(PIPELINE_EVENT_TYPES.DOCS_STARTED, {
+      prNumber: pr.number,
+      docStyle: effectiveDocStyle,
+      modelUsed: this.resolveModel('docsModel'),
+    });
+
+    // Enrich the gathered context with the PR diff so the agent can identify
+    // exactly which functions/methods/classes were changed.
+    let docsContext = contextMarkdown;
+    try {
+      const { context: prDiffContext } = this.buildPRContextString(pr);
+      if (prDiffContext.trim().length > 0) {
+        docsContext = `${contextMarkdown}\n\n## PR Diff & Changed Files\n\n${prDiffContext}`;
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Could not build PR context for docs: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    const prompt = buildDocsPrompt(
+      { projectContext: this.config.projectContext.description || undefined },
+      docsContext,
+      effectiveDocStyle,
+    );
+
+    // runOpenCode reports timeouts and mid-run failures as `success: false`
+    // rather than throwing, so retrying is idempotency-safe: withRetry only
+    // re-invokes on thrown (pre-spawn) failures such as a transient binary
+    // download or health probe, never after a run that may have left partial
+    // documentation changes on disk.
+    const runResult = await withRetry(
+      () =>
+        runOpenCode(prompt, {
+          model: this.resolveModel('docsModel'),
+          timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+          workingDirectory,
+        }),
+      { operationName: 'docs' },
+    );
+    await this.recordTelemetry(
+      pr.number,
+      runResult.durationMs,
+      runResult.tokensUsed,
+      runResult,
+      this.resolveModel('docsModel'),
+      workingDirectory,
+    );
+    if (!runResult.success) {
+      this.logger.warn(
+        'OpenCode docs execution failed or timed out. Checking for partial changes on disk...',
+      );
+      // Give filesystem time to flush writes from the killed process
+      await new Promise((r) => setTimeout(r, 500));
+    }
+
+    const workDir = workingDirectory || process.cwd();
+
+    let changesMade = false;
+    let filesChanged: string[] = [];
+    let summary: string | undefined;
+
+    try {
+      // Consume the summary marker file before inspecting git status so a
+      // workspace where the agent only wrote `.docs-summary.md` (no real doc
+      // changes) does not register as a documentation change and trigger a
+      // commit with nothing but the summary file.
+      try {
+        summary = await fs.readFile(path.join(workDir, '.docs-summary.md'), 'utf-8');
+        await fs.unlink(path.join(workDir, '.docs-summary.md'));
+      } catch {
+        this.logger.debug('No .docs-summary.md — proceeding normally');
+      }
+
+      const status = getGitStatus(workDir);
+      changesMade = status.trim().length > 0;
+
+      if (changesMade) {
+        try {
+          const raw = cp
+            .execFileSync('git', ['diff', '--name-only', 'HEAD'], {
+              encoding: 'utf-8',
+              cwd: workDir,
+            })
+            .toString()
+            .trim();
+          filesChanged = raw ? raw.split('\n') : [];
+        } catch {
+          this.logger.warn('Could not get git diff to determine changed files');
+        }
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Error reading docs results after OpenCode: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    const docsResult = { changesMade, filesChanged, summary };
+    this.publishCompleted(PIPELINE_EVENT_TYPES.DOCS_COMPLETED, {
+      prNumber: pr.number,
+      changesMade,
+      filesChanged,
+      docStyle: effectiveDocStyle,
+      modelUsed: this.resolveModel('docsModel'),
+    });
+    return docsResult;
   }
 
   /**

@@ -1,5 +1,16 @@
-import { DEFAULT_CONFIG, getDefaultMCPServers, loadConfig } from '@opencode-pr-agent/lib';
-import type { AgentConfig, FailOnSeverity, TokenBudgetConfig } from '@opencode-pr-agent/lib';
+import {
+  DEFAULT_CONFIG,
+  Logger,
+  getDefaultMCPServers,
+  isDocStyle,
+  loadConfig,
+} from '@opencode-pr-agent/lib';
+import type {
+  AgentConfig,
+  DocStyle,
+  FailOnSeverity,
+  TokenBudgetConfig,
+} from '@opencode-pr-agent/lib';
 
 const FAIL_ON_SEVERITY_VALUES: readonly FailOnSeverity[] = [
   'off',
@@ -7,6 +18,9 @@ const FAIL_ON_SEVERITY_VALUES: readonly FailOnSeverity[] = [
   'important',
   'minor',
 ];
+
+/** Module-scope logger for helper functions that have no per-call context. */
+const logger = new Logger('Config');
 
 /**
  * Parse the FAIL_ON_SEVERITY environment override into a FailOnSeverity value.
@@ -23,6 +37,21 @@ function parseFailOnSeverityEnv(raw: string | undefined): FailOnSeverity {
     return value as FailOnSeverity;
   }
   return 'off';
+}
+
+/**
+ * Parse the DOCS_STYLE environment override into a DocStyle value.
+ * Unknown or malformed values degrade gracefully to the default ('auto') with
+ * a warning, mirroring the YAML validation in lib/src/config.ts, so a stale
+ * env var can never produce a prompt for a nonexistent doc style.
+ * @param raw - Raw environment variable value (may be undefined).
+ * @returns A valid DocStyle value (default: 'auto').
+ */
+function parseDocsStyleEnv(raw: string | undefined): DocStyle {
+  const value = raw?.trim().toLowerCase();
+  if (value && isDocStyle(value)) return value;
+  if (value) logger.warn(`Ignoring invalid DOCS_STYLE "${raw}" — using "auto"`);
+  return 'auto';
 }
 
 /**
@@ -88,6 +117,7 @@ export function buildConfig(): AgentConfig {
     explanationModel: process.env.EXPLANATION_MODEL || undefined,
     conversationModel: process.env.CONVERSATION_MODEL || undefined,
     analysisModel: process.env.ANALYSIS_MODEL || undefined,
+    docsModel: process.env.DOCS_MODEL || undefined,
     batchSize: parseEnvInt(process.env.BATCH_SIZE, 3),
     maxLinesPerFile: parseEnvInt(process.env.MAX_LINES_PER_FILE, 200),
     maxIterations: parseEnvInt(process.env.MAX_ITERATIONS, 3),
@@ -103,6 +133,10 @@ export function buildConfig(): AgentConfig {
         ? process.env.TYPECHECK_COMMANDS.split(',')
         : [],
       lintCommands: process.env.LINT_COMMANDS ? process.env.LINT_COMMANDS.split(',') : [],
+    },
+    docs: {
+      enabled: process.env.DOCS_ENABLED === 'true',
+      style: parseDocsStyleEnv(process.env.DOCS_STYLE),
     },
     review: {
       ...DEFAULT_CONFIG.review,
