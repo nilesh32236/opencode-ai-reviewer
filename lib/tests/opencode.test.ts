@@ -814,6 +814,62 @@ describe('LLM provider support', () => {
     expect(env.AZURE_OPENAI_API_VERSION).toBe('2024-02-15-preview');
   });
 
+  it('warns and does not forward an azure apiKey {env:VAR} reference off the allowlist', async () => {
+    process.env.INTERNAL_LLM_KEY = 'must-not-leak';
+    setLLMProviderConfig({
+      providers: {
+        azure: {
+          type: 'azure',
+          endpoint: 'https://res.openai.azure.com',
+          apiKey: '{env:INTERNAL_LLM_KEY}',
+          deployment: 'my-deployment',
+        },
+      },
+    });
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const resultPromise = runOpenCode('test', { model: 'azure/my-deployment' });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    proc.emitClose(0);
+    await resultPromise;
+
+    const env = mockSpawn.mock.calls[0][2].env;
+    expect(env.AZURE_OPENAI_ENDPOINT).toBe('https://res.openai.azure.com');
+    expect(env.AZURE_OPENAI_API_KEY).toBeUndefined();
+    expect(core.warning).toHaveBeenCalledWith(
+      expect.stringContaining('not on the allowlist of forwarded variables'),
+    );
+  });
+
+  it('forwards an allowlisted azure apiKey {env:VAR} reference', async () => {
+    // LLM_API_KEY is on the reference allowlist but not the AZURE_* var itself,
+    // so this specifically exercises the azure reference resolution.
+    process.env.LLM_API_KEY = 'real-azure-key';
+    setLLMProviderConfig({
+      providers: {
+        azure: {
+          type: 'azure',
+          endpoint: 'https://res.openai.azure.com',
+          apiKey: '{env:LLM_API_KEY}',
+          deployment: 'my-deployment',
+        },
+      },
+    });
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const resultPromise = runOpenCode('test', { model: 'azure/my-deployment' });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    proc.emitClose(0);
+    await resultPromise;
+
+    const env = mockSpawn.mock.calls[0][2].env;
+    expect(env.AZURE_OPENAI_API_KEY).toBe('real-azure-key');
+  });
+
   it('forwards only allowlisted {env:VAR} references into the subprocess env', async () => {
     process.env.LLM_API_KEY = 'allowed-secret';
     process.env.INTERNAL_LLM_KEY = 'should-not-leak';

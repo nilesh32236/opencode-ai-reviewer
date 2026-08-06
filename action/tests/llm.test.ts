@@ -137,4 +137,108 @@ describe('buildLLMConfig()', () => {
     );
     expect(llm?.defaultProvider).toBe('ollama');
   });
+
+  it('warns when llm_api_key is set without llm_base_url', async () => {
+    const warnSpy = vi.spyOn(await import('@actions/core'), 'warning').mockImplementation(() => {});
+    const llm = buildLLMConfig({ ...BASE_INPUTS, llmApiKey: 'secret' }, null);
+    expect(llm?.providers?.['custom-openai']).toEqual({
+      type: 'openai-compatible',
+      apiKey: 'secret',
+    });
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('llm_api_key was set without llm_base_url'),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('does not warn when llm_api_key is set alongside llm_base_url', async () => {
+    const warnSpy = vi.spyOn(await import('@actions/core'), 'warning').mockImplementation(() => {});
+    const llm = buildLLMConfig(
+      { ...BASE_INPUTS, llmApiKey: 'secret', llmBaseUrl: 'https://gateway.example/v1' },
+      null,
+    );
+    expect(llm?.providers?.['custom-openai']?.baseUrl).toBe('https://gateway.example/v1');
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('llm_api_key was set without llm_base_url'),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('warns when azure_openai_key is set without an endpoint', async () => {
+    const warnSpy = vi.spyOn(await import('@actions/core'), 'warning').mockImplementation(() => {});
+    buildLLMConfig({ ...BASE_INPUTS, azureKey: 'secret', azureDeployment: 'dep' }, null);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('azure_openai_key was set without azure_openai_endpoint'),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('infers the default provider from a config-file azure deployment', () => {
+    const llm = buildLLMConfig(
+      { ...BASE_INPUTS },
+      {
+        llm: {
+          providers: {
+            azure: {
+              type: 'azure',
+              endpoint: 'https://res.openai.azure.com',
+              apiKey: 'key',
+              deployment: 'my-deployment',
+            },
+          },
+        },
+      },
+    );
+    expect(llm?.defaultProvider).toBe('azure');
+  });
+
+  it('merges action azure inputs into a config-file azure provider under a different id', () => {
+    const llm = buildLLMConfig(
+      { ...BASE_INPUTS, azureDeployment: 'input-dep' },
+      {
+        llm: {
+          providers: {
+            myazure: {
+              type: 'azure',
+              endpoint: 'https://config.openai.azure.com',
+              apiKey: 'config-key',
+              deployment: 'config-dep',
+            },
+          },
+        },
+      },
+    );
+    // No duplicate same-type provider: the action's deployment merges into the
+    // config-file entry so applyLLMEnvOverrides' first-wins ordering cannot let
+    // the config-file value silently win over the action input.
+    expect(llm?.providers?.myazure).toEqual({
+      type: 'azure',
+      endpoint: 'https://config.openai.azure.com',
+      apiKey: 'config-key',
+      deployment: 'input-dep',
+    });
+    expect(llm?.providers?.azure).toBeUndefined();
+  });
+
+  it('merges action bedrock inputs into a config-file bedrock provider under a different id', () => {
+    const llm = buildLLMConfig(
+      { ...BASE_INPUTS, bedrockModelId: 'us.input.model', bedrockRegion: 'eu-west-1' },
+      {
+        llm: {
+          providers: {
+            bedrock: {
+              type: 'bedrock',
+              modelId: 'us.config.model',
+              region: 'us-east-1',
+            },
+          },
+        },
+      },
+    );
+    expect(llm?.providers?.bedrock).toEqual({
+      type: 'bedrock',
+      modelId: 'us.input.model',
+      region: 'eu-west-1',
+    });
+  });
 });

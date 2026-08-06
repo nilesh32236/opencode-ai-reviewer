@@ -1535,6 +1535,24 @@ unknownSection: true
       expect(result.llm).toBeUndefined();
     });
 
+    it('drops an invalid llm.defaultProvider and warns', () => {
+      const result = validateConfig({
+        llm: {
+          defaultProvider: 'bedrock',
+          providers: {
+            ollama: { type: 'ollama', model: 'llama3' },
+          },
+        },
+      } as never);
+      // The invalid value must not survive into the emitted config: keeping it
+      // would prefix bare models as "bedrock/<model>" and fail at runtime.
+      expect(result.llm?.defaultProvider).toBeUndefined();
+      expect(result.llm?.providers?.ollama).toEqual({ type: 'ollama', model: 'llama3' });
+      expect(vi.mocked(core.warning)).toHaveBeenCalledWith(
+        expect.stringContaining('Ignoring invalid llm.defaultProvider'),
+      );
+    });
+
     it('loads an llm section from YAML and warns on unknown keys', () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-llm-'));
       try {

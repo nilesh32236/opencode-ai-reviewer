@@ -1,6 +1,11 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { GitHubHelper, GitLabAdapter, type PlatformAdapter } from '@opencode-pr-agent/lib';
+import {
+  GitHubHelper,
+  GitLabAdapter,
+  type PlatformAdapter,
+  loadConfig,
+} from '@opencode-pr-agent/lib';
 import { parseInputs } from './inputs.js';
 import { runPost } from './post.js';
 import { sanitize } from './utils.js';
@@ -16,8 +21,14 @@ import { sanitize } from './utils.js';
  */
 async function main(): Promise<void> {
   try {
-    const inputs = parseInputs();
     const platform = (process.env.PLATFORM || 'github') as 'github' | 'gitlab';
+    // Load the config file before parsing inputs (mirroring the main entry) so
+    // a config-file-only `llm.defaultProvider` (or azure deployment / bedrock
+    // model id) prefixes bare model names identically in the post phase. Without
+    // this, reviewModel/fixModel stay bare and the hard-gated model validation
+    // would fail the whole post step.
+    const loadedConfig = loadConfig(undefined, platform, core.getInput('config') || undefined);
+    const inputs = parseInputs(loadedConfig?.llm);
     const token = inputs.githubToken;
     const repo =
       platform === 'gitlab'

@@ -971,6 +971,10 @@ export function validateConfig(config: PromptConfig): PromptConfig {
           `Ignoring invalid llm.defaultProvider "${llmConfig.defaultProvider}": expected one of ` +
             `${knownIds.join(', ')} or a provider key in the providers map (${providerKeys.join(', ') || 'none'}).`,
         );
+        // Drop the value so the warning and the emitted config agree: keeping an
+        // invalid default would prefix bare models as "<invalid>/<model>" and
+        // surface later as an opaque "model not found" at runtime.
+        llmConfig.defaultProvider = undefined;
       }
     }
     if (llmConfig.defaultProvider !== undefined || llmConfig.providers !== undefined) {

@@ -263,11 +263,15 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   // A configured default LLM provider lets workflow authors write bare model
   // names (e.g. "llama3") that resolve to "ollama/llama3" before validation.
   // The action input wins over the config file's llm.defaultProvider; when
-  // neither is set but an Azure deployment / Bedrock model id is given, the
-  // provider is inferred so a bare model routes to the hosted deployment.
+  // neither is set but a provider is implied by its dedicated inputs (or a
+  // config-file deployment / model id), the provider is inferred so a bare
+  // model routes to the hosted deployment/model.
   const llmDefaultProviderInput = modelInput('llm_default_provider');
   const azureDeploymentInput = modelInput('azure_deployment_name');
   const bedrockModelIdInput = modelInput('aws_bedrock_model_id');
+  const llmBaseUrlInput = modelInput('llm_base_url');
+  const ollamaBaseUrlInput = modelInput('ollama_base_url');
+  const ollamaModelInput = modelInput('ollama_model');
   // Provider entries may be configured solely via the config file (e.g.
   // `llm.providers.azure.deployment`), so mirror the lib-side resolveModel
   // lookup: use the config-file deployment/model id as a fallback when no
@@ -279,14 +283,23 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     .find((p) => p?.type === 'bedrock' && p.modelId?.trim())
     ?.modelId?.trim();
   const configDefaultProvider = configLlm?.defaultProvider;
+  /**
+   * Infer the default LLM provider from the configured shorthands when neither
+   * the `llm_default_provider` input nor the config-file `defaultProvider` is
+   * set. Mirrors the azure/bedrock inference for ollama/custom-openai so every
+   * documented shorthand (ollama_model, ollama_base_url, llm_base_url) resolves
+   * bare model names instead of failing "Invalid model format".
+   * @returns The inferred provider id, or `undefined`.
+   */
+  const inferDefaultProvider = (): string | undefined => {
+    if (azureDeploymentInput || configAzureDeployment) return 'azure';
+    if (bedrockModelIdInput || configBedrockModelId) return 'amazon-bedrock';
+    if (ollamaModelInput || ollamaBaseUrlInput) return 'ollama';
+    if (llmBaseUrlInput) return 'custom-openai';
+    return undefined;
+  };
   const effectiveDefaultProvider =
-    llmDefaultProviderInput || configDefaultProvider
-      ? (llmDefaultProviderInput || configDefaultProvider)!
-      : azureDeploymentInput || configAzureDeployment
-        ? 'azure'
-        : bedrockModelIdInput || configBedrockModelId
-          ? 'amazon-bedrock'
-          : undefined;
+    llmDefaultProviderInput?.trim() || configDefaultProvider?.trim() || inferDefaultProvider();
   const resolveModel = (value: string | undefined): string | undefined => {
     if (!value) return value;
     const trimmed = value.trim();

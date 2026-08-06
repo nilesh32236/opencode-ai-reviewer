@@ -953,11 +953,26 @@ function applyLLMEnvOverrides(safeEnv: Record<string, string>, llm: LLMConfig | 
         // injecting into the env var. Env vars are read directly by the CLI
         // (no {env:...} substitution), so an unresolved reference must not be
         // copied verbatim — that would make AZURE_OPENAI_API_KEY self-reference
-        // the literal placeholder and never yield a real key.
-        const apiKey = provider.apiKey
-          .trim()
-          .replace(/^\{env:([^}]+)\}$/, (_, name: string) => process.env[name] ?? '');
-        if (apiKey) safeEnv.AZURE_OPENAI_API_KEY = apiKey;
+        // the literal placeholder and never yield a real key. The referenced
+        // name must be on the same allowlist that guards every other path:
+        // otherwise a repo-controlled llm block could reference an arbitrary
+        // parent secret (e.g. {env:GITHUB_TOKEN}) and have it sent to an
+        // attacker-chosen endpoint.
+        const apiKey = provider.apiKey.trim();
+        const match = /^\{env:([^}]+)\}$/.exec(apiKey);
+        if (match) {
+          const name = match[1];
+          if (!LLM_REF_ALLOWLIST.has(name)) {
+            core.warning(
+              `Skipping LLM {env:${name}} reference for azure apiKey: "${name}" is not on the ` +
+                `allowlist of forwarded variables (${[...LLM_REF_ALLOWLIST].join(', ')}).`,
+            );
+          } else if (process.env[name]) {
+            safeEnv.AZURE_OPENAI_API_KEY = process.env[name];
+          }
+        } else if (apiKey) {
+          safeEnv.AZURE_OPENAI_API_KEY = apiKey;
+        }
       }
       if (provider.apiVersion?.trim() && !safeEnv.AZURE_OPENAI_API_VERSION) {
         safeEnv.AZURE_OPENAI_API_VERSION = provider.apiVersion.trim();

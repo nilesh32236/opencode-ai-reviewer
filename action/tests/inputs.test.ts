@@ -260,6 +260,41 @@ describe('parseInputs() LLM model resolution', () => {
     expect(inputs.reviewModel).toBe('amazon-bedrock/us.mistral.mistral-large');
   });
 
+  it('infers the ollama provider from ollama_model with a bare model', () => {
+    setInputs({ ...BASE_INPUTS, ollama_model: 'llama3', review_model: 'llama3' });
+    const inputs = parseInputs();
+    expect(inputs.reviewModel).toBe('ollama/llama3');
+  });
+
+  it('infers the ollama provider from ollama_base_url with a bare model', () => {
+    setInputs({
+      ...BASE_INPUTS,
+      ollama_base_url: 'http://ollama.corp:11434/v1',
+      review_model: 'codellama',
+    });
+    const inputs = parseInputs();
+    expect(inputs.reviewModel).toBe('ollama/codellama');
+  });
+
+  it('infers the custom-openai provider from llm_base_url with a bare model', () => {
+    setInputs({
+      ...BASE_INPUTS,
+      llm_base_url: 'https://gateway.example/v1',
+      review_model: 'qwen3-coder',
+    });
+    const inputs = parseInputs();
+    expect(inputs.reviewModel).toBe('custom-openai/qwen3-coder');
+  });
+
+  it('does not infer custom-openai from a bare llm_api_key without llm_base_url', () => {
+    // A key without a base URL cannot build a provider, so no inference happens
+    // and an already-prefixed model passes through untouched (a bare model would
+    // fail "Invalid model format", which is surfaced loudly instead of silently).
+    setInputs({ ...BASE_INPUTS, llm_api_key: 'secret', review_model: 'custom-openai/qwen3-coder' });
+    const inputs = parseInputs();
+    expect(inputs.reviewModel).toBe('custom-openai/qwen3-coder');
+  });
+
   it('leaves an already-prefixed model unchanged even with a default provider', () => {
     setInputs({ ...BASE_INPUTS, llm_default_provider: 'ollama', review_model: 'openai/gpt-4o' });
     const inputs = parseInputs();

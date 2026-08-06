@@ -150,6 +150,90 @@ describe('SetupEngine', () => {
       expect(check.message).toContain('provider');
     });
 
+    it('passes when an azure provider is configured via the config llm block', () => {
+      process.env.GITHUB_TOKEN = 'token';
+      const config = makeConfig({
+        reviewModel: 'azure/my-deployment',
+        llm: {
+          providers: {
+            azure: {
+              type: 'azure',
+              endpoint: 'https://res.openai.azure.com',
+              apiKey: 'azure-key',
+              deployment: 'my-deployment',
+            },
+          },
+        },
+      });
+      const check = new SetupEngine(config, { workingDirectory: tmpDir }).checkSecrets();
+      expect(check.status).toBe('pass');
+      expect(check.details).toContain('Azure OpenAI (config llm provider)');
+    });
+
+    it('passes when an azure {env:VAR} key resolves to an existing parent env var', () => {
+      process.env.GITHUB_TOKEN = 'token';
+      process.env.AZURE_OPENAI_API_KEY = 'azure-key';
+      const config = makeConfig({
+        reviewModel: 'azure/my-deployment',
+        llm: {
+          providers: {
+            azure: {
+              type: 'azure',
+              endpoint: 'https://res.openai.azure.com',
+              apiKey: '{env:AZURE_OPENAI_API_KEY}',
+              deployment: 'my-deployment',
+            },
+          },
+        },
+      });
+      const check = new SetupEngine(config, { workingDirectory: tmpDir }).checkSecrets();
+      expect(check.status).toBe('pass');
+    });
+
+    it('fails when an azure {env:VAR} key references a missing parent env var', () => {
+      process.env.GITHUB_TOKEN = 'token';
+      process.env.AZURE_OPENAI_API_KEY = undefined;
+      const config = makeConfig({
+        reviewModel: 'azure/my-deployment',
+        llm: {
+          providers: {
+            azure: {
+              type: 'azure',
+              apiKey: '{env:AZURE_OPENAI_API_KEY}',
+              deployment: 'my-deployment',
+            },
+          },
+        },
+      });
+      const check = new SetupEngine(config, { workingDirectory: tmpDir }).checkSecrets();
+      expect(check.status).toBe('fail');
+    });
+
+    it('passes when ollama is configured via the config llm block (no external key needed)', () => {
+      process.env.GITHUB_TOKEN = 'token';
+      const config = makeConfig({
+        reviewModel: 'ollama/llama3',
+        llm: {
+          providers: {
+            ollama: { type: 'ollama', model: 'llama3' },
+          },
+        },
+      });
+      const check = new SetupEngine(config, { workingDirectory: tmpDir }).checkSecrets();
+      expect(check.status).toBe('pass');
+      expect(check.details).toContain('Ollama (config llm provider)');
+    });
+
+    it('accepts action-input-form Azure credentials via INPUT_* env vars', () => {
+      process.env.GITHUB_TOKEN = 'token';
+      process.env.INPUT_AZURE_OPENAI_KEY = 'action-key';
+      const engine = new SetupEngine(makeConfig({ reviewModel: 'azure/my-deployment' }), {
+        workingDirectory: tmpDir,
+      });
+      const check = engine.checkSecrets();
+      expect(check.status).toBe('pass');
+    });
+
     it('accepts token passed via options', () => {
       const engine = new SetupEngine(makeConfig(), {
         workingDirectory: tmpDir,

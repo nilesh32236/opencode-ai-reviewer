@@ -26,7 +26,16 @@ const MODEL_PROVIDER_KEYS: Array<{ label: string; envs: string[] }> = [
   { label: 'OpenCode (OPENCODE_API_KEY)', envs: ['OPENCODE_API_KEY', 'INPUT_OPENCODE_API_KEY'] },
   {
     label: 'Azure OpenAI (AZURE_OPENAI_API_KEY)',
-    envs: ['AZURE_OPENAI_API_KEY', 'AZURE_OPENAI_ENDPOINT', 'AZURE_RESOURCE_NAME'],
+    envs: [
+      'AZURE_OPENAI_API_KEY',
+      'AZURE_OPENAI_ENDPOINT',
+      'AZURE_RESOURCE_NAME',
+      // The GitHub Action surfaces its azure_openai_key/endpoint inputs as
+      // INPUT_* vars; the runner's own env is populated only inside the
+      // OpenCode subprocess, so setup must accept the input-form vars too.
+      'INPUT_AZURE_OPENAI_KEY',
+      'INPUT_AZURE_OPENAI_ENDPOINT',
+    ],
   },
   {
     label: 'AWS Bedrock (AWS_ACCESS_KEY_ID / AWS_PROFILE / AWS_ROLE_ARN)',
@@ -40,10 +49,10 @@ const MODEL_PROVIDER_KEYS: Array<{ label: string; envs: string[] }> = [
       'AWS_ROLE_ARN',
     ],
   },
-  { label: 'Ollama (OLLAMA_MODEL)', envs: ['OLLAMA_MODEL'] },
+  { label: 'Ollama (OLLAMA_MODEL)', envs: ['OLLAMA_MODEL', 'INPUT_OLLAMA_MODEL'] },
   {
     label: 'Custom OpenAI-compatible (LLM_BASE_URL)',
-    envs: ['LLM_BASE_URL', 'LLM_API_KEY'],
+    envs: ['LLM_BASE_URL', 'LLM_API_KEY', 'INPUT_LLM_BASE_URL', 'INPUT_LLM_API_KEY'],
   },
 ];
 
@@ -137,6 +146,41 @@ export class SetupEngine {
     for (const provider of MODEL_PROVIDER_KEYS) {
       const value = provider.envs.map((env) => process.env[env]).find((v) => v?.trim());
       if (value) foundProviders.push(provider.label);
+    }
+    // A custom provider can be configured entirely via the config-file `llm:`
+    // block (or the action inputs merged into it) — endpoint/key/model are
+    // forwarded to the OpenCode subprocess by applyLLMEnvOverrides, never
+    // populated in the parent env. Detect those providers so setup validation
+    // reflects the same source of truth the runner actually uses instead of a
+    // false "Missing required secrets" failure. {env:VAR} references count as
+    // satisfied only when the referenced variable exists in the parent env.
+    const llmProviders = this.config.llm?.providers ?? {};
+    const configProviderSeen = (value: string | undefined): boolean => {
+      const trimmed = value?.trim();
+      if (!trimmed) return false;
+      const match = /^\{env:([^}]+)\}$/.exec(trimmed);
+      if (match) return Boolean(process.env[match[1]]?.trim());
+      return true;
+    };
+    for (const provider of Object.values(llmProviders)) {
+      if (!provider) continue;
+      if (
+        provider.type === 'openai-compatible' &&
+        (configProviderSeen(provider.apiKey) || configProviderSeen(provider.baseUrl))
+      ) {
+        foundProviders.push('Custom OpenAI-compatible (config llm provider)');
+      } else if (provider.type === 'ollama') {
+        foundProviders.push('Ollama (config llm provider)');
+      } else if (
+        provider.type === 'azure' &&
+        (configProviderSeen(provider.apiKey) ||
+          configProviderSeen(provider.endpoint) ||
+          configProviderSeen(provider.resourceName))
+      ) {
+        foundProviders.push('Azure OpenAI (config llm provider)');
+      } else if (provider.type === 'bedrock' && configProviderSeen(provider.modelId)) {
+        foundProviders.push('AWS Bedrock (config llm provider)');
+      }
     }
     present.push(...foundProviders);
 

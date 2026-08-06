@@ -151,7 +151,9 @@ secrets:
 #     gateway:                       # arbitrary id, matches the CLI provider key
 #       type: openai-compatible
 #       baseUrl: "https://llm.corp.example/v1"
-#       apiKey: "{env:INTERNAL_LLM_KEY}"
+#       # Referenced vars must be on the runner's forwarded allowlist
+#       # (LLM_API_KEY, OLLAMA_API_KEY, AZURE_*...), or the reference stays empty.
+#       apiKey: "{env:LLM_API_KEY}"
 #       models:
 #         - qwen3-coder
 #     azure:
