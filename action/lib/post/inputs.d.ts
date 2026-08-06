@@ -1,4 +1,4 @@
-import { type ActionMode, type CostTrackingVerbosity, DEFAULT_ALLOWLIST, type DocStyle, type FailOnSeverity, validateRunChecksCommand } from '@opencode-pr-agent/lib';
+import { type ActionMode, type CostTrackingVerbosity, DEFAULT_ALLOWLIST, type DocStyle, type FailOnSeverity, type LLMConfig, validateRunChecksCommand } from '@opencode-pr-agent/lib';
 export { DEFAULT_ALLOWLIST, validateRunChecksCommand };
 /**
  * Parse and validate a timeout value from a raw string.
@@ -138,10 +138,12 @@ export interface ActionInputs {
 /**
  * Parse and validate all GitHub Action inputs from workflow environment.
  *
- * @param configDefaultProvider - The `.opencode-reviewer.yml` `llm.defaultProvider`
- * (when one is configured). Used as a fallback when the `llm_default_provider`
- * action input is unset, so a workflow author who relies on the config file's
- * default provider gets bare model names resolved (and validated) correctly.
+ * @param configLlm - The `.opencode-reviewer.yml` `llm:` block (when one is
+ * configured). Its `defaultProvider` is used as a fallback when the
+ * `llm_default_provider` action input is unset, and its provider entries
+ * (Azure `deployment` / Bedrock `modelId`) are used to route bare model names
+ * when a provider is configured solely via the config file, so the workflow
+ * author gets bare model names resolved (and validated) correctly.
  * @returns A fully populated ActionInputs object.
  */
-export declare function parseInputs(configDefaultProvider?: string): ActionInputs;
+export declare function parseInputs(configLlm?: LLMConfig): ActionInputs;

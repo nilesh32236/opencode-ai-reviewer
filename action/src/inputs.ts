@@ -6,8 +6,8 @@ import {
   DOC_STYLES,
   type DocStyle,
   type FailOnSeverity,
-  isDocStyle,
   type LLMConfig,
+  isDocStyle,
   validateModelString,
   validateRunChecksCommand,
 } from '@opencode-pr-agent/lib';

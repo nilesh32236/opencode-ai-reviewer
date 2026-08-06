@@ -954,9 +954,7 @@ export function validateConfig(config: PromptConfig): PromptConfig {
             );
           }
         } else if (type === 'bedrock' && !validated.modelId) {
-          core.warning(
-            `LLM provider "${id}" (bedrock) is missing a modelId and cannot be used.`,
-          );
+          core.warning(`LLM provider "${id}" (bedrock) is missing a modelId and cannot be used.`);
         }
         providers[id] = validated;
       }

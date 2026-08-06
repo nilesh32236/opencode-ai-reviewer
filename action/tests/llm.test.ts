@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { buildLLMConfig } from '../src/llm.js';
 import type { ActionInputs } from '../src/inputs.js';
+import { buildLLMConfig } from '../src/llm.js';
 
 const BASE_INPUTS = {
   mode: 'review',

@@ -862,21 +862,27 @@ export function buildLLMProviderMap(
     if (process.env.LLM_API_KEY?.trim()) options.apiKey = '{env:LLM_API_KEY}';
     const models: Record<string, Record<string, never>> = {};
     if (process.env.LLM_MODEL?.trim()) models[process.env.LLM_MODEL.trim()] = {};
-    providers['custom-openai'] = mergeEnvProviderEntry(providers['custom-openai'], {
-      npm: LLM_OPENAI_COMPATIBLE_ADAPTER,
-      options,
-      models,
-    });
+    providers['custom-openai'] = mergeEnvProviderEntry(
+      providers['custom-openai'] as Record<string, unknown> | undefined,
+      {
+        npm: LLM_OPENAI_COMPATIBLE_ADAPTER,
+        options,
+        models,
+      },
+    );
   }
 
   // Env-var path for Ollama local models (OLLAMA_MODEL selects the model).
   const ollamaModel = process.env.OLLAMA_MODEL?.trim();
   if (ollamaModel) {
-    providers.ollama = mergeEnvProviderEntry(providers.ollama, {
-      npm: LLM_OPENAI_COMPATIBLE_ADAPTER,
-      options: { baseURL: process.env.OLLAMA_BASE_URL?.trim() || DEFAULT_OLLAMA_BASE_URL },
-      models: { [ollamaModel]: {} },
-    });
+    providers.ollama = mergeEnvProviderEntry(
+      providers.ollama as Record<string, unknown> | undefined,
+      {
+        npm: LLM_OPENAI_COMPATIBLE_ADAPTER,
+        options: { baseURL: process.env.OLLAMA_BASE_URL?.trim() || DEFAULT_OLLAMA_BASE_URL },
+        models: { [ollamaModel]: {} },
+      },
+    );
   }
 
   if (Object.keys(providers).length === 0) return undefined;

@@ -245,7 +245,9 @@ describe('parseInputs() LLM model resolution', () => {
     setInputs({ ...BASE_INPUTS, review_model: 'llama3' });
     const inputs = parseInputs({
       defaultProvider: 'amazon-bedrock',
-      providers: { bedrock: { type: 'bedrock', modelId: 'us.mistral.mistral-large', region: 'us-east-1' } },
+      providers: {
+        bedrock: { type: 'bedrock', modelId: 'us.mistral.mistral-large', region: 'us-east-1' },
+      },
     });
     expect(inputs.reviewModel).toBe('amazon-bedrock/us.mistral.mistral-large');
   });

@@ -861,9 +861,7 @@ describe('LLM provider support', () => {
     proc.emitClose(0);
     await resultPromise;
 
-    expect(core.warning).toHaveBeenCalledWith(
-      expect.stringContaining('not on the allowlist'),
-    );
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('not on the allowlist'));
     const env = mockSpawn.mock.calls[0][2].env;
     expect(env.INTERNAL_LLM_KEY).toBeUndefined();
   });
