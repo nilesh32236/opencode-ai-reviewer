@@ -22,8 +22,9 @@ import type { SCAScanOptions } from './types.js';
  * @returns A review issue ready to merge into a ReviewResult.
  */
 export function scaVulnerabilityToIssue(vuln: SCAVulnerability): ReviewIssue {
-  const { dependency, cveIds, id, summary, fixedVersion } = vuln;
+  const { dependency, cveIds, id, summary, cvssScore, fixedVersion } = vuln;
   const identifier = cveIds[0] ?? id;
+  const cvss = cvssScore !== undefined ? ` CVSS: ${cvssScore}.` : '';
   const fixed = fixedVersion ? ` Fixed version: ${fixedVersion}.` : '';
   const summaryText = summary ? ` ${summary}` : '';
   return {
@@ -31,7 +32,7 @@ export function scaVulnerabilityToIssue(vuln: SCAVulnerability): ReviewIssue {
     severity: vuln.severity,
     file: dependency.file,
     line: dependency.line,
-    message: `Known vulnerability ${identifier} affects ${dependency.name}@${dependency.version}.${summaryText}${fixed}`,
+    message: `Known vulnerability ${identifier} affects ${dependency.name}@${dependency.version}.${summaryText}${cvss}${fixed}`,
     suggestion: fixedVersion
       ? `Upgrade ${dependency.name} to ${fixedVersion} or a patched release.`
       : `Upgrade ${dependency.name} to a patched release or remove the dependency.`,
@@ -51,7 +52,8 @@ export function scaVulnerabilityToIssue(vuln: SCAVulnerability): ReviewIssue {
  * are excluded from LLM review by default (`review.excludePatterns`), so
  * dependency changes would otherwise never surface.
  *
- * Best-effort: any failure is logged and degrades to `[]`.
+ * Best-effort: any failure is logged and degrades to `[]`. Returns `[]`
+ * immediately when `options.enabled` is false.
  *
  * @param changedFiles - All changed files for the PR (before review excludes).
  * @param workDir - Working directory the files are checked out under.
@@ -65,6 +67,7 @@ export async function runSCAScan(
   options: SCAScanOptions,
   logger: Logger,
 ): Promise<ReviewIssue[]> {
+  if (!options.enabled) return [];
   try {
     const dependencies = await extractChangedDependencies(changedFiles, workDir, {
       lockFilePatterns: options.lockFilePatterns,

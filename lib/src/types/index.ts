@@ -667,8 +667,9 @@ export interface SecretDetectorConfig {
   excludePatterns: string[];
 }
 
-/** Ecosystem identifier used when querying the OSV advisory database. */
-export type Ecosystem = 'npm' | 'pypi' | 'crates.io' | 'go' | 'rubygems';
+/** Ecosystem identifier used when querying the OSV advisory database. The
+ * values match OSV's canonical ecosystem casing (case-sensitive on the API). */
+export type Ecosystem = 'npm' | 'PyPI' | 'crates.io' | 'Go' | 'RubyGems';
 
 /** A single dependency resolved from a changed lock file. */
 export interface SCADependency {

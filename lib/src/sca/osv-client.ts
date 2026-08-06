@@ -38,6 +38,61 @@ export function severityFromCvss(score: number): Severity {
   return 'minor';
 }
 
+/** CVSS v3 base-score metric weights (CVSS 3.0 / 3.1). */
+const CVSS_V3_AV: Record<string, number> = { N: 0.85, A: 0.62, L: 0.55, P: 0.2 };
+const CVSS_V3_AC: Record<string, number> = { L: 0.77, H: 0.44 };
+const CVSS_V3_UI: Record<string, number> = { N: 0.85, R: 0.62 };
+const CVSS_V3_CIA: Record<string, number> = { H: 0.56, L: 0.22, N: 0 };
+
+/**
+ * Compute the base score (0.0–10.0) of a CVSS v3/v3.1 vector string such as
+ * `CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:H/I:N/A:N`. OSV returns vectors in the
+ * `severity[].score` field, so a numeric `parseFloat` cannot derive them.
+ *
+ * @param vector - Full CVSS vector (including the `CVSS:3.x/` prefix).
+ * @returns The base score rounded to one decimal, or undefined when required
+ * metrics are missing or the vector is not CVSS v3.
+ */
+function cvssV3BaseScore(vector: string): number | undefined {
+  if (!/^CVSS:3\.[01]\//i.test(vector)) return undefined;
+  const values = new Map<string, string>();
+  for (const part of vector.split('/')) {
+    const eq = part.indexOf(':');
+    if (eq > 0) values.set(part.slice(0, eq), part.slice(eq + 1));
+  }
+  const scopeChanged = values.get('S') === 'C';
+  const av = CVSS_V3_AV[values.get('AV') ?? ''];
+  const ac = CVSS_V3_AC[values.get('AC') ?? ''];
+  const ui = CVSS_V3_UI[values.get('UI') ?? ''];
+  const c = CVSS_V3_CIA[values.get('C') ?? ''];
+  const i = CVSS_V3_CIA[values.get('I') ?? ''];
+  const a = CVSS_V3_CIA[values.get('A') ?? ''];
+  const pr = (scopeChanged ? { N: 0.85, L: 0.68, H: 0.5 } : { N: 0.85, L: 0.62, H: 0.27 })[
+    values.get('PR') ?? ''
+  ];
+  if (
+    av === undefined ||
+    ac === undefined ||
+    pr === undefined ||
+    ui === undefined ||
+    c === undefined ||
+    i === undefined ||
+    a === undefined
+  ) {
+    return undefined;
+  }
+  const iss = 1 - (1 - c) * (1 - i) * (1 - a);
+  const exploitability = 8.22 * av * ac * pr * ui;
+  let score: number;
+  if (scopeChanged) {
+    const impact = 7.52 * (iss - 0.029) - 3.25 * (iss - 0.02) ** 15;
+    score = Math.min(1.08 * (impact + exploitability), 10);
+  } else {
+    score = Math.min(6.42 * iss + exploitability, 10);
+  }
+  return Math.min(10, Math.ceil(score * 10) / 10);
+}
+
 /**
  * Map an OSV `database_specific.severity` label to the project severity.
  * Unknown labels degrade to `minor` so findings are never over-reported.
@@ -74,9 +129,10 @@ export function buildBatchQueries(deps: SCADependency[]): { queries: OSVQuery[] 
 }
 
 /**
- * Extract CVE ids from an advisory's `aliases`. Returns the aliases that look
- * like real CVEs; when none are present, falls back to the advisory id so a
- * GHSA-only advisory is still reported by its own id.
+ * Extract CVE ids from an advisory's `aliases`. Returns only the aliases that
+ * look like real CVEs — the GHSA-only fallback (reporting the advisory id
+ * itself) is handled by the caller via `cveIds[0] ?? id` in
+ * {@link scaVulnerabilityToIssue}.
  *
  * @param vuln - Hydrated advisory record.
  * @returns A list of CVE ids (may be empty).
@@ -87,10 +143,41 @@ export function extractCveIds(vuln: OSVVulnerability): string[] {
 }
 
 /**
+ * Compare two numeric dot-separated versions (`1.2.3` vs `7.18.9`), tolerating
+ * a leading `v` and non-numeric suffixes. Used to prefer a fixed version newer
+ * than the dependency's current one.
+ *
+ * @param a - First version.
+ * @param b - Second version.
+ * @returns Negative when `a < b`, zero when equal, positive when `a > b`.
+ */
+function compareVersions(a: string, b: string): number {
+  const parts = (v: string): number[] =>
+    v
+      .replace(/^v/i, '')
+      .split('.')
+      .map((p) => {
+        const n = Number.parseInt(p, 10);
+        return Number.isFinite(n) ? n : 0;
+      });
+  const pa = parts(a);
+  const pb = parts(b);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const na = pa[i] ?? 0;
+    const nb = pb[i] ?? 0;
+    if (na !== nb) return na < nb ? -1 : 1;
+  }
+  return 0;
+}
+
+/**
  * Extract the best fixed version for a dependency from an advisory's `affected`
- * entries, scoped to the queried package's own affected entry. When multiple
- * `fixed` events exist (several ranges), the last one in document order wins —
- * OSV lists patched versions newest-last.
+ * entries. Scopes to the queried package's own affected entry, falling back to
+ * package-less entries only when no named match exists. Among all `fixed`
+ * events it prefers the lowest version newer than the dependency's current
+ * version; when none is newer it returns the last one in document order (OSV
+ * lists patched versions newest-last).
  *
  * @param vuln - Hydrated advisory record.
  * @param dep - The dependency the advisory applies to.
@@ -100,19 +187,26 @@ export function extractFixedVersion(
   vuln: OSVVulnerability,
   dep: SCADependency,
 ): string | undefined {
-  const affected = (vuln.affected ?? []).find((entry) => {
-    const name = entry.package?.name;
-    if (!name) return true; // no package scope — treat as applying to everything
-    return name === dep.name;
-  });
-  if (!affected?.ranges) return undefined;
-  let fixed: string | undefined;
-  for (const range of affected.ranges) {
-    for (const event of range.events ?? []) {
-      if (event.fixed) fixed = event.fixed;
+  const affected = vuln.affected ?? [];
+  const named = affected.filter((entry) => entry.package?.name === dep.name);
+  const selected =
+    named.length > 0 ? named : affected.filter((entry) => !entry.package?.name);
+
+  const candidates: string[] = [];
+  for (const entry of selected) {
+    for (const range of entry.ranges ?? []) {
+      for (const event of range.events ?? []) {
+        if (event.fixed) candidates.push(event.fixed);
+      }
     }
   }
-  return fixed;
+  if (candidates.length === 0) return undefined;
+
+  const newer = candidates
+    .filter((v) => compareVersions(v, dep.version) > 0)
+    .sort(compareVersions);
+  if (newer.length > 0) return newer[0];
+  return candidates[candidates.length - 1];
 }
 
 /**
@@ -127,9 +221,17 @@ export function resolveSeverity(vuln: OSVVulnerability): {
   cvssScore?: number;
 } {
   for (const entry of vuln.severity ?? []) {
-    const score = Number.parseFloat(entry.score ?? '');
-    if (Number.isFinite(score)) {
-      return { severity: severityFromCvss(score), cvssScore: score };
+    const raw = entry.score ?? '';
+    const numeric = Number.parseFloat(raw);
+    if (Number.isFinite(numeric)) {
+      return { severity: severityFromCvss(numeric), cvssScore: numeric };
+    }
+    // GHSA advisories (the common source for npm/PyPI/Go/RubyGems) carry CVSS
+    // vector strings in `severity[].score`; parse the base score instead of
+    // treating the vector as unparseable and under-reporting severity.
+    const vectorScore = cvssV3BaseScore(raw);
+    if (vectorScore !== undefined) {
+      return { severity: severityFromCvss(vectorScore), cvssScore: vectorScore };
     }
   }
   const label = vuln.database_specific?.severity ?? vuln.ecosystem_specific?.severity;
@@ -145,16 +247,18 @@ export function resolveSeverity(vuln: OSVVulnerability): {
  * @param url - Full request URL.
  * @param init - Request init (method, headers, body, signal).
  * @param operationName - Name used in retry log messages.
+ * @param fetchImpl - Fetch implementation (defaults to global fetch).
  * @returns The parsed JSON body.
  */
 async function fetchOsvJson(
   url: string,
   init: RequestInit,
   operationName: string,
+  fetchImpl: typeof fetch = fetch,
 ): Promise<unknown> {
   return withRetryAndTimeout(
     async (signal) => {
-      const res = await fetch(url, { ...init, signal });
+      const res = await fetchImpl(url, { ...init, signal });
       if (!res.ok) {
         const err = new Error(`OSV API ${res.status} ${res.statusText}`) as Error & {
           status: number;
@@ -190,6 +294,7 @@ async function queryBatch(
       body: JSON.stringify(payload),
     },
     'osv-querybatch',
+    fetchImpl,
   );
   const parsed = body as OSVQueryBatchResponse;
   const results = parsed.results ?? [];
@@ -215,7 +320,12 @@ async function queryBatch(
  */
 async function hydrateVuln(id: string, fetchImpl: typeof fetch): Promise<OSVVulnerability | undefined> {
   try {
-    const body = await fetchOsvJson(`${OSV_API_BASE}/v1/vulns/${encodeURIComponent(id)}`, {}, 'osv-vulns');
+    const body = await fetchOsvJson(
+      `${OSV_API_BASE}/v1/vulns/${encodeURIComponent(id)}`,
+      {},
+      'osv-vulns',
+      fetchImpl,
+    );
     return body as OSVVulnerability;
   } catch (err) {
     if (err instanceof Error && 'status' in err && (err as { status: number }).status === 404) {
@@ -271,7 +381,7 @@ export async function queryOSV(
   options: Pick<SCAScanOptions, 'maxBatchQueries' | 'concurrency' | 'fetchImpl'> = {},
 ): Promise<SCAVulnerability[]> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const maxBatch = options.maxBatchQueries ?? OSV_MAX_BATCH_QUERIES;
+  const maxBatch = Math.max(1, options.maxBatchQueries ?? OSV_MAX_BATCH_QUERIES);
   const concurrency = options.concurrency ?? 8;
 
   // Phase 1: batched id matching.

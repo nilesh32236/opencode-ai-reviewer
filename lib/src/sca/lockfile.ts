@@ -105,11 +105,11 @@ export function detectLockFileType(
     case 'Cargo.lock':
       return { type: 'Cargo.lock', ecosystem: 'crates.io' };
     case 'requirements.txt':
-      return { type: 'requirements.txt', ecosystem: 'pypi' };
+      return { type: 'requirements.txt', ecosystem: 'PyPI' };
     case 'go.sum':
-      return { type: 'go.sum', ecosystem: 'go' };
+      return { type: 'go.sum', ecosystem: 'Go' };
     case 'Gemfile.lock':
-      return { type: 'Gemfile.lock', ecosystem: 'rubygems' };
+      return { type: 'Gemfile.lock', ecosystem: 'RubyGems' };
     default:
       return null;
   }
@@ -170,11 +170,11 @@ function parseNpmLockfile(lines: PatchLine[], file: string): SCADependency[] {
   return deps;
 }
 
-/** yarn.lock v1/v2 block keys like `"foo@^1.0.0":` or `"@babel/core@^7.0.0":`. */
-const YARN_KEY = /^"?(.+?)":\s*$/;
+/** yarn.lock v1/v2 block keys like `"foo@^1.0.0":` (v2, quoted) or `foo@^1.0.0:` (v1, bare). */
+const YARN_KEY = /^"?([^"]+)"?:\s*$/;
 
-/** yarn.lock version lines: `version "1.0.0"` (v1) or `version: 1.0.1` (v2). */
-const YARN_VERSION = /^\s+version\s+"?([^"\s]+)"?/;
+/** yarn.lock version lines: `version "1.0.0"` (v1) or `version: 1.0.1` (v2+). */
+const YARN_VERSION = /^\s+version\s*:?\s*"?([^"\s]+)"?/;
 
 /**
  * Extract the bare package name from a yarn.lock key spec. Handles scoped
@@ -229,8 +229,10 @@ function parseYarnLockfile(lines: PatchLine[], file: string): SCADependency[] {
   return deps;
 }
 
-/** pnpm-lock.yaml package keys: `  /@babel/code-frame@7.18.6:` or `  'vue@3.2.47':`. */
-const PNPM_KEY = /^\s*'?\/?(@?[a-z0-9._~-]+(?:\/[a-z0-9._~-]+)?)@(\d[^)\s:']*)/i;
+/** pnpm-lock.yaml package keys: `  /@babel/code-frame@7.18.6:` or `  'vue@3.2.47':`.
+ * The version capture stops at `_` (peer-dependency suffix), `(` (legacy peer
+ * suffix), `)`, and `:` so `@babel/core@7.18.9_@babel+core@7.19.3` yields `7.18.9`. */
+const PNPM_KEY = /^\s*'?\/?(@?[a-z0-9._~-]+(?:\/[a-z0-9._~-]+)?)@(\d[^)_\s:']*)/i;
 
 /**
  * Parse pnpm-lock.yaml lines. Each added package key carries the resolved
@@ -323,7 +325,7 @@ function parseRequirementsTxt(lines: PatchLine[], file: string): SCADependency[]
         line: pl.line,
         name: match[1].trim(),
         version: match[2],
-        ecosystem: 'pypi',
+        ecosystem: 'PyPI',
       });
     }
   }
@@ -352,7 +354,7 @@ function parseGoSum(lines: PatchLine[], file: string): SCADependency[] {
         line: pl.line,
         name: match[1],
         version: match[2],
-        ecosystem: 'go',
+        ecosystem: 'Go',
       });
     }
   }
@@ -382,7 +384,7 @@ function parseGemfileLock(lines: PatchLine[], file: string): SCADependency[] {
         line: pl.line,
         name: match[1],
         version: match[2].trim(),
-        ecosystem: 'rubygems',
+        ecosystem: 'RubyGems',
       });
     }
   }
@@ -443,9 +445,9 @@ function parseLockfileContent(
 async function readFileLines(workDir: string, file: string): Promise<string[] | null> {
   const fullPath = path.join(workDir, file);
   try {
-    const stat = await fs.stat(fullPath);
+    const stat = await fs.promises.stat(fullPath);
     if (stat.size > MAX_SCA_READ_BYTES) return null;
-    const content = await fs.readFile(fullPath, 'utf-8');
+    const content = await fs.promises.readFile(fullPath, 'utf-8');
     return content.split('\n');
   } catch {
     return null;

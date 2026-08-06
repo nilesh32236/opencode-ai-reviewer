@@ -900,6 +900,7 @@ export class ReviewEngine {
         deltaContext,
         previousFindings,
         previousBotComments,
+        scaIssues,
       );
     }
 
@@ -958,7 +959,8 @@ export class ReviewEngine {
         this.logger.warn('OpenCode review execution failed, returning fallback empty result');
         const r = emptyResult();
         r.verdict.reasoning = 'Review execution failed';
-        return this.applyBudgetModeBanner(r, budgetMode, totalDiffLines);
+        const withSca = scaIssues.length > 0 ? this.mergeScaIssues(r, scaIssues) : r;
+        return this.applyBudgetModeBanner(withSca, budgetMode, totalDiffLines);
       }
 
       try {
@@ -999,7 +1001,8 @@ export class ReviewEngine {
         this.logger.warn(`Failed to parse review output at ${outputPath}, returning empty result`);
         const r = emptyResult();
         r.verdict.reasoning = 'Failed to parse review output';
-        return this.applyBudgetModeBanner(r, budgetMode, totalDiffLines);
+        const withSca = scaIssues.length > 0 ? this.mergeScaIssues(r, scaIssues) : r;
+        return this.applyBudgetModeBanner(withSca, budgetMode, totalDiffLines);
       }
     }
 
@@ -1374,6 +1377,7 @@ export class ReviewEngine {
    * @param deltaContext - Optional incremental review context.
    * @param previousFindings - Optional findings from previous fix iterations.
    * @param previousBotComments - Optional previous bot review comments.
+   * @param scaIssues - Optional SCA findings merged into the verified result.
    * @returns The consolidated, verified ReviewResult.
    */
   private async runMultiAgentReview(
@@ -1403,6 +1407,7 @@ export class ReviewEngine {
       body: string;
       commentId: number;
     }>,
+    scaIssues?: ReviewIssue[],
   ): Promise<ReviewResult> {
     const categories = this.getActiveAgentCategories();
     this.logger.info(
@@ -2989,7 +2994,15 @@ export class ReviewEngine {
   private mergeScaIssues(result: ReviewResult, scaIssues: ReviewIssue[]): ReviewResult {
     if (scaIssues.length === 0) return result;
     const allIssues = [...result.issues, ...scaIssues];
-    return { ...result, issues: allIssues, stats: computeReviewStats(allIssues) };
+    return {
+      ...result,
+      issues: allIssues,
+      stats: computeReviewStats(allIssues),
+      // A vulnerable dependency is a blocking finding: the result is never
+      // "ready to merge" while SCA issues are present, even when the LLM pass
+      // otherwise returned a clean verdict.
+      verdict: { ...result.verdict, ready: false },
+    };
   }
 
   /**
