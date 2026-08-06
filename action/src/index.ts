@@ -197,6 +197,11 @@ async function run(): Promise<void> {
         }),
         enableMetaVerification:
           loadedConfig?.review?.enableMetaVerification ?? inputs.enableMetaVerification,
+        // Explicit workflow inputs are authoritative; only when the input is
+        // omitted does the repo config value (or the opt-in default) apply.
+        enableTestGapDetection: inputs.enableTestGapDetectionExplicit
+          ? inputs.enableTestGapDetection
+          : (loadedConfig?.review?.enableTestGapDetection ?? inputs.enableTestGapDetection),
         includePreExisting: loadedConfig?.review?.includePreExisting ?? inputs.includePreExisting,
         ...(loadedConfig?.review?.tokenBudget && { tokenBudget: loadedConfig.review.tokenBudget }),
         ...(loadedConfig?.review?.enableReachability !== undefined && {

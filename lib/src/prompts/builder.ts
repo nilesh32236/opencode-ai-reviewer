@@ -121,6 +121,10 @@ export interface ReviewPromptOptions {
   blameAware?: boolean;
   /** Detected programming languages from the changed files; injects per-language review guidance when present. */
   languages?: SupportedLanguage[];
+  /** Structured test-gap analysis (modified symbols without test updates, new
+   * untested exports, missing error-case tests). Injected as a dedicated
+   * `## Test Gap Analysis` section when non-empty. */
+  testGapContext?: string;
 }
 
 /**
@@ -154,6 +158,7 @@ export function buildReviewPrompt(
   const codebaseIndexCtx = options.codebaseIndexContext;
   const blameAware = options.blameAware;
   const languages = options.languages;
+  const testGapContext = options.testGapContext;
 
   if (inputs.reviewPromptFile) {
     const customPrompt = loadPromptFile(inputs.reviewPromptFile);
@@ -170,6 +175,9 @@ export function buildReviewPrompt(
         for (const section of languageSections) {
           sections.push('\n' + section);
         }
+      }
+      if (testGapContext) {
+        sections.push('\n' + buildTestGapSection(testGapContext));
       }
       if (inputs.reviewPromptExtra) {
         sections.push('\n## Additional Instructions');
@@ -211,6 +219,10 @@ export function buildReviewPrompt(
     }
     sections.push(truncatedDelta);
     sections.push('```');
+  }
+
+  if (testGapContext) {
+    sections.push('\n' + buildTestGapSection(testGapContext));
   }
 
   sections.push('\n## Project Context');
@@ -1023,7 +1035,29 @@ function buildWhatToCheck(): string {
 **Test gaps (if tests exist in the PR):**
 - Do tests verify real behavior or just mocks?
 - Are edge cases covered?
-- Are integration tests present where they matter?`;
+- Are integration tests present where they matter?
+
+**Test coverage gaps (when test-gap detection is enabled):**
+- Functions or classes modified without corresponding test updates
+- New exported symbols without any test coverage
+- Error-handling paths (throw, reject) without error-case tests
+- Integration points missing integration tests`;
+}
+
+/**
+ * Build the `## Test Gap Analysis` prompt section injected when the
+ * test-gap detector found gaps.
+ * @param testGapContext - The detector's formatted markdown context string.
+ * @returns The assembled prompt section.
+ */
+function buildTestGapSection(testGapContext: string): string {
+  return `## Test Gap Analysis
+
+The following source symbols appear to lack corresponding test coverage. Focus on these specific gaps during review and suggest concrete test cases for each:
+
+${testGapContext}
+
+For every gap, reference the exact file and symbol, and recommend a specific test case (success path, boundary case, and error case).`;
 }
 
 function buildOutputFormat(): string {

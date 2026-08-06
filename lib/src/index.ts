@@ -146,6 +146,24 @@ export { sanitizeString } from './utils/sanitize.js';
 export { sanitizePromptInput } from './utils/prompt-sanitizer.js';
 export { detectSecrets, shannonEntropy, mergeSecretFindings } from './utils/secret-detect.js';
 export type { SecretFinding, SecretDetectOptions } from './utils/secret-detect.js';
+export { TestGapDetector } from './utils/test-gap-detector.js';
+export {
+  extractExports,
+  extractExportsFromContent,
+  findTestFile,
+  buildTestFileCandidates,
+  suggestTestPath,
+  parsePatchTouchedNewLines,
+  buildContextString,
+  isTestFile,
+} from './utils/test-gap-detector.js';
+export type {
+  SourceSymbol,
+  TestGapEntry,
+  TestGapResult,
+  TestSuggestion,
+  TestSuggestionType,
+} from './utils/test-gap-detector.js';
 export { runSCAScan, scaVulnerabilityToIssue } from './sca/index.js';
 export {
   detectLockFileType,

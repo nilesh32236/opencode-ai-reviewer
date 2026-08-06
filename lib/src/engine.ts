@@ -90,6 +90,7 @@ import { withRetry } from './utils/retry.js';
 import { sanitizeString } from './utils/sanitize.js';
 import { detectSecrets, mergeSecretFindings } from './utils/secret-detect.js';
 import type { SecretDetectOptions, SecretFinding } from './utils/secret-detect.js';
+import { TestGapDetector } from './utils/test-gap-detector.js';
 
 /** Maximum number of batch chunks processed concurrently by `reviewPR`. */
 export const MAX_BATCH_CONCURRENCY = 8;
@@ -880,6 +881,32 @@ export class ReviewEngine {
     // Run configured linters as pre-processing step
     const linterResults = await this.runLinters(files, workDir);
 
+    // Test-gap detection: correlate changed source symbols with their test files
+    // and surface structured gaps as prompt context. Non-critical: any failure
+    // degrades gracefully to a review without test-gap context. Only runs when
+    // the feature is enabled, after the exclude / skip early-returns.
+    let testGapContext: string | undefined;
+    if (this.config.review.enableTestGapDetection) {
+      try {
+        const detector = new TestGapDetector();
+        const result = detector.analyze(pr.changedFiles, workDir);
+        if (result.contextString) {
+          this.logger.info(
+            `Test-gap analysis flagged ${result.modifiedUnchangedTests.length} modified-unchanged, ` +
+              `${result.newUntestedExports.length} new-untested, ` +
+              `${result.missingErrorCaseTests.length} missing-error-case gap(s)`,
+          );
+          testGapContext = result.contextString;
+        } else {
+          this.logger.info('Test-gap analysis found no gaps');
+        }
+      } catch (err) {
+        this.logger.warn(
+          `Test gap detection failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
     // Multi-agent review path (opt-in): dispatch specialized agents (security,
     // performance, quality, logic) each with its own focused prompt, then
     // consolidate their findings through the synthesis agent. Falls back to the
@@ -936,6 +963,7 @@ export class ReviewEngine {
           totalDiffLines,
           codebaseIndexContext,
           blameAware: blameData !== undefined && blameData.size > 0,
+          testGapContext,
           languages: detectLanguages(
             files
               .map((f) => f?.path)
@@ -1089,6 +1117,7 @@ export class ReviewEngine {
               linterResults,
               codebaseIndexContext: batchCodebaseContext,
               blameAware: batchBlameData !== undefined && batchBlameData.size > 0,
+              testGapContext,
               languages: detectLanguages(
                 batch
                   .map((f) => f?.path)
