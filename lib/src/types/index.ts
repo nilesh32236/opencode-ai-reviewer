@@ -715,6 +715,13 @@ export interface SCAConfig {
   lockFilePatterns: string[];
   /** Glob patterns for lock files to skip during the SCA scan. */
   excludePatterns: string[];
+  /** Overall wall-clock deadline (ms) for the whole scan. A slow or unreachable
+   * advisory API aborts the scan at this bound and degrades to partial findings
+   * instead of blocking the review (default: 120s). `0` disables the bound. */
+  scanDeadlineMs?: number;
+  /** OSV API base URL override for self-hosted / air-gapped OSV mirrors.
+   * When unset the scan contacts the public `https://api.osv.dev`. */
+  osvBaseUrl?: string;
 }
 
 /** Default glob patterns for the lock files supported by the SCA pass. */
@@ -727,6 +734,9 @@ export const DEFAULT_SCA_LOCK_FILE_PATTERNS: string[] = [
   '**/go.sum',
   '**/Gemfile.lock',
 ];
+
+/** Default wall-clock deadline (ms) for a single SCA scan before it aborts. */
+export const DEFAULT_SCA_SCAN_DEADLINE_MS = 120_000;
 
 // ─── Conversation / @mention ─────────────────────────────
 /** Configuration for the interactive conversation / @mention feature. */
@@ -1522,6 +1532,8 @@ export const DEFAULT_SCA_CONFIG: SCAConfig = {
   minSeverity: 'important',
   lockFilePatterns: DEFAULT_SCA_LOCK_FILE_PATTERNS,
   excludePatterns: [],
+  scanDeadlineMs: DEFAULT_SCA_SCAN_DEADLINE_MS,
+  osvBaseUrl: undefined,
 };
 
 export const DEFAULT_CONFIG: AgentConfig = {

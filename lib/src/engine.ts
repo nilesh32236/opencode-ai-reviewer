@@ -72,7 +72,11 @@ import type {
   TokenUsage,
 } from './types/index.js';
 import { PIPELINE_EVENT_TYPES } from './types/index.js';
-import { DEFAULT_SCA_CONFIG, DEFAULT_SECRET_DETECTOR_CONFIG } from './types/index.js';
+import {
+  DEFAULT_SCA_CONFIG,
+  DEFAULT_SCA_SCAN_DEADLINE_MS,
+  DEFAULT_SECRET_DETECTOR_CONFIG,
+} from './types/index.js';
 import { filterBlameToPatch, getGitBlame, parsePatchHunks } from './utils/blame.js';
 import { MAX_BLAME_LINES_PER_FILE, UNCOMMITTED_SHA } from './utils/blame.js';
 import type { BlameRange } from './utils/blame.js';
@@ -103,14 +107,6 @@ export const INTER_CHUNK_DELAY_MS = 150;
  * (or binary) files are truncated before the regex/entropy pass.
  */
 const MAX_SECRET_SCAN_BYTES = 2 * 1024 * 1024;
-
-/**
- * Overall wall-clock deadline for the deterministic SCA scan. The scan is
- * best-effort and runs on the review critical path, so a slow or unreachable
- * api.osv.dev must never block a review for minutes: the scan is aborted at
- * this deadline and degrades to no findings.
- */
-const SCA_SCAN_DEADLINE_MS = 30_000;
 
 /** Canonical dispatch order of the specialized review agents. */
 export const AGENT_ORDER = ['security', 'performance', 'quality', 'logic'] as const;
@@ -727,7 +723,8 @@ export class ReviewEngine {
             minSeverity: scaConfig.minSeverity,
             lockFilePatterns: scaConfig.lockFilePatterns,
             excludePatterns: scaConfig.excludePatterns,
-            deadlineMs: SCA_SCAN_DEADLINE_MS,
+            deadlineMs: scaConfig.scanDeadlineMs ?? DEFAULT_SCA_SCAN_DEADLINE_MS,
+            osvBaseUrl: scaConfig.osvBaseUrl,
           },
           this.logger,
         );
@@ -3007,8 +3004,13 @@ export class ReviewEngine {
       stats: computeReviewStats(allIssues),
       // A vulnerable dependency is a blocking finding: the result is never
       // "ready to merge" while SCA issues are present, even when the LLM pass
-      // otherwise returned a clean verdict.
-      verdict: { ...result.verdict, ready: false },
+      // otherwise returned a clean verdict. Explain that in the reasoning so a
+      // clean LLM pass (e.g. "No issues") doesn't contradict the blocked verdict.
+      verdict: {
+        ...result.verdict,
+        ready: false,
+        reasoning: `${result.verdict.reasoning ? `${result.verdict.reasoning}. ` : ''}${scaIssues.length} known vulnerable dependency finding(s) block this PR`,
+      },
     };
   }
 

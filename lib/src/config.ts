@@ -158,6 +158,8 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     minSeverity: null,
     lockFilePatterns: null,
     excludePatterns: null,
+    scanDeadlineMs: null,
+    osvBaseUrl: null,
   },
   llm: {
     defaultProvider: null,
@@ -894,6 +896,10 @@ export function validateConfig(config: PromptConfig): PromptConfig {
       raw.minSeverity === 'minor'
         ? (raw.minSeverity as Severity)
         : DEFAULT_SCA_CONFIG.minSeverity;
+    const scanDeadlineMs =
+      typeof raw.scanDeadlineMs === 'number' && Number.isFinite(raw.scanDeadlineMs)
+        ? Math.max(0, Math.round(raw.scanDeadlineMs))
+        : DEFAULT_SCA_CONFIG.scanDeadlineMs;
     const scaConfig: SCAConfig = {
       enabled: typeof raw.enabled === 'boolean' ? raw.enabled : DEFAULT_SCA_CONFIG.enabled,
       minSeverity,
@@ -903,6 +909,10 @@ export function validateConfig(config: PromptConfig): PromptConfig {
       excludePatterns: Array.isArray(raw.excludePatterns)
         ? raw.excludePatterns.filter((p): p is string => typeof p === 'string')
         : [],
+      scanDeadlineMs,
+      ...(typeof raw.osvBaseUrl === 'string' && raw.osvBaseUrl.trim() !== ''
+        ? { osvBaseUrl: raw.osvBaseUrl.trim() }
+        : {}),
     };
     result.sca = scaConfig;
   }

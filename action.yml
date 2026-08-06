@@ -209,7 +209,7 @@ inputs:
     default: 'off'
 
   sca_enabled:
-    description: 'Enable deterministic dependency vulnerability (Software Composition Analysis) checking. When a PR modifies a supported lock file (package-lock.json, yarn.lock, pnpm-lock.yaml, Cargo.lock, requirements.txt, go.sum, Gemfile.lock), changed dependencies are queried against the OSV advisory database and known vulnerabilities are reported as inline security findings. Requires outbound access to api.osv.dev; failures degrade gracefully. Enabled by default when this input is omitted and the repo config does not set sca.enabled.'
+    description: 'Enable deterministic dependency vulnerability (Software Composition Analysis) checking. When a PR modifies a supported lock file (package-lock.json, yarn.lock, pnpm-lock.yaml, Cargo.lock, requirements.txt, go.sum, Gemfile.lock), changed dependencies are queried against the OSV advisory database and known vulnerabilities are reported as inline security findings. NOTE: when enabled, the action transmits each changed dependency name + exact version + ecosystem to the third-party api.osv.dev service. Air-gapped or self-hosted installs can set sca.osvBaseUrl in .opencode-reviewer.yml to point at an internal OSV mirror, or set sca.enabled: false in .opencode-reviewer.yml. Outbound failures degrade gracefully. Enabled by default when this input is omitted and the repo config does not set sca.enabled.'
     required: false
 
   sca_min_severity:

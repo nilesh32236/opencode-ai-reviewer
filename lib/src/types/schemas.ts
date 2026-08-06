@@ -367,12 +367,16 @@ export const SCAConfigSchema = z
     minSeverity: SeveritySchema.optional().default('important'),
     lockFilePatterns: z.array(z.string()).optional().default(DEFAULT_SCA_LOCK_FILE_PATTERNS),
     excludePatterns: z.array(z.string()).optional().default([]),
+    scanDeadlineMs: z.number().int().min(0).optional().default(120_000),
+    osvBaseUrl: z.string().optional(),
   })
   .catch({
     enabled: true,
     minSeverity: 'important',
     lockFilePatterns: DEFAULT_SCA_LOCK_FILE_PATTERNS,
     excludePatterns: [],
+    scanDeadlineMs: 120_000,
+    osvBaseUrl: undefined,
   });
 
 /** Zod schema validating a pluggable event subscriber configuration entry. */

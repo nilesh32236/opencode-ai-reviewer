@@ -6,6 +6,7 @@ import {
   extractCveIds,
   extractFixedVersion,
   queryOSV,
+  queryOSVWithStatus,
   resolveSeverity,
   severityFromCvss,
   severityFromOsvLabel,
@@ -95,8 +96,8 @@ describe('resolveSeverity', () => {
     ).toEqual({ severity: 'minor' });
   });
 
-  it('defaults to important when neither score nor label is available', () => {
-    expect(resolveSeverity({ id: 'GHSA-3' })).toEqual({ severity: 'important' });
+  it('defaults to minor when neither score nor label is available', () => {
+    expect(resolveSeverity({ id: 'GHSA-3' })).toEqual({ severity: 'minor' });
   });
 });
 
@@ -183,7 +184,7 @@ describe('extractFixedVersion', () => {
     expect(extractFixedVersion(vuln, dep({ version: '4.17.19' }))).toBe('4.17.21');
   });
 
-  it('falls back to the last document-order fixed version when none is newer', () => {
+  it('returns undefined when no fixed version is newer than the current version', () => {
     const vuln: OSVVulnerability = {
       id: 'GHSA-1',
       affected: [
@@ -193,17 +194,19 @@ describe('extractFixedVersion', () => {
         },
       ],
     };
-    expect(extractFixedVersion(vuln, dep({ version: '5.0.0' }))).toBe('4.17.21');
+    // 4.17.21 is not newer than the declared 5.0.0, so reporting it would
+    // recommend a downgrade; the caller falls back to generic upgrade guidance.
+    expect(extractFixedVersion(vuln, dep({ version: '5.0.0' }))).toBeUndefined();
   });
 
   it('uses package-less affected entries when no named match exists', () => {
     const vuln: OSVVulnerability = {
       id: 'GHSA-1',
       affected: [
-        { ranges: [{ type: 'ECOSYSTEM', events: [{ introduced: '0', fixed: '1.2.4' }] }] },
+        { ranges: [{ type: 'ECOSYSTEM', events: [{ introduced: '0', fixed: '5.0.2' }] }] },
       ],
     };
-    expect(extractFixedVersion(vuln, dep())).toBe('1.2.4');
+    expect(extractFixedVersion(vuln, dep())).toBe('5.0.2');
   });
 
   it('returns undefined when no fixed event exists', () => {
@@ -348,6 +351,49 @@ describe('queryOSV', () => {
     await queryOSV([dep()], { fetchImpl });
     const urls = fetchImpl.mock.calls.map(([u]) => String(u));
     expect(urls.some((u) => u === `${OSV_API_BASE}/v1/querybatch`)).toBe(true);
+  });
+
+  it('clamps an oversized maxBatchQueries to the OSV querybatch cap', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/v1/querybatch')) {
+        return jsonResponse({ results: [{ vulns: [] }] });
+      }
+      return jsonResponse({ results: [{}] });
+    }) as unknown as typeof fetch;
+
+    const manyDeps = Array.from({ length: 2500 }, (_, i) =>
+      dep({ name: `pkg-${i}`, version: '1.0.0', file: 'package-lock.json', line: i + 1 }),
+    );
+    await queryOSV(manyDeps, { fetchImpl, maxBatchQueries: 1_000_000 });
+
+    const queryBatchCalls = fetchImpl.mock.calls.filter(([u]) =>
+      String(u).endsWith('/v1/querybatch'),
+    );
+    // 2500 deps / 1000-per-batch cap = 3 requests, never 1 (huge batch) or 2500.
+    expect(queryBatchCalls).toHaveLength(3);
+  });
+
+  it('honors an osvBaseUrl override for air-gapped mirrors', async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL) => {
+      return jsonResponse({ results: [{}] });
+    }) as unknown as typeof fetch;
+    await queryOSV([dep()], { fetchImpl, osvBaseUrl: 'http://osv.internal:8080' });
+    const urls = fetchImpl.mock.calls.map(([u]) => String(u));
+    expect(urls.some((u) => u === 'http://osv.internal:8080/v1/querybatch')).toBe(true);
+  });
+
+  it('reports an aborted scan and preserves no findings when nothing resolved', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL) => {
+      throw new Error('should not be reached before the deadline fires');
+    }) as unknown as typeof fetch;
+    const { vulnerabilities, aborted } = await queryOSVWithStatus([dep()], {
+      fetchImpl,
+      signal: controller.signal,
+    });
+    expect(aborted).toBe(true);
+    expect(vulnerabilities).toEqual([]);
   });
 });
 

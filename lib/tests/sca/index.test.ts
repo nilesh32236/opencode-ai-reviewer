@@ -122,6 +122,38 @@ describe('scaVulnerabilityToIssue', () => {
     const issue = scaVulnerabilityToIssue(makeVuln({ cvssScore: undefined }));
     expect(issue.message).not.toContain('CVSS:');
   });
+
+  it('includes the first advisory reference URL when present', () => {
+    const issue = scaVulnerabilityToIssue(
+      makeVuln({ references: ['https://osv.dev/advisory/GHSA-1', 'https://example.com/other'] }),
+    );
+    expect(issue.message).toContain('Reference: https://osv.dev/advisory/GHSA-1.');
+  });
+
+  it('omits the reference fragment when the advisory has no references', () => {
+    const issue = scaVulnerabilityToIssue(makeVuln({ references: [] }));
+    expect(issue.message).not.toContain('Reference:');
+  });
+
+  it('escapes markdown-significant characters from OSV-supplied text', () => {
+    const issue = scaVulnerabilityToIssue(
+      makeVuln({
+        summary: 'Allows [spoofed] *warnings* `backtick` <b>html</b> _emphasis_',
+        dependency: {
+          file: 'package-lock.json',
+          line: 12,
+          name: 'evil*pkg`name`',
+          version: '1.0.0',
+          ecosystem: 'npm',
+        },
+      }),
+    );
+    expect(issue.message).toContain('evil\\*pkg\\`name\\`@1.0.0');
+    expect(issue.message).toContain(
+      '\\[spoofed\\] \\*warnings\\* \\`backtick\\` \\<b\\>html\\</b\\>',
+    );
+    expect(issue.message).not.toContain('[spoofed]');
+  });
 });
 
 describe('runSCAScan', () => {

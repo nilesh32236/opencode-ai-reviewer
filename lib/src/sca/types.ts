@@ -36,6 +36,9 @@ export interface SCAScanOptions {
   maxBatchQueries?: number;
   /** Bounded concurrency for advisory hydration requests. */
   concurrency?: number;
+  /** Optional OSV API base URL override (e.g. a self-hosted / air-gapped OSV
+   * mirror). Defaults to the public `https://api.osv.dev`. */
+  osvBaseUrl?: string;
 }
 
 // ─── OSV API wire shapes ─────────────────────────────────

@@ -372,11 +372,19 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
     }),
     // Mirror the secrets merge so app-hosted repos can disable or tune SCA via
     // `.opencode-reviewer.yml` instead of silently defaulting to enabled with
-    // outbound OSV calls on every lock-file PR.
+    // outbound OSV calls on every lock-file PR. minSeverity is validated here
+    // (falling back to the base value) so an invalid repo value can never reach
+    // severityRank() and silently lower the floor to 'minor'.
     ...(sca && {
       sca: {
         ...baseConfig.sca,
         ...sca,
+        minSeverity:
+          sca.minSeverity === 'critical' ||
+          sca.minSeverity === 'important' ||
+          sca.minSeverity === 'minor'
+            ? sca.minSeverity
+            : (baseConfig.sca?.minSeverity ?? 'important'),
       },
     }),
   };

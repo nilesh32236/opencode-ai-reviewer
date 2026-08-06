@@ -341,6 +341,8 @@ async function run(): Promise<void> {
           loadedConfig?.sca?.lockFilePatterns ?? DEFAULT_CONFIG.sca?.lockFilePatterns ?? [],
         excludePatterns:
           loadedConfig?.sca?.excludePatterns ?? DEFAULT_CONFIG.sca?.excludePatterns ?? [],
+        scanDeadlineMs: loadedConfig?.sca?.scanDeadlineMs ?? DEFAULT_CONFIG.sca?.scanDeadlineMs,
+        osvBaseUrl: loadedConfig?.sca?.osvBaseUrl ?? DEFAULT_CONFIG.sca?.osvBaseUrl,
       },
       llm: buildLLMConfig(inputs, loadedConfig),
     };
