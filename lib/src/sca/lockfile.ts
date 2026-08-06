@@ -118,8 +118,7 @@ export function detectLockFileType(
 // ─── npm / yarn / pnpm ────────────────────────────────────
 
 /** `"node_modules/<pkg>": {` / `"<pkg>": {` package keys (npm lockfiles). */
-const NPM_PACKAGE_KEY =
-  /^\s*"((?:node_modules\/)?(@?[^"/]+(?:\/[^"/]+)?))":\s*\{?$/;
+const NPM_PACKAGE_KEY = /^\s*"((?:node_modules\/)?(@?[^"/]+(?:\/[^"/]+)?))":\s*\{?$/;
 
 /** `"version": "x.y.z"` lines (npm lockfiles). */
 const NPM_VERSION = /^\s*"version":\s*"([^"]+)",?\s*$/;
@@ -403,14 +402,12 @@ export interface ExtractOptions {
  * Dispatch an annotated line list to the parser for the given lock file type.
  *
  * @param type - Detected lock file type.
- * @param ecosystem - Detected ecosystem.
  * @param lines - Annotated lines (patch or full-file).
  * @param file - Repo-relative lock file path.
  * @returns Parsed dependencies.
  */
 function parseLockfileContent(
   type: LockFileType,
-  ecosystem: Ecosystem,
   lines: PatchLine[],
   file: string,
 ): SCADependency[] {
@@ -483,9 +480,7 @@ export async function extractChangedDependencies(
     if (!detected) continue;
 
     if (file.patch) {
-      deps.push(
-        ...parseLockfileContent(detected.type, detected.ecosystem, parsePatchLines(file.patch), file.path),
-      );
+      deps.push(...parseLockfileContent(detected.type, parsePatchLines(file.patch), file.path));
       continue;
     }
 
@@ -499,7 +494,7 @@ export async function extractChangedDependencies(
       added: true,
       deleted: false,
     }));
-    deps.push(...parseLockfileContent(detected.type, detected.ecosystem, fullLines, file.path));
+    deps.push(...parseLockfileContent(detected.type, fullLines, file.path));
   }
   return deps;
 }

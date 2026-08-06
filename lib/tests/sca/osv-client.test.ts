@@ -1,19 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  OSV_API_BASE,
   buildBatchQueries,
   extractCveIds,
   extractFixedVersion,
-  OSV_API_BASE,
   queryOSV,
   resolveSeverity,
   severityFromCvss,
   severityFromOsvLabel,
 } from '../../src/sca/osv-client.js';
+import type { OSVQueryBatchResponse, OSVVulnerability } from '../../src/sca/types.js';
 import type { SCADependency, SCAVulnerability } from '../../src/types/index.js';
-import type {
-  OSVQueryBatchResponse,
-  OSVVulnerability,
-} from '../../src/sca/types.js';
 
 function dep(partial: Partial<SCADependency> = {}): SCADependency {
   return {
@@ -72,9 +69,7 @@ describe('resolveSeverity', () => {
   it('parses a CVSS v3 vector string for a critical advisory', () => {
     const vuln: OSVVulnerability = {
       id: 'GHSA-crit',
-      severity: [
-        { type: 'CVSS_V3', score: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H' },
-      ],
+      severity: [{ type: 'CVSS_V3', score: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H' }],
     };
     expect(resolveSeverity(vuln).severity).toBe('critical');
   });
@@ -82,9 +77,7 @@ describe('resolveSeverity', () => {
   it('parses a CVSS v3 vector string for an important advisory', () => {
     const vuln: OSVVulnerability = {
       id: 'GHSA-imp',
-      severity: [
-        { type: 'CVSS_V3', score: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N' },
-      ],
+      severity: [{ type: 'CVSS_V3', score: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N' }],
     };
     const { severity, cvssScore } = resolveSeverity(vuln);
     expect(severity).toBe('important');
@@ -125,9 +118,9 @@ describe('buildBatchQueries', () => {
 
 describe('extractCveIds', () => {
   it('returns only CVE-shaped aliases', () => {
-    expect(
-      extractCveIds({ id: 'GHSA-1', aliases: ['CVE-2021-23337', 'GHSA-xxxx'] }),
-    ).toEqual(['CVE-2021-23337']);
+    expect(extractCveIds({ id: 'GHSA-1', aliases: ['CVE-2021-23337', 'GHSA-xxxx'] })).toEqual([
+      'CVE-2021-23337',
+    ]);
   });
 
   it('returns an empty array for GHSA-only advisories (caller falls back to the id)', () => {
@@ -204,17 +197,15 @@ describe('queryOSV', () => {
       const url = String(input);
       if (url.endsWith('/v1/querybatch')) {
         const body = JSON.parse(String(init?.body ?? '{}')) as OSVQueryBatchResponse;
-        const results = (body.queries ?? []).map(
-          (q: { package: { name: string } }) => {
-            if (q.package.name === 'lodash') {
-              return { vulns: [{ id: 'GHSA-lodash', modified: '2024-01-01T00:00:00Z' }] };
-            }
-            if (q.package.name === 'express') {
-              return { vulns: [{ id: 'GHSA-express', modified: '2024-01-01T00:00:00Z' }] };
-            }
-            return {};
-          },
-        );
+        const results = (body.queries ?? []).map((q: { package: { name: string } }) => {
+          if (q.package.name === 'lodash') {
+            return { vulns: [{ id: 'GHSA-lodash', modified: '2024-01-01T00:00:00Z' }] };
+          }
+          if (q.package.name === 'express') {
+            return { vulns: [{ id: 'GHSA-express', modified: '2024-01-01T00:00:00Z' }] };
+          }
+          return {};
+        });
         return jsonResponse({ results });
       }
       if (url.includes('/v1/vulns/')) {
@@ -224,13 +215,13 @@ describe('queryOSV', () => {
             id: 'GHSA-lodash',
             aliases: ['CVE-2021-23337'],
             summary: 'Prototype pollution in lodash',
-            severity: [
-              { type: 'CVSS_V3', score: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H' },
-            ],
+            severity: [{ type: 'CVSS_V3', score: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H' }],
             affected: [
               {
                 package: { name: 'lodash' },
-                ranges: [{ type: 'ECOSYSTEM', events: [{ introduced: '4.0.0', fixed: '4.17.21' }] }],
+                ranges: [
+                  { type: 'ECOSYSTEM', events: [{ introduced: '4.0.0', fixed: '4.17.21' }] },
+                ],
               },
             ],
           },
@@ -273,7 +264,7 @@ describe('queryOSV', () => {
   });
 
   it('drops advisories whose hydration returns 404', async () => {
-    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith('/v1/querybatch')) {
         return jsonResponse({
@@ -301,7 +292,7 @@ describe('queryOSV', () => {
   });
 
   it('calls the real API base for querybatch and vulns endpoints', async () => {
-    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL) => {
       return jsonResponse({ results: [{}] });
     }) as unknown as typeof fetch;
     await queryOSV([dep()], { fetchImpl });

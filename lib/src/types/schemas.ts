@@ -5,7 +5,7 @@
 
 import { z } from 'zod';
 import { MODEL_STRING_REGEX } from '../utils/model-string.js';
-import { DOC_STYLES, DEFAULT_SCA_LOCK_FILE_PATTERNS } from './index.js';
+import { DEFAULT_SCA_LOCK_FILE_PATTERNS, DOC_STYLES } from './index.js';
 
 /** Error message shared by every model-field regex in AgentConfigSchema. */
 const MODEL_STRING_ERROR = 'Must be "provider/model-name" format (e.g. "openai/gpt-4o")';

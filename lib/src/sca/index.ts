@@ -6,9 +6,9 @@
 // failure (advisory API unreachable, parse errors) logs a warning and returns
 // no findings so a network outage can never crash or block a review.
 
-import type { Logger } from '../utils/logger.js';
-import { severityRank } from '../utils/filter-findings.js';
 import type { ChangedFile, ReviewIssue, SCAVulnerability } from '../types/index.js';
+import { severityRank } from '../utils/filter-findings.js';
+import type { Logger } from '../utils/logger.js';
 import { extractChangedDependencies } from './lockfile.js';
 import { queryOSV } from './osv-client.js';
 import type { SCAScanOptions } from './types.js';

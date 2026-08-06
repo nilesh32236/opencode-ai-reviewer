@@ -11,8 +11,9 @@
 // All calls go through `withRetryAndTimeout` and a failure in any phase is
 // degraded gracefully by the caller: the SCA pass never crashes a review.
 
-import { withRetryAndTimeout } from '../utils/retry.js';
 import type { SCADependency, SCAVulnerability, Severity } from '../types/index.js';
+import { CircuitBreaker } from '../utils/circuit-breaker.js';
+import { withRetryAndTimeout } from '../utils/retry.js';
 import type {
   OSVQuery,
   OSVQueryBatchResponse,
@@ -29,6 +30,14 @@ export const OSV_MAX_BATCH_QUERIES = 1000;
 
 /** Per-attempt HTTP timeout and default retry tuning for OSV calls. */
 const OSV_TIMEOUT_MS = 30_000;
+
+/**
+ * Shared circuit breaker for all OSV requests. Repeated API failures trip the
+ * circuit so subsequent querybatch / hydration calls fail fast instead of
+ * starting fresh retries for every batch and advisory. Reset automatically
+ * after the cooldown window via the standard half-open probe.
+ */
+const osvCircuitBreaker = new CircuitBreaker({ name: 'osv-client' });
 
 /** Severity derived from a CVSS v3 score. */
 export function severityFromCvss(score: number): Severity {
@@ -189,8 +198,7 @@ export function extractFixedVersion(
 ): string | undefined {
   const affected = vuln.affected ?? [];
   const named = affected.filter((entry) => entry.package?.name === dep.name);
-  const selected =
-    named.length > 0 ? named : affected.filter((entry) => !entry.package?.name);
+  const selected = named.length > 0 ? named : affected.filter((entry) => !entry.package?.name);
 
   const candidates: string[] = [];
   for (const entry of selected) {
@@ -202,9 +210,7 @@ export function extractFixedVersion(
   }
   if (candidates.length === 0) return undefined;
 
-  const newer = candidates
-    .filter((v) => compareVersions(v, dep.version) > 0)
-    .sort(compareVersions);
+  const newer = candidates.filter((v) => compareVersions(v, dep.version) > 0).sort(compareVersions);
   if (newer.length > 0) return newer[0];
   return candidates[candidates.length - 1];
 }
@@ -256,20 +262,22 @@ async function fetchOsvJson(
   operationName: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<unknown> {
-  return withRetryAndTimeout(
-    async (signal) => {
-      const res = await fetchImpl(url, { ...init, signal });
-      if (!res.ok) {
-        const err = new Error(`OSV API ${res.status} ${res.statusText}`) as Error & {
-          status: number;
-        };
-        err.status = res.status;
-        throw err;
-      }
-      return res.json();
-    },
-    OSV_TIMEOUT_MS,
-    { operationName },
+  return osvCircuitBreaker.call(() =>
+    withRetryAndTimeout(
+      async (signal) => {
+        const res = await fetchImpl(url, { ...init, signal });
+        if (!res.ok) {
+          const err = new Error(`OSV API ${res.status} ${res.statusText}`) as Error & {
+            status: number;
+          };
+          err.status = res.status;
+          throw err;
+        }
+        return res.json();
+      },
+      OSV_TIMEOUT_MS,
+      { operationName },
+    ),
   );
 }
 
@@ -318,7 +326,10 @@ async function queryBatch(
  * @param fetchImpl - Fetch implementation.
  * @returns The hydrated advisory, or undefined when it no longer exists.
  */
-async function hydrateVuln(id: string, fetchImpl: typeof fetch): Promise<OSVVulnerability | undefined> {
+async function hydrateVuln(
+  id: string,
+  fetchImpl: typeof fetch,
+): Promise<OSVVulnerability | undefined> {
   try {
     const body = await fetchOsvJson(
       `${OSV_API_BASE}/v1/vulns/${encodeURIComponent(id)}`,
@@ -395,7 +406,9 @@ export async function queryOSV(
 
   // Phase 2: hydrate unique ids in parallel.
   const uniqueIds = [...new Set(matched.map((m) => m.match.id))];
-  const hydrated = await mapWithConcurrency(uniqueIds, concurrency, (id) => hydrateVuln(id, fetchImpl));
+  const hydrated = await mapWithConcurrency(uniqueIds, concurrency, (id) =>
+    hydrateVuln(id, fetchImpl),
+  );
   const byId = new Map<string, OSVVulnerability>();
   for (let i = 0; i < uniqueIds.length; i++) {
     const vuln = hydrated[i];

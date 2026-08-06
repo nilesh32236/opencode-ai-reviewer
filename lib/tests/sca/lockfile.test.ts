@@ -1,18 +1,15 @@
-import { describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import type { ChangedFile } from '../../src/types/index.js';
+import { describe, expect, it } from 'vitest';
 import {
-  DEFAULT_SCA_LOCK_FILE_PATTERNS,
-  type SCADependency,
-} from '../../src/types/index.js';
-import {
+  type ExtractOptions,
   detectLockFileType,
   extractChangedDependencies,
   parsePatchLines,
-  type ExtractOptions,
 } from '../../src/sca/lockfile.js';
+import type { ChangedFile } from '../../src/types/index.js';
+import { DEFAULT_SCA_LOCK_FILE_PATTERNS, type SCADependency } from '../../src/types/index.js';
 
 function changedFile(path: string, patch?: string): ChangedFile {
   return {
@@ -24,9 +21,7 @@ function changedFile(path: string, patch?: string): ChangedFile {
   };
 }
 
-function makeOptions(
-  overrides: Partial<ExtractOptions> = {},
-): ExtractOptions {
+function makeOptions(overrides: Partial<ExtractOptions> = {}): ExtractOptions {
   return {
     lockFilePatterns: DEFAULT_SCA_LOCK_FILE_PATTERNS,
     excludePatterns: [],
@@ -42,13 +37,28 @@ function expectDep(deps: SCADependency[], name: string, version: string): void {
 
 describe('detectLockFileType', () => {
   it('detects all seven supported lock files', () => {
-    expect(detectLockFileType('package-lock.json')).toEqual({ type: 'package-lock.json', ecosystem: 'npm' });
+    expect(detectLockFileType('package-lock.json')).toEqual({
+      type: 'package-lock.json',
+      ecosystem: 'npm',
+    });
     expect(detectLockFileType('yarn.lock')).toEqual({ type: 'yarn.lock', ecosystem: 'npm' });
-    expect(detectLockFileType('pnpm-lock.yaml')).toEqual({ type: 'pnpm-lock.yaml', ecosystem: 'npm' });
-    expect(detectLockFileType('Cargo.lock')).toEqual({ type: 'Cargo.lock', ecosystem: 'crates.io' });
-    expect(detectLockFileType('requirements.txt')).toEqual({ type: 'requirements.txt', ecosystem: 'PyPI' });
+    expect(detectLockFileType('pnpm-lock.yaml')).toEqual({
+      type: 'pnpm-lock.yaml',
+      ecosystem: 'npm',
+    });
+    expect(detectLockFileType('Cargo.lock')).toEqual({
+      type: 'Cargo.lock',
+      ecosystem: 'crates.io',
+    });
+    expect(detectLockFileType('requirements.txt')).toEqual({
+      type: 'requirements.txt',
+      ecosystem: 'PyPI',
+    });
     expect(detectLockFileType('go.sum')).toEqual({ type: 'go.sum', ecosystem: 'Go' });
-    expect(detectLockFileType('Gemfile.lock')).toEqual({ type: 'Gemfile.lock', ecosystem: 'RubyGems' });
+    expect(detectLockFileType('Gemfile.lock')).toEqual({
+      type: 'Gemfile.lock',
+      ecosystem: 'RubyGems',
+    });
   });
 
   it('resolves nested paths by basename', () => {
@@ -69,13 +79,7 @@ describe('detectLockFileType', () => {
 
 describe('parsePatchLines', () => {
   it('maps added/context lines to new-file line numbers and skips deletions', () => {
-    const patch = [
-      '@@ -10,3 +20,3 @@',
-      ' context',
-      '-removed',
-      '+added',
-      ' trailing',
-    ].join('\n');
+    const patch = ['@@ -10,3 +20,3 @@', ' context', '-removed', '+added', ' trailing'].join('\n');
     const lines = parsePatchLines(patch);
     expect(lines).toEqual([
       { line: 20, text: 'context', added: false, deleted: false },
@@ -86,12 +90,7 @@ describe('parsePatchLines', () => {
   });
 
   it('advances the counter across multiple hunks', () => {
-    const patch = [
-      '@@ -1,1 +5,1 @@',
-      '+first',
-      '@@ -2,1 +8,1 @@',
-      '+second',
-    ].join('\n');
+    const patch = ['@@ -1,1 +5,1 @@', '+first', '@@ -2,1 +8,1 @@', '+second'].join('\n');
     const lines = parsePatchLines(patch);
     expect(lines.map((l) => l.line)).toEqual([5, 8]);
   });
@@ -191,12 +190,7 @@ describe('extractChangedDependencies', () => {
   });
 
   it('extracts exact pins from requirements.txt and ignores ranges', async () => {
-    const patch = [
-      '@@ -1,3 +1,4 @@',
-      '+requests==2.31.0',
-      '+flask>=2.3.0',
-      '+pytest',
-    ].join('\n');
+    const patch = ['@@ -1,3 +1,4 @@', '+requests==2.31.0', '+flask>=2.3.0', '+pytest'].join('\n');
     const deps = await extractChangedDependencies(
       [changedFile('requirements.txt', patch)],
       process.cwd(),
@@ -240,10 +234,7 @@ describe('extractChangedDependencies', () => {
   });
 
   it('respects lockFilePatterns and excludePatterns', async () => {
-    const patch = [
-      '@@ -1,1 +1,1 @@',
-      '+requests==2.31.0',
-    ].join('\n');
+    const patch = ['@@ -1,1 +1,1 @@', '+requests==2.31.0'].join('\n');
     const notMatching = await extractChangedDependencies(
       [changedFile('Pipfile', patch)],
       process.cwd(),
@@ -278,11 +269,7 @@ describe('extractChangedDependencies', () => {
         '',
       ].join('\n');
       writeFileSync(join(dir, 'yarn.lock'), content);
-      const deps = await extractChangedDependencies(
-        [changedFile('yarn.lock')],
-        dir,
-        makeOptions(),
-      );
+      const deps = await extractChangedDependencies([changedFile('yarn.lock')], dir, makeOptions());
       expect(deps).toHaveLength(1);
       expectDep(deps, '@babel/core', '7.18.9');
     } finally {

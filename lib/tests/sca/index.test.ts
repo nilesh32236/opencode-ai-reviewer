@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Logger } from '../../src/utils/logger.js';
+import { runSCAScan, scaVulnerabilityToIssue } from '../../src/sca/index.js';
+import type { SCAScanOptions } from '../../src/sca/types.js';
 import {
-  DEFAULT_SCA_LOCK_FILE_PATTERNS,
   type ChangedFile,
+  DEFAULT_SCA_LOCK_FILE_PATTERNS,
   type ReviewIssue,
   type SCAVulnerability,
 } from '../../src/types/index.js';
-import type { SCAScanOptions } from '../../src/sca/types.js';
-import { runSCAScan, scaVulnerabilityToIssue } from '../../src/sca/index.js';
+import type { Logger } from '../../src/utils/logger.js';
 
 const noopLogger = { warn: () => {}, info: () => {} } as unknown as Logger;
 
@@ -21,9 +21,7 @@ function changedFile(path: string, patch: string): ChangedFile {
   };
 }
 
-function makeOptions(
-  overrides: Partial<SCAScanOptions> = {},
-): SCAScanOptions {
+function makeOptions(overrides: Partial<SCAScanOptions> = {}): SCAScanOptions {
   return {
     enabled: true,
     minSeverity: 'important',
@@ -35,7 +33,13 @@ function makeOptions(
 
 function makeVuln(partial: Partial<SCAVulnerability> = {}): SCAVulnerability {
   return {
-    dependency: { file: 'package-lock.json', line: 12, name: 'lodash', version: '4.17.19', ecosystem: 'npm' },
+    dependency: {
+      file: 'package-lock.json',
+      line: 12,
+      name: 'lodash',
+      version: '4.17.19',
+      ecosystem: 'npm',
+    },
     id: 'GHSA-lodash',
     cveIds: ['CVE-2021-23337'],
     summary: 'Prototype pollution in lodash',
@@ -52,7 +56,9 @@ function osvStub(lodashSeverity: 'critical' | 'important' | 'minor'): typeof fet
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith('/v1/querybatch')) {
-      const body = JSON.parse(String(init?.body ?? '{}')) as { queries: Array<{ package: { name: string } }> };
+      const body = JSON.parse(String(init?.body ?? '{}')) as {
+        queries: Array<{ package: { name: string } }>;
+      };
       const results = (body.queries ?? []).map((q) => {
         if (q.package.name === 'lodash') {
           return { vulns: [{ id: 'GHSA-lodash', modified: '2024-01-01T00:00:00Z' }] };

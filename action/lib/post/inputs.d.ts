@@ -1,4 +1,4 @@
-import { type ActionMode, type CostTrackingVerbosity, DEFAULT_ALLOWLIST, type DocStyle, type FailOnSeverity, type LLMConfig, validateRunChecksCommand } from '@opencode-pr-agent/lib';
+import { type ActionMode, type CostTrackingVerbosity, DEFAULT_ALLOWLIST, type DocStyle, type FailOnSeverity, type LLMConfig, type Severity, validateRunChecksCommand } from '@opencode-pr-agent/lib';
 export { DEFAULT_ALLOWLIST, validateRunChecksCommand };
 /**
  * Parse and validate a timeout value from a raw string.
@@ -134,6 +134,14 @@ export interface ActionInputs {
     costTrackingInputCostPer1K?: number;
     /** Cost per 1K output tokens (USD) for cost estimation. */
     costTrackingOutputCostPer1K?: number;
+    /** Whether the deterministic dependency vulnerability (SCA) scan runs (default: true). */
+    scaEnabled: boolean;
+    /** Minimum severity for SCA findings (critical | important | minor, default: important). */
+    scaMinSeverity: Severity;
+    /** Whether the sca_enabled input was explicitly set by the workflow. */
+    scaEnabledExplicit: boolean;
+    /** Whether the sca_min_severity input was explicitly set by the workflow. */
+    scaMinSeverityExplicit: boolean;
 }
 /**
  * Parse and validate all GitHub Action inputs from workflow environment.

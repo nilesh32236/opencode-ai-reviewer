@@ -41,6 +41,7 @@ import {
 import { buildSelfHealPrompt } from './prompts/heal.js';
 import { detectLanguages } from './prompts/language/index.js';
 import { buildVerificationPrompt } from './prompts/verify.js';
+import { runSCAScan } from './sca/index.js';
 import type {
   AgentCategory,
   AgentConfig,
@@ -72,7 +73,6 @@ import type {
 } from './types/index.js';
 import { PIPELINE_EVENT_TYPES } from './types/index.js';
 import { DEFAULT_SCA_CONFIG, DEFAULT_SECRET_DETECTOR_CONFIG } from './types/index.js';
-import { runSCAScan } from './sca/index.js';
 import { filterBlameToPatch, getGitBlame, parsePatchHunks } from './utils/blame.js';
 import { MAX_BLAME_LINES_PER_FILE, UNCOMMITTED_SHA } from './utils/blame.js';
 import type { BlameRange } from './utils/blame.js';
@@ -728,9 +728,7 @@ export class ReviewEngine {
           );
         }
       } catch (err) {
-        this.logger.warn(
-          `SCA scan failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        this.logger.warn(`SCA scan failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
