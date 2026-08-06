@@ -20,8 +20,18 @@ export interface SCAScanOptions {
   lockFilePatterns: string[];
   /** Glob patterns for lock files to skip. */
   excludePatterns: string[];
+  /** Optional overall wall-clock deadline (ms) for the whole scan. When it
+   * fires, in-flight OSV requests are aborted and the scan degrades to `[]`. */
+  deadlineMs?: number;
+  /** Optional opt-in to scan the whole working-tree file when a lock file has
+   * no diff patch (off by default so pre-existing vulnerabilities are not
+   * reported as PR-introduced). */
+  includeUnchanged?: boolean;
   /** Optional `fetch` override for tests. Defaults to the global fetch. */
   fetchImpl?: typeof fetch;
+  /** Optional overall scan-deadline signal. When it aborts, in-flight OSV
+   * requests are cancelled so a slow API cannot block the review pipeline. */
+  signal?: AbortSignal;
   /** Max queries per OSV querybatch request (OSV hard-caps at 1000). */
   maxBatchQueries?: number;
   /** Bounded concurrency for advisory hydration requests. */

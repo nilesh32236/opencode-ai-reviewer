@@ -104,6 +104,14 @@ export const INTER_CHUNK_DELAY_MS = 150;
  */
 const MAX_SECRET_SCAN_BYTES = 2 * 1024 * 1024;
 
+/**
+ * Overall wall-clock deadline for the deterministic SCA scan. The scan is
+ * best-effort and runs on the review critical path, so a slow or unreachable
+ * api.osv.dev must never block a review for minutes: the scan is aborted at
+ * this deadline and degrades to no findings.
+ */
+const SCA_SCAN_DEADLINE_MS = 30_000;
+
 /** Canonical dispatch order of the specialized review agents. */
 export const AGENT_ORDER = ['security', 'performance', 'quality', 'logic'] as const;
 
@@ -719,6 +727,7 @@ export class ReviewEngine {
             minSeverity: scaConfig.minSeverity,
             lockFilePatterns: scaConfig.lockFilePatterns,
             excludePatterns: scaConfig.excludePatterns,
+            deadlineMs: SCA_SCAN_DEADLINE_MS,
           },
           this.logger,
         );

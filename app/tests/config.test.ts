@@ -1,6 +1,9 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { DEFAULT_CONFIG } from '@opencode-pr-agent/lib';
 import { afterEach, describe, expect, it } from 'vitest';
-import { buildConfig } from '../src/utils/config.js';
+import { buildConfig, mergeRepoConfig } from '../src/utils/config.js';
 
 const TOKEN_BUDGET_DEFAULT = DEFAULT_CONFIG.review.tokenBudget;
 
@@ -93,5 +96,49 @@ describe('buildConfig FAIL_ON_SEVERITY override', () => {
   it('degrades gracefully to off for an invalid FAIL_ON_SEVERITY value', () => {
     process.env.FAIL_ON_SEVERITY = 'blocker';
     expect(buildConfig().review.failOnSeverity).toBe('off');
+  });
+});
+
+describe('mergeRepoConfig sca merge', () => {
+  it('applies a repo sca section on top of the base config', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'app-config-sca-'));
+    try {
+      writeFileSync(
+        join(dir, '.opencode-reviewer.yml'),
+        [
+          'sca:',
+          '  enabled: false',
+          '  minSeverity: critical',
+          '  excludePatterns:',
+          '    - "**/vendor/**"',
+          '',
+        ].join('\n'),
+      );
+
+      const merged = mergeRepoConfig(buildConfig(), dir);
+
+      expect(merged.sca).toBeDefined();
+      expect(merged.sca?.enabled).toBe(false);
+      expect(merged.sca?.minSeverity).toBe('critical');
+      expect(merged.sca?.excludePatterns).toEqual(['**/vendor/**']);
+      // Untouched SCA fields retain their defaults.
+      expect(merged.sca?.lockFilePatterns).toEqual(DEFAULT_CONFIG.sca?.lockFilePatterns);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns the base config untouched when the repo has no sca section', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'app-config-nosca-'));
+    try {
+      writeFileSync(
+        join(dir, '.opencode-reviewer.yml'),
+        ['review:', '  failOnSeverity: important', ''].join('\n'),
+      );
+      const merged = mergeRepoConfig(buildConfig(), dir);
+      expect(merged.sca).toEqual(DEFAULT_CONFIG.sca);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

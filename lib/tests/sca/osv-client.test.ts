@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   OSV_API_BASE,
   buildBatchQueries,
+  cvssV3BaseScore,
   extractCveIds,
   extractFixedVersion,
   queryOSV,
@@ -94,8 +95,27 @@ describe('resolveSeverity', () => {
     ).toEqual({ severity: 'minor' });
   });
 
-  it('defaults to minor when neither score nor label is available', () => {
-    expect(resolveSeverity({ id: 'GHSA-3' })).toEqual({ severity: 'minor' });
+  it('defaults to important when neither score nor label is available', () => {
+    expect(resolveSeverity({ id: 'GHSA-3' })).toEqual({ severity: 'important' });
+  });
+});
+
+describe('cvssV3BaseScore', () => {
+  it.each([
+    ['CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H', 9.8],
+    ['CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N', 7.5],
+    ['CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:N/A:N', 5.3],
+    ['CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H', 9.9],
+    ['CVSS:3.1/AV:L/AC:H/PR:H/UI:R/S:U/C:L/I:N/A:N', 1.8],
+    ['CVSS:3.1/AV:N/AC:H/PR:H/UI:N/S:U/C:N/I:N/A:H', 4.4],
+    ['CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H', 9.8],
+  ])('computes the exact base score for %s', (vector, expected) => {
+    expect(cvssV3BaseScore(vector)).toBe(expected);
+  });
+
+  it('returns undefined for a non-CVSS-v3 vector', () => {
+    expect(cvssV3BaseScore('not-a-vector')).toBeUndefined();
+    expect(cvssV3BaseScore('CVSS:4.0/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H')).toBeUndefined();
   });
 });
 
@@ -289,6 +309,36 @@ describe('queryOSV', () => {
       return new Response('Not Found', { status: 404 });
     }) as unknown as typeof fetch;
     expect(await queryOSV([dep()], { fetchImpl })).toEqual([]);
+  });
+
+  it('keeps other findings when a single advisory hydration fails', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/v1/querybatch')) {
+        return jsonResponse({
+          results: [
+            { vulns: [{ id: 'GHSA-good', modified: '2024-01-01T00:00:00Z' }] },
+            { vulns: [{ id: 'GHSA-broken', modified: '2024-01-01T00:00:00Z' }] },
+          ],
+        });
+      }
+      if (url.includes('/v1/vulns/GHSA-good')) {
+        return jsonResponse({ id: 'GHSA-good', summary: 'ok advisory' });
+      }
+      if (url.includes('/v1/vulns/GHSA-broken')) {
+        return new Response('Internal Server Error', { status: 500 });
+      }
+      return new Response('Not Found', { status: 404 });
+    }) as unknown as typeof fetch;
+
+    const results = await queryOSV(
+      [dep({ name: 'good' }), dep({ name: 'broken', file: 'package-lock.json', line: 4 })],
+      { fetchImpl, concurrency: 2 },
+    );
+
+    // The broken hydration is skipped, but the valid advisory still surfaces.
+    expect(results).toHaveLength(1);
+    expect(results[0].id).toBe('GHSA-good');
   });
 
   it('calls the real API base for querybatch and vulns endpoints', async () => {

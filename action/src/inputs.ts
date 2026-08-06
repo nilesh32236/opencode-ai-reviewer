@@ -355,8 +355,15 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   const failOnSeverityExplicit = failOnSeverityInput.trim() !== '';
 
   const scaEnabledInput = core.getInput('sca_enabled');
-  const scaEnabled = scaEnabledInput === '' ? true : scaEnabledInput === 'true';
-  const scaEnabledExplicit = scaEnabledInput.trim() !== '';
+  const scaEnabledRaw = scaEnabledInput.trim();
+  if (scaEnabledRaw !== '' && scaEnabledRaw !== 'true' && scaEnabledRaw !== 'false') {
+    throw new Error(`Invalid sca_enabled: "${scaEnabledInput.trim()}". Must be true or false.`);
+  }
+  // Empty (omitted) resolves to enabled by default; the explicit-input flag is
+  // NOT set for an omitted input so an `.opencode-reviewer.yml` `sca.enabled`
+  // continues to win, matching the sca_min_severity fallback behavior.
+  const scaEnabled = scaEnabledRaw === '' ? true : scaEnabledRaw === 'true';
+  const scaEnabledExplicit = scaEnabledRaw !== '';
 
   const scaMinSeverityInput = core.getInput('sca_min_severity');
   const scaMinSeverityRaw = (scaMinSeverityInput || 'important').trim().toLowerCase();

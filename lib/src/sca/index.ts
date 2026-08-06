@@ -10,7 +10,7 @@ import type { ChangedFile, ReviewIssue, SCAVulnerability } from '../types/index.
 import { severityRank } from '../utils/filter-findings.js';
 import type { Logger } from '../utils/logger.js';
 import { extractChangedDependencies } from './lockfile.js';
-import { queryOSV } from './osv-client.js';
+import { isAbortError, queryOSV } from './osv-client.js';
 import type { SCAScanOptions } from './types.js';
 
 /**
@@ -68,10 +68,21 @@ export async function runSCAScan(
   logger: Logger,
 ): Promise<ReviewIssue[]> {
   if (!options.enabled) return [];
+  // Wall-clock scan deadline (when configured): a slow or unreachable OSV API
+  // aborts the scan instead of blocking the review pipeline on the critical
+  // path. Aborted scans degrade gracefully to no findings (same as a failure).
+  const deadlineMs = options.deadlineMs ?? 0;
+  const controller = deadlineMs > 0 ? new AbortController() : undefined;
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  if (controller) {
+    deadlineTimer = setTimeout(() => controller.abort(), deadlineMs);
+    deadlineTimer.unref?.();
+  }
   try {
     const dependencies = await extractChangedDependencies(changedFiles, workDir, {
       lockFilePatterns: options.lockFilePatterns,
       excludePatterns: options.excludePatterns,
+      includeUnchanged: options.includeUnchanged,
     });
     if (dependencies.length === 0) return [];
 
@@ -79,6 +90,7 @@ export async function runSCAScan(
       maxBatchQueries: options.maxBatchQueries,
       concurrency: options.concurrency,
       fetchImpl: options.fetchImpl,
+      signal: controller?.signal,
     });
 
     const minRank = severityRank(options.minSeverity);
@@ -94,7 +106,13 @@ export async function runSCAScan(
     }
     return issues;
   } catch (err) {
-    logger.warn(`SCA scan failed: ${err instanceof Error ? err.message : String(err)}`);
+    if (isAbortError(err)) {
+      logger.warn(`SCA scan aborted after ${deadlineMs}ms deadline — returning no findings`);
+    } else {
+      logger.warn(`SCA scan failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
     return [];
+  } finally {
+    if (deadlineTimer) clearTimeout(deadlineTimer);
   }
 }

@@ -259,7 +259,50 @@ describe('extractChangedDependencies', () => {
     expect(deps).toHaveLength(0);
   });
 
-  it('falls back to reading the working tree when no patch is present', async () => {
+  it('attributes nested transitive dependencies to their own package name', async () => {
+    const patch = [
+      '@@ -1,5 +1,6 @@',
+      ' "node_modules/a": {',
+      '   "version": "1.0.0",',
+      ' "node_modules/a/node_modules/b": {',
+      '+    "version": "2.3.4",',
+      '     "resolved": "https://registry.npmjs.org/b/-/b-2.3.4.tgz"',
+      '   }',
+      ' }',
+    ].join('\n');
+    const deps = await extractChangedDependencies(
+      [changedFile('package-lock.json', patch)],
+      process.cwd(),
+      makeOptions(),
+    );
+    expect(deps).toHaveLength(1);
+    // The nested dependency must be scanned under its own name, not the parent's.
+    expectDep(deps, 'b', '2.3.4');
+    expect(deps.some((d) => d.name === 'a')).toBe(false);
+  });
+
+  it('skips the whole-file fallback unless includeUnchanged is enabled', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sca-test-'));
+    try {
+      writeFileSync(join(dir, 'yarn.lock'), 'lodash@^4.17.21:\n  version "4.17.20"\n');
+      const defaultDeps = await extractChangedDependencies(
+        [changedFile('yarn.lock')],
+        dir,
+        makeOptions(),
+      );
+      expect(defaultDeps).toHaveLength(0);
+      const optedIn = await extractChangedDependencies(
+        [changedFile('yarn.lock')],
+        dir,
+        makeOptions({ includeUnchanged: true }),
+      );
+      expect(optedIn).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to reading the working tree when no patch is present and opted in', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sca-test-'));
     try {
       const content = [
@@ -269,7 +312,11 @@ describe('extractChangedDependencies', () => {
         '',
       ].join('\n');
       writeFileSync(join(dir, 'yarn.lock'), content);
-      const deps = await extractChangedDependencies([changedFile('yarn.lock')], dir, makeOptions());
+      const deps = await extractChangedDependencies(
+        [changedFile('yarn.lock')],
+        dir,
+        makeOptions({ includeUnchanged: true }),
+      );
       expect(deps).toHaveLength(1);
       expectDep(deps, '@babel/core', '7.18.9');
     } finally {

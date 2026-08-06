@@ -39,11 +39,19 @@ const OSV_TIMEOUT_MS = 30_000;
  */
 const osvCircuitBreaker = new CircuitBreaker({ name: 'osv-client' });
 
-/** Severity derived from a CVSS v3 score. */
+/**
+ * Severity derived from a CVSS v3 score.
+ *
+ * Band mapping uses explicit thresholds: `>= 9.0` critical, `>= 7.0` important,
+ * anything below maps to minor. Note that the CVSS "medium" band (4.0–6.9)
+ * intentionally resolves to `minor` here and is therefore suppressed by the
+ * default `minSeverity: 'important'` floor — a documented tradeoff that keeps
+ * the default noise low. Repos that want medium findings can lower
+ * `sca.minSeverity` to `'minor'`.
+ */
 export function severityFromCvss(score: number): Severity {
   if (score >= 9.0) return 'critical';
   if (score >= 7.0) return 'important';
-  if (score >= 4.0) return 'minor';
   return 'minor';
 }
 
@@ -62,7 +70,7 @@ const CVSS_V3_CIA: Record<string, number> = { H: 0.56, L: 0.22, N: 0 };
  * @returns The base score rounded to one decimal, or undefined when required
  * metrics are missing or the vector is not CVSS v3.
  */
-function cvssV3BaseScore(vector: string): number | undefined {
+export function cvssV3BaseScore(vector: string): number | undefined {
   if (!/^CVSS:3\.[01]\//i.test(vector)) return undefined;
   const values = new Map<string, string>();
   for (const part of vector.split('/')) {
@@ -217,7 +225,12 @@ export function extractFixedVersion(
 
 /**
  * Resolve the severity of an advisory for a dependency: CVSS score when present
- * (thresholds 9.0/7.0/4.0), else `database_specific.severity`, else `minor`.
+ * (thresholds 9.0/7.0), else `database_specific.severity`, else `important`.
+ *
+ * The final fallback is `important` (not `minor`) so advisories whose OSV record
+ * lacks severity metadata — e.g. the Go vulndb, which rarely sets CVSS/labels —
+ * still surface for human triage instead of being silently dropped by the
+ * default `minSeverity: 'important'` floor.
  *
  * @param vuln - Hydrated advisory record.
  * @returns The projected severity and raw CVSS score (when available).
@@ -242,7 +255,7 @@ export function resolveSeverity(vuln: OSVVulnerability): {
   }
   const label = vuln.database_specific?.severity ?? vuln.ecosystem_specific?.severity;
   const mapped = severityFromOsvLabel(label);
-  return { severity: mapped ?? 'minor' };
+  return { severity: mapped ?? 'important' };
 }
 
 /**
@@ -250,10 +263,16 @@ export function resolveSeverity(vuln: OSVVulnerability): {
  * responses throw an error carrying the HTTP status so `withRetry` only retries
  * retryable codes (429, 5xx) and never swallows hard failures like 400/404.
  *
+ * An optional `signal` enables an overall scan deadline: it is forwarded to the
+ * retry loop AND combined with the per-attempt timeout so an in-flight request
+ * is aborted the moment the deadline fires, bounding the total wall-clock time
+ * the pipeline waits on api.osv.dev.
+ *
  * @param url - Full request URL.
- * @param init - Request init (method, headers, body, signal).
+ * @param init - Request init (method, headers, body).
  * @param operationName - Name used in retry log messages.
  * @param fetchImpl - Fetch implementation (defaults to global fetch).
+ * @param signal - Optional AbortSignal (overall scan deadline).
  * @returns The parsed JSON body.
  */
 async function fetchOsvJson(
@@ -261,11 +280,15 @@ async function fetchOsvJson(
   init: RequestInit,
   operationName: string,
   fetchImpl: typeof fetch = fetch,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   return osvCircuitBreaker.call(() =>
     withRetryAndTimeout(
-      async (signal) => {
-        const res = await fetchImpl(url, { ...init, signal });
+      async (attemptSignal) => {
+        // Combine the per-attempt timeout with the overall scan deadline so a
+        // deadline abort cancels an in-flight request immediately.
+        const combined = signal ? combineSignals(attemptSignal, signal) : attemptSignal;
+        const res = await fetchImpl(url, { ...init, signal: combined });
         if (!res.ok) {
           const err = new Error(`OSV API ${res.status} ${res.statusText}`) as Error & {
             status: number;
@@ -276,9 +299,39 @@ async function fetchOsvJson(
         return res.json();
       },
       OSV_TIMEOUT_MS,
-      { operationName },
+      { operationName, signal },
     ),
   );
+}
+
+/**
+ * Build an AbortSignal that aborts as soon as either parent signal aborts.
+ * Uses `AbortSignal.any` when available (Node >= 20.3) and falls back to a
+ * manual controller + listeners otherwise.
+ *
+ * @param a - First signal.
+ * @param b - Second signal.
+ * @returns A signal aborted when `a` or `b` aborts.
+ */
+function combineSignals(a: AbortSignal, b: AbortSignal): AbortSignal {
+  if (a.aborted) return a;
+  if (b.aborted) return b;
+  if (typeof AbortSignal.any === 'function') {
+    return AbortSignal.any([a, b]);
+  }
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  a.addEventListener('abort', onAbort, { once: true });
+  b.addEventListener('abort', onAbort, { once: true });
+  return controller.signal;
+}
+
+/** The AbortError name at runtime (DOMException). */
+const ABORT_ERR_NAME = 'AbortError';
+
+/** True when the thrown value signals a scan-deadline abort. */
+export function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === ABORT_ERR_NAME;
 }
 
 /**
@@ -287,11 +340,13 @@ async function fetchOsvJson(
  *
  * @param deps - Dependencies for this batch (<= 1000).
  * @param fetchImpl - Fetch implementation (defaults to global fetch).
+ * @param signal - Optional overall scan-deadline signal.
  * @returns Matches with their dependency.
  */
 async function queryBatch(
   deps: SCADependency[],
   fetchImpl: typeof fetch,
+  signal?: AbortSignal,
 ): Promise<Array<{ dependency: SCADependency; match: OSVQueryMatch }>> {
   const payload = buildBatchQueries(deps);
   const body = await fetchOsvJson(
@@ -303,6 +358,7 @@ async function queryBatch(
     },
     'osv-querybatch',
     fetchImpl,
+    signal,
   );
   const parsed = body as OSVQueryBatchResponse;
   const results = parsed.results ?? [];
@@ -324,11 +380,13 @@ async function queryBatch(
  *
  * @param id - OSV advisory id.
  * @param fetchImpl - Fetch implementation.
+ * @param signal - Optional overall scan-deadline signal.
  * @returns The hydrated advisory, or undefined when it no longer exists.
  */
 async function hydrateVuln(
   id: string,
   fetchImpl: typeof fetch,
+  signal?: AbortSignal,
 ): Promise<OSVVulnerability | undefined> {
   try {
     const body = await fetchOsvJson(
@@ -336,6 +394,7 @@ async function hydrateVuln(
       {},
       'osv-vulns',
       fetchImpl,
+      signal,
     );
     return body as OSVVulnerability;
   } catch (err) {
@@ -384,30 +443,43 @@ async function mapWithConcurrency<T, R>(
  * any network / parse failure).
  *
  * @param dependencies - Changed dependencies to check.
- * @param options - Scan options (batch size, concurrency, fetch override).
+ * @param options - Scan options (batch size, concurrency, fetch override, signal).
  * @returns Known vulnerabilities for the given dependencies.
  */
 export async function queryOSV(
   dependencies: SCADependency[],
-  options: Pick<SCAScanOptions, 'maxBatchQueries' | 'concurrency' | 'fetchImpl'> = {},
+  options: Pick<SCAScanOptions, 'maxBatchQueries' | 'concurrency' | 'fetchImpl' | 'signal'> = {},
 ): Promise<SCAVulnerability[]> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const maxBatch = Math.max(1, options.maxBatchQueries ?? OSV_MAX_BATCH_QUERIES);
   const concurrency = options.concurrency ?? 8;
+  const signal = options.signal;
 
   // Phase 1: batched id matching.
   const matched: Array<{ dependency: SCADependency; match: OSVQueryMatch }> = [];
   for (let i = 0; i < dependencies.length; i += maxBatch) {
     const chunk = dependencies.slice(i, i + maxBatch);
-    matched.push(...(await queryBatch(chunk, fetchImpl)));
+    matched.push(...(await queryBatch(chunk, fetchImpl, signal)));
   }
 
   if (matched.length === 0) return [];
 
-  // Phase 2: hydrate unique ids in parallel.
+  // Phase 2: hydrate unique ids in parallel. A single advisory hydration must
+  // never sink the whole scan: a persistent 5xx/403/rate-limit failure on one
+  // advisory is skipped (returns undefined) so the remaining advisories still
+  // surface. The per-attempt retry + circuit breaker still count the failure.
   const uniqueIds = [...new Set(matched.map((m) => m.match.id))];
-  const hydrated = await mapWithConcurrency(uniqueIds, concurrency, (id) =>
-    hydrateVuln(id, fetchImpl),
+  const hydrated = await mapWithConcurrency(
+    uniqueIds,
+    concurrency,
+    async (id): Promise<OSVVulnerability | undefined> => {
+      try {
+        return await hydrateVuln(id, fetchImpl, signal);
+      } catch (err) {
+        if (isAbortError(err)) throw err;
+        return undefined;
+      }
+    },
   );
   const byId = new Map<string, OSVVulnerability>();
   for (let i = 0; i < uniqueIds.length; i++) {

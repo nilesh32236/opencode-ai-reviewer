@@ -8,8 +8,10 @@
 // (`ChangedFile.patch`) so only dependencies added or updated by the PR are
 // reported — never pre-existing ones. Each added line is mapped to its new-file
 // line number so findings can be posted as accurate inline comments. When a
-// changed lock file has no patch (e.g. large patches omitted by the platform),
-// the full file is read from the working tree as a best-effort fallback.
+// changed lock file has no patch (e.g. large patches omitted by the platform)
+// and `includeUnchanged` is explicitly enabled, the full file is read from the
+// working tree; off by default because every line is then treated as an
+// addition, which would report pre-existing vulnerabilities as PR-introduced.
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -117,8 +119,14 @@ export function detectLockFileType(
 
 // ─── npm / yarn / pnpm ────────────────────────────────────
 
-/** `"node_modules/<pkg>": {` / `"<pkg>": {` package keys (npm lockfiles). */
-const NPM_PACKAGE_KEY = /^\s*"((?:node_modules\/)?(@?[^"/]+(?:\/[^"/]+)?))":\s*\{?$/;
+/**
+ * `"node_modules/<pkg>": {` package keys (npm lockfiles). Depth-first keys may
+ * nest transitive dependencies as `"node_modules/a/node_modules/b": {`, so the
+ * optional `node_modules/` prefix is repeated and the package name segment may
+ * itself contain a scope separator. The exact package is resolved in
+ * {@link parseNpmLockfile} to the segment after the last `node_modules/` prefix.
+ */
+const NPM_PACKAGE_KEY = /^\s*"((?:node_modules\/)*@?[^"/]+(?:\/[^"/]+)*)":\s*\{?$/;
 
 /** `"version": "x.y.z"` lines (npm lockfiles). */
 const NPM_VERSION = /^\s*"version":\s*"([^"]+)",?\s*$/;
@@ -150,8 +158,14 @@ function parseNpmLockfile(lines: PatchLine[], file: string): SCADependency[] {
   for (const pl of lines) {
     const keyMatch = NPM_PACKAGE_KEY.exec(pl.text);
     if (keyMatch) {
-      const raw = keyMatch[1].replace(/^node_modules\//, '');
-      currentPackage = NPM_CONTAINER_KEYS.has(raw) ? null : raw;
+      // Nested transitive dependencies (`node_modules/a/node_modules/b`) carry
+      // repeated `node_modules/` prefixes; the package name is the segment
+      // after the LAST prefix so the nested dependency is scanned under its
+      // true name rather than leaking into the parent's state.
+      const raw = keyMatch[1];
+      const lastPrefix = raw.lastIndexOf('node_modules/');
+      const name = lastPrefix >= 0 ? raw.slice(lastPrefix + 'node_modules/'.length) : raw;
+      currentPackage = NPM_CONTAINER_KEYS.has(name) ? null : name;
       continue;
     }
     if (!pl.added) continue;
@@ -396,6 +410,11 @@ export interface ExtractOptions {
   lockFilePatterns: string[];
   /** Glob patterns for lock files to skip. */
   excludePatterns: string[];
+  /** When true, a changed lock file with no diff patch is read from the working
+   * tree with every line treated as an addition. Off by default: without a
+   * patch we cannot tell what the PR changed, and scanning the whole file would
+   * report pre-existing vulnerabilities as PR-introduced. */
+  includeUnchanged?: boolean;
 }
 
 /**
@@ -455,7 +474,8 @@ async function readFileLines(workDir: string, file: string): Promise<string[] | 
  * Extract added/updated dependencies from a set of changed files. Only files
  * matching `lockFilePatterns` (and not `excludePatterns`) are considered; each
  * is parsed from the added lines of its diff patch. When a lock file has no
- * patch, the full file is read from the working tree as a fallback.
+ * patch and `includeUnchanged` is set, the full file is read from the working
+ * tree as an explicit opt-in fallback.
  *
  * @param changedFiles - Changed files for the PR (unfiltered by review excludes).
  * @param workDir - Working directory the files are checked out under.
@@ -484,8 +504,11 @@ export async function extractChangedDependencies(
       continue;
     }
 
-    // No patch available (large patch omitted / platform without diffs):
-    // fall back to reading the new file from the working tree.
+    // No patch available (large patch omitted / platform without diffs). Only
+    // scan the whole working-tree file when explicitly opted in — every line is
+    // treated as an addition, so this would otherwise report pre-existing
+    // vulnerabilities as new, blocking findings on unrelated PRs.
+    if (!options.includeUnchanged) continue;
     const contentLines = await readFileLines(workDir, file.path);
     if (!contentLines) continue;
     const fullLines: PatchLine[] = contentLines.map((text, i) => ({
