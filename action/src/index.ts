@@ -315,6 +315,7 @@ async function run(): Promise<void> {
       eventSubscribers: loadedConfig?.eventSubscribers ?? DEFAULT_CONFIG.eventSubscribers,
       notifications: loadedConfig?.notifications ?? DEFAULT_CONFIG.notifications,
       multiAgent: loadedConfig?.multiAgent ?? DEFAULT_CONFIG.multiAgent,
+      secrets: loadedConfig?.secrets ?? DEFAULT_CONFIG.secrets,
     };
 
     const learningStore = new LearningStore();

@@ -1319,4 +1319,118 @@ unknownSection: true
       }
     });
   });
+
+  describe('secrets config', () => {
+    it('DEFAULT_CONFIG ships a complete secret detector config', () => {
+      expect(DEFAULT_CONFIG.secrets).toEqual({
+        enabled: true,
+        entropyThreshold: 4.5,
+        minLength: 32,
+        allowlist: [],
+        failCI: false,
+        excludePatterns: [],
+      });
+    });
+
+    it('AgentConfigSchema applies defaults for a partial secrets block', () => {
+      const result = AgentConfigSchema.parse({ secrets: { entropyThreshold: 5 } });
+      expect(result.secrets).toEqual({
+        enabled: true,
+        entropyThreshold: 5,
+        minLength: 32,
+        allowlist: [],
+        failCI: false,
+        excludePatterns: [],
+      });
+    });
+
+    it('AgentConfigSchema parses a full secrets block', () => {
+      const result = AgentConfigSchema.parse({
+        secrets: {
+          enabled: false,
+          entropyThreshold: 5.5,
+          minLength: 16,
+          allowlist: ['/example-token-[a-z]+/', 'test-value'],
+          failCI: true,
+          excludePatterns: ['**/*.md'],
+        },
+      });
+      expect(result.secrets).toEqual({
+        enabled: false,
+        entropyThreshold: 5.5,
+        minLength: 16,
+        allowlist: ['/example-token-[a-z]+/', 'test-value'],
+        failCI: true,
+        excludePatterns: ['**/*.md'],
+      });
+    });
+
+    it('AgentConfigSchema falls back to defaults for a malformed secrets block', () => {
+      const result = AgentConfigSchema.parse({ secrets: { entropyThreshold: 'banana' } });
+      expect(result.secrets.enabled).toBe(true);
+      expect(result.secrets.entropyThreshold).toBe(4.5);
+      expect(result.secrets.allowlist).toEqual([]);
+    });
+
+    it('loadConfig parses a full secrets block from YAML', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-secrets-'));
+      try {
+        fs.writeFileSync(
+          path.join(dir, '.opencode-reviewer.yml'),
+          `secrets:
+  enabled: true
+  entropyThreshold: 5
+  minLength: 16
+  failCI: true
+  allowlist:
+    - "1234567890abcdef"
+    - "/example-token-[a-z]+/"
+  excludePatterns:
+    - "**/*.md"
+`,
+        );
+        const config = loadConfig(dir);
+        expect(config?.secrets).toEqual({
+          enabled: true,
+          entropyThreshold: 5,
+          minLength: 16,
+          failCI: true,
+          allowlist: ['1234567890abcdef', '/example-token-[a-z]+/'],
+          excludePatterns: ['**/*.md'],
+        });
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('validateConfig clamps out-of-range secret tuning values', () => {
+      const result = validateConfig({
+        secrets: {
+          enabled: false,
+          entropyThreshold: 99,
+          minLength: 0,
+          allowlist: ['a'],
+          failCI: true,
+          excludePatterns: ['x'],
+        },
+      });
+      expect(result.secrets?.entropyThreshold).toBe(8);
+      expect(result.secrets?.minLength).toBe(1);
+      expect(result.secrets?.enabled).toBe(false);
+      expect(result.secrets?.failCI).toBe(true);
+    });
+
+    it('warns on unknown keys under the secrets block', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-secrets-'));
+      try {
+        fs.writeFileSync(path.join(dir, '.opencode-reviewer.yml'), 'secrets:\n  bogusKey: true\n');
+        loadConfig(dir);
+        expect(vi.mocked(core.warning)).toHaveBeenCalledWith(
+          expect.stringContaining('Unknown config key "secrets.bogusKey"'),
+        );
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
 });

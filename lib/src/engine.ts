@@ -1,4 +1,5 @@
 import { promises as fs, existsSync, mkdirSync, readFileSync } from 'fs';
+import type { Dirent } from 'fs';
 import * as cp from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as os from 'os';
@@ -70,6 +71,7 @@ import type {
   TokenUsage,
 } from './types/index.js';
 import { PIPELINE_EVENT_TYPES } from './types/index.js';
+import { DEFAULT_SECRET_DETECTOR_CONFIG } from './types/index.js';
 import { filterBlameToPatch, getGitBlame, parsePatchHunks } from './utils/blame.js';
 import { MAX_BLAME_LINES_PER_FILE, UNCOMMITTED_SHA } from './utils/blame.js';
 import type { BlameRange } from './utils/blame.js';
@@ -85,12 +87,21 @@ import { validateModelString } from './utils/model-string.js';
 import { analyzeBatchReachability } from './utils/reachability.js';
 import { withRetry } from './utils/retry.js';
 import { sanitizeString } from './utils/sanitize.js';
+import { detectSecrets, mergeSecretFindings } from './utils/secret-detect.js';
+import type { SecretDetectOptions, SecretFinding } from './utils/secret-detect.js';
 
 /** Maximum number of batch chunks processed concurrently by `reviewPR`. */
 export const MAX_BATCH_CONCURRENCY = 8;
 
 /** Fixed inter-chunk backoff delay in milliseconds between concurrent chunks. */
 export const INTER_CHUNK_DELAY_MS = 150;
+
+/**
+ * Maximum number of bytes read per file during the deterministic secret scan.
+ * The scan is a best-effort post-pass that must never delay a review, so large
+ * (or binary) files are truncated before the regex/entropy pass.
+ */
+const MAX_SECRET_SCAN_BYTES = 2 * 1024 * 1024;
 
 /** Canonical dispatch order of the specialized review agents. */
 export const AGENT_ORDER = ['security', 'performance', 'quality', 'logic'] as const;
@@ -922,6 +933,7 @@ export class ReviewEngine {
           pr.number,
           budgetMode,
           totalDiffLines,
+          files,
         );
       } catch {
         this.logger.warn(`Failed to parse review output at ${outputPath}, returning empty result`);
@@ -1155,6 +1167,7 @@ export class ReviewEngine {
         pr.number,
         budgetMode,
         totalDiffLines,
+        files,
       );
     }
 
@@ -1196,6 +1209,7 @@ export class ReviewEngine {
         pr.number,
         budgetMode,
         totalDiffLines,
+        files,
       );
     } catch {
       this.logger.warn('Synthesis output parse failed, falling back to merged batch results');
@@ -1221,6 +1235,7 @@ export class ReviewEngine {
         undefined,
         budgetMode,
         totalDiffLines,
+        files,
       );
     }
   }
@@ -1406,6 +1421,7 @@ export class ReviewEngine {
       pr.number,
       budgetMode,
       totalDiffLines,
+      files,
     );
   }
 
@@ -2319,13 +2335,34 @@ export class ReviewEngine {
         category,
         severityRank(this.config.audit.issueSeverityThreshold),
       );
+      // Deterministic hardcoded-secret scan over the audited tree. Merged after
+      // the sensitivity filter so critical secret findings always surface
+      // regardless of focus areas or finding caps configured for LLM findings.
+      // Best-effort: a scan failure degrades to the filtered result.
+      let finalResult = filteredResult;
+      const secretConfig = this.config.secrets ?? DEFAULT_SECRET_DETECTOR_CONFIG;
+      if (secretConfig.enabled) {
+        try {
+          const secretIssues = await this.scanDirectoryForSecrets(targetDir, workingDirectory);
+          if (secretIssues.length > 0) {
+            this.logger.info(
+              `Secret detection flagged ${secretIssues.length} hardcoded secret(s) in audit target`,
+            );
+            finalResult = this.mergeSecretIssues(filteredResult, secretIssues);
+          }
+        } catch (err) {
+          this.logger.warn(
+            `Secret detection failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
       this.publishCompleted(PIPELINE_EVENT_TYPES.AUDIT_COMPLETED, {
         category,
         targetDir,
-        issuesCount: filteredResult.issues.length,
+        issuesCount: finalResult.issues.length,
         modelUsed: this.resolveModel('auditModel'),
       });
-      return filteredResult;
+      return finalResult;
     } catch {
       this.logger.warn(`Failed to parse audit output at ${outputPath}, returning empty result`);
       const r = emptyResult();
@@ -2739,6 +2776,144 @@ export class ReviewEngine {
   }
 
   /**
+   * Read a file from disk and run secret detection on it, skipping binary
+   * content (NUL-byte probe on the first 8KB) and capping the scanned size.
+   *
+   * @param fullPath - Absolute path of the file to scan.
+   * @param options - Tuning options forwarded to {@link detectSecrets}.
+   * @returns Findings, or `[]` for empty/binary/missing content.
+   */
+  private async detectSecretsFromFile(
+    fullPath: string,
+    options: SecretDetectOptions,
+  ): Promise<SecretFinding[]> {
+    const buffer = await fs.readFile(fullPath);
+    if (buffer.length === 0) return [];
+    if (buffer.subarray(0, 8192).includes(0)) return [];
+    return detectSecrets(buffer.subarray(0, MAX_SECRET_SCAN_BYTES).toString('utf-8'), options);
+  }
+
+  /**
+   * Scan the given changed files for hardcoded secrets and return blocking
+   * review issues. Files matched by `secrets.excludePatterns` are skipped, and
+   * missing files (e.g. deleted or not checked out) degrade gracefully. This is
+   * a best-effort static pass — per-file failures never abort the scan.
+   *
+   * @param files - Changed files (already filtered by review exclude patterns).
+   * @param workDir - Working directory the files are checked out under.
+   * @returns Review issues for any detected secrets (empty when none).
+   */
+  private async scanFilesForSecrets(
+    files: PRContext['changedFiles'],
+    workDir: string,
+  ): Promise<ReviewIssue[]> {
+    const secretConfig = this.config.secrets ?? DEFAULT_SECRET_DETECTOR_CONFIG;
+    const options: SecretDetectOptions = {
+      minEntropy: secretConfig.entropyThreshold,
+      minLength: secretConfig.minLength,
+      allowlist: secretConfig.allowlist,
+    };
+    const excludePatterns = secretConfig.excludePatterns ?? [];
+    const issues: ReviewIssue[] = [];
+    for (const file of files) {
+      if (!file?.path) continue;
+      if (excludePatterns.some((pattern) => minimatch(file.path, pattern))) continue;
+      try {
+        const findings = await this.detectSecretsFromFile(path.join(workDir, file.path), options);
+        if (findings.length > 0) {
+          issues.push(...mergeSecretFindings(file.path, findings));
+        }
+      } catch (err) {
+        this.logger.warn(
+          `Secret scan skipped for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    return issues;
+  }
+
+  /**
+   * Recursively walk a directory tree, scanning each text file for hardcoded
+   * secrets. Honors the review `excludePatterns` plus `secrets.excludePatterns`,
+   * skips common VCS/dependency directories and binary files, and caps each
+   * scanned file's size. Best-effort — walk errors degrade gracefully.
+   *
+   * @param targetDir - Directory to walk (repo-relative or absolute).
+   * @param workingDirectory - Repo working directory (defaults to cwd).
+   * @returns Review issues for any detected secrets (empty when none).
+   */
+  private async scanDirectoryForSecrets(
+    targetDir: string,
+    workingDirectory?: string,
+  ): Promise<ReviewIssue[]> {
+    const secretConfig = this.config.secrets ?? DEFAULT_SECRET_DETECTOR_CONFIG;
+    const options: SecretDetectOptions = {
+      minEntropy: secretConfig.entropyThreshold,
+      minLength: secretConfig.minLength,
+      allowlist: secretConfig.allowlist,
+    };
+    const repoRoot = workingDirectory || process.cwd();
+    const root = path.resolve(repoRoot, targetDir || '.');
+    const excludePatterns = [
+      ...(this.config.review.excludePatterns ?? []),
+      ...(secretConfig.excludePatterns ?? []),
+    ];
+    const issues: ReviewIssue[] = [];
+    const queue: string[] = [root];
+    while (queue.length > 0) {
+      const dir = queue.pop()!;
+      let entries: Dirent[];
+      try {
+        entries = await fs.readdir(dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (
+            entry.name === '.git' ||
+            entry.name === 'node_modules' ||
+            entry.name === '.opencode'
+          ) {
+            continue;
+          }
+          queue.push(full);
+          continue;
+        }
+        if (!entry.isFile()) continue;
+        const rel = path.relative(repoRoot, full);
+        if (excludePatterns.some((pattern) => minimatch(rel, pattern))) continue;
+        try {
+          const findings = await this.detectSecretsFromFile(full, options);
+          if (findings.length > 0) {
+            issues.push(...mergeSecretFindings(rel, findings));
+          }
+        } catch (err) {
+          this.logger.warn(
+            `Secret scan skipped for ${rel}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    }
+    return issues;
+  }
+
+  /**
+   * Merge hardcoded-secret issues into a result, recomputing severity stats so
+   * the severity-based CI gate and count outputs reflect the secrets.
+   *
+   * @param result - Result to merge into.
+   * @param secretIssues - Secret review issues to append.
+   * @returns The merged result (unchanged when `secretIssues` is empty).
+   */
+  private mergeSecretIssues(result: ReviewResult, secretIssues: ReviewIssue[]): ReviewResult {
+    if (secretIssues.length === 0) return result;
+    const allIssues = [...result.issues, ...secretIssues];
+    return { ...result, issues: allIssues, stats: computeReviewStats(allIssues) };
+  }
+
+  /**
    * Apply the sensitivity filter to a review result, dropping findings that
    * fall below the configured severity, confidence, or count thresholds.
    *
@@ -2784,6 +2959,7 @@ export class ReviewEngine {
     prNumber?: number,
     budgetMode?: ReviewBudgetMode,
     totalDiffLines?: number,
+    files?: PRContext['changedFiles'],
   ): Promise<ReviewResult> {
     let enrichedResult = result;
 
@@ -2985,6 +3161,31 @@ export class ReviewEngine {
     // focus areas, ignore patterns, finding caps). Runs after verification and
     // low-confidence suppression so the filters see final severities.
     enrichedResult = this.applySensitivityFilter(enrichedResult);
+
+    // Deterministic hardcoded-secret scan. Runs after all LLM-based passes so a
+    // secret finding can never be downgraded by reachability, dropped by
+    // meta-verification, or filtered by sensitivity settings — it is a verified
+    // static finding. Critical issues merge in and drive the severity-based CI
+    // gate through the recomputed stats. Best-effort: a scan failure degrades
+    // gracefully to the already-processed result.
+    if (files && files.length > 0) {
+      const secretConfig = this.config.secrets ?? DEFAULT_SECRET_DETECTOR_CONFIG;
+      if (secretConfig.enabled) {
+        try {
+          const secretIssues = await this.scanFilesForSecrets(files, workDir);
+          if (secretIssues.length > 0) {
+            this.logger.info(
+              `Secret detection flagged ${secretIssues.length} hardcoded secret(s) in the changed files`,
+            );
+            enrichedResult = this.mergeSecretIssues(enrichedResult, secretIssues);
+          }
+        } catch (err) {
+          this.logger.warn(
+            `Secret detection failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    }
 
     if (budgetMode && totalDiffLines !== undefined) {
       enrichedResult = this.applyBudgetModeBanner(enrichedResult, budgetMode, totalDiffLines);

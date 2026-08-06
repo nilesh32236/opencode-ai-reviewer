@@ -281,6 +281,30 @@ export const EventLoggingConfigSchema = z.object({
   path: z.string().default('.opencode/events.ndjson'),
 });
 
+/**
+ * Zod schema validating deterministic hardcoded secret / credential scanning
+ * configuration. All fields are optional with safe defaults; a malformed
+ * `secrets:` block falls back to defaults (mirroring `CostTrackingConfigSchema`)
+ * so a broken section never fails the whole config parse.
+ */
+export const SecretsConfigSchema = z
+  .object({
+    enabled: z.boolean().optional().default(true),
+    entropyThreshold: z.number().min(0).max(8).optional().default(4.5),
+    minLength: z.number().int().min(1).max(1024).optional().default(32),
+    allowlist: z.array(z.string()).optional().default([]),
+    failCI: z.boolean().optional().default(false),
+    excludePatterns: z.array(z.string()).optional().default([]),
+  })
+  .catch({
+    enabled: true,
+    entropyThreshold: 4.5,
+    minLength: 32,
+    allowlist: [],
+    failCI: false,
+    excludePatterns: [],
+  });
+
 /** Zod schema validating a pluggable event subscriber configuration entry. */
 export const PluggableSubscriberConfigSchema = z.object({
   name: z.string().min(1),
@@ -409,6 +433,7 @@ export const AgentConfigSchema = z.object({
   eventSubscribers: z.array(PluggableSubscriberConfigSchema).default([]),
   notifications: NotificationsConfigSchema.default(NotificationsConfigSchema.parse({})),
   multiAgent: MultiAgentConfigSchema.default(MultiAgentConfigSchema.parse({})),
+  secrets: SecretsConfigSchema.default(SecretsConfigSchema.parse({})),
 });
 
 // ─── Prompt Config Schema (YAML config file) ──────────────
@@ -527,4 +552,5 @@ export const PromptConfigSchema = z.object({
   eventSubscribers: z.array(PluggableSubscriberConfigSchema).optional(),
   notifications: NotificationsConfigSchema.optional(),
   multiAgent: MultiAgentConfigSchema.optional(),
+  secrets: SecretsConfigSchema.optional(),
 });

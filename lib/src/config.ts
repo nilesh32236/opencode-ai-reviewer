@@ -140,6 +140,14 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
       model: null,
     },
   },
+  secrets: {
+    enabled: null,
+    entropyThreshold: null,
+    minLength: null,
+    allowlist: null,
+    failCI: null,
+    excludePatterns: null,
+  },
 };
 
 /**
@@ -823,6 +831,30 @@ export function validateConfig(config: PromptConfig): PromptConfig {
       }
     }
     result.multiAgent = multiAgent;
+  }
+
+  if (config.secrets && typeof config.secrets === 'object') {
+    const s = config.secrets;
+    const entropyThreshold =
+      typeof s.entropyThreshold === 'number' && Number.isFinite(s.entropyThreshold)
+        ? Math.min(Math.max(s.entropyThreshold, 0), 8)
+        : 4.5;
+    const minLength =
+      typeof s.minLength === 'number' && Number.isFinite(s.minLength)
+        ? Math.min(Math.max(Math.round(s.minLength), 1), 1024)
+        : 32;
+    result.secrets = {
+      enabled: typeof s.enabled === 'boolean' ? s.enabled : true,
+      entropyThreshold,
+      minLength,
+      allowlist: Array.isArray(s.allowlist)
+        ? s.allowlist.filter((entry): entry is string => typeof entry === 'string')
+        : [],
+      failCI: typeof s.failCI === 'boolean' ? s.failCI : false,
+      excludePatterns: Array.isArray(s.excludePatterns)
+        ? s.excludePatterns.filter((p): p is string => typeof p === 'string')
+        : [],
+    };
   }
 
   return result;

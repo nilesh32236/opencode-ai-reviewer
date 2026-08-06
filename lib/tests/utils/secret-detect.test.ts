@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { detectSecrets, shannonEntropy } from '../../src/utils/secret-detect.js';
+import {
+  detectSecrets,
+  mergeSecretFindings,
+  shannonEntropy,
+} from '../../src/utils/secret-detect.js';
 
 // Fixtures are assembled from disjoint pieces so source never contains a
 // literal full-secret pattern that GitHub secret scanning would reject.
@@ -258,5 +262,74 @@ ${pemEnd}`;
     expect(findings[0].column).toBeLessThan(findings[1].column);
     expect(findings[0].line).toBe(2);
     expect(findings[1].line).toBe(2);
+  });
+
+  it('suppresses a finding when a literal substring of the token is allowlisted', () => {
+    // `ghp_` prefix is a substring of the raw token, so the whole finding is
+    // suppressed even though the full token is not in the allowlist.
+    const findings = detectSecrets(`const key = "${GITHUB_PAT}"`, {
+      allowlist: [GITHUB_PAT.slice(0, 10)],
+    });
+    expect(findings).toEqual([]);
+  });
+
+  it('suppresses a high-entropy finding via a substring allowlist entry', () => {
+    const findings = detectSecrets(`token = "${AWS_SECRET}"`, { allowlist: ['wJal'] });
+    expect(findings).toEqual([]);
+  });
+
+  it('suppresses a finding when a /regex/ allowlist entry matches the token', () => {
+    const findings = detectSecrets(`token = "${GITHUB_PAT}"`, {
+      allowlist: ['/ghp_[a-zA-Z0-9]{36,}/'],
+    });
+    expect(findings).toEqual([]);
+  });
+
+  it('suppresses a high-entropy finding via a /regex/ allowlist entry', () => {
+    const findings = detectSecrets(`token = "${AWS_SECRET}"`, {
+      allowlist: ['/wJal[a-zA-Z0-9/+=]+/'],
+    });
+    expect(findings).toEqual([]);
+  });
+
+  it('treats an invalid /regex/ allowlist entry as a literal substring', () => {
+    // `[unclosed` is not a valid regex, so it falls back to substring matching
+    // and does not match, leaving the finding intact.
+    const findings = detectSecrets(`token = "${GITHUB_PAT}"`, {
+      allowlist: ['/[unclosed'],
+    });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].type).toBe('github-pat');
+  });
+
+  it('keeps a finding when the allowlist entry does not match anything', () => {
+    const findings = detectSecrets(`token = "${GITHUB_PAT}"`, { allowlist: ['nope-'] });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].type).toBe('github-pat');
+  });
+});
+
+describe('mergeSecretFindings', () => {
+  it('converts findings to blocking critical inline issues with redacted messages', () => {
+    const findings = detectSecrets(`const key = "${GITHUB_PAT}"`);
+    expect(findings).toHaveLength(1);
+    const issues = mergeSecretFindings('src/config.ts', findings);
+    expect(issues).toHaveLength(1);
+    const [issue] = issues;
+    expect(issue.type).toBe('issue');
+    expect(issue.severity).toBe('critical');
+    expect(issue.file).toBe('src/config.ts');
+    expect(issue.line).toBe(1);
+    expect(issue.inline).toBe(true);
+    expect(issue.confidence).toBe('high');
+    expect(issue.category).toBe('security');
+    expect(issue.message).toBe('Hardcoded github-pat detected: ghp_…6789');
+    // The raw secret must never leak into the issue.
+    expect(issue.message).not.toContain(GITHUB_PAT);
+    expect(issue.suggestion).toContain('environment variable');
+  });
+
+  it('returns an empty array for no findings', () => {
+    expect(mergeSecretFindings('src/clean.ts', [])).toEqual([]);
   });
 });
