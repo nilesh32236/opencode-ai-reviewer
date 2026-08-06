@@ -305,6 +305,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const suppressLowConfidence = repoConfig?.review?.suppressLowConfidence;
   const failOnSeverity = repoConfig?.review?.failOnSeverity;
   const notifications = repoConfig?.notifications;
+  const secrets = repoConfig?.secrets;
   if (
     !sensitivity &&
     !categories &&
@@ -312,7 +313,8 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
     enableMetaVerification === undefined &&
     suppressLowConfidence === undefined &&
     failOnSeverity === undefined &&
-    !notifications
+    !notifications &&
+    !secrets
   ) {
     return baseConfig;
   }
@@ -342,6 +344,12 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
         ...(notifications.teams && {
           teams: { ...baseConfig.notifications?.teams, ...notifications.teams },
         }),
+      },
+    }),
+    ...(secrets && {
+      secrets: {
+        ...baseConfig.secrets,
+        ...secrets,
       },
     }),
   };

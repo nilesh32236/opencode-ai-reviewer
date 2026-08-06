@@ -171,6 +171,14 @@ export async function runReview(
     }
   }
 
+  // Optional dedicated gate: fail the action whenever the deterministic secret
+  // scanner flagged a hardcoded credential, independent of failOnSeverity.
+  // Secrets are reported as critical findings, so `failOnSeverity: critical`
+  // also covers this without the dedicated toggle.
+  if (config.secrets?.failCI && result.issues.some((i) => i.message.startsWith('Hardcoded'))) {
+    core.setFailed('Hardcoded secrets detected in PR. See review comments for details.');
+  }
+
   const costTracking = config.review.costTracking;
   const telemetry = engine.getLastTelemetry();
   // Mirror the lib's guard (attachUsage): only expose state/outputs when

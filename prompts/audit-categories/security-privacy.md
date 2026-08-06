@@ -4,6 +4,8 @@ You are auditing for security vulnerabilities and privacy issues. Focus on commo
 
 > **Reachability Context:** After this audit, a lightweight reachability analysis will run on each finding. Findings flagged in code that is not reachable from an HTTP handler, CLI entry point, message consumer, or other user-input source will be automatically tagged as `theoreticalRisk: true`. You should still report all potential vulnerabilities — the reachability pass will handle classification.
 
+> **Automated Secret Scanning:** Hardcoded credentials (AWS keys, GitHub/Slack/OpenAI/Anthropic tokens, private keys, connection strings with embedded passwords, and high-entropy strings) are detected by a deterministic static scanner that runs after this audit and reports them as blocking critical findings. Do **not** spend output on obvious hardcoded-token patterns the scanner already catches. Focus instead on **contextual** credential/secret issues the scanner cannot see: secrets written to logs, error responses, URLs, or commit messages; encryption keys or credentials passed via insecure channels; and secrets referenced from config that ship in the repo.
+
 ## What to Check
 
 ### XSS & Injection
@@ -46,6 +48,6 @@ Note: Findings will be post-processed for reachability — you do not need to in
 
 ## Severity Guide
 
-- **critical**: PII leak, XSS vector, missing auth, hardcoded secrets, SQL injection
+- **critical**: PII leak, XSS vector, missing auth, contextual secret exposure (e.g. secrets in logs/URLs), SQL injection
 - **important**: Broad CSP, console.log with data, missing sanitization, exposed errors
 - **minor**: Non-blocking config issues, missing headers

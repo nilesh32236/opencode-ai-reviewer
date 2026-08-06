@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import type { ReviewIssue } from '../types/index.js';
 
 /**
  * A single detected secret or credential in reviewed input text.
@@ -149,6 +150,60 @@ function computeFingerprint(type: string, redactedValue: string, line: number): 
 }
 
 /**
+ * A single allowlist entry compiled for matching. Regex entries (prefixed with
+ * `/`) are matched against the token; everything else is a literal substring.
+ */
+type CompiledAllowlistEntry =
+  | { kind: 'regex'; regex: RegExp }
+  | { kind: 'substring'; value: string };
+
+/**
+ * Compile allowlist entries into matchers. Entries shaped `/pattern/flags` are
+ * compiled as regular expressions; invalid regexes and every other entry are
+ * treated as literal substrings so a typo can never throw or reject the config.
+ *
+ * @param allowlist - Raw allowlist entries from config or options.
+ * @returns Compiled matcher entries.
+ */
+function compileAllowlist(allowlist: string[]): CompiledAllowlistEntry[] {
+  return allowlist.map((entry) => {
+    if (entry.length > 2 && entry.startsWith('/')) {
+      const lastSlash = entry.lastIndexOf('/');
+      if (lastSlash > 0) {
+        const source = entry.slice(1, lastSlash);
+        const flags = entry.slice(lastSlash + 1);
+        try {
+          return { kind: 'regex' as const, regex: new RegExp(source, flags) };
+        } catch {
+          // Invalid regex — fall back to a literal substring match.
+        }
+      }
+    }
+    return { kind: 'substring' as const, value: entry };
+  });
+}
+
+/**
+ * Decide whether a candidate token is suppressed by the allowlist. Matching is
+ * exact-equality-and-substring (a raw token or its redacted form is suppressed
+ * when it contains the entry), plus regex support via `/pattern/flags` entries.
+ *
+ * @param rawValue - The full raw token (never returned to callers).
+ * @param redactedValue - The redacted representation used in public output.
+ * @param allowlist - Raw allowlist entries.
+ * @returns True when the token should be suppressed.
+ */
+function isAllowlisted(rawValue: string, redactedValue: string, allowlist: string[]): boolean {
+  if (allowlist.length === 0) return false;
+  return compileAllowlist(allowlist).some((entry) => {
+    if (entry.kind === 'regex') {
+      return entry.regex.test(rawValue) || entry.regex.test(redactedValue);
+    }
+    return rawValue.includes(entry.value) || redactedValue.includes(entry.value);
+  });
+}
+
+/**
  * Scan text for hardcoded secrets, tokens, and credentials.
  *
  * Detects well-known key/token formats via regex patterns, plus generic
@@ -248,7 +303,6 @@ export function detectSecrets(text: string, options: SecretDetectOptions = {}): 
     while ((tokenMatch = GLOBAL_HIGH_ENTROPY_REGEX.exec(line)) !== null) {
       const token = tokenMatch[0];
       if (token.length < minLength) continue;
-      if (allowlist.includes(token)) continue;
       const index = tokenMatch.index ?? 0;
       const overlapsNamed = namedSpans.some(
         (span) => span.line === lineNumber && index >= span.start && index < span.end,
@@ -269,13 +323,42 @@ export function detectSecrets(text: string, options: SecretDetectOptions = {}): 
   }
 
   // Final allowlist filter: a finding is suppressed when either its raw token
-  // or its redacted representation appears in the allowlist.
-  const findings = candidates.filter(
-    (c) => !allowlist.includes(c.rawValue) && !allowlist.includes(c.redactedValue),
-  );
+  // or its redacted representation matches an allowlist entry (literal
+  // substring or `/regex/`). This is the single suppression point for named
+  // patterns, connection strings, and high-entropy candidates alike.
+  const findings = candidates.filter((c) => !isAllowlisted(c.rawValue, c.redactedValue, allowlist));
 
   // Deterministic source-order output: by line, then column. Strip the raw
   // value before returning so caller never sees the plaintext secret.
   findings.sort((a, b) => a.line - b.line || a.column - b.column);
   return findings.map(({ rawValue: _raw, ...finding }) => finding);
+}
+
+/**
+ * Convert raw {@link SecretFinding}s into blocking {@link ReviewIssue}s for a
+ * specific file so they flow through the existing review/audit pipeline
+ * (review bodies, inline comments, notifications, and severity-based CI gates).
+ *
+ * Every finding is reported as `critical`, `inline: true` (so it surfaces as a
+ * blocking inline comment when the line is present in the diff), categorized as
+ * `security`, and carries a redacted message that never exposes the raw secret.
+ *
+ * @param file - Repo-relative path of the scanned file.
+ * @param secrets - Findings returned by {@link detectSecrets} for that file.
+ * @returns Review issues ready to merge into a ReviewResult.
+ */
+export function mergeSecretFindings(file: string, secrets: SecretFinding[]): ReviewIssue[] {
+  return secrets.map((finding) => ({
+    type: 'issue' as const,
+    severity: 'critical' as const,
+    file,
+    line: finding.line,
+    message: `Hardcoded ${finding.type} detected: ${finding.redactedValue}`,
+    suggestion:
+      'Move the secret to an environment variable or a secret manager (e.g. GitHub ' +
+      'Secrets, Vault, AWS Secrets Manager) and rotate the leaked credential.',
+    inline: true,
+    confidence: 'high' as const,
+    category: 'security',
+  }));
 }

@@ -1249,6 +1249,38 @@ describe('ReviewEngine', () => {
       expect(mockMCPConnect).not.toHaveBeenCalled();
       expect(result).toBeDefined();
     });
+
+    it('merges deterministic secret findings into the audit result', async () => {
+      mockMCPConnect.mockResolvedValue(undefined);
+      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      const GITHUB_PAT = ['ghp_', 'aBcDeFgHiJkLmNOpQrStUvWxYz', '0123456789'].join('');
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-audit-secrets-'));
+      try {
+        fs.mkdirSync(path.join(tmp, 'src'), { recursive: true });
+        fs.writeFileSync(path.join(tmp, 'src', 'config.ts'), `const t = "${GITHUB_PAT}"`, 'utf-8');
+        // Route the (mocked) readFile so only our fixture carries a secret.
+        vi.mocked(fs.promises.readFile).mockImplementation(async (p: string | URL | number) => {
+          const full = String(p);
+          if (full.includes('config.ts')) return Buffer.from(`const t = "${GITHUB_PAT}"`);
+          return Buffer.from('');
+        });
+
+        const result = await engine.runAudit('audit prompt', 'src', 'security', undefined, tmp);
+
+        const secretIssue = result.issues.find((i) => i.message.startsWith('Hardcoded'));
+        expect(secretIssue).toBeDefined();
+        expect(secretIssue!.severity).toBe('critical');
+        expect(secretIssue!.file).toBe('src/config.ts');
+        expect(secretIssue!.inline).toBe(true);
+        expect(secretIssue!.message).not.toContain(GITHUB_PAT);
+        expect(result.stats.critical).toBe(1);
+        expect(result.stats.total).toBe(1);
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    });
   });
 
   describe('runAnalyze()', () => {

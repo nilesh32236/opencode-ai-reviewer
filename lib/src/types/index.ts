@@ -281,6 +281,8 @@ export interface AgentConfig {
   notifications?: NotificationsConfig;
   /** Multi-agent review architecture with specialized agents (opt-in, default disabled). */
   multiAgent?: MultiAgentConfig;
+  /** Deterministic hardcoded secret / credential scanning (default: enabled). */
+  secrets?: SecretDetectorConfig;
 }
 
 // ─── Multi-Agent Architecture ────────────────────────────
@@ -577,6 +579,27 @@ export interface ReviewConfig {
   /** Severity threshold at or above which the action/check run fails
    * (default: 'critical'). Use 'off' to never fail from findings. */
   failOnSeverity: FailOnSeverity;
+}
+
+/** Configuration for deterministic hardcoded secret / credential scanning. */
+export interface SecretDetectorConfig {
+  /** Whether static secret detection runs during review and audit (default: true). */
+  enabled: boolean;
+  /** Shannon entropy floor above which a long token is flagged as a possible
+   * secret (default: 4.5). */
+  entropyThreshold: number;
+  /** Minimum token length considered for generic high-entropy detection (default: 32). */
+  minLength: number;
+  /** Values that should never be flagged. Each entry is matched as a literal
+   * substring against the raw token and its redacted form, or compiled as a
+   * RegExp when prefixed with `/` (e.g. `/test-token-[a-z]+/`). */
+  allowlist: string[];
+  /** When true, the GitHub Action fails when any hardcoded secret is detected
+   * (default: false — findings still block via `review.failOnSeverity: critical`). */
+  failCI: boolean;
+  /** Glob patterns for files to skip during the secret scan (in addition to the
+   * review `excludePatterns`). */
+  excludePatterns: string[];
 }
 
 // ─── Conversation / @mention ─────────────────────────────
@@ -1328,6 +1351,8 @@ export interface PromptConfig {
   eventSubscribers?: PluggableSubscriberConfig[];
   /** Webhook notification configuration for Slack/Teams. */
   notifications?: NotificationsConfig;
+  /** Deterministic hardcoded secret / credential scanning (default: enabled). */
+  secrets?: SecretDetectorConfig;
   /** Multi-agent review architecture configuration (default: disabled). */
   multiAgent?: MultiAgentConfig;
 }
@@ -1349,6 +1374,16 @@ export const DEFAULT_CONVERSATION_CONFIG: ConversationConfig = {
 export const DEFAULT_NOTIFICATIONS_CONFIG: NotificationsConfig = {
   enabled: false,
   minSeverity: 'critical',
+};
+
+/** Default values for deterministic hardcoded secret / credential scanning. */
+export const DEFAULT_SECRET_DETECTOR_CONFIG: SecretDetectorConfig = {
+  enabled: true,
+  entropyThreshold: 4.5,
+  minLength: 32,
+  allowlist: [],
+  failCI: false,
+  excludePatterns: [],
 };
 
 export const DEFAULT_CONFIG: AgentConfig = {
@@ -1466,6 +1501,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   eventSubscribers: [],
   notifications: DEFAULT_NOTIFICATIONS_CONFIG,
   multiAgent: DEFAULT_MULTI_AGENT_CONFIG,
+  secrets: DEFAULT_SECRET_DETECTOR_CONFIG,
 };
 
 // ─── Event Bus ───────────────────────────────────────────

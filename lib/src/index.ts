@@ -142,7 +142,7 @@ export { gatherReviewThread } from './utils/review-thread.js';
 export type { ThreadComment, ReviewThreadResult } from './utils/review-thread.js';
 export { sanitizeString } from './utils/sanitize.js';
 export { sanitizePromptInput } from './utils/prompt-sanitizer.js';
-export { detectSecrets, shannonEntropy } from './utils/secret-detect.js';
+export { detectSecrets, shannonEntropy, mergeSecretFindings } from './utils/secret-detect.js';
 export type { SecretFinding, SecretDetectOptions } from './utils/secret-detect.js';
 export { getLabelColor } from './utils/label-color.js';
 export {

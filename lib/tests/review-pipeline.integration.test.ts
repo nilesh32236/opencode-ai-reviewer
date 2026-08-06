@@ -734,4 +734,119 @@ describe('Review Pipeline Integration', () => {
     expect(result.verdict.ready).toBe(false);
     expect(result.stats.total).toBe(0);
   });
+
+  it('m) secret detector flags a hardcoded token on disk as a blocking critical finding', async () => {
+    const GITHUB_PAT = ['ghp_', 'aBcDeFgHiJkLmNOpQrStUvWxYz', '0123456789'].join('');
+    // Write the changed file to disk so the deterministic scanner can read it.
+    fs.mkdirSync(path.join(workDir, 'src'), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, 'src/config.ts'),
+      `const apiToken = "${GITHUB_PAT}";
+export default apiToken;
+`,
+      'utf-8',
+    );
+    const pr = makePRContext({
+      changedFiles: [
+        {
+          path: 'src/config.ts',
+          status: 'added',
+          additions: 2,
+          deletions: 0,
+          patch: '@@ -0,0 +1,2 @@\n+const apiToken = "…";\n+export default apiToken;',
+        },
+      ],
+    });
+
+    engine = new ReviewEngine(makeAgentConfig({ enableMCP: false, mcpServers: [] }), gh);
+
+    fixtureQueue.push({ content: SAMPLE_VALID_JSONL });
+
+    const result = await engine.reviewPR(pr);
+
+    const secretIssue = result.issues.find((i) => i.message.startsWith('Hardcoded'));
+    expect(secretIssue).toBeDefined();
+    expect(secretIssue!.severity).toBe('critical');
+    expect(secretIssue!.file).toBe('src/config.ts');
+    expect(secretIssue!.inline).toBe(true);
+    // The message is redacted and never leaks the full token.
+    expect(secretIssue!.message).toContain('ghp_');
+    expect(secretIssue!.message).not.toContain(GITHUB_PAT);
+    // Stats reflect the merged critical secret.
+    expect(result.stats.critical).toBeGreaterThanOrEqual(1);
+    expect(result.stats.total).toBeGreaterThan(3);
+  });
+
+  it('n) secret detector honors secrets.excludePatterns and allowlist', async () => {
+    const GITHUB_PAT = ['ghp_', 'aBcDeFgHiJkLmNOpQrStUvWxYz', '0123456789'].join('');
+    fs.mkdirSync(path.join(workDir, 'src'), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, 'src/secrets.example.ts'),
+      `const token = "${GITHUB_PAT}";`,
+      'utf-8',
+    );
+    const pr = makePRContext({
+      changedFiles: [
+        {
+          path: 'src/secrets.example.ts',
+          status: 'added',
+          additions: 1,
+          deletions: 0,
+          patch: '@@ -0,0 +1 @@\n+const token = "…";',
+        },
+      ],
+    });
+
+    engine = new ReviewEngine(
+      makeAgentConfig({
+        enableMCP: false,
+        mcpServers: [],
+        secrets: {
+          ...DEFAULT_CONFIG.secrets,
+          allowlist: [GITHUB_PAT.slice(0, 10)],
+          excludePatterns: ['**/*.example.ts'],
+        },
+      }),
+      gh,
+    );
+
+    fixtureQueue.push({ content: SAMPLE_VALID_JSONL });
+
+    const result = await engine.reviewPR(pr);
+
+    expect(result.issues.some((i) => i.message.startsWith('Hardcoded'))).toBe(false);
+    expect(result.stats.total).toBe(3);
+  });
+
+  it('o) secret detector skips binary files', async () => {
+    fs.mkdirSync(path.join(workDir, 'assets'), { recursive: true });
+    // A fake binary file containing NUL bytes followed by a token string.
+    fs.writeFileSync(
+      path.join(workDir, 'assets/blob.bin'),
+      Buffer.concat([
+        Buffer.from([0x00, 0x01, 0x00]),
+        Buffer.from(['ghp_', 'aBcDeFgHiJkLmNOpQrStUvWxYz', '0123456789'].join('')),
+      ]),
+    );
+    const pr = makePRContext({
+      changedFiles: [
+        {
+          path: 'assets/blob.bin',
+          status: 'added',
+          additions: 1,
+          deletions: 0,
+          patch: '@@ -0,0 +1 @@\n+',
+        },
+      ],
+    });
+
+    engine = new ReviewEngine(makeAgentConfig({ enableMCP: false, mcpServers: [] }), gh);
+
+    fixtureQueue.push({ content: SAMPLE_VALID_JSONL });
+
+    const result = await engine.reviewPR(pr);
+
+    expect(result.issues.some((i) => i.message.startsWith('Hardcoded'))).toBe(false);
+    expect(result.stats.total).toBe(3);
+  });
 });
