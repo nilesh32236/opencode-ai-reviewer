@@ -19,6 +19,7 @@ review:
   enableReachability: true
   # includePreExisting: true   # full-audit mode: review pre-existing (non-PR) code at full priority
   # failOnSeverity: off   # fail the action/check run when findings at or above this severity exist: off | critical | important | minor (default: off — opt-in)
+  # suggestTitleAndLabels: true   # post a conventional-commit title & label suggestion comment after review (default: false; read-only, never modifies the PR)
   sensitivity:
     minSeverity: warning
     confidenceThreshold: low

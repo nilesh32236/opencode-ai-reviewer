@@ -5,6 +5,7 @@ import {
   GitLabAdapter,
   Logger,
   countAtOrAboveSeverity,
+  postSuggestionComment,
   sendNotification,
   shouldFailOnSeverity,
 } from '@opencode-pr-agent/lib';
@@ -149,6 +150,20 @@ export async function runReview(
       new Logger('Review').warn(
         `Failed to send review notification: ${err instanceof Error ? err.message : String(err)}`,
         { operation: 'review.notify', prNumber },
+      );
+    }
+  }
+
+  // Best-effort conventional-commit title & label suggestion. Only posts when
+  // enabled; read-only, never modifies the PR. Non-critical: a failure must
+  // not fail the action.
+  if (config.review.suggestTitleAndLabels && reviewResult.success) {
+    try {
+      await postSuggestionComment(gh, prNumber, pr, result, config.review);
+    } catch (err) {
+      new Logger('Review').warn(
+        `Failed to post title/label suggestion: ${err instanceof Error ? err.message : String(err)}`,
+        { operation: 'review.suggestion', prNumber },
       );
     }
   }

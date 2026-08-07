@@ -11,6 +11,7 @@ import {
   GitLabAdapter,
   Logger,
   ReviewEngine,
+  postSuggestionComment,
   sanitizeErrorMessage,
   sendNotification,
   shouldFailOnSeverity,
@@ -285,6 +286,17 @@ export async function handlePRReview(
           `Failed to send review notification: ${err instanceof Error ? err.message : String(err)}`,
         );
       });
+
+      // Best-effort conventional-commit title & label suggestion. Only posts
+      // when enabled; read-only, never modifies the PR. Non-critical: a
+      // failure must never fail the review flow.
+      if (config.review.suggestTitleAndLabels) {
+        void postSuggestionComment(gh, prNumber, pr, result, config.review).catch((err) => {
+          logger.warn(
+            `Failed to post title/label suggestion: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
+      }
     } else {
       logger.warn(`Failed to post review to PR #${prNumber}`, { prNumber, repo });
       // A review that was not actually posted must not gate merges as a

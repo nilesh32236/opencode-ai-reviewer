@@ -298,6 +298,14 @@ export { buildDocsPRBody } from './utils/pr-body.js';
 export type { DocsPRBodyOptions } from './utils/pr-body.js';
 export { parseCommand, ASK_COMMAND_PATTERN } from './utils/command-match.js';
 export type { ParsedCommand } from './utils/command-match.js';
+export {
+  deriveSuggestedTitle,
+  deriveSuggestedLabels,
+  buildSuggestionComment,
+  postSuggestionComment,
+  TITLE_SUGGESTION_MARKER,
+} from './utils/title-suggestion.js';
+export type { TitleSuggestion } from './utils/title-suggestion.js';
 export { RateLimiter } from './utils/rate-limiter.js';
 export type {
   RateLimitStore,
