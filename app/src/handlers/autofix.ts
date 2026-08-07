@@ -13,6 +13,7 @@ import type {
   ReviewResult,
 } from '@opencode-pr-agent/lib';
 import {
+  type CheckExecution,
   DEFAULT_ALLOWLIST,
   FIX_MARKER,
   GitHubHelper,
@@ -26,10 +27,9 @@ import {
   buildFixBody,
   buildReadyBody,
   configureGit,
+  parseRunChecksCommands,
   resolveFixedComments,
   validateRefName,
-  parseRunChecksCommands,
-  type CheckExecution,
 } from '@opencode-pr-agent/lib';
 import { mergeRepoConfig } from '../utils/config.js';
 

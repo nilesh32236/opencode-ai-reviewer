@@ -42,11 +42,7 @@ export function validateRefName(ref: string): void {
  * @param args - The argument array.
  * @param allowSet - Set of permitted executables.
  */
-export function validateProgramArgs(
-  program: string,
-  args: string[],
-  allowSet: Set<string>,
-): void {
+export function validateProgramArgs(program: string, args: string[], allowSet: Set<string>): void {
   if (!allowSet.has(program)) {
     throw new Error(
       `Command "${program}" is not allowed. Allowed programs: ${[...allowSet].join(', ')}`,

@@ -9,6 +9,7 @@ import type {
   ReviewEngine,
 } from '@opencode-pr-agent/lib';
 import {
+  type CheckExecution,
   FIX_MARKER,
   type IterationRecord,
   REVIEW_MARKER,
@@ -18,11 +19,10 @@ import {
   buildReadyBody,
   markAnalysisReady,
   parseAnalysisPlan,
+  parseRunChecksCommands,
   postBlockingQuestions,
   resolveFixedComments,
   validateRefName,
-  parseRunChecksCommands,
-  type CheckExecution,
 } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { resolvePrNumber, sanitize } from './utils.js';
@@ -729,7 +729,11 @@ export async function runAutofixLoop(
 
           try {
             await exec.exec('git', ['add', '-A']);
-            await exec.exec('git', ['commit', '-m', `fix: verification errors (attempt ${v + 1}) [skip ci]`]);
+            await exec.exec('git', [
+              'commit',
+              '-m',
+              `fix: verification errors (attempt ${v + 1}) [skip ci]`,
+            ]);
             validateRefName(pr.headRef);
             await exec.exec('git', ['push', 'origin', pr.headRef]);
           } catch (err) {
