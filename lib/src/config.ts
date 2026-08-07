@@ -65,6 +65,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     enableCodebaseIndex: null,
     includePreExisting: null,
     failOnSeverity: null,
+    suggestTitleAndLabels: null,
     tokenBudget: null,
     budget: null,
     costTracking: null,
@@ -430,6 +431,9 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     }
     if (typeof config.review.includePreExisting === 'boolean') {
       result.review.includePreExisting = config.review.includePreExisting;
+    }
+    if (typeof config.review.suggestTitleAndLabels === 'boolean') {
+      result.review.suggestTitleAndLabels = config.review.suggestTitleAndLabels;
     }
     if (
       config.review.failOnSeverity === 'off' ||

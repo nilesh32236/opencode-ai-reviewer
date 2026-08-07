@@ -660,6 +660,10 @@ export interface ReviewConfig {
   /** Severity threshold at or above which the action/check run fails
    * (default: 'critical'). Use 'off' to never fail from findings. */
   failOnSeverity: FailOnSeverity;
+  /** Whether to post a conventional-commit title and label suggestion comment
+   * after review (default: false). Read-only — the suggestion never modifies
+   * the PR directly; it only suggests via a comment. */
+  suggestTitleAndLabels?: boolean;
 }
 
 /** Configuration for deterministic hardcoded secret / credential scanning. */
@@ -1428,6 +1432,9 @@ export interface PromptConfig {
     /** Severity threshold at or above which the action/check run fails
      * (default: 'critical'). Use 'off' to never fail from findings. */
     failOnSeverity?: FailOnSeverity;
+    /** Post a conventional-commit title and label suggestion comment after
+     * review (default: false). */
+    suggestTitleAndLabels?: boolean;
   };
   /** Fix prompt configuration */
   fix?: {
@@ -1651,6 +1658,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
       confidenceThreshold: 'low',
     },
     failOnSeverity: 'off',
+    suggestTitleAndLabels: false,
   },
   audit: {
     promptsDir: '.audit-prompts',
