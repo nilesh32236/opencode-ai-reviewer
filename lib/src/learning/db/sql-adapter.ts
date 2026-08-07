@@ -5,7 +5,7 @@ import type { LearningQuality } from '../../types/index.js';
 import type { LearningFeedback } from '../../types/index.js';
 import { Logger } from '../../utils/logger.js';
 import { JsonDatabase, SUPPRESSING_DISMISS_SIGNALS } from '../json-db.js';
-import { deriveFileExtensions, generateId } from '../schema.js';
+import { deriveFileExtensions, generateId, hashPatternKey } from '../schema.js';
 import type {
   ConversationSessionInput,
   ConversationSessionPatch,
@@ -26,6 +26,9 @@ import type {
   ReviewMetricsRow,
   ReviewQualityRow,
   SeverityDistribution,
+  SuppressionRuleGenerationOptions,
+  SuppressionRuleRow,
+  SuppressionRuleStats,
   TelemetryStats,
 } from '../types.js';
 import type {
@@ -382,47 +385,169 @@ export abstract class SqlAdapter implements LearningRepository {
   }
 
   /**
-   * Get false-positive suppression rules from dismissed/disputed feedback.
+   * Get false-positive suppression rules from persisted, active and non-expired
+   * suppression rules. Rules are scoped to the file extensions derived from the
+   * reviewed file paths and ordered by how effective (suppression hits) and
+   * confident (dismissal count) they are.
+   *
+   * Each returned rule is effectiveness-tracked: its `suppression_hits` and
+   * `reviews_seen` counters are incremented and `last_active_at` is refreshed
+   * (read-then-write wrapped in a short transaction).
    * @param filePaths - File paths to derive relevant extensions.
    * @param limit - Maximum number of suppression rules (default: 20).
    * @returns Array of suppression rule strings.
    */
   async getFalsePositiveRules(filePaths: string[], limit = 20): Promise<string[]> {
     const extensions = deriveFileExtensions(filePaths);
-
-    // Only dismissals signalling a genuine false positive suppress future
-    // flags; /dismiss out_of_scope and /dismiss other are metrics-only.
-    const signalValues = [...SUPPRESSING_DISMISS_SIGNALS];
-    const signalPlaceholders = signalValues.map(() => '?').join(', ');
-    const signalFilter = `(fb.signal_type = 'disputed_comment' OR (fb.signal_type = 'dismissed' AND fb.signal_value IN (${signalPlaceholders})))`;
-
-    let extFilter = '';
-    const params: unknown[] = [...signalValues];
-    if (extensions.length > 0) {
-      extFilter = `AND (f.file IS NULL OR ${extensions.map(() => `f.file LIKE ?`).join(' OR ')})`;
-      params.push(...extensions.map((e) => `%${e}`));
-    }
-    params.push(limit);
-
     try {
-      const rows = await this.all<{ message: string; file: string | null; signal_count: number }>(
-        `SELECT f.message, f.file, COUNT(fb.id) as signal_count
-         FROM findings f
-         INNER JOIN feedback fb ON fb.finding_id = f.id
-         WHERE ${signalFilter}
-         ${extFilter}
-         GROUP BY f.message, f.file
-         ORDER BY signal_count DESC
-         LIMIT ?`,
-        params,
+      const rows = await this.all<SuppressionRuleRow>(
+        "SELECT * FROM suppression_rules WHERE status = 'active' ORDER BY suppression_hits DESC, dismissal_count DESC",
       );
-      return rows.map((r) => {
-        const fileHint = r.file ? ` (in ${r.file.split('/').pop()})` : '';
-        return `DO NOT flag: "${r.message.slice(0, 150)}"${fileHint} — user feedback indicates this is intentional (dismissed ${r.signal_count} time(s))`;
+
+      const now = Date.now();
+      const matched = rows.filter((r) => {
+        if (r.expires_at) {
+          const expiry = Date.parse(r.expires_at);
+          if (!Number.isNaN(expiry) && expiry <= now) return false;
+        }
+        const types = (r.file_types || '').split(',').filter(Boolean);
+        if (types.length === 0) return true;
+        if (extensions.length === 0) return true;
+        return types.some((t) => extensions.includes(t));
+      });
+
+      const selected = matched.slice(0, limit);
+
+      if (selected.length > 0) {
+        const bumpedAt = new Date().toISOString();
+        await this.transaction(async () => {
+          for (const rule of selected) {
+            await this.run(
+              `UPDATE suppression_rules SET suppression_hits = suppression_hits + 1, reviews_seen = reviews_seen + 1, last_active_at = ? WHERE id = ?`,
+              [bumpedAt, rule.id],
+            );
+          }
+        });
+      }
+
+      return selected.map((r) => {
+        const fileHint = r.file_types ? ` (in ${r.file_types.split(',')[0]?.trim()} files)` : '';
+        return `DO NOT flag: "${r.message.slice(0, 150)}"${fileHint} — user feedback indicates this is intentional (dismissed ${r.dismissal_count} time(s))`;
       });
     } catch {
       return [];
     }
+  }
+
+  /**
+   * Aggregate dismissal feedback into persisted suppression rules, gated on a
+   * minimum confidence threshold and capped at `maxRules` active rules.
+   *
+   * Suppressing dismissal signals (`false_positive`, `intentional`, review/comment
+   * dismissals, deleted comments) are joined to their findings and grouped by
+   * message + file. Groups reaching `minDismissals` are upserted into
+   * `suppression_rules`, refreshing the rule's `expires_at` window and resetting
+   * its `reviews_seen` budget. Excess active rules beyond `maxRules` are expired.
+   * @param options - Generation thresholds (minDismissals, ttlDays, maxReviews, maxRules).
+   * @returns The number of rules that were newly created or refreshed.
+   */
+  async generateSuppressionRules(options: SuppressionRuleGenerationOptions): Promise<number> {
+    const { minDismissals, ttlDays, maxRules } = options;
+    const signalValues = [...SUPPRESSING_DISMISS_SIGNALS];
+    const signalPlaceholders = signalValues.map(() => '?').join(', ');
+    const signalFilter = `(fb.signal_type = 'disputed_comment' OR (fb.signal_type = 'dismissed' AND fb.signal_value IN (${signalPlaceholders})))`;
+
+    return this.transaction(async () => {
+      const groups = await this.all<{
+        message: string;
+        file: string | null;
+        signal_count: number;
+      }>(
+        `SELECT f.message, f.file, COUNT(fb.id) as signal_count
+         FROM findings f
+         INNER JOIN feedback fb ON fb.finding_id = f.id
+         WHERE ${signalFilter}
+         GROUP BY f.message, f.file
+         HAVING COUNT(fb.id) >= ?`,
+        [...signalValues, minDismissals],
+      );
+
+      const now = new Date().toISOString();
+      const expiresAt = new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000).toISOString();
+
+      let createdOrRefreshed = 0;
+      for (const g of groups) {
+        const fileTypes = deriveFileExtensions(g.file ? [g.file] : []).join(',');
+        const patternKey = hashPatternKey(g.message, g.file ?? undefined);
+        await this.run(
+          `INSERT INTO suppression_rules
+             (id, pattern_key, message, file_types, dismissal_count, status, created_at, last_active_at, expires_at, reviews_seen, suppression_hits)
+           VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, 0, 0)
+           ON CONFLICT (pattern_key) DO UPDATE SET
+             message = excluded.message,
+             file_types = excluded.file_types,
+             dismissal_count = excluded.dismissal_count,
+             status = 'active',
+             last_active_at = excluded.last_active_at,
+             expires_at = excluded.expires_at,
+             reviews_seen = 0`,
+          [generateId(), patternKey, g.message, fileTypes, g.signal_count, now, now, expiresAt],
+        );
+        createdOrRefreshed++;
+      }
+
+      // Cap total active rules at maxRules, expiring the least relevant excess
+      // (lowest dismissal confidence and suppression hits first).
+      const active = await this.all<SuppressionRuleRow>(
+        `SELECT * FROM suppression_rules WHERE status = 'active' ORDER BY dismissal_count ASC, suppression_hits ASC, created_at ASC`,
+      );
+      const excess = active.length - maxRules;
+      if (excess > 0) {
+        for (const rule of active.slice(0, excess)) {
+          await this.run("UPDATE suppression_rules SET status = 'expired' WHERE id = ?", [rule.id]);
+        }
+      }
+
+      return createdOrRefreshed;
+    });
+  }
+
+  /**
+   * Expire suppression rules whose time-to-live has elapsed or whose review
+   * budget has been reached. Expired rules are no longer injected into prompts.
+   * @param maxReviews - Review-count expiry threshold.
+   * @returns The number of rules that were expired.
+   */
+  async expireSuppressionRules(maxReviews: number): Promise<number> {
+    const result = await this.run(
+      `UPDATE suppression_rules SET status = 'expired'
+       WHERE status = 'active' AND (expires_at IS NOT NULL AND expires_at <= ? OR reviews_seen >= ?)`,
+      [new Date().toISOString(), maxReviews],
+    );
+    return result.changes;
+  }
+
+  /**
+   * Retrieve aggregated suppression-rule effectiveness statistics.
+   * @returns SuppressionRuleStats with active/expired counts and suppression hits.
+   */
+  async getSuppressionRuleStats(): Promise<SuppressionRuleStats> {
+    const active = await this.get<{ cnt: number }>(
+      `SELECT COUNT(*) as cnt FROM suppression_rules WHERE status = 'active'`,
+    );
+    const expired = await this.get<{ cnt: number }>(
+      `SELECT COUNT(*) as cnt FROM suppression_rules WHERE status = 'expired'`,
+    );
+    const hits = await this.get<{ total: number }>(
+      `SELECT COALESCE(SUM(suppression_hits), 0) as total FROM suppression_rules`,
+    );
+    const total = await this.get<{ cnt: number }>(`SELECT COUNT(*) as cnt FROM suppression_rules`);
+    return {
+      totalActive: active?.cnt ?? 0,
+      totalExpired: expired?.cnt ?? 0,
+      totalSuppressionHits: hits?.total ?? 0,
+      totalRules: total?.cnt ?? 0,
+    };
   }
 
   /**

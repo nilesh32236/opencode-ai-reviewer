@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import path from 'path';
 import { Logger } from '../utils/logger.js';
 
@@ -264,6 +265,33 @@ export async function applyMigrations(runner: MigrationRunner): Promise<void> {
     await runner.exec(
       `CREATE INDEX IF NOT EXISTS idx_conv_turns_session ON conversation_turns(session_id, turn_number)`,
     );
+
+    // Persisted, expiring suppression rules generated from dismissal feedback.
+    // Each row captures a high-confidence false-positive pattern (message +
+    // file extension) that should not be re-flagged, along with its lifecycle
+    // (expiry time, review budget) and effectiveness counters. Generation,
+    // expiry, and metrics are driven by the SuppressionSubscriber.
+    await runner.exec(`
+      CREATE TABLE IF NOT EXISTS suppression_rules (
+        id TEXT PRIMARY KEY,
+        pattern_key TEXT NOT NULL UNIQUE,
+        message TEXT NOT NULL,
+        file_types TEXT,
+        dismissal_count INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        last_active_at TEXT,
+        expires_at TEXT,
+        reviews_seen INTEGER NOT NULL DEFAULT 0,
+        suppression_hits INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+    await runner.exec(
+      `CREATE INDEX IF NOT EXISTS idx_suppression_rules_status ON suppression_rules(status)`,
+    );
+    await runner.exec(
+      `CREATE INDEX IF NOT EXISTS idx_suppression_rules_expires ON suppression_rules(expires_at)`,
+    );
   } catch (err) {
     const logger = new Logger('LearningStore');
     logger.error('Migration failed', err);
@@ -278,6 +306,22 @@ export async function applyMigrations(runner: MigrationRunner): Promise<void> {
  */
 export function generateId(): string {
   return `f_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
+ * Compute a deterministic pattern key for a suppression rule based on the
+ * finding message and (optional) file path. Used as the unique upsert key for
+ * the `suppression_rules` table so repeat dismissals of the same pattern
+ * refresh the existing rule rather than creating duplicates.
+ * @param message - The finding message text.
+ * @param file - The finding file path, or undefined when no file was recorded.
+ * @returns A stable SHA-256 hex digest of the message::file composite.
+ */
+export function hashPatternKey(message: string, file?: string): string {
+  return crypto
+    .createHash('sha256')
+    .update(`${message}::${file || ''}`)
+    .digest('hex');
 }
 
 /**

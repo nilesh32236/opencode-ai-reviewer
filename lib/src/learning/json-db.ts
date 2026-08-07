@@ -4,8 +4,14 @@ import * as path from 'path';
 import type { LearningQuality } from '../types/index.js';
 import type { LearningFeedback } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
-import type { CustomRuleRow, FindingRow, PatternRow, ReviewQualityRow } from './rows.js';
-import { deriveFileExtensions, generateId } from './schema.js';
+import type {
+  CustomRuleRow,
+  FindingRow,
+  PatternRow,
+  ReviewQualityRow,
+  SuppressionRuleRow,
+} from './rows.js';
+import { deriveFileExtensions, generateId, hashPatternKey } from './schema.js';
 import type {
   ConversationSessionInput,
   ConversationSessionPatch,
@@ -24,6 +30,8 @@ import type {
   RateLimitRow,
   ReviewMetricsRow,
   SeverityDistribution,
+  SuppressionRuleGenerationOptions,
+  SuppressionRuleStats,
   TelemetryStats,
 } from './types.js';
 
@@ -88,6 +96,7 @@ export class JsonDatabase implements LearningRepository {
     rate_limits: RateLimitRow[];
     conversation_sessions: ConversationSessionRow[];
     conversation_turns: ConversationTurnRow[];
+    suppression_rules: SuppressionRuleRow[];
   };
   private filePath: string;
   private inTransaction = false;
@@ -110,6 +119,7 @@ export class JsonDatabase implements LearningRepository {
       rate_limits: [],
       conversation_sessions: [],
       conversation_turns: [],
+      suppression_rules: [],
     };
     this.load();
     if (this.data.rate_limits === undefined) {
@@ -120,6 +130,9 @@ export class JsonDatabase implements LearningRepository {
     }
     if (this.data.conversation_turns === undefined) {
       this.data.conversation_turns = [];
+    }
+    if (this.data.suppression_rules === undefined) {
+      this.data.suppression_rules = [];
     }
     if (this.data.meta_review_counter.length === 0) {
       this.data.meta_review_counter.push({ id: 1, count: 0 });
@@ -503,56 +516,165 @@ export class JsonDatabase implements LearningRepository {
   }
 
   /**
-   * Retrieve rules derived from false positive feedback for the given file paths.
+   * Retrieve active, non-expired suppression rules scoped to the file paths.
+   * Each returned rule is effectiveness-tracked (hits/reviews counters bumped).
    * @param filePaths - Array of file paths to scope the rules to.
    * @param limit - Maximum number of rules to return (default: 20).
    * @returns Array of rule strings describing patterns to avoid flagging.
    */
   async getFalsePositiveRules(filePaths: string[], limit = 20): Promise<string[]> {
     const extensions = deriveFileExtensions(filePaths);
+    const now = Date.now();
 
-    // Build a set of finding IDs that have dismissal/dispute feedback
-    // signalling a genuine false positive (a reason that means the finding is
-    // wrong, not merely out of scope).
-    const disputedFindingIds = new Set<string>();
+    const active = this.data.suppression_rules.filter((r) => r.status === 'active');
+    const matched = active.filter((r) => {
+      if (r.expires_at) {
+        const expiry = Date.parse(r.expires_at);
+        if (!Number.isNaN(expiry) && expiry <= now) return false;
+      }
+      const types = (r.file_types || '').split(',').filter(Boolean);
+      if (types.length === 0) return true;
+      if (extensions.length === 0) return true;
+      return types.some((t) => extensions.includes(t));
+    });
+
+    const selected = matched
+      .sort(
+        (a, b) =>
+          (b.suppression_hits || 0) - (a.suppression_hits || 0) ||
+          b.dismissal_count - a.dismissal_count,
+      )
+      .slice(0, limit);
+
+    if (selected.length > 0) {
+      const bumpedAt = new Date().toISOString();
+      for (const rule of selected) {
+        rule.suppression_hits = (rule.suppression_hits || 0) + 1;
+        rule.reviews_seen = (rule.reviews_seen || 0) + 1;
+        rule.last_active_at = bumpedAt;
+      }
+      this.save();
+    }
+
+    return selected.map((r) => {
+      const fileHint = r.file_types ? ` (in ${r.file_types.split(',')[0]?.trim()} files)` : '';
+      return `DO NOT flag: "${r.message.slice(0, 150)}"${fileHint} — user feedback indicates this is intentional (dismissed ${r.dismissal_count} time(s))`;
+    });
+  }
+
+  /**
+   * Aggregate dismissal feedback into persisted suppression rules, gated on a
+   * minimum confidence threshold and capped at `maxRules` active rules.
+   * @param options - Generation thresholds (minDismissals, ttlDays, maxReviews, maxRules).
+   * @returns The number of rules that were newly created or refreshed.
+   */
+  async generateSuppressionRules(options: SuppressionRuleGenerationOptions): Promise<number> {
+    const { minDismissals, ttlDays, maxRules } = options;
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    const expiresAt = new Date(nowMs + ttlDays * 24 * 60 * 60 * 1000).toISOString();
+
+    // Aggregate dismissing feedback by (message, file) using the joined finding.
+    const findingsById = new Map(this.data.findings.map((f) => [f.id, f]));
+    const counts = new Map<string, { message: string; file?: string; count: number }>();
     for (const fb of this.data.feedback) {
-      if (
+      const suppressing =
         fb.signal_type === 'disputed_comment' ||
-        (fb.signal_type === 'dismissed' && SUPPRESSING_DISMISS_SIGNALS.has(fb.signal_value ?? ''))
-      ) {
-        disputedFindingIds.add(fb.finding_id);
-      }
-    }
-
-    if (disputedFindingIds.size === 0) return [];
-
-    // Group findings with disputed feedback by message + file
-    const grouped = new Map<string, { message: string; file?: string; count: number }>();
-    for (const finding of this.data.findings) {
-      if (!disputedFindingIds.has(finding.id)) continue;
-      if (
-        extensions.length > 0 &&
-        finding.file &&
-        !extensions.some((ext) => finding.file?.endsWith(ext))
-      ) {
-        continue;
-      }
+        (fb.signal_type === 'dismissed' && SUPPRESSING_DISMISS_SIGNALS.has(fb.signal_value ?? ''));
+      if (!suppressing) continue;
+      const finding = findingsById.get(fb.finding_id);
+      if (!finding) continue;
       const key = `${finding.message}::${finding.file || ''}`;
-      const existing = grouped.get(key);
-      if (existing) {
-        existing.count++;
+      const entry = counts.get(key);
+      if (entry) {
+        entry.count++;
       } else {
-        grouped.set(key, { message: finding.message, file: finding.file, count: 1 });
+        counts.set(key, { message: finding.message, file: finding.file, count: 1 });
       }
     }
 
-    return [...grouped.values()]
-      .sort((a, b) => b.count - a.count)
-      .slice(0, limit)
-      .map((r) => {
-        const fileHint = r.file ? ` (in ${r.file.split('/').pop()})` : '';
-        return `DO NOT flag: "${r.message.slice(0, 150)}"${fileHint} — user feedback indicates this is intentional (dismissed ${r.count} time(s))`;
-      });
+    let createdOrRefreshed = 0;
+    for (const g of counts.values()) {
+      if (g.count < minDismissals) continue;
+      const fileTypes = deriveFileExtensions(g.file ? [g.file] : []).join(',');
+      const patternKey = hashPatternKey(g.message, g.file);
+      const existing = this.data.suppression_rules.find((r) => r.pattern_key === patternKey);
+      if (existing) {
+        existing.message = g.message;
+        existing.file_types = fileTypes;
+        existing.dismissal_count = g.count;
+        existing.status = 'active';
+        existing.last_active_at = nowIso;
+        existing.expires_at = expiresAt;
+        existing.reviews_seen = 0;
+      } else {
+        this.data.suppression_rules.push({
+          id: generateId(),
+          pattern_key: patternKey,
+          message: g.message,
+          file_types: fileTypes,
+          dismissal_count: g.count,
+          status: 'active',
+          created_at: nowIso,
+          last_active_at: nowIso,
+          expires_at: expiresAt,
+          reviews_seen: 0,
+          suppression_hits: 0,
+        });
+      }
+      createdOrRefreshed++;
+    }
+
+    // Cap total active rules at maxRules, expiring the least relevant excess.
+    const active = this.data.suppression_rules
+      .filter((r) => r.status === 'active')
+      .sort(
+        (a, b) =>
+          a.dismissal_count - b.dismissal_count ||
+          (a.suppression_hits || 0) - (b.suppression_hits || 0),
+      );
+    const excess = active.length - maxRules;
+    for (const rule of active.slice(0, Math.max(0, excess))) {
+      rule.status = 'expired';
+    }
+
+    this.save();
+    return createdOrRefreshed;
+  }
+
+  /**
+   * Expire suppression rules whose time-to-live or review-count budget elapsed.
+   * @param maxReviews - Review-count expiry threshold.
+   * @returns The number of rules that were expired.
+   */
+  async expireSuppressionRules(maxReviews: number): Promise<number> {
+    const now = Date.now();
+    let expired = 0;
+    for (const rule of this.data.suppression_rules) {
+      if (rule.status !== 'active') continue;
+      const expiredByTime = rule.expires_at ? Date.parse(rule.expires_at) <= now : false;
+      const expiredByReviews = (rule.reviews_seen || 0) >= maxReviews;
+      if (expiredByTime || expiredByReviews) {
+        rule.status = 'expired';
+        expired++;
+      }
+    }
+    if (expired > 0) this.save();
+    return expired;
+  }
+
+  /**
+   * Retrieve aggregated suppression-rule effectiveness statistics.
+   * @returns SuppressionRuleStats with active/expired counts and suppression hits.
+   */
+  async getSuppressionRuleStats(): Promise<SuppressionRuleStats> {
+    const rules = this.data.suppression_rules;
+    return {
+      totalActive: rules.filter((r) => r.status === 'active').length,
+      totalExpired: rules.filter((r) => r.status === 'expired').length,
+      totalSuppressionHits: rules.reduce((sum, r) => sum + (r.suppression_hits || 0), 0),
+      totalRules: rules.length,
+    };
   }
 
   /**

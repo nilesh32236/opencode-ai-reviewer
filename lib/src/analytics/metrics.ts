@@ -48,6 +48,10 @@ export class MetricsService {
         this.store.getTelemetryStats(sinceDays),
       ]);
 
+    const suppressionStats = await this.store
+      .getSuppressionRuleStats()
+      .catch(() => ({ totalActive: 0, totalExpired: 0, totalSuppressionHits: 0, totalRules: 0 }));
+
     const latestRow = metricsRows[0];
     const periodEnd = new Date().toISOString();
     const periodStart = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000).toISOString();
@@ -84,6 +88,7 @@ export class MetricsService {
       },
       severityDistribution: severityDist,
       trends: metricsRows,
+      suppressionStats,
     };
   }
 
@@ -160,6 +165,19 @@ export class MetricsService {
       lines.push(`| Important | ${report.severityDistribution.important} |`);
       lines.push(`| Minor | ${report.severityDistribution.minor} |`);
       lines.push(`| Unknown | ${report.severityDistribution.unknown} |`);
+      lines.push('');
+    }
+
+    if (report.suppressionStats) {
+      lines.push('### Suppression Rules');
+      lines.push('| Metric | Value |');
+      lines.push('|--------|-------|');
+      lines.push(`| Active Rules | ${report.suppressionStats.totalActive} |`);
+      lines.push(`| Expired Rules | ${report.suppressionStats.totalExpired} |`);
+      lines.push(`| Total Rules | ${report.suppressionStats.totalRules} |`);
+      lines.push(
+        `| Suppression Hits (false positives avoided) | ${report.suppressionStats.totalSuppressionHits} |`,
+      );
       lines.push('');
     }
 

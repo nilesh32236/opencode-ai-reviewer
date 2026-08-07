@@ -5,6 +5,7 @@ import {
   MetaReviewEngine,
   MetaReviewSubscriber,
   PatternDetector,
+  SuppressionSubscriber,
   TelemetrySubscriber,
 } from '@opencode-pr-agent/lib';
 import type { AgentConfig, EventBus, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
@@ -63,6 +64,10 @@ export function registerSubscribers(
 
   const feedbackSub = new FeedbackSubscriber(learningStore);
   subscribers.push(feedbackSub);
+
+  // Close the dismissal-feedback learning loop: aggregate high-confidence
+  // dismissal patterns into suppression rules and sweep expired ones.
+  subscribers.push(new SuppressionSubscriber(learningStore, resolvedConfig));
 
   const patternDetector = new PatternDetector(learningStore, {
     windowSize: DEFAULT_CONFIG.learning.patternDiscovery.windowSize,

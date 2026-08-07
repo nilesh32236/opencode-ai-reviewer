@@ -641,6 +641,21 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     const windowSize =
       typeof rawWindowSize === 'number' && rawWindowSize >= 1 ? Math.round(rawWindowSize) : 100;
 
+    const rawMinDismissals = config.learning.suppressionRules?.minDismissals;
+    const rawTtlDays = config.learning.suppressionRules?.ttlDays;
+    const rawMaxReviews = config.learning.suppressionRules?.maxReviews;
+    const rawMaxRules = config.learning.suppressionRules?.maxRules;
+
+    const minDismissals =
+      typeof rawMinDismissals === 'number' && rawMinDismissals >= 1
+        ? Math.round(rawMinDismissals)
+        : 3;
+    const ttlDays = typeof rawTtlDays === 'number' && rawTtlDays >= 0 ? Math.round(rawTtlDays) : 30;
+    const maxReviews =
+      typeof rawMaxReviews === 'number' && rawMaxReviews >= 1 ? Math.round(rawMaxReviews) : 20;
+    const maxRules =
+      typeof rawMaxRules === 'number' && rawMaxRules >= 1 ? Math.round(rawMaxRules) : 25;
+
     result.learning = {
       enabled: config.learning.enabled,
       feedbackSignals: config.learning.feedbackSignals,
@@ -653,6 +668,13 @@ export function validateConfig(config: PromptConfig): PromptConfig {
         enabled: config.learning.patternDiscovery?.enabled ?? true,
         minFrequency,
         windowSize,
+      },
+      suppressionRules: {
+        enabled: config.learning.suppressionRules?.enabled ?? true,
+        minDismissals,
+        ttlDays,
+        maxReviews,
+        maxRules,
       },
     };
   }

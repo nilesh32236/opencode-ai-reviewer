@@ -21,6 +21,8 @@ import type {
   ReviewMetricsRow,
   ReviewQualityRow,
   SeverityDistribution,
+  SuppressionRuleGenerationOptions,
+  SuppressionRuleStats,
   TelemetryStats,
 } from '../types.js';
 import type { DbAdapter, LearningRepository } from './types.js';
@@ -231,6 +233,32 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
    */
   async getFalsePositiveRules(filePaths: string[], limit = 20): Promise<string[]> {
     return this.db.getFalsePositiveRules(filePaths, limit);
+  }
+
+  /**
+   * Generate suppression rules from dismissal feedback.
+   * @param options - Generation thresholds (minDismissals, ttlDays, maxReviews, maxRules).
+   * @returns The number of rules that were newly created or refreshed.
+   */
+  async generateSuppressionRules(options: SuppressionRuleGenerationOptions): Promise<number> {
+    return this.db.generateSuppressionRules(options);
+  }
+
+  /**
+   * Expire suppression rules whose time-to-live or review budget elapsed.
+   * @param maxReviews - Review-count expiry threshold.
+   * @returns The number of rules that were expired.
+   */
+  async expireSuppressionRules(maxReviews: number): Promise<number> {
+    return this.db.expireSuppressionRules(maxReviews);
+  }
+
+  /**
+   * Retrieve aggregated suppression-rule effectiveness statistics.
+   * @returns SuppressionRuleStats with active/expired counts and suppression hits.
+   */
+  async getSuppressionRuleStats(): Promise<SuppressionRuleStats> {
+    return this.db.getSuppressionRuleStats();
   }
 
   /**

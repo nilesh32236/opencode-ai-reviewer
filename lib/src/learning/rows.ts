@@ -53,3 +53,18 @@ export interface CustomRuleRow {
   status: string;
   approved_at?: string;
 }
+
+/** Database row for a generated suppression rule. */
+export interface SuppressionRuleRow {
+  id: string;
+  pattern_key: string;
+  message: string;
+  file_types?: string;
+  dismissal_count: number;
+  status: string;
+  created_at: string;
+  last_active_at?: string;
+  expires_at?: string;
+  reviews_seen: number;
+  suppression_hits: number;
+}

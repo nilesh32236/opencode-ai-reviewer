@@ -1446,6 +1446,19 @@ export interface PromptConfig {
       /** Sliding window size in reviews */
       windowSize?: number;
     };
+    /** Suppression-rule generation configuration */
+    suppressionRules?: {
+      /** Whether suppression-rule generation is enabled */
+      enabled?: boolean;
+      /** Minimum dismissals for a pattern to generate a suppression rule */
+      minDismissals?: number;
+      /** Time-to-live in days before a rule expires */
+      ttlDays?: number;
+      /** Maximum number of reviews a rule is injected before it expires */
+      maxReviews?: number;
+      /** Cap on active rules injected into review prompts */
+      maxRules?: number;
+    };
   };
   /** Project metadata configuration */
   project?: {
@@ -1621,6 +1634,13 @@ export const DEFAULT_CONFIG: AgentConfig = {
       enabled: true,
       minFrequency: 3,
       windowSize: 100,
+    },
+    suppressionRules: {
+      enabled: true,
+      minDismissals: 3,
+      ttlDays: 30,
+      maxReviews: 20,
+      maxRules: 25,
     },
   },
   conversation: {
@@ -1897,6 +1917,19 @@ export interface LearningConfig {
     minFrequency: number;
     /** Sliding window size in reviews */
     windowSize: number;
+  };
+  /** Suppression-rule generation from dismissal feedback */
+  suppressionRules: {
+    /** Whether suppression-rule generation is enabled */
+    enabled: boolean;
+    /** Minimum dismissals for a pattern to generate a suppression rule */
+    minDismissals: number;
+    /** Time-to-live in days before a rule expires */
+    ttlDays: number;
+    /** Maximum number of reviews a rule is injected before it expires */
+    maxReviews: number;
+    /** Cap on active rules injected into review prompts */
+    maxRules: number;
   };
 }
 
