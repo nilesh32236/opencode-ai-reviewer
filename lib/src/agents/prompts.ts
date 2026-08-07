@@ -5,7 +5,12 @@
 // Every prompt instructs the model to emit JSON Lines with an `agent` field on
 // each `issue` so downstream parsing and synthesis can attribute findings.
 
-import { buildBudgetBanner, capPromptLength, loadPromptFile } from '../prompts/builder.js';
+import {
+  buildBudgetBanner,
+  buildTestGapSection,
+  capPromptLength,
+  loadPromptFile,
+} from '../prompts/builder.js';
 import type { AgentCategory } from '../types/index.js';
 import { sanitizePromptInput } from '../utils/prompt-sanitizer.js';
 import type { AgentPromptContext } from './types.js';
@@ -168,6 +173,11 @@ function buildAgentPrompt(context: AgentPromptContext, category: AgentCategory):
   sections.push(buildAgentOutputFormat(category));
   sections.push('');
   sections.push(AGENT_TAIL);
+
+  if (context.testGapContext) {
+    sections.push('');
+    sections.push(buildTestGapSection(context.testGapContext));
+  }
 
   if (context.budgetMode && context.budgetMode !== 'full') {
     sections.push('');

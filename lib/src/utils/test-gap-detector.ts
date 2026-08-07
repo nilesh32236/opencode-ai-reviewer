@@ -19,6 +19,8 @@ export interface SourceSymbol {
   endLine: number;
   /** Whether the symbol body contains error-handling constructs (throw / reject / new Error). */
   hasErrorHandling?: boolean;
+  /** Detected error-path labels (e.g. `throw` / `reject`) present in the body. */
+  errorPaths?: string[];
 }
 
 /**
@@ -74,6 +76,14 @@ const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts',
 /** Test file name markers in the convention `<base>.test.<ext>` / `<base>.spec.<ext>`. */
 const TEST_MARKERS = ['.test', '.spec'];
 
+/** Upper bound (bytes) for a changed source file read into the analyzer; larger
+ * files (vendored bundles, generated code) are skipped so analysis stays fast. */
+const MAX_ANALYSIS_FILE_BYTES = 2 * 1024 * 1024;
+
+/** Timeout for the synchronous `git show` fallback read, mirroring the SCA
+ * scan deadline pattern so a hung git process cannot block the review. */
+const GIT_READ_TIMEOUT_MS = 10_000;
+
 /** Anchored (linear) check for a valid JS identifier, used to validate export names. */
 const IDENTIFIER_RE = /^[A-Za-z_$][\w$]*$/;
 
@@ -102,14 +112,14 @@ const EXPORT_PATTERNS: Array<{ kind: SourceSymbol['kind']; regex: RegExp }> = [
   { kind: 'reexport', regex: /export\s*\{([^}]+)\}\s*from\s*['"][^'"]+['"]/g },
 ];
 
-/** Error-handling constructs looked for inside a symbol body. */
-const ERROR_PATH_PATTERNS = [
-  /\bthrow\s+new\s+Error/g,
-  /\bthrow\s+/g,
-  /\.reject\s*\(/g,
-  /\breject\s*\(\s*new\s+Error/g,
-  /\breject\s*\(\s*err/g,
-  /\bnew\s+Error\s*\(/g,
+/** Error-handling constructs looked for inside a symbol body, labeled by the
+ * error path they represent so `errorPaths` reflects what was actually found. */
+const ERROR_PATH_PATTERNS: Array<{ label: string; regex: RegExp }> = [
+  { label: 'throw', regex: /\bthrow\s+new\s+Error/g },
+  { label: 'throw', regex: /\bthrow\s+/g },
+  { label: 'reject', regex: /\.reject\s*\(/g },
+  { label: 'reject', regex: /\breject\s*\(\s*new\s+Error/g },
+  { label: 'reject', regex: /\breject\s*\(\s*err/g },
 ];
 
 /** Error-case assertions looked for inside a test file body. */
@@ -124,6 +134,16 @@ const TEST_ERROR_PATTERNS = [
   /\brejects\b/g,
   /\bcatch\s*\(\s*err/g,
 ];
+
+/** Symbol kinds that carry runtime behaviour and can be covered by a test.
+ * Type/interface declarations and re-exports have no runtime body of their
+ * own, so they are never reported as test gaps. */
+const TESTABLE_KINDS: ReadonlySet<SourceSymbol['kind']> = new Set([
+  'function',
+  'class',
+  'const',
+  'default',
+]);
 
 /**
  * Best-effort line-range detection for a `{` ... `}` block found at the given
@@ -151,13 +171,34 @@ function findBlockEnd(lines: string[], startLine: number, openLineText: string):
 }
 
 /**
+ * Map a character offset to its 0-based line index using precomputed newline
+ * positions via binary search (O(log n) per lookup).
+ * @param offset - The character offset in the file content.
+ * @param newlineOffsets - Sorted positions of `\n` characters in the content.
+ * @returns The 0-based line index containing `offset`.
+ */
+function lineIndexAtCharOffset(offset: number, newlineOffsets: number[]): number {
+  let lo = 0;
+  let hi = newlineOffsets.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (newlineOffsets[mid] < offset) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/**
  * Extract the exported symbols declared in a source file.
  * @param filePath - Absolute path to the source file to analyze.
+ * @param relativePath - Optional repo-relative path used for attribution; when
+ * omitted the absolute `filePath` is used so `SourceSymbol.file` stays
+ * resolvable by `findTestFile`.
  * @returns The list of exported symbols in declaration order.
  */
-export function extractExports(filePath: string): SourceSymbol[] {
+export function extractExports(filePath: string, relativePath?: string): SourceSymbol[] {
   const content = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf-8') : '';
-  return extractExportsFromContent(content, path.basename(filePath));
+  return extractExportsFromContent(content, relativePath ?? filePath);
 }
 
 /**
@@ -170,12 +211,18 @@ export function extractExportsFromContent(content: string, file: string): Source
   const symbols: SourceSymbol[] = [];
   const lines = content.split('\n');
   const joined = content;
+  // Precompute newline offsets once so the per-match line lookup is a binary
+  // search instead of an O(n) re-split of the whole prefix for every match.
+  const newlineOffsets: number[] = [];
+  for (let i = 0; i < content.length; i++) {
+    if (content.charCodeAt(i) === 10) newlineOffsets.push(i);
+  }
 
   for (const { kind, regex } of EXPORT_PATTERNS) {
     regex.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = regex.exec(joined)) !== null) {
-      const lineOffset = joined.slice(0, match.index).split('\n').length - 1;
+      const lineOffset = lineIndexAtCharOffset(match.index, newlineOffsets);
       const line = lineOffset + 1;
       const lineText = lines[lineOffset] ?? '';
       let name = match[1] ?? 'default';
@@ -201,12 +248,13 @@ export function extractExportsFromContent(content: string, file: string): Source
         name = names[0] ?? 'default';
       }
 
-      // Skip matches inside multi-line comments to reduce false positives.
+      // Skip matches inside comments to reduce false positives.
       const before = joined.slice(0, match.index);
-      const inBlockComment =
+      const lastNewline = before.lastIndexOf('\n');
+      const inComment =
         before.lastIndexOf('/*') > before.lastIndexOf('*/') ||
-        before.lastIndexOf('//', before.lastIndexOf('\n')) > before.lastIndexOf('\n');
-      if (inBlockComment) continue;
+        before.lastIndexOf('//') > lastNewline;
+      if (inComment) continue;
 
       let endLine = line;
       if (kind === 'reexport') {
@@ -230,7 +278,8 @@ export function extractExportsFromContent(content: string, file: string): Source
   }
 
   for (const symbol of symbols) {
-    symbol.hasErrorHandling = hasErrorHandlingInRange(lines, symbol.line, symbol.endLine);
+    symbol.errorPaths = errorPathsInRange(lines, symbol.line, symbol.endLine);
+    symbol.hasErrorHandling = symbol.errorPaths.length > 0;
   }
 
   return dedupeSymbols(symbols);
@@ -254,15 +303,22 @@ function dedupeSymbols(symbols: SourceSymbol[]): SourceSymbol[] {
 }
 
 /**
- * Check whether a line range contains error-handling constructs.
+ * Detect the distinct error-path constructs present in a line range.
  * @param lines - All source lines of the file.
  * @param startLine - 1-based start line of the range.
  * @param endLine - 1-based end line of the range (inclusive).
- * @returns True when an error-handling construct appears in the range.
+ * @returns The distinct error-path labels (e.g. `throw`, `reject`) found in the range.
  */
-function hasErrorHandlingInRange(lines: string[], startLine: number, endLine: number): boolean {
+function errorPathsInRange(lines: string[], startLine: number, endLine: number): string[] {
   const body = lines.slice(startLine - 1, endLine).join('\n');
-  return ERROR_PATH_PATTERNS.some((pattern) => pattern.test(body));
+  const labels = new Set<string>();
+  for (const { label, regex } of ERROR_PATH_PATTERNS) {
+    // Reset lastIndex so the shared global patterns yield order-independent
+    // results across repeated calls.
+    regex.lastIndex = 0;
+    if (regex.test(body)) labels.add(label);
+  }
+  return [...labels];
 }
 
 /**
@@ -318,13 +374,19 @@ export function buildTestFileCandidates(sourceFilePath: string): string[] {
     candidates.push(path.posix.join(dir, 'tests', `${base}${marker}${ext}`));
   }
 
-  // Root `tests/` mirror of a `src/` tree: `src/foo.ts` → `tests/foo.test.ts`.
-  if (dir === 'src' || dir.startsWith('src/')) {
-    const remainder = dir === 'src' ? base : `${dir.slice(4)}/${base}`;
+  // `<pkg>/src/` tree mirror: `src/foo.ts` → `tests/foo.test.ts` at the root
+  // and `lib/src/foo.ts` → `lib/tests/foo.test.ts` inside a monorepo package,
+  // preserving any subdirectories under `src/`.
+  const parts = sourceFilePath.split('/');
+  const srcIndex = parts.indexOf('src');
+  if (srcIndex !== -1) {
+    const mirrorDir = parts.slice(0, srcIndex).concat(['tests']).join('/');
+    const remainder = parts.slice(srcIndex + 1, -1).join('/');
+    const mirrorBase = remainder ? `${remainder}/${base}` : base;
     for (const marker of TEST_MARKERS) {
-      candidates.push(path.posix.join('tests', `${remainder}${marker}${ext}`));
+      candidates.push(path.posix.join(mirrorDir, `${mirrorBase}${marker}${ext}`));
     }
-    candidates.push(path.posix.join('tests', `${remainder}${ext}`));
+    candidates.push(path.posix.join(mirrorDir, `${mirrorBase}${ext}`));
   }
 
   return candidates;
@@ -363,8 +425,12 @@ export function parsePatchTouchedNewLines(patch?: string): Set<number> {
     }
     if (!inHunk) continue;
     if (line.startsWith('-')) continue;
-    if (line.startsWith('+') || line.startsWith(' ')) {
+    if (line.startsWith('+')) {
       if (newLine > 0) lines.add(newLine);
+      newLine++;
+      continue;
+    }
+    if (line.startsWith(' ')) {
       newLine++;
       continue;
     }
@@ -405,6 +471,9 @@ function readFileAtHead(workDir: string, file: string): string | null {
       cwd: workDir,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      // Bound the sync git call so a hung git process (lock contention, slow
+      // network filesystem) can never block the whole review indefinitely.
+      timeout: GIT_READ_TIMEOUT_MS,
     });
     return result as string;
   } catch {
@@ -421,6 +490,11 @@ function readFileAtHead(workDir: string, file: string): string | null {
  * is skipped and never crashes the review.
  */
 export class TestGapDetector {
+  /** Per-analyze memo of `symbol.file` → mapped test file (null = none). */
+  private testFileCache = new Map<string, string | null>();
+  /** Per-analyze memo of test file path → its content (null = unreadable). */
+  private testContentCache = new Map<string, string | null>();
+
   /**
    * Run a full test-gap analysis for a set of changed files.
    * @param changedFiles - The PR's changed files.
@@ -428,6 +502,9 @@ export class TestGapDetector {
    * @returns Structured gap results and a markdown context string.
    */
   analyze(changedFiles: ChangedFile[], workDir: string): TestGapResult {
+    this.testFileCache.clear();
+    this.testContentCache.clear();
+
     const sourceFiles = changedFiles.filter(
       (f) => !isTestFile(f.path) && SOURCE_EXTENSIONS.has(path.posix.extname(f.path)),
     );
@@ -441,7 +518,16 @@ export class TestGapDetector {
     for (const file of sourceFiles) {
       if (file.status === 'removed') continue;
       const fullPath = path.join(workDir, file.path);
-      const content = fs.existsSync(fullPath) ? fs.readFileSync(fullPath, 'utf-8') : '';
+      // Best-effort: a missing, unreadable, oversized, or directory entry is
+      // skipped and never crashes the review.
+      let content = '';
+      try {
+        const stat = fs.statSync(fullPath);
+        if (!stat.isFile() || stat.size > MAX_ANALYSIS_FILE_BYTES) continue;
+        content = fs.readFileSync(fullPath, 'utf-8');
+      } catch {
+        continue;
+      }
       if (!content) continue;
 
       const exports = extractExportsFromContent(content, file.path);
@@ -457,20 +543,24 @@ export class TestGapDetector {
         modifiedSymbols.push(...symbolsTouchedByPatch(exports, touched));
       } else {
         // No patch (e.g. GitLab). Fall back to comparing against the previous
-        // revision when git is available.
+        // revision when git is available. The symbol NAME is the stable key —
+        // line numbers shift whenever lines are inserted or deleted above a
+        // symbol, which would otherwise misclassify exports as new.
         const oldContent = readFileAtHead(workDir, file.path);
         if (oldContent !== null) {
           const oldExports = extractExportsFromContent(oldContent, file.path);
-          const oldByLine = new Map(oldExports.map((s) => [s.line, s]));
+          const oldByName = new Map(oldExports.map((s) => [s.name, s]));
+          const oldLines = oldContent.split('\n');
+          const newLines = content.split('\n');
           for (const symbol of exports) {
-            const previous = oldByLine.get(symbol.line);
+            const previous = oldByName.get(symbol.name);
             if (previous === undefined) {
               // New symbol in a modified file.
               newSymbols.push(symbol);
             } else {
-              const oldLine = oldContent.split('\n')[symbol.line - 1] ?? '';
-              const newLine = content.split('\n')[symbol.line - 1] ?? '';
-              if (oldLine !== newLine) modifiedSymbols.push(symbol);
+              const oldBody = oldLines.slice(previous.line - 1, previous.endLine).join('\n');
+              const newBody = newLines.slice(symbol.line - 1, symbol.endLine).join('\n');
+              if (oldBody !== newBody) modifiedSymbols.push(symbol);
             }
           }
         }
@@ -514,6 +604,40 @@ export class TestGapDetector {
   }
 
   /**
+   * Memoized `findTestFile` lookup keyed by source path, so the (up to twelve
+   * `fs.existsSync` calls per source file) mapping runs at most once per file
+   * per analyze pass.
+   * @param sourceFilePath - Repo-relative source file path.
+   * @param workDir - Repository working directory.
+   * @returns The mapped test file path, or `null` when none exists.
+   */
+  private findTestFileCached(sourceFilePath: string, workDir: string): string | null {
+    if (this.testFileCache.has(sourceFilePath)) return this.testFileCache.get(sourceFilePath)!;
+    const testFile = findTestFile(sourceFilePath, workDir);
+    this.testFileCache.set(sourceFilePath, testFile);
+    return testFile;
+  }
+
+  /**
+   * Memoized test-file content read keyed by test file path. Missing or
+   * unreadable files yield `null` without throwing.
+   * @param testFile - Repo-relative test file path.
+   * @param workDir - Repository working directory.
+   * @returns The test file content, or `null` when unreadable.
+   */
+  private readTestFileCached(testFile: string, workDir: string): string | null {
+    if (this.testContentCache.has(testFile)) return this.testContentCache.get(testFile)!;
+    let content: string | null = null;
+    try {
+      content = fs.readFileSync(path.join(workDir, testFile), 'utf-8');
+    } catch {
+      content = null;
+    }
+    this.testContentCache.set(testFile, content);
+    return content;
+  }
+
+  /**
    * Flag modified source symbols whose mapped test file exists but was NOT
    * updated in the same PR.
    * @param modifiedSymbols - Symbols touched by the PR.
@@ -528,7 +652,8 @@ export class TestGapDetector {
   ): TestGapEntry[] {
     const gaps: TestGapEntry[] = [];
     for (const symbol of modifiedSymbols) {
-      const testFile = findTestFile(symbol.file, workDir);
+      if (!TESTABLE_KINDS.has(symbol.kind)) continue;
+      const testFile = this.findTestFileCached(symbol.file, workDir);
       if (testFile !== null && !changedTestFiles.has(testFile)) {
         gaps.push({
           sourceFile: symbol.file,
@@ -555,7 +680,8 @@ export class TestGapDetector {
   ): TestGapEntry[] {
     const gaps: TestGapEntry[] = [];
     for (const symbol of newSymbols) {
-      const testFile = findTestFile(symbol.file, workDir);
+      if (!TESTABLE_KINDS.has(symbol.kind)) continue;
+      const testFile = this.findTestFileCached(symbol.file, workDir);
       if (testFile === null || !changedTestFiles.has(testFile)) {
         gaps.push({
           sourceFile: symbol.file,
@@ -582,11 +708,10 @@ export class TestGapDetector {
     const gaps: TestGapEntry[] = [];
     for (const symbol of symbols) {
       if (!symbol.hasErrorHandling) continue;
-      const testFile = findTestFile(symbol.file, workDir);
+      const testFile = this.findTestFileCached(symbol.file, workDir);
       if (testFile === null) continue;
-      const testPath = path.join(workDir, testFile);
-      if (!fs.existsSync(testPath)) continue;
-      const testContent = fs.readFileSync(testPath, 'utf-8');
+      const testContent = this.readTestFileCached(testFile, workDir);
+      if (testContent === null) continue;
       const hasErrorAssertions = TEST_ERROR_PATTERNS.some((pattern) => {
         pattern.lastIndex = 0;
         return pattern.test(testContent);
@@ -596,7 +721,7 @@ export class TestGapDetector {
           sourceFile: symbol.file,
           symbolName: symbol.name,
           testFile,
-          errorPaths: ['throw', 'reject'],
+          errorPaths: symbol.errorPaths ?? ['throw'],
           reason: `Symbol \`${symbol.name}\` has error-handling paths but \`${testFile}\` contains no error-case assertions (e.g. \`.rejects\`, \`toThrow\`).`,
         });
       }

@@ -90,7 +90,8 @@ import { withRetry } from './utils/retry.js';
 import { sanitizeString } from './utils/sanitize.js';
 import { detectSecrets, mergeSecretFindings } from './utils/secret-detect.js';
 import type { SecretDetectOptions, SecretFinding } from './utils/secret-detect.js';
-import { TestGapDetector } from './utils/test-gap-detector.js';
+import { TestGapDetector, buildContextString, isTestFile } from './utils/test-gap-detector.js';
+import type { TestGapResult } from './utils/test-gap-detector.js';
 
 /** Maximum number of batch chunks processed concurrently by `reviewPR`. */
 export const MAX_BATCH_CONCURRENCY = 8;
@@ -885,11 +886,23 @@ export class ReviewEngine {
     // and surface structured gaps as prompt context. Non-critical: any failure
     // degrades gracefully to a review without test-gap context. Only runs when
     // the feature is enabled, after the exclude / skip early-returns.
+    let testGapResult: TestGapResult | undefined;
     let testGapContext: string | undefined;
     if (this.config.review.enableTestGapDetection) {
       try {
         const detector = new TestGapDetector();
-        const result = detector.analyze(pr.changedFiles, workDir);
+        // Analyze the review-scoped changed-file set so excluded source files
+        // cannot produce findings for diffs the reviewer never sees, while
+        // retaining changed test files (even ones excluded from review) so the
+        // detector still recognizes them as updated.
+        const reviewScopedFiles = [
+          ...files,
+          ...pr.changedFiles.filter(
+            (f) => isTestFile(f.path) && !files.some((reviewed) => reviewed.path === f.path),
+          ),
+        ];
+        const result = detector.analyze(reviewScopedFiles, workDir);
+        testGapResult = result;
         if (result.contextString) {
           this.logger.info(
             `Test-gap analysis flagged ${result.modifiedUnchangedTests.length} modified-unchanged, ` +
@@ -935,6 +948,7 @@ export class ReviewEngine {
         previousFindings,
         previousBotComments,
         scaIssues,
+        testGapResult,
       );
     }
 
@@ -1117,7 +1131,7 @@ export class ReviewEngine {
               linterResults,
               codebaseIndexContext: batchCodebaseContext,
               blameAware: batchBlameData !== undefined && batchBlameData.size > 0,
-              testGapContext,
+              testGapContext: this.filterTestGapContext(testGapResult, batch),
               languages: detectLanguages(
                 batch
                   .map((f) => f?.path)
@@ -1414,6 +1428,8 @@ export class ReviewEngine {
    * @param previousFindings - Optional findings from previous fix iterations.
    * @param previousBotComments - Optional previous bot review comments.
    * @param scaIssues - Optional SCA findings merged into the verified result.
+   * @param testGapResult - Optional structured test-gap analysis threaded to each
+   * specialized agent (batch-filtered) so the findings reach the multi-agent path.
    * @returns The consolidated, verified ReviewResult.
    */
   private async runMultiAgentReview(
@@ -1444,6 +1460,7 @@ export class ReviewEngine {
       commentId: number;
     }>,
     scaIssues?: ReviewIssue[],
+    testGapResult?: TestGapResult,
   ): Promise<ReviewResult> {
     const categories = this.getActiveAgentCategories();
     this.logger.info(
@@ -1477,6 +1494,7 @@ export class ReviewEngine {
           previousBotComments,
           budgetMode,
           totalDiffLines,
+          testGapResult,
         ),
       ),
     );
@@ -1563,6 +1581,8 @@ export class ReviewEngine {
    * @param previousBotComments - Optional previous bot review comments.
    * @param budgetMode - Optional budget review mode forwarded into the agent prompt.
    * @param totalDiffLines - Optional total diff line count for the budget banner.
+   * @param testGapResult - Optional structured test-gap analysis; each batch
+   * receives a filtered subset scoped to the batch's source paths.
    * @returns The structured AgentResult for this category.
    */
   private async runAgentCategory(
@@ -1591,6 +1611,7 @@ export class ReviewEngine {
     }>,
     budgetMode?: ReviewBudgetMode,
     totalDiffLines?: number,
+    testGapResult?: TestGapResult,
   ): Promise<AgentResult> {
     const agentConfig = this.config.multiAgent?.agents?.[category] as
       | MultiAgentAgentConfig
@@ -1681,6 +1702,10 @@ export class ReviewEngine {
         ),
         budgetMode,
         totalDiffLines,
+        // Restrict the PR-wide detection result to gaps touching this batch's
+        // source paths so agents never suggest tests for files absent from the
+        // batch they are reviewing.
+        testGapContext: this.filterTestGapContext(testGapResult, batch),
       };
 
       const promptBuilder = AGENT_PROMPT_BUILDERS[category] ?? buildSecurityPrompt;
@@ -1800,6 +1825,40 @@ export class ReviewEngine {
       success,
       error,
     };
+  }
+
+  /**
+   * Filter the PR-wide test-gap analysis to entries whose source path belongs
+   * to the current batch, returning the formatted context string. This keeps
+   * the structured detector result while ensuring a batch never receives gaps
+   * (or test suggestions) for source files absent from its own diff.
+   * @param testGapResult - The structured test-gap analysis result (may be undefined).
+   * @param batch - The changed files in the current batch.
+   * @returns The batch-scoped formatted context string, or undefined when the
+   * analysis is absent or no gaps apply to this batch.
+   */
+  private filterTestGapContext(
+    testGapResult: TestGapResult | undefined,
+    batch: PRContext['changedFiles'],
+  ): string | undefined {
+    if (!testGapResult) return undefined;
+    const batchPaths = new Set(
+      batch.map((f) => f?.path).filter((p): p is string => typeof p === 'string' && Boolean(p)),
+    );
+    const inBatch = (sourceFile: string) => batchPaths.has(sourceFile);
+    const filtered: TestGapResult = {
+      modifiedUnchangedTests: testGapResult.modifiedUnchangedTests.filter((g) =>
+        inBatch(g.sourceFile),
+      ),
+      newUntestedExports: testGapResult.newUntestedExports.filter((g) => inBatch(g.sourceFile)),
+      missingErrorCaseTests: testGapResult.missingErrorCaseTests.filter((g) =>
+        inBatch(g.sourceFile),
+      ),
+      testSuggestions: testGapResult.testSuggestions.filter((s) => inBatch(s.sourceFile)),
+      contextString: '',
+    };
+    const context = buildContextString(filtered);
+    return context ? context : undefined;
   }
 
   /**

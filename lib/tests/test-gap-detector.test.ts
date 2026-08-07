@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'os';
 import * as path from 'path';
 import { afterEach, describe, expect, it, test } from 'vitest';
@@ -110,6 +111,54 @@ describe('extractExports', () => {
     expect(symbols.some((s) => s.name === 'blocked')).toBe(false);
     expect(symbols.some((s) => s.name === 'live')).toBe(true);
   });
+
+  it('ignores exports commented out with a trailing same-line comment', () => {
+    const content = `import { x } from './x';
+live(); // export function dead() {}
+export function live() {}
+`;
+    const symbols = extractExportsFromContent(content, 'x.ts');
+    expect(symbols.some((s) => s.name === 'dead')).toBe(false);
+    expect(symbols.some((s) => s.name === 'live')).toBe(true);
+  });
+
+  it('consistently detects error handling across consecutive symbols', () => {
+    const content = [
+      'export function a() { throw new Error("a"); }',
+      'export function b() { throw new Error("b"); }',
+      'export function c() { throw new Error("c"); }',
+      '',
+    ].join('\n');
+    const symbols = extractExportsFromContent(content, 'x.ts');
+    const flagged = symbols.filter((s) => s.hasErrorHandling).map((s) => s.name);
+    expect(flagged).toEqual(['a', 'b', 'c']);
+  });
+
+  it('does not treat bare Error construction as an unhandled error path', () => {
+    const content = 'export function a() { const e = new Error("x"); return e.message; }\n';
+    const symbols = extractExportsFromContent(content, 'x.ts');
+    expect(symbols[0].hasErrorHandling).toBe(false);
+  });
+
+  it('reports only the error paths actually present in a symbol body', () => {
+    const content = [
+      'export function throwsOne() { throw new Error("x"); }',
+      'export function rejectsOne() { return Promise.reject(new Error("x")); }',
+      '',
+    ].join('\n');
+    const symbols = extractExportsFromContent(content, 'x.ts');
+    const throwsOne = symbols.find((s) => s.name === 'throwsOne');
+    expect(throwsOne?.errorPaths).toEqual(['throw']);
+    const rejectsOne = symbols.find((s) => s.name === 'rejectsOne');
+    expect(rejectsOne?.errorPaths).toEqual(['reject']);
+  });
+
+  it('preserves the provided relative path in SourceSymbol.file', () => {
+    const dir = makeWorkDir();
+    write(dir, 'pkg/src/mod.ts', 'export function foo() {}\n');
+    const symbols = extractExports(path.join(dir, 'pkg', 'src', 'mod.ts'), 'pkg/src/mod.ts');
+    expect(symbols[0].file).toBe('pkg/src/mod.ts');
+  });
 });
 
 describe('isTestFile', () => {
@@ -143,6 +192,20 @@ describe('findTestFile', () => {
     expect(findTestFile('src/foo.ts', dir)).toBe('tests/foo.test.ts');
   });
 
+  it('maps lib/src/foo.ts to lib/tests/foo.test.ts monorepo mirror', () => {
+    const dir = makeWorkDir();
+    write(dir, 'lib/src/foo.ts', 'export const foo = 1;');
+    write(dir, 'lib/tests/foo.test.ts', 'import { foo } from "../src/foo";');
+    expect(findTestFile('lib/src/foo.ts', dir)).toBe('lib/tests/foo.test.ts');
+  });
+
+  it('maps src/sub/foo.ts to tests/sub/foo.test.ts preserving subdirectories', () => {
+    const dir = makeWorkDir();
+    write(dir, 'src/sub/foo.ts', 'export const foo = 1;');
+    write(dir, 'tests/sub/foo.test.ts', 'import { foo } from "../../src/sub/foo";');
+    expect(findTestFile('src/sub/foo.ts', dir)).toBe('tests/sub/foo.test.ts');
+  });
+
   it('returns null when no convention-matching file exists', () => {
     const dir = makeWorkDir();
     write(dir, 'src/foo.ts', 'export const foo = 1;');
@@ -162,7 +225,7 @@ describe('findTestFile', () => {
 });
 
 describe('parsePatchTouchedNewLines', () => {
-  it('extracts new-file line numbers touched by a diff', () => {
+  it('extracts new-file line numbers of added lines touched by a diff', () => {
     const patch = [
       '@@ -1,3 +1,5 @@',
       ' export function foo() {',
@@ -173,10 +236,12 @@ describe('parsePatchTouchedNewLines', () => {
       '',
     ].join('\n');
     const touched = parsePatchTouchedNewLines(patch);
+    // Only added ('+') lines are recorded; unchanged context lines (' ') keep
+    // the line counter moving but do NOT mark neighbouring symbols as touched.
     expect(touched.has(2)).toBe(true);
-    expect(touched.has(3)).toBe(true);
     expect(touched.has(4)).toBe(true);
-    expect(touched.has(1)).toBe(true);
+    expect(touched.has(3)).toBe(false);
+    expect(touched.has(1)).toBe(false);
   });
 
   it('returns an empty set for missing patches', () => {
@@ -331,6 +396,72 @@ describe('TestGapDetector', () => {
     const detector = new TestGapDetector();
     const result = detector.analyze(changedFiles, dir);
     expect(result.missingErrorCaseTests).toHaveLength(0);
+  });
+
+  it('does NOT flag type-only exports as untested', () => {
+    const dir = makeWorkDir();
+    write(
+      dir,
+      'src/types.ts',
+      'export interface Shape { area(): number; }\nexport type Maybe<T> = T | null;\n',
+    );
+
+    const changedFiles: ChangedFile[] = [
+      { path: 'src/types.ts', status: 'added', additions: 2, deletions: 0 },
+    ];
+
+    const detector = new TestGapDetector();
+    const result = detector.analyze(changedFiles, dir);
+    expect(result.newUntestedExports).toHaveLength(0);
+  });
+
+  it('does NOT flag modified type-only exports without test updates', () => {
+    const dir = makeWorkDir();
+    write(
+      dir,
+      'src/types.ts',
+      'export interface Shape { area(): number; }\nexport type Maybe<T> = T | null;\n',
+    );
+
+    const changedFiles: ChangedFile[] = [
+      {
+        path: 'src/types.ts',
+        status: 'modified',
+        additions: 1,
+        deletions: 1,
+        patch:
+          '@@ -1 +1 @@\n-export interface Shape { area(): number; }\n+export interface Shape { perimeter(): number; }\n',
+      },
+    ];
+
+    const detector = new TestGapDetector();
+    const result = detector.analyze(changedFiles, dir);
+    expect(result.modifiedUnchangedTests).toHaveLength(0);
+  });
+
+  it('falls back to the previous git revision when no patch is present', () => {
+    const dir = makeWorkDir();
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'ignore' });
+    git('init', '-q');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'test');
+    write(dir, 'src/svc.ts', 'export function alpha() { return 1; }\n');
+    write(dir, 'src/svc.test.ts', 'test("alpha", () => {});');
+    git('add', '.');
+    git('commit', '-qm', 'init');
+
+    // Insert a line above `alpha` so its line number shifts; the no-patch
+    // fallback must still match `alpha` by name, not by stale line number.
+    write(dir, 'src/svc.ts', '// header\nexport function alpha() { return 2; }\n');
+
+    const detector = new TestGapDetector();
+    const result = detector.analyze(
+      [{ path: 'src/svc.ts', status: 'modified', additions: 2, deletions: 1 }],
+      dir,
+    );
+
+    expect(result.newUntestedExports).toHaveLength(0);
+    expect(result.modifiedUnchangedTests.some((g) => g.symbolName === 'alpha')).toBe(true);
   });
 });
 

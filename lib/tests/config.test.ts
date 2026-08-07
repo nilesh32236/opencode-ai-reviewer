@@ -1097,6 +1097,20 @@ fix:
       );
     });
 
+    it('loads review.enableMetaVerification without unknown-key warnings', () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.opencode-reviewer.yml'),
+        `review:
+  enableMetaVerification: true
+`,
+      );
+      const config = loadConfig(tmpDir);
+      expect(config?.review?.enableMetaVerification).toBe(true);
+      expect(core.warning).not.toHaveBeenCalledWith(
+        expect.stringContaining('Unknown config key "review.enableMetaVerification"'),
+      );
+    });
+
     it('loads review.enableTestGapDetection without unknown-key warnings', () => {
       fs.writeFileSync(
         path.join(tmpDir, '.opencode-reviewer.yml'),

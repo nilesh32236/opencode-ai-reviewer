@@ -1046,16 +1046,19 @@ function buildWhatToCheck(): string {
 
 /**
  * Build the `## Test Gap Analysis` prompt section injected when the
- * test-gap detector found gaps.
+ * test-gap detector found gaps. The gap context contains changed file paths
+ * from the PR and is sanitized like every other untrusted input before
+ * interpolation so crafted paths cannot act as prompt instructions.
  * @param testGapContext - The detector's formatted markdown context string.
  * @returns The assembled prompt section.
  */
-function buildTestGapSection(testGapContext: string): string {
+export function buildTestGapSection(testGapContext: string): string {
+  const sanitizedContext = sanitizePromptInput(testGapContext, { maxLength: 50_000 });
   return `## Test Gap Analysis
 
 The following source symbols appear to lack corresponding test coverage. Focus on these specific gaps during review and suggest concrete test cases for each:
 
-${testGapContext}
+${sanitizedContext}
 
 For every gap, reference the exact file and symbol, and recommend a specific test case (success path, boundary case, and error case).`;
 }
