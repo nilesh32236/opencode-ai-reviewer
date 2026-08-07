@@ -320,6 +320,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const secrets = repoConfig?.secrets;
   const llm = repoConfig?.llm;
   const sca = repoConfig?.sca;
+  const changelog = repoConfig?.changelog;
   if (
     !sensitivity &&
     !categories &&
@@ -331,7 +332,8 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
     !notifications &&
     !secrets &&
     !llm &&
-    !sca
+    !sca &&
+    !changelog
   ) {
     return baseConfig;
   }
@@ -389,6 +391,14 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       sca: {
         ...baseConfig.sca,
         ...sca,
+      },
+    }),
+    // Mirror the changelog merge so app-hosted repos can opt in to and tune the
+    // `/changelog` command via `.opencode-reviewer.yml`.
+    ...(changelog && {
+      changelog: {
+        ...baseConfig.changelog,
+        ...changelog,
       },
     }),
   };

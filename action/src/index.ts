@@ -27,6 +27,7 @@ import {
 } from '@opencode-pr-agent/lib';
 import { runAnalyze } from './analyze.js';
 import { runAudit } from './audit.js';
+import { runChangelog } from './changelog.js';
 import { runDescribe } from './describe.js';
 import { runDocs } from './docs.js';
 import { runAutofixLoop, runFix, runFixIssue } from './fix.js';
@@ -287,6 +288,35 @@ async function run(): Promise<void> {
         enabled: loadedConfig?.docs?.enabled ?? DEFAULT_CONFIG.docs?.enabled ?? false,
         style: loadedConfig?.docs?.style ?? inputs.docStyle ?? DEFAULT_CONFIG.docs?.style ?? 'auto',
       },
+      changelog: loadedConfig?.changelog
+        ? {
+            enabled: loadedConfig.changelog.enabled ?? DEFAULT_CONFIG.changelog?.enabled ?? false,
+            outputFormat:
+              loadedConfig.changelog.outputFormat ??
+              DEFAULT_CONFIG.changelog?.outputFormat ??
+              'markdown',
+            categories:
+              loadedConfig.changelog.categories ?? DEFAULT_CONFIG.changelog?.categories ?? {},
+            filePath:
+              loadedConfig.changelog.filePath ??
+              DEFAULT_CONFIG.changelog?.filePath ??
+              'CHANGELOG.md',
+            createPR:
+              loadedConfig.changelog.createPR ?? DEFAULT_CONFIG.changelog?.createPR ?? false,
+            prBranchPrefix:
+              loadedConfig.changelog.prBranchPrefix ??
+              DEFAULT_CONFIG.changelog?.prBranchPrefix ??
+              'changelog',
+            subdirectoryFilter:
+              loadedConfig.changelog.subdirectoryFilter ??
+              DEFAULT_CONFIG.changelog?.subdirectoryFilter,
+            includeFiles:
+              loadedConfig.changelog.includeFiles ??
+              DEFAULT_CONFIG.changelog?.includeFiles ??
+              false,
+            since: loadedConfig.changelog.since ?? DEFAULT_CONFIG.changelog?.since,
+          }
+        : DEFAULT_CONFIG.changelog,
       describe: {
         enabled: loadedConfig?.describe?.enabled ?? DEFAULT_CONFIG.describe.enabled,
         model:
@@ -444,6 +474,9 @@ async function run(): Promise<void> {
             break;
           }
           await runDocs(inputs, config, engine, gh);
+          break;
+        case 'changelog':
+          await runChangelog(inputs, config, gh);
           break;
         case 'describe':
           if (config.describe?.enabled === false) {

@@ -6,6 +6,7 @@ import { minimatch } from 'minimatch';
 import type {
   AgentCategory,
   CategoryOverride,
+  ChangelogConfig,
   ConfigOverride,
   DescribeConfig,
   DocsConfig,
@@ -24,7 +25,11 @@ import type {
 } from './types/index.js';
 import type { Platform } from './types/index.js';
 import { isDocStyle } from './types/index.js';
-import { DEFAULT_SCA_CONFIG, DEFAULT_SCA_LOCK_FILE_PATTERNS } from './types/index.js';
+import {
+  DEFAULT_CHANGELOG_CONFIG,
+  DEFAULT_SCA_CONFIG,
+  DEFAULT_SCA_LOCK_FILE_PATTERNS,
+} from './types/index.js';
 import { PromptConfigSchema } from './types/schemas.js';
 import { DEFAULT_ALLOWLIST } from './utils/command.js';
 import { Logger } from './utils/logger.js';
@@ -99,6 +104,17 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
   describe: {
     enabled: null,
     model: null,
+  },
+  changelog: {
+    enabled: null,
+    outputFormat: null,
+    categories: null,
+    filePath: null,
+    createPR: null,
+    prBranchPrefix: null,
+    subdirectoryFilter: null,
+    includeFiles: null,
+    since: null,
   },
   learning: {
     enabled: null,
@@ -645,6 +661,47 @@ export function validateConfig(config: PromptConfig): PromptConfig {
       describe.model = desc.model.trim();
     }
     result.describe = describe;
+  }
+
+  if (config.changelog && typeof config.changelog === 'object') {
+    const c = config.changelog;
+    const changelog: ChangelogConfig = { ...DEFAULT_CHANGELOG_CONFIG };
+    if (typeof c.enabled === 'boolean') {
+      changelog.enabled = c.enabled;
+    }
+    if (c.outputFormat === 'markdown' || c.outputFormat === 'json') {
+      changelog.outputFormat = c.outputFormat;
+    }
+    if (c.categories && typeof c.categories === 'object') {
+      const categories: Record<string, string> = {};
+      for (const [type, heading] of Object.entries(c.categories)) {
+        if (typeof heading === 'string' && heading.trim() !== '') {
+          categories[type] = heading;
+        }
+      }
+      if (Object.keys(categories).length > 0) {
+        changelog.categories = categories;
+      }
+    }
+    if (typeof c.filePath === 'string' && c.filePath.trim() !== '') {
+      changelog.filePath = c.filePath.trim();
+    }
+    if (typeof c.createPR === 'boolean') {
+      changelog.createPR = c.createPR;
+    }
+    if (typeof c.prBranchPrefix === 'string' && c.prBranchPrefix.trim() !== '') {
+      changelog.prBranchPrefix = c.prBranchPrefix.trim();
+    }
+    if (typeof c.subdirectoryFilter === 'string' && c.subdirectoryFilter.trim() !== '') {
+      changelog.subdirectoryFilter = c.subdirectoryFilter.trim();
+    }
+    if (typeof c.includeFiles === 'boolean') {
+      changelog.includeFiles = c.includeFiles;
+    }
+    if (typeof c.since === 'string' && c.since.trim() !== '') {
+      changelog.since = c.since.trim();
+    }
+    result.changelog = changelog;
   }
 
   if (config.learning) {

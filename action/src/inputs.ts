@@ -23,6 +23,7 @@ const VALID_MODES: ActionMode[] = [
   'setup',
   'docs',
   'describe',
+  'changelog',
 ];
 
 const VALID_FAIL_ON_SEVERITIES: readonly FailOnSeverity[] = [

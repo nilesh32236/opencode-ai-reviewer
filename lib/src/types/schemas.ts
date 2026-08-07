@@ -5,7 +5,11 @@
 
 import { z } from 'zod';
 import { MODEL_STRING_REGEX } from '../utils/model-string.js';
-import { DEFAULT_SCA_LOCK_FILE_PATTERNS, DOC_STYLES } from './index.js';
+import {
+  DEFAULT_CHANGELOG_CATEGORIES,
+  DEFAULT_SCA_LOCK_FILE_PATTERNS,
+  DOC_STYLES,
+} from './index.js';
 
 /** Error message shared by every model-field regex in AgentConfigSchema. */
 const MODEL_STRING_ERROR = 'Must be "provider/model-name" format (e.g. "openai/gpt-4o")';
@@ -237,6 +241,19 @@ export const DocsConfigSchema = z.object({
 export const DescribeConfigSchema = z.object({
   enabled: z.boolean().default(true),
   model: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),
+});
+
+/** Zod schema validating the `/changelog` release-notes configuration. */
+export const ChangelogConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  outputFormat: z.enum(['markdown', 'json']).default('markdown'),
+  categories: z.record(z.string()).default(DEFAULT_CHANGELOG_CATEGORIES),
+  filePath: z.string().default('CHANGELOG.md'),
+  createPR: z.boolean().default(false),
+  prBranchPrefix: z.string().default('changelog'),
+  subdirectoryFilter: z.string().optional(),
+  includeFiles: z.boolean().default(false),
+  since: z.string().optional(),
 });
 
 /** Zod schema validating learning configuration with nested meta-review and pattern discovery defaults. */
@@ -516,6 +533,7 @@ export const AgentConfigSchema = z.object({
   audit: AuditConfigSchema.default({}),
   docs: DocsConfigSchema.default({}),
   describe: DescribeConfigSchema.default({}),
+  changelog: ChangelogConfigSchema.default({}),
   learning: LearningConfigSchema.default({}),
   linters: z.array(LinterConfigSchema).default([]),
   rateLimiting: RateLimitingConfigSchema.default(RateLimitingConfigSchema.parse({})),
@@ -603,6 +621,7 @@ export const PromptConfigSchema = z.object({
     .optional(),
   docs: DocsConfigSchema.optional(),
   describe: DescribeConfigSchema.optional(),
+  changelog: ChangelogConfigSchema.optional(),
   learning: z
     .object({
       enabled: z.boolean().optional(),

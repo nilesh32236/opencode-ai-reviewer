@@ -7,7 +7,7 @@ branding:
 
 inputs:
   mode:
-    description: 'Action mode: review, fix, audit, post, analyze, self-heal, setup, docs, or describe'
+    description: 'Action mode: review, fix, audit, post, analyze, self-heal, setup, docs, describe, or changelog'
     required: true
     default: 'review'
 
@@ -344,6 +344,20 @@ outputs:
     description: 'Estimated cost of the review run in USD (when cost_tracking_enabled=true and computable)'
   description:
     description: 'Markdown PR description generated in describe mode'
+  changelog_markdown:
+    description: 'Generated changelog release notes in markdown (changelog mode)'
+  changelog_json:
+    description: 'Generated changelog entries as JSON (changelog mode, when changelog.outputFormat is json)'
+  entry_count:
+    description: 'Number of changelog entries generated (changelog mode)'
+  baseline:
+    description: 'ISO 8601 baseline date merged PRs were filtered against (changelog mode)'
+  baseline_tag:
+    description: 'Baseline git tag name, or empty when none was resolved (changelog mode)'
+  changelog_pr_url:
+    description: 'URL of the created release-prep changelog PR (changelog mode with changelog.createPR)'
+  changelog_pr_number:
+    description: 'Number of the created release-prep changelog PR (changelog mode with changelog.createPR)'
 
 runs:
   using: 'node24'

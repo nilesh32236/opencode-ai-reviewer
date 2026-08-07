@@ -13,6 +13,8 @@ describe('parseCommand', () => {
     expect(parseCommand('/ask')?.command).toBe('ask');
     expect(parseCommand('/setup')?.command).toBe('setup');
     expect(parseCommand('/docs')?.command).toBe('docs');
+    expect(parseCommand('/changelog')?.command).toBe('changelog');
+    expect(parseCommand('/oc changelog')?.command).toBe('changelog');
     expect(parseCommand('/dismiss')?.command).toBe('dismiss');
     expect(parseCommand('/oc setup')?.command).toBe('setup');
   });
