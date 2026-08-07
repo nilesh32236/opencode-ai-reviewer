@@ -6,11 +6,11 @@ import type { LearningFeedback } from '../../types/index.js';
 import { Logger } from '../../utils/logger.js';
 import { JsonDatabase, SUPPRESSING_DISMISS_SIGNALS } from '../json-db.js';
 import {
+  SUPPRESSION_RETENTION_MS,
   deriveFileExtensions,
   generateId,
   hashPatternKey,
   sanitizeSuppressionMessage,
-  SUPPRESSION_RETENTION_MS,
 } from '../schema.js';
 import { DEFAULT_EXCLUDED_SEVERITIES } from '../types.js';
 import type {

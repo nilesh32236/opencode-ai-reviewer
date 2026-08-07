@@ -12,11 +12,11 @@ import type {
   SuppressionRuleRow,
 } from './rows.js';
 import {
+  SUPPRESSION_RETENTION_MS,
   deriveFileExtensions,
   generateId,
   hashPatternKey,
   sanitizeSuppressionMessage,
-  SUPPRESSION_RETENTION_MS,
 } from './schema.js';
 import { DEFAULT_EXCLUDED_SEVERITIES } from './types.js';
 import type {
@@ -697,7 +697,7 @@ export class JsonDatabase implements LearningRepository {
     for (const rule of this.data.suppression_rules) {
       if (rule.status === 'expired') {
         const createdMs = Date.parse(rule.created_at);
-        const expMs = rule.expires_at ? Date.parse(rule.expires_at) : NaN;
+        const expMs = rule.expires_at ? Date.parse(rule.expires_at) : Number.NaN;
         // Purge long-held inactive rules so the store cannot grow without bound.
         if (createdMs < cutoff && !Number.isNaN(expMs) && expMs < cutoff) {
           purged++;

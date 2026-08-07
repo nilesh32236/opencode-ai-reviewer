@@ -937,7 +937,11 @@ describe('LearningStore getFalsePositiveRules', () => {
         prNumber: 13,
       });
     }
-    const created = await store.generateSuppressionRules({ minDismissals: 3, ttlDays: 30, maxRules: 25 });
+    const created = await store.generateSuppressionRules({
+      minDismissals: 3,
+      ttlDays: 30,
+      maxRules: 25,
+    });
     expect(created).toBe(1);
     // A review that touches files must not pick up the unscoped rule.
     expect(await store.getFalsePositiveRules(['src/x.ts'])).toHaveLength(0);
@@ -961,7 +965,11 @@ describe('LearningStore getFalsePositiveRules', () => {
         prNumber: 14,
       });
     }
-    const created = await store.generateSuppressionRules({ minDismissals: 3, ttlDays: 30, maxRules: 25 });
+    const created = await store.generateSuppressionRules({
+      minDismissals: 3,
+      ttlDays: 30,
+      maxRules: 25,
+    });
     expect(created).toBe(1);
     expect(await store.getFalsePositiveRules(['src/a.ts'])).toHaveLength(1);
     expect(await store.getFalsePositiveRules(['src/b.ts'])).toHaveLength(1);

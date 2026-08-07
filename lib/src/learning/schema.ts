@@ -367,5 +367,8 @@ export const SUPPRESSION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
  * @returns A single-line, length-capped, prompt-safe message.
  */
 export function sanitizeSuppressionMessage(message: string): string {
-  return (message || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 150);
+  return (message || '')
+    .replace(/[\r\n]+/g, ' ')
+    .trim()
+    .slice(0, 150);
 }
