@@ -295,7 +295,7 @@ export class LearningStore {
    * Errors are caught and 0 is returned (graceful degradation — the review
    * flow never depends on suppression-rule generation succeeding).
    *
-   * @param options - Generation thresholds (minDismissals, ttlDays, maxReviews, maxRules).
+   * @param options - Generation thresholds (minDismissals, ttlDays, maxRules, excludeSeverities).
    * @returns The number of rules that were newly created or refreshed.
    */
   async generateSuppressionRules(options: SuppressionRuleGenerationOptions): Promise<number> {

@@ -54,17 +54,20 @@ export interface CustomRuleRow {
   approved_at?: string;
 }
 
+/** Lifecycle status of a generated suppression rule. */
+export type SuppressionRuleStatus = 'active' | 'expired';
+
 /** Database row for a generated suppression rule. */
 export interface SuppressionRuleRow {
   id: string;
   pattern_key: string;
   message: string;
-  file_types?: string;
+  file_types?: string | null;
   dismissal_count: number;
-  status: string;
+  status: SuppressionRuleStatus;
   created_at: string;
-  last_active_at?: string;
-  expires_at?: string;
+  last_active_at?: string | null;
+  expires_at?: string | null;
   reviews_seen: number;
   suppression_hits: number;
 }

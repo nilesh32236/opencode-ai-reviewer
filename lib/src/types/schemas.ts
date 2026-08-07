@@ -254,9 +254,10 @@ export const LearningConfigSchema = z.object({
     .object({
       enabled: z.boolean().default(true),
       minDismissals: z.number().int().min(1).default(3),
-      ttlDays: z.number().int().min(0).default(30),
+      ttlDays: z.number().int().min(1).default(30),
       maxReviews: z.number().int().min(1).default(20),
       maxRules: z.number().int().min(1).default(25),
+      excludeSeverities: z.array(z.string()).default(['critical']),
     })
     .default({}),
 });
@@ -613,9 +614,10 @@ export const PromptConfigSchema = z.object({
         .object({
           enabled: z.boolean().optional(),
           minDismissals: z.number().int().min(1).optional(),
-          ttlDays: z.number().int().min(0).optional(),
+          ttlDays: z.number().int().min(1).optional(),
           maxReviews: z.number().int().min(1).optional(),
           maxRules: z.number().int().min(1).optional(),
+          excludeSeverities: z.array(z.string()).optional(),
         })
         .optional(),
     })

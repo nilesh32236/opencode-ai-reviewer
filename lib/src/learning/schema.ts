@@ -313,14 +313,19 @@ export function generateId(): string {
  * finding message and (optional) file path. Used as the unique upsert key for
  * the `suppression_rules` table so repeat dismissals of the same pattern
  * refresh the existing rule rather than creating duplicates.
+ *
+ * The message and file components are length-prefixed before hashing so that
+ * distinct (message, file) pairs can never produce the same digest (a plain
+ * `::` separator is ambiguous when a message itself contains `::`).
  * @param message - The finding message text.
  * @param file - The finding file path, or undefined when no file was recorded.
- * @returns A stable SHA-256 hex digest of the message::file composite.
+ * @returns A stable SHA-256 hex digest of the length-prefixed message and file.
  */
 export function hashPatternKey(message: string, file?: string): string {
+  const f = file || '';
   return crypto
     .createHash('sha256')
-    .update(`${message}::${file || ''}`)
+    .update(`${message.length}:${message}${f.length}:${f}`)
     .digest('hex');
 }
 

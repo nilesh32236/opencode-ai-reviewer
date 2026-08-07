@@ -1458,6 +1458,8 @@ export interface PromptConfig {
       maxReviews?: number;
       /** Cap on active rules injected into review prompts */
       maxRules?: number;
+      /** Finding severities that never generate a suppression rule */
+      excludeSeverities?: string[];
     };
   };
   /** Project metadata configuration */
@@ -1641,6 +1643,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
       ttlDays: 30,
       maxReviews: 20,
       maxRules: 25,
+      excludeSeverities: ['critical'],
     },
   },
   conversation: {
@@ -1930,6 +1933,8 @@ export interface LearningConfig {
     maxReviews: number;
     /** Cap on active rules injected into review prompts */
     maxRules: number;
+    /** Finding severities that never generate a suppression rule */
+    excludeSeverities: string[];
   };
 }
 

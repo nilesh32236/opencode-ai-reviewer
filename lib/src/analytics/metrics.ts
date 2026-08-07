@@ -48,9 +48,7 @@ export class MetricsService {
         this.store.getTelemetryStats(sinceDays),
       ]);
 
-    const suppressionStats = await this.store
-      .getSuppressionRuleStats()
-      .catch(() => ({ totalActive: 0, totalExpired: 0, totalSuppressionHits: 0, totalRules: 0 }));
+    const suppressionStats = await this.store.getSuppressionRuleStats();
 
     const latestRow = metricsRows[0];
     const periodEnd = new Date().toISOString();

@@ -309,8 +309,9 @@ export interface LearningRepository {
    * Aggregate dismissal feedback into persisted suppression rules, gated on a
    * minimum confidence threshold and capped at `maxRules` active rules.
    * Patterns that have been dismissed at least `minDismissals` times are
-   * upserted (refreshing their expiry window and resetting their review budget).
-   * @param options - Generation thresholds (minDismissals, ttlDays, maxReviews, maxRules).
+   * upserted, refreshing their expiry window only when dismissal evidence
+   * increases. Findings whose severity is excluded never generate a rule.
+   * @param options - Generation thresholds (minDismissals, ttlDays, maxRules, excludeSeverities).
    * @returns The number of rules that were newly created or refreshed.
    */
   generateSuppressionRules(options: SuppressionRuleGenerationOptions): Promise<number>;
@@ -717,16 +718,19 @@ export interface ReviewMetricsReport {
   suppressionStats?: SuppressionRuleStats;
 }
 
+/** Finding severities excluded from suppression-rule generation by default. */
+export const DEFAULT_EXCLUDED_SEVERITIES = ['critical'];
+
 /** Thresholds and caps used when generating suppression rules from feedback. */
 export interface SuppressionRuleGenerationOptions {
   /** Minimum number of dismissals for a pattern to become a suppression rule. */
   minDismissals: number;
   /** Time-to-live in days before a generated rule expires. */
   ttlDays: number;
-  /** Maximum number of reviews a rule is injected before it expires. */
-  maxReviews: number;
   /** Maximum number of active rules kept in the store. */
   maxRules: number;
+  /** Finding severities that never generate a suppression rule (default: ['critical']). */
+  excludeSeverities?: string[];
 }
 
 /** Aggregated suppression-rule effectiveness statistics. */

@@ -645,16 +645,31 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     const rawTtlDays = config.learning.suppressionRules?.ttlDays;
     const rawMaxReviews = config.learning.suppressionRules?.maxReviews;
     const rawMaxRules = config.learning.suppressionRules?.maxRules;
+    const rawExcludeSeverities = config.learning.suppressionRules?.excludeSeverities;
 
     const minDismissals =
-      typeof rawMinDismissals === 'number' && rawMinDismissals >= 1
+      typeof rawMinDismissals === 'number' &&
+      Number.isFinite(rawMinDismissals) &&
+      rawMinDismissals >= 1
         ? Math.round(rawMinDismissals)
         : 3;
-    const ttlDays = typeof rawTtlDays === 'number' && rawTtlDays >= 0 ? Math.round(rawTtlDays) : 30;
+    const ttlDays =
+      typeof rawTtlDays === 'number' && Number.isFinite(rawTtlDays) && rawTtlDays >= 1
+        ? Math.round(rawTtlDays)
+        : 30;
     const maxReviews =
-      typeof rawMaxReviews === 'number' && rawMaxReviews >= 1 ? Math.round(rawMaxReviews) : 20;
+      typeof rawMaxReviews === 'number' && Number.isFinite(rawMaxReviews) && rawMaxReviews >= 1
+        ? Math.round(rawMaxReviews)
+        : 20;
     const maxRules =
-      typeof rawMaxRules === 'number' && rawMaxRules >= 1 ? Math.round(rawMaxRules) : 25;
+      typeof rawMaxRules === 'number' && Number.isFinite(rawMaxRules) && rawMaxRules >= 1
+        ? Math.round(rawMaxRules)
+        : 25;
+    const excludeSeverities =
+      Array.isArray(rawExcludeSeverities) &&
+      rawExcludeSeverities.every((s) => typeof s === 'string')
+        ? rawExcludeSeverities
+        : ['critical'];
 
     result.learning = {
       enabled: config.learning.enabled,
@@ -675,6 +690,7 @@ export function validateConfig(config: PromptConfig): PromptConfig {
         ttlDays,
         maxReviews,
         maxRules,
+        excludeSeverities,
       },
     };
   }

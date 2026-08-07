@@ -596,7 +596,6 @@ describe('LearningStore getFalsePositiveRules', () => {
     const created = await store.generateSuppressionRules({
       minDismissals: 3,
       ttlDays: 30,
-      maxReviews: 20,
       maxRules: 25,
     });
     expect(created).toBe(1);
@@ -640,7 +639,6 @@ describe('LearningStore getFalsePositiveRules', () => {
     const created = await store.generateSuppressionRules({
       minDismissals: 3,
       ttlDays: 30,
-      maxReviews: 20,
       maxRules: 25,
     });
     expect(created).toBe(0);
@@ -668,7 +666,6 @@ describe('LearningStore getFalsePositiveRules', () => {
     await store.generateSuppressionRules({
       minDismissals: 3,
       ttlDays: 30,
-      maxReviews: 20,
       maxRules: 25,
     });
 
@@ -695,7 +692,6 @@ describe('LearningStore getFalsePositiveRules', () => {
     const createdBelow = await store.generateSuppressionRules({
       minDismissals: 3,
       ttlDays: 30,
-      maxReviews: 20,
       maxRules: 25,
     });
     expect(createdBelow).toBe(0);
@@ -717,7 +713,6 @@ describe('LearningStore getFalsePositiveRules', () => {
     const createdAt = await store.generateSuppressionRules({
       minDismissals: 3,
       ttlDays: 30,
-      maxReviews: 20,
       maxRules: 25,
     });
     expect(createdAt).toBe(1);
@@ -742,7 +737,6 @@ describe('LearningStore getFalsePositiveRules', () => {
     await store.generateSuppressionRules({
       minDismissals: 3,
       ttlDays: 30,
-      maxReviews: 20,
       maxRules: 25,
     });
 
@@ -769,7 +763,6 @@ describe('LearningStore getFalsePositiveRules', () => {
     await store.generateSuppressionRules({
       minDismissals: 3,
       ttlDays: 30,
-      maxReviews: 1,
       maxRules: 25,
     });
 
@@ -803,7 +796,6 @@ describe('LearningStore getFalsePositiveRules', () => {
     await store.generateSuppressionRules({
       minDismissals: 3,
       ttlDays: 0,
-      maxReviews: 20,
       maxRules: 25,
     });
 
@@ -811,6 +803,95 @@ describe('LearningStore getFalsePositiveRules', () => {
     expect(await store.getFalsePositiveRules(['src/e.ts'])).toHaveLength(0);
     const expired = await store.expireSuppressionRules(20);
     expect(expired).toBe(1);
+  });
+
+  it('never generates suppression rules for excluded severities by default', async () => {
+    for (let i = 0; i < 3; i++) {
+      const id = await store.recordFinding({
+        prNumber: 6,
+        type: 'issue',
+        severity: 'critical',
+        file: 'src/f.ts',
+        message: 'Critical pattern',
+      });
+      await store.recordFeedback({
+        findingId: id,
+        signalType: 'dismissed',
+        signalValue: 'false_positive',
+        prNumber: 6,
+      });
+    }
+
+    const created = await store.generateSuppressionRules({
+      minDismissals: 3,
+      ttlDays: 30,
+      maxRules: 25,
+    });
+    expect(created).toBe(0);
+    expect(await store.getFalsePositiveRules(['src/f.ts'])).toHaveLength(0);
+  });
+
+  it('allows critical findings to generate rules when exclusion is opted out', async () => {
+    for (let i = 0; i < 3; i++) {
+      const id = await store.recordFinding({
+        prNumber: 8,
+        type: 'issue',
+        severity: 'critical',
+        file: 'src/g.ts',
+        message: 'Opt-in critical pattern',
+      });
+      await store.recordFeedback({
+        findingId: id,
+        signalType: 'dismissed',
+        signalValue: 'false_positive',
+        prNumber: 8,
+      });
+    }
+
+    const created = await store.generateSuppressionRules({
+      minDismissals: 3,
+      ttlDays: 30,
+      maxRules: 25,
+      excludeSeverities: [],
+    });
+    expect(created).toBe(1);
+    expect(await store.getFalsePositiveRules(['src/g.ts'])).toHaveLength(1);
+  });
+
+  it('re-generating a rule does not reset its review budget without new evidence', async () => {
+    for (let i = 0; i < 3; i++) {
+      const id = await store.recordFinding({
+        prNumber: 9,
+        type: 'issue',
+        file: 'src/h.ts',
+        message: 'Monotonic budget pattern',
+      });
+      await store.recordFeedback({
+        findingId: id,
+        signalType: 'dismissed',
+        signalValue: 'false_positive',
+        prNumber: 9,
+      });
+    }
+    await store.generateSuppressionRules({
+      minDismissals: 3,
+      ttlDays: 30,
+      maxRules: 25,
+    });
+
+    // First injection consumes the review budget (maxReviews: 1).
+    expect(await store.getFalsePositiveRules(['src/h.ts'])).toHaveLength(1);
+
+    // Re-running generation with unchanged evidence must not reset reviews_seen.
+    await store.generateSuppressionRules({
+      minDismissals: 3,
+      ttlDays: 30,
+      maxRules: 25,
+    });
+
+    const expired = await store.expireSuppressionRules(1);
+    expect(expired).toBe(1);
+    expect(await store.getFalsePositiveRules(['src/h.ts'])).toHaveLength(0);
   });
 });
 
@@ -880,7 +961,6 @@ describe('LearningStore JSON Fallback Smoke Test', () => {
     const created = await jsonStore.generateSuppressionRules({
       minDismissals: 3,
       ttlDays: 30,
-      maxReviews: 1,
       maxRules: 25,
     });
     expect(created).toBe(1);
@@ -893,5 +973,88 @@ describe('LearningStore JSON Fallback Smoke Test', () => {
     const stats = await jsonStore.getSuppressionRuleStats();
     expect(stats.totalExpired).toBe(1);
     expect(stats.totalSuppressionHits).toBe(1);
+  });
+
+  it('excludes critical findings from JSON suppression rules by default', async () => {
+    for (let i = 0; i < 3; i++) {
+      const id = await jsonStore.recordFinding({
+        prNumber: 10,
+        type: 'issue',
+        severity: 'critical',
+        file: 'src/main.ts',
+        message: 'JSON critical pattern',
+      });
+      await jsonStore.recordFeedback({
+        findingId: id,
+        signalType: 'dismissed',
+        signalValue: 'false_positive',
+        prNumber: 10,
+      });
+    }
+
+    const created = await jsonStore.generateSuppressionRules({
+      minDismissals: 3,
+      ttlDays: 30,
+      maxRules: 25,
+    });
+    expect(created).toBe(0);
+    expect(await jsonStore.getFalsePositiveRules(['src/main.ts'])).toHaveLength(0);
+  });
+
+  it('resets the JSON rule review budget only when dismissal evidence increases', async () => {
+    for (let i = 0; i < 3; i++) {
+      const id = await jsonStore.recordFinding({
+        prNumber: 11,
+        type: 'issue',
+        file: 'src/main.ts',
+        message: 'JSON budget pattern',
+      });
+      await jsonStore.recordFeedback({
+        findingId: id,
+        signalType: 'dismissed',
+        signalValue: 'false_positive',
+        prNumber: 11,
+      });
+    }
+    await jsonStore.generateSuppressionRules({
+      minDismissals: 3,
+      ttlDays: 30,
+      maxRules: 25,
+    });
+
+    // First injection consumes the review budget (maxReviews: 1).
+    expect(await jsonStore.getFalsePositiveRules(['src/main.ts'])).toHaveLength(1);
+
+    // Re-running with unchanged evidence must not reset the budget.
+    await jsonStore.generateSuppressionRules({
+      minDismissals: 3,
+      ttlDays: 30,
+      maxRules: 25,
+    });
+    expect(await jsonStore.expireSuppressionRules(1)).toBe(1);
+
+    // A new dismissal increases the evidence and reactivates with a fresh budget.
+    const id = await jsonStore.recordFinding({
+      prNumber: 11,
+      type: 'issue',
+      file: 'src/main.ts',
+      message: 'JSON budget pattern',
+    });
+    await jsonStore.recordFeedback({
+      findingId: id,
+      signalType: 'dismissed',
+      signalValue: 'false_positive',
+      prNumber: 11,
+    });
+    await jsonStore.generateSuppressionRules({
+      minDismissals: 3,
+      ttlDays: 30,
+      maxRules: 25,
+    });
+
+    // Budget was reset, so expiry (maxReviews: 1) does not fire until re-injection.
+    expect(await jsonStore.expireSuppressionRules(1)).toBe(0);
+    expect(await jsonStore.getFalsePositiveRules(['src/main.ts'])).toHaveLength(1);
+    expect(await jsonStore.expireSuppressionRules(1)).toBe(1);
   });
 });

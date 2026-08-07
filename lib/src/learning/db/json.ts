@@ -237,7 +237,7 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
 
   /**
    * Generate suppression rules from dismissal feedback.
-   * @param options - Generation thresholds (minDismissals, ttlDays, maxReviews, maxRules).
+   * @param options - Generation thresholds (minDismissals, ttlDays, maxRules, excludeSeverities).
    * @returns The number of rules that were newly created or refreshed.
    */
   async generateSuppressionRules(options: SuppressionRuleGenerationOptions): Promise<number> {

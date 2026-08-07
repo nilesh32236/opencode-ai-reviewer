@@ -6,6 +6,7 @@ import type { LearningFeedback } from '../../types/index.js';
 import { Logger } from '../../utils/logger.js';
 import { JsonDatabase, SUPPRESSING_DISMISS_SIGNALS } from '../json-db.js';
 import { deriveFileExtensions, generateId, hashPatternKey } from '../schema.js';
+import { DEFAULT_EXCLUDED_SEVERITIES } from '../types.js';
 import type {
   ConversationSessionInput,
   ConversationSessionPatch,
@@ -391,8 +392,9 @@ export abstract class SqlAdapter implements LearningRepository {
    * confident (dismissal count) they are.
    *
    * Each returned rule is effectiveness-tracked: its `suppression_hits` and
-   * `reviews_seen` counters are incremented and `last_active_at` is refreshed
-   * (read-then-write wrapped in a short transaction).
+   * `reviews_seen` counters are incremented and `last_active_at` is refreshed.
+   * The read-then-write pair is wrapped in a single transaction so concurrent
+   * reviews cannot increment counters from the same stale snapshot.
    * @param filePaths - File paths to derive relevant extensions.
    * @param limit - Maximum number of suppression rules (default: 20).
    * @returns Array of suppression rule strings.
@@ -400,41 +402,42 @@ export abstract class SqlAdapter implements LearningRepository {
   async getFalsePositiveRules(filePaths: string[], limit = 20): Promise<string[]> {
     const extensions = deriveFileExtensions(filePaths);
     try {
-      const rows = await this.all<SuppressionRuleRow>(
-        "SELECT * FROM suppression_rules WHERE status = 'active' ORDER BY suppression_hits DESC, dismissal_count DESC",
-      );
+      const selected = await this.transaction(async () => {
+        const rows = await this.all<SuppressionRuleRow>(
+          "SELECT * FROM suppression_rules WHERE status = 'active' ORDER BY suppression_hits DESC, dismissal_count DESC",
+        );
 
-      const now = Date.now();
-      const matched = rows.filter((r) => {
-        if (r.expires_at) {
-          const expiry = Date.parse(r.expires_at);
-          if (!Number.isNaN(expiry) && expiry <= now) return false;
-        }
-        const types = (r.file_types || '').split(',').filter(Boolean);
-        if (types.length === 0) return true;
-        if (extensions.length === 0) return true;
-        return types.some((t) => extensions.includes(t));
-      });
+        const now = Date.now();
+        const matched = rows.filter((r) => {
+          if (r.expires_at) {
+            const expiry = Date.parse(r.expires_at);
+            if (!Number.isNaN(expiry) && expiry <= now) return false;
+          }
+          const types = (r.file_types || '').split(',').filter(Boolean);
+          if (types.length === 0) return true;
+          if (extensions.length === 0) return true;
+          return types.some((t) => extensions.includes(t));
+        });
 
-      const selected = matched.slice(0, limit);
-
-      if (selected.length > 0) {
-        const bumpedAt = new Date().toISOString();
-        await this.transaction(async () => {
-          for (const rule of selected) {
+        const picked = matched.slice(0, limit);
+        if (picked.length > 0) {
+          const bumpedAt = new Date().toISOString();
+          for (const rule of picked) {
             await this.run(
               `UPDATE suppression_rules SET suppression_hits = suppression_hits + 1, reviews_seen = reviews_seen + 1, last_active_at = ? WHERE id = ?`,
               [bumpedAt, rule.id],
             );
           }
-        });
-      }
+        }
+        return picked;
+      });
 
       return selected.map((r) => {
         const fileHint = r.file_types ? ` (in ${r.file_types.split(',')[0]?.trim()} files)` : '';
         return `DO NOT flag: "${r.message.slice(0, 150)}"${fileHint} — user feedback indicates this is intentional (dismissed ${r.dismissal_count} time(s))`;
       });
-    } catch {
+    } catch (err) {
+      new Logger('SqlAdapter').warn('Failed to retrieve suppression rules', err);
       return [];
     }
   }
@@ -446,16 +449,28 @@ export abstract class SqlAdapter implements LearningRepository {
    * Suppressing dismissal signals (`false_positive`, `intentional`, review/comment
    * dismissals, deleted comments) are joined to their findings and grouped by
    * message + file. Groups reaching `minDismissals` are upserted into
-   * `suppression_rules`, refreshing the rule's `expires_at` window and resetting
-   * its `reviews_seen` budget. Excess active rules beyond `maxRules` are expired.
-   * @param options - Generation thresholds (minDismissals, ttlDays, maxReviews, maxRules).
+   * `suppression_rules`. Existing rules only have their expiry window and
+   * active status refreshed when dismissal evidence increases; when evidence
+   * is unchanged their lifecycle fields (including the `reviews_seen` budget)
+   * are left untouched so time- and review-based expiry can actually fire.
+   * A rule that gains new dismissal evidence gets a fresh review budget.
+   * @param options - Generation thresholds (minDismissals, ttlDays, maxRules, excludeSeverities).
    * @returns The number of rules that were newly created or refreshed.
    */
   async generateSuppressionRules(options: SuppressionRuleGenerationOptions): Promise<number> {
-    const { minDismissals, ttlDays, maxRules } = options;
+    const {
+      minDismissals,
+      ttlDays,
+      maxRules,
+      excludeSeverities = DEFAULT_EXCLUDED_SEVERITIES,
+    } = options;
     const signalValues = [...SUPPRESSING_DISMISS_SIGNALS];
     const signalPlaceholders = signalValues.map(() => '?').join(', ');
     const signalFilter = `(fb.signal_type = 'disputed_comment' OR (fb.signal_type = 'dismissed' AND fb.signal_value IN (${signalPlaceholders})))`;
+    const excludeFilter =
+      excludeSeverities.length > 0
+        ? ` AND (f.severity IS NULL OR f.severity NOT IN (${excludeSeverities.map(() => '?').join(', ')}))`
+        : '';
 
     return this.transaction(async () => {
       const groups = await this.all<{
@@ -466,10 +481,10 @@ export abstract class SqlAdapter implements LearningRepository {
         `SELECT f.message, f.file, COUNT(fb.id) as signal_count
          FROM findings f
          INNER JOIN feedback fb ON fb.finding_id = f.id
-         WHERE ${signalFilter}
+         WHERE ${signalFilter}${excludeFilter}
          GROUP BY f.message, f.file
          HAVING COUNT(fb.id) >= ?`,
-        [...signalValues, minDismissals],
+        [...signalValues, ...excludeSeverities, minDismissals],
       );
 
       const now = new Date().toISOString();
@@ -487,10 +502,10 @@ export abstract class SqlAdapter implements LearningRepository {
              message = excluded.message,
              file_types = excluded.file_types,
              dismissal_count = excluded.dismissal_count,
-             status = 'active',
              last_active_at = excluded.last_active_at,
-             expires_at = excluded.expires_at,
-             reviews_seen = 0`,
+             status = CASE WHEN excluded.dismissal_count > dismissal_count THEN 'active' ELSE status END,
+             expires_at = CASE WHEN excluded.dismissal_count > dismissal_count THEN excluded.expires_at ELSE expires_at END,
+             reviews_seen = CASE WHEN excluded.dismissal_count > dismissal_count THEN 0 ELSE reviews_seen END`,
           [generateId(), patternKey, g.message, fileTypes, g.signal_count, now, now, expiresAt],
         );
         createdOrRefreshed++;
@@ -521,7 +536,8 @@ export abstract class SqlAdapter implements LearningRepository {
   async expireSuppressionRules(maxReviews: number): Promise<number> {
     const result = await this.run(
       `UPDATE suppression_rules SET status = 'expired'
-       WHERE status = 'active' AND (expires_at IS NOT NULL AND expires_at <= ? OR reviews_seen >= ?)`,
+       WHERE status = 'active'
+         AND ((expires_at IS NOT NULL AND expires_at <= ?) OR reviews_seen >= ?)`,
       [new Date().toISOString(), maxReviews],
     );
     return result.changes;
@@ -529,24 +545,31 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Retrieve aggregated suppression-rule effectiveness statistics.
+   * Active rules are counted only while their `expires_at` has not passed,
+   * matching the `getFalsePositiveRules` retrieval semantics.
    * @returns SuppressionRuleStats with active/expired counts and suppression hits.
    */
   async getSuppressionRuleStats(): Promise<SuppressionRuleStats> {
-    const active = await this.get<{ cnt: number }>(
-      `SELECT COUNT(*) as cnt FROM suppression_rules WHERE status = 'active'`,
+    const row = await this.get<{
+      active: number;
+      expired: number;
+      hits: number;
+      total: number;
+    }>(
+      `SELECT
+         SUM(CASE WHEN status = 'active'
+                    AND (expires_at IS NULL OR expires_at > ?) THEN 1 ELSE 0 END) as active,
+         SUM(CASE WHEN status = 'expired' THEN 1 ELSE 0 END) as expired,
+         COALESCE(SUM(suppression_hits), 0) as hits,
+         COUNT(*) as total
+       FROM suppression_rules`,
+      [new Date().toISOString()],
     );
-    const expired = await this.get<{ cnt: number }>(
-      `SELECT COUNT(*) as cnt FROM suppression_rules WHERE status = 'expired'`,
-    );
-    const hits = await this.get<{ total: number }>(
-      `SELECT COALESCE(SUM(suppression_hits), 0) as total FROM suppression_rules`,
-    );
-    const total = await this.get<{ cnt: number }>(`SELECT COUNT(*) as cnt FROM suppression_rules`);
     return {
-      totalActive: active?.cnt ?? 0,
-      totalExpired: expired?.cnt ?? 0,
-      totalSuppressionHits: hits?.total ?? 0,
-      totalRules: total?.cnt ?? 0,
+      totalActive: Number(row?.active ?? 0),
+      totalExpired: Number(row?.expired ?? 0),
+      totalSuppressionHits: Number(row?.hits ?? 0),
+      totalRules: Number(row?.total ?? 0),
     };
   }
 

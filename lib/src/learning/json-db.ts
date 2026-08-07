@@ -12,6 +12,7 @@ import type {
   SuppressionRuleRow,
 } from './rows.js';
 import { deriveFileExtensions, generateId, hashPatternKey } from './schema.js';
+import { DEFAULT_EXCLUDED_SEVERITIES } from './types.js';
 import type {
   ConversationSessionInput,
   ConversationSessionPatch,
@@ -565,11 +566,23 @@ export class JsonDatabase implements LearningRepository {
   /**
    * Aggregate dismissal feedback into persisted suppression rules, gated on a
    * minimum confidence threshold and capped at `maxRules` active rules.
-   * @param options - Generation thresholds (minDismissals, ttlDays, maxReviews, maxRules).
+   *
+   * Existing rules only have their expiry window and active status refreshed
+   * when dismissal evidence increases; otherwise their lifecycle fields
+   * (including the `reviews_seen` budget) are left untouched so time- and
+   * review-based expiry can actually fire. A rule that gains new dismissal
+   * evidence gets a fresh review budget. Findings whose severity is excluded
+   * never generate a rule.
+   * @param options - Generation thresholds (minDismissals, ttlDays, maxRules, excludeSeverities).
    * @returns The number of rules that were newly created or refreshed.
    */
   async generateSuppressionRules(options: SuppressionRuleGenerationOptions): Promise<number> {
-    const { minDismissals, ttlDays, maxRules } = options;
+    const {
+      minDismissals,
+      ttlDays,
+      maxRules,
+      excludeSeverities = DEFAULT_EXCLUDED_SEVERITIES,
+    } = options;
     const nowMs = Date.now();
     const nowIso = new Date(nowMs).toISOString();
     const expiresAt = new Date(nowMs + ttlDays * 24 * 60 * 60 * 1000).toISOString();
@@ -584,7 +597,15 @@ export class JsonDatabase implements LearningRepository {
       if (!suppressing) continue;
       const finding = findingsById.get(fb.finding_id);
       if (!finding) continue;
-      const key = `${finding.message}::${finding.file || ''}`;
+      if (
+        excludeSeverities.length > 0 &&
+        finding.severity &&
+        excludeSeverities.includes(finding.severity)
+      ) {
+        continue;
+      }
+      const file = finding.file || '';
+      const key = `${finding.message.length}:${finding.message}${file.length}:${file}`;
       const entry = counts.get(key);
       if (entry) {
         entry.count++;
@@ -600,13 +621,16 @@ export class JsonDatabase implements LearningRepository {
       const patternKey = hashPatternKey(g.message, g.file);
       const existing = this.data.suppression_rules.find((r) => r.pattern_key === patternKey);
       if (existing) {
+        const dismissalIncreased = g.count > existing.dismissal_count;
         existing.message = g.message;
         existing.file_types = fileTypes;
         existing.dismissal_count = g.count;
-        existing.status = 'active';
         existing.last_active_at = nowIso;
-        existing.expires_at = expiresAt;
-        existing.reviews_seen = 0;
+        if (dismissalIncreased) {
+          existing.status = 'active';
+          existing.expires_at = expiresAt;
+          existing.reviews_seen = 0;
+        }
       } else {
         this.data.suppression_rules.push({
           id: generateId(),
@@ -631,7 +655,8 @@ export class JsonDatabase implements LearningRepository {
       .sort(
         (a, b) =>
           a.dismissal_count - b.dismissal_count ||
-          (a.suppression_hits || 0) - (b.suppression_hits || 0),
+          (a.suppression_hits || 0) - (b.suppression_hits || 0) ||
+          a.created_at.localeCompare(b.created_at),
       );
     const excess = active.length - maxRules;
     for (const rule of active.slice(0, Math.max(0, excess))) {
@@ -669,8 +694,11 @@ export class JsonDatabase implements LearningRepository {
    */
   async getSuppressionRuleStats(): Promise<SuppressionRuleStats> {
     const rules = this.data.suppression_rules;
+    const now = Date.now();
     return {
-      totalActive: rules.filter((r) => r.status === 'active').length,
+      totalActive: rules.filter(
+        (r) => r.status === 'active' && (!r.expires_at || Date.parse(r.expires_at) > now),
+      ).length,
       totalExpired: rules.filter((r) => r.status === 'expired').length,
       totalSuppressionHits: rules.reduce((sum, r) => sum + (r.suppression_hits || 0), 0),
       totalRules: rules.length,

@@ -6,6 +6,7 @@ import {
   type AgentConfig,
   DEFAULT_CONFIG,
   EventBus,
+  FeedbackSubscriber,
   GitHubHelper,
   GitLabAdapter,
   LearningStore,
@@ -327,6 +328,9 @@ async function run(): Promise<void> {
               maxRules:
                 loadedConfig.learning.suppressionRules?.maxRules ??
                 DEFAULT_CONFIG.learning.suppressionRules.maxRules,
+              excludeSeverities:
+                loadedConfig.learning.suppressionRules?.excludeSeverities ??
+                DEFAULT_CONFIG.learning.suppressionRules.excludeSeverities,
             },
           }
         : DEFAULT_CONFIG.learning,
@@ -375,6 +379,9 @@ async function run(): Promise<void> {
       // Persist duration/token telemetry for completed pipeline stages so
       // /metrics keeps reporting latency and token usage.
       eventBus.register(new TelemetrySubscriber(learningStore));
+      // Persist dismissal/dispute feedback signals (registered before the
+      // suppression sweep below so rule generation runs against feedback).
+      eventBus.register(new FeedbackSubscriber(learningStore));
       // Close the dismissal-feedback learning loop: aggregate high-confidence
       // dismissal patterns into suppression rules and sweep expired ones.
       eventBus.register(new SuppressionSubscriber(learningStore, config));
