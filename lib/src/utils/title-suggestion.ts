@@ -1,6 +1,8 @@
-import * as core from '@actions/core';
 import type { PlatformAdapter } from '../platform/adapter.js';
 import type { ChangedFile, PRContext, ReviewResult } from '../types/index.js';
+import { CircuitBreaker } from './circuit-breaker.js';
+import { Logger } from './logger.js';
+import { withRetry } from './retry.js';
 
 /**
  * A conventional-commit title plus a set of suggested GitHub labels derived
@@ -16,6 +18,10 @@ export interface TitleSuggestion {
 /** Stable marker prefix used to deduplicate the suggestion comment on re-review. */
 export const TITLE_SUGGESTION_MARKER = '<!-- title-suggestion -->';
 
+/** Module-level circuit breaker guarding suggestion-comment posting so a
+ * persistently failing GitHub API is short-circuited on later reviews. */
+const suggestionCommentBreaker = new CircuitBreaker({ name: 'title-suggestion' });
+
 /** Conventional-commit types recognized when classifying change type. */
 const CONVENTIONAL_TYPES = 'feat|fix|docs|chore|refactor|test|build|ci|style|perf|revert' as const;
 
@@ -28,7 +34,11 @@ const GITIGNORE_RE = /(^|\/)\.gitignore$/i;
 const TEST_FILE_RE = /\.(test|spec)\.[a-z0-9]+$/i;
 const TEST_DIR_RE = /(^|\/)(__tests__|tests?|specs?|e2e|integration-tests?)\//i;
 
-/** True when the file path looks like a config file (lock, yaml, json, etc.). */
+/**
+ * Check whether a file path looks like a config file (lock, yaml, json, etc.).
+ * @param path - The changed file path.
+ * @returns True when the path matches a config-file pattern.
+ */
 function isConfigFile(path: string): boolean {
   return (
     CONFIG_EXTENSION_RE.test(path) ||
@@ -39,12 +49,21 @@ function isConfigFile(path: string): boolean {
   );
 }
 
-/** True when the file path looks like a test/spec file or lives in a test dir. */
+/**
+ * Check whether a file path looks like a test/spec file or lives in a test dir.
+ * @param path - The changed file path.
+ * @returns True when the path matches a test file or directory pattern.
+ */
 function isTestFile(path: string): boolean {
   return TEST_FILE_RE.test(path) || TEST_DIR_RE.test(path);
 }
 
-/** Sum of a numeric field across the changed files, defaulting to 0. */
+/**
+ * Sum a numeric field across the changed files.
+ * @param files - The changed files to sum over.
+ * @param pick - Selector for the numeric field to sum.
+ * @returns The summed total, or 0 when there are no files.
+ */
 function sumField(files: ChangedFile[], pick: (file: ChangedFile) => number): number {
   return files.reduce((sum, file) => sum + pick(file), 0);
 }
@@ -78,7 +97,11 @@ function classifyChangeType(files: ChangedFile[], additions: number, deletions: 
   return 'fix';
 }
 
-/** Normalize a top-level directory into a safe conventional-commit scope slug. */
+/**
+ * Normalize a top-level directory into a safe conventional-commit scope slug.
+ * @param segment - The top-level directory segment to normalize.
+ * @returns A lowercased, hyphenated slug safe for a commit scope.
+ */
 function normalizeScope(segment: string): string {
   const slug = segment
     .toLowerCase()
@@ -90,32 +113,47 @@ function normalizeScope(segment: string): string {
 /**
  * Derive a conventional-commit scope from the most common top-level directory
  * among the changed files (e.g. `api`, `frontend`, `lib`).
+ *
+ * Root-level files (paths without a directory separator, e.g. `README.md`) are
+ * excluded from the counts entirely so they can never become a scope, and the
+ * majority threshold is computed over the number of scoped files rather than
+ * the total file count.
  * @param files - Changed files of the PR.
  * @returns A scope slug, or undefined when there is no clear majority directory.
  */
 function deriveScope(files: ChangedFile[]): string | undefined {
   const counts = new Map<string, number>();
+  let scopedCount = 0;
   for (const file of files) {
-    const segment = file.path.split('/')[0];
+    const separatorIndex = file.path.indexOf('/');
+    if (separatorIndex === -1) continue;
+    const segment = file.path.slice(0, separatorIndex);
     if (!segment) continue;
     counts.set(segment, (counts.get(segment) ?? 0) + 1);
+    scopedCount++;
   }
   if (counts.size === 0) return undefined;
   if (counts.size === 1) {
     return normalizeScope([...counts.keys()][0]);
   }
-  const total = files.length;
   for (const [dir, count] of counts) {
-    if (count / total > 0.5) return normalizeScope(dir);
+    if (count / scopedCount > 0.5) return normalizeScope(dir);
   }
   return undefined;
 }
 
-/** Strip a conventional-commit prefix, emoji/punctuation, and whitespace from a
- * PR title to produce a clean, lowercased description. */
+/**
+ * Strip a conventional-commit prefix, emoji/punctuation, and whitespace from a
+ * PR title to produce a clean, lowercased description. The word boundary after
+ * the type word prevents prefix stripping from mangling titles that merely
+ * start with a type word (e.g. "Fixing the login bug" must not become
+ * "ing the login bug").
+ * @param title - The PR title to clean.
+ * @returns A lowercased description, or 'update' when nothing remains.
+ */
 function cleanDescription(title: string): string {
   const withoutPrefix = title
-    .replace(new RegExp(`^\\s*(${CONVENTIONAL_TYPES})(\\([^)]*\\))?!?:?\\s*`, 'i'), '')
+    .replace(new RegExp(`^\\s*(${CONVENTIONAL_TYPES})\\b(\\([^)]*\\))?!?:?\\s*`, 'i'), '')
     .replace(/^[^\p{L}\p{N}]+/u, '')
     .replace(/\s+/g, ' ')
     .trim()
@@ -209,40 +247,55 @@ export function deriveSuggestedLabels(
 }
 
 /**
+ * Escape backticks in a title so PR-controlled input cannot terminate the
+ * Markdown inline-code span it is interpolated into.
+ * @param title - The suggested title to escape.
+ * @returns The title with backticks escaped.
+ */
+function escapeInlineCode(title: string): string {
+  return title.replace(/`/g, '\\`');
+}
+
+/**
  * Build the full suggestion comment markdown body.
  * Includes the suggested conventional-commit title, the suggested labels as a
- * bullet list, and instructions on how to accept the suggestion.
+ * bullet list, and instructions on how to apply the suggestion manually.
  * @param suggestion - Derived title and labels.
- * @param prNumber - PR number referenced in the acceptance hint.
+ * @param prNumber - PR number referenced in the manual-apply hint.
  * @returns Markdown comment body.
  */
 export function buildSuggestionComment(suggestion: TitleSuggestion, prNumber: number): string {
   const labels = suggestion.labels.length
     ? suggestion.labels.map((label) => `- \`${label}\``).join('\n')
     : '- No specific labels suggested';
+  const safeTitle = escapeInlineCode(suggestion.title);
   return [
     '## 🏷️ Suggested Title & Labels',
     '',
-    `**Suggested title:** \`${suggestion.title}\``,
+    `**Suggested title:** \`${safeTitle}\``,
     '',
     '**Suggested labels:**',
     labels,
     '',
-    `_Reply with \`/suggest-title\` to accept and apply this suggestion to PR #${prNumber}. ` +
-      'This is only a suggestion — nothing is changed automatically._',
+    `_This is only a suggestion — nothing is changed automatically. To apply it ` +
+      `manually on PR #${prNumber}, set the title to the value above and add the ` +
+      'suggested labels in the GitHub UI._',
   ].join('\n');
 }
 
 /**
  * Post the title/label suggestion comment to the PR when the feature is
  * enabled. Uses `postOrUpdateComment` with a stable marker so repeated reviews
- * update a single comment instead of spamming the timeline. Returns silently on
- * failure (graceful degradation) and never throws.
+ * update a single comment instead of spamming the timeline. The external call
+ * runs through `withRetry` and a module-level `CircuitBreaker` so a transient
+ * API failure retries and a persistently failing endpoint is short-circuited.
+ * Returns silently on failure (graceful degradation) and never throws.
  * @param gh - Platform adapter exposing `postOrUpdateComment`.
  * @param prNumber - PR number to comment on.
  * @param pr - Pull request context used to derive the suggestion.
  * @param result - Review result used for severity-based labels.
  * @param config - Config slice controlling whether the feature is enabled.
+ * @param config.suggestTitleAndLabels - When true, post the suggestion comment.
  */
 export async function postSuggestionComment(
   gh: Pick<PlatformAdapter, 'postOrUpdateComment'>,
@@ -252,19 +305,27 @@ export async function postSuggestionComment(
   config: { suggestTitleAndLabels?: boolean },
 ): Promise<void> {
   if (!config.suggestTitleAndLabels) return;
+  const logger = new Logger('TitleSuggestion', { prNumber });
   try {
     const suggestion: TitleSuggestion = {
       title: deriveSuggestedTitle(pr),
       labels: deriveSuggestedLabels(pr.changedFiles, result),
     };
-    await gh.postOrUpdateComment(
-      prNumber,
-      TITLE_SUGGESTION_MARKER,
-      buildSuggestionComment(suggestion, prNumber),
+    await suggestionCommentBreaker.call(() =>
+      withRetry(
+        () =>
+          gh.postOrUpdateComment(
+            prNumber,
+            TITLE_SUGGESTION_MARKER,
+            buildSuggestionComment(suggestion, prNumber),
+          ),
+        { operationName: 'title-suggestion', maxRetries: 3 },
+      ),
     );
   } catch (err) {
-    core.warning(
+    logger.warn(
       `Failed to post title/label suggestion: ${err instanceof Error ? err.message : String(err)}`,
+      { operation: 'review.suggestion' },
     );
   }
 }

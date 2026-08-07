@@ -257,4 +257,51 @@ describe('handlePRReview check run reporting', () => {
     expect(mockGitLabAdapterCtor).toHaveBeenCalled();
     expect(mockCreateCheckRun).not.toHaveBeenCalled();
   });
+
+  it('posts the title/label suggestion when a repo-level override enables it', async () => {
+    mockMergeRepoConfig.mockImplementation((c: AgentConfig) => ({
+      ...c,
+      review: { ...c.review, suggestTitleAndLabels: true },
+    }));
+    mockGetMR.mockResolvedValue({
+      ...makePR(),
+      title: 'Add caching',
+      body: '',
+      headRef: 'feature/cache',
+      baseRef: 'main',
+      changedFiles: [{ path: 'api/cache.ts', status: 'added', additions: 100, deletions: 5 }],
+    });
+
+    await handlePRReview(
+      42,
+      'owner/repo',
+      'token',
+      makeConfig({ review: { ...DEFAULT_CONFIG.review, suggestTitleAndLabels: false } }),
+    );
+
+    const suggestionCall = mockPostOrUpdateComment.mock.calls.find(
+      (call) => call[1] === '<!-- title-suggestion -->',
+    );
+    expect(suggestionCall).toBeDefined();
+    expect(suggestionCall?.[0]).toBe(42);
+  });
+
+  it('does not post the title/label suggestion when a repo-level override disables it', async () => {
+    mockMergeRepoConfig.mockImplementation((c: AgentConfig) => ({
+      ...c,
+      review: { ...c.review, suggestTitleAndLabels: false },
+    }));
+
+    await handlePRReview(
+      42,
+      'owner/repo',
+      'token',
+      makeConfig({ review: { ...DEFAULT_CONFIG.review, suggestTitleAndLabels: true } }),
+    );
+
+    const suggestionCall = mockPostOrUpdateComment.mock.calls.find(
+      (call) => call[1] === '<!-- title-suggestion -->',
+    );
+    expect(suggestionCall).toBeUndefined();
+  });
 });

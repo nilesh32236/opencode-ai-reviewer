@@ -290,8 +290,8 @@ export function buildConfig(): AgentConfig {
  *
  * Only the `review.sensitivity` / `review.categories` / `review.enableCodebaseIndex`
  * / `review.enableMetaVerification` / `review.enableTestGapDetection` /
- * `review.suppressLowConfidence` /
- * `review.failOnSeverity` fields, the `notifications`, `secrets`, `llm`,
+ * `review.suppressLowConfidence` / `review.failOnSeverity` /
+ * `review.suggestTitleAndLabels` fields, the `notifications`, `secrets`, `llm`,
  * and `sca` sections are merged
  * (the engine filters findings off those fields and respects the codebase-index /
  * meta-verification / low-confidence-suppression toggles, the check-run
@@ -316,6 +316,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const enableTestGapDetection = repoConfig?.review?.enableTestGapDetection;
   const suppressLowConfidence = repoConfig?.review?.suppressLowConfidence;
   const failOnSeverity = repoConfig?.review?.failOnSeverity;
+  const suggestTitleAndLabels = repoConfig?.review?.suggestTitleAndLabels;
   const notifications = repoConfig?.notifications;
   const secrets = repoConfig?.secrets;
   const llm = repoConfig?.llm;
@@ -328,6 +329,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
     enableTestGapDetection === undefined &&
     suppressLowConfidence === undefined &&
     failOnSeverity === undefined &&
+    suggestTitleAndLabels === undefined &&
     !notifications &&
     !secrets &&
     !llm &&
@@ -351,6 +353,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       ...(enableTestGapDetection !== undefined && { enableTestGapDetection }),
       ...(suppressLowConfidence !== undefined && { suppressLowConfidence }),
       ...(failOnSeverity !== undefined && { failOnSeverity }),
+      ...(suggestTitleAndLabels !== undefined && { suggestTitleAndLabels }),
     },
     ...(notifications && {
       notifications: {

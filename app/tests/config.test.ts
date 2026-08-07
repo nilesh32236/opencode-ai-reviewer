@@ -142,3 +142,33 @@ describe('mergeRepoConfig sca merge', () => {
     }
   });
 });
+
+describe('mergeRepoConfig suggestTitleAndLabels merge', () => {
+  it('enables suggestions when the repo config sets review.suggestTitleAndLabels', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'app-config-suggestion-on-'));
+    try {
+      writeFileSync(
+        join(dir, '.opencode-reviewer.yml'),
+        ['review:', '  suggestTitleAndLabels: true', ''].join('\n'),
+      );
+      const merged = mergeRepoConfig(buildConfig(), dir);
+      expect(merged.review.suggestTitleAndLabels).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('disables suggestions when the repo config sets review.suggestTitleAndLabels: false', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'app-config-suggestion-off-'));
+    try {
+      writeFileSync(
+        join(dir, '.opencode-reviewer.yml'),
+        ['review:', '  suggestTitleAndLabels: false', ''].join('\n'),
+      );
+      const merged = mergeRepoConfig(buildConfig(), dir);
+      expect(merged.review.suggestTitleAndLabels).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
