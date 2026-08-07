@@ -145,6 +145,38 @@ describe('parseInputs() fail_on_severity', () => {
   });
 });
 
+describe('parseInputs() enable_test_gap_detection', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('defaults to disabled when the input is omitted (not explicit)', () => {
+    setInputs(BASE_INPUTS);
+    const inputs = parseInputs();
+    expect(inputs.enableTestGapDetection).toBe(false);
+    expect(inputs.enableTestGapDetectionExplicit).toBe(false);
+  });
+
+  it('enables test-gap detection when the input is explicitly "true"', () => {
+    setInputs({ ...BASE_INPUTS, enable_test_gap_detection: 'true' });
+    const inputs = parseInputs();
+    expect(inputs.enableTestGapDetection).toBe(true);
+    expect(inputs.enableTestGapDetectionExplicit).toBe(true);
+  });
+
+  it('disables test-gap detection when the input is explicitly "false"', () => {
+    setInputs({ ...BASE_INPUTS, enable_test_gap_detection: 'false' });
+    const inputs = parseInputs();
+    expect(inputs.enableTestGapDetection).toBe(false);
+    expect(inputs.enableTestGapDetectionExplicit).toBe(true);
+  });
+
+  it('rejects an invalid enable_test_gap_detection value', () => {
+    setInputs({ ...BASE_INPUTS, enable_test_gap_detection: 'yes' });
+    expect(() => parseInputs()).toThrow(/Invalid enable_test_gap_detection/);
+  });
+});
+
 describe('parseInputs() docs mode', () => {
   beforeEach(() => {
     vi.clearAllMocks();

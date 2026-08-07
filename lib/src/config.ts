@@ -60,6 +60,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     excludePatterns: null,
     enableReachability: null,
     enableMetaVerification: null,
+    enableTestGapDetection: null,
     enableCodebaseIndex: null,
     includePreExisting: null,
     failOnSeverity: null,
@@ -415,6 +416,9 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     }
     if (typeof config.review.enableMetaVerification === 'boolean') {
       result.review.enableMetaVerification = config.review.enableMetaVerification;
+    }
+    if (typeof config.review.enableTestGapDetection === 'boolean') {
+      result.review.enableTestGapDetection = config.review.enableTestGapDetection;
     }
     if (typeof config.review.enableCodebaseIndex === 'boolean') {
       result.review.enableCodebaseIndex = config.review.enableCodebaseIndex;

@@ -18,4 +18,8 @@ export interface AgentPromptContext {
   budgetMode?: ReviewBudgetMode;
   /** Optional total diff line count for the budget banner. */
   totalDiffLines?: number;
+  /** Structured test-gap analysis (modified symbols without test updates, new
+   * untested exports, missing error-case tests). Injected as a dedicated
+   * `## Test Gap Analysis` section when non-empty, mirroring the legacy prompt. */
+  testGapContext?: string;
 }

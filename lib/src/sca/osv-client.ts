@@ -335,9 +335,9 @@ function combineSignals(a: AbortSignal, b: AbortSignal): AbortSignal {
 /** The AbortError name at runtime (DOMException). */
 const ABORT_ERR_NAME = 'AbortError';
 
-/** True when the thrown value signals a scan-deadline abort.
- *
- * @param err - The value thrown by a request.
+/**
+ * True when the thrown value signals a scan-deadline abort.
+ * @param err - The thrown value to inspect.
  * @returns True when the value is an `AbortError`.
  */
 export function isAbortError(err: unknown): boolean {

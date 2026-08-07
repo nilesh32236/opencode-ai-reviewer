@@ -50,6 +50,10 @@ export interface ActionInputs {
     verificationModel?: string;
     /** Whether the meta-verification pass is enabled. */
     enableMetaVerification: boolean;
+    /** Whether test-gap detection (modified code without test updates) is enabled (default: false). */
+    enableTestGapDetection: boolean;
+    /** Whether the enable_test_gap_detection input was explicitly set by the workflow. */
+    enableTestGapDetectionExplicit: boolean;
     /** Whether pre-existing (non-PR) code is reviewed at full audit priority (default: false). */
     includePreExisting: boolean;
     /** Model identifier for meta-review quality evaluation. */

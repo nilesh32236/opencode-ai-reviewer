@@ -147,6 +147,7 @@ docs:
 | `docs_style`             | `auto`                               | Doc comment style for `docs` mode: `jsdoc`, `tsdoc`, `rest`, `doxygen`, `numpy`, or `auto` (infer per file, default) |
 | `verification_model`     | _(falls back to `review_model`)_     | Model for meta-verification (false-positive filtering) |
 | `enable_meta_verification` | `false`                            | Enable the meta-verification pass (also settable via `review.enableMetaVerification` in `.opencode-reviewer.yml`) |
+| `enable_test_gap_detection` | `false`                           | Opt-in test-gap analysis: flags code changes lacking corresponding test updates (also settable via `review.enableTestGapDetection` in `.opencode-reviewer.yml`) |
 | `review_prompt_file`     | —                                    | Path to custom review prompt file              |
 | `review_prompt_extra`    | —                                    | Extra context appended to the review prompt    |
 | `enable_fix`             | `true`                               | Enable auto-fix mode                           |

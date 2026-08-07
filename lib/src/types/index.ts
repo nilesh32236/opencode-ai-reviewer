@@ -621,6 +621,10 @@ export interface ReviewConfig {
   excludePatterns: string[];
   /** Whether to run a meta-verification pass that drops false-positive findings */
   enableMetaVerification: boolean;
+  /** Whether to run test-gap detection that flags code changes lacking
+   * corresponding test updates and surfaces structured gap context to the
+   * review prompt (default: false). */
+  enableTestGapDetection: boolean;
   /** Whether to suppress low-confidence findings from review output */
   suppressLowConfidence?: boolean;
   /** Whether to enable lightweight reachability analysis on security findings */
@@ -1367,6 +1371,8 @@ export interface PromptConfig {
     enableReachability?: boolean;
     /** Enable the meta-verification pass that drops false-positive findings (default: false) */
     enableMetaVerification?: boolean;
+    /** Enable test-gap detection that flags code changes lacking test updates (default: false) */
+    enableTestGapDetection?: boolean;
     /** Enable codebase indexing for cross-file review context (default: true) */
     enableCodebaseIndex?: boolean;
     /** Review pre-existing (non-PR) code at full audit priority (default: false) */
@@ -1566,6 +1572,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
       '**/.next/**',
     ],
     enableMetaVerification: false,
+    enableTestGapDetection: false,
     suppressLowConfidence: false,
     enableReachability: true,
     enableCodebaseIndex: true,

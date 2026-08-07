@@ -149,6 +149,9 @@ export function buildConfig(): AgentConfig {
       ...(process.env.ENABLE_META_VERIFICATION !== undefined
         ? { enableMetaVerification: process.env.ENABLE_META_VERIFICATION !== 'false' }
         : {}),
+      ...(process.env.REVIEW_TEST_GAP_DETECTION !== undefined
+        ? { enableTestGapDetection: process.env.REVIEW_TEST_GAP_DETECTION === 'true' }
+        : {}),
       ...(process.env.ENABLE_CODEBASE_INDEX !== undefined
         ? { enableCodebaseIndex: process.env.ENABLE_CODEBASE_INDEX !== 'false' }
         : {}),
@@ -281,7 +284,8 @@ export function buildConfig(): AgentConfig {
  * is applied here at the point where a repo working directory exists.
  *
  * Only the `review.sensitivity` / `review.categories` / `review.enableCodebaseIndex`
- * / `review.enableMetaVerification` / `review.suppressLowConfidence` /
+ * / `review.enableMetaVerification` / `review.enableTestGapDetection` /
+ * `review.suppressLowConfidence` /
  * `review.failOnSeverity` fields, the `notifications`, `secrets`, `llm`,
  * and `sca` sections are merged
  * (the engine filters findings off those fields and respects the codebase-index /
@@ -304,6 +308,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const categories = repoConfig?.review?.categories;
   const enableCodebaseIndex = repoConfig?.review?.enableCodebaseIndex;
   const enableMetaVerification = repoConfig?.review?.enableMetaVerification;
+  const enableTestGapDetection = repoConfig?.review?.enableTestGapDetection;
   const suppressLowConfidence = repoConfig?.review?.suppressLowConfidence;
   const failOnSeverity = repoConfig?.review?.failOnSeverity;
   const notifications = repoConfig?.notifications;
@@ -315,6 +320,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
     !categories &&
     enableCodebaseIndex === undefined &&
     enableMetaVerification === undefined &&
+    enableTestGapDetection === undefined &&
     suppressLowConfidence === undefined &&
     failOnSeverity === undefined &&
     !notifications &&
@@ -337,6 +343,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       ...(categories && { categories }),
       ...(enableCodebaseIndex !== undefined && { enableCodebaseIndex }),
       ...(enableMetaVerification !== undefined && { enableMetaVerification }),
+      ...(enableTestGapDetection !== undefined && { enableTestGapDetection }),
       ...(suppressLowConfidence !== undefined && { suppressLowConfidence }),
       ...(failOnSeverity !== undefined && { failOnSeverity }),
     },

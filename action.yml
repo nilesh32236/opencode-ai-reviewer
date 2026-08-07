@@ -98,6 +98,10 @@ inputs:
     required: false
     default: 'false'
 
+  enable_test_gap_detection:
+    description: 'Enable test-gap detection that correlates changed source symbols with their test files and surfaces structured gaps (modified without test updates, new untested exports, missing error-case tests) as review context. Disabled by default; when omitted, review.enableTestGapDetection from the repo config applies (also settable via review.enableTestGapDetection in the config file)'
+    required: false
+
   include_pre_existing:
     description: 'Review pre-existing (non-PR) code at full audit priority. When false (default), git blame annotations are injected so the reviewer deprioritizes issues on lines that predate the PR (also settable via review.includePreExisting in the config file)'
     required: false

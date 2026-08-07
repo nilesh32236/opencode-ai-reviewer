@@ -114,6 +114,10 @@ export interface ActionInputs {
   verificationModel?: string;
   /** Whether the meta-verification pass is enabled. */
   enableMetaVerification: boolean;
+  /** Whether test-gap detection (modified code without test updates) is enabled (default: false). */
+  enableTestGapDetection: boolean;
+  /** Whether the enable_test_gap_detection input was explicitly set by the workflow. */
+  enableTestGapDetectionExplicit: boolean;
   /** Whether pre-existing (non-PR) code is reviewed at full audit priority (default: false). */
   includePreExisting: boolean;
   /** Model identifier for meta-review quality evaluation. */
@@ -344,6 +348,24 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   const enableMetaVerification = core.getInput('enable_meta_verification') === 'true';
   const enableAudit = core.getInput('enable_audit') === 'true';
 
+  const enableTestGapDetectionInput = core.getInput('enable_test_gap_detection');
+  const enableTestGapDetectionRaw = enableTestGapDetectionInput.trim();
+  if (
+    enableTestGapDetectionRaw !== '' &&
+    enableTestGapDetectionRaw !== 'true' &&
+    enableTestGapDetectionRaw !== 'false'
+  ) {
+    throw new Error(
+      `Invalid enable_test_gap_detection: "${enableTestGapDetectionInput.trim()}". Must be true or false.`,
+    );
+  }
+  // Opt-in by default: an absent input resolves to disabled. The explicit-input
+  // flag is NOT set for an omitted input so an `.opencode-reviewer.yml`
+  // `review.enableTestGapDetection` continues to win when the workflow leaves it unset.
+  const enableTestGapDetection =
+    enableTestGapDetectionRaw === '' ? false : enableTestGapDetectionRaw === 'true';
+  const enableTestGapDetectionExplicit = enableTestGapDetectionRaw !== '';
+
   const failOnSeverityInput = core.getInput('fail_on_severity');
   const failOnSeverityRaw = (failOnSeverityInput || 'off').trim().toLowerCase();
   if (!VALID_FAIL_ON_SEVERITIES.includes(failOnSeverityRaw as FailOnSeverity)) {
@@ -441,6 +463,8 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     synthesisModel,
     verificationModel,
     enableMetaVerification,
+    enableTestGapDetection,
+    enableTestGapDetectionExplicit,
     includePreExisting: core.getInput('include_pre_existing') === 'true',
     metaReviewModel,
     explanationModel,

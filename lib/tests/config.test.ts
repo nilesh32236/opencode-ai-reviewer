@@ -884,6 +884,16 @@ multiAgent:
       const result = AgentConfigSchema.parse({ review: { enableMetaVerification: true } });
       expect(result.review.enableMetaVerification).toBe(true);
     });
+
+    it('defaults enableTestGapDetection to false', () => {
+      const result = AgentConfigSchema.parse({});
+      expect(result.review.enableTestGapDetection).toBe(false);
+    });
+
+    it('parses enableTestGapDetection when provided', () => {
+      const result = AgentConfigSchema.parse({ review: { enableTestGapDetection: true } });
+      expect(result.review.enableTestGapDetection).toBe(true);
+    });
   });
 
   describe('docs config handling', () => {
@@ -1098,6 +1108,20 @@ fix:
       expect(config?.review?.enableMetaVerification).toBe(true);
       expect(core.warning).not.toHaveBeenCalledWith(
         expect.stringContaining('Unknown config key "review.enableMetaVerification"'),
+      );
+    });
+
+    it('loads review.enableTestGapDetection without unknown-key warnings', () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.opencode-reviewer.yml'),
+        `review:
+  enableTestGapDetection: true
+`,
+      );
+      const config = loadConfig(tmpDir);
+      expect(config?.review?.enableTestGapDetection).toBe(true);
+      expect(core.warning).not.toHaveBeenCalledWith(
+        expect.stringContaining('Unknown config key "review.enableTestGapDetection"'),
       );
     });
 
