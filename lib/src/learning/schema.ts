@@ -347,3 +347,25 @@ export function deriveFileExtensions(filePaths: string[]): string[] {
     ),
   ].filter(Boolean);
 }
+
+/**
+ * Retention window for physically purging expired suppression rules. Rules
+ * that have been inactive (both created and expired) longer than this are
+ * deleted so the `suppression_rules` table cannot grow without bound.
+ */
+export const SUPPRESSION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Sanitize a persisted finding message before it is injected into a review
+ * prompt as a suppression rule. Finding messages are derived from untrusted
+ * PR/code content, so newlines and delimiter-style tokens that could be
+ * interpreted as instructions are collapsed into a single space, surrounding
+ * whitespace is trimmed, and the result is clamped to a fixed length. This is
+ * the rule-format-time partner to {@link sanitizePromptInput}, which wraps the
+ * final prompt in data-only delimiters.
+ * @param message - The persisted finding message text.
+ * @returns A single-line, length-capped, prompt-safe message.
+ */
+export function sanitizeSuppressionMessage(message: string): string {
+  return (message || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 150);
+}

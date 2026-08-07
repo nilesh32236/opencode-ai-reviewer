@@ -11,7 +11,13 @@ import type {
   ReviewQualityRow,
   SuppressionRuleRow,
 } from './rows.js';
-import { deriveFileExtensions, generateId, hashPatternKey } from './schema.js';
+import {
+  deriveFileExtensions,
+  generateId,
+  hashPatternKey,
+  sanitizeSuppressionMessage,
+  SUPPRESSION_RETENTION_MS,
+} from './schema.js';
 import { DEFAULT_EXCLUDED_SEVERITIES } from './types.js';
 import type {
   ConversationSessionInput,
@@ -533,8 +539,11 @@ export class JsonDatabase implements LearningRepository {
         const expiry = Date.parse(r.expires_at);
         if (!Number.isNaN(expiry) && expiry <= now) return false;
       }
+      // A file-less rule has no scope and could otherwise quiet legitimate
+      // findings repo-wide, so it is only injected when the review itself
+      // carries no file paths to scope against.
       const types = (r.file_types || '').split(',').filter(Boolean);
-      if (types.length === 0) return true;
+      if (types.length === 0) return extensions.length === 0;
       if (extensions.length === 0) return true;
       return types.some((t) => extensions.includes(t));
     });
@@ -559,7 +568,7 @@ export class JsonDatabase implements LearningRepository {
 
     return selected.map((r) => {
       const fileHint = r.file_types ? ` (in ${r.file_types.split(',')[0]?.trim()} files)` : '';
-      return `DO NOT flag: "${r.message.slice(0, 150)}"${fileHint} — user feedback indicates this is intentional (dismissed ${r.dismissal_count} time(s))`;
+      return `DO NOT flag: "${sanitizeSuppressionMessage(r.message)}"${fileHint} — user feedback indicates this is intentional (dismissed ${r.dismissal_count} time(s))`;
     });
   }
 
@@ -587,9 +596,11 @@ export class JsonDatabase implements LearningRepository {
     const nowIso = new Date(nowMs).toISOString();
     const expiresAt = new Date(nowMs + ttlDays * 24 * 60 * 60 * 1000).toISOString();
 
-    // Aggregate dismissing feedback by (message, file) using the joined finding.
+    // Aggregate dismissing feedback by (message, file extension) so confidence
+    // accumulates across files sharing the extension — the same scope used by
+    // `getFalsePositiveRules` at retrieval time.
     const findingsById = new Map(this.data.findings.map((f) => [f.id, f]));
-    const counts = new Map<string, { message: string; file?: string; count: number }>();
+    const counts = new Map<string, { message: string; ext: string; count: number }>();
     for (const fb of this.data.feedback) {
       const suppressing =
         fb.signal_type === 'disputed_comment' ||
@@ -604,29 +615,34 @@ export class JsonDatabase implements LearningRepository {
       ) {
         continue;
       }
-      const file = finding.file || '';
-      const key = `${finding.message.length}:${finding.message}${file.length}:${file}`;
+      const exts = deriveFileExtensions(finding.file ? [finding.file] : []);
+      const ext = exts.join(',');
+      const key = `${finding.message.length}:${finding.message}${ext.length}:${ext}`;
       const entry = counts.get(key);
       if (entry) {
         entry.count++;
       } else {
-        counts.set(key, { message: finding.message, file: finding.file, count: 1 });
+        counts.set(key, { message: finding.message, ext, count: 1 });
       }
     }
 
     let createdOrRefreshed = 0;
     for (const g of counts.values()) {
       if (g.count < minDismissals) continue;
-      const fileTypes = deriveFileExtensions(g.file ? [g.file] : []).join(',');
-      const patternKey = hashPatternKey(g.message, g.file);
+      const patternKey = hashPatternKey(g.message, g.ext || undefined);
       const existing = this.data.suppression_rules.find((r) => r.pattern_key === patternKey);
       if (existing) {
         const dismissalIncreased = g.count > existing.dismissal_count;
+        const wasExpired = existing.status === 'expired';
         existing.message = g.message;
-        existing.file_types = fileTypes;
+        existing.file_types = g.ext;
         existing.dismissal_count = g.count;
         existing.last_active_at = nowIso;
-        if (dismissalIncreased) {
+        // Revive a rule that had expired (by time or review budget) as long as
+        // its dismissal aggregate still satisfies the threshold, so recurring
+        // false positives do not resurface once suppression goes quiet. The
+        // review budget is only reset on new evidence or revival.
+        if (dismissalIncreased || wasExpired) {
           existing.status = 'active';
           existing.expires_at = expiresAt;
           existing.reviews_seen = 0;
@@ -636,7 +652,7 @@ export class JsonDatabase implements LearningRepository {
           id: generateId(),
           pattern_key: patternKey,
           message: g.message,
-          file_types: fileTypes,
+          file_types: g.ext,
           dismissal_count: g.count,
           status: 'active',
           created_at: nowIso,
@@ -674,17 +690,36 @@ export class JsonDatabase implements LearningRepository {
    */
   async expireSuppressionRules(maxReviews: number): Promise<number> {
     const now = Date.now();
+    const cutoff = now - SUPPRESSION_RETENTION_MS;
     let expired = 0;
+    let purged = 0;
+    const kept: SuppressionRuleRow[] = [];
     for (const rule of this.data.suppression_rules) {
-      if (rule.status !== 'active') continue;
+      if (rule.status === 'expired') {
+        const createdMs = Date.parse(rule.created_at);
+        const expMs = rule.expires_at ? Date.parse(rule.expires_at) : NaN;
+        // Purge long-held inactive rules so the store cannot grow without bound.
+        if (createdMs < cutoff && !Number.isNaN(expMs) && expMs < cutoff) {
+          purged++;
+          continue;
+        }
+        kept.push(rule);
+        continue;
+      }
+      if (rule.status !== 'active') {
+        kept.push(rule);
+        continue;
+      }
       const expiredByTime = rule.expires_at ? Date.parse(rule.expires_at) <= now : false;
       const expiredByReviews = (rule.reviews_seen || 0) >= maxReviews;
       if (expiredByTime || expiredByReviews) {
         rule.status = 'expired';
         expired++;
       }
+      kept.push(rule);
     }
-    if (expired > 0) this.save();
+    this.data.suppression_rules = kept;
+    if (expired > 0 || purged > 0) this.save();
     return expired;
   }
 

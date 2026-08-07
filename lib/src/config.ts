@@ -685,7 +685,7 @@ export function validateConfig(config: PromptConfig): PromptConfig {
         windowSize,
       },
       suppressionRules: {
-        enabled: config.learning.suppressionRules?.enabled ?? true,
+        enabled: config.learning.suppressionRules?.enabled ?? false,
         minDismissals,
         ttlDays,
         maxReviews,

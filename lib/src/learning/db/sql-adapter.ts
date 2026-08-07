@@ -5,7 +5,13 @@ import type { LearningQuality } from '../../types/index.js';
 import type { LearningFeedback } from '../../types/index.js';
 import { Logger } from '../../utils/logger.js';
 import { JsonDatabase, SUPPRESSING_DISMISS_SIGNALS } from '../json-db.js';
-import { deriveFileExtensions, generateId, hashPatternKey } from '../schema.js';
+import {
+  deriveFileExtensions,
+  generateId,
+  hashPatternKey,
+  sanitizeSuppressionMessage,
+  SUPPRESSION_RETENTION_MS,
+} from '../schema.js';
 import { DEFAULT_EXCLUDED_SEVERITIES } from '../types.js';
 import type {
   ConversationSessionInput,
@@ -404,17 +410,19 @@ export abstract class SqlAdapter implements LearningRepository {
     try {
       const selected = await this.transaction(async () => {
         const rows = await this.all<SuppressionRuleRow>(
-          "SELECT * FROM suppression_rules WHERE status = 'active' ORDER BY suppression_hits DESC, dismissal_count DESC",
+          `SELECT * FROM suppression_rules
+           WHERE status = 'active'
+             AND (expires_at IS NULL OR expires_at > ?)
+           ORDER BY suppression_hits DESC, dismissal_count DESC`,
+          [new Date().toISOString()],
         );
 
-        const now = Date.now();
         const matched = rows.filter((r) => {
-          if (r.expires_at) {
-            const expiry = Date.parse(r.expires_at);
-            if (!Number.isNaN(expiry) && expiry <= now) return false;
-          }
+          // A file-less rule has no scope and could otherwise quiet legitimate
+          // findings repo-wide, so it is only injected when the review itself
+          // carries no file paths to scope against.
           const types = (r.file_types || '').split(',').filter(Boolean);
-          if (types.length === 0) return true;
+          if (types.length === 0) return extensions.length === 0;
           if (extensions.length === 0) return true;
           return types.some((t) => extensions.includes(t));
         });
@@ -422,19 +430,21 @@ export abstract class SqlAdapter implements LearningRepository {
         const picked = matched.slice(0, limit);
         if (picked.length > 0) {
           const bumpedAt = new Date().toISOString();
-          for (const rule of picked) {
-            await this.run(
-              `UPDATE suppression_rules SET suppression_hits = suppression_hits + 1, reviews_seen = reviews_seen + 1, last_active_at = ? WHERE id = ?`,
-              [bumpedAt, rule.id],
-            );
-          }
+          const ids = picked.map((r) => r.id);
+          const placeholders = ids.map(() => '?').join(',');
+          await this.run(
+            `UPDATE suppression_rules
+             SET suppression_hits = suppression_hits + 1, reviews_seen = reviews_seen + 1, last_active_at = ?
+             WHERE id IN (${placeholders})`,
+            [bumpedAt, ...ids],
+          );
         }
         return picked;
       });
 
       return selected.map((r) => {
         const fileHint = r.file_types ? ` (in ${r.file_types.split(',')[0]?.trim()} files)` : '';
-        return `DO NOT flag: "${r.message.slice(0, 150)}"${fileHint} — user feedback indicates this is intentional (dismissed ${r.dismissal_count} time(s))`;
+        return `DO NOT flag: "${sanitizeSuppressionMessage(r.message)}"${fileHint} — user feedback indicates this is intentional (dismissed ${r.dismissal_count} time(s))`;
       });
     } catch (err) {
       new Logger('SqlAdapter').warn('Failed to retrieve suppression rules', err);
@@ -473,6 +483,10 @@ export abstract class SqlAdapter implements LearningRepository {
         : '';
 
     return this.transaction(async () => {
+      // Group dismissing feedback by (message, file), then re-aggregate by
+      // (message, file extension) in JS so confidence accumulates across files
+      // with the same extension — the exact scope used by `getFalsePositiveRules`
+      // at retrieval time. This keeps generation and retrieval symmetric.
       const groups = await this.all<{
         message: string;
         file: string | null;
@@ -482,18 +496,30 @@ export abstract class SqlAdapter implements LearningRepository {
          FROM findings f
          INNER JOIN feedback fb ON fb.finding_id = f.id
          WHERE ${signalFilter}${excludeFilter}
-         GROUP BY f.message, f.file
-         HAVING COUNT(fb.id) >= ?`,
-        [...signalValues, ...excludeSeverities, minDismissals],
+         GROUP BY f.message, f.file`,
+        [...signalValues, ...excludeSeverities],
       );
+
+      const byExtension = new Map<string, { message: string; ext: string; count: number }>();
+      for (const g of groups) {
+        const exts = deriveFileExtensions(g.file ? [g.file] : []);
+        const ext = exts.join(',');
+        const key = `${g.message.length}:${g.message}${ext.length}:${ext}`;
+        const entry = byExtension.get(key);
+        if (entry) {
+          entry.count += g.signal_count;
+        } else {
+          byExtension.set(key, { message: g.message, ext, count: g.signal_count });
+        }
+      }
 
       const now = new Date().toISOString();
       const expiresAt = new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000).toISOString();
 
       let createdOrRefreshed = 0;
-      for (const g of groups) {
-        const fileTypes = deriveFileExtensions(g.file ? [g.file] : []).join(',');
-        const patternKey = hashPatternKey(g.message, g.file ?? undefined);
+      for (const g of byExtension.values()) {
+        if (g.count < minDismissals) continue;
+        const patternKey = hashPatternKey(g.message, g.ext || undefined);
         await this.run(
           `INSERT INTO suppression_rules
              (id, pattern_key, message, file_types, dismissal_count, status, created_at, last_active_at, expires_at, reviews_seen, suppression_hits)
@@ -503,10 +529,22 @@ export abstract class SqlAdapter implements LearningRepository {
              file_types = excluded.file_types,
              dismissal_count = excluded.dismissal_count,
              last_active_at = excluded.last_active_at,
-             status = CASE WHEN excluded.dismissal_count > dismissal_count THEN 'active' ELSE status END,
-             expires_at = CASE WHEN excluded.dismissal_count > dismissal_count THEN excluded.expires_at ELSE expires_at END,
-             reviews_seen = CASE WHEN excluded.dismissal_count > dismissal_count THEN 0 ELSE reviews_seen END`,
-          [generateId(), patternKey, g.message, fileTypes, g.signal_count, now, now, expiresAt],
+             status = CASE
+               WHEN status = 'expired' THEN 'active'
+               WHEN excluded.dismissal_count > dismissal_count THEN 'active'
+               ELSE status
+             END,
+             expires_at = CASE
+               WHEN excluded.dismissal_count > dismissal_count THEN excluded.expires_at
+               WHEN status = 'expired' THEN excluded.expires_at
+               ELSE expires_at
+             END,
+             reviews_seen = CASE
+               WHEN excluded.dismissal_count > dismissal_count THEN 0
+               WHEN status = 'expired' THEN 0
+               ELSE reviews_seen
+             END`,
+          [generateId(), patternKey, g.message, g.ext, g.count, now, now, expiresAt],
         );
         createdOrRefreshed++;
       }
@@ -539,6 +577,12 @@ export abstract class SqlAdapter implements LearningRepository {
        WHERE status = 'active'
          AND ((expires_at IS NOT NULL AND expires_at <= ?) OR reviews_seen >= ?)`,
       [new Date().toISOString(), maxReviews],
+    );
+    // Purge inactive, long-held rules so the table cannot grow without bound.
+    const cutoff = new Date(Date.now() - SUPPRESSION_RETENTION_MS).toISOString();
+    await this.run(
+      `DELETE FROM suppression_rules WHERE status = 'expired' AND created_at < ? AND expires_at < ?`,
+      [cutoff, cutoff],
     );
     return result.changes;
   }

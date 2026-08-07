@@ -174,7 +174,7 @@ export class MetricsService {
       lines.push(`| Expired Rules | ${report.suppressionStats.totalExpired} |`);
       lines.push(`| Total Rules | ${report.suppressionStats.totalRules} |`);
       lines.push(
-        `| Suppression Hits (false positives avoided) | ${report.suppressionStats.totalSuppressionHits} |`,
+        `| Suppression Rule Injections | ${report.suppressionStats.totalSuppressionHits} |`,
       );
       lines.push('');
     }

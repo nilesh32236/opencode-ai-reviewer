@@ -252,7 +252,7 @@ export const LearningConfigSchema = z.object({
     .default({}),
   suppressionRules: z
     .object({
-      enabled: z.boolean().default(true),
+      enabled: z.boolean().default(false),
       minDismissals: z.number().int().min(1).default(3),
       ttlDays: z.number().int().min(1).default(30),
       maxReviews: z.number().int().min(1).default(20),

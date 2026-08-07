@@ -1352,7 +1352,7 @@ unknownSection: true
         minLength: 32,
         allowlist: [],
         failCI: false,
-        excludePatterns: [],
+        excludePatterns: ['**/action/lib/**/*.js'],
       });
     });
 

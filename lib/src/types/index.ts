@@ -1534,7 +1534,10 @@ export const DEFAULT_SECRET_DETECTOR_CONFIG: SecretDetectorConfig = {
   minLength: 32,
   allowlist: [],
   failCI: false,
-  excludePatterns: [],
+  // Compiled ncc bundles in `action/lib` are committed so the Action runs
+  // without a build step; their vendored dependency code is high-entropy and
+  // produces deterministic false-positive secret findings, so they are skipped.
+  excludePatterns: ['**/action/lib/**/*.js'],
 };
 
 /** Default values for deterministic Software Composition Analysis (SCA). */
@@ -1638,7 +1641,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
       windowSize: 100,
     },
     suppressionRules: {
-      enabled: true,
+      enabled: false,
       minDismissals: 3,
       ttlDays: 30,
       maxReviews: 20,

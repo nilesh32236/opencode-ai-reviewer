@@ -9,7 +9,7 @@ const DEBOUNCE_MS = 60_000;
  * not carry a `learning.suppressionRules` block.
  */
 const DEFAULT_THRESHOLDS = {
-  enabled: true,
+  enabled: false,
   minDismissals: 3,
   ttlDays: 30,
   maxReviews: 20,
