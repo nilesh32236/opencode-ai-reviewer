@@ -28,6 +28,7 @@ const EXPECTED_SUBSCRIBERS = [
   'AdminSubscriber',
   'TelemetrySubscriber',
   'FeedbackSubscriber',
+  'SuppressionSubscriber',
   'MetaReviewSubscriber',
   'DiscoverSubscriber',
   'MetricsSubscriber',

@@ -6,6 +6,7 @@ import {
   type AgentConfig,
   DEFAULT_CONFIG,
   EventBus,
+  FeedbackSubscriber,
   GitHubHelper,
   GitLabAdapter,
   LearningStore,
@@ -14,6 +15,7 @@ import {
   MCPServerConfigSchema,
   type PlatformAdapter,
   ReviewEngine,
+  SuppressionSubscriber,
   TelemetrySubscriber,
   configureGit,
   getDefaultMCPServers,
@@ -310,6 +312,26 @@ async function run(): Promise<void> {
                 loadedConfig.learning.patternDiscovery?.windowSize ??
                 DEFAULT_CONFIG.learning.patternDiscovery.windowSize,
             },
+            suppressionRules: {
+              enabled:
+                loadedConfig.learning.suppressionRules?.enabled ??
+                DEFAULT_CONFIG.learning.suppressionRules.enabled,
+              minDismissals:
+                loadedConfig.learning.suppressionRules?.minDismissals ??
+                DEFAULT_CONFIG.learning.suppressionRules.minDismissals,
+              ttlDays:
+                loadedConfig.learning.suppressionRules?.ttlDays ??
+                DEFAULT_CONFIG.learning.suppressionRules.ttlDays,
+              maxReviews:
+                loadedConfig.learning.suppressionRules?.maxReviews ??
+                DEFAULT_CONFIG.learning.suppressionRules.maxReviews,
+              maxRules:
+                loadedConfig.learning.suppressionRules?.maxRules ??
+                DEFAULT_CONFIG.learning.suppressionRules.maxRules,
+              excludeSeverities:
+                loadedConfig.learning.suppressionRules?.excludeSeverities ??
+                DEFAULT_CONFIG.learning.suppressionRules.excludeSeverities,
+            },
           }
         : DEFAULT_CONFIG.learning,
       conversation: {
@@ -357,6 +379,12 @@ async function run(): Promise<void> {
       // Persist duration/token telemetry for completed pipeline stages so
       // /metrics keeps reporting latency and token usage.
       eventBus.register(new TelemetrySubscriber(learningStore));
+      // Persist dismissal/dispute feedback signals (registered before the
+      // suppression sweep below so rule generation runs against feedback).
+      eventBus.register(new FeedbackSubscriber(learningStore));
+      // Close the dismissal-feedback learning loop: aggregate high-confidence
+      // dismissal patterns into suppression rules and sweep expired ones.
+      eventBus.register(new SuppressionSubscriber(learningStore, config));
       const registeredSubscribers = await registerEventSubscribers(
         eventBus,
         config.eventLogging,

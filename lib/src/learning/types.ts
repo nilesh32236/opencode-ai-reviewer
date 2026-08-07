@@ -1,7 +1,13 @@
 import type { LearningFeedback, LearningQuality, RateLimitTier } from '../types/index.js';
-import type { CustomRuleRow, FindingRow, PatternRow, ReviewQualityRow } from './rows.js';
+import type {
+  CustomRuleRow,
+  FindingRow,
+  PatternRow,
+  ReviewQualityRow,
+  SuppressionRuleRow,
+} from './rows.js';
 
-export type { CustomRuleRow, FindingRow, PatternRow, ReviewQualityRow };
+export type { CustomRuleRow, FindingRow, PatternRow, ReviewQualityRow, SuppressionRuleRow };
 export type { RateLimitTier };
 
 /** Input data for recording a single review finding. */
@@ -290,11 +296,38 @@ export interface LearningRepository {
    * Retrieve false-positive suppression rules derived from user feedback (dismissed/disputed findings).
    * Returns rules formatted for direct injection into review prompts to prevent re-flagging known false positives.
    *
+   * Only **active, non-expired** persisted suppression rules are returned. Rules are
+   * created and expired via `generateSuppressionRules` / `expireSuppressionRules`.
+   * Each injected rule increments its `suppression_hits` counter for effectiveness tracking.
+   *
    * @param filePaths - File paths being reviewed (used for extension-based filtering).
    * @param limit - Maximum number of rules to return (default: 20).
    * @returns Array of rule text strings describing patterns the reviewer should NOT flag.
    */
   getFalsePositiveRules(filePaths: string[], limit?: number): Promise<string[]>;
+  /**
+   * Aggregate dismissal feedback into persisted suppression rules, gated on a
+   * minimum confidence threshold and capped at `maxRules` active rules.
+   * Patterns that have been dismissed at least `minDismissals` times are
+   * upserted, refreshing their expiry window only when dismissal evidence
+   * increases. Findings whose severity is excluded never generate a rule.
+   * @param options - Generation thresholds (minDismissals, ttlDays, maxRules, excludeSeverities).
+   * @returns The number of rules that were newly created or refreshed.
+   */
+  generateSuppressionRules(options: SuppressionRuleGenerationOptions): Promise<number>;
+  /**
+   * Expire suppression rules whose time-to-live or review-count budget has been
+   * reached. Expired rules are no longer injected into review prompts.
+   * @param maxReviews - Review-count expiry threshold (rules used this many
+   * times are expired regardless of their remaining time-to-live).
+   * @returns The number of rules that were expired.
+   */
+  expireSuppressionRules(maxReviews: number): Promise<number>;
+  /**
+   * Retrieve aggregated suppression-rule effectiveness statistics.
+   * @returns SuppressionRuleStats with active/expired counts and suppression hits.
+   */
+  getSuppressionRuleStats(): Promise<SuppressionRuleStats>;
   /**
    * Record a review quality assessment.
    * @param quality - Quality scores (actionability, accuracy, coverage, consistency).
@@ -681,4 +714,33 @@ export interface ReviewMetricsReport {
   severityDistribution?: SeverityDistribution;
   /** Optional trends data (pre-computed rows). */
   trends?: ReviewMetricsRow[];
+  /** Optional suppression-rule effectiveness statistics. */
+  suppressionStats?: SuppressionRuleStats;
+}
+
+/** Finding severities excluded from suppression-rule generation by default. */
+export const DEFAULT_EXCLUDED_SEVERITIES = ['critical'];
+
+/** Thresholds and caps used when generating suppression rules from feedback. */
+export interface SuppressionRuleGenerationOptions {
+  /** Minimum number of dismissals for a pattern to become a suppression rule. */
+  minDismissals: number;
+  /** Time-to-live in days before a generated rule expires. */
+  ttlDays: number;
+  /** Maximum number of active rules kept in the store. */
+  maxRules: number;
+  /** Finding severities that never generate a suppression rule (default: ['critical']). */
+  excludeSeverities?: string[];
+}
+
+/** Aggregated suppression-rule effectiveness statistics. */
+export interface SuppressionRuleStats {
+  /** Number of rules currently active (eligible for prompt injection). */
+  totalActive: number;
+  /** Number of rules that have expired (by time or review budget). */
+  totalExpired: number;
+  /** Total number of times active rules were injected into a review prompt. */
+  totalSuppressionHits: number;
+  /** Total number of suppression rule rows recorded. */
+  totalRules: number;
 }

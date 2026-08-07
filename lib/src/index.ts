@@ -219,6 +219,7 @@ export {
   verifyChecksum,
 } from './utils/checksum.js';
 export { FeedbackSubscriber } from './learning/feedback-subscriber.js';
+export { SuppressionSubscriber } from './learning/suppression-subscriber.js';
 export { TelemetrySubscriber } from './learning/telemetry-subscriber.js';
 export { MetaReviewEngine, MetaReviewSubscriber } from './meta-review/engine.js';
 export { buildMetaReviewPrompt } from './meta-review/prompts.js';

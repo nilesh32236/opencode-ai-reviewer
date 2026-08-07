@@ -22,6 +22,8 @@ import type {
   ReviewMetricsRow,
   ReviewQualityRow,
   SeverityDistribution,
+  SuppressionRuleGenerationOptions,
+  SuppressionRuleStats,
   TelemetryStats,
 } from './types.js';
 
@@ -284,6 +286,61 @@ export class LearningStore {
       return repo.getFalsePositiveRules(filePaths, limit);
     } catch {
       return [];
+    }
+  }
+
+  /**
+   * Aggregate dismissal feedback into persisted suppression rules, gated on a
+   * minimum confidence threshold and capped at maxRules active rules.
+   * Errors are caught and 0 is returned (graceful degradation — the review
+   * flow never depends on suppression-rule generation succeeding).
+   *
+   * @param options - Generation thresholds (minDismissals, ttlDays, maxRules, excludeSeverities).
+   * @returns The number of rules that were newly created or refreshed.
+   */
+  async generateSuppressionRules(options: SuppressionRuleGenerationOptions): Promise<number> {
+    try {
+      const repo = await this.repoPromise;
+      return await repo.generateSuppressionRules(options);
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.warn('Failed to generate suppression rules', err);
+      return 0;
+    }
+  }
+
+  /**
+   * Expire suppression rules whose time-to-live or review-count budget has been
+   * reached. Errors are caught and 0 is returned (graceful degradation).
+   *
+   * @param maxReviews - Review-count expiry threshold.
+   * @returns The number of rules that were expired.
+   */
+  async expireSuppressionRules(maxReviews: number): Promise<number> {
+    try {
+      const repo = await this.repoPromise;
+      return await repo.expireSuppressionRules(maxReviews);
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.warn('Failed to expire suppression rules', err);
+      return 0;
+    }
+  }
+
+  /**
+   * Retrieve aggregated suppression-rule effectiveness statistics.
+   * Errors are caught and zeroed stats are returned (graceful degradation).
+   *
+   * @returns SuppressionRuleStats with active/expired counts and suppression hits.
+   */
+  async getSuppressionRuleStats(): Promise<SuppressionRuleStats> {
+    try {
+      const repo = await this.repoPromise;
+      return await repo.getSuppressionRuleStats();
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.warn('Failed to get suppression rule stats', err);
+      return { totalActive: 0, totalExpired: 0, totalSuppressionHits: 0, totalRules: 0 };
     }
   }
 
