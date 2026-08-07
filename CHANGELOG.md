@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.8.3] — 2026-08-07
+
+
+### Fixed
+
+- self-heal CI failure (attempt 1) [lint-error — biome style violations (import ordering + formatting) in `action/src/fix.ts`, `app/src/handlers/autofix.ts`, and `lib/src/utils/validation.ts`. the ci run also showed the `build lib` step canceled, but this was a transient concurrency cancellation (`cancel-in-progress: true`); the build itself compiles cleanly.] (#360) (#360)
+
+### Changed
+
+- revert: drop pinned checksum entry — opencode_version uses latest automatically
+- fix(action): support cd && chains in run_checks_after_fix; skip ci on autofix commits
+
+[v1.8.3]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.8.2...v1.8.3
+
 ## [v1.8.2] — 2026-08-06
 
 
