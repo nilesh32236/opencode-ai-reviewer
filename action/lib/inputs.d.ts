@@ -64,6 +64,8 @@ export interface ActionInputs {
     conversationModel?: string;
     /** Model identifier for issue analysis. */
     analysisModel?: string;
+    /** Model identifier for PR description generation. */
+    describeModel?: string;
     /** Model identifier for documentation generation. */
     docsModel?: string;
     /** Doc comment style for the /docs command ('auto' infers per file). */
@@ -72,6 +74,10 @@ export interface ActionInputs {
     reviewPromptFile?: string;
     /** Optional extra instructions appended to the review prompt. */
     reviewPromptExtra?: string;
+    /** Optional path to a custom describe prompt file. */
+    describePromptFile?: string;
+    /** Optional extra instructions appended to the describe prompt. */
+    describePromptExtra?: string;
     /** Optional path to a custom config file (overrides .opencode-reviewer.yml discovery). */
     configFile?: string;
     /** Whether automated fix mode is enabled. */

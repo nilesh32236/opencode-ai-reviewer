@@ -69,6 +69,7 @@ export {
   buildDocsPrompt,
   buildReplyPrompt,
   buildExplainPrompt,
+  buildDescribePrompt,
   buildSynthesisPrompt,
   buildMultiAgentSynthesisPrompt,
   loadPromptFile,

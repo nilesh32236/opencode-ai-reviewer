@@ -7,7 +7,7 @@ branding:
 
 inputs:
   mode:
-    description: 'Action mode: review, fix, audit, post, analyze, self-heal, setup, or docs'
+    description: 'Action mode: review, fix, audit, post, analyze, self-heal, setup, docs, or describe'
     required: true
     default: 'review'
 
@@ -121,6 +121,18 @@ inputs:
 
   analysis_model:
     description: 'Model to use for issue analysis'
+    required: false
+
+  describe_model:
+    description: 'Model to use for PR description generation (mode=describe)'
+    required: false
+
+  describe_prompt_file:
+    description: 'Path to a custom describe prompt file'
+    required: false
+
+  describe_prompt_extra:
+    description: 'Extra context to append to the describe prompt'
     required: false
 
   docs_model:
@@ -330,6 +342,8 @@ outputs:
     description: 'Total tokens consumed during the review (when cost_tracking_enabled=true)'
   cost:
     description: 'Estimated cost of the review run in USD (when cost_tracking_enabled=true and computable)'
+  description:
+    description: 'Markdown PR description generated in describe mode'
 
 runs:
   using: 'node24'

@@ -232,6 +232,12 @@ export const DocsConfigSchema = z.object({
   style: z.enum(DOC_STYLES).default('auto'),
 });
 
+/** Zod schema validating the `/describe` PR-description configuration. */
+export const DescribeConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  model: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),
+});
+
 /** Zod schema validating learning configuration with nested meta-review and pattern discovery defaults. */
 export const LearningConfigSchema = z.object({
   enabled: z.boolean().default(true),
@@ -494,6 +500,7 @@ export const AgentConfigSchema = z.object({
   explanationModel: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),
   conversationModel: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),
   analysisModel: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),
+  describeModel: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),
   batchSize: z.number().int().min(1).max(10).default(3),
   maxLinesPerFile: z.number().int().min(0).max(5000).default(200),
   maxIterations: z.number().int().min(1).max(10).default(3),
@@ -507,6 +514,7 @@ export const AgentConfigSchema = z.object({
   review: ReviewConfigSchema.default({}),
   audit: AuditConfigSchema.default({}),
   docs: DocsConfigSchema.default({}),
+  describe: DescribeConfigSchema.default({}),
   learning: LearningConfigSchema.default({}),
   linters: z.array(LinterConfigSchema).default([]),
   rateLimiting: RateLimitingConfigSchema.default(RateLimitingConfigSchema.parse({})),
@@ -592,6 +600,7 @@ export const PromptConfigSchema = z.object({
     })
     .optional(),
   docs: DocsConfigSchema.optional(),
+  describe: DescribeConfigSchema.optional(),
   learning: z
     .object({
       enabled: z.boolean().optional(),
