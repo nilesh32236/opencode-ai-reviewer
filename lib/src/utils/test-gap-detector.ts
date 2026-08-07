@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import * as path from 'path';
 import type { ChangedFile } from '../types/index.js';
 
@@ -74,6 +74,9 @@ const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts',
 /** Test file name markers in the convention `<base>.test.<ext>` / `<base>.spec.<ext>`. */
 const TEST_MARKERS = ['.test', '.spec'];
 
+/** Anchored (linear) check for a valid JS identifier, used to validate export names. */
+const IDENTIFIER_RE = /^[A-Za-z_$][\w$]*$/;
+
 /** Export declaration patterns matched during symbol extraction. */
 const EXPORT_PATTERNS: Array<{ kind: SourceSymbol['kind']; regex: RegExp }> = [
   { kind: 'function', regex: /export\s+async\s+function\s+([A-Za-z_$][\w$]*)/g },
@@ -125,6 +128,11 @@ const TEST_ERROR_PATTERNS = [
 /**
  * Best-effort line-range detection for a `{` ... `}` block found at the given
  * offset in `lines`. Returns the index of the line where the block closes.
+ * @param lines - All source lines of the file.
+ * @param startLine - 0-based index of the line that opens the block.
+ * @param openLineText - The text of the opening line.
+ * @returns The 0-based index of the line where the block closes, or `startLine`
+ * when the block never closes.
  */
 function findBlockEnd(lines: string[], startLine: number, openLineText: string): number {
   const opens = (openLineText.match(/\{/g) || []).length;
@@ -174,13 +182,22 @@ export function extractExportsFromContent(content: string, file: string): Source
       let names: string[] | undefined;
       if (kind === 'reexport') {
         // `export { foo as bar, baz } from './x'` → one symbol per exported name.
+        // The `as` alias is parsed with a linear split (no backtracking regex)
+        // so untrusted re-export lists cannot trigger ReDoS.
         names = match[1]
           .split(',')
           .map((part) => {
-            const aliasMatch = part.match(/([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)/);
-            return aliasMatch ? aliasMatch[2] : part.trim();
+            const segments = part.trim().split(/\s+as\s+/);
+            if (
+              segments.length === 2 &&
+              IDENTIFIER_RE.test(segments[0]) &&
+              IDENTIFIER_RE.test(segments[1])
+            ) {
+              return segments[1];
+            }
+            return part.trim();
           })
-          .filter((part) => /^[A-Za-z_$][\w$]*$/.test(part));
+          .filter((part) => IDENTIFIER_RE.test(part));
         name = names[0] ?? 'default';
       }
 
@@ -219,7 +236,11 @@ export function extractExportsFromContent(content: string, file: string): Source
   return dedupeSymbols(symbols);
 }
 
-/** Remove duplicate symbol entries (e.g. `export default foo` matched twice). */
+/**
+ * Remove duplicate symbol entries (e.g. `export default foo` matched twice).
+ * @param symbols - Extracted symbols, possibly containing duplicates.
+ * @returns The deduplicated symbols, sorted by declaration line.
+ */
 function dedupeSymbols(symbols: SourceSymbol[]): SourceSymbol[] {
   const seen = new Set<string>();
   const unique: SourceSymbol[] = [];
@@ -232,7 +253,13 @@ function dedupeSymbols(symbols: SourceSymbol[]): SourceSymbol[] {
   return unique.sort((a, b) => a.line - b.line);
 }
 
-/** Check whether a line range contains error-handling constructs. */
+/**
+ * Check whether a line range contains error-handling constructs.
+ * @param lines - All source lines of the file.
+ * @param startLine - 1-based start line of the range.
+ * @param endLine - 1-based end line of the range (inclusive).
+ * @returns True when an error-handling construct appears in the range.
+ */
 function hasErrorHandlingInRange(lines: string[], startLine: number, endLine: number): boolean {
   const body = lines.slice(startLine - 1, endLine).join('\n');
   return ERROR_PATH_PATTERNS.some((pattern) => pattern.test(body));
@@ -241,6 +268,8 @@ function hasErrorHandlingInRange(lines: string[], startLine: number, endLine: nu
 /**
  * Whether a repo-relative path points at a test file (`.test.`/`.spec.` marker
  * or a `__tests__` directory).
+ * @param filePath - Repo-relative file path to classify.
+ * @returns True when the path looks like a test file.
  */
 export function isTestFile(filePath: string): boolean {
   const base = path.basename(filePath);
@@ -304,6 +333,8 @@ export function buildTestFileCandidates(sourceFilePath: string): string[] {
 /**
  * Primary conventional test path for a source file (may not exist yet); used
  * for suggestions.
+ * @param sourceFilePath - Repo-relative source file path.
+ * @returns The suggested test file path in `<dir>/<base>.test.<ext>` form.
  */
 export function suggestTestPath(sourceFilePath: string): string {
   const dir = path.posix.dirname(sourceFilePath);
@@ -312,7 +343,11 @@ export function suggestTestPath(sourceFilePath: string): string {
   return path.posix.join(dir, `${base}${TEST_MARKERS[0]}${ext}`);
 }
 
-/** Parse a unified diff patch and return the set of NEW-file line numbers it touches. */
+/**
+ * Parse a unified diff patch and return the set of NEW-file line numbers it touches.
+ * @param patch - Optional unified diff patch text.
+ * @returns The set of new-file line numbers the patch touches.
+ */
 export function parsePatchTouchedNewLines(patch?: string): Set<number> {
   const lines = new Set<number>();
   if (!patch) return lines;
@@ -339,7 +374,12 @@ export function parsePatchTouchedNewLines(patch?: string): Set<number> {
   return lines;
 }
 
-/** Filter symbols whose `[line, endLine]` range overlaps any touched new line. */
+/**
+ * Filter symbols whose `[line, endLine]` range overlaps any touched new line.
+ * @param symbols - Extracted source symbols.
+ * @param touched - Set of new-file line numbers touched by the patch.
+ * @returns The symbols whose body range overlaps a touched line.
+ */
 function symbolsTouchedByPatch(symbols: SourceSymbol[], touched: Set<number>): SourceSymbol[] {
   if (touched.size === 0) return [];
   return symbols.filter((symbol) => {
@@ -352,11 +392,16 @@ function symbolsTouchedByPatch(symbols: SourceSymbol[], touched: Set<number>): S
 
 /**
  * Read the previous revision of a file from git (best-effort).
+ * Uses `execFileSync` with an argument array (no shell) so the file path —
+ * which originates from PR changed-file metadata — can never be interpreted
+ * as a shell command.
+ * @param workDir - Repository working directory.
+ * @param file - Repo-relative file path to read at HEAD.
  * @returns The file content at HEAD, or `null` when unavailable.
  */
 function readFileAtHead(workDir: string, file: string): string | null {
   try {
-    const result = execSync(`git show HEAD:${file}`, {
+    const result = execFileSync('git', ['show', `HEAD:${file}`], {
       cwd: workDir,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -561,6 +606,10 @@ export class TestGapDetector {
 
   /**
    * Derive test suggestions from the detected gaps.
+   * @param modifiedUnchangedTests - Gaps for modified symbols with unchanged tests.
+   * @param newUntestedExports - Gaps for new exports without coverage.
+   * @param missingErrorCaseTests - Gaps for error paths lacking error-case tests.
+   * @returns The derived test suggestions.
    */
   buildSuggestions(
     modifiedUnchangedTests: TestGapEntry[],

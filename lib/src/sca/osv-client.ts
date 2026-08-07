@@ -48,6 +48,8 @@ const osvCircuitBreaker = new CircuitBreaker({ name: 'osv-client' });
  * default `minSeverity: 'important'` floor — a documented tradeoff that keeps
  * the default noise low. Repos that want medium findings can lower
  * `sca.minSeverity` to `'minor'`.
+ * @param score - CVSS v3 base score (0–10).
+ * @returns The mapped severity band.
  */
 export function severityFromCvss(score: number): Severity {
   if (score >= 9.0) return 'critical';
@@ -113,6 +115,8 @@ export function cvssV3BaseScore(vector: string): number | undefined {
 /**
  * Map an OSV `database_specific.severity` label to the project severity.
  * Unknown labels degrade to `minor` so findings are never over-reported.
+ * @param label - The OSV severity label (may be undefined).
+ * @returns The mapped severity, or `minor` for unknown/absent labels.
  */
 export function severityFromOsvLabel(label: string | undefined): Severity | undefined {
   switch ((label ?? '').toUpperCase()) {
@@ -329,7 +333,11 @@ function combineSignals(a: AbortSignal, b: AbortSignal): AbortSignal {
 /** The AbortError name at runtime (DOMException). */
 const ABORT_ERR_NAME = 'AbortError';
 
-/** True when the thrown value signals a scan-deadline abort. */
+/**
+ * True when the thrown value signals a scan-deadline abort.
+ * @param err - The thrown value to inspect.
+ * @returns True when the value is an `AbortError`.
+ */
 export function isAbortError(err: unknown): boolean {
   return err instanceof Error && err.name === ABORT_ERR_NAME;
 }
