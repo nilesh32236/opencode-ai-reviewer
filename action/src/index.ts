@@ -27,6 +27,7 @@ import {
 } from '@opencode-pr-agent/lib';
 import { runAnalyze } from './analyze.js';
 import { runAudit } from './audit.js';
+import { runDescribe } from './describe.js';
 import { runDocs } from './docs.js';
 import { runAutofixLoop, runFix, runFixIssue } from './fix.js';
 import { type ActionInputs, parseInputs } from './inputs.js';
@@ -171,6 +172,7 @@ async function run(): Promise<void> {
       conversationModel: inputs.conversationModel,
       analysisModel: inputs.analysisModel,
       docsModel: inputs.docsModel,
+      describeModel: inputs.describeModel,
       batchSize: inputs.maxFilesPerBatch,
       maxLinesPerFile: inputs.maxLinesPerFile,
       maxIterations: loadedConfig?.fix?.maxIterations ?? inputs.maxFixIterations,
@@ -284,6 +286,11 @@ async function run(): Promise<void> {
       docs: {
         enabled: loadedConfig?.docs?.enabled ?? DEFAULT_CONFIG.docs?.enabled ?? false,
         style: loadedConfig?.docs?.style ?? inputs.docStyle ?? DEFAULT_CONFIG.docs?.style ?? 'auto',
+      },
+      describe: {
+        enabled: loadedConfig?.describe?.enabled ?? DEFAULT_CONFIG.describe.enabled,
+        model:
+          inputs.describeModel || loadedConfig?.describe?.model || DEFAULT_CONFIG.describe.model,
       },
       learning: loadedConfig?.learning
         ? {
@@ -437,6 +444,15 @@ async function run(): Promise<void> {
             break;
           }
           await runDocs(inputs, config, engine, gh);
+          break;
+        case 'describe':
+          if (config.describe?.enabled === false) {
+            core.info(
+              'Skipping describe mode — PR description generation is disabled (describe.enabled: false)',
+            );
+            break;
+          }
+          await runDescribe(inputs, config, engine, gh, repo, token);
           break;
         case 'self-heal':
           await runSelfHeal(inputs, config, engine, gh, repo, token);

@@ -9,6 +9,7 @@ describe('parseCommand', () => {
     expect(parseCommand('/analyze')?.command).toBe('analyze');
     expect(parseCommand('/analyse')?.command).toBe('analyze');
     expect(parseCommand('/explain')?.command).toBe('explain');
+    expect(parseCommand('/describe')?.command).toBe('describe');
     expect(parseCommand('/ask')?.command).toBe('ask');
     expect(parseCommand('/setup')?.command).toBe('setup');
     expect(parseCommand('/docs')?.command).toBe('docs');

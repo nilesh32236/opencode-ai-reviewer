@@ -26,6 +26,7 @@ import type { PlatformAdapter } from './platform/adapter.js';
 import {
   buildAnalyzePrompt,
   buildAuditPrompt,
+  buildDescribePrompt,
   buildDocsPrompt,
   buildExplainPrompt,
   buildFixPrompt,
@@ -579,6 +580,7 @@ export class ReviewEngine {
       | 'explanationModel'
       | 'conversationModel'
       | 'analysisModel'
+      | 'describeModel'
     >,
   ): string {
     return this.config[stageField] ?? this.config.reviewModel;
@@ -2799,6 +2801,97 @@ export class ReviewEngine {
         modelUsed: this.resolveModel('explanationModel'),
       });
       return '⚠️ **Explanation Failed**: Could not read explanation from `.opencode/explain-output.md`.';
+    }
+  }
+
+  /**
+   * Generate a structured PR description for the team.
+   * Builds a describe prompt from the PR context, runs OpenCode CLI to produce
+   * a human-readable PR summary, and reads the markdown output from disk.
+   *
+   * @param pr - The PR context object.
+   * @param workingDirectory - Optional working directory (tempDir).
+   * @param timeoutMinutes - Optional timeout override.
+   * @param promptFile - Optional path to a custom describe prompt file.
+   * @param promptExtra - Optional extra instructions appended to the describe prompt.
+   * @returns Markdown content of the generated PR description.
+   */
+  async runDescribe(
+    pr: PRContext,
+    workingDirectory?: string,
+    timeoutMinutes?: number,
+    promptFile?: string,
+    promptExtra?: string,
+  ): Promise<string> {
+    // Enforce the describe.enabled flag here so every caller (Action describe
+    // mode and the App /describe handler) is blocked before resetting telemetry
+    // or invoking the model when PR description generation is disabled.
+    if (this.config.describe?.enabled === false) {
+      this.logger.info('Describe generation is disabled (describe.enabled: false) — skipping');
+      return '⚠️ **Description Generation Disabled**: `describe.enabled` is set to `false` in the config.';
+    }
+    // Reset telemetry so the reported usage reflects only this describe invocation.
+    this.telemetry = null;
+    this.publishEvent(PIPELINE_EVENT_TYPES.DESCRIBE_STARTED, {
+      prNumber: pr.number,
+      modelUsed: this.resolveModel('describeModel'),
+    });
+    const workDir = workingDirectory || process.cwd();
+    const outputPath = path.join(workDir, '.opencode', 'describe-output.md');
+    ensureOutputDir(outputPath);
+
+    const { context: prContext } = this.buildPRContextString(pr);
+    const prompt = buildDescribePrompt(
+      {
+        projectContext: this.config.projectContext.description || undefined,
+        describePromptFile: promptFile,
+        describePromptExtra: promptExtra,
+      },
+      prContext,
+    );
+
+    const runResult = await this.runLLM(prompt, {
+      model: this.config.describe?.model || this.resolveModel('describeModel'),
+      timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+      workingDirectory: workDir,
+    });
+    await this.recordTelemetry(
+      pr.number,
+      runResult.durationMs,
+      runResult.tokensUsed,
+      runResult,
+      this.config.describe?.model || this.resolveModel('describeModel'),
+      workDir,
+    );
+
+    if (!runResult.success) {
+      this.publishCompleted(PIPELINE_EVENT_TYPES.DESCRIBE_COMPLETED, {
+        prNumber: pr.number,
+        modelUsed: this.config.describe?.model || this.resolveModel('describeModel'),
+      });
+      return '⚠️ **Description Generation Failed**: OpenCode CLI was unable to generate the PR description.';
+    }
+
+    try {
+      const content = await fs.readFile(outputPath, 'utf-8');
+      this.publishCompleted(PIPELINE_EVENT_TYPES.DESCRIBE_COMPLETED, {
+        prNumber: pr.number,
+        modelUsed: this.config.describe?.model || this.resolveModel('describeModel'),
+      });
+      return content.trim();
+    } catch {
+      if (runResult.output && runResult.output.trim().length > 0) {
+        this.publishCompleted(PIPELINE_EVENT_TYPES.DESCRIBE_COMPLETED, {
+          prNumber: pr.number,
+          modelUsed: this.config.describe?.model || this.resolveModel('describeModel'),
+        });
+        return runResult.output.trim();
+      }
+      this.publishCompleted(PIPELINE_EVENT_TYPES.DESCRIBE_COMPLETED, {
+        prNumber: pr.number,
+        modelUsed: this.config.describe?.model || this.resolveModel('describeModel'),
+      });
+      return '⚠️ **Description Error**: Could not read generated `.opencode/describe-output.md` file.';
     }
   }
 

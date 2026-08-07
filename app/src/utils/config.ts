@@ -118,6 +118,7 @@ export function buildConfig(): AgentConfig {
     conversationModel: process.env.CONVERSATION_MODEL || undefined,
     analysisModel: process.env.ANALYSIS_MODEL || undefined,
     docsModel: process.env.DOCS_MODEL || undefined,
+    describeModel: process.env.DESCRIBE_MODEL || undefined,
     batchSize: parseEnvInt(process.env.BATCH_SIZE, 3),
     maxLinesPerFile: parseEnvInt(process.env.MAX_LINES_PER_FILE, 200),
     maxIterations: parseEnvInt(process.env.MAX_ITERATIONS, 3),
@@ -137,6 +138,10 @@ export function buildConfig(): AgentConfig {
     docs: {
       enabled: process.env.DOCS_ENABLED === 'true',
       style: parseDocsStyleEnv(process.env.DOCS_STYLE),
+    },
+    describe: {
+      enabled: process.env.DESCRIBE_ENABLED !== 'false',
+      model: process.env.DESCRIBE_MODEL || undefined,
     },
     review: {
       ...DEFAULT_CONFIG.review,

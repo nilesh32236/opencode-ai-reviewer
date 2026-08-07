@@ -19,6 +19,7 @@ const {
   mockBuildAnalyzePrompt,
   mockBuildDocsPrompt,
   mockBuildSynthesisPrompt,
+  mockBuildDescribePrompt,
   MockMCPManager,
   createMockAdapter,
 } = vi.hoisted(() => {
@@ -46,6 +47,7 @@ const {
   const _mockBuildAnalyzePrompt = vi.fn(() => 'analyze prompt');
   const _mockBuildDocsPrompt = vi.fn(() => 'docs prompt');
   const _mockBuildSynthesisPrompt = vi.fn(() => 'synthesis prompt');
+  const _mockBuildDescribePrompt = vi.fn(() => 'describe prompt');
 
   class _MockMCPManager {
     connect = _mockMCPConnect;
@@ -114,6 +116,7 @@ const {
     mockBuildAnalyzePrompt: _mockBuildAnalyzePrompt,
     mockBuildDocsPrompt: _mockBuildDocsPrompt,
     mockBuildSynthesisPrompt: _mockBuildSynthesisPrompt,
+    mockBuildDescribePrompt: _mockBuildDescribePrompt,
     MockMCPManager: _MockMCPManager,
     createMockAdapter: _createMockAdapter,
   };
@@ -163,6 +166,7 @@ vi.mock('../src/prompts/builder.js', async (importOriginal) => {
     buildAnalyzePrompt: mockBuildAnalyzePrompt,
     buildDocsPrompt: mockBuildDocsPrompt,
     buildSynthesisPrompt: mockBuildSynthesisPrompt,
+    buildDescribePrompt: mockBuildDescribePrompt,
   };
 });
 
@@ -1261,6 +1265,51 @@ describe('ReviewEngine', () => {
       expect(result.changesMade).toBe(false);
       expect(result.filesChanged).toEqual([]);
       expect(result.summary).toBe('Summary only');
+    });
+  });
+
+  describe('runDescribe()', () => {
+    const contextMarkdown = '## PR Context\nSome context';
+    const pr = makePRContext({
+      changedFiles: [{ path: 'src/example.ts', status: 'modified', additions: 20, deletions: 0 }],
+    });
+
+    it('returns a non-empty description on success', async () => {
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: 'PR description',
+        durationMs: 1500,
+      });
+
+      const result = await engine.runDescribe(pr, contextMarkdown);
+
+      expect(mockBuildDescribePrompt).toHaveBeenCalled();
+      expect(mockRunOpenCode).toHaveBeenCalledWith(
+        'describe prompt',
+        expect.objectContaining({ model: DEFAULT_CONFIG.reviewModel }),
+      );
+      expect(result).toContain('PR description');
+    });
+
+    it('uses the resolved describe model override when configured', async () => {
+      const describeEngine = new ReviewEngine(makeConfig({ describeModel: 'gpt-4o' }), mockAdapter);
+      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
+
+      await describeEngine.runDescribe(pr, contextMarkdown);
+
+      expect(mockRunOpenCode).toHaveBeenCalledWith(
+        'describe prompt',
+        expect.objectContaining({ model: 'gpt-4o' }),
+      );
+    });
+
+    it('returns a fallback message when runOpenCode fails', async () => {
+      mockRunOpenCode.mockResolvedValue({ success: false, output: '', durationMs: 500 });
+
+      const result = await engine.runDescribe(pr, contextMarkdown);
+
+      expect(result).toBeTruthy();
+      expect(result.length).toBeGreaterThan(0);
     });
   });
 

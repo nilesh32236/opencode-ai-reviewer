@@ -49,7 +49,7 @@ const logger = new Logger('Command');
  * @param correlationId - Optional correlation ID for tracing this request.
  */
 export async function handleCommand(
-  command: 'fix' | 'review' | 'audit' | 'analyze' | 'explain' | 'setup' | 'docs',
+  command: 'fix' | 'review' | 'audit' | 'analyze' | 'explain' | 'setup' | 'docs' | 'describe',
   issueNumber: number,
   repo: string,
   token: string,
@@ -113,6 +113,23 @@ export async function handleCommand(
 
       case 'explain': {
         await handleExplainCommand(
+          issueNumber,
+          repo,
+          token,
+          config,
+          tempDir,
+          eventBus,
+          correlationId,
+        );
+        break;
+      }
+
+      case 'describe': {
+        if (!(await gh.isMR(issueNumber))) {
+          logger.info(`Ignoring /describe on #${issueNumber}: not a pull request`);
+          break;
+        }
+        await handleDescribeCommand(
           issueNumber,
           repo,
           token,
@@ -350,6 +367,59 @@ export async function handleExplainCommand(
       issueNumber,
       '<!-- pr-explanation-error -->',
       `❌ **Explanation Failed**: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  } finally {
+    await engine.cleanup();
+  }
+}
+
+/**
+ * Handle a describe command: gather PR context, run the describe engine,
+ * and post the generated PR description as a comment on the PR.
+ * @param issueNumber - The PR number to describe.
+ * @param repo - Repository string (owner/repo).
+ * @param token - GitHub authentication token.
+ * @param config - Agent configuration.
+ * @param tempDir - Temporary working directory.
+ * @param eventBus - Optional event bus for publishing pipeline events.
+ * @param correlationId - Optional correlation ID for tracing this request.
+ */
+export async function handleDescribeCommand(
+  issueNumber: number,
+  repo: string,
+  token: string,
+  config: AgentConfig,
+  tempDir: string,
+  eventBus?: EventBus,
+  correlationId?: string,
+): Promise<void> {
+  const logger = new Logger('Command:Describe', { repo, prNumber: issueNumber, correlationId });
+  logger.info(`Describing PR #${issueNumber}`);
+
+  if (config.describe?.enabled === false) {
+    logger.info('PR description generation is disabled (describe.enabled: false) — skipping');
+    return;
+  }
+
+  const gh: PlatformAdapter =
+    config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
+  const engine = new ReviewEngine(config, gh, undefined, eventBus, repo, correlationId);
+
+  try {
+    const pr = await gh.getMR(issueNumber);
+    const description = await engine.runDescribe(pr, tempDir);
+
+    await gh.postOrUpdateComment(issueNumber, '<!-- pr-description -->', description);
+
+    logger.info(`Posted PR description for PR #${issueNumber}`);
+  } catch (err) {
+    logger.error(
+      `Failed to describe PR #${issueNumber}: ${err instanceof Error ? err.message : err}`,
+    );
+    await gh.postOrUpdateComment(
+      issueNumber,
+      '<!-- pr-description-error -->',
+      `❌ **Description Generation Failed**: ${err instanceof Error ? err.message : String(err)}`,
     );
   } finally {
     await engine.cleanup();

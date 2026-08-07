@@ -22,6 +22,7 @@ const VALID_MODES: ActionMode[] = [
   'self-heal',
   'setup',
   'docs',
+  'describe',
 ];
 
 const VALID_FAIL_ON_SEVERITIES: readonly FailOnSeverity[] = [
@@ -128,6 +129,8 @@ export interface ActionInputs {
   conversationModel?: string;
   /** Model identifier for issue analysis. */
   analysisModel?: string;
+  /** Model identifier for PR description generation. */
+  describeModel?: string;
   /** Model identifier for documentation generation. */
   docsModel?: string;
   /** Doc comment style for the /docs command ('auto' infers per file). */
@@ -136,6 +139,10 @@ export interface ActionInputs {
   reviewPromptFile?: string;
   /** Optional extra instructions appended to the review prompt. */
   reviewPromptExtra?: string;
+  /** Optional path to a custom describe prompt file. */
+  describePromptFile?: string;
+  /** Optional extra instructions appended to the describe prompt. */
+  describePromptExtra?: string;
   /** Optional path to a custom config file (overrides .opencode-reviewer.yml discovery). */
   configFile?: string;
   /** Whether automated fix mode is enabled. */
@@ -335,6 +342,7 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   const conversationModel =
     resolveModel(modelInput('conversation_model') || globalModel) || undefined;
   const analysisModel = resolveModel(modelInput('analysis_model') || globalModel) || undefined;
+  const describeModel = resolveModel(modelInput('describe_model') || globalModel) || undefined;
   const docsModel = resolveModel(modelInput('docs_model') || globalModel) || undefined;
 
   const docStyleRaw = core.getInput('doc_style').trim().toLowerCase();
@@ -413,6 +421,7 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     explanationModel: false,
     conversationModel: false,
     analysisModel: mode === 'analyze',
+    describeModel: mode === 'describe',
     docsModel: mode === 'docs',
   };
 
@@ -426,6 +435,7 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     explanationModel,
     conversationModel,
     analysisModel,
+    describeModel,
     docsModel,
   })) {
     if (!model) continue;
@@ -470,10 +480,13 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     explanationModel,
     conversationModel,
     analysisModel,
+    describeModel,
     docsModel,
     docStyle,
     reviewPromptFile: core.getInput('review_prompt_file') || undefined,
     reviewPromptExtra: core.getInput('review_prompt_extra') || undefined,
+    describePromptFile: core.getInput('describe_prompt_file') || undefined,
+    describePromptExtra: core.getInput('describe_prompt_extra') || undefined,
     configFile: core.getInput('config') || undefined,
     enableFix: core.getInput('enable_fix') !== 'false',
     maxFixIterations,

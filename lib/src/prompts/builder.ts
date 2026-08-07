@@ -92,6 +92,8 @@ function boundSection(text: string, maxBytes: number, label: string): string {
 export interface PromptBuilderInputs {
   reviewPromptFile?: string;
   reviewPromptExtra?: string;
+  describePromptFile?: string;
+  describePromptExtra?: string;
   maxFilesPerBatch?: number;
   projectContext?: string;
   runChecksAfterFix?: string;
@@ -1270,4 +1272,111 @@ Does this PR affect the overall architecture? If so, explain how.
 ## Output Format
 Write your response as a single markdown document directly to \`.opencode/explain-output.md\`.
 Do NOT wrap in JSON. Be concise but thorough.`);
+}
+
+/**
+ * Build a describe prompt for the `/describe` command.
+ * Instructs the LLM to read the PR diff and commit messages and generate a
+ * structured PR description including: a change overview grouped by
+ * component/area, testing notes, a breaking-change flag with details,
+ * suggested labels, and a suggested conventional-commit title.
+ *
+ * A custom prompt file (`describePromptFile`) replaces the built-in
+ * instructions (mirroring the review prompt file behavior), with the PR
+ * context appended; `describePromptExtra` is appended as additional
+ * instructions in either case.
+ *
+ * @param inputs - Configuration inputs including project context and optional
+ * custom describe prompt file / extra instructions.
+ * @param prContext - The PR context string describing the pull request.
+ * @returns The assembled describe prompt string.
+ */
+export function buildDescribePrompt(inputs: PromptBuilderInputs, prContext: string): string {
+  const safePrContext = boundSection(
+    sanitizePromptInput(prContext, { maxLength: 50_000 }),
+    MAX_CONTEXT_SECTION_BYTES,
+    'PR & issue context',
+  );
+  const boundedProjectContext = boundSection(
+    inputs.projectContext || getDefaultProjectContext(),
+    MAX_PROJECT_CONTEXT_SECTION_BYTES,
+    'project context',
+  );
+
+  const sections: string[] = [];
+
+  if (inputs.describePromptFile) {
+    const customPrompt = loadPromptFile(inputs.describePromptFile);
+    if (customPrompt) {
+      const customSections: string[] = [customPrompt];
+      customSections.push('\n## PR & Issue Context');
+      customSections.push('');
+      customSections.push(safePrContext);
+      if (inputs.describePromptExtra) {
+        customSections.push('\n## Additional Instructions');
+        customSections.push('');
+        customSections.push(inputs.describePromptExtra);
+      }
+      return capPromptLength(customSections.join('\n'));
+    }
+  }
+
+  sections.push(
+    'You are a Senior Software Engineer writing a clear, human-readable pull request description.',
+  );
+  sections.push('');
+
+  sections.push('## PR & Issue Context');
+  sections.push('');
+  sections.push(safePrContext);
+  sections.push('');
+  sections.push('## Project Context');
+  sections.push('');
+  sections.push(boundedProjectContext);
+  sections.push('');
+
+  sections.push(`## Instructions
+
+Read the PR diff and commit messages above and generate a structured PR description:
+
+1. **Change Overview**: Summarize the key changes grouped by component or feature area. State what was changed and why.
+2. **Testing Notes**: Describe how this PR should be tested, including any automated tests added or updated and manual verification steps.
+3. **Breaking Changes**: Flag whether the PR introduces breaking changes. If yes, list each one with a short migration note; if no, state "None".
+4. **Suggested Labels**: Propose 2-5 concise GitHub labels that fit this PR (e.g. \`feature\`, \`bug\`, \`dependencies\`, \`tests\`).
+5. **Suggested Conventional-commit Title**: Propose a single conventional-commit title for this PR (e.g. \`feat: add describe mode for PR summaries\`).
+
+## Output Format
+Write your response as a single markdown document directly to \`.opencode/describe-output.md\`.
+Use this structure:
+
+\`\`\`markdown
+## Summary
+<1-2 sentence overview>
+
+## Changes
+- **<component/area>**: <what changed and why>
+- ...
+
+## Testing
+- <test guidance>
+
+## Breaking Changes
+- <"None" or list with migration notes>
+
+## Suggested Labels
+- \`label1\`, \`label2\`, ...
+
+## Suggested Conventional-commit Title
+\`<type(scope): subject>\`
+\`\`\`
+
+Do NOT wrap in JSON. Be concise but thorough.`);
+
+  if (inputs.describePromptExtra) {
+    sections.push('\n## Additional Instructions');
+    sections.push('');
+    sections.push(inputs.describePromptExtra);
+  }
+
+  return capPromptLength(sections.join('\n'));
 }

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
 import {
   buildAnalyzePrompt,
+  buildDescribePrompt,
   buildDocsPrompt,
   buildFixPrompt,
   buildReplyPrompt,
@@ -131,6 +132,83 @@ describe('prompt-builder', () => {
       expect(prompt).toContain('git commit');
       expect(prompt).toContain('git push');
       expect(prompt).toContain('gh pr create');
+    });
+  });
+
+  describe('buildDescribePrompt', () => {
+    it('returns a non-empty string', () => {
+      const prompt = buildDescribePrompt(
+        { reviewPromptFile: '', reviewPromptExtra: '', maxFilesPerBatch: 3, projectContext: '' },
+        'PR context with changed code',
+      );
+      expect(prompt).toBeTruthy();
+      expect(typeof prompt).toBe('string');
+      expect(prompt.length).toBeGreaterThan(50);
+    });
+
+    it('includes the PR context', () => {
+      const prContext = 'Test PR context with specific details';
+      const prompt = buildDescribePrompt({ projectContext: '' }, prContext);
+      expect(prompt).toContain(prContext);
+    });
+
+    it('instructs the agent to write to describe-output.md', () => {
+      const prompt = buildDescribePrompt({ projectContext: '' }, 'PR context');
+      expect(prompt).toContain('.opencode/describe-output.md');
+    });
+
+    it('includes output structure headings', () => {
+      const prompt = buildDescribePrompt({ projectContext: '' }, 'PR context');
+      expect(prompt).toContain('## Summary');
+      expect(prompt).toContain('## Changes');
+      expect(prompt).toContain('## Testing');
+      expect(prompt).toContain('## Breaking Changes');
+      expect(prompt).toContain('## Suggested Labels');
+      expect(prompt).toContain('## Suggested Conventional-commit Title');
+    });
+
+    it('instructs the agent to flag breaking changes with migration notes', () => {
+      const prompt = buildDescribePrompt({ projectContext: '' }, 'PR context');
+      expect(prompt).toMatch(/breaking changes/i);
+      expect(prompt).toContain('migration');
+    });
+
+    it('uses provided project context', () => {
+      const prompt = buildDescribePrompt(
+        { projectContext: 'Custom project context' },
+        'PR context',
+      );
+      expect(prompt).toContain('Custom project context');
+    });
+
+    it('appends describePromptExtra when set', () => {
+      const extra = 'DESCRIBE_EXTRA_INSTRUCTIONS';
+      const prompt = buildDescribePrompt(
+        { projectContext: '', describePromptExtra: extra },
+        'PR context',
+      );
+      expect(prompt).toContain('## Additional Instructions');
+      expect(prompt).toContain(extra);
+    });
+
+    it('uses a custom describe prompt file when provided', () => {
+      const customFile = path.join(process.cwd(), `.tmp-custom-describe-${Date.now()}.md`);
+      fs.writeFileSync(customFile, 'CUSTOM_DESCRIBE_PROMPT_CONTENT');
+      try {
+        const prompt = buildDescribePrompt(
+          { projectContext: '', describePromptFile: path.basename(customFile) },
+          'PR context',
+        );
+        expect(prompt).toContain('CUSTOM_DESCRIBE_PROMPT_CONTENT');
+        expect(prompt).not.toContain('structured PR description');
+      } finally {
+        fs.unlinkSync(customFile);
+      }
+    });
+
+    it('includes critical rules forbidding git push and PR creation', () => {
+      const prompt = buildDescribePrompt({ projectContext: '' }, 'PR context');
+      expect(prompt).toContain('Do NOT wrap in JSON');
     });
   });
 

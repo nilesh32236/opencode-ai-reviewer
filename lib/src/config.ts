@@ -7,6 +7,7 @@ import type {
   AgentCategory,
   CategoryOverride,
   ConfigOverride,
+  DescribeConfig,
   DocsConfig,
   LLMConfig,
   LLMProviderConfig,
@@ -93,6 +94,10 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
   docs: {
     enabled: null,
     style: null,
+  },
+  describe: {
+    enabled: null,
+    model: null,
   },
   learning: {
     enabled: null,
@@ -624,6 +629,18 @@ export function validateConfig(config: PromptConfig): PromptConfig {
       docs.style = 'auto';
     }
     result.docs = docs;
+  }
+
+  if (config.describe && typeof config.describe === 'object') {
+    const desc = config.describe;
+    const describe: DescribeConfig = { enabled: true };
+    if (typeof desc.enabled === 'boolean') {
+      describe.enabled = desc.enabled;
+    }
+    if (typeof desc.model === 'string' && desc.model.trim() !== '') {
+      describe.model = desc.model.trim();
+    }
+    result.describe = describe;
   }
 
   if (config.learning) {
