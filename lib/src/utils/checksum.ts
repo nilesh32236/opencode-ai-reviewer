@@ -84,10 +84,9 @@ export function parseChecksumFile(content: string, targetAssetName: string): str
 
 const KNOWN_CHECKSUMS: Record<string, string> = {
   // Format: `${version}-${arch}` → sha256 hex string
-  // Entries populated as releases are manually verified.
-  // Verify with: curl -L <release>/opencode-<arch>.tar.gz | sha256sum
-  'v1.18.14-linux-x64':
-    'f23980ba2aebfbfa53948e55e213d3f2a53740fd7326553828e89ad27e970572',
+  // Entries populated as releases are manually verified (only used when the
+  // opencode_version input is pinned; 'latest' falls back to the release
+  // checksum asset or a warning).
 };
 
 /**
