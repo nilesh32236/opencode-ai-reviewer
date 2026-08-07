@@ -5,7 +5,7 @@ import type { PlatformAdapter, TokenUsage } from '@opencode-pr-agent/lib';
 import {
   LearningStore,
   buildTokenUsageSection,
-  validateRunChecksCommand,
+  parseRunChecksCommands,
   withRetry,
 } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
@@ -36,11 +36,21 @@ export async function runPost(
   if (inputs.runChecksAfterFix) {
     core.info('Running verification commands after fix...');
     try {
-      const { program, args } = validateRunChecksCommand(
-        inputs.runChecksAfterFix,
-        inputs.checkAllowlist,
-      );
-      await exec.exec(program, args);
+      const steps = parseRunChecksCommands(inputs.runChecksAfterFix, inputs.checkAllowlist);
+      for (const step of steps) {
+        const exitCode = await exec.exec(step.program, step.args, {
+          ...(step.cwd ? { cwd: step.cwd } : {}),
+          ignoreReturnCode: true,
+        });
+        if (exitCode !== 0) {
+          core.warning(
+            sanitize(
+              `Verification command "${step.program} ${step.args.join(' ')}" failed with exit code ${exitCode}`,
+            ),
+          );
+          break;
+        }
+      }
     } catch (error) {
       core.warning(
         sanitize(`Verification command failed: ${inputs.runChecksAfterFix} — ${String(error)}`),

@@ -1,4 +1,9 @@
-import { DEFAULT_ALLOWLIST, validateRunChecksCommand } from '../src/utils/command.js';
+import path from 'node:path';
+import {
+  DEFAULT_ALLOWLIST,
+  parseRunChecksCommands,
+  validateRunChecksCommand,
+} from '../src/utils/command.js';
 
 const BLOCKED_PROGRAMS = [
   'rm',
@@ -58,7 +63,7 @@ const DANGEROUS_RUNNER_SUBCOMMANDS = [
   'pnpm exec foo',
 ];
 
-const CHAINING_OPERATORS = [';', '&&', '||', '|', '&'];
+const CHAINING_OPERATORS = [';', '||', '|', '&'];
 
 const SHELL_EXPANSION_PATTERNS = [
   '`id`',
@@ -159,6 +164,68 @@ describe('validateRunChecksCommand()', () => {
     it.each(CHAINING_OPERATORS)('rejects chaining operator "%s"', (op) => {
       expect(() => validateRunChecksCommand(`pnpm test ${op} echo pwned`)).toThrow(
         'contains unsafe shell characters',
+      );
+    });
+
+    it('rejects a disallowed program after a "&&" separator', () => {
+      expect(() => validateRunChecksCommand('pnpm test && echo pwned')).toThrow(
+        'Command "echo" is not allowed',
+      );
+    });
+  });
+
+  describe('parseRunChecksCommands()', () => {
+    it('parses a single command', () => {
+      expect(parseRunChecksCommands('pnpm typecheck')).toEqual([
+        { program: 'pnpm', args: ['typecheck'] },
+      ]);
+    });
+
+    it('parses chained commands in sequence', () => {
+      expect(parseRunChecksCommands('pnpm typecheck && pnpm lint')).toEqual([
+        { program: 'pnpm', args: ['typecheck'] },
+        { program: 'pnpm', args: ['lint'] },
+      ]);
+    });
+
+    it('applies "cd <dir>" to subsequent commands', () => {
+      expect(
+        parseRunChecksCommands(
+          'cd frontend && pnpm typecheck && pnpm lint && cd ../backend && pnpm typecheck',
+        ),
+      ).toEqual([
+        { program: 'pnpm', args: ['typecheck'], cwd: path.resolve('frontend') },
+        { program: 'pnpm', args: ['lint'], cwd: path.resolve('frontend') },
+        { program: 'pnpm', args: ['typecheck'], cwd: path.resolve('frontend', '../backend') },
+      ]);
+    });
+
+    it('resolves nested "cd" paths', () => {
+      expect(parseRunChecksCommands('cd a && cd b && pnpm test')).toEqual([
+        { program: 'pnpm', args: ['test'], cwd: path.resolve('a', 'b') },
+      ]);
+    });
+
+    it('rejects a "cd" without exactly one argument', () => {
+      expect(() => parseRunChecksCommands('cd')).toThrow('exactly one path argument');
+      expect(() => parseRunChecksCommands('cd a b && pnpm test')).toThrow(
+        'exactly one path argument',
+      );
+    });
+
+    it('rejects an unsafe "cd" target', () => {
+      expect(() => parseRunChecksCommands('cd "x;y" && pnpm test')).toThrow('Unsafe cd target');
+    });
+
+    it('rejects a disallowed program after "cd"', () => {
+      expect(() => parseRunChecksCommands('cd frontend && rm -rf .')).toThrow(
+        'Command "rm" is not allowed',
+      );
+    });
+
+    it('rejects a command with no actual executions', () => {
+      expect(() => parseRunChecksCommands('cd frontend')).toThrow(
+        'must contain at least one command',
       );
     });
   });

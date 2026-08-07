@@ -28,7 +28,8 @@ import {
   configureGit,
   resolveFixedComments,
   validateRefName,
-  validateRunChecksCommand,
+  parseRunChecksCommands,
+  type CheckExecution,
 } from '@opencode-pr-agent/lib';
 import { mergeRepoConfig } from '../utils/config.js';
 
@@ -327,13 +328,13 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
       history[history.length - 1].status = 'fix-applied';
       history[history.length - 1].filesChanged = fixResult.filesChanged;
       history[history.length - 1].commitMessage =
-        `fix: address review feedback (iteration ${i + 1})`;
+        `fix: address review feedback (iteration ${i + 1}) [skip ci]`;
 
       try {
         execFileSync('git', ['add', '-A'], gitOpts);
         execFileSync(
           'git',
-          ['commit', '-m', `fix: address review feedback (iteration ${i + 1})`],
+          ['commit', '-m', `fix: address review feedback (iteration ${i + 1}) [skip ci]`],
           gitOpts,
         );
         validateRefName(pr.headRef);
@@ -371,36 +372,34 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
 
       if (runChecksAfterFix) {
         logger.info('Running verification commands...');
-        let program: string;
-        let args: string[];
+        let steps: CheckExecution[];
         try {
-          const validated = validateRunChecksCommand(
-            runChecksAfterFix,
-            checkAllowlist ?? DEFAULT_ALLOWLIST,
-          );
-          program = validated.program;
-          args = validated.args;
+          steps = parseRunChecksCommands(runChecksAfterFix, checkAllowlist ?? DEFAULT_ALLOWLIST);
         } catch (err) {
           logger.warn(
             `Verification command rejected: ${err instanceof Error ? err.message : String(err)}`,
           );
-          program = '';
-          args = [];
+          steps = [];
         }
 
-        if (program) {
+        if (steps.length > 0) {
           const maxVerificationRetries = 2;
           for (let v = 0; v <= maxVerificationRetries; v++) {
             let checkOutput = '';
+            const baseCwd = workingDir ?? process.cwd();
             const execOpts = {
               encoding: 'utf-8' as const,
               stdio: 'pipe' as const,
               timeout: 300_000,
-              ...(workingDir ? { cwd: workingDir } : {}),
             };
             try {
-              const stdout = execFileSync(program, args, execOpts);
-              checkOutput += stdout;
+              for (const step of steps) {
+                const stdout = execFileSync(step.program, step.args, {
+                  ...execOpts,
+                  cwd: step.cwd ? path.resolve(baseCwd, step.cwd) : baseCwd,
+                });
+                checkOutput += stdout;
+              }
               verificationPassed = true;
               logger.info('Verification passed');
               break;
@@ -440,7 +439,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
                     execFileSync('git', ['add', '-A'], gitOpts);
                     execFileSync(
                       'git',
-                      ['commit', '-m', `fix: verification errors (attempt ${v + 1})`],
+                      ['commit', '-m', `fix: verification errors (attempt ${v + 1}) [skip ci]`],
                       gitOpts,
                     );
                     validateRefName(pr.headRef);

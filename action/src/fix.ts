@@ -21,7 +21,8 @@ import {
   postBlockingQuestions,
   resolveFixedComments,
   validateRefName,
-  validateRunChecksCommand,
+  parseRunChecksCommands,
+  type CheckExecution,
 } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { resolvePrNumber, sanitize } from './utils.js';
@@ -90,14 +91,25 @@ export async function runFix(
 
   if (inputs.runChecksAfterFix && changesMade) {
     core.info('Running verification commands...');
-    const { program, args } = validateRunChecksCommand(
-      inputs.runChecksAfterFix,
-      inputs.checkAllowlist,
-    );
+    let steps: CheckExecution[];
+    try {
+      steps = parseRunChecksCommands(inputs.runChecksAfterFix, inputs.checkAllowlist);
+    } catch (err) {
+      core.warning(
+        sanitize(
+          `Verification command rejected (${err instanceof Error ? err.message : err}). Skipping verification.`,
+        ),
+      );
+      steps = [];
+    }
 
     const maxVerificationRetries = 2;
     for (let v = 0; v <= maxVerificationRetries; v++) {
-      const { exitCode, output: checkOutput } = await runVerification(program, args);
+      const { exitCode, output: checkOutput } = await runVerificationSteps(steps);
+
+      if (steps.length === 0) {
+        break;
+      }
 
       if (exitCode === 0) {
         core.info('Verification passed');
@@ -329,7 +341,7 @@ export async function runFixIssue(
   }
 
   await exec.exec('git', ['add', '-A']);
-  await exec.exec('git', ['commit', '-m', `fix: address issue #${issueNumber}`]);
+  await exec.exec('git', ['commit', '-m', `fix: address issue #${issueNumber} [skip ci]`]);
   try {
     if (reuseBotBranch) {
       // Reusing a bot-authored branch: guard against a concurrent remote update.
@@ -609,7 +621,7 @@ export async function runAutofixLoop(
     currentEntry.filesChanged = fixResult.filesChanged;
     currentEntry.fixSummary = fixResult.summary;
 
-    const commitMsg = `fix: autofix iteration ${i + 1}`;
+    const commitMsg = `fix: autofix iteration ${i + 1} [skip ci]`;
     try {
       await exec.exec('git', ['add', '-A']);
       await exec.exec('git', ['commit', '-m', commitMsg]);
@@ -663,14 +675,25 @@ export async function runAutofixLoop(
 
     if (inputs.runChecksAfterFix) {
       core.info('Running verification commands...');
-      const { program, args } = validateRunChecksCommand(
-        inputs.runChecksAfterFix,
-        inputs.checkAllowlist,
-      );
+      let steps: CheckExecution[];
+      try {
+        steps = parseRunChecksCommands(inputs.runChecksAfterFix, inputs.checkAllowlist);
+      } catch (err) {
+        core.warning(
+          sanitize(
+            `Verification command rejected (${err instanceof Error ? err.message : err}). Skipping verification.`,
+          ),
+        );
+        steps = [];
+      }
 
       const maxVerificationRetries = 2;
       for (let v = 0; v <= maxVerificationRetries; v++) {
-        const { exitCode, output: checkOutput } = await runVerification(program, args);
+        const { exitCode, output: checkOutput } = await runVerificationSteps(steps);
+
+        if (steps.length === 0) {
+          break;
+        }
 
         if (exitCode === 0) {
           core.info('Verification passed');
@@ -706,7 +729,7 @@ export async function runAutofixLoop(
 
           try {
             await exec.exec('git', ['add', '-A']);
-            await exec.exec('git', ['commit', '-m', `fix: verification errors (attempt ${v + 1})`]);
+            await exec.exec('git', ['commit', '-m', `fix: verification errors (attempt ${v + 1}) [skip ci]`]);
             validateRefName(pr.headRef);
             await exec.exec('git', ['push', 'origin', pr.headRef]);
           } catch (err) {
@@ -755,10 +778,12 @@ export async function runAutofixLoop(
   core.setOutput('approved', String(approved));
 }
 
-async function runVerification(
-  program: string,
-  args: string[],
+async function runVerificationSteps(
+  steps: CheckExecution[],
 ): Promise<{ exitCode: number; output: string }> {
+  if (steps.length === 0) {
+    return { exitCode: 0, output: '' };
+  }
   const chunks: Buffer[] = [];
   const execOptions = {
     listeners: {
@@ -771,7 +796,15 @@ async function runVerification(
     },
     ignoreReturnCode: true,
   };
-  const exitCode = await exec.exec(program, args, execOptions);
+
+  let exitCode = 0;
+  for (const step of steps) {
+    const stepOpts = step.cwd ? { ...execOptions, cwd: step.cwd } : execOptions;
+    exitCode = await exec.exec(step.program, step.args, stepOpts);
+    if (exitCode !== 0) {
+      break;
+    }
+  }
   const output = Buffer.concat(chunks).toString('utf-8');
   return { exitCode, output };
 }
@@ -794,7 +827,7 @@ async function handleTimeoutGracefully(
       const raw = await exec.getExecOutput('git', ['diff', '--name-only', 'HEAD']);
       filesChanged = raw.stdout.trim().split('\n').filter(Boolean);
 
-      commitMessage = `fix: address review feedback (partial changes due to timeout iteration ${iteration + 1})`;
+      commitMessage = `fix: address review feedback (partial changes due to timeout iteration ${iteration + 1}) [skip ci]`;
       await exec.exec('git', ['add', '-A']);
       await exec.exec('git', ['commit', '-m', commitMessage]);
 
