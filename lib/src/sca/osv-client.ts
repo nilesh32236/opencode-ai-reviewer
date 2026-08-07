@@ -48,8 +48,9 @@ const osvCircuitBreaker = new CircuitBreaker({ name: 'osv-client' });
  * default `minSeverity: 'important'` floor — a documented tradeoff that keeps
  * the default noise low. Repos that want medium findings can lower
  * `sca.minSeverity` to `'minor'`.
- * @param score - CVSS v3 base score (0–10).
- * @returns The mapped severity band.
+ *
+ * @param score - Raw CVSS v3 base score (0.0–10.0).
+ * @returns The projected severity band.
  */
 export function severityFromCvss(score: number): Severity {
   if (score >= 9.0) return 'critical';
@@ -115,8 +116,9 @@ export function cvssV3BaseScore(vector: string): number | undefined {
 /**
  * Map an OSV `database_specific.severity` label to the project severity.
  * Unknown labels degrade to `minor` so findings are never over-reported.
- * @param label - The OSV severity label (may be undefined).
- * @returns The mapped severity, or `minor` for unknown/absent labels.
+ *
+ * @param label - OSV severity label (e.g. `CRITICAL`, `HIGH`, `LOW`).
+ * @returns The projected severity, or undefined when the label is unknown.
  */
 export function severityFromOsvLabel(label: string | undefined): Severity | undefined {
   switch ((label ?? '').toUpperCase()) {

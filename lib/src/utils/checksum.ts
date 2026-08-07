@@ -84,7 +84,9 @@ export function parseChecksumFile(content: string, targetAssetName: string): str
 
 const KNOWN_CHECKSUMS: Record<string, string> = {
   // Format: `${version}-${arch}` → sha256 hex string
-  // Entries populated as releases are manually verified
+  // Entries populated as releases are manually verified (only used when the
+  // opencode_version input is pinned; 'latest' falls back to the release
+  // checksum asset or a warning).
 };
 
 /**

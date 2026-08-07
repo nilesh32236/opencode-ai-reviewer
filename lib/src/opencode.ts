@@ -690,7 +690,9 @@ async function verifyDownloadedArchive(
   }
 
   core.warning(
-    `No checksum file found for ${assetName}. Skipping integrity verification — this could be a security concern.`,
+    `No checksum file found for ${assetName} and no known-good checksum for ${version}. ` +
+      `Skipping integrity verification — this could be a security concern. ` +
+      `Pin an opencode_version and add its sha256 to KNOWN_CHECKSUMS to enable verification.`,
   );
 }
 

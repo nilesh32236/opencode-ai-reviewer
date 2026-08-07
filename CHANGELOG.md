@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.8.2] — 2026-08-06
+
+
+### Fixed
+
+- self-heal CI failure (attempt 1) [lint-error (jsdoc docstring coverage violation)] (#358) (#358)
+
+### Changed
+
+- [Autofix] Issue 38: No dependency vulnerability (SCA) checking (#357) (#357)
+- [Autofix] Add custom LLM model hosting support (#356) (#356)
+
+[v1.8.2]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.8.1...v1.8.2
+
 ## [v1.8.1] — 2026-08-06
 
 
