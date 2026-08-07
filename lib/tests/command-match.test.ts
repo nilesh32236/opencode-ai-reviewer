@@ -39,6 +39,14 @@ describe('parseCommand', () => {
     expect(parseCommand('/docs9')).toBeNull();
   });
 
+  it('rejects suffixed /describe tokens', () => {
+    expect(parseCommand('/describe-draft')).toBeNull();
+    expect(parseCommand('/describe.md')).toBeNull();
+    expect(parseCommand('/describe_draft')).toBeNull();
+    expect(parseCommand('/describe9')).toBeNull();
+    expect(parseCommand('/describing')).toBeNull();
+  });
+
   it('parses flags correctly', () => {
     const res = parseCommand('/fix --force --dry-run --reason="testing fix"');
     expect(res?.command).toBe('fix');

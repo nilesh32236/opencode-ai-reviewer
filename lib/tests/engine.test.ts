@@ -1269,33 +1269,50 @@ describe('ReviewEngine', () => {
   });
 
   describe('runDescribe()', () => {
-    const contextMarkdown = '## PR Context\nSome context';
     const pr = makePRContext({
       changedFiles: [{ path: 'src/example.ts', status: 'modified', additions: 20, deletions: 0 }],
     });
 
-    it('returns a non-empty description on success', async () => {
+    it('reads the generated describe-output.md from disk on success', async () => {
       mockRunOpenCode.mockResolvedValue({
         success: true,
-        output: 'PR description',
+        output: '',
         durationMs: 1500,
       });
+      vi.mocked(fs.promises.readFile).mockResolvedValue('PR description content');
 
-      const result = await engine.runDescribe(pr, contextMarkdown);
+      const result = await engine.runDescribe(pr);
 
       expect(mockBuildDescribePrompt).toHaveBeenCalled();
       expect(mockRunOpenCode).toHaveBeenCalledWith(
         'describe prompt',
         expect.objectContaining({ model: DEFAULT_CONFIG.reviewModel }),
       );
-      expect(result).toContain('PR description');
+      expect(fs.promises.readFile).toHaveBeenCalledWith(
+        expect.stringContaining('describe-output.md'),
+        'utf-8',
+      );
+      expect(result).toBe('PR description content');
+    });
+
+    it('falls back to the CLI output when the output file cannot be read', async () => {
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: 'CLI fallback description',
+        durationMs: 1500,
+      });
+      vi.mocked(fs.promises.readFile).mockRejectedValue(new Error('ENOENT'));
+
+      const result = await engine.runDescribe(pr);
+
+      expect(result).toBe('CLI fallback description');
     });
 
     it('uses the resolved describe model override when configured', async () => {
       const describeEngine = new ReviewEngine(makeConfig({ describeModel: 'gpt-4o' }), mockAdapter);
       mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
 
-      await describeEngine.runDescribe(pr, contextMarkdown);
+      await describeEngine.runDescribe(pr);
 
       expect(mockRunOpenCode).toHaveBeenCalledWith(
         'describe prompt',
@@ -1303,13 +1320,28 @@ describe('ReviewEngine', () => {
       );
     });
 
-    it('returns a fallback message when runOpenCode fails', async () => {
+    it('returns the exact fallback message when runOpenCode fails', async () => {
       mockRunOpenCode.mockResolvedValue({ success: false, output: '', durationMs: 500 });
 
-      const result = await engine.runDescribe(pr, contextMarkdown);
+      const result = await engine.runDescribe(pr);
 
-      expect(result).toBeTruthy();
-      expect(result.length).toBeGreaterThan(0);
+      expect(result).toBe(
+        '⚠️ **Description Generation Failed**: OpenCode CLI was unable to generate the PR description.',
+      );
+    });
+
+    it('returns the exact fallback message when describe is disabled', async () => {
+      const disabledEngine = new ReviewEngine(
+        makeConfig({ describe: { enabled: false } }),
+        mockAdapter,
+      );
+
+      const result = await disabledEngine.runDescribe(pr);
+
+      expect(result).toBe(
+        '⚠️ **Description Generation Disabled**: `describe.enabled` is set to `false` in the config.',
+      );
+      expect(mockRunOpenCode).not.toHaveBeenCalled();
     });
   });
 

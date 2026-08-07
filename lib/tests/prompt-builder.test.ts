@@ -206,7 +206,7 @@ describe('prompt-builder', () => {
       }
     });
 
-    it('includes critical rules forbidding git push and PR creation', () => {
+    it('instructs the agent not to wrap the output in JSON', () => {
       const prompt = buildDescribePrompt({ projectContext: '' }, 'PR context');
       expect(prompt).toContain('Do NOT wrap in JSON');
     });

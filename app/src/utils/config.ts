@@ -320,6 +320,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const secrets = repoConfig?.secrets;
   const llm = repoConfig?.llm;
   const sca = repoConfig?.sca;
+  const describe = repoConfig?.describe;
   if (
     !sensitivity &&
     !categories &&
@@ -331,7 +332,8 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
     !notifications &&
     !secrets &&
     !llm &&
-    !sca
+    !sca &&
+    !describe
   ) {
     return baseConfig;
   }
@@ -389,6 +391,15 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       sca: {
         ...baseConfig.sca,
         ...sca,
+      },
+    }),
+    // Merge the repo-level `describe` section (enabled/model) so
+    // `.opencode-reviewer.yml` overrides are honored by the App, mirroring how
+    // SCA and notifications are merged.
+    ...(describe && {
+      describe: {
+        ...baseConfig.describe,
+        ...describe,
       },
     }),
   };

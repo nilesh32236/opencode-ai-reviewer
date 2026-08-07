@@ -2832,9 +2832,25 @@ export class ReviewEngine {
     }
     // Reset telemetry so the reported usage reflects only this describe invocation.
     this.telemetry = null;
+    // Resolve the describe model once so every event, telemetry record, and the
+    // actual run agree on which model was used. Validate the config-provided
+    // model and fall back (with a warning) when it is malformed so a typo in
+    // .opencode-reviewer.yml degrades gracefully instead of throwing.
+    const configModel = this.config.describe?.model;
+    let describeModel = this.resolveModel('describeModel');
+    if (configModel) {
+      try {
+        validateModelString(configModel);
+        describeModel = configModel;
+      } catch (err) {
+        this.logger.warn(
+          `Describe model "${configModel}" is invalid, falling back to the describe/review model: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
     this.publishEvent(PIPELINE_EVENT_TYPES.DESCRIBE_STARTED, {
       prNumber: pr.number,
-      modelUsed: this.resolveModel('describeModel'),
+      modelUsed: describeModel,
     });
     const workDir = workingDirectory || process.cwd();
     const outputPath = path.join(workDir, '.opencode', 'describe-output.md');
@@ -2851,7 +2867,7 @@ export class ReviewEngine {
     );
 
     const runResult = await this.runLLM(prompt, {
-      model: this.config.describe?.model || this.resolveModel('describeModel'),
+      model: describeModel,
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory: workDir,
     });
@@ -2860,14 +2876,14 @@ export class ReviewEngine {
       runResult.durationMs,
       runResult.tokensUsed,
       runResult,
-      this.config.describe?.model || this.resolveModel('describeModel'),
+      describeModel,
       workDir,
     );
 
     if (!runResult.success) {
       this.publishCompleted(PIPELINE_EVENT_TYPES.DESCRIBE_COMPLETED, {
         prNumber: pr.number,
-        modelUsed: this.config.describe?.model || this.resolveModel('describeModel'),
+        modelUsed: describeModel,
       });
       return '⚠️ **Description Generation Failed**: OpenCode CLI was unable to generate the PR description.';
     }
@@ -2876,20 +2892,20 @@ export class ReviewEngine {
       const content = await fs.readFile(outputPath, 'utf-8');
       this.publishCompleted(PIPELINE_EVENT_TYPES.DESCRIBE_COMPLETED, {
         prNumber: pr.number,
-        modelUsed: this.config.describe?.model || this.resolveModel('describeModel'),
+        modelUsed: describeModel,
       });
       return content.trim();
     } catch {
       if (runResult.output && runResult.output.trim().length > 0) {
         this.publishCompleted(PIPELINE_EVENT_TYPES.DESCRIBE_COMPLETED, {
           prNumber: pr.number,
-          modelUsed: this.config.describe?.model || this.resolveModel('describeModel'),
+          modelUsed: describeModel,
         });
         return runResult.output.trim();
       }
       this.publishCompleted(PIPELINE_EVENT_TYPES.DESCRIBE_COMPLETED, {
         prNumber: pr.number,
-        modelUsed: this.config.describe?.model || this.resolveModel('describeModel'),
+        modelUsed: describeModel,
       });
       return '⚠️ **Description Error**: Could not read generated `.opencode/describe-output.md` file.';
     }

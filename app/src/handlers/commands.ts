@@ -80,8 +80,12 @@ export async function handleCommand(
       timeout: 120_000,
       ...(gitEnv ? { env: { ...process.env, ...gitEnv } } : {}),
     };
+    const cloneRemote =
+      config.platform === 'gitlab'
+        ? `https://gitlab.com/${repo}.git`
+        : `https://github.com/${repo}.git`;
     try {
-      execFileSync('git', ['clone', `https://github.com/${repo}.git`, tempDir], cloneOpts);
+      execFileSync('git', ['clone', cloneRemote, tempDir], cloneOpts);
     } catch (err) {
       logger.error(`Git clone failed for ${repo}: ${err instanceof Error ? err.message : err}`);
       if (command === 'setup') {
@@ -419,7 +423,7 @@ export async function handleDescribeCommand(
     await gh.postOrUpdateComment(
       issueNumber,
       '<!-- pr-description-error -->',
-      `❌ **Description Generation Failed**: ${err instanceof Error ? err.message : String(err)}`,
+      `❌ **Description Generation Failed**: ${sanitizeErrorMessage(err)}`,
     );
   } finally {
     await engine.cleanup();

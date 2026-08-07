@@ -224,6 +224,41 @@ describe('parseInputs() docs mode', () => {
   });
 });
 
+describe('parseInputs() describe mode', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('accepts describe as a valid mode', () => {
+    setInputs({ ...BASE_INPUTS, mode: 'describe' });
+    const inputs = parseInputs();
+    expect(inputs.mode).toBe('describe');
+  });
+
+  it('parses describe_model from its input', () => {
+    setInputs({ ...BASE_INPUTS, mode: 'describe', describe_model: 'openai/gpt-4o' });
+    const inputs = parseInputs();
+    expect(inputs.describeModel).toBe('openai/gpt-4o');
+  });
+
+  it('rejects an invalid describe_model when mode is describe', () => {
+    setInputs({ ...BASE_INPUTS, mode: 'describe', describe_model: 'gpt-4o' });
+    expect(() => parseInputs()).toThrow(/Invalid model format/);
+  });
+
+  it('parses describe_prompt_file and describe_prompt_extra', () => {
+    setInputs({
+      ...BASE_INPUTS,
+      mode: 'describe',
+      describe_prompt_file: 'custom-describe.md',
+      describe_prompt_extra: 'Focus on migrations',
+    });
+    const inputs = parseInputs();
+    expect(inputs.describePromptFile).toBe('custom-describe.md');
+    expect(inputs.describePromptExtra).toBe('Focus on migrations');
+  });
+});
+
 describe('parseInputs() LLM model resolution', () => {
   beforeEach(() => {
     vi.clearAllMocks();

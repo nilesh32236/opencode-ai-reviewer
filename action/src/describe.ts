@@ -10,7 +10,7 @@ import { resolvePrNumber, sanitize } from './utils.js';
  * description as a PR comment (upserted by a stable marker so it is updated on
  * subsequent pushes).
  * @param inputs - Parsed action inputs.
- * @param config - Full agent configuration.
+ * @param _config - Full agent configuration.
  * @param engine - Review engine instance.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param _repo - Repository string (owner/repo, unused).
@@ -40,14 +40,18 @@ export async function runDescribe(
   try {
     const pr = await gh.getMR(prNumber);
 
-    const hasSkipLabel = pr.labels.some((l: string) => _config.review.skipLabels.includes(l));
+    const hasSkipLabel = pr.labels.some((l: string) =>
+      _config.review.skipLabels
+        .filter((skipLabel: string) => !/^autofix/.test(skipLabel))
+        .includes(l),
+    );
     const isSkippedActor = _config.review.skipActors.includes(pr.author);
 
     if (hasSkipLabel && !isManualTrigger) {
       core.info(`PR has skip label — skipping description generation`);
       return;
     }
-    if (isSkippedActor) {
+    if (isSkippedActor && !isManualTrigger) {
       core.info(`PR author ${pr.author} is in skip list — skipping`);
       return;
     }
@@ -59,6 +63,19 @@ export async function runDescribe(
       inputs.describePromptFile,
       inputs.describePromptExtra,
     );
+
+    // The engine returns fallback/warning strings on failure/disabled rather
+    // than throwing. Treat them as a failure so a downstream consumer of the
+    // `description` output can never mistake an error for a real description.
+    if (description.startsWith('⚠️ **Description')) {
+      core.setFailed('PR description generation failed or was disabled');
+      await gh.postOrUpdateComment(
+        prNumber,
+        '<!-- pr-description-error -->',
+        `❌ **Description Generation Failed**: ${sanitize(description)}`,
+      );
+      return;
+    }
 
     await gh.postOrUpdateComment(prNumber, '<!-- pr-description -->', description);
 

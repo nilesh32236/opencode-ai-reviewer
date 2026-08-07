@@ -28,6 +28,7 @@ import { DEFAULT_SCA_CONFIG, DEFAULT_SCA_LOCK_FILE_PATTERNS } from './types/inde
 import { PromptConfigSchema } from './types/schemas.js';
 import { DEFAULT_ALLOWLIST } from './utils/command.js';
 import { Logger } from './utils/logger.js';
+import { validateModelString } from './utils/model-string.js';
 
 /**
  * Shape descriptor used to detect unknown keys in a raw config object.
@@ -638,7 +639,15 @@ export function validateConfig(config: PromptConfig): PromptConfig {
       describe.enabled = desc.enabled;
     }
     if (typeof desc.model === 'string' && desc.model.trim() !== '') {
-      describe.model = desc.model.trim();
+      try {
+        const trimmed = desc.model.trim();
+        validateModelString(trimmed);
+        describe.model = trimmed;
+      } catch (err) {
+        new Logger('Config').warn(
+          `Invalid describe.model "${String(desc.model)}" — ignoring it, falling back to describeModel: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
     result.describe = describe;
   }
