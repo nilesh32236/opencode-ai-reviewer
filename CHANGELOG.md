@@ -4,6 +4,27 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.8.4] — 2026-08-08
+
+
+### Fixed
+
+- escape backslashes before backticks in title suggestion (CodeQL incomplete-escaping)
+- address PR #364 review findings — config plumbing, retry/breaker, scope & title fixes (#366) (#364
+#366)
+- address issue #192 [skip ci] (#364) (#192
+#364)
+- address issue #193 [skip ci] (#362) (#193
+#362)
+
+### Changed
+
+- Merge pull request #368 from nilesh32236/clean/codeql-escape
+- [Autofix] Implement incremental learning from dismissal feedback loop (#361) (#361)
+- [Autofix] Issue 34: No test gap detection or test suggestion capability (#359) (#359)
+
+[v1.8.4]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.8.3...v1.8.4
+
 ## [v1.8.3] — 2026-08-07
 
 
