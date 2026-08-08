@@ -8,6 +8,8 @@ export {
   formatJson,
   monorepoFilter,
   generateChangelog,
+  buildChangelogFileContent,
+  resolveSafeChangelogPath,
 } from './generator.js';
 export type { ChangelogBaseline, FormatMarkdownOptions } from './generator.js';
 export type {
@@ -17,7 +19,3 @@ export type {
   ChangelogConfig,
   ChangelogResult,
 } from './types.js';
-export {
-  buildChangelogFileContent,
-  resolveChangelogFilePath,
-} from './file-content.js';

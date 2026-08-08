@@ -4,7 +4,10 @@
  * result as markdown or JSON release notes.
  */
 
+import path from 'node:path';
+
 import type { GitHubHelper } from '../utils/github.js';
+import { escapeMarkdownText } from '../utils/pr-body.js';
 import type { ChangelogConfig, ChangelogEntry, ChangelogResult, MergedPR } from './types.js';
 
 /** Conventional-commit title prefix, e.g. `feat(ui)!: add thing`. */
@@ -56,8 +59,6 @@ export function categorizePRs(
 
     let heading = OTHER_HEADING;
     if (breaking) {
-      // Any truthy breaking marker (on any type) goes to the Breaking Changes
-      // heading; only non-breaking entries use their configured category.
       heading = categories.breaking ?? BREAKING_HEADING;
     } else if (type && categories[type]) {
       heading = categories[type];
@@ -108,11 +109,7 @@ export function formatMarkdown(
 
   lines.push(tag ? `## ${tag}` : '## Unreleased');
   lines.push('');
-  lines.push(
-    `_Generated on ${new Date().toISOString().slice(0, 10)}. PRs merged since ${
-      tag ?? 'the last release'
-    } (${since.slice(0, 10)})._`,
-  );
+  lines.push(`_PRs merged since ${tag ?? 'the last release'} (${since.slice(0, 10)})._`);
   lines.push('');
 
   if (entryCount === 0) {
@@ -126,7 +123,11 @@ export function formatMarkdown(
     lines.push(`### ${heading}`);
     lines.push('');
     for (const entry of entries) {
-      lines.push(`- #${entry.prNumber} by @${entry.author}: ${entry.title}`);
+      lines.push(
+        `- #${entry.prNumber} by \`@${singleLine(entry.author)}\`: ${escapeMarkdownText(
+          singleLine(entry.title),
+        )}`,
+      );
     }
     lines.push('');
   }
@@ -135,13 +136,27 @@ export function formatMarkdown(
 }
 
 /**
- * Serialize changelog entries as pretty-printed JSON.
+ * Collapse whitespace — including newlines — in untrusted text so a hostile PR
+ * title or author handle cannot break out of a single markdown bullet.
+ * @param text - Untrusted text.
+ * @returns The text with whitespace runs collapsed to single spaces.
+ */
+function singleLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Serialize changelog entries as pretty-printed JSON. The full PR body is
+ * omitted from the serialized output: it is not needed downstream and keeps
+ * the payload small enough to post as a GitHub comment while avoiding
+ * surfacing confidential body content in CI logs.
  *
  * @param entries - Flattened changelog entries.
  * @returns The JSON string.
  */
 export function formatJson(entries: ChangelogEntry[]): string {
-  return JSON.stringify(entries, null, 2);
+  const safe = entries.map(({ body, ...rest }) => rest);
+  return JSON.stringify(safe, null, 2);
 }
 
 /**
@@ -170,17 +185,19 @@ function orderedHeadings(
  * filter matches the PR title's conventional-commit scope; when `includeFiles`
  * is set, it matches the union of the PR's changed file paths instead.
  *
+ * When `includeFiles` is enabled the per-PR file lookups run with bounded
+ * concurrency (up to {@link MONOREPO_CONCURRENCY} in flight at once), and a
+ * failed lookup skips that entry rather than aborting the whole generation.
+ *
  * @param gh - GitHubHelper used to fetch per-PR file lists when `includeFiles` is set.
  * @param entries - Entries to filter.
  * @param config - Changelog config carrying `subdirectoryFilter` and `includeFiles`.
- * @param signal - Optional AbortSignal checked between file-path requests.
  * @returns Entries that match the configured subdirectory.
  */
 export async function monorepoFilter(
   gh: GitHubHelper,
   entries: ChangelogEntry[],
   config: ChangelogConfig,
-  signal?: AbortSignal,
 ): Promise<ChangelogEntry[]> {
   const filter = config.subdirectoryFilter?.trim();
   if (!filter) return entries;
@@ -189,26 +206,30 @@ export async function monorepoFilter(
     return entries.filter((e) => e.scope !== undefined && scopeMatchesFilter(e.scope, filter));
   }
 
-  // File-path filtering requires one GitHub API call per entry; run the
-  // requests with bounded concurrency and honor the abort signal between
-  // batches so an aborted run stops promptly instead of draining the queue.
   const kept: ChangelogEntry[] = [];
-  const CONCURRENCY = 5;
-  for (let i = 0; i < entries.length; i += CONCURRENCY) {
-    if (signal?.aborted) break;
-    const batch = entries.slice(i, i + CONCURRENCY);
+  for (let i = 0; i < entries.length; i += MONOREPO_CONCURRENCY) {
+    const batch = entries.slice(i, i + MONOREPO_CONCURRENCY);
     const results = await Promise.all(
-      batch.map(async (entry) => {
-        const paths = await gh.getPRFilePaths(entry.prNumber);
-        return paths.some((p) => pathMatchesFilter(p, filter)) ? entry : null;
+      batch.map(async (entry): Promise<ChangelogEntry | null> => {
+        try {
+          const paths = await gh.getPRFilePaths(entry.prNumber);
+          return paths.some((p) => pathMatchesFilter(p, filter)) ? entry : null;
+        } catch {
+          // A failed per-PR file lookup should not abort the whole generation:
+          // skip the entry so the remaining PRs still produce release notes.
+          return null;
+        }
       }),
     );
-    for (const entry of results) {
-      if (entry) kept.push(entry);
+    for (const result of results) {
+      if (result) kept.push(result);
     }
   }
   return kept;
 }
+
+/** Max concurrent `getPRFilePaths` requests issued by {@link monorepoFilter}. */
+const MONOREPO_CONCURRENCY = 5;
 
 /**
  * Match a file path against a subdirectory filter (repo-relative prefix match).
@@ -223,9 +244,8 @@ function pathMatchesFilter(path: string, filter: string): boolean {
 
 /**
  * Match a conventional-commit scope against a subdirectory filter. Matches when
- * the scope equals the filter, or one is a path-boundary prefix of the other
- * (the next character is `/`) so `feat(ui):` satisfies `ui` or `ui/button`, but
- * sibling names such as `ui-kit` or `uikit` do not satisfy `ui`.
+ * the scope equals the filter, is a prefix of it, or the filter is a prefix of
+ * the scope (case-insensitive) so `feat(ui):` satisfies `ui` or `ui/button`.
  * @param scope - Conventional-commit scope (e.g. 'ui').
  * @param filter - Configured subdirectory filter.
  * @returns True when the scope matches the filter.
@@ -233,10 +253,7 @@ function pathMatchesFilter(path: string, filter: string): boolean {
 function scopeMatchesFilter(scope: string, filter: string): boolean {
   const s = scope.toLowerCase();
   const f = filter.toLowerCase().replace(/\/+$/, '');
-  if (s === f) return true;
-  if (s.startsWith(f)) return s[f.length] === '/';
-  if (f.startsWith(s)) return f[s.length] === '/';
-  return false;
+  return s === f || s.startsWith(f) || f.startsWith(s);
 }
 
 /**
@@ -290,15 +307,15 @@ export async function generateChangelog(
     }
   }
 
-  const mergedPRs = await gh.listMergedPRs(since, config.baseBranch, signal);
+  const baseBranch = await gh.getDefaultBranch();
+  const mergedPRs = await gh.listMergedPRs(since, baseBranch, signal);
 
   let categorized = categorizePRs(mergedPRs, config.categories);
 
   if (config.subdirectoryFilter) {
     const filtered: Record<string, ChangelogEntry[]> = {};
     for (const [heading, entries] of Object.entries(categorized)) {
-      if (signal?.aborted) break;
-      const kept = await monorepoFilter(gh, entries, config, signal);
+      const kept = await monorepoFilter(gh, entries, config);
       if (kept.length > 0) filtered[heading] = kept;
     }
     categorized = filtered;
@@ -320,4 +337,47 @@ export async function generateChangelog(
     since,
     entryCount: allEntries.length,
   };
+}
+
+/**
+ * Resolve a repo-relative changelog file path against a working root,
+ * rejecting any path that escapes the root via an absolute value or parent
+ * traversal. Confines `changelog.filePath` — which comes from a repo-owned
+ * `.opencode-reviewer.yml` — to the checkout so a malformed config cannot
+ * overwrite arbitrary files on the runner or host.
+ *
+ * @param root - Working root directory (repo checkout or clone temp dir).
+ * @param filePath - Repo-relative changelog file path.
+ * @returns The resolved absolute path, guaranteed to stay inside `root`.
+ * @throws When the resolved path escapes the root.
+ */
+export function resolveSafeChangelogPath(root: string, filePath: string): string {
+  const resolvedRoot = path.resolve(root);
+  const resolved = path.resolve(resolvedRoot, filePath);
+  if (resolved !== resolvedRoot && !resolved.startsWith(resolvedRoot + path.sep)) {
+    throw new Error(`changelog.filePath escapes the repo directory: ${filePath}`);
+  }
+  return resolved;
+}
+
+/**
+ * Build the changelog file content for a release-prep PR by prepending the
+ * generated release-notes entry. Idempotent: when the entry already exists in
+ * the file (a re-run against the same baseline), the existing content is
+ * returned unchanged so release-prep re-runs become no-ops instead of
+ * duplicating entries or failing an empty git commit.
+ *
+ * @param newEntry - The generated markdown release-notes entry.
+ * @param existing - Existing changelog file content, or null.
+ * @returns The full new changelog file content.
+ */
+export function buildChangelogFileContent(newEntry: string, existing: string | null): string {
+  const entry = newEntry.trim();
+  if (existing?.includes(entry)) {
+    return `${existing.trim()}\n`;
+  }
+  if (!existing || existing.trim() === '') {
+    return `# Changelog\n\n${entry}\n`;
+  }
+  return `${entry}\n\n---\n\n${existing.trim()}\n`;
 }

@@ -15,7 +15,7 @@ import {
   buildChangelogFileContent,
   buildChangelogPRBody,
   generateChangelog,
-  resolveChangelogFilePath,
+  resolveSafeChangelogPath,
   sanitizeErrorMessage,
   validateRefName,
 } from '@opencode-pr-agent/lib';
@@ -191,7 +191,7 @@ async function createChangelogPR(
       log.info(`Created branch ${branchName} from ${defaultBranch}`);
     }
 
-    const changelogPath = resolveChangelogFilePath(changelogConfig.filePath, tempDir);
+    const changelogPath = resolveSafeChangelogPath(tempDir, changelogConfig.filePath);
     const existingContent = existsSync(changelogPath) ? readFileSync(changelogPath, 'utf-8') : null;
     writeFileSync(
       changelogPath,
@@ -199,18 +199,39 @@ async function createChangelogPR(
       'utf-8',
     );
 
-    execFileSync('git', ['add', '-A'], gitOpts);
-    let stagedExit = 1;
+    // Scope the staged path to the changelog file so runner output is never
+    // swept into the release-prep PR, and skip commit/push when a re-run
+    // produced no staged changes (byte-identical content against the same
+    // baseline) instead of failing an empty `git commit`.
+    execFileSync('git', ['add', changelogPath], gitOpts);
+    let hasStagedChanges = true;
     try {
       execFileSync('git', ['diff', '--cached', '--quiet'], gitOpts);
-      stagedExit = 0;
+      hasStagedChanges = false;
     } catch {
-      stagedExit = 1;
+      // Non-zero exit code means the index has staged changes.
     }
-    if (stagedExit === 0) {
-      log.info(`No changelog changes staged for ${version} — nothing to commit`);
+
+    if (!hasStagedChanges) {
+      log.info(`No staged changes for the changelog file — nothing to commit for ${version}`);
+      const existingPR = await findExistingChangelogPR(gh, issueNumber);
+      if (existingPR) {
+        log.info(`Reusing existing changelog PR #${existingPR.number}: ${existingPR.url}`);
+        try {
+          await gh.postOrUpdateComment(
+            issueNumber,
+            '<!-- changelog-pr-link -->',
+            `📝 Changelog PR: ${existingPR.url}`,
+          );
+        } catch (err) {
+          log.warn(
+            `Failed to post changelog PR link comment: ${err instanceof Error ? err.message : err}`,
+          );
+        }
+      }
       return;
     }
+
     execFileSync(
       'git',
       ['commit', '-m', `chore(release): update changelog for ${version}`],

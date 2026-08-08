@@ -458,7 +458,7 @@ async function run(): Promise<void> {
           await runDocs(inputs, config, engine, gh);
           break;
         case 'changelog':
-          await runChangelog(inputs, config, gh);
+          await runChangelog(config, gh);
           break;
         case 'describe':
           if (config.describe?.enabled === false) {

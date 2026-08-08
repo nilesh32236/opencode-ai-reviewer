@@ -1814,4 +1814,141 @@ diff --git a/deleted.ts b/deleted.ts
       });
     });
   });
+
+  describe('changelog helpers', () => {
+    it('getTags paginates the /tags endpoint and peels annotated tags to commit SHAs', async () => {
+      fetchMock.mockResolvedValue(
+        mockResponse({
+          body: [
+            { name: 'v1.2.0', commit: { sha: 'ccc' } },
+            { name: 'v1.1.0', commit: { sha: 'bbb' } },
+            { name: 'v1.10.0', commit: { sha: 'ddd' } },
+          ],
+        }),
+      );
+
+      const tags = await helper.getTags();
+      expect(tags).toEqual([
+        { name: 'v1.10.0', commitSha: 'ddd' },
+        { name: 'v1.2.0', commitSha: 'ccc' },
+        { name: 'v1.1.0', commitSha: 'bbb' },
+      ]);
+      const url = fetchMock.mock.calls[0][0] as string;
+      expect(url).toContain('/tags?per_page=100&page=1');
+    });
+
+    it('getTags sorts non-semver tags after valid semver tags', async () => {
+      fetchMock.mockResolvedValue(
+        mockResponse({
+          body: [
+            { name: 'alpha', commit: { sha: 'a1' } },
+            { name: 'v2.0.0', commit: { sha: 'b1' } },
+          ],
+        }),
+      );
+      const tags = await helper.getTags();
+      expect(tags.map((t) => t.name)).toEqual(['v2.0.0', 'alpha']);
+    });
+
+    it('getPRFilePaths paginates the files endpoint', async () => {
+      let callCount = 0;
+      fetchMock.mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          return mockResponse({
+            body: Array.from({ length: 100 }, (_, i) => ({ filename: `src/file-${i}.ts` })),
+          });
+        }
+        return mockResponse({ body: [] });
+      });
+      const paths = await helper.getPRFilePaths(42);
+      expect(paths).toHaveLength(100);
+      const url = fetchMock.mock.calls[0][0] as string;
+      expect(url).toContain('/pulls/42/files?per_page=100&page=1');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('getPRFilePaths keeps only string filenames', async () => {
+      fetchMock.mockResolvedValue(
+        mockResponse({ body: [{ filename: 'a.ts' }, { filename: null }, { filename: 'b.ts' }] }),
+      );
+      const paths = await helper.getPRFilePaths(42);
+      expect(paths).toEqual(['a.ts', 'b.ts']);
+    });
+
+    it('findOpenPRByHeadBranch matches an open PR by head ref', async () => {
+      fetchMock.mockResolvedValue(
+        mockResponse({
+          body: [
+            { number: 10, html_url: 'https://github.com/o/r/pull/10', head: { ref: 'other' } },
+            {
+              number: 11,
+              html_url: 'https://github.com/o/r/pull/11',
+              head: { ref: 'changelog/v1.2.3' },
+            },
+          ],
+        }),
+      );
+      const pr = await helper.findOpenPRByHeadBranch('changelog/v1.2.3');
+      expect(pr).toEqual({ number: 11, url: 'https://github.com/o/r/pull/11' });
+    });
+
+    it('findOpenPRByHeadBranch returns null when no PR uses the branch', async () => {
+      fetchMock.mockResolvedValue(
+        mockResponse({
+          body: [
+            { number: 10, html_url: 'https://github.com/o/r/pull/10', head: { ref: 'other' } },
+          ],
+        }),
+      );
+      const pr = await helper.findOpenPRByHeadBranch('changelog/v9.9.9');
+      expect(pr).toBeNull();
+    });
+
+    it('listMergedPRs compares merged_at against a user-supplied date-only `since` as timestamps', async () => {
+      const { warning } = await import('@actions/core');
+      fetchMock.mockResolvedValue(
+        mockResponse({
+          body: [
+            {
+              number: 1,
+              title: 't1',
+              body: null,
+              user: { login: 'a' },
+              merged_at: '2026-01-01T00:00:00Z',
+              base: { ref: 'main' },
+            },
+            {
+              number: 2,
+              title: 't2',
+              body: null,
+              user: { login: 'b' },
+              merged_at: '2025-12-31T23:59:59Z',
+              base: { ref: 'main' },
+            },
+          ],
+        }),
+      );
+      const prs = await helper.listMergedPRs('2026-01-01');
+      expect(prs.map((p) => p.number)).toEqual([1]);
+      expect(warning).not.toHaveBeenCalled();
+    });
+
+    it('listMergedPRs warns when the pagination window is exhausted', async () => {
+      const { warning } = await import('@actions/core');
+      const page = Array.from({ length: 100 }, (_, i) => ({
+        number: i,
+        title: `t${i}`,
+        body: null,
+        user: { login: 'a' },
+        merged_at: '2026-08-01T00:00:00Z',
+        base: { ref: 'main' },
+      }));
+      fetchMock.mockResolvedValue(mockResponse({ body: page }));
+
+      const prs = await helper.listMergedPRs('2020-01-01');
+      expect(prs).toHaveLength(1000);
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('1000-item pagination window'));
+    });
+  });
 });
