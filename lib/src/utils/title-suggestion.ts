@@ -247,13 +247,15 @@ export function deriveSuggestedLabels(
 }
 
 /**
- * Escape backticks in a title so PR-controlled input cannot terminate the
- * Markdown inline-code span it is interpolated into.
+ * Escape backslashes and backticks in a title so PR-controlled input cannot
+ * terminate the Markdown inline-code span it is interpolated into. Backslashes
+ * are escaped first so a crafted `\`` sequence cannot smuggle a raw backtick
+ * through.
  * @param title - The suggested title to escape.
- * @returns The title with backticks escaped.
+ * @returns The title with backslashes and backticks escaped.
  */
 function escapeInlineCode(title: string): string {
-  return title.replace(/`/g, '\\`');
+  return title.replace(/\\/g, '\\\\').replace(/`/g, '\\`');
 }
 
 /**

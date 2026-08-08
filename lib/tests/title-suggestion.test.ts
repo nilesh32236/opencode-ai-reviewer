@@ -194,6 +194,12 @@ describe('buildSuggestionComment', () => {
     expect(body).not.toContain('`fix: add `select` support`');
   });
 
+  it('escapes backslashes before backticks to prevent smuggled escapes', () => {
+    const body = buildSuggestionComment({ title: 'fix: add \\`code\\`', labels: [] }, 1);
+    expect(body).toContain('fix: add \\\\\\`code\\\\\\`');
+    expect(body).not.toContain('`fix: add \\`code\\``');
+  });
+
   it('does not include the dedup marker (added by postOrUpdateComment)', () => {
     const body = buildSuggestionComment({ title: 'fix: x', labels: [] }, 1);
     expect(body).not.toContain(TITLE_SUGGESTION_MARKER);
