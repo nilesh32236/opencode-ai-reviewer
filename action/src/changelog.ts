@@ -10,7 +10,6 @@ import {
   validateRefName,
   withRetry,
 } from '@opencode-pr-agent/lib';
-import type { ActionInputs } from './inputs.js';
 import { resolvePrNumber, sanitize } from './utils.js';
 
 /**
@@ -24,7 +23,6 @@ import { resolvePrNumber, sanitize } from './utils.js';
  * changelog generation is disabled. Platform reads (`getTags`, `getLatestTag`,
  * `getCommitDate`, `listMergedPRs`) are retried on transient failures.
  *
- * @param inputs - Parsed action inputs.
  * @param config - Full agent configuration.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @returns A promise that resolves once changelog generation (and optionally the
@@ -32,11 +30,7 @@ import { resolvePrNumber, sanitize } from './utils.js';
  * platform is GitLab, the function reports failure/skip via `core` and returns
  * early instead of rejecting.
  */
-export async function runChangelog(
-  inputs: ActionInputs,
-  config: AgentConfig,
-  gh: PlatformAdapter,
-): Promise<void> {
+export async function runChangelog(config: AgentConfig, gh: PlatformAdapter): Promise<void> {
   if (config.changelog?.enabled === false) {
     core.info(
       'Skipping changelog mode — changelog generation is disabled (changelog.enabled: false)',

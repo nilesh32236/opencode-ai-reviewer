@@ -1,5 +1,4 @@
 import type { AgentConfig, PlatformAdapter } from '@opencode-pr-agent/lib';
-import type { ActionInputs } from './inputs.js';
 /**
  * Run changelog generation: gather merged PRs since the last release tag,
  * categorize them by conventional-commit type, and (when `createPR` is enabled)
@@ -11,7 +10,6 @@ import type { ActionInputs } from './inputs.js';
  * changelog generation is disabled. Platform reads (`getTags`, `getLatestTag`,
  * `getCommitDate`, `listMergedPRs`) are retried on transient failures.
  *
- * @param inputs - Parsed action inputs.
  * @param config - Full agent configuration.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @returns A promise that resolves once changelog generation (and optionally the
@@ -19,4 +17,4 @@ import type { ActionInputs } from './inputs.js';
  * platform is GitLab, the function reports failure/skip via `core` and returns
  * early instead of rejecting.
  */
-export declare function runChangelog(inputs: ActionInputs, config: AgentConfig, gh: PlatformAdapter): Promise<void>;
+export declare function runChangelog(config: AgentConfig, gh: PlatformAdapter): Promise<void>;

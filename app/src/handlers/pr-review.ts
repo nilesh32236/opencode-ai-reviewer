@@ -289,13 +289,16 @@ export async function handlePRReview(
 
       // Best-effort conventional-commit title & label suggestion. Only posts
       // when enabled; read-only, never modifies the PR. Non-critical: a
-      // failure must never fail the review flow.
-      if (config.review.suggestTitleAndLabels) {
-        void postSuggestionComment(gh, prNumber, pr, result, config.review).catch((err) => {
-          logger.warn(
-            `Failed to post title/label suggestion: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        });
+      // failure must never fail the review flow. Uses `effectiveConfig` so a
+      // repository-level override can enable or disable the suggestion.
+      if (effectiveConfig.review.suggestTitleAndLabels) {
+        void postSuggestionComment(gh, prNumber, pr, result, effectiveConfig.review).catch(
+          (err) => {
+            logger.warn(
+              `Failed to post title/label suggestion: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          },
+        );
       }
     } else {
       logger.warn(`Failed to post review to PR #${prNumber}`, { prNumber, repo });

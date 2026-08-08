@@ -51,14 +51,28 @@ describe('deriveSuggestedTitle', () => {
 
   it('returns docs type when only markdown files change', () => {
     const ctx = pr({ changedFiles: [file('docs/guide.md'), file('README.md')] });
+    expect(deriveSuggestedTitle(ctx)).toBe('docs(docs): add rate limiting to the api');
+  });
+
+  it('omits the scope when only root-level files change', () => {
+    const ctx = pr({
+      changedFiles: [file('README.md'), file('CONTRIBUTING.md')],
+    });
     expect(deriveSuggestedTitle(ctx)).toBe('docs: add rate limiting to the api');
+  });
+
+  it('ignores root-level files when computing the majority scope', () => {
+    const ctx = pr({
+      changedFiles: [file('src/rate.ts'), file('README.md'), file('src/cache.ts')],
+    });
+    expect(deriveSuggestedTitle(ctx)).toBe('fix(src): add rate limiting to the api');
   });
 
   it('returns chore type when only config files change', () => {
     const ctx = pr({
       changedFiles: [file('.github/workflows/ci.yml'), file('tsconfig.json')],
     });
-    expect(deriveSuggestedTitle(ctx)).toBe('chore: add rate limiting to the api');
+    expect(deriveSuggestedTitle(ctx)).toBe('chore(github): add rate limiting to the api');
   });
 
   it('returns test type when more than half the files are tests', () => {
@@ -104,6 +118,14 @@ describe('deriveSuggestedTitle', () => {
       ],
     });
     expect(deriveSuggestedTitle(ctx)).toBe('fix: login bug');
+  });
+
+  it('does not strip a type word that merely prefixes the title', () => {
+    const ctx = pr({
+      title: 'Fixing the login bug',
+      changedFiles: [file('api/auth.ts')],
+    });
+    expect(deriveSuggestedTitle(ctx)).toBe('fix(api): fixing the login bug');
   });
 });
 
@@ -154,7 +176,7 @@ describe('deriveSuggestedLabels', () => {
 });
 
 describe('buildSuggestionComment', () => {
-  it('includes the suggested title, labels, and acceptance hint', () => {
+  it('includes the suggested title, labels, and manual-apply hint', () => {
     const body = buildSuggestionComment(
       { title: 'feat(api): add rate limiting', labels: ['frontend', 'testing'] },
       42,
@@ -162,8 +184,20 @@ describe('buildSuggestionComment', () => {
     expect(body).toContain('feat(api): add rate limiting');
     expect(body).toContain('`frontend`');
     expect(body).toContain('`testing`');
-    expect(body).toContain('/suggest-title');
+    expect(body).not.toContain('/suggest-title');
     expect(body).toContain('PR #42');
+  });
+
+  it('escapes backticks in the suggested title to protect the code span', () => {
+    const body = buildSuggestionComment({ title: 'fix: add `select` support', labels: [] }, 1);
+    expect(body).toContain('`fix: add \\`select\\` support`');
+    expect(body).not.toContain('`fix: add `select` support`');
+  });
+
+  it('escapes backslashes before backticks to prevent smuggled escapes', () => {
+    const body = buildSuggestionComment({ title: 'fix: add \\`code\\`', labels: [] }, 1);
+    expect(body).toContain('fix: add \\\\\\`code\\\\\\`');
+    expect(body).not.toContain('`fix: add \\`code\\``');
   });
 
   it('does not include the dedup marker (added by postOrUpdateComment)', () => {

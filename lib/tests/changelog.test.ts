@@ -61,7 +61,7 @@ const PRS: MergedPR[] = [
 describe('categorizePRs', () => {
   it('groups PRs by configured category heading', () => {
     const categorized = categorizePRs(PRS, CATEGORIES);
-    expect(categorized['Features'].map((e) => e.prNumber)).toEqual([101]);
+    expect(categorized.Features.map((e) => e.prNumber)).toEqual([101]);
     expect(categorized['Bug Fixes'].map((e) => e.prNumber)).toEqual([102]);
   });
 
@@ -80,8 +80,8 @@ describe('categorizePRs', () => {
 
   it('strips conventional-commit prefixes from titles and captures scope', () => {
     const categorized = categorizePRs(PRS, CATEGORIES);
-    expect(categorized['Features'][0].title).toBe('add dark mode');
-    expect(categorized['Features'][0].scope).toBe('ui');
+    expect(categorized.Features[0].title).toBe('add dark mode');
+    expect(categorized.Features[0].scope).toBe('ui');
     expect(categorized['Breaking Changes'][0].title).toBe('rename endpoints');
   });
 

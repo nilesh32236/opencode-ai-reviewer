@@ -56,7 +56,7 @@ export function categorizePRs(
 
     let heading = OTHER_HEADING;
     if (breaking && (type === 'feat' || type === 'fix')) {
-      heading = categories['breaking'] ?? BREAKING_HEADING;
+      heading = categories.breaking ?? BREAKING_HEADING;
     } else if (type && categories[type]) {
       heading = categories[type];
     }
