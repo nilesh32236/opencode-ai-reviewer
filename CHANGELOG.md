@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.8.5] — 2026-08-08
+
+
+### Fixed
+
+- address issue #367 [skip ci]
+- address issue #191 [skip ci] (#365) (#191
+#365)
+
+### Changed
+
+- Merge pull request #369 from nilesh32236/autofix/issue-367
+
+[v1.8.5]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.8.4...v1.8.5
+
 ## [v1.8.4] — 2026-08-08
 
 
