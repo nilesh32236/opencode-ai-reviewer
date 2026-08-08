@@ -3,6 +3,7 @@
  * Provides runtime validation that TypeScript types alone cannot.
  */
 
+import * as path from 'path';
 import { z } from 'zod';
 import { MODEL_STRING_REGEX } from '../utils/model-string.js';
 import {
@@ -248,12 +249,19 @@ export const ChangelogConfigSchema = z.object({
   enabled: z.boolean().default(false),
   outputFormat: z.enum(['markdown', 'json']).default('markdown'),
   categories: z.record(z.string()).default(DEFAULT_CHANGELOG_CATEGORIES),
-  filePath: z.string().default('CHANGELOG.md'),
+  filePath: z
+    .string()
+    .default('CHANGELOG.md')
+    .refine(
+      (p) => !path.isAbsolute(p) && !p.startsWith('../') && p !== '..' && !p.includes('/../'),
+      'changelog.filePath must be a repository-relative path that does not escape the worktree',
+    ),
   createPR: z.boolean().default(false),
   prBranchPrefix: z.string().default('changelog'),
   subdirectoryFilter: z.string().optional(),
   includeFiles: z.boolean().default(false),
   since: z.string().optional(),
+  baseBranch: z.string().optional(),
 });
 
 /** Zod schema validating learning configuration with nested meta-review and pattern discovery defaults. */

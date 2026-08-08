@@ -1912,8 +1912,15 @@ export class GitHubHelper implements PlatformAdapter {
       base: { ref: string };
     }>(endpoint, { perPage: 100, maxPages: 10 }, signal);
 
+    const sinceMs = Date.parse(since);
     return prs
-      .filter((p) => p.merged_at && p.merged_at >= since)
+      .filter((p) => {
+        if (!p.merged_at) return false;
+        // Compare as parsed timestamps so date-only and offset-bearing `since`
+        // values are interpreted correctly instead of lexically.
+        const mergedMs = Date.parse(p.merged_at);
+        return !Number.isNaN(mergedMs) && !Number.isNaN(sinceMs) && mergedMs >= sinceMs;
+      })
       .map((p) => ({
         number: p.number,
         title: p.title,
@@ -1926,20 +1933,26 @@ export class GitHubHelper implements PlatformAdapter {
 
   /**
    * Fetch the changed file paths for a pull request. Used by the changelog
-   * generator's opt-in monorepo filtering (one call per merged PR).
+   * generator's opt-in monorepo filtering (one call per merged PR). Pages
+   * through all files so large PRs are not truncated.
    *
    * @param prNumber - PR number.
    * @returns Array of repo-relative file paths touched by the PR.
    */
   async getPRFilePaths(prNumber: number): Promise<string[]> {
-    const files = await this.api<Array<{ filename: string }>>(`/pulls/${prNumber}/files`);
+    const files = await this.paginate<{ filename: string }>(`/pulls/${prNumber}/files`, {
+      perPage: 100,
+      maxPages: 10,
+    });
     return files.map((f) => f.filename).filter((f): f is string => typeof f === 'string');
   }
 }
 
 /**
  * Compare two tag names by semver, newest first. Tags that fail to parse as
- * `v?X.Y.Z` sort after all valid semver tags (descending lexically).
+ * `v?X.Y.Z` sort after all valid semver tags (descending lexically). When two
+ * tags share the same numeric version, the stable release (no prerelease
+ * suffix) ranks above the prerelease (e.g. `v1.2.3` > `v1.2.3-beta.1`).
  * @param a - First tag name.
  * @param b - Second tag name.
  * @returns Negative when `a` is newer than `b`, positive when older, 0 when equal.
@@ -1948,11 +1961,31 @@ function compareSemverDesc(a: string, b: string): number {
   const va = parseSemver(a);
   const vb = parseSemver(b);
   if (va && vb) {
-    return vb.major - va.major || vb.minor - va.minor || vb.patch - va.patch;
+    const majorCmp = vb.major - va.major;
+    if (majorCmp !== 0) return majorCmp;
+    const minorCmp = vb.minor - va.minor;
+    if (minorCmp !== 0) return minorCmp;
+    const patchCmp = vb.patch - va.patch;
+    if (patchCmp !== 0) return patchCmp;
+    // Equal numeric version: stable (no suffix) sorts before prerelease.
+    const aIsPrerelease = hasPrereleaseSuffix(a);
+    const bIsPrerelease = hasPrereleaseSuffix(b);
+    if (aIsPrerelease !== bIsPrerelease) return aIsPrerelease ? 1 : -1;
+    return 0;
   }
   if (va && !vb) return -1;
   if (!va && vb) return 1;
   return b.localeCompare(a);
+}
+
+/**
+ * Detect a semver prerelease suffix (e.g. `-beta.1` in `v1.2.3-beta.1`).
+ * @param tag - Tag name to inspect.
+ * @returns True when the tag carries a prerelease suffix after the `X.Y.Z` part.
+ */
+function hasPrereleaseSuffix(tag: string): boolean {
+  const match = tag.match(/^v?\d+\.\d+\.\d+(?:-|$)/);
+  return match ? tag.length > match[0].length : false;
 }
 
 /**

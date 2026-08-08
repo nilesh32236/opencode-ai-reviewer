@@ -17,3 +17,7 @@ export type {
   ChangelogConfig,
   ChangelogResult,
 } from './types.js';
+export {
+  buildChangelogFileContent,
+  resolveChangelogFilePath,
+} from './file-content.js';

@@ -41,6 +41,15 @@ describe('parseCommand', () => {
     expect(parseCommand('/docs9')).toBeNull();
   });
 
+  it('rejects /changelog suffix lookalikes', () => {
+    expect(parseCommand('/changelog.md')).toBeNull();
+    expect(parseCommand('/changelog-foo')).toBeNull();
+    expect(parseCommand('/changelog_bar')).toBeNull();
+    expect(parseCommand('/changelog/v1')).toBeNull();
+    expect(parseCommand('/changelogs')).toBeNull();
+    expect(parseCommand('/oc changelog.docs')).toBeNull();
+  });
+
   it('parses flags correctly', () => {
     const res = parseCommand('/fix --force --dry-run --reason="testing fix"');
     expect(res?.command).toBe('fix');

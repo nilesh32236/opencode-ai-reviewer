@@ -4,6 +4,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import {
   type AgentConfig,
+  DEFAULT_CHANGELOG_CONFIG,
   DEFAULT_CONFIG,
   EventBus,
   FeedbackSubscriber,
@@ -291,35 +292,13 @@ async function run(): Promise<void> {
         enabled: loadedConfig?.docs?.enabled ?? DEFAULT_CONFIG.docs?.enabled ?? false,
         style: loadedConfig?.docs?.style ?? inputs.docStyle ?? DEFAULT_CONFIG.docs?.style ?? 'auto',
       },
-      changelog: loadedConfig?.changelog
-        ? {
-            enabled: loadedConfig.changelog.enabled ?? DEFAULT_CONFIG.changelog?.enabled ?? false,
-            outputFormat:
-              loadedConfig.changelog.outputFormat ??
-              DEFAULT_CONFIG.changelog?.outputFormat ??
-              'markdown',
-            categories:
-              loadedConfig.changelog.categories ?? DEFAULT_CONFIG.changelog?.categories ?? {},
-            filePath:
-              loadedConfig.changelog.filePath ??
-              DEFAULT_CONFIG.changelog?.filePath ??
-              'CHANGELOG.md',
-            createPR:
-              loadedConfig.changelog.createPR ?? DEFAULT_CONFIG.changelog?.createPR ?? false,
-            prBranchPrefix:
-              loadedConfig.changelog.prBranchPrefix ??
-              DEFAULT_CONFIG.changelog?.prBranchPrefix ??
-              'changelog',
-            subdirectoryFilter:
-              loadedConfig.changelog.subdirectoryFilter ??
-              DEFAULT_CONFIG.changelog?.subdirectoryFilter,
-            includeFiles:
-              loadedConfig.changelog.includeFiles ??
-              DEFAULT_CONFIG.changelog?.includeFiles ??
-              false,
-            since: loadedConfig.changelog.since ?? DEFAULT_CONFIG.changelog?.since,
-          }
-        : DEFAULT_CONFIG.changelog,
+      changelog: {
+        // Shared defaults first so a config-file change in lib is reflected
+        // here without duplicating fallback literals per field.
+        ...DEFAULT_CHANGELOG_CONFIG,
+        ...DEFAULT_CONFIG.changelog,
+        ...loadedConfig?.changelog,
+      },
       describe: {
         enabled: loadedConfig?.describe?.enabled ?? DEFAULT_CONFIG.describe.enabled,
         model:

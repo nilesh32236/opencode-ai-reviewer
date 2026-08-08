@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   categorizePRs,
   formatJson,
@@ -56,20 +56,35 @@ const PRS: MergedPR[] = [
     mergedAt: '2026-08-05T10:00:00Z',
     baseRef: 'main',
   },
+  {
+    number: 106,
+    title: 'refactor(core)!: drop legacy API',
+    body: 'Breaking refactor.',
+    author: 'frank',
+    mergedAt: '2026-08-06T10:00:00Z',
+    baseRef: 'main',
+  },
 ];
 
 describe('categorizePRs', () => {
   it('groups PRs by configured category heading', () => {
     const categorized = categorizePRs(PRS, CATEGORIES);
-    expect(categorized['Features'].map((e) => e.prNumber)).toEqual([101]);
+    expect(categorized.Features.map((e) => e.prNumber)).toEqual([101]);
     expect(categorized['Bug Fixes'].map((e) => e.prNumber)).toEqual([102]);
   });
 
   it('buckets breaking feat/fix PRs under Breaking Changes', () => {
     const categorized = categorizePRs(PRS, CATEGORIES);
-    expect(categorized['Breaking Changes']).toHaveLength(1);
-    expect(categorized['Breaking Changes'][0].prNumber).toBe(103);
-    expect(categorized['Breaking Changes'][0].breaking).toBe(true);
+    expect(categorized['Breaking Changes'].map((e) => e.prNumber)).toContain(103);
+    expect(categorized['Breaking Changes'].find((e) => e.prNumber === 103)?.breaking).toBe(true);
+  });
+
+  it('buckets a breaking marker on any type under Breaking Changes', () => {
+    const categorized = categorizePRs(PRS, CATEGORIES);
+    const breaking = categorized['Breaking Changes'].map((e) => e.prNumber);
+    expect(breaking).toContain(106);
+    expect(categorized.Refactoring?.map((e) => e.prNumber) ?? []).not.toContain(106);
+    expect(categorized['Breaking Changes'].find((e) => e.prNumber === 106)?.breaking).toBe(true);
   });
 
   it('falls back to Other Changes for unknown types and unprefixed titles', () => {
@@ -80,8 +95,8 @@ describe('categorizePRs', () => {
 
   it('strips conventional-commit prefixes from titles and captures scope', () => {
     const categorized = categorizePRs(PRS, CATEGORIES);
-    expect(categorized['Features'][0].title).toBe('add dark mode');
-    expect(categorized['Features'][0].scope).toBe('ui');
+    expect(categorized.Features[0].title).toBe('add dark mode');
+    expect(categorized.Features[0].scope).toBe('ui');
     expect(categorized['Breaking Changes'][0].title).toBe('rename endpoints');
   });
 
@@ -200,6 +215,10 @@ describe('generateChangelog', () => {
     getPRFilePaths: vi.fn(async () => []),
   } as unknown as GitHubHelper;
 
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it('resolves the latest tag baseline and returns markdown + json + entries', async () => {
     const result = await generateChangelog(gh, DEFAULT_TEST_CONFIG);
     expect(gh.getLatestTag).toHaveBeenCalled();
@@ -211,7 +230,6 @@ describe('generateChangelog', () => {
   });
 
   it('uses an explicit baseline when provided', async () => {
-    vi.clearAllMocks();
     const result = await generateChangelog(gh, DEFAULT_TEST_CONFIG, {
       tagName: 'v9.9.9',
       since: '2026-01-01T00:00:00Z',
@@ -259,6 +277,22 @@ describe('generateChangelog', () => {
     } as unknown as GitHubHelper;
     await generateChangelog(listGh, DEFAULT_TEST_CONFIG, undefined, signal);
     expect(listGh.listMergedPRs).toHaveBeenCalledWith('2026-07-15T00:00:00Z', undefined, signal);
+  });
+
+  it('forwards the configured base branch to listMergedPRs', async () => {
+    const signal = new AbortController().signal;
+    const listGh = {
+      getLatestTag: vi.fn(async () => ({ name: 'v1.1.0', commitSha: 'abc123' })),
+      getCommitDate: vi.fn(async () => '2026-07-15T00:00:00Z'),
+      listMergedPRs: vi.fn(async () => PRS),
+    } as unknown as GitHubHelper;
+    await generateChangelog(
+      listGh,
+      { ...DEFAULT_TEST_CONFIG, baseBranch: 'release/v2' },
+      undefined,
+      signal,
+    );
+    expect(listGh.listMergedPRs).toHaveBeenCalledWith('2026-07-15T00:00:00Z', 'release/v2', signal);
   });
 });
 

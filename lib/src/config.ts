@@ -684,7 +684,12 @@ export function validateConfig(config: PromptConfig): PromptConfig {
       }
     }
     if (typeof c.filePath === 'string' && c.filePath.trim() !== '') {
-      changelog.filePath = c.filePath.trim();
+      const filePath = c.filePath.trim();
+      // Restrict to repository-relative paths: reject absolute paths and
+      // normalized values that escape the worktree via parent traversal.
+      if (!path.isAbsolute(filePath) && !filePath.startsWith('../')) {
+        changelog.filePath = filePath;
+      }
     }
     if (typeof c.createPR === 'boolean') {
       changelog.createPR = c.createPR;

@@ -94,6 +94,11 @@ export interface ChangelogConfig {
    * 90 days before now when unset.
    */
   since?: string;
+  /**
+   * Release target branch used to restrict the merged-PR query (e.g. 'main').
+   * When unset, all merged PRs are considered.
+   */
+  baseBranch?: string;
 }
 
 /** The result of a changelog generation run. */

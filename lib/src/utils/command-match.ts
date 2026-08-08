@@ -37,7 +37,7 @@ const COMMAND_PATTERNS: Array<{ name: string; regex: RegExp }> = [
   { name: 'metrics', regex: /^\s*\/(?:oc\s+)?metrics\b/i },
   { name: 'setup', regex: /^\s*\/(?:oc\s+)?setup\b/i },
   { name: 'docs', regex: /^\s*\/(?:oc\s+)?docs(?=\s|$)/i },
-  { name: 'changelog', regex: /^\s*\/(?:oc\s+)?changelog\b/i },
+  { name: 'changelog', regex: /^\s*\/(?:oc\s+)?changelog(?![A-Za-z0-9._/-])/i },
 ];
 
 const FLAG_PATTERN = /--([a-zA-Z0-9-]+)(?:=(?:"([^"]*)"|'([^']*)'|(\S+)))?/g;

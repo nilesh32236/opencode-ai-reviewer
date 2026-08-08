@@ -1,7 +1,6 @@
 import { execFileSync } from 'child_process';
 import type { ExecFileSyncOptions } from 'child_process';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import path from 'path';
 import type {
   AgentConfig,
   ChangelogConfig,
@@ -13,8 +12,10 @@ import {
   DEFAULT_CHANGELOG_CONFIG,
   GitHubHelper,
   Logger,
+  buildChangelogFileContent,
   buildChangelogPRBody,
   generateChangelog,
+  resolveChangelogFilePath,
   sanitizeErrorMessage,
   validateRefName,
 } from '@opencode-pr-agent/lib';
@@ -190,7 +191,7 @@ async function createChangelogPR(
       log.info(`Created branch ${branchName} from ${defaultBranch}`);
     }
 
-    const changelogPath = path.join(tempDir, changelogConfig.filePath);
+    const changelogPath = resolveChangelogFilePath(changelogConfig.filePath, tempDir);
     const existingContent = existsSync(changelogPath) ? readFileSync(changelogPath, 'utf-8') : null;
     writeFileSync(
       changelogPath,
@@ -199,6 +200,17 @@ async function createChangelogPR(
     );
 
     execFileSync('git', ['add', '-A'], gitOpts);
+    let stagedExit = 1;
+    try {
+      execFileSync('git', ['diff', '--cached', '--quiet'], gitOpts);
+      stagedExit = 0;
+    } catch {
+      stagedExit = 1;
+    }
+    if (stagedExit === 0) {
+      log.info(`No changelog changes staged for ${version} — nothing to commit`);
+      return;
+    }
     execFileSync(
       'git',
       ['commit', '-m', `chore(release): update changelog for ${version}`],
@@ -296,21 +308,6 @@ async function createChangelogPR(
       `❌ **Changelog PR creation failed**: ${sanitizeErrorMessage(err)}`,
     );
   }
-}
-
-/**
- * Prepend the generated changelog entry to an existing changelog file, creating
- * a `# Changelog` file from scratch when none exists.
- * @param newEntry - The generated markdown release-notes entry.
- * @param existing - Existing changelog file content, or null.
- * @returns The full new changelog file content.
- */
-function buildChangelogFileContent(newEntry: string, existing: string | null): string {
-  const entry = newEntry.trim();
-  if (!existing || existing.trim() === '') {
-    return `# Changelog\n\n${entry}\n`;
-  }
-  return `${entry}\n\n---\n\n${existing.trim()}\n`;
 }
 
 /**

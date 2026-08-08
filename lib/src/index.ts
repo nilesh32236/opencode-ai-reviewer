@@ -304,6 +304,8 @@ export {
   formatJson,
   monorepoFilter,
   generateChangelog,
+  buildChangelogFileContent,
+  resolveChangelogFilePath,
 } from './changelog/index.js';
 export type {
   ChangelogBaseline,

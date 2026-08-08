@@ -55,8 +55,10 @@ export function categorizePRs(
     const cleanTitle = match?.[4]?.trim() || pr.title.trim();
 
     let heading = OTHER_HEADING;
-    if (breaking && (type === 'feat' || type === 'fix')) {
-      heading = categories['breaking'] ?? BREAKING_HEADING;
+    if (breaking) {
+      // Any truthy breaking marker (on any type) goes to the Breaking Changes
+      // heading; only non-breaking entries use their configured category.
+      heading = categories.breaking ?? BREAKING_HEADING;
     } else if (type && categories[type]) {
       heading = categories[type];
     }
@@ -171,23 +173,38 @@ function orderedHeadings(
  * @param gh - GitHubHelper used to fetch per-PR file lists when `includeFiles` is set.
  * @param entries - Entries to filter.
  * @param config - Changelog config carrying `subdirectoryFilter` and `includeFiles`.
+ * @param signal - Optional AbortSignal checked between file-path requests.
  * @returns Entries that match the configured subdirectory.
  */
 export async function monorepoFilter(
   gh: GitHubHelper,
   entries: ChangelogEntry[],
   config: ChangelogConfig,
+  signal?: AbortSignal,
 ): Promise<ChangelogEntry[]> {
   const filter = config.subdirectoryFilter?.trim();
   if (!filter) return entries;
 
+  if (!config.includeFiles) {
+    return entries.filter((e) => e.scope !== undefined && scopeMatchesFilter(e.scope, filter));
+  }
+
+  // File-path filtering requires one GitHub API call per entry; run the
+  // requests with bounded concurrency and honor the abort signal between
+  // batches so an aborted run stops promptly instead of draining the queue.
   const kept: ChangelogEntry[] = [];
-  for (const entry of entries) {
-    if (config.includeFiles) {
-      const paths = await gh.getPRFilePaths(entry.prNumber);
-      if (paths.some((p) => pathMatchesFilter(p, filter))) kept.push(entry);
-    } else if (entry.scope && scopeMatchesFilter(entry.scope, filter)) {
-      kept.push(entry);
+  const CONCURRENCY = 5;
+  for (let i = 0; i < entries.length; i += CONCURRENCY) {
+    if (signal?.aborted) break;
+    const batch = entries.slice(i, i + CONCURRENCY);
+    const results = await Promise.all(
+      batch.map(async (entry) => {
+        const paths = await gh.getPRFilePaths(entry.prNumber);
+        return paths.some((p) => pathMatchesFilter(p, filter)) ? entry : null;
+      }),
+    );
+    for (const entry of results) {
+      if (entry) kept.push(entry);
     }
   }
   return kept;
@@ -206,8 +223,9 @@ function pathMatchesFilter(path: string, filter: string): boolean {
 
 /**
  * Match a conventional-commit scope against a subdirectory filter. Matches when
- * the scope equals the filter, is a prefix of it, or the filter is a prefix of
- * the scope (case-insensitive) so `feat(ui):` satisfies `ui` or `ui/button`.
+ * the scope equals the filter, or one is a path-boundary prefix of the other
+ * (the next character is `/`) so `feat(ui):` satisfies `ui` or `ui/button`, but
+ * sibling names such as `ui-kit` or `uikit` do not satisfy `ui`.
  * @param scope - Conventional-commit scope (e.g. 'ui').
  * @param filter - Configured subdirectory filter.
  * @returns True when the scope matches the filter.
@@ -215,7 +233,10 @@ function pathMatchesFilter(path: string, filter: string): boolean {
 function scopeMatchesFilter(scope: string, filter: string): boolean {
   const s = scope.toLowerCase();
   const f = filter.toLowerCase().replace(/\/+$/, '');
-  return s === f || s.startsWith(f) || f.startsWith(s);
+  if (s === f) return true;
+  if (s.startsWith(f)) return s[f.length] === '/';
+  if (f.startsWith(s)) return f[s.length] === '/';
+  return false;
 }
 
 /**
@@ -269,14 +290,15 @@ export async function generateChangelog(
     }
   }
 
-  const mergedPRs = await gh.listMergedPRs(since, undefined, signal);
+  const mergedPRs = await gh.listMergedPRs(since, config.baseBranch, signal);
 
   let categorized = categorizePRs(mergedPRs, config.categories);
 
   if (config.subdirectoryFilter) {
     const filtered: Record<string, ChangelogEntry[]> = {};
     for (const [heading, entries] of Object.entries(categorized)) {
-      const kept = await monorepoFilter(gh, entries, config);
+      if (signal?.aborted) break;
+      const kept = await monorepoFilter(gh, entries, config, signal);
       if (kept.length > 0) filtered[heading] = kept;
     }
     categorized = filtered;

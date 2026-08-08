@@ -3,7 +3,6 @@ import type {
   AgentConfig,
   EventBus,
   GitHubEvent,
-  ParsedCommand,
   RateLimiter,
   Subscriber,
 } from '@opencode-pr-agent/lib';
@@ -34,11 +33,10 @@ export function createChangelogSubscriber(
         const changelogPayload = event.payload as Record<string, unknown>;
         const changelogComment = changelogPayload.comment as Record<string, string> | undefined;
 
-        let parsed: ParsedCommand | null = null;
-        if (event.type === 'comment.created' || event.type === 'review_comment.created') {
-          parsed = changelogComment?.body ? parseCommand(changelogComment.body) : null;
-          if (!parsed || parsed.command !== 'changelog') return;
-        }
+        // subscribedEvents only includes comment.created and
+        // review_comment.created, so the event type is always one of them.
+        const parsed = changelogComment?.body ? parseCommand(changelogComment.body) : null;
+        if (!parsed || parsed.command !== 'changelog') return;
 
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;
@@ -57,7 +55,7 @@ export function createChangelogSubscriber(
           event.repo || '',
           getToken(),
           config,
-          parsed ?? undefined,
+          parsed,
           signal,
           eventBus,
           event.correlationId,

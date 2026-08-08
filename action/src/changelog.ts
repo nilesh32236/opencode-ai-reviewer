@@ -5,13 +5,14 @@ import type { AgentConfig, ChangelogConfig, PlatformAdapter } from '@opencode-pr
 import {
   DEFAULT_CHANGELOG_CONFIG,
   GitHubHelper,
+  buildChangelogFileContent,
   buildChangelogPRBody,
   generateChangelog,
+  resolveChangelogFilePath,
   validateRefName,
-  withRetry,
 } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { resolvePrNumber, sanitize } from './utils.js';
+import { sanitize } from './utils.js';
 
 /**
  * Run changelog generation: gather merged PRs since the last release tag,
@@ -22,15 +23,15 @@ import { resolvePrNumber, sanitize } from './utils.js';
  * Changelog generation is GitHub-only: on GitLab the mode reports a failure and
  * returns early. Honors `config.changelog.enabled` and returns early when
  * changelog generation is disabled. Platform reads (`getTags`, `getLatestTag`,
- * `getCommitDate`, `listMergedPRs`) are retried on transient failures.
+ * `getCommitDate`, `listMergedPRs`) are retried on transient failures via
+ * GitHubHelper's own retry/circuit-breaker.
  *
  * @param inputs - Parsed action inputs.
  * @param config - Full agent configuration.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @returns A promise that resolves once changelog generation (and optionally the
- * release-prep PR) completes. When the PR number cannot be resolved or the
- * platform is GitLab, the function reports failure/skip via `core` and returns
- * early instead of rejecting.
+ * release-prep PR) completes. When the platform is GitLab, the function reports
+ * failure/skip via `core` and returns early instead of rejecting.
  */
 export async function runChangelog(
   inputs: ActionInputs,
@@ -44,12 +45,6 @@ export async function runChangelog(
     return;
   }
 
-  const prNumber = await resolvePrNumber();
-  if (prNumber === null) {
-    core.setFailed('Could not determine PR number for changelog');
-    return;
-  }
-
   if (!(gh instanceof GitHubHelper)) {
     core.setFailed('Changelog generation is only supported on GitHub repositories');
     return;
@@ -57,9 +52,7 @@ export async function runChangelog(
 
   const changelogConfig: ChangelogConfig = config.changelog ?? DEFAULT_CHANGELOG_CONFIG;
 
-  const result = await withRetry(() => generateChangelog(gh, changelogConfig, undefined), {
-    operationName: 'changelog.generate',
-  });
+  const result = await generateChangelog(gh, changelogConfig, undefined);
 
   core.setOutput('changes_made', String(result.entryCount > 0));
   core.setOutput('entry_count', String(result.entryCount));
@@ -89,9 +82,7 @@ export async function runChangelog(
     const branchName = `${changelogConfig.prBranchPrefix}/${version}`;
     validateRefName(branchName);
 
-    const defaultBranch = await withRetry(() => gh.getDefaultBranch(), {
-      operationName: 'changelog.getDefaultBranch',
-    });
+    const defaultBranch = await gh.getDefaultBranch();
 
     await exec.exec('git', ['fetch', 'origin']);
     const branchExists =
@@ -108,7 +99,7 @@ export async function runChangelog(
       core.info(`Created branch ${branchName} from ${defaultBranch}`);
     }
 
-    const changelogPath = changelogConfig.filePath;
+    const changelogPath = resolveChangelogFilePath(changelogConfig.filePath, process.cwd());
     let existingContent: string | null = null;
     try {
       existingContent = readFileSync(changelogPath, 'utf-8');
@@ -122,6 +113,13 @@ export async function runChangelog(
     );
 
     await exec.exec('git', ['add', '-A']);
+    const stagedExit = await exec.exec('git', ['diff', '--cached', '--quiet'], {
+      ignoreReturnCode: true,
+    });
+    if (stagedExit === 0) {
+      core.info(`No changelog changes staged for ${version} — nothing to commit`);
+      return;
+    }
     await exec.exec('git', ['commit', '-m', `chore(release): update changelog for ${version}`]);
     validateRefName(branchName);
     await exec.exec('git', ['push', 'origin', branchName, '--force-with-lease']);
@@ -160,19 +158,4 @@ export async function runChangelog(
       sanitize(`Changelog PR creation failed: ${err instanceof Error ? err.message : err}`),
     );
   }
-}
-
-/**
- * Prepend the generated changelog entry to an existing changelog file, creating
- * a `# Changelog` file from scratch when none exists.
- * @param newEntry - The generated markdown release-notes entry.
- * @param existing - Existing changelog file content, or null.
- * @returns The full new changelog file content.
- */
-function buildChangelogFileContent(newEntry: string, existing: string | null): string {
-  const entry = newEntry.trim();
-  if (!existing || existing.trim() === '') {
-    return `# Changelog\n\n${entry}\n`;
-  }
-  return `${entry}\n\n---\n\n${existing.trim()}\n`;
 }
