@@ -29,6 +29,7 @@ import {
 import { isBotLogin } from '../utils/bot.js';
 import { handleAudit } from './audit.js';
 import { handleAutofixLoop } from './autofix.js';
+import { handleChangelogCommand } from './changelog.js';
 import { handlePRReview } from './pr-review.js';
 
 /** Module-scope logger for helper functions that have no per-call context. */
@@ -49,7 +50,16 @@ const logger = new Logger('Command');
  * @param correlationId - Optional correlation ID for tracing this request.
  */
 export async function handleCommand(
-  command: 'fix' | 'review' | 'audit' | 'analyze' | 'explain' | 'setup' | 'docs' | 'describe',
+  command:
+    | 'fix'
+    | 'review'
+    | 'audit'
+    | 'analyze'
+    | 'explain'
+    | 'setup'
+    | 'docs'
+    | 'describe'
+    | 'changelog',
   issueNumber: number,
   repo: string,
   token: string,
@@ -257,6 +267,11 @@ export async function handleCommand(
 
       case 'setup': {
         await handleSetup(issueNumber, repo, token, config, tempDir);
+        break;
+      }
+
+      case 'changelog': {
+        await handleChangelogCommand(gh, issueNumber, repo, config, tempDir, gitEnv, signal);
         break;
       }
     }

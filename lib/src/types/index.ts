@@ -1,6 +1,11 @@
 // Shared types for the OpenCode PR Agent system.
 // Used by both the GitHub Action and GitHub App.
 
+// ─── Changelog ───────────────────────────────────────────
+/** Configuration for the `/changelog` release-notes command. */
+import type { ChangelogConfig } from '../changelog/types.js';
+export type { ChangelogConfig } from '../changelog/types.js';
+
 // ─── Severity ─────────────────────────────────────────────
 /** Severity levels for review findings. */
 export type Severity = 'critical' | 'important' | 'minor';
@@ -338,6 +343,8 @@ export interface AgentConfig {
   docs?: DocsConfig;
   /** PR description generation behavior */
   describe: DescribeConfig;
+  /** Changelog / release-notes generation behavior */
+  changelog?: ChangelogConfig;
   /** Learning behavior */
   learning: LearningConfig;
   /** Conversation / @mention behavior */
@@ -1259,7 +1266,8 @@ export type ActionMode =
   | 'self-heal'
   | 'setup'
   | 'docs'
-  | 'describe';
+  | 'describe'
+  | 'changelog';
 
 // ─── Issue Details ────────────────────────────────────────
 /** Details of a GitHub issue. */
@@ -1467,6 +1475,8 @@ export interface PromptConfig {
     enabled?: boolean;
     model?: string;
   };
+  /** Changelog / release-notes generation (`/changelog`) configuration */
+  changelog?: ChangelogConfig;
   /** Learning configuration */
   learning?: {
     /** Whether learning is enabled */
@@ -1590,6 +1600,32 @@ export const DEFAULT_SCA_CONFIG: SCAConfig = {
   excludePatterns: [],
 };
 
+/** Default conventional-commit type → heading map for changelog categories. */
+export const DEFAULT_CHANGELOG_CATEGORIES: Record<string, string> = {
+  feat: 'Features',
+  fix: 'Bug Fixes',
+  docs: 'Documentation',
+  refactor: 'Refactoring',
+  perf: 'Performance',
+  test: 'Tests',
+  chore: 'Chores',
+  build: 'Build System',
+  ci: 'Continuous Integration',
+  style: 'Styling',
+  revert: 'Reverts',
+};
+
+/** Default values for the `/changelog` release-notes command (opt-in). */
+export const DEFAULT_CHANGELOG_CONFIG: ChangelogConfig = {
+  enabled: false,
+  outputFormat: 'markdown',
+  categories: DEFAULT_CHANGELOG_CATEGORIES,
+  filePath: 'CHANGELOG.md',
+  createPR: false,
+  prBranchPrefix: 'changelog',
+  includeFiles: false,
+};
+
 export const DEFAULT_CONFIG: AgentConfig = {
   platform: 'github',
   reviewModel: 'opencode/deepseek-v4-flash-free',
@@ -1674,6 +1710,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   describe: {
     enabled: true,
   },
+  changelog: DEFAULT_CHANGELOG_CONFIG,
   learning: {
     enabled: true,
     feedbackSignals: ['dismissed', 'reaction', 'disputed_comment'],

@@ -16,6 +16,7 @@ const EXPECTED_SUBSCRIBERS = [
   'ReviewSubscriber',
   'FixSubscriber',
   'DocsSubscriber',
+  'ChangelogSubscriber',
   'AuditSubscriber',
   'AnalyzeSubscriber',
   'AutoAnalyzeSubscriber',

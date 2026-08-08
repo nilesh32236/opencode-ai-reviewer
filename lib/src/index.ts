@@ -296,6 +296,26 @@ export { buildAutofixPRBody } from './utils/pr-body.js';
 export type { PRBodyOptions } from './utils/pr-body.js';
 export { buildDocsPRBody } from './utils/pr-body.js';
 export type { DocsPRBodyOptions } from './utils/pr-body.js';
+export { buildChangelogPRBody } from './utils/pr-body.js';
+export type { ChangelogPRBodyOptions } from './utils/pr-body.js';
+export {
+  categorizePRs,
+  formatMarkdown,
+  formatJson,
+  monorepoFilter,
+  generateChangelog,
+} from './changelog/index.js';
+export type {
+  ChangelogBaseline,
+  FormatMarkdownOptions,
+} from './changelog/index.js';
+export type {
+  MergedPR,
+  ChangelogEntry,
+  GitTag,
+  ChangelogConfig,
+  ChangelogResult,
+} from './changelog/index.js';
 export { parseCommand, ASK_COMMAND_PATTERN } from './utils/command-match.js';
 export type { ParsedCommand } from './utils/command-match.js';
 export {

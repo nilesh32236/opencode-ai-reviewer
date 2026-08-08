@@ -1826,4 +1826,143 @@ export class GitHubHelper implements PlatformAdapter {
   async updateMR(mrNumber: number, updates: { title?: string; body?: string }): Promise<void> {
     return this.updatePR(mrNumber, updates);
   }
+
+  // ─── Changelog Operations ──────────────────────────────
+
+  /**
+   * Fetch all git tags for the repository via the matching-refs API and sort
+   * them by semver (newest first), falling back to a plain descending name sort
+   * for tags that do not parse as `vX.Y.Z` / `X.Y.Z`.
+   *
+   * @returns Array of tags with name and commit SHA, newest first.
+   */
+  async getTags(): Promise<Array<{ name: string; commitSha: string }>> {
+    const refs =
+      await this.api<Array<{ ref: string; object: { sha: string } }>>('/git/matching-refs/tags');
+    const tags = refs.map((r) => ({
+      name: r.ref.replace('refs/tags/', ''),
+      commitSha: r.object.sha,
+    }));
+    return tags.sort((a, b) => compareSemverDesc(a.name, b.name));
+  }
+
+  /**
+   * Fetch the most recent tag (by semver) for the repository.
+   *
+   * @returns The newest tag, or null when the repository has no tags.
+   */
+  async getLatestTag(): Promise<{ name: string; commitSha: string } | null> {
+    const tags = await this.getTags();
+    return tags[0] ?? null;
+  }
+
+  /**
+   * Fetch the committer date of a commit, used to derive the changelog baseline
+   * from a release tag's commit.
+   *
+   * @param sha - Commit SHA (or tag SHA) to look up.
+   * @returns ISO 8601 committer date, or null when the commit is not found.
+   */
+  async getCommitDate(sha: string): Promise<string | null> {
+    try {
+      const commit = await this.api<{ commit: { committer: { date: string } } }>(`/commits/${sha}`);
+      return commit.commit.committer.date ?? null;
+    } catch (err) {
+      core.warning(
+        `Could not fetch commit date for ${sha.slice(0, 7)}: ${
+          err instanceof Error ? err.message : err
+        }`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * List pull requests merged at or after a given baseline date (paginated).
+   *
+   * @param since - ISO 8601 baseline date; only PRs merged at or after this are returned.
+   * @param base - Optional base branch to restrict the query to (e.g. 'main').
+   * @param signal - Optional AbortSignal to cancel the paginated fetch.
+   * @returns Array of merged PRs sorted by update time (newest first).
+   */
+  async listMergedPRs(
+    since: string,
+    base?: string,
+    signal?: AbortSignal,
+  ): Promise<
+    Array<{
+      number: number;
+      title: string;
+      body: string;
+      author: string;
+      mergedAt: string;
+      baseRef: string;
+    }>
+  > {
+    let endpoint = '/pulls?state=closed&sort=updated&direction=desc';
+    if (base) {
+      endpoint += `&base=${encodeURIComponent(base)}`;
+    }
+    const prs = await this.paginate<{
+      number: number;
+      title: string;
+      body: string | null;
+      user: { login: string };
+      merged_at: string | null;
+      base: { ref: string };
+    }>(endpoint, { perPage: 100, maxPages: 10 }, signal);
+
+    return prs
+      .filter((p) => p.merged_at && p.merged_at >= since)
+      .map((p) => ({
+        number: p.number,
+        title: p.title,
+        body: p.body ?? '',
+        author: p.user?.login ?? 'unknown',
+        mergedAt: p.merged_at as string,
+        baseRef: p.base?.ref ?? '',
+      }));
+  }
+
+  /**
+   * Fetch the changed file paths for a pull request. Used by the changelog
+   * generator's opt-in monorepo filtering (one call per merged PR).
+   *
+   * @param prNumber - PR number.
+   * @returns Array of repo-relative file paths touched by the PR.
+   */
+  async getPRFilePaths(prNumber: number): Promise<string[]> {
+    const files = await this.api<Array<{ filename: string }>>(`/pulls/${prNumber}/files`);
+    return files.map((f) => f.filename).filter((f): f is string => typeof f === 'string');
+  }
+}
+
+/**
+ * Compare two tag names by semver, newest first. Tags that fail to parse as
+ * `v?X.Y.Z` sort after all valid semver tags (descending lexically).
+ * @param a - First tag name.
+ * @param b - Second tag name.
+ * @returns Negative when `a` is newer than `b`, positive when older, 0 when equal.
+ */
+function compareSemverDesc(a: string, b: string): number {
+  const va = parseSemver(a);
+  const vb = parseSemver(b);
+  if (va && vb) {
+    return vb.major - va.major || vb.minor - va.minor || vb.patch - va.patch;
+  }
+  if (va && !vb) return -1;
+  if (!va && vb) return 1;
+  return b.localeCompare(a);
+}
+
+/**
+ * Parse a tag name into a `vX.Y.Z`-style semver triple, ignoring non-numeric
+ * suffixes (e.g. `v1.2.3-beta.1` → `{ major: 1, minor: 2, patch: 3 }`).
+ * @param tag - Tag name to parse.
+ * @returns Parsed semver parts, or null when the tag has no numeric `X.Y.Z` prefix.
+ */
+function parseSemver(tag: string): { major: number; minor: number; patch: number } | null {
+  const match = tag.match(/^v?(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return null;
+  return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]) };
 }
