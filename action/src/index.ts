@@ -207,6 +207,9 @@ async function run(): Promise<void> {
           ? inputs.enableTestGapDetection
           : (loadedConfig?.review?.enableTestGapDetection ?? inputs.enableTestGapDetection),
         includePreExisting: loadedConfig?.review?.includePreExisting ?? inputs.includePreExisting,
+        suggestTitleAndLabels:
+          loadedConfig?.review?.suggestTitleAndLabels ??
+          DEFAULT_CONFIG.review.suggestTitleAndLabels,
         ...(loadedConfig?.review?.tokenBudget && { tokenBudget: loadedConfig.review.tokenBudget }),
         ...(loadedConfig?.review?.enableReachability !== undefined && {
           enableReachability: loadedConfig.review.enableReachability,
