@@ -1830,20 +1830,24 @@ export class GitHubHelper implements PlatformAdapter {
   // ─── Changelog Operations ──────────────────────────────
 
   /**
-   * Fetch all git tags for the repository via the matching-refs API and sort
-   * them by semver (newest first), falling back to a plain descending name sort
-   * for tags that do not parse as `vX.Y.Z` / `X.Y.Z`.
+   * Fetch all git tags for the repository and sort them by semver (newest
+   * first), falling back to a plain descending name sort for tags that do not
+   * parse as `vX.Y.Z` / `X.Y.Z`. Uses the paginated `/tags` endpoint, which
+   * peels annotated tags to the commit SHA they point at (unlike
+   * `/git/matching-refs` which returns the tag-object SHA), so the changelog
+   * baseline resolves for repos with more than 100 tags and for annotated
+   * tags created via `git tag -a` or `gh release create`.
    *
    * @returns Array of tags with name and commit SHA, newest first.
    */
   async getTags(): Promise<Array<{ name: string; commitSha: string }>> {
-    const refs =
-      await this.api<Array<{ ref: string; object: { sha: string } }>>('/git/matching-refs/tags');
-    const tags = refs.map((r) => ({
-      name: r.ref.replace('refs/tags/', ''),
-      commitSha: r.object.sha,
-    }));
-    return tags.sort((a, b) => compareSemverDesc(a.name, b.name));
+    const tags = await this.paginate<{
+      name: string;
+      commit: { sha: string };
+    }>('/tags', { perPage: 100 });
+    return tags
+      .map((t) => ({ name: t.name, commitSha: t.commit.sha }))
+      .sort((a, b) => compareSemverDesc(a.name, b.name));
   }
 
   /**
@@ -1912,8 +1916,22 @@ export class GitHubHelper implements PlatformAdapter {
       base: { ref: string };
     }>(endpoint, { perPage: 100, maxPages: 10 }, signal);
 
+    if (prs.length >= 10 * 100) {
+      core.warning(
+        'listMergedPRs hit the 1000-item pagination window; the changelog may be missing older merged PRs (consider narrowing the baseline).',
+      );
+    }
+
+    // Compare parsed timestamps instead of strings: `merged_at` is always a UTC
+    // `Z` timestamp, while `since` is user-supplied and may be date-only
+    // (`2026-01-01`) or carry an offset (`...+02:00`).
+    const sinceMs = Date.parse(since);
     return prs
-      .filter((p) => p.merged_at && p.merged_at >= since)
+      .filter((p) => {
+        if (!p.merged_at) return false;
+        if (Number.isNaN(sinceMs)) return true;
+        return Date.parse(p.merged_at) >= sinceMs;
+      })
       .map((p) => ({
         number: p.number,
         title: p.title,
@@ -1926,14 +1944,38 @@ export class GitHubHelper implements PlatformAdapter {
 
   /**
    * Fetch the changed file paths for a pull request. Used by the changelog
-   * generator's opt-in monorepo filtering (one call per merged PR).
+   * generator's opt-in monorepo filtering (one call per merged PR). Paginates
+   * the files endpoint so PRs touching more than 30 files are not truncated.
    *
    * @param prNumber - PR number.
    * @returns Array of repo-relative file paths touched by the PR.
    */
   async getPRFilePaths(prNumber: number): Promise<string[]> {
-    const files = await this.api<Array<{ filename: string }>>(`/pulls/${prNumber}/files`);
+    const files = await this.paginate<{ filename: string }>(`/pulls/${prNumber}/files`, {
+      perPage: 100,
+    });
     return files.map((f) => f.filename).filter((f): f is string => typeof f === 'string');
+  }
+
+  /**
+   * Find an open pull request whose head branch matches the given branch name.
+   * Used by the action changelog flow to reuse a previously-created
+   * release-prep PR on re-runs instead of failing `createPR`.
+   *
+   * @param branchName - Head branch name to match.
+   * @returns The matching PR's number/URL, or null when no open PR uses the
+   * branch.
+   */
+  async findOpenPRByHeadBranch(
+    branchName: string,
+  ): Promise<{ number: number; url: string } | null> {
+    const prs = await this.paginate<{
+      number: number;
+      html_url: string;
+      head: { ref: string };
+    }>('/pulls?state=open', { perPage: 100 });
+    const match = prs.find((p) => p.head?.ref === branchName);
+    return match ? { number: match.number, url: match.html_url } : null;
   }
 }
 

@@ -1,10 +1,12 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  buildChangelogFileContent,
   categorizePRs,
   formatJson,
   formatMarkdown,
   generateChangelog,
   monorepoFilter,
+  resolveSafeChangelogPath,
 } from '../src/changelog/index.js';
 import type { MergedPR } from '../src/changelog/types.js';
 import type { GitHubHelper } from '../src/utils/github.js';
@@ -72,6 +74,22 @@ describe('categorizePRs', () => {
     expect(categorized['Breaking Changes'][0].breaking).toBe(true);
   });
 
+  it('buckets a breaking `!` marker on any type under Breaking Changes', () => {
+    const breakingRefactor: MergedPR = {
+      number: 106,
+      title: 'refactor(core)!: drop legacy API',
+      body: 'Removes deprecated endpoints.',
+      author: 'frank',
+      mergedAt: '2026-08-06T10:00:00Z',
+      baseRef: 'main',
+    };
+    const categorized = categorizePRs([breakingRefactor], CATEGORIES);
+    expect(categorized['Breaking Changes']).toHaveLength(1);
+    expect(categorized['Breaking Changes'][0].prNumber).toBe(106);
+    expect(categorized['Breaking Changes'][0].breaking).toBe(true);
+    expect(categorized['Breaking Changes'][0].title).toBe('drop legacy API');
+  });
+
   it('falls back to Other Changes for unknown types and unprefixed titles', () => {
     const categorized = categorizePRs(PRS, CATEGORIES);
     const other = categorized['Other Changes'];
@@ -102,8 +120,34 @@ describe('formatMarkdown', () => {
     });
     expect(markdown).toContain('## v1.2.3');
     expect(markdown).toContain('### Features');
-    expect(markdown).toContain('- #101 by @alice: add dark mode');
+    expect(markdown).toContain('- #101 by `@alice`: add dark mode');
     expect(markdown).toContain('### Breaking Changes');
+  });
+
+  it('escapes markdown metacharacters and collapses newlines in hostile titles', () => {
+    const hostile: MergedPR = {
+      number: 107,
+      title: 'feat: add **bold** [link](https://example.com) \n\n ## fake heading',
+      body: 'x',
+      author: 'evil_handle',
+      mergedAt: '2026-08-07T10:00:00Z',
+      baseRef: 'main',
+    };
+    const markdown = formatMarkdown(categorizePRs([hostile], CATEGORIES), {
+      tag: null,
+      since: '2026-08-01T00:00:00Z',
+      categories: CATEGORIES,
+      entryCount: 1,
+    });
+    const bullet = markdown.split('\n').find((l) => l.startsWith('- #107'));
+    expect(bullet).toBeDefined();
+    // Author handle is wrapped in inline code so it cannot notify the user.
+    expect(bullet).toContain('by `@evil_handle`');
+    // Title metacharacters are backslash-escaped, so no fake heading escapes.
+    expect(bullet).toContain('\\*\\*bold\\*\\*');
+    expect(bullet).toContain('\\[link\\]');
+    expect(markdown.split('\n').filter((l) => l.startsWith('## fake')).length).toBe(0);
+    expect(bullet).not.toContain('\n');
   });
 
   it('orders configured headings by declaration order with breaking/other last', () => {
@@ -154,6 +198,16 @@ describe('formatJson', () => {
     expect(parsed).toHaveLength(PRS.length);
     expect(parsed[0].prNumber).toBe(101);
   });
+
+  it('omits the PR body field from the serialized JSON', () => {
+    const categorized = categorizePRs([PRS[0]], CATEGORIES);
+    const parsed = JSON.parse(formatJson(Object.values(categorized).flat())) as Array<
+      Record<string, unknown>
+    >;
+    expect(parsed[0].body).toBeUndefined();
+    expect(parsed[0].prNumber).toBe(101);
+    expect(parsed[0]).toMatchObject({ title: 'add dark mode' });
+  });
 });
 
 describe('monorepoFilter', () => {
@@ -196,9 +250,14 @@ describe('generateChangelog', () => {
     getTags: vi.fn(async () => [{ name: 'v1.1.0', commitSha: 'abc123' }]),
     getLatestTag: vi.fn(async () => ({ name: 'v1.1.0', commitSha: 'abc123' })),
     getCommitDate: vi.fn(async () => '2026-07-15T00:00:00Z'),
+    getDefaultBranch: vi.fn(async () => 'main'),
     listMergedPRs: vi.fn(async () => PRS),
     getPRFilePaths: vi.fn(async () => []),
   } as unknown as GitHubHelper;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
 
   it('resolves the latest tag baseline and returns markdown + json + entries', async () => {
     const result = await generateChangelog(gh, DEFAULT_TEST_CONFIG);
@@ -211,7 +270,6 @@ describe('generateChangelog', () => {
   });
 
   it('uses an explicit baseline when provided', async () => {
-    vi.clearAllMocks();
     const result = await generateChangelog(gh, DEFAULT_TEST_CONFIG, {
       tagName: 'v9.9.9',
       since: '2026-01-01T00:00:00Z',
@@ -225,6 +283,7 @@ describe('generateChangelog', () => {
     const noTagGh = {
       getLatestTag: vi.fn(async () => null),
       getTags: vi.fn(async () => []),
+      getDefaultBranch: vi.fn(async () => 'main'),
       listMergedPRs: vi.fn(async () => PRS),
     } as unknown as GitHubHelper;
     const result = await generateChangelog(noTagGh, {
@@ -239,6 +298,7 @@ describe('generateChangelog', () => {
     const filteredGh = {
       getLatestTag: vi.fn(async () => ({ name: 'v1.1.0', commitSha: 'abc123' })),
       getCommitDate: vi.fn(async () => '2026-07-15T00:00:00Z'),
+      getDefaultBranch: vi.fn(async () => 'main'),
       listMergedPRs: vi.fn(async () => PRS),
       getPRFilePaths: vi.fn(async () => ['packages/ui/src/index.ts']),
     } as unknown as GitHubHelper;
@@ -250,15 +310,54 @@ describe('generateChangelog', () => {
     expect(result.entries.map((e) => e.prNumber)).toEqual([101]);
   });
 
-  it('passes the abort signal to listMergedPRs', async () => {
+  it('passes the default branch and abort signal to listMergedPRs', async () => {
     const signal = new AbortController().signal;
     const listGh = {
       getLatestTag: vi.fn(async () => ({ name: 'v1.1.0', commitSha: 'abc123' })),
       getCommitDate: vi.fn(async () => '2026-07-15T00:00:00Z'),
+      getDefaultBranch: vi.fn(async () => 'main'),
       listMergedPRs: vi.fn(async () => PRS),
     } as unknown as GitHubHelper;
     await generateChangelog(listGh, DEFAULT_TEST_CONFIG, undefined, signal);
-    expect(listGh.listMergedPRs).toHaveBeenCalledWith('2026-07-15T00:00:00Z', undefined, signal);
+    expect(listGh.listMergedPRs).toHaveBeenCalledWith('2026-07-15T00:00:00Z', 'main', signal);
+  });
+});
+
+describe('buildChangelogFileContent', () => {
+  const entry = '## v1.2.3\n\n- #1 by `@alice`: a thing';
+
+  it('creates a fresh changelog file when none exists', () => {
+    expect(buildChangelogFileContent(entry, null)).toBe(`# Changelog\n\n${entry}\n`);
+  });
+
+  it('prepends the new entry to an existing changelog', () => {
+    const result = buildChangelogFileContent(entry, '# Changelog\n\n## v1.1.0\n\nold notes\n');
+    expect(result).toContain(
+      `## v1.2.3\n\n- #1 by \`@alice\`: a thing\n\n---\n\n# Changelog\n\n## v1.1.0`,
+    );
+    expect(result).toContain('old notes');
+  });
+
+  it('returns existing content unchanged when the entry is already present (idempotent re-run)', () => {
+    const existing = `# Changelog\n\n${entry}\n\n---\n\n## v1.1.0\nold notes\n`;
+    expect(buildChangelogFileContent(entry, existing)).toBe(`${existing.trim()}\n`);
+    expect(buildChangelogFileContent(entry, existing)).not.toContain(entry + entry);
+  });
+});
+
+describe('resolveSafeChangelogPath', () => {
+  it('resolves an in-root repo-relative path', () => {
+    expect(resolveSafeChangelogPath('/tmp/checkout', 'CHANGELOG.md')).toBe(
+      '/tmp/checkout/CHANGELOG.md',
+    );
+  });
+
+  it('rejects absolute paths and parent traversal', () => {
+    expect(() => resolveSafeChangelogPath('/tmp/checkout', '/etc/passwd')).toThrow(/escapes/);
+    expect(() => resolveSafeChangelogPath('/tmp/checkout', '../CHANGELOG.md')).toThrow(/escapes/);
+    expect(() => resolveSafeChangelogPath('/tmp/checkout', 'a/../../CHANGELOG.md')).toThrow(
+      /escapes/,
+    );
   });
 });
 

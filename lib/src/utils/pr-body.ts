@@ -13,11 +13,11 @@ function escapeCodeSpan(file: string): string {
 /**
  * Escape markdown metacharacters in untrusted user text (e.g. a source PR
  * title) so it cannot break out of prose or inject links, images, or code
- * spans into the auto-created docs PR body.
+ * spans into the auto-created docs PR body or generated release notes.
  * @param text - Untrusted text.
  * @returns The text with markdown metacharacters backslash-escaped.
  */
-function escapeMarkdownText(text: string): string {
+export function escapeMarkdownText(text: string): string {
   return text.replace(/([`*_\[\]()#!<>~|\\])/g, '\\$1');
 }
 

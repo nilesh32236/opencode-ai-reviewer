@@ -1,7 +1,6 @@
 import { execFileSync } from 'child_process';
 import type { ExecFileSyncOptions } from 'child_process';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import path from 'path';
 import type {
   AgentConfig,
   ChangelogConfig,
@@ -13,8 +12,10 @@ import {
   DEFAULT_CHANGELOG_CONFIG,
   GitHubHelper,
   Logger,
+  buildChangelogFileContent,
   buildChangelogPRBody,
   generateChangelog,
+  resolveSafeChangelogPath,
   sanitizeErrorMessage,
   validateRefName,
 } from '@opencode-pr-agent/lib';
@@ -190,7 +191,7 @@ async function createChangelogPR(
       log.info(`Created branch ${branchName} from ${defaultBranch}`);
     }
 
-    const changelogPath = path.join(tempDir, changelogConfig.filePath);
+    const changelogPath = resolveSafeChangelogPath(tempDir, changelogConfig.filePath);
     const existingContent = existsSync(changelogPath) ? readFileSync(changelogPath, 'utf-8') : null;
     writeFileSync(
       changelogPath,
@@ -198,7 +199,39 @@ async function createChangelogPR(
       'utf-8',
     );
 
-    execFileSync('git', ['add', '-A'], gitOpts);
+    // Scope the staged path to the changelog file so runner output is never
+    // swept into the release-prep PR, and skip commit/push when a re-run
+    // produced no staged changes (byte-identical content against the same
+    // baseline) instead of failing an empty `git commit`.
+    execFileSync('git', ['add', changelogPath], gitOpts);
+    let hasStagedChanges = true;
+    try {
+      execFileSync('git', ['diff', '--cached', '--quiet'], gitOpts);
+      hasStagedChanges = false;
+    } catch {
+      // Non-zero exit code means the index has staged changes.
+    }
+
+    if (!hasStagedChanges) {
+      log.info(`No staged changes for the changelog file — nothing to commit for ${version}`);
+      const existingPR = await findExistingChangelogPR(gh, issueNumber);
+      if (existingPR) {
+        log.info(`Reusing existing changelog PR #${existingPR.number}: ${existingPR.url}`);
+        try {
+          await gh.postOrUpdateComment(
+            issueNumber,
+            '<!-- changelog-pr-link -->',
+            `📝 Changelog PR: ${existingPR.url}`,
+          );
+        } catch (err) {
+          log.warn(
+            `Failed to post changelog PR link comment: ${err instanceof Error ? err.message : err}`,
+          );
+        }
+      }
+      return;
+    }
+
     execFileSync(
       'git',
       ['commit', '-m', `chore(release): update changelog for ${version}`],
@@ -296,21 +329,6 @@ async function createChangelogPR(
       `❌ **Changelog PR creation failed**: ${sanitizeErrorMessage(err)}`,
     );
   }
-}
-
-/**
- * Prepend the generated changelog entry to an existing changelog file, creating
- * a `# Changelog` file from scratch when none exists.
- * @param newEntry - The generated markdown release-notes entry.
- * @param existing - Existing changelog file content, or null.
- * @returns The full new changelog file content.
- */
-function buildChangelogFileContent(newEntry: string, existing: string | null): string {
-  const entry = newEntry.trim();
-  if (!existing || existing.trim() === '') {
-    return `# Changelog\n\n${entry}\n`;
-  }
-  return `${entry}\n\n---\n\n${existing.trim()}\n`;
 }
 
 /**

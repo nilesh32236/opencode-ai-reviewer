@@ -294,6 +294,7 @@ export {
 export type { AnalysisPlanResult } from './utils/analyze-parser.js';
 export { buildAutofixPRBody } from './utils/pr-body.js';
 export type { PRBodyOptions } from './utils/pr-body.js';
+export { escapeMarkdownText } from './utils/pr-body.js';
 export { buildDocsPRBody } from './utils/pr-body.js';
 export type { DocsPRBodyOptions } from './utils/pr-body.js';
 export { buildChangelogPRBody } from './utils/pr-body.js';
@@ -304,6 +305,8 @@ export {
   formatJson,
   monorepoFilter,
   generateChangelog,
+  buildChangelogFileContent,
+  resolveSafeChangelogPath,
 } from './changelog/index.js';
 export type {
   ChangelogBaseline,

@@ -5,12 +5,14 @@ import type { AgentConfig, ChangelogConfig, PlatformAdapter } from '@opencode-pr
 import {
   DEFAULT_CHANGELOG_CONFIG,
   GitHubHelper,
+  buildChangelogFileContent,
   buildChangelogPRBody,
   generateChangelog,
+  resolveSafeChangelogPath,
   validateRefName,
   withRetry,
 } from '@opencode-pr-agent/lib';
-import { resolvePrNumber, sanitize } from './utils.js';
+import { sanitize } from './utils.js';
 
 /**
  * Run changelog generation: gather merged PRs since the last release tag,
@@ -20,27 +22,27 @@ import { resolvePrNumber, sanitize } from './utils.js';
  *
  * Changelog generation is GitHub-only: on GitLab the mode reports a failure and
  * returns early. Honors `config.changelog.enabled` and returns early when
- * changelog generation is disabled. Platform reads (`getTags`, `getLatestTag`,
- * `getCommitDate`, `listMergedPRs`) are retried on transient failures.
+ * changelog generation is disabled. Platform reads (`getDefaultBranch`,
+ * `getTags`, `getLatestTag`, `getCommitDate`, `listMergedPRs`) are retried on
+ * transient failures.
+ *
+ * Side effects beyond generation: when `changelog.createPR` is enabled, the
+ * function commits the generated entry to a `changelog/<version>` branch and
+ * pushes it with `--force-with-lease`; on a re-run with no staged changes it
+ * skips the commit/push and, if a release-prep PR already exists for the
+ * branch, reuses that PR instead of creating a new one.
  *
  * @param config - Full agent configuration.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @returns A promise that resolves once changelog generation (and optionally the
- * release-prep PR) completes. When the PR number cannot be resolved or the
- * platform is GitLab, the function reports failure/skip via `core` and returns
- * early instead of rejecting.
+ * release-prep PR) completes. When the platform is GitLab, the function reports
+ * failure via `core` and returns early instead of rejecting.
  */
 export async function runChangelog(config: AgentConfig, gh: PlatformAdapter): Promise<void> {
   if (config.changelog?.enabled === false) {
     core.info(
       'Skipping changelog mode — changelog generation is disabled (changelog.enabled: false)',
     );
-    return;
-  }
-
-  const prNumber = await resolvePrNumber();
-  if (prNumber === null) {
-    core.setFailed('Could not determine PR number for changelog');
     return;
   }
 
@@ -62,7 +64,9 @@ export async function runChangelog(config: AgentConfig, gh: PlatformAdapter): Pr
 
   if (changelogConfig.outputFormat === 'json') {
     core.setOutput('changelog_json', result.json);
-    core.info(result.json);
+    core.info(
+      `Generated ${result.entryCount} changelog entry(ies) as JSON (baseline ${result.since}, tag ${result.tag ?? 'none'})`,
+    );
   } else {
     core.setOutput('changelog_markdown', result.markdown);
     core.info(result.markdown);
@@ -102,7 +106,9 @@ export async function runChangelog(config: AgentConfig, gh: PlatformAdapter): Pr
       core.info(`Created branch ${branchName} from ${defaultBranch}`);
     }
 
-    const changelogPath = changelogConfig.filePath;
+    // Confine `changelog.filePath` to the workspace checkout so a repo-controlled
+    // config value cannot escape the working directory on read/write.
+    const changelogPath = resolveSafeChangelogPath(process.cwd(), changelogConfig.filePath);
     let existingContent: string | null = null;
     try {
       existingContent = readFileSync(changelogPath, 'utf-8');
@@ -115,7 +121,24 @@ export async function runChangelog(config: AgentConfig, gh: PlatformAdapter): Pr
       'utf-8',
     );
 
-    await exec.exec('git', ['add', '-A']);
+    // Scope the staged path to the changelog file so runner output is never
+    // swept into the release-prep PR, and skip commit/push when a re-run
+    // produced no staged changes (byte-identical content against the same
+    // baseline) instead of failing an empty `git commit`.
+    await exec.exec('git', ['add', changelogPath]);
+    const stagedExitCode = await exec.exec('git', ['diff', '--cached', '--quiet'], {
+      ignoreReturnCode: true,
+    });
+    if (stagedExitCode === 0) {
+      core.info(`No staged changes for the changelog file — nothing to commit for ${version}`);
+      const existing = await gh.findOpenPRByHeadBranch(branchName);
+      if (existing) {
+        core.info(`Reusing existing changelog PR #${existing.number}: ${existing.url}`);
+        core.setOutput('changelog_pr_url', existing.url);
+        core.setOutput('changelog_pr_number', String(existing.number));
+      }
+      return;
+    }
     await exec.exec('git', ['commit', '-m', `chore(release): update changelog for ${version}`]);
     validateRefName(branchName);
     await exec.exec('git', ['push', 'origin', branchName, '--force-with-lease']);
@@ -146,6 +169,17 @@ export async function runChangelog(config: AgentConfig, gh: PlatformAdapter): Pr
       return;
     }
 
+    // A re-run pushes the same (unchanged) branch and createPR fails because a
+    // release-prep PR already exists for `changelog/<version>`. Reuse that PR
+    // instead of failing the whole action.
+    const existing = await gh.findOpenPRByHeadBranch(branchName);
+    if (existing) {
+      core.info(`Reusing existing changelog PR #${existing.number}: ${existing.url}`);
+      core.setOutput('changelog_pr_url', existing.url);
+      core.setOutput('changelog_pr_number', String(existing.number));
+      return;
+    }
+
     core.setFailed(
       `Failed to create changelog PR from branch \`${branchName}\`. A PR may already exist from this branch or the API rejected the request.`,
     );
@@ -154,19 +188,4 @@ export async function runChangelog(config: AgentConfig, gh: PlatformAdapter): Pr
       sanitize(`Changelog PR creation failed: ${err instanceof Error ? err.message : err}`),
     );
   }
-}
-
-/**
- * Prepend the generated changelog entry to an existing changelog file, creating
- * a `# Changelog` file from scratch when none exists.
- * @param newEntry - The generated markdown release-notes entry.
- * @param existing - Existing changelog file content, or null.
- * @returns The full new changelog file content.
- */
-function buildChangelogFileContent(newEntry: string, existing: string | null): string {
-  const entry = newEntry.trim();
-  if (!existing || existing.trim() === '') {
-    return `# Changelog\n\n${entry}\n`;
-  }
-  return `${entry}\n\n---\n\n${existing.trim()}\n`;
 }
