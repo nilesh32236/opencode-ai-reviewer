@@ -1,6 +1,6 @@
 import { execFileSync } from 'child_process';
 import type { ExecFileSyncOptions } from 'child_process';
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { readFileSync, writeFileSync } from 'fs';
 import type {
   AgentConfig,
   ChangelogConfig,
@@ -192,7 +192,12 @@ async function createChangelogPR(
     }
 
     const changelogPath = resolveSafeChangelogPath(tempDir, changelogConfig.filePath);
-    const existingContent = existsSync(changelogPath) ? readFileSync(changelogPath, 'utf-8') : null;
+    let existingContent: string | null = null;
+    try {
+      existingContent = readFileSync(changelogPath, 'utf-8');
+    } catch {
+      existingContent = null;
+    }
     writeFileSync(
       changelogPath,
       buildChangelogFileContent(result.markdown, existingContent),

@@ -11,7 +11,7 @@ import { escapeMarkdownText } from '../utils/pr-body.js';
 import type { ChangelogConfig, ChangelogEntry, ChangelogResult, MergedPR } from './types.js';
 
 /** Conventional-commit title prefix, e.g. `feat(ui)!: add thing`. */
-const CONVENTIONAL_COMMIT_REGEX = /^(\w+)(?:\(([^)]*)\))?(!)?:\s*(.*)$/;
+const CONVENTIONAL_COMMIT_REGEX = /^([A-Za-z][A-Za-z0-9-]*)(?:\(([^)]+)\))?(!)?:\s+(.*)$/;
 
 /** Default baseline window (90 days) used when no tag or configured `since` exists. */
 const DEFAULT_SINCE_DAYS = 90;
@@ -238,8 +238,21 @@ const MONOREPO_CONCURRENCY = 5;
  * @returns True when the path lives under the subdirectory.
  */
 function pathMatchesFilter(path: string, filter: string): boolean {
-  const normalizedFilter = filter.replace(/\/+$/, '');
+  const normalizedFilter = trimTrailingSlashes(filter);
   return path === normalizedFilter || path.startsWith(`${normalizedFilter}/`);
+}
+
+/**
+ * Strip trailing `/` characters from a string without a regex.
+ * @param value - The value to trim.
+ * @returns The value with trailing slashes removed.
+ */
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '/') {
+    end--;
+  }
+  return value.slice(0, end);
 }
 
 /**
@@ -252,7 +265,7 @@ function pathMatchesFilter(path: string, filter: string): boolean {
  */
 function scopeMatchesFilter(scope: string, filter: string): boolean {
   const s = scope.toLowerCase();
-  const f = filter.toLowerCase().replace(/\/+$/, '');
+  const f = trimTrailingSlashes(filter.toLowerCase());
   return s === f || s.startsWith(f) || f.startsWith(s);
 }
 
