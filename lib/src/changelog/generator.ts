@@ -307,7 +307,7 @@ export async function generateChangelog(
     }
   }
 
-  const baseBranch = await gh.getDefaultBranch();
+  const baseBranch = config.baseBranch ?? (await gh.getDefaultBranch());
   const mergedPRs = await gh.listMergedPRs(since, baseBranch, signal);
 
   let categorized = categorizePRs(mergedPRs, config.categories);
