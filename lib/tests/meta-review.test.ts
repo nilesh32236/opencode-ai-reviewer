@@ -99,6 +99,51 @@ describe('MetaReviewEngine', () => {
     const lessons = await store.getRelevantLessons(['test.ts']);
     expect(lessons.some((l) => l.includes('false positive rate'))).toBe(true);
   });
+
+  it('reports -1 accuracy score when the FP rate is unknown', async () => {
+    // When getFalsePositiveRate throws (e.g. DB unavailable), the engine must
+    // surface an unknown accuracy score (-1) instead of a misleading 100%.
+    vi.spyOn(store, 'getFalsePositiveRate').mockRejectedValueOnce(new Error('db down'));
+
+    const result = await engine.runMetaReview({
+      prNumber: 9,
+      reviewSummary: 'test',
+      findingsCount: 0,
+      issuesCount: 0,
+      strengthsCount: 0,
+      hasVerdict: true,
+      fileCount: 1,
+    });
+
+    expect(result).toBeDefined();
+    expect(result.accuracyScore).toBe(-1);
+  });
+
+  it('computes accuracy from a real FP rate when feedback data exists', async () => {
+    const id = await store.recordFinding({ prNumber: 1, type: 'issue', message: 'fp1' });
+    await store.recordFeedback({
+      findingId: id,
+      signalType: 'dismissed',
+      signalValue: 'fp',
+      prNumber: 1,
+    });
+
+    const result = await engine.runMetaReview({
+      prNumber: 10,
+      reviewSummary: 'test',
+      findingsCount: 1,
+      issuesCount: 1,
+      strengthsCount: 0,
+      hasVerdict: true,
+      fileCount: 1,
+    });
+
+    // The accuracy score is derived from the computed FP rate, so it must be a
+    // real value in [0, 100] and never the unknown sentinel -1.
+    expect(result.accuracyScore).not.toBe(-1);
+    expect(result.accuracyScore).toBeGreaterThanOrEqual(0);
+    expect(result.accuracyScore).toBeLessThanOrEqual(100);
+  });
 });
 
 describe('MetaReviewSubscriber', () => {
