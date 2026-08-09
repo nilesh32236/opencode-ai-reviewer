@@ -217,6 +217,33 @@ export class LocalAdapter implements PlatformAdapter {
   }
 
   /**
+   * Post a single inline review comment immediately (streaming). No-op in local
+   * CLI mode — streaming is only meaningful when posting to a remote PR.
+   * @returns A no-op result of null (not posted).
+   */
+  async postInlineComment(
+    _mrNumber: number,
+    _commitSha: string,
+    _comment: { path: string; line: number; body: string; side?: 'LEFT' | 'RIGHT' },
+  ): Promise<{ commentId: number; nodeId?: string } | null> {
+    return null;
+  }
+
+  /**
+   * Post or update a streaming progress summary comment. No-op in local CLI mode.
+   * @returns A promise that resolves once the (no-op) progress comment is done.
+   */
+  async postStreamingProgress(
+    _mrNumber: number,
+    _batchIndex: number,
+    _totalBatches: number,
+    _findingCount: number,
+    _lastFile?: string,
+  ): Promise<void> {
+    return;
+  }
+
+  /**
    * Create a comment on an issue.
    * @param _issueNumber - Issue number.
    * @param _body - Comment body.
