@@ -52,6 +52,21 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
   }
 
   /**
+   * Ping the database to verify it is reachable and responsive.
+   * @returns Promise resolving to a health result with an `ok` flag and the
+   * round-trip response time in milliseconds.
+   */
+  async ping(): Promise<{ ok: boolean; responseMs: number }> {
+    const start = performance.now();
+    try {
+      this.db.exec('SELECT 1');
+      return { ok: true, responseMs: Math.round(performance.now() - start) };
+    } catch {
+      return { ok: false, responseMs: Math.round(performance.now() - start) };
+    }
+  }
+
+  /**
    * Execute a SQL statement and return the number of affected rows.
    * @param _sql - SQL statement (unused).
    * @param _params - Query parameters (unused).

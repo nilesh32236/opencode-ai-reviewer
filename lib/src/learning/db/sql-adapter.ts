@@ -118,6 +118,21 @@ export abstract class SqlAdapter implements LearningRepository {
   abstract close(): Promise<void>;
 
   /**
+   * Ping the database to verify it is reachable and responsive.
+   * @returns Promise resolving to a health result with an `ok` flag and the
+   * round-trip response time in milliseconds.
+   */
+  async ping(): Promise<{ ok: boolean; responseMs: number }> {
+    const start = performance.now();
+    try {
+      await this.all<{ one: number }>('SELECT 1 AS one');
+      return { ok: true, responseMs: Math.round(performance.now() - start) };
+    } catch {
+      return { ok: false, responseMs: Math.round(performance.now() - start) };
+    }
+  }
+
+  /**
    * Record a single review finding.
    * @param finding - Finding data to record.
    * @returns The generated finding ID.

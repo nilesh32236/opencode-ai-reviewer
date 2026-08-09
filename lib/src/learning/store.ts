@@ -256,6 +256,22 @@ export class LearningStore {
   }
 
   /**
+   * Ping the underlying repository to verify it is reachable and responsive.
+   * Used by the app's health/readiness probes. Degrades gracefully to an
+   * `ok: false` result when the repository is unavailable.
+   *
+   * @returns A health result with an `ok` flag and round-trip time in ms.
+   */
+  async ping(): Promise<{ ok: boolean; responseMs: number }> {
+    try {
+      const repo = await this.repoPromise;
+      return await repo.ping();
+    } catch {
+      return { ok: false, responseMs: 0 };
+    }
+  }
+
+  /**
    * Query active custom rules and prompt overrides relevant to the given file paths.
    * Matches rules by file extension.
    *
