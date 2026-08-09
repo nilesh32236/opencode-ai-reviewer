@@ -138,6 +138,8 @@ function makeBenchmarkAdapter(): PlatformAdapter {
     getOpenHumanThreads: async () => '',
     updateMR: async () => {},
     getCurrentUser: async () => 'benchmark-bot',
+    postInlineComment: async () => null,
+    postStreamingProgress: async () => {},
     paginate: async () => [],
   };
 }

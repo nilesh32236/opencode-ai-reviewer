@@ -1023,6 +1023,85 @@ describe('ReviewEngine', () => {
         fs.rmSync(repoRoot, { recursive: true, force: true });
       }
     });
+
+    it('invokes onBatchComplete for completed batches with per-batch results', async () => {
+      const learningStore = {
+        getRelevantLessons: vi.fn().mockResolvedValue([]),
+        getFalsePositiveRules: vi.fn().mockResolvedValue([]),
+        close: vi.fn(),
+      };
+      const eng = new ReviewEngine(
+        makeConfig({ enableMCP: false, mcpServers: [] }),
+        mockAdapter,
+        learningStore as never,
+      );
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 100,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      const onBatchComplete = vi.fn().mockResolvedValue(undefined);
+      await eng.reviewPR(
+        pr,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        onBatchComplete,
+      );
+
+      expect(onBatchComplete).toHaveBeenCalled();
+      const calls = onBatchComplete.mock.calls as Array<[number, number, ReviewResult]>;
+      for (const [idx, total, batchResult] of calls) {
+        expect(idx).toBeGreaterThanOrEqual(0);
+        expect(total).toBeGreaterThanOrEqual(1);
+        expect(batchResult).toBeDefined();
+      }
+    });
+
+    it('does not fail the review when onBatchComplete throws', async () => {
+      const learningStore = {
+        getRelevantLessons: vi.fn().mockResolvedValue([]),
+        getFalsePositiveRules: vi.fn().mockResolvedValue([]),
+        close: vi.fn(),
+      };
+      const eng = new ReviewEngine(
+        makeConfig({ enableMCP: false, mcpServers: [] }),
+        mockAdapter,
+        learningStore as never,
+      );
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 100,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      const onBatchComplete = vi.fn().mockRejectedValue(new Error('stream broke'));
+      const result = await eng.reviewPR(
+        pr,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        onBatchComplete,
+      );
+
+      expect(result).toBeDefined();
+      expect(onBatchComplete).toHaveBeenCalled();
+    });
   });
 
   describe('runFix()', () => {
