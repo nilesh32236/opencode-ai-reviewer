@@ -204,6 +204,12 @@ export interface LearningRepository {
    * @returns Promise that resolves when execution completes.
    */
   exec(sql: string): Promise<void>;
+  /**
+   * Ping the database to verify it is reachable and responsive.
+   * @returns Promise resolving to a health result with an `ok` flag and the
+   * round-trip response time in milliseconds.
+   */
+  ping(): Promise<{ ok: boolean; responseMs: number }>;
 
   /**
    * Record a single review finding and return its ID.

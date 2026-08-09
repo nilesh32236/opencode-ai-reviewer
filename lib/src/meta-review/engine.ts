@@ -66,8 +66,13 @@ export class MetaReviewEngine {
     suggestions: string[];
   }> {
     let fpRate = 0;
+    // Distinguish "computed as 0" from "not computed at all": an unknown FP
+    // rate must surface as an unknown accuracy score (-1) rather than a
+    // misleading 100%.
+    let fpRateComputed = false;
     try {
       fpRate = await this.store.getFalsePositiveRate();
+      fpRateComputed = true;
     } catch {
       new Logger('MetaReviewEngine').warn('Failed to get false positive rate, defaulting to 0');
     }
@@ -87,7 +92,7 @@ export class MetaReviewEngine {
       );
       return {
         actionabilityScore: 70,
-        accuracyScore: Math.max(0, 100 - fpRate * 100),
+        accuracyScore: fpRateComputed ? Math.max(0, 100 - fpRate * 100) : -1,
         coverageScore: 70,
         consistencyScore: 70,
         suggestions: ['Meta-review execution failed'],
@@ -108,15 +113,24 @@ export class MetaReviewEngine {
         actionabilityScore: 70,
         coverageScore: 70,
         consistencyScore: 70,
-        accuracyScore: Math.max(0, 100 - fpRate * 100),
+        accuracyScore: fpRateComputed ? Math.max(0, 100 - fpRate * 100) : -1,
         suggestions: ['Unable to complete meta-review analysis'],
       };
     }
 
+    // Resolve a finite parsed score, preserving a legitimate 0 while falling
+    // back for missing or non-finite (NaN/Infinity) values.
+    const parsedAccuracy = Number(result.accuracyScore);
+    const accuracyScore = Number.isFinite(parsedAccuracy)
+      ? parsedAccuracy
+      : fpRateComputed
+        ? Math.max(0, 100 - fpRate * 100)
+        : -1;
+
     const quality = {
       prNumber: context.prNumber,
       actionabilityScore: Number(result.actionabilityScore) || 70,
-      accuracyScore: Number(result.accuracyScore) || Math.max(0, 100 - fpRate * 100),
+      accuracyScore,
       coverageScore: Number(result.coverageScore) || 70,
       consistencyScore: Number(result.consistencyScore) || 70,
       durationMs: metaRunResult.durationMs,

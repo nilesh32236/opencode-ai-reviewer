@@ -114,6 +114,27 @@ describe('MCPManager', () => {
     vi.clearAllMocks();
   });
 
+  it('getStatus() reports configured totals and initialization state', async () => {
+    const manager = new MCPManager([
+      makeConfig({ name: 'server-a' }),
+      makeConfig({ name: 'server-b' }),
+    ]);
+    expect(manager.getStatus()).toEqual({
+      initialized: false,
+      connectedServers: 0,
+      totalServers: 2,
+    });
+
+    mockConnect.mockResolvedValue(undefined);
+    mockListTools.mockResolvedValue({ tools: [{ name: 'search', description: 'test tool' }] });
+    await manager.connect();
+
+    const status = manager.getStatus();
+    expect(status.initialized).toBe(true);
+    expect(status.connectedServers).toBe(2);
+    expect(status.totalServers).toBe(2);
+  });
+
   describe('connect()', () => {
     it('skips connection when no servers configured', async () => {
       const manager = new MCPManager([]);

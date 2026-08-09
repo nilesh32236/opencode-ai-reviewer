@@ -278,6 +278,23 @@ export class JsonDatabase implements LearningRepository {
     this.flushSync();
   }
 
+  /**
+   * Ping the database to verify it is reachable and responsive.
+   * @returns Promise resolving to a health result with an `ok` flag and the
+   * round-trip response time in milliseconds.
+   */
+  async ping(): Promise<{ ok: boolean; responseMs: number }> {
+    const start = performance.now();
+    try {
+      // JsonDatabase is an in-memory store; verifying the data object is
+      // populated is a cheap liveness check.
+      if (!this.data) throw new Error('JsonDatabase data not initialized');
+      return { ok: true, responseMs: Math.round(performance.now() - start) };
+    } catch {
+      return { ok: false, responseMs: Math.round(performance.now() - start) };
+    }
+  }
+
   // ─── LearningRepository implementation ───────────────────
 
   /**

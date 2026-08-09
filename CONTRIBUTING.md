@@ -10,6 +10,7 @@ Thank you for considering contributing! This document covers how to set up the p
 - [Code Conventions](#code-conventions)
 - [Setup and Verification Commands](#setup-and-verification-commands)
 - [Pull Request Process](#pull-request-process)
+- [Architecture Decision Records](#architecture-decision-records)
 - [How to Add a New Audit Category](#how-to-add-a-new-audit-category)
 
 ---
@@ -145,6 +146,22 @@ Run these before submitting a PR to make sure CI passes.
 6. **Expect a review.** The project uses AI-assisted review. Address any review feedback with additional commits.
 
 > **Note:** The project uses auto-fix and self-improvement workflows. If your PR introduces lint or type errors, an auto-fix job may trigger.
+
+## Architecture Decision Records
+
+Architecture Decision Records (ADRs) capture the reasoning behind significant
+architectural choices so future contributors understand not just *what* the
+code does but *why* alternatives were rejected.
+
+- **Location:** ADRs live in [`adr/`](adr/) at the repository root.
+- **When to write one:** any change that introduces or replaces a significant
+  architectural component (a new backend, storage engine, integration
+  protocol, or pipeline structure) should include an ADR.
+- **Template:** use [`adr/ADR-TEMPLATE.md`](adr/ADR-TEMPLATE.md), which covers
+  Context, Decision, Consequences, and Compliance.
+- **Process:** add the ADR file in the same PR as the implementation, and link
+  it from the PR description so reviewers can evaluate the decision alongside
+  the code.
 
 ---
 
