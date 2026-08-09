@@ -22,3 +22,7 @@
 **Learning:** Found that `JsonDatabase.save()` called `this.flushSync()` which performed synchronous file writing blocking the main thread on every mutation. By using `setTimeout` to debounce the call by 100ms and writing asynchronously using `writeToDisk()`, we drastically reduce redundant I/O operations and prevent blocking during batch processing.
 **Action:** Always debounce repeated write operations and use async file APIs like `fs.promises.writeFile` rather than synchronous alternatives like `fs.writeFileSync`.
 **Refs:** `lib/src/learning/json-db.ts:195` (`save()`), `lib/src/learning/json-db.ts:177` (`flushSync()`), `lib/src/learning/json-db.ts:173` (`writeToDisk()`).
+## 2026-08-09 - Optimize clustering tokenization and Jaccard similarity
+**Learning:** Found that `cluster.ts` was redundantly tokenizing strings and computing exhaustive Jaccard similarities, despite an optimized, cached `tokenizeMessage` and early-terminating `jaccardSimilarityWithThreshold` existing in `minhash-optimized.ts`.
+**Action:** Replaced the local `tokenize` and `jaccardSimilarity` functions in `cluster.ts` with the optimized imports from `minhash-optimized.ts` to reduce redundant string allocation and early-exit exhaustive set comparisons.
+**Refs:** `lib/src/pattern-detector/cluster.ts:22,39` (`tokenize`, `jaccardSimilarity` replaced by `lib/src/pattern-detector/minhash-optimized.ts:66,300`).
