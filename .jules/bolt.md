@@ -16,3 +16,6 @@
 ## 2026-07-30 - Optimize JsonDatabase save() with debounced async I/O
 **Learning:** Found that `JsonDatabase.save()` called `this.flushSync()` which performed synchronous file writing blocking the main thread on every mutation. By using `setTimeout` to debounce the call by 100ms and writing asynchronously using `writeToDisk()`, we drastically reduce redundant I/O operations and prevent blocking during batch processing.
 **Action:** Always debounce repeated write operations and use async file APIs like `fs.promises.writeFile` rather than synchronous alternatives like `fs.writeFileSync`.
+## 2026-08-09 - Optimize clustering tokenization and Jaccard similarity
+**Learning:** Found that `cluster.ts` was redundantly tokenizing strings and computing exhaustive Jaccard similarities, despite an optimized, cached `tokenizeMessage` and early-terminating `jaccardSimilarityWithThreshold` existing in `minhash-optimized.ts`.
+**Action:** Replaced the local `tokenize` and `jaccardSimilarity` functions in `cluster.ts` with the optimized imports from `minhash-optimized.ts` to reduce redundant string allocation and early-exit exhaustive set comparisons.
