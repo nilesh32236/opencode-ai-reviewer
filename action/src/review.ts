@@ -135,7 +135,7 @@ export async function runReview(
               streamedFindingCount,
               batchResult.issues[batchResult.issues.length - 1]?.file,
             )
-            .catch((err) => {
+            .catch((err: unknown) => {
               new Logger('Review').warn(
                 `Failed to post streaming progress: ${err instanceof Error ? err.message : String(err)}`,
                 { operation: 'review.stream', prNumber },
