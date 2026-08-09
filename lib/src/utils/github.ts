@@ -785,6 +785,85 @@ export class GitHubHelper implements PlatformAdapter {
     return { success: true, method: 'partial', reviewId, commentIds };
   }
 
+  /**
+   * Post a single inline review comment immediately, used by streaming reviews
+   * so findings appear as each batch completes instead of after the full run.
+   * Routes through `this.api()` so retry + circuit-breaker resilience applies.
+   *
+   * @param prNumber - PR number.
+   * @param commitSha - Head commit SHA the comment anchors to.
+   * @param comment - Inline comment payload.
+   * @param comment.path - File path the comment anchors to.
+   * @param comment.line - Diff line the comment anchors to.
+   * @param comment.body - Comment body text.
+   * @param comment.side - Diff side ('LEFT' or 'RIGHT'); defaults to 'RIGHT'.
+   * @returns The created comment id/nodeId, or null when the post fails.
+   */
+  async postInlineComment(
+    prNumber: number,
+    commitSha: string,
+    comment: {
+      path: string;
+      line: number;
+      body: string;
+      side?: 'LEFT' | 'RIGHT';
+    },
+  ): Promise<{ commentId: number; nodeId?: string } | null> {
+    try {
+      const response = await this.api<{ id: number; node_id: string }>(
+        `/pulls/${prNumber}/comments`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            commit_id: commitSha,
+            path: comment.path,
+            line: comment.line,
+            side: comment.side ?? 'RIGHT',
+            body: comment.body,
+          }),
+        },
+      );
+      return { commentId: response.id, nodeId: response.node_id };
+    } catch (err) {
+      core.warning(
+        `Streaming inline comment for ${comment.path}:${comment.line} failed: ${err instanceof Error ? err.message : err}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Post or update a streaming progress summary comment on a PR. Uses a stable
+   * marker so repeated updates replace a single comment instead of spamming the
+   * timeline.
+   *
+   * @param prNumber - PR number.
+   * @param batchIndex - 1-based index of the batch that just completed.
+   * @param totalBatches - Total number of batches.
+   * @param findingCount - Number of findings posted so far.
+   * @param lastFile - Optional last file reviewed (shown in the progress line).
+   * @returns A promise that resolves once the progress comment is posted/updated.
+   */
+  async postStreamingProgress(
+    prNumber: number,
+    batchIndex: number,
+    totalBatches: number,
+    findingCount: number,
+    lastFile?: string,
+  ): Promise<void> {
+    const body = [
+      '## ⏳ Review In Progress',
+      '',
+      `- **Batches:** ${batchIndex}/${totalBatches} complete`,
+      `- **Findings so far:** ${findingCount}`,
+      ...(lastFile ? [`- **Last file:** \`${lastFile}\``] : []),
+      '',
+      '_Streaming review — findings are posted as they are discovered._',
+    ].join('\n');
+    await this.postOrUpdateComment(prNumber, '<!-- review-stream-progress -->', body);
+  }
+
   // ─── Comment Operations ─────────────────────────────────
 
   /**

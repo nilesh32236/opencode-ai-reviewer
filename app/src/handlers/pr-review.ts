@@ -170,6 +170,8 @@ export async function handlePRReview(
     }
 
     let result: ReviewResult;
+    const streamedIssueKeys = new Set<string>();
+    let streamedFindingCount = 0;
     try {
       try {
         await gh.postOrUpdateComment(
@@ -183,6 +185,8 @@ export async function handlePRReview(
         );
       }
 
+      const streamEnabled = effectiveConfig.review.streamComments === true;
+
       result = await engine.reviewPR(
         pr,
         undefined,
@@ -193,6 +197,34 @@ export async function handlePRReview(
         reviewWorkingDir,
         previousHeadSha,
         previousBotComments,
+        streamEnabled
+          ? async (batchIndex, totalBatches, batchResult) => {
+              for (const issue of batchResult.issues) {
+                if (issue.inline && issue.file && issue.line) {
+                  await gh.postInlineComment(prNumber, pr.headSha, {
+                    path: issue.file,
+                    line: issue.line,
+                    body: `**${issue.severity.toUpperCase()}**: ${issue.message}`,
+                  });
+                  streamedIssueKeys.add(`${issue.file}:${issue.line}`);
+                  streamedFindingCount++;
+                }
+              }
+              await gh
+                .postStreamingProgress(
+                  prNumber,
+                  batchIndex + 1,
+                  totalBatches,
+                  streamedFindingCount,
+                  batchResult.issues[batchResult.issues.length - 1]?.file,
+                )
+                .catch((err) => {
+                  logger.warn(
+                    `Failed to post streaming progress: ${err instanceof Error ? err.message : String(err)}`,
+                  );
+                });
+            }
+          : undefined,
       );
     } catch (err) {
       logger.error(
@@ -231,7 +263,21 @@ export async function handlePRReview(
 
     let reviewResult: Awaited<ReturnType<typeof gh.postReview>>;
     try {
-      reviewResult = await gh.postReview(prNumber, pr.headSha, result, config.review.inline);
+      // When streaming was enabled, inline findings were already posted as
+      // batches completed, so the final review posts only the summary +
+      // non-inline findings to avoid duplicate comments.
+      const streamEnabled = effectiveConfig.review.streamComments === true;
+      const finalResult =
+        streamEnabled && streamedIssueKeys.size > 0
+          ? {
+              ...result,
+              issues: result.issues.filter(
+                (i) =>
+                  !i.inline || !i.file || !i.line || !streamedIssueKeys.has(`${i.file}:${i.line}`),
+              ),
+            }
+          : result;
+      reviewResult = await gh.postReview(prNumber, pr.headSha, finalResult, config.review.inline);
     } catch (err) {
       logger.error(
         `Failed to post review for PR #${prNumber}: ${err instanceof Error ? err.message : err}`,

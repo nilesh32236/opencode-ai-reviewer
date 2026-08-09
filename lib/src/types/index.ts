@@ -671,6 +671,13 @@ export interface ReviewConfig {
    * after review (default: false). Read-only — the suggestion never modifies
    * the PR directly; it only suggests via a comment. */
   suggestTitleAndLabels?: boolean;
+  /** Whether to post review findings incrementally as each file batch completes
+   * (default: false). When true, findings appear progressively instead of only
+   * after the full review finishes. */
+  streamComments?: boolean;
+  /** Number of findings to accumulate before posting a streaming batch
+   * (default: 0 = post per-batch as soon as the batch completes). */
+  streamBatchSize?: number;
 }
 
 /** Configuration for deterministic hardcoded secret / credential scanning. */
@@ -1443,6 +1450,11 @@ export interface PromptConfig {
     /** Post a conventional-commit title and label suggestion comment after
      * review (default: false). */
     suggestTitleAndLabels?: boolean;
+    /** Post findings incrementally as batches complete (default: false). */
+    streamComments?: boolean;
+    /** Number of findings to accumulate before posting a streaming batch
+     * (default: 0 = per-batch). */
+    streamBatchSize?: number;
   };
   /** Fix prompt configuration */
   fix?: {
@@ -1695,6 +1707,8 @@ export const DEFAULT_CONFIG: AgentConfig = {
     },
     failOnSeverity: 'off',
     suggestTitleAndLabels: false,
+    streamComments: false,
+    streamBatchSize: 0,
   },
   audit: {
     promptsDir: '.audit-prompts',

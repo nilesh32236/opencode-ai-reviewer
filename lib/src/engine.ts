@@ -599,6 +599,9 @@ export class ReviewEngine {
    * @param workingDirectory - Optional working directory for cloned repo (tempDir).
    * @param previousHeadSha - Optional previous head SHA for delta diff.
    * @param previousBotComments - Optional previous bot review comments for context awareness.
+   * @param onBatchComplete - Optional callback invoked after each batch completes
+   * (or after the single batch on the small-PR fast path) so callers can stream
+   * findings progressively. Failures inside the callback never break the review.
    * @returns Consolidated ReviewResult with deduplicated findings.
    */
   async reviewPR(
@@ -616,6 +619,11 @@ export class ReviewEngine {
       body: string;
       commentId: number;
     }>,
+    onBatchComplete?: (
+      batchIndex: number,
+      totalBatches: number,
+      batchResult: ReviewResult,
+    ) => Promise<void>,
   ): Promise<ReviewResult> {
     // Reset telemetry so the reported usage reflects only this review invocation.
     this.telemetry = null;
@@ -633,6 +641,7 @@ export class ReviewEngine {
       workingDirectory,
       previousHeadSha,
       previousBotComments,
+      onBatchComplete,
     );
     const finalResult = this.attachUsage(result);
     // Fire-and-forget completion publish: heavy subscribers (e.g. meta-review)
@@ -665,6 +674,11 @@ export class ReviewEngine {
       body: string;
       commentId: number;
     }>,
+    onBatchComplete?: (
+      batchIndex: number,
+      totalBatches: number,
+      batchResult: ReviewResult,
+    ) => Promise<void>,
   ): Promise<ReviewResult> {
     let mcpDocs = '';
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
@@ -1037,7 +1051,7 @@ export class ReviewEngine {
 
         this.logTokenSavings(budgetMetrics);
 
-        return await this.verifyReviewResult(
+        const singleBatchResult = await this.verifyReviewResult(
           finalResult,
           baseContext,
           workDir,
@@ -1048,6 +1062,18 @@ export class ReviewEngine {
           files,
           scaIssues,
         );
+
+        // Single-batch fast path still emits the streaming hook (batch 0 of 1)
+        // so callers get findings for small PRs too. Failures never break review.
+        if (onBatchComplete) {
+          await onBatchComplete(0, 1, singleBatchResult).catch((err) => {
+            this.logger.warn(
+              `Streaming batch callback failed for batch 0: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          });
+        }
+
+        return singleBatchResult;
       } catch {
         this.logger.warn(`Failed to parse review output at ${outputPath}, returning empty result`);
         const r = emptyResult();
@@ -1192,6 +1218,20 @@ export class ReviewEngine {
         accumulatedCompletionTokens += item.completionTokens ?? 0;
         batchResults.push(item.result);
         if (item.failed) failedBatches++;
+      }
+      // Emit a streaming hook after each chunk so callers (action/app) can post
+      // findings progressively. Failures must never break the review pipeline.
+      if (onBatchComplete) {
+        for (let offset = 0; offset < chunkOutputs.length; offset++) {
+          const idx = batchStart + offset;
+          await onBatchComplete(idx, fileBatches.length, chunkOutputs[offset].result).catch(
+            (err) => {
+              this.logger.warn(
+                `Streaming batch callback failed for batch ${idx}: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            },
+          );
+        }
       }
     }
 
