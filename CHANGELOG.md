@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.9.1] — 2026-08-09
+
+
+### Fixed
+
+- command injection via unvalidated PR head branch name
+
+### Changed
+
+- Merge pull request #377 from nilesh32236/sentinel/command-injection-fix-6297593707538227482
+- Merge remote-tracking branch 'origin/main' into sentinel/command-injection-fix-6297593707538227482
+
+[v1.9.1]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.9.0...v1.9.1
+
 ## [v1.9.0] — 2026-08-09
 
 ### Added
