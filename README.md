@@ -12,6 +12,7 @@ AI-powered PR review, auto-fix, and codebase audit — as a GitHub Action and a 
 - **Review** PRs for bugs, security issues, and style problems.
 - **Auto-fix** issues iteratively using compiler and test errors.
 - **Audit** an entire codebase and file GitHub issues for findings.
+- **Analyze** an issue and generate a step-by-step implementation plan before fixing.
 
 Uses OpenCode models (`opencode/deepseek-v4-flash-free`) by default; also supports OpenAI, Anthropic, and Gemini.
 
