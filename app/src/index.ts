@@ -3,9 +3,11 @@ import {
   EventRouter,
   LearningStore,
   Logger,
+  MCPManager,
   registerEventSubscribers,
 } from '@opencode-pr-agent/lib';
 import type { Probot } from 'probot';
+import { createHealthRouter } from './health.js';
 import { registerSubscribers } from './subscribers/index.js';
 import { buildConfig } from './utils/config.js';
 
@@ -14,9 +16,12 @@ const logger = new Logger('App');
 /**
  * Initialize the Probot app with event subscribers for review, fix, and audit.
  * Registers all subscribers with the event bus and handles SIGTERM cleanup.
+ * Mounts health/readiness probes on the Probot Express router.
  * @param app - The Probot application instance.
+ * @param options - Probot app options carrying `getRouter` (Express router access).
+ * @param options.getRouter - Function returning an Express Router for HTTP endpoints.
  */
-export default (app: Probot): void => {
+export default (app: Probot, options?: { getRouter?: (path?: string) => unknown }): void => {
   if (!process.env.GITHUB_TOKEN && !process.env.APP_ID) {
     throw new Error('GITHUB_TOKEN or APP_ID must be set for the GitHub App to start');
   }
@@ -40,6 +45,19 @@ export default (app: Probot): void => {
   const bus = new EventBus();
   const router = new EventRouter(bus);
   const config = buildConfig();
+
+  // Health/readiness probes for container orchestrators (Kubernetes, Docker
+  // Compose). `/health` reports liveness + critical DB reachability;
+  // `/ready` additionally requires MCP initialization to have completed.
+  const mcpManager = new MCPManager(config.mcpServers);
+  const healthRouter = createHealthRouter(learningStore, () => mcpManager.getStatus());
+  const appRouter = options?.getRouter?.();
+  if (appRouter && typeof (appRouter as { use?: unknown }).use === 'function') {
+    (appRouter as { use: (p: string, r: unknown) => void }).use('/health', healthRouter);
+    logger.info('Health endpoints mounted: GET /health, GET /ready');
+  } else {
+    logger.warn('getRouter() unavailable — health endpoints not mounted');
+  }
 
   const registeredSubscribers = registerSubscribers(bus, learningStore, config);
   logger.info(`Registered ${registeredSubscribers.length} subscribers`);

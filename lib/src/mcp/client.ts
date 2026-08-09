@@ -111,6 +111,19 @@ export class MCPManager {
   constructor(private servers: MCPServerConfig[]) {}
 
   /**
+   * Report the MCP connection status for health/readiness probes.
+   * @returns Whether initialization has been attempted, how many servers are
+   * connected, and the total number of configured servers.
+   */
+  getStatus(): { initialized: boolean; connectedServers: number; totalServers: number } {
+    return {
+      initialized: this.initialized,
+      connectedServers: this.clients.size,
+      totalServers: this.servers.length,
+    };
+  }
+
+  /**
    * Initialize all configured MCP servers.
    */
   async connect(): Promise<void> {
