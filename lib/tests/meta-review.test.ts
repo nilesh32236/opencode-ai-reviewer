@@ -144,6 +144,39 @@ describe('MetaReviewEngine', () => {
     expect(result.accuracyScore).toBeGreaterThanOrEqual(0);
     expect(result.accuracyScore).toBeLessThanOrEqual(100);
   });
+
+  it('preserves a parsed accuracyScore of 0 instead of falling back', async () => {
+    const outDir = path.join(process.cwd(), '.opencode');
+    fs.mkdirSync(outDir, { recursive: true });
+    const outFile = path.join(outDir, 'meta-review-output.jsonl');
+    fs.writeFileSync(
+      outFile,
+      JSON.stringify({
+        actionabilityScore: 80,
+        accuracyScore: 0,
+        coverageScore: 90,
+        consistencyScore: 85,
+      }),
+      'utf-8',
+    );
+
+    try {
+      const result = await engine.runMetaReview({
+        prNumber: 11,
+        reviewSummary: 'test',
+        findingsCount: 1,
+        issuesCount: 1,
+        strengthsCount: 0,
+        hasVerdict: true,
+        fileCount: 1,
+      });
+      // 0 is a legitimate parsed value and must not be replaced by the
+      // FP-rate fallback (which would be 100 on an empty store).
+      expect(result.accuracyScore).toBe(0);
+    } finally {
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('MetaReviewSubscriber', () => {

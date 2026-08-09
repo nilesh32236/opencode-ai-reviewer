@@ -118,11 +118,19 @@ export class MetaReviewEngine {
       };
     }
 
+    // Resolve a finite parsed score, preserving a legitimate 0 while falling
+    // back for missing or non-finite (NaN/Infinity) values.
+    const parsedAccuracy = Number(result.accuracyScore);
+    const accuracyScore = Number.isFinite(parsedAccuracy)
+      ? parsedAccuracy
+      : fpRateComputed
+        ? Math.max(0, 100 - fpRate * 100)
+        : -1;
+
     const quality = {
       prNumber: context.prNumber,
       actionabilityScore: Number(result.actionabilityScore) || 70,
-      accuracyScore:
-        Number(result.accuracyScore) || (fpRateComputed ? Math.max(0, 100 - fpRate * 100) : -1),
+      accuracyScore,
       coverageScore: Number(result.coverageScore) || 70,
       consistencyScore: Number(result.consistencyScore) || 70,
       durationMs: metaRunResult.durationMs,
