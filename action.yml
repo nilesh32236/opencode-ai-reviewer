@@ -214,6 +214,16 @@ inputs:
     required: false
     default: 'true'
 
+  stream_comments:
+    description: 'Post review findings incrementally as each file batch completes (streaming) instead of only after the full review finishes'
+    required: false
+    default: 'false'
+
+  stream_batch_size:
+    description: 'Number of findings to accumulate before posting a streaming batch (0 = post as soon as each batch completes)'
+    required: false
+    default: '0'
+
   review_comment_summary:
     description: 'Include a summary comment on the PR'
     required: false

@@ -220,6 +220,8 @@ export const ReviewConfigSchema = z.object({
   categories: z.record(CategoryOverrideSchema).optional(),
   failOnSeverity: z.enum(['off', 'critical', 'important', 'minor']).default('off'),
   suggestTitleAndLabels: z.boolean().optional().default(false),
+  streamComments: z.boolean().optional().default(false),
+  streamBatchSize: z.number().int().min(0).optional().default(0),
 });
 
 /** Zod schema validating audit configuration. */
@@ -600,6 +602,8 @@ export const PromptConfigSchema = z.object({
       categories: z.record(CategoryOverrideSchema).optional(),
       failOnSeverity: z.enum(['off', 'critical', 'important', 'minor']).optional(),
       suggestTitleAndLabels: z.boolean().optional(),
+      streamComments: z.boolean().optional(),
+      streamBatchSize: z.number().int().min(0).optional(),
     })
     .optional(),
   fix: z

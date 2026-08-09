@@ -4,6 +4,42 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.9.0] — 2026-08-09
+
+### Added
+
+- add health/readiness probes for the Probot app (issue #179)
+- streaming review comments — post findings as batches complete (issue #190)
+
+### Fixed
+
+- benchmark adapter streaming methods; explicit catch typing; merge main
+- complete JSDoc for streaming methods in LocalAdapter
+- add streaming methods to LocalAdapter for PlatformAdapter compatibility
+- preserve parsed accuracyScore of 0 instead of FP-rate fallback
+- report -1 accuracy score when FP rate is unknown (issue #185)
+
+### Changed
+
+- Merge pull request #372 from nilesh32236/fix/issue-190-streaming
+- Merge remote-tracking branch 'origin/main' into fix/issue-190-streaming
+- Merge pull request #370 from nilesh32236/bolt-cluster-optimization-3271668728549648341
+- Merge remote-tracking branch 'origin/main' into bolt-cluster-optimization-3271668728549648341
+- Merge pull request #376 from nilesh32236/fix/issue-179-health
+- Merge pull request #371 from nilesh32236/fix/issue-185-meta-review
+- Merge pull request #375 from nilesh32236/fix/issue-180-adr
+- Merge pull request #374 from nilesh32236/fix/issue-181-bolt-md
+- Merge pull request #373 from nilesh32236/fix/issue-183-readme-analyze
+- docs: add architecture decision records for key design decisions (issue #180)
+- docs: add file:line references to bolt.md optimization claims (issue #181)
+- docs: add analyze mode to quick-start highlights (issue #183)
+
+### Performance
+
+- Use optimized tokenizeMessage and jaccardSimilarity in cluster.ts
+
+[v1.9.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.8.5...v1.9.0
+
 ## [v1.8.5] — 2026-08-08
 
 

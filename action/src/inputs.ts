@@ -188,6 +188,10 @@ export interface ActionInputs {
   timeoutMinutes: number;
   /** Whether to post review comments inline on the diff. */
   reviewInline: boolean;
+  /** Whether to stream review findings as batches complete. */
+  streamComments: boolean;
+  /** Number of findings to accumulate before posting a streaming batch (0 = per-batch). */
+  streamBatchSize: number;
   /** Severity threshold at or above which the action fails (default: 'off'). */
   failOnSeverity: FailOnSeverity;
   /** Whether the fail_on_severity input was explicitly set by the workflow. */
@@ -510,6 +514,8 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     probeAllModels: core.getInput('probe_all_models') === 'true',
     timeoutMinutes: parseTimeoutMinutes(core.getInput('timeout_minutes')),
     reviewInline: core.getInput('review_inline') !== 'false',
+    streamComments: core.getInput('stream_comments') === 'true',
+    streamBatchSize: Number.parseInt(core.getInput('stream_batch_size') || '0', 10) || 0,
     failOnSeverity,
     failOnSeverityExplicit,
     enableStateCache: core.getInput('enable_state_cache') !== 'false',

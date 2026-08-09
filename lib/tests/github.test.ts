@@ -827,6 +827,68 @@ diff --git a/deleted.ts b/deleted.ts
     });
   });
 
+  describe('postInlineComment', () => {
+    it('posts a single inline comment to the PR diff', async () => {
+      let posted: Record<string, unknown> | null = null;
+      fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+        if (url.includes('/pulls/42/comments') && options?.method === 'POST') {
+          posted = JSON.parse(String(options.body)) as Record<string, unknown>;
+          return mockResponse({ body: { id: 111, node_id: 'node1' } });
+        }
+        return mockResponse({ body: [] });
+      });
+
+      const result = await helper.postInlineComment(42, 'sha123', {
+        path: 'src/a.ts',
+        line: 5,
+        body: '**MAJOR**: bug',
+      });
+
+      expect(result).toEqual({ commentId: 111, nodeId: 'node1' });
+      expect(posted).toMatchObject({
+        commit_id: 'sha123',
+        path: 'src/a.ts',
+        line: 5,
+        side: 'RIGHT',
+        body: '**MAJOR**: bug',
+      });
+    });
+
+    it('returns null when the post fails (graceful degradation)', async () => {
+      fetchMock.mockImplementation(async () => {
+        throw new Error('network down');
+      });
+
+      const result = await helper.postInlineComment(42, 'sha123', {
+        path: 'src/a.ts',
+        line: 5,
+        body: 'x',
+      });
+
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('postStreamingProgress', () => {
+    it('posts or updates a progress comment with the batch marker', async () => {
+      let postedBody = '';
+      fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+        if (url.includes('/issues/7/comments') && options?.method === 'POST') {
+          postedBody = (JSON.parse(String(options.body)) as { body: string }).body;
+          return mockResponse({ body: { id: 1 } });
+        }
+        return mockResponse({ body: [] });
+      });
+
+      await helper.postStreamingProgress(7, 2, 4, 5, 'src/b.ts');
+
+      expect(postedBody).toContain('<!-- review-stream-progress -->');
+      expect(postedBody).toContain('2/4');
+      expect(postedBody).toContain('5');
+      expect(postedBody).toContain('src/b.ts');
+    });
+  });
+
   describe('postOrUpdateComment', () => {
     const marker = '## OpenCode Review';
 

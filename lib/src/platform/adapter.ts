@@ -181,6 +181,40 @@ export interface PlatformAdapter {
     suppressLowConfidence?: boolean,
   ): Promise<ReviewPostResult>;
   /**
+   * Post a single inline review comment immediately (streaming). Implementations
+   * on platforms that cannot anchor diff comments may post a body-only comment
+   * or no-op and return null.
+   * @param mrNumber - Merge request/PR number.
+   * @param commitSha - Head commit SHA to anchor the comment to.
+   * @param comment - Inline comment payload.
+   * @param comment.path - File path the comment anchors to.
+   * @param comment.line - Diff line the comment anchors to.
+   * @param comment.body - Comment body text.
+   * @param comment.side - Diff side ('LEFT' or 'RIGHT').
+   * @returns The created comment id/nodeId, or null when the post fails.
+   */
+  postInlineComment(
+    mrNumber: number,
+    commitSha: string,
+    comment: { path: string; line: number; body: string; side?: 'LEFT' | 'RIGHT' },
+  ): Promise<{ commentId: number; nodeId?: string } | null>;
+  /**
+   * Post or update a streaming progress summary comment on a PR.
+   * @param mrNumber - Merge request/PR number.
+   * @param batchIndex - 1-based index of the batch that just completed.
+   * @param totalBatches - Total number of batches.
+   * @param findingCount - Number of findings posted so far.
+   * @param lastFile - Optional last file reviewed.
+   * @returns A promise that resolves once the progress comment is posted/updated.
+   */
+  postStreamingProgress(
+    mrNumber: number,
+    batchIndex: number,
+    totalBatches: number,
+    findingCount: number,
+    lastFile?: string,
+  ): Promise<void>;
+  /**
    * Create a check run for a commit via the Checks API (GitHub only).
    * Used to surface a conclusion that branch protection can enforce as a
    * required status check. Other platforms implement this as a no-op.

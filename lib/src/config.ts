@@ -71,6 +71,8 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     includePreExisting: null,
     failOnSeverity: null,
     suggestTitleAndLabels: null,
+    streamComments: null,
+    streamBatchSize: null,
     tokenBudget: null,
     budget: null,
     costTracking: null,
@@ -450,6 +452,12 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     }
     if (typeof config.review.suggestTitleAndLabels === 'boolean') {
       result.review.suggestTitleAndLabels = config.review.suggestTitleAndLabels;
+    }
+    if (typeof config.review.streamComments === 'boolean') {
+      result.review.streamComments = config.review.streamComments;
+    }
+    if (typeof config.review.streamBatchSize === 'number' && config.review.streamBatchSize >= 0) {
+      result.review.streamBatchSize = config.review.streamBatchSize;
     }
     if (
       config.review.failOnSeverity === 'off' ||

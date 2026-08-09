@@ -643,6 +643,73 @@ export class GitLabAdapter implements PlatformAdapter {
     return { success: true, method: 'partial', commentIds };
   }
 
+  /**
+   * Post a single inline review comment immediately (streaming). GitLab
+   * supports inline MR discussion notes; falls back to a plain note on failure.
+   * @param mrNumber - Merge request number.
+   * @param commitSha - Head commit SHA.
+   * @param comment - Inline comment payload.
+   * @param comment.path - File path the comment anchors to.
+   * @param comment.line - Diff line the comment anchors to.
+   * @param comment.body - Comment body text.
+   * @param comment.side - Diff side ('LEFT' or 'RIGHT').
+   * @returns The created comment id, or null when the post fails.
+   */
+  async postInlineComment(
+    mrNumber: number,
+    commitSha: string,
+    comment: { path: string; line: number; body: string; side?: 'LEFT' | 'RIGHT' },
+  ): Promise<{ commentId: number; nodeId?: string } | null> {
+    try {
+      const created = await this.api<{ id: number }>(`/merge_requests/${mrNumber}/notes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          body: `**${comment.path}:${comment.line}** — ${comment.body}`,
+          position: {
+            position_type: 'text',
+            new_path: comment.path,
+            new_line: comment.line,
+          },
+        }),
+      });
+      return { commentId: created.id };
+    } catch (err) {
+      core.warning(
+        `Streaming GitLab inline comment for ${comment.path}:${comment.line} failed: ${err instanceof Error ? err.message : err}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Post or update a streaming progress summary comment on a merge request.
+   * @param mrNumber - Merge request number.
+   * @param batchIndex - 1-based index of the batch that just completed.
+   * @param totalBatches - Total number of batches.
+   * @param findingCount - Number of findings posted so far.
+   * @param lastFile - Optional last file reviewed.
+   * @returns A promise that resolves once the progress comment is posted/updated.
+   */
+  async postStreamingProgress(
+    mrNumber: number,
+    batchIndex: number,
+    totalBatches: number,
+    findingCount: number,
+    lastFile?: string,
+  ): Promise<void> {
+    const body = [
+      '## ⏳ Review In Progress',
+      '',
+      `- **Batches:** ${batchIndex}/${totalBatches} complete`,
+      `- **Findings so far:** ${findingCount}`,
+      ...(lastFile ? [`- **Last file:** \`${lastFile}\``] : []),
+      '',
+      '_Streaming review — findings are posted as they are discovered._',
+    ].join('\n');
+    await this.postOrUpdateComment(mrNumber, '<!-- review-stream-progress -->', body);
+  }
+
   // ─── Comment Operations ─────────────────────────────────
 
   /**
