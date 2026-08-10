@@ -27,6 +27,9 @@ export function validateRefName(ref: string): void {
   if (!ref) {
     throw new Error('Ref name must not be empty');
   }
+  if (ref.startsWith('-')) {
+    throw new Error('Ref name must not begin with a dash');
+  }
   if (!VALID_REF_REGEX.test(ref)) {
     throw new Error(
       `Ref name "${ref}" contains invalid characters. Only letters, digits, underscores, dots, slashes, and hyphens are allowed.`,
