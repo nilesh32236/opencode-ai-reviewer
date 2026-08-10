@@ -659,7 +659,7 @@ export class GitLabAdapter implements PlatformAdapter {
    */
   async postInlineComment(
     mrNumber: number,
-    commitSha: string,
+    _commitSha: string,
     comment: { path: string; line: number; body: string; side?: 'LEFT' | 'RIGHT' },
   ): Promise<{ commentId: number; nodeId?: string } | null> {
     try {
