@@ -23,7 +23,7 @@ authority must remain unchanged.
 
 ## [REFACTORING]
 
-- [ ] Audit `action`, `app`, and `cli` for duplicated shared logic that belongs in `lib`; refactor only concrete duplication with existing test coverage. Targeted gate: affected package tests.
+- [x] Audit `action`, `app`, and `cli` for duplicated shared logic that belongs in `lib`; refactor only concrete duplication with existing test coverage. Audit result: wrappers consistently consume shared `lib` engines, helpers, validators, retry utilities, learning stores, command parsing, and formatters; no concrete duplicate implementation justified a refactor. Verification: wrapper test suites passed in the full gate run.
 - [ ] Audit strict TypeScript and ESM import compliance across all workspace source files; fix verified violations without generated-file churn. Targeted gate: `pnpm typecheck` and `pnpm lint`.
 - [ ] Audit GitHub API pagination, retry, timeout, and structured logging call sites against workspace resilience rules. Targeted gate: affected lib/app/action tests.
 - [ ] Audit SQLite read-then-write operations for transaction boundaries and add regression coverage for confirmed races. Targeted gate: learning-store tests.
