@@ -218,7 +218,7 @@ export class ReviewEngine {
   }
 
   private shouldApplyDedup(): boolean {
-    return this.repo !== undefined && this.repo !== 'unknown-repo';
+    return Boolean(this.repo) && this.repo !== 'unknown-repo';
   }
 
   private getInFlightReview(key: string): Promise<ReviewResult> | undefined {

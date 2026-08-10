@@ -661,6 +661,14 @@ describe('ReviewEngine', () => {
         expect(mockRunOpenCode).toHaveBeenCalledTimes(2);
       });
 
+      it('does not deduplicate when the repo is an empty string', async () => {
+        const eng = makeRepoEngine('');
+        await eng.reviewPR(makePRContext({ number: 903 }));
+        await eng.reviewPR(makePRContext({ number: 903 }));
+
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(2);
+      });
+
       it('runs a new review when the headSha changes', async () => {
         const eng = makeRepoEngine();
         await eng.reviewPR(makePRContext({ number: 902, headSha: 'sha-v1' }));
