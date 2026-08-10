@@ -36,6 +36,7 @@ import type {
  */
 export class LearningStore {
   private repoPromise: Promise<LearningRepository>;
+  private cleanupPromise: Promise<number> | undefined;
 
   /**
    * @param dbPathOrUrl - Database path or connection URL.
@@ -78,6 +79,10 @@ export class LearningStore {
       return;
     }
     try {
+      const cleanupPromise = this.cleanupPromise;
+      if (cleanupPromise) {
+        await cleanupPromise;
+      }
       await repo.close();
     } catch (err) {
       const logger = new Logger('LearningStore');
@@ -927,13 +932,24 @@ export class LearningStore {
    * @returns Number of deleted rows (0 on store failure).
    */
   async cleanupConversations(olderThanMs: number): Promise<number> {
-    try {
-      const repo = await this.repoPromise;
-      return await repo.cleanupConversations(olderThanMs);
-    } catch (err) {
-      const logger = new Logger('LearningStore');
-      logger.warn('Failed to cleanup conversations', err);
-      return 0;
-    }
+    if (this.cleanupPromise) return this.cleanupPromise;
+
+    const cleanupPromise = (async () => {
+      try {
+        const repo = await this.repoPromise;
+        return await repo.cleanupConversations(olderThanMs);
+      } catch (err) {
+        const logger = new Logger('LearningStore');
+        logger.warn('Failed to cleanup conversations', err);
+        return 0;
+      }
+    })();
+    this.cleanupPromise = cleanupPromise;
+    void cleanupPromise.then(() => {
+      if (this.cleanupPromise === cleanupPromise) {
+        this.cleanupPromise = undefined;
+      }
+    });
+    return cleanupPromise;
   }
 }
