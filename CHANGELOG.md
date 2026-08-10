@@ -4,6 +4,42 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.9.2] — 2026-08-10
+
+
+### Fixed
+
+- wait for conversation cleanup before close
+- paginate pull request files
+- reject option-like git refs
+- consolidate JSON database exit listeners
+- serialize concurrent state cache saves
+- preserve GitLab retry-after headers
+
+### Changed
+
+- chore: rebuild action bundle for shutdown lifecycle
+- docs: align GitLab adapter JSDoc
+- chore: verify SQLite transaction boundaries
+- chore: rebuild action bundle for PR pagination
+- chore: rebuild action bundle for ref validation
+- chore: clean strict source diagnostics
+- chore: verify package logic parity
+- chore: audit workflow diagnostics
+- ci: validate orchestrator branch refs
+- ci: avoid duplicate self-heal dispatches
+- ci: cache pnpm in autonomous workflows
+- chore: inventory workflow invariants
+- chore: rebuild action bundle for JSON database lifecycle
+- chore: rebuild action state cache bundle
+- chore: rebuild action bundle
+- chore: verify circuit breaker state transitions
+- test: fix setup secret environment isolation
+- docs: plan setup secret fixture fix
+- docs: add conservative autonomous audit plan
+
+[v1.9.2]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.9.1...v1.9.2
+
 ## [v1.9.1] — 2026-08-09
 
 
