@@ -151,6 +151,29 @@ describe('GitHubHelper', () => {
       expect(pr.changedFiles[0].path).toBe('src/app.ts');
     });
 
+    it('loads changed files across multiple API pages', async () => {
+      const firstPage = Array.from({ length: 100 }, (_, index) => ({
+        filename: `src/page-one-${index}.ts`,
+        status: 'modified',
+        additions: 1,
+        deletions: 0,
+      }));
+      const secondPage = [
+        { filename: 'src/page-two.ts', status: 'added', additions: 2, deletions: 0 },
+      ];
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes('/files')) {
+          return mockResponse({ body: url.includes('page=2') ? secondPage : firstPage });
+        }
+        return mockResponse({ body: prData });
+      });
+
+      const pr = await helper.getPR(42);
+
+      expect(pr.changedFiles).toHaveLength(101);
+      expect(pr.changedFiles[100].path).toBe('src/page-two.ts');
+    });
+
     it('handles PR body without linked issue keyword', async () => {
       const noLinkPR = { ...prData, body: 'No references here' };
       fetchMock.mockImplementation(async (url: string) => {

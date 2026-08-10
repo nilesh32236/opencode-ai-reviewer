@@ -265,7 +265,11 @@ export class GitHubHelper implements PlatformAdapter {
         user: { login: string };
         labels: Array<{ name: string }>;
       }>(`/pulls/${number}`),
-      this.api<Array<ChangedFile & { filename?: string }>>(`/pulls/${number}/files`),
+      this.paginate<ChangedFile & { filename?: string }>(`/pulls/${number}/files`, {
+        perPage: 100,
+        maxPages: 10,
+        throwOnError: true,
+      }),
     ]);
 
     if (prResult.status === 'rejected') {
