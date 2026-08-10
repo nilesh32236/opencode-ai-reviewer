@@ -3,6 +3,8 @@ import { buildInlineComments } from '../src/jsonl-parser.js';
 import type { ReviewResult } from '../src/types/index.js';
 import { GitLabAdapter } from '../src/utils/gitlab-adapter.js';
 
+const { retryErrors } = vi.hoisted(() => ({ retryErrors: [] as unknown[] }));
+
 vi.mock('@actions/core', () => {
   const warning = vi.fn();
   const info = vi.fn();
@@ -11,7 +13,14 @@ vi.mock('@actions/core', () => {
 });
 
 vi.mock('../src/utils/retry.js', () => ({
-  withRetry: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withRetry: vi.fn(async (fn: () => Promise<unknown>) => {
+    try {
+      return await fn();
+    } catch (error) {
+      retryErrors.push(error);
+      throw error;
+    }
+  }),
   withRetryAndTimeout: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
@@ -77,6 +86,7 @@ describe('GitLabAdapter', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    retryErrors.length = 0;
     fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     adapter = new GitLabAdapter(TOKEN, REPO);
@@ -1615,6 +1625,18 @@ diff --git a/src/a.ts b/src/a.ts
       await adapter.isMR(1);
 
       expect(warning).toHaveBeenCalledWith(expect.stringContaining('rate limited'));
+    });
+
+    it('passes response headers to retry handling on HTTP errors', async () => {
+      const headers = new Headers({ 'Retry-After': '10' });
+      const response = mockErrorResponse(429, 'Too Many Requests');
+      Object.assign(response, { headers });
+      fetchMock.mockResolvedValue(response);
+
+      await adapter.isMR(1);
+
+      expect(retryErrors).toHaveLength(1);
+      expect((retryErrors[0] as { headers?: Headers }).headers).toBe(headers);
     });
   });
 });

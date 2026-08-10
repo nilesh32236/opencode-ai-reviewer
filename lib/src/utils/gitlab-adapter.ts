@@ -91,6 +91,8 @@ export class GitLabAdapter implements PlatformAdapter {
               const truncatedBody = body.length > 500 ? body.slice(0, 500) + '...' : body;
               const err = new Error(`GitLab API ${res.status} on ${path}: ${truncatedBody}`);
               (err as Error & { status: number }).status = res.status;
+              // Preserve response headers so withRetry can honor Retry-After hints.
+              (err as Error & { headers?: Headers }).headers = res.headers;
               throw err;
             }
 
