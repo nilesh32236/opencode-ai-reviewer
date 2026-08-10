@@ -15,7 +15,7 @@ authority must remain unchanged.
 
 ## [WORKFLOWS]
 
-- [ ] Inventory all workflow triggers, permissions, concurrency groups, checkout/setup steps, and reusable-workflow contracts. Record verified redundancies and invariants without changing merge authority. Targeted gate: YAML parse/static validation.
+- [x] Inventory all workflow triggers, permissions, concurrency groups, checkout/setup steps, and reusable-workflow contracts. Verified all 11 workflow files parse successfully with `js-yaml`. Invariants recorded: review/fix/audit label routing, approval labels, auto-merge jobs, scheduled self-heal paths, and reusable workflow inputs/outputs remain unchanged. Safe redundancy candidates are repeated Node/pnpm setup and duplicated secret validation, but no consolidation was applied without a concrete behavior-preserving boundary. Verification: YAML parse plus full build, typecheck, test (1,812 passed, 1 skipped), and lint (exit 0; one pre-existing warning).
 - [ ] Consolidate safe Node/pnpm setup and dependency caching across eligible workflows without changing runtime versions, lockfile policy, or trigger behavior. Targeted gate: YAML validation plus workflow contract review.
 - [ ] Prevent duplicate scheduled/self-heal/autofix work only where concurrency groups or event filters demonstrably overlap; preserve existing review, fix, labels, and merge routes. Targeted gate: YAML validation and trigger-matrix review.
 - [ ] Harden workflow shell inputs and failure propagation where untrusted refs, issue content, model input, or command output can alter execution. Preserve intended autonomous behavior and avoid broad shell rewrites. Targeted gate: YAML static review and relevant tests.
