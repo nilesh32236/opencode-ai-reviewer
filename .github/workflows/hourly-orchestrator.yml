@@ -105,6 +105,13 @@ jobs:
             echo "----------------------------------------"
             echo "Processing PR #${PR_NUMBER}: ${TITLE} (branch: ${HEAD_REF}, mergeable: ${MERGEABLE})"
 
+            if [[ "$HEAD_REF" == -* ]] || ! git check-ref-format --branch "$HEAD_REF" >/dev/null 2>&1; then
+              echo "::warning::Skipping PR #${PR_NUMBER}: invalid or option-like head ref."
+              gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "autofix:skipped" || true
+              PROCESSED_ANY=true
+              continue
+            fi
+
             git fetch origin "${HEAD_REF}:${HEAD_REF}" 2>/dev/null || git checkout -b "${HEAD_REF}" "origin/${HEAD_REF}"
             git checkout "${HEAD_REF}"
 
