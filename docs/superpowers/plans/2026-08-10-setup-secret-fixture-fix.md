@@ -28,7 +28,7 @@
 - Consumes: `SetupEngine.checkSecrets()` and the existing `process.env` test setup.
 - Produces: A test fixture where unset provider variables are absent rather than the string `"undefined"`.
 
-- [ ] **Step 1: Confirm the fixture failure and coercion behavior**
+- [x] **Step 1: Confirm the fixture failure and coercion behavior**
 
 Run:
 
@@ -39,7 +39,7 @@ node -e "process.env.TEST_UNSET = undefined; console.log(process.env.TEST_UNSET,
 
 Expected: the setup suite fails only at the non-OpenCode provider-key test, and Node reports the assigned value as a string rather than an absent variable.
 
-- [ ] **Step 2: Replace undefined assignments with deletion**
+- [x] **Step 2: Replace undefined assignments with deletion**
 
 In `beforeEach`, replace the provider and credential assignments that use `process.env.NAME = undefined` with explicit deletion:
 
@@ -55,6 +55,19 @@ for (const key of [
   'INPUT_GEMINI_API_KEY',
   'OPENCODE_API_KEY',
   'INPUT_OPENCODE_API_KEY',
+  'AZURE_OPENAI_API_KEY',
+  'AZURE_OPENAI_ENDPOINT',
+  'AZURE_RESOURCE_NAME',
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'AWS_PROFILE',
+  'AWS_BEARER_TOKEN_BEDROCK',
+  'AWS_WEB_IDENTITY_TOKEN_FILE',
+  'AWS_ROLE_ARN',
+  'OLLAMA_MODEL',
+  'LLM_BASE_URL',
+  'LLM_API_KEY',
   'APP_ID',
   'PRIVATE_KEY',
   'PRIVATE_KEY_PATH',
@@ -66,17 +79,17 @@ for (const key of [
 
 Retain the existing `afterEach` snapshot restoration so tests cannot leak environment changes.
 
-- [ ] **Step 3: Run the targeted setup suite**
+- [x] **Step 3: Run the targeted setup suite**
 
 Run:
 
 ```bash
-pnpm --filter @opencode-pr-agent/lib test -- tests/setup.test.ts
+pnpm --filter @opencode-pr-agent/lib exec vitest run tests/setup.test.ts
 ```
 
 Expected: all setup tests pass, including the non-OpenCode model test with a missing provider key.
 
-- [ ] **Step 4: Run the workspace verification gates**
+- [x] **Step 4: Run the workspace verification gates**
 
 Run in order:
 
@@ -89,11 +102,11 @@ pnpm lint
 
 Expected: every command exits with status 0 and no new warnings indicate a fixture or lifecycle regression.
 
-- [ ] **Step 5: Mark the manifest item complete**
+- [x] **Step 5: Mark the manifest item complete**
 
 Update only the first unchecked item in `AUTONOMOUS_PLAN.md` from `- [ ]` to `- [x]` and record that the failure was a test environment coercion bug fixed by deleting unset variables.
 
-- [ ] **Step 6: Commit the isolated change**
+- [x] **Step 6: Commit the isolated change**
 
 Run:
 

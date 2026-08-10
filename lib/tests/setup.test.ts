@@ -84,16 +84,37 @@ describe('SetupEngine', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-setup-test-'));
-    process.env.GITHUB_TOKEN = undefined;
-    process.env.INPUT_GITHUB_TOKEN = undefined;
-    process.env.OPENAI_API_KEY = undefined;
-    process.env.ANTHROPIC_API_KEY = undefined;
-    process.env.GEMINI_API_KEY = undefined;
-    process.env.OPENCODE_API_KEY = undefined;
-    process.env.APP_ID = undefined;
-    process.env.PRIVATE_KEY = undefined;
-    process.env.PRIVATE_KEY_PATH = undefined;
-    process.env.APP_PRIVATE_KEY = undefined;
+    for (const key of [
+      'GITHUB_TOKEN',
+      'INPUT_GITHUB_TOKEN',
+      'OPENAI_API_KEY',
+      'INPUT_OPENAI_API_KEY',
+      'ANTHROPIC_API_KEY',
+      'INPUT_ANTHROPIC_API_KEY',
+      'GEMINI_API_KEY',
+      'INPUT_GEMINI_API_KEY',
+      'OPENCODE_API_KEY',
+      'INPUT_OPENCODE_API_KEY',
+      'AZURE_OPENAI_API_KEY',
+      'AZURE_OPENAI_ENDPOINT',
+      'AZURE_RESOURCE_NAME',
+      'AWS_ACCESS_KEY_ID',
+      'AWS_SECRET_ACCESS_KEY',
+      'AWS_SESSION_TOKEN',
+      'AWS_PROFILE',
+      'AWS_BEARER_TOKEN_BEDROCK',
+      'AWS_WEB_IDENTITY_TOKEN_FILE',
+      'AWS_ROLE_ARN',
+      'OLLAMA_MODEL',
+      'LLM_BASE_URL',
+      'LLM_API_KEY',
+      'APP_ID',
+      'PRIVATE_KEY',
+      'PRIVATE_KEY_PATH',
+      'APP_PRIVATE_KEY',
+    ]) {
+      delete process.env[key];
+    }
     mockResolveOpenCodePath.mockResolvedValue('/usr/local/bin/opencode');
     mockExecFileSync.mockReturnValue('opencode v1.2.3');
     mockRunOpenCode.mockResolvedValue({

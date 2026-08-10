@@ -7,7 +7,7 @@ authority must remain unchanged.
 
 ## [CRITICAL_BUGS]
 
-- [ ] Fix `SetupEngine.checkSecrets()` so a configured non-OpenCode model without its required provider key fails setup, and retain coverage for OpenCode/local provider exceptions. Evidence: `pnpm test` fails `lib/tests/setup.test.ts` at the provider-key assertion. Targeted gate: `pnpm --filter @opencode-pr-agent/lib test -- tests/setup.test.ts`.
+- [x] Fix setup-secret test isolation so a configured non-OpenCode model without its required provider key fails setup, while retaining coverage for OpenCode/local provider exceptions. Root cause: assigning `undefined` to `process.env` coerced values to the string `"undefined"`; the fixture now deletes all recognized provider variables. Verification: targeted setup suite passed (40/40), `pnpm build`, `pnpm typecheck`, `pnpm test` (1,810 passed, 1 skipped), and `pnpm lint` (exit 0; one pre-existing warning).
 - [ ] Audit `CircuitBreaker` state transitions under concurrent half-open calls and verify failure/success counters cannot allow premature closure or probe leaks. Evidence required from implementation review and regression tests before changing code. Targeted gate: circuit-breaker tests.
 - [ ] Audit external API retry and rate-limit handling for unbounded delays, duplicate retries, or missing circuit protection. Evidence required from call-site inventory and tests before changing code. Targeted gate: affected lib tests.
 - [ ] Audit `StateCacheManager` restore/save behavior for cache-key collisions, stale mtime decisions, and concurrent save races. Evidence required from implementation review and regression tests before changing code. Targeted gate: `action` state-cache tests.
