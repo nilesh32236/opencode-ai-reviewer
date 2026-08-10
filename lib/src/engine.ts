@@ -170,6 +170,12 @@ export class ReviewEngine {
   private telemetry: TokenUsage | null = null;
   private static readonly LESSONS_CACHE_TTL = 60_000;
   private static readonly MCP_DOCS_CACHE_TTL = 60_000;
+  private static readonly REVIEW_DEDUP_TTL_MS = 5 * 60 * 1000;
+  private static readonly IN_FLIGHT_REVIEWS = new Map<string, Promise<ReviewResult>>();
+  private static readonly REVIEWED_CACHE = new Map<
+    string,
+    { headSha: string; baseSha: string; timestamp: number }
+  >();
 
   /**
    * @param config - Agent configuration (models, batch size, MCP servers, etc.).
@@ -198,6 +204,48 @@ export class ReviewEngine {
     // undefined while the logger falls back to its own generated UUID, so
     // published events would not share the engine logs' trace ID.
     this.correlationId = this.logger.getCorrelationId();
+  }
+
+  /** Clear static dedup caches (for test isolation). */
+  static resetReviewDedup(): void {
+    ReviewEngine.IN_FLIGHT_REVIEWS.clear();
+    ReviewEngine.REVIEWED_CACHE.clear();
+  }
+
+  private getReviewDedupKey(pr: PRContext): string {
+    const baseSha = pr.baseSha ?? 'unknown-base';
+    return `${this.repo ?? 'unknown-repo'}#${pr.number}#${baseSha}#${pr.headSha}`;
+  }
+
+  private shouldApplyDedup(): boolean {
+    return this.repo !== undefined && this.repo !== 'unknown-repo';
+  }
+
+  private getInFlightReview(key: string): Promise<ReviewResult> | undefined {
+    return ReviewEngine.IN_FLIGHT_REVIEWS.get(key);
+  }
+
+  private setInFlightReview(key: string, promise: Promise<ReviewResult>): void {
+    ReviewEngine.IN_FLIGHT_REVIEWS.set(key, promise);
+    promise.finally(() => ReviewEngine.IN_FLIGHT_REVIEWS.delete(key));
+  }
+
+  private isAlreadyReviewed(key: string, pr: PRContext): boolean {
+    const entry = ReviewEngine.REVIEWED_CACHE.get(key);
+    if (!entry) return false;
+    if (Date.now() - entry.timestamp > ReviewEngine.REVIEW_DEDUP_TTL_MS) {
+      ReviewEngine.REVIEWED_CACHE.delete(key);
+      return false;
+    }
+    return entry.headSha === pr.headSha && entry.baseSha === (pr.baseSha ?? 'unknown-base');
+  }
+
+  private markReviewed(key: string, pr: PRContext): void {
+    ReviewEngine.REVIEWED_CACHE.set(key, {
+      headSha: pr.headSha,
+      baseSha: pr.baseSha ?? 'unknown-base',
+      timestamp: Date.now(),
+    });
   }
 
   /**
@@ -627,11 +675,28 @@ export class ReviewEngine {
   ): Promise<ReviewResult> {
     // Reset telemetry so the reported usage reflects only this review invocation.
     this.telemetry = null;
+
+    // Deduplication: prevent concurrent/duplicate reviews for same PR+SHA.
+    // Only active for real repo contexts so test runs with mock repo data
+    // (e.g. "unknown-repo") never short-circuit the pipeline.
+    const dedupKey = this.shouldApplyDedup() ? this.getReviewDedupKey(pr) : null;
+    if (dedupKey) {
+      const inFlight = this.getInFlightReview(dedupKey);
+      if (inFlight) {
+        this.logger.info(`Review already in-flight for ${dedupKey}, waiting...`);
+        return inFlight;
+      }
+      if (this.isAlreadyReviewed(dedupKey, pr)) {
+        this.logger.info(`PR already reviewed for ${dedupKey}, skipping`);
+        return emptyResult();
+      }
+    }
+
     this.publishEvent(PIPELINE_EVENT_TYPES.REVIEW_STARTED, {
       prNumber: pr.number,
       modelUsed: this.config.reviewModel,
     });
-    const result = await this.runReviewPipeline(
+    const promise = this.runReviewPipeline(
       pr,
       _iteration,
       promptFile,
@@ -643,6 +708,10 @@ export class ReviewEngine {
       previousBotComments,
       onBatchComplete,
     );
+    if (dedupKey) this.setInFlightReview(dedupKey, promise);
+
+    const result = await promise;
+    if (dedupKey) this.markReviewed(dedupKey, pr);
     const finalResult = this.attachUsage(result);
     // Fire-and-forget completion publish: heavy subscribers (e.g. meta-review)
     // must not delay the handler's review post or observe unpersisted findings.

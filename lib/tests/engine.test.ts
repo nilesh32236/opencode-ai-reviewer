@@ -616,6 +616,60 @@ describe('ReviewEngine', () => {
       });
     });
 
+    describe('duplicate review deduplication', () => {
+      const dedupPr = makePRContext({ number: 900, headSha: 'dedup-hash' });
+
+      function makeRepoEngine(repo = 'owner/repo'): ReviewEngine {
+        return new ReviewEngine(makeConfig(), mockAdapter, undefined, undefined, repo);
+      }
+
+      beforeEach(() => {
+        mockMCPConnect.mockResolvedValue(undefined);
+        mockRunOpenCode.mockResolvedValue({
+          success: true,
+          output: '',
+          durationMs: 1000,
+          tokensUsed: 500,
+        });
+        mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+        ReviewEngine.resetReviewDedup();
+      });
+
+      it('shares a single in-flight pipeline across concurrent duplicate reviews', async () => {
+        const eng = makeRepoEngine();
+        const [first, second] = await Promise.all([eng.reviewPR(dedupPr), eng.reviewPR(dedupPr)]);
+
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(1);
+        expect(first).toEqual(second);
+      });
+
+      it('skips a repeated review for the same PR and headSha within the TTL window', async () => {
+        const eng = makeRepoEngine();
+        await eng.reviewPR(dedupPr);
+        const second = await eng.reviewPR(dedupPr);
+
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(1);
+        expect(second.summary).toBe('');
+        expect(second.issues).toHaveLength(0);
+      });
+
+      it('does not deduplicate when no real repo context is set', async () => {
+        const eng = new ReviewEngine(makeConfig(), mockAdapter);
+        await eng.reviewPR(makePRContext({ number: 901 }));
+        await eng.reviewPR(makePRContext({ number: 901 }));
+
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(2);
+      });
+
+      it('runs a new review when the headSha changes', async () => {
+        const eng = makeRepoEngine();
+        await eng.reviewPR(makePRContext({ number: 902, headSha: 'sha-v1' }));
+        await eng.reviewPR(makePRContext({ number: 902, headSha: 'sha-v2' }));
+
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(2);
+      });
+    });
+
     describe('multi-agent review path', () => {
       const agentPr = makePRContext();
       const agentOutput = [
