@@ -76,6 +76,14 @@ const SUPPRESSING_DISMISS_SIGNALS = new Set<string>([
 
 export { SUPPRESSING_DISMISS_SIGNALS };
 
+const activeJsonDatabases = new Set<JsonDatabase>();
+
+process.on('beforeExit', () => {
+  for (const database of activeJsonDatabases) {
+    database.flushSync();
+  }
+});
+
 /**
  * In-memory JSON-backed database implementing the LearningRepository interface.
  * Persists data to disk as JSON. Directly operates on in-memory arrays for all
@@ -139,9 +147,7 @@ export class JsonDatabase implements LearningRepository {
       this.data.meta_review_counter.push({ id: 1, count: 0 });
       this.save();
     }
-    process.on('beforeExit', () => {
-      this.flushSync();
-    });
+    activeJsonDatabases.add(this);
   }
 
   private load() {
@@ -275,6 +281,7 @@ export class JsonDatabase implements LearningRepository {
 
   /** Close the database and flush pending writes. */
   async close(): Promise<void> {
+    activeJsonDatabases.delete(this);
     this.flushSync();
   }
 
