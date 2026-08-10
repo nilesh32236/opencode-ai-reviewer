@@ -649,7 +649,7 @@ export class GitLabAdapter implements PlatformAdapter {
    * Post a single inline review comment immediately (streaming). GitLab
    * supports inline MR discussion notes; falls back to a plain note on failure.
    * @param mrNumber - Merge request number.
-   * @param commitSha - Head commit SHA.
+   * @param _commitSha - Head commit SHA.
    * @param comment - Inline comment payload.
    * @param comment.path - File path the comment anchors to.
    * @param comment.line - Diff line the comment anchors to.
