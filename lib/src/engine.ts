@@ -682,11 +682,11 @@ export class ReviewEngine {
    * @param onBatchComplete - Optional callback invoked after each batch completes
    * (or after the single batch on the small-PR fast path) so callers can stream
    * findings progressively. Failures inside the callback never break the review.
-   * @param options - Optional behavior flags:
-   *   - `forceReview`: bypass the "already reviewed" dedup cache so an explicit
-   *     re-review (manual `/review`, autofix iteration) always runs the pipeline
-   *     against the current head SHA. Concurrent in-flight runs still share one
-   *     pipeline to avoid duplicate LLM work.
+   * @param options - Optional behavior flags.
+   * @param options.forceReview - Bypass the "already reviewed" dedup cache so an
+   *   explicit re-review (manual `/review`, autofix iteration) always runs the
+   *   pipeline against the current head SHA. Concurrent in-flight runs still
+   *   share one pipeline to avoid duplicate LLM work.
    * @returns Consolidated ReviewResult with deduplicated findings.
    */
   async reviewPR(
@@ -1629,6 +1629,11 @@ export class ReviewEngine {
    * @param scaIssues - Optional SCA findings merged into the verified result.
    * @param testGapResult - Optional structured test-gap analysis threaded to each
    * specialized agent (batch-filtered) so the findings reach the multi-agent path.
+   * @param onBatchComplete - Optional callback invoked as each agent settles so
+   * callers can stream findings progressively. Failures never break the review.
+   * @param repoRulesContext - Optional repository rules context
+   * (AGENTS.md/CLAUDE.md/GEMINI.md/RULES.md) threaded into each agent prompt.
+   * @param commitMessages - Optional compact git log commit list for the PR.
    * @returns The consolidated, verified ReviewResult.
    */
   private async runMultiAgentReview(
@@ -1828,6 +1833,9 @@ export class ReviewEngine {
    * @param totalDiffLines - Optional total diff line count for the budget banner.
    * @param testGapResult - Optional structured test-gap analysis; each batch
    * receives a filtered subset scoped to the batch's source paths.
+   * @param repoRulesContext - Optional repository rules context
+   * (AGENTS.md/CLAUDE.md/GEMINI.md/RULES.md) threaded into each agent prompt.
+   * @param commitMessages - Optional compact git log commit list for the PR.
    * @returns The structured AgentResult for this category.
    */
   private async runAgentCategory(
@@ -2126,6 +2134,9 @@ export class ReviewEngine {
    * @param falsePositiveRules - Optional false-positive suppression rules.
    * @param previousFindings - Optional findings from previous fix iterations.
    * @param previousBotComments - Optional previous bot review comments.
+   * @param repoRulesContext - Optional repository rules context
+   * (AGENTS.md/CLAUDE.md/GEMINI.md/RULES.md) threaded into the agent prompt.
+   * @param commitMessages - Optional compact git log commit list for the PR.
    * @returns The enriched context string.
    */
   private buildAgentBatchContext(

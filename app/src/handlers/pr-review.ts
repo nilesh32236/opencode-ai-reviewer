@@ -60,8 +60,9 @@ function truncateToUtf8Bytes(text: string, maxBytes: number = MAX_CHECK_TEXT_BYT
  * @param previousHeadSha - Optional previous HEAD sha
  * @param eventBus - Optional event bus for publishing pipeline events.
  * @param correlationId - Optional correlation ID for tracing this request.
- * @param options - Optional behavior flags:
- *   - `forceReview`: bypass the dedup cache so an explicit `/review` always runs.
+ * @param options - Optional behavior flags.
+ * @param options.forceReview - Bypass the dedup cache so an explicit `/review`
+ *   always runs against the current head.
  * @returns The review result or null if review was skipped or failed.
  */
 export async function handlePRReview(
