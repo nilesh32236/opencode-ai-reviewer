@@ -8,6 +8,7 @@ const {
   mockPostOrUpdateComment,
   mockPostReview,
   mockPostInlineComment,
+  mockPostStreamingProgress,
   mockCreateCheckRun,
   mockReviewPR,
   mockCleanup,
@@ -18,6 +19,7 @@ const {
   const _mockPostOrUpdateComment = vi.fn();
   const _mockPostReview = vi.fn();
   const _mockPostInlineComment = vi.fn();
+  const _mockPostStreamingProgress = vi.fn();
   const _mockCreateCheckRun = vi.fn();
   const _mockReviewPR = vi.fn();
   const _mockCleanup = vi.fn();
@@ -28,6 +30,7 @@ const {
     mockPostOrUpdateComment: _mockPostOrUpdateComment,
     mockPostReview: _mockPostReview,
     mockPostInlineComment: _mockPostInlineComment,
+    mockPostStreamingProgress: _mockPostStreamingProgress,
     mockCreateCheckRun: _mockCreateCheckRun,
     mockReviewPR: _mockReviewPR,
     mockCleanup: _mockCleanup,
@@ -52,6 +55,7 @@ vi.mock('@opencode-pr-agent/lib', async (importOriginal) => {
       postOrUpdateComment = mockPostOrUpdateComment;
       postReview = mockPostReview;
       postInlineComment = mockPostInlineComment;
+      postStreamingProgress = mockPostStreamingProgress;
       createCheckRun = mockCreateCheckRun;
     },
     GitLabAdapter: class {
@@ -63,6 +67,7 @@ vi.mock('@opencode-pr-agent/lib', async (importOriginal) => {
       postOrUpdateComment = mockPostOrUpdateComment;
       postReview = mockPostReview;
       postInlineComment = mockPostInlineComment;
+      postStreamingProgress = mockPostStreamingProgress;
       createCheckRun = mockCreateCheckRun;
     },
     ReviewEngine: class {
@@ -116,6 +121,7 @@ describe('handlePRReview check run reporting', () => {
     mockPostOrUpdateComment.mockResolvedValue({ action: 'created', commentId: 1 });
     mockPostReview.mockResolvedValue({ success: true, method: 'full', reviewId: 1 });
     mockPostInlineComment.mockResolvedValue({ id: 101 });
+    mockPostStreamingProgress.mockResolvedValue(undefined);
     mockCreateCheckRun.mockResolvedValue({ id: 77 });
     mockReviewPR.mockResolvedValue(cleanReview());
     mockCleanup.mockResolvedValue(undefined);
