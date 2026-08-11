@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.9.3] — 2026-08-11
+
+
+### Fixed
+
+- treat empty-string repo as non-dedup context in review guard
+- deduplicate concurrent and repeated ReviewEngine review runs
+- make signal handlers idempotent and non-terminating in lib
+
+[v1.9.3]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.9.2...v1.9.3
+
 ## [v1.9.2] — 2026-08-10
 
 
