@@ -204,14 +204,45 @@ export async function resolveFixedComments(
   const lastIteration = previousFindings[previousFindings.length - 1];
   if (!lastIteration.commentIds || lastIteration.commentIds.length === 0) return;
 
-  const stillOpenKeys = new Set(currentIssues.map((issue) => `${issue.file}:${issue.line}`));
+  // Line coordinates shift as fixes add/remove lines above the finding, so a
+  // `file:line` key alone falsely resolves a moved-but-unfixed issue (and keeps
+  // a stale thread for a fixed issue that happened to land on the same line).
+  // Correlate by normalized message within the same file as the primary signal,
+  // falling back to exact file:line only as a tie-breaker.
+  const currentByAnchor = new Set(currentIssues.map((i) => `${i.file}:${i.line}`));
+  const currentMessagesInFile = new Map<string, Set<string>>();
+  for (const issue of currentIssues) {
+    if (!issue.file) continue;
+    const fileKey = normalizeMessage(issue.file);
+    if (!currentMessagesInFile.has(fileKey)) currentMessagesInFile.set(fileKey, new Set());
+    currentMessagesInFile.get(fileKey)!.add(normalizeMessage(issue.message));
+  }
+
+  // Map the previous iteration's comment anchors to their finding messages so a
+  // comment can be checked against the current findings by content, not only by
+  // coordinates.
+  const prevMessageByAnchor = new Map<string, string>();
+  for (const issue of lastIteration.issues) {
+    if (!issue.file) continue;
+    prevMessageByAnchor.set(`${issue.file}:${issue.line}`, normalizeMessage(issue.message));
+  }
 
   let threads: Awaited<ReturnType<typeof gh.getReviewThreads>> | undefined;
 
   for (const prevComment of lastIteration.commentIds) {
-    const key = `${prevComment.file}:${prevComment.line}`;
+    const anchor = `${prevComment.file}:${prevComment.line}`;
+    const prevMessage = prevMessageByAnchor.get(anchor);
 
-    if (!stillOpenKeys.has(key)) {
+    // The previous finding is still present when its message still appears in
+    // the same file (line may have shifted as fixes add/remove lines above it).
+    // Only when the previous message is unknown (could not be matched back to an
+    // issue) do we fall back to exact file:line recurrence.
+    const stillOpen =
+      prevMessage !== undefined
+        ? currentMessagesInFile.get(normalizeMessage(prevComment.file))?.has(prevMessage)
+        : currentByAnchor.has(anchor);
+
+    if (!stillOpen) {
       try {
         if (!threads) {
           threads = await gh.getReviewThreads(prNumber);
@@ -240,4 +271,12 @@ export async function resolveFixedComments(
       }
     }
   }
+}
+
+/** Normalize a message or file path for fuzzy content matching. */
+function normalizeMessage(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
 }
