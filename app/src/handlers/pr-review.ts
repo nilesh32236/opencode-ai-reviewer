@@ -204,13 +204,26 @@ export async function handlePRReview(
           ? async (batchIndex, totalBatches, batchResult) => {
               for (const issue of batchResult.issues) {
                 if (issue.inline && issue.file && issue.line) {
-                  await gh.postInlineComment(prNumber, pr.headSha, {
+                  const key = `${issue.file}:${issue.line}`;
+                  // Never post the same file:line twice across batches, and
+                  // only mark a finding as streamed when the inline post
+                  // actually succeeded — otherwise the final-result filter
+                  // below would drop it entirely (neither inline nor body).
+                  if (streamedIssueKeys.has(key)) continue;
+                  const posted = await gh.postInlineComment(prNumber, pr.headSha, {
                     path: issue.file,
                     line: issue.line,
                     body: `**${issue.severity.toUpperCase()}**: ${issue.message}`,
                   });
-                  streamedIssueKeys.add(`${issue.file}:${issue.line}`);
-                  streamedFindingCount++;
+                  if (posted) {
+                    streamedIssueKeys.add(key);
+                    streamedFindingCount++;
+                  } else {
+                    logger.warn(
+                      `Inline comment post failed for ${key} — will retry in final review body`,
+                      { prNumber, repo },
+                    );
+                  }
                 }
               }
               await gh
