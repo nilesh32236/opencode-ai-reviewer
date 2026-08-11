@@ -4,6 +4,133 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.10.0] — 2026-08-11
+
+### Added
+
+- merge-readiness score + repository rules & commit context in review prompts
+- add opencode_api_key input + OPENCODE_API_KEY env forwarding
+
+### Fixed
+
+- address verification findings (finding identity, single-flight coalescing, per-agent streaming)
+- address verification findings (all-batches-failed caching, reasoning, repo-keyed upserts)
+- preserve markdown fences inside JSONL string values
+- stream findings in multi-agent mode; finalize stream-progress marker
+- resolveFixedComments keys on message, not line coordinates
+- make postOrUpdateComment race-free under concurrent webhooks
+- never green-light an unreviewed PR (all batches failed -> ready:false)
+- feedback/dismissal correctness (bot self-dispute, file-only scope, comment_id, thread dismissal)
+- serialize concurrent review events per PR in the app subscriber
+- failed streamed inline posts no longer drop the finding
+- make dedup skip a first-class no-op instead of no meaningful content
+- don't cache failed reviews; avoid unhandled rejection on dedup cleanup
+- dedup cache no longer kills autofix loop or manual /review
+
+### Changed
+
+- Merge pull request #378 from nilesh32236/improve/review-comments-and-quality
+- test: add postStreamingProgress mock to pr-review handler tests
+
+[v1.10.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.9.3...v1.10.0
+
+## [v1.9.3] — 2026-08-11
+
+
+### Fixed
+
+- treat empty-string repo as non-dedup context in review guard
+- deduplicate concurrent and repeated ReviewEngine review runs
+- make signal handlers idempotent and non-terminating in lib
+
+[v1.9.3]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.9.2...v1.9.3
+
+## [v1.9.2] — 2026-08-10
+
+
+### Fixed
+
+- wait for conversation cleanup before close
+- paginate pull request files
+- reject option-like git refs
+- consolidate JSON database exit listeners
+- serialize concurrent state cache saves
+- preserve GitLab retry-after headers
+
+### Changed
+
+- chore: rebuild action bundle for shutdown lifecycle
+- docs: align GitLab adapter JSDoc
+- chore: verify SQLite transaction boundaries
+- chore: rebuild action bundle for PR pagination
+- chore: rebuild action bundle for ref validation
+- chore: clean strict source diagnostics
+- chore: verify package logic parity
+- chore: audit workflow diagnostics
+- ci: validate orchestrator branch refs
+- ci: avoid duplicate self-heal dispatches
+- ci: cache pnpm in autonomous workflows
+- chore: inventory workflow invariants
+- chore: rebuild action bundle for JSON database lifecycle
+- chore: rebuild action state cache bundle
+- chore: rebuild action bundle
+- chore: verify circuit breaker state transitions
+- test: fix setup secret environment isolation
+- docs: plan setup secret fixture fix
+- docs: add conservative autonomous audit plan
+
+[v1.9.2]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.9.1...v1.9.2
+
+## [v1.9.1] — 2026-08-09
+
+
+### Fixed
+
+- command injection via unvalidated PR head branch name
+
+### Changed
+
+- Merge pull request #377 from nilesh32236/sentinel/command-injection-fix-6297593707538227482
+- Merge remote-tracking branch 'origin/main' into sentinel/command-injection-fix-6297593707538227482
+
+[v1.9.1]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.9.0...v1.9.1
+
+## [v1.9.0] — 2026-08-09
+
+### Added
+
+- add health/readiness probes for the Probot app (issue #179)
+- streaming review comments — post findings as batches complete (issue #190)
+
+### Fixed
+
+- benchmark adapter streaming methods; explicit catch typing; merge main
+- complete JSDoc for streaming methods in LocalAdapter
+- add streaming methods to LocalAdapter for PlatformAdapter compatibility
+- preserve parsed accuracyScore of 0 instead of FP-rate fallback
+- report -1 accuracy score when FP rate is unknown (issue #185)
+
+### Changed
+
+- Merge pull request #372 from nilesh32236/fix/issue-190-streaming
+- Merge remote-tracking branch 'origin/main' into fix/issue-190-streaming
+- Merge pull request #370 from nilesh32236/bolt-cluster-optimization-3271668728549648341
+- Merge remote-tracking branch 'origin/main' into bolt-cluster-optimization-3271668728549648341
+- Merge pull request #376 from nilesh32236/fix/issue-179-health
+- Merge pull request #371 from nilesh32236/fix/issue-185-meta-review
+- Merge pull request #375 from nilesh32236/fix/issue-180-adr
+- Merge pull request #374 from nilesh32236/fix/issue-181-bolt-md
+- Merge pull request #373 from nilesh32236/fix/issue-183-readme-analyze
+- docs: add architecture decision records for key design decisions (issue #180)
+- docs: add file:line references to bolt.md optimization claims (issue #181)
+- docs: add analyze mode to quick-start highlights (issue #183)
+
+### Performance
+
+- Use optimized tokenizeMessage and jaccardSimilarity in cluster.ts
+
+[v1.9.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.8.5...v1.9.0
+
 ## [v1.8.5] — 2026-08-08
 
 

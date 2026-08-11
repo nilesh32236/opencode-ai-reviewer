@@ -115,7 +115,10 @@ export function resetOpenCodeState(): void {
   cachedCIConfig = null;
   runModeOverride = undefined;
   llmProviderConfig = undefined;
+  signalHandlersRegistered = false;
 }
+
+let signalHandlersRegistered = false;
 
 function cleanupAskPassDirs(): void {
   for (const dir of askPassDirs) {
@@ -127,15 +130,28 @@ function cleanupAskPassDirs(): void {
   }
 }
 
-process.on('exit', cleanupAskPassDirs);
-process.on('SIGINT', () => {
-  cleanupAskPassDirs();
-  process.exit(2);
-});
-process.on('SIGTERM', () => {
-  cleanupAskPassDirs();
-  process.exit(15);
-});
+function registerSignalHandlers(): void {
+  if (signalHandlersRegistered) return;
+  signalHandlersRegistered = true;
+
+  process.on('exit', cleanupAskPassDirs);
+
+  const sigintHandler = () => {
+    cleanupAskPassDirs();
+    process.off('SIGINT', sigintHandler);
+    process.kill(process.pid, 'SIGINT');
+  };
+  process.on('SIGINT', sigintHandler);
+
+  const sigtermHandler = () => {
+    cleanupAskPassDirs();
+    process.off('SIGTERM', sigtermHandler);
+    process.kill(process.pid, 'SIGTERM');
+  };
+  process.on('SIGTERM', sigtermHandler);
+}
+
+registerSignalHandlers();
 
 /**
  * Parsed OpenCode CLI version, with the raw text matched from `--version` output.
@@ -780,6 +796,7 @@ const LLM_REF_ALLOWLIST = new Set([
   'LLM_BASE_URL',
   'LLM_MODEL',
   'OPENAI_API_KEY',
+  'OPENCODE_API_KEY',
   'OLLAMA_API_KEY',
   'OLLAMA_BASE_URL',
   'OLLAMA_MODEL',

@@ -96,6 +96,28 @@ describe('StateCacheManager mtime comparison (issue #188 regression)', () => {
     expect(mockSaveCache).toHaveBeenCalledWith([path.dirname(dbPath)], expect.any(String));
   });
 
+  it('shares an in-flight save when concurrent callers save the same state', async () => {
+    const dbPath = makeDb();
+    const manager = makeManager(dbPath);
+    await manager.restore();
+    setMtime(dbPath, FIXED_MTIME_MS + 2_000);
+
+    let resolveSave!: () => void;
+    mockSaveCache.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSave = resolve;
+        }),
+    );
+
+    const firstSave = manager.save();
+    const secondSave = manager.save();
+
+    expect(mockSaveCache).toHaveBeenCalledTimes(1);
+    resolveSave();
+    await Promise.all([firstSave, secondSave]);
+  });
+
   it('builds a distinct cache key per branch (GitLab branch isolation)', () => {
     const keyFor = (branch: string) => buildCacheKey('state', 'group/project', branch);
     expect(keyFor('main')).not.toBe(keyFor('feature/foo'));

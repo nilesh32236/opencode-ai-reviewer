@@ -257,6 +257,108 @@ describe('handleDismissCommand', () => {
     expect(ghMock.replyToReviewComment).not.toHaveBeenCalled();
   });
 
+  it('correlates a thread-level dismissal by the comment body when no file/line exists', async () => {
+    ghMock.getReviewCommentThread.mockResolvedValue({
+      comments: [
+        {
+          id: 10,
+          author: 'bot',
+          body: 'IMPORTANT: Potential SQL injection in the query builder',
+          isBot: true,
+        },
+      ],
+      rootComment: {
+        id: 10,
+        author: 'bot',
+        body: 'IMPORTANT: Potential SQL injection in the query builder',
+        isBot: true,
+      },
+      filePath: '',
+      lineNumber: undefined,
+    });
+    (store.getFindings as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        id: 'f1',
+        pr_number: 1,
+        type: 'issue',
+        file: '',
+        line: undefined,
+        message: 'Potential SQL injection in the query builder',
+      },
+    ]);
+
+    await handleDismissCommand(
+      1,
+      'owner/repo',
+      'token',
+      makeConfig(),
+      store,
+      10,
+      makeParsed(),
+      'COLLABORATOR',
+    );
+
+    expect(store.recordFeedbackBatch).toHaveBeenCalledWith([
+      expect.objectContaining({ findingId: 'f1', signalType: 'dismissed' }),
+    ]);
+  });
+
+  it('does not record ambiguous feedback when two findings share a first sentence', async () => {
+    ghMock.getReviewCommentThread.mockResolvedValue({
+      comments: [
+        {
+          id: 10,
+          author: 'bot',
+          body: 'IMPORTANT: Unescaped user input flows into the SQL query.',
+          isBot: true,
+        },
+      ],
+      rootComment: {
+        id: 10,
+        author: 'bot',
+        body: 'IMPORTANT: Unescaped user input flows into the SQL query.',
+        isBot: true,
+      },
+      filePath: '',
+      lineNumber: undefined,
+    });
+    (store.getFindings as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        id: 'f1',
+        pr_number: 1,
+        type: 'issue',
+        file: '',
+        line: undefined,
+        message: 'Unescaped user input flows into the SQL query. It affects the login path.',
+      },
+      {
+        id: 'f2',
+        pr_number: 1,
+        type: 'issue',
+        file: '',
+        line: undefined,
+        message: 'Unescaped user input flows into the SQL query. It affects the signup path.',
+      },
+    ]);
+
+    await handleDismissCommand(
+      1,
+      'owner/repo',
+      'token',
+      makeConfig(),
+      store,
+      10,
+      makeParsed(),
+      'COLLABORATOR',
+    );
+
+    // Neither finding is uniquely identified by the comment body, so no
+    // ambiguous dismissal feedback is recorded and nothing is minimized/acked.
+    expect(store.recordFeedbackBatch).not.toHaveBeenCalled();
+    expect(ghMock.minimizeReviewComment).not.toHaveBeenCalled();
+    expect(ghMock.replyToReviewComment).not.toHaveBeenCalled();
+  });
+
   it('minimizes the bot comment and posts an acknowledgment', async () => {
     ghMock.getReviewCommentThread.mockResolvedValue({
       comments: [{ id: 10, author: 'bot', body: 'root', isBot: true }],

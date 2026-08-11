@@ -143,6 +143,8 @@ describe('runReview (action wrapper)', () => {
       undefined,
       undefined,
       [],
+      undefined,
+      { forceReview: false },
     );
     expect(mockPostReview).toHaveBeenCalledWith(42, 'abc123', reviewResult, config.review.inline);
     expect(mockSetOutput).toHaveBeenCalledWith('review_summary', reviewResult.summary);

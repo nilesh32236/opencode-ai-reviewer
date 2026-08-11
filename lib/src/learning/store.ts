@@ -36,6 +36,7 @@ import type {
  */
 export class LearningStore {
   private repoPromise: Promise<LearningRepository>;
+  private cleanupPromise: Promise<number> | undefined;
 
   /**
    * @param dbPathOrUrl - Database path or connection URL.
@@ -78,6 +79,10 @@ export class LearningStore {
       return;
     }
     try {
+      const cleanupPromise = this.cleanupPromise;
+      if (cleanupPromise) {
+        await cleanupPromise;
+      }
       await repo.close();
     } catch (err) {
       const logger = new Logger('LearningStore');
@@ -253,6 +258,22 @@ export class LearningStore {
   async getFalsePositiveRate(): Promise<number> {
     const repo = await this.repoPromise;
     return repo.getFalsePositiveRate();
+  }
+
+  /**
+   * Ping the underlying repository to verify it is reachable and responsive.
+   * Used by the app's health/readiness probes. Degrades gracefully to an
+   * `ok: false` result when the repository is unavailable.
+   *
+   * @returns A health result with an `ok` flag and round-trip time in ms.
+   */
+  async ping(): Promise<{ ok: boolean; responseMs: number }> {
+    try {
+      const repo = await this.repoPromise;
+      return await repo.ping();
+    } catch {
+      return { ok: false, responseMs: 0 };
+    }
   }
 
   /**
@@ -911,13 +932,24 @@ export class LearningStore {
    * @returns Number of deleted rows (0 on store failure).
    */
   async cleanupConversations(olderThanMs: number): Promise<number> {
-    try {
-      const repo = await this.repoPromise;
-      return await repo.cleanupConversations(olderThanMs);
-    } catch (err) {
-      const logger = new Logger('LearningStore');
-      logger.warn('Failed to cleanup conversations', err);
-      return 0;
-    }
+    if (this.cleanupPromise) return this.cleanupPromise;
+
+    const cleanupPromise = (async () => {
+      try {
+        const repo = await this.repoPromise;
+        return await repo.cleanupConversations(olderThanMs);
+      } catch (err) {
+        const logger = new Logger('LearningStore');
+        logger.warn('Failed to cleanup conversations', err);
+        return 0;
+      }
+    })();
+    this.cleanupPromise = cleanupPromise;
+    void cleanupPromise.then(() => {
+      if (this.cleanupPromise === cleanupPromise) {
+        this.cleanupPromise = undefined;
+      }
+    });
+    return cleanupPromise;
   }
 }

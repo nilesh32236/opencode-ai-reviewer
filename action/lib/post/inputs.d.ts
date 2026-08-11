@@ -18,6 +18,8 @@ export interface ActionInputs {
     anthropicKey?: string;
     /** Optional Google Gemini API key. */
     geminiKey?: string;
+    /** Optional OpenCode gateway API key (opencode-go/* models). */
+    opencodeKey?: string;
     /** Optional default LLM provider used to prefix bare model names. */
     llmDefaultProvider?: string;
     /** Optional custom base URL for an OpenAI-compatible API. */
@@ -122,6 +124,10 @@ export interface ActionInputs {
     timeoutMinutes: number;
     /** Whether to post review comments inline on the diff. */
     reviewInline: boolean;
+    /** Whether to stream review findings as batches complete. */
+    streamComments: boolean;
+    /** Number of findings to accumulate before posting a streaming batch (0 = per-batch). */
+    streamBatchSize: number;
     /** Severity threshold at or above which the action fails (default: 'off'). */
     failOnSeverity: FailOnSeverity;
     /** Whether the fail_on_severity input was explicitly set by the workflow. */

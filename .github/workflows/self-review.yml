@@ -448,6 +448,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
+          MERGE_SHA="${{ github.event.pull_request.merge_commit_sha }}"
+          EXISTING_HEAL=$(gh run list \
+            --repo "${{ github.repository }}" \
+            --workflow self-heal.yml \
+            --commit "$MERGE_SHA" \
+            --json status \
+            --jq '[.[] | select(.status == "queued" or .status == "in_progress" or .status == "waiting")] | length' \
+            2>/dev/null || echo "0")
+          if [ "$EXISTING_HEAL" -gt 0 ]; then
+            echo "Self-heal is already queued or running for ${MERGE_SHA}; skipping duplicate dispatch."
+            exit 0
+          fi
+
           echo "Triggering self-heal workflow..."
           gh workflow run self-heal.yml \
             --repo "${{ github.repository }}" \

@@ -149,13 +149,21 @@ class JsonlParserState {
     // Trim before parse so BOM/whitespace-prefixed lines behave identically
     const trimmed = line.trim();
     if (!trimmed) return;
-    if (trimmed.startsWith('```')) return;
+    // A line that is ONLY a markdown fence (optionally with a language tag) is
+    // decorative wrapping — skip it. A fence on the SAME line as JSONL content
+    // is stripped so the line still parses, without corrupting literal "```"
+    // inside JSON string values (the blanket stripMarkdownFences did).
+    if (/^```[a-zA-Z0-9_-]*\s*$/.test(trimmed)) return;
+    const content = trimmed.startsWith('```')
+      ? trimmed.replace(/^```[a-zA-Z0-9_-]*\s*/, '').trim()
+      : trimmed;
+    if (!content) return;
 
     // Store in circular buffer
-    this.rawLines.add(trimmed);
+    this.rawLines.add(content);
 
     try {
-      const parsed = JSON.parse(trimmed);
+      const parsed = JSON.parse(content);
 
       // Handle executive_summary separately since it's not a standard FindingType
       if (parsed.type === 'executive_summary') {
@@ -387,10 +395,9 @@ async function parseJsonlFileStreaming(filePath: string, maxLines: number): Prom
  * @returns A ReviewResult with parsed findings.
  */
 export function parseJsonlString(content: string, maxLines?: number): ReviewResult {
-  const sanitized = stripMarkdownFences(content);
   const state = new JsonlParserState(maxLines);
 
-  const lines = sanitized.split('\n');
+  const lines = content.split('\n');
   const limit = maxLines ?? lines.length;
 
   for (let i = 0; i < Math.min(lines.length, limit); i++) {

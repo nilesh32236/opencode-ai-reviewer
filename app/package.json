@@ -1,6 +1,6 @@
 {
   "name": "@opencode-pr-agent/app",
-  "version": "1.8.5",
+  "version": "1.10.0",
   "description": "GitHub App for AI-powered PR review, auto-fix, and audit using OpenCode",
   "main": "dist/index.js",
   "scripts": {
@@ -12,11 +12,15 @@
   },
   "dependencies": {
     "@opencode-pr-agent/lib": "workspace:*",
+    "express": "5.2.1",
     "probot": "^13.4.3",
     "smee-client": "^2.0.3"
   },
   "devDependencies": {
+    "@types/express": "5",
     "@types/node": "^22.0.0",
+    "@types/supertest": "6",
+    "supertest": "7",
     "typescript": "^5.8.0",
     "vitest": "^4.1.10"
   }

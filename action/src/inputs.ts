@@ -84,6 +84,8 @@ export interface ActionInputs {
   anthropicKey?: string;
   /** Optional Google Gemini API key. */
   geminiKey?: string;
+  /** Optional OpenCode gateway API key (opencode-go/* models). */
+  opencodeKey?: string;
   /** Optional default LLM provider used to prefix bare model names. */
   llmDefaultProvider?: string;
   /** Optional custom base URL for an OpenAI-compatible API. */
@@ -188,6 +190,10 @@ export interface ActionInputs {
   timeoutMinutes: number;
   /** Whether to post review comments inline on the diff. */
   reviewInline: boolean;
+  /** Whether to stream review findings as batches complete. */
+  streamComments: boolean;
+  /** Number of findings to accumulate before posting a streaming batch (0 = per-batch). */
+  streamBatchSize: number;
   /** Severity threshold at or above which the action fails (default: 'off'). */
   failOnSeverity: FailOnSeverity;
   /** Whether the fail_on_severity input was explicitly set by the workflow. */
@@ -458,6 +464,7 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     openAiKey: core.getInput('openai_api_key') || undefined,
     anthropicKey: core.getInput('anthropic_api_key') || undefined,
     geminiKey: core.getInput('gemini_api_key') || undefined,
+    opencodeKey: core.getInput('opencode_api_key') || undefined,
     llmDefaultProvider: llmDefaultProviderInput,
     llmBaseUrl: core.getInput('llm_base_url') || undefined,
     llmApiKey: core.getInput('llm_api_key') || undefined,
@@ -510,6 +517,8 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     probeAllModels: core.getInput('probe_all_models') === 'true',
     timeoutMinutes: parseTimeoutMinutes(core.getInput('timeout_minutes')),
     reviewInline: core.getInput('review_inline') !== 'false',
+    streamComments: core.getInput('stream_comments') === 'true',
+    streamBatchSize: Number.parseInt(core.getInput('stream_batch_size') || '0', 10) || 0,
     failOnSeverity,
     failOnSeverityExplicit,
     enableStateCache: core.getInput('enable_state_cache') !== 'false',

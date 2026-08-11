@@ -127,6 +127,12 @@ export interface ReviewPromptOptions {
    * untested exports, missing error-case tests). Injected as a dedicated
    * `## Test Gap Analysis` section when non-empty. */
   testGapContext?: string;
+  /** Repo-defined review rules/coding conventions extracted from AGENTS.md,
+   * CLAUDE.md, GEMINI.md, or a root rules file. Injected as a `## Repository
+   * Review Rules` section so the reviewer enforces the team's own standards. */
+  repoRulesContext?: string;
+  /** Compact `git log --oneline base..head` commit list (author intent). */
+  commitMessages?: string;
 }
 
 /**
@@ -161,6 +167,8 @@ export function buildReviewPrompt(
   const blameAware = options.blameAware;
   const languages = options.languages;
   const testGapContext = options.testGapContext;
+  const repoRulesContext = options.repoRulesContext;
+  const commitMessages = options.commitMessages;
 
   if (inputs.reviewPromptFile) {
     const customPrompt = loadPromptFile(inputs.reviewPromptFile);
@@ -180,6 +188,16 @@ export function buildReviewPrompt(
       }
       if (testGapContext) {
         sections.push('\n' + buildTestGapSection(testGapContext));
+      }
+      if (repoRulesContext) {
+        sections.push('\n## Repository Review Rules');
+        sections.push('');
+        sections.push(repoRulesContext);
+      }
+      if (commitMessages) {
+        sections.push('\n## Commits in this PR');
+        sections.push('');
+        sections.push(commitMessages);
       }
       if (inputs.reviewPromptExtra) {
         sections.push('\n## Additional Instructions');
@@ -348,6 +366,32 @@ export function buildReviewPrompt(
     sections.push(
       '**Remember:** Your value-add is catching issues that automated linters miss. Prioritize deep architectural and logic review over style or syntax issues that linters already handle.',
     );
+  }
+
+  if (repoRulesContext) {
+    sections.push('\n## Repository Review Rules');
+    sections.push('');
+    sections.push(
+      'The repository defines its own review rules and coding conventions (from AGENTS.md/CLAUDE.md/GEMINI.md or a rules file). Treat these as authoritative — enforce them, and prefer them over generic best practices where they conflict:',
+    );
+    sections.push('');
+    const rulesCtx = truncateUtf8Bytes(repoRulesContext, 32_000);
+    sections.push(rulesCtx);
+    if (rulesCtx.length < repoRulesContext.length) {
+      sections.push('');
+      sections.push('... [repository rules truncated at 32KB cap]');
+    }
+  }
+
+  if (commitMessages) {
+    sections.push('\n## Commits in this PR');
+    sections.push('');
+    sections.push(
+      "The commit messages below capture the author's intent. Use them to assess whether the changes actually implement what the commits claim, and to judge plan/code alignment:",
+    );
+    sections.push('');
+    const commitCtx = truncateUtf8Bytes(commitMessages, 8_000);
+    sections.push(commitCtx);
   }
 
   if (lessons && lessons.length > 0) {

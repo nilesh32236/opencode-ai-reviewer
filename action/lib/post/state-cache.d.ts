@@ -43,6 +43,7 @@ export declare class StateCacheManager {
     private readonly repo;
     private readonly branch;
     private readonly logger;
+    private savePromise;
     private readonly circuitBreaker;
     /**
      * Create a state cache manager.
@@ -74,4 +75,5 @@ export declare class StateCacheManager {
      * @returns A promise that resolves when the save attempt completes.
      */
     save(): Promise<void>;
+    private saveState;
 }

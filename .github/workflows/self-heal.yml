@@ -76,17 +76,22 @@ jobs:
           git config --global user.name "opencode-ai-reviewer[bot]"
           git config --global user.email "opencode-ai-reviewer[bot]@users.noreply.github.com"
 
+      - name: Setup PNPM
+        if: steps.check-existing.outputs.existing_pr == ''
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.8.0
+
       - name: Setup Node.js
         if: steps.check-existing.outputs.existing_pr == ''
         uses: actions/setup-node@v7
         with:
           node-version: 22
+          cache: 'pnpm'
 
-      - name: Install pnpm & dependencies
+      - name: Install dependencies
         if: steps.check-existing.outputs.existing_pr == ''
-        run: |
-          npm install -g pnpm
-          pnpm install
+        run: pnpm install
 
       - name: Capture CI failure logs
         if: steps.check-existing.outputs.existing_pr == ''

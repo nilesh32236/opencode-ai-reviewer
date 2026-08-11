@@ -25,6 +25,7 @@ import {
   parseAnalysisPlan,
   postBlockingQuestions,
   sanitizeErrorMessage,
+  validateRefName,
 } from '@opencode-pr-agent/lib';
 import { isBotLogin } from '../utils/bot.js';
 import { handleAudit } from './audit.js';
@@ -163,6 +164,7 @@ export async function handleCommand(
             undefined,
             eventBus,
             correlationId,
+            { forceReview: true },
           );
         }
         break;
@@ -514,6 +516,9 @@ export async function handleDocsCommand(
     // the default branch would document pre-PR revisions and miss newly-added
     // files entirely. The source PR's own branch is left untouched.
     const pr = await gh.getMR(issueNumber);
+    if (pr.headRef) {
+      validateRefName(pr.headRef);
+    }
     const baseRef = pr.headRef || defaultBranch;
 
     // Fork-backed PRs keep the head branch on the fork, not on origin. Resolve

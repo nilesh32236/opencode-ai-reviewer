@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ReviewResult } from '../src/types/index.js';
 import {
   buildReviewBody,
+  computeMergeScore,
   formatConfidenceLabel,
   formatIssueBullet,
   getSeverityBadge,
@@ -171,6 +172,86 @@ describe('review-body', () => {
 
       const body = buildReviewBody(result);
       expect(body).not.toContain('Partial review');
+    });
+    it('never reports a partial review as ready to merge, even when the verdict says so', () => {
+      const result: ReviewResult = {
+        summary: 'Partial result.',
+        verdict: { ready: true, reasoning: 'All good.', autoFixable: true, confidence: 'high' },
+        strengths: [],
+        issues: [],
+        stats: { total: 0, critical: 0, important: 0, minor: 0 },
+        rawLines: [],
+        failedLines: 0,
+        failedBatches: 2,
+      };
+
+      const body = buildReviewBody(result);
+      expect(body).toContain('Partial review');
+      // Readiness must agree with the 1/5 merge score for partial reviews.
+      expect(body).toContain('**Ready to merge?** false');
+      expect(body).toContain('1/5');
+    });
+  });
+
+  describe('computeMergeScore', () => {
+    function resultWith(stats: ReviewResult['stats'], ready = true): ReviewResult {
+      return {
+        summary: 's',
+        verdict: { ready, reasoning: 'r', autoFixable: false, confidence: 'high' },
+        strengths: [],
+        issues: [],
+        stats,
+      };
+    }
+
+    it('scores 5 for a clean review', () => {
+      expect(computeMergeScore(resultWith({ total: 0, critical: 0, important: 0, minor: 0 }))).toBe(
+        5,
+      );
+    });
+
+    it('scores 4 when only minor issues exist', () => {
+      expect(computeMergeScore(resultWith({ total: 2, critical: 0, important: 0, minor: 2 }))).toBe(
+        4,
+      );
+    });
+
+    it('scores 3 for a single important issue', () => {
+      expect(computeMergeScore(resultWith({ total: 1, critical: 0, important: 1, minor: 0 }))).toBe(
+        3,
+      );
+    });
+
+    it('scores 2 for multiple important issues', () => {
+      expect(computeMergeScore(resultWith({ total: 2, critical: 0, important: 2, minor: 0 }))).toBe(
+        2,
+      );
+    });
+
+    it('scores 1 when a critical issue exists', () => {
+      expect(computeMergeScore(resultWith({ total: 1, critical: 1, important: 0, minor: 0 }))).toBe(
+        1,
+      );
+    });
+
+    it('scores 0 when the verdict is not ready or the result is skipped', () => {
+      expect(
+        computeMergeScore(resultWith({ total: 1, critical: 1, important: 0, minor: 0 }, false)),
+      ).toBe(0);
+      expect(
+        computeMergeScore({
+          ...resultWith({ total: 0, critical: 0, important: 0, minor: 0 }),
+          skipped: true,
+        }),
+      ).toBe(0);
+    });
+
+    it('caps the score at 1 for a partial review with failures', () => {
+      const partial: ReviewResult = {
+        ...resultWith({ total: 0, critical: 0, important: 0, minor: 0 }),
+        failedBatches: 2,
+      };
+      expect(computeMergeScore(partial)).toBe(1);
     });
   });
 });

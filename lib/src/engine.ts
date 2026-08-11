@@ -1,4 +1,4 @@
-import { promises as fs, existsSync, mkdirSync, readFileSync } from 'fs';
+import { promises as fs, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from 'fs';
 import type { Dirent } from 'fs';
 import * as cp from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -170,6 +170,23 @@ export class ReviewEngine {
   private telemetry: TokenUsage | null = null;
   private static readonly LESSONS_CACHE_TTL = 60_000;
   private static readonly MCP_DOCS_CACHE_TTL = 60_000;
+  private static readonly REVIEW_DEDUP_TTL_MS = 5 * 60 * 1000;
+  private static readonly IN_FLIGHT_REVIEWS = new Map<string, Promise<ReviewResult>>();
+  private static readonly REVIEWED_CACHE = new Map<
+    string,
+    { headSha: string; baseSha: string; timestamp: number }
+  >();
+  // Reasoning strings set on `emptyResult()` by runReviewPipeline when a
+  // review pass FAILED. A result carrying one of these is NOT a genuine review
+  // and must not be cached as "already reviewed" — otherwise a transient
+  // failure would silently suppress the next trigger for the TTL. A genuine
+  // clean review ("No issues found") is NOT in this set and IS cached.
+  private static readonly REVIEW_FAILURE_SENTINELS = new Set<string>([
+    'Review execution failed',
+    'Failed to parse review output',
+    'All review agents failed',
+    'All review batches failed',
+  ]);
 
   /**
    * @param config - Agent configuration (models, batch size, MCP servers, etc.).
@@ -198,6 +215,69 @@ export class ReviewEngine {
     // undefined while the logger falls back to its own generated UUID, so
     // published events would not share the engine logs' trace ID.
     this.correlationId = this.logger.getCorrelationId();
+  }
+
+  /** Clear static dedup caches (for test isolation). */
+  static resetReviewDedup(): void {
+    ReviewEngine.IN_FLIGHT_REVIEWS.clear();
+    ReviewEngine.REVIEWED_CACHE.clear();
+  }
+
+  private getReviewDedupKey(pr: PRContext): string {
+    const baseSha = pr.baseSha ?? 'unknown-base';
+    return `${this.repo ?? 'unknown-repo'}#${pr.number}#${baseSha}#${pr.headSha}`;
+  }
+
+  private shouldApplyDedup(): boolean {
+    return Boolean(this.repo) && this.repo !== 'unknown-repo';
+  }
+
+  private getInFlightReview(key: string): Promise<ReviewResult> | undefined {
+    return ReviewEngine.IN_FLIGHT_REVIEWS.get(key);
+  }
+
+  private setInFlightReview(key: string, promise: Promise<ReviewResult>): void {
+    ReviewEngine.IN_FLIGHT_REVIEWS.set(key, promise);
+    // Delete the in-flight entry when the pipeline settles, regardless of
+    // outcome. Use an explicit .then(onOk, onErr) pair instead of .finally()
+    // so a rejecting pipeline never produces an unhandled rejection on the
+    // derived (unobserved) promise.
+    promise.then(
+      () => {
+        ReviewEngine.IN_FLIGHT_REVIEWS.delete(key);
+      },
+      () => {
+        ReviewEngine.IN_FLIGHT_REVIEWS.delete(key);
+      },
+    );
+  }
+
+  private isAlreadyReviewed(key: string, pr: PRContext): boolean {
+    const entry = ReviewEngine.REVIEWED_CACHE.get(key);
+    if (!entry) return false;
+    if (Date.now() - entry.timestamp > ReviewEngine.REVIEW_DEDUP_TTL_MS) {
+      ReviewEngine.REVIEWED_CACHE.delete(key);
+      return false;
+    }
+    return entry.headSha === pr.headSha && entry.baseSha === (pr.baseSha ?? 'unknown-base');
+  }
+
+  private markReviewed(key: string, pr: PRContext): void {
+    ReviewEngine.REVIEWED_CACHE.set(key, {
+      headSha: pr.headSha,
+      baseSha: pr.baseSha ?? 'unknown-base',
+      timestamp: Date.now(),
+    });
+  }
+
+  private isMeaningfulReview(result: ReviewResult): boolean {
+    // Check failure sentinels FIRST: a failed pipeline (execution/parse/all
+    // batches failed) must never be cached as "already reviewed", even when its
+    // fallback summary is truthy (e.g. "All N review batches failed — PR was
+    // not reviewed"). The content short-circuit below would otherwise treat
+    // that sentinel message as a meaningful review.
+    if (ReviewEngine.REVIEW_FAILURE_SENTINELS.has(result.verdict.reasoning ?? '')) return false;
+    return true;
   }
 
   /**
@@ -599,6 +679,14 @@ export class ReviewEngine {
    * @param workingDirectory - Optional working directory for cloned repo (tempDir).
    * @param previousHeadSha - Optional previous head SHA for delta diff.
    * @param previousBotComments - Optional previous bot review comments for context awareness.
+   * @param onBatchComplete - Optional callback invoked after each batch completes
+   * (or after the single batch on the small-PR fast path) so callers can stream
+   * findings progressively. Failures inside the callback never break the review.
+   * @param options - Optional behavior flags.
+   * @param options.forceReview - Bypass the "already reviewed" dedup cache so an
+   *   explicit re-review (manual `/review`, autofix iteration) always runs the
+   *   pipeline against the current head SHA. Concurrent in-flight runs still
+   *   share one pipeline to avoid duplicate LLM work.
    * @returns Consolidated ReviewResult with deduplicated findings.
    */
   async reviewPR(
@@ -616,14 +704,40 @@ export class ReviewEngine {
       body: string;
       commentId: number;
     }>,
+    onBatchComplete?: (
+      batchIndex: number,
+      totalBatches: number,
+      batchResult: ReviewResult,
+    ) => Promise<void>,
+    options?: { forceReview?: boolean },
   ): Promise<ReviewResult> {
     // Reset telemetry so the reported usage reflects only this review invocation.
     this.telemetry = null;
+
+    // Deduplication: prevent concurrent/duplicate reviews for same PR+SHA.
+    // Only active for real repo contexts so test runs with mock repo data
+    // (e.g. "unknown-repo") never short-circuit the pipeline.
+    const dedupKey = this.shouldApplyDedup() ? this.getReviewDedupKey(pr) : null;
+    if (dedupKey) {
+      const inFlight = this.getInFlightReview(dedupKey);
+      if (inFlight) {
+        this.logger.info(`Review already in-flight for ${dedupKey}, waiting...`);
+        const joined = await inFlight;
+        // Mark the joined result as shared rather than re-run; callers treat a
+        // skipped/in-flight-shared result as an informational no-op for posting.
+        return { ...joined, skipped: true };
+      }
+      if (!options?.forceReview && this.isAlreadyReviewed(dedupKey, pr)) {
+        this.logger.info(`PR already reviewed for ${dedupKey}, skipping`);
+        return { ...emptyResult(), skipped: true };
+      }
+    }
+
     this.publishEvent(PIPELINE_EVENT_TYPES.REVIEW_STARTED, {
       prNumber: pr.number,
       modelUsed: this.config.reviewModel,
     });
-    const result = await this.runReviewPipeline(
+    const promise = this.runReviewPipeline(
       pr,
       _iteration,
       promptFile,
@@ -633,7 +747,15 @@ export class ReviewEngine {
       workingDirectory,
       previousHeadSha,
       previousBotComments,
+      onBatchComplete,
     );
+    if (dedupKey) this.setInFlightReview(dedupKey, promise);
+
+    const result = await promise;
+    // Only cache a genuinely reviewed result. A failed pipeline (execution or
+    // parse error) must NOT be cached, so a retry within the TTL re-runs the
+    // review instead of being silently skipped.
+    if (dedupKey && this.isMeaningfulReview(result)) this.markReviewed(dedupKey, pr);
     const finalResult = this.attachUsage(result);
     // Fire-and-forget completion publish: heavy subscribers (e.g. meta-review)
     // must not delay the handler's review post or observe unpersisted findings.
@@ -665,6 +787,11 @@ export class ReviewEngine {
       body: string;
       commentId: number;
     }>,
+    onBatchComplete?: (
+      batchIndex: number,
+      totalBatches: number,
+      batchResult: ReviewResult,
+    ) => Promise<void>,
   ): Promise<ReviewResult> {
     let mcpDocs = '';
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
@@ -881,6 +1008,26 @@ export class ReviewEngine {
       }
     }
 
+    // Repo-defined review rules (AGENTS.md/CLAUDE.md/GEMINI.md) and the PR's
+    // commit list are gathered once and threaded into every review path so the
+    // reviewer enforces the team's own conventions and can judge intent vs code.
+    let repoRulesContext: string | undefined;
+    let commitMessages: string | undefined;
+    try {
+      repoRulesContext = await this.buildRepoRulesContext(workDir);
+    } catch (err) {
+      this.logger.warn(
+        `Failed to build repository rules context: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    try {
+      commitMessages = await this.buildCommitMessages(pr, workDir);
+    } catch (err) {
+      this.logger.warn(
+        `Failed to build commit-message context: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
     // Run configured linters as pre-processing step
     const linterResults = await this.runLinters(files, workDir);
 
@@ -951,6 +1098,9 @@ export class ReviewEngine {
         previousBotComments,
         scaIssues,
         testGapResult,
+        onBatchComplete,
+        repoRulesContext,
+        commitMessages,
       );
     }
 
@@ -980,6 +1130,8 @@ export class ReviewEngine {
           codebaseIndexContext,
           blameAware: blameData !== undefined && blameData.size > 0,
           testGapContext,
+          repoRulesContext,
+          commitMessages,
           languages: detectLanguages(
             files
               .map((f) => f?.path)
@@ -1037,7 +1189,7 @@ export class ReviewEngine {
 
         this.logTokenSavings(budgetMetrics);
 
-        return await this.verifyReviewResult(
+        const singleBatchResult = await this.verifyReviewResult(
           finalResult,
           baseContext,
           workDir,
@@ -1048,6 +1200,18 @@ export class ReviewEngine {
           files,
           scaIssues,
         );
+
+        // Single-batch fast path still emits the streaming hook (batch 0 of 1)
+        // so callers get findings for small PRs too. Failures never break review.
+        if (onBatchComplete) {
+          await onBatchComplete(0, 1, singleBatchResult).catch((err) => {
+            this.logger.warn(
+              `Streaming batch callback failed for batch 0: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          });
+        }
+
+        return singleBatchResult;
       } catch {
         this.logger.warn(`Failed to parse review output at ${outputPath}, returning empty result`);
         const r = emptyResult();
@@ -1134,6 +1298,8 @@ export class ReviewEngine {
               codebaseIndexContext: batchCodebaseContext,
               blameAware: batchBlameData !== undefined && batchBlameData.size > 0,
               testGapContext: this.filterTestGapContext(testGapResult, batch),
+              repoRulesContext,
+              commitMessages,
               languages: detectLanguages(
                 batch
                   .map((f) => f?.path)
@@ -1192,6 +1358,20 @@ export class ReviewEngine {
         accumulatedCompletionTokens += item.completionTokens ?? 0;
         batchResults.push(item.result);
         if (item.failed) failedBatches++;
+      }
+      // Emit a streaming hook after each chunk so callers (action/app) can post
+      // findings progressively. Failures must never break the review pipeline.
+      if (onBatchComplete) {
+        for (let offset = 0; offset < chunkOutputs.length; offset++) {
+          const idx = batchStart + offset;
+          await onBatchComplete(idx, fileBatches.length, chunkOutputs[offset].result).catch(
+            (err) => {
+              this.logger.warn(
+                `Streaming batch callback failed for batch ${idx}: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            },
+          );
+        }
       }
     }
 
@@ -1294,11 +1474,29 @@ export class ReviewEngine {
       if (failedBatches > 0) {
         finalResult = { ...parsed, failedBatches };
       }
+      // When every batch failed, the synthesis model is fed an empty findings
+      // payload and may still emit a clean verdict. Never green-light a PR that
+      // was never actually reviewed — mirror the multi-agent forceFailedVerdict.
+      const allBatchesFailed = failedBatches > 0 && failedBatches >= fileBatches.length;
+      if (allBatchesFailed) {
+        finalResult = {
+          ...finalResult,
+          verdict: {
+            ...finalResult.verdict,
+            ready: false,
+            autoFixable: false,
+            reasoning: 'All review batches failed',
+          },
+        };
+      }
       if (linterResults.length > 0) {
-        const deduped = this.deduplicateAgainstLinters(parsed.issues, linterResults, workDir);
-        if (deduped.length < parsed.issues.length) {
+        // Dedup from finalResult (not parsed) so the forced all-batches-failed
+        // verdict (ready:false / autoFixable:false / reasoning) is preserved
+        // when linter deduplication also rewrites the result.
+        const deduped = this.deduplicateAgainstLinters(finalResult.issues, linterResults, workDir);
+        if (deduped.length < finalResult.issues.length) {
           finalResult = {
-            ...parsed,
+            ...finalResult,
             issues: deduped,
             stats: {
               total: deduped.length,
@@ -1306,7 +1504,6 @@ export class ReviewEngine {
               important: deduped.filter((i) => i.severity === 'important').length,
               minor: deduped.filter((i) => i.severity === 'minor').length,
             },
-            ...(failedBatches > 0 ? { failedBatches } : {}),
           };
         }
       }
@@ -1432,6 +1629,11 @@ export class ReviewEngine {
    * @param scaIssues - Optional SCA findings merged into the verified result.
    * @param testGapResult - Optional structured test-gap analysis threaded to each
    * specialized agent (batch-filtered) so the findings reach the multi-agent path.
+   * @param onBatchComplete - Optional callback invoked as each agent settles so
+   * callers can stream findings progressively. Failures never break the review.
+   * @param repoRulesContext - Optional repository rules context
+   * (AGENTS.md/CLAUDE.md/GEMINI.md/RULES.md) threaded into each agent prompt.
+   * @param commitMessages - Optional compact git log commit list for the PR.
    * @returns The consolidated, verified ReviewResult.
    */
   private async runMultiAgentReview(
@@ -1463,6 +1665,13 @@ export class ReviewEngine {
     }>,
     scaIssues?: ReviewIssue[],
     testGapResult?: TestGapResult,
+    onBatchComplete?: (
+      batchIndex: number,
+      totalBatches: number,
+      batchResult: ReviewResult,
+    ) => Promise<void>,
+    repoRulesContext?: string,
+    commitMessages?: string,
   ): Promise<ReviewResult> {
     const categories = this.getActiveAgentCategories();
     this.logger.info(
@@ -1473,9 +1682,42 @@ export class ReviewEngine {
     // `.opencode/agent-<category>/batch-<idx>` output directory, so the agents
     // cannot collide; concurrency is bounded inside each agent by a per-agent
     // batch limit that keeps the aggregate under MAX_BATCH_CONCURRENCY.
-    const settled = await Promise.allSettled(
-      categories.map((category) =>
-        this.runAgentCategory(
+    //
+    // Streaming hook: emit one batch per agent as it settles (not after the
+    // full allSettled) so callers with streamComments enabled post findings
+    // progressively. Callbacks fire for failed agents too (with an empty
+    // payload) and never break the pipeline.
+    const emitAgentStream = async (idx: number, agent: AgentResult): Promise<void> => {
+      if (!onBatchComplete) return;
+      const batchResult: ReviewResult = {
+        summary: `Agent "${agent.agent}" findings`,
+        verdict: {
+          ready: false,
+          reasoning: '',
+          autoFixable: false,
+          confidence: 'medium',
+        },
+        strengths: agent.strengths,
+        issues: agent.findings,
+        stats: {
+          total: agent.findings.length,
+          critical: agent.findings.filter((f) => f.severity === 'critical').length,
+          important: agent.findings.filter((f) => f.severity === 'important').length,
+          minor: agent.findings.filter((f) => f.severity === 'minor').length,
+        },
+        rawLines: agent.rawOutput ? [agent.rawOutput] : [],
+        failedLines: 0,
+      };
+      await onBatchComplete(idx, categories.length, batchResult).catch((err) => {
+        this.logger.warn(
+          `Streaming batch callback failed for agent "${agent.agent}": ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    };
+
+    const settleAgent = async (category: AgentCategory, idx: number): Promise<AgentResult> => {
+      try {
+        const value = await this.runAgentCategory(
           category,
           files,
           pr,
@@ -1497,26 +1739,32 @@ export class ReviewEngine {
           budgetMode,
           totalDiffLines,
           testGapResult,
-        ),
-      ),
+          repoRulesContext,
+          commitMessages,
+        );
+        await emitAgentStream(idx, value);
+        return value;
+      } catch (reason) {
+        const message = reason instanceof Error ? reason.message : String(reason);
+        this.logger.warn(`Agent "${category}" rejected: ${message}`);
+        const failed: AgentResult = {
+          agent: category,
+          findings: [],
+          strengths: [],
+          rawOutput: '',
+          durationMs: 0,
+          tokensUsed: 0,
+          success: false,
+          error: message,
+        };
+        await emitAgentStream(idx, failed);
+        return failed;
+      }
+    };
+
+    const agentResults = await Promise.all(
+      categories.map((category, idx) => settleAgent(category, idx)),
     );
-    const agentResults: AgentResult[] = settled.map((outcome, idx) => {
-      if (outcome.status === 'fulfilled') return outcome.value;
-      const category = categories[idx];
-      const message =
-        outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
-      this.logger.warn(`Agent "${category}" rejected: ${message}`);
-      return {
-        agent: category,
-        findings: [],
-        strengths: [],
-        rawOutput: '',
-        durationMs: 0,
-        tokensUsed: 0,
-        success: false,
-        error: message,
-      };
-    });
     for (const result of agentResults) {
       if (result.success) {
         this.logger.info(
@@ -1585,6 +1833,9 @@ export class ReviewEngine {
    * @param totalDiffLines - Optional total diff line count for the budget banner.
    * @param testGapResult - Optional structured test-gap analysis; each batch
    * receives a filtered subset scoped to the batch's source paths.
+   * @param repoRulesContext - Optional repository rules context
+   * (AGENTS.md/CLAUDE.md/GEMINI.md/RULES.md) threaded into each agent prompt.
+   * @param commitMessages - Optional compact git log commit list for the PR.
    * @returns The structured AgentResult for this category.
    */
   private async runAgentCategory(
@@ -1614,6 +1865,8 @@ export class ReviewEngine {
     budgetMode?: ReviewBudgetMode,
     totalDiffLines?: number,
     testGapResult?: TestGapResult,
+    repoRulesContext?: string,
+    commitMessages?: string,
   ): Promise<AgentResult> {
     const agentConfig = this.config.multiAgent?.agents?.[category] as
       | MultiAgentAgentConfig
@@ -1701,6 +1954,8 @@ export class ReviewEngine {
           falsePositiveRules,
           previousFindings,
           previousBotComments,
+          repoRulesContext,
+          commitMessages,
         ),
         budgetMode,
         totalDiffLines,
@@ -1879,6 +2134,9 @@ export class ReviewEngine {
    * @param falsePositiveRules - Optional false-positive suppression rules.
    * @param previousFindings - Optional findings from previous fix iterations.
    * @param previousBotComments - Optional previous bot review comments.
+   * @param repoRulesContext - Optional repository rules context
+   * (AGENTS.md/CLAUDE.md/GEMINI.md/RULES.md) threaded into the agent prompt.
+   * @param commitMessages - Optional compact git log commit list for the PR.
    * @returns The enriched context string.
    */
   private buildAgentBatchContext(
@@ -1896,6 +2154,8 @@ export class ReviewEngine {
       body: string;
       commentId: number;
     }>,
+    repoRulesContext?: string,
+    commitMessages?: string,
   ): string {
     const parts: string[] = [batchContext];
 
@@ -1937,6 +2197,18 @@ export class ReviewEngine {
       for (const rule of falsePositiveRules) {
         parts.push(`- ${rule}`);
       }
+    }
+    if (repoRulesContext) {
+      parts.push(
+        '\n\n## Repository Review Rules\n\nThe repository defines its own review rules and coding conventions (from AGENTS.md/CLAUDE.md/GEMINI.md or a rules file). Treat these as authoritative — enforce them:',
+      );
+      parts.push(repoRulesContext.slice(0, 32_000));
+    }
+    if (commitMessages) {
+      parts.push(
+        "\n\n## Commits in this PR\n\nThe commit messages below capture the author's intent. Use them to judge whether the changes implement what the commits claim:",
+      );
+      parts.push(commitMessages.slice(0, 8_000));
     }
     if (lessons && lessons.length > 0) {
       parts.push(
@@ -4260,14 +4532,21 @@ export class ReviewEngine {
     reasoning: string,
     failedBatches = 0,
   ): ReviewResult {
+    // When EVERY batch failed (and we are here because synthesis also failed),
+    // the PR was never actually reviewed. Mirror the multi-agent path's
+    // forceFailedVerdict guard: a merge gate must never green-light an
+    // unreviewed PR just because zero issues were parsed.
+    const allBatchesFailed = failedBatches > 0 && failedBatches >= fileBatches.length;
     return {
       summary:
         allIssues.length > 0
           ? `Found ${allIssues.length} issues across ${fileBatches.length} batches`
-          : 'No issues found',
+          : allBatchesFailed
+            ? `All ${fileBatches.length} review batches failed — PR was not reviewed`
+            : 'No issues found',
       verdict: {
-        ready: allIssues.length === 0,
-        reasoning,
+        ready: allIssues.length === 0 && !allBatchesFailed,
+        reasoning: allBatchesFailed ? 'All review batches failed' : reasoning,
         autoFixable: false,
         confidence: 'medium' as const,
       },
@@ -4562,6 +4841,89 @@ export class ReviewEngine {
     }
 
     return result;
+  }
+
+  /**
+   * Read repository-defined review rules/conventions from AGENTS.md, CLAUDE.md,
+   * GEMINI.md, or a root `RULES.md`, scoped to the repo root. These become a
+   * `## Repository Review Rules` prompt section so the reviewer enforces the
+   * team's own standards (competitors: CodeRabbit path_instructions, Qodo
+   * REVIEW.md, Copilot AGENTS.md). Degrades gracefully to undefined.
+   * @param workDir - The working directory of the review run.
+   * @returns Combined markdown rules content, or undefined when none found.
+   */
+  private async buildRepoRulesContext(workDir: string): Promise<string | undefined> {
+    const candidateNames = ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md', 'RULES.md'];
+    try {
+      const root = await this.resolveCodebaseRoot(workDir);
+      const rootReal = realpathSync(root);
+      // Only rules files in the repo root are considered to keep the prompt
+      // deterministic and bounded. (Per-path scoping is a follow-up.)
+      const sections: string[] = [];
+      for (const name of candidateNames) {
+        const p = path.join(root, name);
+        let stat: ReturnType<typeof lstatSync>;
+        try {
+          stat = lstatSync(p);
+        } catch {
+          continue; // Missing or unreadable — try the next candidate.
+        }
+        // Reject symlinks and non-regular files: a rules file must be a real
+        // file inside the repo so a PR-controlled link cannot smuggle content
+        // from (or read) arbitrary paths into the review prompt.
+        if (stat.isSymbolicLink() || !stat.isFile()) continue;
+        // Belt-and-suspenders: confirm the resolved path stays inside the repo
+        // root even when the filesystem resolves the entry elsewhere.
+        const resolved = realpathSync(p);
+        if (resolved !== rootReal && !resolved.startsWith(`${rootReal}${path.sep}`)) continue;
+        const content = readFileSync(p, 'utf-8').slice(0, 16_000);
+        if (content.trim()) {
+          sections.push(`### ${name} (${p})`);
+          sections.push('');
+          sections.push(content);
+          sections.push('');
+        }
+      }
+      if (sections.length === 0) return undefined;
+      sections.unshift(
+        'The following repository rules and conventions were detected. Treat them as authoritative for this review:',
+      );
+      sections.push('');
+      return sections.join('\n');
+    } catch (err) {
+      this.logger.warn(
+        `buildRepoRulesContext failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * Build a compact `git log --oneline base..head` commit list for the PR so the
+   * reviewer can judge whether the changes implement what the commit messages
+   * claim (author intent). Degrades gracefully to undefined (e.g. shallow clones).
+   * @param pr - Pull request context.
+   * @param workDir - The working directory of the review run.
+   * @returns A markdown commit list, or undefined when git is unavailable.
+   */
+  private async buildCommitMessages(pr: PRContext, workDir: string): Promise<string | undefined> {
+    try {
+      const head = pr.headRef || pr.headSha;
+      if (!head) return undefined;
+      const base = pr.baseSha || pr.baseRef;
+      const args = base
+        ? ['log', '--oneline', '--no-merges', '-30', `${base}..${head}`]
+        : ['log', '--oneline', '--no-merges', '-20', head];
+      const out = await this.execGit(args, workDir);
+      if (!out) return undefined;
+      const lines = out.split('\n').slice(0, 30);
+      return lines.map((l) => `- ${l}`).join('\n');
+    } catch (err) {
+      this.logger.warn(
+        `buildCommitMessages failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return undefined;
+    }
   }
 }
 

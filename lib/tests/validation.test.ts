@@ -24,6 +24,10 @@ describe('validateRefName()', () => {
     expect(() => validateRefName('main:evil')).toThrow('contains invalid characters');
   });
 
+  it('rejects refs beginning with a dash', () => {
+    expect(() => validateRefName('-malicious-ref')).toThrow('must not begin with a dash');
+  });
+
   it('rejects refs containing spaces', () => {
     expect(() => validateRefName('branch name')).toThrow('contains invalid characters');
   });

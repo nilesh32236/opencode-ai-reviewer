@@ -614,6 +614,192 @@ describe('ReviewEngine', () => {
         expect(result.issues).toHaveLength(1);
         expect(result.stats.total).toBe(1);
       });
+
+      it('does not report ready:true when every batch and synthesis fail', async () => {
+        mockMCPConnect.mockResolvedValue(undefined);
+        // Every batch AND the synthesis pass fail.
+        mockRunOpenCode.mockResolvedValue({
+          success: false,
+          output: '',
+          durationMs: 500,
+          tokensUsed: 0,
+        });
+
+        const result = await engine.reviewPR(batchPr);
+
+        expect(result.verdict.ready).toBe(false);
+        expect(result.verdict.reasoning).toBe('All review batches failed');
+        expect(result.summary).toContain('batches failed');
+      });
+    });
+
+    describe('duplicate review deduplication', () => {
+      const dedupPr = makePRContext({ number: 900, headSha: 'dedup-hash' });
+
+      function makeRepoEngine(repo = 'owner/repo'): ReviewEngine {
+        return new ReviewEngine(makeConfig(), mockAdapter, undefined, undefined, repo);
+      }
+
+      beforeEach(() => {
+        mockMCPConnect.mockResolvedValue(undefined);
+        mockRunOpenCode.mockResolvedValue({
+          success: true,
+          output: '',
+          durationMs: 1000,
+          tokensUsed: 500,
+        });
+        mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+        ReviewEngine.resetReviewDedup();
+      });
+
+      it('shares a single in-flight pipeline across concurrent duplicate reviews', async () => {
+        const eng = makeRepoEngine();
+        const [first, second] = await Promise.all([eng.reviewPR(dedupPr), eng.reviewPR(dedupPr)]);
+
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(1);
+        // The first caller owns the pipeline; the joining caller shares the same
+        // computed result but is marked `skipped` so it does not re-post.
+        expect(first.skipped).toBeUndefined();
+        expect(second.skipped).toBe(true);
+        expect(second.issues).toEqual(first.issues);
+      });
+
+      it('skips a repeated review for the same PR and headSha within the TTL window', async () => {
+        const eng = makeRepoEngine();
+        await eng.reviewPR(dedupPr);
+        const second = await eng.reviewPR(dedupPr);
+
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(1);
+        expect(second.summary).toBe('');
+        expect(second.issues).toHaveLength(0);
+        expect(second.skipped).toBe(true);
+      });
+
+      it('does not deduplicate when no real repo context is set', async () => {
+        const eng = new ReviewEngine(makeConfig(), mockAdapter);
+        await eng.reviewPR(makePRContext({ number: 901 }));
+        await eng.reviewPR(makePRContext({ number: 901 }));
+
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(2);
+      });
+
+      it('does not deduplicate when the repo is an empty string', async () => {
+        const eng = makeRepoEngine('');
+        await eng.reviewPR(makePRContext({ number: 903 }));
+        await eng.reviewPR(makePRContext({ number: 903 }));
+
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(2);
+      });
+
+      it('runs a new review when the headSha changes', async () => {
+        const eng = makeRepoEngine();
+        await eng.reviewPR(makePRContext({ number: 902, headSha: 'sha-v1' }));
+        await eng.reviewPR(makePRContext({ number: 902, headSha: 'sha-v2' }));
+
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(2);
+      });
+
+      it('bypasses the reviewed cache when forceReview is set (autofix re-review)', async () => {
+        const eng = makeRepoEngine();
+        await eng.reviewPR(dedupPr);
+        const forced = await eng.reviewPR(
+          dedupPr,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { forceReview: true },
+        );
+
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(2);
+        expect(forced.summary).toBe('');
+        expect(forced.issues).toHaveLength(0);
+      });
+
+      it('does not cache a failed pipeline as reviewed (retry re-runs the review)', async () => {
+        const eng = makeRepoEngine();
+        mockRunOpenCode.mockResolvedValue({
+          success: false,
+          output: '',
+          durationMs: 500,
+          tokensUsed: 0,
+        });
+        const first = await eng.reviewPR(dedupPr);
+        expect(first.verdict.reasoning).toBe('Review execution failed');
+
+        const second = await eng.reviewPR(dedupPr);
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(2);
+        expect(second.verdict.reasoning).toBe('Review execution failed');
+      });
+
+      it('does not cache a parse-failure pipeline as reviewed (retry re-runs the review)', async () => {
+        const eng = makeRepoEngine();
+        mockRunOpenCode.mockResolvedValueOnce({
+          success: true,
+          output: '',
+          durationMs: 1000,
+          tokensUsed: 500,
+        });
+        mockParseJsonlFile.mockRejectedValueOnce(new Error('Parse error'));
+        const first = await eng.reviewPR(dedupPr);
+        expect(first.verdict.reasoning).toBe('Failed to parse review output');
+
+        await eng.reviewPR(dedupPr);
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(2);
+      });
+
+      it('does not cache an all-batches-failed review (retry re-runs the pipeline)', async () => {
+        const eng = makeRepoEngine();
+        const multiFilePr = makePRContext({
+          number: 904,
+          headSha: 'multi-batch-hash',
+          changedFiles: [
+            { path: 'src/a.ts', status: 'modified', additions: 10, deletions: 0 },
+            { path: 'src/b.ts', status: 'modified', additions: 10, deletions: 0 },
+            { path: 'src/c.ts', status: 'modified', additions: 10, deletions: 0 },
+            { path: 'src/d.ts', status: 'modified', additions: 10, deletions: 0 },
+          ],
+        });
+        mockRunOpenCode.mockResolvedValue({
+          success: false,
+          output: '',
+          durationMs: 500,
+          tokensUsed: 0,
+        });
+        const first = await eng.reviewPR(multiFilePr);
+        expect(first.verdict.reasoning).toBe('All review batches failed');
+
+        await eng.reviewPR(multiFilePr);
+        // Second run re-runs the pipeline (the failure must NOT be cached).
+        expect(mockRunOpenCode.mock.calls.length).toBeGreaterThanOrEqual(4);
+      });
+
+      it('does not leak an unhandled rejection when the review pipeline rejects', async () => {
+        const eng = makeRepoEngine();
+        // Force the pipeline to reject outright (a genuine throw, not a
+        // fallback emptyResult) so the in-flight entry's cleanup path is hit.
+        mockRunOpenCode.mockRejectedValue(new Error('boom'));
+
+        const unhandled: unknown[] = [];
+        const listener = (reason: unknown): void => {
+          unhandled.push(reason);
+        };
+        process.on('unhandledRejection', listener);
+        try {
+          await expect(eng.reviewPR(dedupPr)).rejects.toThrow('boom');
+        } finally {
+          process.off('unhandledRejection', listener);
+        }
+
+        // Allow the microtask queue to flush any leaked derived promise.
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(unhandled).toHaveLength(0);
+      });
     });
 
     describe('multi-agent review path', () => {
@@ -665,6 +851,37 @@ describe('ReviewEngine', () => {
         expect(result.issues[0].message).toBe('SQL injection');
         expect(result.issues[0].agent).toBe('security');
         expect(result.verdict.reasoning).toBe('Merged agent findings');
+      });
+
+      it('emits a streaming batch per completed agent in multi-agent mode', async () => {
+        const eng = makeMultiAgentEngine({ enabled: false });
+        mockRunOpenCode.mockResolvedValue({
+          success: true,
+          output: '',
+          durationMs: 500,
+          tokensUsed: 10,
+        });
+        vi.mocked(fs.promises.readFile).mockImplementation(async () => agentOutput);
+
+        const batches: number[] = [];
+        await eng.reviewPR(
+          agentPr,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          async (batchIndex, totalBatches) => {
+            batches.push(batchIndex);
+            expect(totalBatches).toBe(1);
+          },
+        );
+
+        expect(batches).toHaveLength(1);
+        expect(batches[0]).toBe(0);
       });
 
       it('falls back to merged findings when the synthesis pass fails', async () => {
@@ -1022,6 +1239,85 @@ describe('ReviewEngine', () => {
       } finally {
         fs.rmSync(repoRoot, { recursive: true, force: true });
       }
+    });
+
+    it('invokes onBatchComplete for completed batches with per-batch results', async () => {
+      const learningStore = {
+        getRelevantLessons: vi.fn().mockResolvedValue([]),
+        getFalsePositiveRules: vi.fn().mockResolvedValue([]),
+        close: vi.fn(),
+      };
+      const eng = new ReviewEngine(
+        makeConfig({ enableMCP: false, mcpServers: [] }),
+        mockAdapter,
+        learningStore as never,
+      );
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 100,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      const onBatchComplete = vi.fn().mockResolvedValue(undefined);
+      await eng.reviewPR(
+        pr,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        onBatchComplete,
+      );
+
+      expect(onBatchComplete).toHaveBeenCalled();
+      const calls = onBatchComplete.mock.calls as Array<[number, number, ReviewResult]>;
+      for (const [idx, total, batchResult] of calls) {
+        expect(idx).toBeGreaterThanOrEqual(0);
+        expect(total).toBeGreaterThanOrEqual(1);
+        expect(batchResult).toBeDefined();
+      }
+    });
+
+    it('does not fail the review when onBatchComplete throws', async () => {
+      const learningStore = {
+        getRelevantLessons: vi.fn().mockResolvedValue([]),
+        getFalsePositiveRules: vi.fn().mockResolvedValue([]),
+        close: vi.fn(),
+      };
+      const eng = new ReviewEngine(
+        makeConfig({ enableMCP: false, mcpServers: [] }),
+        mockAdapter,
+        learningStore as never,
+      );
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 100,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      const onBatchComplete = vi.fn().mockRejectedValue(new Error('stream broke'));
+      const result = await eng.reviewPR(
+        pr,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        onBatchComplete,
+      );
+
+      expect(result).toBeDefined();
+      expect(onBatchComplete).toHaveBeenCalled();
     });
   });
 

@@ -58,6 +58,7 @@ export class StateCacheManager {
   private readonly repo: string;
   private readonly branch: string;
   private readonly logger: Logger;
+  private savePromise: Promise<void> | undefined;
   private readonly circuitBreaker = new CircuitBreaker({
     failureThreshold: 5,
     successThreshold: 2,
@@ -152,6 +153,20 @@ export class StateCacheManager {
    * @returns A promise that resolves when the save attempt completes.
    */
   async save(): Promise<void> {
+    if (this.savePromise) return this.savePromise;
+
+    const savePromise = this.saveState();
+    this.savePromise = savePromise;
+    try {
+      await savePromise;
+    } finally {
+      if (this.savePromise === savePromise) {
+        this.savePromise = undefined;
+      }
+    }
+  }
+
+  private async saveState(): Promise<void> {
     if (!fs.existsSync(this.stateDir)) {
       core.info('No learning state directory found — skipping cache save');
       return;

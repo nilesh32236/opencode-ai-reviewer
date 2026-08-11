@@ -76,6 +76,14 @@ const SUPPRESSING_DISMISS_SIGNALS = new Set<string>([
 
 export { SUPPRESSING_DISMISS_SIGNALS };
 
+const activeJsonDatabases = new Set<JsonDatabase>();
+
+process.on('beforeExit', () => {
+  for (const database of activeJsonDatabases) {
+    database.flushSync();
+  }
+});
+
 /**
  * In-memory JSON-backed database implementing the LearningRepository interface.
  * Persists data to disk as JSON. Directly operates on in-memory arrays for all
@@ -139,9 +147,7 @@ export class JsonDatabase implements LearningRepository {
       this.data.meta_review_counter.push({ id: 1, count: 0 });
       this.save();
     }
-    process.on('beforeExit', () => {
-      this.flushSync();
-    });
+    activeJsonDatabases.add(this);
   }
 
   private load() {
@@ -275,7 +281,25 @@ export class JsonDatabase implements LearningRepository {
 
   /** Close the database and flush pending writes. */
   async close(): Promise<void> {
+    activeJsonDatabases.delete(this);
     this.flushSync();
+  }
+
+  /**
+   * Ping the database to verify it is reachable and responsive.
+   * @returns Promise resolving to a health result with an `ok` flag and the
+   * round-trip response time in milliseconds.
+   */
+  async ping(): Promise<{ ok: boolean; responseMs: number }> {
+    const start = performance.now();
+    try {
+      // JsonDatabase is an in-memory store; verifying the data object is
+      // populated is a cheap liveness check.
+      if (!this.data) throw new Error('JsonDatabase data not initialized');
+      return { ok: true, responseMs: Math.round(performance.now() - start) };
+    } catch {
+      return { ok: false, responseMs: Math.round(performance.now() - start) };
+    }
   }
 
   // ─── LearningRepository implementation ───────────────────

@@ -1,3 +1,4 @@
+import { jaccardSimilarityWithThreshold, tokenizeMessage } from './minhash-optimized.js';
 import {
   LSH_BANDS,
   LSH_ROWS,
@@ -6,52 +7,10 @@ import {
   lshCandidates,
 } from './minhash.js';
 
-const NON_ALPHANUMERIC_REGEX = /[^a-z0-9\s]/g;
-const WHITESPACE_REGEX = /\s+/;
-
 /** Maximum number of messages clustered with the exact O(N²) all-pairs path. */
 export const EXACT_CLUSTER_LIMIT = 100;
 /** Hard safety-net cap on the number of messages clustered in a single call. */
 export const MAX_CLUSTER_INPUT = 500;
-
-/**
- * Tokenize a message into a set of lowercase alphanumeric tokens (length > 2).
- * @param message - The message to tokenize.
- * @returns A set of alphanumeric tokens from the message.
- */
-function tokenize(message: string): Set<string> {
-  return new Set(
-    message
-      .toLowerCase()
-      .replace(NON_ALPHANUMERIC_REGEX, '')
-      .split(WHITESPACE_REGEX)
-      .filter((t) => t.length > 2),
-  );
-}
-
-/**
- * Compute Jaccard similarity between two sets: |intersection| / |union|.
- * Optimized to iterate over the smaller set.
- * @param a - First set.
- * @param b - Second set.
- * @returns The Jaccard similarity score between 0 and 1.
- */
-function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
-  if (a.size === 0 && b.size === 0) return 0;
-
-  let intersectionSize = 0;
-  const smallerSet = a.size < b.size ? a : b;
-  const largerSet = a.size < b.size ? b : a;
-
-  for (const item of smallerSet) {
-    if (largerSet.has(item)) intersectionSize++;
-  }
-
-  const unionSize = a.size + b.size - intersectionSize;
-  if (unionSize === 0) return 0;
-
-  return intersectionSize / unionSize;
-}
 
 /**
  * Greedy single-pass clustering shared by the exact and LSH candidate paths.
@@ -82,7 +41,7 @@ function greedyCluster(
     if (candidatesByIndex !== null) {
       for (const j of candidatesByIndex[i]) {
         if (assigned[j]) continue;
-        if (jaccardSimilarity(tokens[i], tokens[j]) >= threshold) {
+        if (jaccardSimilarityWithThreshold(tokens[i], tokens[j], threshold) >= threshold) {
           cluster.push(messages[j]);
           assigned[j] = true;
         }
@@ -90,7 +49,7 @@ function greedyCluster(
     } else {
       for (let j = i + 1; j < messages.length; j++) {
         if (assigned[j]) continue;
-        if (jaccardSimilarity(tokens[i], tokens[j]) >= threshold) {
+        if (jaccardSimilarityWithThreshold(tokens[i], tokens[j], threshold) >= threshold) {
           cluster.push(messages[j]);
           assigned[j] = true;
         }
@@ -127,7 +86,7 @@ export function clusterFindingsExact(
 ): Array<{ centroid: string; messages: string[] }> {
   if (messages.length === 0) return [];
 
-  const tokens = messages.map((m) => tokenize(m));
+  const tokens = messages.map((m) => tokenizeMessage(m));
   return greedyCluster(tokens, messages, threshold, null);
 }
 
@@ -147,7 +106,7 @@ export function clusterFindingsWithStatus(messages: string[], threshold = 0.3): 
   const truncated = messages.length > MAX_CLUSTER_INPUT;
   const input = truncated ? messages.slice(0, MAX_CLUSTER_INPUT) : messages;
 
-  const tokens = input.map((m) => tokenize(m));
+  const tokens = input.map((m) => tokenizeMessage(m));
 
   let clusters: Array<{ centroid: string; messages: string[] }>;
   if (input.length <= EXACT_CLUSTER_LIMIT) {

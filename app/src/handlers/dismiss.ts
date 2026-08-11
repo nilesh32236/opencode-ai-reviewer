@@ -156,6 +156,52 @@ export async function handleDismissCommand(
             typeof f.line === 'number' &&
             f.line === thread.lineNumber,
         );
+      } else if (parentComment.body) {
+        // Thread-level / general comments carry no path/line. Correlate by the
+        // comment body: the bot quotes the finding message (or its essence) in
+        // the comment, so match findings whose message text appears in the
+        // comment. This keeps dismissal feedback scoped to the actual finding
+        // instead of silently dropping it (the previous no-op) or over-matching
+        // the whole PR.
+        const normalizedBody = parentComment.body.toLowerCase().replace(/[^a-z0-9\s]/g, ' ');
+        const matchBy = (sentenceOnly: boolean) =>
+          findings.filter((f) => {
+            if (!f.id || typeof f.message !== 'string' || !f.message) return false;
+            const normalizedMsg = f.message
+              .toLowerCase()
+              .replace(/[^a-z0-9\s]/g, ' ')
+              .trim();
+            if (!normalizedMsg) return false;
+            if (sentenceOnly) {
+              // Prefer the first meaningful sentence of the message for a stable match.
+              const firstSentence = normalizedMsg.split(/\s{2,}|\.\s/)[0];
+              return firstSentence.length >= 24 && normalizedBody.includes(firstSentence);
+            }
+            return normalizedBody.includes(normalizedMsg);
+          });
+        // A first-sentence match is only trusted when it identifies exactly one
+        // finding: two findings sharing a sentence would otherwise BOTH receive
+        // the dismissal feedback for a single comment. Otherwise require exactly
+        // one full-message match; ambiguous matches record nothing.
+        const sentenceMatches = matchBy(true);
+        if (sentenceMatches.length === 1) {
+          matched = sentenceMatches;
+        } else {
+          const fullMatches = matchBy(false);
+          if (fullMatches.length === 1) matched = fullMatches;
+        }
+        if (matched.length === 0) {
+          // Last resort for thread-level dismissal: record a PR-scoped signal so
+          // at least the suppression aggregation can group by message text. Must
+          // also identify exactly one finding to avoid ambiguous feedback.
+          const lastResort = findings.filter(
+            (f) =>
+              f.id &&
+              typeof f.message === 'string' &&
+              normalizedBody.includes(f.message.toLowerCase()),
+          );
+          if (lastResort.length === 1) matched = lastResort;
+        }
       }
     } catch (err) {
       logger.warn(

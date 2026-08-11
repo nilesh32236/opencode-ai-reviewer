@@ -44,15 +44,19 @@ jobs:
           git config --global user.name "opencode-ai-reviewer[bot]"
           git config --global user.email "opencode-ai-reviewer[bot]@users.noreply.github.com"
 
+      - name: Setup PNPM
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.8.0
+
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
           node-version: 22
+          cache: 'pnpm'
 
-      - name: Install pnpm & dependencies
-        run: |
-          npm install -g pnpm
-          pnpm install
+      - name: Install dependencies
+        run: pnpm install
 
       - name: Setup OpenCode
         run: |
@@ -100,6 +104,13 @@ jobs:
 
             echo "----------------------------------------"
             echo "Processing PR #${PR_NUMBER}: ${TITLE} (branch: ${HEAD_REF}, mergeable: ${MERGEABLE})"
+
+            if [[ "$HEAD_REF" == -* ]] || ! git check-ref-format --branch "$HEAD_REF" >/dev/null 2>&1; then
+              echo "::warning::Skipping PR #${PR_NUMBER}: invalid or option-like head ref."
+              gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "autofix:skipped" || true
+              PROCESSED_ANY=true
+              continue
+            fi
 
             git fetch origin "${HEAD_REF}:${HEAD_REF}" 2>/dev/null || git checkout -b "${HEAD_REF}" "origin/${HEAD_REF}"
             git checkout "${HEAD_REF}"

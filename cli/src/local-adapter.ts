@@ -217,6 +217,45 @@ export class LocalAdapter implements PlatformAdapter {
   }
 
   /**
+   * Post a single inline review comment immediately (streaming). No-op in local
+   * CLI mode — streaming is only meaningful when posting to a remote PR.
+   * @param _mrNumber - Merge request/PR number (unused).
+   * @param _commitSha - Head commit SHA (unused).
+   * @param _comment - Inline comment payload (unused).
+   * @param _comment.path - File path the comment anchors to (unused).
+   * @param _comment.line - Diff line the comment anchors to (unused).
+   * @param _comment.body - Comment body text (unused).
+   * @param _comment.side - Diff side ('LEFT' or 'RIGHT') (unused).
+   * @returns A no-op result of null (not posted).
+   */
+  async postInlineComment(
+    _mrNumber: number,
+    _commitSha: string,
+    _comment: { path: string; line: number; body: string; side?: 'LEFT' | 'RIGHT' },
+  ): Promise<{ commentId: number; nodeId?: string } | null> {
+    return null;
+  }
+
+  /**
+   * Post or update a streaming progress summary comment. No-op in local CLI mode.
+   * @param _mrNumber - Merge request/PR number (unused).
+   * @param _batchIndex - 1-based index of the batch that just completed (unused).
+   * @param _totalBatches - Total number of batches (unused).
+   * @param _findingCount - Number of findings posted so far (unused).
+   * @param _lastFile - Optional last file reviewed (unused).
+   * @returns A promise that resolves once the (no-op) progress comment is done.
+   */
+  async postStreamingProgress(
+    _mrNumber: number,
+    _batchIndex: number,
+    _totalBatches: number,
+    _findingCount: number,
+    _lastFile?: string,
+  ): Promise<void> {
+    return;
+  }
+
+  /**
    * Create a comment on an issue.
    * @param _issueNumber - Issue number.
    * @param _body - Comment body.

@@ -321,6 +321,13 @@ describe('LearningStore', () => {
     expect(statsFiltered.totalReviews).toBe(1);
     expect(statsFiltered.avgDurationMs).toBe(6000);
   });
+
+  it('ping() reports ok for a live database', async () => {
+    const result = await store.ping();
+    expect(result.ok).toBe(true);
+    expect(typeof result.responseMs).toBe('number');
+    expect(result.responseMs).toBeGreaterThanOrEqual(0);
+  });
 });
 
 describe('LearningStore Analytics', () => {

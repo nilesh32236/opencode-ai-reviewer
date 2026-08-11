@@ -19,6 +19,21 @@ import { buildReviewBody } from './review-body.js';
 import { gatherReviewThread } from './review-thread.js';
 import type { ThreadComment } from './review-thread.js';
 
+/**
+ * Single-flight registry for marker-based comment upserts (postOrUpdateComment).
+ * Shared across GitHubHelper instances so concurrent webhook events for the same
+ * issue/marker collapse onto one create-or-update instead of racing read-then-
+ * write. Entries are removed when the upsert settles.
+ */
+const commentUpserts = new Map<
+  string,
+  {
+    body: string;
+    pendingBody?: string;
+    promise: Promise<{ action: 'created' | 'updated' | 'failed'; commentId: number }>;
+  }
+>();
+
 /** Paginated result wrapper for API responses. */
 export interface PaginatedResult<T> {
   items: T[];
@@ -268,7 +283,11 @@ export class GitHubHelper implements PlatformAdapter {
         user: { login: string };
         labels: Array<{ name: string }>;
       }>(`/pulls/${number}`),
-      this.api<Array<ChangedFile & { filename?: string }>>(`/pulls/${number}/files`),
+      this.paginate<ChangedFile & { filename?: string }>(`/pulls/${number}/files`, {
+        perPage: 100,
+        maxPages: 10,
+        throwOnError: true,
+      }),
     ]);
 
     if (prResult.status === 'rejected') {
@@ -788,6 +807,85 @@ export class GitHubHelper implements PlatformAdapter {
     return { success: true, method: 'partial', reviewId, commentIds };
   }
 
+  /**
+   * Post a single inline review comment immediately, used by streaming reviews
+   * so findings appear as each batch completes instead of after the full run.
+   * Routes through `this.api()` so retry + circuit-breaker resilience applies.
+   *
+   * @param prNumber - PR number.
+   * @param commitSha - Head commit SHA the comment anchors to.
+   * @param comment - Inline comment payload.
+   * @param comment.path - File path the comment anchors to.
+   * @param comment.line - Diff line the comment anchors to.
+   * @param comment.body - Comment body text.
+   * @param comment.side - Diff side ('LEFT' or 'RIGHT'); defaults to 'RIGHT'.
+   * @returns The created comment id/nodeId, or null when the post fails.
+   */
+  async postInlineComment(
+    prNumber: number,
+    commitSha: string,
+    comment: {
+      path: string;
+      line: number;
+      body: string;
+      side?: 'LEFT' | 'RIGHT';
+    },
+  ): Promise<{ commentId: number; nodeId?: string } | null> {
+    try {
+      const response = await this.api<{ id: number; node_id: string }>(
+        `/pulls/${prNumber}/comments`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            commit_id: commitSha,
+            path: comment.path,
+            line: comment.line,
+            side: comment.side ?? 'RIGHT',
+            body: comment.body,
+          }),
+        },
+      );
+      return { commentId: response.id, nodeId: response.node_id };
+    } catch (err) {
+      core.warning(
+        `Streaming inline comment for ${comment.path}:${comment.line} failed: ${err instanceof Error ? err.message : err}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Post or update a streaming progress summary comment on a PR. Uses a stable
+   * marker so repeated updates replace a single comment instead of spamming the
+   * timeline.
+   *
+   * @param prNumber - PR number.
+   * @param batchIndex - 1-based index of the batch that just completed.
+   * @param totalBatches - Total number of batches.
+   * @param findingCount - Number of findings posted so far.
+   * @param lastFile - Optional last file reviewed (shown in the progress line).
+   * @returns A promise that resolves once the progress comment is posted/updated.
+   */
+  async postStreamingProgress(
+    prNumber: number,
+    batchIndex: number,
+    totalBatches: number,
+    findingCount: number,
+    lastFile?: string,
+  ): Promise<void> {
+    const body = [
+      '## ⏳ Review In Progress',
+      '',
+      `- **Batches:** ${batchIndex}/${totalBatches} complete`,
+      `- **Findings so far:** ${findingCount}`,
+      ...(lastFile ? [`- **Last file:** \`${lastFile}\``] : []),
+      '',
+      '_Streaming review — findings are posted as they are discovered._',
+    ].join('\n');
+    await this.postOrUpdateComment(prNumber, '<!-- review-stream-progress -->', body);
+  }
+
   // ─── Comment Operations ─────────────────────────────────
 
   /**
@@ -804,12 +902,64 @@ export class GitHubHelper implements PlatformAdapter {
     marker: string,
     body: string,
   ): Promise<{ action: 'created' | 'updated' | 'failed'; commentId: number }> {
+    // Single-flight per (apiUrl, repo, issue, marker): the read-then-write below
+    // is not atomic, so two concurrent callers (e.g. two webhook events updating
+    // the same "review in progress" marker) could both read "no marker" and both
+    // POST, leaving duplicate status comments. Sharing one in-flight upsert
+    // promise collapses concurrent callers onto a single create-or-update. The
+    // key includes apiUrl and repo so two different providers/repositories with
+    // the same issue number + marker never share (and suppress) an upsert.
+    const key = `${this.apiUrl}\u0000${this.repo}\u0000${issueNumber}\u0000${marker}`;
+    const existing = commentUpserts.get(key);
+    if (existing) {
+      // Identical in-flight work is deduplicated; a newer body for the same
+      // marker is coalesced into a follow-up upsert once the first settles so
+      // the newest concurrent update is eventually applied.
+      if (existing.body === body) return existing.promise;
+      existing.pendingBody = body;
+      return existing.promise.then(async (first) => {
+        const pending = existing.pendingBody;
+        existing.pendingBody = undefined;
+        if (pending === undefined) return first;
+        return this.doPostOrUpdateComment(issueNumber, marker, pending);
+      });
+    }
+    const entry: {
+      body: string;
+      pendingBody?: string;
+      promise: Promise<{ action: 'created' | 'updated' | 'failed'; commentId: number }>;
+    } = {
+      body,
+      pendingBody: undefined,
+      promise: undefined as unknown as Promise<{
+        action: 'created' | 'updated' | 'failed';
+        commentId: number;
+      }>,
+    };
+    entry.promise = (async () => {
+      const first = await this.doPostOrUpdateComment(issueNumber, marker, body);
+      const pending = entry.pendingBody;
+      entry.pendingBody = undefined;
+      if (pending === undefined) return first;
+      return this.doPostOrUpdateComment(issueNumber, marker, pending);
+    })().finally(() => {
+      commentUpserts.delete(key);
+    });
+    commentUpserts.set(key, entry);
+    return entry.promise;
+  }
+
+  private async doPostOrUpdateComment(
+    issueNumber: number,
+    marker: string,
+    body: string,
+  ): Promise<{ action: 'created' | 'updated' | 'failed'; commentId: number }> {
     try {
       const markedBody = `${marker}\n\n${body}`;
 
       const allComments = await this.paginate<{ id: number; body: string }>(
         `/issues/${issueNumber}/comments`,
-        { perPage: 100, maxPages: 5, throwOnError: true },
+        { perPage: 100, maxPages: 10, throwOnError: true },
       );
 
       const existing = allComments.find((c) => c.body?.startsWith(marker));
