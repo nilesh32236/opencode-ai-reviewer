@@ -1441,6 +1441,16 @@ export class ReviewEngine {
       if (failedBatches > 0) {
         finalResult = { ...parsed, failedBatches };
       }
+      // When every batch failed, the synthesis model is fed an empty findings
+      // payload and may still emit a clean verdict. Never green-light a PR that
+      // was never actually reviewed — mirror the multi-agent forceFailedVerdict.
+      const allBatchesFailed = failedBatches > 0 && failedBatches >= fileBatches.length;
+      if (allBatchesFailed) {
+        finalResult = {
+          ...finalResult,
+          verdict: { ...finalResult.verdict, ready: false, autoFixable: false },
+        };
+      }
       if (linterResults.length > 0) {
         const deduped = this.deduplicateAgainstLinters(parsed.issues, linterResults, workDir);
         if (deduped.length < parsed.issues.length) {
@@ -4407,14 +4417,21 @@ export class ReviewEngine {
     reasoning: string,
     failedBatches = 0,
   ): ReviewResult {
+    // When EVERY batch failed (and we are here because synthesis also failed),
+    // the PR was never actually reviewed. Mirror the multi-agent path's
+    // forceFailedVerdict guard: a merge gate must never green-light an
+    // unreviewed PR just because zero issues were parsed.
+    const allBatchesFailed = failedBatches > 0 && failedBatches >= fileBatches.length;
     return {
       summary:
         allIssues.length > 0
           ? `Found ${allIssues.length} issues across ${fileBatches.length} batches`
-          : 'No issues found',
+          : allBatchesFailed
+            ? `All ${fileBatches.length} review batches failed — PR was not reviewed`
+            : 'No issues found',
       verdict: {
-        ready: allIssues.length === 0,
-        reasoning,
+        ready: allIssues.length === 0 && !allBatchesFailed,
+        reasoning: allBatchesFailed ? 'All review batches failed' : reasoning,
         autoFixable: false,
         confidence: 'medium' as const,
       },

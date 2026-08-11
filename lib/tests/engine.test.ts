@@ -614,6 +614,23 @@ describe('ReviewEngine', () => {
         expect(result.issues).toHaveLength(1);
         expect(result.stats.total).toBe(1);
       });
+
+      it('does not report ready:true when every batch and synthesis fail', async () => {
+        mockMCPConnect.mockResolvedValue(undefined);
+        // Every batch AND the synthesis pass fail.
+        mockRunOpenCode.mockResolvedValue({
+          success: false,
+          output: '',
+          durationMs: 500,
+          tokensUsed: 0,
+        });
+
+        const result = await engine.reviewPR(batchPr);
+
+        expect(result.verdict.ready).toBe(false);
+        expect(result.verdict.reasoning).toBe('All review batches failed');
+        expect(result.summary).toContain('batches failed');
+      });
     });
 
     describe('duplicate review deduplication', () => {
