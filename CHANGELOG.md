@@ -6,6 +6,20 @@ All notable changes to this project are documented in this file.
 
 ## [v1.10.1] — 2026-08-11
 
+
+### Fixed
+
+- remove invalid secrets expression from action.yml description
+
+### Changed
+
+- [Self-Improvement] Autonomous Codebase Enhancement (#379) (#379)
+- fix(ci): add missing JSDoc params breaking doc:check on main
+
+[v1.10.1]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.10.0...v1.10.1
+
+## [v1.10.1] — 2026-08-11
+
 ### Fixed
 
 - action.yml: remove `${{ secrets.OPENCODE_API_KEY }}` from the `opencode_api_key` input description so GitHub can parse the action metadata (the `secrets` context is not valid inside `action.yml`)
