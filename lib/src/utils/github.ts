@@ -11,7 +11,7 @@ import type {
   ReviewResult,
   ReviewStrength,
 } from '../types/index.js';
-import { CircuitBreaker } from './circuit-breaker.js';
+import { CircuitBreaker, countHttpError } from './circuit-breaker.js';
 import { getLabelColor } from './label-color.js';
 import { withRetry } from './retry.js';
 import type { RetryOptions } from './retry.js';
@@ -96,6 +96,9 @@ export class GitHubHelper implements PlatformAdapter {
     successThreshold: 2,
     cooldownMs: 30000,
     name: 'GitHubHelper',
+    // Deterministic 4xx client errors (except 429) will never recover on retry,
+    // so they should not trip the circuit. 5xx and persistent 429s do.
+    shouldCountFailure: countHttpError,
   });
 
   /**
