@@ -176,6 +176,16 @@ export class ReviewEngine {
     string,
     { headSha: string; baseSha: string; timestamp: number }
   >();
+  // Reasoning strings set on `emptyResult()` by runReviewPipeline when a
+  // review pass FAILED. A result carrying one of these is NOT a genuine review
+  // and must not be cached as "already reviewed" — otherwise a transient
+  // failure would silently suppress the next trigger for the TTL. A genuine
+  // clean review ("No issues found") is NOT in this set and IS cached.
+  private static readonly REVIEW_FAILURE_SENTINELS = new Set<string>([
+    'Review execution failed',
+    'Failed to parse review output',
+    'All review agents failed',
+  ]);
 
   /**
    * @param config - Agent configuration (models, batch size, MCP servers, etc.).
@@ -227,7 +237,18 @@ export class ReviewEngine {
 
   private setInFlightReview(key: string, promise: Promise<ReviewResult>): void {
     ReviewEngine.IN_FLIGHT_REVIEWS.set(key, promise);
-    promise.finally(() => ReviewEngine.IN_FLIGHT_REVIEWS.delete(key));
+    // Delete the in-flight entry when the pipeline settles, regardless of
+    // outcome. Use an explicit .then(onOk, onErr) pair instead of .finally()
+    // so a rejecting pipeline never produces an unhandled rejection on the
+    // derived (unobserved) promise.
+    promise.then(
+      () => {
+        ReviewEngine.IN_FLIGHT_REVIEWS.delete(key);
+      },
+      () => {
+        ReviewEngine.IN_FLIGHT_REVIEWS.delete(key);
+      },
+    );
   }
 
   private isAlreadyReviewed(key: string, pr: PRContext): boolean {
@@ -246,6 +267,11 @@ export class ReviewEngine {
       baseSha: pr.baseSha ?? 'unknown-base',
       timestamp: Date.now(),
     });
+  }
+
+  private isMeaningfulReview(result: ReviewResult): boolean {
+    if (result.summary || result.issues.length > 0 || result.strengths.length > 0) return true;
+    return !ReviewEngine.REVIEW_FAILURE_SENTINELS.has(result.verdict.reasoning ?? '');
   }
 
   /**
@@ -717,7 +743,10 @@ export class ReviewEngine {
     if (dedupKey) this.setInFlightReview(dedupKey, promise);
 
     const result = await promise;
-    if (dedupKey) this.markReviewed(dedupKey, pr);
+    // Only cache a genuinely reviewed result. A failed pipeline (execution or
+    // parse error) must NOT be cached, so a retry within the TTL re-runs the
+    // review instead of being silently skipped.
+    if (dedupKey && this.isMeaningfulReview(result)) this.markReviewed(dedupKey, pr);
     const finalResult = this.attachUsage(result);
     // Fire-and-forget completion publish: heavy subscribers (e.g. meta-review)
     // must not delay the handler's review post or observe unpersisted findings.

@@ -698,6 +698,60 @@ describe('ReviewEngine', () => {
         expect(forced.summary).toBe('');
         expect(forced.issues).toHaveLength(0);
       });
+
+      it('does not cache a failed pipeline as reviewed (retry re-runs the review)', async () => {
+        const eng = makeRepoEngine();
+        mockRunOpenCode.mockResolvedValue({
+          success: false,
+          output: '',
+          durationMs: 500,
+          tokensUsed: 0,
+        });
+        const first = await eng.reviewPR(dedupPr);
+        expect(first.verdict.reasoning).toBe('Review execution failed');
+
+        const second = await eng.reviewPR(dedupPr);
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(2);
+        expect(second.verdict.reasoning).toBe('Review execution failed');
+      });
+
+      it('does not cache a parse-failure pipeline as reviewed (retry re-runs the review)', async () => {
+        const eng = makeRepoEngine();
+        mockRunOpenCode.mockResolvedValueOnce({
+          success: true,
+          output: '',
+          durationMs: 1000,
+          tokensUsed: 500,
+        });
+        mockParseJsonlFile.mockRejectedValueOnce(new Error('Parse error'));
+        const first = await eng.reviewPR(dedupPr);
+        expect(first.verdict.reasoning).toBe('Failed to parse review output');
+
+        await eng.reviewPR(dedupPr);
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(2);
+      });
+
+      it('does not leak an unhandled rejection when the review pipeline rejects', async () => {
+        const eng = makeRepoEngine();
+        // Force the pipeline to reject outright (a genuine throw, not a
+        // fallback emptyResult) so the in-flight entry's cleanup path is hit.
+        mockRunOpenCode.mockRejectedValue(new Error('boom'));
+
+        const unhandled: unknown[] = [];
+        const listener = (reason: unknown): void => {
+          unhandled.push(reason);
+        };
+        process.on('unhandledRejection', listener);
+        try {
+          await expect(eng.reviewPR(dedupPr)).rejects.toThrow('boom');
+        } finally {
+          process.off('unhandledRejection', listener);
+        }
+
+        // Allow the microtask queue to flush any leaked derived promise.
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(unhandled).toHaveLength(0);
+      });
     });
 
     describe('multi-agent review path', () => {
