@@ -650,6 +650,11 @@ export class ReviewEngine {
    * @param onBatchComplete - Optional callback invoked after each batch completes
    * (or after the single batch on the small-PR fast path) so callers can stream
    * findings progressively. Failures inside the callback never break the review.
+   * @param options - Optional behavior flags:
+   *   - `forceReview`: bypass the "already reviewed" dedup cache so an explicit
+   *     re-review (manual `/review`, autofix iteration) always runs the pipeline
+   *     against the current head SHA. Concurrent in-flight runs still share one
+   *     pipeline to avoid duplicate LLM work.
    * @returns Consolidated ReviewResult with deduplicated findings.
    */
   async reviewPR(
@@ -672,6 +677,7 @@ export class ReviewEngine {
       totalBatches: number,
       batchResult: ReviewResult,
     ) => Promise<void>,
+    options?: { forceReview?: boolean },
   ): Promise<ReviewResult> {
     // Reset telemetry so the reported usage reflects only this review invocation.
     this.telemetry = null;
@@ -686,7 +692,7 @@ export class ReviewEngine {
         this.logger.info(`Review already in-flight for ${dedupKey}, waiting...`);
         return inFlight;
       }
-      if (this.isAlreadyReviewed(dedupKey, pr)) {
+      if (!options?.forceReview && this.isAlreadyReviewed(dedupKey, pr)) {
         this.logger.info(`PR already reviewed for ${dedupKey}, skipping`);
         return emptyResult();
       }

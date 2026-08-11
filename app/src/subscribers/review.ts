@@ -81,6 +81,10 @@ export function createReviewSubscriber(
           previousHeadSha,
           bus,
           event.correlationId,
+          // A user-invoked /review command must bypass the dedup cache so it
+          // always re-reviews the current head. Auto events (opened/synchronize)
+          // keep the cache to avoid redundant re-review work.
+          { forceReview: isCommandInvoked },
         );
         if (result) {
           await recordRateLimit(

@@ -164,6 +164,7 @@ export async function handleCommand(
             undefined,
             eventBus,
             correlationId,
+            { forceReview: true },
           );
         }
         break;

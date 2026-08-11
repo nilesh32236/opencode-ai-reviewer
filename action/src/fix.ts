@@ -487,6 +487,8 @@ export async function runAutofixLoop(
       undefined,
       undefined,
       previousBotComments,
+      undefined,
+      { forceReview: true },
     );
 
     if (

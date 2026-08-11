@@ -60,6 +60,8 @@ function truncateToUtf8Bytes(text: string, maxBytes: number = MAX_CHECK_TEXT_BYT
  * @param previousHeadSha - Optional previous HEAD sha
  * @param eventBus - Optional event bus for publishing pipeline events.
  * @param correlationId - Optional correlation ID for tracing this request.
+ * @param options - Optional behavior flags:
+ *   - `forceReview`: bypass the dedup cache so an explicit `/review` always runs.
  * @returns The review result or null if review was skipped or failed.
  */
 export async function handlePRReview(
@@ -72,6 +74,7 @@ export async function handlePRReview(
   previousHeadSha?: string,
   eventBus?: EventBus,
   correlationId?: string,
+  options?: { forceReview?: boolean },
 ): Promise<ReviewResult | null> {
   const logger = new Logger('PRReview', { prNumber, repo, correlationId });
   logger.info(
@@ -225,6 +228,7 @@ export async function handlePRReview(
                 });
             }
           : undefined,
+        { forceReview: options?.forceReview ?? false },
       );
     } catch (err) {
       logger.error(

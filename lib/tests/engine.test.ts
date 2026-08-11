@@ -676,6 +676,28 @@ describe('ReviewEngine', () => {
 
         expect(mockRunOpenCode).toHaveBeenCalledTimes(2);
       });
+
+      it('bypasses the reviewed cache when forceReview is set (autofix re-review)', async () => {
+        const eng = makeRepoEngine();
+        await eng.reviewPR(dedupPr);
+        const forced = await eng.reviewPR(
+          dedupPr,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { forceReview: true },
+        );
+
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(2);
+        expect(forced.summary).toBe('');
+        expect(forced.issues).toHaveLength(0);
+      });
     });
 
     describe('multi-agent review path', () => {

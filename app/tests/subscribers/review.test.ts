@@ -56,6 +56,7 @@ describe('ReviewSubscriber', () => {
       'abcdef123456',
       bus,
       'event-corr-id',
+      { forceReview: false },
     );
   });
 
@@ -84,6 +85,7 @@ describe('ReviewSubscriber', () => {
       'fallbacksha123',
       bus,
       'event-corr-id',
+      { forceReview: false },
     );
   });
 });

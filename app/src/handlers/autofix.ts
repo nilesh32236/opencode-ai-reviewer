@@ -168,6 +168,8 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           reviewWorkingDir,
           undefined,
           previousBotComments,
+          undefined,
+          { forceReview: true },
         );
       } catch (err) {
         logger.error(
