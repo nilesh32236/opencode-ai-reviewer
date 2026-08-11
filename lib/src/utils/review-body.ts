@@ -1,6 +1,56 @@
 import type { ReviewIssue, ReviewResult, Severity, TokenUsage } from '../types/index.js';
 
 /**
+ * Compute a 0-5 merge-readiness score from a review result, modeled on
+ * Greptile's confidence score. Weighted by severity counts (critical weighs
+ * more than important/minor), the verdict, and whether the review was partial.
+ *
+ *   5 = production-ready     4 = minor polish  3 = address feedback first
+ *   2 = significant bugs     0-1 = critical problems / unreviewed
+ *
+ * @param result - The review result to score.
+ * @returns An integer 0-5.
+ */
+export function computeMergeScore(result: ReviewResult): number {
+  if (!result || result.verdict.ready === false || result.skipped) return 0;
+  const stats = result.stats ?? {
+    total: 0,
+    critical: 0,
+    important: 0,
+    minor: 0,
+  };
+  const critical = stats.critical ?? 0;
+  const important = stats.important ?? 0;
+  const minor = stats.minor ?? 0;
+
+  // A partial review (failed batches/agents) was never fully verified, so it
+  // can never be "merge-ready" — score it low regardless of what was parsed.
+  if ((result.failedBatches ?? 0) > 0 || (result.failedAgents ?? 0) > 0) {
+    return 1;
+  }
+
+  if (critical > 0) return 1;
+  if (important > 0) {
+    // Multiple important issues keep the score low; one important issue is a
+    // "address before merge" signal.
+    return important >= 2 ? 2 : 3;
+  }
+  if (minor > 0) return 4;
+  return 5;
+}
+
+/**
+ * Render a merge-readiness score as a short markdown line.
+ * @param score - The 0-5 score.
+ * @returns A markdown string like "**Merge-readiness:** 🟢 5/5".
+ */
+export function formatMergeScore(score: number): string {
+  const badge =
+    score >= 5 ? '🟢' : score >= 4 ? '🟢' : score >= 3 ? '🟡' : score >= 2 ? '🟠' : '🔴';
+  return `${badge} ${score}/5`;
+}
+
+/**
  * Get an emoji badge aligned with a finding's severity.
  * @param severity - Severity of the issue.
  * @returns Emoji string representing the severity.
@@ -133,6 +183,8 @@ export function buildReviewBody(result: ReviewResult): string {
     result.summary,
     '',
     `**Ready to merge?** ${result.verdict.ready}`,
+    '',
+    `**Merge-readiness:** ${formatMergeScore(computeMergeScore(result))}`,
     '',
     `**Reasoning:** ${result.verdict.reasoning}`,
     '',

@@ -69,6 +69,23 @@ describe('prompt-builder', () => {
     expect(prompt).toContain('Use strict equality checks');
   });
 
+  it('injects repository review rules when provided', () => {
+    const prompt = buildReviewPrompt({ maxFilesPerBatch: 3 }, '## PR Context\n...', {
+      repoRulesContext: 'Always use parameterized queries. Never use eval.',
+    });
+    expect(prompt).toContain('## Repository Review Rules');
+    expect(prompt).toContain('Always use parameterized queries');
+    expect(prompt).toContain('authoritative');
+  });
+
+  it('injects commit messages when provided', () => {
+    const prompt = buildReviewPrompt({ maxFilesPerBatch: 3 }, '## PR Context\n...', {
+      commitMessages: '- feat: add payment webhook\n- fix: validate email input',
+    });
+    expect(prompt).toContain('## Commits in this PR');
+    expect(prompt).toContain('fix: validate email input');
+  });
+
   it('buildFixPrompt returns a non-empty string', () => {
     const prompt = buildFixPrompt(
       { reviewPromptFile: '', reviewPromptExtra: '', maxFilesPerBatch: 3, projectContext: '' },

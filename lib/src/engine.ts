@@ -1002,6 +1002,26 @@ export class ReviewEngine {
       }
     }
 
+    // Repo-defined review rules (AGENTS.md/CLAUDE.md/GEMINI.md) and the PR's
+    // commit list are gathered once and threaded into every review path so the
+    // reviewer enforces the team's own conventions and can judge intent vs code.
+    let repoRulesContext: string | undefined;
+    let commitMessages: string | undefined;
+    try {
+      repoRulesContext = await this.buildRepoRulesContext(workDir, files);
+    } catch (err) {
+      this.logger.warn(
+        `Failed to build repository rules context: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    try {
+      commitMessages = await this.buildCommitMessages(pr, workDir);
+    } catch (err) {
+      this.logger.warn(
+        `Failed to build commit-message context: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
     // Run configured linters as pre-processing step
     const linterResults = await this.runLinters(files, workDir);
 
@@ -1073,6 +1093,8 @@ export class ReviewEngine {
         scaIssues,
         testGapResult,
         onBatchComplete,
+        repoRulesContext,
+        commitMessages,
       );
     }
 
@@ -1102,6 +1124,8 @@ export class ReviewEngine {
           codebaseIndexContext,
           blameAware: blameData !== undefined && blameData.size > 0,
           testGapContext,
+          repoRulesContext,
+          commitMessages,
           languages: detectLanguages(
             files
               .map((f) => f?.path)
@@ -1268,6 +1292,8 @@ export class ReviewEngine {
               codebaseIndexContext: batchCodebaseContext,
               blameAware: batchBlameData !== undefined && batchBlameData.size > 0,
               testGapContext: this.filterTestGapContext(testGapResult, batch),
+              repoRulesContext,
+              commitMessages,
               languages: detectLanguages(
                 batch
                   .map((f) => f?.path)
@@ -1626,6 +1652,8 @@ export class ReviewEngine {
       totalBatches: number,
       batchResult: ReviewResult,
     ) => Promise<void>,
+    repoRulesContext?: string,
+    commitMessages?: string,
   ): Promise<ReviewResult> {
     const categories = this.getActiveAgentCategories();
     this.logger.info(
@@ -1660,6 +1688,8 @@ export class ReviewEngine {
           budgetMode,
           totalDiffLines,
           testGapResult,
+          repoRulesContext,
+          commitMessages,
         ),
       ),
     );
@@ -1810,6 +1840,8 @@ export class ReviewEngine {
     budgetMode?: ReviewBudgetMode,
     totalDiffLines?: number,
     testGapResult?: TestGapResult,
+    repoRulesContext?: string,
+    commitMessages?: string,
   ): Promise<AgentResult> {
     const agentConfig = this.config.multiAgent?.agents?.[category] as
       | MultiAgentAgentConfig
@@ -1897,6 +1929,8 @@ export class ReviewEngine {
           falsePositiveRules,
           previousFindings,
           previousBotComments,
+          repoRulesContext,
+          commitMessages,
         ),
         budgetMode,
         totalDiffLines,
@@ -2092,6 +2126,8 @@ export class ReviewEngine {
       body: string;
       commentId: number;
     }>,
+    repoRulesContext?: string,
+    commitMessages?: string,
   ): string {
     const parts: string[] = [batchContext];
 
@@ -2133,6 +2169,18 @@ export class ReviewEngine {
       for (const rule of falsePositiveRules) {
         parts.push(`- ${rule}`);
       }
+    }
+    if (repoRulesContext) {
+      parts.push(
+        '\n\n## Repository Review Rules\n\nThe repository defines its own review rules and coding conventions (from AGENTS.md/CLAUDE.md/GEMINI.md or a rules file). Treat these as authoritative — enforce them:',
+      );
+      parts.push(repoRulesContext.slice(0, 32_000));
+    }
+    if (commitMessages) {
+      parts.push(
+        "\n\n## Commits in this PR\n\nThe commit messages below capture the author's intent. Use them to judge whether the changes implement what the commits claim:",
+      );
+      parts.push(commitMessages.slice(0, 8_000));
     }
     if (lessons && lessons.length > 0) {
       parts.push(
@@ -4765,6 +4813,80 @@ export class ReviewEngine {
     }
 
     return result;
+  }
+
+  /**
+   * Read repository-defined review rules/conventions from AGENTS.md, CLAUDE.md,
+   * GEMINI.md, or a root `RULES.md`, scoped to the repo root. These become a
+   * `## Repository Review Rules` prompt section so the reviewer enforces the
+   * team's own standards (competitors: CodeRabbit path_instructions, Qodo
+   * REVIEW.md, Copilot AGENTS.md). Degrades gracefully to undefined.
+   * @param workDir - The working directory of the review run.
+   * @param files - The changed files (used to prefer rules files near changed paths).
+   * @returns Combined markdown rules content, or undefined when none found.
+   */
+  private async buildRepoRulesContext(
+    workDir: string,
+    files: PRContext['changedFiles'],
+  ): Promise<string | undefined> {
+    const candidateNames = ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md', 'RULES.md'];
+    try {
+      const root = await this.resolveCodebaseRoot(workDir);
+      // Only rules files in the repo root are considered to keep the prompt
+      // deterministic and bounded. (Per-path scoping is a follow-up.)
+      const sections: string[] = [];
+      for (const name of candidateNames) {
+        const p = path.join(root, name);
+        if (existsSync(p)) {
+          const content = readFileSync(p, 'utf-8').slice(0, 16_000);
+          if (content.trim()) {
+            sections.push(`### ${name} (${p})`);
+            sections.push('');
+            sections.push(content);
+            sections.push('');
+          }
+        }
+      }
+      if (sections.length === 0) return undefined;
+      sections.unshift(
+        'The following repository rules and conventions were detected. Treat them as authoritative for this review:',
+      );
+      sections.push('');
+      return sections.join('\n');
+    } catch (err) {
+      this.logger.warn(
+        `buildRepoRulesContext failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * Build a compact `git log --oneline base..head` commit list for the PR so the
+   * reviewer can judge whether the changes implement what the commit messages
+   * claim (author intent). Degrades gracefully to undefined (e.g. shallow clones).
+   * @param pr - Pull request context.
+   * @param workDir - The working directory of the review run.
+   * @returns A markdown commit list, or undefined when git is unavailable.
+   */
+  private async buildCommitMessages(pr: PRContext, workDir: string): Promise<string | undefined> {
+    try {
+      const head = pr.headRef || pr.headSha;
+      if (!head) return undefined;
+      const base = pr.baseSha || pr.baseRef;
+      const args = base
+        ? ['log', '--oneline', '--no-merges', `${base}..${head}`]
+        : ['log', '--oneline', '--no-merges', '-20', head];
+      const out = await this.execGit(args, workDir);
+      if (!out) return undefined;
+      const lines = out.split('\n').slice(0, 30);
+      return lines.map((l) => `- ${l}`).join('\n');
+    } catch (err) {
+      this.logger.warn(
+        `buildCommitMessages failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return undefined;
+    }
   }
 }
 
