@@ -19,6 +19,16 @@ import { getLabelColor } from './label-color.js';
 import { withRetry } from './retry.js';
 import { buildReviewBody } from './review-body.js';
 
+/**
+ * Single-flight registry for marker-based comment upserts (postOrUpdateComment),
+ * shared across GitLabAdapter instances so concurrent webhook events collapse
+ * onto one create-or-update instead of racing read-then-write.
+ */
+const commentUpserts = new Map<
+  string,
+  Promise<{ action: 'created' | 'updated' | 'failed'; commentId: number }>
+>();
+
 /** GitLab adapter. */
 export class GitLabAdapter implements PlatformAdapter {
   private circuitBreaker = new CircuitBreaker({
@@ -726,12 +736,30 @@ export class GitLabAdapter implements PlatformAdapter {
     marker: string,
     body: string,
   ): Promise<{ action: 'created' | 'updated' | 'failed'; commentId: number }> {
+    // Single-flight per (issue, marker): the read-then-write below is not atomic
+    // under concurrent webhook events; share one in-flight upsert so duplicate
+    // marker comments are never created.
+    const key = `${issueNumber}\u0000${marker}`;
+    const existing = commentUpserts.get(key);
+    if (existing) return existing;
+    const promise = this.doPostOrUpdateComment(issueNumber, marker, body).finally(() => {
+      commentUpserts.delete(key);
+    });
+    commentUpserts.set(key, promise);
+    return promise;
+  }
+
+  private async doPostOrUpdateComment(
+    issueNumber: number,
+    marker: string,
+    body: string,
+  ): Promise<{ action: 'created' | 'updated' | 'failed'; commentId: number }> {
     try {
       const markedBody = `${marker}\n\n${body}`;
 
       const allComments = await this.paginate<{ id: number; body: string }>(
         `/issues/${issueNumber}/notes`,
-        { perPage: 100, maxPages: 5, throwOnError: true },
+        { perPage: 100, maxPages: 10, throwOnError: true },
       );
 
       const existing = allComments.find((c) => c.body?.startsWith(marker));

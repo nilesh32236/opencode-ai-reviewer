@@ -19,6 +19,17 @@ import { buildReviewBody } from './review-body.js';
 import { gatherReviewThread } from './review-thread.js';
 import type { ThreadComment } from './review-thread.js';
 
+/**
+ * Single-flight registry for marker-based comment upserts (postOrUpdateComment).
+ * Shared across GitHubHelper instances so concurrent webhook events for the same
+ * issue/marker collapse onto one create-or-update instead of racing read-then-
+ * write. Entries are removed when the upsert settles.
+ */
+const commentUpserts = new Map<
+  string,
+  Promise<{ action: 'created' | 'updated' | 'failed'; commentId: number }>
+>();
+
 /** Paginated result wrapper for API responses. */
 export interface PaginatedResult<T> {
   items: T[];
@@ -884,12 +895,32 @@ export class GitHubHelper implements PlatformAdapter {
     marker: string,
     body: string,
   ): Promise<{ action: 'created' | 'updated' | 'failed'; commentId: number }> {
+    // Single-flight per (issue, marker): the read-then-write below is not atomic,
+    // so two concurrent callers (e.g. two webhook events updating the same
+    // "review in progress" marker) could both read "no marker" and both POST,
+    // leaving duplicate status comments. Sharing one in-flight upsert promise
+    // collapses concurrent callers onto a single create-or-update.
+    const key = `${issueNumber}\u0000${marker}`;
+    const existing = commentUpserts.get(key);
+    if (existing) return existing;
+    const promise = this.doPostOrUpdateComment(issueNumber, marker, body).finally(() => {
+      commentUpserts.delete(key);
+    });
+    commentUpserts.set(key, promise);
+    return promise;
+  }
+
+  private async doPostOrUpdateComment(
+    issueNumber: number,
+    marker: string,
+    body: string,
+  ): Promise<{ action: 'created' | 'updated' | 'failed'; commentId: number }> {
     try {
       const markedBody = `${marker}\n\n${body}`;
 
       const allComments = await this.paginate<{ id: number; body: string }>(
         `/issues/${issueNumber}/comments`,
-        { perPage: 100, maxPages: 5, throwOnError: true },
+        { perPage: 100, maxPages: 10, throwOnError: true },
       );
 
       const existing = allComments.find((c) => c.body?.startsWith(marker));

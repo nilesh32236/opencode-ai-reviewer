@@ -957,6 +957,33 @@ diff --git a/deleted.ts b/deleted.ts
 
       await expect(helper.postOrUpdateComment(1, marker, 'body')).rejects.toThrow('GitHub API 500');
     });
+
+    it('collapses concurrent upserts for the same marker into one comment', async () => {
+      let postCount = 0;
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+
+      fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+        if (url.includes('/issues/1/comments') && options?.method === 'POST') {
+          postCount++;
+          await gate;
+          return mockResponse({ body: { id: 999 } });
+        }
+        return mockResponse({ body: [] });
+      });
+
+      const first = helper.postOrUpdateComment(1, marker, 'New review');
+      const second = helper.postOrUpdateComment(1, marker, 'New review');
+      release();
+      const [r1, r2] = await Promise.all([first, second]);
+
+      expect(postCount).toBe(1);
+      expect(r1.action).toBe('created');
+      expect(r2.action).toBe('created');
+      expect(r2.commentId).toBe(r1.commentId);
+    });
   });
 
   describe('replyToReviewComment', () => {
