@@ -827,6 +827,37 @@ describe('ReviewEngine', () => {
         expect(result.verdict.reasoning).toBe('Merged agent findings');
       });
 
+      it('emits a streaming batch per completed agent in multi-agent mode', async () => {
+        const eng = makeMultiAgentEngine({ enabled: false });
+        mockRunOpenCode.mockResolvedValue({
+          success: true,
+          output: '',
+          durationMs: 500,
+          tokensUsed: 10,
+        });
+        vi.mocked(fs.promises.readFile).mockImplementation(async () => agentOutput);
+
+        const batches: number[] = [];
+        await eng.reviewPR(
+          agentPr,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          async (batchIndex, totalBatches) => {
+            batches.push(batchIndex);
+            expect(totalBatches).toBe(1);
+          },
+        );
+
+        expect(batches).toHaveLength(1);
+        expect(batches[0]).toBe(0);
+      });
+
       it('falls back to merged findings when the synthesis pass fails', async () => {
         const eng = makeMultiAgentEngine();
         mockRunOpenCode.mockImplementation(

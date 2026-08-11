@@ -187,6 +187,23 @@ export async function runReview(
     core.warning('Failed to post review to GitHub');
   }
 
+  // Flip the streaming progress marker to a terminal state so a "Batches x/y
+  // complete" comment does not stay on the PR indefinitely after the review.
+  if (streamEnabled) {
+    try {
+      await gh.postOrUpdateComment(
+        prNumber,
+        '<!-- review-stream-progress -->',
+        '## ✅ Review In Progress\n\n**Streaming complete** — all findings posted. See the review above.',
+      );
+    } catch (err: unknown) {
+      new Logger('Review').warn(
+        `Failed to update stream-progress marker: ${err instanceof Error ? err.message : String(err)}`,
+        { operation: 'review.stream-finalize', prNumber },
+      );
+    }
+  }
+
   // Attach comment IDs to issues for future tracking
   if (reviewResult.commentIds) {
     for (const issue of result.issues) {

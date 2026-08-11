@@ -1072,6 +1072,7 @@ export class ReviewEngine {
         previousBotComments,
         scaIssues,
         testGapResult,
+        onBatchComplete,
       );
     }
 
@@ -1620,6 +1621,11 @@ export class ReviewEngine {
     }>,
     scaIssues?: ReviewIssue[],
     testGapResult?: TestGapResult,
+    onBatchComplete?: (
+      batchIndex: number,
+      totalBatches: number,
+      batchResult: ReviewResult,
+    ) => Promise<void>,
   ): Promise<ReviewResult> {
     const categories = this.getActiveAgentCategories();
     this.logger.info(
@@ -1681,6 +1687,39 @@ export class ReviewEngine {
         );
       } else {
         this.logger.warn(`Agent "${result.agent}" failed: ${result.error ?? 'unknown error'}`);
+      }
+    }
+
+    // Streaming hook: emit one batch per completed agent category so callers
+    // with streamComments enabled post findings progressively instead of only
+    // after the full multi-agent run settles. Failures never break the pipeline.
+    if (onBatchComplete) {
+      for (let idx = 0; idx < agentResults.length; idx++) {
+        const agent = agentResults[idx];
+        const batchResult: ReviewResult = {
+          summary: `Agent "${agent.agent}" findings`,
+          verdict: {
+            ready: false,
+            reasoning: '',
+            autoFixable: false,
+            confidence: 'medium',
+          },
+          strengths: agent.strengths,
+          issues: agent.findings,
+          stats: {
+            total: agent.findings.length,
+            critical: agent.findings.filter((f) => f.severity === 'critical').length,
+            important: agent.findings.filter((f) => f.severity === 'important').length,
+            minor: agent.findings.filter((f) => f.severity === 'minor').length,
+          },
+          rawLines: agent.rawOutput ? [agent.rawOutput] : [],
+          failedLines: 0,
+        };
+        await onBatchComplete(idx, agentResults.length, batchResult).catch((err) => {
+          this.logger.warn(
+            `Streaming batch callback failed for agent "${agent.agent}": ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
       }
     }
 

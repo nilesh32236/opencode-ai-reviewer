@@ -175,6 +175,7 @@ export async function handlePRReview(
     let result: ReviewResult;
     const streamedIssueKeys = new Set<string>();
     let streamedFindingCount = 0;
+    const streamEnabled = effectiveConfig.review.streamComments === true;
     try {
       try {
         await gh.postOrUpdateComment(
@@ -187,8 +188,6 @@ export async function handlePRReview(
           `Failed to post review-in-progress comment: ${err instanceof Error ? err.message : err}`,
         );
       }
-
-      const streamEnabled = effectiveConfig.review.streamComments === true;
 
       result = await engine.reviewPR(
         pr,
@@ -350,6 +349,19 @@ export async function handlePRReview(
         logger.warn(
           `Failed to post review-complete comment: ${err instanceof Error ? err.message : err}`,
         );
+      }
+      if (streamEnabled) {
+        try {
+          await gh.postOrUpdateComment(
+            prNumber,
+            '<!-- review-stream-progress -->',
+            '## ✅ Review In Progress\n\n**Streaming complete** — all findings posted. See the review above.',
+          );
+        } catch (err) {
+          logger.warn(
+            `Failed to update stream-progress marker: ${err instanceof Error ? err.message : err}`,
+          );
+        }
       }
 
       // Best-effort Slack/Teams notification with the review summary.
