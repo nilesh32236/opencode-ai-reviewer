@@ -88,4 +88,40 @@ describe('ReviewSubscriber', () => {
       { forceReview: false },
     );
   });
+
+  it('serializes concurrent events for the same PR into one review invocation', async () => {
+    const bus: EventBus = new RealEventBus();
+    const sub = createReviewSubscriber({} as LearningStore, bus, undefined, DEFAULT_CONFIG);
+
+    let resolveHandler: (value: unknown) => void = () => {};
+    mockedHandlePRReview.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveHandler = resolve;
+        }),
+    );
+
+    const first = sub.handle(makeSynchronizeEvent(42, { before: 'abcdef123456' }));
+    // Allow the first invocation to reach the in-flight registration.
+    await new Promise((r) => setTimeout(r, 5));
+    const second = sub.handle(makeSynchronizeEvent(42, { before: 'abcdef123456' }));
+
+    expect(mockedHandlePRReview).toHaveBeenCalledTimes(1);
+
+    resolveHandler(null);
+    await Promise.all([first, second]);
+
+    expect(mockedHandlePRReview).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows a subsequent event after the previous run finished', async () => {
+    const bus: EventBus = new RealEventBus();
+    const sub = createReviewSubscriber({} as LearningStore, bus, undefined, DEFAULT_CONFIG);
+    mockedHandlePRReview.mockResolvedValue(null);
+
+    await sub.handle(makeSynchronizeEvent(42, { before: 'abcdef123456' }));
+    await sub.handle(makeSynchronizeEvent(42, { before: 'abcdef123456' }));
+
+    expect(mockedHandlePRReview).toHaveBeenCalledTimes(2);
+  });
 });

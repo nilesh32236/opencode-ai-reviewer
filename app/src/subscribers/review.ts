@@ -27,6 +27,11 @@ export function createReviewSubscriber(
   config: AgentConfig,
 ): Subscriber {
   const logger = new Logger('ReviewSubscriber');
+  // Single-flight map: one in-flight review handler per (repo, prNumber) so two
+  // concurrent events for the same PR (e.g. pr.synchronize + /review comment)
+  // serialize instead of both posting a review. The joining invocation awaits
+  // the first, then no-ops — the engine's dedup marks the join as `skipped`.
+  const inFlightHandlers = new Map<string, Promise<unknown>>();
   return {
     name: 'ReviewSubscriber',
     subscribedEvents: ['pr.opened', 'pr.synchronize', 'comment.created', 'review_comment.created'],
@@ -71,31 +76,47 @@ export function createReviewSubscriber(
               ((evPayload.pull_request as Record<string, unknown> | undefined)?.before as string)
             : undefined;
 
-        const result = await handlePRReview(
-          prNumber,
-          event.repo || '',
-          getToken(),
-          config,
-          learningStore,
-          undefined,
-          previousHeadSha,
-          bus,
-          event.correlationId,
-          // A user-invoked /review command must bypass the dedup cache so it
-          // always re-reviews the current head. Auto events (opened/synchronize)
-          // keep the cache to avoid redundant re-review work.
-          { forceReview: isCommandInvoked },
-        );
-        if (result) {
-          await recordRateLimit(
-            rateLimiter,
-            event,
-            'command',
-            'review',
-            reservation,
-            result.usage?.totalTokens,
-          );
+        // Serialize concurrent events for the same PR. A joining event waits
+        // for the in-flight handler and then no-ops; only the first invocation
+        // actually reviews (its engine run is not dedup-skipped).
+        const key = `${event.repo || ''}#${prNumber}`;
+        const existing = inFlightHandlers.get(key);
+        if (existing) {
+          logger.info(`Review already in progress for ${key} — joining existing run`);
+          await existing;
+          return;
         }
+        const handler = (async () => {
+          const result = await handlePRReview(
+            prNumber,
+            event.repo || '',
+            getToken(),
+            config,
+            learningStore,
+            undefined,
+            previousHeadSha,
+            bus,
+            event.correlationId,
+            // A user-invoked /review command must bypass the dedup cache so it
+            // always re-reviews the current head. Auto events (opened/synchronize)
+            // keep the cache to avoid redundant re-review work.
+            { forceReview: isCommandInvoked },
+          );
+          if (result) {
+            await recordRateLimit(
+              rateLimiter,
+              event,
+              'command',
+              'review',
+              reservation,
+              result.usage?.totalTokens,
+            );
+          }
+        })().finally(() => {
+          inFlightHandlers.delete(key);
+        });
+        inFlightHandlers.set(key, handler);
+        await handler;
       } catch (err) {
         logger.error(`ReviewSubscriber failed: ${err instanceof Error ? err.message : err}`, {
           correlationId: event.correlationId,
