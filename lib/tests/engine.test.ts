@@ -753,6 +753,32 @@ describe('ReviewEngine', () => {
         expect(mockRunOpenCode).toHaveBeenCalledTimes(2);
       });
 
+      it('does not cache an all-batches-failed review (retry re-runs the pipeline)', async () => {
+        const eng = makeRepoEngine();
+        const multiFilePr = makePRContext({
+          number: 904,
+          headSha: 'multi-batch-hash',
+          changedFiles: [
+            { path: 'src/a.ts', status: 'modified', additions: 10, deletions: 0 },
+            { path: 'src/b.ts', status: 'modified', additions: 10, deletions: 0 },
+            { path: 'src/c.ts', status: 'modified', additions: 10, deletions: 0 },
+            { path: 'src/d.ts', status: 'modified', additions: 10, deletions: 0 },
+          ],
+        });
+        mockRunOpenCode.mockResolvedValue({
+          success: false,
+          output: '',
+          durationMs: 500,
+          tokensUsed: 0,
+        });
+        const first = await eng.reviewPR(multiFilePr);
+        expect(first.verdict.reasoning).toBe('All review batches failed');
+
+        await eng.reviewPR(multiFilePr);
+        // Second run re-runs the pipeline (the failure must NOT be cached).
+        expect(mockRunOpenCode.mock.calls.length).toBeGreaterThanOrEqual(4);
+      });
+
       it('does not leak an unhandled rejection when the review pipeline rejects', async () => {
         const eng = makeRepoEngine();
         // Force the pipeline to reject outright (a genuine throw, not a

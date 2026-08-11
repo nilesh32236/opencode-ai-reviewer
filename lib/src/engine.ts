@@ -185,6 +185,7 @@ export class ReviewEngine {
     'Review execution failed',
     'Failed to parse review output',
     'All review agents failed',
+    'All review batches failed',
   ]);
 
   /**
@@ -270,8 +271,13 @@ export class ReviewEngine {
   }
 
   private isMeaningfulReview(result: ReviewResult): boolean {
-    if (result.summary || result.issues.length > 0 || result.strengths.length > 0) return true;
-    return !ReviewEngine.REVIEW_FAILURE_SENTINELS.has(result.verdict.reasoning ?? '');
+    // Check failure sentinels FIRST: a failed pipeline (execution/parse/all
+    // batches failed) must never be cached as "already reviewed", even when its
+    // fallback summary is truthy (e.g. "All N review batches failed — PR was
+    // not reviewed"). The content short-circuit below would otherwise treat
+    // that sentinel message as a meaningful review.
+    if (ReviewEngine.REVIEW_FAILURE_SENTINELS.has(result.verdict.reasoning ?? '')) return false;
+    return true;
   }
 
   /**
@@ -1008,7 +1014,7 @@ export class ReviewEngine {
     let repoRulesContext: string | undefined;
     let commitMessages: string | undefined;
     try {
-      repoRulesContext = await this.buildRepoRulesContext(workDir, files);
+      repoRulesContext = await this.buildRepoRulesContext(workDir);
     } catch (err) {
       this.logger.warn(
         `Failed to build repository rules context: ${err instanceof Error ? err.message : String(err)}`,
@@ -1475,7 +1481,12 @@ export class ReviewEngine {
       if (allBatchesFailed) {
         finalResult = {
           ...finalResult,
-          verdict: { ...finalResult.verdict, ready: false, autoFixable: false },
+          verdict: {
+            ...finalResult.verdict,
+            ready: false,
+            autoFixable: false,
+            reasoning: 'All review batches failed',
+          },
         };
       }
       if (linterResults.length > 0) {
@@ -4822,13 +4833,9 @@ export class ReviewEngine {
    * team's own standards (competitors: CodeRabbit path_instructions, Qodo
    * REVIEW.md, Copilot AGENTS.md). Degrades gracefully to undefined.
    * @param workDir - The working directory of the review run.
-   * @param files - The changed files (used to prefer rules files near changed paths).
    * @returns Combined markdown rules content, or undefined when none found.
    */
-  private async buildRepoRulesContext(
-    workDir: string,
-    files: PRContext['changedFiles'],
-  ): Promise<string | undefined> {
+  private async buildRepoRulesContext(workDir: string): Promise<string | undefined> {
     const candidateNames = ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md', 'RULES.md'];
     try {
       const root = await this.resolveCodebaseRoot(workDir);

@@ -739,7 +739,7 @@ export class GitLabAdapter implements PlatformAdapter {
     // Single-flight per (issue, marker): the read-then-write below is not atomic
     // under concurrent webhook events; share one in-flight upsert so duplicate
     // marker comments are never created.
-    const key = `${issueNumber}\u0000${marker}`;
+    const key = `${this.repo}\u0000${issueNumber}\u0000${marker}`;
     const existing = commentUpserts.get(key);
     if (existing) return existing;
     const promise = this.doPostOrUpdateComment(issueNumber, marker, body).finally(() => {

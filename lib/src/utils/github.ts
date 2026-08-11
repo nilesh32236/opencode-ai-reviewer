@@ -900,7 +900,7 @@ export class GitHubHelper implements PlatformAdapter {
     // "review in progress" marker) could both read "no marker" and both POST,
     // leaving duplicate status comments. Sharing one in-flight upsert promise
     // collapses concurrent callers onto a single create-or-update.
-    const key = `${issueNumber}\u0000${marker}`;
+    const key = `${this.repo}\u0000${issueNumber}\u0000${marker}`;
     const existing = commentUpserts.get(key);
     if (existing) return existing;
     const promise = this.doPostOrUpdateComment(issueNumber, marker, body).finally(() => {
