@@ -33,6 +33,10 @@ When writing or reviewing code in this repository, follow these patterns:
 1. **Use `withRetry()` for external API calls**: Import from `lib/src/utils/retry.ts`. All GitHub API calls should use this utility for exponential backoff and retry on transient errors (429, 5xx). Supports optional `AbortSignal` via the `signal` option for cancellation.
 2. **Use `CircuitBreaker` for repeated API calls**: Import from `lib/src/utils/circuit-breaker.ts`. Wrap external API calls that should stop being attempted after repeated failures. The circuit trips OPEN after `failureThreshold` failures, re-tries after `cooldownMs`, and requires `successThreshold` consecutive successes in HALF_OPEN to reset.
 
+   **Failure classification**: The optional `shouldCountFailure` predicate decides which thrown errors count toward the failure threshold. Errors it rejects are still re-thrown to the caller but never trip the circuit — use this to exclude deterministic errors (e.g. HTTP 4xx) that will never recover on retry. The `countHttpError` classifier is exported for HTTP-backed callers: it counts 5xx, 429 (rate limits), and unknown/network errors, but NOT other 4xx client errors. The `GitHubHelper` and `GitLabAdapter` breakers already use it.
+
+   **Observability**: `getMetrics()` returns `state`, `failureCount`, `successCount`, plus cumulative `callCount`/`tripCount` and `lastFailureAt`/`lastSuccessAt` timestamps — useful for tracking failure rate, trip count, and recovery time. Cumulative counters survive `reset()`.
+
    **Event hooks**: The `CircuitBreakerOptions` supports `onOpen`, `onClose`, and `onHalfOpen` callbacks that fire on state transitions. Use these for metrics collection, alerting, or integration with monitoring:
    ```ts
    const cb = new CircuitBreaker({

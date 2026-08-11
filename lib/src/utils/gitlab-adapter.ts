@@ -14,7 +14,7 @@ import type {
   PRContext,
   ReviewResult,
 } from '../types/index.js';
-import { CircuitBreaker } from './circuit-breaker.js';
+import { CircuitBreaker, countHttpError } from './circuit-breaker.js';
 import { getLabelColor } from './label-color.js';
 import { withRetry } from './retry.js';
 import { buildReviewBody } from './review-body.js';
@@ -26,6 +26,9 @@ export class GitLabAdapter implements PlatformAdapter {
     successThreshold: 2,
     cooldownMs: 30000,
     name: 'GitLabAdapter',
+    // Deterministic 4xx client errors (except 429) will never recover on retry,
+    // so they should not trip the circuit. 5xx and persistent 429s do.
+    shouldCountFailure: countHttpError,
   });
 
   private currentUserLogin: string | null = null;

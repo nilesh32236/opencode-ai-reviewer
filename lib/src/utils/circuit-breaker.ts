@@ -3,6 +3,24 @@ import * as core from '@actions/core';
 /** State of the circuit breaker: CLOSED (normal), OPEN (failing), HALF_OPEN (probing). */
 export type CircuitState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
 
+/** Snapshot of circuit breaker state and observability counters. */
+export interface CircuitBreakerMetrics {
+  /** Current circuit state. */
+  state: CircuitState;
+  /** Consecutive failures in the current window (reset on recovery). */
+  failureCount: number;
+  /** Consecutive successes accumulated in the HALF_OPEN probing window. */
+  successCount: number;
+  /** Total number of calls routed through the breaker (lifetime). */
+  callCount: number;
+  /** Total number of times the circuit has transitioned into OPEN (lifetime). */
+  tripCount: number;
+  /** Epoch millisecond timestamp of the last recorded failure, or null. */
+  lastFailureAt: number | null;
+  /** Epoch millisecond timestamp of the last recorded success, or null. */
+  lastSuccessAt: number | null;
+}
+
 /** Options for configuring a CircuitBreaker instance. */
 export interface CircuitBreakerOptions {
   /** Number of consecutive failures to trip the circuit (default: 5) */
@@ -13,23 +31,27 @@ export interface CircuitBreakerOptions {
   cooldownMs?: number;
   /** Name for this circuit breaker, used in log messages (default: "CircuitBreaker") */
   name?: string;
+  /**
+   * Optional predicate that classifies whether a thrown error counts as a
+   * circuit failure. When it returns false, the error is still re-thrown to
+   * the caller but does NOT increment the failure count or influence the
+   * circuit state. Use this to exclude deterministic errors that will never
+   * recover on retry (e.g. HTTP 4xx client errors) from tripping the circuit.
+   * Default: every error counts.
+   */
+  shouldCountFailure?: (err: unknown) => boolean;
   /** Called when circuit transitions from CLOSED or HALF_OPEN to OPEN */
-  onOpen?: (metrics: { state: CircuitState; failureCount: number; successCount: number }) => void;
+  onOpen?: (metrics: CircuitBreakerMetrics) => void;
   /** Called when circuit transitions from OPEN or HALF_OPEN to CLOSED */
-  onClose?: (metrics: { state: CircuitState; failureCount: number; successCount: number }) => void;
+  onClose?: (metrics: CircuitBreakerMetrics) => void;
   /** Called when circuit transitions from OPEN to HALF_OPEN after cooldown */
-  onHalfOpen?: (metrics: {
-    state: CircuitState;
-    failureCount: number;
-    successCount: number;
-  }) => void;
+  onHalfOpen?: (metrics: CircuitBreakerMetrics) => void;
 }
 
-type CircuitBreakerMetrics = { state: CircuitState; failureCount: number; successCount: number };
-
 type RequiredCircuitBreakerOptions = Required<
-  Omit<CircuitBreakerOptions, 'onOpen' | 'onClose' | 'onHalfOpen'>
+  Omit<CircuitBreakerOptions, 'onOpen' | 'onClose' | 'onHalfOpen' | 'shouldCountFailure'>
 > & {
+  shouldCountFailure?: (err: unknown) => boolean;
   onOpen?: (metrics: CircuitBreakerMetrics) => void;
   onClose?: (metrics: CircuitBreakerMetrics) => void;
   onHalfOpen?: (metrics: CircuitBreakerMetrics) => void;
@@ -51,7 +73,11 @@ export class CircuitBreaker {
   private state: CircuitState = 'CLOSED';
   private failureCount = 0;
   private successCount = 0;
+  private callCount = 0;
+  private tripCount = 0;
   private lastFailureTime = 0;
+  private lastFailureAt: number | null = null;
+  private lastSuccessAt: number | null = null;
   private options: RequiredCircuitBreakerOptions;
   private inFlightProbe = false;
 
@@ -121,19 +147,48 @@ export class CircuitBreaker {
       this.inFlightProbe = true;
     }
 
+    this.callCount++;
+
     try {
       const result = await fn();
       this.onSuccess();
       return result;
     } catch (err) {
-      this.onFailure();
+      if (this.shouldCountFailure(err)) {
+        this.onFailure();
+      }
       throw err;
     } finally {
       this.inFlightProbe = false;
     }
   }
 
+  /**
+   * Determine whether a thrown error counts toward the circuit failure
+   * threshold, honoring the optional `shouldCountFailure` classifier.
+   *
+   * @param err - The error thrown by the wrapped function.
+   * @returns True when the error should count as a failure (default).
+   */
+  private shouldCountFailure(err: unknown): boolean {
+    const classifier = this.options.shouldCountFailure;
+    if (!classifier) {
+      return true;
+    }
+    try {
+      return classifier(err);
+    } catch (classifyError) {
+      core.warning(
+        `[${this.options.name}] shouldCountFailure classifier threw: ${
+          classifyError instanceof Error ? classifyError.message : String(classifyError)
+        } — treating error as a failure`,
+      );
+      return true;
+    }
+  }
+
   private onSuccess(): void {
+    this.lastSuccessAt = Date.now();
     if (this.state === 'HALF_OPEN') {
       this.successCount++;
       if (this.successCount >= this.options.successThreshold) {
@@ -155,10 +210,12 @@ export class CircuitBreaker {
   private onFailure(): void {
     this.failureCount++;
     this.lastFailureTime = Date.now();
+    this.lastFailureAt = this.lastFailureTime;
 
     if (this.state === 'HALF_OPEN') {
       this.state = 'OPEN';
       this.successCount = 0;
+      this.tripCount++;
       core.warning(
         `[${this.options.name}] Circuit HALF_OPEN -> OPEN after failure in half-open state`,
       );
@@ -166,6 +223,7 @@ export class CircuitBreaker {
     } else if (this.state === 'CLOSED' && this.failureCount >= this.options.failureThreshold) {
       this.state = 'OPEN';
       this.successCount = 0;
+      this.tripCount++;
       core.warning(
         `[${this.options.name}] Circuit CLOSED -> OPEN after ${this.failureCount} consecutive failures`,
       );
@@ -188,15 +246,59 @@ export class CircuitBreaker {
   }
 
   /**
-   * Get current circuit breaker metrics.
+   * Get current circuit breaker metrics, including cumulative observability
+   * counters (call count, trip count) and last success/failure timestamps.
    *
-   * @returns Object containing the current state, failure count, and success count.
+   * @returns A snapshot of the current state and counters.
    */
-  getMetrics(): { state: CircuitState; failureCount: number; successCount: number } {
+  getMetrics(): CircuitBreakerMetrics {
     return {
       state: this.state,
       failureCount: this.failureCount,
       successCount: this.successCount,
+      callCount: this.callCount,
+      tripCount: this.tripCount,
+      lastFailureAt: this.lastFailureAt,
+      lastSuccessAt: this.lastSuccessAt,
     };
   }
+}
+
+/**
+ * Read the numeric HTTP status from a thrown error, if one is attached.
+ *
+ * @param err - The thrown value, which may carry a `status` property.
+ * @returns The HTTP status code, or null when not present.
+ */
+function getHttpStatus(err: unknown): number | null {
+  if (typeof err !== 'object' || err === null) {
+    return null;
+  }
+  const status = (err as { status?: unknown }).status;
+  return typeof status === 'number' && Number.isFinite(status) ? status : null;
+}
+
+/**
+ * Default `shouldCountFailure` classifier for HTTP-backed circuit breakers.
+ *
+ * Classification rules:
+ * - Unknown/network errors (no status) always count as failures.
+ * - 5xx server errors always count as failures.
+ * - 429 rate limits count as failures — a persistent rate limit indicates the
+ *   caller is hammering the API, so tripping the circuit provides backoff.
+ * - Other 4xx client errors (400, 404, 422, ...) are deterministic and will
+ *   never recover on retry, so they do NOT count toward tripping the circuit.
+ *
+ * @param err - The error thrown by the wrapped call.
+ * @returns True when the error should count toward the failure threshold.
+ */
+export function countHttpError(err: unknown): boolean {
+  const status = getHttpStatus(err);
+  if (status === null) {
+    return true;
+  }
+  if (status === 429) {
+    return true;
+  }
+  return !(status >= 400 && status < 500);
 }
