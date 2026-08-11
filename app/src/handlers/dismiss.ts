@@ -156,6 +156,36 @@ export async function handleDismissCommand(
             typeof f.line === 'number' &&
             f.line === thread.lineNumber,
         );
+      } else if (parentComment.body) {
+        // Thread-level / general comments carry no path/line. Correlate by the
+        // comment body: the bot quotes the finding message (or its essence) in
+        // the comment, so match findings whose message text appears in the
+        // comment. This keeps dismissal feedback scoped to the actual finding
+        // instead of silently dropping it (the previous no-op) or over-matching
+        // the whole PR.
+        const normalizedBody = parentComment.body.toLowerCase().replace(/[^a-z0-9\s]/g, ' ');
+        matched = findings.filter((f) => {
+          if (!f.id || typeof f.message !== 'string' || !f.message) return false;
+          const normalizedMsg = f.message
+            .toLowerCase()
+            .replace(/[^a-z0-9\s]/g, ' ')
+            .trim();
+          if (!normalizedMsg) return false;
+          // Prefer the first meaningful sentence of the message for a stable match.
+          const firstSentence = normalizedMsg.split(/\s{2,}|\.\s/)[0];
+          if (firstSentence.length >= 24 && normalizedBody.includes(firstSentence)) return true;
+          return normalizedBody.includes(normalizedMsg);
+        });
+        if (matched.length === 0) {
+          // Last resort for thread-level dismissal: record a PR-scoped signal so
+          // at least the suppression aggregation can group by message text.
+          matched = findings.filter(
+            (f) =>
+              f.id &&
+              typeof f.message === 'string' &&
+              normalizedBody.includes(f.message.toLowerCase()),
+          );
+        }
       }
     } catch (err) {
       logger.warn(

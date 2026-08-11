@@ -440,6 +440,14 @@ export async function handlePRReview(
 
     if (learningStore) {
       try {
+        // Correlate each posted inline comment back to its finding by file:line
+        // so dismissal feedback can use the exact comment_id instead of brittle
+        // file/line matching. Falls back to undefined (no correlation) when a
+        // finding had no inline comment.
+        const commentIdByAnchor = new Map<string, number>();
+        for (const c of reviewResult.commentIds ?? []) {
+          if (c.file && c.line) commentIdByAnchor.set(`${c.file}:${c.line}`, c.commentId);
+        }
         const findingsToStore = [
           ...result.issues.map((i) => ({
             prNumber,
@@ -449,6 +457,7 @@ export async function handlePRReview(
             line: i.line,
             message: i.message,
             suggestion: i.suggestion,
+            commentId: i.file && i.line ? commentIdByAnchor.get(`${i.file}:${i.line}`) : undefined,
           })),
           ...result.strengths.map((s) => ({
             prNumber,

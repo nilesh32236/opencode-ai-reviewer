@@ -7,7 +7,9 @@ import type { FindingRow } from './types.js';
 
 const DISPUTE_KEYWORDS = ['false positive', 'not an issue', 'wrong', 'incorrect', 'false alarm'];
 
-const MAX_FINDINGS = 20;
+// Aligned with dismiss.ts (MAX_FINDINGS = 1000): a dispute aimed at an older
+// finding on a busy PR (20+ findings) must still be correlatable.
+const MAX_FINDINGS = 1000;
 const DEBOUNCE_MS = 60_000;
 
 /** Matches `path/to/file.ext:12` or `file.ext:12-30` references in comment text. */
@@ -87,7 +89,7 @@ export class FeedbackSubscriber implements Subscriber {
     private readonly debounceMs = DEBOUNCE_MS,
   ) {}
 
-  private readonly lastProcessedAt = new Map<number, number>();
+  private readonly lastProcessedAt = new Map<string, number>();
 
   /**
    * Route an event to the appropriate handler based on event type.
@@ -243,12 +245,26 @@ export class FeedbackSubscriber implements Subscriber {
         line?: number;
         start_line?: number;
         original_line?: number;
+        user?: { login?: string; type?: string };
       };
       issue?: { number?: number };
     };
     const body = payload?.comment?.body || '';
     const prNumber = payload?.issue?.number || event.prNumber || 0;
     if (!prNumber || !body) return;
+
+    // Never record dispute feedback for the bot's own replies (conversational
+    // replies, dismissal acks). The bot often echoes the user's dispute words
+    // ("not an issue", "wrong") when answering, which would otherwise record a
+    // disputed signal against its own finding, inflate the false-positive rate,
+    // and (after 3 occurrences) generate a suppression rule for a genuine issue.
+    const user = payload?.comment?.user;
+    const commentUser = user?.login || '';
+    const isBot =
+      user?.type === 'Bot' ||
+      commentUser.endsWith('[bot]') ||
+      commentUser.toLowerCase().includes('opencode');
+    if (isBot) return;
 
     // Only process threaded replies to existing comments (bot review comments);
     // ignore top-level comments even when they contain dispute keywords.
@@ -260,7 +276,12 @@ export class FeedbackSubscriber implements Subscriber {
     if (parseCommand(body)) return;
 
     const now = Date.now();
-    const lastProcessed = this.lastProcessedAt.get(prNumber);
+    // Debounce per (prNumber, thread) instead of per PR: two different threads
+    // disputed within the window are both legitimate signals and must both be
+    // recorded; only rapid repeats on the SAME thread are collapsed.
+    const inReplyToId = payload.comment?.in_reply_to_id ?? 0;
+    const debounceKey = `${prNumber}#${inReplyToId}`;
+    const lastProcessed = this.lastProcessedAt.get(debounceKey);
     if (lastProcessed !== undefined && now - lastProcessed < this.debounceMs) return;
 
     const lower = body.toLowerCase();
@@ -282,18 +303,20 @@ export class FeedbackSubscriber implements Subscriber {
       // Derive a scope from the replied-to review-comment's location. GitHub
       // populates `line` (and `start_line` for multi-line ranges) on thread
       // comments; comments on the file/diff header or on outdated positions
-      // may only carry `original_line`. Fall back through those fields. When
-      // a positive line is available, scope to that line. When only `path` is
-      // known (file-only), use unbounded line bounds so any finding on that
-      // file still matches — never encode an absent line as the sentinel 0,
-      // which would silently drop real findings whose line is always > 0.
+      // may only carry `original_line`. Fall back through those fields. When a
+      // positive line is available, scope to that line. Without a positive
+      // line we deliberately do NOT expand to the whole file: a file-only
+      // scope would mark every finding on that file as disputed, poisoning
+      // suppression rules (3 such comments generate rules for every message in
+      // the file, scoped repo-wide by extension).
       const commentLine =
         payload.comment.line ?? payload.comment.original_line ?? payload.comment.start_line;
       const lineIsPositive = Number.isInteger(commentLine) && (commentLine as number) > 0;
+      if (!lineIsPositive) return;
       refs.push({
         file: payload.comment.path,
-        startLine: lineIsPositive ? (commentLine as number) : Number.MIN_SAFE_INTEGER,
-        endLine: lineIsPositive ? (commentLine as number) : Number.MAX_SAFE_INTEGER,
+        startLine: commentLine as number,
+        endLine: commentLine as number,
       });
     }
     if (refs.length === 0) return;
@@ -305,7 +328,7 @@ export class FeedbackSubscriber implements Subscriber {
     // findings for a valid scope. An earlier placement would let unscoped
     // disputes consume the debounce window and silently drop a subsequent
     // scoped dispute that arrived within debounceMs.
-    this.lastProcessedAt.set(prNumber, now);
+    this.lastProcessedAt.set(debounceKey, now);
     try {
       await this.store.recordFeedbackBatch(
         validFindings.map((f) => ({

@@ -186,7 +186,102 @@ describe('FeedbackSubscriber', () => {
     expect(fpRate).toBe(0);
   });
 
-  it('fetches at most 20 findings for feedback', async () => {
+  it("ignores the bot's own replies even when they echo dispute keywords", async () => {
+    await store.recordFinding({
+      prNumber: 1,
+      type: 'issue',
+      message: 'test',
+      file: 'src/foo.ts',
+      line: 10,
+    });
+
+    await subscriber.handle({
+      type: 'comment.created',
+      category: 'comment',
+      payload: {
+        comment: {
+          body: 'You are right — this is not an issue, my mistake.',
+          in_reply_to_id: 42,
+          path: 'src/foo.ts',
+          line: 10,
+          user: { login: 'opencode-ai-reviewer[bot]', type: 'Bot' },
+        },
+        issue: { number: 1 },
+      },
+      timestamp: Date.now(),
+      prNumber: 1,
+    });
+
+    const fpRate = await store.getFalsePositiveRate();
+    expect(fpRate).toBe(0);
+  });
+
+  it('does not mark all findings in a file as disputed from a file-only comment', async () => {
+    await store.recordFinding({
+      prNumber: 1,
+      type: 'issue',
+      message: 'unrelated',
+      file: 'src/foo.ts',
+      line: 99,
+    });
+
+    await subscriber.handle({
+      type: 'comment.created',
+      category: 'comment',
+      payload: {
+        comment: {
+          body: 'This finding is wrong',
+          in_reply_to_id: 42,
+          path: 'src/foo.ts',
+        },
+        issue: { number: 1 },
+      },
+      timestamp: Date.now(),
+      prNumber: 1,
+    });
+
+    const fpRate = await store.getFalsePositiveRate();
+    expect(fpRate).toBe(0);
+  });
+
+  it('debounces per thread so disputes on different threads both count', async () => {
+    await store.recordFinding({
+      prNumber: 1,
+      type: 'issue',
+      message: 'test',
+      file: 'src/foo.ts',
+      line: 10,
+    });
+
+    const base = {
+      type: 'comment.created' as const,
+      category: 'comment' as const,
+      comment: { path: 'src/foo.ts', line: 10 },
+      issue: { number: 1 },
+      timestamp: Date.now(),
+      prNumber: 1,
+    };
+
+    await subscriber.handle({
+      ...base,
+      payload: {
+        comment: { body: 'This is wrong', in_reply_to_id: 42, path: 'src/foo.ts', line: 10 },
+        issue: { number: 1 },
+      },
+    });
+    await subscriber.handle({
+      ...base,
+      payload: {
+        comment: { body: 'Also wrong', in_reply_to_id: 43, path: 'src/foo.ts', line: 10 },
+        issue: { number: 1 },
+      },
+    });
+
+    const breakdown = await store.getFeedbackBreakdown();
+    expect(breakdown.disputedCount).toBe(2);
+  });
+
+  it('correlates disputes against up to 1000 findings (not just the newest 20)', async () => {
     for (let i = 0; i < 30; i++) {
       await store.recordFinding({
         prNumber: 1,
@@ -214,7 +309,7 @@ describe('FeedbackSubscriber', () => {
     });
 
     const breakdown = await store.getFeedbackBreakdown();
-    expect(breakdown.disputedCount).toBe(20);
+    expect(breakdown.disputedCount).toBe(30);
   });
 
   it('debounce prevents duplicate processing within 60s', async () => {
@@ -440,7 +535,7 @@ describe('FeedbackSubscriber', () => {
     expect(unrelatedFeedback).toHaveLength(0);
   });
 
-  it('matches all findings on the file when line is absent (file-only scope)', async () => {
+  it('does NOT expand a file-only dispute to every finding on the file', async () => {
     const anyAId = await store.recordFinding({
       prNumber: 1,
       type: 'issue',
@@ -478,16 +573,15 @@ describe('FeedbackSubscriber', () => {
       prNumber: 1,
     });
 
+    // A dispute reply with no positive line must not mark every finding on the
+    // file as disputed (that would poison suppression rules repo-wide by
+    // extension). Without a line the scope is unresolvable → no feedback.
     const breakdown = await store.getFeedbackBreakdown();
-    expect(breakdown.disputedCount).toBe(2);
-    // Both findings on the referenced file are disputed; the finding on the
-    // other file is not.
-    for (const id of [anyAId, anyBId]) {
+    expect(breakdown.disputedCount).toBe(0);
+    for (const id of [anyAId, anyBId, otherId]) {
       const feedback = await store.getFeedbackForFinding(id);
-      expect(feedback.some((f) => f.signalType === 'disputed_comment')).toBe(true);
+      expect(feedback).toHaveLength(0);
     }
-    const otherFeedback = await store.getFeedbackForFinding(otherId);
-    expect(otherFeedback).toHaveLength(0);
   });
 
   it('does not consume the debounce window for an unscoped dispute (reprocessing is allowed)', async () => {
