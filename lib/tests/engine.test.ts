@@ -640,7 +640,11 @@ describe('ReviewEngine', () => {
         const [first, second] = await Promise.all([eng.reviewPR(dedupPr), eng.reviewPR(dedupPr)]);
 
         expect(mockRunOpenCode).toHaveBeenCalledTimes(1);
-        expect(first).toEqual(second);
+        // The first caller owns the pipeline; the joining caller shares the same
+        // computed result but is marked `skipped` so it does not re-post.
+        expect(first.skipped).toBeUndefined();
+        expect(second.skipped).toBe(true);
+        expect(second.issues).toEqual(first.issues);
       });
 
       it('skips a repeated review for the same PR and headSha within the TTL window', async () => {
@@ -651,6 +655,7 @@ describe('ReviewEngine', () => {
         expect(mockRunOpenCode).toHaveBeenCalledTimes(1);
         expect(second.summary).toBe('');
         expect(second.issues).toHaveLength(0);
+        expect(second.skipped).toBe(true);
       });
 
       it('does not deduplicate when no real repo context is set', async () => {

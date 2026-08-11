@@ -145,6 +145,11 @@ export async function runReview(
       : undefined,
   );
 
+  if (result?.skipped) {
+    core.info('Review deduplicated — this PR/commit was already reviewed. Skipping.');
+    return;
+  }
+
   if (!result || (!result.summary && result.issues.length === 0 && result.strengths.length === 0)) {
     core.setFailed('Review returned no meaningful content - AI model may have failed silently');
     return;

@@ -228,6 +228,25 @@ describe('handlePRReview check run reporting', () => {
     );
   });
 
+  it('does not post a duplicate review or check run when the review was deduplicated', async () => {
+    mockReviewPR.mockResolvedValue({
+      ...cleanReview(),
+      summary: '',
+      skipped: true,
+    });
+
+    const result = await handlePRReview(42, 'owner/repo', 'token', makeConfig());
+
+    expect(result).toBeNull();
+    expect(mockPostReview).not.toHaveBeenCalled();
+    expect(mockCreateCheckRun).not.toHaveBeenCalled();
+    expect(mockPostOrUpdateComment).toHaveBeenCalledWith(
+      42,
+      expect.stringContaining('review-in-progress'),
+      expect.stringContaining('already completed'),
+    );
+  });
+
   it('skips the check run when failOnSeverity is off', async () => {
     mockReviewPR.mockResolvedValue({
       ...cleanReview(),

@@ -254,6 +254,25 @@ export async function handlePRReview(
       return null;
     }
 
+    if (result.skipped) {
+      // Dedup short-circuit: this PR+head was already reviewed (or an in-flight
+      // run is doing it). Treat as an informational no-op — clear the
+      // in-progress marker and do NOT post a duplicate review or check run.
+      logger.info(`Review deduplicated for PR #${prNumber} — skipping duplicate post`);
+      try {
+        await gh.postOrUpdateComment(
+          prNumber,
+          REVIEW_IN_PROGRESS_MARKER,
+          '✅ **Review already completed** for this commit — see the existing review above.',
+        );
+      } catch (err) {
+        logger.warn(
+          `Failed to update review-in-progress marker: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+      return null;
+    }
+
     if (!result.summary && result.issues.length === 0 && result.strengths.length === 0) {
       logger.warn(`Review returned no meaningful content for PR #${prNumber}`, { prNumber, repo });
       await reportCheckRun(

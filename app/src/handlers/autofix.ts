@@ -178,6 +178,13 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         break;
       }
 
+      if (result.skipped) {
+        // forceReview was set, so a skip should not normally happen; guard
+        // defensively so a dedup short-circuit never aborts the fix loop.
+        logger.info(`Review deduplicated in iteration ${i + 1} — continuing`);
+        continue;
+      }
+
       if (!result.summary && result.issues.length === 0 && result.strengths.length === 0) {
         logger.error(`Review returned empty result in iteration ${i + 1}`);
         break;

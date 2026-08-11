@@ -491,6 +491,13 @@ export async function runAutofixLoop(
       { forceReview: true },
     );
 
+    if (result?.skipped) {
+      // forceReview was set, so a skip should not normally happen; guard
+      // defensively so a dedup short-circuit never aborts the fix loop.
+      core.info(`Review deduplicated in iteration ${i + 1} — continuing`);
+      continue;
+    }
+
     if (
       !result ||
       (!result.summary && result.issues.length === 0 && result.strengths.length === 0)

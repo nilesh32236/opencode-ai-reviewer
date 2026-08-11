@@ -716,11 +716,14 @@ export class ReviewEngine {
       const inFlight = this.getInFlightReview(dedupKey);
       if (inFlight) {
         this.logger.info(`Review already in-flight for ${dedupKey}, waiting...`);
-        return inFlight;
+        const joined = await inFlight;
+        // Mark the joined result as shared rather than re-run; callers treat a
+        // skipped/in-flight-shared result as an informational no-op for posting.
+        return { ...joined, skipped: true };
       }
       if (!options?.forceReview && this.isAlreadyReviewed(dedupKey, pr)) {
         this.logger.info(`PR already reviewed for ${dedupKey}, skipping`);
-        return emptyResult();
+        return { ...emptyResult(), skipped: true };
       }
     }
 
