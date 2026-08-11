@@ -4,6 +4,36 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.10.0] — 2026-08-11
+
+### Added
+
+- merge-readiness score + repository rules & commit context in review prompts
+- add opencode_api_key input + OPENCODE_API_KEY env forwarding
+
+### Fixed
+
+- address verification findings (finding identity, single-flight coalescing, per-agent streaming)
+- address verification findings (all-batches-failed caching, reasoning, repo-keyed upserts)
+- preserve markdown fences inside JSONL string values
+- stream findings in multi-agent mode; finalize stream-progress marker
+- resolveFixedComments keys on message, not line coordinates
+- make postOrUpdateComment race-free under concurrent webhooks
+- never green-light an unreviewed PR (all batches failed -> ready:false)
+- feedback/dismissal correctness (bot self-dispute, file-only scope, comment_id, thread dismissal)
+- serialize concurrent review events per PR in the app subscriber
+- failed streamed inline posts no longer drop the finding
+- make dedup skip a first-class no-op instead of no meaningful content
+- don't cache failed reviews; avoid unhandled rejection on dedup cleanup
+- dedup cache no longer kills autofix loop or manual /review
+
+### Changed
+
+- Merge pull request #378 from nilesh32236/improve/review-comments-and-quality
+- test: add postStreamingProgress mock to pr-review handler tests
+
+[v1.10.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.9.3...v1.10.0
+
 ## [v1.9.3] — 2026-08-11
 
 
