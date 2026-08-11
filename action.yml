@@ -31,6 +31,10 @@ inputs:
     description: 'Google Gemini API key'
     required: false
 
+  opencode_api_key:
+    description: 'OpenCode gateway API key for opencode-go/* models (e.g. opencode-go/deepseek-v4-flash). Pass a GitHub secret: ${{ secrets.OPENCODE_API_KEY }}'
+    required: false
+
   llm_default_provider:
     description: 'Default LLM provider used to prefix bare model names (e.g. "ollama" makes model "llama3" resolve to "ollama/llama3")'
     required: false

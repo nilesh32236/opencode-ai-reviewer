@@ -67,6 +67,8 @@ The following reusable workflows are shipped with the action:
 All shipped workflows are production-ready with timeouts, concurrency guards, and zero-config defaults — the GitHub Token is auto-inherited via `secrets: inherit`. See [examples/basic/review.yml](examples/basic/review.yml) and [examples/advanced/ai-suite.yml](examples/advanced/ai-suite.yml) for ready-to-copy templates that compose these reusable workflows.
 
 > **Secrets configuration:** The reusable workflows accept API keys **only via GitHub Secrets** (`secrets: inherit` or an explicit `secrets:` mapping). Configure `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `GEMINI_API_KEY` in your repository's *Settings → Secrets and variables → Actions* if you use OpenAI, Anthropic, or Gemini models. The default OpenCode model (`opencode/deepseek-v4-flash-free`) requires no external API key.
+>
+> **OpenCode gateway:** For `opencode-go/*` models (e.g. `opencode-go/deepseek-v4-flash`), configure the **`OPENCODE_API_KEY` secret** and pass it as `opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}`. The model itself is not a secret — read it from a repository **variable** so it can be changed without touching secrets: `model: ${{ vars.OPENCODE_MODEL || 'opencode-go/deepseek-v4-flash' }}` (add `OPENCODE_MODEL` under *Settings → Secrets and variables → Actions → Variables*).
 
 ### Option B: Direct Action Usage
 
@@ -92,6 +94,8 @@ jobs:
           mode: review
           github_token: ${{ secrets.GITHUB_TOKEN }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}
+          model: ${{ vars.OPENCODE_MODEL || 'opencode-go/deepseek-v4-flash' }}
 ```
 
 The Action runs `review` mode by default. Other modes: `fix`, `audit`, `analyze`, `post`, `self-heal`, `setup`, `docs`.
@@ -142,6 +146,7 @@ docs:
 | `openai_api_key`         | —                                    | OpenAI API key — supply via `${{ secrets.OPENAI_API_KEY }}` |
 | `anthropic_api_key`      | —                                    | Anthropic API key — supply via `${{ secrets.ANTHROPIC_API_KEY }}` |
 | `gemini_api_key`         | —                                    | Google Gemini API key — supply via `${{ secrets.GEMINI_API_KEY }}` |
+| `opencode_api_key`       | —                                    | OpenCode gateway key for `opencode-go/*` models — supply via `${{ secrets.OPENCODE_API_KEY }}` |
 | `review_model`           | `opencode/deepseek-v4-flash-free`    | Model for PR review                            |
 | `fix_model`              | `opencode/deepseek-v4-flash-free`    | Model for auto-fix                             |
 | `audit_model`            | `opencode/deepseek-v4-flash-free`    | Model for codebase audit                       |
