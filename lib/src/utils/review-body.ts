@@ -182,7 +182,10 @@ export function buildReviewBody(result: ReviewResult): string {
     '',
     result.summary,
     '',
-    `**Ready to merge?** ${result.verdict.ready}`,
+    // A partial review (failed batches/agents) was never fully verified, so it
+    // must never be displayed as ready to merge even when the verdict says so.
+    // This keeps the readiness line consistent with the 1/5 merge score below.
+    `**Ready to merge?** ${(result.failedBatches ?? 0) > 0 || (result.failedAgents ?? 0) > 0 ? false : result.verdict.ready}`,
     '',
     `**Merge-readiness:** ${formatMergeScore(computeMergeScore(result))}`,
     '',

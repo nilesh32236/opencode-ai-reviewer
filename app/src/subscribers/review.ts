@@ -76,15 +76,22 @@ export function createReviewSubscriber(
               ((evPayload.pull_request as Record<string, unknown> | undefined)?.before as string)
             : undefined;
 
-        // Serialize concurrent events for the same PR. A joining event waits
-        // for the in-flight handler and then no-ops; only the first invocation
-        // actually reviews (its engine run is not dedup-skipped).
+        // Serialize concurrent events for the same PR. An automatic joiner
+        // (opened/synchronize) waits for the in-flight run and then no-ops — the
+        // engine's dedup marks the join as skipped, so only one review is ever
+        // posted for concurrent auto events. An explicit /review command waits
+        // for the active run too, but then starts its OWN forced review so a
+        // user-invoked re-review is never swallowed by dedup.
         const key = `${event.repo || ''}#${prNumber}`;
         const existing = inFlightHandlers.get(key);
         if (existing) {
-          logger.info(`Review already in progress for ${key} — joining existing run`);
+          if (!isCommandInvoked) {
+            logger.info(`Review already in progress for ${key} — joining existing run`);
+            await existing;
+            return;
+          }
+          logger.info(`Review already in progress for ${key} — /review queued behind it`);
           await existing;
-          return;
         }
         const handler = (async () => {
           const result = await handlePRReview(

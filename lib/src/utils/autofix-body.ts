@@ -208,15 +208,60 @@ export async function resolveFixedComments(
   // `file:line` key alone falsely resolves a moved-but-unfixed issue (and keeps
   // a stale thread for a fixed issue that happened to land on the same line).
   // Correlate by normalized message within the same file as the primary signal,
-  // falling back to exact file:line only as a tie-breaker.
-  const currentByAnchor = new Set(currentIssues.map((i) => `${i.file}:${i.line}`));
-  const currentMessagesInFile = new Map<string, Set<string>>();
+  // falling back to exact file:line only as a tie-breaker. Correlation is
+  // strictly one-to-one: each current finding can keep at most one previous
+  // thread open, so duplicate messages cannot hold multiple old threads open.
+  //
+  // Track unmatched current findings by their file:line anchor and by
+  // (normalized file, normalized message) counts. Exact file:line matches are
+  // consumed first; a moved finding then consumes one same-file message match.
+  const currentByAnchor = new Map<string, { fileKey: string; msgKey: string }>();
+  const currentByFileMessage = new Map<string, Map<string, Set<string>>>();
   for (const issue of currentIssues) {
     if (!issue.file) continue;
+    const anchor = `${issue.file}:${issue.line}`;
     const fileKey = normalizeMessage(issue.file);
-    if (!currentMessagesInFile.has(fileKey)) currentMessagesInFile.set(fileKey, new Set());
-    currentMessagesInFile.get(fileKey)!.add(normalizeMessage(issue.message));
+    const msgKey = normalizeMessage(issue.message);
+    currentByAnchor.set(anchor, { fileKey, msgKey });
+    let byMsg = currentByFileMessage.get(fileKey);
+    if (!byMsg) {
+      byMsg = new Map();
+      currentByFileMessage.set(fileKey, byMsg);
+    }
+    let anchors = byMsg.get(msgKey);
+    if (!anchors) {
+      anchors = new Set();
+      byMsg.set(msgKey, anchors);
+    }
+    anchors.add(anchor);
   }
+
+  const consumeAnchor = (anchor: string, msgKey: string): boolean => {
+    const entry = currentByAnchor.get(anchor);
+    if (!entry) return false;
+    // Same coordinates with a different message means the original issue is
+    // gone — the exact match only counts when the message still matches.
+    if (entry.msgKey !== msgKey) return false;
+    currentByAnchor.delete(anchor);
+    currentByFileMessage.get(entry.fileKey)?.get(entry.msgKey)?.delete(anchor);
+    return true;
+  };
+
+  const consumeAnchorByLine = (anchor: string): boolean => {
+    const entry = currentByAnchor.get(anchor);
+    if (!entry) return false;
+    currentByAnchor.delete(anchor);
+    currentByFileMessage.get(entry.fileKey)?.get(entry.msgKey)?.delete(anchor);
+    return true;
+  };
+
+  const consumeMessage = (fileKey: string, msgKey: string): boolean => {
+    const anchors = currentByFileMessage.get(fileKey)?.get(msgKey);
+    if (!anchors || anchors.size === 0) return false;
+    const anchor = anchors.values().next().value as string;
+    consumeAnchorByLine(anchor);
+    return true;
+  };
 
   // Map the previous iteration's comment anchors to their finding messages so a
   // comment can be checked against the current findings by content, not only by
@@ -233,14 +278,21 @@ export async function resolveFixedComments(
     const anchor = `${prevComment.file}:${prevComment.line}`;
     const prevMessage = prevMessageByAnchor.get(anchor);
 
-    // The previous finding is still present when its message still appears in
-    // the same file (line may have shifted as fixes add/remove lines above it).
-    // Only when the previous message is unknown (could not be matched back to an
-    // issue) do we fall back to exact file:line recurrence.
-    const stillOpen =
-      prevMessage !== undefined
-        ? currentMessagesInFile.get(normalizeMessage(prevComment.file))?.has(prevMessage)
-        : currentByAnchor.has(anchor);
+    // The previous finding is still present when its file:line anchor recurs
+    // with the same message, or (moved findings) when one remaining same-file
+    // normalized-message match can be consumed. Consuming keeps the correlation
+    // one-to-one so a single current finding never keeps multiple identical
+    // threads open.
+    let stillOpen = false;
+    if (prevMessage !== undefined) {
+      stillOpen = consumeAnchor(anchor, prevMessage);
+      if (!stillOpen) {
+        stillOpen = consumeMessage(normalizeMessage(prevComment.file), prevMessage);
+      }
+    } else {
+      // No message to compare — fall back to exact file:line recurrence.
+      stillOpen = consumeAnchorByLine(anchor);
+    }
 
     if (!stillOpen) {
       try {
@@ -273,7 +325,12 @@ export async function resolveFixedComments(
   }
 }
 
-/** Normalize a message or file path for fuzzy content matching. */
+/**
+ * Normalize a message or file path for fuzzy content matching.
+ * @param text - Raw message or file path to normalize.
+ * @returns The lowercase, punctuation-stripped, whitespace-collapsed string
+ * used for fuzzy content matching.
+ */
 function normalizeMessage(text: string): string {
   return text
     .toLowerCase()

@@ -344,6 +344,45 @@ describe('FeedbackSubscriber', () => {
     expect(breakdown.disputedCount).toBe(1);
   });
 
+  it('evicts expired debounce entries so a later dispute on the same thread is processed again', async () => {
+    const tinyDebounce = 25;
+    const expiringSub = new FeedbackSubscriber(store, tinyDebounce);
+    await store.recordFinding({
+      prNumber: 9,
+      type: 'issue',
+      message: 'target',
+      file: 'src/x.ts',
+      line: 10,
+    });
+
+    const event = {
+      type: 'comment.created' as const,
+      category: 'comment' as const,
+      payload: {
+        comment: {
+          body: 'this is wrong',
+          in_reply_to_id: 42,
+          path: 'src/x.ts',
+          line: 10,
+        },
+        issue: { number: 9 },
+      },
+      timestamp: Date.now(),
+      prNumber: 9,
+    };
+
+    await expiringSub.handle(event);
+    expect((await store.getFeedbackBreakdown()).disputedCount).toBe(1);
+
+    // Wait past the (tiny) debounce window: the stale entry must be evicted so
+    // the same thread can be disputed again instead of being suppressed forever.
+    await new Promise((r) => setTimeout(r, tinyDebounce + 25));
+    await expiringSub.handle(event);
+
+    const breakdown = await store.getFeedbackBreakdown();
+    expect(breakdown.disputedCount).toBe(2);
+  });
+
   it('parses file:line from comment body to narrow feedback', async () => {
     await store.recordFinding({
       prNumber: 1,

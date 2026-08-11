@@ -26,7 +26,11 @@ import { buildReviewBody } from './review-body.js';
  */
 const commentUpserts = new Map<
   string,
-  Promise<{ action: 'created' | 'updated' | 'failed'; commentId: number }>
+  {
+    body: string;
+    pendingBody?: string;
+    promise: Promise<{ action: 'created' | 'updated' | 'failed'; commentId: number }>;
+  }
 >();
 
 /** GitLab adapter. */
@@ -736,17 +740,49 @@ export class GitLabAdapter implements PlatformAdapter {
     marker: string,
     body: string,
   ): Promise<{ action: 'created' | 'updated' | 'failed'; commentId: number }> {
-    // Single-flight per (issue, marker): the read-then-write below is not atomic
-    // under concurrent webhook events; share one in-flight upsert so duplicate
-    // marker comments are never created.
-    const key = `${this.repo}\u0000${issueNumber}\u0000${marker}`;
+    // Single-flight per (apiUrl, repo, issue, marker): the read-then-write below
+    // is not atomic under concurrent webhook events; share one in-flight upsert
+    // so duplicate marker comments are never created. The key includes apiUrl
+    // and repo so two different providers/repositories with the same issue
+    // number + marker never share (and suppress) an upsert.
+    const key = `${this.apiUrl}\u0000${this.repo}\u0000${issueNumber}\u0000${marker}`;
     const existing = commentUpserts.get(key);
-    if (existing) return existing;
-    const promise = this.doPostOrUpdateComment(issueNumber, marker, body).finally(() => {
+    if (existing) {
+      // Identical in-flight work is deduplicated; a newer body for the same
+      // marker is coalesced into a follow-up upsert once the first settles so
+      // the newest concurrent update is eventually applied.
+      if (existing.body === body) return existing.promise;
+      existing.pendingBody = body;
+      return existing.promise.then(async (first) => {
+        const pending = existing.pendingBody;
+        existing.pendingBody = undefined;
+        if (pending === undefined) return first;
+        return this.doPostOrUpdateComment(issueNumber, marker, pending);
+      });
+    }
+    const entry: {
+      body: string;
+      pendingBody?: string;
+      promise: Promise<{ action: 'created' | 'updated' | 'failed'; commentId: number }>;
+    } = {
+      body,
+      pendingBody: undefined,
+      promise: undefined as unknown as Promise<{
+        action: 'created' | 'updated' | 'failed';
+        commentId: number;
+      }>,
+    };
+    entry.promise = (async () => {
+      const first = await this.doPostOrUpdateComment(issueNumber, marker, body);
+      const pending = entry.pendingBody;
+      entry.pendingBody = undefined;
+      if (pending === undefined) return first;
+      return this.doPostOrUpdateComment(issueNumber, marker, pending);
+    })().finally(() => {
       commentUpserts.delete(key);
     });
-    commentUpserts.set(key, promise);
-    return promise;
+    commentUpserts.set(key, entry);
+    return entry.promise;
   }
 
   private async doPostOrUpdateComment(

@@ -68,7 +68,7 @@ All shipped workflows are production-ready with timeouts, concurrency guards, an
 
 > **Secrets configuration:** The reusable workflows accept API keys **only via GitHub Secrets** (`secrets: inherit` or an explicit `secrets:` mapping). Configure `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `GEMINI_API_KEY` in your repository's *Settings → Secrets and variables → Actions* if you use OpenAI, Anthropic, or Gemini models. The default OpenCode model (`opencode/deepseek-v4-flash-free`) requires no external API key.
 >
-> **OpenCode gateway:** For `opencode-go/*` models (e.g. `opencode-go/deepseek-v4-flash`), configure the **`OPENCODE_API_KEY` secret** and pass it as `opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}`. The model itself is not a secret — read it from a repository **variable** so it can be changed without touching secrets: `model: ${{ vars.OPENCODE_MODEL || 'opencode-go/deepseek-v4-flash' }}` (add `OPENCODE_MODEL` under *Settings → Secrets and variables → Actions → Variables*).
+> **OpenCode gateway:** For `opencode-go/*` models (e.g. `opencode-go/deepseek-v4-flash`), configure the **`OPENCODE_API_KEY` secret** — the shipped reusable workflows declare it in `workflow_call` and forward it automatically via `secrets: inherit`; for direct action usage pass it as `opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}`. The model itself is not a secret — read it from a repository **variable** so it can be changed without touching secrets: `model: ${{ vars.OPENCODE_MODEL || 'opencode-go/deepseek-v4-flash' }}` (add `OPENCODE_MODEL` under *Settings → Secrets and variables → Actions → Variables*).
 
 ### Option B: Direct Action Usage
 

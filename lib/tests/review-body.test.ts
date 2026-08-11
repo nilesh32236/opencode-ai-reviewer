@@ -173,13 +173,31 @@ describe('review-body', () => {
       const body = buildReviewBody(result);
       expect(body).not.toContain('Partial review');
     });
+    it('never reports a partial review as ready to merge, even when the verdict says so', () => {
+      const result: ReviewResult = {
+        summary: 'Partial result.',
+        verdict: { ready: true, reasoning: 'All good.', autoFixable: true, confidence: 'high' },
+        strengths: [],
+        issues: [],
+        stats: { total: 0, critical: 0, important: 0, minor: 0 },
+        rawLines: [],
+        failedLines: 0,
+        failedBatches: 2,
+      };
+
+      const body = buildReviewBody(result);
+      expect(body).toContain('Partial review');
+      // Readiness must agree with the 1/5 merge score for partial reviews.
+      expect(body).toContain('**Ready to merge?** false');
+      expect(body).toContain('1/5');
+    });
   });
 
   describe('computeMergeScore', () => {
     function resultWith(stats: ReviewResult['stats'], ready = true): ReviewResult {
       return {
         summary: 's',
-        verdict: { ready, reasoning: 'r' },
+        verdict: { ready, reasoning: 'r', autoFixable: false, confidence: 'high' },
         strengths: [],
         issues: [],
         stats,

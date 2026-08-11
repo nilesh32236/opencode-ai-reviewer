@@ -174,6 +174,11 @@ export async function handlePRReview(
 
     let result: ReviewResult;
     const streamedIssueKeys = new Set<string>();
+    // commentId of each successfully posted streamed inline comment, keyed by
+    // the same anchor used for final-result filtering. Streamed comments are
+    // posted via postInlineComment (not postReview), so their IDs are absent
+    // from reviewResult.commentIds and must be tracked separately.
+    const streamedCommentIds = new Map<string, number>();
     let streamedFindingCount = 0;
     const streamEnabled = effectiveConfig.review.streamComments === true;
     try {
@@ -216,6 +221,7 @@ export async function handlePRReview(
                   });
                   if (posted) {
                     streamedIssueKeys.add(key);
+                    streamedCommentIds.set(`${issue.file}:${issue.line}`, posted.commentId);
                     streamedFindingCount++;
                   } else {
                     logger.warn(
@@ -459,6 +465,12 @@ export async function handlePRReview(
         const commentIdByAnchor = new Map<string, number>();
         for (const c of reviewResult.commentIds ?? []) {
           if (c.file && c.line) commentIdByAnchor.set(`${c.file}:${c.line}`, c.commentId);
+        }
+        // Streamed inline comments were posted during the batch callback, so
+        // merge their IDs in — otherwise feedback/dismissal would have no
+        // comment_id to correlate streamed findings with.
+        for (const [anchor, commentId] of streamedCommentIds) {
+          commentIdByAnchor.set(anchor, commentId);
         }
         const findingsToStore = [
           ...result.issues.map((i) => ({

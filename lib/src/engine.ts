@@ -1,4 +1,4 @@
-import { promises as fs, existsSync, mkdirSync, readFileSync } from 'fs';
+import { promises as fs, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from 'fs';
 import type { Dirent } from 'fs';
 import * as cp from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -1490,10 +1490,13 @@ export class ReviewEngine {
         };
       }
       if (linterResults.length > 0) {
-        const deduped = this.deduplicateAgainstLinters(parsed.issues, linterResults, workDir);
-        if (deduped.length < parsed.issues.length) {
+        // Dedup from finalResult (not parsed) so the forced all-batches-failed
+        // verdict (ready:false / autoFixable:false / reasoning) is preserved
+        // when linter deduplication also rewrites the result.
+        const deduped = this.deduplicateAgainstLinters(finalResult.issues, linterResults, workDir);
+        if (deduped.length < finalResult.issues.length) {
           finalResult = {
-            ...parsed,
+            ...finalResult,
             issues: deduped,
             stats: {
               total: deduped.length,
@@ -1501,7 +1504,6 @@ export class ReviewEngine {
               important: deduped.filter((i) => i.severity === 'important').length,
               minor: deduped.filter((i) => i.severity === 'minor').length,
             },
-            ...(failedBatches > 0 ? { failedBatches } : {}),
           };
         }
       }
@@ -1675,9 +1677,42 @@ export class ReviewEngine {
     // `.opencode/agent-<category>/batch-<idx>` output directory, so the agents
     // cannot collide; concurrency is bounded inside each agent by a per-agent
     // batch limit that keeps the aggregate under MAX_BATCH_CONCURRENCY.
-    const settled = await Promise.allSettled(
-      categories.map((category) =>
-        this.runAgentCategory(
+    //
+    // Streaming hook: emit one batch per agent as it settles (not after the
+    // full allSettled) so callers with streamComments enabled post findings
+    // progressively. Callbacks fire for failed agents too (with an empty
+    // payload) and never break the pipeline.
+    const emitAgentStream = async (idx: number, agent: AgentResult): Promise<void> => {
+      if (!onBatchComplete) return;
+      const batchResult: ReviewResult = {
+        summary: `Agent "${agent.agent}" findings`,
+        verdict: {
+          ready: false,
+          reasoning: '',
+          autoFixable: false,
+          confidence: 'medium',
+        },
+        strengths: agent.strengths,
+        issues: agent.findings,
+        stats: {
+          total: agent.findings.length,
+          critical: agent.findings.filter((f) => f.severity === 'critical').length,
+          important: agent.findings.filter((f) => f.severity === 'important').length,
+          minor: agent.findings.filter((f) => f.severity === 'minor').length,
+        },
+        rawLines: agent.rawOutput ? [agent.rawOutput] : [],
+        failedLines: 0,
+      };
+      await onBatchComplete(idx, categories.length, batchResult).catch((err) => {
+        this.logger.warn(
+          `Streaming batch callback failed for agent "${agent.agent}": ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    };
+
+    const settleAgent = async (category: AgentCategory, idx: number): Promise<AgentResult> => {
+      try {
+        const value = await this.runAgentCategory(
           category,
           files,
           pr,
@@ -1701,26 +1736,30 @@ export class ReviewEngine {
           testGapResult,
           repoRulesContext,
           commitMessages,
-        ),
-      ),
+        );
+        await emitAgentStream(idx, value);
+        return value;
+      } catch (reason) {
+        const message = reason instanceof Error ? reason.message : String(reason);
+        this.logger.warn(`Agent "${category}" rejected: ${message}`);
+        const failed: AgentResult = {
+          agent: category,
+          findings: [],
+          strengths: [],
+          rawOutput: '',
+          durationMs: 0,
+          tokensUsed: 0,
+          success: false,
+          error: message,
+        };
+        await emitAgentStream(idx, failed);
+        return failed;
+      }
+    };
+
+    const agentResults = await Promise.all(
+      categories.map((category, idx) => settleAgent(category, idx)),
     );
-    const agentResults: AgentResult[] = settled.map((outcome, idx) => {
-      if (outcome.status === 'fulfilled') return outcome.value;
-      const category = categories[idx];
-      const message =
-        outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
-      this.logger.warn(`Agent "${category}" rejected: ${message}`);
-      return {
-        agent: category,
-        findings: [],
-        strengths: [],
-        rawOutput: '',
-        durationMs: 0,
-        tokensUsed: 0,
-        success: false,
-        error: message,
-      };
-    });
     for (const result of agentResults) {
       if (result.success) {
         this.logger.info(
@@ -1728,39 +1767,6 @@ export class ReviewEngine {
         );
       } else {
         this.logger.warn(`Agent "${result.agent}" failed: ${result.error ?? 'unknown error'}`);
-      }
-    }
-
-    // Streaming hook: emit one batch per completed agent category so callers
-    // with streamComments enabled post findings progressively instead of only
-    // after the full multi-agent run settles. Failures never break the pipeline.
-    if (onBatchComplete) {
-      for (let idx = 0; idx < agentResults.length; idx++) {
-        const agent = agentResults[idx];
-        const batchResult: ReviewResult = {
-          summary: `Agent "${agent.agent}" findings`,
-          verdict: {
-            ready: false,
-            reasoning: '',
-            autoFixable: false,
-            confidence: 'medium',
-          },
-          strengths: agent.strengths,
-          issues: agent.findings,
-          stats: {
-            total: agent.findings.length,
-            critical: agent.findings.filter((f) => f.severity === 'critical').length,
-            important: agent.findings.filter((f) => f.severity === 'important').length,
-            minor: agent.findings.filter((f) => f.severity === 'minor').length,
-          },
-          rawLines: agent.rawOutput ? [agent.rawOutput] : [],
-          failedLines: 0,
-        };
-        await onBatchComplete(idx, agentResults.length, batchResult).catch((err) => {
-          this.logger.warn(
-            `Streaming batch callback failed for agent "${agent.agent}": ${err instanceof Error ? err.message : String(err)}`,
-          );
-        });
       }
     }
 
@@ -4839,19 +4845,32 @@ export class ReviewEngine {
     const candidateNames = ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md', 'RULES.md'];
     try {
       const root = await this.resolveCodebaseRoot(workDir);
+      const rootReal = realpathSync(root);
       // Only rules files in the repo root are considered to keep the prompt
       // deterministic and bounded. (Per-path scoping is a follow-up.)
       const sections: string[] = [];
       for (const name of candidateNames) {
         const p = path.join(root, name);
-        if (existsSync(p)) {
-          const content = readFileSync(p, 'utf-8').slice(0, 16_000);
-          if (content.trim()) {
-            sections.push(`### ${name} (${p})`);
-            sections.push('');
-            sections.push(content);
-            sections.push('');
-          }
+        let stat: ReturnType<typeof lstatSync>;
+        try {
+          stat = lstatSync(p);
+        } catch {
+          continue; // Missing or unreadable — try the next candidate.
+        }
+        // Reject symlinks and non-regular files: a rules file must be a real
+        // file inside the repo so a PR-controlled link cannot smuggle content
+        // from (or read) arbitrary paths into the review prompt.
+        if (stat.isSymbolicLink() || !stat.isFile()) continue;
+        // Belt-and-suspenders: confirm the resolved path stays inside the repo
+        // root even when the filesystem resolves the entry elsewhere.
+        const resolved = realpathSync(p);
+        if (resolved !== rootReal && !resolved.startsWith(`${rootReal}${path.sep}`)) continue;
+        const content = readFileSync(p, 'utf-8').slice(0, 16_000);
+        if (content.trim()) {
+          sections.push(`### ${name} (${p})`);
+          sections.push('');
+          sections.push(content);
+          sections.push('');
         }
       }
       if (sections.length === 0) return undefined;
@@ -4882,7 +4901,7 @@ export class ReviewEngine {
       if (!head) return undefined;
       const base = pr.baseSha || pr.baseRef;
       const args = base
-        ? ['log', '--oneline', '--no-merges', `${base}..${head}`]
+        ? ['log', '--oneline', '--no-merges', '-30', `${base}..${head}`]
         : ['log', '--oneline', '--no-merges', '-20', head];
       const out = await this.execGit(args, workDir);
       if (!out) return undefined;

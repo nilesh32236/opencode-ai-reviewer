@@ -117,6 +117,55 @@ describe('resolveFixedComments', () => {
     expect(adapter.resolveReviewThread).toHaveBeenCalledWith('thread-1');
   });
 
+  it('keeps only one thread open when two previous findings share a message but one current finding remains', async () => {
+    const adapter = makeAdapter();
+    adapter.getReviewThreads.mockResolvedValue([
+      {
+        threadId: 'thread-1',
+        isResolved: false,
+        firstComment: {
+          commentId: 'node-1',
+          databaseId: 1,
+          body: 'issue',
+          filePath: 'src/a.ts',
+          lineNumber: 10,
+          author: 'bot',
+          createdAt: '2026-01-01T00:00:00Z',
+        },
+      },
+      {
+        threadId: 'thread-2',
+        isResolved: false,
+        firstComment: {
+          commentId: 'node-2',
+          databaseId: 2,
+          body: 'issue',
+          filePath: 'src/a.ts',
+          lineNumber: 20,
+          author: 'bot',
+          createdAt: '2026-01-01T00:00:00Z',
+        },
+      },
+    ]);
+    const previous: PreviousFindingIteration = {
+      iteration: 0,
+      issues: [makeIssue(), makeIssue({ line: 20 })],
+      commentIds: [
+        { file: 'src/a.ts', line: 10, commentId: 1, nodeId: 'node-1' },
+        { file: 'src/a.ts', line: 20, commentId: 2, nodeId: 'node-2' },
+      ],
+    };
+    // Identical messages on separate lines previously; only ONE current
+    // finding remains (moved to line 15).
+    const current = [makeIssue({ line: 15 })];
+
+    await resolveFixedComments(adapter as never, 1, [previous], current);
+
+    // One-to-one correlation: the single current finding keeps at most one
+    // identical thread open; the other must be resolved as fixed.
+    expect(adapter.resolveReviewThread).toHaveBeenCalledTimes(1);
+  });
+
   it('does nothing when there are no previous findings or comment IDs', async () => {
     const adapter = makeAdapter();
 

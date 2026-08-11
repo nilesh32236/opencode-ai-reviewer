@@ -92,6 +92,37 @@ export class FeedbackSubscriber implements Subscriber {
   private readonly lastProcessedAt = new Map<string, number>();
 
   /**
+   * Read a debounce stamp, evicting the entry once it has expired so stale
+   * reply-thread keys do not accumulate indefinitely in a long-lived process.
+   * @param key - The debounce key (prNumber#thread).
+   * @param now - Current timestamp.
+   * @returns The last processed timestamp when still inside the debounce window.
+   */
+  private readDebounce(key: string, now: number): number | undefined {
+    const last = this.lastProcessedAt.get(key);
+    if (last === undefined) return undefined;
+    if (now - last >= this.debounceMs) {
+      this.lastProcessedAt.delete(key);
+      return undefined;
+    }
+    return last;
+  }
+
+  /**
+   * Stamp a debounce key, opportunistically sweeping every already-expired
+   * entry so the registry stays bounded by the number of threads disputed
+   * within a single debounce window (a TTL cache without a background timer).
+   * @param key - The debounce key (prNumber#thread).
+   * @param now - Current timestamp.
+   */
+  private stampDebounce(key: string, now: number): void {
+    for (const [k, at] of this.lastProcessedAt) {
+      if (now - at >= this.debounceMs) this.lastProcessedAt.delete(k);
+    }
+    this.lastProcessedAt.set(key, now);
+  }
+
+  /**
    * Route an event to the appropriate handler based on event type.
    * @param event - The GitHub webhook event data.
    * @param signal - Optional abort signal to cancel handling.
@@ -281,8 +312,8 @@ export class FeedbackSubscriber implements Subscriber {
     // recorded; only rapid repeats on the SAME thread are collapsed.
     const inReplyToId = payload.comment?.in_reply_to_id ?? 0;
     const debounceKey = `${prNumber}#${inReplyToId}`;
-    const lastProcessed = this.lastProcessedAt.get(debounceKey);
-    if (lastProcessed !== undefined && now - lastProcessed < this.debounceMs) return;
+    const lastProcessed = this.readDebounce(debounceKey, now);
+    if (lastProcessed !== undefined) return;
 
     const lower = body.toLowerCase();
     const isDispute = DISPUTE_KEYWORDS.some((kw) => lower.includes(kw));
@@ -328,7 +359,7 @@ export class FeedbackSubscriber implements Subscriber {
     // findings for a valid scope. An earlier placement would let unscoped
     // disputes consume the debounce window and silently drop a subsequent
     // scoped dispute that arrived within debounceMs.
-    this.lastProcessedAt.set(debounceKey, now);
+    this.stampDebounce(debounceKey, now);
     try {
       await this.store.recordFeedbackBatch(
         validFindings.map((f) => ({

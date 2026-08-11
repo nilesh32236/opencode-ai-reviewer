@@ -28,6 +28,22 @@ function makeSynchronizeEvent(prNumber: number, payload: Record<string, unknown>
   };
 }
 
+function makeCommentCreatedEvent(prNumber: number, body: string): GitHubEvent {
+  return {
+    type: 'comment.created',
+    category: 'comment',
+    timestamp: Date.now(),
+    repo: 'owner/repo',
+    prNumber,
+    correlationId: 'cmd-corr-id',
+    payload: {
+      comment: { body, user: { login: 'octocat' } },
+      issue: { number: prNumber },
+      pull_request: { number: prNumber, user: { login: 'octocat' } },
+    },
+  };
+}
+
 describe('ReviewSubscriber', () => {
   beforeEach(() => {
     process.env.GITHUB_TOKEN = 'test-token';
@@ -94,16 +110,22 @@ describe('ReviewSubscriber', () => {
     const sub = createReviewSubscriber({} as LearningStore, bus, undefined, DEFAULT_CONFIG);
 
     let resolveHandler: (value: unknown) => void = () => {};
+    let resolveFirstInvocation: () => void = () => {};
+    const firstInvocation = new Promise<void>((resolve) => {
+      resolveFirstInvocation = resolve;
+    });
     mockedHandlePRReview.mockImplementation(
       () =>
         new Promise((resolve) => {
+          resolveFirstInvocation();
           resolveHandler = resolve;
         }),
     );
 
     const first = sub.handle(makeSynchronizeEvent(42, { before: 'abcdef123456' }));
-    // Allow the first invocation to reach the in-flight registration.
-    await new Promise((r) => setTimeout(r, 5));
+    // Wait until the first invocation has actually registered as in-flight
+    // instead of guessing with a fixed timeout.
+    await firstInvocation;
     const second = sub.handle(makeSynchronizeEvent(42, { before: 'abcdef123456' }));
 
     expect(mockedHandlePRReview).toHaveBeenCalledTimes(1);
@@ -112,6 +134,58 @@ describe('ReviewSubscriber', () => {
     await Promise.all([first, second]);
 
     expect(mockedHandlePRReview).toHaveBeenCalledTimes(1);
+  });
+
+  it('queues an explicit /review command behind an in-flight auto review, then executes it', async () => {
+    const bus: EventBus = new RealEventBus();
+    const sub = createReviewSubscriber({} as LearningStore, bus, undefined, DEFAULT_CONFIG);
+
+    const pendingHandlers: Array<(value: unknown) => void> = [];
+    let resolveFirstInvocation: () => void = () => {};
+    let resolveSecondInvocation: () => void = () => {};
+    const firstInvocation = new Promise<void>((resolve) => {
+      resolveFirstInvocation = resolve;
+    });
+    const secondInvocation = new Promise<void>((resolve) => {
+      resolveSecondInvocation = resolve;
+    });
+    mockedHandlePRReview.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          const idx = pendingHandlers.length;
+          pendingHandlers.push(resolve);
+          if (idx === 0) resolveFirstInvocation();
+          if (idx === 1) resolveSecondInvocation();
+        }),
+    );
+
+    const sync = sub.handle(makeSynchronizeEvent(42, { before: 'abcdef123456' }));
+    await firstInvocation;
+    const command = sub.handle(makeCommentCreatedEvent(42, '/review'));
+    // The explicit /review must NOT be deduplicated by the in-flight auto run.
+    expect(mockedHandlePRReview).toHaveBeenCalledTimes(1);
+
+    pendingHandlers[0](null);
+    await sync;
+    // After the auto run settles, the queued /review starts its own review
+    // with forceReview: true.
+    await secondInvocation;
+    expect(mockedHandlePRReview).toHaveBeenCalledTimes(2);
+    expect(mockedHandlePRReview).toHaveBeenLastCalledWith(
+      42,
+      'owner/repo',
+      'test-token',
+      expect.any(Object),
+      expect.anything(),
+      undefined,
+      undefined,
+      bus,
+      'cmd-corr-id',
+      { forceReview: true },
+    );
+
+    pendingHandlers[1](null);
+    await command;
   });
 
   it('allows a subsequent event after the previous run finished', async () => {
