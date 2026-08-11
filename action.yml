@@ -32,7 +32,7 @@ inputs:
     required: false
 
   opencode_api_key:
-    description: 'OpenCode gateway API key for opencode-go/* models (e.g. opencode-go/deepseek-v4-flash). Pass a GitHub secret: ${{ secrets.OPENCODE_API_KEY }}'
+    description: 'OpenCode gateway API key for opencode-go/* models (e.g. opencode-go/deepseek-v4-flash). Pass your OPENCODE_API_KEY GitHub secret as the value of this input.'
     required: false
 
   llm_default_provider:
