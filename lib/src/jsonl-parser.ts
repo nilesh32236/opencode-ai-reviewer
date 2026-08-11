@@ -103,9 +103,8 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
  * @returns A ReviewResult with parsed findings.
  */
 export function parseJsonlString(content: string): ReviewResult {
-  const sanitized = stripMarkdownFences(content);
   const state = new JsonlParserState();
-  for (const line of sanitized.split('\n')) {
+  for (const line of content.split('\n')) {
     state.addLine(line);
   }
   return state.finish();
@@ -257,12 +256,24 @@ class JsonlParserState {
     // across both entry points. rawLines stores the trimmed text.
     const trimmed = line.trim();
     if (!trimmed) return;
-    if (trimmed.startsWith('```')) return;
+    // A line that is ONLY a markdown fence (optionally with a language tag) is
+    // decorative wrapping — skip it entirely. A fence on the SAME line as JSONL
+    // content (e.g. "```jsonl {"type":"summary",...}") is stripped so the line
+    // still parses; this preserves multi-line fence blocks while not corrupting
+    // literal "```" inside JSON string values (the blanket stripMarkdownFences
+    // approach did corrupt those).
+    const fenceOnly = /^```[a-zA-Z0-9_-]*\s*$/.test(trimmed);
+    if (fenceOnly) return;
+    const deFenced = trimmed.startsWith('```')
+      ? trimmed.replace(/^```[a-zA-Z0-9_-]*\s*/, '')
+      : trimmed;
+    const content = deFenced.trim();
+    if (!content) return;
 
-    this.rawLines.push(trimmed);
+    this.rawLines.push(content);
 
     try {
-      const parsed = JSON.parse(trimmed);
+      const parsed = JSON.parse(content);
 
       // Handle executive_summary separately since it's not a standard FindingType
       if (parsed.type === 'executive_summary') {

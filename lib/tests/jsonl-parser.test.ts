@@ -233,6 +233,40 @@ describe('jsonl-parser', () => {
       expect(result.issues[1].confidence).toBe('medium');
       expect(result.issues[2].confidence).toBe('low');
     });
+
+    it('preserves markdown fences inside a JSON string value', () => {
+      const input = JSON.stringify({
+        type: 'issue',
+        severity: 'critical',
+        file: 'src/a.ts',
+        line: 5,
+        message: 'Use ```json\n{"key":"value"}\n``` as the payload.',
+        suggestionCode: '```json\n{"ok": true}\n```',
+      });
+      const result = parseJsonlString(input);
+      expect(result.issues).toHaveLength(1);
+      expect(result.issues[0].message).toContain('```json');
+      expect(result.issues[0].suggestionCode).toContain('{"ok": true}');
+    });
+
+    it('parses a JSONL block wrapped in markdown fences', () => {
+      const input = [
+        '```jsonl',
+        JSON.stringify({ type: 'summary', text: 'Block review.' }),
+        JSON.stringify({
+          type: 'issue',
+          severity: 'important',
+          file: 'src/b.ts',
+          line: 9,
+          message: 'Bug.',
+        }),
+        '```',
+      ].join('\n');
+      const result = parseJsonlString(input);
+      expect(result.summary).toBe('Block review.');
+      expect(result.issues).toHaveLength(1);
+      expect(result.issues[0].message).toBe('Bug.');
+    });
   });
 
   describe('stripMarkdownFences', () => {

@@ -168,12 +168,21 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           reviewWorkingDir,
           undefined,
           previousBotComments,
+          undefined,
+          { forceReview: true },
         );
       } catch (err) {
         logger.error(
           `Review engine failed in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
         );
         break;
+      }
+
+      if (result.skipped) {
+        // forceReview was set, so a skip should not normally happen; guard
+        // defensively so a dedup short-circuit never aborts the fix loop.
+        logger.info(`Review deduplicated in iteration ${i + 1} — continuing`);
+        continue;
       }
 
       if (!result.summary && result.issues.length === 0 && result.strengths.length === 0) {

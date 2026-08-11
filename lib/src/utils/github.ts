@@ -19,6 +19,21 @@ import { buildReviewBody } from './review-body.js';
 import { gatherReviewThread } from './review-thread.js';
 import type { ThreadComment } from './review-thread.js';
 
+/**
+ * Single-flight registry for marker-based comment upserts (postOrUpdateComment).
+ * Shared across GitHubHelper instances so concurrent webhook events for the same
+ * issue/marker collapse onto one create-or-update instead of racing read-then-
+ * write. Entries are removed when the upsert settles.
+ */
+const commentUpserts = new Map<
+  string,
+  {
+    body: string;
+    pendingBody?: string;
+    promise: Promise<{ action: 'created' | 'updated' | 'failed'; commentId: number }>;
+  }
+>();
+
 /** Paginated result wrapper for API responses. */
 export interface PaginatedResult<T> {
   items: T[];
@@ -884,12 +899,64 @@ export class GitHubHelper implements PlatformAdapter {
     marker: string,
     body: string,
   ): Promise<{ action: 'created' | 'updated' | 'failed'; commentId: number }> {
+    // Single-flight per (apiUrl, repo, issue, marker): the read-then-write below
+    // is not atomic, so two concurrent callers (e.g. two webhook events updating
+    // the same "review in progress" marker) could both read "no marker" and both
+    // POST, leaving duplicate status comments. Sharing one in-flight upsert
+    // promise collapses concurrent callers onto a single create-or-update. The
+    // key includes apiUrl and repo so two different providers/repositories with
+    // the same issue number + marker never share (and suppress) an upsert.
+    const key = `${this.apiUrl}\u0000${this.repo}\u0000${issueNumber}\u0000${marker}`;
+    const existing = commentUpserts.get(key);
+    if (existing) {
+      // Identical in-flight work is deduplicated; a newer body for the same
+      // marker is coalesced into a follow-up upsert once the first settles so
+      // the newest concurrent update is eventually applied.
+      if (existing.body === body) return existing.promise;
+      existing.pendingBody = body;
+      return existing.promise.then(async (first) => {
+        const pending = existing.pendingBody;
+        existing.pendingBody = undefined;
+        if (pending === undefined) return first;
+        return this.doPostOrUpdateComment(issueNumber, marker, pending);
+      });
+    }
+    const entry: {
+      body: string;
+      pendingBody?: string;
+      promise: Promise<{ action: 'created' | 'updated' | 'failed'; commentId: number }>;
+    } = {
+      body,
+      pendingBody: undefined,
+      promise: undefined as unknown as Promise<{
+        action: 'created' | 'updated' | 'failed';
+        commentId: number;
+      }>,
+    };
+    entry.promise = (async () => {
+      const first = await this.doPostOrUpdateComment(issueNumber, marker, body);
+      const pending = entry.pendingBody;
+      entry.pendingBody = undefined;
+      if (pending === undefined) return first;
+      return this.doPostOrUpdateComment(issueNumber, marker, pending);
+    })().finally(() => {
+      commentUpserts.delete(key);
+    });
+    commentUpserts.set(key, entry);
+    return entry.promise;
+  }
+
+  private async doPostOrUpdateComment(
+    issueNumber: number,
+    marker: string,
+    body: string,
+  ): Promise<{ action: 'created' | 'updated' | 'failed'; commentId: number }> {
     try {
       const markedBody = `${marker}\n\n${body}`;
 
       const allComments = await this.paginate<{ id: number; body: string }>(
         `/issues/${issueNumber}/comments`,
-        { perPage: 100, maxPages: 5, throwOnError: true },
+        { perPage: 100, maxPages: 10, throwOnError: true },
       );
 
       const existing = allComments.find((c) => c.body?.startsWith(marker));

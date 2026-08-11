@@ -1,4 +1,4 @@
-import type { AgentConfig, ReviewResult } from '@opencode-pr-agent/lib';
+import type { AgentConfig, LearningStore, ReviewResult } from '@opencode-pr-agent/lib';
 import { DEFAULT_CONFIG } from '@opencode-pr-agent/lib';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -7,6 +7,8 @@ const {
   mockGetBotReviewThreads,
   mockPostOrUpdateComment,
   mockPostReview,
+  mockPostInlineComment,
+  mockPostStreamingProgress,
   mockCreateCheckRun,
   mockReviewPR,
   mockCleanup,
@@ -16,6 +18,8 @@ const {
   const _mockGetBotReviewThreads = vi.fn();
   const _mockPostOrUpdateComment = vi.fn();
   const _mockPostReview = vi.fn();
+  const _mockPostInlineComment = vi.fn();
+  const _mockPostStreamingProgress = vi.fn();
   const _mockCreateCheckRun = vi.fn();
   const _mockReviewPR = vi.fn();
   const _mockCleanup = vi.fn();
@@ -25,6 +29,8 @@ const {
     mockGetBotReviewThreads: _mockGetBotReviewThreads,
     mockPostOrUpdateComment: _mockPostOrUpdateComment,
     mockPostReview: _mockPostReview,
+    mockPostInlineComment: _mockPostInlineComment,
+    mockPostStreamingProgress: _mockPostStreamingProgress,
     mockCreateCheckRun: _mockCreateCheckRun,
     mockReviewPR: _mockReviewPR,
     mockCleanup: _mockCleanup,
@@ -48,6 +54,8 @@ vi.mock('@opencode-pr-agent/lib', async (importOriginal) => {
       getBotReviewThreads = mockGetBotReviewThreads;
       postOrUpdateComment = mockPostOrUpdateComment;
       postReview = mockPostReview;
+      postInlineComment = mockPostInlineComment;
+      postStreamingProgress = mockPostStreamingProgress;
       createCheckRun = mockCreateCheckRun;
     },
     GitLabAdapter: class {
@@ -58,6 +66,8 @@ vi.mock('@opencode-pr-agent/lib', async (importOriginal) => {
       getBotReviewThreads = mockGetBotReviewThreads;
       postOrUpdateComment = mockPostOrUpdateComment;
       postReview = mockPostReview;
+      postInlineComment = mockPostInlineComment;
+      postStreamingProgress = mockPostStreamingProgress;
       createCheckRun = mockCreateCheckRun;
     },
     ReviewEngine: class {
@@ -110,6 +120,8 @@ describe('handlePRReview check run reporting', () => {
     mockGetBotReviewThreads.mockResolvedValue([]);
     mockPostOrUpdateComment.mockResolvedValue({ action: 'created', commentId: 1 });
     mockPostReview.mockResolvedValue({ success: true, method: 'full', reviewId: 1 });
+    mockPostInlineComment.mockResolvedValue({ id: 101 });
+    mockPostStreamingProgress.mockResolvedValue(undefined);
     mockCreateCheckRun.mockResolvedValue({ id: 77 });
     mockReviewPR.mockResolvedValue(cleanReview());
     mockCleanup.mockResolvedValue(undefined);
@@ -225,6 +237,135 @@ describe('handlePRReview check run reporting', () => {
       'abc123',
       'neutral',
       expect.objectContaining({ title: 'Review skipped' }),
+    );
+  });
+
+  it('does not post a duplicate review or check run when the review was deduplicated', async () => {
+    mockReviewPR.mockResolvedValue({
+      ...cleanReview(),
+      summary: '',
+      skipped: true,
+    });
+
+    const result = await handlePRReview(42, 'owner/repo', 'token', makeConfig());
+
+    expect(result).toBeNull();
+    expect(mockPostReview).not.toHaveBeenCalled();
+    expect(mockCreateCheckRun).not.toHaveBeenCalled();
+    expect(mockPostOrUpdateComment).toHaveBeenCalledWith(
+      42,
+      expect.stringContaining('review-in-progress'),
+      expect.stringContaining('already completed'),
+    );
+  });
+
+  it('keeps a finding in the final review body when its streamed inline post failed', async () => {
+    const issue = {
+      type: 'issue',
+      severity: 'important',
+      file: 'src/bug.ts',
+      line: 10,
+      message: 'Streamed-then-failed finding',
+      inline: true,
+    };
+    const streamedResult: ReviewResult = {
+      ...cleanReview(),
+      issues: [issue],
+      stats: { total: 1, critical: 0, important: 1, minor: 0 },
+    };
+    mockReviewPR.mockImplementation(
+      async (
+        _pr: unknown,
+        _it?: unknown,
+        _pf?: unknown,
+        _pe?: unknown,
+        _tm?: unknown,
+        _pf2?: unknown,
+        _wd?: unknown,
+        _phs?: unknown,
+        _pbc?: unknown,
+        onBatchComplete?: (
+          batchIndex: number,
+          totalBatches: number,
+          batchResult: ReviewResult,
+        ) => Promise<void>,
+      ) => {
+        if (onBatchComplete) await onBatchComplete(0, 1, streamedResult);
+        return streamedResult;
+      },
+    );
+    mockPostInlineComment.mockResolvedValue(null);
+    const config = makeConfig({
+      review: { ...DEFAULT_CONFIG.review, failOnSeverity: 'critical', streamComments: true },
+    } as AgentConfig);
+
+    await handlePRReview(42, 'owner/repo', 'token', config);
+
+    // The inline post failed, so the finding must NOT be filtered out of the
+    // final review body (it should be retried there), and no inline post attempt
+    // was made that would leave it orphaned.
+    expect(mockPostReview).toHaveBeenCalledWith(
+      42,
+      'abc123',
+      expect.objectContaining({
+        issues: expect.arrayContaining([
+          expect.objectContaining({ message: 'Streamed-then-failed finding' }),
+        ]),
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('records the streamed inline comment ID against the finding in the learning store', async () => {
+    const issue = {
+      type: 'issue',
+      severity: 'important',
+      file: 'src/bug.ts',
+      line: 10,
+      message: 'Streamed finding',
+      inline: true,
+    };
+    const streamedResult: ReviewResult = {
+      ...cleanReview(),
+      issues: [issue],
+      stats: { total: 1, critical: 0, important: 1, minor: 0 },
+    };
+    mockReviewPR.mockImplementation(
+      async (
+        _pr: unknown,
+        _it?: unknown,
+        _pf?: unknown,
+        _pe?: unknown,
+        _tm?: unknown,
+        _pf2?: unknown,
+        _wd?: unknown,
+        _phs?: unknown,
+        _pbc?: unknown,
+        onBatchComplete?: (
+          batchIndex: number,
+          totalBatches: number,
+          batchResult: ReviewResult,
+        ) => Promise<void>,
+      ) => {
+        if (onBatchComplete) await onBatchComplete(0, 1, streamedResult);
+        return streamedResult;
+      },
+    );
+    // The streamed inline comment is posted via postInlineComment (not
+    // postReview), so its ID must be captured from the post result.
+    mockPostInlineComment.mockResolvedValue({ commentId: 4242, nodeId: 'node-4242' });
+    const recordFindings = vi.fn().mockResolvedValue(undefined);
+    const store = { recordFindings } as unknown as LearningStore;
+    const config = makeConfig({
+      review: { ...DEFAULT_CONFIG.review, failOnSeverity: 'critical', streamComments: true },
+    } as AgentConfig);
+
+    await handlePRReview(42, 'owner/repo', 'token', config, store);
+
+    expect(recordFindings).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ file: 'src/bug.ts', line: 10, commentId: 4242 }),
+      ]),
     );
   });
 

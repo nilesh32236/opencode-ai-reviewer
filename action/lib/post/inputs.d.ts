@@ -18,6 +18,8 @@ export interface ActionInputs {
     anthropicKey?: string;
     /** Optional Google Gemini API key. */
     geminiKey?: string;
+    /** Optional OpenCode gateway API key (opencode-go/* models). */
+    opencodeKey?: string;
     /** Optional default LLM provider used to prefix bare model names. */
     llmDefaultProvider?: string;
     /** Optional custom base URL for an OpenAI-compatible API. */

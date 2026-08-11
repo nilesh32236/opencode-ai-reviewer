@@ -1111,6 +1111,10 @@ export interface ReviewResult {
   failedBatches?: number;
   /** Number of specialized agents that failed (multi-agent path; partial when > 0) */
   failedAgents?: number;
+  /** True when this result is a dedup short-circuit (already reviewed / in-flight)
+   * rather than a real review pass. Callers should treat it as a no-op success,
+   * NOT as "no meaningful content" or a failure. */
+  skipped?: boolean;
   /** Optional executive summary with risk assessment */
   executiveSummary?: ExecutiveSummary;
   /** Optional token usage / cost data accumulated for this run (server-side, not AI-derived) */

@@ -957,6 +957,93 @@ diff --git a/deleted.ts b/deleted.ts
 
       await expect(helper.postOrUpdateComment(1, marker, 'body')).rejects.toThrow('GitHub API 500');
     });
+
+    it('collapses concurrent upserts for the same marker into one comment', async () => {
+      let postCount = 0;
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+
+      fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+        if (url.includes('/issues/1/comments') && options?.method === 'POST') {
+          postCount++;
+          await gate;
+          return mockResponse({ body: { id: 999 } });
+        }
+        return mockResponse({ body: [] });
+      });
+
+      const first = helper.postOrUpdateComment(1, marker, 'New review');
+      const second = helper.postOrUpdateComment(1, marker, 'New review');
+      release();
+      const [r1, r2] = await Promise.all([first, second]);
+
+      expect(postCount).toBe(1);
+      expect(r1.action).toBe('created');
+      expect(r2.action).toBe('created');
+      expect(r2.commentId).toBe(r1.commentId);
+    });
+
+    it('coalesces a newer concurrent body into a follow-up upsert after the first settles', async () => {
+      const postBodies: string[] = [];
+      let releaseFirst: () => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      let postCount = 0;
+
+      fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+        if (url.includes('/issues/1/comments') && options?.method === 'POST') {
+          postCount++;
+          const parsed = JSON.parse(String(options.body)) as { body: string };
+          postBodies.push(parsed.body);
+          if (postCount === 1) await gate;
+          return mockResponse({ body: { id: 1000 + postCount } });
+        }
+        return mockResponse({ body: [] });
+      });
+
+      const first = helper.postOrUpdateComment(1, marker, 'Version 1');
+      const second = helper.postOrUpdateComment(1, marker, 'Version 2');
+      releaseFirst();
+      await Promise.all([first, second]);
+
+      // Identical in-flight work is deduplicated, but the NEWER body must still
+      // be applied via a follow-up upsert once the first settles.
+      expect(postCount).toBe(2);
+      expect(postBodies[0]).toContain('Version 1');
+      expect(postBodies[1]).toContain('Version 2');
+    });
+
+    it('does not collapse upserts across different API URLs for the same repo and marker', async () => {
+      const enterprise = new GitHubHelper(TOKEN, REPO, 'https://ghe.example.com/api/v3');
+      let postCount = 0;
+      let releaseAll: () => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        releaseAll = resolve;
+      });
+
+      fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+        if (url.includes('/issues/1/comments') && options?.method === 'POST') {
+          postCount++;
+          await gate;
+          return mockResponse({ body: { id: 2000 + postCount } });
+        }
+        return mockResponse({ body: [] });
+      });
+
+      const first = helper.postOrUpdateComment(1, marker, 'Body A');
+      const second = enterprise.postOrUpdateComment(1, marker, 'Body B');
+      releaseAll();
+      const [r1, r2] = await Promise.all([first, second]);
+
+      // The single-flight key includes apiUrl, so a GitHub Enterprise helper
+      // never shares (and suppresses) an upsert with the public API helper.
+      expect(postCount).toBe(2);
+      expect(r1.action).toBe('created');
+      expect(r2.action).toBe('created');
+    });
   });
 
   describe('replyToReviewComment', () => {

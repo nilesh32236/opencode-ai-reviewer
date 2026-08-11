@@ -13,6 +13,20 @@ import type { ActionInputs } from './inputs.js';
 import { resolvePrNumber, sanitize } from './utils.js';
 
 /**
+ * Stable key for a streamed finding: file, line, and normalized message
+ * content. Distinct findings on the same line stay independent (each is
+ * posted inline), while identical findings still deduplicate. Shared between
+ * the inline-post loop and the final-result filter so both sides agree.
+ * @param file - Finding file path.
+ * @param line - Finding line number.
+ * @param message - Finding message text.
+ * @returns The deduplication key.
+ */
+function streamedFindingKey(file: string, line: number, message: string): string {
+  return `${file}:${line}:${message.toLowerCase().replace(/\s+/g, ' ').trim()}`;
+}
+
+/**
  * Execute a code review on a pull request and post results.
  * Determines the PR number from input or event context, fetches the PR,
  * checks skip-labels/actors, runs the review engine, and posts
@@ -118,13 +132,28 @@ export async function runReview(
       ? async (batchIndex, totalBatches, batchResult) => {
           for (const issue of batchResult.issues) {
             if (issue.inline && issue.file && issue.line) {
-              await gh.postInlineComment(prNumber, pr.headSha, {
+              const key = streamedFindingKey(issue.file, issue.line, issue.message);
+              // Never post the same finding twice across batches (distinct
+              // findings on one line have distinct keys and stay independent),
+              // and only mark a finding as streamed when the inline post
+              // actually succeeded — otherwise the final-result filter below
+              // would drop it entirely (neither inline nor body).
+              if (streamedIssueKeys.has(key)) continue;
+              const posted = await gh.postInlineComment(prNumber, pr.headSha, {
                 path: issue.file,
                 line: issue.line,
                 body: `**${issue.severity.toUpperCase()}**: ${issue.message}`,
               });
-              streamedIssueKeys.add(`${issue.file}:${issue.line}`);
-              streamedFindingCount++;
+              if (posted) {
+                streamedIssueKeys.add(key);
+                streamedFindingCount++;
+              } else {
+                core.warning(
+                  sanitize(
+                    `Inline comment post failed for ${key} — will retry in final review body`,
+                  ),
+                );
+              }
             }
           }
           await gh
@@ -143,7 +172,16 @@ export async function runReview(
             });
         }
       : undefined,
+    // A manual trigger (issue comment / workflow dispatch / explicit PR number)
+    // must bypass the dedup cache so it always re-reviews the current head;
+    // automatic events keep dedup to avoid redundant re-review work.
+    { forceReview: isManualTrigger },
   );
+
+  if (result?.skipped) {
+    core.info('Review deduplicated — this PR/commit was already reviewed. Skipping.');
+    return;
+  }
 
   if (!result || (!result.summary && result.issues.length === 0 && result.strengths.length === 0)) {
     core.setFailed('Review returned no meaningful content - AI model may have failed silently');
@@ -157,7 +195,11 @@ export async function runReview(
     ? {
         ...result,
         issues: result.issues.filter(
-          (i) => !i.inline || !i.file || !i.line || !streamedIssueKeys.has(`${i.file}:${i.line}`),
+          (i) =>
+            !i.inline ||
+            !i.file ||
+            !i.line ||
+            !streamedIssueKeys.has(streamedFindingKey(i.file, i.line, i.message)),
         ),
       }
     : result;
@@ -166,6 +208,23 @@ export async function runReview(
 
   if (!reviewResult.success) {
     core.warning('Failed to post review to GitHub');
+  }
+
+  // Flip the streaming progress marker to a terminal state so a "Batches x/y
+  // complete" comment does not stay on the PR indefinitely after the review.
+  if (streamEnabled) {
+    try {
+      await gh.postOrUpdateComment(
+        prNumber,
+        '<!-- review-stream-progress -->',
+        '## ✅ Review In Progress\n\n**Streaming complete** — all findings posted. See the review above.',
+      );
+    } catch (err: unknown) {
+      new Logger('Review').warn(
+        `Failed to update stream-progress marker: ${err instanceof Error ? err.message : String(err)}`,
+        { operation: 'review.stream-finalize', prNumber },
+      );
+    }
   }
 
   // Attach comment IDs to issues for future tracking

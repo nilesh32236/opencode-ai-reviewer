@@ -60,6 +60,8 @@ function truncateToUtf8Bytes(text: string, maxBytes: number = MAX_CHECK_TEXT_BYT
  * @param previousHeadSha - Optional previous HEAD sha
  * @param eventBus - Optional event bus for publishing pipeline events.
  * @param correlationId - Optional correlation ID for tracing this request.
+ * @param options - Optional behavior flags:
+ *   - `forceReview`: bypass the dedup cache so an explicit `/review` always runs.
  * @returns The review result or null if review was skipped or failed.
  */
 export async function handlePRReview(
@@ -72,6 +74,7 @@ export async function handlePRReview(
   previousHeadSha?: string,
   eventBus?: EventBus,
   correlationId?: string,
+  options?: { forceReview?: boolean },
 ): Promise<ReviewResult | null> {
   const logger = new Logger('PRReview', { prNumber, repo, correlationId });
   logger.info(
@@ -171,7 +174,13 @@ export async function handlePRReview(
 
     let result: ReviewResult;
     const streamedIssueKeys = new Set<string>();
+    // commentId of each successfully posted streamed inline comment, keyed by
+    // the same anchor used for final-result filtering. Streamed comments are
+    // posted via postInlineComment (not postReview), so their IDs are absent
+    // from reviewResult.commentIds and must be tracked separately.
+    const streamedCommentIds = new Map<string, number>();
     let streamedFindingCount = 0;
+    const streamEnabled = effectiveConfig.review.streamComments === true;
     try {
       try {
         await gh.postOrUpdateComment(
@@ -184,8 +193,6 @@ export async function handlePRReview(
           `Failed to post review-in-progress comment: ${err instanceof Error ? err.message : err}`,
         );
       }
-
-      const streamEnabled = effectiveConfig.review.streamComments === true;
 
       result = await engine.reviewPR(
         pr,
@@ -201,13 +208,27 @@ export async function handlePRReview(
           ? async (batchIndex, totalBatches, batchResult) => {
               for (const issue of batchResult.issues) {
                 if (issue.inline && issue.file && issue.line) {
-                  await gh.postInlineComment(prNumber, pr.headSha, {
+                  const key = `${issue.file}:${issue.line}`;
+                  // Never post the same file:line twice across batches, and
+                  // only mark a finding as streamed when the inline post
+                  // actually succeeded — otherwise the final-result filter
+                  // below would drop it entirely (neither inline nor body).
+                  if (streamedIssueKeys.has(key)) continue;
+                  const posted = await gh.postInlineComment(prNumber, pr.headSha, {
                     path: issue.file,
                     line: issue.line,
                     body: `**${issue.severity.toUpperCase()}**: ${issue.message}`,
                   });
-                  streamedIssueKeys.add(`${issue.file}:${issue.line}`);
-                  streamedFindingCount++;
+                  if (posted) {
+                    streamedIssueKeys.add(key);
+                    streamedCommentIds.set(`${issue.file}:${issue.line}`, posted.commentId);
+                    streamedFindingCount++;
+                  } else {
+                    logger.warn(
+                      `Inline comment post failed for ${key} — will retry in final review body`,
+                      { prNumber, repo },
+                    );
+                  }
                 }
               }
               await gh
@@ -225,6 +246,7 @@ export async function handlePRReview(
                 });
             }
           : undefined,
+        { forceReview: options?.forceReview ?? false },
       );
     } catch (err) {
       logger.error(
@@ -247,6 +269,25 @@ export async function handlePRReview(
         'Review failed',
         'The review engine could not complete the review for this commit.',
       );
+      return null;
+    }
+
+    if (result.skipped) {
+      // Dedup short-circuit: this PR+head was already reviewed (or an in-flight
+      // run is doing it). Treat as an informational no-op — clear the
+      // in-progress marker and do NOT post a duplicate review or check run.
+      logger.info(`Review deduplicated for PR #${prNumber} — skipping duplicate post`);
+      try {
+        await gh.postOrUpdateComment(
+          prNumber,
+          REVIEW_IN_PROGRESS_MARKER,
+          '✅ **Review already completed** for this commit — see the existing review above.',
+        );
+      } catch (err) {
+        logger.warn(
+          `Failed to update review-in-progress marker: ${err instanceof Error ? err.message : err}`,
+        );
+      }
       return null;
     }
 
@@ -314,6 +355,19 @@ export async function handlePRReview(
         logger.warn(
           `Failed to post review-complete comment: ${err instanceof Error ? err.message : err}`,
         );
+      }
+      if (streamEnabled) {
+        try {
+          await gh.postOrUpdateComment(
+            prNumber,
+            '<!-- review-stream-progress -->',
+            '## ✅ Review In Progress\n\n**Streaming complete** — all findings posted. See the review above.',
+          );
+        } catch (err) {
+          logger.warn(
+            `Failed to update stream-progress marker: ${err instanceof Error ? err.message : err}`,
+          );
+        }
       }
 
       // Best-effort Slack/Teams notification with the review summary.
@@ -404,6 +458,20 @@ export async function handlePRReview(
 
     if (learningStore) {
       try {
+        // Correlate each posted inline comment back to its finding by file:line
+        // so dismissal feedback can use the exact comment_id instead of brittle
+        // file/line matching. Falls back to undefined (no correlation) when a
+        // finding had no inline comment.
+        const commentIdByAnchor = new Map<string, number>();
+        for (const c of reviewResult.commentIds ?? []) {
+          if (c.file && c.line) commentIdByAnchor.set(`${c.file}:${c.line}`, c.commentId);
+        }
+        // Streamed inline comments were posted during the batch callback, so
+        // merge their IDs in — otherwise feedback/dismissal would have no
+        // comment_id to correlate streamed findings with.
+        for (const [anchor, commentId] of streamedCommentIds) {
+          commentIdByAnchor.set(anchor, commentId);
+        }
         const findingsToStore = [
           ...result.issues.map((i) => ({
             prNumber,
@@ -413,6 +481,7 @@ export async function handlePRReview(
             line: i.line,
             message: i.message,
             suggestion: i.suggestion,
+            commentId: i.file && i.line ? commentIdByAnchor.get(`${i.file}:${i.line}`) : undefined,
           })),
           ...result.strengths.map((s) => ({
             prNumber,
