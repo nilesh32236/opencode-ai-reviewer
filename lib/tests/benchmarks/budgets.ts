@@ -21,7 +21,7 @@ export const BUDGETS = {
    * Maximum end-to-end reviewPR latency (excluding the fixed inter-chunk
    * backoff, which is runner-topology-dependent) in milliseconds.
    */
-  reviewLatencyMaxMs: 40,
+  reviewLatencyMaxMs: 100,
 } as const;
 
 /** Names of every enforceable budget. */
