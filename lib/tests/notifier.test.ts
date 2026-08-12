@@ -226,6 +226,26 @@ describe('formatSlackMessage', () => {
     expect(text).toContain('Inject &lt;b&gt; &amp; check');
   });
 
+  it('escapes Slack formatting metacharacters in finding messages', () => {
+    const result = makeResult([makeIssue('critical', 'var **x** = 1 and _snake_case_')]);
+    const payload = formatSlackMessage(result, CONTEXT);
+    const text = (payload.blocks[2].text as { text: string }).text;
+    expect(text).toContain('var \\*\\*x\\*\\* = 1 and \\_snake\\_case\\_');
+    expect(text).not.toContain('**x**');
+    expect(text).not.toContain('_snake_case_');
+  });
+
+  it('escapes backticks and tildes in the PR title', () => {
+    const result = makeResult([makeIssue('critical', 'x')]);
+    const payload = formatSlackMessage(result, {
+      ...CONTEXT,
+      title: 'Install `lodash` via ~/.npmrc',
+    });
+    const headerText = (payload.blocks[0].text as { text: string }).text;
+    expect(headerText).toContain('Install \\`lodash\\` via \\~/.npmrc');
+    expect(headerText).not.toContain('`lodash`');
+  });
+
   it('does not truncate short top-findings text', () => {
     const result = makeResult([makeIssue('critical', 'short message')]);
     const payload = formatSlackMessage(result, CONTEXT);

@@ -272,7 +272,7 @@ export function buildSuggestionComment(suggestion: TitleSuggestion, prNumber: nu
     : '- No specific labels suggested';
   const safeTitle = escapeInlineCode(suggestion.title);
   return [
-    '## 🏷️ Suggested Title & Labels',
+    '## Suggested Title & Labels 🏷️',
     '',
     `**Suggested title:** \`${safeTitle}\``,
     '',

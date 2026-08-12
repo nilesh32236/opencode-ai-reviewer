@@ -398,7 +398,7 @@ export class ReviewEngine {
     const lineCount =
       totalDiffLines !== undefined ? `~${totalDiffLines} lines` : 'a very large number of lines';
     const splitThreshold = this.config.review.reviewBudget?.splitThreshold ?? 1000;
-    const banner = `## ⚠️ Large PR Detected (${lineCount})\n\nThis pull request is very large. Consider splitting it into smaller, focused PRs for faster, more thorough reviews. Ideally each PR should contain fewer than ${splitThreshold} lines of changes.\n\n---\n\n`;
+    const banner = `## Large PR Detected (${lineCount}) ⚠️\n\nThis pull request is very large. Consider splitting it into smaller, focused PRs for faster, more thorough reviews. Ideally each PR should contain fewer than ${splitThreshold} lines of changes.\n\n---\n\n`;
     return {
       ...result,
       summary: banner + (result.summary || ''),

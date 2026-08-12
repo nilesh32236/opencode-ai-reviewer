@@ -35,7 +35,7 @@ export function buildAutofixStatusBody(
   phase: 'reviewing' | 'approved' | 'no-changes' | 'max-iterations',
   current?: ReviewResult,
 ): string {
-  const lines: string[] = ['## 🤖 Autofix Review', ''];
+  const lines: string[] = ['## Autofix Review 🤖', ''];
   const currentIter = history.length;
 
   switch (phase) {
@@ -135,7 +135,7 @@ export function buildAutofixStatusBody(
  */
 export function buildFixBody(history: IterationRecord[]): string {
   const last = history[history.length - 1];
-  const lines: string[] = ['## 🔧 Autofix Applied', ''];
+  const lines: string[] = ['## Autofix Applied 🔧', ''];
   if (last) {
     lines.push(`**Iteration:** ${last.iteration}`);
     lines.push(`**Files changed:** ${last.filesChanged?.length ?? 0}`);
@@ -164,7 +164,7 @@ export function buildFixBody(history: IterationRecord[]): string {
  * @returns A markdown string indicating the PR is ready to merge.
  */
 export function buildReadyBody(history: IterationRecord[], prNumber: number): string {
-  const lines: string[] = ['## ✅ Ready to Merge', ''];
+  const lines: string[] = ['## Ready to Merge ✅', ''];
   lines.push(`All issues have been resolved in PR #${prNumber}.`);
   lines.push(
     '',

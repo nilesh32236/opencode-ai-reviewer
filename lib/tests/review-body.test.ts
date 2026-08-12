@@ -5,6 +5,7 @@ import {
   computeMergeScore,
   formatConfidenceLabel,
   formatIssueBullet,
+  formatMergeScore,
   getSeverityBadge,
 } from '../src/utils/review-body.js';
 
@@ -40,7 +41,7 @@ describe('review-body', () => {
       });
       expect(bullet).toContain('🔴');
       expect(bullet).toContain('**CRITICAL:**');
-      expect(bullet).toContain('`src/a.ts:42`');
+      expect(bullet).toContain('`src/​a.ts:42`');
       expect(bullet).toContain('Missing auth check.');
     });
 
@@ -82,7 +83,7 @@ describe('review-body', () => {
       const body = buildReviewBody(result);
 
       expect(body).toContain('Good PR overall.');
-      expect(body).toContain('**Ready to merge?** false');
+      expect(body).toContain('**Ready to merge?** No');
       expect(body).toContain('One critical issue found.');
       expect(body).toContain('Clean function.');
       expect(body).toContain('🔴');
@@ -173,6 +174,23 @@ describe('review-body', () => {
       const body = buildReviewBody(result);
       expect(body).not.toContain('Partial review');
     });
+
+    it('renders a human "Yes" verdict when the review is ready to merge', () => {
+      const result: ReviewResult = {
+        summary: 'Clean PR.',
+        verdict: { ready: true, reasoning: 'All good.' },
+        strengths: [],
+        issues: [],
+        stats: { total: 0, critical: 0, important: 0, minor: 0 },
+        rawLines: [],
+        failedLines: 0,
+      };
+
+      const body = buildReviewBody(result);
+      expect(body).toContain('**Ready to merge?** Yes');
+      expect(body).not.toContain('**Ready to merge?** true');
+      expect(body).not.toContain('**Ready to merge?** false');
+    });
     it('never reports a partial review as ready to merge, even when the verdict says so', () => {
       const result: ReviewResult = {
         summary: 'Partial result.',
@@ -188,7 +206,7 @@ describe('review-body', () => {
       const body = buildReviewBody(result);
       expect(body).toContain('Partial review');
       // Readiness must agree with the 1/5 merge score for partial reviews.
-      expect(body).toContain('**Ready to merge?** false');
+      expect(body).toContain('**Ready to merge?** No');
       expect(body).toContain('1/5');
     });
   });
@@ -252,6 +270,25 @@ describe('review-body', () => {
         failedBatches: 2,
       };
       expect(computeMergeScore(partial)).toBe(1);
+    });
+  });
+
+  describe('formatMergeScore', () => {
+    it('maps each score level to a distinct gradient badge', () => {
+      expect(formatMergeScore(5)).toBe('🟢 5/5');
+      expect(formatMergeScore(4)).toBe('🟡 4/5');
+      expect(formatMergeScore(3)).toBe('🟠 3/5');
+      expect(formatMergeScore(2)).toBe('🔴 2/5');
+      expect(formatMergeScore(1)).toBe('🔴 1/5');
+      expect(formatMergeScore(0)).toBe('🔴 0/5');
+    });
+
+    it('never conflates production-ready (5) with minor polish (4)', () => {
+      const five = formatMergeScore(5);
+      const four = formatMergeScore(4);
+      expect(five).toContain('🟢');
+      expect(four).toContain('🟡');
+      expect(five).not.toBe(four);
     });
   });
 });

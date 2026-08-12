@@ -168,12 +168,18 @@ export function defaultPrUrl(context: NotificationContext): string {
 
 /**
  * Escape Slack mrkdwn metacharacters in untrusted text so a PR title or
- * model-generated finding cannot spoof links or corrupt the layout.
+ * model-generated finding cannot spoof links, inject formatting, or corrupt
+ * the layout.
  * @param text - Raw text to embed in a mrkdwn block.
- * @returns The text with `&`, `<`, and `>` HTML-escaped.
+ * @returns The text with `&`, `<`, and `>` HTML-escaped and `*`, `_`, `` ` ``,
+ * and `~` backslash-escaped.
  */
 function escapeMrkdwn(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/([*_`~])/g, '\\$1');
 }
 
 /**

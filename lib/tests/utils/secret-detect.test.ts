@@ -252,6 +252,20 @@ ${pemEnd}`;
     expect(findings[0].redactedValue).toBe('mongodb://replicaset@');
   });
 
+  it('does not self-flag the reworded doc comment in secret-detect.ts', () => {
+    // Regression for the audit false positive: the comment previously held a
+    // literal `redis://:password@host` which the connection-string regex
+    // matched. The reworded text must never produce a connection-string
+    // finding.
+    const comment = [
+      '// empty-username forms (e.g. redis://:password-at-host; the separator is',
+      '// written as `-at-` so this doc comment never self-triggers the detector',
+      '// -- a real empty-username URI uses `:password@host`).',
+    ].join('\n');
+    const findings = detectSecrets(comment);
+    expect(findings).toEqual([]);
+  });
+
   it('returns findings in deterministic source order (line then column)', () => {
     // Two secrets on line 2 (openai FIRST in source, AWS SECOND) — the old
     // implementation returned [aws, openai] because of SECRET_PATTERNS array
