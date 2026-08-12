@@ -32,9 +32,10 @@ const logger = new Logger('prompt-builder');
  * @returns The truncated string, or the original when it already fits.
  */
 export function truncateUtf8Bytes(text: string, maxBytes: number): string {
+  if (maxBytes <= 0 || !Number.isInteger(maxBytes)) return '';
   if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
   const buf = Buffer.from(text, 'utf8');
-  let end = maxBytes;
+  let end = Math.min(maxBytes, buf.length);
   while (end > 0 && (buf[end] & 0xc0) === 0x80) {
     end--;
   }
