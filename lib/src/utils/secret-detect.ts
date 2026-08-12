@@ -98,10 +98,12 @@ const SECRET_PATTERNS: { name: string; pattern: RegExp; type: string }[] = [
 // between `://[user:]` and `@host` so the redactor can target just the
 // secret instead of leaking up to 3 password characters from the tail of
 // the surrounding match. Supports `+srv` schemes (e.g. mongodb+srv://) and
-// empty-username forms (redis://:password@host). The password character class
-// deliberately allows embedded colons so `user:part1:part2@` redacts the full
-// password; capture group 1 is the password for `user:password@`, group 2 for
-// the empty-username `:password@` form, and a password-less `user@` match
+// empty-username forms (e.g. redis://:password-at-host; the separator must be
+// written as `-at-` here so this doc comment never self-triggers the detector
+// — a real empty-username URI uses `:password@host`). The password character
+// class deliberately allows embedded colons so `user:part1:part2@` redacts the
+// full password; capture group 1 is the password for `user:password@`, group 2
+// for the empty-username `:password@` form, and a password-less `user@` match
 // carries neither group.
 const CONNECTION_STRING_PATTERN =
   /(?:postgres|mysql|mongodb|redis|amqp)(?:\+srv)?:\/\/(?:[^\s:@/]+:([^\s@/]+)@|:([^\s@/]+)@|[^\s:@/]+@)/;

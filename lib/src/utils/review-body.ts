@@ -45,8 +45,7 @@ export function computeMergeScore(result: ReviewResult): number {
  * @returns A markdown string like "**Merge-readiness:** 🟢 5/5".
  */
 export function formatMergeScore(score: number): string {
-  const badge =
-    score >= 5 ? '🟢' : score >= 4 ? '🟢' : score >= 3 ? '🟡' : score >= 2 ? '🟠' : '🔴';
+  const badge = score >= 5 ? '🟢' : score >= 4 ? '🟡' : score >= 3 ? '🟠' : '🔴';
   return `${badge} ${score}/5`;
 }
 
@@ -132,7 +131,11 @@ export function formatConfidenceLabel(confidence?: 'high' | 'medium' | 'low'): s
  * @returns A markdown bullet string.
  */
 export function formatIssueBullet(issue: ReviewIssue): string {
-  return `- ${getSeverityBadge(issue.severity)} **${issue.severity.toUpperCase()}:** \`${issue.file}:${issue.line}\` — ${issue.message}${formatConfidenceLabel(issue.confidence)}`;
+  // Insert a zero-width space after each '/' so long file paths inside the
+  // inline code span can break at directory boundaries on narrow viewports
+  // instead of overflowing horizontally.
+  const codePath = `${issue.file}:${issue.line}`.replace(/\//g, '/\u200b');
+  return `- ${getSeverityBadge(issue.severity)} **${issue.severity.toUpperCase()}:** \`${codePath}\` — ${issue.message}${formatConfidenceLabel(issue.confidence)}`;
 }
 
 /**
@@ -185,7 +188,11 @@ export function buildReviewBody(result: ReviewResult): string {
     // A partial review (failed batches/agents) was never fully verified, so it
     // must never be displayed as ready to merge even when the verdict says so.
     // This keeps the readiness line consistent with the 1/5 merge score below.
-    `**Ready to merge?** ${(result.failedBatches ?? 0) > 0 || (result.failedAgents ?? 0) > 0 ? false : result.verdict.ready}`,
+    `**Ready to merge?** ${
+      (result.failedBatches ?? 0) > 0 || (result.failedAgents ?? 0) > 0 || !result.verdict.ready
+        ? 'No'
+        : 'Yes'
+    }`,
     '',
     `**Merge-readiness:** ${formatMergeScore(computeMergeScore(result))}`,
     '',

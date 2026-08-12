@@ -538,10 +538,10 @@ export class SetupEngine {
       durationMs: 0,
     },
   ): string {
-    const lines: string[] = ['## 🚀 Setup Validation Report', ''];
+    const lines: string[] = ['## Setup Validation Report 🚀', ''];
     for (const check of result.checks) {
       const icon = check.status === 'pass' ? '✅' : check.status === 'fail' ? '❌' : '⚠️';
-      lines.push(`### ${icon} ${check.name} — ${check.status.toUpperCase()}`, '');
+      lines.push(`### ${check.name} — ${check.status.toUpperCase()} ${icon}`, '');
       lines.push(check.message, '');
       if (check.details) {
         lines.push(
