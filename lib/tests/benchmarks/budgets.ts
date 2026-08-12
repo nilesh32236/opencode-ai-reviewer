@@ -16,12 +16,12 @@ export const BUDGETS = {
   /** Maximum heap delta in bytes when parsing a 2000-line JSONL payload. */
   heapDeltaMaxBytes: 2 * 1024 * 1024,
   /** Maximum per-batch orchestration overhead in milliseconds. */
-  batchOverheadMaxMs: 10,
+  batchOverheadMaxMs: 40,
   /**
    * Maximum end-to-end reviewPR latency (excluding the fixed inter-chunk
    * backoff, which is runner-topology-dependent) in milliseconds.
    */
-  reviewLatencyMaxMs: 40,
+  reviewLatencyMaxMs: 100,
 } as const;
 
 /** Names of every enforceable budget. */

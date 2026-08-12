@@ -29,19 +29,17 @@ const logger = new Logger('prompt-builder');
  * decode to U+FFFD). Returns the original string when it already fits.
  * @param text - The string to truncate.
  * @param maxBytes - Maximum number of UTF-8 bytes allowed.
- * @returns The truncated string, or the original when it already fits.
+ * @returns The truncated string, the original when it already fits, or an empty string when maxBytes is non-positive or not an integer.
  */
 export function truncateUtf8Bytes(text: string, maxBytes: number): string {
+  if (maxBytes <= 0 || !Number.isInteger(maxBytes)) return '';
   if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
-  let sliceEnd = 0;
-  let runningBytes = 0;
-  for (const codePoint of text) {
-    const cpBytes = Buffer.byteLength(codePoint, 'utf8');
-    if (runningBytes + cpBytes > maxBytes) break;
-    runningBytes += cpBytes;
-    sliceEnd += codePoint.length;
+  const buf = Buffer.from(text, 'utf8');
+  let end = maxBytes;
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) {
+    end--;
   }
-  return text.slice(0, sliceEnd);
+  return buf.toString('utf8', 0, end);
 }
 
 /**
