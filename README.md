@@ -172,12 +172,15 @@ docs:
 | `run_checks_after_fix`   | —                                    | Commands to run after fix (e.g. `npm run lint`) |
 > **Security:** Commands are validated against an allowlist (`fix.checkAllowlist` in `.opencode-reviewer.yml`, default `[pnpm, npm, yarn, node]`) to prevent shell injection. Add only trusted programs to the allowlist.
 | `audit_prompt_file`      | —                                    | Path to custom audit prompt file               |
+| `audit_prompt_name`      | —                                    | Audit category name to run (basename of a `.md` prompt in the audit prompts dir, e.g. `performance-efficiency`); omit for a random category |
 | `audit_create_issues`    | `true`                               | Create GitHub issues for audit findings        |
 | `audit_auto_fix`         | `false`                              | Auto-trigger fixes for audit findings          |
 | `audit_labels`           | `audit`                              | Comma-separated labels for audit issues        |
 | `probe_all_models`       | `false`                              | In setup mode, probe every configured model instead of only the review model |
 | `enable_state_cache`     | `true`                               | Persist the learning database across runs using GitHub Actions Cache |
 | `state_cache_key`        | `opencode-learning-state`            | Custom key prefix for the learning state cache |
+| `git_user_name`          | `GITHUB_ACTOR`                       | Git user name for fix commits                  |
+| `git_user_email`         | actor noreply email                  | Git user email for fix commits                 |
 
 **Outputs:** `review_summary`, `verdict`, `critical_count`, `important_count`, `minor_count`, `changes_made`.
 

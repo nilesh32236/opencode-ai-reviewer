@@ -131,7 +131,7 @@ jobs:
         with:
           mode: audit
           model: 'opencode/deepseek-v4-flash-free'
-          audit_prompt_file: ${{ github.event.inputs.audit_category }}
+          audit_prompt_name: ${{ github.event.inputs.audit_category }}
           audit_create_issues: true
           audit_auto_fix: true
         env:

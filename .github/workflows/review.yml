@@ -51,6 +51,16 @@ on:
         required: false
         type: string
         default: ''
+      git_user_name:
+        description: 'Git user name for fix commits (default: triggering actor)'
+        required: false
+        type: string
+        default: ''
+      git_user_email:
+        description: 'Git user email for fix commits (default: actor noreply email)'
+        required: false
+        type: string
+        default: ''
     outputs:
       verdict:
         description: 'Review verdict (true/false)'
@@ -134,6 +144,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         run: |
           if echo "${{ inputs.model }}" | grep -qiE 'openai|gpt'; then
             [ -n "$OPENAI_API_KEY" ] || echo "::warning::OPENAI_API_KEY secret is not configured — OpenAI models will fail to authenticate"
@@ -143,6 +154,9 @@ jobs:
           fi
           if echo "${{ inputs.model }}" | grep -qiE 'gemini'; then
             [ -n "$GEMINI_API_KEY" ] || echo "::warning::GEMINI_API_KEY secret is not configured — Gemini models will fail to authenticate"
+          fi
+          if echo "${{ inputs.model }}" | grep -qiE 'opencode-go'; then
+            [ -n "$OPENCODE_API_KEY" ] || echo "::warning::OPENCODE_API_KEY secret is not configured — opencode-go/* models will fail to authenticate"
           fi
 
       - name: AI Code Review
@@ -155,6 +169,8 @@ jobs:
           fail_on_critical: ${{ inputs.fail_on_critical }}
           include_strengths: ${{ inputs.include_strengths }}
           project_context: ${{ inputs.project_context }}
+          git_user_name: ${{ inputs.git_user_name }}
+          git_user_email: ${{ inputs.git_user_email }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}

@@ -921,6 +921,7 @@ describe('LLM provider support', () => {
 describe('validateModelString()', () => {
   it.each([
     'opencode/deepseek-v4-flash-free',
+    'opencode-go/deepseek-v4-flash',
     'anthropic/claude-sonnet-4-20250514',
     'openai/gpt-4o',
     'google/gemini-2.0-flash',

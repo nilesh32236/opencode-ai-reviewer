@@ -87,7 +87,10 @@ export async function runAudit(
   const promptsDirRaw = core.getInput('audit-prompts-dir');
   let promptsDir = promptsDirRaw || config.audit.promptsDir;
   const targetDir = inputs.auditTargetDir;
-  const promptName = core.getInput('audit-prompt-name');
+  // The canonical input is `audit_prompt_name` (declared in action.yml). The
+  // kebab-case variant is read as a fallback for workflows written against the
+  // older, undeclared name so those configs keep working.
+  const promptName = core.getInput('audit_prompt_name') || core.getInput('audit-prompt-name');
 
   try {
     await gh.ensureLabels([

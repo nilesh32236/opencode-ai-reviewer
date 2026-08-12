@@ -146,9 +146,12 @@ jobs:
           failed_step: ${{ steps.capture-logs.outputs.failed_step }}
           failed_workflow: ${{ steps.capture-logs.outputs.failed_workflow }}
           github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          git_user_name: nilesh32236
+          git_user_email: nilesh32236@gmail.com
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}
         env:
           # Pass the logs via environment variable file path since they can be large
           CI_FAILURE_LOGS_FILE: /tmp/ci-failure-logs.txt

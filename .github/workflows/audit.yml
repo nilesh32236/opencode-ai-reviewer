@@ -40,6 +40,16 @@ on:
         required: false
         type: boolean
         default: true
+      git_user_name:
+        description: 'Git user name for fix commits (default: triggering actor)'
+        required: false
+        type: string
+        default: ''
+      git_user_email:
+        description: 'Git user email for fix commits (default: actor noreply email)'
+        required: false
+        type: string
+        default: ''
     outputs:
       critical_count:
         value: ${{ jobs.audit.outputs.critical_count }}
@@ -57,6 +67,9 @@ on:
         required: false
       GEMINI_API_KEY:
         description: 'Google Gemini API key (required when using Gemini models)'
+        required: false
+      OPENCODE_API_KEY:
+        description: 'OpenCode gateway API key (required when using opencode-go/* models)'
         required: false
 
 permissions:
@@ -86,6 +99,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         run: |
           if echo "${{ inputs.model }}" | grep -qiE 'openai|gpt'; then
             [ -n "$OPENAI_API_KEY" ] || echo "::warning::OPENAI_API_KEY secret is not configured — OpenAI models will fail to authenticate"
@@ -96,6 +110,9 @@ jobs:
           if echo "${{ inputs.model }}" | grep -qiE 'gemini'; then
             [ -n "$GEMINI_API_KEY" ] || echo "::warning::GEMINI_API_KEY secret is not configured — Gemini models will fail to authenticate"
           fi
+          if echo "${{ inputs.model }}" | grep -qiE 'opencode-go'; then
+            [ -n "$OPENCODE_API_KEY" ] || echo "::warning::OPENCODE_API_KEY secret is not configured — opencode-go/* models will fail to authenticate"
+          fi
 
       - name: AI Audit
         id: ai-audit
@@ -103,11 +120,14 @@ jobs:
         with:
           mode: audit
           model: ${{ inputs.model }}
-          audit_prompt_file: ${{ inputs.prompt_name }}
+          audit_prompt_name: ${{ inputs.prompt_name }}
           audit_target_dir: ${{ inputs.target_dir }}
           audit_create_issues: ${{ inputs.create_issues }}
           audit_auto_fix: ${{ inputs.auto_fix }}
           github_token: ${{ secrets.repo_token }}
+          git_user_name: ${{ inputs.git_user_name }}
+          git_user_email: ${{ inputs.git_user_email }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}

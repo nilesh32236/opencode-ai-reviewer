@@ -29,8 +29,11 @@ export async function runPost(
     ? Number(process.env.CI_MERGE_REQUEST_IID)
     : github.context.payload.pull_request?.number || github.context.payload.issue?.number;
   if (!prNumber) {
-    core.setFailed('Could not determine PR number for post-processing');
-    return;
+    // Audit / scheduled / changelog runs have no PR or issue context. Posting a
+    // review-summary or token-usage comment is meaningless there, but the job
+    // must not be failed just because there is nothing to post to. Log a notice
+    // and skip the PR-specific post-processing instead of failing the run.
+    core.info('No PR or issue context for post-processing — skipping PR-specific post steps');
   }
 
   if (inputs.runChecksAfterFix) {
@@ -59,7 +62,7 @@ export async function runPost(
   }
 
   const reviewSummary = core.getInput('review_summary');
-  if (reviewSummary && inputs.reviewCommentSummary) {
+  if (prNumber && reviewSummary && inputs.reviewCommentSummary) {
     try {
       await gh.postOrUpdateComment(
         prNumber,
@@ -89,7 +92,7 @@ export async function runPost(
   // comment is skipped — the token_usage / cost step outputs remain the
   // cross-platform surface for automation.
   const tokenUsageState = core.getState('token_usage');
-  if (tokenUsageState) {
+  if (prNumber && tokenUsageState) {
     try {
       const usage: TokenUsage = {
         totalTokens: Number(tokenUsageState),
@@ -127,10 +130,12 @@ export async function runPost(
   }
 
   const verdict = core.getInput('verdict');
-  if (verdict === 'true') {
-    core.info('PR is approved — no annotations needed');
-  } else {
-    core.warning('PR has unresolved issues — check review output');
+  if (prNumber) {
+    if (verdict === 'true') {
+      core.info('PR is approved — no annotations needed');
+    } else {
+      core.warning('PR has unresolved issues — check review output');
+    }
   }
 
   // Post telemetry & metrics summary

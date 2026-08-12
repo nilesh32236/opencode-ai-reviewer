@@ -597,6 +597,7 @@ ${verificationError ? `\n## Verification Errors from Previous Attempt\n\`\`\`\n$
 
 ## CRITICAL RULES
 - Do NOT run \`git commit\`, \`git push\`, or \`gh pr create\`.
+- Do NOT modify files under \`.github/\` (workflow definitions, CI configs, release automation) or other repository-configuration files. Changing them requires special CI permissions your token does not have and will cause the push to be rejected. If an issue requires a workflow change, describe the required change in \`.fix-summary.md\` instead of editing the file.
 - Strictly follow any explicit instructions provided by human maintainers in the comment thread.
 - Keep fixes minimal and target only the issue described.
 - If you cannot complete the fix, write the reason to \`.fix-stuck.md\` and stop.`;

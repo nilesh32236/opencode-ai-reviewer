@@ -364,9 +364,12 @@ jobs:
           run_checks_after_fix: 'pnpm build && pnpm typecheck && pnpm test && pnpm lint'
           pr-number: ${{ steps.process-issue.outputs.issue_number }}
           github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          git_user_name: nilesh32236
+          git_user_email: nilesh32236@gmail.com
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}
 
       # ─── Summary Step ────────────────────────────────────────────────────────
       - name: Report Orchestrator Run Summary

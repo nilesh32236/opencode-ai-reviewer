@@ -9,6 +9,7 @@ import * as core from '@actions/core';
  */
 export const KNOWN_PROVIDERS = [
   'opencode',
+  'opencode-go',
   'anthropic',
   'openai',
   'google',

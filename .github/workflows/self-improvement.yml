@@ -249,6 +249,8 @@ jobs:
           fi
 
           BRANCH="improvement/run-${{ github.run_id }}"
+          git config user.name "nilesh32236"
+          git config user.email "nilesh32236@gmail.com"
           git checkout -b "$BRANCH"
           git add -A
           git commit -m "feat(improvement): autonomous codebase enhancement [run ${{ github.run_id }}]"

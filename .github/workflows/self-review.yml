@@ -109,9 +109,12 @@ jobs:
           mode: review
           model: 'opencode/deepseek-v4-flash-free'
           github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          git_user_name: nilesh32236
+          git_user_email: nilesh32236@gmail.com
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}
 
   # ─── Autofix Review Loop ──────────────────────────────────────────────────────
   # Runs the full review→fix→review loop inside a single workflow execution.
@@ -181,9 +184,12 @@ jobs:
           max_fix_iterations: 3
           run_checks_after_fix: 'pnpm lint'
           github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          git_user_name: nilesh32236
+          git_user_email: nilesh32236@gmail.com
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}
 
   # ─── Daily Codebase Audit ─────────────────────────────────────────────────────
   audit:
@@ -211,13 +217,16 @@ jobs:
         with:
           mode: audit
           model: 'opencode/deepseek-v4-flash-free'
-          audit_prompt_file: ${{ inputs.audit_category }}
+          audit_prompt_name: ${{ inputs.audit_category }}
           audit_create_issues: true
           audit_auto_fix: true
           github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          git_user_name: nilesh32236
+          git_user_email: nilesh32236@gmail.com
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}
 
   # ─── Analyze Issue ─────────────────────────────────────────────────────────────
   analyze-issue:
@@ -239,9 +248,12 @@ jobs:
           mode: analyze
           model: 'opencode/deepseek-v4-flash-free'
           github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          git_user_name: nilesh32236
+          git_user_email: nilesh32236@gmail.com
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}
 
   # ─── Fix Audit Issue ──────────────────────────────────────────────────────────
   # Triggered by /fix on a plain issue or when audit adds autofix-trigger label.
@@ -288,9 +300,12 @@ jobs:
           run_checks_after_fix: 'pnpm lint'
           pr-number: ${{ steps.resolve-issue.outputs.issue_number }}
           github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          git_user_name: nilesh32236
+          git_user_email: nilesh32236@gmail.com
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}
 
   # ─── Auto-Merge Approved PR ───────────────────────────────────────────────────
   auto-merge:

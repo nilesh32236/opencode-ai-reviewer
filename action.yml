@@ -254,6 +254,10 @@ inputs:
     description: 'Path to a custom audit prompt file'
     required: false
 
+  audit_prompt_name:
+    description: 'Name of an audit category prompt to use (basename of a .md file in the audit prompts directory, e.g. "performance-efficiency"). Omit for a random category.'
+    required: false
+
   audit_create_issues:
     description: 'Create GitHub issues for audit findings'
     required: false
