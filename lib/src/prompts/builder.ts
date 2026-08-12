@@ -33,15 +33,12 @@ const logger = new Logger('prompt-builder');
  */
 export function truncateUtf8Bytes(text: string, maxBytes: number): string {
   if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
-  let sliceEnd = 0;
-  let runningBytes = 0;
-  for (const codePoint of text) {
-    const cpBytes = Buffer.byteLength(codePoint, 'utf8');
-    if (runningBytes + cpBytes > maxBytes) break;
-    runningBytes += cpBytes;
-    sliceEnd += codePoint.length;
+  const buf = Buffer.from(text, 'utf8');
+  let end = maxBytes;
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) {
+    end--;
   }
-  return text.slice(0, sliceEnd);
+  return buf.toString('utf8', 0, end);
 }
 
 /**
