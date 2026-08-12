@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.10.2] — 2026-08-12
+
+
+### Fixed
+
+- recognize opencode-go provider, graceful post-processing, audit prompt name, git identity
+- address issue #380 [skip ci] (#381) (#380
+#381)
+
+### Changed
+
+- ⚡ Bolt: Optimize truncateUtf8Bytes allocation overhead (#382) (#382)
+
+[v1.10.2]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.10.1...v1.10.2
+
 ## [v1.10.1] — 2026-08-11
 
 
