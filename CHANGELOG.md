@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.10.4] — 2026-08-13
+
+
+### Fixed
+
+- install docker compose v2 plugin in EC2 deployment
+
+[v1.10.4]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.10.3...v1.10.4
+
 ## [v1.10.3] — 2026-08-13
 
 
