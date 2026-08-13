@@ -3,6 +3,8 @@ node_modules
 *.md
 dist
 .env
+**/.env
+**/.env.*
 action/lib
 app/dist
 lib/dist

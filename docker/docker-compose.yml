@@ -51,11 +51,12 @@ services:
       MAX_ITERATIONS: ${MAX_ITERATIONS:-3}
       PORT: ${PORT:-3000}
     # GitHub App mode: expose the webhook port and mount the private key file.
-    # Uncomment and adjust the paths for your deployment:
-    # ports:
-    #   - "3000:3000"
-    # volumes:
-    #   - /host/path/to/private-key.pem:/app/private-key.pem:ro
+    # The private key path is taken from `.env` (PRIVATE_KEY_HOST_PATH) with a
+    # default relative to the repo root (../private-key.pem). Mounted read-only.
+    ports:
+      - "3000:3000"
+    volumes:
+      - ${PRIVATE_KEY_HOST_PATH:-../private-key.pem}:/app/private-key.pem:ro
     # No restart policy: validate-env.sh fail-fasts (exit 1) on a bad config,
     # so a restart policy would loop forever on the same error. Start the
     # container again after fixing `.env`.

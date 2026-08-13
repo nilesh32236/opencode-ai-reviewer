@@ -59,6 +59,8 @@ RUN pnpm --filter @opencode-pr-agent/lib --filter @opencode-pr-agent/app build
 # Stage 2 — slim runtime with compiled output and production deps only
 FROM node:22.11.0-bookworm-slim@sha256:f035ba7ffee18f67200e2eb8018e0f13c954ec16338f264940f701997e3c12da AS runtime
 
+ENV NODE_ENV=production
+
 # Build tools are only needed to compile better-sqlite3 during the prod
 # install below; they are purged afterwards so no compilers ship in the image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
