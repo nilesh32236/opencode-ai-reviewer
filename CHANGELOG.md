@@ -4,6 +4,27 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.12.0] — 2026-08-13
+
+### Added
+
+- auto-upgrade opencode models to paid when OPENCODE_API_KEY set
+
+### Fixed
+
+- create writable .opencode dir in image for learning DB volume
+- use opencode-go provider for paid models when key set
+- let app resolve opencode models (paid upgrade with key) instead of compose hardcoding free default
+- persist learning DB via volume; keep git askpass out of repo and out of workspace
+
+### Changed
+
+- feat(review): single-process subagent dispatch replaces multi-agent mode (#392) (#392)
+- feat(platform): scaffold platform package with health endpoint (Chunk 1) (#391) (#391)
+- ci: allow manual deploy trigger; target new EC2 instance
+
+[v1.12.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.11.5...v1.12.0
+
 ## [v1.11.5] — 2026-08-13
 
 
