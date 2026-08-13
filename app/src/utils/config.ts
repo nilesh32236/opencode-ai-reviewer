@@ -66,6 +66,23 @@ function parseEnvInt(envVar: string | undefined, fallback: number): number {
 }
 
 /**
+ * Resolve a default `opencode/*-free` model to its paid variant when an
+ * OpenCode API key is configured, so paid models are used automatically and
+ * the free variant remains the fallback when no key is present.
+ *
+ * Explicit `REVIEW_MODEL` / `FIX_MODEL` / etc. env overrides always win; this
+ * only upgrades the built-in `*-free` defaults.
+ * @param fallback - The default model string (e.g. `opencode/deepseek-v4-flash-free`).
+ * @returns The model to use, upgrading `*-free` to its paid form when a key is set.
+ */
+function resolveModel(fallback: string): string {
+  const hasKey = Boolean(process.env.OPENCODE_API_KEY || process.env.INPUT_OPENCODE_API_KEY);
+  if (!hasKey) return fallback;
+  // Map `opencode/<name>-free` → `opencode/<name>` when a key is available.
+  return fallback.replace(/^opencode\/([a-z0-9-]+)-free$/i, 'opencode/$1');
+}
+
+/**
  * Clamp an integer into a [min, max] range so that hostile or malformed env
  * overrides (negative, absurdly large) cannot silently disable rate limits.
  * @param value - Parsed integer value.
@@ -108,8 +125,8 @@ function parseTokenBudgetEnv(
 export function buildConfig(): AgentConfig {
   return {
     ...DEFAULT_CONFIG,
-    reviewModel: process.env.REVIEW_MODEL || DEFAULT_CONFIG.reviewModel,
-    fixModel: process.env.FIX_MODEL || DEFAULT_CONFIG.fixModel,
+    reviewModel: process.env.REVIEW_MODEL || resolveModel(DEFAULT_CONFIG.reviewModel),
+    fixModel: process.env.FIX_MODEL || resolveModel(DEFAULT_CONFIG.fixModel),
     auditModel: process.env.AUDIT_MODEL || undefined,
     synthesisModel: process.env.SYNTHESIS_MODEL || undefined,
     verificationModel: process.env.VERIFICATION_MODEL || undefined,
