@@ -5,13 +5,7 @@ import { createHash } from 'node:crypto';
 import * as os from 'os';
 import * as path from 'path';
 import { minimatch } from 'minimatch';
-import {
-  AGENT_PROMPT_BUILDERS,
-  buildLogicPrompt,
-  buildPerformancePrompt,
-  buildQualityPrompt,
-  buildSecurityPrompt,
-} from './agents/index.js';
+import { buildSubagentReviewPrompt } from './agents/index.js';
 import type { AgentPromptContext } from './agents/index.js';
 import { CodebaseIndex, CodebaseIndexCache } from './codebase-index/index.js';
 import type { CodebaseIndexData } from './codebase-index/types.js';
@@ -22,6 +16,7 @@ import { emptyResult, parseAgentJsonlString, parseJsonlFile } from './jsonl-pars
 import type { LearningStore } from './learning/store.js';
 import { MCPManager } from './mcp/client.js';
 import { ensureOutputDir, getGitStatus, runOpenCode } from './opencode.js';
+import { buildReviewSubagent } from './opencode.js';
 import type { PlatformAdapter } from './platform/adapter.js';
 import {
   buildAnalyzePrompt,
@@ -30,7 +25,6 @@ import {
   buildDocsPrompt,
   buildExplainPrompt,
   buildFixPrompt,
-  buildMultiAgentSynthesisPrompt,
   buildReviewPrompt,
   buildSynthesisPrompt,
 } from './prompts/builder.js';
@@ -1084,8 +1078,6 @@ export class ReviewEngine {
         promptFile,
         promptExtra,
         timeoutMinutes,
-        tokenBudgetConfig,
-        blameData,
         codebaseIndex,
         codebaseIndexData,
         linterResults,
@@ -1601,10 +1593,11 @@ export class ReviewEngine {
    * meta-verification, sensitivity filtering, and budget banners apply
    * identically to the legacy path.
    *
-   * Active agents are dispatched concurrently (each agent runs its own file
-   * batches under a bounded per-agent concurrency limit), so up to four
-   * specialized agents review in parallel instead of serially — output files
-   * are namespaced per agent/batch so no collisions occur.
+   * This runs as a SINGLE `opencode run` process: the configured review
+   * subagents (one per active category, read-only, injected into the OpenCode
+   * config) are dispatched by the primary agent via the task tool. One shared
+   * context is assembled once and passed to the orchestrator, so the review
+   * avoids re-reading the whole PR context once per category.
    * @param pr - The PR context being reviewed.
    * @param files - Changed files (already filtered by exclude patterns).
    * @param baseContext - The assembled PR/base context string (MCP + open threads).
@@ -1612,10 +1605,8 @@ export class ReviewEngine {
    * @param openThreadsContext - Open human-thread discussion context ('' when none/failed).
    * @param workDir - Working directory the review runs in.
    * @param promptFile - Optional custom review prompt file path.
-   * @param promptExtra - Optional extra instructions appended to each agent prompt.
+   * @param promptExtra - Optional extra instructions appended to the orchestrator prompt.
    * @param timeoutMinutes - Optional per-run timeout override.
-   * @param tokenBudgetConfig - Optional token budget config for per-file context caps.
-   * @param blameData - Optional git blame annotations keyed by file path.
    * @param codebaseIndex - Optional codebase index engine for cross-file context.
    * @param codebaseIndexData - Optional loaded index data.
    * @param linterResults - Results from configured linters.
@@ -1627,12 +1618,12 @@ export class ReviewEngine {
    * @param previousFindings - Optional findings from previous fix iterations.
    * @param previousBotComments - Optional previous bot review comments.
    * @param scaIssues - Optional SCA findings merged into the verified result.
-   * @param testGapResult - Optional structured test-gap analysis threaded to each
-   * specialized agent (batch-filtered) so the findings reach the multi-agent path.
-   * @param onBatchComplete - Optional callback invoked as each agent settles so
-   * callers can stream findings progressively. Failures never break the review.
+   * @param testGapResult - Optional structured test-gap analysis threaded into
+   * the orchestrator context so the findings reach the subagent review.
+   * @param onBatchComplete - Optional callback invoked once when the orchestrator
+   * settles so callers can stream a completion. Failures never break the review.
    * @param repoRulesContext - Optional repository rules context
-   * (AGENTS.md/CLAUDE.md/GEMINI.md/RULES.md) threaded into each agent prompt.
+   * (AGENTS.md/CLAUDE.md/GEMINI.md/RULES.md) threaded into the orchestrator prompt.
    * @param commitMessages - Optional compact git log commit list for the PR.
    * @returns The consolidated, verified ReviewResult.
    */
@@ -1646,8 +1637,6 @@ export class ReviewEngine {
     promptFile?: string,
     promptExtra?: string,
     timeoutMinutes?: number,
-    tokenBudgetConfig?: TokenBudgetConfig,
-    blameData?: Map<string, Map<number, BlameInfo>>,
     codebaseIndex?: CodebaseIndex,
     codebaseIndexData?: CodebaseIndexData,
     linterResults: LinterResult[] = [],
@@ -1675,115 +1664,192 @@ export class ReviewEngine {
   ): Promise<ReviewResult> {
     const categories = this.getActiveAgentCategories();
     this.logger.info(
-      `Multi-agent review: dispatching ${categories.length} specialized agent(s): ${categories.join(', ')}`,
+      `Multi-agent review (single-process subagent dispatch): ${categories.join(', ')}`,
     );
 
-    // Dispatch all active agents concurrently. Each agent writes to its own
-    // `.opencode/agent-<category>/batch-<idx>` output directory, so the agents
-    // cannot collide; concurrency is bounded inside each agent by a per-agent
-    // batch limit that keeps the aggregate under MAX_BATCH_CONCURRENCY.
-    //
-    // Streaming hook: emit one batch per agent as it settles (not after the
-    // full allSettled) so callers with streamComments enabled post findings
-    // progressively. Callbacks fire for failed agents too (with an empty
-    // payload) and never break the pipeline.
-    const emitAgentStream = async (idx: number, agent: AgentResult): Promise<void> => {
-      if (!onBatchComplete) return;
-      const batchResult: ReviewResult = {
-        summary: `Agent "${agent.agent}" findings`,
+    // Build read-only review subagents injected into the OpenCode config. A
+    // single primary agent dispatches them via the task tool, so the whole
+    // review runs as one `opencode run` process that shares a single context
+    // instead of N full sessions (one per category).
+    const subagents: Record<string, Record<string, unknown>> = {};
+    for (const category of categories) {
+      subagents[`${category}-reviewer`] = buildReviewSubagent(
+        `Specialized ${category} code reviewer. Reviews the pull request with a narrow ${category} focus and reports findings for its category.`,
+        this.resolveAgentModel(category),
+      );
+    }
+
+    // Assemble a single rich context (base PR context + codebase index +
+    // learning/false-positive/delta enrichment) once, shared by the orchestrator.
+    const codebaseIndexContext = this.formatCodebaseContext(
+      codebaseIndex,
+      codebaseIndexData,
+      files,
+    );
+    const orchestratorContext = this.buildAgentBatchContext(
+      baseContext,
+      mcpDocs,
+      openThreadsContext,
+      codebaseIndexContext,
+      deltaContext,
+      lessons,
+      falsePositiveRules,
+      previousFindings,
+      previousBotComments,
+      repoRulesContext,
+      commitMessages,
+    );
+
+    const promptBuilderInputs = {
+      projectContext: this.config.projectContext.description || undefined,
+      reviewPromptFile: promptFile,
+      reviewPromptExtra: promptExtra,
+    };
+    const prompt = buildSubagentReviewPrompt(
+      {
+        inputs: promptBuilderInputs,
+        prContext: orchestratorContext,
+        budgetMode,
+        totalDiffLines,
+        testGapContext: this.filterTestGapContext(testGapResult, files),
+      },
+      categories,
+    );
+
+    const finalOutputPath = path.join(workDir, 'review-output.jsonl');
+    ensureOutputDir(finalOutputPath);
+    const start = Date.now();
+
+    // A thrown/rejected orchestrator run (model typo, CLI outage) must not
+    // abort the review — degrade to a failed verdict like the legacy path.
+    const runResult = await this.runLLM(prompt, {
+      model: this.config.reviewModel,
+      timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+      workingDirectory: workDir,
+      subagents,
+    }).catch((err: unknown) => {
+      this.logger.warn(
+        `Subagent orchestrator run threw: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return {
+        success: false,
+        output: '',
+        durationMs: 0,
+        tokensUsed: 0,
+        promptTokens: undefined,
+        completionTokens: undefined,
+      };
+    });
+
+    // Single completion hook (the subagent path has no per-batch granularity):
+    // fire one callback with the run result once the orchestrator settles so
+    // streamComments callers still get notified. Never breaks the pipeline.
+    if (onBatchComplete) {
+      const completion: ReviewResult = {
+        summary: 'Subagent review findings',
         verdict: {
           ready: false,
           reasoning: '',
           autoFixable: false,
           confidence: 'medium',
         },
-        strengths: agent.strengths,
-        issues: agent.findings,
-        stats: {
-          total: agent.findings.length,
-          critical: agent.findings.filter((f) => f.severity === 'critical').length,
-          important: agent.findings.filter((f) => f.severity === 'important').length,
-          minor: agent.findings.filter((f) => f.severity === 'minor').length,
-        },
-        rawLines: agent.rawOutput ? [agent.rawOutput] : [],
+        strengths: [],
+        issues: [],
+        stats: { total: 0, critical: 0, important: 0, minor: 0 },
+        rawLines: [],
         failedLines: 0,
       };
-      await onBatchComplete(idx, categories.length, batchResult).catch((err) => {
+      await onBatchComplete(0, 1, completion).catch((err) => {
         this.logger.warn(
-          `Streaming batch callback failed for agent "${agent.agent}": ${err instanceof Error ? err.message : String(err)}`,
+          `Streaming batch callback failed: ${err instanceof Error ? err.message : String(err)}`,
         );
       });
-    };
-
-    const settleAgent = async (category: AgentCategory, idx: number): Promise<AgentResult> => {
-      try {
-        const value = await this.runAgentCategory(
-          category,
-          files,
-          pr,
-          mcpDocs,
-          openThreadsContext,
-          workDir,
-          promptFile,
-          promptExtra,
-          timeoutMinutes,
-          tokenBudgetConfig,
-          blameData,
-          codebaseIndex,
-          codebaseIndexData,
-          lessons,
-          falsePositiveRules,
-          deltaContext,
-          previousFindings,
-          previousBotComments,
-          budgetMode,
-          totalDiffLines,
-          testGapResult,
-          repoRulesContext,
-          commitMessages,
-        );
-        await emitAgentStream(idx, value);
-        return value;
-      } catch (reason) {
-        const message = reason instanceof Error ? reason.message : String(reason);
-        this.logger.warn(`Agent "${category}" rejected: ${message}`);
-        const failed: AgentResult = {
-          agent: category,
-          findings: [],
-          strengths: [],
-          rawOutput: '',
-          durationMs: 0,
-          tokensUsed: 0,
-          success: false,
-          error: message,
-        };
-        await emitAgentStream(idx, failed);
-        return failed;
-      }
-    };
-
-    const agentResults = await Promise.all(
-      categories.map((category, idx) => settleAgent(category, idx)),
-    );
-    for (const result of agentResults) {
-      if (result.success) {
-        this.logger.info(
-          `Agent "${result.agent}" found ${result.findings.length} issue(s) and ${result.strengths.length} strength(s) in ${result.durationMs}ms`,
-        );
-      } else {
-        this.logger.warn(`Agent "${result.agent}" failed: ${result.error ?? 'unknown error'}`);
-      }
     }
 
-    const result = await this.synthesizeAgentFindings(
+    await this.recordTelemetry(
       pr.number,
-      agentResults,
+      Date.now() - start,
+      runResult.tokensUsed,
+      runResult,
+      this.config.reviewModel,
       workDir,
-      timeoutMinutes,
-      linterResults,
-      promptFile,
-      promptExtra,
     );
+
+    if (!runResult.success) {
+      this.logger.warn('Subagent orchestrator run failed — reporting failed review');
+      const failed: ReviewResult = {
+        ...this.buildAgentFallbackResult(
+          [],
+          [],
+          [],
+          0,
+          'All review agents failed',
+          categories.length,
+        ),
+        verdict: {
+          ready: false,
+          reasoning: 'All review agents failed',
+          autoFixable: false,
+          confidence: 'medium',
+        },
+        summary: 'No issues found',
+      };
+      return await this.verifyReviewResult(
+        failed,
+        baseContext,
+        workDir,
+        timeoutMinutes,
+        pr.number,
+        budgetMode,
+        totalDiffLines,
+        files,
+        scaIssues,
+      );
+    }
+
+    // The orchestrator writes one consolidated JSONL. On parse failure or an
+    // empty output, degrade to a failed/empty verdict rather than crashing.
+    let result: ReviewResult;
+    try {
+      result = await parseJsonlFile(finalOutputPath);
+    } catch (err) {
+      this.logger.warn(
+        `Subagent orchestrator output parse failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      result = {
+        ...this.buildAgentFallbackResult(
+          [],
+          [],
+          [],
+          0,
+          'Review output could not be parsed',
+          categories.length,
+        ),
+        verdict: {
+          ready: false,
+          reasoning: 'Review output could not be parsed',
+          autoFixable: false,
+          confidence: 'medium',
+        },
+        summary: 'No issues found',
+      };
+    }
+
+    if (linterResults.length > 0) {
+      const deduped = this.deduplicateAgainstLinters(result.issues, linterResults, workDir);
+      if (deduped.length < result.issues.length) {
+        result = {
+          ...result,
+          issues: deduped,
+          stats: {
+            total: deduped.length,
+            critical: deduped.filter((i) => i.severity === 'critical').length,
+            important: deduped.filter((i) => i.severity === 'important').length,
+            minor: deduped.filter((i) => i.severity === 'minor').length,
+          },
+        };
+      }
+    }
 
     return await this.verifyReviewResult(
       result,
@@ -1796,292 +1862,6 @@ export class ReviewEngine {
       files,
       scaIssues,
     );
-  }
-
-  /**
-   * Run a single specialized agent over the changed files. Files are split into
-   * batches of `batchSize` (reusing the legacy batch infrastructure), each
-   * batch is dispatched to `runOpenCode` with the agent's focused prompt in an
-   * isolated working directory, and the accumulated output is parsed into one
-   * AgentResult attributed to the agent's category.
-   *
-   * Batches run concurrently under a bounded limit that keeps the aggregate
-   * across all active agents under `MAX_BATCH_CONCURRENCY`. A batch whose
-   * `runOpenCode` invocation throws or reports failure is marked failed and the
-   * remaining batches still run, so a per-agent model typo or CLI outage can
-   * never abort the whole review.
-   * @param category - The agent category to run.
-   * @param files - Changed files the agent reviews.
-   * @param pr - The PR context being reviewed.
-   * @param mcpDocs - MCP library documentation ('' when disabled/failed).
-   * @param openThreadsContext - Open human-thread discussion context ('' when none/failed).
-   * @param workDir - Working directory the review runs in.
-   * @param promptFile - Optional review-level custom prompt file path (the per-agent
-   * `multiAgent.agents.<category>.promptFile` takes precedence when set).
-   * @param promptExtra - Optional extra instructions appended to the agent prompt.
-   * @param timeoutMinutes - Optional per-run timeout override.
-   * @param tokenBudgetConfig - Optional token budget config.
-   * @param blameData - Optional git blame annotations keyed by file path.
-   * @param codebaseIndex - Optional codebase index engine.
-   * @param codebaseIndexData - Optional loaded index data.
-   * @param lessons - Optional learning-store lessons.
-   * @param falsePositiveRules - Optional false-positive suppression rules.
-   * @param deltaContext - Optional incremental review context.
-   * @param previousFindings - Optional findings from previous fix iterations.
-   * @param previousBotComments - Optional previous bot review comments.
-   * @param budgetMode - Optional budget review mode forwarded into the agent prompt.
-   * @param totalDiffLines - Optional total diff line count for the budget banner.
-   * @param testGapResult - Optional structured test-gap analysis; each batch
-   * receives a filtered subset scoped to the batch's source paths.
-   * @param repoRulesContext - Optional repository rules context
-   * (AGENTS.md/CLAUDE.md/GEMINI.md/RULES.md) threaded into each agent prompt.
-   * @param commitMessages - Optional compact git log commit list for the PR.
-   * @returns The structured AgentResult for this category.
-   */
-  private async runAgentCategory(
-    category: AgentCategory,
-    files: PRContext['changedFiles'],
-    pr: PRContext,
-    mcpDocs: string,
-    openThreadsContext: string,
-    workDir: string,
-    promptFile?: string,
-    promptExtra?: string,
-    timeoutMinutes?: number,
-    tokenBudgetConfig?: TokenBudgetConfig,
-    blameData?: Map<string, Map<number, BlameInfo>>,
-    codebaseIndex?: CodebaseIndex,
-    codebaseIndexData?: CodebaseIndexData,
-    lessons?: string[],
-    falsePositiveRules?: string[],
-    deltaContext?: string,
-    previousFindings?: PreviousFindingIteration[],
-    previousBotComments?: Array<{
-      file: string;
-      line: number | null;
-      body: string;
-      commentId: number;
-    }>,
-    budgetMode?: ReviewBudgetMode,
-    totalDiffLines?: number,
-    testGapResult?: TestGapResult,
-    repoRulesContext?: string,
-    commitMessages?: string,
-  ): Promise<AgentResult> {
-    const agentConfig = this.config.multiAgent?.agents?.[category] as
-      | MultiAgentAgentConfig
-      | undefined;
-    const model = this.resolveAgentModel(category);
-    const agentPromptFile = agentConfig?.promptFile;
-    const batchSize = this.config.batchSize || 3;
-
-    const fileBatches: Array<(typeof files)[number][]> = [];
-    for (let i = 0; i < files.length; i += batchSize) {
-      fileBatches.push(files.slice(i, i + batchSize));
-    }
-
-    const agentStart = Date.now();
-    let accumulatedTokensUsed = 0;
-    let accumulatedPromptTokens = 0;
-    let accumulatedCompletionTokens = 0;
-    const rawBatches: string[] = [];
-    let success = true;
-    let error: string | undefined;
-
-    // Bound the per-agent batch concurrency so the aggregate across concurrently
-    // running agents stays under MAX_BATCH_CONCURRENCY (mirroring the legacy
-    // single-agent path's cap).
-    const activeCategories = Math.max(1, this.getActiveAgentCategories().length);
-    const concurrencyLimit = Math.min(
-      os.cpus().length || 4,
-      fileBatches.length,
-      Math.max(1, Math.floor(MAX_BATCH_CONCURRENCY / activeCategories)),
-    );
-
-    const runBatch = async (
-      batch: (typeof files)[number][],
-      idx: number,
-    ): Promise<{
-      raw: string;
-      tokensUsed: number;
-      promptTokens?: number;
-      completionTokens?: number;
-      failed: boolean;
-      error?: string;
-    }> => {
-      const batchDir = path.join(workDir, '.opencode', `agent-${category}`, `batch-${idx}`);
-      if (!existsSync(batchDir)) {
-        mkdirSync(batchDir, { recursive: true });
-      }
-
-      const batchPR = { ...pr, changedFiles: batch };
-      const batchBlameData: Map<string, Map<number, BlameInfo>> | undefined =
-        blameData && blameData.size > 0
-          ? new Map(
-              batch
-                .map((f) => f.path)
-                .filter((p): p is string => Boolean(p))
-                .flatMap((p) => {
-                  const info = blameData.get(p);
-                  return info !== undefined ? [[p, info] as const] : [];
-                }),
-            )
-          : undefined;
-      const { context: batchContext } = this.buildPRContextString(
-        batchPR,
-        tokenBudgetConfig,
-        true,
-        batchBlameData,
-      );
-      const batchCodebaseContext = this.formatCodebaseContext(
-        codebaseIndex,
-        codebaseIndexData,
-        batch,
-      );
-      const agentContext: AgentPromptContext = {
-        inputs: {
-          projectContext: this.config.projectContext.description || undefined,
-          reviewPromptFile: agentPromptFile ?? promptFile,
-          reviewPromptExtra: promptExtra,
-        },
-        prContext: this.buildAgentBatchContext(
-          batchContext,
-          mcpDocs,
-          openThreadsContext,
-          batchCodebaseContext,
-          deltaContext,
-          lessons,
-          falsePositiveRules,
-          previousFindings,
-          previousBotComments,
-          repoRulesContext,
-          commitMessages,
-        ),
-        budgetMode,
-        totalDiffLines,
-        // Restrict the PR-wide detection result to gaps touching this batch's
-        // source paths so agents never suggest tests for files absent from the
-        // batch they are reviewing.
-        testGapContext: this.filterTestGapContext(testGapResult, batch),
-      };
-
-      const promptBuilder = AGENT_PROMPT_BUILDERS[category] ?? buildSecurityPrompt;
-      const prompt = promptBuilder(agentContext);
-
-      const outputPath = path.join(batchDir, 'review-output.jsonl');
-      ensureOutputDir(outputPath);
-
-      // runOpenCode throws synchronously on a malformed model string and can
-      // reject on setup/health-check failures. Treat a thrown/rejected call as a
-      // failed batch so a single bad batch never aborts the whole review.
-      const runResult = await this.runLLM(prompt, {
-        model,
-        timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
-        workingDirectory: batchDir,
-      }).catch((err: unknown) => {
-        this.logger.warn(
-          `Agent ${category} batch ${idx} threw: ${err instanceof Error ? err.message : String(err)}`,
-        );
-        return {
-          success: false,
-          output: '',
-          durationMs: 0,
-          tokensUsed: 0,
-          promptTokens: undefined,
-          completionTokens: undefined,
-        };
-      });
-
-      if (!runResult.success) {
-        this.logger.warn(`Agent ${category} batch ${idx} execution failed`);
-        return {
-          raw: '',
-          tokensUsed: runResult.tokensUsed,
-          promptTokens: runResult.promptTokens,
-          completionTokens: runResult.completionTokens,
-          failed: true,
-          error: `Agent batch ${idx} execution failed`,
-        };
-      }
-
-      try {
-        const content = await fs.readFile(outputPath, 'utf-8');
-        return {
-          raw: content.trim() ? content : '',
-          tokensUsed: runResult.tokensUsed,
-          promptTokens: runResult.promptTokens,
-          completionTokens: runResult.completionTokens,
-          failed: false,
-        };
-      } catch (err) {
-        this.logger.warn(`Agent ${category} batch ${idx} output missing`);
-        return {
-          raw: '',
-          tokensUsed: runResult.tokensUsed,
-          promptTokens: runResult.promptTokens,
-          completionTokens: runResult.completionTokens,
-          failed: true,
-          error: err instanceof Error ? err.message : String(err),
-        };
-      }
-    };
-
-    const chunkCount = computeChunkDelays(fileBatches.length, concurrencyLimit) + 1;
-    for (let chunk = 0; chunk < chunkCount; chunk++) {
-      if (chunk > 0) {
-        await new Promise((r) => setTimeout(r, INTER_CHUNK_DELAY_MS));
-      }
-      const batchStart = chunk * concurrencyLimit;
-      const chunkBatches = fileBatches.slice(batchStart, batchStart + concurrencyLimit);
-      const chunkOutputs = await Promise.all(
-        chunkBatches.map((batch, chunkOffset) => runBatch(batch, batchStart + chunkOffset)),
-      );
-      for (const batchResult of chunkOutputs) {
-        accumulatedTokensUsed += batchResult.tokensUsed;
-        accumulatedPromptTokens += batchResult.promptTokens ?? 0;
-        accumulatedCompletionTokens += batchResult.completionTokens ?? 0;
-        if (batchResult.raw) {
-          rawBatches.push(batchResult.raw);
-        }
-        if (batchResult.failed) {
-          success = false;
-          error = error ?? batchResult.error;
-        }
-      }
-    }
-
-    // Record the agent's aggregated telemetry (all batches, one entry).
-    await this.recordTelemetry(
-      pr.number,
-      Date.now() - agentStart,
-      accumulatedTokensUsed,
-      {
-        promptTokens: accumulatedPromptTokens > 0 ? accumulatedPromptTokens : undefined,
-        completionTokens: accumulatedCompletionTokens > 0 ? accumulatedCompletionTokens : undefined,
-      },
-      model,
-      workDir,
-    );
-
-    const parsed = parseAgentJsonlString(rawBatches.join('\n'), category);
-    const rawOutput = rawBatches.join('\n');
-
-    if (success && rawOutput.trim().length === 0 && parsed.findings.length === 0) {
-      success = false;
-      error = 'Agent produced no output';
-    }
-
-    return {
-      agent: category,
-      findings: parsed.findings,
-      strengths: parsed.strengths,
-      rawOutput,
-      failedLines: parsed.failedLines,
-      durationMs: Date.now() - agentStart,
-      tokensUsed: accumulatedTokensUsed,
-      success,
-      error,
-    };
   }
 
   /**
@@ -2250,237 +2030,6 @@ export class ReviewEngine {
     }
 
     return parts.join('\n');
-  }
-
-  /**
-   * Consolidate findings from all specialized agents into a final ReviewResult.
-   * Runs the synthesis agent (always, when enabled) with a JSONL payload of
-   * per-agent findings; on synthesis failure or output-parse failure, falls back
-   * to a deterministic merged + deduplicated result so a synthesis-model outage
-   * can never fail the whole review.
-   *
-   * When every agent failed (model outage, timeout, malformed output), the
-   * resulting review is forced to a failed verdict (`ready: false`) — a PR that
-   * was never actually reviewed must never be reported as clean and merge-ready.
-   * @param prNumber - PR number being reviewed.
-   * @param agentResults - Findings from each specialized agent.
-   * @param workDir - Working directory the review runs in.
-   * @param timeoutMinutes - Optional per-run timeout override.
-   * @param linterResults - Results from configured linters (deduped post-synthesis).
-   * @param promptFile - Optional review-level custom prompt file path forwarded to the synthesis prompt.
-   * @param promptExtra - Optional extra instructions forwarded to the synthesis prompt.
-   * @returns The consolidated ReviewResult.
-   */
-  private async synthesizeAgentFindings(
-    prNumber: number,
-    agentResults: AgentResult[],
-    workDir: string,
-    timeoutMinutes?: number,
-    linterResults: LinterResult[] = [],
-    promptFile?: string,
-    promptExtra?: string,
-  ): Promise<ReviewResult> {
-    const allFindings: AgentFinding[] = agentResults.flatMap((r) => r.findings);
-    const allStrengths: ReviewStrength[] = agentResults.flatMap((r) => r.strengths);
-    const allRawLines: string[] = agentResults
-      .map((r) => r.rawOutput)
-      .filter((raw) => typeof raw === 'string' && raw.length > 0);
-    const failedAgents = agentResults.filter((r) => !r.success).length;
-    const totalFailedLines = agentResults.reduce((sum, r) => sum + (r.failedLines ?? 0), 0);
-    const allFailed = failedAgents === agentResults.length && agentResults.length > 0;
-
-    const dedupIssues = (issues: ReviewIssue[]): ReviewIssue[] => {
-      if (linterResults.length === 0) return issues;
-      return this.deduplicateAgainstLinters(issues, linterResults, workDir);
-    };
-
-    // Force a failed verdict when every agent failed, regardless of which
-    // consolidation path runs, so an unreviewed PR is never green-lit.
-    const forceFailedVerdict = (result: ReviewResult): ReviewResult => {
-      if (!allFailed) return result;
-      return {
-        ...result,
-        verdict: { ...result.verdict, ready: false, autoFixable: false },
-      };
-    };
-
-    const synthesisEnabled = this.config.multiAgent?.synthesis?.enabled !== false;
-    if (!synthesisEnabled || allFindings.length === 0) {
-      const reasoning = allFailed
-        ? 'All review agents failed'
-        : allFindings.length === 0
-          ? 'No issues found'
-          : 'Merged agent findings';
-      return forceFailedVerdict(
-        this.buildAgentFallbackResult(
-          dedupIssues(this.deduplicateAgentFindings(allFindings)),
-          allStrengths,
-          allRawLines,
-          totalFailedLines,
-          reasoning,
-          failedAgents,
-        ),
-      );
-    }
-
-    // Serialize per-agent findings (each issue carries its originating agent)
-    // and hand them to the synthesis agent for dedup, prioritization, and
-    // consolidated formatting.
-    const findingsJsonl = allFindings
-      .map((f) =>
-        JSON.stringify({
-          ...f,
-          agent: f.agent,
-          category: f.agent,
-        }),
-      )
-      .join('\n');
-    const synthesisPrompt = buildMultiAgentSynthesisPrompt(
-      {
-        projectContext: this.config.projectContext.description || undefined,
-        reviewPromptFile: promptFile,
-        reviewPromptExtra: promptExtra,
-      },
-      findingsJsonl,
-    );
-    const synthesisModelOverride = this.config.multiAgent?.synthesis?.model;
-    let synthesisModel = this.resolveModel('synthesisModel');
-    if (synthesisModelOverride) {
-      try {
-        validateModelString(synthesisModelOverride);
-        synthesisModel = synthesisModelOverride;
-      } catch (err) {
-        this.logger.warn(
-          `Synthesis model "${synthesisModelOverride}" is invalid, falling back to the synthesis/review model: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
-
-    const finalOutputPath = path.join(workDir, 'review-output.jsonl');
-    ensureOutputDir(finalOutputPath);
-
-    const synthesisResult = await this.runLLM(synthesisPrompt, {
-      model: synthesisModel,
-      timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
-      workingDirectory: workDir,
-    }).catch((err: unknown) => {
-      this.logger.warn(
-        `Multi-agent synthesis run threw: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return {
-        success: false,
-        output: '',
-        durationMs: 0,
-        tokensUsed: 0,
-        promptTokens: undefined,
-        completionTokens: undefined,
-      };
-    });
-    await this.recordTelemetry(
-      prNumber,
-      synthesisResult.durationMs,
-      synthesisResult.tokensUsed,
-      synthesisResult,
-      synthesisModel,
-      workDir,
-    );
-
-    if (!synthesisResult.success) {
-      this.logger.warn('Multi-agent synthesis pass failed, falling back to merged agent results');
-      return forceFailedVerdict(
-        this.buildAgentFallbackResult(
-          dedupIssues(this.deduplicateAgentFindings(allFindings)),
-          allStrengths,
-          allRawLines,
-          totalFailedLines,
-          'Synthesis failed, using merged agent results',
-          failedAgents,
-        ),
-      );
-    }
-
-    try {
-      const parsed = await parseJsonlFile(finalOutputPath);
-      // Preserve per-agent strengths on the synthesis-success path by merging
-      // them (deduplicated by message) so agent-reported strengths survive
-      // regardless of which consolidation path runs.
-      const mergedStrengths = [...parsed.strengths, ...allStrengths].filter(
-        (s, i, arr) => arr.findIndex((x) => x.message === s.message) === i,
-      );
-      let finalResult: ReviewResult = {
-        ...parsed,
-        strengths: mergedStrengths,
-        ...(failedAgents > 0 ? { failedAgents } : {}),
-      };
-      if (linterResults.length > 0) {
-        const deduped = this.deduplicateAgainstLinters(parsed.issues, linterResults, workDir);
-        if (deduped.length < parsed.issues.length) {
-          finalResult = {
-            ...finalResult,
-            issues: deduped,
-            stats: {
-              total: deduped.length,
-              critical: deduped.filter((i) => i.severity === 'critical').length,
-              important: deduped.filter((i) => i.severity === 'important').length,
-              minor: deduped.filter((i) => i.severity === 'minor').length,
-            },
-          };
-        }
-      }
-      return forceFailedVerdict(finalResult);
-    } catch (err) {
-      this.logger.warn(
-        `Multi-agent synthesis output parse failed, falling back to merged agent results: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return forceFailedVerdict(
-        this.buildAgentFallbackResult(
-          dedupIssues(this.deduplicateAgentFindings(allFindings)),
-          allStrengths,
-          allRawLines,
-          totalFailedLines,
-          'Synthesis output parse failed, using merged agent results',
-          failedAgents,
-        ),
-      );
-    }
-  }
-
-  /**
-   * Deterministically deduplicate findings across agents. Two findings are
-   * considered the same when they share file, line, and message (case
-   * insensitive). When duplicates are found, the higher-confidence finding is
-   * kept; ties resolve to the higher severity. This runs as a pre-merge pass for
-   * fallback results and complements the synthesis agent's LLM dedup.
-   * @param findings - Raw findings from all specialized agents.
-   * @returns The deduplicated findings.
-   */
-  private deduplicateAgentFindings(findings: AgentFinding[]): AgentFinding[] {
-    const confidenceRank: Record<'high' | 'medium' | 'low', number> = {
-      high: 3,
-      medium: 2,
-      low: 1,
-    };
-    const seen = new Map<string, AgentFinding>();
-    for (const finding of findings) {
-      const messageKey = (finding.message || '').trim().toLowerCase();
-      const key = `${finding.file}:${finding.line}:${messageKey}`;
-      const existing = seen.get(key);
-      if (!existing) {
-        seen.set(key, finding);
-        continue;
-      }
-      const newConfidence = confidenceRank[finding.confidence ?? 'low'] ?? 1;
-      const existingConfidence = confidenceRank[existing.confidence ?? 'low'] ?? 1;
-      const newSeverity = severityRank(finding.severity);
-      const existingSeverity = severityRank(existing.severity);
-      if (
-        newConfidence > existingConfidence ||
-        (newConfidence === existingConfidence && newSeverity > existingSeverity)
-      ) {
-        seen.set(key, finding);
-      }
-    }
-    return [...seen.values()];
   }
 
   /**

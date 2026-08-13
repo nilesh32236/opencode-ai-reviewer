@@ -7,5 +7,6 @@ export {
   buildPerformancePrompt,
   buildQualityPrompt,
   buildLogicPrompt,
+  buildSubagentReviewPrompt,
 } from './prompts.js';
 export type { AgentPromptContext } from './types.js';

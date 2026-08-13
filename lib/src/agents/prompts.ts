@@ -246,3 +246,104 @@ export const AGENT_PROMPT_BUILDERS: Record<AgentCategory, (context: AgentPromptC
     quality: buildQualityPrompt,
     logic: buildLogicPrompt,
   };
+
+/**
+ * Build the orchestrator prompt for a single-process subagent review. Instead
+ * of spawning one `opencode run` per review category, a single primary agent
+ * dispatches the configured read-only review subagents via the task tool and
+ * consolidates their findings into one `review-output.jsonl`.
+ * @param context - The agent prompt context (PR context, inputs).
+ * @param categories - The active review categories to dispatch as subagents.
+ * @returns The assembled orchestrator prompt string.
+ */
+export function buildSubagentReviewPrompt(
+  context: AgentPromptContext,
+  categories: readonly AgentCategory[],
+): string {
+  const prContext = sanitizePromptInput(context.prContext, { maxLength: 50_000 });
+  const subagentMentions = categories.map((c) => `@${c}-reviewer`).join(', ');
+  const sections: string[] = [];
+
+  if (context.inputs.reviewPromptFile) {
+    const customPrompt = loadPromptFile(context.inputs.reviewPromptFile);
+    if (customPrompt) {
+      sections.push(customPrompt);
+      sections.push('');
+    }
+  }
+
+  sections.push(`You are the Review Orchestrator, a Senior Code Reviewer coordinating specialized subagent reviewers for a pull request.
+
+You have the following read-only review subagents available — dispatch them via the task tool:
+${categories.map((c) => `- @${c}-reviewer`).join('\n')}
+
+## Your Job
+
+1. Dispatch every one of these subagents: ${subagentMentions}. Give each subagent the PR context and ask it to return its findings for its specialization.
+2. Wait for each subagent to finish and collect its findings.
+3. Deduplicate overlapping findings (same file, line, and message, or the same root cause described from different angles).
+4. Prioritize by severity × confidence.
+5. Write ONE consolidated JSON Lines report to \`review-output.jsonl\`, preserving each issue's originating subagent in the \`agent\` and \`category\` fields (e.g. "security", "performance", "quality", "logic").
+
+If a subagent cannot be dispatched or fails, note the failure in the verdict reasoning but still consolidate the findings you did collect.
+
+## PR & Issue Context
+
+${prContext}`);
+
+  if (context.inputs.projectContext) {
+    sections.push('');
+    sections.push('## Project Context');
+    sections.push('');
+    sections.push(context.inputs.projectContext);
+  }
+
+  sections.push('');
+  sections.push(`## Output Format: JSON Lines
+
+You MUST write the JSONL content directly to the file \`review-output.jsonl\` in the current working directory, then verify the file exists and conforms strictly to the schema.
+
+\`\`\`
+{"type":"executive_summary","purpose":"1-2 sentence description of what this PR does.","riskLevel":"low","riskRationale":"Why this risk level.","breakingChanges":[]}
+{"type":"summary","text":"Brief overall assessment of the PR. 2-3 sentences."}
+{"type":"verdict","ready":false,"reasoning":"1-2 sentence technical assessment.","autoFixable":true,"confidence":"high"}
+{"type":"strength","file":"src/example.ts","line":10,"message":"What's well done and why."}
+{"type":"issue","agent":"security","category":"security","severity":"critical","file":"src/example.ts","line":42,"message":"What's wrong.","suggestion":"Add a null guard before iterating over data.user","suggestionCode":"const user = data?.user ?? null;","inline":true,"confidence":"high"}
+\`\`\`
+
+**Rules for the JSONL file:**
+- Write exactly ONE \`executive_summary\`, ONE \`summary\`, and ONE \`verdict\` line
+- Write zero or more \`strength\` and \`issue\` lines
+- EVERY \`issue\` line MUST include an \`agent\` and \`category\` field matching the subagent that found it (one of: ${categories.map((c) => `"${c}"`).join(', ')})
+- Every issue MUST include \`file\`, \`line\`, \`severity\` ("critical" | "important" | "minor"), and \`confidence\` ("high" | "medium" | "low")
+- For \`critical\` and \`important\` issues, if the fix is a code change of ≤ 10 lines, ALSO provide a \`suggestionCode\` field
+- \`"inline": true\` ONLY if the line is in the PR diff
+- If you find zero issues, write a verdict with \`"ready": true\`, \`"autoFixable": false\`, and \`"confidence": "high"\`
+- Do NOT wrap in an array, do NOT add commas between lines`);
+
+  if (context.testGapContext) {
+    sections.push('');
+    sections.push(buildTestGapSection(context.testGapContext));
+  }
+
+  if (context.budgetMode && context.budgetMode !== 'full') {
+    sections.push('');
+    sections.push(buildBudgetBanner(context.budgetMode, context.totalDiffLines));
+  }
+
+  sections.push('');
+  sections.push(AGENT_TAIL);
+  sections.push('');
+  sections.push(
+    `- You MUST dispatch the subagents (${subagentMentions}) before writing your consolidated output; do not substitute your own single-pass review for the subagent findings.`,
+  );
+
+  if (context.inputs.reviewPromptExtra) {
+    sections.push('');
+    sections.push('## Additional Instructions');
+    sections.push('');
+    sections.push(context.inputs.reviewPromptExtra);
+  }
+
+  return capPromptLength(sections.join('\n'));
+}
