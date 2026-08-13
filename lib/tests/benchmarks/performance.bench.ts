@@ -88,6 +88,7 @@ function makeBenchmarkConfig(): AgentConfig {
 function makeBenchmarkAdapter(): PlatformAdapter {
   return {
     getMR: async () => generatePRContextFixture(1),
+    getFileContent: async () => null,
     isMR: async () => true,
     getDefaultBranch: async () => 'main',
     getIssue: async () => ({
