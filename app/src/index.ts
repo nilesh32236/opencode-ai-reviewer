@@ -53,7 +53,10 @@ export default (app: Probot, options?: { getRouter?: (path?: string) => unknown 
   const healthRouter = createHealthRouter(learningStore, () => mcpManager.getStatus());
   const appRouter = options?.getRouter?.();
   if (appRouter && typeof (appRouter as { use?: unknown }).use === 'function') {
-    (appRouter as { use: (p: string, r: unknown) => void }).use('/health', healthRouter);
+    // Mount at the root: the health router defines `/health` and `/ready`
+    // routes internally, so a `.use('/health', ...)` mount would strip the
+    // prefix and make them unreachable (they'd become `/health/health`).
+    (appRouter as { use: (p: string, r: unknown) => void }).use('/', healthRouter);
     logger.info('Health endpoints mounted: GET /health, GET /ready');
   } else {
     logger.warn('getRouter() unavailable — health endpoints not mounted');
@@ -78,7 +81,13 @@ export default (app: Probot, options?: { getRouter?: (path?: string) => unknown 
 
   app.onAny(async (context) => {
     try {
-      await router.handle(context.name, context.payload);
+      // Probot's `context.name` is the bare event name (e.g. `issue_comment`),
+      // while the EventRouter maps `issue_comment.created`-style keys. Compose
+      // the full `name.action` so routing actually matches subscriber events.
+      const payload = context.payload as Record<string, unknown>;
+      const action = typeof payload?.action === 'string' ? payload.action : undefined;
+      const eventName = action ? `${context.name}.${action}` : context.name;
+      await router.handle(eventName, payload);
     } catch (err) {
       logger.error(
         `Unhandled error in event router for ${context.name}: ${err instanceof Error ? err.message : err}`,
