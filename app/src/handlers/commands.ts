@@ -91,6 +91,7 @@ export async function handleCommand(
       await execGit(['clone', '--depth', '1', `https://github.com/${repo}.git`, tempDir], {
         timeout: 120_000,
         ...(gitEnv ? { env: gitEnv } : {}),
+        ...(signal ? { signal } : {}),
       });
     } catch (err) {
       logger.error(`Git clone failed for ${repo}: ${err instanceof Error ? err.message : err}`);
@@ -481,6 +482,7 @@ export async function handleDocsCommand(
     cwd: tempDir,
     timeout: 120_000,
     ...(gitEnv ? { env: gitEnv } : {}),
+    ...(signal ? { signal } : {}),
   };
   const engine = new ReviewEngine(config, gh, undefined, eventBus, repo, correlationId);
   const branchName = `docs/issue-${issueNumber}`;
@@ -496,6 +498,13 @@ export async function handleDocsCommand(
 
     try {
       await execGit(['fetch', 'origin'], gitOpts);
+      // The shallow clone is single-branch: `fetch origin` only updates the
+      // default branch. Fetch the docs branch into its remote-tracking ref so
+      // existing-branch detection and checkout below can reference it.
+      await execGit(
+        ['fetch', 'origin', `+${branchName}:refs/remotes/origin/${branchName}`],
+        gitOpts,
+      );
     } catch (err) {
       logger.warn(
         `Git fetch failed: ${err instanceof Error ? err.message : String(err)} — continuing with local state`,
@@ -544,9 +553,29 @@ export async function handleDocsCommand(
 
     if (signal?.aborted) return;
 
+    // Same-repository PR head branches are not present in the single-branch
+    // shallow clone; fetch the source PR head into its remote-tracking ref so
+    // the new-branch checkout below can reference `origin/<baseRef>`.
+    if (!forkRemote) {
+      try {
+        await execGit(['fetch', 'origin', `+${baseRef}:refs/remotes/origin/${baseRef}`], gitOpts);
+      } catch (err) {
+        logger.warn(
+          `Could not fetch docs base branch ${baseRef} from origin: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
     if (branchExists) {
       await execGit(['checkout', '-B', branchName, `origin/${branchName}`], gitOpts);
       logger.info(`Checked out existing branch ${branchName}`);
+      // A depth-1 clone has no merge-base between the existing branch tip and
+      // the updated base; deepen so `pull --rebase` can compute the merge-base
+      // instead of treating both boundary commits as roots.
+      await execGit(['fetch', '--unshallow', 'origin'], gitOpts);
+      if (forkRemote) {
+        await execGit(['fetch', '--unshallow', forkRemote], gitOpts);
+      }
       await execGit(['pull', '--rebase', forkRemote ?? 'origin', baseRef], gitOpts);
     } else {
       const startRef = forkRemote ? `${forkRemote}/${baseRef}` : `origin/${baseRef}`;
@@ -806,6 +835,7 @@ async function createAutofixPR(
     cwd: tempDir,
     timeout: 120_000,
     ...(gitEnv ? { env: gitEnv } : {}),
+    ...(signal ? { signal } : {}),
   };
   const engine = new ReviewEngine(config, gh, undefined, eventBus, repo, correlationId);
   const branchName = `autofix/issue-${issueNumber}`;
@@ -813,6 +843,13 @@ async function createAutofixPR(
   try {
     try {
       await execGit(['fetch', 'origin'], gitOpts);
+      // The shallow clone is single-branch: `fetch origin` only updates the
+      // default branch. Fetch the autofix branch into its remote-tracking ref
+      // so existing-branch detection and checkout below can reference it.
+      await execGit(
+        ['fetch', 'origin', `+${branchName}:refs/remotes/origin/${branchName}`],
+        gitOpts,
+      );
     } catch (err) {
       logger.warn(
         `Git fetch failed: ${err instanceof Error ? err.message : String(err)} — continuing with local state`,
@@ -834,6 +871,9 @@ async function createAutofixPR(
     if (branchExists) {
       await execGit(['checkout', '-B', branchName, `origin/${branchName}`], gitOpts);
       logger.info(`Checked out existing branch ${branchName}`);
+      // A depth-1 clone has no merge-base between the existing branch tip and
+      // the updated default branch; deepen so `pull --rebase` works.
+      await execGit(['fetch', '--unshallow', 'origin'], gitOpts);
       await execGit(['pull', '--rebase', 'origin', defaultBranch], gitOpts);
     } else {
       await execGit(['checkout', '-b', branchName, `origin/${defaultBranch}`], gitOpts);
@@ -878,15 +918,17 @@ async function createAutofixPR(
       } else {
         await markAnalysisReady(gh, issueNumber);
       }
-
-      // The analysis above may have posted a plan/questions/force-answers comment
-      // and swapped labels, so the previously-fetched issue is stale. Re-fetch so
-      // the unanswered-question checks below see the post-analysis state.
-      issue = await gh.getIssue(issueNumber);
-      issueContext = await gh.gatherContext({ issueNumber });
     }
 
     if (signal?.aborted) return null;
+
+    // The analysis above may have posted a plan/questions/force-answers comment
+    // and swapped labels, and the clone/fetch/checkout branch setup can take
+    // minutes. Re-fetch right before the pending-question checks so a user's
+    // answer comment that landed meanwhile is observed — otherwise an
+    // answerable fix is wrongly deferred on a stale issue.
+    issue = await gh.getIssue(issueNumber);
+    issueContext = await gh.gatherContext({ issueNumber });
 
     const hasQuestionsPending = await checkForUnansweredQuestions(issue, issueContext);
     if (hasQuestionsPending) {

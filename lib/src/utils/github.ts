@@ -644,11 +644,17 @@ export class GitHubHelper implements PlatformAdapter {
       .join('/');
     const query = ref ? `?ref=${encodeURIComponent(ref)}` : '';
     try {
-      return await this.api<string>(
+      const content = await this.api<string>(
         `/contents/${encodedPath}${query}`,
-        { headers: { Accept: 'application/vnd.github.raw+json' } },
+        { headers: { Accept: 'application/vnd.github.raw' } },
         'text',
       );
+      // With a raw media type, binary files (images, archives) come back as raw
+      // bytes whose NUL bytes survive the UTF-8 text decode. Reject them so
+      // callers fall back to the diff hunk instead of embedding binary garbage
+      // in the LLM prompt.
+      if (content.includes('\u0000')) return null;
+      return content;
     } catch (err) {
       if (err instanceof Error && (err as Error & { status?: number }).status === 404) {
         return null;
@@ -1135,6 +1141,7 @@ export class GitHubHelper implements PlatformAdapter {
     rootComment: { id: number; author: string; body: string; isBot: boolean };
     filePath: string;
     lineNumber?: number;
+    commitId?: string;
   }> {
     const commentById = new Map<number, ThreadComment>();
     const chainIds: number[] = [];
@@ -1179,6 +1186,7 @@ export class GitHubHelper implements PlatformAdapter {
       | undefined;
     let filePath = '';
     let lineNumber: number | undefined;
+    let commitId: string | undefined;
 
     // Anchor filePath/lineNumber on the ROOT comment (first chain entry) to
     // preserve the pre-refactor leaf-to-root walk semantics, falling back to the
@@ -1197,6 +1205,7 @@ export class GitHubHelper implements PlatformAdapter {
 
       if (!filePath && comment.path) filePath = comment.path;
       if (lineNumber === undefined && comment.line !== undefined) lineNumber = comment.line;
+      if (commitId === undefined && comment.commit_id) commitId = comment.commit_id;
 
       if (!root) root = entry;
     }
@@ -1205,7 +1214,7 @@ export class GitHubHelper implements PlatformAdapter {
       throw new Error(`Comment ${commentId} not found — cannot build thread`);
     }
 
-    return { comments, rootComment: root, filePath, lineNumber };
+    return { comments, rootComment: root, filePath, lineNumber, commitId };
   }
 
   /**

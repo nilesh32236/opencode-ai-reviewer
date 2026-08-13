@@ -543,11 +543,13 @@ export class GitLabAdapter implements PlatformAdapter {
     const encodedPath = encodeURIComponent(filePath);
     const query = ref ? `?ref=${encodeURIComponent(ref)}` : '';
     try {
-      const data = await this.api<{ content?: string }>(
-        `/repository/files/${encodedPath}${query}`,
-      );
+      const data = await this.api<{ content?: string }>(`/repository/files/${encodedPath}${query}`);
       if (data.content === undefined) return null;
-      return Buffer.from(data.content, 'base64').toString('utf-8');
+      const decoded = Buffer.from(data.content, 'base64').toString('utf-8');
+      // Binary files decode with NUL bytes; reject them so callers fall back to
+      // the MR diff hunk instead of embedding binary garbage in the LLM prompt.
+      if (decoded.includes('\u0000')) return null;
+      return decoded;
     } catch (err) {
       if (err instanceof Error && (err as Error & { status?: number }).status === 404) {
         return null;

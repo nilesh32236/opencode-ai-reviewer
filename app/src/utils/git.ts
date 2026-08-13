@@ -28,7 +28,7 @@ export interface ExecGitResult {
  *
  * @param args - Arguments passed to the `git` binary.
  * @param options - Execution options (cwd, env, buffer, timeout, signal).
- * @returns The trimmed stdout and raw stderr on success.
+ * @returns The raw (untrimmed) stdout and stderr on success.
  * @throws When git exits non-zero; the error carries `code`, `stdout`, and
  * `stderr` for diagnostics, and rethrows abort errors unmodified.
  */

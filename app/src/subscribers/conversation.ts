@@ -1,4 +1,4 @@
-import { rmSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { ConversationStateManager, Logger, parseCommand } from '@opencode-pr-agent/lib';
@@ -87,15 +87,18 @@ export function createConversationSubscriber(
         const reservation = await checkRateLimit(rateLimiter, event, 'interactive', action);
         if (!reservation) return;
 
-        // Each conversation gets its own scratch directory under the OS temp dir
-        // so concurrent webhooks (Probot handles them concurrently) never clobber
-        // each other's `.opencode/conversation-output.txt` / `conversation-summary.txt`.
+        // Each conversation gets its own unique scratch directory under the OS
+        // temp dir so concurrent webhooks and retried deliveries of the same
+        // event (Probot handles them concurrently) never clobber each other's
+        // `.opencode/conversation-output.txt` / `conversation-summary.txt`, and
+        // one invocation can never delete a directory another is still writing.
         // The directory is removed when the turn finishes so temp dirs do not
         // accumulate across every conversation event.
-        const convWorkDir = path.join(
-          os.tmpdir(),
-          'opencode-conv',
-          `${(event.repo || '').replace('/', '-')}-${prNumber}-${commentId}`,
+        const convWorkDir = await mkdtemp(
+          path.join(
+            os.tmpdir(),
+            `opencode-conv-${(event.repo || '').replace('/', '-')}-${prNumber}-${commentId}-`,
+          ),
         );
 
         try {
@@ -115,7 +118,7 @@ export function createConversationSubscriber(
           );
         } finally {
           try {
-            rmSync(convWorkDir, { recursive: true, force: true });
+            await rm(convWorkDir, { recursive: true, force: true });
           } catch (rmErr) {
             logger.warn(
               `Failed to clean up conversation work dir ${convWorkDir}: ${

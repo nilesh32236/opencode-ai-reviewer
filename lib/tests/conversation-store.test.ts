@@ -1,7 +1,11 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { JsonDbAdapter } from '../src/learning/db/json.js';
+import { connectDb } from '../src/learning/db/sql-adapter.js';
+import { JsonDatabase } from '../src/learning/json-db.js';
+import { applyMigrations } from '../src/learning/schema.js';
 import { LearningStore } from '../src/learning/store.js';
 
 const TEST_DB = path.join(os.tmpdir(), `.test-conv-store-${Date.now()}.db`);
@@ -277,5 +281,178 @@ describe('LearningStore conversation sessions', () => {
     expect(await store.getConversationTurns(staleId)).toHaveLength(0);
     expect(await store.getConversationSession(freshId)).not.toBeNull();
     expect(await store.getConversationTurns(freshId)).toHaveLength(1);
+  });
+
+  it('saveConversationExchange commits the session patch and both turns atomically', async () => {
+    const sessionId = await store.getOrCreateConversationSession({
+      id: 'org/repo/42/issue',
+      prNumber: 42,
+      repo: 'org/repo',
+      isReviewComment: false,
+      turnCount: 2,
+    });
+
+    await store.saveConversationExchange({
+      sessionId,
+      patch: { turnCount: 4, tokenBudgetUsed: 500, summarySnapshot: 'agreed' },
+      userTurn: { turnNumber: 3, body: 'Why is this null?' },
+      assistantTurn: { turnNumber: 4, body: 'Because it is not initialized.' },
+    });
+
+    const session = await store.getConversationSession(sessionId);
+    expect(session?.turn_count).toBe(4);
+    expect(session?.token_budget_used).toBe(500);
+    expect(session?.summary_snapshot).toBe('agreed');
+
+    const turns = await store.getConversationTurns(sessionId);
+    expect(turns).toHaveLength(2);
+    expect(turns.map((t) => t.role)).toEqual(['user', 'assistant']);
+    expect(turns[0].body).toBe('Why is this null?');
+    expect(turns[1].body).toBe('Because it is not initialized.');
+  });
+
+  it('saveConversationExchange honors omitted user/assistant turns', async () => {
+    const sessionId = await store.getOrCreateConversationSession({
+      id: 'org/repo/42/issue',
+      prNumber: 42,
+      repo: 'org/repo',
+      isReviewComment: false,
+      turnCount: 1,
+    });
+
+    await store.saveConversationExchange({
+      sessionId,
+      patch: { turnCount: 2, alreadyClosed: true },
+    });
+
+    const session = await store.getConversationSession(sessionId);
+    expect(session?.turn_count).toBe(2);
+    expect(session?.already_closed).toBe(1);
+    expect(await store.getConversationTurns(sessionId)).toHaveLength(0);
+  });
+
+  it('saveConversationExchange rolls back the session patch when a mid-transaction turn insert fails', async () => {
+    const adapter = await connectDb(TEST_DB);
+    await applyMigrations(adapter);
+    try {
+      const sessionId = await adapter.getOrCreateConversationSession({
+        id: 'org/repo/42/issue',
+        prNumber: 42,
+        repo: 'org/repo',
+        isReviewComment: false,
+        turnCount: 2,
+      });
+
+      // Force the assistant-turn insert to fail after the session patch update.
+      const addTurn = vi
+        .spyOn(adapter, 'addConversationTurn')
+        .mockRejectedValueOnce(new Error('forced turn failure'));
+
+      await expect(
+        adapter.saveConversationExchange({
+          sessionId,
+          patch: { turnCount: 99, summarySnapshot: 'should roll back' },
+          userTurn: { turnNumber: 3, body: 'question' },
+          assistantTurn: { turnNumber: 4, body: 'answer' },
+        }),
+      ).rejects.toThrow('forced turn failure');
+
+      addTurn.mockRestore();
+
+      // Atomicity: the patch must NOT be persisted and no turn rows may remain.
+      const session = await adapter.getConversationSession(sessionId);
+      expect(session?.turn_count).toBe(2);
+      expect(session?.summary_snapshot).toBeNull();
+      expect(await adapter.getConversationTurns(sessionId)).toHaveLength(0);
+    } finally {
+      await adapter.close().catch(() => {});
+    }
+  });
+});
+
+describe('LearningStore conversation exchanges (JSON fallback)', () => {
+  let jsonDb: JsonDatabase;
+  let adapter: JsonDbAdapter;
+
+  beforeEach(() => {
+    const jsonPath = path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'conv-json-test-')),
+      'test.json',
+    );
+    jsonDb = new JsonDatabase(jsonPath);
+    adapter = new JsonDbAdapter(jsonDb);
+  });
+
+  afterEach(async () => {
+    await adapter.close().catch(() => {});
+  });
+
+  it('commits the session patch and both turns atomically', async () => {
+    const sessionId = await adapter.getOrCreateConversationSession({
+      id: 'org/repo/42/issue',
+      prNumber: 42,
+      repo: 'org/repo',
+      isReviewComment: false,
+      turnCount: 2,
+    });
+
+    await adapter.saveConversationExchange({
+      sessionId,
+      patch: { turnCount: 4, summarySnapshot: 'agreed' },
+      userTurn: { turnNumber: 3, body: 'Why?' },
+      assistantTurn: { turnNumber: 4, body: 'Because.' },
+    });
+
+    const session = await adapter.getConversationSession(sessionId);
+    expect(session?.turn_count).toBe(4);
+    expect(session?.summary_snapshot).toBe('agreed');
+    const turns = await adapter.getConversationTurns(sessionId);
+    expect(turns).toHaveLength(2);
+    expect(turns.map((t) => t.role)).toEqual(['user', 'assistant']);
+  });
+
+  it('honors omitted user/assistant turns', async () => {
+    const sessionId = await adapter.getOrCreateConversationSession({
+      id: 'org/repo/42/issue',
+      prNumber: 42,
+      repo: 'org/repo',
+      isReviewComment: false,
+      turnCount: 1,
+    });
+
+    await adapter.saveConversationExchange({ sessionId, patch: { turnCount: 2 } });
+
+    expect((await adapter.getConversationSession(sessionId))?.turn_count).toBe(2);
+    expect(await adapter.getConversationTurns(sessionId)).toHaveLength(0);
+  });
+
+  it('rolls back the session patch when a mid-transaction turn insert fails', async () => {
+    const sessionId = await adapter.getOrCreateConversationSession({
+      id: 'org/repo/42/issue',
+      prNumber: 42,
+      repo: 'org/repo',
+      isReviewComment: false,
+      turnCount: 2,
+    });
+
+    const addTurn = vi
+      .spyOn(jsonDb, 'addConversationTurn')
+      .mockRejectedValueOnce(new Error('forced turn failure'));
+
+    await expect(
+      adapter.saveConversationExchange({
+        sessionId,
+        patch: { turnCount: 99, summarySnapshot: 'should roll back' },
+        userTurn: { turnNumber: 3, body: 'question' },
+        assistantTurn: { turnNumber: 4, body: 'answer' },
+      }),
+    ).rejects.toThrow('forced turn failure');
+
+    addTurn.mockRestore();
+
+    const session = await adapter.getConversationSession(sessionId);
+    expect(session?.turn_count).toBe(2);
+    expect(session?.summary_snapshot).toBeNull();
+    expect(await adapter.getConversationTurns(sessionId)).toHaveLength(0);
   });
 });

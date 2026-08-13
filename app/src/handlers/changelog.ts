@@ -153,6 +153,7 @@ async function createChangelogPR(
     cwd: tempDir,
     timeout: 120_000,
     ...(gitEnv ? { env: gitEnv } : {}),
+    ...(signal ? { signal } : {}),
   };
 
   const version = result.tag ?? `release-${result.since.slice(0, 10)}`;
@@ -162,6 +163,13 @@ async function createChangelogPR(
   try {
     try {
       await execGit(['fetch', 'origin'], gitOpts);
+      // The shallow clone is single-branch: `fetch origin` only updates the
+      // default branch. Fetch the changelog branch into its remote-tracking ref
+      // so existing-branch detection and checkout below can reference it.
+      await execGit(
+        ['fetch', 'origin', `+${branchName}:refs/remotes/origin/${branchName}`],
+        gitOpts,
+      );
     } catch (err) {
       log.warn(
         `Git fetch failed: ${err instanceof Error ? err.message : String(err)} — continuing with local state`,
@@ -183,6 +191,9 @@ async function createChangelogPR(
     if (branchExists) {
       await execGit(['checkout', '-B', branchName, `origin/${branchName}`], gitOpts);
       log.info(`Checked out existing branch ${branchName}`);
+      // A depth-1 clone has no merge-base between the existing branch tip and
+      // the updated default branch; deepen so `pull --rebase` works.
+      await execGit(['fetch', '--unshallow', 'origin'], gitOpts);
       await execGit(['pull', '--rebase', 'origin', defaultBranch], gitOpts);
     } else {
       await execGit(['checkout', '-b', branchName, `origin/${defaultBranch}`], gitOpts);

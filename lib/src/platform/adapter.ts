@@ -58,6 +58,13 @@ export interface ReviewCommentThread {
   rootComment: { id: number; author: string; body: string; isBot: boolean };
   filePath: string;
   lineNumber?: number;
+  /**
+   * Git commit the root comment was made against, when the platform exposes it
+   * (GitHub review comments carry `commit_id`). Callers use it as the ref to
+   * fetch file content so modified files resolve to the PR revision instead of
+   * the stale default branch.
+   */
+  commitId?: string;
 }
 
 /** Platform-agnostic adapter interface for interacting with Git hosting services. */

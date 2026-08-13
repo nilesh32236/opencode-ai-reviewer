@@ -279,7 +279,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
       }
 
       const gitOpts: ExecGitOptions = workingDir
-        ? { cwd: workingDir, ...(gitEnv ? { env: gitEnv } : {}) }
+        ? { cwd: workingDir, ...(gitEnv ? { env: gitEnv } : {}), ...(signal ? { signal } : {}) }
         : {};
       let fixResult: FixResult | undefined;
       try {
