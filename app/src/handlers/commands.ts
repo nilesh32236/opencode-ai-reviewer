@@ -1,4 +1,6 @@
-import { mkdtempSync, rmSync } from 'fs';
+import { execFileSync } from 'child_process';
+import type { ExecFileSyncOptions } from 'child_process';
+import { existsSync, mkdtempSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import type {
@@ -891,6 +893,40 @@ async function createAutofixPR(
     } else {
       await execGit(['checkout', '-b', branchName, `origin/${defaultBranch}`], gitOpts);
       logger.info(`Created branch ${branchName} from ${defaultBranch}`);
+    }
+
+    // The fix workspace is a fresh clone with no node_modules, so the AI agent's
+    // verification commands (pnpm build/typecheck/lint) would fail with
+    // "tsc: not found". Install dependencies once up front so the agent's own
+    // checks and the structured verification steps all work.
+    try {
+      logger.info('Installing workspace dependencies for autofix PR...');
+      const installOpts: ExecFileSyncOptions = {
+        cwd: tempDir,
+        env: {
+          ...process.env,
+          ...(gitEnv ? { GIT_ASKPASS: 'echo', GIT_TERMINAL_PROMPT: '0' } : {}),
+        },
+        stdio: 'inherit',
+        timeout: 600_000,
+      };
+      let installed = false;
+      if (existsSync(path.join(tempDir, 'pnpm-lock.yaml'))) {
+        execFileSync('pnpm', ['install'], installOpts);
+        installed = true;
+      } else if (existsSync(path.join(tempDir, 'package-lock.json'))) {
+        execFileSync('npm', ['ci'], installOpts);
+        installed = true;
+      }
+      if (!installed) {
+        logger.warn('No lockfile found in autofix workspace — skipping dependency install');
+      }
+    } catch (installErr) {
+      logger.warn(
+        `Autofix dependency install failed: ${
+          installErr instanceof Error ? installErr.message : String(installErr)
+        } — continuing without dependencies`,
+      );
     }
 
     let issue = initialIssue ?? (await gh.getIssue(issueNumber));
