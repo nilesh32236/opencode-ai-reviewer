@@ -1,0 +1,59 @@
+name: Daily Scheduled Audit
+
+# Runs the codebase audit on a daily schedule. The hosted GitHub App handles
+# event-driven review/fix/audit via webhooks; this workflow only exists for the
+# cron-driven audit, which the App cannot schedule on its own.
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Daily at midnight UTC
+  workflow_dispatch:
+    inputs:
+      audit_category:
+        description: 'Specific audit category (omit for random)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: scheduled-audit
+  cancel-in-progress: false
+
+env:
+  CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Ensure autofix labels exist
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create "autofix" --force --color "243cd4" 2>/dev/null || true
+          gh label create "autofix-trigger" --force --color "c2e0c6" --description "Triggers autofix workflow on issues" 2>/dev/null || true
+
+      - uses: ./
+        with:
+          mode: audit
+          model: 'opencode/deepseek-v4-flash-free'
+          audit_prompt_name: ${{ inputs.audit_category }}
+          audit_create_issues: true
+          audit_auto_fix: true
+          github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          git_user_name: nilesh32236
+          git_user_email: nilesh32236@gmail.com
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}

@@ -1,0 +1,327 @@
+name: Hourly Autonomous Orchestrator
+
+# Runs hourly to check open PRs and issues.
+# Workflow:
+# 1. Checks open PRs: merges mergeable PRs. If PR has merge conflict, resolves using AI,
+#    reviews PR, and merges to main if high confidence. Otherwise skips.
+# 2. If no open PRs remain: checks open issues, picks one issue.
+#    - If there are questions AI can answer, answers them in a comment and adds /fix comment.
+#    - If no questions, adds /fix comment and triggers fix issue workflow.
+#    - Checks if fix issue workflow started; if started, exits early (rest handled by fix issue workflow).
+#    - If not started/skipped, debugs why, fixes it, and retries.
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # Hourly at minute 0
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: hourly-orchestrator
+  cancel-in-progress: false
+
+env:
+  CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+
+jobs:
+  orchestrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config --global user.name "opencode-ai-reviewer[bot]"
+          git config --global user.email "opencode-ai-reviewer[bot]@users.noreply.github.com"
+
+      - name: Setup PNPM
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.8.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Setup OpenCode
+        run: |
+          chmod +x .github/scripts/setup-opencode.sh
+          .github/scripts/setup-opencode.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+
+      # ─── STEP 1: Process Open PRs ─────────────────────────────────────────────
+      - name: Process Open PRs
+        id: process-prs
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          echo "=== Step 1: Checking for open PRs ==="
+
+          PRS=$(gh pr list \
+            --repo "${{ github.repository }}" \
+            --state open \
+            --json number,title,headRefName,baseRefName,mergeable,labels \
+            | jq -c '.[] | select(
+                (.labels | map(.name) | contains(["autofix:skipped"]) | not) and
+                (.labels | map(.name) | contains(["autofix:needs-manual-review"]) | not)
+              )')
+
+          if [ -z "$PRS" ]; then
+            echo "No open unskipped PRs found."
+            echo "has_open_prs=false" >> "$GITHUB_OUTPUT"
+            echo "processed_pr=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "has_open_prs=true" >> "$GITHUB_OUTPUT"
+          PROCESSED_ANY=false
+
+          while IFS= read -r PR; do
+            [ -z "$PR" ] && continue
+            PR_NUMBER=$(echo "$PR" | jq -r '.number')
+            HEAD_REF=$(echo "$PR" | jq -r '.headRefName')
+            MERGEABLE=$(echo "$PR" | jq -r '.mergeable')
+            TITLE=$(echo "$PR" | jq -r '.title')
+
+            echo "----------------------------------------"
+            echo "Processing PR #${PR_NUMBER}: ${TITLE} (branch: ${HEAD_REF}, mergeable: ${MERGEABLE})"
+
+            if [[ "$HEAD_REF" == -* ]] || ! git check-ref-format --branch "$HEAD_REF" >/dev/null 2>&1; then
+              echo "::warning::Skipping PR #${PR_NUMBER}: invalid or option-like head ref."
+              gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "autofix:skipped" || true
+              PROCESSED_ANY=true
+              continue
+            fi
+
+            git fetch origin "${HEAD_REF}:${HEAD_REF}" 2>/dev/null || git checkout -b "${HEAD_REF}" "origin/${HEAD_REF}"
+            git checkout "${HEAD_REF}"
+
+            # Check if PR has merge conflicts or is behind main
+            if [ "$MERGEABLE" = "DIRTY" ] || ! git merge-base --is-ancestor origin/main HEAD; then
+              echo "PR #${PR_NUMBER} has merge conflicts or is behind main — attempting merge..."
+              git fetch origin main
+
+              if ! git merge origin/main --no-commit --no-ff; then
+                echo "Merge conflicts detected on PR #${PR_NUMBER}. Attempting AI conflict resolution..."
+
+                cat << CONFLICT_EOF > /tmp/conflict-prompt.txt
+          You are an AI conflict resolution agent. Merge conflicts occurred while merging origin/main into branch ${HEAD_REF}.
+
+          ## Conflicts Summary
+          \`\`\`
+          $(git status --porcelain)
+          \`\`\`
+
+          ## Instructions
+          1. Inspect the conflicted files using git status and file viewing tools.
+          2. Resolve all merge conflict markers (<<<<<<<, =======, >>>>>>>) safely.
+          3. Ensure ESM imports end with .js extensions and strict TypeScript types are maintained.
+          4. Run verification: pnpm build && pnpm typecheck && pnpm test && pnpm lint
+          5. Do NOT run git commit or git push yourself.
+          CONFLICT_EOF
+
+                opencode run --auto --model opencode/deepseek-v4-flash-free \
+                  "$(cat /tmp/conflict-prompt.txt)" < /dev/null || true
+
+                # Verify conflict resolution
+                if pnpm build && pnpm typecheck && pnpm test && pnpm lint; then
+                  echo "✅ Conflict resolution verified successfully."
+                  git add -A
+                  git commit -m "chore: resolve merge conflicts with main [autofix]"
+                  git push origin "${HEAD_REF}" --force-with-lease
+                else
+                  echo "❌ AI could not resolve merge conflicts cleanly."
+                  git merge --abort 2>/dev/null || true
+                  gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "autofix:skipped" || true
+                  gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
+                    --body "⚠️ **Merge Conflict Resolution Skipped**: Could not automatically resolve merge conflicts with \`main\`. Marked as \`autofix:skipped\` for manual review." || true
+                  PROCESSED_ANY=true
+                  continue
+                fi
+              fi
+            fi
+
+            # Check if PR is ready for auto-merge or run AI review
+            IS_READY=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json labels --jq '.labels[].name' | grep -x "autofix:ready" || true)
+
+            if [ -n "$IS_READY" ]; then
+              echo "PR #${PR_NUMBER} has label 'autofix:ready' — squash merging..."
+              gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch 2>/dev/null || \
+              gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch --auto || {
+                echo "::warning::Merge failed for PR #${PR_NUMBER}"
+              }
+              PROCESSED_ANY=true
+              continue
+            fi
+
+            # Run AI review on PR
+            echo "Running AI review on PR #${PR_NUMBER}..."
+            cat << REVIEW_PROMPT_EOF > /tmp/review-prompt.txt
+          You are an AI code reviewer evaluating PR #${PR_NUMBER}: "${TITLE}".
+          Perform a thorough review of the changes between origin/main and ${HEAD_REF}.
+          Check for bugs, TypeScript type errors, ESM import extensions (.js), and test failures.
+
+          Determine if the PR has HIGH CONFIDENCE and is ready to merge into main.
+          Return a JSON summary on the last line: {"approved": true, "confidence": "high", "reason": "..."} or {"approved": false, "confidence": "low", "reason": "..."}
+          REVIEW_PROMPT_EOF
+
+            REVIEW_OUT=$(opencode run --auto --model opencode/deepseek-v4-flash-free "$(cat /tmp/review-prompt.txt)" < /dev/null || true)
+            APPROVED=$(echo "$REVIEW_OUT" | tail -20 | grep -oP '\{\s*"approved"\s*:\s*(true|false)' | grep -o 'true\|false' | tail -1 || echo "false")
+
+            if [ "$APPROVED" = "true" ]; then
+              echo "PR #${PR_NUMBER} approved with high confidence — squash merging to main..."
+              gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "autofix:ready" || true
+              gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch 2>/dev/null || \
+              gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch --auto || {
+                echo "::warning::Merge failed for PR #${PR_NUMBER}"
+              }
+            else
+              echo "PR #${PR_NUMBER} not approved with high confidence — marking as autofix:skipped."
+              gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "autofix:skipped" || true
+              gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
+                --body "ℹ️ **PR Review Skipped**: AI review did not yield high confidence for automatic merge. Marked as \`autofix:skipped\` for human review." || true
+            fi
+            PROCESSED_ANY=true
+
+          done <<< "$PRS"
+
+          echo "processed_pr=${PROCESSED_ANY}" >> "$GITHUB_OUTPUT"
+
+          # Re-check if any open PRs remain
+          REMAINING_PRS=$(gh pr list --repo "${{ github.repository }}" --state open --json number | jq 'length')
+          if [ "$REMAINING_PRS" -gt 0 ]; then
+            echo "Remaining open PRs exist in repo: ${REMAINING_PRS}"
+            echo "has_open_prs=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No open PRs remain in repo."
+            echo "has_open_prs=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ─── STEP 2: Process Open Issue (only if NO open PRs remain) ───────────────
+      - name: Process Open Issue
+        if: steps.process-prs.outputs.has_open_prs != 'true'
+        id: process-issue
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          echo "=== Step 2: Checking open issues (no open PRs remain) ==="
+
+          ISSUES=$(gh issue list \
+            --repo "${{ github.repository }}" \
+            --state open \
+            --json number,title,labels,body,comments \
+            | jq -c '.[] | select(
+                (.labels | map(.name) | contains(["autofix:skipped"]) | not) and
+                (.labels | map(.name) | contains(["autofix:completed"]) | not)
+              )')
+
+          if [ -z "$ISSUES" ]; then
+            echo "No open eligible issues found."
+            echo "processed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Select oldest open eligible issue
+          TARGET_ISSUE=$(echo "$ISSUES" | head -1)
+          ISSUE_NUMBER=$(echo "$TARGET_ISSUE" | jq -r '.number')
+          ISSUE_TITLE=$(echo "$TARGET_ISSUE" | jq -r '.title')
+          ISSUE_BODY=$(echo "$TARGET_ISSUE" | jq -r '.body // ""')
+
+          echo "Selected Issue #${ISSUE_NUMBER}: ${ISSUE_TITLE}"
+
+          # Check if there are unanswered questions or pending inputs on the issue
+          COMMENTS=$(gh issue view "$ISSUE_NUMBER" --repo "${{ github.repository }}" --json comments --jq '.comments')
+          HAS_QUESTIONS_LABEL=$(echo "$TARGET_ISSUE" | jq -r '.labels[].name' | grep -x "analysis:needs-input" || true)
+
+          # Check for pending questions in issue comments
+          if [ -n "$HAS_QUESTIONS_LABEL" ] || echo "$COMMENTS" | grep -q "<!-- issue-analysis-questions -->"; then
+            echo "Issue #${ISSUE_NUMBER} has questions/needs-input pending. Evaluating if AI can answer..."
+
+            cat << QUESTION_PROMPT_EOF > /tmp/answer-questions-prompt.txt
+          You are an AI assistant analyzing GitHub Issue #${ISSUE_NUMBER}: "${ISSUE_TITLE}".
+
+          ## Issue Description
+          ${ISSUE_BODY}
+
+          ## Issue Comments
+          $(echo "$COMMENTS" | jq -r '.[].body')
+
+          ## Tasks
+          1. Research the codebase using Context7, web search, or codebase inspection to answer any pending user questions or technical clarifications requested in the issue/comments.
+          2. Provide a clear, detailed, and accurate answer to the questions.
+          3. Write your answer to /tmp/ai-answer.txt.
+          QUESTION_PROMPT_EOF
+
+            opencode run --auto --model opencode/deepseek-v4-flash-free \
+              "$(cat /tmp/answer-questions-prompt.txt)" < /dev/null || true
+
+            if [ -s /tmp/ai-answer.txt ]; then
+              echo "Posting AI answer to Issue #${ISSUE_NUMBER}..."
+              AI_ANSWER=$(cat /tmp/ai-answer.txt)
+              gh issue comment "$ISSUE_NUMBER" --repo "${{ github.repository }}" \
+                --body "🤖 **AI Answer to Pending Questions:**\n\n${AI_ANSWER}" || true
+
+              # Remove analysis:needs-input label since questions are answered
+              gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}" \
+                --remove-label "analysis:needs-input" 2>/dev/null || true
+            fi
+          else
+            # Ensure analysis:needs-input label is removed if present
+            gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}" \
+              --remove-label "analysis:needs-input" 2>/dev/null || true
+          fi
+
+          echo "issue_number=${ISSUE_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "processed=true" >> "$GITHUB_OUTPUT"
+      - name: Trigger Inline Fix for Issue
+        if: steps.process-prs.outputs.has_open_prs != 'true' && steps.process-issue.outputs.processed == 'true' && steps.process-issue.outputs.issue_number != ''
+        uses: ./
+        with:
+          mode: fix
+          model: 'opencode/deepseek-v4-flash-free'
+          max_fix_iterations: 1
+          run_checks_after_fix: 'pnpm build && pnpm typecheck && pnpm test && pnpm lint'
+          pr-number: ${{ steps.process-issue.outputs.issue_number }}
+          github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          git_user_name: nilesh32236
+          git_user_email: nilesh32236@gmail.com
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}
+
+      - name: Report Orchestrator Run Summary
+        run: |
+          PR_PROCESSED="${{ steps.process-prs.outputs.processed_pr }}"
+          ISSUE_PROCESSED="${{ steps.process-issue.outputs.processed }}"
+          ISSUE_NUM="${{ steps.process-issue.outputs.issue_number }}"
+
+          if [ "$PR_PROCESSED" = "true" ]; then
+            echo "✅ Hourly Orchestrator completed processing open PRs."
+          elif [ "$ISSUE_PROCESSED" = "true" ]; then
+            echo "✅ Hourly Orchestrator completed processing Issue #${ISSUE_NUM}."
+          else
+            echo "ℹ️ Hourly Orchestrator idle — no eligible PRs or issues required processing."
+          fi

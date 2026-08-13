@@ -15,6 +15,10 @@ inputs:
     description: 'GitHub token for API access'
     required: true
 
+  pr-number:
+    description: 'PR or issue number to process (defaults to the triggering event context)'
+    required: false
+
   model:
     description: 'Model to use (shorthand — sets review_model, fix_model, and audit_model, and serves as global fallback for all per-stage model inputs)'
     required: false
