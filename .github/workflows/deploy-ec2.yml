@@ -1,0 +1,38 @@
+name: Deploy via Rsync & Docker
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Sync files to EC2 via Rsync
+        uses: easingthemes/ssh-deploy@main
+        with:
+          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
+          REMOTE_HOST: ${{ secrets.EC2_HOST }}
+          REMOTE_USER: ${{ secrets.EC2_USER }}
+          TARGET: "/home/${{ secrets.EC2_USER }}/opencode-ai-reviewer"
+          EXCLUDE: "/.git/, /node_modules/, /dist/, /.env"
+
+      - name: Build and Restart Docker Containers
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd /home/${{ secrets.EC2_USER }}/opencode-ai-reviewer
+
+            # Build and start containers in background
+            docker compose -f docker/docker-compose.yml up -d --build
+
+            # Clean up unused old Docker images to save disk space
+            docker image prune -f
