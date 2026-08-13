@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.10.8] — 2026-08-13
+
+
+### Fixed
+
+- exclude private-key.pem from rsync and git to prevent --delete removal
+
+[v1.10.8]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.10.7...v1.10.8
+
 ## [v1.10.7] — 2026-08-13
 
 
