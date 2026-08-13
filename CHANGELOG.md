@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.11.3] — 2026-08-13
+
+
+### Fixed
+
+- self-heal CI failure (attempt 1) [`type-error` — typescript strict-mode violation in benchmark code.] (#387) (#387)
+
+[v1.11.3]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.11.2...v1.11.3
+
 ## [v1.11.2] — 2026-08-13
 
 
