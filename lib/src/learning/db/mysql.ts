@@ -82,20 +82,24 @@ export class MysqlAdapter extends SqlAdapter implements DbAdapter {
   }
 
   /**
-   * Execute operations within a transaction.
+   * Execute operations within a transaction, serialized behind a promise-chain
+   * mutex so concurrent callers never interleave begin/commit on the single
+   * shared mysql2 connection.
    * @param fn - Async function containing transactional operations.
    * @returns The return value of the transaction function.
    */
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
-    await this.connection.beginTransaction();
-    try {
-      const res = await fn();
-      await this.connection.commit();
-      return res;
-    } catch (e) {
-      await this.connection.rollback();
-      throw e;
-    }
+    return this.serializeTransaction(async () => {
+      await this.connection.beginTransaction();
+      try {
+        const res = await fn();
+        await this.connection.commit();
+        return res;
+      } catch (e) {
+        await this.connection.rollback();
+        throw e;
+      }
+    });
   }
 
   /**

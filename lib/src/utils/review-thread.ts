@@ -14,6 +14,8 @@ export interface ThreadComment {
   line?: number;
   diff_hunk?: string;
   in_reply_to_id?: number;
+  /** Commit the comment was made against (GitHub review comments carry it). */
+  commit_id?: string;
 }
 
 /** Result of reconstructing a review comment thread. */

@@ -122,6 +122,7 @@ export type {
   ReviewMetricsRow,
   SeverityDistribution,
   ReviewMetricsReport,
+  ConversationExchangeInput,
   ConversationSessionInput,
   ConversationSessionPatch,
   ConversationSessionRow,

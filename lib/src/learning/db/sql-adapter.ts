@@ -8,6 +8,7 @@ import { JsonDatabase, SUPPRESSING_DISMISS_SIGNALS } from '../json-db.js';
 import { deriveFileExtensions, generateId, hashPatternKey } from '../schema.js';
 import { DEFAULT_EXCLUDED_SEVERITIES } from '../types.js';
 import type {
+  ConversationExchangeInput,
   ConversationSessionInput,
   ConversationSessionPatch,
   ConversationSessionRow,
@@ -109,6 +110,7 @@ export function translateQuery(sql: string, dialect: 'postgres' | 'mysql' | 'sql
 export abstract class SqlAdapter implements LearningRepository {
   protected fpRateCache: { rate: number; timestamp: number } | null = null;
   private static readonly FP_RATE_CACHE_TTL = 600_000;
+  private transactionTail: Promise<void> = Promise.resolve();
 
   abstract exec(sql: string): Promise<void>;
   abstract run(sql: string, params?: unknown[]): Promise<{ changes: number }>;
@@ -116,6 +118,29 @@ export abstract class SqlAdapter implements LearningRepository {
   abstract get<T>(sql: string, params?: unknown[]): Promise<T | undefined>;
   abstract transaction<T>(fn: () => Promise<T>): Promise<T>;
   abstract close(): Promise<void>;
+
+  /**
+   * Serialize a transaction body against the adapter's single shared
+   * connection. The async Postgres/MySQL adapters own one client/connection
+   * and issue real BEGIN/COMMIT; two concurrent callers would interleave —
+   * the second BEGIN throws "transaction already in progress" — so all
+   * transactions are run behind a promise-chain mutex. better-sqlite3 is
+   * synchronous and never awaits real I/O, so it is unaffected.
+   * @param fn - The BEGIN/COMMIT-wrapped transaction body to run serially.
+   * @returns A promise resolving to the transaction's result once all
+   * previously-queued transactions on this adapter have settled.
+   */
+  protected serializeTransaction<T>(fn: () => Promise<T>): Promise<T> {
+    const result = this.transactionTail.then(fn);
+    // The tail only settles after this transaction completes (success or
+    // failure) so the next caller starts after BEGIN/COMMIT, and it never
+    // retains a rejection that would fail an unrelated queued transaction.
+    this.transactionTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
 
   /**
    * Ping the database to verify it is reachable and responsive.
@@ -1404,6 +1429,32 @@ export abstract class SqlAdapter implements LearningRepository {
       ],
     );
     return id;
+  }
+
+  /**
+   * Atomically persist a full assistant-turn exchange: apply the session patch
+   * and record the user/assistant turns in a single transaction so a crash
+   * mid-persist cannot leave the patch and its turns inconsistent.
+   * @param input - Exchange data (session patch plus optional turns).
+   */
+  async saveConversationExchange(input: ConversationExchangeInput): Promise<void> {
+    await this.transaction(async () => {
+      await this.updateConversationSession(input.sessionId, input.patch);
+      if (input.userTurn) {
+        await this.addConversationTurn({
+          sessionId: input.sessionId,
+          role: 'user',
+          ...input.userTurn,
+        });
+      }
+      if (input.assistantTurn) {
+        await this.addConversationTurn({
+          sessionId: input.sessionId,
+          role: 'assistant',
+          ...input.assistantTurn,
+        });
+      }
+    });
   }
 
   /**

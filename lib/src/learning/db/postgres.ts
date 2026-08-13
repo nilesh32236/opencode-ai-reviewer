@@ -81,20 +81,24 @@ export class PostgresAdapter extends SqlAdapter implements DbAdapter {
   }
 
   /**
-   * Execute operations within a transaction.
+   * Execute operations within a transaction, serialized behind a promise-chain
+   * mutex so concurrent callers never interleave BEGIN/COMMIT on the single
+   * shared pg client.
    * @param fn - Async function containing transactional operations.
    * @returns The return value of the transaction function.
    */
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
-    await this.client.query('BEGIN');
-    try {
-      const res = await fn();
-      await this.client.query('COMMIT');
-      return res;
-    } catch (e) {
-      await this.client.query('ROLLBACK');
-      throw e;
-    }
+    return this.serializeTransaction(async () => {
+      await this.client.query('BEGIN');
+      try {
+        const res = await fn();
+        await this.client.query('COMMIT');
+        return res;
+      } catch (e) {
+        await this.client.query('ROLLBACK');
+        throw e;
+      }
+    });
   }
 
   /**

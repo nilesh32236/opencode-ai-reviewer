@@ -217,6 +217,8 @@ export class GitHubHelper implements PlatformAdapter {
    * @param options.direction - Sort direction (optional, e.g. 'asc' or 'desc').
    * @param options.throwOnError - When true, rethrow a page-fetch error instead of
    * silently returning partial data (default: false).
+   * @param options.stopWhen - Predicate evaluated against the accumulated items after
+   * each page; when it returns true, pagination stops early (default: never).
    * @param signal - Optional AbortSignal to cancel the paginated fetch.
    * @returns Array of items from all pages.
    */
@@ -227,12 +229,14 @@ export class GitHubHelper implements PlatformAdapter {
       maxPages?: number;
       direction?: 'asc' | 'desc';
       throwOnError?: boolean;
+      stopWhen?: (items: T[]) => boolean;
     },
     signal?: AbortSignal,
   ): Promise<T[]> {
     const perPage = options?.perPage ?? 100;
     const maxPages = options?.maxPages ?? 10;
     const direction = options?.direction;
+    const stopWhen = options?.stopWhen;
     const allItems: T[] = [];
     let page = 1;
 
@@ -246,6 +250,7 @@ export class GitHubHelper implements PlatformAdapter {
         const items = await this.api<T[]>(pagePath, {}, undefined, signal);
         allItems.push(...items);
 
+        if (stopWhen?.(allItems)) break;
         if (items.length < perPage) break;
       } catch (err) {
         core.warning(
@@ -585,12 +590,19 @@ export class GitHubHelper implements PlatformAdapter {
    * @param options.perPage - Items per page (default: 100).
    * @param options.maxPages - Maximum pages to fetch (default: 10).
    * @param options.direction - Sort direction (optional, e.g. 'asc' or 'desc').
+   * @param options.stopWhen - Predicate evaluated against the accumulated comments
+   * after each page; when it returns true, pagination stops early (default: never).
    * @param signal - Optional AbortSignal to cancel the paginated fetch.
    * @returns Array of raw issue comment objects.
    */
   async listComments(
     issueNumber: number,
-    options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
+    options?: {
+      perPage?: number;
+      maxPages?: number;
+      direction?: 'asc' | 'desc';
+      stopWhen?: (items: Array<Record<string, unknown>>) => boolean;
+    },
     signal?: AbortSignal,
   ): Promise<Array<Record<string, unknown>>> {
     return this.paginate<Record<string, unknown>>(
@@ -612,6 +624,43 @@ export class GitHubHelper implements PlatformAdapter {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ body }),
     });
+  }
+
+  /**
+   * Get the raw content of a file in the repository via the contents API,
+   * avoiding a full pull request diff download.
+   * @param _mrNumber - Merge request/PR number (unused; the contents API is
+   * scoped by repo + ref instead).
+   * @param filePath - Repository-relative path to the file.
+   * @param ref - Optional git ref (branch, tag, or commit SHA). When omitted,
+   * the default branch is used.
+   * @returns Promise resolving to the file's UTF-8 content, or null when the
+   * file does not exist at the given ref.
+   */
+  async getFileContent(_mrNumber: number, filePath: string, ref?: string): Promise<string | null> {
+    const encodedPath = filePath
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/');
+    const query = ref ? `?ref=${encodeURIComponent(ref)}` : '';
+    try {
+      const content = await this.api<string>(
+        `/contents/${encodedPath}${query}`,
+        { headers: { Accept: 'application/vnd.github.raw' } },
+        'text',
+      );
+      // With a raw media type, binary files (images, archives) come back as raw
+      // bytes whose NUL bytes survive the UTF-8 text decode. Reject them so
+      // callers fall back to the diff hunk instead of embedding binary garbage
+      // in the LLM prompt.
+      if (content.includes('\u0000')) return null;
+      return content;
+    } catch (err) {
+      if (err instanceof Error && (err as Error & { status?: number }).status === 404) {
+        return null;
+      }
+      throw err;
+    }
   }
 
   // ─── Review Operations ──────────────────────────────────
@@ -1092,6 +1141,7 @@ export class GitHubHelper implements PlatformAdapter {
     rootComment: { id: number; author: string; body: string; isBot: boolean };
     filePath: string;
     lineNumber?: number;
+    commitId?: string;
   }> {
     const commentById = new Map<number, ThreadComment>();
     const chainIds: number[] = [];
@@ -1136,6 +1186,7 @@ export class GitHubHelper implements PlatformAdapter {
       | undefined;
     let filePath = '';
     let lineNumber: number | undefined;
+    let commitId: string | undefined;
 
     // Anchor filePath/lineNumber on the ROOT comment (first chain entry) to
     // preserve the pre-refactor leaf-to-root walk semantics, falling back to the
@@ -1154,6 +1205,7 @@ export class GitHubHelper implements PlatformAdapter {
 
       if (!filePath && comment.path) filePath = comment.path;
       if (lineNumber === undefined && comment.line !== undefined) lineNumber = comment.line;
+      if (commitId === undefined && comment.commit_id) commitId = comment.commit_id;
 
       if (!root) root = entry;
     }
@@ -1162,7 +1214,7 @@ export class GitHubHelper implements PlatformAdapter {
       throw new Error(`Comment ${commentId} not found — cannot build thread`);
     }
 
-    return { comments, rootComment: root, filePath, lineNumber };
+    return { comments, rootComment: root, filePath, lineNumber, commitId };
   }
 
   /**

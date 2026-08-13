@@ -1,5 +1,3 @@
-import { execFileSync } from 'child_process';
-import type { ExecFileSyncOptions } from 'child_process';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import type {
@@ -18,6 +16,8 @@ import {
   sanitizeErrorMessage,
   validateRefName,
 } from '@opencode-pr-agent/lib';
+import { execGit } from '../utils/git.js';
+import type { ExecGitOptions } from '../utils/git.js';
 
 /** Module-scope logger for helper functions that have no per-call context. */
 const logger = new Logger('Changelog');
@@ -149,11 +149,11 @@ async function createChangelogPR(
 ): Promise<void> {
   const log = new Logger('Command:Changelog', { repo, prNumber: issueNumber });
   const changelogConfig: ChangelogConfig = config.changelog ?? DEFAULT_CHANGELOG_CONFIG;
-  const gitOpts: ExecFileSyncOptions = {
-    stdio: 'pipe',
+  const gitOpts: ExecGitOptions = {
     cwd: tempDir,
     timeout: 120_000,
-    ...(gitEnv ? { env: { ...process.env, ...gitEnv } } : {}),
+    ...(gitEnv ? { env: gitEnv } : {}),
+    ...(signal ? { signal } : {}),
   };
 
   const version = result.tag ?? `release-${result.since.slice(0, 10)}`;
@@ -162,7 +162,14 @@ async function createChangelogPR(
 
   try {
     try {
-      execFileSync('git', ['fetch', 'origin'], gitOpts);
+      await execGit(['fetch', 'origin'], gitOpts);
+      // The shallow clone is single-branch: `fetch origin` only updates the
+      // default branch. Fetch the changelog branch into its remote-tracking ref
+      // so existing-branch detection and checkout below can reference it.
+      await execGit(
+        ['fetch', 'origin', `+${branchName}:refs/remotes/origin/${branchName}`],
+        gitOpts,
+      );
     } catch (err) {
       log.warn(
         `Git fetch failed: ${err instanceof Error ? err.message : String(err)} — continuing with local state`,
@@ -171,7 +178,7 @@ async function createChangelogPR(
 
     let branchExists = false;
     try {
-      execFileSync('git', ['rev-parse', '--verify', `origin/${branchName}`], gitOpts);
+      await execGit(['rev-parse', '--verify', `origin/${branchName}`], gitOpts);
       branchExists = true;
     } catch {
       branchExists = false;
@@ -182,11 +189,14 @@ async function createChangelogPR(
     if (signal?.aborted) return;
 
     if (branchExists) {
-      execFileSync('git', ['checkout', '-B', branchName, `origin/${branchName}`], gitOpts);
+      await execGit(['checkout', '-B', branchName, `origin/${branchName}`], gitOpts);
       log.info(`Checked out existing branch ${branchName}`);
-      execFileSync('git', ['pull', '--rebase', 'origin', defaultBranch], gitOpts);
+      // A depth-1 clone has no merge-base between the existing branch tip and
+      // the updated default branch; deepen so `pull --rebase` works.
+      await execGit(['fetch', '--unshallow', 'origin'], gitOpts);
+      await execGit(['pull', '--rebase', 'origin', defaultBranch], gitOpts);
     } else {
-      execFileSync('git', ['checkout', '-b', branchName, `origin/${defaultBranch}`], gitOpts);
+      await execGit(['checkout', '-b', branchName, `origin/${defaultBranch}`], gitOpts);
       log.info(`Created branch ${branchName} from ${defaultBranch}`);
     }
 
@@ -198,15 +208,11 @@ async function createChangelogPR(
       'utf-8',
     );
 
-    execFileSync('git', ['add', '-A'], gitOpts);
-    execFileSync(
-      'git',
-      ['commit', '-m', `chore(release): update changelog for ${version}`],
-      gitOpts,
-    );
+    await execGit(['add', '-A'], gitOpts);
+    await execGit(['commit', '-m', `chore(release): update changelog for ${version}`], gitOpts);
 
     try {
-      execFileSync('git', ['push', 'origin', branchName, '--force-with-lease'], gitOpts);
+      await execGit(['push', 'origin', branchName, '--force-with-lease'], gitOpts);
     } catch (err) {
       log.error(`Git push failed: ${err instanceof Error ? err.message : err}`);
       await gh.postOrUpdateComment(

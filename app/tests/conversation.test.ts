@@ -224,9 +224,17 @@ describe('conversation thread gathering', () => {
       expect(result.thread.map((m) => m.body)).toEqual(['c5', 'c6', 'c7', 'c8', 'c9', 'c10']);
       expect(gh.listComments).toHaveBeenCalledWith(
         1,
-        { perPage: 100, maxPages: 5, direction: 'asc' },
+        expect.objectContaining({ perPage: 100, maxPages: 5, direction: 'asc' }),
         undefined,
       );
+      // The early-exit predicate must be attached so pagination stops once the
+      // accumulated ascending comments reach the triggering comment.
+      const options = (gh.listComments as ReturnType<typeof vi.fn>).mock.calls[0][1] as {
+        stopWhen?: (items: Array<{ id: number }>) => boolean;
+      };
+      expect(typeof options.stopWhen).toBe('function');
+      expect(options.stopWhen?.([{ id: 9 }, { id: 10 }])).toBe(true);
+      expect(options.stopWhen?.([{ id: 8 }, { id: 9 }])).toBe(false);
     });
 
     it('accumulates more than 5 preceding comments when the window is larger, so long threads can engage the sliding window', async () => {
@@ -317,22 +325,22 @@ describe('extractAskQuestion', () => {
 describe('persistSessionState', () => {
   function makeFakeStore() {
     const calls = {
-      updates: [] as Array<{ id: string; patch: Record<string, unknown> }>,
-      turns: [] as Array<Record<string, unknown>>,
+      exchanges: [] as Array<{
+        sessionId: string;
+        patch: Record<string, unknown>;
+        userTurn?: Record<string, unknown>;
+        assistantTurn?: Record<string, unknown>;
+      }>,
     };
     const store = {
-      updateConversationSession: vi.fn(async (id: string, patch: unknown) => {
-        calls.updates.push({ id, patch: patch as Record<string, unknown> });
-      }),
-      addConversationTurn: vi.fn(async (input: unknown) => {
-        calls.turns.push(input as Record<string, unknown>);
-        return 'turn-id';
+      saveConversationExchange: vi.fn(async (input: unknown) => {
+        calls.exchanges.push(input as (typeof calls)['exchanges'][number]);
       }),
     } as unknown as LearningStore;
     return { store, calls };
   }
 
-  it('allocates distinct ordered turn numbers from the post-turn state', async () => {
+  it('persists the patch and both turns in a single exchange', async () => {
     const { store, calls } = makeFakeStore();
     const manager = new ConversationStateManager();
     const state = manager.getOrCreateState('org/repo/42/issue');
@@ -349,14 +357,20 @@ describe('persistSessionState', () => {
       undefined,
     );
 
-    expect(calls.updates[0].patch.turnCount).toBe(2);
-    expect(calls.turns.map((t) => t.role)).toEqual(['user', 'assistant']);
-    expect(calls.turns[0].turnNumber).toBe(3);
-    expect(calls.turns[1].turnNumber).toBe(4);
+    expect(calls.exchanges).toHaveLength(1);
+    expect(calls.exchanges[0].patch.turnCount).toBe(2);
+    expect(calls.exchanges[0].userTurn?.turnNumber).toBe(3);
+    expect(calls.exchanges[0].assistantTurn?.turnNumber).toBe(4);
+    expect(store.saveConversationExchange).toHaveBeenCalledTimes(1);
   });
 
   it('falls back to priorTurnCount when no state manager is present', async () => {
-    const { store, calls } = makeFakeStore();
+    const { calls } = makeFakeStore();
+    const store = {
+      saveConversationExchange: vi.fn(async (input: unknown) => {
+        calls.exchanges.push(input as (typeof calls)['exchanges'][number]);
+      }),
+    } as unknown as LearningStore;
 
     await persistSessionState(
       store,
@@ -368,9 +382,9 @@ describe('persistSessionState', () => {
       undefined,
     );
 
-    expect(calls.updates[0].patch.turnCount).toBe(1);
-    expect(calls.turns[0].turnNumber).toBe(1);
-    expect(calls.turns[1].turnNumber).toBe(2);
+    expect(calls.exchanges[0].patch.turnCount).toBe(1);
+    expect(calls.exchanges[0].userTurn?.turnNumber).toBe(1);
+    expect(calls.exchanges[0].assistantTurn?.turnNumber).toBe(2);
   });
 
   it('records the first code reference on both rows', async () => {
@@ -387,8 +401,9 @@ describe('persistSessionState', () => {
       ref,
     );
 
-    expect(calls.turns[0].fileRef).toBe('src/foo.ts');
-    expect(calls.turns[0].lineRef).toBe(42);
-    expect(calls.turns[1].fileRef).toBe('src/foo.ts');
+    expect(calls.exchanges[0].patch.turnCount).toBe(1);
+    expect(calls.exchanges[0].userTurn?.fileRef).toBe('src/foo.ts');
+    expect(calls.exchanges[0].userTurn?.lineRef).toBe(42);
+    expect(calls.exchanges[0].assistantTurn?.fileRef).toBe('src/foo.ts');
   });
 });

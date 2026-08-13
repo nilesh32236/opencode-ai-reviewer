@@ -1,3 +1,4 @@
+import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { ConversationStateManager, Logger, parseCommand } from '@opencode-pr-agent/lib';
@@ -86,29 +87,46 @@ export function createConversationSubscriber(
         const reservation = await checkRateLimit(rateLimiter, event, 'interactive', action);
         if (!reservation) return;
 
-        // Each conversation gets its own scratch directory under the OS temp dir
-        // so concurrent webhooks (Probot handles them concurrently) never clobber
-        // each other's `.opencode/conversation-output.txt` / `conversation-summary.txt`.
-        const convWorkDir = path.join(
-          os.tmpdir(),
-          'opencode-conv',
-          `${(event.repo || '').replace('/', '-')}-${prNumber}-${commentId}`,
+        // Each conversation gets its own unique scratch directory under the OS
+        // temp dir so concurrent webhooks and retried deliveries of the same
+        // event (Probot handles them concurrently) never clobber each other's
+        // `.opencode/conversation-output.txt` / `conversation-summary.txt`, and
+        // one invocation can never delete a directory another is still writing.
+        // The directory is removed when the turn finishes so temp dirs do not
+        // accumulate across every conversation event.
+        const convWorkDir = await mkdtemp(
+          path.join(
+            os.tmpdir(),
+            `opencode-conv-${(event.repo || '').replace('/', '-')}-${prNumber}-${commentId}-`,
+          ),
         );
 
-        await handleConversation(
-          commentId,
-          prNumber,
-          event.repo || '',
-          getToken(),
-          config,
-          isReviewComment,
-          learningStore,
-          signal,
-          convWorkDir,
-          conversationStateManager,
-          eventBus,
-          event.correlationId,
-        );
+        try {
+          await handleConversation(
+            commentId,
+            prNumber,
+            event.repo || '',
+            getToken(),
+            config,
+            isReviewComment,
+            learningStore,
+            signal,
+            convWorkDir,
+            conversationStateManager,
+            eventBus,
+            event.correlationId,
+          );
+        } finally {
+          try {
+            await rm(convWorkDir, { recursive: true, force: true });
+          } catch (rmErr) {
+            logger.warn(
+              `Failed to clean up conversation work dir ${convWorkDir}: ${
+                rmErr instanceof Error ? rmErr.message : rmErr
+              }`,
+            );
+          }
+        }
         await recordRateLimit(rateLimiter, event, 'interactive', action, reservation);
       } catch (err) {
         logger.error(

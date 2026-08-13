@@ -307,35 +307,37 @@ export async function persistSessionState(
   const userTurnNumber = turnNumber * 2 - 1;
   const assistantTurnNumber = userTurnNumber + 1;
   try {
-    await learningStore.updateConversationSession(sessionId, {
-      turnCount: turnNumber,
-      lastActivityTimestamp: latest?.lastActivityTimestamp,
-      summarySnapshot: latest?.summarySnapshot,
-      summarizedCount: latest?.summarizedCount,
-      alreadyClosed: latest?.alreadyClosed,
-      lastFileRef: firstRef?.file,
-      lastLineRef: firstRef?.line,
+    // Persist the session patch and both turns in a single transaction so a
+    // crash mid-persist cannot leave the session state and its turns
+    // inconsistent (avoids three separate read-then-write SQLite statements).
+    await learningStore.saveConversationExchange({
+      sessionId,
+      patch: {
+        turnCount: turnNumber,
+        lastActivityTimestamp: latest?.lastActivityTimestamp,
+        summarySnapshot: latest?.summarySnapshot,
+        summarizedCount: latest?.summarizedCount,
+        alreadyClosed: latest?.alreadyClosed,
+        lastFileRef: firstRef?.file,
+        lastLineRef: firstRef?.line,
+      },
+      userTurn: lastUserMessage
+        ? {
+            turnNumber: userTurnNumber,
+            body: lastUserMessage.body,
+            fileRef: firstRef?.file,
+            lineRef: firstRef?.line,
+          }
+        : undefined,
+      assistantTurn: response
+        ? {
+            turnNumber: assistantTurnNumber,
+            body: response,
+            fileRef: firstRef?.file,
+            lineRef: firstRef?.line,
+          }
+        : undefined,
     });
-    if (lastUserMessage) {
-      await learningStore.addConversationTurn({
-        sessionId,
-        turnNumber: userTurnNumber,
-        role: 'user',
-        body: lastUserMessage.body,
-        fileRef: firstRef?.file,
-        lineRef: firstRef?.line,
-      });
-    }
-    if (response) {
-      await learningStore.addConversationTurn({
-        sessionId,
-        turnNumber: assistantTurnNumber,
-        role: 'assistant',
-        body: response,
-        fileRef: firstRef?.file,
-        lineRef: firstRef?.line,
-      });
-    }
   } catch (err) {
     new Logger('Conversation').warn(
       `Failed to persist conversation session state: ${err instanceof Error ? err.message : err}`,
@@ -487,13 +489,20 @@ export async function gatherIssueCommentThread(
   let allComments: Array<{ id: number; body: string; user?: { login?: string } }> = [];
   try {
     // Ascending order matches what GitHub actually returns for issue comments
-    // (the direction param is ignored by the endpoint).
+    // (the direction param is ignored by the endpoint). Stop paginating as soon
+    // as the accumulated comments reach the triggering comment: every comment
+    // at or after it (higher id, ascending order) is beyond the context window,
+    // so fetching further pages is wasted work.
     allComments = (await gh.listComments(
       prNumber,
       {
         perPage: 100,
         maxPages: 5,
         direction: 'asc',
+        stopWhen: (items) => {
+          const last = items[items.length - 1];
+          return last !== undefined && Number((last as { id?: unknown }).id) >= commentId;
+        },
       },
       signal,
     )) as Array<{

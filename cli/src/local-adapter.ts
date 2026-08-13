@@ -141,15 +141,36 @@ export class LocalAdapter implements PlatformAdapter {
    * @param _options.perPage - Items per page.
    * @param _options.maxPages - Maximum pages to fetch.
    * @param _options.direction - Sort direction.
+   * @param _options.stopWhen - Early-exit predicate (ignored; no results).
    * @param _signal - Optional AbortSignal.
    * @returns An empty comment list.
    */
   async listComments(
     _issueNumber: number,
-    _options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
+    _options?: {
+      perPage?: number;
+      maxPages?: number;
+      direction?: 'asc' | 'desc';
+      stopWhen?: (items: Array<Record<string, unknown>>) => boolean;
+    },
     _signal?: AbortSignal,
   ): Promise<Array<Record<string, unknown>>> {
     return [];
+  }
+
+  /**
+   * Get the raw content of a file in the repository.
+   * @param _mrNumber - Merge request/PR number.
+   * @param _filePath - Repository-relative file path.
+   * @param _ref - Optional git ref.
+   * @throws Error Always, unsupported in local CLI mode.
+   */
+  async getFileContent(
+    _mrNumber: number,
+    _filePath: string,
+    _ref?: string,
+  ): Promise<string | null> {
+    throw new Error('getFileContent is not available in local CLI mode');
   }
 
   /**
@@ -507,6 +528,7 @@ export class LocalAdapter implements PlatformAdapter {
    * @param _options.maxPages - Maximum pages to fetch.
    * @param _options.direction - Sort direction.
    * @param _options.throwOnError - Whether to rethrow a page-fetch error.
+   * @param _options.stopWhen - Early-exit predicate (ignored; no results).
    * @param _signal - Optional AbortSignal.
    * @returns An empty result list.
    */
@@ -517,6 +539,7 @@ export class LocalAdapter implements PlatformAdapter {
       maxPages?: number;
       direction?: 'asc' | 'desc';
       throwOnError?: boolean;
+      stopWhen?: (items: T[]) => boolean;
     },
     _signal?: AbortSignal,
   ): Promise<T[]> {

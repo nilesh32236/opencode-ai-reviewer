@@ -1,6 +1,7 @@
 import type { AgentConfig, LearningStore, ReviewResult } from '@opencode-pr-agent/lib';
 import { DEFAULT_CONFIG } from '@opencode-pr-agent/lib';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { truncateToUtf8Bytes } from '../../src/handlers/pr-review.js';
 
 const {
   mockGetMR,
@@ -444,5 +445,35 @@ describe('handlePRReview check run reporting', () => {
       (call) => call[1] === '<!-- title-suggestion -->',
     );
     expect(suggestionCall).toBeUndefined();
+  });
+});
+
+describe('truncateToUtf8Bytes', () => {
+  it('never splits a surrogate pair at the cut boundary', () => {
+    expect(truncateToUtf8Bytes('a\u{1F600}b', 2)).toBe('a');
+    expect(truncateToUtf8Bytes('\u{1D306}\u{1D306}', 7)).toBe('\u{1D306}');
+    expect(truncateToUtf8Bytes('\u{1D306}\u{1D306}', 8)).toBe('\u{1D306}\u{1D306}');
+  });
+
+  it('keeps a cut that lands exactly on a byte boundary', () => {
+    // '𝌆' (4 bytes) fits at maxBytes 4 exactly.
+    expect(truncateToUtf8Bytes('\u{1D306}\u{1D306}', 4)).toBe('\u{1D306}');
+    // ASCII prefix fits exactly.
+    expect(truncateToUtf8Bytes('abcd', 4)).toBe('abcd');
+  });
+
+  it('returns the original when it already fits', () => {
+    expect(truncateToUtf8Bytes('hello', 10)).toBe('hello');
+  });
+
+  it('returns an empty string when maxBytes is smaller than a single code point', () => {
+    // The smallest multi-byte character (2-byte é) needs 2 bytes.
+    expect(truncateToUtf8Bytes('é', 1)).toBe('');
+    expect(truncateToUtf8Bytes('\u{1F600}', 3)).toBe('');
+  });
+
+  it('handles an empty input', () => {
+    expect(truncateToUtf8Bytes('', 100)).toBe('');
+    expect(truncateToUtf8Bytes('', 0)).toBe('');
   });
 });

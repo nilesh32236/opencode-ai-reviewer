@@ -174,6 +174,20 @@ export interface ConversationTurnInput {
   tokensUsed?: number;
 }
 
+/** A single assistant-turn exchange: a session patch plus optional user and
+ * assistant turn bodies, persisted atomically by `saveConversationExchange`. */
+export interface ConversationExchangeInput {
+  /** Session id to update. */
+  sessionId: string;
+  /** Post-turn state to apply to the session. */
+  patch: ConversationSessionPatch;
+  /** The user turn to record (optional; omitted when the exchange has no user
+   * message, e.g. a follow-up reply without a fresh user prompt). */
+  userTurn?: Omit<ConversationTurnInput, 'sessionId' | 'role'>;
+  /** The assistant turn to record (optional). */
+  assistantTurn?: Omit<ConversationTurnInput, 'sessionId' | 'role'>;
+}
+
 /** A persisted conversation turn row. */
 export interface ConversationTurnRow {
   id: string;
@@ -561,6 +575,14 @@ export interface LearningRepository {
    * @returns The generated turn id.
    */
   addConversationTurn(input: ConversationTurnInput): Promise<string>;
+  /**
+   * Atomically persist a full assistant-turn exchange: apply the session patch
+   * and record the user and/or assistant turns in a single transaction, so a
+   * crash mid-persist cannot leave the session patch and its turns inconsistent.
+   * @param input - Exchange data (session patch plus optional turns).
+   * @returns Promise that resolves when the exchange is persisted.
+   */
+  saveConversationExchange(input: ConversationExchangeInput): Promise<void>;
   /**
    * Retrieve persisted turns for a session, ordered by turn number.
    * @param sessionId - Session id to load turns for.

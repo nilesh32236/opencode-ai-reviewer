@@ -1,5 +1,3 @@
-import { execFileSync } from 'child_process';
-import type { ExecFileSyncOptions } from 'child_process';
 import { mkdtempSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
@@ -7,6 +5,7 @@ import type {
   AgentConfig,
   DocStyle,
   EventBus,
+  IssueContext,
   PRContext,
   ParsedCommand,
   PlatformAdapter,
@@ -28,6 +27,8 @@ import {
   validateRefName,
 } from '@opencode-pr-agent/lib';
 import { isBotLogin } from '../utils/bot.js';
+import { execGit } from '../utils/git.js';
+import type { ExecGitOptions } from '../utils/git.js';
 import { handleAudit } from './audit.js';
 import { handleAutofixLoop } from './autofix.js';
 import { handleChangelogCommand } from './changelog.js';
@@ -86,13 +87,12 @@ export async function handleCommand(
 
     if (signal?.aborted) return;
 
-    const cloneOpts: ExecFileSyncOptions = {
-      stdio: 'pipe',
-      timeout: 120_000,
-      ...(gitEnv ? { env: { ...process.env, ...gitEnv } } : {}),
-    };
     try {
-      execFileSync('git', ['clone', `https://github.com/${repo}.git`, tempDir], cloneOpts);
+      await execGit(['clone', '--depth', '1', `https://github.com/${repo}.git`, tempDir], {
+        timeout: 120_000,
+        ...(gitEnv ? { env: gitEnv } : {}),
+        ...(signal ? { signal } : {}),
+      });
     } catch (err) {
       logger.error(`Git clone failed for ${repo}: ${err instanceof Error ? err.message : err}`);
       if (command === 'setup') {
@@ -187,7 +187,8 @@ export async function handleCommand(
             correlationId,
           });
         } else {
-          const existingPR = await findExistingAutofixPR(gh, issueNumber);
+          const issue = await gh.getIssue(issueNumber);
+          const existingPR = await findExistingAutofixPR(issueNumber, issue);
           if (existingPR) {
             await handleAutofixLoop({
               prNumber: existingPR,
@@ -212,6 +213,7 @@ export async function handleCommand(
               force,
               eventBus,
               correlationId,
+              issue,
             );
             if (newPR) {
               await handleAutofixLoop({
@@ -476,11 +478,11 @@ export async function handleDocsCommand(
   const logger = new Logger('Command:Docs', { repo, prNumber: issueNumber, correlationId });
   logger.info(`Docs triggered for PR #${issueNumber}`);
 
-  const gitOpts: ExecFileSyncOptions = {
-    stdio: 'pipe',
+  const gitOpts: ExecGitOptions = {
     cwd: tempDir,
     timeout: 120_000,
-    ...(gitEnv ? { env: { ...process.env, ...gitEnv } } : {}),
+    ...(gitEnv ? { env: gitEnv } : {}),
+    ...(signal ? { signal } : {}),
   };
   const engine = new ReviewEngine(config, gh, undefined, eventBus, repo, correlationId);
   const branchName = `docs/issue-${issueNumber}`;
@@ -495,7 +497,14 @@ export async function handleDocsCommand(
     );
 
     try {
-      execFileSync('git', ['fetch', 'origin'], gitOpts);
+      await execGit(['fetch', 'origin'], gitOpts);
+      // The shallow clone is single-branch: `fetch origin` only updates the
+      // default branch. Fetch the docs branch into its remote-tracking ref so
+      // existing-branch detection and checkout below can reference it.
+      await execGit(
+        ['fetch', 'origin', `+${branchName}:refs/remotes/origin/${branchName}`],
+        gitOpts,
+      );
     } catch (err) {
       logger.warn(
         `Git fetch failed: ${err instanceof Error ? err.message : String(err)} — continuing with local state`,
@@ -504,7 +513,7 @@ export async function handleDocsCommand(
 
     let branchExists = false;
     try {
-      execFileSync('git', ['rev-parse', '--verify', `origin/${branchName}`], gitOpts);
+      await execGit(['rev-parse', '--verify', `origin/${branchName}`], gitOpts);
       branchExists = true;
     } catch {
       branchExists = false;
@@ -528,12 +537,11 @@ export async function handleDocsCommand(
     let forkRemote: string | undefined;
     if (pr.headRepoFullName && pr.headRepoFullName !== repo) {
       try {
-        execFileSync(
-          'git',
+        await execGit(
           ['remote', 'add', 'fork', `https://github.com/${pr.headRepoFullName}.git`],
           gitOpts,
         );
-        execFileSync('git', ['fetch', 'fork', baseRef], gitOpts);
+        await execGit(['fetch', 'fork', baseRef], gitOpts);
         forkRemote = 'fork';
         logger.info(`Fetched docs base branch ${baseRef} from fork ${pr.headRepoFullName}`);
       } catch (err) {
@@ -545,13 +553,33 @@ export async function handleDocsCommand(
 
     if (signal?.aborted) return;
 
+    // Same-repository PR head branches are not present in the single-branch
+    // shallow clone; fetch the source PR head into its remote-tracking ref so
+    // the new-branch checkout below can reference `origin/<baseRef>`.
+    if (!forkRemote) {
+      try {
+        await execGit(['fetch', 'origin', `+${baseRef}:refs/remotes/origin/${baseRef}`], gitOpts);
+      } catch (err) {
+        logger.warn(
+          `Could not fetch docs base branch ${baseRef} from origin: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
     if (branchExists) {
-      execFileSync('git', ['checkout', '-B', branchName, `origin/${branchName}`], gitOpts);
+      await execGit(['checkout', '-B', branchName, `origin/${branchName}`], gitOpts);
       logger.info(`Checked out existing branch ${branchName}`);
-      execFileSync('git', ['pull', '--rebase', forkRemote ?? 'origin', baseRef], gitOpts);
+      // A depth-1 clone has no merge-base between the existing branch tip and
+      // the updated base; deepen so `pull --rebase` can compute the merge-base
+      // instead of treating both boundary commits as roots.
+      await execGit(['fetch', '--unshallow', 'origin'], gitOpts);
+      if (forkRemote) {
+        await execGit(['fetch', '--unshallow', forkRemote], gitOpts);
+      }
+      await execGit(['pull', '--rebase', forkRemote ?? 'origin', baseRef], gitOpts);
     } else {
       const startRef = forkRemote ? `${forkRemote}/${baseRef}` : `origin/${baseRef}`;
-      execFileSync('git', ['checkout', '-b', branchName, startRef], gitOpts);
+      await execGit(['checkout', '-b', branchName, startRef], gitOpts);
       logger.info(`Created branch ${branchName} from ${startRef}`);
     }
 
@@ -579,15 +607,11 @@ export async function handleDocsCommand(
       return;
     }
 
-    execFileSync('git', ['add', '-A'], gitOpts);
-    execFileSync(
-      'git',
-      ['commit', '-m', `docs: add API documentation for #${issueNumber}`],
-      gitOpts,
-    );
+    await execGit(['add', '-A'], gitOpts);
+    await execGit(['commit', '-m', `docs: add API documentation for #${issueNumber}`], gitOpts);
 
     try {
-      execFileSync('git', ['push', 'origin', branchName, '--force-with-lease'], gitOpts);
+      await execGit(['push', 'origin', branchName, '--force-with-lease'], gitOpts);
     } catch (err) {
       logger.error(`Git push failed: ${err instanceof Error ? err.message : err}`);
       await gh.postOrUpdateComment(
@@ -734,12 +758,11 @@ export async function handleSetup(
 }
 
 async function findExistingAutofixPR(
-  gh: PlatformAdapter,
   issueNumber: number,
+  issue: IssueContext,
 ): Promise<number | null> {
   const logger = new Logger('Command', { prNumber: issueNumber });
   try {
-    const issue = await gh.getIssue(issueNumber);
     let prLink = issue.body?.match(/PR #(\d+)/)?.[1];
     if (!prLink) {
       for (const comment of issue.comments) {
@@ -795,6 +818,7 @@ async function createAutofixPR(
   force = false,
   eventBus?: EventBus,
   correlationId?: string,
+  initialIssue?: IssueContext,
 ): Promise<number | null> {
   const logger = new Logger('Command', { repo, prNumber: issueNumber, correlationId });
   logger.info(`Fix triggered for issue #${issueNumber}`);
@@ -807,18 +831,25 @@ async function createAutofixPR(
     '🤖 **Autofix in progress...** The fix agent is analyzing the codebase and implementing changes. This may take a few minutes.',
   );
 
-  const gitOpts: ExecFileSyncOptions = {
-    stdio: 'pipe',
+  const gitOpts: ExecGitOptions = {
     cwd: tempDir,
     timeout: 120_000,
-    ...(gitEnv ? { env: { ...process.env, ...gitEnv } } : {}),
+    ...(gitEnv ? { env: gitEnv } : {}),
+    ...(signal ? { signal } : {}),
   };
   const engine = new ReviewEngine(config, gh, undefined, eventBus, repo, correlationId);
   const branchName = `autofix/issue-${issueNumber}`;
 
   try {
     try {
-      execFileSync('git', ['fetch', 'origin'], gitOpts);
+      await execGit(['fetch', 'origin'], gitOpts);
+      // The shallow clone is single-branch: `fetch origin` only updates the
+      // default branch. Fetch the autofix branch into its remote-tracking ref
+      // so existing-branch detection and checkout below can reference it.
+      await execGit(
+        ['fetch', 'origin', `+${branchName}:refs/remotes/origin/${branchName}`],
+        gitOpts,
+      );
     } catch (err) {
       logger.warn(
         `Git fetch failed: ${err instanceof Error ? err.message : String(err)} — continuing with local state`,
@@ -827,7 +858,7 @@ async function createAutofixPR(
 
     let branchExists = false;
     try {
-      execFileSync('git', ['rev-parse', '--verify', `origin/${branchName}`], gitOpts);
+      await execGit(['rev-parse', '--verify', `origin/${branchName}`], gitOpts);
       branchExists = true;
     } catch {
       branchExists = false;
@@ -838,15 +869,18 @@ async function createAutofixPR(
     if (signal?.aborted) return null;
 
     if (branchExists) {
-      execFileSync('git', ['checkout', '-B', branchName, `origin/${branchName}`], gitOpts);
+      await execGit(['checkout', '-B', branchName, `origin/${branchName}`], gitOpts);
       logger.info(`Checked out existing branch ${branchName}`);
-      execFileSync('git', ['pull', '--rebase', 'origin', defaultBranch], gitOpts);
+      // A depth-1 clone has no merge-base between the existing branch tip and
+      // the updated default branch; deepen so `pull --rebase` works.
+      await execGit(['fetch', '--unshallow', 'origin'], gitOpts);
+      await execGit(['pull', '--rebase', 'origin', defaultBranch], gitOpts);
     } else {
-      execFileSync('git', ['checkout', '-b', branchName, `origin/${defaultBranch}`], gitOpts);
+      await execGit(['checkout', '-b', branchName, `origin/${defaultBranch}`], gitOpts);
       logger.info(`Created branch ${branchName} from ${defaultBranch}`);
     }
 
-    const issue = await gh.getIssue(issueNumber);
+    let issue = initialIssue ?? (await gh.getIssue(issueNumber));
     let issueContext = await gh.gatherContext({ issueNumber });
 
     if (signal?.aborted) return null;
@@ -884,17 +918,23 @@ async function createAutofixPR(
       } else {
         await markAnalysisReady(gh, issueNumber);
       }
-
-      issueContext = await gh.gatherContext({ issueNumber });
     }
 
     if (signal?.aborted) return null;
 
-    const hasQuestionsPending = await checkForUnansweredQuestions(gh, issueNumber, issueContext);
+    // The analysis above may have posted a plan/questions/force-answers comment
+    // and swapped labels, and the clone/fetch/checkout branch setup can take
+    // minutes. Re-fetch right before the pending-question checks so a user's
+    // answer comment that landed meanwhile is observed — otherwise an
+    // answerable fix is wrongly deferred on a stale issue.
+    issue = await gh.getIssue(issueNumber);
+    issueContext = await gh.gatherContext({ issueNumber });
+
+    const hasQuestionsPending = await checkForUnansweredQuestions(issue, issueContext);
     if (hasQuestionsPending) {
       if (force) {
         logger.info('Force mode — auto-answering pending questions from previous analysis');
-        const pendingQuestions = await extractBlockingQuestions(gh, issueNumber);
+        const pendingQuestions = await extractBlockingQuestions(issue);
         await autoAnswerBlockingQuestions(gh, issueNumber, pendingQuestions);
       } else {
         logger.info(`Issue #${issueNumber} has unanswered blocking questions — fix deferred`);
@@ -951,11 +991,11 @@ async function createAutofixPR(
       return null;
     }
 
-    execFileSync('git', ['add', '-A'], gitOpts);
-    execFileSync('git', ['commit', '-m', `fix: address issue #${issueNumber}`], gitOpts);
+    await execGit(['add', '-A'], gitOpts);
+    await execGit(['commit', '-m', `fix: address issue #${issueNumber}`], gitOpts);
 
     try {
-      execFileSync('git', ['push', 'origin', branchName, '--force-with-lease'], gitOpts);
+      await execGit(['push', 'origin', branchName, '--force-with-lease'], gitOpts);
     } catch (err) {
       logger.error(`Git push failed: ${err instanceof Error ? err.message : err}`);
       await gh.postOrUpdateComment(
@@ -1022,15 +1062,13 @@ async function createAutofixPR(
 }
 
 async function checkForUnansweredQuestions(
-  gh: PlatformAdapter,
-  issueNumber: number,
+  issue: IssueContext,
   issueContext: string,
 ): Promise<boolean> {
   if (!issueContext.includes('<!-- issue-analysis-questions -->')) {
     return false;
   }
   try {
-    const issue = await gh.getIssue(issueNumber);
     if (!issue.labels.includes('analysis:needs-input')) {
       return false;
     }
@@ -1046,7 +1084,7 @@ async function checkForUnansweredQuestions(
     return repliesAfter.length === 0;
   } catch (err) {
     logger.warn(
-      `Failed to check unanswered questions for #${issueNumber}: ${err instanceof Error ? err.message : String(err)}`,
+      `Failed to check unanswered questions for #${issue.number}: ${err instanceof Error ? err.message : String(err)}`,
     );
     return true;
   }
@@ -1103,16 +1141,11 @@ async function autoAnswerBlockingQuestions(
 
 /**
  * Extract blocking questions from the issue's questions comment.
- * @param gh - Platform adapter
- * @param issueNumber - Issue number
+ * @param issue - The issue context, already fetched by the caller.
  * @returns Array of blocking question strings
  */
-async function extractBlockingQuestions(
-  gh: PlatformAdapter,
-  issueNumber: number,
-): Promise<string[]> {
+async function extractBlockingQuestions(issue: IssueContext): Promise<string[]> {
   try {
-    const issue = await gh.getIssue(issueNumber);
     const questionsComment = issue.comments.find((c) =>
       c.body.startsWith('<!-- issue-analysis-questions -->'),
     );
