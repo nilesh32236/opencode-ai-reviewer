@@ -66,20 +66,22 @@ function parseEnvInt(envVar: string | undefined, fallback: number): number {
 }
 
 /**
- * Resolve a default `opencode/*-free` model to its paid variant when an
- * OpenCode API key is configured, so paid models are used automatically and
- * the free variant remains the fallback when no key is present.
+ * Resolve a default `opencode/*-free` model to its paid `opencode-go/*`
+ * variant when an OpenCode API key is configured, so paid models are used
+ * automatically and the free variant remains the fallback when no key is
+ * present.
  *
  * Explicit `REVIEW_MODEL` / `FIX_MODEL` / etc. env overrides always win; this
  * only upgrades the built-in `*-free` defaults.
  * @param fallback - The default model string (e.g. `opencode/deepseek-v4-flash-free`).
- * @returns The model to use, upgrading `*-free` to its paid form when a key is set.
+ * @returns The model to use, upgrading `*-free` to the paid `opencode-go`
+ * variant when a key is set.
  */
 function resolveModel(fallback: string): string {
   const hasKey = Boolean(process.env.OPENCODE_API_KEY || process.env.INPUT_OPENCODE_API_KEY);
   if (!hasKey) return fallback;
-  // Map `opencode/<name>-free` → `opencode/<name>` when a key is available.
-  return fallback.replace(/^opencode\/([a-z0-9-]+)-free$/i, 'opencode/$1');
+  // Map `opencode/<name>-free` → `opencode-go/<name>` (paid) when a key is set.
+  return fallback.replace(/^opencode\/([a-z0-9-]+)-free$/i, 'opencode-go/$1');
 }
 
 /**
