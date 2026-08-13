@@ -952,16 +952,7 @@ async function createAutofixPR(
           await autoAnswerBlockingQuestions(gh, issueNumber, parsed.blockingQuestions);
         } else {
           await postBlockingQuestions(gh, issueNumber, parsed);
-          await gh.postOrUpdateComment(
-            issueNumber,
-            '<!-- autofix-deferred -->',
-            [
-              '⏸️ **Fix Deferred — Questions Pending**',
-              '',
-              'I cannot start the fix yet because there are unanswered questions in the analysis.',
-              'Please answer the questions above, then comment `/fix` again.',
-            ].join('\n'),
-          );
+          await postFixDeferredComment(gh, issueNumber);
           return null;
         }
       } else {
@@ -987,16 +978,7 @@ async function createAutofixPR(
         await autoAnswerBlockingQuestions(gh, issueNumber, pendingQuestions);
       } else {
         logger.info(`Issue #${issueNumber} has unanswered blocking questions — fix deferred`);
-        await gh.postOrUpdateComment(
-          issueNumber,
-          '<!-- autofix-deferred -->',
-          [
-            '⏸️ **Fix Deferred — Questions Pending**',
-            '',
-            'I cannot start the fix yet because there are unanswered questions in the analysis.',
-            'Please answer the questions above, then comment `/fix` again.',
-          ].join('\n'),
-        );
+        await postFixDeferredComment(gh, issueNumber);
         return null;
       }
     }
@@ -1137,6 +1119,24 @@ async function checkForUnansweredQuestions(
     );
     return true;
   }
+}
+
+/**
+ * Post the "Fix Deferred — Questions Pending" comment for an issue.
+ * @param gh - Platform adapter.
+ * @param issueNumber - Issue number to post on.
+ */
+async function postFixDeferredComment(gh: PlatformAdapter, issueNumber: number): Promise<void> {
+  await gh.postOrUpdateComment(
+    issueNumber,
+    '<!-- autofix-deferred -->',
+    [
+      '⏸️ **Fix Deferred — Questions Pending**',
+      '',
+      'I cannot start the fix yet because there are unanswered questions in the analysis.',
+      'Please answer the questions above, then comment `/fix` again.',
+    ].join('\n'),
+  );
 }
 
 function buildQAContext(comments: Array<{ author: string; body: string }>): string {
