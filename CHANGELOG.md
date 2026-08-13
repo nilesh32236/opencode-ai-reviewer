@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.11.4] — 2026-08-13
+
+
+### Fixed
+
+- install deps in autofix workspace before AI analyze/fix
+
+[v1.11.4]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.11.3...v1.11.4
+
 ## [v1.11.3] — 2026-08-13
 
 
