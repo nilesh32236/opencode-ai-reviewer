@@ -1,4 +1,5 @@
 import { execFileSync } from 'child_process';
+import type { ExecFileSyncOptions } from 'child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
@@ -123,6 +124,42 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
     );
   }
   try {
+    // The fix workspace is a fresh clone with no dependencies. Install them
+    // once up front so the AI agent's own verification commands (pnpm
+    // build/typecheck/lint) and the structured runChecksAfterFix steps find
+    // node_modules without the agent having to install on every iteration.
+    if (workingDir) {
+      try {
+        logger.info('Installing workspace dependencies for autofix...');
+        const installOpts: ExecFileSyncOptions = {
+          cwd: workingDir,
+          env: {
+            ...process.env,
+            ...(gitEnv ? { GIT_ASKPASS: 'echo', GIT_TERMINAL_PROMPT: '0' } : {}),
+          },
+          stdio: 'inherit',
+          timeout: 600_000,
+        };
+        let installed = false;
+        if (existsSync(path.join(workingDir, 'pnpm-lock.yaml'))) {
+          execFileSync('pnpm', ['install'], installOpts);
+          installed = true;
+        } else if (existsSync(path.join(workingDir, 'package-lock.json'))) {
+          execFileSync('npm', ['ci'], installOpts);
+          installed = true;
+        }
+        if (!installed) {
+          logger.warn('No lockfile found in autofix workspace — skipping dependency install');
+        }
+      } catch (installErr) {
+        logger.warn(
+          `Autofix dependency install failed: ${
+            installErr instanceof Error ? installErr.message : String(installErr)
+          } — continuing without dependencies`,
+        );
+      }
+    }
+
     for (let i = 0; i < config.maxIterations; i++) {
       let verificationPassed = false;
       logger.info(`=== Autofix iteration ${i + 1}/${config.maxIterations} ===`);
