@@ -802,21 +802,10 @@ describe('ReviewEngine', () => {
       });
     });
 
-    describe('multi-agent review path', () => {
+    describe('multi-agent review path (single-process subagent dispatch)', () => {
       const agentPr = makePRContext();
-      const agentOutput = [
-        JSON.stringify({ type: 'summary', text: 'security pass' }),
-        JSON.stringify({
-          type: 'issue',
-          severity: 'critical',
-          file: 'src/test.ts',
-          line: 42,
-          message: 'SQL injection',
-          agent: 'security',
-        }),
-      ].join('\n');
 
-      function makeMultiAgentEngine(synthesis = { enabled: true }): ReviewEngine {
+      function makeMultiAgentEngine(): ReviewEngine {
         return new ReviewEngine(
           makeConfig({
             multiAgent: {
@@ -827,41 +816,64 @@ describe('ReviewEngine', () => {
                 quality: { enabled: false },
                 logic: { enabled: false },
               },
-              synthesis,
+              synthesis: { enabled: false },
             },
           }),
           mockAdapter,
         );
       }
 
-      it('merges findings into a fallback result when synthesis is disabled', async () => {
-        const eng = makeMultiAgentEngine({ enabled: false });
-        mockRunOpenCode.mockResolvedValue({
-          success: true,
-          output: '',
-          durationMs: 500,
-          tokensUsed: 10,
+      it('runs a single opencode process with subagents injected, then parses the consolidated output', async () => {
+        const eng = makeMultiAgentEngine();
+        let capturedSubagents: unknown;
+        mockRunOpenCode.mockImplementation(async (_p: string, opts?: { subagents?: unknown }) => {
+          capturedSubagents = opts?.subagents;
+          return { success: true, output: '', durationMs: 500, tokensUsed: 10 };
         });
-        vi.mocked(fs.promises.readFile).mockImplementation(async () => agentOutput);
+        mockParseJsonlFile.mockResolvedValue({
+          ...mockEmptyResult(),
+          summary: 'consolidated',
+          issues: [
+            {
+              type: 'issue',
+              severity: 'critical',
+              file: 'src/test.ts',
+              line: 42,
+              message: 'SQL injection',
+              agent: 'security',
+              category: 'security',
+            },
+          ],
+        });
 
         const result = await eng.reviewPR(agentPr);
 
-        expect(mockRunOpenCode).toHaveBeenCalledTimes(1); // agent only, no synthesis call
+        // One process for the whole multi-agent review (no per-category spawns,
+        // no separate synthesis pass).
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(1);
+        // The injected subagents include the active category as a read-only
+        // subagent definition keyed by its agent name.
+        expect(capturedSubagents).toBeDefined();
+        const subagents = capturedSubagents as Record<string, Record<string, unknown>>;
+        expect(subagents['security-reviewer']).toBeDefined();
+        expect(subagents['security-reviewer'].mode).toBe('subagent');
+        expect(subagents['security-reviewer'].permission).toEqual({
+          edit: 'deny',
+          bash: 'deny',
+        });
         expect(result.issues).toHaveLength(1);
-        expect(result.issues[0].message).toBe('SQL injection');
         expect(result.issues[0].agent).toBe('security');
-        expect(result.verdict.reasoning).toBe('Merged agent findings');
       });
 
-      it('emits a streaming batch per completed agent in multi-agent mode', async () => {
-        const eng = makeMultiAgentEngine({ enabled: false });
+      it('emits a single streaming batch completion for the orchestrator run', async () => {
+        const eng = makeMultiAgentEngine();
         mockRunOpenCode.mockResolvedValue({
           success: true,
           output: '',
           durationMs: 500,
           tokensUsed: 10,
         });
-        vi.mocked(fs.promises.readFile).mockImplementation(async () => agentOutput);
+        mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
 
         const batches: number[] = [];
         await eng.reviewPR(
@@ -884,36 +896,59 @@ describe('ReviewEngine', () => {
         expect(batches[0]).toBe(0);
       });
 
-      it('falls back to merged findings when the synthesis pass fails', async () => {
+      it('reports a failed orchestrator run as not ready', async () => {
         const eng = makeMultiAgentEngine();
-        mockRunOpenCode.mockImplementation(
-          async (_prompt, opts?: { workingDirectory?: string }) => {
-            if (opts?.workingDirectory?.includes('agent-security')) {
-              return { success: true, output: '', durationMs: 500, tokensUsed: 10 };
-            }
-            return { success: false, output: '', durationMs: 300, tokensUsed: 5 };
-          },
-        );
-        vi.mocked(fs.promises.readFile).mockImplementation(async () => agentOutput);
+        mockRunOpenCode.mockResolvedValue({
+          success: false,
+          output: '',
+          durationMs: 500,
+          tokensUsed: 10,
+        });
+        mockParseJsonlFile.mockRejectedValue(new Error('no output'));
 
         const result = await eng.reviewPR(agentPr);
 
-        expect(mockRunOpenCode).toHaveBeenCalledTimes(2); // agent + synthesis
-        expect(result.verdict.reasoning).toBe('Synthesis failed, using merged agent results');
-        expect(result.issues).toHaveLength(1);
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(1);
+        expect(result.verdict.ready).toBe(false);
+        expect(result.verdict.reasoning).toBe('All review agents failed');
+        expect(result.failedAgents).toBe(1);
       });
 
-      it('reports no issues when agents produce no findings', async () => {
-        const eng = makeMultiAgentEngine({ enabled: false });
+      it('degrades to a failed verdict when the consolidated output cannot be parsed', async () => {
+        const eng = makeMultiAgentEngine();
         mockRunOpenCode.mockResolvedValue({
           success: true,
           output: '',
           durationMs: 500,
           tokensUsed: 10,
         });
-        vi.mocked(fs.promises.readFile).mockImplementation(
-          async () => '{"type":"summary","text":"clean"}\n',
-        );
+        mockParseJsonlFile.mockRejectedValue(new Error('bad jsonl'));
+
+        const result = await eng.reviewPR(agentPr);
+
+        expect(result.verdict.ready).toBe(false);
+        expect(result.verdict.reasoning).toBe('Review output could not be parsed');
+        expect(result.failedAgents).toBe(1);
+      });
+
+      it('reports no issues when the orchestrator produces a clean verdict', async () => {
+        const eng = makeMultiAgentEngine();
+        mockRunOpenCode.mockResolvedValue({
+          success: true,
+          output: '',
+          durationMs: 500,
+          tokensUsed: 10,
+        });
+        mockParseJsonlFile.mockResolvedValue({
+          ...mockEmptyResult(),
+          summary: 'No issues found',
+          verdict: {
+            ready: true,
+            reasoning: 'No issues found',
+            autoFixable: false,
+            confidence: 'high',
+          },
+        });
 
         const result = await eng.reviewPR(agentPr);
 
@@ -923,22 +958,17 @@ describe('ReviewEngine', () => {
         expect(result.verdict.ready).toBe(true);
       });
 
-      it('forwards custom promptFile and promptExtra into each agent prompt', async () => {
+      it('forwards custom promptFile and promptExtra into the orchestrator prompt', async () => {
         const customFile = path.join(process.cwd(), `.tmp-agent-engine-${Date.now()}.md`);
         fs.writeFileSync(customFile, 'CUSTOM_ENGINE_AGENT_PROMPT');
         let capturedPrompt = '';
         try {
-          const eng = makeMultiAgentEngine({ enabled: false });
-          mockRunOpenCode.mockImplementation(
-            async (p: string, opts?: { workingDirectory?: string }) => {
-              if (opts?.workingDirectory?.includes('agent-security')) {
-                capturedPrompt = p;
-                return { success: true, output: '', durationMs: 500, tokensUsed: 10 };
-              }
-              return { success: true, output: '', durationMs: 300, tokensUsed: 5 };
-            },
-          );
-          vi.mocked(fs.promises.readFile).mockImplementation(async () => agentOutput);
+          const eng = makeMultiAgentEngine();
+          mockRunOpenCode.mockImplementation(async (p: string) => {
+            capturedPrompt = p;
+            return { success: true, output: '', durationMs: 500, tokensUsed: 10 };
+          });
+          mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
 
           await eng.reviewPR(agentPr, 0, path.basename(customFile), 'EXTRA_AGENT_INSTRUCTIONS');
 
@@ -952,222 +982,74 @@ describe('ReviewEngine', () => {
       it('continues past a thrown runOpenCode and reports the all-failed run as not ready', async () => {
         const eng = makeMultiAgentEngine();
         mockRunOpenCode.mockRejectedValue(new Error('model outage'));
-        vi.mocked(fs.promises.readFile).mockResolvedValue('');
+        mockParseJsonlFile.mockRejectedValue(new Error('no output'));
 
         const result = await eng.reviewPR(agentPr);
 
-        expect(mockRunOpenCode).toHaveBeenCalledTimes(1); // agent only — no synthesis on empty findings
-        expect(result.verdict.ready).toBe(false);
-        expect(result.verdict.reasoning).toBe('All review agents failed');
-        expect(result.failedAgents).toBe(1);
-        expect(result.summary).toBe('No issues found');
-      });
-
-      it('reports an all-agents-failed run as not ready instead of clean', async () => {
-        const eng = makeMultiAgentEngine({ enabled: false });
-        mockRunOpenCode.mockResolvedValue({
-          success: false,
-          output: '',
-          durationMs: 500,
-          tokensUsed: 10,
-        });
-        vi.mocked(fs.promises.readFile).mockResolvedValue('');
-
-        const result = await eng.reviewPR(agentPr);
-
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(1);
         expect(result.verdict.ready).toBe(false);
         expect(result.verdict.reasoning).toBe('All review agents failed');
         expect(result.failedAgents).toBe(1);
       });
 
-      it('falls back to the reviewModel when the per-agent model override is malformed', async () => {
-        const eng = new ReviewEngine(
-          makeConfig({
-            multiAgent: {
-              enabled: true,
-              agents: { security: { enabled: true, model: 'gpt-4o' } },
-              synthesis: { enabled: false },
-            },
-          }),
-          mockAdapter,
-        );
+      it('uses the reviewModel for the orchestrator run', async () => {
+        const eng = makeMultiAgentEngine();
         let capturedModel = '';
         mockRunOpenCode.mockImplementation(async (_p: string, opts?: { model?: string }) => {
           capturedModel = opts?.model ?? '';
           return { success: true, output: '', durationMs: 500, tokensUsed: 10 };
         });
-        vi.mocked(fs.promises.readFile).mockResolvedValue('{"type":"summary","text":"clean"}\n');
+        mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
 
         await eng.reviewPR(agentPr);
 
         expect(capturedModel).toBe(DEFAULT_CONFIG.reviewModel);
       });
 
-      it('deduplicates overlapping findings from two concurrent agents, keeping the higher confidence', async () => {
-        const eng = new ReviewEngine(
-          makeConfig({
-            multiAgent: {
-              enabled: true,
-              agents: {
-                security: { enabled: true },
-                performance: { enabled: false },
-                quality: { enabled: false },
-                logic: { enabled: true },
-              },
-              synthesis: { enabled: false },
+      it('preserves the orchestrator findings (no linters configured)', async () => {
+        const eng = makeMultiAgentEngine();
+        const dedupedResult: ReviewResult = {
+          ...mockEmptyResult(),
+          issues: [
+            {
+              type: 'issue',
+              severity: 'important',
+              file: 'src/test.ts',
+              line: 42,
+              message: 'SQL injection',
+              agent: 'security',
             },
-          }),
-          mockAdapter,
-        );
-        const securityOutput = [
-          JSON.stringify({ type: 'summary', text: 'security pass' }),
-          JSON.stringify({
-            type: 'issue',
-            severity: 'important',
-            file: 'src/test.ts',
-            line: 42,
-            message: 'SQL injection risk',
-            agent: 'security',
-            confidence: 'medium',
-          }),
-        ].join('\n');
-        const logicOutput = [
-          JSON.stringify({ type: 'summary', text: 'logic pass' }),
-          JSON.stringify({
-            type: 'issue',
-            severity: 'critical',
-            file: 'src/test.ts',
-            line: 42,
-            message: 'SQL injection risk',
-            agent: 'logic',
-            confidence: 'high',
-          }),
-        ].join('\n');
+          ],
+        };
         mockRunOpenCode.mockResolvedValue({
           success: true,
           output: '',
           durationMs: 500,
           tokensUsed: 10,
         });
-        vi.mocked(fs.promises.readFile).mockImplementation(async (path: string) => {
-          return path.includes('agent-logic') ? logicOutput : securityOutput;
-        });
-
+        mockParseJsonlFile.mockResolvedValue(dedupedResult);
         const result = await eng.reviewPR(agentPr);
 
-        expect(mockRunOpenCode).toHaveBeenCalledTimes(2); // security + logic, no synthesis
         expect(result.issues).toHaveLength(1);
-        expect(result.issues[0].message).toBe('SQL injection risk');
-        expect(result.issues[0].agent).toBe('logic');
-        expect(result.issues[0].confidence).toBe('high');
+        expect(result.issues[0].message).toBe('SQL injection');
       });
 
-      it('forwards open human-thread context into the agent prompt', async () => {
-        const eng = makeMultiAgentEngine({ enabled: false });
+      it('forwards open human-thread context into the orchestrator prompt', async () => {
+        const eng = makeMultiAgentEngine();
         vi.mocked(mockAdapter.getOpenHumanThreads).mockResolvedValue(
           '## Open Review Threads (Unresolved)\n\n### Thread on `src/test.ts:1`\nAlready fixed in a later commit.',
         );
         let capturedPrompt = '';
-        mockRunOpenCode.mockImplementation(
-          async (p: string, opts?: { workingDirectory?: string }) => {
-            if (opts?.workingDirectory?.includes('agent-security')) {
-              capturedPrompt = p;
-            }
-            return { success: true, output: '', durationMs: 500, tokensUsed: 10 };
-          },
-        );
-        vi.mocked(fs.promises.readFile).mockImplementation(async () => agentOutput);
+        mockRunOpenCode.mockImplementation(async (p: string) => {
+          capturedPrompt = p;
+          return { success: true, output: '', durationMs: 500, tokensUsed: 10 };
+        });
+        mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
 
         await eng.reviewPR(agentPr);
 
         expect(capturedPrompt).toContain('## Open Review Threads (Unresolved)');
         expect(capturedPrompt).toContain('Already fixed in a later commit.');
-      });
-
-      it('merges per-agent strengths into the synthesis-success result', async () => {
-        const eng = makeMultiAgentEngine();
-        const agentOutputWithStrength = [
-          JSON.stringify({ type: 'summary', text: 'security pass' }),
-          JSON.stringify({
-            type: 'strength',
-            file: 'src/test.ts',
-            line: 1,
-            message: 'Clear error handling',
-          }),
-          JSON.stringify({
-            type: 'issue',
-            severity: 'critical',
-            file: 'src/test.ts',
-            line: 42,
-            message: 'SQL injection',
-            agent: 'security',
-          }),
-        ].join('\n');
-        mockRunOpenCode.mockImplementation(
-          async (_prompt, opts?: { workingDirectory?: string }) => {
-            if (opts?.workingDirectory?.includes('agent-security')) {
-              return { success: true, output: '', durationMs: 500, tokensUsed: 10 };
-            }
-            return { success: true, output: '', durationMs: 300, tokensUsed: 5 };
-          },
-        );
-        vi.mocked(fs.promises.readFile).mockImplementation(async () => agentOutputWithStrength);
-        mockParseJsonlFile.mockResolvedValue({
-          ...mockEmptyResult(),
-          summary: 'synthesized',
-          strengths: [
-            { type: 'strength', file: 'src/test.ts', line: 1, message: 'Clear error handling' },
-          ],
-          issues: [
-            {
-              type: 'issue',
-              severity: 'critical',
-              file: 'src/test.ts',
-              line: 42,
-              message: 'SQL injection',
-              category: 'security',
-            },
-          ],
-          verdict: {
-            ready: false,
-            reasoning: 'issue found',
-            autoFixable: true,
-            confidence: 'high',
-          },
-        });
-
-        const result = await eng.reviewPR(agentPr);
-
-        expect(result.strengths).toHaveLength(1); // deduplicated by message
-        expect(result.strengths[0].message).toBe('Clear error handling');
-        expect(result.issues).toHaveLength(1);
-      });
-
-      it('forwards the review-level promptFile and promptExtra into the synthesis pass', async () => {
-        const customFile = path.join(process.cwd(), `.tmp-agent-synthesis-${Date.now()}.md`);
-        fs.writeFileSync(customFile, 'CUSTOM_SYNTHESIS_PROMPT');
-        let synthesisPrompt = '';
-        try {
-          const eng = makeMultiAgentEngine();
-          mockRunOpenCode.mockImplementation(
-            async (p: string, opts?: { workingDirectory?: string }) => {
-              if (!opts?.workingDirectory?.includes('agent-security')) {
-                synthesisPrompt = p;
-              }
-              return { success: true, output: '', durationMs: 500, tokensUsed: 10 };
-            },
-          );
-          vi.mocked(fs.promises.readFile).mockImplementation(async () => agentOutput);
-          mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
-
-          await eng.reviewPR(agentPr, 0, path.basename(customFile), 'SYNTHESIS_EXTRA');
-
-          expect(synthesisPrompt.startsWith('CUSTOM_SYNTHESIS_PROMPT')).toBe(true);
-          expect(synthesisPrompt).toContain('SYNTHESIS_EXTRA');
-          expect(synthesisPrompt).toContain('## Additional Instructions');
-        } finally {
-          fs.unlinkSync(customFile);
-        }
       });
     });
 

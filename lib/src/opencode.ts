@@ -1067,6 +1067,57 @@ function mergeLLMProviderConfig(baseConfig: string, llm: LLMConfig | undefined):
 }
 
 /**
+ * Merge a subagent `agent` block into a base OpenCode config JSON string,
+ * preserving any existing `agent` keys (e.g. a caller-supplied custom config
+ * that already defines built-in agents).
+ *
+ * Subagents are injected via the `agent` top-level key as `mode: "subagent"`
+ * read-only reviewers. They are dispatched by the primary agent through the
+ * OpenCode `task` tool during a single `opencode run` session, so a review that
+ * previously spawned one process per category now runs as one process whose
+ * primary agent delegates to these focused subagents.
+ *
+ * @param baseConfig - The base OpenCode config JSON (CI or custom).
+ * @param subagents - Map of subagent name → definition to merge.
+ * @returns The config JSON with the `agent` block merged in.
+ */
+export function mergeSubagentConfig(
+  baseConfig: string,
+  subagents: Record<string, Record<string, unknown>>,
+): string {
+  if (!subagents || Object.keys(subagents).length === 0) return baseConfig;
+  try {
+    const parsed = JSON.parse(baseConfig) as Record<string, unknown>;
+    const existing =
+      parsed.agent && typeof parsed.agent === 'object' && !Array.isArray(parsed.agent)
+        ? (parsed.agent as Record<string, unknown>)
+        : {};
+    parsed.agent = { ...existing, ...subagents };
+    return JSON.stringify(parsed);
+  } catch {
+    return baseConfig;
+  }
+}
+
+/**
+ * Build a read-only review subagent definition for the OpenCode config.
+ * Subagents run with edit and bash denied so they can only inspect code and
+ * report findings; they are dispatched by the primary agent via the task tool.
+ * @param description - The subagent's role description (shown to the primary agent).
+ * @param model - Optional per-subagent model override (defaults to the primary's model).
+ * @returns A subagent config object for the `agent` block.
+ */
+export function buildReviewSubagent(description: string, model?: string): Record<string, unknown> {
+  const def: Record<string, unknown> = {
+    description,
+    mode: 'subagent',
+    permission: { edit: 'deny', bash: 'deny' },
+  };
+  if (model) def.model = model;
+  return def;
+}
+
+/**
  * Resolve a model string, prefixing a configured default provider when the
  * model is bare (has no "provider/" prefix).
  *
@@ -1220,6 +1271,9 @@ export {
  * stdout/stderr (output is still captured for parsing/returning).
  * @param options.opencodeConfig - Custom OpenCode config JSON injected as
  * OPENCODE_CONFIG_CONTENT. When set, replaces the CI config for this run.
+ * @param options.subagents - Optional map of subagent name → definition merged
+ * into the injected OpenCode config under the `agent` key. The primary agent
+ * can dispatch these read-only subagents via the task tool within this run.
  * @param options.autoApprove - When true (default), pass `--auto` to auto-approve
  * tool permissions. Set to false for interactive local use.
  * @param options.llm - Custom LLM provider configuration for this run. When
@@ -1242,6 +1296,10 @@ export async function runOpenCode(
     quiet?: boolean;
     /** Custom OpenCode config JSON to inject as OPENCODE_CONFIG_CONTENT. */
     opencodeConfig?: string;
+    /** Optional subagent definitions merged into the injected OpenCode config.
+     * When provided, the primary agent can dispatch these subagents via the
+     * task tool within a single `opencode run` session. */
+    subagents?: Record<string, Record<string, unknown>>;
     /** Pass `--auto` to auto-approve tool permissions (default: true). */
     autoApprove?: boolean;
     /** Custom LLM provider configuration for this run (see JSDoc above). */
@@ -1380,7 +1438,10 @@ export async function runOpenCode(
   // own substitution resolves them inside the sandboxed subprocess environment.
   applyLLMEnvVarReferences(safeEnv, llm);
   safeEnv.OPENCODE_CONFIG_CONTENT = mergeLLMProviderConfig(
-    options.opencodeConfig ?? runModeOverride?.opencodeConfig ?? buildCIConfig(),
+    mergeSubagentConfig(
+      options.opencodeConfig ?? runModeOverride?.opencodeConfig ?? buildCIConfig(),
+      options.subagents ?? {},
+    ),
     llm,
   );
   safeEnv.OPENCODE_DISABLE_AUTOUPDATE = 'true';
