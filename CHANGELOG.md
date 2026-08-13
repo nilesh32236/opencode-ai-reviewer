@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.11.2] — 2026-08-13
+
+
+### Fixed
+
+- configure git identity after clone and install deps before fix verification
+
+[v1.11.2]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.11.1...v1.11.2
+
 ## [v1.11.1] — 2026-08-13
 
 
