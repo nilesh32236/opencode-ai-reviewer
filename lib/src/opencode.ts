@@ -1627,7 +1627,11 @@ export function configureGit(
       // avoiding global process.env mutation that would conflict between
       // concurrent webhook events.
       if (token) {
-        const askPassPath = path.join(cwd, '.git-askpass.sh');
+        // Write the askpass helper to a temp dir, never into the workspace, so
+        // an autofix `git add -A` cannot accidentally commit it to the repo.
+        const askPassDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-askpass-'));
+        askPassDirs.push(askPassDir);
+        const askPassPath = path.join(askPassDir, 'credential.sh');
         fs.writeFileSync(
           askPassPath,
           [
@@ -1637,7 +1641,7 @@ export function configureGit(
             '  *Password*) echo "${OPENCODE_CREDENTIAL_TOKEN}" ;;',
             'esac',
           ].join('\n'),
-          { encoding: 'utf-8', mode: 0o700, flag: 'w' },
+          { encoding: 'utf-8', mode: 0o700 },
         );
         const gitEnv: Record<string, string> = {
           GIT_ASKPASS: askPassPath,

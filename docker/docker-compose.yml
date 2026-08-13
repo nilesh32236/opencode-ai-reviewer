@@ -57,6 +57,13 @@ services:
       - "3000:3000"
     volumes:
       - ${PRIVATE_KEY_HOST_PATH:-../private-key.pem}:/app/private-key.pem:ro
+      # Persist the learning store (SQLite learning.db + WAL) across container
+      # restarts/redeploys. The app runs with cwd /app/app and defaults to
+      # `.opencode/learning.db`, so mount that directory as a named volume.
+      - opencode-learning:/app/app/.opencode
     # No restart policy: validate-env.sh fail-fasts (exit 1) on a bad config,
     # so a restart policy would loop forever on the same error. Start the
     # container again after fixing `.env`.
+
+volumes:
+  opencode-learning:

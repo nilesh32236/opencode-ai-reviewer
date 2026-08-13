@@ -12,6 +12,9 @@ review-output.jsonl
 .secrets
 *.pem
 !app/app.yml
+.git-askpass.sh
+.git-askpass/
+*.tsbuildinfo
 *.tar.gz
 .DS_Store
 Thumbs.db
