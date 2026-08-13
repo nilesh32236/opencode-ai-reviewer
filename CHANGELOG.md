@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.11.1] — 2026-08-13
+
+
+### Fixed
+
+- route Probot webhooks to subscribers and mount health at root
+
+[v1.11.1]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.11.0...v1.11.1
+
 ## [v1.11.0] — 2026-08-13
 
 ### Added
