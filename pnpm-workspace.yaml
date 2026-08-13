@@ -3,6 +3,7 @@ packages:
   - action
   - app
   - cli
+  - platform
 
 onlyBuiltDependencies:
   - '@biomejs/biome'

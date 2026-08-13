@@ -1,0 +1,129 @@
+/**
+ * Express HTTP server for the platform. For the vertical slice this exposes
+ * liveness/readiness probes and a placeholder API health route; the task
+ * queue, webhook receiver, and dashboard are added in later chunks.
+ */
+
+import { Logger } from '@opencode-pr-agent/lib';
+import type { Request, Response } from 'express';
+import express from 'express';
+import type { PlatformConfig } from './config.js';
+import { PLATFORM_VERSION } from './version.js';
+
+/** Per-component health probe results. */
+export interface HealthComponent {
+  /** Component name (e.g. 'database', 'queue', 'server'). */
+  name: string;
+  /** True when the component check passed. */
+  ok: boolean;
+  /** Optional detail (response time, error message). */
+  detail?: string;
+}
+
+/** Health response payload. */
+export interface HealthResponse {
+  /** Overall status: 'ok' | 'degraded' | 'error'. */
+  status: 'ok' | 'degraded' | 'error';
+  /** Per-component results. */
+  components: HealthComponent[];
+}
+
+/** Number of seconds a subsystem probe may run before timing out. */
+const PROBE_TIMEOUT_MS = 3_000;
+
+/**
+ * Run a health probe with a hard timeout, so a hung or flaky dependency
+ * cannot stall the liveness endpoint. Uses `Promise.race` against a timer so
+ * the bound holds even when the probe ignores cancellation signals.
+ * @param name - Component name (for error logging).
+ * @param probe - The probe to run; returns true when the subsystem is healthy.
+ * @param logger - Logger for probe failures.
+ * @returns True when the probe reported healthy within the timeout.
+ */
+async function runProbe(
+  name: string,
+  probe: (() => Promise<boolean> | boolean) | undefined,
+  logger: Logger,
+): Promise<boolean> {
+  if (!probe) return true;
+  const timeout = new Promise<boolean>((resolve) => {
+    setTimeout(() => resolve(false), PROBE_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([Promise.resolve(probe()), timeout]);
+  } catch (err) {
+    logger.error(
+      `Health check ${name} failure: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return false;
+  }
+}
+
+/**
+ * Build and return the platform Express app.
+ * @param config - Platform configuration.
+ * @param deps - Runtime dependencies injected for testability. When a subsystem
+ * URL is configured but its probe is omitted, the component reports `ok: true`
+ * with detail "not-wired" — the probe will be supplied by a later chunk, and a
+ * missing probe must not fail-close the liveness endpoint.
+ * @param deps.databaseOk - Optional async check that returns whether the
+ * PostgreSQL database is reachable.
+ * @param deps.queueOk - Optional async check that returns whether the task
+ * queue (Redis) is reachable.
+ * @returns The configured Express application.
+ */
+export function createPlatformServer(
+  config: PlatformConfig,
+  deps: {
+    databaseOk?: () => Promise<boolean> | boolean;
+    queueOk?: () => Promise<boolean> | boolean;
+  } = {},
+): express.Express {
+  const app = express();
+  const logger = new Logger('PlatformServer');
+
+  app.disable('x-powered-by');
+  app.use(express.json({ limit: '1mb' }));
+
+  app.get('/health', async (_req: Request, res: Response) => {
+    const components: HealthComponent[] = [];
+
+    // Database — checked only when configured; a configured-but-unwired
+    // subsystem reports ok ("not-wired") rather than failing the endpoint.
+    if (config.databaseUrl) {
+      const probe = deps.databaseOk;
+      const ok = await runProbe('database', probe, logger);
+      components.push({
+        name: 'database',
+        ok,
+        detail: ok ? (probe ? 'ok' : 'not-wired') : 'unreachable',
+      });
+    }
+
+    // Queue — checked only when a Redis URL is configured.
+    if (config.redisUrl) {
+      const probe = deps.queueOk;
+      const ok = await runProbe('queue', probe, logger);
+      components.push({
+        name: 'queue',
+        ok,
+        detail: ok ? (probe ? 'ok' : 'not-wired') : 'unreachable',
+      });
+    }
+
+    components.push({ name: 'server', ok: true, detail: 'listening' });
+
+    // Degraded when at least one configured subsystem is down but the server
+    // itself is alive; error only when every critical component is down.
+    const down = components.filter((c) => !c.ok);
+    let status: HealthResponse['status'] = 'ok';
+    if (down.length > 0) status = down.length === components.length ? 'error' : 'degraded';
+    res.status(status === 'ok' ? 200 : 503).json({ status, components });
+  });
+
+  app.get('/api/health', (_req: Request, res: Response) => {
+    res.json({ ok: true, service: 'opencode-platform', version: PLATFORM_VERSION });
+  });
+
+  return app;
+}

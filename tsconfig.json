@@ -10,5 +10,10 @@
     "noEmit": true
   },
   "include": [],
-  "references": [{ "path": "./lib" }, { "path": "./action" }, { "path": "./app" }]
+  "references": [
+    { "path": "./lib" },
+    { "path": "./action" },
+    { "path": "./app" },
+    { "path": "./platform" }
+  ]
 }
