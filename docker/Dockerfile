@@ -52,7 +52,9 @@ RUN pnpm install --frozen-lockfile
 
 COPY . .
 
-RUN pnpm build
+# Only the app and its lib dependency are needed in the container; skip the
+# action (memory-hungry ncc --minify bundle) and cli packages entirely.
+RUN pnpm --filter @opencode-pr-agent/lib --filter @opencode-pr-agent/app build
 
 # Stage 2 — slim runtime with compiled output and production deps only
 FROM node:22.11.0-bookworm-slim@sha256:f035ba7ffee18f67200e2eb8018e0f13c954ec16338f264940f701997e3c12da AS runtime
