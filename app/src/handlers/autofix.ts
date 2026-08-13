@@ -150,6 +150,11 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         }
         if (!installed) {
           logger.warn('No lockfile found in autofix workspace — skipping dependency install');
+        } else {
+          // Build the shared lib so its compiled `.d.ts` exists for workspace
+          // typechecks that resolve `@opencode-pr-agent/lib` via its `exports`.
+          logger.info('Building lib for autofix workspace...');
+          execFileSync('pnpm', ['--filter', '@opencode-pr-agent/lib', 'build'], installOpts);
         }
       } catch (installErr) {
         logger.warn(

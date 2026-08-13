@@ -920,6 +920,13 @@ async function createAutofixPR(
       }
       if (!installed) {
         logger.warn('No lockfile found in autofix workspace — skipping dependency install');
+      } else {
+        // Build the shared lib so its compiled `.d.ts` exists. Workspace
+        // packages (app/cli) resolve `@opencode-pr-agent/lib` via its `exports`
+        // → `./dist/index.d.ts`, which is absent after a fresh install; without
+        // building lib first, their typecheck fails with "Cannot find module".
+        logger.info('Building lib for autofix workspace...');
+        execFileSync('pnpm', ['--filter', '@opencode-pr-agent/lib', 'build'], installOpts);
       }
     } catch (installErr) {
       logger.warn(
