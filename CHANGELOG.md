@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.10.6] — 2026-08-13
+
+
+### Fixed
+
+- skip action/cli builds in Docker image to avoid ncc OOM
+
+[v1.10.6]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.10.5...v1.10.6
+
 ## [v1.10.5] — 2026-08-13
 
 
