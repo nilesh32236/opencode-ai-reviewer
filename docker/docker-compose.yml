@@ -45,8 +45,6 @@ services:
       # their `.env` values are never clobbered by empty interpolations. Only
       # variables with sensible defaults are mirrored inline:
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      REVIEW_MODEL: ${REVIEW_MODEL:-opencode/deepseek-v4-flash-free}
-      FIX_MODEL: ${FIX_MODEL:-opencode/deepseek-v4-flash-free}
       BATCH_SIZE: ${BATCH_SIZE:-3}
       MAX_ITERATIONS: ${MAX_ITERATIONS:-3}
       PORT: ${PORT:-3000}
