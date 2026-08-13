@@ -1,6 +1,6 @@
 {
   "name": "@opencode-pr-agent/action",
-  "version": "1.10.8",
+  "version": "1.11.0",
   "private": true,
   "main": "lib/index.js",
   "scripts": {

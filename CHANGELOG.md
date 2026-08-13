@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.11.0] — 2026-08-13
+
+### Added
+
+- restore scheduled workflows (daily audit, weekly self-improvement, hourly orchestrator)
+
+### Changed
+
+- chore: remove opencode-related workflows, hosted App handles event-driven review
+
+[v1.11.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.10.8...v1.11.0
+
 ## [v1.10.8] — 2026-08-13
 
 
