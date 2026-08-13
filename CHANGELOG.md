@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.11.5] — 2026-08-13
+
+
+### Fixed
+
+- build lib in autofix workspace so workspace typechecks resolve
+
+[v1.11.5]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.11.4...v1.11.5
+
 ## [v1.11.4] — 2026-08-13
 
 
