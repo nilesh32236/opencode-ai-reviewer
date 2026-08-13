@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.10.3] — 2026-08-13
+
+
+### Fixed
+
+- use native SSH for EC2 deployment
+
+### Changed
+
+- ci: add EC2 deployment workflow (#386) (#386)
+
+[v1.10.3]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.10.2...v1.10.3
+
 ## [v1.10.2] — 2026-08-12
 
 
