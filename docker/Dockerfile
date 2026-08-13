@@ -13,7 +13,7 @@
 FROM node:22.11.0-bookworm-slim@sha256:f035ba7ffee18f67200e2eb8018e0f13c954ec16338f264940f701997e3c12da AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      curl git jq python3 make g++ \
+      curl ca-certificates git jq python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g pnpm@10.8.0
@@ -60,7 +60,7 @@ FROM node:22.11.0-bookworm-slim@sha256:f035ba7ffee18f67200e2eb8018e0f13c954ec163
 # Build tools are only needed to compile better-sqlite3 during the prod
 # install below; they are purged afterwards so no compilers ship in the image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      curl git jq python3 make g++ \
+      curl ca-certificates git jq python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g pnpm@10.8.0
