@@ -5,16 +5,24 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
 jobs:
   deploy:
     name: Deploy to EC2
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Sync files to EC2 via Rsync
-        uses: easingthemes/ssh-deploy@main
+        uses: easingthemes/ssh-deploy@v6.0.3
         with:
           SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
           REMOTE_HOST: ${{ secrets.EC2_HOST }}
@@ -28,11 +36,15 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          fingerprint: ${{ secrets.EC2_HOST_FINGERPRINT }}
+          command_timeout: 30m
           script: |
+            set -e
             cd /home/${{ secrets.EC2_USER }}/opencode-ai-reviewer
+            test -f .env || { echo "ERROR: .env missing on server" >&2; exit 1; }
 
             # Build and start containers in background
-            docker compose -f docker/docker-compose.yml up -d --build
+            docker compose -f docker/docker-compose.yml --env-file .env up -d --build
 
             # Clean up unused old Docker images to save disk space
             docker image prune -f
