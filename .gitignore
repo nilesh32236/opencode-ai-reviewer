@@ -10,6 +10,8 @@ review-output.jsonl
 .env
 .env.local
 .secrets
+*.pem
+!app/app.yml
 *.tar.gz
 .DS_Store
 Thumbs.db
