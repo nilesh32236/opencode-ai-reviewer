@@ -162,6 +162,8 @@ export class GitLabAdapter implements PlatformAdapter {
    * @param options.direction - options.direction argument.
    * @param options.throwOnError - When true, rethrow a page-fetch error instead of
    * silently returning partial data (default: false).
+   * @param options.stopWhen - Predicate evaluated against the accumulated items after
+   * each page; when it returns true, pagination stops early (default: never).
    * @param signal - Optional AbortSignal to cancel the paginated fetch.
    * @returns Description.
    */
@@ -172,11 +174,13 @@ export class GitLabAdapter implements PlatformAdapter {
       maxPages?: number;
       direction?: 'asc' | 'desc';
       throwOnError?: boolean;
+      stopWhen?: (items: T[]) => boolean;
     },
     signal?: AbortSignal,
   ): Promise<T[]> {
     const perPage = options?.perPage ?? 100;
     const maxPages = options?.maxPages ?? 10;
+    const stopWhen = options?.stopWhen;
     const allItems: T[] = [];
     let page = 1;
 
@@ -192,6 +196,7 @@ export class GitLabAdapter implements PlatformAdapter {
       try {
         const items = await this.api<T[]>(pagePath, {}, undefined, signal);
         allItems.push(...items);
+        if (stopWhen?.(allItems)) break;
         if (items.length < perPage) break;
       } catch (err) {
         core.warning(
@@ -491,12 +496,19 @@ export class GitLabAdapter implements PlatformAdapter {
    * @param options.perPage
    * @param options.maxPages
    * @param options.direction - options.direction argument.
+   * @param options.stopWhen - Predicate evaluated against the accumulated comments
+   * after each page; when it returns true, pagination stops early (default: never).
    * @param signal - Optional AbortSignal to cancel the paginated fetch.
    * @returns Description.
    */
   async listComments(
     issueNumber: number,
-    options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
+    options?: {
+      perPage?: number;
+      maxPages?: number;
+      direction?: 'asc' | 'desc';
+      stopWhen?: (items: Array<Record<string, unknown>>) => boolean;
+    },
     signal?: AbortSignal,
   ): Promise<Array<Record<string, unknown>>> {
     return this.paginate<Record<string, unknown>>(`/issues/${issueNumber}/notes`, options, signal);
@@ -514,6 +526,34 @@ export class GitLabAdapter implements PlatformAdapter {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ body }),
     });
+  }
+
+  /**
+   * Get the raw content of a file in the repository via the repository-files
+   * API, avoiding a full merge request diff download.
+   * @param _mrNumber - Merge request/PR number (unused; the files API is scoped
+   * by project + ref instead).
+   * @param filePath - Repository-relative path to the file.
+   * @param ref - Optional git ref (branch, tag, or commit SHA). When omitted,
+   * the default branch is used.
+   * @returns Promise resolving to the file's UTF-8 content, or null when the
+   * file does not exist at the given ref.
+   */
+  async getFileContent(_mrNumber: number, filePath: string, ref?: string): Promise<string | null> {
+    const encodedPath = encodeURIComponent(filePath);
+    const query = ref ? `?ref=${encodeURIComponent(ref)}` : '';
+    try {
+      const data = await this.api<{ content?: string }>(
+        `/repository/files/${encodedPath}${query}`,
+      );
+      if (data.content === undefined) return null;
+      return Buffer.from(data.content, 'base64').toString('utf-8');
+    } catch (err) {
+      if (err instanceof Error && (err as Error & { status?: number }).status === 404) {
+        return null;
+      }
+      throw err;
+    }
   }
 
   // ─── Review Operations ──────────────────────────────────

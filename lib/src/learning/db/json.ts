@@ -2,6 +2,7 @@ import type { LearningQuality } from '../../types/index.js';
 import type { LearningFeedback } from '../../types/index.js';
 import type { JsonDatabase } from '../json-db.js';
 import type {
+  ConversationExchangeInput,
   ConversationSessionInput,
   ConversationSessionPatch,
   ConversationSessionRow,
@@ -592,6 +593,32 @@ export class JsonDbAdapter implements DbAdapter, LearningRepository {
    */
   async addConversationTurn(input: ConversationTurnInput): Promise<string> {
     return this.db.addConversationTurn(input);
+  }
+
+  /**
+   * Atomically persist a full assistant-turn exchange: apply the session patch
+   * and record the user/assistant turns in a single transaction so a crash
+   * mid-persist cannot leave the patch and its turns inconsistent.
+   * @param input - Exchange data (session patch plus optional turns).
+   */
+  async saveConversationExchange(input: ConversationExchangeInput): Promise<void> {
+    await this.transaction(async () => {
+      await this.db.updateConversationSession(input.sessionId, input.patch);
+      if (input.userTurn) {
+        await this.db.addConversationTurn({
+          sessionId: input.sessionId,
+          role: 'user',
+          ...input.userTurn,
+        });
+      }
+      if (input.assistantTurn) {
+        await this.db.addConversationTurn({
+          sessionId: input.sessionId,
+          role: 'assistant',
+          ...input.assistantTurn,
+        });
+      }
+    });
   }
 
   /**

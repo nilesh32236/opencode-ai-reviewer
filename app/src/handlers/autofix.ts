@@ -1,5 +1,4 @@
 import { execFileSync } from 'child_process';
-import type { ExecFileSyncOptions } from 'child_process';
 import { mkdtempSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
@@ -32,6 +31,8 @@ import {
   validateRefName,
 } from '@opencode-pr-agent/lib';
 import { mergeRepoConfig } from '../utils/config.js';
+import { execGit } from '../utils/git.js';
+import type { ExecGitOptions } from '../utils/git.js';
 
 /**
  * Options for {@link handleAutofixLoop}. A single options object (instead of a
@@ -277,8 +278,8 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         contextMd += '\n';
       }
 
-      const gitOpts: ExecFileSyncOptions = workingDir
-        ? { cwd: workingDir, ...(gitEnv ? { env: { ...process.env, ...gitEnv } } : {}) }
+      const gitOpts: ExecGitOptions = workingDir
+        ? { cwd: workingDir, ...(gitEnv ? { env: gitEnv } : {}) }
         : {};
       let fixResult: FixResult | undefined;
       try {
@@ -340,14 +341,13 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         `fix: address review feedback (iteration ${i + 1}) [skip ci]`;
 
       try {
-        execFileSync('git', ['add', '-A'], gitOpts);
-        execFileSync(
-          'git',
+        await execGit(['add', '-A'], gitOpts);
+        await execGit(
           ['commit', '-m', `fix: address review feedback (iteration ${i + 1}) [skip ci]`],
           gitOpts,
         );
         validateRefName(pr.headRef);
-        execFileSync('git', ['push', 'origin', pr.headRef], gitOpts);
+        await execGit(['push', 'origin', pr.headRef], gitOpts);
         previousFindings.push({
           iteration: i + 1,
           issues: result.issues,
@@ -445,14 +445,13 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
                   );
 
                   if (retryResult?.changesMade) {
-                    execFileSync('git', ['add', '-A'], gitOpts);
-                    execFileSync(
-                      'git',
+                    await execGit(['add', '-A'], gitOpts);
+                    await execGit(
                       ['commit', '-m', `fix: verification errors (attempt ${v + 1}) [skip ci]`],
                       gitOpts,
                     );
                     validateRefName(pr.headRef);
-                    execFileSync('git', ['push', 'origin', pr.headRef], gitOpts);
+                    await execGit(['push', 'origin', pr.headRef], gitOpts);
                   } else {
                     logger.info('Fix agent made no changes to address verification errors');
                     break;

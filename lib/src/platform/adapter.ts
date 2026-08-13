@@ -69,6 +69,17 @@ export interface PlatformAdapter {
    */
   getMR(number: number): Promise<PRContext>;
   /**
+   * Get the raw content of a file in the repository, without downloading the
+   * entire pull request diff.
+   * @param mrNumber - Merge request/PR number.
+   * @param filePath - Repository-relative path to the file.
+   * @param ref - Optional git ref (branch, tag, or commit SHA). When omitted,
+   * the platform's default ref is used.
+   * @returns Promise resolving to the file's UTF-8 content, or null when the
+   * file does not exist at the given ref.
+   */
+  getFileContent(mrNumber: number, filePath: string, ref?: string): Promise<string | null>;
+  /**
    * Check if a given number refers to a merge request (not an issue).
    * @param number - Issue/PR number.
    * @returns Promise resolving to true if the number refers to a merge request.
@@ -149,12 +160,19 @@ export interface PlatformAdapter {
    * @param options.perPage - Items per page.
    * @param options.maxPages - Maximum pages to fetch.
    * @param options.direction - Sort direction.
+   * @param options.stopWhen - Predicate evaluated against the accumulated items after
+   * each page; when it returns true, pagination stops early (default: never).
    * @param signal - Optional AbortSignal to cancel the request.
    * @returns Promise resolving to array of comments.
    */
   listComments(
     issueNumber: number,
-    options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
+    options?: {
+      perPage?: number;
+      maxPages?: number;
+      direction?: 'asc' | 'desc';
+      stopWhen?: (items: Array<Record<string, unknown>>) => boolean;
+    },
     signal?: AbortSignal,
   ): Promise<Array<Record<string, unknown>>>;
   /**
@@ -429,6 +447,8 @@ export interface PlatformAdapter {
    * @param options.direction - Sort direction.
    * @param options.throwOnError - When true, rethrow a page-fetch error instead of
    * silently returning partial data (default: false).
+   * @param options.stopWhen - Predicate evaluated against the accumulated items after
+   * each page; when it returns true, pagination stops early (default: never).
    * @param signal - Optional AbortSignal to cancel the paginated fetch.
    * @returns Promise resolving to array of paginated results.
    */
@@ -439,6 +459,7 @@ export interface PlatformAdapter {
       maxPages?: number;
       direction?: 'asc' | 'desc';
       throwOnError?: boolean;
+      stopWhen?: (items: T[]) => boolean;
     },
     signal?: AbortSignal,
   ): Promise<T[]>;

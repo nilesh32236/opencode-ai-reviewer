@@ -1566,6 +1566,25 @@ diff --git a/src/a.ts b/src/a.ts
       ).rejects.toThrow('GitLab API 500');
     });
 
+    it('stops fetching further pages as soon as stopWhen returns true', async () => {
+      let callCount = 0;
+      fetchMock.mockImplementation(async () => {
+        callCount++;
+        return mockResponse({
+          body: Array.from({ length: 100 }, (_, i) => ({ id: callCount * 100 + i })),
+        });
+      });
+
+      const result = await adapter.paginate('/issues/1/notes', {
+        perPage: 100,
+        maxPages: 5,
+        stopWhen: (items) => items.length >= 200,
+      });
+
+      expect(callCount).toBe(2);
+      expect(result).toHaveLength(200);
+    });
+
     it('adds ? when no query params exist', async () => {
       fetchMock.mockResolvedValue(mockResponse({ body: [{ id: 1 }] }));
 
@@ -1591,6 +1610,30 @@ diff --git a/src/a.ts b/src/a.ts
 
       const url = fetchMock.mock.calls[0][0] as string;
       expect(url).toContain('per_page=10&page=1');
+    });
+  });
+
+  describe('getFileContent', () => {
+    it('decodes the base64 file content from the repository-files API', async () => {
+      fetchMock.mockResolvedValue(
+        mockResponse({
+          body: { content: Buffer.from('const x = 1;\n', 'utf-8').toString('base64') },
+        }),
+      );
+
+      const content = await adapter.getFileContent(42, 'src/a.ts', 'main');
+
+      const url = fetchMock.mock.calls[0][0] as string;
+      expect(url).toContain('/repository/files/src%2Fa.ts');
+      expect(url).toContain('ref=main');
+      expect(content).toBe('const x = 1;\n');
+    });
+
+    it('returns null when the file does not exist at the ref', async () => {
+      fetchMock.mockResolvedValue(mockErrorResponse(404));
+
+      const content = await adapter.getFileContent(42, 'missing.ts');
+      expect(content).toBeNull();
     });
   });
 

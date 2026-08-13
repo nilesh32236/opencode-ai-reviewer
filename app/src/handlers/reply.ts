@@ -88,12 +88,17 @@ export async function handleReply(
 }
 
 /**
- * Fetch a small diff snippet around a specific file:line for context.
- * Falls back to a brief message if the diff cannot be fetched.
- * @param gh - GitHub helper
+ * Fetch a small snippet of the file the review thread comments on, for context.
+ *
+ * Prefers fetching just that file's content via the repository contents API
+ * (which also avoids downloading the diff of every other changed file in the
+ * PR). Falls back to the file's diff hunk from the full PR context, then to a
+ * brief message, when the file is unavailable (e.g. a newly-added file that
+ * does not exist on the default branch).
+ * @param gh - Platform adapter
  * @param prNumber - PR number
  * @param filePath - File path
- * @returns A diff snippet string, or a fallback message if unavailable.
+ * @returns A snippet string, or a fallback message if unavailable.
  */
 async function fetchDiffSnippet(
   gh: PlatformAdapter,
@@ -102,6 +107,11 @@ async function fetchDiffSnippet(
 ): Promise<string> {
   if (!filePath) return '(No file context available)';
   try {
+    // The contents API resolves to the default branch when no ref is given,
+    // avoiding a `getMR` call that downloads the entire PR diff.
+    const content = await gh.getFileContent(prNumber, filePath);
+    if (content !== null) return content;
+
     const pr = await gh.getMR(prNumber);
     const file = pr.changedFiles.find((f) => f.path === filePath);
     return file?.patch || '(No diff available for this file)';

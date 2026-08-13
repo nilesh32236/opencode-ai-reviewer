@@ -8,6 +8,7 @@ import { JsonDatabase, SUPPRESSING_DISMISS_SIGNALS } from '../json-db.js';
 import { deriveFileExtensions, generateId, hashPatternKey } from '../schema.js';
 import { DEFAULT_EXCLUDED_SEVERITIES } from '../types.js';
 import type {
+  ConversationExchangeInput,
   ConversationSessionInput,
   ConversationSessionPatch,
   ConversationSessionRow,
@@ -1404,6 +1405,32 @@ export abstract class SqlAdapter implements LearningRepository {
       ],
     );
     return id;
+  }
+
+  /**
+   * Atomically persist a full assistant-turn exchange: apply the session patch
+   * and record the user/assistant turns in a single transaction so a crash
+   * mid-persist cannot leave the patch and its turns inconsistent.
+   * @param input - Exchange data (session patch plus optional turns).
+   */
+  async saveConversationExchange(input: ConversationExchangeInput): Promise<void> {
+    await this.transaction(async () => {
+      await this.updateConversationSession(input.sessionId, input.patch);
+      if (input.userTurn) {
+        await this.addConversationTurn({
+          sessionId: input.sessionId,
+          role: 'user',
+          ...input.userTurn,
+        });
+      }
+      if (input.assistantTurn) {
+        await this.addConversationTurn({
+          sessionId: input.sessionId,
+          role: 'assistant',
+          ...input.assistantTurn,
+        });
+      }
+    });
   }
 
   /**

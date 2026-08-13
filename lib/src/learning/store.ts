@@ -4,6 +4,7 @@ import { withRetry } from '../utils/retry.js';
 import { connectDb } from './db/index.js';
 import { applyMigrations, getDbPath } from './schema.js';
 import type {
+  ConversationExchangeInput,
   ConversationSessionInput,
   ConversationSessionPatch,
   ConversationSessionRow,
@@ -901,6 +902,23 @@ export class LearningStore {
       const logger = new Logger('LearningStore');
       logger.warn('Failed to record conversation turn', err);
       return '';
+    }
+  }
+
+  /**
+   * Atomically persist a full assistant-turn exchange (session patch plus
+   * optional user/assistant turns) in a single transaction.
+   *
+   * @param input - Exchange data.
+   */
+  async saveConversationExchange(input: ConversationExchangeInput): Promise<void> {
+    if (!input.sessionId) return;
+    try {
+      const repo = await this.repoPromise;
+      await repo.saveConversationExchange(input);
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.warn('Failed to persist conversation exchange', err);
     }
   }
 

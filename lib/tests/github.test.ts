@@ -1948,6 +1948,46 @@ diff --git a/deleted.ts b/deleted.ts
       expect(result).toHaveLength(100);
       expect(warning).toHaveBeenCalledWith(expect.stringContaining('Failed to fetch page'));
     });
+
+    it('stops fetching further pages as soon as stopWhen returns true', async () => {
+      let callCount = 0;
+      fetchMock.mockImplementation(async () => {
+        callCount++;
+        return mockResponse({
+          body: Array.from({ length: 100 }, (_, i) => ({ id: callCount * 100 + i })),
+        });
+      });
+
+      const result = await helper.paginate('/issues/1/comments', {
+        perPage: 100,
+        maxPages: 5,
+        stopWhen: (items) => items.length >= 200,
+      });
+
+      expect(callCount).toBe(2);
+      expect(result).toHaveLength(200);
+    });
+  });
+
+  describe('getFileContent', () => {
+    it('fetches the raw file content via the contents API', async () => {
+      fetchMock.mockResolvedValue(
+        mockResponse({ text: vi.fn().mockResolvedValue('const x = 1;\n') }),
+      );
+
+      const content = await helper.getFileContent(42, 'src/a.ts', 'main');
+
+      const url = fetchMock.mock.calls[0][0] as string;
+      expect(url).toContain('/contents/src/a.ts?ref=main');
+      expect(content).toBe('const x = 1;\n');
+    });
+
+    it('returns null when the file does not exist at the ref', async () => {
+      fetchMock.mockResolvedValue(mockErrorResponse(404));
+
+      const content = await helper.getFileContent(42, 'missing.ts');
+      expect(content).toBeNull();
+    });
   });
 
   describe('custom apiUrl', () => {

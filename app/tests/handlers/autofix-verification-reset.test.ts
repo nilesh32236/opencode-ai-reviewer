@@ -83,6 +83,10 @@ vi.mock('child_process', () => ({
   execFileSync: mockExecFileSync,
 }));
 
+vi.mock('../../src/utils/git.js', () => ({
+  execGit: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+}));
+
 function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {
     ...DEFAULT_CONFIG,

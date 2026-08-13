@@ -1,3 +1,4 @@
+import { rmSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { ConversationStateManager, Logger, parseCommand } from '@opencode-pr-agent/lib';
@@ -89,26 +90,40 @@ export function createConversationSubscriber(
         // Each conversation gets its own scratch directory under the OS temp dir
         // so concurrent webhooks (Probot handles them concurrently) never clobber
         // each other's `.opencode/conversation-output.txt` / `conversation-summary.txt`.
+        // The directory is removed when the turn finishes so temp dirs do not
+        // accumulate across every conversation event.
         const convWorkDir = path.join(
           os.tmpdir(),
           'opencode-conv',
           `${(event.repo || '').replace('/', '-')}-${prNumber}-${commentId}`,
         );
 
-        await handleConversation(
-          commentId,
-          prNumber,
-          event.repo || '',
-          getToken(),
-          config,
-          isReviewComment,
-          learningStore,
-          signal,
-          convWorkDir,
-          conversationStateManager,
-          eventBus,
-          event.correlationId,
-        );
+        try {
+          await handleConversation(
+            commentId,
+            prNumber,
+            event.repo || '',
+            getToken(),
+            config,
+            isReviewComment,
+            learningStore,
+            signal,
+            convWorkDir,
+            conversationStateManager,
+            eventBus,
+            event.correlationId,
+          );
+        } finally {
+          try {
+            rmSync(convWorkDir, { recursive: true, force: true });
+          } catch (rmErr) {
+            logger.warn(
+              `Failed to clean up conversation work dir ${convWorkDir}: ${
+                rmErr instanceof Error ? rmErr.message : rmErr
+              }`,
+            );
+          }
+        }
         await recordRateLimit(rateLimiter, event, 'interactive', action, reservation);
       } catch (err) {
         logger.error(
