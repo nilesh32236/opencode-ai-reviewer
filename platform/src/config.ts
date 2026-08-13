@@ -19,7 +19,7 @@ export interface PlatformConfig {
   workspaceDir: string;
   /** PostgreSQL connection URL (required for tasks/repos persistence). */
   databaseUrl: string | undefined;
-  /** Redis connection URL (required for the BullMQ queue). */
+  /** Redis connection URL (required for the BullMQ queue; undefined = no queue). */
   redisUrl: string | undefined;
   /** GitHub App ID (installation token auth) or GITHUB_TOKEN fallback. */
   appId: string | undefined;
@@ -27,7 +27,7 @@ export interface PlatformConfig {
   privateKeyPath: string | undefined;
   /** Plain GITHUB_TOKEN (used when APP_ID/private key are absent). */
   githubToken: string | undefined;
-  /** Log level forwarded to the lib logger (default: info). */
+  /** Log level for the platform's own loggers (default: info). */
   logLevel: string;
 }
 
@@ -61,7 +61,7 @@ export function buildPlatformConfig(env: NodeJS.ProcessEnv = process.env): Platf
     webhookSecret: env.WEBHOOK_SECRET,
     workspaceDir: env.WORKSPACE_DIR ?? 'data/workspaces',
     databaseUrl: env.DATABASE_URL,
-    redisUrl: env.REDIS_URL ?? 'redis://localhost:6379',
+    redisUrl: env.REDIS_URL,
     appId: env.APP_ID,
     privateKeyPath: env.PRIVATE_KEY_PATH,
     githubToken: env.GITHUB_TOKEN,

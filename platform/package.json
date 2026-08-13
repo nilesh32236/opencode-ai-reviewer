@@ -6,9 +6,10 @@
   "scripts": {
     "build": "tsc",
     "start": "node ./dist/index.js",
-    "dev": "node --watch ./dist/index.js",
+    "dev": "tsc --watch --preserveWatchOutput --incremental & node --watch ./dist/index.js",
+    "dev:build": "tsc && node ./dist/index.js",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json"
   },
   "dependencies": {
     "@opencode-pr-agent/lib": "workspace:*",

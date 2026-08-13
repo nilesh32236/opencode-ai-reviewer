@@ -3,15 +3,19 @@ import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildPlatformConfig } from '../src/config.js';
 import { createPlatformServer } from '../src/server.js';
+import { PLATFORM_VERSION } from '../src/version.js';
 
 describe('platform server', () => {
   let app: Express;
 
   beforeEach(() => {
-    app = createPlatformServer(buildPlatformConfig({ PORT: '8080' }), {
-      databaseOk: () => Promise.resolve(true),
-      queueOk: () => Promise.resolve(true),
-    });
+    app = createPlatformServer(
+      buildPlatformConfig({ PORT: '8080', DATABASE_URL: 'postgres://x', REDIS_URL: 'redis://x' }),
+      {
+        databaseOk: () => Promise.resolve(true),
+        queueOk: () => Promise.resolve(true),
+      },
+    );
   });
 
   afterEach(() => {
@@ -23,7 +27,29 @@ describe('platform server', () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('ok');
     expect(res.body.components).toContainEqual(
+      expect.objectContaining({ name: 'database', ok: true, detail: 'ok' }),
+    );
+    expect(res.body.components).toContainEqual(
+      expect.objectContaining({ name: 'queue', ok: true, detail: 'ok' }),
+    );
+    expect(res.body.components).toContainEqual(
       expect.objectContaining({ name: 'server', ok: true }),
+    );
+  });
+
+  it('returns degraded when one configured subsystem is down', async () => {
+    const partialApp = createPlatformServer(
+      buildPlatformConfig({ PORT: '8080', DATABASE_URL: 'postgres://x', REDIS_URL: 'redis://x' }),
+      {
+        databaseOk: () => Promise.resolve(true),
+        queueOk: () => Promise.resolve(false),
+      },
+    );
+    const res = await request(partialApp).get('/health');
+    expect(res.status).toBe(503);
+    expect(res.body.status).toBe('degraded');
+    expect(res.body.components).toContainEqual(
+      expect.objectContaining({ name: 'queue', ok: false }),
     );
   });
 
@@ -37,9 +63,19 @@ describe('platform server', () => {
     );
     const res = await request(failingApp).get('/health');
     expect(res.status).toBe(503);
-    expect(res.body.status).toBe('error');
     expect(res.body.components).toContainEqual(
-      expect.objectContaining({ name: 'database', ok: false }),
+      expect.objectContaining({ name: 'database', ok: false, detail: 'unreachable' }),
+    );
+  });
+
+  it('reports not-wired (non-failing) when a configured subsystem lacks a probe', async () => {
+    const notWiredApp = createPlatformServer(
+      buildPlatformConfig({ PORT: '8080', DATABASE_URL: 'postgres://x' }),
+    );
+    const res = await request(notWiredApp).get('/health');
+    expect(res.status).toBe(200);
+    expect(res.body.components).toContainEqual(
+      expect.objectContaining({ name: 'database', ok: true, detail: 'not-wired' }),
     );
   });
 
@@ -53,9 +89,24 @@ describe('platform server', () => {
     expect(res.body.components[0].name).toBe('server');
   });
 
-  it('exposes /api/health', async () => {
+  it('fails the probe when it hangs past the timeout', async () => {
+    const slowApp = createPlatformServer(
+      buildPlatformConfig({ PORT: '8080', DATABASE_URL: 'postgres://x' }),
+      {
+        databaseOk: () => new Promise<boolean>(() => {}),
+      },
+    );
+    const res = await request(slowApp).get('/health');
+    expect(res.status).toBe(503);
+    expect(res.body.components).toContainEqual(
+      expect.objectContaining({ name: 'database', ok: false }),
+    );
+  });
+
+  it('exposes /api/health with the package version', async () => {
     const res = await request(app).get('/api/health');
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
+    expect(res.body.version).toBe(PLATFORM_VERSION);
   });
 });

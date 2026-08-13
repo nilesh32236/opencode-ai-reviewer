@@ -29,11 +29,11 @@ Verified live: `opencode serve --port N` starts a headless HTTP server; `POST /s
 - **Queue:** BullMQ + Redis.
 - **Frontend:** bundled into the platform server (Vite + React, served by Express static middleware). No S3/CloudFront.
 - **Deploy:** same EC2 instance, platform on port 8080 behind Caddy; existing Probot app untouched on 3000.
-- **Review loop per chunk:** push PR → comment `/review` → the live deployed app reviews it → fix findings → merge.
+- **Review loop per chunk:** push PR → comment `/review` → the **existing deployed Probot app** (not the platform itself, which doesn't run until later chunks) reviews it → fix findings → merge. This validates the live webhook→app→review pipeline throughout development.
 
 ## Architecture
 
-```
+```text
 GitHub Webhook ─▶ platform server (Express) ─▶ BullMQ Queue (Redis)
                                                   │
                                                   ▼
@@ -42,12 +42,12 @@ GitHub Webhook ─▶ platform server (Express) ─▶ BullMQ Queue (Redis)
                                                   ▼
                                        Postgres: tasks / repos / conversations / task_events
                                                   │
-                                      Dashboard (Vite+React, SSE real-time)
+                                       Dashboard (Vite+React, SSE real-time)
 ```
 
 ## Package layout (`platform/`)
 
-```
+```text
 platform/
 ├── package.json          # name @opencode-pr-agent/platform
 ├── tsconfig.json
@@ -84,6 +84,11 @@ platform/
 ## Database (PostgreSQL via `pg` pool, raw SQL — matches repo's hand-rolled SQL style)
 
 Tables from PLATFORM-PLAN §4.3: `users`, `repositories`, `tasks` (type/status enums, PR context, workspace path, result_data JSONB), `conversations`, `task_events`. Indexes on `tasks(status)`, `tasks(repo_id)`, `tasks(repo_id, pr_number)`, `task_events(task_id)`. Numbered migration files applied at boot.
+
+## Security & idempotency notes (design decisions for chunks 5-7)
+
+- **Authentication/authorization is deferred to Phase 4** (GitHub OAuth + RBAC). Until then, the platform's REST API, SSE stream, dashboard, and workspace proxy are **not exposed publicly** — they sit behind the Caddy reverse proxy bound to the same host, with webhook delivery the only public surface (HMAC-verified). Chunk 7 adds an opt-in `PLATFORM_API_TOKEN` bearer check so the API is never silently open.
+- **Idempotency:** GitHub deliveries carry a unique `X-GitHub-Delivery` header. Chunk 5 persists this delivery ID with a unique constraint in a `webhook_events` table (dedupes GitHub redelivery), and derives a deterministic BullMQ `jobId` from `(repo, pr_number, head_sha, task_type)` so a re-enqueued review for the same commit replaces rather than duplicates. Comment posting (Chunk 6) persists a `comments_posted` row with a unique `(repo, pr, kind)` key before retrying publication, so a retried job never double-posts.
 
 ## Chunk plan (each chunk = one PR + /review + fix cycle)
 
