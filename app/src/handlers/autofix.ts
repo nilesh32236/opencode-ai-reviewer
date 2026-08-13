@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process';
-import { mkdtempSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import type {
@@ -392,15 +392,57 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         }
 
         if (steps.length > 0) {
+          // The fix workspace is a fresh clone with no dependencies, so the
+          // verification commands (pnpm build/typecheck/lint) cannot run.
+          // Install dependencies once per iteration before checking.
+          const baseCwd = workingDir ?? process.cwd();
+          const execOpts = {
+            encoding: 'utf-8' as const,
+            stdio: 'pipe' as const,
+            timeout: 300_000,
+          };
+          try {
+            logger.info('Installing workspace dependencies before verification...');
+            const installEnv = {
+              ...process.env,
+              ...(gitEnv ? { GIT_ASKPASS: 'echo', GIT_TERMINAL_PROMPT: '0' } : {}),
+            };
+            let installOk = false;
+            if (existsSync(path.join(baseCwd, 'pnpm-lock.yaml'))) {
+              const lockfile = readFileSync(path.join(baseCwd, 'pnpm-lock.yaml'), 'utf-8');
+              const installCmd = lockfile.includes('lockfileVersion: 9')
+                ? ['install', '--frozen-lockfile']
+                : ['install'];
+              execFileSync('pnpm', installCmd, {
+                ...execOpts,
+                cwd: baseCwd,
+                env: installEnv,
+                stdio: 'inherit',
+              });
+              installOk = true;
+            } else if (existsSync(path.join(baseCwd, 'package-lock.json'))) {
+              execFileSync('npm', ['ci'], {
+                ...execOpts,
+                cwd: baseCwd,
+                env: installEnv,
+                stdio: 'inherit',
+              });
+              installOk = true;
+            }
+            if (!installOk) {
+              logger.warn('No lockfile found — skipping dependency install before verification');
+            }
+          } catch (installErr) {
+            logger.warn(
+              `Dependency install failed before verification: ${
+                installErr instanceof Error ? installErr.message : String(installErr)
+              }`,
+            );
+          }
+
           const maxVerificationRetries = 2;
           for (let v = 0; v <= maxVerificationRetries; v++) {
             let checkOutput = '';
-            const baseCwd = workingDir ?? process.cwd();
-            const execOpts = {
-              encoding: 'utf-8' as const,
-              stdio: 'pipe' as const,
-              timeout: 300_000,
-            };
             try {
               for (const step of steps) {
                 const stdout = execFileSync(step.program, step.args, {

@@ -78,21 +78,22 @@ export async function handleCommand(
   const tempDir = mkdtempSync(path.join(os.tmpdir(), 'opencode-workspace-'));
 
   try {
-    const gitEnv = configureGit(
-      'opencode-pr-agent[bot]',
-      'opencode-pr-agent[bot]@users.noreply.github.com',
-      token,
-      tempDir,
-    );
-
     if (signal?.aborted) return;
 
     try {
-      await execGit(['clone', '--depth', '1', `https://github.com/${repo}.git`, tempDir], {
-        timeout: 120_000,
-        ...(gitEnv ? { env: gitEnv } : {}),
-        ...(signal ? { signal } : {}),
-      });
+      await execGit(
+        [
+          'clone',
+          '--depth',
+          '1',
+          `https://x-access-token:${token}@github.com/${repo}.git`,
+          tempDir,
+        ],
+        {
+          timeout: 120_000,
+          ...(signal ? { signal } : {}),
+        },
+      );
     } catch (err) {
       logger.error(`Git clone failed for ${repo}: ${err instanceof Error ? err.message : err}`);
       if (command === 'setup') {
@@ -107,6 +108,18 @@ export async function handleCommand(
       }
       throw err;
     }
+
+    // Configure git identity AFTER cloning so `git config --local` runs inside
+    // a real repository (calling it on an empty temp dir throws and would
+    // leave gitEnv unset, breaking every downstream commit).
+    const gitEnv = configureGit(
+      'opencode-pr-agent[bot]',
+      'opencode-pr-agent[bot]@users.noreply.github.com',
+      token,
+      tempDir,
+    );
+
+    if (signal?.aborted) return;
 
     switch (command) {
       case 'analyze': {
