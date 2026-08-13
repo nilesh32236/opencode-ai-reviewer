@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.10.7] — 2026-08-13
+
+
+### Fixed
+
+- boot app as Probot server in Docker (probot run) for App mode
+
+### Changed
+
+- [Autofix] [Audit:performance-efficiency] 2 critical, 7 important, 1 minor (#384) (#384)
+
+[v1.10.7]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.10.6...v1.10.7
+
 ## [v1.10.6] — 2026-08-13
 
 
