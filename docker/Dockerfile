@@ -92,6 +92,7 @@ COPY docker/validate-env.sh ./docker/validate-env.sh
 
 RUN chmod +x docker/validate-env.sh \
     && useradd --create-home --uid 10001 reviewer \
+    && mkdir -p /app/app/.opencode \
     && chown -R reviewer:reviewer /app /usr/local/bin/opencode
 
 # Drop privileges: the app never needs root once the image is assembled.
