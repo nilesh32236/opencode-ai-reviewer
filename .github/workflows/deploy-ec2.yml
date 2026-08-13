@@ -50,7 +50,7 @@ jobs:
         run: |
           set -euo pipefail
           known_hosts="$RUNNER_TEMP/ec2_known_hosts"
-          ssh-keyscan -T 10 -H "$EC2_HOST" > "$known_hosts"
+          ssh-keyscan -T 10 -t ed25519 -H "$EC2_HOST" > "$known_hosts"
           test -s "$known_hosts"
           ssh-keygen -lf "$known_hosts" -E sha256 | awk '{print $2}' | grep -Fx -- "$EC2_HOST_FINGERPRINT"
           echo "path=$known_hosts" >> "$GITHUB_OUTPUT"
@@ -67,16 +67,26 @@ jobs:
           SSH_CMD_ARGS: "-o StrictHostKeyChecking=yes -o UserKnownHostsFile=${{ steps.host-key.outputs.path }}"
 
       - name: Build and Restart Docker Containers
-        uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          fingerprint: ${{ secrets.EC2_HOST_FINGERPRINT }}
-          command_timeout: 30m
-          script: |
-            set -e
-            cd /home/${{ secrets.EC2_USER }}/opencode-ai-reviewer
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          KNOWN_HOSTS: ${{ steps.host-key.outputs.path }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/ec2_deploy_key"
+          printf '%s\n' "$EC2_SSH_KEY" > "$key"
+          chmod 600 "$key"
+
+          ssh \
+            -i "$key" \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$KNOWN_HOSTS" \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=60 \
+            "$EC2_USER@$EC2_HOST" \
+            'set -e
+            cd "$HOME/opencode-ai-reviewer"
             test -f .env || { echo "ERROR: .env missing on server" >&2; exit 1; }
 
             # Build and start containers in background
@@ -91,4 +101,4 @@ jobs:
             fi
 
             # Clean up unused old Docker images to save disk space
-            docker image prune -f
+            docker image prune -f'
