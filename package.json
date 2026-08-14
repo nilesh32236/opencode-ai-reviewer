@@ -22,7 +22,9 @@
     "bench:check": "pnpm --filter @opencode-pr-agent/lib bench:check",
     "typecheck": "pnpm --recursive typecheck",
     "setup:local": "docker compose -f docker/docker-compose.yml $(if [ -f .env ]; then echo '--env-file .env'; fi) up -d --build",
-    "teardown:local": "docker compose -f docker/docker-compose.yml $(if [ -f .env ]; then echo '--env-file .env'; fi) down"
+    "teardown:local": "docker compose -f docker/docker-compose.yml $(if [ -f .env ]; then echo '--env-file .env'; fi) down",
+    "setup:platform": "docker compose -f docker/docker-compose.platform.yml $(if [ -f .env.platform ]; then echo '--env-file .env.platform'; fi) up -d --build",
+    "teardown:platform": "docker compose -f docker/docker-compose.platform.yml $(if [ -f .env.platform ]; then echo '--env-file .env.platform'; fi) down"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

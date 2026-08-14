@@ -1,0 +1,156 @@
+name: Deploy Platform
+
+# Deploys the OpenCode Platform stack (platform server + Postgres + Redis) to
+# the same EC2 instance that runs the Probot app. The platform runs on its own
+# port (default 8082) behind the Caddy reverse proxy, alongside the app on 3000.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'platform/**'
+      - 'docker/Dockerfile.platform'
+      - 'docker/docker-compose.platform.yml'
+      - '.env.platform.example'
+      - 'pnpm-workspace.yaml'
+      - 'pnpm-lock.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-platform
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy platform to EC2
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup PNPM
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.8.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate repository
+        run: |
+          pnpm lint
+          git diff --check
+
+      - name: Verify EC2 host key
+        id: host-key
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_HOST_FINGERPRINT: ${{ secrets.EC2_HOST_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          known_hosts="$RUNNER_TEMP/ec2_known_hosts"
+          ssh-keyscan -T 10 -t ed25519 -H "$EC2_HOST" > "$known_hosts"
+          test -s "$known_hosts"
+          ssh-keygen -lf "$known_hosts" -E sha256 | awk '{print $2}' | grep -Fx -- "$EC2_HOST_FINGERPRINT"
+          echo "path=$known_hosts" >> "$GITHUB_OUTPUT"
+
+      - name: Sync files to EC2 via Rsync
+        uses: easingthemes/ssh-deploy@2cc5b27bf3029d0455dd5e09fe02633904031447
+        with:
+          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
+          REMOTE_HOST: ${{ secrets.EC2_HOST }}
+          REMOTE_USER: ${{ secrets.EC2_USER }}
+          TARGET: "/home/${{ secrets.EC2_USER }}/opencode-ai-reviewer"
+          EXCLUDE: "/.git/, /node_modules/, /dist/, /.env, /.env.platform, /*.pem, private-key.pem, /app/lib, /lib/dist, /app/dist, /action/lib"
+          ARGS: "-rlgoDzvc -i --delete"
+          SSH_CMD_ARGS: "-o StrictHostKeyChecking=yes -o UserKnownHostsFile=${{ steps.host-key.outputs.path }}"
+
+      - name: Build and Restart Platform Containers
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          KNOWN_HOSTS: ${{ steps.host-key.outputs.path }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/ec2_deploy_key"
+          printf '%s\n' "$EC2_SSH_KEY" > "$key"
+          chmod 600 "$key"
+
+          ssh \
+            -i "$key" \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$KNOWN_HOSTS" \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=60 \
+            "$EC2_USER@$EC2_HOST" \
+            'set -e
+            cd "$HOME/opencode-ai-reviewer"
+            # The platform stack reads .env.platform. Copy from the example when
+            # missing so the stack can boot (credentials added separately).
+            if [ ! -f .env.platform ]; then
+              cp .env.platform.example .env.platform
+              echo "Created .env.platform from example — review the credentials."
+            fi
+
+            # Compose v2 plugin (same as the app deploy).
+            if ! docker compose version >/dev/null 2>&1; then
+              echo "Installing Docker Compose v2 plugin..."
+              mkdir -p "$HOME/.docker/cli-plugins"
+              case "$(uname -m)" in
+                aarch64|arm64) compose_arch="aarch64" ;;
+                x86_64|amd64)  compose_arch="x86_64" ;;
+                *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+              esac
+              curl -fsSL "https://github.com/docker/compose/releases/download/v2.29.1/docker-compose-linux-${compose_arch}" \
+                -o "$HOME/.docker/cli-plugins/docker-compose"
+              chmod +x "$HOME/.docker/cli-plugins/docker-compose"
+              docker compose version
+            fi
+
+            # Free disk before building.
+            docker builder prune -af 2>/dev/null || true
+
+            # Build and start the platform stack (host port from PORT in
+            # .env.platform, default 8080; the app is on 3000).
+            docker compose -f docker/docker-compose.platform.yml --env-file .env.platform up -d --build
+
+            # Confirm the platform container stays up and its health endpoint
+            # reports ok BEFORE declaring success (a broken deploy must fail).
+            sleep 12
+            if ! docker compose -f docker/docker-compose.platform.yml --env-file .env.platform ps --status running --services | grep -q '^platform$'; then
+              echo "ERROR: platform container failed to start" >&2
+              docker compose -f docker/docker-compose.platform.yml --env-file .env.platform logs --tail 50 platform
+              exit 1
+            fi
+            health_port=$(grep -E "^PORT=" .env.platform | head -1 | cut -d= -f2)
+            health_port=${health_port:-8080}
+            health=""
+            for i in $(seq 1 15); do
+              health=$(curl -fsS --max-time 5 "http://localhost:${health_port}/health" 2>/dev/null || true)
+              if echo "$health" | grep -q '"status":"ok"'; then break; fi
+              echo "Waiting for platform health (attempt $i)..."
+              sleep 4
+            done
+            if ! echo "$health" | grep -q '"status":"ok"'; then
+              echo "ERROR: platform /health did not report ok: ${health:-unreachable}" >&2
+              docker compose -f docker/docker-compose.platform.yml --env-file .env.platform logs --tail 50 platform
+              exit 1
+            fi
+            echo "Platform health: $health"
+
+            # Clean up old images.
+            docker image prune -f'
