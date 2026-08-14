@@ -261,7 +261,14 @@ export function createWebhookHandler(
     const eventName = req.header('x-github-event') ?? '';
     const deliveryId = req.header('x-github-delivery') ?? 'unknown';
     const signatureHeader = req.header('x-hub-signature-256') ?? undefined;
-    const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body));
+    // The webhook route uses express.raw(), so req.body is a Buffer. Guard
+    // against an empty/undefined body (e.g. a probe or malformed request)
+    // rather than throwing in Buffer.from.
+    const rawBody = Buffer.isBuffer(req.body)
+      ? req.body
+      : req.body === undefined || req.body === null
+        ? Buffer.alloc(0)
+        : Buffer.from(JSON.stringify(req.body));
 
     // Rejection guard: an unexpected throw must not surface as an unhandled
     // promise rejection (Express 4 does not catch async route errors).

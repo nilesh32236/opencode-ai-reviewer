@@ -1,10 +1,14 @@
 import { Logger } from '@opencode-pr-agent/lib';
 import type { Express, Request } from 'express';
+import express from 'express';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildPlatformConfig } from '../src/config.js';
+import type { PlatformDb } from '../src/db/client.js';
+import type { TaskQueue } from '../src/queue/manager.js';
 import { createPlatformServer, runProbe } from '../src/server.js';
 import { PLATFORM_VERSION } from '../src/version.js';
+import { createWebhookHandler } from '../src/webhooks.js';
 
 describe('runProbe', () => {
   const logger = new Logger('TestProbe');
@@ -183,5 +187,28 @@ describe('platform server', () => {
     expect((receivedBody as Buffer).toString('utf-8')).toBe(payload);
     expect(receivedHeaders.event).toBe('pull_request');
     expect(receivedHeaders.delivery).toBe('del-xyz');
+  });
+
+  it('handles an empty webhook body without crashing', async () => {
+    // A probe or malformed request with no body must not throw in the handler.
+    const handler = createWebhookHandler(
+      {
+        queryOne: vi.fn(async () => undefined),
+        execute: vi.fn(async () => {}),
+        query: vi.fn(async () => []),
+        ping: vi.fn(async () => true),
+      } as unknown as PlatformDb,
+      { enqueue: vi.fn(async () => ({})) } as unknown as TaskQueue,
+      'secret',
+    );
+    const webhookApp = createPlatformServer(buildPlatformConfig({ PORT: '8080' }), {
+      webhookHandler: handler,
+    });
+    const res = await request(webhookApp)
+      .post('/webhooks/github')
+      .set('X-GitHub-Event', 'pull_request')
+      .set('X-GitHub-Delivery', 'empty-del');
+    // Either 401 (missing signature) or 400 (invalid JSON) — never a crash.
+    expect([401, 400]).toContain(res.status);
   });
 });
