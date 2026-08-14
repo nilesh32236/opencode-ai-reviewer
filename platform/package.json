@@ -4,7 +4,8 @@
   "description": "Self-hosted web platform for OpenCode AI reviews — async task queue, webhook receiver, dashboard",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run copy:migrations",
+    "copy:migrations": "node -e \"require('fs').cpSync('src/db/migrations', 'dist/db/migrations', { recursive: true })\"",
     "start": "node ./dist/index.js",
     "dev": "tsc --watch --preserveWatchOutput --incremental & node --watch ./dist/index.js",
     "dev:build": "tsc && node ./dist/index.js",
@@ -13,11 +14,15 @@
   },
   "dependencies": {
     "@opencode-pr-agent/lib": "workspace:*",
-    "express": "5.2.1"
+    "bullmq": "^6.1.1",
+    "express": "5.2.1",
+    "ioredis": "^6.0.0",
+    "pg": "^8.13.1"
   },
   "devDependencies": {
     "@types/express": "5",
     "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.10",
     "@types/supertest": "6",
     "supertest": "7",
     "typescript": "^5.8.0",
