@@ -159,7 +159,7 @@ describe('platform server', () => {
     let receivedBody: unknown;
     let receivedHeaders: Record<string, string | undefined> = {};
     const webhookApp = createPlatformServer(buildPlatformConfig({ PORT: '8080' }), {
-      webhookHandler: (req, res) => {
+      webhookHandler: async (req, res) => {
         receivedBody = (req as Request & { body: unknown }).body;
         receivedHeaders = {
           event: req.header('x-github-event'),

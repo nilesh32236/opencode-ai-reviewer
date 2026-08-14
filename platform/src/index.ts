@@ -48,6 +48,14 @@ export async function startPlatform(): Promise<{
   let redis: Redis | null = null;
   if (config.redisUrl) {
     redis = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
+    // Without an error listener, an unhandled 'error' event on the Redis
+    // connection crashes the whole process when Redis is unreachable. Log and
+    // degrade (the queue reports unavailable via /health) instead.
+    redis.on('error', (err) => {
+      logger.warn(
+        `Redis error (queue unavailable): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
     queue = new TaskQueue(redis);
     logger.info('Task queue connected');
   } else {
