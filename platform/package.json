@@ -16,6 +16,7 @@
     "@opencode-pr-agent/lib": "workspace:*",
     "bullmq": "^6.1.1",
     "express": "5.2.1",
+    "express-rate-limit": "^8.6.2",
     "ioredis": "^6.0.0",
     "pg": "^8.13.1"
   },
