@@ -1,0 +1,78 @@
+# OpenCode Platform — Docker Compose configuration.
+#
+# Runs the platform server alongside PostgreSQL (tasks/repos persistence) and
+# Redis (BullMQ queue). The platform is the web-dashboard + task-queue layer
+# that will eventually absorb the Probot app's webhook processing.
+#
+# Start with:
+#   cp .env.platform.example .env.platform   # then fill in credentials
+#   docker compose -f docker/docker-compose.platform.yml --env-file .env.platform up -d --build
+#
+# Notes:
+#   - `env_file: ../.env.platform` loads the root `.env.platform` into the
+#     platform container and is the SOLE source for credentials and every
+#     other variable. `required: false` keeps `docker compose config` working
+#     even before you create `.env.platform`.
+#   - The Postgres/Redis containers use their own defaults (POSTGRES_USER/PASSWORD
+#     via env, or the compose defaults below) — set them in `.env.platform` for
+#     production.
+
+services:
+  platform:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.platform
+    env_file:
+      - path: ../.env.platform
+        required: false
+    environment:
+      # Internal port is fixed at 8080 to match the published port mapping;
+      # the host-side port is configured separately below via PORT.
+      PORT: 8080
+      DATABASE_URL: ${DATABASE_URL:-postgres://platform:platform@postgres:5432/platform}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      WORKSPACE_DIR: ${WORKSPACE_DIR:-/data/workspaces}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      # Persist cloned workspaces across restarts/redeploys.
+      - platform-workspaces:/data/workspaces
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-platform}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-platform}
+      POSTGRES_DB: ${POSTGRES_DB:-platform}
+    volumes:
+      - platform-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-platform} -d ${POSTGRES_DB:-platform}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - platform-redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  platform-workspaces:
+  platform-pgdata:
+  platform-redisdata:

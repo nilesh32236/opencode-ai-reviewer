@@ -1,0 +1,65 @@
+# OpenCode Platform — multi-stage build.
+#
+# Stage 1 (builder) compiles the `lib` + `platform` workspace packages; only the
+# compiled output and production dependencies are copied into the slim runtime
+# stage (stage 2). The image runs as a non-root user.
+#
+# Both stages pin the base image to an exact Node patch release + digest so
+# builds are reproducible.
+
+# Stage 1 — build-time toolchain & compiled artifacts
+FROM node:22.11.0-bookworm-slim@sha256:f035ba7ffee18f67200e2eb8018e0f13c954ec16338f264940f701997e3c12da AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      curl ca-certificates git python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g pnpm@10.8.0
+
+WORKDIR /app
+
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY lib/package.json ./lib/
+COPY platform/package.json ./platform/
+
+RUN pnpm install --frozen-lockfile
+
+COPY . .
+
+# Only the platform and its lib dependency are built; skip action/app/cli.
+RUN pnpm --filter @opencode-pr-agent/lib --filter @opencode-pr-agent/platform build
+
+# Stage 2 — slim runtime with compiled output and production deps only
+FROM node:22.11.0-bookworm-slim@sha256:f035ba7ffee18f67200e2eb8018e0f13c954ec16338f264940f701997e3c12da AS runtime
+
+ENV NODE_ENV=production
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      curl ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g pnpm@10.8.0
+
+WORKDIR /app
+
+# Install only production dependencies into a fresh, self-contained pnpm
+# virtual store (workspace symlinks resolve to the copied dist below).
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY lib/package.json ./lib/
+COPY platform/package.json ./platform/
+
+RUN pnpm install --frozen-lockfile --prod \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy only the compiled JS + the migrations bundle.
+COPY --from=builder /app/lib/dist ./lib/dist
+COPY --from=builder /app/platform/dist ./platform/dist
+
+RUN useradd --create-home --uid 10001 platform \
+    && chown -R platform:platform /app
+
+USER platform
+
+EXPOSE 8080
+
+CMD ["node", "./platform/dist/index.js"]
