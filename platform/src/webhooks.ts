@@ -88,7 +88,10 @@ export function eventToTask(
   if (eventName === 'issue_comment') {
     const comment = payload.comment as Record<string, unknown> | undefined;
     const body = typeof comment?.body === 'string' ? comment.body : '';
-    const command = body.trim().replace(/^\//, '').split(/\s+/)[0].toLowerCase();
+    const trimmed = body.trim();
+    // Require a leading '/' so bare words in comments never trigger agent work.
+    if (!trimmed.startsWith('/')) return null;
+    const command = trimmed.slice(1).split(/\s+/)[0].toLowerCase();
     const type = COMMAND_TASKS[command];
     if (!type) return null;
     const repo = (payload.repository as Record<string, unknown> | undefined)?.full_name as
@@ -97,11 +100,23 @@ export function eventToTask(
     if (!repo) return null;
     const issue = payload.issue as Record<string, unknown> | undefined;
     const prNumber = typeof issue?.number === 'number' ? (issue.number as number) : undefined;
+    if (prNumber === undefined) return null;
+
+    // For a comment on a pull request, GitHub ships the PR in issue.pull_request
+    // — capture head SHA / base / title so the worker can check out the commit.
+    const pr = (issue?.pull_request ?? {}) as Record<string, unknown>;
+    const prHead = (pr.head ?? {}) as Record<string, unknown>;
+    const prBase = (pr.base ?? {}) as Record<string, unknown>;
     return {
       repo,
       type,
       prNumber,
       issueNumber: prNumber,
+      headSha: typeof prHead.sha === 'string' ? prHead.sha : undefined,
+      baseBranch: typeof prBase.ref === 'string' ? prBase.ref : undefined,
+      headBranch: typeof prHead.ref === 'string' ? prHead.ref : undefined,
+      // For PR comments the title lives on the issue, not issue.pull_request.
+      prTitle: typeof issue?.title === 'string' ? issue.title : undefined,
       triggerSource: 'webhook',
     };
   }
@@ -137,6 +152,12 @@ export async function handleWebhook(
       logger.warn(`Webhook signature verification failed (delivery ${deliveryId})`);
       return { status: 401, message: 'Invalid signature' };
     }
+  } else {
+    // Fail closed: an unverified webhook is never trusted. The webhook
+    // endpoint is public, so running without a secret would let anyone enqueue
+    // arbitrary tasks against the configured GITHUB_TOKEN.
+    logger.warn(`Rejecting webhook delivery ${deliveryId}: WEBHOOK_SECRET is not configured`);
+    return { status: 401, message: 'Webhook secret not configured' };
   }
 
   // Parse the payload up-front so invalid JSON fails fast (400) before any
@@ -148,44 +169,27 @@ export async function handleWebhook(
     return { status: 400, message: 'Invalid JSON payload' };
   }
 
-  // Atomic dedup: claim the delivery with an INSERT ... ON CONFLICT DO NOTHING
-  // RETURNING. When no row is returned, another (or earlier) handler already
-  // claimed this delivery, so it is a duplicate — even under concurrency.
   const repo = (payload.repository as Record<string, unknown> | undefined)?.full_name as
     | string
     | undefined;
-  let claimed: { id: string } | undefined;
-  try {
-    claimed = await db.queryOne<{ id: string }>(
-      `INSERT INTO webhook_events (delivery_id, event_type, repo, payload)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (delivery_id) DO NOTHING
-       RETURNING id`,
-      [deliveryId, eventName, repo ?? 'unknown', JSON.stringify(payload)],
-    );
-  } catch (err) {
-    logger.error(
-      `Failed to claim webhook delivery ${deliveryId}: ${err instanceof Error ? err.message : String(err)}`,
-    );
-    return { status: 500, message: 'Failed to record delivery' };
-  }
-  if (!claimed) {
-    return { status: 200, message: 'Duplicate delivery ignored' };
-  }
 
   if (!TASK_EVENTS.has(eventName)) {
+    // Not a task event — record the delivery (dedup) and return.
+    await claimDelivery(db, deliveryId, eventName, repo, payload);
     return { status: 200, message: 'Event not handled' };
   }
 
   const task = eventToTask(eventName, payload);
   if (!task) {
+    // Task event but no task produced (e.g. non-command comment) — record the
+    // delivery so we do not re-process it on redelivery.
+    await claimDelivery(db, deliveryId, eventName, repo, payload);
     return { status: 200, message: 'Event does not trigger a task' };
   }
 
-  // Enqueue BEFORE finalizing the claim's "processed" state: if enqueueing
-  // fails we return 500 and leave the delivery unprocessed so GitHub's
-  // redelivery (or a later retry) can try again. The deterministic BullMQ
-  // jobId makes a re-enqueue idempotent (replaces rather than duplicates).
+  // Enqueue BEFORE claiming the delivery: if enqueueing fails there is no
+  // claim yet, so GitHub's redelivery can try again — the task is never lost.
+  // The deterministic BullMQ jobId keeps a re-enqueue idempotent.
   try {
     await queue.enqueue(task);
   } catch (err) {
@@ -195,8 +199,50 @@ export async function handleWebhook(
     return { status: 500, message: 'Failed to enqueue task' };
   }
 
+  // Record the delivery so redeliveries are deduplicated.
+  const claimed = await claimDelivery(db, deliveryId, eventName, repo, payload);
+  if (!claimed) {
+    // A concurrent handler already recorded + enqueued this delivery; the
+    // deterministic jobId means our enqueue just replaced the same job.
+    return { status: 200, message: 'Duplicate delivery ignored' };
+  }
+
   logger.info(`Enqueued ${task.type} task for ${task.repo} (delivery ${deliveryId})`);
   return { status: 200, message: `Queued ${task.type}` };
+}
+
+/**
+ * Atomically record a webhook delivery for dedup. Returns false when the
+ * delivery was already recorded (a duplicate).
+ * @param db - The platform database.
+ * @param deliveryId - The unique delivery id.
+ * @param eventName - The GitHub event name.
+ * @param repo - Repository full name, or undefined.
+ * @param payload - The parsed payload to store.
+ * @returns True when this call recorded the delivery, false when it was a duplicate.
+ */
+async function claimDelivery(
+  db: PlatformDb,
+  deliveryId: string,
+  eventName: string,
+  repo: string | undefined,
+  payload: Record<string, unknown>,
+): Promise<boolean> {
+  try {
+    const claimed = await db.queryOne<{ id: string }>(
+      `INSERT INTO webhook_events (delivery_id, event_type, repo, payload)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (delivery_id) DO NOTHING
+       RETURNING id`,
+      [deliveryId, eventName, repo ?? 'unknown', JSON.stringify(payload)],
+    );
+    return Boolean(claimed);
+  } catch (err) {
+    logger.error(
+      `Failed to claim webhook delivery ${deliveryId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return false;
+  }
 }
 
 /**
@@ -217,15 +263,24 @@ export function createWebhookHandler(
     const signatureHeader = req.header('x-hub-signature-256') ?? undefined;
     const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body));
 
-    const { status, message } = await handleWebhook(
-      eventName,
-      deliveryId,
-      signatureHeader,
-      rawBody,
-      db,
-      queue,
-      webhookSecret,
-    );
-    res.status(status).json({ ok: status < 400, message });
+    // Rejection guard: an unexpected throw must not surface as an unhandled
+    // promise rejection (Express 4 does not catch async route errors).
+    try {
+      const { status, message } = await handleWebhook(
+        eventName,
+        deliveryId,
+        signatureHeader,
+        rawBody,
+        db,
+        queue,
+        webhookSecret,
+      );
+      res.status(status).json({ ok: status < 400, message });
+    } catch (err) {
+      logger.error(
+        `Webhook handler threw for delivery ${deliveryId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      res.status(500).json({ ok: false, message: 'Internal error' });
+    }
   };
 }

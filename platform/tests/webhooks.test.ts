@@ -19,14 +19,13 @@ function makeFakeDb(): { db: PlatformDb; insertCalled: () => number } {
       // For a duplicate delivery it returns no row (conflict); otherwise it
       // returns the claimed row.
       if (sql.includes('INSERT INTO webhook_events')) {
+        inserts++;
         const id = params[0] as string;
         return id === 'dup-delivery' ? undefined : { id: 'claimed' };
       }
       return undefined;
     }),
-    execute: vi.fn(async () => {
-      inserts++;
-    }),
+    execute: vi.fn(async () => {}),
     query: vi.fn(async () => []),
     ping: vi.fn(async () => true),
   } as unknown as PlatformDb;
@@ -73,6 +72,23 @@ describe('handleWebhook', () => {
       SECRET,
     );
     expect(res.status).toBe(401);
+  });
+
+  it('fails closed (401) when no webhook secret is configured', async () => {
+    const { db } = makeFakeDb();
+    const { queue } = makeFakeQueue();
+    const body = prPayload();
+    const res = await handleWebhook(
+      'pull_request',
+      'del-1',
+      sign(body),
+      Buffer.from(body),
+      db,
+      queue,
+      undefined,
+    );
+    expect(res.status).toBe(401);
+    expect(res.message).toBe('Webhook secret not configured');
   });
 
   it('rejects an invalid signature', async () => {
@@ -123,8 +139,8 @@ describe('handleWebhook', () => {
     expect(enqueued).toContain('acme/app|review');
   });
 
-  it('ignores duplicate deliveries without enqueueing', async () => {
-    const { db } = makeFakeDb();
+  it('ignores duplicate deliveries (enqueue is idempotent, claim not re-recorded)', async () => {
+    const { db, insertCalled } = makeFakeDb();
     const { queue, enqueued } = makeFakeQueue();
     const body = prPayload();
     const res = await handleWebhook(
@@ -138,11 +154,14 @@ describe('handleWebhook', () => {
     );
     expect(res.status).toBe(200);
     expect(res.message).toBe('Duplicate delivery ignored');
-    expect(enqueued).toHaveLength(0);
+    // Enqueue runs before the claim; the deterministic jobId makes the
+    // duplicate enqueue idempotent (it replaces, never doubles).
+    expect(enqueued).toHaveLength(1);
+    expect(insertCalled()).toBe(1);
   });
 
   it('returns 500 and does not swallow the delivery when enqueue fails', async () => {
-    const { db } = makeFakeDb();
+    const { db, insertCalled } = makeFakeDb();
     const { queue } = makeFakeQueue(true);
     const body = prPayload();
     const res = await handleWebhook(
@@ -156,6 +175,9 @@ describe('handleWebhook', () => {
     );
     expect(res.status).toBe(500);
     expect(res.message).toBe('Failed to enqueue task');
+    // Enqueue failed BEFORE the claim, so the delivery was never recorded —
+    // a redelivery can try again instead of being swallowed as a duplicate.
+    expect(insertCalled()).toBe(0);
   });
 });
 
@@ -213,10 +235,17 @@ describe('eventToTask', () => {
     ).toBeNull();
   });
 
-  it('maps a /review comment to a review task', () => {
+  it('maps a /review comment to a review task with PR context', () => {
     const task = eventToTask('issue_comment', {
       repository: { full_name: 'acme/app' },
-      issue: { number: 7 },
+      issue: {
+        number: 7,
+        title: 'Fix bug',
+        pull_request: {
+          head: { sha: 'deadbeef', ref: 'feature/x' },
+          base: { ref: 'main' },
+        },
+      },
       comment: { body: '/review' },
     });
     expect(task).toEqual({
@@ -224,6 +253,10 @@ describe('eventToTask', () => {
       type: 'review',
       prNumber: 7,
       issueNumber: 7,
+      headSha: 'deadbeef',
+      baseBranch: 'main',
+      headBranch: 'feature/x',
+      prTitle: 'Fix bug',
       triggerSource: 'webhook',
     });
   });
@@ -243,6 +276,24 @@ describe('eventToTask', () => {
         repository: { full_name: 'acme/app' },
         issue: { number: 1 },
         comment: { body: 'just a comment' },
+      }),
+    ).toBeNull();
+  });
+
+  it('requires a leading slash for a command', () => {
+    // A bare word must never trigger agent work.
+    expect(
+      eventToTask('issue_comment', {
+        repository: { full_name: 'acme/app' },
+        issue: { number: 2 },
+        comment: { body: 'review' },
+      }),
+    ).toBeNull();
+    expect(
+      eventToTask('issue_comment', {
+        repository: { full_name: 'acme/app' },
+        issue: { number: 3 },
+        comment: { body: ' fix this' },
       }),
     ).toBeNull();
   });
