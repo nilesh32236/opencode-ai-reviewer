@@ -912,6 +912,8 @@ describe('ReviewEngine', () => {
         expect(result.verdict.ready).toBe(false);
         expect(result.verdict.reasoning).toBe('All review agents failed');
         expect(result.failedAgents).toBe(1);
+        // The failed-run summary must not claim "No issues found".
+        expect(result.summary).toContain('could not be completed');
       });
 
       it('degrades to a failed verdict when the consolidated output cannot be parsed', async () => {
@@ -929,6 +931,8 @@ describe('ReviewEngine', () => {
         expect(result.verdict.ready).toBe(false);
         expect(result.verdict.reasoning).toBe('Review output could not be parsed');
         expect(result.failedAgents).toBe(1);
+        // The parse-failure summary must not claim "No issues found".
+        expect(result.summary).toContain('could not be completed');
       });
 
       it('reports no issues when the orchestrator produces a clean verdict', async () => {
