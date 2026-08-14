@@ -61,8 +61,15 @@ export async function runSelfHeal(
   const branchName = `fix/ci-heal-${runId}`;
   const defaultBranch = await gh.getDefaultBranch();
 
-  validateRefName(branchName);
-  validateRefName(defaultBranch);
+  try {
+    validateRefName(branchName);
+    validateRefName(defaultBranch);
+  } catch (err) {
+    core.setFailed(
+      sanitize(`Invalid ref for self-heal: ${err instanceof Error ? err.message : String(err)}`),
+    );
+    return;
+  }
 
   try {
     await exec.exec('git', ['checkout', '-b', branchName, `origin/${defaultBranch}`]);

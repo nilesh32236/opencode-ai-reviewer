@@ -36,18 +36,20 @@ describe('runSelfHeal', () => {
 
   it('rejects an invalid branchName (invalid chars) and throws/fails action', async () => {
     process.env.GITHUB_RUN_ID = 'injection \n injection';
-    await expect(
-      runSelfHeal(mockInputs, mockConfig, mockEngine, mockGh, 'owner/repo', 'token'),
-    ).rejects.toThrow(/contains invalid characters/);
+    await runSelfHeal(mockInputs, mockConfig, mockEngine, mockGh, 'owner/repo', 'token');
+    expect(core.setFailed).toHaveBeenCalledWith(
+      expect.stringContaining('contains invalid characters'),
+    );
     expect(exec.exec).not.toHaveBeenCalled();
   });
 
   it('rejects an invalid branchName (leading dash) and throws/fails action', async () => {
     process.env.GITHUB_RUN_ID = 'id';
     mockGh.getDefaultBranch.mockResolvedValueOnce('-main'); // inject leading dash into default branch
-    await expect(
-      runSelfHeal(mockInputs, mockConfig, mockEngine, mockGh, 'owner/repo', 'token'),
-    ).rejects.toThrow('Ref name must not begin with a dash');
+    await runSelfHeal(mockInputs, mockConfig, mockEngine, mockGh, 'owner/repo', 'token');
+    expect(core.setFailed).toHaveBeenCalledWith(
+      expect.stringContaining('must not begin with a dash'),
+    );
     expect(exec.exec).not.toHaveBeenCalled();
   });
 
