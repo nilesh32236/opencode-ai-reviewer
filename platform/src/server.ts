@@ -8,6 +8,7 @@ import path from 'node:path';
 import { Logger } from '@opencode-pr-agent/lib';
 import type { Request, Response } from 'express';
 import express from 'express';
+import rateLimit from 'express-rate-limit';
 import type { PlatformConfig } from './config.js';
 import type { PlatformDb } from './db/client.js';
 import type { TaskQueue } from './queue/manager.js';
@@ -25,30 +26,14 @@ export interface HealthComponent {
   detail?: string;
 }
 
-/**
- * Simple fixed-window in-memory rate limiter (per IP).
- * @param limit - Maximum requests per IP within the window.
- * @param windowMs - Window length in milliseconds.
- * @returns An Express middleware that returns 429 when the limit is exceeded.
- */
-function makeRateLimiter(limit: number, windowMs: number) {
-  const hits = new Map<string, { count: number; resetAt: number }>();
-  return (req: Request, res: Response, next: () => void): void => {
-    const ip = req.ip ?? 'unknown';
-    const now = Date.now();
-    let entry = hits.get(ip);
-    if (!entry || now > entry.resetAt) {
-      entry = { count: 0, resetAt: now + windowMs };
-      hits.set(ip, entry);
-    }
-    entry.count++;
-    if (entry.count > limit) {
-      res.status(429).json({ error: 'Too many requests' });
-      return;
-    }
-    next();
-  };
-}
+/** Rate limiter for the public dashboard static/fallback routes. */
+const DASHBOARD_RATE_LIMIT = rateLimit({
+  windowMs: 60_000,
+  limit: 120,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Too many requests' },
+});
 
 /** Health response payload. */
 export interface HealthResponse {
@@ -155,13 +140,12 @@ export function createPlatformServer(
   // fallback handlers are rate-limited (file system access on public routes)
   // to bound abuse; express.static already guards against path traversal.
   if (deps.dashboardDir) {
-    const dashboardLimiter = makeRateLimiter(120, 60_000);
     const dashboard = express.static(deps.dashboardDir, { maxAge: '1h' });
-    app.use('/dashboard', dashboardLimiter, dashboard);
-    app.get('/dashboard/*path', dashboardLimiter, (_req, res) => {
+    app.use('/dashboard', DASHBOARD_RATE_LIMIT, dashboard);
+    app.get('/dashboard/*path', DASHBOARD_RATE_LIMIT, (_req, res) => {
       res.sendFile(path.join(deps.dashboardDir as string, 'index.html'));
     });
-    app.get('/dashboard', dashboardLimiter, (_req, res) => {
+    app.get('/dashboard', DASHBOARD_RATE_LIMIT, (_req, res) => {
       res.sendFile(path.join(deps.dashboardDir as string, 'index.html'));
     });
   }
