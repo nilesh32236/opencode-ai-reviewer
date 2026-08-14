@@ -75,6 +75,23 @@ describe('handleWebhook', () => {
     expect(res.status).toBe(401);
   });
 
+  it('fails closed (401) when no webhook secret is configured', async () => {
+    const { db } = makeFakeDb();
+    const { queue } = makeFakeQueue();
+    const body = prPayload();
+    const res = await handleWebhook(
+      'pull_request',
+      'del-1',
+      sign(body),
+      Buffer.from(body),
+      db,
+      queue,
+      undefined,
+    );
+    expect(res.status).toBe(401);
+    expect(res.message).toBe('Webhook secret not configured');
+  });
+
   it('rejects an invalid signature', async () => {
     const { db } = makeFakeDb();
     const { queue } = makeFakeQueue();
@@ -156,6 +173,10 @@ describe('handleWebhook', () => {
     );
     expect(res.status).toBe(500);
     expect(res.message).toBe('Failed to enqueue task');
+    // The delivery claim must be released so a redelivery is not swallowed.
+    expect(db.execute).toHaveBeenCalledWith('DELETE FROM webhook_events WHERE delivery_id = $1', [
+      'del-fail',
+    ]);
   });
 });
 

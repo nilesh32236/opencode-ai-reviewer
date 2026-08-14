@@ -137,6 +137,12 @@ export async function handleWebhook(
       logger.warn(`Webhook signature verification failed (delivery ${deliveryId})`);
       return { status: 401, message: 'Invalid signature' };
     }
+  } else {
+    // Fail closed: an unverified webhook is never trusted. The webhook
+    // endpoint is public, so running without a secret would let anyone enqueue
+    // arbitrary tasks against the configured GITHUB_TOKEN.
+    logger.warn(`Rejecting webhook delivery ${deliveryId}: WEBHOOK_SECRET is not configured`);
+    return { status: 401, message: 'Webhook secret not configured' };
   }
 
   // Parse the payload up-front so invalid JSON fails fast (400) before any
@@ -183,15 +189,24 @@ export async function handleWebhook(
   }
 
   // Enqueue BEFORE finalizing the claim's "processed" state: if enqueueing
-  // fails we return 500 and leave the delivery unprocessed so GitHub's
-  // redelivery (or a later retry) can try again. The deterministic BullMQ
-  // jobId makes a re-enqueue idempotent (replaces rather than duplicates).
+  // fails we return 500, and best-effort DELETE the claim so GitHub's
+  // redelivery can try again instead of being swallowed as a duplicate. The
+  // deterministic BullMQ jobId keeps a re-enqueue idempotent.
   try {
     await queue.enqueue(task);
   } catch (err) {
     logger.error(
       `Failed to enqueue task for delivery ${deliveryId}: ${err instanceof Error ? err.message : String(err)}`,
     );
+    // Release the claim so a redelivery is not treated as a processed
+    // duplicate (otherwise the task would be lost permanently).
+    try {
+      await db.execute('DELETE FROM webhook_events WHERE delivery_id = $1', [deliveryId]);
+    } catch (deleteErr) {
+      logger.warn(
+        `Failed to release delivery claim ${deliveryId}: ${deleteErr instanceof Error ? deleteErr.message : String(deleteErr)}`,
+      );
+    }
     return { status: 500, message: 'Failed to enqueue task' };
   }
 
