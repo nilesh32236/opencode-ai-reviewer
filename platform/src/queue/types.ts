@@ -18,6 +18,8 @@ export interface TaskJobData {
   installationId?: number;
   /** PR number (for PR-scoped tasks). */
   prNumber?: number;
+  /** PR title (for PR-scoped tasks). */
+  prTitle?: string;
   /** Issue number (for issue-scoped tasks like /analyze). */
   issueNumber?: number;
   /** Head SHA to check out. */

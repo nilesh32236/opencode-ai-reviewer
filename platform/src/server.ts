@@ -78,6 +78,8 @@ export async function runProbe(
  * PostgreSQL database is reachable.
  * @param deps.queueOk - Optional async check that returns whether the task
  * queue (Redis) is reachable.
+ * @param deps.webhookHandler - Optional webhook route handler mounted at
+ * POST /webhooks/github with raw-body parsing (HMAC needs the exact bytes).
  * @returns The configured Express application.
  */
 export function createPlatformServer(
@@ -85,13 +87,20 @@ export function createPlatformServer(
   deps: {
     databaseOk?: () => Promise<boolean> | boolean;
     queueOk?: () => Promise<boolean> | boolean;
+    webhookHandler?: (req: Request, res: Response) => Promise<void>;
   } = {},
 ): express.Express {
   const app = express();
   const logger = new Logger('PlatformServer');
 
   app.disable('x-powered-by');
+  // JSON for the API/health routes; the webhook route is mounted separately
+  // with raw body parsing so HMAC verification sees the exact bytes.
   app.use(express.json({ limit: '1mb' }));
+
+  if (deps.webhookHandler) {
+    app.post('/webhooks/github', express.raw({ type: '*/*', limit: '10mb' }), deps.webhookHandler);
+  }
 
   app.get('/health', async (_req: Request, res: Response) => {
     const components: HealthComponent[] = [];
