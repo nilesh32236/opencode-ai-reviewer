@@ -56,7 +56,8 @@ COPY --from=builder /app/lib/dist ./lib/dist
 COPY --from=builder /app/platform/dist ./platform/dist
 
 RUN useradd --create-home --uid 10001 platform \
-    && chown -R platform:platform /app
+    && mkdir -p /app /data/workspaces \
+    && chown -R platform:platform /app /data/workspaces
 
 USER platform
 
