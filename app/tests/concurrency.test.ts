@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { Semaphore, runSemaphore, runWithConcurrencyLimit } from '../src/utils/concurrency.js';
+import {
+  type ConcurrencyDecision,
+  Semaphore,
+  runSemaphore,
+  runWithConcurrencyLimit,
+} from '../src/utils/concurrency.js';
 import { buildRepoFilter, isRepoAllowed } from '../src/utils/repo-filter.js';
 
 describe('Semaphore', () => {
@@ -96,5 +101,19 @@ describe('repo filter', () => {
   it('rejects a missing repo string', () => {
     const filter = buildRepoFilter({});
     expect(isRepoAllowed(undefined, filter)).toBe(false);
+  });
+
+  it('fails closed when the allowlist is configured but all entries are malformed', () => {
+    // No valid "owner/repo" entries — must deny everything rather than fail open.
+    const filter = buildRepoFilter({ ALLOWED_REPOS: 'no-slash, anotherbad, ,,' });
+    expect(filter.allowlistConfigured).toBe(true);
+    expect(isRepoAllowed('anything/repo', filter)).toBe(false);
+    expect(isRepoAllowed('good/repo', filter)).toBe(false);
+  });
+
+  it('allows all repos when ALLOWED_REPOS is empty or unset', () => {
+    expect(buildRepoFilter({ ALLOWED_REPOS: '' }).allowlistConfigured).toBe(false);
+    expect(buildRepoFilter({}).allowlistConfigured).toBe(false);
+    expect(isRepoAllowed('x/y', buildRepoFilter({ ALLOWED_REPOS: '' }))).toBe(true);
   });
 });

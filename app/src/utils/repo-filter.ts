@@ -18,6 +18,10 @@ export interface RepoFilter {
   allowed: Set<string>;
   /** Repos (owner/repo) explicitly excluded; empty = deny none. */
   denied: Set<string>;
+  /** True when ALLOWED_REPOS was set in the environment (even if all entries
+   * were malformed). When set but empty, the filter must DENY everything
+   * rather than fail open. */
+  allowlistConfigured: boolean;
 }
 
 function parseList(raw: string | undefined): Set<string> {
@@ -33,14 +37,26 @@ function parseList(raw: string | undefined): Set<string> {
 
 /**
  * Build the repo filter from environment variables.
+ *
+ * Fail-closed allowlist semantics: when `ALLOWED_REPOS` is set but every entry
+ * is malformed (e.g. no "owner/repo" slash), the parsed allowlist is empty but
+ * `allowlistConfigured` stays true, so {@link isRepoAllowed} denies everything
+ * instead of silently allowing all repos.
  * @param env - Environment variables (defaults to `process.env`).
  * @returns The parsed allowlist/denylist.
  */
 export function buildRepoFilter(env: NodeJS.ProcessEnv = process.env): RepoFilter {
-  return {
-    allowed: parseList(env.ALLOWED_REPOS),
-    denied: parseList(env.DENIED_REPOS),
-  };
+  const allowed = parseList(env.ALLOWED_REPOS);
+  const denied = parseList(env.DENIED_REPOS);
+  // Fail-closed: an allowlist that was configured but parsed to nothing (all
+  // entries malformed) denies every repo instead of allowing all.
+  const allowlistConfigured = (env.ALLOWED_REPOS ?? '').trim().length > 0;
+  if (allowlistConfigured && allowed.size === 0) {
+    logger.warn(
+      'ALLOWED_REPOS is set but no valid "owner/repo" entries were parsed — denying all repositories (fail closed)',
+    );
+  }
+  return { allowed, denied, allowlistConfigured };
 }
 
 /**
@@ -51,8 +67,9 @@ export const repoFilter: RepoFilter = buildRepoFilter();
 
 /**
  * Decide whether a repository is allowed to run heavy workloads.
- * A repo is allowed when: it is not on the denylist AND (the allowlist is
- * empty OR it is on the allowlist).
+ * A repo is allowed when: it is not on the denylist AND (the allowlist was
+ * not configured OR it is on the allowlist). An allowlist that was configured
+ * but parsed empty denies everything (fail closed).
  * @param repo - Repository in "owner/repo" form.
  * @param filter - The parsed repo filter.
  * @returns True when the repo may run heavy workloads.
@@ -61,7 +78,7 @@ export function isRepoAllowed(repo: string | undefined, filter: RepoFilter): boo
   const normalized = repo?.toLowerCase() ?? '';
   if (!normalized) return false;
   if (filter.denied.has(normalized)) return false;
-  if (filter.allowed.size > 0) return filter.allowed.has(normalized);
+  if (filter.allowlistConfigured) return filter.allowed.has(normalized);
   return true;
 }
 
@@ -76,7 +93,10 @@ export function logRepoFilter(filter: RepoFilter): void {
   if (filter.denied.size > 0) {
     logger.info(`Repo denylist: ${[...filter.denied].sort().join(', ')}`);
   }
-  if (filter.allowed.size === 0 && filter.denied.size === 0) {
+  if (filter.allowlistConfigured) {
+    logger.warn('ALLOWED_REPOS configured but empty — all repositories denied');
+  }
+  if (filter.allowed.size === 0 && filter.denied.size === 0 && !filter.allowlistConfigured) {
     logger.info('No repo allowlist/denylist configured — all repositories are eligible');
   }
 }

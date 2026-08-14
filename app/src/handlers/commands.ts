@@ -147,12 +147,10 @@ export async function handleCommand(
     // A command that cannot get a slot within the wait window is skipped
     // (logged + a short "busy" notice) rather than blocking the webhook.
     const commandLabel = `/${command} ${repo}#${issueNumber}`;
-    let executed = false;
-    await runWithConcurrencyLimit(async () => {
-      executed = true;
+    const decision = await runWithConcurrencyLimit(async () => {
       await dispatchCommand();
     }, commandLabel);
-    if (!executed) {
+    if (!decision.acquired) {
       logger.warn(`Skipped ${commandLabel} — global concurrency limit reached`);
       try {
         await gh.postOrUpdateComment(

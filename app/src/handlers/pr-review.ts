@@ -299,7 +299,9 @@ export async function handlePRReview(
 
       // The global concurrency limit is exhausted. Do not block the webhook:
       // post a short "busy" notice so the PR is not silently skipped, and let
-      // the next /review (or a re-delivered event) run it.
+      // the next /review (or a re-delivered event) run it. Report a neutral
+      // check run so a required check never hangs pending under branch
+      // protection.
       if (!decision.acquired) {
         try {
           await gh.postOrUpdateComment(
@@ -312,6 +314,12 @@ export async function handlePRReview(
             `Failed to post busy comment: ${err instanceof Error ? err.message : String(err)}`,
           );
         }
+        await reportCheckRun(
+          pr.headSha,
+          'neutral',
+          'Review queued',
+          'Another review is already running — this PR was queued and not reviewed.',
+        );
         logger.warn(`Skipped ${reviewLabel} — global concurrency limit reached`);
         return null;
       }
