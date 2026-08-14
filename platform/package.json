@@ -14,7 +14,9 @@
   },
   "dependencies": {
     "@opencode-pr-agent/lib": "workspace:*",
+    "bullmq": "^6.1.1",
     "express": "5.2.1",
+    "ioredis": "^6.0.0",
     "pg": "^8.13.1"
   },
   "devDependencies": {
