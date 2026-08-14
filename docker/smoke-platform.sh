@@ -33,10 +33,18 @@ echo "[1/7] Booting platform stack..."
 if [ ! -f "$ENV_FILE" ]; then
   cp .env.platform.example "$ENV_FILE"
 fi
-# Ensure the webhook secret used by the smoke script is set.
+# Ensure a webhook secret exists so the signed-webhook checks are meaningful.
+# Use a random one when the operator hasn't configured a value, so the smoke
+# test never hardcodes a secret or relies on a fixed value.
 if ! grep -q '^WEBHOOK_SECRET=' "$ENV_FILE" 2>/dev/null || [ -z "$(grep '^WEBHOOK_SECRET=' "$ENV_FILE" | cut -d= -f2)" ]; then
-  echo 'WEBHOOK_SECRET=smoke-secret' >> "$ENV_FILE"
+  if grep -q '^WEBHOOK_SECRET=' "$ENV_FILE" 2>/dev/null; then
+    sed -i 's/^WEBHOOK_SECRET=.*/WEBHOOK_SECRET=smoke-secret-'"$(date +%s%N)"'/' "$ENV_FILE"
+  else
+    echo "WEBHOOK_SECRET=smoke-secret-$(date +%s%N)" >> "$ENV_FILE"
+  fi
 fi
+# Read the effective secret so the signing step matches the configured value.
+WEBHOOK_SECRET=$(grep '^WEBHOOK_SECRET=' "$ENV_FILE" | head -1 | cut -d= -f2)
 PORT="$PORT" $COMPOSE --env-file "$ENV_FILE" up -d --build >/dev/null 2>&1 || fail "compose up"
 
 # --- 2. Health ---
@@ -60,14 +68,14 @@ pass "migrations applied ($migrations)"
 # --- 4. Signed webhook accepted ---
 echo "[4/7] Sending signed pull_request webhook..."
 DELIVERY_ID="smoke-delivery-$(date +%s%N)"
-PORT=$PORT DELIVERY_ID=$DELIVERY_ID node -e '
+PORT=$PORT DELIVERY_ID=$DELIVERY_ID WEBHOOK_SECRET=$WEBHOOK_SECRET node -e '
   const crypto = require("crypto");
   const payload = JSON.stringify({
     action: "opened",
     repository: { full_name: "acme/smoke" },
     pull_request: { number: 1, title: "smoke", head: { sha: "abc", ref: "x" }, base: { ref: "main" } },
   });
-  const sig = "sha256=" + crypto.createHmac("sha256", "smoke-secret").update(payload).digest("hex");
+  const sig = "sha256=" + crypto.createHmac("sha256", process.env.WEBHOOK_SECRET).update(payload).digest("hex");
   const http = require("http");
   const body = Buffer.from(payload);
   const req = http.request({
@@ -92,14 +100,14 @@ pass "webhook accepted + task queued"
 
 # --- 5. Duplicate delivery ignored ---
 echo "[5/7] Resending the same delivery (dedup)..."
-dup=$(PORT=$PORT DELIVERY_ID=$DELIVERY_ID node -e '
+dup=$(PORT=$PORT DELIVERY_ID=$DELIVERY_ID WEBHOOK_SECRET=$WEBHOOK_SECRET node -e '
   const crypto = require("crypto");
   const payload = JSON.stringify({
     action: "opened",
     repository: { full_name: "acme/smoke" },
     pull_request: { number: 1, title: "smoke", head: { sha: "abc", ref: "x" }, base: { ref: "main" } },
   });
-  const sig = "sha256=" + crypto.createHmac("sha256", "smoke-secret").update(payload).digest("hex");
+  const sig = "sha256=" + crypto.createHmac("sha256", process.env.WEBHOOK_SECRET).update(payload).digest("hex");
   const http = require("http");
   const body = Buffer.from(payload);
   const req = http.request({

@@ -124,22 +124,33 @@ jobs:
             # Free disk before building.
             docker builder prune -af 2>/dev/null || true
 
-            # Build and start the platform stack (default port 8082; override
-            # PLATFORM_PORT in .env.platform if 8082 is taken).
+            # Build and start the platform stack (host port from PORT in
+            # .env.platform, default 8080; the app is on 3000).
             docker compose -f docker/docker-compose.platform.yml --env-file .env.platform up -d --build
 
             # Confirm the platform container stays up and its health endpoint
-            # reports ok before declaring success.
+            # reports ok BEFORE declaring success (a broken deploy must fail).
             sleep 12
-            if ! docker compose -f docker/docker-compose.platform.yml --env-file .env.platform ps --status running -q | grep -q .; then
+            if ! docker compose -f docker/docker-compose.platform.yml --env-file .env.platform ps --status running --services | grep -q '^platform$'; then
               echo "ERROR: platform container failed to start" >&2
-              docker compose -f docker/docker-compose.platform.yml --env-file .env.platform logs --tail 50
+              docker compose -f docker/docker-compose.platform.yml --env-file .env.platform logs --tail 50 platform
               exit 1
             fi
             health_port=$(grep -E "^PORT=" .env.platform | head -1 | cut -d= -f2)
             health_port=${health_port:-8080}
-            health=$(curl -fsS --max-time 5 "http://localhost:${health_port}/health" 2>/dev/null) || true
-            echo "Platform health: ${health:-unreachable}"
+            health=""
+            for i in $(seq 1 15); do
+              health=$(curl -fsS --max-time 5 "http://localhost:${health_port}/health" 2>/dev/null || true)
+              if echo "$health" | grep -q '"status":"ok"'; then break; fi
+              echo "Waiting for platform health (attempt $i)..."
+              sleep 4
+            done
+            if ! echo "$health" | grep -q '"status":"ok"'; then
+              echo "ERROR: platform /health did not report ok: ${health:-unreachable}" >&2
+              docker compose -f docker/docker-compose.platform.yml --env-file .env.platform logs --tail 50 platform
+              exit 1
+            fi
+            echo "Platform health: $health"
 
             # Clean up old images.
             docker image prune -f'
