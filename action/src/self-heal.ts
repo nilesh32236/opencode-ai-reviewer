@@ -61,9 +61,10 @@ export async function runSelfHeal(
   const branchName = `fix/ci-heal-${runId}`;
   const defaultBranch = await gh.getDefaultBranch();
 
+  validateRefName(branchName);
+  validateRefName(defaultBranch);
+
   try {
-    validateRefName(branchName);
-    validateRefName(defaultBranch);
     await exec.exec('git', ['checkout', '-b', branchName, `origin/${defaultBranch}`]);
   } catch (err) {
     core.warning(
@@ -141,7 +142,6 @@ export async function runSelfHeal(
 
   // Push the branch with retry
   try {
-    validateRefName(branchName);
     await withRetry(() => exec.exec('git', ['push', 'origin', branchName, '--force-with-lease']), {
       maxRetries: 3,
       baseDelayMs: 1000,
