@@ -10,6 +10,7 @@ import type { Probot } from 'probot';
 import { createHealthRouter } from './health.js';
 import { registerSubscribers } from './subscribers/index.js';
 import { buildConfig } from './utils/config.js';
+import { logRepoFilter, repoFilter } from './utils/repo-filter.js';
 
 const logger = new Logger('App');
 
@@ -45,6 +46,13 @@ export default (app: Probot, options?: { getRouter?: (path?: string) => unknown 
   const bus = new EventBus();
   const router = new EventRouter(bus);
   const config = buildConfig();
+
+  // Log which repos the app will / won't process at startup so operators can
+  // verify the allowlist/denylist config.
+  logRepoFilter(repoFilter);
+  logger.info(
+    `Global run concurrency limit: ${process.env.MAX_CONCURRENT_RUNS ?? '1'} (MAX_CONCURRENT_RUNS)`,
+  );
 
   // Health/readiness probes for container orchestrators (Kubernetes, Docker
   // Compose). `/health` reports liveness + critical DB reachability;

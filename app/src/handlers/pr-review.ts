@@ -16,7 +16,13 @@ import {
   sendNotification,
   shouldFailOnSeverity,
 } from '@opencode-pr-agent/lib';
+import { runWithConcurrencyLimit } from '../utils/concurrency.js';
 import { mergeRepoConfig } from '../utils/config.js';
+import {
+  type RepoFilter,
+  repoFilter as defaultRepoFilter,
+  isRepoAllowed,
+} from '../utils/repo-filter.js';
 import { handleAutofixLoop } from './autofix.js';
 /** Marker identifying the "review in progress" status comment on a PR. */
 const REVIEW_IN_PROGRESS_MARKER = '<!-- review-in-progress -->';
@@ -88,6 +94,8 @@ export function truncateToUtf8Bytes(text: string, maxBytes: number = MAX_CHECK_T
  * @param options - Optional behavior flags.
  * @param options.forceReview - Bypass the dedup cache so an explicit `/review`
  *   always runs against the current head.
+ * @param repoFilter - Optional repo allowlist/denylist; defaults to the shared
+ * process-wide filter built from ALLOWED_REPOS / DENIED_REPOS env.
  * @returns The review result or null if review was skipped or failed.
  */
 export async function handlePRReview(
@@ -101,11 +109,20 @@ export async function handlePRReview(
   eventBus?: EventBus,
   correlationId?: string,
   options?: { forceReview?: boolean },
+  repoFilter?: RepoFilter,
 ): Promise<ReviewResult | null> {
   const logger = new Logger('PRReview', { prNumber, repo, correlationId });
   logger.info(
     `Starting review for PR #${prNumber}${previousHeadSha ? ` (delta from ${previousHeadSha.slice(0, 7)})` : ''}`,
   );
+
+  // Repository allowlist/denylist gate: never spend LLM budget on repos the
+  // operator excluded. Opt-in via ALLOWED_REPOS / DENIED_REPOS env.
+  const effectiveRepoFilter = repoFilter ?? defaultRepoFilter;
+  if (!isRepoAllowed(repo, effectiveRepoFilter)) {
+    logger.info(`Skipping PR #${prNumber} — repository ${repo} is filtered out`);
+    return null;
+  }
 
   const gh: PlatformAdapter =
     config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
@@ -220,60 +237,85 @@ export async function handlePRReview(
         );
       }
 
-      result = await engine.reviewPR(
-        pr,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        reviewWorkingDir,
-        previousHeadSha,
-        previousBotComments,
-        streamEnabled
-          ? async (batchIndex, totalBatches, batchResult) => {
-              for (const issue of batchResult.issues) {
-                if (issue.inline && issue.file && issue.line) {
-                  const key = `${issue.file}:${issue.line}`;
-                  // Never post the same file:line twice across batches, and
-                  // only mark a finding as streamed when the inline post
-                  // actually succeeded — otherwise the final-result filter
-                  // below would drop it entirely (neither inline nor body).
-                  if (streamedIssueKeys.has(key)) continue;
-                  const posted = await gh.postInlineComment(prNumber, pr.headSha, {
-                    path: issue.file,
-                    line: issue.line,
-                    body: `**${issue.severity.toUpperCase()}**: ${issue.message}`,
-                  });
-                  if (posted) {
-                    streamedIssueKeys.add(key);
-                    streamedCommentIds.set(`${issue.file}:${issue.line}`, posted.commentId);
-                    streamedFindingCount++;
-                  } else {
-                    logger.warn(
-                      `Inline comment post failed for ${key} — will retry in final review body`,
-                      { prNumber, repo },
-                    );
+      const reviewLabel = `review ${repo}#${prNumber}`;
+      let reviewResult: ReviewResult | undefined;
+      const runReview = async (): Promise<void> => {
+        reviewResult = await engine.reviewPR(
+          pr,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          reviewWorkingDir,
+          previousHeadSha,
+          previousBotComments,
+          streamEnabled
+            ? async (batchIndex, totalBatches, batchResult) => {
+                for (const issue of batchResult.issues) {
+                  if (issue.inline && issue.file && issue.line) {
+                    const key = `${issue.file}:${issue.line}`;
+                    // Never post the same file:line twice across batches, and
+                    // only mark a finding as streamed when the inline post
+                    // actually succeeded — otherwise the final-result filter
+                    // below would drop it entirely (neither inline nor body).
+                    if (streamedIssueKeys.has(key)) continue;
+                    const posted = await gh.postInlineComment(prNumber, pr.headSha, {
+                      path: issue.file,
+                      line: issue.line,
+                      body: `**${issue.severity.toUpperCase()}**: ${issue.message}`,
+                    });
+                    if (posted) {
+                      streamedIssueKeys.add(key);
+                      streamedCommentIds.set(`${issue.file}:${issue.line}`, posted.commentId);
+                      streamedFindingCount++;
+                    } else {
+                      logger.warn(
+                        `Inline comment post failed for ${key} — will retry in final review body`,
+                        { prNumber, repo },
+                      );
+                    }
                   }
                 }
+                await gh
+                  .postStreamingProgress(
+                    prNumber,
+                    batchIndex + 1,
+                    totalBatches,
+                    streamedFindingCount,
+                    batchResult.issues[batchResult.issues.length - 1]?.file,
+                  )
+                  .catch((err) => {
+                    logger.warn(
+                      `Failed to post streaming progress: ${err instanceof Error ? err.message : String(err)}`,
+                    );
+                  });
               }
-              await gh
-                .postStreamingProgress(
-                  prNumber,
-                  batchIndex + 1,
-                  totalBatches,
-                  streamedFindingCount,
-                  batchResult.issues[batchResult.issues.length - 1]?.file,
-                )
-                .catch((err) => {
-                  logger.warn(
-                    `Failed to post streaming progress: ${err instanceof Error ? err.message : String(err)}`,
-                  );
-                });
-            }
-          : undefined,
-        { forceReview: options?.forceReview ?? false },
-      );
+            : undefined,
+          { forceReview: options?.forceReview ?? false },
+        );
+      };
+      const decision = await runWithConcurrencyLimit(runReview, reviewLabel);
+
+      // The global concurrency limit is exhausted. Do not block the webhook:
+      // post a short "busy" notice so the PR is not silently skipped, and let
+      // the next /review (or a re-delivered event) run it.
+      if (!decision.acquired) {
+        try {
+          await gh.postOrUpdateComment(
+            prNumber,
+            REVIEW_IN_PROGRESS_MARKER,
+            '⏳ **Another review is already running — this PR is queued.** Re-trigger with `/review` shortly.',
+          );
+        } catch (err) {
+          logger.warn(
+            `Failed to post busy comment: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        logger.warn(`Skipped ${reviewLabel} — global concurrency limit reached`);
+        return null;
+      }
+      result = reviewResult as ReviewResult;
     } catch (err) {
       logger.error(
         `Review engine failed for PR #${prNumber}: ${err instanceof Error ? err.message : err}`,
