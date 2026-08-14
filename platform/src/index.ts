@@ -12,6 +12,8 @@ import { buildPlatformConfig } from './config.js';
 import { connectPlatformDb } from './db/client.js';
 import type { PlatformDb } from './db/client.js';
 import { TaskQueue } from './queue/manager.js';
+import { startWorker } from './queue/worker.js';
+import type { PlatformWorkerHandle } from './queue/worker.js';
 import { createPlatformServer } from './server.js';
 import { createWebhookHandler } from './webhooks.js';
 
@@ -29,6 +31,7 @@ export async function startPlatform(): Promise<{
   server: Server;
   db: PlatformDb | null;
   queue: TaskQueue | null;
+  worker: PlatformWorkerHandle | null;
 }> {
   const config = buildPlatformConfig();
 
@@ -46,6 +49,7 @@ export async function startPlatform(): Promise<{
   // BullMQ queue + Redis connection when configured.
   let queue: TaskQueue | null = null;
   let redis: Redis | null = null;
+  let worker: PlatformWorkerHandle | null = null;
   if (config.redisUrl) {
     redis = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
     // Without an error listener, an unhandled 'error' event on the Redis
@@ -58,6 +62,24 @@ export async function startPlatform(): Promise<{
     });
     queue = new TaskQueue(redis);
     logger.info('Task queue connected');
+
+    // Start the worker only when we have a queue, DB, and token to act on.
+    if (config.githubToken && db) {
+      worker = startWorker({
+        connection: redis,
+        db,
+        workspaceDir: config.workspaceDir,
+        githubToken: config.githubToken,
+        concurrency: Math.max(1, Number.parseInt(process.env.MAX_CONCURRENT_RUNS ?? '1', 10) || 1),
+      });
+      logger.info('Worker started');
+    } else {
+      logger.warn(
+        config.githubToken
+          ? 'DATABASE_URL not set — worker not started; jobs will queue'
+          : 'GITHUB_TOKEN not set — worker not started; jobs will queue',
+      );
+    }
   } else {
     logger.warn('REDIS_URL not set — running without a task queue');
   }
@@ -65,6 +87,8 @@ export async function startPlatform(): Promise<{
   const app = createPlatformServer(config, {
     databaseOk: () => (db ? db.ping() : true),
     queueOk: () => (queue ? redis?.status === 'ready' : true),
+    db: db ?? undefined,
+    queue,
     webhookHandler: db && queue ? createWebhookHandler(db, queue, config.webhookSecret) : undefined,
   });
 
@@ -80,12 +104,19 @@ export async function startPlatform(): Promise<{
     });
   });
 
-  return { server, db, queue };
+  return { server, db, queue, worker };
 }
 
 // Only auto-start when run directly (not when imported by tests).
 if (require.main === module) {
-  let started: { server: Server; db: PlatformDb | null; queue: TaskQueue | null } | undefined;
+  let started:
+    | {
+        server: Server;
+        db: PlatformDb | null;
+        queue: TaskQueue | null;
+        worker: PlatformWorkerHandle | null;
+      }
+    | undefined;
   startPlatform()
     .then((handle) => {
       started = handle;
@@ -95,11 +126,12 @@ if (require.main === module) {
       process.exit(1);
     });
 
-  // Graceful shutdown: close the queue and DB pool, then exit on SIGTERM/SIGINT.
+  // Graceful shutdown: close the worker, queue, and DB pool, then exit.
   const shutdown = (signal: string): void => {
     logger.info(`Received ${signal} — shutting down`);
     started?.server.close(() => {
       Promise.allSettled([
+        started?.worker?.close() ?? Promise.resolve(),
         started?.queue?.close() ?? Promise.resolve(),
         started?.db?.close() ?? Promise.resolve(),
       ])

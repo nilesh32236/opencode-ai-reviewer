@@ -22,6 +22,7 @@ export type DbRow = Record<string, unknown>;
 export interface TaskRow extends Record<string, unknown> {
   id: string;
   repo_id: string | null;
+  repo: string | null;
   type: string;
   status: string;
   priority: number;

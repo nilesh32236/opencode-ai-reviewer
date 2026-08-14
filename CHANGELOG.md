@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.12.1] — 2026-08-14
+
+
+### Fixed
+
+- subagent review dispatch guard + platform probe timer leak (#394) (#394)
+
+### Changed
+
+- feat(platform): BullMQ worker running lib ReviewEngine (Chunk 6) (#398) (#398)
+- feat(platform): REST API + SSE events + tasks.repo column (Chunk 7) (#399) (#399)
+- feat(platform): BullMQ task queue + workspace manager (Chunk 4) (#396) (#396)
+- feat(app): global concurrency limit + repo allowlist for heavy runs (#393) (#393)
+
+[v1.12.1]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.12.0...v1.12.1
+
 ## [v1.12.0] — 2026-08-13
 
 ### Added
