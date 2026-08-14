@@ -4,6 +4,7 @@
  * queue, webhook receiver, and dashboard are added in later chunks.
  */
 
+import path from 'node:path';
 import { Logger } from '@opencode-pr-agent/lib';
 import type { Request, Response } from 'express';
 import express from 'express';
@@ -87,6 +88,8 @@ export async function runProbe(
  * @param deps.db - Optional platform database handle; when present the
  * dashboard REST API + SSE event routes are mounted under /api.
  * @param deps.queue - Optional task queue used by the /api/tasks routes.
+ * @param deps.dashboardDir - Optional directory of the built dashboard
+ * (platform/web/dist); served under /dashboard with an SPA fallback.
  * @returns The configured Express application.
  */
 export function createPlatformServer(
@@ -97,6 +100,7 @@ export function createPlatformServer(
     webhookHandler?: (req: Request, res: Response) => Promise<void>;
     db?: PlatformDb;
     queue?: TaskQueue | null;
+    dashboardDir?: string;
   } = {},
 ): express.Express {
   const app = express();
@@ -118,6 +122,20 @@ export function createPlatformServer(
   if (deps.db) {
     app.use('/api', createApiRouter(deps.db, deps.queue ?? null));
     app.use('/api', createEventsRouter(deps.db));
+  }
+
+  // Serve the built dashboard (platform/web/dist) when present. Assets are
+  // served under /dashboard with an SPA fallback to index.html. Express 5 /
+  // path-to-regexp requires a named wildcard (not bare `*`).
+  if (deps.dashboardDir) {
+    const dashboard = express.static(deps.dashboardDir, { maxAge: '1h' });
+    app.use('/dashboard', dashboard);
+    app.get('/dashboard/*path', (_req, res) => {
+      res.sendFile(path.join(deps.dashboardDir as string, 'index.html'));
+    });
+    app.get('/dashboard', (_req, res) => {
+      res.sendFile(path.join(deps.dashboardDir as string, 'index.html'));
+    });
   }
 
   app.get('/health', async (_req: Request, res: Response) => {

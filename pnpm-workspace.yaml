@@ -4,6 +4,7 @@ packages:
   - app
   - cli
   - platform
+  - platform/web
 
 onlyBuiltDependencies:
   - '@biomejs/biome'

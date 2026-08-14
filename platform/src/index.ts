@@ -5,7 +5,9 @@
  * creates the BullMQ queue and mounts the GitHub webhook receiver.
  */
 
+import { existsSync } from 'node:fs';
 import type { Server } from 'node:http';
+import path from 'node:path';
 import { Logger } from '@opencode-pr-agent/lib';
 import { Redis } from 'ioredis';
 import { buildPlatformConfig } from './config.js';
@@ -90,6 +92,13 @@ export async function startPlatform(): Promise<{
     db: db ?? undefined,
     queue,
     webhookHandler: db && queue ? createWebhookHandler(db, queue, config.webhookSecret) : undefined,
+    // Serve the built dashboard (platform/web/dist) when present. Defaults to
+    // the bundled copy next to the compiled output; override via DASHBOARD_DIR.
+    dashboardDir:
+      process.env.DASHBOARD_DIR ??
+      (existsSync(path.join(process.cwd(), 'platform', 'web', 'dist'))
+        ? path.join(process.cwd(), 'platform', 'web', 'dist')
+        : undefined),
   });
 
   const server = app.listen(config.port);
