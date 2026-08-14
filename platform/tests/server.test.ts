@@ -1,5 +1,5 @@
 import { Logger } from '@opencode-pr-agent/lib';
-import type { Express } from 'express';
+import type { Express, Request } from 'express';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildPlatformConfig } from '../src/config.js';
@@ -151,5 +151,37 @@ describe('platform server', () => {
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.version).toBe(PLATFORM_VERSION);
+  });
+
+  it('mounts the webhook route with raw body parsing before JSON middleware', async () => {
+    // The webhook handler must receive the raw Buffer body so HMAC verification
+    // sees the exact bytes GitHub signed — express.json() must not consume it.
+    let receivedBody: unknown;
+    let receivedHeaders: Record<string, string | undefined> = {};
+    const webhookApp = createPlatformServer(buildPlatformConfig({ PORT: '8080' }), {
+      webhookHandler: async (req, res) => {
+        receivedBody = (req as Request & { body: unknown }).body;
+        receivedHeaders = {
+          event: req.header('x-github-event'),
+          delivery: req.header('x-github-delivery'),
+        };
+        res.status(200).json({ ok: true });
+      },
+    });
+    const payload = JSON.stringify({ action: 'opened', repository: { full_name: 'a/b' } });
+    const res = await request(webhookApp)
+      .post('/webhooks/github')
+      .set('Content-Type', 'application/json')
+      .set('X-GitHub-Event', 'pull_request')
+      .set('X-GitHub-Delivery', 'del-xyz')
+      .send(payload);
+
+    expect(res.status).toBe(200);
+    // express.raw() produces a Buffer; if express.json() ran first it would be
+    // a plain object and this assertion would fail.
+    expect(Buffer.isBuffer(receivedBody)).toBe(true);
+    expect((receivedBody as Buffer).toString('utf-8')).toBe(payload);
+    expect(receivedHeaders.event).toBe('pull_request');
+    expect(receivedHeaders.delivery).toBe('del-xyz');
   });
 });

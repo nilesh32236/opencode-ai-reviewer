@@ -1,28 +1,38 @@
 /**
  * Platform server entry point. Boots the HTTP server and, when DATABASE_URL is
  * configured, connects to PostgreSQL and applies pending migrations so the
- * queue/worker (later chunks) can persist tasks. The webhook receiver and
- * worker are added in later chunks.
+ * queue/worker (later chunks) can persist tasks. When REDIS_URL is configured,
+ * creates the BullMQ queue and mounts the GitHub webhook receiver.
  */
 
 import type { Server } from 'node:http';
 import { Logger } from '@opencode-pr-agent/lib';
+import { Redis } from 'ioredis';
 import { buildPlatformConfig } from './config.js';
 import { connectPlatformDb } from './db/client.js';
 import type { PlatformDb } from './db/client.js';
+import { TaskQueue } from './queue/manager.js';
+import { startWorker } from './queue/worker.js';
+import type { PlatformWorkerHandle } from './queue/worker.js';
 import { createPlatformServer } from './server.js';
+import { createWebhookHandler } from './webhooks.js';
 
 const logger = new Logger('Platform');
 
 /**
  * Start the platform server. Connects to PostgreSQL (and applies migrations)
- * when DATABASE_URL is set, then boots the HTTP server with live database and
- * queue probes. Resolves once the HTTP server is listening, and rejects when
- * port binding fails (e.g. EADDRINUSE) or the database cannot be reached.
- * @returns A handle exposing `server` (the Node http.Server) and the DB handle
- * (for graceful shutdown).
+ * when DATABASE_URL is set, creates the BullMQ queue when REDIS_URL is set,
+ * and mounts the webhook receiver. Resolves once the HTTP server is listening,
+ * and rejects when port binding fails or the database cannot be reached.
+ * @returns A handle exposing `server`, the DB handle, and the queue (for
+ * graceful shutdown).
  */
-export async function startPlatform(): Promise<{ server: Server; db: PlatformDb | null }> {
+export async function startPlatform(): Promise<{
+  server: Server;
+  db: PlatformDb | null;
+  queue: TaskQueue | null;
+  worker: PlatformWorkerHandle | null;
+}> {
   const config = buildPlatformConfig();
 
   // Connect to Postgres and apply migrations when configured. The DB is
@@ -30,21 +40,56 @@ export async function startPlatform(): Promise<{ server: Server; db: PlatformDb 
   // set; when configured, a failure to reach/migrate it is fatal.
   let db: PlatformDb | null = null;
   if (config.databaseUrl) {
-    db = await connectPlatformDb(
-      config.databaseUrl,
-      // The migrations dir defaults to the bundled dist/db/migrations, but the
-      // callers may override via env (e.g. a volume-mounted copy in prod).
-      process.env.PLATFORM_MIGRATIONS_DIR,
-    );
+    db = await connectPlatformDb(config.databaseUrl, process.env.PLATFORM_MIGRATIONS_DIR);
     logger.info('PostgreSQL connected and migrations applied');
   } else {
     logger.warn('DATABASE_URL not set — running without task persistence');
   }
 
+  // BullMQ queue + Redis connection when configured.
+  let queue: TaskQueue | null = null;
+  let redis: Redis | null = null;
+  let worker: PlatformWorkerHandle | null = null;
+  if (config.redisUrl) {
+    redis = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
+    // Without an error listener, an unhandled 'error' event on the Redis
+    // connection crashes the whole process when Redis is unreachable. Log and
+    // degrade (the queue reports unavailable via /health) instead.
+    redis.on('error', (err) => {
+      logger.warn(
+        `Redis error (queue unavailable): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+    queue = new TaskQueue(redis);
+    logger.info('Task queue connected');
+
+    // Start the worker only when we have a queue, DB, and token to act on.
+    if (config.githubToken && db) {
+      worker = startWorker({
+        connection: redis,
+        db,
+        workspaceDir: config.workspaceDir,
+        githubToken: config.githubToken,
+        concurrency: Math.max(1, Number.parseInt(process.env.MAX_CONCURRENT_RUNS ?? '1', 10) || 1),
+      });
+      logger.info('Worker started');
+    } else {
+      logger.warn(
+        config.githubToken
+          ? 'DATABASE_URL not set — worker not started; jobs will queue'
+          : 'GITHUB_TOKEN not set — worker not started; jobs will queue',
+      );
+    }
+  } else {
+    logger.warn('REDIS_URL not set — running without a task queue');
+  }
+
   const app = createPlatformServer(config, {
     databaseOk: () => (db ? db.ping() : true),
-    // Queue probe comes with the BullMQ worker (Chunk 4); until then report ok.
-    queueOk: () => Promise.resolve(true),
+    queueOk: () => (queue ? redis?.status === 'ready' : true),
+    db: db ?? undefined,
+    queue,
+    webhookHandler: db && queue ? createWebhookHandler(db, queue, config.webhookSecret) : undefined,
   });
 
   const server = app.listen(config.port);
@@ -59,12 +104,19 @@ export async function startPlatform(): Promise<{ server: Server; db: PlatformDb 
     });
   });
 
-  return { server, db };
+  return { server, db, queue, worker };
 }
 
 // Only auto-start when run directly (not when imported by tests).
 if (require.main === module) {
-  let started: { server: Server; db: PlatformDb | null } | undefined;
+  let started:
+    | {
+        server: Server;
+        db: PlatformDb | null;
+        queue: TaskQueue | null;
+        worker: PlatformWorkerHandle | null;
+      }
+    | undefined;
   startPlatform()
     .then((handle) => {
       started = handle;
@@ -74,15 +126,18 @@ if (require.main === module) {
       process.exit(1);
     });
 
-  // Graceful shutdown: close the DB pool and exit on SIGTERM/SIGINT.
+  // Graceful shutdown: close the worker, queue, and DB pool, then exit.
   const shutdown = (signal: string): void => {
     logger.info(`Received ${signal} — shutting down`);
     started?.server.close(() => {
-      started?.db
-        ?.close()
+      Promise.allSettled([
+        started?.worker?.close() ?? Promise.resolve(),
+        started?.queue?.close() ?? Promise.resolve(),
+        started?.db?.close() ?? Promise.resolve(),
+      ])
         .catch((err) => {
           logger.warn(
-            `DB close failed during shutdown: ${err instanceof Error ? err.message : String(err)}`,
+            `Shutdown cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
           );
         })
         .finally(() => process.exit(0));

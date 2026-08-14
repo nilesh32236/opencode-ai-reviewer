@@ -8,6 +8,10 @@ import { Logger } from '@opencode-pr-agent/lib';
 import type { Request, Response } from 'express';
 import express from 'express';
 import type { PlatformConfig } from './config.js';
+import type { PlatformDb } from './db/client.js';
+import type { TaskQueue } from './queue/manager.js';
+import { createApiRouter } from './routes/api.js';
+import { createEventsRouter } from './routes/events.js';
 import { PLATFORM_VERSION } from './version.js';
 
 /** Per-component health probe results. */
@@ -78,6 +82,11 @@ export async function runProbe(
  * PostgreSQL database is reachable.
  * @param deps.queueOk - Optional async check that returns whether the task
  * queue (Redis) is reachable.
+ * @param deps.webhookHandler - Optional webhook route handler mounted at
+ * POST /webhooks/github with raw-body parsing (HMAC needs the exact bytes).
+ * @param deps.db - Optional platform database handle; when present the
+ * dashboard REST API + SSE event routes are mounted under /api.
+ * @param deps.queue - Optional task queue used by the /api/tasks routes.
  * @returns The configured Express application.
  */
 export function createPlatformServer(
@@ -85,13 +94,31 @@ export function createPlatformServer(
   deps: {
     databaseOk?: () => Promise<boolean> | boolean;
     queueOk?: () => Promise<boolean> | boolean;
+    webhookHandler?: (req: Request, res: Response) => Promise<void>;
+    db?: PlatformDb;
+    queue?: TaskQueue | null;
   } = {},
 ): express.Express {
   const app = express();
   const logger = new Logger('PlatformServer');
 
   app.disable('x-powered-by');
+
+  // Mount the webhook route BEFORE the global express.json() middleware:
+  // HMAC verification needs the exact raw bytes GitHub signed, and once
+  // express.json() consumes the body it is no longer available as a Buffer.
+  if (deps.webhookHandler) {
+    app.post('/webhooks/github', express.raw({ type: '*/*', limit: '10mb' }), deps.webhookHandler);
+  }
+
+  // JSON for the API/health routes.
   app.use(express.json({ limit: '1mb' }));
+
+  // Dashboard REST API + SSE events (mounted when a DB is available).
+  if (deps.db) {
+    app.use('/api', createApiRouter(deps.db, deps.queue ?? null));
+    app.use('/api', createEventsRouter(deps.db));
+  }
 
   app.get('/health', async (_req: Request, res: Response) => {
     const components: HealthComponent[] = [];
