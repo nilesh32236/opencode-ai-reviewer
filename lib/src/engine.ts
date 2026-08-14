@@ -1163,6 +1163,7 @@ export class ReviewEngine {
 
         // Deduplicate against linter findings
         let finalResult = parsed;
+
         if (linterResults.length > 0) {
           const deduped = this.deduplicateAgainstLinters(parsed.issues, linterResults, workDir);
           if (deduped.length < parsed.issues.length) {
@@ -1828,6 +1829,40 @@ export class ReviewEngine {
         verdict: {
           ready: false,
           reasoning: 'Review output could not be parsed',
+          autoFixable: false,
+          confidence: 'medium',
+        },
+        summary: 'No issues found',
+      };
+    }
+
+    // Dispatch-coverage guard: a successful orchestrator run that produced
+    // nothing substantive (no issues, no strengths, no verdict reasoning, no
+    // summary) means the primary agent almost certainly failed to dispatch the
+    // review subagents (or short-circuited). A genuinely clean PR still yields
+    // a verdict reasoning + executive summary, so this only catches the
+    // silent-zero case — never a real "no issues found".
+    const producedNothing =
+      result.issues.length === 0 &&
+      result.strengths.length === 0 &&
+      !result.verdict.reasoning?.trim() &&
+      !result.summary?.trim();
+    if (producedNothing) {
+      this.logger.warn(
+        'Subagent orchestrator produced no substantive output — treating as failed review',
+      );
+      result = {
+        ...this.buildAgentFallbackResult(
+          [],
+          [],
+          [],
+          0,
+          'All review agents failed',
+          categories.length,
+        ),
+        verdict: {
+          ready: false,
+          reasoning: 'All review agents failed',
           autoFixable: false,
           confidence: 'medium',
         },

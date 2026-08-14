@@ -1034,6 +1034,26 @@ describe('ReviewEngine', () => {
         expect(result.issues[0].message).toBe('SQL injection');
       });
 
+      it('treats a run with no substantive output as a failed review (dispatch guard)', async () => {
+        const eng = makeMultiAgentEngine();
+        mockRunOpenCode.mockResolvedValue({
+          success: true,
+          output: '',
+          durationMs: 500,
+          tokensUsed: 10,
+        });
+        // A parseable but completely empty result (no issues, strengths,
+        // summary, or verdict reasoning) means the orchestrator likely failed
+        // to dispatch the subagents — never report it as a clean review.
+        mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+        const result = await eng.reviewPR(agentPr);
+
+        expect(result.verdict.ready).toBe(false);
+        expect(result.verdict.reasoning).toBe('All review agents failed');
+        expect(result.failedAgents).toBe(1);
+      });
+
       it('forwards open human-thread context into the orchestrator prompt', async () => {
         const eng = makeMultiAgentEngine();
         vi.mocked(mockAdapter.getOpenHumanThreads).mockResolvedValue(

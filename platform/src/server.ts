@@ -46,11 +46,16 @@ async function runProbe(
   logger: Logger,
 ): Promise<boolean> {
   if (!probe) return true;
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<boolean>((resolve) => {
-    setTimeout(() => resolve(false), PROBE_TIMEOUT_MS);
+    timeoutHandle = setTimeout(() => resolve(false), PROBE_TIMEOUT_MS);
   });
   try {
-    return await Promise.race([Promise.resolve(probe()), timeout]);
+    const ok = await Promise.race([Promise.resolve(probe()), timeout]);
+    // The probe won the race — clear the timeout timer so it does not fire
+    // later (a probe that succeeds is far more common than one that hangs).
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+    return ok;
   } catch (err) {
     logger.error(
       `Health check ${name} failure: ${err instanceof Error ? err.message : String(err)}`,
