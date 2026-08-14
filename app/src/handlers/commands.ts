@@ -29,8 +29,14 @@ import {
   validateRefName,
 } from '@opencode-pr-agent/lib';
 import { isBotLogin } from '../utils/bot.js';
+import { runWithConcurrencyLimit } from '../utils/concurrency.js';
 import { execGit } from '../utils/git.js';
 import type { ExecGitOptions } from '../utils/git.js';
+import {
+  type RepoFilter,
+  repoFilter as defaultRepoFilter,
+  isRepoAllowed,
+} from '../utils/repo-filter.js';
 import { handleAudit } from './audit.js';
 import { handleAutofixLoop } from './autofix.js';
 import { handleChangelogCommand } from './changelog.js';
@@ -52,6 +58,8 @@ const logger = new Logger('Command');
  * @param signal - Optional abort signal
  * @param eventBus - Optional event bus for publishing pipeline events.
  * @param correlationId - Optional correlation ID for tracing this request.
+ * @param repoFilter - Optional repo allowlist/denylist; defaults to the shared
+ * process-wide filter built from ALLOWED_REPOS / DENIED_REPOS env.
  */
 export async function handleCommand(
   command:
@@ -72,8 +80,18 @@ export async function handleCommand(
   signal?: AbortSignal,
   eventBus?: EventBus,
   correlationId?: string,
+  repoFilter?: RepoFilter,
 ): Promise<void> {
   const logger = new Logger('Command', { repo, prNumber: issueNumber, correlationId });
+
+  // Repository allowlist/denylist gate: never run slash-command workloads on
+  // repos the operator excluded. Opt-in via ALLOWED_REPOS / DENIED_REPOS env.
+  const effectiveRepoFilter = repoFilter ?? defaultRepoFilter;
+  if (!isRepoAllowed(repo, effectiveRepoFilter)) {
+    logger.info(`Skipping /${command} — repository ${repo} is filtered out`);
+    return;
+  }
+
   const gh: PlatformAdapter =
     config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
 
@@ -123,90 +141,103 @@ export async function handleCommand(
 
     if (signal?.aborted) return;
 
-    switch (command) {
-      case 'analyze': {
-        await handleAnalyzeCommand(
+    // Global concurrency gate: reviews/fixes/audits each spawn a heavy
+    // `opencode` subprocess. The semaphore caps how many run simultaneously
+    // across ALL repos/PRs so a busy instance never oversubscribes CPU/RAM.
+    // A command that cannot get a slot within the wait window is skipped
+    // (logged + a short "busy" notice) rather than blocking the webhook.
+    const commandLabel = `/${command} ${repo}#${issueNumber}`;
+    let executed = false;
+    await runWithConcurrencyLimit(async () => {
+      executed = true;
+      await dispatchCommand();
+    }, commandLabel);
+    if (!executed) {
+      logger.warn(`Skipped ${commandLabel} — global concurrency limit reached`);
+      try {
+        await gh.postOrUpdateComment(
           issueNumber,
-          repo,
-          token,
-          config,
-          tempDir,
-          eventBus,
-          correlationId,
+          '<!-- command-busy -->',
+          '⏳ **Another run is already active — this command is queued.** Re-trigger with `/review` shortly.',
         );
-        break;
-      }
-
-      case 'explain': {
-        await handleExplainCommand(
-          issueNumber,
-          repo,
-          token,
-          config,
-          tempDir,
-          eventBus,
-          correlationId,
+      } catch (err) {
+        logger.warn(
+          `Failed to post busy comment: ${err instanceof Error ? err.message : String(err)}`,
         );
-        break;
       }
+      return;
+    }
 
-      case 'describe': {
-        if (!(await gh.isMR(issueNumber))) {
-          logger.info(`Ignoring /describe on #${issueNumber}: not a pull request`);
-          break;
-        }
-        await handleDescribeCommand(
-          issueNumber,
-          repo,
-          token,
-          config,
-          tempDir,
-          eventBus,
-          correlationId,
-        );
-        break;
-      }
-
-      case 'review': {
-        if (await gh.isMR(issueNumber)) {
-          await handlePRReview(
+    async function dispatchCommand(): Promise<void> {
+      switch (command) {
+        case 'analyze': {
+          await handleAnalyzeCommand(
             issueNumber,
             repo,
             token,
             config,
-            undefined,
             tempDir,
-            undefined,
             eventBus,
             correlationId,
-            { forceReview: true },
           );
+          break;
         }
-        break;
-      }
 
-      case 'fix': {
-        if (signal?.aborted) return;
-        const force = parsed?.flags?.force === true;
-        const isPR = await gh.isMR(issueNumber);
-        if (isPR) {
-          await handleAutofixLoop({
-            prNumber: issueNumber,
+        case 'explain': {
+          await handleExplainCommand(
+            issueNumber,
             repo,
             token,
             config,
             tempDir,
-            initialGitEnv: gitEnv,
-            signal,
             eventBus,
             correlationId,
-          });
-        } else {
-          const issue = await gh.getIssue(issueNumber);
-          const existingPR = await findExistingAutofixPR(issueNumber, issue);
-          if (existingPR) {
+          );
+          break;
+        }
+
+        case 'describe': {
+          if (!(await gh.isMR(issueNumber))) {
+            logger.info(`Ignoring /describe on #${issueNumber}: not a pull request`);
+            break;
+          }
+          await handleDescribeCommand(
+            issueNumber,
+            repo,
+            token,
+            config,
+            tempDir,
+            eventBus,
+            correlationId,
+          );
+          break;
+        }
+
+        case 'review': {
+          if (await gh.isMR(issueNumber)) {
+            await handlePRReview(
+              issueNumber,
+              repo,
+              token,
+              config,
+              undefined,
+              tempDir,
+              undefined,
+              eventBus,
+              correlationId,
+              { forceReview: true },
+            );
+          }
+          break;
+        }
+
+        case 'fix': {
+          if (signal?.aborted) return;
+          const force = parsed?.flags?.force === true;
+          const isPR = await gh.isMR(issueNumber);
+          if (isPR) {
             await handleAutofixLoop({
-              prNumber: existingPR,
+              prNumber: issueNumber,
               repo,
               token,
               config,
@@ -217,22 +248,11 @@ export async function handleCommand(
               correlationId,
             });
           } else {
-            const newPR = await createAutofixPR(
-              gh,
-              issueNumber,
-              repo,
-              config,
-              tempDir,
-              gitEnv,
-              signal,
-              force,
-              eventBus,
-              correlationId,
-              issue,
-            );
-            if (newPR) {
+            const issue = await gh.getIssue(issueNumber);
+            const existingPR = await findExistingAutofixPR(issueNumber, issue);
+            if (existingPR) {
               await handleAutofixLoop({
-                prNumber: newPR,
+                prNumber: existingPR,
                 repo,
                 token,
                 config,
@@ -242,56 +262,83 @@ export async function handleCommand(
                 eventBus,
                 correlationId,
               });
+            } else {
+              const newPR = await createAutofixPR(
+                gh,
+                issueNumber,
+                repo,
+                config,
+                tempDir,
+                gitEnv,
+                signal,
+                force,
+                eventBus,
+                correlationId,
+                issue,
+              );
+              if (newPR) {
+                await handleAutofixLoop({
+                  prNumber: newPR,
+                  repo,
+                  token,
+                  config,
+                  tempDir,
+                  initialGitEnv: gitEnv,
+                  signal,
+                  eventBus,
+                  correlationId,
+                });
+              }
             }
           }
-        }
-        break;
-      }
-
-      case 'audit': {
-        await handleAudit(
-          repo,
-          token,
-          config,
-          undefined,
-          undefined,
-          tempDir,
-          undefined,
-          issueNumber,
-          eventBus,
-          correlationId,
-        );
-        break;
-      }
-
-      case 'docs': {
-        if (!(await gh.isMR(issueNumber))) {
-          logger.info(`Ignoring /docs on #${issueNumber}: not a pull request`);
           break;
         }
-        await handleDocsCommand(
-          gh,
-          issueNumber,
-          repo,
-          config,
-          tempDir,
-          gitEnv,
-          signal,
-          eventBus,
-          correlationId,
-          parsed,
-        );
-        break;
-      }
 
-      case 'setup': {
-        await handleSetup(issueNumber, repo, token, config, tempDir);
-        break;
-      }
+        case 'audit': {
+          await handleAudit(
+            repo,
+            token,
+            config,
+            undefined,
+            undefined,
+            tempDir,
+            undefined,
+            issueNumber,
+            eventBus,
+            correlationId,
+          );
+          break;
+        }
 
-      case 'changelog': {
-        await handleChangelogCommand(gh, issueNumber, repo, config, tempDir, gitEnv, signal);
-        break;
+        case 'docs': {
+          if (!(await gh.isMR(issueNumber))) {
+            logger.info(`Ignoring /docs on #${issueNumber}: not a pull request`);
+            break;
+          }
+          await handleDocsCommand(
+            gh,
+            issueNumber,
+            repo,
+            config,
+            tempDir,
+            gitEnv,
+            signal,
+            eventBus,
+            correlationId,
+            parsed,
+          );
+          break;
+        }
+
+        case 'setup': {
+          await handleSetup(issueNumber, repo, token, config, tempDir);
+          break;
+        }
+
+        case 'changelog': {
+          await handleChangelogCommand(gh, issueNumber, repo, config, tempDir, gitEnv, signal);
+          break;
+        }
       }
     }
   } catch (err) {
