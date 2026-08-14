@@ -74,8 +74,12 @@ jobs:
           REMOTE_HOST: ${{ secrets.EC2_HOST }}
           REMOTE_USER: ${{ secrets.EC2_USER }}
           TARGET: "/home/${{ secrets.EC2_USER }}/opencode-ai-reviewer"
+          # NOTE: no --delete here. The app deploy uses --delete, but the
+          # platform deploy must never delete server-side .env.platform (which
+          # holds the webhook secret / GitHub token) if the exclude list ever
+          # drifts from the action's delete logic.
           EXCLUDE: "/.git/, /node_modules/, /dist/, /.env, /.env.platform, /*.pem, private-key.pem, /app/lib, /lib/dist, /app/dist, /action/lib"
-          ARGS: "-rlgoDzvc -i --delete"
+          ARGS: "-rlgoDzvc -i"
           SSH_CMD_ARGS: "-o StrictHostKeyChecking=yes -o UserKnownHostsFile=${{ steps.host-key.outputs.path }}"
 
       - name: Build and Restart Platform Containers
@@ -99,12 +103,19 @@ jobs:
             "$EC2_USER@$EC2_HOST" \
             'set -e
             cd "$HOME/opencode-ai-reviewer"
-            # The platform stack reads .env.platform. Copy from the example when
-            # missing so the stack can boot (credentials added separately).
+            # The platform stack reads .env.platform. Recreate from the example
+            # when missing or when required keys are empty (e.g. first deploy),
+            # so the stack can always boot. Real credentials are added on the
+            # server; a missing file must never fail the deploy.
             if [ ! -f .env.platform ]; then
               cp .env.platform.example .env.platform
-              echo "Created .env.platform from example — review the credentials."
+              echo "Created .env.platform from example — add credentials on the server."
             fi
+            # Compose will error if the env file is empty; ensure required
+            # non-secret defaults exist.
+            grep -q "^PORT=" .env.platform || echo "PORT=8080" >> .env.platform
+            grep -q "^REDIS_URL=" .env.platform || echo "REDIS_URL=redis://redis:6379" >> .env.platform
+            grep -q "^DATABASE_URL=" .env.platform || echo "DATABASE_URL=postgres://platform:platform@postgres:5432/platform" >> .env.platform
 
             # Compose v2 plugin (same as the app deploy).
             if ! docker compose version >/dev/null 2>&1; then
