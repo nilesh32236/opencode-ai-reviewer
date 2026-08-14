@@ -1163,7 +1163,6 @@ export class ReviewEngine {
 
         // Deduplicate against linter findings
         let finalResult = parsed;
-
         if (linterResults.length > 0) {
           const deduped = this.deduplicateAgainstLinters(parsed.issues, linterResults, workDir);
           if (deduped.length < parsed.issues.length) {
@@ -1841,15 +1840,17 @@ export class ReviewEngine {
     // summary) means the primary agent almost certainly failed to dispatch the
     // review subagents (or short-circuited). A genuinely clean PR still yields
     // a verdict reasoning + executive summary, so this only catches the
-    // silent-zero case — never a real "no issues found".
+    // silent-zero case — never a real "no issues found". Parsed defensively so
+    // a degenerate result (e.g. missing verdict) degrades to the failed path.
+    const issues = result.issues ?? [];
+    const strengths = result.strengths ?? [];
+    const verdictReasoning = result.verdict?.reasoning?.trim() ?? '';
+    const summary = result.summary?.trim() ?? '';
     const producedNothing =
-      result.issues.length === 0 &&
-      result.strengths.length === 0 &&
-      !result.verdict.reasoning?.trim() &&
-      !result.summary?.trim();
+      issues.length === 0 && strengths.length === 0 && !verdictReasoning && !summary;
     if (producedNothing) {
       this.logger.warn(
-        'Subagent orchestrator produced no substantive output — treating as failed review',
+        `Subagent orchestrator produced no substantive output — treating as failed review (raw lines: ${result.rawLines?.length ?? 0})`,
       );
       result = {
         ...this.buildAgentFallbackResult(
@@ -1866,7 +1867,10 @@ export class ReviewEngine {
           autoFixable: false,
           confidence: 'medium',
         },
-        summary: 'No issues found',
+        // A failed review must not claim "No issues found" — that would
+        // recreate the false-clean signal this guard exists to remove.
+        summary:
+          'The review could not be completed — the review agents failed to produce findings.',
       };
     }
 
