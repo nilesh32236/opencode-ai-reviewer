@@ -14,6 +14,8 @@ export interface TaskJobData {
   repo: string;
   /** Task type. */
   type: PlatformTaskType;
+  /** Optional tasks-table row id linked to this job (set by the enqueue side). */
+  taskId?: string;
   /** GitHub installation id used to mint an installation token. */
   installationId?: number;
   /** PR number (for PR-scoped tasks). */
