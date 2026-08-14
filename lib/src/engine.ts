@@ -178,6 +178,7 @@ export class ReviewEngine {
   private static readonly REVIEW_FAILURE_SENTINELS = new Set<string>([
     'Review execution failed',
     'Failed to parse review output',
+    'Review output could not be parsed',
     'All review agents failed',
     'All review batches failed',
   ]);
@@ -1792,7 +1793,7 @@ export class ReviewEngine {
           autoFixable: false,
           confidence: 'medium',
         },
-        summary: 'No issues found',
+        summary: 'The review could not be completed — the review agents failed.',
       };
       return await this.verifyReviewResult(
         failed,
@@ -1831,7 +1832,7 @@ export class ReviewEngine {
           autoFixable: false,
           confidence: 'medium',
         },
-        summary: 'No issues found',
+        summary: 'The review could not be completed — the review output could not be parsed.',
       };
     }
 
