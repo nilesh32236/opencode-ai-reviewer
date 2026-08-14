@@ -912,6 +912,8 @@ describe('ReviewEngine', () => {
         expect(result.verdict.ready).toBe(false);
         expect(result.verdict.reasoning).toBe('All review agents failed');
         expect(result.failedAgents).toBe(1);
+        // The failed-run summary must not claim "No issues found".
+        expect(result.summary).toContain('could not be completed');
       });
 
       it('degrades to a failed verdict when the consolidated output cannot be parsed', async () => {
@@ -929,6 +931,8 @@ describe('ReviewEngine', () => {
         expect(result.verdict.ready).toBe(false);
         expect(result.verdict.reasoning).toBe('Review output could not be parsed');
         expect(result.failedAgents).toBe(1);
+        // The parse-failure summary must not claim "No issues found".
+        expect(result.summary).toContain('could not be completed');
       });
 
       it('reports no issues when the orchestrator produces a clean verdict', async () => {
@@ -1032,6 +1036,80 @@ describe('ReviewEngine', () => {
 
         expect(result.issues).toHaveLength(1);
         expect(result.issues[0].message).toBe('SQL injection');
+      });
+
+      it('treats a run with no substantive output as a failed review (dispatch guard)', async () => {
+        const eng = makeMultiAgentEngine();
+        mockRunOpenCode.mockResolvedValue({
+          success: true,
+          output: '',
+          durationMs: 500,
+          tokensUsed: 10,
+        });
+        // A parseable but completely empty result (no issues, strengths,
+        // summary, or verdict reasoning) means the orchestrator likely failed
+        // to dispatch the subagents — never report it as a clean review.
+        mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+        const result = await eng.reviewPR(agentPr);
+
+        expect(result.verdict.ready).toBe(false);
+        expect(result.verdict.reasoning).toBe('All review agents failed');
+        expect(result.failedAgents).toBe(1);
+        // The failed-review summary must NOT claim "No issues found".
+        expect(result.summary).toContain('could not be completed');
+      });
+
+      it('does not trip the dispatch guard on a genuinely clean review', async () => {
+        const eng = makeMultiAgentEngine();
+        mockRunOpenCode.mockResolvedValue({
+          success: true,
+          output: '',
+          durationMs: 500,
+          tokensUsed: 10,
+        });
+        // A real clean result carries verdict reasoning + a summary even with
+        // zero issues — the guard must not convert it into a failed review.
+        mockParseJsonlFile.mockResolvedValue({
+          ...mockEmptyResult(),
+          summary: 'No issues found',
+          verdict: {
+            ready: true,
+            reasoning: 'No issues found',
+            autoFixable: false,
+            confidence: 'high',
+          },
+        });
+
+        const result = await eng.reviewPR(agentPr);
+
+        expect(result.verdict.ready).toBe(true);
+        expect(result.verdict.reasoning).toBe('No issues found');
+        expect(result.summary).toBe('No issues found');
+      });
+
+      it('does not trip the dispatch guard when only verdict reasoning is present', async () => {
+        const eng = makeMultiAgentEngine();
+        mockRunOpenCode.mockResolvedValue({
+          success: true,
+          output: '',
+          durationMs: 500,
+          tokensUsed: 10,
+        });
+        mockParseJsonlFile.mockResolvedValue({
+          ...mockEmptyResult(),
+          verdict: {
+            ready: false,
+            reasoning: 'One minor concern found',
+            autoFixable: false,
+            confidence: 'low',
+          },
+        });
+
+        const result = await eng.reviewPR(agentPr);
+
+        expect(result.verdict.reasoning).toBe('One minor concern found');
+        expect(result.verdict.ready).toBe(false);
       });
 
       it('forwards open human-thread context into the orchestrator prompt', async () => {

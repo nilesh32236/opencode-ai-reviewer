@@ -35,27 +35,35 @@ const PROBE_TIMEOUT_MS = 3_000;
  * Run a health probe with a hard timeout, so a hung or flaky dependency
  * cannot stall the liveness endpoint. Uses `Promise.race` against a timer so
  * the bound holds even when the probe ignores cancellation signals.
+ * The timer is always cleared (success, timeout, or thrown probe) so a single
+ * poll never leaks a timeout handle. Exported for unit testing.
  * @param name - Component name (for error logging).
  * @param probe - The probe to run; returns true when the subsystem is healthy.
  * @param logger - Logger for probe failures.
  * @returns True when the probe reported healthy within the timeout.
  */
-async function runProbe(
+export async function runProbe(
   name: string,
   probe: (() => Promise<boolean> | boolean) | undefined,
   logger: Logger,
 ): Promise<boolean> {
   if (!probe) return true;
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<boolean>((resolve) => {
-    setTimeout(() => resolve(false), PROBE_TIMEOUT_MS);
+    timeoutHandle = setTimeout(() => resolve(false), PROBE_TIMEOUT_MS);
   });
   try {
-    return await Promise.race([Promise.resolve(probe()), timeout]);
+    const ok = await Promise.race([Promise.resolve(probe()), timeout]);
+    return ok;
   } catch (err) {
     logger.error(
       `Health check ${name} failure: ${err instanceof Error ? err.message : String(err)}`,
     );
     return false;
+  } finally {
+    // Always clear the timer — whether the probe won, hung, rejected, or threw
+    // synchronously — so a single /health poll never leaks a timeout handle.
+    if (timeoutHandle) clearTimeout(timeoutHandle);
   }
 }
 

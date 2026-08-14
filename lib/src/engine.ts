@@ -178,6 +178,7 @@ export class ReviewEngine {
   private static readonly REVIEW_FAILURE_SENTINELS = new Set<string>([
     'Review execution failed',
     'Failed to parse review output',
+    'Review output could not be parsed',
     'All review agents failed',
     'All review batches failed',
   ]);
@@ -1792,7 +1793,7 @@ export class ReviewEngine {
           autoFixable: false,
           confidence: 'medium',
         },
-        summary: 'No issues found',
+        summary: 'The review could not be completed — the review agents failed.',
       };
       return await this.verifyReviewResult(
         failed,
@@ -1831,7 +1832,46 @@ export class ReviewEngine {
           autoFixable: false,
           confidence: 'medium',
         },
-        summary: 'No issues found',
+        summary: 'The review could not be completed — the review output could not be parsed.',
+      };
+    }
+
+    // Dispatch-coverage guard: a successful orchestrator run that produced
+    // nothing substantive (no issues, no strengths, no verdict reasoning, no
+    // summary) means the primary agent almost certainly failed to dispatch the
+    // review subagents (or short-circuited). A genuinely clean PR still yields
+    // a verdict reasoning + executive summary, so this only catches the
+    // silent-zero case — never a real "no issues found". Parsed defensively so
+    // a degenerate result (e.g. missing verdict) degrades to the failed path.
+    const issues = result.issues ?? [];
+    const strengths = result.strengths ?? [];
+    const verdictReasoning = result.verdict?.reasoning?.trim() ?? '';
+    const summary = result.summary?.trim() ?? '';
+    const producedNothing =
+      issues.length === 0 && strengths.length === 0 && !verdictReasoning && !summary;
+    if (producedNothing) {
+      this.logger.warn(
+        `Subagent orchestrator produced no substantive output — treating as failed review (raw lines: ${result.rawLines?.length ?? 0})`,
+      );
+      result = {
+        ...this.buildAgentFallbackResult(
+          [],
+          [],
+          [],
+          0,
+          'All review agents failed',
+          categories.length,
+        ),
+        verdict: {
+          ready: false,
+          reasoning: 'All review agents failed',
+          autoFixable: false,
+          confidence: 'medium',
+        },
+        // A failed review must not claim "No issues found" — that would
+        // recreate the false-clean signal this guard exists to remove.
+        summary:
+          'The review could not be completed — the review agents failed to produce findings.',
       };
     }
 

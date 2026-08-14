@@ -1,9 +1,52 @@
+import { Logger } from '@opencode-pr-agent/lib';
 import type { Express } from 'express';
 import request from 'supertest';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildPlatformConfig } from '../src/config.js';
-import { createPlatformServer } from '../src/server.js';
+import { createPlatformServer, runProbe } from '../src/server.js';
 import { PLATFORM_VERSION } from '../src/version.js';
+
+describe('runProbe', () => {
+  const logger = new Logger('TestProbe');
+
+  it('returns true for a healthy probe and clears its timeout', async () => {
+    const clearSpy = vi.spyOn(global, 'clearTimeout');
+    const ok = await runProbe('db', () => Promise.resolve(true), logger);
+    expect(ok).toBe(true);
+    expect(clearSpy).toHaveBeenCalled();
+    clearSpy.mockRestore();
+  });
+
+  it('returns false and clears its timeout when the probe hangs', async () => {
+    const clearSpy = vi.spyOn(global, 'clearTimeout');
+    const ok = await runProbe('db', () => new Promise<boolean>(() => {}), logger);
+    expect(ok).toBe(false);
+    expect(clearSpy).toHaveBeenCalled();
+    clearSpy.mockRestore();
+  });
+
+  it('returns false and clears its timeout when the probe throws', async () => {
+    const clearSpy = vi.spyOn(global, 'clearTimeout');
+    const ok = await runProbe(
+      'db',
+      () => {
+        throw new Error('boom');
+      },
+      logger,
+    );
+    expect(ok).toBe(false);
+    expect(clearSpy).toHaveBeenCalled();
+    clearSpy.mockRestore();
+  });
+
+  it('returns true without scheduling a timer when no probe is provided', async () => {
+    const clearSpy = vi.spyOn(global, 'clearTimeout');
+    const ok = await runProbe('db', undefined, logger);
+    expect(ok).toBe(true);
+    expect(clearSpy).not.toHaveBeenCalled();
+    clearSpy.mockRestore();
+  });
+});
 
 describe('platform server', () => {
   let app: Express;
