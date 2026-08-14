@@ -139,15 +139,8 @@ export async function handleWebhook(
     }
   }
 
-  // Dedup: skip deliveries we have already processed.
-  const seen = await db.queryOne<{ id: string }>(
-    'SELECT id FROM webhook_events WHERE delivery_id = $1',
-    [deliveryId],
-  );
-  if (seen) {
-    return { status: 200, message: 'Duplicate delivery ignored' };
-  }
-
+  // Parse the payload up-front so invalid JSON fails fast (400) before any
+  // state is written.
   let payload: Record<string, unknown>;
   try {
     payload = JSON.parse(rawBody.toString('utf-8')) as Record<string, unknown>;
@@ -155,23 +148,29 @@ export async function handleWebhook(
     return { status: 400, message: 'Invalid JSON payload' };
   }
 
+  // Atomic dedup: claim the delivery with an INSERT ... ON CONFLICT DO NOTHING
+  // RETURNING. When no row is returned, another (or earlier) handler already
+  // claimed this delivery, so it is a duplicate — even under concurrency.
   const repo = (payload.repository as Record<string, unknown> | undefined)?.full_name as
     | string
     | undefined;
-
-  // Persist the delivery (best-effort) so redeliveries are deduped even if a
-  // later step fails. Insert conflicts are ignored (concurrent deliveries).
+  let claimed: { id: string } | undefined;
   try {
-    await db.execute(
+    claimed = await db.queryOne<{ id: string }>(
       `INSERT INTO webhook_events (delivery_id, event_type, repo, payload)
        VALUES ($1, $2, $3, $4)
-       ON CONFLICT (delivery_id) DO NOTHING`,
+       ON CONFLICT (delivery_id) DO NOTHING
+       RETURNING id`,
       [deliveryId, eventName, repo ?? 'unknown', JSON.stringify(payload)],
     );
   } catch (err) {
-    logger.warn(
-      `Failed to record webhook delivery ${deliveryId}: ${err instanceof Error ? err.message : String(err)}`,
+    logger.error(
+      `Failed to claim webhook delivery ${deliveryId}: ${err instanceof Error ? err.message : String(err)}`,
     );
+    return { status: 500, message: 'Failed to record delivery' };
+  }
+  if (!claimed) {
+    return { status: 200, message: 'Duplicate delivery ignored' };
   }
 
   if (!TASK_EVENTS.has(eventName)) {
@@ -183,6 +182,10 @@ export async function handleWebhook(
     return { status: 200, message: 'Event does not trigger a task' };
   }
 
+  // Enqueue BEFORE finalizing the claim's "processed" state: if enqueueing
+  // fails we return 500 and leave the delivery unprocessed so GitHub's
+  // redelivery (or a later retry) can try again. The deterministic BullMQ
+  // jobId makes a re-enqueue idempotent (replaces rather than duplicates).
   try {
     await queue.enqueue(task);
   } catch (err) {

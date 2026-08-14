@@ -94,13 +94,16 @@ export function createPlatformServer(
   const logger = new Logger('PlatformServer');
 
   app.disable('x-powered-by');
-  // JSON for the API/health routes; the webhook route is mounted separately
-  // with raw body parsing so HMAC verification sees the exact bytes.
-  app.use(express.json({ limit: '1mb' }));
 
+  // Mount the webhook route BEFORE the global express.json() middleware:
+  // HMAC verification needs the exact raw bytes GitHub signed, and once
+  // express.json() consumes the body it is no longer available as a Buffer.
   if (deps.webhookHandler) {
     app.post('/webhooks/github', express.raw({ type: '*/*', limit: '10mb' }), deps.webhookHandler);
   }
+
+  // JSON for the API/health routes.
+  app.use(express.json({ limit: '1mb' }));
 
   app.get('/health', async (_req: Request, res: Response) => {
     const components: HealthComponent[] = [];
