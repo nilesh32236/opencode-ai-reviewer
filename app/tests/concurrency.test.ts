@@ -63,6 +63,20 @@ describe('runWithConcurrencyLimit', () => {
     expect(nested[0].acquired).toBe(true);
     expect(nested[1].acquired).toBe(true);
   });
+
+  it('releases the slot when the wrapped work throws', async () => {
+    // The try/finally in runWithConcurrencyLimit must release the slot even
+    // when work rejects, or every later run would busy-out until restart.
+    await expect(
+      runWithConcurrencyLimit(async () => {
+        throw new Error('boom');
+      }, 'throwing work'),
+    ).rejects.toThrow('boom');
+
+    // A subsequent call must still be able to acquire the slot.
+    const decision = await runWithConcurrencyLimit(async () => {}, 'after throw');
+    expect(decision.acquired).toBe(true);
+  });
 });
 
 // Helper to acquire the shared semaphore directly so a test can hold the slot.

@@ -96,58 +96,60 @@ export async function handleCommand(
     config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
 
   const tempDir = mkdtempSync(path.join(os.tmpdir(), 'opencode-workspace-'));
+  let gitEnv: Record<string, string> | undefined;
 
   try {
     if (signal?.aborted) return;
 
-    try {
-      await execGit(
-        [
-          'clone',
-          '--depth',
-          '1',
-          `https://x-access-token:${token}@github.com/${repo}.git`,
-          tempDir,
-        ],
-        {
-          timeout: 120_000,
-          ...(signal ? { signal } : {}),
-        },
-      );
-    } catch (err) {
-      logger.error(`Git clone failed for ${repo}: ${err instanceof Error ? err.message : err}`);
-      if (command === 'setup') {
-        // Setup must still produce a diagnostic report even when the repo
-        // cannot be cloned (e.g. missing/read-only token): run the checks
-        // against the empty temp dir so token-independent checks still run.
-        logger.info(
-          `Running setup validation against an empty workspace because ${repo} could not be cloned`,
-        );
-        await handleSetup(issueNumber, repo, token, config, tempDir);
-        return;
-      }
-      throw err;
-    }
-
-    // Configure git identity AFTER cloning so `git config --local` runs inside
-    // a real repository (calling it on an empty temp dir throws and would
-    // leave gitEnv unset, breaking every downstream commit).
-    const gitEnv = configureGit(
-      'opencode-pr-agent[bot]',
-      'opencode-pr-agent[bot]@users.noreply.github.com',
-      token,
-      tempDir,
-    );
-
-    if (signal?.aborted) return;
-
-    // Global concurrency gate: reviews/fixes/audits each spawn a heavy
-    // `opencode` subprocess. The semaphore caps how many run simultaneously
-    // across ALL repos/PRs so a busy instance never oversubscribes CPU/RAM.
-    // A command that cannot get a slot within the wait window is skipped
-    // (logged + a short "busy" notice) rather than blocking the webhook.
+    // Global concurrency gate FIRST (before the expensive clone): reviews,
+    // fixes, and audits each spawn a heavy `opencode` subprocess. The semaphore
+    // caps how many run simultaneously across ALL repos/PRs, and a command that
+    // cannot get a slot within the wait window is skipped (with a notice)
+    // rather than blocking the webhook — so a busy instance never wastes a full
+    // network clone on a run that would be dropped anyway.
     const commandLabel = `/${command} ${repo}#${issueNumber}`;
     const decision = await runWithConcurrencyLimit(async () => {
+      try {
+        await execGit(
+          [
+            'clone',
+            '--depth',
+            '1',
+            `https://x-access-token:${token}@github.com/${repo}.git`,
+            tempDir,
+          ],
+          {
+            timeout: 120_000,
+            ...(signal ? { signal } : {}),
+          },
+        );
+      } catch (err) {
+        logger.error(`Git clone failed for ${repo}: ${err instanceof Error ? err.message : err}`);
+        if (command === 'setup') {
+          // Setup must still produce a diagnostic report even when the repo
+          // cannot be cloned (e.g. missing/read-only token): run the checks
+          // against the empty temp dir so token-independent checks still run.
+          logger.info(
+            `Running setup validation against an empty workspace because ${repo} could not be cloned`,
+          );
+          await handleSetup(issueNumber, repo, token, config, tempDir);
+          return;
+        }
+        throw err;
+      }
+
+      // Configure git identity AFTER cloning so `git config --local` runs
+      // inside a real repository (calling it on an empty temp dir throws and
+      // would leave gitEnv unset, breaking every downstream commit).
+      gitEnv = configureGit(
+        'opencode-pr-agent[bot]',
+        'opencode-pr-agent[bot]@users.noreply.github.com',
+        token,
+        tempDir,
+      );
+
+      if (signal?.aborted) return;
+
       await dispatchCommand();
     }, commandLabel);
     if (!decision.acquired) {
@@ -156,7 +158,7 @@ export async function handleCommand(
         await gh.postOrUpdateComment(
           issueNumber,
           '<!-- command-busy -->',
-          '⏳ **Another run is already active — this command is queued.** Re-trigger with `/review` shortly.',
+          `Another run is in progress — \`/${command}\` was **skipped** (not queued). Please re-run \`/${command}\` once the current run completes.`,
         );
       } catch (err) {
         logger.warn(

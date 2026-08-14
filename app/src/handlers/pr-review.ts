@@ -117,10 +117,29 @@ export async function handlePRReview(
   );
 
   // Repository allowlist/denylist gate: never spend LLM budget on repos the
-  // operator excluded. Opt-in via ALLOWED_REPOS / DENIED_REPOS env.
+  // operator excluded. Opt-in via ALLOWED_REPOS / DENIED_REPOS env. A
+  // command-invoked review (forceReview) on a filtered repo gets a short
+  // notice so the bot doesn't look broken; auto-triggered events stay silent.
   const effectiveRepoFilter = repoFilter ?? defaultRepoFilter;
   if (!isRepoAllowed(repo, effectiveRepoFilter)) {
     logger.info(`Skipping PR #${prNumber} — repository ${repo} is filtered out`);
+    if (options?.forceReview) {
+      const ghNotice: PlatformAdapter =
+        config.platform === 'gitlab'
+          ? new GitLabAdapter(token, repo)
+          : new GitHubHelper(token, repo);
+      try {
+        await ghNotice.postOrUpdateComment(
+          prNumber,
+          '<!-- review-filtered -->',
+          'This repository is not enabled for reviews on this installation.',
+        );
+      } catch (err) {
+        logger.warn(
+          `Failed to post filtered-repo notice: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
     return null;
   }
 
@@ -297,28 +316,30 @@ export async function handlePRReview(
       };
       const decision = await runWithConcurrencyLimit(runReview, reviewLabel);
 
-      // The global concurrency limit is exhausted. Do not block the webhook:
-      // post a short "busy" notice so the PR is not silently skipped, and let
-      // the next /review (or a re-delivered event) run it. Report a neutral
-      // check run so a required check never hangs pending under branch
-      // protection.
+      // The global concurrency limit is exhausted. Do not block the webhook.
+      // Report a neutral check run so a required check never hangs pending
+      // under branch protection. Only a command-invoked review (forceReview)
+      // posts a user-facing notice; auto-triggered events stay silent so the
+      // PR thread is not spammed with "queued" noise nobody can act on.
       if (!decision.acquired) {
-        try {
-          await gh.postOrUpdateComment(
-            prNumber,
-            REVIEW_IN_PROGRESS_MARKER,
-            '⏳ **Another review is already running — this PR is queued.** Re-trigger with `/review` shortly.',
-          );
-        } catch (err) {
-          logger.warn(
-            `Failed to post busy comment: ${err instanceof Error ? err.message : String(err)}`,
-          );
+        if (options?.forceReview) {
+          try {
+            await gh.postOrUpdateComment(
+              prNumber,
+              REVIEW_IN_PROGRESS_MARKER,
+              'Another review is already running — this review was **skipped** (not queued). Re-trigger with `/review` once it completes.',
+            );
+          } catch (err) {
+            logger.warn(
+              `Failed to post busy comment: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
         }
         await reportCheckRun(
           pr.headSha,
           'neutral',
-          'Review queued',
-          'Another review is already running — this PR was queued and not reviewed.',
+          'Review skipped',
+          'Another review was already running — this review was skipped by the global concurrency limit.',
         );
         logger.warn(`Skipped ${reviewLabel} — global concurrency limit reached`);
         return null;
@@ -512,6 +533,18 @@ export async function handlePRReview(
         }, `autofix ${repo}#${prNumber}`);
         if (!fixDecision.acquired) {
           logger.warn(`Skipped autofix ${repo}#${prNumber} — global concurrency limit reached`);
+          // Surface the skipped fix so it is not mistaken for "no fix needed".
+          try {
+            await gh.postOrUpdateComment(
+              prNumber,
+              REVIEW_IN_PROGRESS_MARKER,
+              'The review found auto-fixable issues, but autofix was **skipped** because another run is in progress. Re-trigger with `/fix` once it completes.',
+            );
+          } catch (err) {
+            logger.warn(
+              `Failed to post autofix-skipped notice: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
         }
       } catch (err) {
         logger.error(
