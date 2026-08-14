@@ -9,6 +9,7 @@ import type { PlatformDb, TaskRow } from './client.js';
 /** Fields for creating a new task. */
 export interface CreateTaskInput {
   repoId: string | null;
+  repo?: string | null;
   type: string;
   prNumber?: number | null;
   prTitle?: string | null;
@@ -42,12 +43,13 @@ export interface UpdateTaskInput {
 export async function createTask(db: PlatformDb, input: CreateTaskInput): Promise<TaskRow> {
   const rows = await db.query<TaskRow>(
     `INSERT INTO tasks (
-       repo_id, type, priority, pr_number, pr_title, head_sha,
+       repo_id, repo, type, priority, pr_number, pr_title, head_sha,
        base_branch, head_branch, trigger_source, triggered_by
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      RETURNING *`,
     [
       input.repoId,
+      input.repo ?? null,
       input.type,
       input.priority ?? 0,
       input.prNumber ?? null,

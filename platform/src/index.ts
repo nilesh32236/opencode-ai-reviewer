@@ -87,6 +87,8 @@ export async function startPlatform(): Promise<{
   const app = createPlatformServer(config, {
     databaseOk: () => (db ? db.ping() : true),
     queueOk: () => (queue ? redis?.status === 'ready' : true),
+    db: db ?? undefined,
+    queue,
     webhookHandler: db && queue ? createWebhookHandler(db, queue, config.webhookSecret) : undefined,
   });
 

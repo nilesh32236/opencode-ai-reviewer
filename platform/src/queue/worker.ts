@@ -149,6 +149,7 @@ export function startWorker(options: WorkerOptions): PlatformWorkerHandle {
         if (!taskId) {
           const created = await createTask(db, {
             repoId: null,
+            repo,
             type,
             prNumber: job.data.prNumber ?? null,
             headSha: job.data.headSha ?? null,
