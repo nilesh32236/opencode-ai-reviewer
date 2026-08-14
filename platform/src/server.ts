@@ -25,6 +25,31 @@ export interface HealthComponent {
   detail?: string;
 }
 
+/**
+ * Simple fixed-window in-memory rate limiter (per IP).
+ * @param limit - Maximum requests per IP within the window.
+ * @param windowMs - Window length in milliseconds.
+ * @returns An Express middleware that returns 429 when the limit is exceeded.
+ */
+function makeRateLimiter(limit: number, windowMs: number) {
+  const hits = new Map<string, { count: number; resetAt: number }>();
+  return (req: Request, res: Response, next: () => void): void => {
+    const ip = req.ip ?? 'unknown';
+    const now = Date.now();
+    let entry = hits.get(ip);
+    if (!entry || now > entry.resetAt) {
+      entry = { count: 0, resetAt: now + windowMs };
+      hits.set(ip, entry);
+    }
+    entry.count++;
+    if (entry.count > limit) {
+      res.status(429).json({ error: 'Too many requests' });
+      return;
+    }
+    next();
+  };
+}
+
 /** Health response payload. */
 export interface HealthResponse {
   /** Overall status: 'ok' | 'degraded' | 'error'. */
@@ -126,14 +151,17 @@ export function createPlatformServer(
 
   // Serve the built dashboard (platform/web/dist) when present. Assets are
   // served under /dashboard with an SPA fallback to index.html. Express 5 /
-  // path-to-regexp requires a named wildcard (not bare `*`).
+  // path-to-regexp requires a named wildcard (not bare `*`). The static +
+  // fallback handlers are rate-limited (file system access on public routes)
+  // to bound abuse; express.static already guards against path traversal.
   if (deps.dashboardDir) {
+    const dashboardLimiter = makeRateLimiter(120, 60_000);
     const dashboard = express.static(deps.dashboardDir, { maxAge: '1h' });
-    app.use('/dashboard', dashboard);
-    app.get('/dashboard/*path', (_req, res) => {
+    app.use('/dashboard', dashboardLimiter, dashboard);
+    app.get('/dashboard/*path', dashboardLimiter, (_req, res) => {
       res.sendFile(path.join(deps.dashboardDir as string, 'index.html'));
     });
-    app.get('/dashboard', (_req, res) => {
+    app.get('/dashboard', dashboardLimiter, (_req, res) => {
       res.sendFile(path.join(deps.dashboardDir as string, 'index.html'));
     });
   }
