@@ -21,10 +21,17 @@ set -euo pipefail
 PORT="${1:-8087}"
 COMPOSE="docker compose -f docker/docker-compose.platform.yml"
 ENV_FILE=".env.platform"
-STEP=0
 
 pass() { echo "  ✔ $1"; }
-fail() { echo "  ✘ $1" >&2; exit 1; }
+fail() {
+  echo "  ✘ $1" >&2
+  # Best-effort teardown so a failed run never leaves the stack up.
+  PORT="$PORT" $COMPOSE --env-file "$ENV_FILE" down >/dev/null 2>&1 || true
+  exit 1
+}
+# Also tear down on early exit (Ctrl-C / set -e abort).
+cleanup() { PORT="$PORT" $COMPOSE --env-file "$ENV_FILE" down >/dev/null 2>&1 || true; }
+trap cleanup EXIT
 
 echo "== OpenCode Platform smoke test (port $PORT) =="
 
