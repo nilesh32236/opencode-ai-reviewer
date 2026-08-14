@@ -43,6 +43,21 @@ describe('runWithConcurrencyLimit', () => {
       release();
     }
   });
+
+  it('is reentrant: nested acquisition inside a held slot does not deadlock', async () => {
+    // A delegated call (e.g. /review -> handlePRReview) runs inside a held
+    // slot; a nested runWithConcurrencyLimit must reuse the slot instead of
+    // waiting on itself (which would busy-out after the wait window).
+    const nested: ConcurrencyDecision[] = [];
+    const decision = await runWithConcurrencyLimit(async () => {
+      nested.push(await runWithConcurrencyLimit(async () => {}, 'nested', 200));
+      nested.push(await runWithConcurrencyLimit(async () => {}, 'nested2', 200));
+    }, 'outer');
+    expect(decision.acquired).toBe(true);
+    expect(nested).toHaveLength(2);
+    expect(nested[0].acquired).toBe(true);
+    expect(nested[1].acquired).toBe(true);
+  });
 });
 
 // Helper to acquire the shared semaphore directly so a test can hold the slot.

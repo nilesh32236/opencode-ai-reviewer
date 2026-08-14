@@ -489,15 +489,22 @@ export async function handlePRReview(
         `Review agent confirmed issues are auto-fixable with high confidence. Launching handleAutofixLoop...`,
       );
       try {
-        await handleAutofixLoop({
-          prNumber,
-          repo,
-          token,
-          config,
-          tempDir,
-          eventBus,
-          correlationId,
-        });
+        // The autofix loop also spawns heavy `opencode` subprocesses, so run it
+        // under the same global concurrency limit as the review itself.
+        const fixDecision = await runWithConcurrencyLimit(async () => {
+          await handleAutofixLoop({
+            prNumber,
+            repo,
+            token,
+            config,
+            tempDir,
+            eventBus,
+            correlationId,
+          });
+        }, `autofix ${repo}#${prNumber}`);
+        if (!fixDecision.acquired) {
+          logger.warn(`Skipped autofix ${repo}#${prNumber} — global concurrency limit reached`);
+        }
       } catch (err) {
         logger.error(
           `Autofix loop failed for PR #${prNumber}: ${err instanceof Error ? err.message : err}`,

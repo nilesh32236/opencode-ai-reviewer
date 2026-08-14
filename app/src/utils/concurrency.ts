@@ -11,8 +11,14 @@
  * across ALL repos/PRs. Additional requests wait for a free slot up to a
  * bounded wait, then give up (returning a "busy" outcome) instead of hanging
  * the webhook response forever.
+ *
+ * The semaphore is REENTRANT: a call that runs while the caller already holds
+ * the slot (e.g. `/review` → `handleCommand` → `handlePRReview`) reuses the
+ * held slot instead of acquiring a second one and deadlocking. Reentrancy is
+ * tracked via `AsyncLocalStorage` so it is safe across `await` boundaries.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { Logger } from '@opencode-pr-agent/lib';
 
 const logger = new Logger('ConcurrencyLimiter');
@@ -25,9 +31,22 @@ export interface ConcurrencyDecision {
   reason?: string;
 }
 
+/** Per-async-context slot state used to make acquisition reentrant. */
+interface SlotState {
+  /** Release function for the held slot. */
+  release: () => void;
+}
+
+const slotContext = new AsyncLocalStorage<SlotState>();
+
 /**
  * A simple async semaphore that limits concurrent executions to `limit`.
  * No external dependency — a promise-queue FIFO.
+ *
+ * Acquisition is reentrant per async context: if the current execution chain
+ * already holds a slot (tracked by {@link slotContext}), a nested acquire
+ * returns immediately without taking a second slot, so callers that delegate
+ * (e.g. `/review` → `handlePRReview`) never deadlock themselves.
  */
 export class Semaphore {
   private active = 0;
@@ -43,10 +62,16 @@ export class Semaphore {
   }
 
   /**
-   * Acquire a slot, waiting for one to free up.
+   * Acquire a slot, waiting for one to free up. When the caller already holds
+   * a slot in the current async context, this returns the existing release
+   * (no second slot is taken), making nested use safe.
    * @returns A release function that MUST be called when the work completes.
    */
   async acquire(): Promise<() => void> {
+    const existing = slotContext.getStore();
+    if (existing) {
+      return existing.release;
+    }
     if (this.active < this.limit) {
       this.active++;
       return this.release.bind(this);
@@ -84,8 +109,10 @@ export const runSemaphore = new Semaphore(
  * available it runs immediately; otherwise it waits up to `maxWaitMs` for a
  * slot, and returns a "busy" decision without running when the wait elapses.
  *
- * A slot that is granted after the wait elapses is released immediately, so
- * the semaphore never leaks a slot on the timeout path.
+ * The slot is tracked in an async context so any nested
+ * {@link runWithConcurrencyLimit} call during `work` reuses it instead of
+ * acquiring a second slot. A slot granted after the wait elapses is released
+ * immediately, so the semaphore never leaks a slot on the timeout path.
  *
  * @param work - The heavy task to run while holding the slot.
  * @param label - Descriptive label for logging (e.g. "review nilesh32236/repo#5").
@@ -98,9 +125,16 @@ export async function runWithConcurrencyLimit<T>(
   label: string,
   maxWaitMs = 30_000,
 ): Promise<ConcurrencyDecision> {
+  // Reentrant fast path: the caller already holds the slot in this context.
+  if (slotContext.getStore()) {
+    await work();
+    return { acquired: true };
+  }
+
   const acquirePromise = runSemaphore.acquire();
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<null>((resolve) => {
-    setTimeout(() => resolve(null), maxWaitMs);
+    timeoutHandle = setTimeout(() => resolve(null), maxWaitMs);
   });
   // `acquirePromise.then((r) => r)` unwraps the release function; the race
   // yields either the release function or null (timeout).
@@ -114,9 +148,17 @@ export async function runWithConcurrencyLimit<T>(
     logger.warn(`Busy — skipping ${label}: all slots in use (${maxWaitMs}ms wait elapsed)`);
     return { acquired: false, reason: 'Too many concurrent runs' };
   }
+
+  // Clear the timeout timer once the slot is won so it does not stay alive for
+  // the full wait window on every completed run.
+  if (timeoutHandle) clearTimeout(timeoutHandle);
+
+  const state: SlotState = { release: slot };
   try {
-    await work();
-    return { acquired: true };
+    return await slotContext.run(state, async () => {
+      await work();
+      return { acquired: true };
+    });
   } finally {
     slot();
   }
