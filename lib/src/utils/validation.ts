@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-const VALID_REF_REGEX = /^[a-zA-Z0-9_./-]+$/;
+const VALID_REF_REGEX = /^[a-zA-Z0-9_./@+=!,-]+$/;
 
 export const DEFAULT_ALLOWLIST = ['pnpm', 'npm', 'yarn', 'node'];
 
@@ -32,8 +32,11 @@ export function validateRefName(ref: string): void {
   }
   if (!VALID_REF_REGEX.test(ref)) {
     throw new Error(
-      `Ref name "${ref}" contains invalid characters. Only letters, digits, underscores, dots, slashes, and hyphens are allowed.`,
+      `Ref name "${ref}" contains invalid characters. Only letters, digits, underscores, dots, slashes, hyphens, and certain special characters (@, +, =, !, ,) are allowed.`,
     );
+  }
+  if (ref.includes('..') || ref.includes('@{')) {
+    throw new Error(`Ref name "${ref}" contains invalid sequences (e.g. '..' or '@{').`);
   }
 }
 
