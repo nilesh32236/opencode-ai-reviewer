@@ -117,10 +117,10 @@ export function createPlatformServer(
   const logger = new Logger('PlatformServer');
 
   app.disable('x-powered-by');
-  // Behind the Caddy reverse proxy, which sets X-Forwarded-For. Required for
-  // express-rate-limit to correctly key clients by their real IP instead of
-  // the proxy's, and for correct client IPs in logs. Caddy is the only ingress.
-  app.set('trust proxy', true);
+  // Behind the Caddy reverse proxy, which sets X-Forwarded-For. Trust exactly
+  // one proxy hop (Caddy) so express-rate-limit keys clients by real IP. Using
+  // `true` (trust all) is rejected by express-rate-limit as too permissive.
+  app.set('trust proxy', 1);
 
   // Mount the webhook route BEFORE the global express.json() middleware:
   // HMAC verification needs the exact raw bytes GitHub signed, and once
