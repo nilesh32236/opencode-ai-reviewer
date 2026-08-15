@@ -3,7 +3,7 @@ import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as github from '@actions/github';
 import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
-import { withRetry } from '@opencode-pr-agent/lib';
+import { validateRefName, withRetry } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { sanitize } from './utils.js';
 
@@ -62,6 +62,8 @@ export async function runSelfHeal(
   const defaultBranch = await gh.getDefaultBranch();
 
   try {
+    validateRefName(branchName);
+    validateRefName(defaultBranch);
     await exec.exec('git', ['checkout', '-b', branchName, `origin/${defaultBranch}`]);
   } catch (err) {
     core.warning(
@@ -139,6 +141,7 @@ export async function runSelfHeal(
 
   // Push the branch with retry
   try {
+    validateRefName(branchName);
     await withRetry(() => exec.exec('git', ['push', 'origin', branchName, '--force-with-lease']), {
       maxRetries: 3,
       baseDelayMs: 1000,

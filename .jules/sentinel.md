@@ -7,3 +7,6 @@
 ## 2026-08-09 - Command Injection Fixed in handleDocsCommand
 **Learning:** In `app/src/handlers/commands.ts`, the `handleDocsCommand` used the `pr.headRef` as `baseRef` directly without verifying its structure or character content. This could allow for command injection or argument injection via malicious branch names (e.g. beginning with `-`).
 **Prevention:** Added `validateRefName(pr.headRef)` to explicitly validate the PR's head ref before allowing git operations like `git pull`, `git checkout`, or `git rebase` to execute with it.
+## 2026-08-27 - Command Injection Risk Fixed in self-heal handler
+**Learning:** Found that `branchName` was being pushed to `origin` without validation via `exec.exec('git', ['push', 'origin', branchName, '--force-with-lease'])` in `action/src/self-heal.ts`, and also used during `git checkout`. Although `exec` is mostly safe from shell injection, malicious branch names (e.g. beginning with `-`) could still cause argument injection to git.
+**Prevention:** Added `validateRefName` validations to explicitly validate `branchName` and `defaultBranch` during checkout, and `branchName` before allowing git push operations to execute with it.

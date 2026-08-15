@@ -76,6 +76,10 @@ jobs:
           test -f action/lib/index.js || { echo "action/lib/index.js missing!"; exit 1; }
           echo "Build artifacts verified."
 
+      - name: Ensure action bundle is up to date
+        run: |
+          git diff --exit-code -- action/lib/index.js || { echo "ERROR: action/lib/index.js is out of date. Re-run 'pnpm --filter @opencode-pr-agent/action build' and commit the result."; exit 1; }
+
       - name: Check no duplicate action.yml
         run: |
           DUPES=$(find . -name 'action.yml' -not -path './action.yml' \
