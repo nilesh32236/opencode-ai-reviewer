@@ -29,3 +29,7 @@
 ## 2026-08-12 - Optimize truncateUtf8Bytes allocation overhead
 **Learning:** Found that iterating over strings using `for (const codePoint of text)` allocates iterators and strings inside a loop causing high GC pressure. While Buffer.from(text, "utf8") is still O(N) over the full string for the encode, the per-codepoint iteration and allocations are eliminated and the boundary scan walk-back is O(1). It is much faster to allocate a Buffer from the string, jump to the `maxBytes` length, and walk backwards to the start of the UTF-8 character boundary (checking `(buf[end] & 0xc0) === 0x80`).
 **Action:** Always compute string truncations on a Buffer view directly rather than character by character.
+## 2026-08-16 - Optimize Set allocation in pattern discovery
+**Learning:** Found that `[...new Set(findings.map((f) => f.message).filter(Boolean))]` iterates over the `findings` array multiple times and creates intermediate arrays for mapping and filtering before initializing the Set. This causes unnecessary memory allocations and GC pressure.
+**Action:** Always use a single iteration loop over the original array to populate a Set directly without intermediate map/filter chains.
+**Refs:** `lib/src/pattern-detector/engine.ts:74` (deduplicating messages for clustering).
