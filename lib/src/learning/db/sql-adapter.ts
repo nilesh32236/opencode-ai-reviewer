@@ -125,7 +125,9 @@ export abstract class SqlAdapter implements LearningRepository {
    * and issue real BEGIN/COMMIT; two concurrent callers would interleave —
    * the second BEGIN throws "transaction already in progress" — so all
    * transactions are run behind a promise-chain mutex. better-sqlite3 is
-   * synchronous and never awaits real I/O, so it is unaffected.
+   * synchronous at the statement level, but its transaction() body still
+   * awaits fn() between BEGIN and COMMIT, which yields to the event loop and
+   * can interleave concurrent callers — so it serializes here too.
    * @param fn - The BEGIN/COMMIT-wrapped transaction body to run serially.
    * @returns A promise resolving to the transaction's result once all
    * previously-queued transactions on this adapter have settled.

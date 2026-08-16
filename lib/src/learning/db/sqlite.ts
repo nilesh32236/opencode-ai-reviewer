@@ -93,20 +93,28 @@ export class SqliteAdapter extends SqlAdapter implements DbAdapter {
   }
 
   /**
-   * Execute operations within a transaction.
+   * Execute operations within a transaction, serialized behind a promise-chain
+   * mutex so concurrent callers never interleave BEGIN/COMMIT on the single
+   * shared better-sqlite3 connection. Even though better-sqlite3 is
+   * synchronous, the `await fn()` between BEGIN and COMMIT yields to the event
+   * loop, so two concurrent callers could otherwise issue a second BEGIN
+   * against an open transaction and throw "cannot start a transaction within a
+   * transaction" (or corrupt the BEGIN/COMMIT pairing).
    * @param fn - Async function containing transactional operations.
    * @returns The return value of the transaction function.
    */
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
-    this.db.exec('BEGIN TRANSACTION');
-    try {
-      const res = await fn();
-      this.db.exec('COMMIT');
-      return res;
-    } catch (e) {
-      this.db.exec('ROLLBACK');
-      throw e;
-    }
+    return this.serializeTransaction(async () => {
+      this.db.exec('BEGIN TRANSACTION');
+      try {
+        const res = await fn();
+        this.db.exec('COMMIT');
+        return res;
+      } catch (e) {
+        this.db.exec('ROLLBACK');
+        throw e;
+      }
+    });
   }
 
   /**
