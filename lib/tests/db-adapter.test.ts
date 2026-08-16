@@ -582,6 +582,44 @@ describe('SqliteAdapter', () => {
     expect(findings).toHaveLength(0);
   });
 
+  it('serializes concurrent transactions so BEGIN/COMMIT never interleave', async () => {
+    const [r1, r2] = await Promise.all([
+      adapter.transaction(async () => {
+        await adapter.recordFinding({
+          id: 'c1',
+          prNumber: 1,
+          type: 'issue',
+          severity: 'minor',
+          file: 'a.ts',
+          line: 1,
+          message: 'concurrent-1',
+        });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return 'one';
+      }),
+      adapter.transaction(async () => {
+        await adapter.recordFinding({
+          id: 'c2',
+          prNumber: 1,
+          type: 'issue',
+          severity: 'minor',
+          file: 'a.ts',
+          line: 2,
+          message: 'concurrent-2',
+        });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return 'two';
+      }),
+    ]);
+
+    expect(r1).toBe('one');
+    expect(r2).toBe('two');
+    const findings = await adapter.getFindings();
+    expect(findings.map((f: { message: string }) => f.message)).toEqual(
+      expect.arrayContaining(['concurrent-1', 'concurrent-2']),
+    );
+  });
+
   it('recordPatterns with new patterns sets correct frequency', async () => {
     await adapter.recordPatterns([
       {

@@ -1702,7 +1702,15 @@ export class GitHubHelper implements PlatformAdapter {
           errors?: Array<{ message: string }>;
         };
         if (result.errors) {
-          throw new Error(`GraphQL error: ${result.errors.map((e) => e.message).join(', ')}`);
+          const err = new Error(
+            `GitHub GraphQL error: ${result.errors.map((e) => e.message).join(', ')}`,
+          );
+          // GraphQL application-level errors (e.g. "Could not resolve to a node")
+          // are deterministic and will not recover on retry. Tag them with a
+          // non-retryable 4xx status so withRetry skips them, while HTTP-level
+          // 429/5xx responses above still follow the normal retry policy.
+          (err as Error & { status: number }).status = 422;
+          throw err;
         }
         return result.data as T;
       } finally {

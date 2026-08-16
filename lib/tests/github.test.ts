@@ -2026,4 +2026,20 @@ diff --git a/deleted.ts b/deleted.ts
       });
     });
   });
+
+  describe('graphql error classification', () => {
+    it('tags deterministic GraphQL application errors with a non-retryable status', async () => {
+      fetchMock.mockResolvedValue(
+        mockResponse({
+          status: 200,
+          body: { data: null, errors: [{ message: 'Could not resolve to a node with id X' }] },
+        }),
+      );
+
+      await expect(helper.getReviewThreads(42)).rejects.toMatchObject({
+        status: 422,
+        message: 'GitHub GraphQL error: Could not resolve to a node with id X',
+      });
+    });
+  });
 });
