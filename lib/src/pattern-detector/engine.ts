@@ -70,8 +70,10 @@ export class PatternDetector {
       if (f.message) freqMap.set(f.message, (freqMap.get(f.message) || 0) + 1);
     }
 
-    // Deduplicate messages for clustering to reduce O(N^2) complexity
-    const uniqueMessages = [...new Set(findings.map((f) => f.message).filter(Boolean))];
+    // Deduplicate messages for clustering to reduce O(N^2) complexity.
+    // Build the Set directly from freqMap keys to avoid an additional array iteration
+    // and intermediate array allocations.
+    const uniqueMessages = [...freqMap.keys()];
     if (uniqueMessages.length === 0) return [];
 
     const { maxFindingsToCluster } = this.options;
