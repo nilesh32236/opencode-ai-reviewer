@@ -33,3 +33,7 @@
 **Learning:** Found that `[...new Set(findings.map((f) => f.message).filter(Boolean))]` iterates over the `findings` array multiple times and creates intermediate arrays for mapping and filtering before initializing the Set. This causes unnecessary memory allocations and GC pressure.
 **Action:** Always use a single iteration loop over the original array to populate a Set directly without intermediate map/filter chains.
 **Refs:** `lib/src/pattern-detector/engine.ts:74` (deduplicating messages for clustering).
+## 2026-08-17 - Optimize PatternDetector discoveries sets
+**Learning:** Found that finding file extensions inside `PatternDetector.discover` created unnecessary nested sets and loops over findings. Computing file types alongside frequencies with `Map<string, Set<string>>` reduces `findings.filter` iterations. Found that `[...new Set(clusters.flatMap((c) => c.messages))]` created unneeded allocations by flatMapping an intermediate array, converting it to Set. We can directly iterate over the original clusters to add to the set.
+**Action:** Always combine frequency maps and metadata tracking where feasible, and use single-iteration manual nested loops instead of `flatMap` on sets for efficiency.
+**Refs:** `lib/src/pattern-detector/engine.ts:85` (deduplicating messages for clustering).
