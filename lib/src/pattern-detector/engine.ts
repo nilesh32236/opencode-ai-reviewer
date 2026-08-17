@@ -64,17 +64,27 @@ export class PatternDetector {
     }
     if (findings.length === 0) return [];
 
-    // Count actual frequencies from raw findings
+    // Count actual frequencies and track file types per message
     const freqMap = new Map<string, number>();
-    for (const f of findings) {
-      if (f.message) freqMap.set(f.message, (freqMap.get(f.message) || 0) + 1);
-    }
-
-    // Deduplicate messages for clustering to reduce O(N^2) complexity.
-    // ⚡ Bolt: Use a single Set iteration instead of map/filter to avoid intermediate array allocations.
+    const msgToFileTypes = new Map<string, Set<string>>();
     const uniqueMessagesSet = new Set<string>();
+
     for (const f of findings) {
-      if (f.message) uniqueMessagesSet.add(f.message);
+      if (!f.message) continue;
+      uniqueMessagesSet.add(f.message);
+      freqMap.set(f.message, (freqMap.get(f.message) || 0) + 1);
+
+      if (f.file) {
+        const ext = f.file.split('.').pop();
+        if (ext) {
+          let fileTypes = msgToFileTypes.get(f.message);
+          if (!fileTypes) {
+            fileTypes = new Set<string>();
+            msgToFileTypes.set(f.message, fileTypes);
+          }
+          fileTypes.add(`.${ext}`);
+        }
+      }
     }
     const uniqueMessages = [...uniqueMessagesSet];
     if (uniqueMessages.length === 0) return [];
@@ -98,7 +108,13 @@ export class PatternDetector {
     }
 
     // Handle frequent messages that didn't cluster (single-message patterns)
-    const clusteredMsgs = new Set(clusters.flatMap((c) => c.messages));
+    const clusteredMsgs = new Set<string>();
+    for (const c of clusters) {
+      for (const m of c.messages) {
+        clusteredMsgs.add(m);
+      }
+    }
+
     for (const msg of uniqueMessages) {
       if (!clusteredMsgs.has(msg) && (freqMap.get(msg) || 0) >= minFrequency) {
         clusters.push({ centroid: msg, messages: [msg] });
@@ -110,20 +126,17 @@ export class PatternDetector {
     for (const cluster of clusters) {
       // Count total frequency across all messages in the cluster
       let totalFrequency = 0;
+      const fileTypeSet = new Set<string>();
+
       for (const msg of cluster.messages) {
         totalFrequency += freqMap.get(msg) || 0;
+        const fileTypes = msgToFileTypes.get(msg);
+        if (fileTypes) {
+          for (const ext of fileTypes) fileTypeSet.add(ext);
+        }
       }
       if (totalFrequency < minFrequency) continue;
 
-      const messageSet = new Set(cluster.messages);
-      const relatedFindings = findings.filter((f) => messageSet.has(f.message));
-
-      const fileTypeSet = new Set<string>();
-      for (const f of relatedFindings) {
-        if (!f.file) continue;
-        const ext = f.file.split('.').pop();
-        if (ext) fileTypeSet.add(`.${ext}`);
-      }
       const fileTypes = Array.from(fileTypeSet);
 
       const patternKey = cluster.centroid
