@@ -115,7 +115,7 @@ export async function handleCommand(
         },
       );
     } catch (err) {
-      logger.error(`Git clone failed for ${repo}: ${err instanceof Error ? err.message : err}`);
+      logger.error(`Git clone failed for ${repo}: ${sanitizeErrorMessage(err)}`);
       if (command === 'setup') {
         // Setup must still produce a diagnostic report even when the repo
         // cannot be cloned (e.g. missing/read-only token): run the checks
@@ -675,7 +675,7 @@ export async function handleDocsCommand(
     try {
       await execGit(['push', 'origin', branchName, '--force-with-lease'], gitOpts);
     } catch (err) {
-      logger.error(`Git push failed: ${err instanceof Error ? err.message : err}`);
+      logger.error(`Git push failed: ${sanitizeErrorMessage(err)}`);
       await gh.postOrUpdateComment(
         issueNumber,
         '<!-- docs-error -->',
@@ -1100,7 +1100,7 @@ async function createAutofixPR(
     try {
       await execGit(['push', 'origin', branchName, '--force-with-lease'], gitOpts);
     } catch (err) {
-      logger.error(`Git push failed: ${err instanceof Error ? err.message : err}`);
+      logger.error(`Git push failed: ${sanitizeErrorMessage(err)}`);
       await gh.postOrUpdateComment(
         issueNumber,
         '<!-- autofix-error -->',
