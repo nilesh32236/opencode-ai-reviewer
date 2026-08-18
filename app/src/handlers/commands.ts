@@ -115,7 +115,7 @@ export async function handleCommand(
         },
       );
     } catch (err) {
-      logger.error(`Git clone failed for ${repo}: ${err instanceof Error ? err.message : err}`);
+      logger.error(`Git clone failed for ${repo}: ${sanitizeErrorMessage(err)}`);
       if (command === 'setup') {
         // Setup must still produce a diagnostic report even when the repo
         // cannot be cloned (e.g. missing/read-only token): run the checks
@@ -162,7 +162,7 @@ export async function handleCommand(
         );
       } catch (err) {
         logger.warn(
-          `Failed to post busy comment: ${err instanceof Error ? err.message : String(err)}`,
+          `Failed to post busy comment: ${sanitizeErrorMessage(err)}`,
         );
       }
       return;
@@ -343,7 +343,7 @@ export async function handleCommand(
     }
   } catch (err) {
     logger.error(
-      `Command ${command} failed for issue ${issueNumber} in ${repo}: ${err instanceof Error ? err.message : err}`,
+      `Command ${command} failed for issue ${issueNumber} in ${repo}: ${sanitizeErrorMessage(err)}`,
     );
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
@@ -394,12 +394,12 @@ export async function handleAnalyzeCommand(
     logger.info(`Posted analysis plan for issue #${issueNumber}`);
   } catch (err) {
     logger.error(
-      `Failed to analyze issue #${issueNumber}: ${err instanceof Error ? err.message : err}`,
+      `Failed to analyze issue #${issueNumber}: ${sanitizeErrorMessage(err)}`,
     );
     await gh.postOrUpdateComment(
       issueNumber,
       '<!-- issue-analysis-error -->',
-      `❌ **Analysis Failed**: ${err instanceof Error ? err.message : String(err)}`,
+      `❌ **Analysis Failed**: ${sanitizeErrorMessage(err)}`,
     );
   } finally {
     await engine.cleanup();
@@ -442,12 +442,12 @@ export async function handleExplainCommand(
     logger.info(`Posted explanation for PR #${issueNumber}`);
   } catch (err) {
     logger.error(
-      `Failed to explain PR #${issueNumber}: ${err instanceof Error ? err.message : err}`,
+      `Failed to explain PR #${issueNumber}: ${sanitizeErrorMessage(err)}`,
     );
     await gh.postOrUpdateComment(
       issueNumber,
       '<!-- pr-explanation-error -->',
-      `❌ **Explanation Failed**: ${err instanceof Error ? err.message : String(err)}`,
+      `❌ **Explanation Failed**: ${sanitizeErrorMessage(err)}`,
     );
   } finally {
     await engine.cleanup();
@@ -495,12 +495,12 @@ export async function handleDescribeCommand(
     logger.info(`Posted PR description for PR #${issueNumber}`);
   } catch (err) {
     logger.error(
-      `Failed to describe PR #${issueNumber}: ${err instanceof Error ? err.message : err}`,
+      `Failed to describe PR #${issueNumber}: ${sanitizeErrorMessage(err)}`,
     );
     await gh.postOrUpdateComment(
       issueNumber,
       '<!-- pr-description-error -->',
-      `❌ **Description Generation Failed**: ${err instanceof Error ? err.message : String(err)}`,
+      `❌ **Description Generation Failed**: ${sanitizeErrorMessage(err)}`,
     );
   } finally {
     await engine.cleanup();
@@ -569,7 +569,7 @@ export async function handleDocsCommand(
       );
     } catch (err) {
       logger.warn(
-        `Git fetch failed: ${err instanceof Error ? err.message : String(err)} — continuing with local state`,
+        `Git fetch failed: ${sanitizeErrorMessage(err)} — continuing with local state`,
       );
     }
 
@@ -608,7 +608,7 @@ export async function handleDocsCommand(
         logger.info(`Fetched docs base branch ${baseRef} from fork ${pr.headRepoFullName}`);
       } catch (err) {
         logger.warn(
-          `Could not fetch docs base branch from fork ${pr.headRepoFullName}: ${err instanceof Error ? err.message : String(err)} — falling back to origin`,
+          `Could not fetch docs base branch from fork ${pr.headRepoFullName}: ${sanitizeErrorMessage(err)} — falling back to origin`,
         );
       }
     }
@@ -623,7 +623,7 @@ export async function handleDocsCommand(
         await execGit(['fetch', 'origin', `+${baseRef}:refs/remotes/origin/${baseRef}`], gitOpts);
       } catch (err) {
         logger.warn(
-          `Could not fetch docs base branch ${baseRef} from origin: ${err instanceof Error ? err.message : String(err)}`,
+          `Could not fetch docs base branch ${baseRef} from origin: ${sanitizeErrorMessage(err)}`,
         );
       }
     }
@@ -675,7 +675,7 @@ export async function handleDocsCommand(
     try {
       await execGit(['push', 'origin', branchName, '--force-with-lease'], gitOpts);
     } catch (err) {
-      logger.error(`Git push failed: ${err instanceof Error ? err.message : err}`);
+      logger.error(`Git push failed: ${sanitizeErrorMessage(err)}`);
       await gh.postOrUpdateComment(
         issueNumber,
         '<!-- docs-error -->',
@@ -705,7 +705,7 @@ export async function handleDocsCommand(
         await gh.addLabels(newPR.number, ['docs']);
       } catch (err) {
         logger.warn(
-          `Failed to label docs PR #${newPR.number}: ${err instanceof Error ? err.message : err}`,
+          `Failed to label docs PR #${newPR.number}: ${sanitizeErrorMessage(err)}`,
         );
       }
       try {
@@ -716,7 +716,7 @@ export async function handleDocsCommand(
         );
       } catch (err) {
         logger.warn(
-          `Failed to post docs PR link comment: ${err instanceof Error ? err.message : err}`,
+          `Failed to post docs PR link comment: ${sanitizeErrorMessage(err)}`,
         );
       }
       return;
@@ -733,7 +733,7 @@ export async function handleDocsCommand(
         await gh.addLabels(existingPR.number, ['docs']);
       } catch (err) {
         logger.warn(
-          `Failed to label docs PR #${existingPR.number}: ${err instanceof Error ? err.message : err}`,
+          `Failed to label docs PR #${existingPR.number}: ${sanitizeErrorMessage(err)}`,
         );
       }
       try {
@@ -744,7 +744,7 @@ export async function handleDocsCommand(
         );
       } catch (err) {
         logger.warn(
-          `Failed to post docs PR link comment: ${err instanceof Error ? err.message : err}`,
+          `Failed to post docs PR link comment: ${sanitizeErrorMessage(err)}`,
         );
       }
       return;
@@ -758,7 +758,7 @@ export async function handleDocsCommand(
     );
   } catch (err) {
     logger.error(
-      `Docs PR creation failed for PR #${issueNumber}: ${err instanceof Error ? err.message : err}`,
+      `Docs PR creation failed for PR #${issueNumber}: ${sanitizeErrorMessage(err)}`,
     );
     await gh.postOrUpdateComment(
       issueNumber,
@@ -809,7 +809,7 @@ export async function handleSetup(
     );
   } catch (err) {
     logger.error(
-      `Failed to run setup validation for issue #${issueNumber}: ${err instanceof Error ? err.message : err}`,
+      `Failed to run setup validation for issue #${issueNumber}: ${sanitizeErrorMessage(err)}`,
     );
     await gh.postOrUpdateComment(
       issueNumber,
@@ -840,7 +840,7 @@ async function findExistingAutofixPR(
     if (prLink) return Number.parseInt(prLink, 10);
   } catch (err) {
     logger.debug(
-      `Failed to find existing autofix PR for issue ${issueNumber}: ${err instanceof Error ? err.message : err}`,
+      `Failed to find existing autofix PR for issue ${issueNumber}: ${sanitizeErrorMessage(err)}`,
     );
   }
   return null;
@@ -863,7 +863,7 @@ async function findExistingDocsPR(
     }
   } catch (err) {
     logger.debug(
-      `Failed to find existing docs PR for issue ${issueNumber}: ${err instanceof Error ? err.message : err}`,
+      `Failed to find existing docs PR for issue ${issueNumber}: ${sanitizeErrorMessage(err)}`,
     );
   }
   return null;
@@ -914,7 +914,7 @@ async function createAutofixPR(
       );
     } catch (err) {
       logger.warn(
-        `Git fetch failed: ${err instanceof Error ? err.message : String(err)} — continuing with local state`,
+        `Git fetch failed: ${sanitizeErrorMessage(err)} — continuing with local state`,
       );
     }
 
@@ -1100,7 +1100,7 @@ async function createAutofixPR(
     try {
       await execGit(['push', 'origin', branchName, '--force-with-lease'], gitOpts);
     } catch (err) {
-      logger.error(`Git push failed: ${err instanceof Error ? err.message : err}`);
+      logger.error(`Git push failed: ${sanitizeErrorMessage(err)}`);
       await gh.postOrUpdateComment(
         issueNumber,
         '<!-- autofix-error -->',
@@ -1130,7 +1130,7 @@ async function createAutofixPR(
         await gh.addLabels(pr.number, ['autofix']);
       } catch (err) {
         logger.warn(
-          `Failed to label autofix PR #${pr.number}: ${err instanceof Error ? err.message : err}`,
+          `Failed to label autofix PR #${pr.number}: ${sanitizeErrorMessage(err)}`,
         );
       }
       try {
@@ -1141,7 +1141,7 @@ async function createAutofixPR(
         );
       } catch (err) {
         logger.warn(
-          `Failed to post autofix PR link comment: ${err instanceof Error ? err.message : err}`,
+          `Failed to post autofix PR link comment: ${sanitizeErrorMessage(err)}`,
         );
       }
       return pr.number;
@@ -1156,7 +1156,7 @@ async function createAutofixPR(
     return null;
   } catch (err) {
     logger.error(
-      `Autofix PR creation failed for issue #${issueNumber}: ${err instanceof Error ? err.message : err}`,
+      `Autofix PR creation failed for issue #${issueNumber}: ${sanitizeErrorMessage(err)}`,
     );
     return null;
   } finally {
@@ -1187,7 +1187,7 @@ async function checkForUnansweredQuestions(
     return repliesAfter.length === 0;
   } catch (err) {
     logger.warn(
-      `Failed to check unanswered questions for #${issue.number}: ${err instanceof Error ? err.message : String(err)}`,
+      `Failed to check unanswered questions for #${issue.number}: ${sanitizeErrorMessage(err)}`,
     );
     return true;
   }

@@ -214,7 +214,7 @@ async function createChangelogPR(
     try {
       await execGit(['push', 'origin', branchName, '--force-with-lease'], gitOpts);
     } catch (err) {
-      log.error(`Git push failed: ${err instanceof Error ? err.message : err}`);
+      log.error(`Git push failed: ${sanitizeErrorMessage(err)}`);
       await gh.postOrUpdateComment(
         issueNumber,
         '<!-- changelog-error -->',
