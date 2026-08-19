@@ -62,6 +62,7 @@ export async function runSelfHeal(
   const defaultBranch = await gh.getDefaultBranch();
 
   try {
+    validateRefName(branchName);
     await exec.exec('git', ['checkout', '-b', branchName, `origin/${defaultBranch}`]);
   } catch (err) {
     core.warning(
