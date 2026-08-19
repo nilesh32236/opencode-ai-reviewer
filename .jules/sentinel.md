@@ -13,3 +13,6 @@
 ## 2026-08-18 - Token Leak Fixed in app/src/handlers/commands.ts and changelog.ts
 **Learning:** Found that errors thrown during `execGit` operations (like `git clone` or `git push`), which could include embedded token credentials in the git URL, were being logged directly as raw strings.
 **Prevention:** Wrapped `err` in `sanitizeErrorMessage(err)` before passing to `logger.error` to ensure any exposed GitHub Token is redacted from logs.
+## 2026-08-19 - Command Injection Risk Fixed in self-heal handler
+**Learning:** Found that `branchName` was used without validation in the initial `exec.exec('git', ['checkout', '-b', branchName, ...])` call in `action/src/self-heal.ts`. Although `branchName` is dynamically generated based on `GITHUB_RUN_ID` and thus generally safe, validating it before any Git execution enforces the defensive programming baseline against argument injection risks.
+**Prevention:** Added `validateRefName(branchName)` before the `checkout` command in `action/src/self-heal.ts` to ensure consistency with the later `push` command and proactively prevent any potential argument injection.
