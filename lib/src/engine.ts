@@ -1246,18 +1246,20 @@ export class ReviewEngine {
             mkdirSync(batchDir, { recursive: true });
           }
           const batchPR = { ...pr, changedFiles: batch };
-          const batchBlameData: Map<string, Map<number, BlameInfo>> | undefined =
-            blameData && blameData.size > 0
-              ? new Map(
-                  batch
-                    .map((f) => f.path)
-                    .filter((p): p is string => Boolean(p))
-                    .flatMap((p) => {
-                      const info = blameData.get(p);
-                      return info !== undefined ? [[p, info] as const] : [];
-                    }),
-                )
-              : undefined;
+
+          let batchBlameData: Map<string, Map<number, BlameInfo>> | undefined;
+          if (blameData && blameData.size > 0) {
+            batchBlameData = new Map();
+            for (const f of batch) {
+              if (f.path) {
+                const info = blameData.get(f.path);
+                if (info !== undefined) {
+                  batchBlameData.set(f.path, info);
+                }
+              }
+            }
+          }
+
           const { context: batchContext } = this.buildPRContextString(
             batchPR,
             tokenBudgetConfig,
