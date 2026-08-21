@@ -59,9 +59,16 @@ services:
       # restarts/redeploys. The app runs with cwd /app/app and defaults to
       # `.opencode/learning.db`, so mount that directory as a named volume.
       - opencode-learning:/app/app/.opencode
-    # No restart policy: validate-env.sh fail-fasts (exit 1) on a bad config,
-    # so a restart policy would loop forever on the same error. Start the
-    # container again after fixing `.env`.
+    # Restart policy: auto-recover from crashes and EC2 reboots. On a bad .env
+    # (validate-env.sh exits 1) this will restart-loop until the config is
+    # fixed — check `docker logs opencode-reviewer` and `docker compose up`.
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:$${PORT:-3000}/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
 volumes:
   opencode-learning:
