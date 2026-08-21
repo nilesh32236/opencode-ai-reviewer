@@ -1,11 +1,12 @@
-import { jaccardSimilarityWithThreshold, tokenizeMessage } from './minhash-optimized.js';
 import {
   LSH_BANDS,
   LSH_ROWS,
   MINHASH_SIGNATURE_SIZE,
   computeMinHashSignature,
-  lshCandidates,
-} from './minhash.js';
+  jaccardSimilarityWithThreshold,
+  lshCandidatesTyped,
+  tokenizeMessage,
+} from './minhash-optimized.js';
 
 /** Maximum number of messages clustered with the exact O(N²) all-pairs path. */
 export const EXACT_CLUSTER_LIMIT = 100;
@@ -113,7 +114,7 @@ export function clusterFindingsWithStatus(messages: string[], threshold = 0.3): 
     clusters = greedyCluster(tokens, input, threshold, null);
   } else {
     const signatures = tokens.map((t) => computeMinHashSignature(t, MINHASH_SIGNATURE_SIZE));
-    const candidatePairs = lshCandidates(signatures, LSH_BANDS, LSH_ROWS);
+    const candidatePairs = lshCandidatesTyped(signatures, LSH_BANDS, LSH_ROWS);
 
     const candidatesByIndex: number[][] = Array.from({ length: input.length }, () => []);
     for (const [i, j] of candidatePairs) {
