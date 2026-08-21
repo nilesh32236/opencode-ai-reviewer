@@ -2595,6 +2595,7 @@ describe('ReviewEngine', () => {
 
   describe('linter integration', () => {
     const mockSpawnSync = vi.mocked(cp.spawnSync);
+    const mockExecFile = vi.mocked(cp.execFile);
     const prLinter = makePRContext();
 
     beforeEach(() => {
@@ -2606,6 +2607,21 @@ describe('ReviewEngine', () => {
         output: [],
         signal: null,
       } as never);
+      // Linters now use async execFile; default to empty success for linter commands,
+      // while preserving the global beforeEach's empty for codebase-index probes.
+      mockExecFile.mockImplementation(((
+        cmd: string,
+        _args: string[],
+        _opts: unknown,
+        cb: unknown,
+      ) => {
+        const callback = cb as (err: Error | null, stdout?: string, stderr?: string) => void;
+        if (cmd === 'eslint' || cmd === 'ruff') {
+          callback(null, '', '');
+        } else {
+          (callback as (err: Error | null, stdout?: string) => void)(null, '');
+        }
+      }) as never);
     });
 
     it('skips linters when no linters configured', async () => {
@@ -2633,27 +2649,38 @@ describe('ReviewEngine', () => {
         mockAdapter,
       );
 
+      const eslintJson = JSON.stringify([
+        {
+          filePath: 'src/test.ts',
+          messages: [
+            {
+              line: 5,
+              column: 1,
+              severity: 'warning',
+              ruleId: 'no-unused-vars',
+              message: 'x is unused',
+            },
+          ],
+        },
+      ]);
       mockSpawnSync.mockReturnValue({
-        stdout: JSON.stringify([
-          {
-            filePath: 'src/test.ts',
-            messages: [
-              {
-                line: 5,
-                column: 1,
-                severity: 'warning',
-                ruleId: 'no-unused-vars',
-                message: 'x is unused',
-              },
-            ],
-          },
-        ]),
+        stdout: eslintJson,
         stderr: '',
         status: 0,
         pid: 0,
         output: [],
         signal: null,
       } as never);
+      mockExecFile.mockImplementation(((
+        cmd: string,
+        _args: string[],
+        _opts: unknown,
+        cb: unknown,
+      ) => {
+        const callback = cb as (err: Error | null, stdout?: string, stderr?: string) => void;
+        if (cmd === 'eslint') callback(null, eslintJson, '');
+        else (callback as (err: Error | null, stdout?: string) => void)(null, '');
+      }) as never);
 
       mockMCPConnect.mockResolvedValue(undefined);
       mockRunOpenCode.mockResolvedValue({
@@ -2666,10 +2693,11 @@ describe('ReviewEngine', () => {
 
       await eng.reviewPR(prLinter);
 
-      expect(mockSpawnSync).toHaveBeenCalledWith(
+      expect(mockExecFile).toHaveBeenCalledWith(
         'eslint',
         expect.arrayContaining(['--format', 'json', 'src/test.ts']),
         expect.any(Object),
+        expect.any(Function),
       );
     });
 
@@ -2695,6 +2723,16 @@ describe('ReviewEngine', () => {
         output: [],
         signal: null,
       } as never);
+      mockExecFile.mockImplementation(((
+        cmd: string,
+        _args: string[],
+        _opts: unknown,
+        cb: unknown,
+      ) => {
+        const callback = cb as (err: Error | null, stdout?: string, stderr?: string) => void;
+        if (cmd === 'ruff') callback(null, '', '');
+        else (callback as (err: Error | null, stdout?: string) => void)(null, '');
+      }) as never);
 
       mockMCPConnect.mockResolvedValue(undefined);
       mockRunOpenCode.mockResolvedValue({
@@ -2708,12 +2746,13 @@ describe('ReviewEngine', () => {
       await eng.reviewPR(pr);
 
       // Should only run ruff for .py files, not .ts
-      expect(mockSpawnSync).toHaveBeenCalledWith(
+      expect(mockExecFile).toHaveBeenCalledWith(
         'ruff',
         expect.arrayContaining(['src/test.py']),
         expect.any(Object),
+        expect.any(Function),
       );
-      expect(mockSpawnSync).not.toHaveBeenCalledWith(
+      expect(mockExecFile).not.toHaveBeenCalledWith(
         'ruff',
         expect.arrayContaining(['src/test.ts']),
         expect.any(Object),
@@ -2731,6 +2770,16 @@ describe('ReviewEngine', () => {
       mockSpawnSync.mockImplementation(() => {
         throw new Error('Command not found');
       });
+      mockExecFile.mockImplementation(((
+        cmd: string,
+        _args: string[],
+        _opts: unknown,
+        cb: unknown,
+      ) => {
+        const callback = cb as (err: Error | null, stdout?: string, stderr?: string) => void;
+        if (cmd === 'eslint') callback(new Error('Command not found'));
+        else (callback as (err: Error | null, stdout?: string) => void)(null, '');
+      }) as never);
 
       mockMCPConnect.mockResolvedValue(undefined);
       mockRunOpenCode.mockResolvedValue({
@@ -2753,19 +2802,30 @@ describe('ReviewEngine', () => {
         mockAdapter,
       );
 
+      const dedupJson = JSON.stringify([
+        {
+          filePath: 'src/test.ts',
+          messages: [{ line: 5, severity: 2, ruleId: 'no-unused-vars', message: 'x is unused' }],
+        },
+      ]);
       mockSpawnSync.mockReturnValue({
-        stdout: JSON.stringify([
-          {
-            filePath: 'src/test.ts',
-            messages: [{ line: 5, severity: 2, ruleId: 'no-unused-vars', message: 'x is unused' }],
-          },
-        ]),
+        stdout: dedupJson,
         stderr: '',
         status: 0,
         pid: 0,
         output: [],
         signal: null,
       } as never);
+      mockExecFile.mockImplementation(((
+        cmd: string,
+        _args: string[],
+        _opts: unknown,
+        cb: unknown,
+      ) => {
+        const callback = cb as (err: Error | null, stdout?: string, stderr?: string) => void;
+        if (cmd === 'eslint') callback(null, dedupJson, '');
+        else (callback as (err: Error | null, stdout?: string) => void)(null, '');
+      }) as never);
 
       mockMCPConnect.mockResolvedValue(undefined);
       mockRunOpenCode.mockResolvedValue({
@@ -2828,22 +2888,33 @@ describe('ReviewEngine', () => {
         mockAdapter,
       );
 
+      const recalcJson = JSON.stringify([
+        {
+          filePath: 'src/test.ts',
+          messages: [
+            { line: 5, severity: 2, ruleId: 'no-unused-vars', message: 'x is unused' },
+            { line: 10, severity: 2, ruleId: 'no-console', message: 'Unexpected console' },
+          ],
+        },
+      ]);
       mockSpawnSync.mockReturnValue({
-        stdout: JSON.stringify([
-          {
-            filePath: 'src/test.ts',
-            messages: [
-              { line: 5, severity: 2, ruleId: 'no-unused-vars', message: 'x is unused' },
-              { line: 10, severity: 2, ruleId: 'no-console', message: 'Unexpected console' },
-            ],
-          },
-        ]),
+        stdout: recalcJson,
         stderr: '',
         status: 0,
         pid: 0,
         output: [],
         signal: null,
       } as never);
+      mockExecFile.mockImplementation(((
+        cmd: string,
+        _args: string[],
+        _opts: unknown,
+        cb: unknown,
+      ) => {
+        const callback = cb as (err: Error | null, stdout?: string, stderr?: string) => void;
+        if (cmd === 'eslint') callback(null, recalcJson, '');
+        else (callback as (err: Error | null, stdout?: string) => void)(null, '');
+      }) as never);
 
       mockMCPConnect.mockResolvedValue(undefined);
       mockRunOpenCode.mockResolvedValue({
@@ -2914,19 +2985,30 @@ describe('ReviewEngine', () => {
         ],
       });
 
+      const preserveJson = JSON.stringify([
+        {
+          filePath: 'src/test.ts',
+          messages: [{ line: 5, severity: 2, ruleId: 'no-unused-vars', message: 'x is unused' }],
+        },
+      ]);
       mockSpawnSync.mockReturnValue({
-        stdout: JSON.stringify([
-          {
-            filePath: 'src/test.ts',
-            messages: [{ line: 5, severity: 2, ruleId: 'no-unused-vars', message: 'x is unused' }],
-          },
-        ]),
+        stdout: preserveJson,
         stderr: '',
         status: 0,
         pid: 0,
         output: [],
         signal: null,
       } as never);
+      mockExecFile.mockImplementation(((
+        cmd: string,
+        _args: string[],
+        _opts: unknown,
+        cb: unknown,
+      ) => {
+        const callback = cb as (err: Error | null, stdout?: string, stderr?: string) => void;
+        if (cmd === 'eslint') callback(null, preserveJson, '');
+        else (callback as (err: Error | null, stdout?: string) => void)(null, '');
+      }) as never);
 
       mockMCPConnect.mockResolvedValue(undefined);
 
