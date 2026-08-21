@@ -107,6 +107,7 @@ export async function handleCommand(
       'case "$1" in',
       '  *Username*) echo "x-access-token" ;;',
       '  *Password*) echo "${OPENCODE_CREDENTIAL_TOKEN}" ;;',
+      '  *) exit 0 ;;',
       'esac',
     ].join('\n'),
     { encoding: 'utf-8', mode: 0o700 },
@@ -121,7 +122,7 @@ export async function handleCommand(
 
     try {
       await execGit(['clone', '--depth', '1', `https://github.com/${repo}.git`, tempDir], {
-        env: { ...process.env, ...cloneEnv } as Record<string, string>,
+        env: cloneEnv,
         timeout: 120_000,
         ...(signal ? { signal } : {}),
       });
@@ -358,6 +359,7 @@ export async function handleCommand(
     );
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
+    rmSync(askPassDir, { recursive: true, force: true });
   }
 }
 
