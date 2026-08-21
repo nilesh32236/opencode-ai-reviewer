@@ -116,6 +116,11 @@ export async function runProbe(
  * /auth routes are mounted and the dashboard/API are gated by a session JWT.
  * When the session secret is absent, auth passes through (reverse-proxy
  * protected deployment).
+ * @param deps.auth.clientId - GitHub OAuth client id.
+ * @param deps.auth.clientSecret - GitHub OAuth client secret.
+ * @param deps.auth.baseUrl - Public base URL for the OAuth callback.
+ * @param deps.auth.sessionSecret - Session JWT secret.
+ * @param deps.auth.secureCookie - Whether the session cookie is secure.
  * @returns The configured Express application.
  */
 export function createPlatformServer(

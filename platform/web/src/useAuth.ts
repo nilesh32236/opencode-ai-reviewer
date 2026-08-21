@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 
+/** User role for RBAC. */
 export type UserRole = 'admin' | 'reviewer' | 'viewer';
 
+/** Authenticated user returned from /auth/me. */
 export interface AuthUser {
   id: string;
   login: string;
@@ -18,6 +20,10 @@ function isAuthUser(data: unknown): data is AuthUser {
   );
 }
 
+/**
+ * Hook for platform auth state (fetches /auth/me, provides login/logout).
+ * @returns Auth state and actions.
+ */
 export function useAuth(): {
   user: AuthUser | null;
   loading: boolean;
