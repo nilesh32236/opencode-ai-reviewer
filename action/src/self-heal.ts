@@ -63,6 +63,7 @@ export async function runSelfHeal(
 
   try {
     validateRefName(branchName);
+    validateRefName(defaultBranch);
     await exec.exec('git', ['checkout', '-b', branchName, `origin/${defaultBranch}`]);
   } catch (err) {
     core.warning(
