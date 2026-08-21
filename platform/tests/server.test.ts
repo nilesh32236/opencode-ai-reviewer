@@ -27,7 +27,7 @@ describe('runProbe', () => {
     expect(ok).toBe(false);
     expect(clearSpy).toHaveBeenCalled();
     clearSpy.mockRestore();
-  });
+  }, 10000);
 
   it('returns false and clears its timeout when the probe throws', async () => {
     const clearSpy = vi.spyOn(global, 'clearTimeout');

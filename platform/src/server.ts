@@ -6,9 +6,12 @@
 
 import path from 'node:path';
 import { Logger } from '@opencode-pr-agent/lib';
+import cookieParser from 'cookie-parser';
 import type { Request, Response } from 'express';
 import express from 'express';
 import rateLimit from 'express-rate-limit';
+import { requireAuth } from './auth/middleware.js';
+import { createAuthRouter } from './auth/routes.js';
 import type { PlatformConfig } from './config.js';
 import type { PlatformDb } from './db/client.js';
 import type { TaskQueue } from './queue/manager.js';
@@ -30,6 +33,15 @@ export interface HealthComponent {
 const DASHBOARD_RATE_LIMIT = rateLimit({
   windowMs: 60_000,
   limit: 120,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Too many requests' },
+});
+
+/** Stricter rate limiter for auth routes (OAuth/login) to prevent abuse. */
+const AUTH_RATE_LIMIT = rateLimit({
+  windowMs: 60_000,
+  limit: 30,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   message: { error: 'Too many requests' },
@@ -100,6 +112,15 @@ export async function runProbe(
  * @param deps.queue - Optional task queue used by the /api/tasks routes.
  * @param deps.dashboardDir - Optional directory of the built dashboard
  * (platform/web/dist); served under /dashboard with an SPA fallback.
+ * @param deps.auth - Optional GitHub OAuth + session config. When provided,
+ * /auth routes are mounted and the dashboard/API are gated by a session JWT.
+ * When the session secret is absent, auth passes through (reverse-proxy
+ * protected deployment).
+ * @param deps.auth.clientId - GitHub OAuth client id.
+ * @param deps.auth.clientSecret - GitHub OAuth client secret.
+ * @param deps.auth.baseUrl - Public base URL for the OAuth callback.
+ * @param deps.auth.sessionSecret - Session JWT secret.
+ * @param deps.auth.secureCookie - Whether the session cookie is secure.
  * @returns The configured Express application.
  */
 export function createPlatformServer(
@@ -111,6 +132,13 @@ export function createPlatformServer(
     db?: PlatformDb;
     queue?: TaskQueue | null;
     dashboardDir?: string;
+    auth?: {
+      clientId: string | undefined;
+      clientSecret: string | undefined;
+      baseUrl: string;
+      sessionSecret: string | undefined;
+      secureCookie: boolean;
+    };
   } = {},
 ): express.Express {
   const app = express();
@@ -131,11 +159,25 @@ export function createPlatformServer(
 
   // JSON for the API/health routes.
   app.use(express.json({ limit: '1mb' }));
+  app.use(cookieParser());
 
-  // Dashboard REST API + SSE events (mounted when a DB is available).
+  // Authentication: GitHub OAuth + session JWT. When auth is not configured
+  // (no session secret), requireAuth passes through so the platform works
+  // behind a trusted reverse proxy.
+  const sessionSecret = deps.auth?.sessionSecret;
+  if (!sessionSecret) {
+    logger.warn('auth disabled: SESSION_SECRET empty — /api is open (trusted reverse-proxy mode)');
+  }
+  if (deps.db && deps.auth) {
+    app.use('/auth', AUTH_RATE_LIMIT, createAuthRouter(deps.db, deps.auth));
+  }
+
+  // Dashboard REST API + SSE events (mounted when a DB is available). Use a
+  // single requireAuth instance so each request verifies the JWT once.
   if (deps.db) {
-    app.use('/api', createApiRouter(deps.db, deps.queue ?? null));
-    app.use('/api', createEventsRouter(deps.db));
+    const apiAuth = requireAuth(sessionSecret, deps.auth?.secureCookie ?? false);
+    app.use('/api', apiAuth, createApiRouter(deps.db, deps.queue ?? null));
+    app.use('/api', apiAuth, createEventsRouter(deps.db));
   }
 
   // Serve the built dashboard (platform/web/dist) when present. Assets are
@@ -143,6 +185,8 @@ export function createPlatformServer(
   // path-to-regexp requires a named wildcard (not bare `*`). The static +
   // fallback handlers are rate-limited (file system access on public routes)
   // to bound abuse; express.static already guards against path traversal.
+  // Dashboard is served publicly so the initial HTML loads; API calls handle
+  // auth. The frontend checks /auth/me and shows a login prompt when needed.
   if (deps.dashboardDir) {
     const dashboard = express.static(deps.dashboardDir, { maxAge: '1h' });
     app.use('/dashboard', DASHBOARD_RATE_LIMIT, dashboard);
