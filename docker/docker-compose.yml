@@ -59,9 +59,13 @@ services:
       # restarts/redeploys. The app runs with cwd /app/app and defaults to
       # `.opencode/learning.db`, so mount that directory as a named volume.
       - opencode-learning:/app/app/.opencode
-    # No restart policy: validate-env.sh fail-fasts (exit 1) on a bad config,
-    # so a restart policy would loop forever on the same error. Start the
-    # container again after fixing `.env`.
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
 volumes:
   opencode-learning:
