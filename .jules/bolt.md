@@ -41,3 +41,7 @@
 **Learning:** Found that `new Map(batch.map().filter().flatMap())` in `Engine.runReviewPipeline` iterates over the batch multiple times and creates intermediate arrays, causing unnecessary memory allocations and GC pressure in a hot path.
 **Action:** Always use a single iteration loop over the original array to populate a Map directly without intermediate array allocation chains.
 **Refs:** `lib/src/engine.ts:1250` (batchBlameData population).
+## 2026-08-21 - Use typed arrays for MinHash clustering
+**Learning:** Found that `cluster.ts` was using the older MinHash implementation which computes `number[]` arrays and uses `number[][]` for signatures. By switching to `Uint32Array` signatures from `minhash-optimized.ts` (`computeMinHashSignature` and `lshCandidatesTyped`), memory allocation is more efficient and we avoid creating millions of standard array items on large inputs, reducing GC pressure and speeding up clustering.
+**Action:** Always prefer `Uint32Array` or typed arrays for purely numerical processing like hash arrays or clustering signatures to minimize GC pressure and memory usage overhead.
+**Refs:** `lib/src/pattern-detector/cluster.ts`
