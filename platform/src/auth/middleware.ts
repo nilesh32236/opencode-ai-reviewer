@@ -8,7 +8,7 @@
  */
 
 import type { NextFunction, Request, Response } from 'express';
-import { type SessionPayload, readSession } from './session.js';
+import { SESSION_COOKIE, type SessionPayload, readSession } from './session.js';
 
 /** Extend Express Request with the authenticated session. */
 export interface AuthedRequest extends Request {
@@ -34,7 +34,7 @@ export function requireAuth(secret: string | undefined, secureCookie = false) {
     }
     const session = readSession(req, secret);
     if (!session) {
-      res.clearCookie('opencode_session', {
+      res.clearCookie(SESSION_COOKIE, {
         httpOnly: true,
         secure: secureCookie,
         sameSite: 'lax',

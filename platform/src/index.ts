@@ -104,7 +104,7 @@ export async function startPlatform(): Promise<{
     auth: {
       clientId: config.githubClientId,
       clientSecret: config.githubClientSecret,
-      baseUrl: config.publicBaseUrl,
+      baseUrl: config.publicBaseUrl.replace(/\/+$/, ''),
       sessionSecret: config.sessionSecret,
       secureCookie: config.publicBaseUrl.startsWith('https://'),
     },
