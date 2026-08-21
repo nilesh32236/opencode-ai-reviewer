@@ -3894,7 +3894,10 @@ export class ReviewEngine {
    * @param workDir - Working directory for running linters.
    * @returns Array of linter results.
    */
-  private runLinters(changedFiles: Array<{ path: string }>, workDir: string): LinterResult[] {
+  private async runLinters(
+    changedFiles: Array<{ path: string }>,
+    workDir: string,
+  ): Promise<LinterResult[]> {
     if (!this.config.linters?.length) return [];
 
     const results: LinterResult[] = [];
@@ -3915,17 +3918,51 @@ export class ReviewEngine {
         const args = [...(linterConfig.args || []), ...matchedFiles];
         const start = Date.now();
 
-        const {
-          stdout,
-          stderr,
-          status,
-          error: spawnError,
-        } = cp.spawnSync(linterConfig.command, args, {
-          cwd: linterDir,
-          encoding: 'utf-8',
-          maxBuffer: 50 * 1024 * 1024,
-          timeout: linterConfig.timeout ?? 60_000,
-        });
+        let stdout = '';
+        let stderr = '';
+        let status: number | null = null;
+        let spawnError: Error | undefined;
+
+        try {
+          const execResult = await new Promise<{
+            stdout: string;
+            stderr: string;
+            status: number | null;
+          }>((resolve) => {
+            cp.execFile(
+              linterConfig.command,
+              args,
+              {
+                cwd: linterDir,
+                encoding: 'utf-8',
+                maxBuffer: 50 * 1024 * 1024,
+                timeout: linterConfig.timeout ?? 60_000,
+              },
+              (error, out, errOut) => {
+                if (error) {
+                  const execErr = error as NodeJS.ErrnoException & {
+                    code?: number;
+                    stdout?: string;
+                    stderr?: string;
+                  };
+                  spawnError = error;
+                  resolve({
+                    stdout: (execErr.stdout as unknown as string) || (out as string) || '',
+                    stderr: (execErr.stderr as unknown as string) || (errOut as string) || '',
+                    status: typeof execErr.code === 'number' ? execErr.code : null,
+                  });
+                } else {
+                  resolve({ stdout: out as string, stderr: errOut as string, status: 0 });
+                }
+              },
+            );
+          });
+          stdout = execResult.stdout;
+          stderr = execResult.stderr;
+          status = execResult.status;
+        } catch (err) {
+          spawnError = err as Error;
+        }
 
         const duration = Date.now() - start;
 
