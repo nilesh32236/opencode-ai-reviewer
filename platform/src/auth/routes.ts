@@ -60,9 +60,10 @@ export function createAuthRouter(db: PlatformDb, opts: AuthOptions): Router {
       maxAge: 10 * 60 * 1000,
       path: '/',
     });
+    const normalizedBase = opts.baseUrl.replace(/\/+$/, '');
     const params = new URLSearchParams({
       client_id: opts.clientId as string,
-      redirect_uri: `${opts.baseUrl}/auth/callback`,
+      redirect_uri: `${normalizedBase}/auth/callback`,
       scope: 'read:user',
       state,
     });
@@ -86,7 +87,8 @@ export function createAuthRouter(db: PlatformDb, opts: AuthOptions): Router {
     const oauthError = typeof req.query.error === 'string' ? req.query.error : undefined;
     if (oauthError) {
       clearStateCookie();
-      res.status(401).json({ error: `OAuth: ${oauthError}` });
+      const safeError = /^[a-z_]+$/.test(oauthError) ? oauthError : 'oauth_failed';
+      res.status(401).json({ error: `OAuth: ${safeError}` });
       return;
     }
     const state = typeof req.query.state === 'string' ? req.query.state : undefined;
@@ -103,22 +105,27 @@ export function createAuthRouter(db: PlatformDb, opts: AuthOptions): Router {
       return;
     }
     clearStateCookie();
+    const normalizedBase = opts.baseUrl.replace(/\/+$/, '');
     try {
       // Exchange the code for an access token (10s timeout).
       const tokenCtrl = new AbortController();
       const tokenTimer = setTimeout(() => tokenCtrl.abort(), 10_000);
-      const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({
-          client_id: opts.clientId,
-          client_secret: opts.clientSecret,
-          code,
-          redirect_uri: `${opts.baseUrl}/auth/callback`,
-        }),
-        signal: tokenCtrl.signal,
-      });
-      clearTimeout(tokenTimer);
+      let tokenRes: Awaited<ReturnType<typeof fetch>>;
+      try {
+        tokenRes = await fetch('https://github.com/login/oauth/access_token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify({
+            client_id: opts.clientId,
+            client_secret: opts.clientSecret,
+            code,
+            redirect_uri: `${normalizedBase}/auth/callback`,
+          }),
+          signal: tokenCtrl.signal,
+        });
+      } finally {
+        clearTimeout(tokenTimer);
+      }
       if (!tokenRes.ok) {
         res.status(502).json({ error: 'OAuth exchange failed' });
         return;
@@ -137,11 +144,18 @@ export function createAuthRouter(db: PlatformDb, opts: AuthOptions): Router {
       // Fetch the GitHub profile (10s timeout).
       const userCtrl = new AbortController();
       const userTimer = setTimeout(() => userCtrl.abort(), 10_000);
-      const userRes = await fetch('https://api.github.com/user', {
-        headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/vnd.github+json' },
-        signal: userCtrl.signal,
-      });
-      clearTimeout(userTimer);
+      let userRes: Awaited<ReturnType<typeof fetch>>;
+      try {
+        userRes = await fetch('https://api.github.com/user', {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: 'application/vnd.github+json',
+          },
+          signal: userCtrl.signal,
+        });
+      } finally {
+        clearTimeout(userTimer);
+      }
       if (!userRes.ok) {
         res.status(502).json({ error: 'Failed to fetch GitHub profile' });
         return;
@@ -170,8 +184,13 @@ export function createAuthRouter(db: PlatformDb, opts: AuthOptions): Router {
       };
       const token = signSession(session, opts.sessionSecret as string);
       setSessionCookie(res, token, opts.secureCookie);
-      res.redirect(`${opts.baseUrl}/dashboard/`);
+      res.redirect(`${normalizedBase}/dashboard/`);
     } catch (err) {
+      if ((err as Error).name === 'AbortError') {
+        logger.error('OAuth callback timed out');
+        res.status(504).json({ error: 'Authentication timed out' });
+        return;
+      }
       logger.error(`OAuth callback failed: ${err instanceof Error ? err.message : String(err)}`);
       res.status(500).json({ error: 'Authentication failed' });
     }

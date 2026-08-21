@@ -22,9 +22,10 @@ const RANK: Record<'viewer' | 'reviewer' | 'admin', number> = { viewer: 1, revie
  * requests pass through unauthenticated so the platform works behind a trusted
  * proxy. When enabled, a missing/invalid session gets a 401.
  * @param secret - The session secret (undefined = auth disabled).
+ * @param secureCookie - Whether the session cookie was set as secure.
  * @returns Express middleware.
  */
-export function requireAuth(secret: string | undefined) {
+export function requireAuth(secret: string | undefined, secureCookie = false) {
   return (req: AuthedRequest, res: Response, next: NextFunction): void => {
     if (!secret) {
       // Auth disabled — pass through (reverse-proxy protected deployment).
@@ -35,7 +36,7 @@ export function requireAuth(secret: string | undefined) {
     if (!session) {
       res.clearCookie('opencode_session', {
         httpOnly: true,
-        secure: req.secure,
+        secure: secureCookie,
         sameSite: 'lax',
         path: '/',
       });

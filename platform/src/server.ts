@@ -175,7 +175,7 @@ export function createPlatformServer(
   // Dashboard REST API + SSE events (mounted when a DB is available). Use a
   // single requireAuth instance so each request verifies the JWT once.
   if (deps.db) {
-    const apiAuth = requireAuth(sessionSecret);
+    const apiAuth = requireAuth(sessionSecret, deps.auth?.secureCookie ?? false);
     app.use('/api', apiAuth, createApiRouter(deps.db, deps.queue ?? null));
     app.use('/api', apiAuth, createEventsRouter(deps.db));
   }
