@@ -15,13 +15,17 @@
   "dependencies": {
     "@opencode-pr-agent/lib": "workspace:*",
     "bullmq": "^6.1.1",
+    "cookie-parser": "^1.4.7",
     "express": "5.2.1",
     "express-rate-limit": "^8.6.2",
     "ioredis": "^6.0.0",
+    "jsonwebtoken": "^9.0.3",
     "pg": "^8.13.1"
   },
   "devDependencies": {
+    "@types/cookie-parser": "^1.4.10",
     "@types/express": "5",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^22.0.0",
     "@types/pg": "^8.11.10",
     "@types/supertest": "6",

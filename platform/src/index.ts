@@ -99,6 +99,15 @@ export async function startPlatform(): Promise<{
       (existsSync(path.join(process.cwd(), 'platform', 'web', 'dist'))
         ? path.join(process.cwd(), 'platform', 'web', 'dist')
         : undefined),
+    // GitHub OAuth + session auth for the dashboard/API (Phase 4). Disabled
+    // until GITHUB_CLIENT_ID/SECRET + SESSION_SECRET are set.
+    auth: {
+      clientId: config.githubClientId,
+      clientSecret: config.githubClientSecret,
+      baseUrl: config.publicBaseUrl,
+      sessionSecret: config.sessionSecret,
+      secureCookie: config.publicBaseUrl.startsWith('https://'),
+    },
   });
 
   const server = app.listen(config.port);

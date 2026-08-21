@@ -1,3 +1,4 @@
+import { useAuth } from './useAuth.js';
 import { useTasks } from './useTasks.js';
 
 const STATUS_COLORS: Record<string, string> = {
@@ -29,14 +30,55 @@ function StatusBadge({ status }: { status: string }): React.JSX.Element {
 
 export function App(): React.JSX.Element {
   const { tasks, loading, error } = useTasks();
+  const { user, loading: authLoading, login, logout } = useAuth();
 
   return (
     <main
       style={{ fontFamily: 'system-ui, sans-serif', maxWidth: 900, margin: '0 auto', padding: 24 }}
     >
-      <header style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-        <h1 style={{ fontSize: 22 }}>OpenCode Platform</h1>
-        <StatusBadge status={loading ? 'running' : 'queued'} />
+      <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <h1 style={{ fontSize: 22 }}>OpenCode Platform</h1>
+          <StatusBadge status={loading ? 'running' : 'queued'} />
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          {authLoading ? null : user ? (
+            <>
+              <span style={{ fontSize: 13 }}>
+                {user.login} ({user.role})
+              </span>
+              <button
+                type="button"
+                onClick={() => void logout()}
+                style={{
+                  padding: '4px 10px',
+                  borderRadius: 6,
+                  border: '1px solid #ccc',
+                  cursor: 'pointer',
+                  fontSize: 12,
+                }}
+              >
+                Logout
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={login}
+              style={{
+                padding: '6px 14px',
+                borderRadius: 6,
+                border: 'none',
+                background: '#24292f',
+                color: '#fff',
+                cursor: 'pointer',
+                fontSize: 13,
+              }}
+            >
+              Login with GitHub
+            </button>
+          )}
+        </div>
       </header>
 
       {error ? (

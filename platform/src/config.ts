@@ -27,6 +27,14 @@ export interface PlatformConfig {
   privateKeyPath: string | undefined;
   /** Plain GITHUB_TOKEN (used when APP_ID/private key are absent). */
   githubToken: string | undefined;
+  /** GitHub OAuth client id for the dashboard login (empty = auth disabled). */
+  githubClientId: string | undefined;
+  /** GitHub OAuth client secret for the dashboard login. */
+  githubClientSecret: string | undefined;
+  /** Secret used to sign dashboard session JWTs. */
+  sessionSecret: string | undefined;
+  /** Public base URL of the platform (for OAuth callback, behind Caddy). */
+  publicBaseUrl: string;
   /** Log level for the platform's own loggers (default: info). */
   logLevel: string;
 }
@@ -65,6 +73,10 @@ export function buildPlatformConfig(env: NodeJS.ProcessEnv = process.env): Platf
     appId: env.APP_ID,
     privateKeyPath: env.PRIVATE_KEY_PATH,
     githubToken: env.GITHUB_TOKEN,
+    githubClientId: env.GITHUB_CLIENT_ID,
+    githubClientSecret: env.GITHUB_CLIENT_SECRET,
+    sessionSecret: env.SESSION_SECRET,
+    publicBaseUrl: env.PUBLIC_BASE_URL ?? 'http://localhost:8080',
     logLevel: env.LOG_LEVEL ?? 'info',
   };
 }
