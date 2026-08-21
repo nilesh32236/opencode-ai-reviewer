@@ -1,6 +1,6 @@
 import { execFileSync } from 'child_process';
 import type { ExecFileSyncOptions } from 'child_process';
-import { existsSync, mkdtempSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import type {
@@ -97,23 +97,34 @@ export async function handleCommand(
 
   const tempDir = mkdtempSync(path.join(os.tmpdir(), 'opencode-workspace-'));
 
+  // Create GIT_ASKPASS helper for clone so the token never appears in argv or .git/config
+  const askPassDir = mkdtempSync(path.join(os.tmpdir(), 'opencode-askpass-'));
+  const askPassPath = path.join(askPassDir, 'credential.sh');
+  writeFileSync(
+    askPassPath,
+    [
+      '#!/bin/sh',
+      'case "$1" in',
+      '  *Username*) echo "x-access-token" ;;',
+      '  *Password*) echo "${OPENCODE_CREDENTIAL_TOKEN}" ;;',
+      'esac',
+    ].join('\n'),
+    { encoding: 'utf-8', mode: 0o700 },
+  );
+  const cloneEnv: Record<string, string> = {
+    GIT_ASKPASS: askPassPath,
+    OPENCODE_CREDENTIAL_TOKEN: token,
+  };
+
   try {
     if (signal?.aborted) return;
 
     try {
-      await execGit(
-        [
-          'clone',
-          '--depth',
-          '1',
-          `https://x-access-token:${token}@github.com/${repo}.git`,
-          tempDir,
-        ],
-        {
-          timeout: 120_000,
-          ...(signal ? { signal } : {}),
-        },
-      );
+      await execGit(['clone', '--depth', '1', `https://github.com/${repo}.git`, tempDir], {
+        env: { ...process.env, ...cloneEnv } as Record<string, string>,
+        timeout: 120_000,
+        ...(signal ? { signal } : {}),
+      });
     } catch (err) {
       logger.error(`Git clone failed for ${repo}: ${sanitizeErrorMessage(err)}`);
       if (command === 'setup') {
