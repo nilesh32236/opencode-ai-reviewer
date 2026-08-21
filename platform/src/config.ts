@@ -76,7 +76,7 @@ export function buildPlatformConfig(env: NodeJS.ProcessEnv = process.env): Platf
     githubClientId: env.GITHUB_CLIENT_ID,
     githubClientSecret: env.GITHUB_CLIENT_SECRET,
     sessionSecret: env.SESSION_SECRET,
-    publicBaseUrl: env.PUBLIC_BASE_URL ?? 'http://localhost:8080',
+    publicBaseUrl: (env.PUBLIC_BASE_URL ?? 'http://localhost:8080').replace(/\/+$/, ''),
     logLevel: env.LOG_LEVEL ?? 'info',
   };
 }

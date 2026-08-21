@@ -11,6 +11,7 @@
  * behind the reverse proxy until then).
  */
 
+import crypto from 'node:crypto';
 import { Logger } from '@opencode-pr-agent/lib';
 import type { Request, Response, Router } from 'express';
 import { Router as createRouter } from 'express';
@@ -51,7 +52,14 @@ export function createAuthRouter(db: PlatformDb, opts: AuthOptions): Router {
       res.status(501).json({ error: 'Authentication not configured' });
       return;
     }
-    const state = Math.random().toString(36).slice(2);
+    const state = crypto.randomBytes(16).toString('hex');
+    res.cookie('opencode_oauth_state', state, {
+      httpOnly: true,
+      secure: opts.secureCookie,
+      sameSite: 'lax',
+      maxAge: 10 * 60 * 1000,
+      path: '/',
+    });
     const params = new URLSearchParams({
       client_id: opts.clientId as string,
       redirect_uri: `${opts.baseUrl}/auth/callback`,
@@ -67,11 +75,18 @@ export function createAuthRouter(db: PlatformDb, opts: AuthOptions): Router {
       res.status(501).json({ error: 'Authentication not configured' });
       return;
     }
+    const state = typeof req.query.state === 'string' ? req.query.state : undefined;
     const code = typeof req.query.code === 'string' ? req.query.code : undefined;
     if (!code) {
       res.status(400).json({ error: 'Missing code' });
       return;
     }
+    const expectedState = req.cookies?.opencode_oauth_state as string | undefined;
+    if (!expectedState || !state || expectedState !== state) {
+      res.status(401).json({ error: 'Invalid state' });
+      return;
+    }
+    res.clearCookie('opencode_oauth_state', { httpOnly: true, path: '/' });
     try {
       // Exchange the code for an access token.
       const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
@@ -83,7 +98,15 @@ export function createAuthRouter(db: PlatformDb, opts: AuthOptions): Router {
           code,
         }),
       });
-      const tokenData = (await tokenRes.json()) as { access_token?: string };
+      if (!tokenRes.ok) {
+        res.status(502).json({ error: 'OAuth exchange failed' });
+        return;
+      }
+      const tokenData = (await tokenRes.json()) as { access_token?: string; error?: string };
+      if (tokenData.error) {
+        res.status(401).json({ error: `OAuth error: ${tokenData.error}` });
+        return;
+      }
       const accessToken = tokenData.access_token;
       if (!accessToken) {
         res.status(401).json({ error: 'Failed to exchange code' });
@@ -94,11 +117,19 @@ export function createAuthRouter(db: PlatformDb, opts: AuthOptions): Router {
       const userRes = await fetch('https://api.github.com/user', {
         headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/vnd.github+json' },
       });
+      if (!userRes.ok) {
+        res.status(502).json({ error: 'Failed to fetch GitHub profile' });
+        return;
+      }
       const profile = (await userRes.json()) as {
         id: number;
         login: string;
         avatar_url?: string;
       };
+      if (typeof profile.id !== 'number' || typeof profile.login !== 'string') {
+        res.status(502).json({ error: 'Invalid GitHub profile' });
+        return;
+      }
 
       const user = await upsertUser(db, {
         id: profile.id,
@@ -123,11 +154,11 @@ export function createAuthRouter(db: PlatformDb, opts: AuthOptions): Router {
 
   // GET /auth/me — current session user.
   router.get('/me', async (req: Request, res: Response) => {
-    if (!opts.sessionSecret) {
-      res.status(401).json({ error: 'Not authenticated' });
+    if (!authEnabled) {
+      res.status(501).json({ error: 'Authentication not configured' });
       return;
     }
-    const session = readSession(req, opts.sessionSecret);
+    const session = readSession(req, opts.sessionSecret as string);
     if (!session) {
       res.status(401).json({ error: 'Not authenticated' });
       return;
@@ -152,7 +183,8 @@ export function createAuthRouter(db: PlatformDb, opts: AuthOptions): Router {
 
   // POST /auth/logout — clear the session cookie.
   router.post('/logout', (_req: Request, res: Response) => {
-    clearSessionCookie(res);
+    res.set('Cache-Control', 'no-store');
+    clearSessionCookie(res, opts.secureCookie);
     res.json({ ok: true });
   });
 

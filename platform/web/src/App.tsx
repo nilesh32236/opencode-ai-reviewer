@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useAuth } from './useAuth.js';
 import { useTasks } from './useTasks.js';
 
@@ -30,7 +31,20 @@ function StatusBadge({ status }: { status: string }): React.JSX.Element {
 
 export function App(): React.JSX.Element {
   const { tasks, loading, error } = useTasks();
-  const { user, loading: authLoading, login, logout } = useAuth();
+  const { user, loading: authLoading, error: authError, login, logout } = useAuth();
+  const [loggingOut, setLoggingOut] = useState(false);
+
+  const handleLogout = async (): Promise<void> => {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    try {
+      await logout();
+    } catch {
+      // keep user logged in on failure
+    } finally {
+      setLoggingOut(false);
+    }
+  };
 
   return (
     <main
@@ -41,24 +55,39 @@ export function App(): React.JSX.Element {
           <h1 style={{ fontSize: 22 }}>OpenCode Platform</h1>
           <StatusBadge status={loading ? 'running' : 'queued'} />
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          {authLoading ? null : user ? (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            minWidth: 140,
+            justifyContent: 'flex-end',
+          }}
+        >
+          {authLoading ? (
+            <span style={{ fontSize: 12, opacity: 0.6 }}>Checking session…</span>
+          ) : authError ? (
+            <span style={{ fontSize: 12, color: '#d9534f' }}>{authError}</span>
+          ) : user ? (
             <>
               <span style={{ fontSize: 13 }}>
-                {user.login} ({user.role})
+                {user.login} (
+                {['admin', 'reviewer', 'viewer'].includes(user.role) ? user.role : 'reviewer'})
               </span>
               <button
                 type="button"
-                onClick={() => void logout()}
+                onClick={() => void handleLogout()}
+                disabled={loggingOut}
                 style={{
                   padding: '4px 10px',
                   borderRadius: 6,
                   border: '1px solid #ccc',
-                  cursor: 'pointer',
+                  cursor: loggingOut ? 'not-allowed' : 'pointer',
                   fontSize: 12,
+                  opacity: loggingOut ? 0.6 : 1,
                 }}
               >
-                Logout
+                {loggingOut ? '...' : 'Logout'}
               </button>
             </>
           ) : (

@@ -12,6 +12,9 @@ import jwt from 'jsonwebtoken';
 /** Session cookie name. */
 export const SESSION_COOKIE = 'opencode_platform_session';
 
+/** Allowed session roles. */
+export type SessionRole = 'admin' | 'reviewer' | 'viewer';
+
 /** Payload embedded in the session JWT. */
 export interface SessionPayload {
   /** Internal user UUID. */
@@ -21,7 +24,7 @@ export interface SessionPayload {
   /** GitHub login. */
   login: string;
   /** Role (admin | reviewer | viewer). */
-  role: string;
+  role: SessionRole;
 }
 
 /**
@@ -36,7 +39,7 @@ export function signSession(
   secret: string,
   ttlSeconds = 12 * 3600,
 ): string {
-  return jwt.sign(payload, secret, { expiresIn: ttlSeconds });
+  return jwt.sign(payload, secret, { algorithm: 'HS256', expiresIn: ttlSeconds });
 }
 
 /**
@@ -47,7 +50,15 @@ export function signSession(
  */
 export function verifySession(token: string, secret: string): SessionPayload | null {
   try {
-    const decoded = jwt.verify(token, secret) as SessionPayload;
+    const decoded = jwt.verify(token, secret, { algorithms: ['HS256'] }) as SessionPayload;
+    if (
+      typeof decoded.sub !== 'string' ||
+      typeof decoded.githubId !== 'number' ||
+      typeof decoded.login !== 'string' ||
+      !['admin', 'reviewer', 'viewer'].includes(decoded.role)
+    ) {
+      return null;
+    }
     return decoded;
   } catch {
     return null;
@@ -59,13 +70,19 @@ export function verifySession(token: string, secret: string): SessionPayload | n
  * @param res - The Express response.
  * @param token - The signed JWT.
  * @param secure - Whether the cookie should be HTTPS-only.
+ * @param ttlSeconds - Cookie lifetime in seconds (default 12h, should match JWT ttl).
  */
-export function setSessionCookie(res: Response, token: string, secure: boolean): void {
+export function setSessionCookie(
+  res: Response,
+  token: string,
+  secure: boolean,
+  ttlSeconds = 12 * 3600,
+): void {
   res.cookie(SESSION_COOKIE, token, {
     httpOnly: true,
     secure,
     sameSite: 'lax',
-    maxAge: 12 * 3600 * 1000,
+    maxAge: ttlSeconds * 1000,
     path: '/',
   });
 }
@@ -73,9 +90,10 @@ export function setSessionCookie(res: Response, token: string, secure: boolean):
 /**
  * Clear the session cookie.
  * @param res - The Express response.
+ * @param secure - Whether the cookie should be HTTPS-only (must match set).
  */
-export function clearSessionCookie(res: Response): void {
-  res.clearCookie(SESSION_COOKIE, { httpOnly: true, path: '/' });
+export function clearSessionCookie(res: Response, secure = false): void {
+  res.clearCookie(SESSION_COOKIE, { httpOnly: true, secure, sameSite: 'lax', path: '/' });
 }
 
 /**

@@ -32,6 +32,7 @@ export async function upsertUser(
   db: PlatformDb,
   user: { id: number; login: string; avatar?: string | null },
 ): Promise<UserRow> {
+  const avatar = user.avatar?.trim() ? user.avatar : null;
   const rows = await db.query<UserRow>(
     `INSERT INTO users (github_id, github_login, avatar_url)
      VALUES ($1, $2, $3)
@@ -40,8 +41,9 @@ export async function upsertUser(
        avatar_url = EXCLUDED.avatar_url,
        updated_at = NOW()
      RETURNING *`,
-    [user.id, user.login, user.avatar ?? null],
+    [user.id, user.login, avatar],
   );
+  if (!rows.length) throw new Error('Failed to upsert user');
   return rows[0];
 }
 
