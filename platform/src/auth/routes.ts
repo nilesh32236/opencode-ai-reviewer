@@ -75,20 +75,38 @@ export function createAuthRouter(db: PlatformDb, opts: AuthOptions): Router {
       res.status(501).json({ error: 'Authentication not configured' });
       return;
     }
+    const clearStateCookie = (): void => {
+      res.clearCookie('opencode_oauth_state', {
+        httpOnly: true,
+        secure: opts.secureCookie,
+        sameSite: 'lax',
+        path: '/',
+      });
+    };
+    const oauthError = typeof req.query.error === 'string' ? req.query.error : undefined;
+    if (oauthError) {
+      clearStateCookie();
+      res.status(401).json({ error: `OAuth: ${oauthError}` });
+      return;
+    }
     const state = typeof req.query.state === 'string' ? req.query.state : undefined;
     const code = typeof req.query.code === 'string' ? req.query.code : undefined;
     if (!code) {
+      clearStateCookie();
       res.status(400).json({ error: 'Missing code' });
       return;
     }
     const expectedState = req.cookies?.opencode_oauth_state as string | undefined;
     if (!expectedState || !state || expectedState !== state) {
+      clearStateCookie();
       res.status(401).json({ error: 'Invalid state' });
       return;
     }
-    res.clearCookie('opencode_oauth_state', { httpOnly: true, path: '/' });
+    clearStateCookie();
     try {
-      // Exchange the code for an access token.
+      // Exchange the code for an access token (10s timeout).
+      const tokenCtrl = new AbortController();
+      const tokenTimer = setTimeout(() => tokenCtrl.abort(), 10_000);
       const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -96,8 +114,11 @@ export function createAuthRouter(db: PlatformDb, opts: AuthOptions): Router {
           client_id: opts.clientId,
           client_secret: opts.clientSecret,
           code,
+          redirect_uri: `${opts.baseUrl}/auth/callback`,
         }),
+        signal: tokenCtrl.signal,
       });
+      clearTimeout(tokenTimer);
       if (!tokenRes.ok) {
         res.status(502).json({ error: 'OAuth exchange failed' });
         return;
@@ -113,10 +134,14 @@ export function createAuthRouter(db: PlatformDb, opts: AuthOptions): Router {
         return;
       }
 
-      // Fetch the GitHub profile.
+      // Fetch the GitHub profile (10s timeout).
+      const userCtrl = new AbortController();
+      const userTimer = setTimeout(() => userCtrl.abort(), 10_000);
       const userRes = await fetch('https://api.github.com/user', {
         headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/vnd.github+json' },
+        signal: userCtrl.signal,
       });
+      clearTimeout(userTimer);
       if (!userRes.ok) {
         res.status(502).json({ error: 'Failed to fetch GitHub profile' });
         return;
@@ -160,15 +185,19 @@ export function createAuthRouter(db: PlatformDb, opts: AuthOptions): Router {
     }
     const session = readSession(req, opts.sessionSecret as string);
     if (!session) {
+      res.set('Cache-Control', 'no-store');
       res.status(401).json({ error: 'Not authenticated' });
       return;
     }
     try {
       const user = await getUserById(db, session.sub);
       if (!user) {
+        clearSessionCookie(res, opts.secureCookie);
+        res.set('Cache-Control', 'no-store');
         res.status(401).json({ error: 'User not found' });
         return;
       }
+      res.set('Cache-Control', 'no-store');
       res.json({
         id: user.id,
         login: user.github_login,

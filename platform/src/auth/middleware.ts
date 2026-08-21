@@ -15,6 +15,8 @@ export interface AuthedRequest extends Request {
   session?: SessionPayload;
 }
 
+const RANK: Record<'viewer' | 'reviewer' | 'admin', number> = { viewer: 1, reviewer: 2, admin: 3 };
+
 /**
  * Require a valid session for the request. When auth is disabled (no secret),
  * requests pass through unauthenticated so the platform works behind a trusted
@@ -31,6 +33,12 @@ export function requireAuth(secret: string | undefined) {
     }
     const session = readSession(req, secret);
     if (!session) {
+      res.clearCookie('opencode_session', {
+        httpOnly: true,
+        secure: req.secure,
+        sameSite: 'lax',
+        path: '/',
+      });
       res.status(401).json({ error: 'Not authenticated' });
       return;
     }
@@ -51,8 +59,7 @@ export function requireRole(minRole: 'viewer' | 'reviewer' | 'admin') {
       res.status(401).json({ error: 'Not authenticated' });
       return;
     }
-    const rank: Record<string, number> = { viewer: 1, reviewer: 2, admin: 3 };
-    if ((rank[role] ?? 0) < (rank[minRole] ?? 0)) {
+    if ((RANK[role as keyof typeof RANK] ?? 0) < RANK[minRole]) {
       res.status(403).json({ error: 'Insufficient permissions' });
       return;
     }

@@ -38,6 +38,15 @@ const DASHBOARD_RATE_LIMIT = rateLimit({
   message: { error: 'Too many requests' },
 });
 
+/** Stricter rate limiter for auth routes (OAuth/login) to prevent abuse. */
+const AUTH_RATE_LIMIT = rateLimit({
+  windowMs: 60_000,
+  limit: 30,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Too many requests' },
+});
+
 /** Health response payload. */
 export interface HealthResponse {
   /** Overall status: 'ok' | 'degraded' | 'error'. */
@@ -151,14 +160,19 @@ export function createPlatformServer(
   // (no session secret), requireAuth passes through so the platform works
   // behind a trusted reverse proxy.
   const sessionSecret = deps.auth?.sessionSecret;
+  if (!sessionSecret) {
+    logger.warn('auth disabled: SESSION_SECRET empty — /api is open (trusted reverse-proxy mode)');
+  }
   if (deps.db && deps.auth) {
-    app.use('/auth', createAuthRouter(deps.db, deps.auth));
+    app.use('/auth', AUTH_RATE_LIMIT, createAuthRouter(deps.db, deps.auth));
   }
 
-  // Dashboard REST API + SSE events (mounted when a DB is available).
+  // Dashboard REST API + SSE events (mounted when a DB is available). Use a
+  // single requireAuth instance so each request verifies the JWT once.
   if (deps.db) {
-    app.use('/api', requireAuth(sessionSecret), createApiRouter(deps.db, deps.queue ?? null));
-    app.use('/api', requireAuth(sessionSecret), createEventsRouter(deps.db));
+    const apiAuth = requireAuth(sessionSecret);
+    app.use('/api', apiAuth, createApiRouter(deps.db, deps.queue ?? null));
+    app.use('/api', apiAuth, createEventsRouter(deps.db));
   }
 
   // Serve the built dashboard (platform/web/dist) when present. Assets are

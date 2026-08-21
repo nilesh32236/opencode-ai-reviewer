@@ -36,7 +36,7 @@ export function useAuth(): {
     try {
       const res = await fetch('/auth/me', { credentials: 'include' });
       if (!res.ok) {
-        if (res.status !== 401) setError(`Auth check failed: ${res.status}`);
+        if (res.status !== 401 && res.status !== 501) setError(`Auth check failed: ${res.status}`);
         setUser(null);
         return;
       }
@@ -54,8 +54,10 @@ export function useAuth(): {
     const ac = new AbortController();
     fetch('/auth/me', { credentials: 'include', signal: ac.signal })
       .then((res) => {
+        if (ac.signal.aborted) return null;
         if (!res.ok) {
-          if (res.status !== 401) setError(`Auth check failed: ${res.status}`);
+          if (res.status !== 401 && res.status !== 501)
+            setError(`Auth check failed: ${res.status}`);
           return null;
         }
         return res.json() as Promise<unknown>;
@@ -66,6 +68,7 @@ export function useAuth(): {
         else setUser(null);
       })
       .catch((e) => {
+        if (ac.signal.aborted) return;
         if ((e as Error).name !== 'AbortError') setUser(null);
       })
       .finally(() => {

@@ -32,7 +32,7 @@ export async function upsertUser(
   db: PlatformDb,
   user: { id: number; login: string; avatar?: string | null },
 ): Promise<UserRow> {
-  const avatar = user.avatar?.trim() ? user.avatar : null;
+  const avatar = user.avatar?.trim() || null;
   const rows = await db.query<UserRow>(
     `INSERT INTO users (github_id, github_login, avatar_url)
      VALUES ($1, $2, $3)
