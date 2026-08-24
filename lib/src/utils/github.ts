@@ -2148,7 +2148,7 @@ export class GitHubHelper implements PlatformAdapter {
     const files = await this.api<Array<{ filename: string }>>(`/pulls/${prNumber}/files`);
     const filePaths: string[] = [];
     for (const f of files) {
-      if (typeof f.filename === 'string') {
+      if (typeof f.filename === 'string' && f.filename.length > 0) {
         filePaths.push(f.filename);
       }
     }

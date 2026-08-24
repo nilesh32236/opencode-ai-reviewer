@@ -506,7 +506,7 @@ export async function queryOSV(
     const references: string[] = [];
     if (vuln.references) {
       for (const r of vuln.references) {
-        if (r.url) {
+        if (typeof r.url === 'string' && r.url.length > 0) {
           references.push(r.url);
         }
       }
