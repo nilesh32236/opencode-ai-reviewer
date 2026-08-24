@@ -502,6 +502,16 @@ export async function queryOSV(
     const vuln = byId.get(match.id);
     if (!vuln) continue; // advisory removed from the database
     const { severity, cvssScore } = resolveSeverity(vuln);
+
+    const references: string[] = [];
+    if (vuln.references) {
+      for (const r of vuln.references) {
+        if (r.url) {
+          references.push(r.url);
+        }
+      }
+    }
+
     results.push({
       dependency,
       id: vuln.id,
@@ -510,7 +520,7 @@ export async function queryOSV(
       severity,
       cvssScore,
       fixedVersion: extractFixedVersion(vuln, dependency),
-      references: (vuln.references ?? []).map((r) => r.url ?? '').filter(Boolean),
+      references,
     });
   }
   return results;

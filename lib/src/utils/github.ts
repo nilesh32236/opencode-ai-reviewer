@@ -2146,7 +2146,13 @@ export class GitHubHelper implements PlatformAdapter {
    */
   async getPRFilePaths(prNumber: number): Promise<string[]> {
     const files = await this.api<Array<{ filename: string }>>(`/pulls/${prNumber}/files`);
-    return files.map((f) => f.filename).filter((f): f is string => typeof f === 'string');
+    const filePaths: string[] = [];
+    for (const f of files) {
+      if (typeof f.filename === 'string') {
+        filePaths.push(f.filename);
+      }
+    }
+    return filePaths;
   }
 }
 
