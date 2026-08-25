@@ -114,6 +114,8 @@ export interface ActionInputs {
   fixModel: string;
   /** Whether the fix_model input was explicitly set by the workflow. */
   fixModelExplicit: boolean;
+  /** Whether the global model input was explicitly set by the workflow. */
+  globalModelExplicit: boolean;
   /** Model identifier for audit operations. */
   auditModel?: string;
   /** Model identifier for synthesis of collated batch results. */
@@ -279,6 +281,7 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
 
   const mode = modeStr as ActionMode;
   const globalModel = core.getInput('model').trim();
+  const globalModelExplicit = globalModel.length > 0;
 
   // GitHub Actions inputs are not trimmed by default, so normalize each model
   // value before validation to avoid confusing "Invalid model format" errors
@@ -488,6 +491,7 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     reviewModelExplicit: reviewModelInput !== undefined,
     fixModel,
     fixModelExplicit: fixModelInput !== undefined,
+    globalModelExplicit,
     auditModel,
     synthesisModel,
     verificationModel,
