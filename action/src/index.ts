@@ -163,9 +163,13 @@ async function run(): Promise<void> {
 
     const config: AgentConfig = {
       ...DEFAULT_CONFIG,
-      reviewModel: inputs.reviewModel,
-      fixModel: inputs.fixModel,
-      auditModel: inputs.auditModel,
+      reviewModel: inputs.reviewModelExplicit
+        ? inputs.reviewModel
+        : (loadedConfig?.reviewModel ?? inputs.reviewModel),
+      fixModel: inputs.fixModelExplicit
+        ? inputs.fixModel
+        : (loadedConfig?.fixModel ?? inputs.fixModel),
+      auditModel: inputs.auditModel ?? loadedConfig?.auditModel,
       synthesisModel: inputs.synthesisModel,
       verificationModel: inputs.verificationModel,
       metaReviewModel: inputs.metaReviewModel,

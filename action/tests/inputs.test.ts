@@ -1,14 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockGetInput, mockWarning } = vi.hoisted(() => {
+const { mockGetInput, mockWarning, mockInfo } = vi.hoisted(() => {
   const _mockGetInput = vi.fn();
   const _mockWarning = vi.fn();
-  return { mockGetInput: _mockGetInput, mockWarning: _mockWarning };
+  const _mockInfo = vi.fn();
+  return { mockGetInput: _mockGetInput, mockWarning: _mockWarning, mockInfo: _mockInfo };
 });
 
 vi.mock('@actions/core', () => ({
   getInput: mockGetInput,
-  info: vi.fn(),
+  info: mockInfo,
   warning: mockWarning,
   error: vi.fn(),
   debug: vi.fn(),
@@ -34,12 +35,12 @@ describe('parseInputs() model validation', () => {
   });
 
   it('rejects an invalid review model', () => {
-    setInputs({ ...BASE_INPUTS, review_model: 'gpt-4o' });
+    setInputs({ ...BASE_INPUTS, review_model: 'openai/gpt 4o' });
     expect(() => parseInputs()).toThrow(/Invalid model format/);
   });
 
   it('rejects an invalid audit model when audit is enabled', () => {
-    setInputs({ ...BASE_INPUTS, mode: 'audit', audit_model: 'gpt-4o' });
+    setInputs({ ...BASE_INPUTS, mode: 'audit', audit_model: 'openai/gpt 4o' });
     expect(() => parseInputs()).toThrow(/Invalid model format/);
   });
 
@@ -47,16 +48,43 @@ describe('parseInputs() model validation', () => {
     setInputs({
       ...BASE_INPUTS,
       enable_meta_verification: 'true',
-      verification_model: 'gpt-4o',
+      verification_model: 'openai/gpt 4o',
     });
     expect(() => parseInputs()).toThrow(/Invalid model format/);
   });
 
   it('warns (does not throw) for an invalid model of a disabled feature', () => {
-    setInputs({ ...BASE_INPUTS, audit_model: 'gpt-4o' });
+    setInputs({ ...BASE_INPUTS, audit_model: 'openai/gpt 4o' });
     const inputs = parseInputs();
-    expect(inputs.auditModel).toBe('gpt-4o');
+    expect(inputs.auditModel).toBe('openai/gpt 4o');
     expect(mockWarning).toHaveBeenCalledWith(expect.stringContaining('disabled feature'));
+  });
+
+  it('resolves a bare review model against the default opencode provider', () => {
+    setInputs({ ...BASE_INPUTS, review_model: 'deepseek-v4-flash-free' });
+    const inputs = parseInputs();
+    expect(inputs.reviewModel).toBe('opencode/deepseek-v4-flash-free');
+    expect(inputs.reviewModelExplicit).toBe(true);
+    expect(mockInfo).toHaveBeenCalledWith(expect.stringContaining('no provider prefix'));
+  });
+
+  it('resolves the global model input for unset per-stage models', () => {
+    setInputs({ ...BASE_INPUTS, model: 'deepseek-v4-flash-free' });
+    const inputs = parseInputs();
+    expect(inputs.reviewModel).toBe('opencode/deepseek-v4-flash-free');
+    expect(inputs.fixModel).toBe('opencode/deepseek-v4-flash-free');
+    expect(inputs.auditModel).toBe('opencode/deepseek-v4-flash-free');
+  });
+
+  it('marks per-stage models explicit only when directly set', () => {
+    setInputs({ ...BASE_INPUTS, model: 'openai/gpt-4o' });
+    let inputs = parseInputs();
+    expect(inputs.reviewModel).toBe('openai/gpt-4o');
+    expect(inputs.reviewModelExplicit).toBe(false);
+
+    setInputs({ ...BASE_INPUTS, review_model: 'anthropic/claude-sonnet-4' });
+    inputs = parseInputs();
+    expect(inputs.reviewModelExplicit).toBe(true);
   });
 
   it('trims whitespace-padded model values', () => {
@@ -206,14 +234,14 @@ describe('parseInputs() docs mode', () => {
   });
 
   it('rejects an invalid docs_model when mode is docs', () => {
-    setInputs({ ...BASE_INPUTS, mode: 'docs', docs_model: 'gpt-4o' });
+    setInputs({ ...BASE_INPUTS, mode: 'docs', docs_model: 'openai/gpt 4o' });
     expect(() => parseInputs()).toThrow(/Invalid model format/);
   });
 
   it('warns (does not throw) for an invalid docs_model in review mode', () => {
-    setInputs({ ...BASE_INPUTS, docs_model: 'gpt-4o' });
+    setInputs({ ...BASE_INPUTS, docs_model: 'openai/gpt 4o' });
     const inputs = parseInputs();
-    expect(inputs.docsModel).toBe('gpt-4o');
+    expect(inputs.docsModel).toBe('openai/gpt 4o');
     expect(mockWarning).toHaveBeenCalledWith(expect.stringContaining('disabled feature'));
   });
 

@@ -20,7 +20,7 @@ inputs:
     required: false
 
   model:
-    description: 'Model to use (shorthand — sets review_model, fix_model, and audit_model, and serves as global fallback for all per-stage model inputs)'
+    description: 'Global fallback model — used for any per-stage model input that is not explicitly set. Bare names are prefixed with "opencode/" (e.g. "deepseek-v4-flash-free" resolves to "opencode/deepseek-v4-flash-free").'
     required: false
 
   openai_api_key:
@@ -80,14 +80,12 @@ inputs:
     required: false
 
   review_model:
-    description: 'Model to use for PR review'
+    description: 'Model to use for PR review (overrides the global `model` input). Defaults to `model`, then .opencode-reviewer.yml, then opencode/deepseek-v4-flash-free.'
     required: false
-    default: 'opencode/deepseek-v4-flash-free'
 
   fix_model:
-    description: 'Model to use for auto-fix'
+    description: 'Model to use for auto-fix (overrides the global `model` input). Defaults to `model`, then .opencode-reviewer.yml, then opencode/deepseek-v4-flash-free.'
     required: false
-    default: 'opencode/deepseek-v4-flash-free'
 
   audit_model:
     description: 'Model to use for codebase audit'
