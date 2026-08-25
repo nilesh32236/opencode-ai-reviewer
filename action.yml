@@ -20,7 +20,7 @@ inputs:
     required: false
 
   model:
-    description: 'Global fallback model — used for any per-stage model input that is not explicitly set. Bare names are prefixed with "opencode/" (e.g. "deepseek-v4-flash-free" resolves to "opencode/deepseek-v4-flash-free").'
+    description: 'Global fallback model — used for any per-stage model input that is not explicitly set. Bare names resolve against the configured default provider (llm_default_provider / llm.defaultProvider), falling back to opencode/.'
     required: false
 
   openai_api_key:
@@ -88,7 +88,7 @@ inputs:
     required: false
 
   audit_model:
-    description: 'Model to use for codebase audit'
+    description: 'Model to use for codebase audit (overrides the global `model` input). Defaults to `model`, then .opencode-reviewer.yml.'
     required: false
 
   synthesis_model:

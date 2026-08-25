@@ -47,16 +47,16 @@ The plan is to ship these `workflow_call` workflows so setup is a single `uses:`
 
 | Workflow | Description | Planned usage |
 |----------|-------------|---------------|
-| `review.yml` | AI-powered PR review | `uses: nilesh32236/opencode-ai-reviewer/.github/workflows/review.yml@v1` |
-| `audit.yml` | Full codebase audit | `uses: nilesh32236/opencode-ai-reviewer/.github/workflows/audit.yml@v1` |
-| `autofix.yml` | Review → fix → auto-merge loop | `uses: nilesh32236/opencode-ai-reviewer/.github/workflows/autofix.yml@v1` |
-| `setup.yml` | Onboarding setup validation | `uses: nilesh32236/opencode-ai-reviewer/.github/workflows/setup.yml@v1` or run manually / comment `/setup` |
+| `review.yml` | AI-powered PR review | `uses: .../review.yml@v1` _(planned — not yet available)_ |
+| `audit.yml` | Full codebase audit | `uses: .../audit.yml@v1` _(planned — not yet available)_ |
+| `autofix.yml` | Review → fix → auto-merge loop | `uses: .../autofix.yml@v1` _(planned — not yet available)_ |
+| `setup.yml` | Onboarding setup validation | `uses: .../setup.yml@v1` or run manually / comment `/setup` _(planned — not yet available)_ |
 
 Once shipped they will carry timeouts, concurrency guards, and zero-config defaults, with API keys accepted **only via GitHub Secrets** (`secrets: inherit` or an explicit `secrets:` mapping).
 
 > **Secrets configuration:** Configure `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `GEMINI_API_KEY` in your repository's *Settings → Secrets and variables → Actions* if you use OpenAI, Anthropic, or Gemini models. The default OpenCode model (`opencode/deepseek-v4-flash-free`) requires no external API key.
 >
-> **OpenCode gateway:** For `opencode-go/*` models (e.g. `opencode-go/deepseek-v4-flash`), configure the **`OPENCODE_API_KEY` secret** — pass it as `opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}`. The model itself is not a secret — read it from a repository **variable** so it can be changed without touching secrets: `model: ${{ vars.OPENCODE_MODEL || 'opencode/deepseek-v4-flash-free' }}` (add `OPENCODE_MODEL` under *Settings → Secrets and variables → Actions → Variables*). Bare names without a provider prefix are resolved against the default `opencode/` provider automatically.
+> **OpenCode gateway:** For `opencode-go/*` models (e.g. `opencode-go/deepseek-v4-flash`), configure the **`OPENCODE_API_KEY` secret** — pass it as `opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}`. The model itself is not a secret — read it from a repository **variable** so it can be changed without touching secrets: `model: ${{ vars.OPENCODE_MODEL || 'opencode/deepseek-v4-flash-free' }}` (add `OPENCODE_MODEL` under *Settings → Secrets and variables → Actions → Variables*). Bare names resolve against the configured default provider (`llm_default_provider` input / `llm.defaultProvider` config), falling back to the built-in `opencode/` provider — `opencode-go/*` models must always be fully qualified and cannot be selected by bare name.
 
 ### Option B: Direct Action Usage
 
@@ -135,7 +135,7 @@ docs:
 | `anthropic_api_key`      | —                                    | Anthropic API key — supply via `${{ secrets.ANTHROPIC_API_KEY }}` |
 | `gemini_api_key`         | —                                    | Google Gemini API key — supply via `${{ secrets.GEMINI_API_KEY }}` |
 | `opencode_api_key`       | —                                    | OpenCode gateway key for `opencode-go/*` models — supply via `${{ secrets.OPENCODE_API_KEY }}` |
-| `model`                  | —                                    | Global fallback model for any per-stage model input that is not set. Bare names are prefixed with the default `opencode/` provider (e.g. `deepseek-v4-flash-free` → `opencode/deepseek-v4-flash-free`). |
+| `model`                  | —                                    | Global fallback model for any per-stage model input that is not set. Bare names resolve against the configured default provider (`llm_default_provider` / `llm.defaultProvider`), falling back to `opencode/` (e.g. `deepseek-v4-flash-free` → `opencode/deepseek-v4-flash-free`); use `opencode-go/...` explicitly for gateway models. |
 | `review_model`           | _(falls back to `model` → `.opencode-reviewer.yml` → `opencode/deepseek-v4-flash-free`)_ | Model for PR review (overrides the global `model` input) |
 | `fix_model`              | _(falls back to `model` → `.opencode-reviewer.yml` → `opencode/deepseek-v4-flash-free`)_ | Model for auto-fix (overrides the global `model` input) |
 | `audit_model`            | _(falls back to `model` → `.opencode-reviewer.yml`)_ | Model for codebase audit                       |
