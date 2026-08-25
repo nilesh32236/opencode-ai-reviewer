@@ -9,6 +9,7 @@ import {
   getPlatformLoggerFactory,
   setPlatformLoggerFactory,
 } from '../src/utils/platform-logger.js';
+import { sanitizeString } from '../src/utils/sanitize.js';
 
 describe('ConsolePlatformLogger', () => {
   afterEach(() => {
@@ -50,6 +51,18 @@ describe('ConsolePlatformLogger', () => {
     const line = String(spy.mock.calls[0][0]);
     expect(line).not.toContain('ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop');
     expect(line).toContain('[REDACTED_GITHUB_TOKEN]');
+  });
+
+  it('redacts gateway and custom-provider API keys', () => {
+    const line = sanitizeString(
+      'OPENCODE_API_KEY=oc_key123 LLM_API_KEY:llm_secret456 AZURE_OPENAI_API_KEY="az-key-789"',
+    );
+    expect(line).not.toContain('oc_key123');
+    expect(line).not.toContain('llm_secret456');
+    expect(line).not.toContain('az-key-789');
+    expect(line).toContain('OPENCODE_API_KEY=[REDACTED]');
+    expect(line).toContain('LLM_API_KEY=[REDACTED]');
+    expect(line).toContain('AZURE_OPENAI_API_KEY=[REDACTED]');
   });
 
   it('respects setLevel for level filtering', () => {

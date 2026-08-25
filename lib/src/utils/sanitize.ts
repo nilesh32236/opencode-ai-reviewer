@@ -25,7 +25,7 @@ export function sanitizeString(input: string): string {
     .replace(/(xox[bpras]-\d+-)[a-zA-Z0-9-]+/g, '$1[REDACTED]')
     .replace(/x-access-token:[^@]+@/g, 'x-access-token:[REDACTED]@')
     .replace(
-      /(OPENAI_API_KEY|ANTHROPIC_API_KEY|GEMINI_API_KEY|GITHUB_TOKEN)[=":]+[^&\s'"]+/gi,
+      /(OPENAI_API_KEY|ANTHROPIC_API_KEY|GEMINI_API_KEY|GITHUB_TOKEN|GH_TOKEN|OPENCODE_API_KEY|LLM_API_KEY|AZURE_OPENAI_API_KEY)[=":]+[^&\s'"]+/gi,
       '$1=[REDACTED]',
     );
 }
