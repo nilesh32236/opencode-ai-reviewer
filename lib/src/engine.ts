@@ -141,12 +141,15 @@ export function computeChunkDelays(batchCount: number, concurrencyLimit: number)
 
 /**
  * Compute the expected number of `runOpenCode` invocations for a review.
- * Single-batch reviews run one pass; multi-batch reviews run one pass per
- * batch plus a final synthesis pass.
+ * Default path (single-process multi-agent): 1 call regardless of batch count.
+ * Legacy batch path: single-batch reviews run one pass; multi-batch reviews
+ * run one pass per batch plus a final synthesis pass.
  * @param batchCount - Number of file batches to process.
+ * @param legacyBatching - Whether the legacy concurrent-batch path is active.
  * @returns The expected number of OpenCode invocations.
  */
-export function expectedReviewOpenCodeCalls(batchCount: number): number {
+export function expectedReviewOpenCodeCalls(batchCount: number, legacyBatching = false): number {
+  if (!legacyBatching) return 1;
   return batchCount <= 1 ? 1 : batchCount + 1;
 }
 
@@ -1064,11 +1067,12 @@ export class ReviewEngine {
       }
     }
 
-    // Multi-agent review path (opt-in): dispatch specialized agents (security,
-    // performance, quality, logic) each with its own focused prompt, then
-    // consolidate their findings through the synthesis agent. Falls back to the
-    // legacy single-agent/batch path when multi-agent mode is disabled.
-    if (this.getActiveAgentCategories().length > 0) {
+    // Default: single-process multi-agent review (one `opencode run` that
+    // fans out to read-only subagents via the task tool). The legacy
+    // concurrent-batch fan-out (N+1 processes, MAX_BATCH_CONCURRENCY) is only
+    // used when `review.legacyBatching` is explicitly enabled.
+    const effectiveCategories = this.getEffectiveAgentCategories();
+    if (effectiveCategories.length > 0) {
       return await this.runMultiAgentReview(
         pr,
         files,
@@ -1565,6 +1569,26 @@ export class ReviewEngine {
   }
 
   /**
+   * Resolve the effective agent categories for a review, honoring the
+   * default single-process path. When `review.legacyBatching` is true the
+   * legacy concurrent-batch path is used (no multi-agent). When multi-agent
+   * is explicitly enabled the configured categories are used. Otherwise the
+   * default path injects the built-in category set (security, performance,
+   * quality, logic) so a default-config multi-batch PR runs as one process.
+   * @returns The effective agent categories, or [] when legacy batching is active.
+   */
+  private getEffectiveAgentCategories(): AgentCategory[] {
+    if (this.config.review.legacyBatching) return [];
+    const active = this.getActiveAgentCategories();
+    if (active.length > 0) return active;
+    // Opt-in with every category disabled → nothing to dispatch. multiAgent
+    // .enabled is always materialized (default false), so review.legacyBatching
+    // — not multiAgent.enabled — is the supported opt-out of this path.
+    if (this.config.multiAgent?.enabled === true) return [];
+    return [...AGENT_ORDER];
+  }
+
+  /**
    * Resolve the effective model for a specialized agent, preferring the
    * per-agent override, then the review model. The per-agent override is
    * validated at dispatch time: a malformed override (e.g. 'gpt-4o' with no
@@ -1665,7 +1689,7 @@ export class ReviewEngine {
     repoRulesContext?: string,
     commitMessages?: string,
   ): Promise<ReviewResult> {
-    const categories = this.getActiveAgentCategories();
+    const categories = this.getEffectiveAgentCategories();
     this.logger.info(
       `Multi-agent review (single-process subagent dispatch): ${categories.join(', ')}`,
     );
@@ -1723,6 +1747,16 @@ export class ReviewEngine {
     ensureOutputDir(finalOutputPath);
     const start = Date.now();
 
+    // Streamed callers receive verified parsed findings, never a run-status placeholder.
+    const notifyStream = async (result: ReviewResult): Promise<void> => {
+      if (!onBatchComplete) return;
+      await onBatchComplete(0, 1, result).catch((err) => {
+        this.logger.warn(
+          `Streaming batch callback failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    };
+
     // A thrown/rejected orchestrator run (model typo, CLI outage) must not
     // abort the review — degrade to a failed verdict like the legacy path.
     const runResult = await this.runLLM(prompt, {
@@ -1743,31 +1777,6 @@ export class ReviewEngine {
         completionTokens: undefined,
       };
     });
-
-    // Single completion hook (the subagent path has no per-batch granularity):
-    // fire one callback with the run result once the orchestrator settles so
-    // streamComments callers still get notified. Never breaks the pipeline.
-    if (onBatchComplete) {
-      const completion: ReviewResult = {
-        summary: 'Subagent review findings',
-        verdict: {
-          ready: false,
-          reasoning: '',
-          autoFixable: false,
-          confidence: 'medium',
-        },
-        strengths: [],
-        issues: [],
-        stats: { total: 0, critical: 0, important: 0, minor: 0 },
-        rawLines: [],
-        failedLines: 0,
-      };
-      await onBatchComplete(0, 1, completion).catch((err) => {
-        this.logger.warn(
-          `Streaming batch callback failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      });
-    }
 
     await this.recordTelemetry(
       pr.number,
@@ -1797,7 +1806,7 @@ export class ReviewEngine {
         },
         summary: 'The review could not be completed — the review agents failed.',
       };
-      return await this.verifyReviewResult(
+      const verifiedFailed = await this.verifyReviewResult(
         failed,
         baseContext,
         workDir,
@@ -1808,6 +1817,8 @@ export class ReviewEngine {
         files,
         scaIssues,
       );
+      await notifyStream(verifiedFailed);
+      return verifiedFailed;
     }
 
     // The orchestrator writes one consolidated JSONL. On parse failure or an
@@ -1893,7 +1904,7 @@ export class ReviewEngine {
       }
     }
 
-    return await this.verifyReviewResult(
+    const verified = await this.verifyReviewResult(
       result,
       baseContext,
       workDir,
@@ -1904,6 +1915,8 @@ export class ReviewEngine {
       files,
       scaIssues,
     );
+    await notifyStream(verified);
+    return verified;
   }
 
   /**

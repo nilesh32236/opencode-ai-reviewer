@@ -108,8 +108,14 @@ export interface ActionInputs {
   bedrockRegion?: string;
   /** Model identifier for review operations. */
   reviewModel: string;
+  /** Whether the review_model input was explicitly set by the workflow. */
+  reviewModelExplicit: boolean;
   /** Model identifier for fix operations. */
   fixModel: string;
+  /** Whether the fix_model input was explicitly set by the workflow. */
+  fixModelExplicit: boolean;
+  /** Whether the global model input was explicitly set by the workflow. */
+  globalModelExplicit: boolean;
   /** Model identifier for audit operations. */
   auditModel?: string;
   /** Model identifier for synthesis of collated batch results. */
@@ -275,6 +281,7 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
 
   const mode = modeStr as ActionMode;
   const globalModel = core.getInput('model').trim();
+  const globalModelExplicit = globalModel.length > 0;
 
   // GitHub Actions inputs are not trimmed by default, so normalize each model
   // value before validation to avoid confusing "Invalid model format" errors
@@ -320,7 +327,11 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     if (!value) return value;
     const trimmed = value.trim();
     if (trimmed.includes('/')) return trimmed;
-    if (!effectiveDefaultProvider?.trim()) return trimmed;
+    if (!effectiveDefaultProvider?.trim()) {
+      const prefixed = `opencode/${trimmed}`;
+      core.info(`Model "${trimmed}" has no provider prefix — using "${prefixed}".`);
+      return prefixed;
+    }
     const provider = effectiveDefaultProvider.trim();
     // Azure/Bedrock deployments are addressed by the deployment/model id, not
     // the bare model name: "llama3" + azure deployment "my-dep" → "azure/my-dep".
@@ -335,10 +346,11 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     return `${provider}/${trimmed}`;
   };
 
+  const reviewModelInput = modelInput('review_model');
+  const fixModelInput = modelInput('fix_model');
   const reviewModel =
-    resolveModel(modelInput('review_model') || globalModel) || 'opencode/deepseek-v4-flash-free';
-  const fixModel =
-    resolveModel(modelInput('fix_model') || globalModel) || 'opencode/deepseek-v4-flash-free';
+    resolveModel(reviewModelInput || globalModel) || 'opencode/deepseek-v4-flash-free';
+  const fixModel = resolveModel(fixModelInput || globalModel) || 'opencode/deepseek-v4-flash-free';
   const auditModel = resolveModel(modelInput('audit_model') || globalModel) || undefined;
   const synthesisModel = resolveModel(modelInput('synthesis_model') || globalModel) || undefined;
   const verificationModel =
@@ -476,7 +488,10 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     bedrockModelId: core.getInput('aws_bedrock_model_id') || undefined,
     bedrockRegion: core.getInput('aws_region') || undefined,
     reviewModel,
+    reviewModelExplicit: reviewModelInput !== undefined,
     fixModel,
+    fixModelExplicit: fixModelInput !== undefined,
+    globalModelExplicit,
     auditModel,
     synthesisModel,
     verificationModel,

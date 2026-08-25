@@ -272,7 +272,12 @@ describe('Review Pipeline Integration', () => {
     });
 
     engine = new ReviewEngine(
-      makeAgentConfig({ batchSize: 3, enableMCP: false, mcpServers: [] }),
+      makeAgentConfig({
+        batchSize: 3,
+        enableMCP: false,
+        mcpServers: [],
+        review: { legacyBatching: true },
+      }),
       gh,
     );
 
@@ -306,7 +311,14 @@ describe('Review Pipeline Integration', () => {
   });
 
   it('c) OpenCode CLI failure — pre-batch failure', async () => {
-    engine = new ReviewEngine(makeAgentConfig({ enableMCP: false, mcpServers: [] }), gh);
+    engine = new ReviewEngine(
+      makeAgentConfig({
+        enableMCP: false,
+        mcpServers: [],
+        review: { legacyBatching: true },
+      }),
+      gh,
+    );
     const pr = makePRContext();
 
     fixtureQueue.push({ content: undefined, success: false });
@@ -330,7 +342,12 @@ describe('Review Pipeline Integration', () => {
     });
 
     engine = new ReviewEngine(
-      makeAgentConfig({ batchSize: 3, enableMCP: false, mcpServers: [] }),
+      makeAgentConfig({
+        batchSize: 3,
+        enableMCP: false,
+        mcpServers: [],
+        review: { legacyBatching: true },
+      }),
       gh,
     );
 
@@ -360,7 +377,12 @@ describe('Review Pipeline Integration', () => {
     });
 
     engine = new ReviewEngine(
-      makeAgentConfig({ batchSize: 3, enableMCP: false, mcpServers: [] }),
+      makeAgentConfig({
+        batchSize: 3,
+        enableMCP: false,
+        mcpServers: [],
+        review: { legacyBatching: true },
+      }),
       gh,
     );
 
@@ -378,7 +400,14 @@ describe('Review Pipeline Integration', () => {
   });
 
   it('f) JSONL parse failure — main review (malformed output)', async () => {
-    engine = new ReviewEngine(makeAgentConfig({ enableMCP: false, mcpServers: [] }), gh);
+    engine = new ReviewEngine(
+      makeAgentConfig({
+        enableMCP: false,
+        mcpServers: [],
+        review: { legacyBatching: true },
+      }),
+      gh,
+    );
     const pr = makePRContext();
 
     fixtureQueue.push({ content: 'this is not valid json line 1\nnor is this' });
@@ -401,7 +430,12 @@ describe('Review Pipeline Integration', () => {
     });
 
     engine = new ReviewEngine(
-      makeAgentConfig({ batchSize: 3, enableMCP: false, mcpServers: [] }),
+      makeAgentConfig({
+        batchSize: 3,
+        enableMCP: false,
+        mcpServers: [],
+        review: { legacyBatching: true },
+      }),
       gh,
     );
 
@@ -430,7 +464,12 @@ describe('Review Pipeline Integration', () => {
     });
 
     engine = new ReviewEngine(
-      makeAgentConfig({ batchSize: 3, enableMCP: false, mcpServers: [] }),
+      makeAgentConfig({
+        batchSize: 3,
+        enableMCP: false,
+        mcpServers: [],
+        review: { legacyBatching: true },
+      }),
       gh,
     );
 
@@ -601,6 +640,7 @@ describe('Review Pipeline Integration', () => {
           requireVerdict: DEFAULT_CONFIG.review.requireVerdict,
           commandTriggers: DEFAULT_CONFIG.review.commandTriggers,
           enableMetaVerification: DEFAULT_CONFIG.review.enableMetaVerification,
+          legacyBatching: true,
         },
       }),
       gh,
@@ -661,6 +701,27 @@ describe('Review Pipeline Integration', () => {
       }
     }
 
+    expect(result).toBeDefined();
+  });
+
+  it('j2) default config (no legacyBatching) runs multi-batch PR as one process', async () => {
+    const pr = makePRContext({
+      changedFiles: Array.from({ length: 5 }, (_, i) => ({
+        path: `src/app/module${i}.ts`,
+        status: 'modified' as const,
+        additions: 10,
+        deletions: 2,
+        patch: `@@ -1 +1 @@\n-old${i}\n+new${i}`,
+      })),
+    });
+
+    engine = new ReviewEngine(makeAgentConfig({ enableMCP: false, mcpServers: [] }), gh);
+
+    fixtureQueue.push({ content: SAMPLE_BATCH_A_JSONL });
+
+    const result = await engine.reviewPR(pr);
+
+    expect(mockRunOpenCode).toHaveBeenCalledTimes(1);
     expect(result).toBeDefined();
   });
 

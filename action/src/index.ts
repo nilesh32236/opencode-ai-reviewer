@@ -161,19 +161,69 @@ async function run(): Promise<void> {
 
     const mergedDefaults = mergeConfigWithInputs(loadedConfig, {});
 
+    // Stage-model precedence: explicit per-stage input > global model input >
+    // .opencode-reviewer.yml > built-in default (undefined → engine fallback).
+    // Per-stage inputs already fold the global model in via parseInputs, so a
+    // stage value is "explicit or global"; only globalModelExplicit tells them
+    // apart, and a global model must outrank the config file.
+    const resolveStageModel = (
+      stageExplicit: boolean | undefined,
+      stageValue: string | undefined,
+      configValue: string | undefined,
+    ): string | undefined => {
+      if (stageExplicit) return stageValue;
+      if (inputs?.globalModelExplicit) return stageValue;
+      return configValue ?? stageValue;
+    };
+
     const config: AgentConfig = {
       ...DEFAULT_CONFIG,
-      reviewModel: inputs.reviewModel,
-      fixModel: inputs.fixModel,
-      auditModel: inputs.auditModel,
-      synthesisModel: inputs.synthesisModel,
-      verificationModel: inputs.verificationModel,
-      metaReviewModel: inputs.metaReviewModel,
-      explanationModel: inputs.explanationModel,
-      conversationModel: inputs.conversationModel,
-      analysisModel: inputs.analysisModel,
-      docsModel: inputs.docsModel,
-      describeModel: inputs.describeModel,
+      reviewModel:
+        resolveStageModel(
+          inputs.reviewModelExplicit,
+          inputs.reviewModel,
+          loadedConfig?.reviewModel,
+        ) ?? DEFAULT_CONFIG.reviewModel,
+      fixModel:
+        resolveStageModel(inputs.fixModelExplicit, inputs.fixModel, loadedConfig?.fixModel) ??
+        DEFAULT_CONFIG.fixModel,
+      auditModel: resolveStageModel(undefined, inputs.auditModel, loadedConfig?.auditModel),
+      synthesisModel: resolveStageModel(
+        undefined,
+        inputs.synthesisModel,
+        loadedConfig?.synthesisModel,
+      ),
+      verificationModel: resolveStageModel(
+        undefined,
+        inputs.verificationModel,
+        loadedConfig?.verificationModel,
+      ),
+      metaReviewModel: resolveStageModel(
+        undefined,
+        inputs.metaReviewModel,
+        loadedConfig?.metaReviewModel,
+      ),
+      explanationModel: resolveStageModel(
+        undefined,
+        inputs.explanationModel,
+        loadedConfig?.explanationModel,
+      ),
+      conversationModel: resolveStageModel(
+        undefined,
+        inputs.conversationModel,
+        loadedConfig?.conversationModel,
+      ),
+      analysisModel: resolveStageModel(
+        undefined,
+        inputs.analysisModel,
+        loadedConfig?.analysisModel,
+      ),
+      docsModel: resolveStageModel(undefined, inputs.docsModel, loadedConfig?.docsModel),
+      describeModel: resolveStageModel(
+        undefined,
+        inputs.describeModel,
+        loadedConfig?.describeModel,
+      ),
       batchSize: inputs.maxFilesPerBatch,
       maxLinesPerFile: inputs.maxLinesPerFile,
       maxIterations: loadedConfig?.fix?.maxIterations ?? inputs.maxFixIterations,
@@ -193,6 +243,8 @@ async function run(): Promise<void> {
         inline: loadedConfig?.review?.inline ?? inputs.reviewInline,
         streamComments: inputs.streamComments,
         streamBatchSize: inputs.streamBatchSize,
+        legacyBatching:
+          loadedConfig?.review?.legacyBatching ?? DEFAULT_CONFIG.review.legacyBatching,
         // When the workflow explicitly sets fail_on_severity it is authoritative
         // so a PR cannot disable its own gate by editing .opencode-reviewer.yml.
         // Only when the input is omitted does the repo config value apply.

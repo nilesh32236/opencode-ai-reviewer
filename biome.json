@@ -39,6 +39,7 @@
   "files": {
     "ignore": [
       ".opencode",
+      ".omo",
       "dist",
       "eslint.config.mjs",
       "action/lib",

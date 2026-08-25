@@ -33,6 +33,7 @@ import {
 import { PromptConfigSchema } from './types/schemas.js';
 import { DEFAULT_ALLOWLIST } from './utils/command.js';
 import { Logger } from './utils/logger.js';
+import { validateModelString } from './utils/model-string.js';
 
 /**
  * Shape descriptor used to detect unknown keys in a raw config object.
@@ -55,6 +56,17 @@ const CATEGORY_OVERRIDE_SHAPE: Record<string, ConfigShape> = {
 
 const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
   platform: null,
+  reviewModel: null,
+  fixModel: null,
+  auditModel: null,
+  docsModel: null,
+  synthesisModel: null,
+  verificationModel: null,
+  metaReviewModel: null,
+  explanationModel: null,
+  conversationModel: null,
+  analysisModel: null,
+  describeModel: null,
   review: {
     skipLabels: null,
     skipActors: null,
@@ -73,6 +85,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     suggestTitleAndLabels: null,
     streamComments: null,
     streamBatchSize: null,
+    legacyBatching: null,
     tokenBudget: null,
     budget: null,
     costTracking: null,
@@ -458,6 +471,9 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     }
     if (typeof config.review.streamBatchSize === 'number' && config.review.streamBatchSize >= 0) {
       result.review.streamBatchSize = config.review.streamBatchSize;
+    }
+    if (typeof config.review.legacyBatching === 'boolean') {
+      result.review.legacyBatching = config.review.legacyBatching;
     }
     if (
       config.review.failOnSeverity === 'off' ||
@@ -1136,6 +1152,35 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     }
   }
 
+  const topLevelModelKeys = [
+    'reviewModel',
+    'fixModel',
+    'auditModel',
+    'docsModel',
+    'synthesisModel',
+    'verificationModel',
+    'metaReviewModel',
+    'explanationModel',
+    'conversationModel',
+    'analysisModel',
+    'describeModel',
+  ] as const;
+  for (const key of topLevelModelKeys) {
+    const raw = config[key];
+    if (typeof raw !== 'string' || raw.trim() === '') continue;
+    const trimmed = raw.trim();
+    // Mirror the action input path: bare names resolve against opencode/.
+    const normalized = trimmed.includes('/') ? trimmed : `opencode/${trimmed}`;
+    try {
+      validateModelString(normalized);
+      result[key] = normalized;
+    } catch {
+      core.warning(
+        `Ignoring invalid ${key} "${raw}" in config file: expected provider/name format.`,
+      );
+    }
+  }
+
   return result;
 }
 
@@ -1201,6 +1246,25 @@ function extractDefaultsFromConfig(config: PromptConfig): Record<string, unknown
     ]
       .filter(Boolean)
       .join('\n');
+  }
+
+  const topLevelModelKeys = [
+    'reviewModel',
+    'fixModel',
+    'auditModel',
+    'docsModel',
+    'synthesisModel',
+    'verificationModel',
+    'metaReviewModel',
+    'explanationModel',
+    'conversationModel',
+    'analysisModel',
+    'describeModel',
+  ] as const;
+  for (const key of topLevelModelKeys) {
+    if (typeof config[key] === 'string' && (config[key] as string).trim() !== '') {
+      defaults[key] = config[key];
+    }
   }
 
   return defaults;

@@ -42,8 +42,14 @@ export interface ActionInputs {
     bedrockRegion?: string;
     /** Model identifier for review operations. */
     reviewModel: string;
+    /** Whether the review_model input was explicitly set by the workflow. */
+    reviewModelExplicit: boolean;
     /** Model identifier for fix operations. */
     fixModel: string;
+    /** Whether the fix_model input was explicitly set by the workflow. */
+    fixModelExplicit: boolean;
+    /** Whether the global model input was explicitly set by the workflow. */
+    globalModelExplicit: boolean;
     /** Model identifier for audit operations. */
     auditModel?: string;
     /** Model identifier for synthesis of collated batch results. */
