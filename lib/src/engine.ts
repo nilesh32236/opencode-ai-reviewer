@@ -141,12 +141,15 @@ export function computeChunkDelays(batchCount: number, concurrencyLimit: number)
 
 /**
  * Compute the expected number of `runOpenCode` invocations for a review.
- * Single-batch reviews run one pass; multi-batch reviews run one pass per
- * batch plus a final synthesis pass.
+ * Default path (single-process multi-agent): 1 call regardless of batch count.
+ * Legacy batch path: single-batch reviews run one pass; multi-batch reviews
+ * run one pass per batch plus a final synthesis pass.
  * @param batchCount - Number of file batches to process.
+ * @param legacyBatching - Whether the legacy concurrent-batch path is active.
  * @returns The expected number of OpenCode invocations.
  */
-export function expectedReviewOpenCodeCalls(batchCount: number): number {
+export function expectedReviewOpenCodeCalls(batchCount: number, legacyBatching = false): number {
+  if (!legacyBatching) return 1;
   return batchCount <= 1 ? 1 : batchCount + 1;
 }
 
@@ -1064,11 +1067,12 @@ export class ReviewEngine {
       }
     }
 
-    // Multi-agent review path (opt-in): dispatch specialized agents (security,
-    // performance, quality, logic) each with its own focused prompt, then
-    // consolidate their findings through the synthesis agent. Falls back to the
-    // legacy single-agent/batch path when multi-agent mode is disabled.
-    if (this.getActiveAgentCategories().length > 0) {
+    // Default: single-process multi-agent review (one `opencode run` that
+    // fans out to read-only subagents via the task tool). The legacy
+    // concurrent-batch fan-out (N+1 processes, MAX_BATCH_CONCURRENCY) is only
+    // used when `review.legacyBatching` is explicitly enabled.
+    const effectiveCategories = this.getEffectiveAgentCategories();
+    if (effectiveCategories.length > 0) {
       return await this.runMultiAgentReview(
         pr,
         files,
@@ -1565,6 +1569,23 @@ export class ReviewEngine {
   }
 
   /**
+   * Resolve the effective agent categories for a review, honoring the
+   * default single-process path. When `review.legacyBatching` is true the
+   * legacy concurrent-batch path is used (no multi-agent). When multi-agent
+   * is explicitly enabled the configured categories are used. Otherwise the
+   * default path injects the built-in category set (security, performance,
+   * quality, logic) so a default-config multi-batch PR runs as one process.
+   * @returns The effective agent categories, or [] when legacy batching is active.
+   */
+  private getEffectiveAgentCategories(): AgentCategory[] {
+    if (this.config.review.legacyBatching) return [];
+    const active = this.getActiveAgentCategories();
+    if (active.length > 0) return active;
+    if (this.config.multiAgent?.enabled) return [];
+    return [...AGENT_ORDER];
+  }
+
+  /**
    * Resolve the effective model for a specialized agent, preferring the
    * per-agent override, then the review model. The per-agent override is
    * validated at dispatch time: a malformed override (e.g. 'gpt-4o' with no
@@ -1665,7 +1686,7 @@ export class ReviewEngine {
     repoRulesContext?: string,
     commitMessages?: string,
   ): Promise<ReviewResult> {
-    const categories = this.getActiveAgentCategories();
+    const categories = this.getEffectiveAgentCategories();
     this.logger.info(
       `Multi-agent review (single-process subagent dispatch): ${categories.join(', ')}`,
     );

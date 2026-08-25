@@ -222,6 +222,9 @@ export const ReviewConfigSchema = z.object({
   suggestTitleAndLabels: z.boolean().optional().default(false),
   streamComments: z.boolean().optional().default(false),
   streamBatchSize: z.number().int().min(0).optional().default(0),
+  /** Use the legacy concurrent-batch fan-out (up to 8 processes) instead of the
+   * default single-process multi-agent subagent dispatch. Default: false. */
+  legacyBatching: z.boolean().default(false),
 });
 
 /** Zod schema validating audit configuration. */
@@ -604,6 +607,7 @@ export const PromptConfigSchema = z.object({
       suggestTitleAndLabels: z.boolean().optional(),
       streamComments: z.boolean().optional(),
       streamBatchSize: z.number().int().min(0).optional(),
+      legacyBatching: z.boolean().optional(),
     })
     .optional(),
   fix: z
@@ -683,4 +687,15 @@ export const PromptConfigSchema = z.object({
   secrets: SecretsConfigSchema.optional(),
   sca: SCAConfigSchema.optional(),
   llm: LLMConfigSchema.optional(),
+  reviewModel: z.string().optional(),
+  fixModel: z.string().optional(),
+  auditModel: z.string().optional(),
+  docsModel: z.string().optional(),
+  synthesisModel: z.string().optional(),
+  verificationModel: z.string().optional(),
+  metaReviewModel: z.string().optional(),
+  explanationModel: z.string().optional(),
+  conversationModel: z.string().optional(),
+  analysisModel: z.string().optional(),
+  describeModel: z.string().optional(),
 });

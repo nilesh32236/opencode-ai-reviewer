@@ -272,7 +272,12 @@ describe('Review Pipeline Integration', () => {
     });
 
     engine = new ReviewEngine(
-      makeAgentConfig({ batchSize: 3, enableMCP: false, mcpServers: [] }),
+      makeAgentConfig({
+        batchSize: 3,
+        enableMCP: false,
+        mcpServers: [],
+        review: { legacyBatching: true } as never,
+      }),
       gh,
     );
 
@@ -306,7 +311,14 @@ describe('Review Pipeline Integration', () => {
   });
 
   it('c) OpenCode CLI failure — pre-batch failure', async () => {
-    engine = new ReviewEngine(makeAgentConfig({ enableMCP: false, mcpServers: [] }), gh);
+    engine = new ReviewEngine(
+      makeAgentConfig({
+        enableMCP: false,
+        mcpServers: [],
+        review: { legacyBatching: true } as never,
+      }),
+      gh,
+    );
     const pr = makePRContext();
 
     fixtureQueue.push({ content: undefined, success: false });
@@ -330,7 +342,12 @@ describe('Review Pipeline Integration', () => {
     });
 
     engine = new ReviewEngine(
-      makeAgentConfig({ batchSize: 3, enableMCP: false, mcpServers: [] }),
+      makeAgentConfig({
+        batchSize: 3,
+        enableMCP: false,
+        mcpServers: [],
+        review: { legacyBatching: true } as never,
+      }),
       gh,
     );
 
@@ -360,7 +377,12 @@ describe('Review Pipeline Integration', () => {
     });
 
     engine = new ReviewEngine(
-      makeAgentConfig({ batchSize: 3, enableMCP: false, mcpServers: [] }),
+      makeAgentConfig({
+        batchSize: 3,
+        enableMCP: false,
+        mcpServers: [],
+        review: { legacyBatching: true } as never,
+      }),
       gh,
     );
 
@@ -378,7 +400,14 @@ describe('Review Pipeline Integration', () => {
   });
 
   it('f) JSONL parse failure — main review (malformed output)', async () => {
-    engine = new ReviewEngine(makeAgentConfig({ enableMCP: false, mcpServers: [] }), gh);
+    engine = new ReviewEngine(
+      makeAgentConfig({
+        enableMCP: false,
+        mcpServers: [],
+        review: { legacyBatching: true } as never,
+      }),
+      gh,
+    );
     const pr = makePRContext();
 
     fixtureQueue.push({ content: 'this is not valid json line 1\nnor is this' });
@@ -401,7 +430,12 @@ describe('Review Pipeline Integration', () => {
     });
 
     engine = new ReviewEngine(
-      makeAgentConfig({ batchSize: 3, enableMCP: false, mcpServers: [] }),
+      makeAgentConfig({
+        batchSize: 3,
+        enableMCP: false,
+        mcpServers: [],
+        review: { legacyBatching: true } as never,
+      }),
       gh,
     );
 
@@ -430,7 +464,12 @@ describe('Review Pipeline Integration', () => {
     });
 
     engine = new ReviewEngine(
-      makeAgentConfig({ batchSize: 3, enableMCP: false, mcpServers: [] }),
+      makeAgentConfig({
+        batchSize: 3,
+        enableMCP: false,
+        mcpServers: [],
+        review: { legacyBatching: true } as never,
+      }),
       gh,
     );
 
@@ -601,6 +640,7 @@ describe('Review Pipeline Integration', () => {
           requireVerdict: DEFAULT_CONFIG.review.requireVerdict,
           commandTriggers: DEFAULT_CONFIG.review.commandTriggers,
           enableMetaVerification: DEFAULT_CONFIG.review.enableMetaVerification,
+          legacyBatching: true,
         },
       }),
       gh,

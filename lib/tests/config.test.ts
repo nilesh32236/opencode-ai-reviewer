@@ -294,6 +294,19 @@ multiAgent:
       expect(result.audit?.categories).toEqual(['security', 'performance']);
     });
 
+    it('preserves valid top-level model overrides', () => {
+      const result = validateConfig({
+        reviewModel: 'opencode/deepseek-v4-flash-free',
+        fixModel: 'openai/gpt-4o',
+        auditModel: '',
+        verificationModel: 42,
+      } as never);
+      expect(result.reviewModel).toBe('opencode/deepseek-v4-flash-free');
+      expect(result.fixModel).toBe('openai/gpt-4o');
+      expect(result.auditModel).toBeUndefined();
+      expect(result.verificationModel).toBeUndefined();
+    });
+
     it('filters non-string project conventions', () => {
       const result = validateConfig({
         project: { conventions: ['good', null, 'bad'] },

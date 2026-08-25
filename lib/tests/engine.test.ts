@@ -229,6 +229,11 @@ function makePRContext(overrides: Partial<PRContext> = {}): PRContext {
 }
 
 function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
+  const overridesReview = (overrides.review || {}) as Record<string, unknown> & {
+    legacyBatching?: boolean;
+  };
+  const reviewLegacyBatching =
+    overridesReview.legacyBatching !== undefined ? overridesReview.legacyBatching : true;
   return {
     ...DEFAULT_CONFIG,
     timeoutMinutes: 10,
@@ -236,7 +241,8 @@ function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     review: {
       ...DEFAULT_CONFIG.review,
       enableReachability: false,
-      ...((overrides.review || {}) as Record<string, unknown>),
+      ...overridesReview,
+      legacyBatching: reviewLegacyBatching,
     },
   };
 }
@@ -258,7 +264,10 @@ describe('ReviewEngine', () => {
     // Deterministic SCA defaults to no findings unless a test overrides it.
     mockRunSCAScan.mockResolvedValue([]);
     mockAdapter = createMockAdapter();
-    engine = new ReviewEngine(makeConfig(), mockAdapter);
+    engine = new ReviewEngine(
+      makeConfig({ review: { legacyBatching: true } as never }),
+      mockAdapter,
+    );
   });
 
   describe('reviewPR()', () => {
@@ -500,7 +509,7 @@ describe('ReviewEngine', () => {
       expect(mockMCPGetLibraryDocs).not.toHaveBeenCalled();
     });
 
-    describe('concurrent batch processing', () => {
+    describe('concurrent batch processing (legacy)', () => {
       const batchPr = makePRContext({
         changedFiles: [
           { path: 'src/a.ts', status: 'modified', additions: 10, deletions: 0 },
@@ -509,6 +518,13 @@ describe('ReviewEngine', () => {
           { path: 'src/d.ts', status: 'modified', additions: 10, deletions: 0 },
         ],
       });
+
+      function makeLegacyEngine(): ReviewEngine {
+        return new ReviewEngine(
+          makeConfig({ review: { legacyBatching: true } as never }),
+          mockAdapter,
+        );
+      }
 
       function makeBatchResult(prefix: string): ReviewResult {
         return {
@@ -540,6 +556,7 @@ describe('ReviewEngine', () => {
       }
 
       it('splits files into batches and runs concurrent reviews', async () => {
+        const legacyEngine = makeLegacyEngine();
         mockMCPConnect.mockResolvedValue(undefined);
         mockRunOpenCode.mockResolvedValue({
           success: true,
@@ -552,7 +569,7 @@ describe('ReviewEngine', () => {
           .mockResolvedValueOnce(makeBatchResult('batch1'))
           .mockResolvedValueOnce(makeBatchResult('final'));
 
-        const result = await engine.reviewPR(batchPr);
+        const result = await legacyEngine.reviewPR(batchPr);
 
         expect(mockRunOpenCode).toHaveBeenCalledTimes(3);
         expect(mockBuildSynthesisPrompt).toHaveBeenCalledOnce();
@@ -560,6 +577,7 @@ describe('ReviewEngine', () => {
       });
 
       it('returns merged fallback when synthesis fails', async () => {
+        const legacyEngine = makeLegacyEngine();
         mockMCPConnect.mockResolvedValue(undefined);
         mockRunOpenCode
           .mockResolvedValueOnce({ success: true, output: '', durationMs: 1000 })
@@ -570,7 +588,7 @@ describe('ReviewEngine', () => {
           .mockResolvedValueOnce(makeBatchResult('batch0'))
           .mockResolvedValueOnce(makeBatchResult('batch1'));
 
-        const result = await engine.reviewPR(batchPr);
+        const result = await legacyEngine.reviewPR(batchPr);
 
         expect(mockRunOpenCode).toHaveBeenCalledTimes(3);
         expect(result.verdict.reasoning).toBe('Synthesis failed, using merged batch results');
@@ -579,6 +597,7 @@ describe('ReviewEngine', () => {
       });
 
       it('returns merged fallback when synthesis output parse fails', async () => {
+        const legacyEngine = makeLegacyEngine();
         mockMCPConnect.mockResolvedValue(undefined);
         mockRunOpenCode
           .mockResolvedValueOnce({ success: true, output: '', durationMs: 1000 })
@@ -590,7 +609,7 @@ describe('ReviewEngine', () => {
           .mockResolvedValueOnce(makeBatchResult('batch1'))
           .mockRejectedValueOnce(new Error('Parse error'));
 
-        const result = await engine.reviewPR(batchPr);
+        const result = await legacyEngine.reviewPR(batchPr);
 
         expect(result.verdict.reasoning).toBe(
           'Synthesis output parse failed, using merged batch results',
@@ -599,6 +618,7 @@ describe('ReviewEngine', () => {
       });
 
       it('handles individual batch failures gracefully', async () => {
+        const legacyEngine = makeLegacyEngine();
         mockMCPConnect.mockResolvedValue(undefined);
         mockRunOpenCode
           .mockResolvedValueOnce({ success: true, output: '', durationMs: 1000 })
@@ -609,15 +629,15 @@ describe('ReviewEngine', () => {
           .mockResolvedValueOnce(makeBatchResult('batch0'))
           .mockResolvedValueOnce(makeBatchResult('final'));
 
-        const result = await engine.reviewPR(batchPr);
+        const result = await legacyEngine.reviewPR(batchPr);
 
         expect(result.issues).toHaveLength(1);
         expect(result.stats.total).toBe(1);
       });
 
       it('does not report ready:true when every batch and synthesis fail', async () => {
+        const legacyEngine = makeLegacyEngine();
         mockMCPConnect.mockResolvedValue(undefined);
-        // Every batch AND the synthesis pass fail.
         mockRunOpenCode.mockResolvedValue({
           success: false,
           output: '',
@@ -625,7 +645,7 @@ describe('ReviewEngine', () => {
           tokensUsed: 0,
         });
 
-        const result = await engine.reviewPR(batchPr);
+        const result = await legacyEngine.reviewPR(batchPr);
 
         expect(result.verdict.ready).toBe(false);
         expect(result.verdict.reasoning).toBe('All review batches failed');
@@ -754,7 +774,13 @@ describe('ReviewEngine', () => {
       });
 
       it('does not cache an all-batches-failed review (retry re-runs the pipeline)', async () => {
-        const eng = makeRepoEngine();
+        const legacyEng = new ReviewEngine(
+          makeConfig({ review: { legacyBatching: true } as never }),
+          mockAdapter,
+          undefined,
+          undefined,
+          'owner/repo',
+        );
         const multiFilePr = makePRContext({
           number: 904,
           headSha: 'multi-batch-hash',
@@ -771,10 +797,10 @@ describe('ReviewEngine', () => {
           durationMs: 500,
           tokensUsed: 0,
         });
-        const first = await eng.reviewPR(multiFilePr);
+        const first = await legacyEng.reviewPR(multiFilePr);
         expect(first.verdict.reasoning).toBe('All review batches failed');
 
-        await eng.reviewPR(multiFilePr);
+        await legacyEng.reviewPR(multiFilePr);
         // Second run re-runs the pipeline (the failure must NOT be cached).
         expect(mockRunOpenCode.mock.calls.length).toBeGreaterThanOrEqual(4);
       });
@@ -808,6 +834,7 @@ describe('ReviewEngine', () => {
       function makeMultiAgentEngine(): ReviewEngine {
         return new ReviewEngine(
           makeConfig({
+            review: { legacyBatching: false } as never,
             multiAgent: {
               enabled: true,
               agents: {
@@ -1128,6 +1155,164 @@ describe('ReviewEngine', () => {
 
         expect(capturedPrompt).toContain('## Open Review Threads (Unresolved)');
         expect(capturedPrompt).toContain('Already fixed in a later commit.');
+      });
+    });
+
+    describe('default single-process routing (regression)', () => {
+      const multiBatchPr = makePRContext({
+        changedFiles: [
+          { path: 'src/a.ts', status: 'modified', additions: 10, deletions: 0 },
+          { path: 'src/b.ts', status: 'modified', additions: 10, deletions: 0 },
+          { path: 'src/c.ts', status: 'modified', additions: 10, deletions: 0 },
+          { path: 'src/d.ts', status: 'modified', additions: 10, deletions: 0 },
+        ],
+      });
+
+      it('default config + multi-batch PR invokes runOpenCode exactly once with non-empty subagents', async () => {
+        const eng = new ReviewEngine(
+          makeConfig({ review: { legacyBatching: false } as never }),
+          mockAdapter,
+        );
+        let capturedSubagents: unknown;
+        mockRunOpenCode.mockImplementation(async (_p: string, opts?: { subagents?: unknown }) => {
+          capturedSubagents = opts?.subagents;
+          return { success: true, output: '', durationMs: 500, tokensUsed: 10 };
+        });
+        mockParseJsonlFile.mockResolvedValue({
+          ...mockEmptyResult(),
+          summary: 'No issues found',
+          verdict: {
+            ready: true,
+            reasoning: 'No issues found',
+            autoFixable: false,
+            confidence: 'high',
+          },
+        });
+
+        await eng.reviewPR(multiBatchPr);
+
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(1);
+        expect(capturedSubagents).toBeDefined();
+        const subagents = capturedSubagents as Record<string, unknown>;
+        expect(Object.keys(subagents).length).toBeGreaterThan(0);
+        expect(subagents['security-reviewer']).toBeDefined();
+      });
+
+      it('legacyBatching:true preserves old N-batch concurrent behavior', async () => {
+        const legacyEng = new ReviewEngine(
+          makeConfig({ review: { legacyBatching: true } as never }),
+          mockAdapter,
+        );
+        mockRunOpenCode.mockResolvedValue({
+          success: true,
+          output: '',
+          durationMs: 1000,
+          tokensUsed: 10,
+        });
+        mockParseJsonlFile
+          .mockResolvedValueOnce({
+            summary: 'Batch 0',
+            verdict: {
+              ready: false,
+              reasoning: 'issues found',
+              autoFixable: false,
+              confidence: 'medium',
+            },
+            strengths: [],
+            issues: [
+              {
+                type: 'issue',
+                severity: 'critical',
+                file: 'src/a.ts',
+                line: 1,
+                message: 'Issue',
+                category: 'general',
+              },
+            ],
+            stats: { total: 1, critical: 1, important: 0, minor: 0 },
+            rawLines: [
+              '{"type":"issue","severity":"critical","file":"src/a.ts","line":1,"message":"Issue"}',
+            ],
+            failedLines: 0,
+          })
+          .mockResolvedValueOnce({
+            summary: 'Batch 1',
+            verdict: {
+              ready: false,
+              reasoning: 'issues found',
+              autoFixable: false,
+              confidence: 'medium',
+            },
+            strengths: [],
+            issues: [
+              {
+                type: 'issue',
+                severity: 'critical',
+                file: 'src/c.ts',
+                line: 1,
+                message: 'Issue',
+                category: 'general',
+              },
+            ],
+            stats: { total: 1, critical: 1, important: 0, minor: 0 },
+            rawLines: [
+              '{"type":"issue","severity":"critical","file":"src/c.ts","line":1,"message":"Issue"}',
+            ],
+            failedLines: 0,
+          })
+          .mockResolvedValueOnce({
+            summary: 'Final',
+            verdict: { ready: false, reasoning: 'final', autoFixable: false, confidence: 'medium' },
+            strengths: [],
+            issues: [],
+            stats: { total: 0, critical: 0, important: 0, minor: 0 },
+            rawLines: [],
+            failedLines: 0,
+          });
+
+        await legacyEng.reviewPR(multiBatchPr);
+
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(3);
+      });
+
+      it('explicitly configured categories are still respected (single-process)', async () => {
+        const explicitEng = new ReviewEngine(
+          makeConfig({
+            review: { legacyBatching: false } as never,
+            multiAgent: {
+              enabled: true,
+              agents: {
+                security: { enabled: true },
+                performance: { enabled: false },
+                quality: { enabled: false },
+                logic: { enabled: false },
+              },
+              synthesis: { enabled: true },
+            },
+          }),
+          mockAdapter,
+        );
+        let capturedSubagents: unknown;
+        mockRunOpenCode.mockImplementation(async (_p: string, opts?: { subagents?: unknown }) => {
+          capturedSubagents = opts?.subagents;
+          return { success: true, output: '', durationMs: 500, tokensUsed: 10 };
+        });
+        mockParseJsonlFile.mockResolvedValue({
+          ...mockEmptyResult(),
+          summary: 'No issues found',
+          verdict: {
+            ready: true,
+            reasoning: 'No issues found',
+            autoFixable: false,
+            confidence: 'high',
+          },
+        });
+
+        await explicitEng.reviewPR(multiBatchPr);
+
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(1);
+        const subagents = capturedSubagents as Record<string, unknown>;
+        expect(Object.keys(subagents)).toEqual(['security-reviewer']);
       });
     });
 
@@ -2376,6 +2561,7 @@ describe('ReviewEngine', () => {
           mcpServers: [],
           review: {
             ...DEFAULT_CONFIG.review,
+            legacyBatching: true,
             tokenBudget: {
               enabled: true,
               maxLinesComplex: 200,
@@ -2429,6 +2615,7 @@ describe('ReviewEngine', () => {
           mcpServers: [],
           review: {
             ...DEFAULT_CONFIG.review,
+            legacyBatching: true,
             tokenBudget: {
               enabled: true,
               maxLinesComplex: 200,
@@ -2513,6 +2700,7 @@ describe('ReviewEngine', () => {
           mcpServers: [],
           review: {
             ...DEFAULT_CONFIG.review,
+            legacyBatching: true,
             tokenBudget: {
               enabled: true,
               maxLinesComplex: 200,
@@ -3101,6 +3289,7 @@ describe('ReviewEngine', () => {
         ...overrides,
         review: {
           ...DEFAULT_CONFIG.review,
+          legacyBatching: true,
           reviewBudget: { enabled: true, summaryThreshold: 500, splitThreshold: 1000 },
           ...((overrides.review || {}) as Record<string, unknown>),
         },
@@ -3180,6 +3369,7 @@ describe('ReviewEngine', () => {
           mcpServers: [],
           review: {
             ...DEFAULT_CONFIG.review,
+            legacyBatching: true,
             reviewBudget: { enabled: false, summaryThreshold: 500, splitThreshold: 1000 },
           },
         }),
@@ -3210,6 +3400,7 @@ describe('ReviewEngine', () => {
           mcpServers: [],
           review: {
             ...DEFAULT_CONFIG.review,
+            legacyBatching: true,
             reviewBudget: { enabled: true, summaryThreshold: 100, splitThreshold: 1000 },
           },
         }),
@@ -3313,6 +3504,7 @@ describe('ReviewEngine', () => {
         ...overrides,
         review: {
           ...DEFAULT_CONFIG.review,
+          legacyBatching: true,
           costTracking: {
             enabled: costTracking.enabled ?? true,
             verbosity: costTracking.verbosity ?? 'summary',
@@ -3394,6 +3586,7 @@ describe('ReviewEngine', () => {
         makeCostTrackingConfig({
           review: {
             ...DEFAULT_CONFIG.review,
+            legacyBatching: true,
             costTracking: {
               enabled: true,
               verbosity: 'detailed',
@@ -3423,6 +3616,7 @@ describe('ReviewEngine', () => {
         makeCostTrackingConfig({
           review: {
             ...DEFAULT_CONFIG.review,
+            legacyBatching: true,
             costTracking: {
               enabled: true,
               verbosity: 'detailed',
@@ -3456,6 +3650,7 @@ describe('ReviewEngine', () => {
         makeCostTrackingConfig({
           review: {
             ...DEFAULT_CONFIG.review,
+            legacyBatching: true,
             costTracking: {
               enabled: true,
               verbosity: 'detailed',

@@ -55,6 +55,17 @@ const CATEGORY_OVERRIDE_SHAPE: Record<string, ConfigShape> = {
 
 const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
   platform: null,
+  reviewModel: null,
+  fixModel: null,
+  auditModel: null,
+  docsModel: null,
+  synthesisModel: null,
+  verificationModel: null,
+  metaReviewModel: null,
+  explanationModel: null,
+  conversationModel: null,
+  analysisModel: null,
+  describeModel: null,
   review: {
     skipLabels: null,
     skipActors: null,
@@ -73,6 +84,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     suggestTitleAndLabels: null,
     streamComments: null,
     streamBatchSize: null,
+    legacyBatching: null,
     tokenBudget: null,
     budget: null,
     costTracking: null,
@@ -458,6 +470,9 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     }
     if (typeof config.review.streamBatchSize === 'number' && config.review.streamBatchSize >= 0) {
       result.review.streamBatchSize = config.review.streamBatchSize;
+    }
+    if (typeof config.review.legacyBatching === 'boolean') {
+      result.review.legacyBatching = config.review.legacyBatching;
     }
     if (
       config.review.failOnSeverity === 'off' ||
@@ -1133,6 +1148,25 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     }
     if (llmConfig.defaultProvider !== undefined || llmConfig.providers !== undefined) {
       result.llm = llmConfig;
+    }
+  }
+
+  const topLevelModelKeys = [
+    'reviewModel',
+    'fixModel',
+    'auditModel',
+    'docsModel',
+    'synthesisModel',
+    'verificationModel',
+    'metaReviewModel',
+    'explanationModel',
+    'conversationModel',
+    'analysisModel',
+    'describeModel',
+  ] as const;
+  for (const key of topLevelModelKeys) {
+    if (typeof config[key] === 'string' && (config[key] as string).trim() !== '') {
+      result[key] = config[key];
     }
   }
 

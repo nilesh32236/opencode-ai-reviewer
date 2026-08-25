@@ -678,6 +678,9 @@ export interface ReviewConfig {
   /** Number of findings to accumulate before posting a streaming batch
    * (default: 0 = post per-batch as soon as the batch completes). */
   streamBatchSize?: number;
+  /** Use the legacy concurrent-batch fan-out (up to 8 processes) instead of the
+   * default single-process multi-agent subagent dispatch. Default: false. */
+  legacyBatching?: boolean;
 }
 
 /** Configuration for deterministic hardcoded secret / credential scanning. */
@@ -1459,6 +1462,8 @@ export interface PromptConfig {
     /** Number of findings to accumulate before posting a streaming batch
      * (default: 0 = per-batch). */
     streamBatchSize?: number;
+    /** Use legacy concurrent-batch fan-out instead of single-process subagents. */
+    legacyBatching?: boolean;
   };
   /** Fix prompt configuration */
   fix?: {
@@ -1577,6 +1582,18 @@ export interface PromptConfig {
   multiAgent?: MultiAgentConfig;
   /** Custom LLM providers (self-hosted OpenAI-compatible, Azure, Bedrock, Ollama). */
   llm?: LLMConfig;
+  /** Model overrides from config file (top-level). */
+  reviewModel?: string;
+  fixModel?: string;
+  auditModel?: string;
+  docsModel?: string;
+  synthesisModel?: string;
+  verificationModel?: string;
+  metaReviewModel?: string;
+  explanationModel?: string;
+  conversationModel?: string;
+  analysisModel?: string;
+  describeModel?: string;
 }
 
 // ─── Defaults ─────────────────────────────────────────────
@@ -1713,6 +1730,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     suggestTitleAndLabels: false,
     streamComments: false,
     streamBatchSize: 0,
+    legacyBatching: false,
   },
   audit: {
     promptsDir: '.audit-prompts',
