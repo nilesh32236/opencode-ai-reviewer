@@ -276,7 +276,7 @@ describe('Review Pipeline Integration', () => {
         batchSize: 3,
         enableMCP: false,
         mcpServers: [],
-        review: { legacyBatching: true } as never,
+        review: { legacyBatching: true },
       }),
       gh,
     );
@@ -315,7 +315,7 @@ describe('Review Pipeline Integration', () => {
       makeAgentConfig({
         enableMCP: false,
         mcpServers: [],
-        review: { legacyBatching: true } as never,
+        review: { legacyBatching: true },
       }),
       gh,
     );
@@ -346,7 +346,7 @@ describe('Review Pipeline Integration', () => {
         batchSize: 3,
         enableMCP: false,
         mcpServers: [],
-        review: { legacyBatching: true } as never,
+        review: { legacyBatching: true },
       }),
       gh,
     );
@@ -381,7 +381,7 @@ describe('Review Pipeline Integration', () => {
         batchSize: 3,
         enableMCP: false,
         mcpServers: [],
-        review: { legacyBatching: true } as never,
+        review: { legacyBatching: true },
       }),
       gh,
     );
@@ -404,7 +404,7 @@ describe('Review Pipeline Integration', () => {
       makeAgentConfig({
         enableMCP: false,
         mcpServers: [],
-        review: { legacyBatching: true } as never,
+        review: { legacyBatching: true },
       }),
       gh,
     );
@@ -434,7 +434,7 @@ describe('Review Pipeline Integration', () => {
         batchSize: 3,
         enableMCP: false,
         mcpServers: [],
-        review: { legacyBatching: true } as never,
+        review: { legacyBatching: true },
       }),
       gh,
     );
@@ -468,7 +468,7 @@ describe('Review Pipeline Integration', () => {
         batchSize: 3,
         enableMCP: false,
         mcpServers: [],
-        review: { legacyBatching: true } as never,
+        review: { legacyBatching: true },
       }),
       gh,
     );
@@ -701,6 +701,27 @@ describe('Review Pipeline Integration', () => {
       }
     }
 
+    expect(result).toBeDefined();
+  });
+
+  it('j2) default config (no legacyBatching) runs multi-batch PR as one process', async () => {
+    const pr = makePRContext({
+      changedFiles: Array.from({ length: 5 }, (_, i) => ({
+        path: `src/app/module${i}.ts`,
+        status: 'modified' as const,
+        additions: 10,
+        deletions: 2,
+        patch: `@@ -1 +1 @@\n-old${i}\n+new${i}`,
+      })),
+    });
+
+    engine = new ReviewEngine(makeAgentConfig({ enableMCP: false, mcpServers: [] }), gh);
+
+    fixtureQueue.push({ content: SAMPLE_BATCH_A_JSONL });
+
+    const result = await engine.reviewPR(pr);
+
+    expect(mockRunOpenCode).toHaveBeenCalledTimes(1);
     expect(result).toBeDefined();
   });
 

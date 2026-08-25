@@ -1581,7 +1581,10 @@ export class ReviewEngine {
     if (this.config.review.legacyBatching) return [];
     const active = this.getActiveAgentCategories();
     if (active.length > 0) return active;
-    if (this.config.multiAgent?.enabled) return [];
+    // Opt-in with every category disabled → nothing to dispatch. multiAgent
+    // .enabled is always materialized (default false), so review.legacyBatching
+    // — not multiAgent.enabled — is the supported opt-out of this path.
+    if (this.config.multiAgent?.enabled === true) return [];
     return [...AGENT_ORDER];
   }
 
@@ -1744,6 +1747,16 @@ export class ReviewEngine {
     ensureOutputDir(finalOutputPath);
     const start = Date.now();
 
+    // Streamed callers receive verified parsed findings, never a run-status placeholder.
+    const notifyStream = async (result: ReviewResult): Promise<void> => {
+      if (!onBatchComplete) return;
+      await onBatchComplete(0, 1, result).catch((err) => {
+        this.logger.warn(
+          `Streaming batch callback failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    };
+
     // A thrown/rejected orchestrator run (model typo, CLI outage) must not
     // abort the review — degrade to a failed verdict like the legacy path.
     const runResult = await this.runLLM(prompt, {
@@ -1764,31 +1777,6 @@ export class ReviewEngine {
         completionTokens: undefined,
       };
     });
-
-    // Single completion hook (the subagent path has no per-batch granularity):
-    // fire one callback with the run result once the orchestrator settles so
-    // streamComments callers still get notified. Never breaks the pipeline.
-    if (onBatchComplete) {
-      const completion: ReviewResult = {
-        summary: 'Subagent review findings',
-        verdict: {
-          ready: false,
-          reasoning: '',
-          autoFixable: false,
-          confidence: 'medium',
-        },
-        strengths: [],
-        issues: [],
-        stats: { total: 0, critical: 0, important: 0, minor: 0 },
-        rawLines: [],
-        failedLines: 0,
-      };
-      await onBatchComplete(0, 1, completion).catch((err) => {
-        this.logger.warn(
-          `Streaming batch callback failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      });
-    }
 
     await this.recordTelemetry(
       pr.number,
@@ -1818,7 +1806,7 @@ export class ReviewEngine {
         },
         summary: 'The review could not be completed — the review agents failed.',
       };
-      return await this.verifyReviewResult(
+      const verifiedFailed = await this.verifyReviewResult(
         failed,
         baseContext,
         workDir,
@@ -1829,6 +1817,8 @@ export class ReviewEngine {
         files,
         scaIssues,
       );
+      await notifyStream(verifiedFailed);
+      return verifiedFailed;
     }
 
     // The orchestrator writes one consolidated JSONL. On parse failure or an
@@ -1914,7 +1904,7 @@ export class ReviewEngine {
       }
     }
 
-    return await this.verifyReviewResult(
+    const verified = await this.verifyReviewResult(
       result,
       baseContext,
       workDir,
@@ -1925,6 +1915,8 @@ export class ReviewEngine {
       files,
       scaIssues,
     );
+    await notifyStream(verified);
+    return verified;
   }
 
   /**
