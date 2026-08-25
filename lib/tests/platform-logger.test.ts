@@ -53,6 +53,16 @@ describe('ConsolePlatformLogger', () => {
     expect(line).toContain('[REDACTED_GITHUB_TOKEN]');
   });
 
+  it('redacts gateway keys end-to-end through the logger', () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const logger = new ConsolePlatformLogger('Test');
+    logger.info('export OPENCODE_API_KEY=oc-secret-123 before run');
+    expect(spy).toHaveBeenCalledTimes(1);
+    const line = String(spy.mock.calls[0][0]);
+    expect(line).not.toContain('oc-secret-123');
+    expect(line).toContain('OPENCODE_API_KEY=[REDACTED]');
+  });
+
   it('redacts gateway and custom-provider API keys', () => {
     const line = sanitizeString(
       'OPENCODE_API_KEY=oc_key123 LLM_API_KEY:llm_secret456 AZURE_OPENAI_API_KEY="az-key-789"',

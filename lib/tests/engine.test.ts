@@ -233,7 +233,7 @@ function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     legacyBatching?: boolean;
   };
   const reviewLegacyBatching =
-    overridesReview.legacyBatching !== undefined ? overridesReview.legacyBatching : true;
+    overridesReview.legacyBatching !== undefined ? overridesReview.legacyBatching : false;
   return {
     ...DEFAULT_CONFIG,
     timeoutMinutes: 10,
@@ -245,6 +245,12 @@ function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
       legacyBatching: reviewLegacyBatching,
     },
   };
+}
+
+/** Config opting into the legacy concurrent-batch pipeline (per-batch JSONL files). */
+function makeLegacyConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
+  const base = overrides.review ?? {};
+  return makeConfig({ ...overrides, review: { ...base, legacyBatching: true } });
 }
 
 describe('ReviewEngine', () => {
@@ -264,10 +270,7 @@ describe('ReviewEngine', () => {
     // Deterministic SCA defaults to no findings unless a test overrides it.
     mockRunSCAScan.mockResolvedValue([]);
     mockAdapter = createMockAdapter();
-    engine = new ReviewEngine(
-      makeConfig({ review: { legacyBatching: true } as never }),
-      mockAdapter,
-    );
+    engine = new ReviewEngine(makeConfig({ review: { legacyBatching: true } }), mockAdapter);
   });
 
   describe('reviewPR()', () => {
@@ -275,7 +278,7 @@ describe('ReviewEngine', () => {
 
     it('returns review result on success', async () => {
       const engWithMCP = new ReviewEngine(
-        makeConfig({
+        makeLegacyConfig({
           enableMCP: true,
           mcpServers: [{ name: 'context7', type: 'local', command: ['node', 'server.js'] }],
         }),
@@ -436,7 +439,7 @@ describe('ReviewEngine', () => {
         getRelevantLessons: vi.fn().mockRejectedValue(new Error('DB error')),
         close: vi.fn(),
       };
-      const eng = new ReviewEngine(makeConfig(), mockAdapter, learningStore as never);
+      const eng = new ReviewEngine(makeLegacyConfig(), mockAdapter, learningStore as never);
       mockMCPConnect.mockResolvedValue(undefined);
       mockRunOpenCode.mockResolvedValue({
         success: true,
@@ -457,7 +460,7 @@ describe('ReviewEngine', () => {
         close: vi.fn(),
       };
       const eng = new ReviewEngine(
-        makeConfig({ enableMCP: false, mcpServers: [] }),
+        makeLegacyConfig({ enableMCP: false, mcpServers: [] }),
         mockAdapter,
         learningStore as never,
       );
@@ -476,7 +479,10 @@ describe('ReviewEngine', () => {
     });
 
     it('skips MCP when enableMCP is false', async () => {
-      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      const eng = new ReviewEngine(
+        makeLegacyConfig({ enableMCP: false, mcpServers: [] }),
+        mockAdapter,
+      );
       mockRunOpenCode.mockResolvedValue({
         success: true,
         output: '',
@@ -520,10 +526,7 @@ describe('ReviewEngine', () => {
       });
 
       function makeLegacyEngine(): ReviewEngine {
-        return new ReviewEngine(
-          makeConfig({ review: { legacyBatching: true } as never }),
-          mockAdapter,
-        );
+        return new ReviewEngine(makeConfig({ review: { legacyBatching: true } }), mockAdapter);
       }
 
       function makeBatchResult(prefix: string): ReviewResult {
@@ -657,7 +660,7 @@ describe('ReviewEngine', () => {
       const dedupPr = makePRContext({ number: 900, headSha: 'dedup-hash' });
 
       function makeRepoEngine(repo = 'owner/repo'): ReviewEngine {
-        return new ReviewEngine(makeConfig(), mockAdapter, undefined, undefined, repo);
+        return new ReviewEngine(makeLegacyConfig(), mockAdapter, undefined, undefined, repo);
       }
 
       beforeEach(() => {
@@ -696,7 +699,7 @@ describe('ReviewEngine', () => {
       });
 
       it('does not deduplicate when no real repo context is set', async () => {
-        const eng = new ReviewEngine(makeConfig(), mockAdapter);
+        const eng = new ReviewEngine(makeLegacyConfig(), mockAdapter);
         await eng.reviewPR(makePRContext({ number: 901 }));
         await eng.reviewPR(makePRContext({ number: 901 }));
 
@@ -775,7 +778,7 @@ describe('ReviewEngine', () => {
 
       it('does not cache an all-batches-failed review (retry re-runs the pipeline)', async () => {
         const legacyEng = new ReviewEngine(
-          makeConfig({ review: { legacyBatching: true } as never }),
+          makeConfig({ review: { legacyBatching: true } }),
           mockAdapter,
           undefined,
           undefined,
@@ -834,7 +837,7 @@ describe('ReviewEngine', () => {
       function makeMultiAgentEngine(): ReviewEngine {
         return new ReviewEngine(
           makeConfig({
-            review: { legacyBatching: false } as never,
+            review: { legacyBatching: false },
             multiAgent: {
               enabled: true,
               agents: {
@@ -1170,7 +1173,7 @@ describe('ReviewEngine', () => {
 
       it('default config + multi-batch PR invokes runOpenCode exactly once with non-empty subagents', async () => {
         const eng = new ReviewEngine(
-          makeConfig({ review: { legacyBatching: false } as never }),
+          makeConfig({ review: { legacyBatching: false } }),
           mockAdapter,
         );
         let capturedSubagents: unknown;
@@ -1200,7 +1203,7 @@ describe('ReviewEngine', () => {
 
       it('legacyBatching:true preserves old N-batch concurrent behavior', async () => {
         const legacyEng = new ReviewEngine(
-          makeConfig({ review: { legacyBatching: true } as never }),
+          makeConfig({ review: { legacyBatching: true } }),
           mockAdapter,
         );
         mockRunOpenCode.mockResolvedValue({
@@ -1278,7 +1281,7 @@ describe('ReviewEngine', () => {
       it('explicitly configured categories are still respected (single-process)', async () => {
         const explicitEng = new ReviewEngine(
           makeConfig({
-            review: { legacyBatching: false } as never,
+            review: { legacyBatching: false },
             multiAgent: {
               enabled: true,
               agents: {
@@ -1358,7 +1361,10 @@ describe('ReviewEngine', () => {
             },
           ],
         });
-        const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+        const eng = new ReviewEngine(
+          makeLegacyConfig({ enableMCP: false, mcpServers: [] }),
+          mockAdapter,
+        );
         mockRunOpenCode.mockResolvedValue({
           success: true,
           output: '',
@@ -1393,7 +1399,7 @@ describe('ReviewEngine', () => {
         close: vi.fn(),
       };
       const eng = new ReviewEngine(
-        makeConfig({ enableMCP: false, mcpServers: [] }),
+        makeLegacyConfig({ enableMCP: false, mcpServers: [] }),
         mockAdapter,
         learningStore as never,
       );
@@ -1435,7 +1441,7 @@ describe('ReviewEngine', () => {
         close: vi.fn(),
       };
       const eng = new ReviewEngine(
-        makeConfig({ enableMCP: false, mcpServers: [] }),
+        makeLegacyConfig({ enableMCP: false, mcpServers: [] }),
         mockAdapter,
         learningStore as never,
       );
@@ -1558,7 +1564,10 @@ describe('ReviewEngine', () => {
     });
 
     it('skips MCP when no servers configured', async () => {
-      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      const eng = new ReviewEngine(
+        makeLegacyConfig({ enableMCP: false, mcpServers: [] }),
+        mockAdapter,
+      );
       const mockedGetGitStatus = vi.mocked(getGitStatus);
       mockedGetGitStatus.mockReturnValue('');
 
@@ -1593,7 +1602,7 @@ describe('ReviewEngine', () => {
 
     beforeEach(() => {
       docsEngine = new ReviewEngine(
-        makeConfig({ docs: { enabled: true, style: 'auto' } }),
+        makeLegacyConfig({ docs: { enabled: true, style: 'auto' } }),
         mockAdapter,
       );
     });
@@ -1671,7 +1680,7 @@ describe('ReviewEngine', () => {
     });
 
     it('skips the run entirely when docs are disabled', async () => {
-      const disabledEngine = new ReviewEngine(makeConfig(), mockAdapter);
+      const disabledEngine = new ReviewEngine(makeLegacyConfig(), mockAdapter);
 
       const result = await disabledEngine.runDocs(pr, contextMarkdown);
 
@@ -1733,7 +1742,10 @@ describe('ReviewEngine', () => {
     });
 
     it('uses the resolved describe model override when configured', async () => {
-      const describeEngine = new ReviewEngine(makeConfig({ describeModel: 'gpt-4o' }), mockAdapter);
+      const describeEngine = new ReviewEngine(
+        makeLegacyConfig({ describeModel: 'gpt-4o' }),
+        mockAdapter,
+      );
       mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
 
       await describeEngine.runDescribe(pr, contextMarkdown);
@@ -1815,7 +1827,10 @@ describe('ReviewEngine', () => {
     });
 
     it('skips MCP when enableMCP is false', async () => {
-      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      const eng = new ReviewEngine(
+        makeLegacyConfig({ enableMCP: false, mcpServers: [] }),
+        mockAdapter,
+      );
       mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
       mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
 
@@ -1863,7 +1878,7 @@ describe('ReviewEngine', () => {
 
     it('returns analysis plan markdown on success', async () => {
       const engWithMCP = new ReviewEngine(
-        makeConfig({
+        makeLegacyConfig({
           enableMCP: true,
           mcpServers: [{ name: 'context7', type: 'local', command: ['node', 'server.js'] }],
         }),
@@ -1912,7 +1927,10 @@ describe('ReviewEngine', () => {
     });
 
     it('works with custom config', async () => {
-      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      const eng = new ReviewEngine(
+        makeLegacyConfig({ enableMCP: false, mcpServers: [] }),
+        mockAdapter,
+      );
       mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
 
       const fsPromises = fs.promises;
@@ -1945,7 +1963,7 @@ describe('ReviewEngine', () => {
       });
 
       const eng = new ReviewEngine(
-        makeConfig({ maxLinesPerFile: maxLines, enableMCP: false, mcpServers: [] }),
+        makeLegacyConfig({ maxLinesPerFile: maxLines, enableMCP: false, mcpServers: [] }),
         mockAdapter,
       );
 
@@ -1986,7 +2004,7 @@ describe('ReviewEngine', () => {
       });
 
       const eng = new ReviewEngine(
-        makeConfig({ maxLinesPerFile: 100, enableMCP: false, mcpServers: [] }),
+        makeLegacyConfig({ maxLinesPerFile: 100, enableMCP: false, mcpServers: [] }),
         mockAdapter,
       );
 
@@ -2031,7 +2049,7 @@ describe('ReviewEngine', () => {
       });
 
       const eng = new ReviewEngine(
-        makeConfig({ maxLinesPerFile: 50, enableMCP: false, mcpServers: [] }),
+        makeLegacyConfig({ maxLinesPerFile: 50, enableMCP: false, mcpServers: [] }),
         mockAdapter,
       );
 
@@ -2106,7 +2124,10 @@ describe('ReviewEngine', () => {
         ],
       ]);
 
-      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      const eng = new ReviewEngine(
+        makeLegacyConfig({ enableMCP: false, mcpServers: [] }),
+        mockAdapter,
+      );
       const { context } = eng.buildPRContextString(pr, undefined, false, blameData);
 
       expect(context).toContain('### Git Blame Annotations');
@@ -2135,7 +2156,10 @@ describe('ReviewEngine', () => {
         ],
       ]);
 
-      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      const eng = new ReviewEngine(
+        makeLegacyConfig({ enableMCP: false, mcpServers: [] }),
+        mockAdapter,
+      );
       const { context } = eng.buildPRContextString(pr, undefined, false, blameData);
 
       expect(context).toContain('- Lines 10-11 — pre-existing @Alice, 2023-11-14');
@@ -2155,7 +2179,10 @@ describe('ReviewEngine', () => {
           },
         ],
       });
-      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      const eng = new ReviewEngine(
+        makeLegacyConfig({ enableMCP: false, mcpServers: [] }),
+        mockAdapter,
+      );
 
       vi.mocked(cp.execFile).mockImplementation((_cmd, args, _opts, cb) => {
         const callback = cb as (err: Error | null, stdout?: string) => void;
@@ -2193,7 +2220,11 @@ describe('ReviewEngine', () => {
         ],
       });
       const eng = new ReviewEngine(
-        makeConfig({ enableMCP: false, mcpServers: [], review: { includePreExisting: true } }),
+        makeLegacyConfig({
+          enableMCP: false,
+          mcpServers: [],
+          review: { includePreExisting: true },
+        }),
         mockAdapter,
       );
 
@@ -2226,7 +2257,10 @@ describe('ReviewEngine', () => {
           },
         ],
       });
-      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      const eng = new ReviewEngine(
+        makeLegacyConfig({ enableMCP: false, mcpServers: [] }),
+        mockAdapter,
+      );
 
       vi.mocked(cp.execFile).mockImplementation((_cmd, args, _opts, cb) => {
         const callback = cb as (err: Error | null, stdout?: string) => void;
@@ -2269,7 +2303,7 @@ describe('ReviewEngine', () => {
         ],
       });
       const eng = new ReviewEngine(
-        makeConfig({
+        makeLegacyConfig({
           enableMCP: false,
           mcpServers: [],
           review: { reviewBudget: { enabled: true, summaryThreshold: 500, splitThreshold: 1 } },
@@ -2313,7 +2347,10 @@ describe('ReviewEngine', () => {
           ]),
         ],
       ]);
-      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      const eng = new ReviewEngine(
+        makeLegacyConfig({ enableMCP: false, mcpServers: [] }),
+        mockAdapter,
+      );
       const { context } = eng.buildPRContextString(pr, undefined, false, blameData);
       expect(context).toContain('- Line 5 — [PR CHANGE] @Dev, 2023-11-14, working tree');
       expect(context).not.toContain('0000000');
@@ -2336,7 +2373,10 @@ describe('ReviewEngine', () => {
           ]),
         ],
       ]);
-      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      const eng = new ReviewEngine(
+        makeLegacyConfig({ enableMCP: false, mcpServers: [] }),
+        mockAdapter,
+      );
       const { context } = eng.buildPRContextString(pr, undefined, false, blameData);
       expect(context).toContain('@a\\*b\\[c\\]\\`d');
     });
@@ -2366,7 +2406,7 @@ describe('ReviewEngine', () => {
         ],
       ]);
       const eng = new ReviewEngine(
-        makeConfig({ enableMCP: false, mcpServers: [], maxLinesPerFile: 6 }),
+        makeLegacyConfig({ enableMCP: false, mcpServers: [], maxLinesPerFile: 6 }),
         mockAdapter,
       );
       const { context } = eng.buildPRContextString(pr, undefined, false, blameData);
@@ -2392,7 +2432,7 @@ describe('ReviewEngine', () => {
         })),
       });
       const eng = new ReviewEngine(
-        makeConfig({ enableMCP: false, mcpServers: [], batchSize: 2 }),
+        makeLegacyConfig({ enableMCP: false, mcpServers: [], batchSize: 2 }),
         mockAdapter,
       );
 
@@ -2439,7 +2479,10 @@ describe('ReviewEngine', () => {
           },
         ],
       });
-      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      const eng = new ReviewEngine(
+        makeLegacyConfig({ enableMCP: false, mcpServers: [] }),
+        mockAdapter,
+      );
 
       vi.mocked(cp.execFile).mockImplementation((_cmd, args, _opts, cb) => {
         const callback = cb as (err: Error | null, stdout?: string) => void;
@@ -2478,7 +2521,10 @@ describe('ReviewEngine', () => {
           },
         ],
       });
-      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      const eng = new ReviewEngine(
+        makeLegacyConfig({ enableMCP: false, mcpServers: [] }),
+        mockAdapter,
+      );
 
       vi.mocked(cp.execFile).mockImplementation((_cmd, args, _opts, cb) => {
         const callback = cb as (err: Error | null, stdout?: string) => void;
@@ -2515,7 +2561,10 @@ describe('ReviewEngine', () => {
           },
         ],
       });
-      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      const eng = new ReviewEngine(
+        makeLegacyConfig({ enableMCP: false, mcpServers: [] }),
+        mockAdapter,
+      );
 
       vi.mocked(cp.execFile).mockImplementation((_cmd, _args, _opts, cb) => {
         const callback = cb as (err: Error | null, stdout?: string) => void;
@@ -2555,7 +2604,7 @@ describe('ReviewEngine', () => {
       });
 
       const eng = new ReviewEngine(
-        makeConfig({
+        makeLegacyConfig({
           maxLinesPerFile: 200,
           enableMCP: false,
           mcpServers: [],
@@ -2609,7 +2658,7 @@ describe('ReviewEngine', () => {
       });
 
       const eng = new ReviewEngine(
-        makeConfig({
+        makeLegacyConfig({
           maxLinesPerFile: 200,
           enableMCP: false,
           mcpServers: [],
@@ -2662,7 +2711,7 @@ describe('ReviewEngine', () => {
       });
 
       const eng = new ReviewEngine(
-        makeConfig({ maxLinesPerFile: 100, enableMCP: false, mcpServers: [] }),
+        makeLegacyConfig({ maxLinesPerFile: 100, enableMCP: false, mcpServers: [] }),
         mockAdapter,
       );
 
@@ -2694,7 +2743,7 @@ describe('ReviewEngine', () => {
       });
 
       const eng = new ReviewEngine(
-        makeConfig({
+        makeLegacyConfig({
           maxLinesPerFile: 200,
           enableMCP: false,
           mcpServers: [],
@@ -2749,7 +2798,7 @@ describe('ReviewEngine', () => {
       const learningStore = {
         close: vi.fn().mockResolvedValue(undefined),
       };
-      const eng = new ReviewEngine(makeConfig(), mockAdapter, learningStore as never);
+      const eng = new ReviewEngine(makeLegacyConfig(), mockAdapter, learningStore as never);
       mockMCPDisconnect.mockResolvedValue(undefined);
 
       await eng.cleanup();
@@ -2761,7 +2810,7 @@ describe('ReviewEngine', () => {
       const learningStore = {
         close: vi.fn().mockRejectedValue(new Error('Close failed')),
       };
-      const eng = new ReviewEngine(makeConfig(), mockAdapter, learningStore as never);
+      const eng = new ReviewEngine(makeLegacyConfig(), mockAdapter, learningStore as never);
       mockMCPDisconnect.mockResolvedValue(undefined);
 
       await expect(eng.cleanup()).resolves.toBeUndefined();
@@ -2813,7 +2862,7 @@ describe('ReviewEngine', () => {
     });
 
     it('skips linters when no linters configured', async () => {
-      const eng = new ReviewEngine(makeConfig({ linters: [] }), mockAdapter);
+      const eng = new ReviewEngine(makeLegacyConfig({ linters: [] }), mockAdapter);
 
       mockMCPConnect.mockResolvedValue(undefined);
       mockRunOpenCode.mockResolvedValue({
@@ -2831,7 +2880,7 @@ describe('ReviewEngine', () => {
 
     it('runs linters when configured', async () => {
       const eng = new ReviewEngine(
-        makeConfig({
+        makeLegacyConfig({
           linters: [{ pattern: '**/*.ts', command: 'eslint', args: ['--format', 'json'] }],
         }),
         mockAdapter,
@@ -2891,7 +2940,7 @@ describe('ReviewEngine', () => {
 
     it('matches linters only to files matching pattern', async () => {
       const eng = new ReviewEngine(
-        makeConfig({
+        makeLegacyConfig({
           linters: [{ pattern: '**/*.py', command: 'ruff' }],
         }),
         mockAdapter,
@@ -2949,7 +2998,7 @@ describe('ReviewEngine', () => {
 
     it('gracefully handles linter failure', async () => {
       const eng = new ReviewEngine(
-        makeConfig({
+        makeLegacyConfig({
           linters: [{ pattern: '**/*.ts', command: 'eslint' }],
         }),
         mockAdapter,
@@ -2984,7 +3033,7 @@ describe('ReviewEngine', () => {
 
     it('deduplicates AI findings against linter output', async () => {
       const eng = new ReviewEngine(
-        makeConfig({
+        makeLegacyConfig({
           linters: [{ pattern: '**/*.ts', command: 'eslint', parseFormat: 'eslint' }],
         }),
         mockAdapter,
@@ -3070,7 +3119,7 @@ describe('ReviewEngine', () => {
 
     it('recalculates stats after dedup', async () => {
       const eng = new ReviewEngine(
-        makeConfig({
+        makeLegacyConfig({
           linters: [{ pattern: '**/*.ts', command: 'eslint', parseFormat: 'eslint' }],
         }),
         mockAdapter,
@@ -3156,7 +3205,7 @@ describe('ReviewEngine', () => {
 
     it('preserves failedBatches when linter dedup rebuilds the result', async () => {
       const eng = new ReviewEngine(
-        makeConfig({
+        makeLegacyConfig({
           linters: [{ pattern: '**/*.ts', command: 'eslint', parseFormat: 'eslint' }],
         }),
         mockAdapter,
@@ -3283,7 +3332,7 @@ describe('ReviewEngine', () => {
     }
 
     function makeBudgetEnabledConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
-      return makeConfig({
+      return makeLegacyConfig({
         enableMCP: false,
         mcpServers: [],
         ...overrides,
@@ -3364,7 +3413,7 @@ describe('ReviewEngine', () => {
 
     it('always uses full mode when budget review is disabled', async () => {
       const eng = new ReviewEngine(
-        makeConfig({
+        makeLegacyConfig({
           enableMCP: false,
           mcpServers: [],
           review: {
@@ -3384,7 +3433,10 @@ describe('ReviewEngine', () => {
     });
 
     it('defaults to full mode when reviewBudget is not configured', async () => {
-      const eng = new ReviewEngine(makeConfig({ enableMCP: false, mcpServers: [] }), mockAdapter);
+      const eng = new ReviewEngine(
+        makeLegacyConfig({ enableMCP: false, mcpServers: [] }),
+        mockAdapter,
+      );
       mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
 
       const result = await eng.reviewPR(makeLargePR(2000));
@@ -3395,7 +3447,7 @@ describe('ReviewEngine', () => {
 
     it('respects custom thresholds', async () => {
       const eng = new ReviewEngine(
-        makeConfig({
+        makeLegacyConfig({
           enableMCP: false,
           mcpServers: [],
           review: {
@@ -3498,7 +3550,7 @@ describe('ReviewEngine', () => {
       overrides: Partial<AgentConfig> = {},
       costTracking: { enabled?: boolean; verbosity?: 'off' | 'summary' | 'detailed' } = {},
     ): AgentConfig {
-      return makeConfig({
+      return makeLegacyConfig({
         enableMCP: false,
         mcpServers: [],
         ...overrides,
