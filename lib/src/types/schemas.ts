@@ -224,7 +224,7 @@ export const ReviewConfigSchema = z.object({
   streamBatchSize: z.number().int().min(0).optional().default(0),
   /** Use the legacy concurrent-batch fan-out (up to 8 processes) instead of the
    * default single-process multi-agent subagent dispatch. Default: false. */
-  legacyBatching: z.boolean().default(false),
+  legacyBatching: z.boolean().optional().default(false),
 });
 
 /** Zod schema validating audit configuration. */
