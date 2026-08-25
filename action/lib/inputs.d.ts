@@ -48,6 +48,8 @@ export interface ActionInputs {
     fixModel: string;
     /** Whether the fix_model input was explicitly set by the workflow. */
     fixModelExplicit: boolean;
+    /** Whether the global model input was explicitly set by the workflow. */
+    globalModelExplicit: boolean;
     /** Model identifier for audit operations. */
     auditModel?: string;
     /** Model identifier for synthesis of collated batch results. */
