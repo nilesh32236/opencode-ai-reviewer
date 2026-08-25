@@ -39,36 +39,24 @@ The project has an active development roadmap with clear milestones and strategi
 
 ## Quick Start — GitHub Action
 
-### Option A: Shipped Reusable Workflow (Recommended)
+### Option A: Reusable Workflows (Planned)
 
-No files to copy. Create `.github/workflows/ai-review.yml` with a single job that calls the shipped reusable workflow:
+> **⚠️ Not yet shipped:** the reusable workflows listed below do **not** exist in this repository yet — referencing them will fail with a "workflow not found" error. Use [Option B](#option-b-direct-action-usage) (direct action usage) today. Ready-to-copy standalone templates already live in [examples/basic/review.yml](examples/basic/review.yml) and [examples/advanced/ai-suite.yml](examples/advanced/ai-suite.yml).
 
-```yaml
-name: AI Code Review
-on:
-  pull_request:
-    types: [opened, synchronize]
+The plan is to ship these `workflow_call` workflows so setup is a single `uses:` line:
 
-jobs:
-  review:
-    uses: nilesh32236/opencode-ai-reviewer/.github/workflows/review.yml@v1
-    secrets: inherit
-```
-
-The following reusable workflows are shipped with the action:
-
-| Workflow | Description | Usage |
-|----------|-------------|-------|
+| Workflow | Description | Planned usage |
+|----------|-------------|---------------|
 | `review.yml` | AI-powered PR review | `uses: nilesh32236/opencode-ai-reviewer/.github/workflows/review.yml@v1` |
 | `audit.yml` | Full codebase audit | `uses: nilesh32236/opencode-ai-reviewer/.github/workflows/audit.yml@v1` |
 | `autofix.yml` | Review → fix → auto-merge loop | `uses: nilesh32236/opencode-ai-reviewer/.github/workflows/autofix.yml@v1` |
 | `setup.yml` | Onboarding setup validation | `uses: nilesh32236/opencode-ai-reviewer/.github/workflows/setup.yml@v1` or run manually / comment `/setup` |
 
-All shipped workflows are production-ready with timeouts, concurrency guards, and zero-config defaults — the GitHub Token is auto-inherited via `secrets: inherit`. See [examples/basic/review.yml](examples/basic/review.yml) and [examples/advanced/ai-suite.yml](examples/advanced/ai-suite.yml) for ready-to-copy templates that compose these reusable workflows.
+Once shipped they will carry timeouts, concurrency guards, and zero-config defaults, with API keys accepted **only via GitHub Secrets** (`secrets: inherit` or an explicit `secrets:` mapping).
 
-> **Secrets configuration:** The reusable workflows accept API keys **only via GitHub Secrets** (`secrets: inherit` or an explicit `secrets:` mapping). Configure `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `GEMINI_API_KEY` in your repository's *Settings → Secrets and variables → Actions* if you use OpenAI, Anthropic, or Gemini models. The default OpenCode model (`opencode/deepseek-v4-flash-free`) requires no external API key.
+> **Secrets configuration:** Configure `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `GEMINI_API_KEY` in your repository's *Settings → Secrets and variables → Actions* if you use OpenAI, Anthropic, or Gemini models. The default OpenCode model (`opencode/deepseek-v4-flash-free`) requires no external API key.
 >
-> **OpenCode gateway:** For `opencode-go/*` models (e.g. `opencode-go/deepseek-v4-flash`), configure the **`OPENCODE_API_KEY` secret** — the shipped reusable workflows declare it in `workflow_call` and forward it automatically via `secrets: inherit`; for direct action usage pass it as `opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}`. The model itself is not a secret — read it from a repository **variable** so it can be changed without touching secrets: `model: ${{ vars.OPENCODE_MODEL || 'opencode-go/deepseek-v4-flash' }}` (add `OPENCODE_MODEL` under *Settings → Secrets and variables → Actions → Variables*).
+> **OpenCode gateway:** For `opencode-go/*` models (e.g. `opencode-go/deepseek-v4-flash`), configure the **`OPENCODE_API_KEY` secret** — pass it as `opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}`. The model itself is not a secret — read it from a repository **variable** so it can be changed without touching secrets: `model: ${{ vars.OPENCODE_MODEL || 'opencode/deepseek-v4-flash-free' }}` (add `OPENCODE_MODEL` under *Settings → Secrets and variables → Actions → Variables*). Bare names without a provider prefix are resolved against the default `opencode/` provider automatically.
 
 ### Option B: Direct Action Usage
 
@@ -147,9 +135,10 @@ docs:
 | `anthropic_api_key`      | —                                    | Anthropic API key — supply via `${{ secrets.ANTHROPIC_API_KEY }}` |
 | `gemini_api_key`         | —                                    | Google Gemini API key — supply via `${{ secrets.GEMINI_API_KEY }}` |
 | `opencode_api_key`       | —                                    | OpenCode gateway key for `opencode-go/*` models — supply via `${{ secrets.OPENCODE_API_KEY }}` |
-| `review_model`           | `opencode/deepseek-v4-flash-free`    | Model for PR review                            |
-| `fix_model`              | `opencode/deepseek-v4-flash-free`    | Model for auto-fix                             |
-| `audit_model`            | `opencode/deepseek-v4-flash-free`    | Model for codebase audit                       |
+| `model`                  | —                                    | Global fallback model for any per-stage model input that is not set. Bare names are prefixed with the default `opencode/` provider (e.g. `deepseek-v4-flash-free` → `opencode/deepseek-v4-flash-free`). |
+| `review_model`           | _(falls back to `model` → `.opencode-reviewer.yml` → `opencode/deepseek-v4-flash-free`)_ | Model for PR review (overrides the global `model` input) |
+| `fix_model`              | _(falls back to `model` → `.opencode-reviewer.yml` → `opencode/deepseek-v4-flash-free`)_ | Model for auto-fix (overrides the global `model` input) |
+| `audit_model`            | _(falls back to `model` → `.opencode-reviewer.yml`)_ | Model for codebase audit                       |
 | `docs_model`             | _(falls back to `review_model`)_     | Model for documentation generation (`docs` mode) |
 | `docs_style`             | `auto`                               | Doc comment style for `docs` mode: `jsdoc`, `tsdoc`, `rest`, `doxygen`, `numpy`, or `auto` (infer per file, default) |
 | `verification_model`     | _(falls back to `review_model`)_     | Model for meta-verification (false-positive filtering) |
