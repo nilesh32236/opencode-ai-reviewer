@@ -48,3 +48,5 @@
 ## 2026-08-26 - Optimize Set allocation in engine.ts
 **Learning:** Found two hot paths in `engine.ts` that initialize a Set by passing an intermediate array generated via a chained `.map().filter()`. This creates unnecessary intermediate allocations that are immediately thrown away and increases GC pressure in a frequently executed path.
 **Action:** Replaced `new Set(array.map().filter())` chains with a standard `for...of` loop that calls `Set.add()` directly, eliminating the need for any intermediate array allocation.
+
+**Refs:** `lib/src/engine.ts:756` (publishCompleted fileCount), `lib/src/engine.ts:1930` (filterTestGapContext batchPaths)

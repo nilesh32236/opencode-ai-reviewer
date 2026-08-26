@@ -1929,8 +1929,9 @@ export class ReviewEngine {
     // Optimize Set allocation by avoiding intermediate .map().filter() arrays
     const batchPaths = new Set<string>();
     for (const f of batch) {
-      if (typeof f?.path === 'string' && f.path) {
-        batchPaths.add(f.path);
+      const p = f?.path;
+      if (typeof p === 'string' && p) {
+        batchPaths.add(p);
       }
     }
     const inBatch = (sourceFile: string) => batchPaths.has(sourceFile);
