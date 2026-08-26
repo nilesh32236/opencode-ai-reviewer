@@ -752,6 +752,11 @@ export class ReviewEngine {
     // review instead of being silently skipped.
     if (dedupKey && this.isMeaningfulReview(result)) this.markReviewed(dedupKey, pr);
     const finalResult = this.attachUsage(result);
+    // Optimize Set allocation by avoiding intermediate .map().filter() arrays
+    const fileSet = new Set<string>();
+    for (const issue of finalResult.issues) {
+      if (issue.file) fileSet.add(issue.file);
+    }
     // Fire-and-forget completion publish: heavy subscribers (e.g. meta-review)
     // must not delay the handler's review post or observe unpersisted findings.
     this.publishCompleted(PIPELINE_EVENT_TYPES.REVIEW_COMPLETED, {
@@ -761,7 +766,7 @@ export class ReviewEngine {
       issuesCount: finalResult.issues.length,
       strengthsCount: finalResult.strengths.length,
       hasVerdict: Boolean(finalResult.verdict?.reasoning),
-      fileCount: new Set(finalResult.issues.map((i) => i.file).filter(Boolean)).size,
+      fileCount: fileSet.size,
       modelUsed: this.config.reviewModel,
     });
     return finalResult;
@@ -1921,9 +1926,13 @@ export class ReviewEngine {
     batch: PRContext['changedFiles'],
   ): string | undefined {
     if (!testGapResult) return undefined;
-    const batchPaths = new Set(
-      batch.map((f) => f?.path).filter((p): p is string => typeof p === 'string' && Boolean(p)),
-    );
+    // Optimize Set allocation by avoiding intermediate .map().filter() arrays
+    const batchPaths = new Set<string>();
+    for (const f of batch) {
+      if (typeof f?.path === 'string' && f.path) {
+        batchPaths.add(f.path);
+      }
+    }
     const inBatch = (sourceFile: string) => batchPaths.has(sourceFile);
     const filtered: TestGapResult = {
       modifiedUnchangedTests: testGapResult.modifiedUnchangedTests.filter((g) =>
