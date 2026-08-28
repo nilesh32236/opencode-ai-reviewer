@@ -86,6 +86,7 @@ export async function runChangelog(config: AgentConfig, gh: PlatformAdapter): Pr
     const defaultBranch = await withRetry(() => gh.getDefaultBranch(), {
       operationName: 'changelog.getDefaultBranch',
     });
+    validateRefName(defaultBranch);
 
     await exec.exec('git', ['fetch', 'origin']);
     const branchExists =
