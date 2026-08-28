@@ -204,6 +204,8 @@ export async function runFixIssue(
   const branchName = `autofix/issue-${issueNumber}`;
 
   const defaultBranch = await gh.getDefaultBranch();
+  validateRefName(branchName);
+  validateRefName(defaultBranch);
 
   // Reuse an existing `origin/${branchName}` only when its tip commit was
   // authored by this bot (the configured git email). Any collaborator with push

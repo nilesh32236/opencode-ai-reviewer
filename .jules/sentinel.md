@@ -16,3 +16,6 @@
 ## 2026-08-19 - Command Injection Risk Fixed in self-heal handler
 **Learning:** Found that `branchName` was used without validation in the initial `exec.exec('git', ['checkout', '-b', branchName, ...])` call in `action/src/self-heal.ts`. Although `branchName` is dynamically generated based on `GITHUB_RUN_ID` and thus generally safe, validating it before any Git execution enforces the defensive programming baseline against argument injection risks.
 **Prevention:** Added `validateRefName(branchName)` before the `checkout` command in `action/src/self-heal.ts` to ensure consistency with the later `push` command and proactively prevent any potential argument injection.
+## 2026-08-28 - Command Injection Risk Fixed in autofix and changelog
+**Learning:** Found that `branchName` and `defaultBranch` were used without validation in the initial `git checkout` and `git pull` commands in `action/src/fix.ts` and `action/src/changelog.ts`. This could potentially allow for argument injection via malicious branch names.
+**Prevention:** Added `validateRefName(branchName)` and `validateRefName(defaultBranch)` before any git operations using these refs to enforce defensive programming against argument injection risks.
