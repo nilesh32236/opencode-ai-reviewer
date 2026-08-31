@@ -508,13 +508,9 @@ export class TestGapDetector {
     const sourceFiles = changedFiles.filter(
       (f) => !isTestFile(f.path) && SOURCE_EXTENSIONS.has(path.posix.extname(f.path)),
     );
-    // ⚡ Bolt: Avoid intermediate array allocations (.filter().map()) by populating Set directly
-    const changedTestFileSet = new Set<string>();
-    for (const f of changedFiles) {
-      if (isTestFile(f.path)) {
-        changedTestFileSet.add(f.path);
-      }
-    }
+    const changedTestFileSet = new Set(
+      changedFiles.filter((f) => isTestFile(f.path)).map((f) => f.path),
+    );
 
     const modifiedSymbols: SourceSymbol[] = [];
     const newSymbols: SourceSymbol[] = [];
@@ -553,11 +549,7 @@ export class TestGapDetector {
         const oldContent = readFileAtHead(workDir, file.path);
         if (oldContent !== null) {
           const oldExports = extractExportsFromContent(oldContent, file.path);
-          // ⚡ Bolt: Avoid intermediate tuple array allocation (.map()) by populating Map directly
-          const oldByName = new Map<string, (typeof oldExports)[0]>();
-          for (const s of oldExports) {
-            oldByName.set(s.name, s);
-          }
+          const oldByName = new Map(oldExports.map((s) => [s.name, s]));
           const oldLines = oldContent.split('\n');
           const newLines = content.split('\n');
           for (const symbol of exports) {
