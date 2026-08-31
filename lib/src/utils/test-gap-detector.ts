@@ -505,12 +505,17 @@ export class TestGapDetector {
     this.testFileCache.clear();
     this.testContentCache.clear();
 
-    const sourceFiles = changedFiles.filter(
-      (f) => !isTestFile(f.path) && SOURCE_EXTENSIONS.has(path.posix.extname(f.path)),
-    );
-    const changedTestFileSet = new Set(
-      changedFiles.filter((f) => isTestFile(f.path)).map((f) => f.path),
-    );
+    // Avoid intermediate array allocations (.filter().map()) by populating collections directly
+    const sourceFiles: typeof changedFiles = [];
+    const changedTestFileSet = new Set<string>();
+
+    for (const f of changedFiles) {
+      if (isTestFile(f.path)) {
+        changedTestFileSet.add(f.path);
+      } else if (SOURCE_EXTENSIONS.has(path.posix.extname(f.path))) {
+        sourceFiles.push(f);
+      }
+    }
 
     const modifiedSymbols: SourceSymbol[] = [];
     const newSymbols: SourceSymbol[] = [];
@@ -549,7 +554,11 @@ export class TestGapDetector {
         const oldContent = readFileAtHead(workDir, file.path);
         if (oldContent !== null) {
           const oldExports = extractExportsFromContent(oldContent, file.path);
-          const oldByName = new Map(oldExports.map((s) => [s.name, s]));
+          // Avoid intermediate tuple array allocation (.map()) by populating Map directly
+          const oldByName = new Map<string, SourceSymbol>();
+          for (const s of oldExports) {
+            oldByName.set(s.name, s);
+          }
           const oldLines = oldContent.split('\n');
           const newLines = content.split('\n');
           for (const symbol of exports) {
