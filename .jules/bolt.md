@@ -45,3 +45,7 @@
 **Learning:** Found that `cluster.ts` was using the older MinHash implementation which computes `number[]` arrays and uses `number[][]` for signatures. By switching to `Uint32Array` signatures from `minhash-optimized.ts` (`computeMinHashSignature` and `lshCandidatesTyped`), memory allocation is more efficient and we avoid creating millions of standard array items on large inputs, reducing GC pressure and speeding up clustering.
 **Action:** Always prefer `Uint32Array` or typed arrays for purely numerical processing like hash arrays or clustering signatures to minimize GC pressure and memory usage overhead.
 **Refs:** `lib/src/pattern-detector/cluster.ts`
+## 2026-08-31 - Optimize Set and Map instantiation in test gap detector
+**Learning:** Found that `new Set(changedFiles.filter().map())` and `new Map(oldExports.map())` in `test-gap-detector.ts` created unnecessary intermediate array allocations, causing GC pressure in a hot path.
+**Action:** Always use a single `for...of` iteration loop over the original array to populate a `Set` or `Map` directly without intermediate `.map()` or `.filter()` chains.
+**Refs:** `lib/src/utils/test-gap-detector.ts:511` (changedTestFileSet), `lib/src/utils/test-gap-detector.ts:557` (oldByName).
