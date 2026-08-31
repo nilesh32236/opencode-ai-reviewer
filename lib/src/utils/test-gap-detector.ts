@@ -505,9 +505,8 @@ export class TestGapDetector {
     this.testFileCache.clear();
     this.testContentCache.clear();
 
-    // ⚡ Bolt: Avoid intermediate array allocations (.filter()) by populating array directly
+    // Avoid intermediate array allocations (.filter().map()) by populating collections directly
     const sourceFiles: typeof changedFiles = [];
-    // ⚡ Bolt: Avoid intermediate array allocations (.filter().map()) by populating Set directly
     const changedTestFileSet = new Set<string>();
 
     for (const f of changedFiles) {
@@ -555,8 +554,8 @@ export class TestGapDetector {
         const oldContent = readFileAtHead(workDir, file.path);
         if (oldContent !== null) {
           const oldExports = extractExportsFromContent(oldContent, file.path);
-          // ⚡ Bolt: Avoid intermediate tuple array allocation (.map()) by populating Map directly
-          const oldByName = new Map<string, (typeof oldExports)[0]>();
+          // Avoid intermediate tuple array allocation (.map()) by populating Map directly
+          const oldByName = new Map<string, SourceSymbol>();
           for (const s of oldExports) {
             oldByName.set(s.name, s);
           }
