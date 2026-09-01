@@ -46,7 +46,7 @@ jobs:
         id: ai-review
         with:
           mode: review
-          model: 'opencode/deepseek-v4-flash-free'
+          model: 'opencode/muse-spark-1.2-contributor-free'
           # Uncomment to use OpenAI instead (API keys are passed via GitHub Secrets, never as inputs):
           # openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           # anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}

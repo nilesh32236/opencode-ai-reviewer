@@ -507,11 +507,11 @@ export const AgentConfigSchema = z.object({
   reviewModel: z
     .string()
     .regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR)
-    .default('opencode/deepseek-v4-flash-free'),
+    .default('opencode/muse-spark-1.2-contributor-free'),
   fixModel: z
     .string()
     .regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR)
-    .default('opencode/deepseek-v4-flash-free'),
+    .default('opencode/muse-spark-1.2-contributor-free'),
   auditModel: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),
   docsModel: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),
   synthesisModel: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),

@@ -139,7 +139,7 @@ jobs:
           5. Do NOT run git commit or git push yourself.
           CONFLICT_EOF
 
-                opencode run --auto --model opencode/deepseek-v4-flash-free \
+                opencode run --auto --model opencode/muse-spark-1.2-contributor-free \
                   "$(cat /tmp/conflict-prompt.txt)" < /dev/null || true
 
                 # Verify conflict resolution
@@ -184,7 +184,7 @@ jobs:
           Return a JSON summary on the last line: {"approved": true, "confidence": "high", "reason": "..."} or {"approved": false, "confidence": "low", "reason": "..."}
           REVIEW_PROMPT_EOF
 
-            REVIEW_OUT=$(opencode run --auto --model opencode/deepseek-v4-flash-free "$(cat /tmp/review-prompt.txt)" < /dev/null || true)
+            REVIEW_OUT=$(opencode run --auto --model opencode/muse-spark-1.2-contributor-free "$(cat /tmp/review-prompt.txt)" < /dev/null || true)
             APPROVED=$(echo "$REVIEW_OUT" | tail -20 | grep -oP '\{\s*"approved"\s*:\s*(true|false)' | grep -o 'true\|false' | tail -1 || echo "false")
 
             if [ "$APPROVED" = "true" ]; then
@@ -274,7 +274,7 @@ jobs:
           3. Write your answer to /tmp/ai-answer.txt.
           QUESTION_PROMPT_EOF
 
-            opencode run --auto --model opencode/deepseek-v4-flash-free \
+            opencode run --auto --model opencode/muse-spark-1.2-contributor-free \
               "$(cat /tmp/answer-questions-prompt.txt)" < /dev/null || true
 
             if [ -s /tmp/ai-answer.txt ]; then
@@ -300,7 +300,7 @@ jobs:
         uses: ./
         with:
           mode: fix
-          model: 'opencode/deepseek-v4-flash-free'
+          model: 'opencode/muse-spark-1.2-contributor-free'
           max_fix_iterations: 1
           run_checks_after_fix: 'pnpm build && pnpm typecheck && pnpm test && pnpm lint'
           pr-number: ${{ steps.process-issue.outputs.issue_number }}

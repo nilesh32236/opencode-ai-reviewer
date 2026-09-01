@@ -518,7 +518,7 @@ analyze-issue:
     - uses: ./action
       with:
         mode: analyze
-        model: 'opencode/deepseek-v4-flash-free'
+        model: 'opencode/muse-spark-1.2-contributor-free'
         github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         openai_api_key: ${{ secrets.OPENAI_API_KEY }}
         anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}

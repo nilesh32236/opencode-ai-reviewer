@@ -12,7 +12,7 @@ Options:
   --branch <name>        Review the diff between <name>...HEAD
   --output <format>      Output format: terminal (default), json, or markdown
   --config <path>        Custom config file (default: .opencode-reviewer.yml)
-  --model <name>         Model to use (default: opencode/deepseek-v4-flash-free)
+   --model <name>         Model to use (default: opencode/muse-spark-1.2-contributor-free)
   --timeout-minutes <n>  Max execution timeout in minutes (default: 20)
   -h, --help             Show this help message
   -v, --version          Show the CLI version
