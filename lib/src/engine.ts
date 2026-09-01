@@ -757,8 +757,7 @@ export class ReviewEngine {
     for (const issue of finalResult.issues) {
       if (issue.file) fileSet.add(issue.file);
     }
-    // Fire-and-forget completion publish: heavy subscribers (e.g. meta-review)
-    // must not delay the handler's review post or observe unpersisted findings.
+
     this.publishCompleted(PIPELINE_EVENT_TYPES.REVIEW_COMPLETED, {
       prNumber: pr.number,
       reviewSummary: finalResult.summary,
