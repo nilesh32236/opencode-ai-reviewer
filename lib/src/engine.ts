@@ -116,7 +116,7 @@ export const AGENT_ORDER = ['security', 'performance', 'quality', 'logic'] as co
  * Fallback USD cost rates per 1K tokens for a few well-known models.
  * Used ONLY for cost estimation when the user has not supplied explicit
  * `inputCostPer1K` / `outputCostPer1K` config rates and the model name
- * matches one of these keys. The default `opencode/deepseek-v4-flash-free`
+ * matches one of these keys. The default `opencode/muse-spark-1.2-contributor-free`
  * model is not listed because it is free — `estimatedCost` stays undefined.
  */
 const KNOWN_MODEL_RATES: Record<string, { inputCostPer1K: number; outputCostPer1K: number }> = {

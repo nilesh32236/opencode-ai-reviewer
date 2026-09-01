@@ -62,7 +62,7 @@ export function validateModelString(model: string): void {
   if (!trimmed) {
     throw new Error(
       `Invalid model: "${String(model)}". Model must be a non-empty string in "provider/model-name" format. ` +
-        `Examples: "anthropic/claude-sonnet-4-20250514", "openai/gpt-4o", "opencode/deepseek-v4-flash-free".`,
+        `Examples: "anthropic/claude-sonnet-4-20250514", "openai/gpt-4o", "opencode/muse-spark-1.2-contributor-free".`,
     );
   }
 
@@ -70,7 +70,7 @@ export function validateModelString(model: string): void {
     throw new Error(
       `Invalid model format: "${trimmed}". Model must match "provider/model-name" pattern. ` +
         `Allowed characters: alphanumeric, hyphens, underscores, dots, colons, plus signs. ` +
-        `Examples: "anthropic/claude-sonnet-4-20250514", "openai/gpt-4o", "opencode/deepseek-v4-flash-free".`,
+        `Examples: "anthropic/claude-sonnet-4-20250514", "openai/gpt-4o", "opencode/muse-spark-1.2-contributor-free".`,
     );
   }
 

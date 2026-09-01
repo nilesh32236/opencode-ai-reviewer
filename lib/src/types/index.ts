@@ -1644,8 +1644,8 @@ export const DEFAULT_CHANGELOG_CONFIG: ChangelogConfig = {
 
 export const DEFAULT_CONFIG: AgentConfig = {
   platform: 'github',
-  reviewModel: 'opencode/deepseek-v4-flash-free',
-  fixModel: 'opencode/deepseek-v4-flash-free',
+  reviewModel: 'opencode/muse-spark-1.2-contributor-free',
+  fixModel: 'opencode/muse-spark-1.2-contributor-free',
   auditModel: undefined,
   synthesisModel: undefined,
   verificationModel: undefined,

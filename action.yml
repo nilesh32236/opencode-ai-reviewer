@@ -36,7 +36,7 @@ inputs:
     required: false
 
   opencode_api_key:
-    description: 'OpenCode gateway API key for opencode-go/* models (e.g. opencode-go/deepseek-v4-flash). Pass your OPENCODE_API_KEY GitHub secret as the value of this input.'
+    description: 'OpenCode gateway API key for opencode-go/* models (e.g. opencode-go/muse-spark-1.2-contributor). Pass your OPENCODE_API_KEY GitHub secret as the value of this input.'
     required: false
 
   llm_default_provider:
@@ -82,12 +82,12 @@ inputs:
   review_model:
     description: 'Model to use for PR review'
     required: false
-    default: 'opencode/deepseek-v4-flash-free'
+    default: 'opencode/muse-spark-1.2-contributor-free'
 
   fix_model:
     description: 'Model to use for auto-fix'
     required: false
-    default: 'opencode/deepseek-v4-flash-free'
+    default: 'opencode/muse-spark-1.2-contributor-free'
 
   audit_model:
     description: 'Model to use for codebase audit'

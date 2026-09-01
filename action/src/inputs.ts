@@ -336,9 +336,11 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   };
 
   const reviewModel =
-    resolveModel(modelInput('review_model') || globalModel) || 'opencode/deepseek-v4-flash-free';
+    resolveModel(modelInput('review_model') || globalModel) ||
+    'opencode/muse-spark-1.2-contributor-free';
   const fixModel =
-    resolveModel(modelInput('fix_model') || globalModel) || 'opencode/deepseek-v4-flash-free';
+    resolveModel(modelInput('fix_model') || globalModel) ||
+    'opencode/muse-spark-1.2-contributor-free';
   const auditModel = resolveModel(modelInput('audit_model') || globalModel) || undefined;
   const synthesisModel = resolveModel(modelInput('synthesis_model') || globalModel) || undefined;
   const verificationModel =

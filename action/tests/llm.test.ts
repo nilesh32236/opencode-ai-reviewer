@@ -6,8 +6,8 @@ import { buildLLMConfig } from '../src/llm.js';
 const BASE_INPUTS = {
   mode: 'review',
   githubToken: 'ghs_token',
-  reviewModel: 'opencode/deepseek-v4-flash-free',
-  fixModel: 'opencode/deepseek-v4-flash-free',
+  reviewModel: 'opencode/muse-spark-1.2-contributor-free',
+  fixModel: 'opencode/muse-spark-1.2-contributor-free',
   enableMetaVerification: false,
   includePreExisting: false,
   docStyle: 'auto',
