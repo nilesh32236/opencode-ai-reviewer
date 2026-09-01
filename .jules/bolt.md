@@ -45,3 +45,12 @@
 **Learning:** Found that `cluster.ts` was using the older MinHash implementation which computes `number[]` arrays and uses `number[][]` for signatures. By switching to `Uint32Array` signatures from `minhash-optimized.ts` (`computeMinHashSignature` and `lshCandidatesTyped`), memory allocation is more efficient and we avoid creating millions of standard array items on large inputs, reducing GC pressure and speeding up clustering.
 **Action:** Always prefer `Uint32Array` or typed arrays for purely numerical processing like hash arrays or clustering signatures to minimize GC pressure and memory usage overhead.
 **Refs:** `lib/src/pattern-detector/cluster.ts`
+## 2026-08-24 - Optimize Set/Array allocation in mapping and filtering
+**Learning:** Found multiple instances where `.map().filter()` chains were used to extract specific data from arrays (e.g. `batch.map((f) => f?.path).filter(Boolean)`). These chains iterate over the array multiple times and create intermediate array allocations. Converting these to single-pass loops that directly populate the target `Set` or `Array` avoids this overhead and reduces GC pressure.
+**Action:** Replace `.map().filter()` chains with single-pass loops (`for...of` or `for (let i = 0...)`) when extracting and filtering data into Sets or Arrays.
+**Refs:** `lib/src/engine.ts`, `lib/src/utils/github.ts`, `lib/src/sca/osv-client.ts`.
+## 2026-08-26 - Optimize Set allocation in engine.ts
+**Learning:** Found two hot paths in `engine.ts` that initialize a Set by passing an intermediate array generated via a chained `.map().filter()`. This creates unnecessary intermediate allocations that are immediately thrown away and increases GC pressure in a frequently executed path.
+**Action:** Replaced `new Set(array.map().filter())` chains with a standard `for...of` loop that calls `Set.add()` directly, eliminating the need for any intermediate array allocation.
+
+**Refs:** `lib/src/engine.ts:756` (publishCompleted fileCount), `lib/src/engine.ts:1930` (filterTestGapContext batchPaths)

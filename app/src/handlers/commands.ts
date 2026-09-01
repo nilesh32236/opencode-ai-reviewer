@@ -561,6 +561,7 @@ export async function handleDocsCommand(
   };
   const engine = new ReviewEngine(config, gh, undefined, eventBus, repo, correlationId);
   const branchName = `docs/issue-${issueNumber}`;
+  validateRefName(branchName);
 
   try {
     if (signal?.aborted) return;
@@ -914,6 +915,7 @@ async function createAutofixPR(
   };
   const engine = new ReviewEngine(config, gh, undefined, eventBus, repo, correlationId);
   const branchName = `autofix/issue-${issueNumber}`;
+  validateRefName(branchName);
 
   try {
     try {

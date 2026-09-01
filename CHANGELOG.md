@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.12.3] — 2026-09-01
+
+
+### Fixed
+
+- add validateRefName to branchName variables (#427) (#427)
+
+### Changed
+
+- ⚡ Bolt: optimize array filtering into Sets and Arrays (#420) (#420)
+- ⚡ Bolt: Optimize Set allocation in engine.ts (#422) (#422)
+
+[v1.12.3]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.12.2...v1.12.3
+
 ## [v1.12.2] — 2026-09-01
 
 
