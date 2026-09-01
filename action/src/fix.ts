@@ -202,6 +202,7 @@ export async function runFixIssue(
   core.info(`Fixing issue #${issueNumber}`);
 
   const branchName = `autofix/issue-${issueNumber}`;
+  validateRefName(branchName);
 
   const defaultBranch = await gh.getDefaultBranch();
 
