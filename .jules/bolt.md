@@ -45,3 +45,8 @@
 **Learning:** Found that `cluster.ts` was using the older MinHash implementation which computes `number[]` arrays and uses `number[][]` for signatures. By switching to `Uint32Array` signatures from `minhash-optimized.ts` (`computeMinHashSignature` and `lshCandidatesTyped`), memory allocation is more efficient and we avoid creating millions of standard array items on large inputs, reducing GC pressure and speeding up clustering.
 **Action:** Always prefer `Uint32Array` or typed arrays for purely numerical processing like hash arrays or clustering signatures to minimize GC pressure and memory usage overhead.
 **Refs:** `lib/src/pattern-detector/cluster.ts`
+## 2026-08-26 - Optimize Set allocation in engine.ts
+**Learning:** Found two hot paths in `engine.ts` that initialize a Set by passing an intermediate array generated via a chained `.map().filter()`. This creates unnecessary intermediate allocations that are immediately thrown away and increases GC pressure in a frequently executed path.
+**Action:** Replaced `new Set(array.map().filter())` chains with a standard `for...of` loop that calls `Set.add()` directly, eliminating the need for any intermediate array allocation.
+
+**Refs:** `lib/src/engine.ts:756` (publishCompleted fileCount), `lib/src/engine.ts:1930` (filterTestGapContext batchPaths)
