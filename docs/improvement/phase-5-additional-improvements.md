@@ -319,7 +319,7 @@ const auditSubscriber = {
 **Problem:**  
 The self-improvement workflow runs:
 ```bash
-opencode run --auto --model opencode/deepseek-v4-flash-free "$(cat /tmp/self-improve-prompt.txt)"
+opencode run --auto --model opencode/muse-spark-1.2-contributor-free "$(cat /tmp/self-improve-prompt.txt)"
 ```
 
 The `--auto` flag behavior may change across OpenCode versions. The workflow doesn't pin the OpenCode version, so a breaking change in the CLI could silently break the self-improvement job.

@@ -55,7 +55,7 @@ jobs:
         id: review
         with:
           mode: review
-          model: 'opencode/deepseek-v4-flash-free'
+          model: 'opencode/muse-spark-1.2-contributor-free'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN || secrets.GH_PAT }}
 
@@ -92,7 +92,7 @@ jobs:
         uses: nilesh32236/opencode-ai-reviewer@v1
         with:
           mode: review
-          model: 'opencode/deepseek-v4-flash-free'
+          model: 'opencode/muse-spark-1.2-contributor-free'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN || secrets.GH_PAT }}
 
@@ -110,7 +110,7 @@ jobs:
       - uses: nilesh32236/opencode-ai-reviewer@v1
         with:
           mode: fix
-          model: 'opencode/deepseek-v4-flash-free'
+          model: 'opencode/muse-spark-1.2-contributor-free'
           max_fix_iterations: 3
           auto_merge: true
           run_checks_after_fix: 'pnpm lint && pnpm typecheck'
@@ -130,7 +130,7 @@ jobs:
       - uses: nilesh32236/opencode-ai-reviewer@v1
         with:
           mode: audit
-          model: 'opencode/deepseek-v4-flash-free'
+          model: 'opencode/muse-spark-1.2-contributor-free'
           audit_prompt_name: ${{ github.event.inputs.audit_category }}
           audit_create_issues: true
           audit_auto_fix: true
@@ -153,7 +153,7 @@ jobs:
       - uses: nilesh32236/opencode-ai-reviewer@v1
         with:
           mode: fix
-          model: 'opencode/deepseek-v4-flash-free'
+          model: 'opencode/muse-spark-1.2-contributor-free'
           max_fix_iterations: 3
           auto_merge: true
           run_checks_after_fix: 'pnpm lint && pnpm typecheck'

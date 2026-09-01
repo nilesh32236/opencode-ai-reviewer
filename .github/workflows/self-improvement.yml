@@ -138,7 +138,7 @@ jobs:
 
       - name: Run OpenCode Self-Improvement
         run: |
-          opencode run --auto --model opencode/deepseek-v4-flash-free \
+          opencode run --auto --model opencode/muse-spark-1.2-contributor-free \
             "$(cat /tmp/self-improve-prompt.txt)" < /dev/null
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
@@ -213,7 +213,7 @@ jobs:
           Do NOT run git add/commit/push.
           FIX_EOF
 
-              opencode run --auto --model opencode/deepseek-v4-flash-free \
+              opencode run --auto --model opencode/muse-spark-1.2-contributor-free \
                 "$(cat /tmp/self-heal-fix-prompt.txt)" < /dev/null || true
             fi
           done

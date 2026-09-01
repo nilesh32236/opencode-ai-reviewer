@@ -116,7 +116,7 @@ And asks the LLM to emit a single JSON line:
 The verifier must be a **separate LLM call** from the main review, because:
 
 - It needs different context (the previous finding + the diff + the file content), not the full review context.
-- It can use a smaller / cheaper model — `opencode/deepseek-v4-flash-free` is fine.
+- It can use a smaller / cheaper model — `opencode/muse-spark-1.2-contributor-free` is fine.
 - It must not be influenced by the current iteration's findings (which would bias it toward `STILL_PRESENT`).
 
 ### 2.4 The fuzzy line match
@@ -432,7 +432,7 @@ PRs 1.1 and 1.2 can land in parallel. PRs 1.3 and 1.4 depend on 1.2. PR 1.5 depe
 
 ## 8. Open Questions
 
-1. **Verifier model choice:** Default to `reviewModel` (same as the main review) or to a cheaper `verifyResolutionModel`? Recommendation: separate `verifyResolutionModel` config key, defaulting to `opencode/deepseek-v4-flash-free` (cheap, fast).
+1. **Verifier model choice:** Default to `reviewModel` (same as the main review) or to a cheaper `verifyResolutionModel`? Recommendation: separate `verifyResolutionModel` config key, defaulting to `opencode/muse-spark-1.2-contributor-free` (cheap, fast).
 
 2. **Parallel verifier calls:** Run the verifier for each previous finding in parallel, or sequentially? Recommendation: parallel with a concurrency limit of 5. The findings are independent.
 

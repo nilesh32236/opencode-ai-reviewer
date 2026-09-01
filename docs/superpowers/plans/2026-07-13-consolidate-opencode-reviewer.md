@@ -521,7 +521,7 @@ inputs:
   model:
     description: 'OpenCode model to use'
     required: false
-    default: 'opencode/deepseek-v4-flash-free'
+    default: 'opencode/muse-spark-1.2-contributor-free'
   github_token:
     description: 'GitHub token (defaults to GITHUB_TOKEN)'
     required: false
@@ -811,7 +811,7 @@ export function parseInputs(): ActionInputs {
   }
   return {
     mode: mode as ActionMode,
-    model: core.getInput('model') || 'opencode/deepseek-v4-flash-free',
+    model: core.getInput('model') || 'opencode/muse-spark-1.2-contributor-free',
     // ... all other inputs with validation (same structure as variant 2)
   };
 }

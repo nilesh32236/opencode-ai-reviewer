@@ -116,7 +116,7 @@ export const AGENT_ORDER = ['security', 'performance', 'quality', 'logic'] as co
  * Fallback USD cost rates per 1K tokens for a few well-known models.
  * Used ONLY for cost estimation when the user has not supplied explicit
  * `inputCostPer1K` / `outputCostPer1K` config rates and the model name
- * matches one of these keys. The default `opencode/deepseek-v4-flash-free`
+ * matches one of these keys. The default `opencode/muse-spark-1.2-contributor-free`
  * model is not listed because it is free — `estimatedCost` stays undefined.
  */
 const KNOWN_MODEL_RATES: Record<string, { inputCostPer1K: number; outputCostPer1K: number }> = {
@@ -752,15 +752,10 @@ export class ReviewEngine {
     // review instead of being silently skipped.
     if (dedupKey && this.isMeaningfulReview(result)) this.markReviewed(dedupKey, pr);
     const finalResult = this.attachUsage(result);
-    // Fire-and-forget completion publish: heavy subscribers (e.g. meta-review)
-    // must not delay the handler's review post or observe unpersisted findings.
-    // Use single iteration Set insertion to avoid intermediate map/filter allocations
-    const uniqueFiles = new Set<string>();
-    for (let i = 0; i < finalResult.issues.length; i++) {
-      const file = finalResult.issues[i].file;
-      if (file) {
-        uniqueFiles.add(file);
-      }
+    // Optimize Set allocation by avoiding intermediate .map().filter() arrays
+    const fileSet = new Set<string>();
+    for (const issue of finalResult.issues) {
+      if (issue.file) fileSet.add(issue.file);
     }
 
     this.publishCompleted(PIPELINE_EVENT_TYPES.REVIEW_COMPLETED, {
@@ -770,7 +765,7 @@ export class ReviewEngine {
       issuesCount: finalResult.issues.length,
       strengthsCount: finalResult.strengths.length,
       hasVerdict: Boolean(finalResult.verdict?.reasoning),
-      fileCount: uniqueFiles.size,
+      fileCount: fileSet.size,
       modelUsed: this.config.reviewModel,
     });
     return finalResult;
@@ -1930,10 +1925,12 @@ export class ReviewEngine {
     batch: PRContext['changedFiles'],
   ): string | undefined {
     if (!testGapResult) return undefined;
+    // Optimize Set allocation by avoiding intermediate .map().filter() arrays
     const batchPaths = new Set<string>();
     for (const f of batch) {
-      if (f && typeof f.path === 'string' && f.path.length > 0) {
-        batchPaths.add(f.path);
+      const p = f?.path;
+      if (typeof p === 'string' && p) {
+        batchPaths.add(p);
       }
     }
     const inBatch = (sourceFile: string) => batchPaths.has(sourceFile);

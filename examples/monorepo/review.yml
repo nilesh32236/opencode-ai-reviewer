@@ -51,7 +51,7 @@ jobs:
         id: ai-review
         with:
           mode: review
-          model: 'opencode/deepseek-v4-flash-free'
+          model: 'opencode/muse-spark-1.2-contributor-free'
           max_files_per_batch: 3
           include_strengths: true
           # Config file .opencode-reviewer.yml provides project context
