@@ -22,13 +22,13 @@ describe('worker resolveConfig', () => {
   });
 
   it('honours REVIEW_MODEL / FIX_MODEL / AUDIT_MODEL env overrides', () => {
-    process.env.REVIEW_MODEL = 'opencode-go/deepseek-v4-flash';
-    process.env.FIX_MODEL = 'opencode-go/deepseek-v4-flash';
-    process.env.AUDIT_MODEL = 'opencode-go/deepseek-v4-flash';
+    process.env.REVIEW_MODEL = 'opencode-go/muse-spark-1.2-contributor';
+    process.env.FIX_MODEL = 'opencode-go/muse-spark-1.2-contributor';
+    process.env.AUDIT_MODEL = 'opencode-go/muse-spark-1.2-contributor';
     const config = resolveConfig();
-    expect(config.reviewModel).toBe('opencode-go/deepseek-v4-flash');
-    expect(config.fixModel).toBe('opencode-go/deepseek-v4-flash');
-    expect(config.auditModel).toBe('opencode-go/deepseek-v4-flash');
+    expect(config.reviewModel).toBe('opencode-go/muse-spark-1.2-contributor');
+    expect(config.fixModel).toBe('opencode-go/muse-spark-1.2-contributor');
+    expect(config.auditModel).toBe('opencode-go/muse-spark-1.2-contributor');
   });
 
   it('prefers an explicitly provided config over env', () => {

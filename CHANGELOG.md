@@ -4,6 +4,39 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.12.2] — 2026-09-01
+
+
+### Fixed
+
+- replace discontinued deepseek-v4-flash-free with muse-spark-1.2-contributor-free
+
+### Changed
+
+- fix(lib): make linter execution async to unblock event loop (AUD-005) (#419) (#419)
+- fix(docker): add restart policy and healthcheck (AUD-003) (#418) (#418)
+- fix(app): prevent token leakage in git clone via GIT_ASKPASS (AUD-002) (#417) (#417)
+- fix(action): validate defaultBranch ref to prevent injection in self-heal (#416) (#416)
+- ⚡ Bolt: Use typed arrays for MinHash signatures in clustering (#414) (#414)
+- feat(platform): GitHub OAuth + JWT session auth for dashboard (Phase 4) (#415) (#415)
+- ⚡ Bolt: Optimize Map allocation in blame data filtering (#413) (#413)
+- 🛡️ Sentinel Daily Guard: Prevent Argument Injection Risk in self-heal branch checkout (#411) (#411)
+- 🛡️ Sentinel Daily Guard: Fix Token Leak in Git clone error logs (#410) (#410)
+- ⚡ Bolt: Optimize Set iteration and clustering loops (#408) (#408)
+- ⚡ Bolt: Optimize Set allocation in pattern discovery (#407) (#407)
+- [Self-Improvement] Autonomous Codebase Enhancement (#406) (#406)
+- 🛡️ Sentinel Daily Guard: Validate branchName to prevent Command Injection Risk in self-heal handler (#404) (#404)
+- fix(platform): dashboard asset base matches /platform/ proxy path
+- fix(platform): trust exactly one proxy hop, not all proxies
+- fix(ci): make platform deploy robust to missing .env.platform
+- fix(platform): trust proxy for express-rate-limit behind Caddy
+- fix(platform): handle empty webhook body without crashing
+- feat(platform): bundled React dashboard served by the platform server (Chunk 8) (#400) (#400)
+- feat(platform): deploy workflow + end-to-end smoke test (Chunk 9) (#401) (#401)
+- feat(platform): GitHub webhook receiver + task enqueue (Chunk 5) (#397) (#397)
+
+[v1.12.2]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.12.1...v1.12.2
+
 ## [v1.12.1] — 2026-08-14
 
 

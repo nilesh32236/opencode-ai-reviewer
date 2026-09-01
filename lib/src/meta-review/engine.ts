@@ -82,7 +82,7 @@ export class MetaReviewEngine {
       model:
         this.config?.metaReviewModel ??
         this.config?.reviewModel ??
-        'opencode/deepseek-v4-flash-free',
+        'opencode/muse-spark-1.2-contributor-free',
       signal,
       llm: this.config?.llm,
     });
