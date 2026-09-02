@@ -165,9 +165,11 @@ export function resolveCodeReferences(
 ): CodeReference[] {
   if (!refs || refs.length === 0) return [];
   const changed = changedFiles || [];
-  const byPath = new Map(changed.map((f) => [f.path, f]));
+  const byPath = new Map<string, ChangedFile>();
   const byBasename = new Map<string, ChangedFile[]>();
+
   for (const f of changed) {
+    byPath.set(f.path, f);
     const base = f.path.split('/').pop();
     if (!base) continue;
     const list = byBasename.get(base) ?? [];
