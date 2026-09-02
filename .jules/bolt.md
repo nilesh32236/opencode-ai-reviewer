@@ -54,3 +54,7 @@
 **Action:** Replaced `new Set(array.map().filter())` chains with a standard `for...of` loop that calls `Set.add()` directly, eliminating the need for any intermediate array allocation.
 
 **Refs:** `lib/src/engine.ts:756` (publishCompleted fileCount), `lib/src/engine.ts:1930` (filterTestGapContext batchPaths)
+## 2026-09-02 - Optimize Map allocation in byPath and findingsById
+**Learning:** Found multiple instances where `new Map(array.map((item) => [item.key, item]))` was used to instantiate a Map from an array. This iterates over the array multiple times and creates an intermediate array of tuples, causing unnecessary memory allocations and GC pressure in hot paths.
+**Action:** Always use a single iteration loop (`for...of`) over the original array to populate a Map directly using `.set(key, value)` without intermediate array allocation chains.
+**Refs:** `lib/src/prompts/conversation.ts:168` (byPath population), `lib/src/learning/json-db.ts:616` (findingsById population).

@@ -613,7 +613,8 @@ export class JsonDatabase implements LearningRepository {
     const expiresAt = new Date(nowMs + ttlDays * 24 * 60 * 60 * 1000).toISOString();
 
     // Aggregate dismissing feedback by (message, file) using the joined finding.
-    const findingsById = new Map(this.data.findings.map((f) => [f.id, f]));
+    const findingsById = new Map<string, (typeof this.data.findings)[0]>();
+    for (const f of this.data.findings) findingsById.set(f.id, f);
     const counts = new Map<string, { message: string; file?: string; count: number }>();
     for (const fb of this.data.feedback) {
       const suppressing =
