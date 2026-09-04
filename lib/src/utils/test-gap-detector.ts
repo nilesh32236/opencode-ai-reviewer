@@ -549,7 +549,11 @@ export class TestGapDetector {
         const oldContent = readFileAtHead(workDir, file.path);
         if (oldContent !== null) {
           const oldExports = extractExportsFromContent(oldContent, file.path);
-          const oldByName = new Map(oldExports.map((s) => [s.name, s]));
+          // Optimized: Avoid intermediate tuple array allocation for better performance
+          const oldByName = new Map<string, SourceSymbol>();
+          for (const s of oldExports) {
+            oldByName.set(s.name, s);
+          }
           const oldLines = oldContent.split('\n');
           const newLines = content.split('\n');
           for (const symbol of exports) {
