@@ -2,7 +2,13 @@ import { existsSync } from 'fs';
 import { promises as fs } from 'fs';
 import path from 'path';
 import type { AgentConfig, EventBus, PlatformAdapter, ReviewResult } from '@opencode-pr-agent/lib';
-import { GitHubHelper, GitLabAdapter, Logger, ReviewEngine } from '@opencode-pr-agent/lib';
+import {
+  GitHubHelper,
+  GitLabAdapter,
+  Logger,
+  ReviewEngine,
+  sanitizeErrorMessage,
+} from '@opencode-pr-agent/lib';
 import { mergeRepoConfig } from '../utils/config.js';
 
 /**
@@ -94,7 +100,10 @@ export async function handleAudit(
       category = path.basename(mdFiles[rand], '.md');
     }
   } catch (err) {
-    logger.error(`Error reading audit prompts: ${err instanceof Error ? err.message : err}`, err);
+    logger.error(
+      `Error reading audit prompts: ${sanitizeErrorMessage(err)}`,
+      sanitizeErrorMessage(err),
+    );
     return;
   }
 
@@ -107,7 +116,7 @@ export async function handleAudit(
   try {
     promptContent = await fs.readFile(selectedFile, 'utf-8');
   } catch (err) {
-    logger.error(`Failed to read audit prompt file: ${err instanceof Error ? err.message : err}`);
+    logger.error(`Failed to read audit prompt file: ${sanitizeErrorMessage(err)}`, err);
     return;
   }
 
@@ -132,7 +141,7 @@ export async function handleAudit(
         auditWorkingDir,
       );
     } catch (err) {
-      logger.error(`Audit engine failed: ${err instanceof Error ? err.message : err}`);
+      logger.error(`Audit engine failed: ${sanitizeErrorMessage(err)}`, err);
       if (issueNumber !== undefined) {
         try {
           await gh.postOrUpdateComment(
@@ -172,7 +181,7 @@ export async function handleAudit(
           logger.info(`Created issue #${issue.number}: ${issue.url}`);
         }
       } catch (err) {
-        logger.error(`Failed to create audit issue: ${err instanceof Error ? err.message : err}`);
+        logger.error(`Failed to create audit issue: ${sanitizeErrorMessage(err)}`, err);
       }
     } else {
       logger.info('No critical or important issues found — skipping issue creation');
@@ -181,7 +190,7 @@ export async function handleAudit(
     try {
       await engine.cleanup();
     } catch (err) {
-      logger.error(`Engine cleanup failed: ${err instanceof Error ? err.message : err}`);
+      logger.error(`Engine cleanup failed: ${sanitizeErrorMessage(err)}`, err);
     }
   }
 }

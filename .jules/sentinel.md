@@ -19,3 +19,6 @@
 ## 2026-08-20 - Command Injection Risk Fixed in fix.ts and commands.ts
 **Learning:** Found that `branchName` dynamically generated using `issueNumber` was used without validation in `git` commands in `action/src/fix.ts` and `app/src/handlers/commands.ts`. Although issue numbers are generally numeric, validating the constructed branch name before any Git execution enforces the defensive programming baseline against argument injection risks.
 **Prevention:** Added `validateRefName(branchName)` immediately after `branchName` generation in `action/src/fix.ts` and `app/src/handlers/commands.ts` to proactively prevent any potential argument injection.
+## 2026-08-29 - Token Leak Fixed in app/src/handlers/audit.ts
+**Learning:** Found that errors thrown during file reading or review engine audits could include sensitive information or tokens, and were being logged directly as raw strings or error objects in `logger.error` without sanitization.
+**Prevention:** Wrapped `err` in `sanitizeErrorMessage(err)` before passing to `logger.error` to ensure any exposed GitHub Token or credentials are redacted from logs in `handleAudit`.
