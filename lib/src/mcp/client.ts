@@ -424,13 +424,18 @@ function extractTextFromResult(result: unknown): string {
   if (!result) return '';
   // MCP tool results have a `content` array
   const r = result as { content?: Array<{ type: string; text?: string }> };
-  if (Array.isArray(r.content)) {
-    return r.content
-      .filter((c) => c.type === 'text' && c.text)
-      .map((c) => c.text ?? '')
-      .join('\n');
+  if (!Array.isArray(r.content)) return '';
+
+  let out = '';
+  let first = true;
+  for (const c of r.content) {
+    if (c.type === 'text' && c.text) {
+      if (!first) out += '\n';
+      out += c.text;
+      first = false;
+    }
   }
-  return '';
+  return out;
 }
 
 /**
