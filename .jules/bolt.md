@@ -64,3 +64,6 @@
 ## 2026-09-04 - Optimize Map allocation in test-gap-detector
 **Learning:** Found that `new Map(oldExports.map(...))` iterates over the array multiple times and creates an intermediate array of tuples, causing unnecessary memory allocations and GC pressure in a hot path.
 **Action:** Replaced with a single iteration loop (`for...of`) over the original array to populate a Map directly using `.set(key, value)` without intermediate array allocation chains.
+## 2026-09-06 - Optimize array allocation in extractTextFromResult
+**Learning:** Found that `extractTextFromResult` in `lib/src/mcp/client.ts` used an array chain (`.filter().map().join()`) to concatenate text from MCP results. This creates unnecessary intermediate arrays, adding GC pressure. A single pass for loop over the content array directly accumulating the string removes all intermediate array allocations.
+**Action:** Replace `.filter().map().join()` chains with a single pass string accumulation loop where applicable to avoid intermediate arrays.
