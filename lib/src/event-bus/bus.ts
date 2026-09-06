@@ -3,8 +3,16 @@ import { CircuitBreaker } from '../utils/circuit-breaker.js';
 import { Logger } from '../utils/logger.js';
 import { withRetry } from '../utils/retry.js';
 
-const SUBSCRIBER_CONCURRENCY = 10;
-const SUBSCRIBER_TIMEOUT_MS = 600_000;
+const DEFAULT_SUBSCRIBER_CONCURRENCY = 10;
+const DEFAULT_SUBSCRIBER_TIMEOUT_MS = 600_000;
+
+/** Options for configuring an EventBus instance. */
+export interface EventBusOptions {
+  /** Maximum number of subscribers executed concurrently per publish batch (default: 10). */
+  concurrency?: number;
+  /** Per-subscriber timeout in milliseconds (default: 600_000 / 10 min). */
+  subscriberTimeoutMs?: number;
+}
 
 /** Health metrics for a single event subscriber. */
 export interface SubscriberHealth {
@@ -28,6 +36,18 @@ export class EventBus {
   private subscriberHealth: Map<string, SubscriberHealth> = new Map();
   private circuitBreakers: Map<string, CircuitBreaker> = new Map();
   private logger = new Logger('EventBus');
+  private readonly concurrency: number;
+  private readonly subscriberTimeoutMs: number;
+
+  /**
+   * Create a new EventBus.
+   *
+   * @param options - Optional tuning for concurrency and per-subscriber timeout.
+   */
+  constructor(options: EventBusOptions = {}) {
+    this.concurrency = options.concurrency ?? DEFAULT_SUBSCRIBER_CONCURRENCY;
+    this.subscriberTimeoutMs = options.subscriberTimeoutMs ?? DEFAULT_SUBSCRIBER_TIMEOUT_MS;
+  }
 
   /**
    * Register a subscriber for its subscribed event types.
@@ -91,8 +111,8 @@ export class EventBus {
     const wildcard = this.subscribers.get('*') || [];
     const allSubs = [...new Set([...matching, ...wildcard])];
 
-    for (let i = 0; i < allSubs.length; i += SUBSCRIBER_CONCURRENCY) {
-      const batch = allSubs.slice(i, i + SUBSCRIBER_CONCURRENCY);
+    for (let i = 0; i < allSubs.length; i += this.concurrency) {
+      const batch = allSubs.slice(i, i + this.concurrency);
       await Promise.allSettled(batch.map((sub) => this.executeSubscriber(sub, event)));
     }
   }
@@ -136,11 +156,11 @@ export class EventBus {
     timeoutHandle = setTimeout(() => {
       timedOut = true;
       abortController.abort();
-      logger.warn(`Subscriber ${sub.name} timed out after ${SUBSCRIBER_TIMEOUT_MS}ms`, {
+      logger.warn(`Subscriber ${sub.name} timed out after ${this.subscriberTimeoutMs}ms`, {
         prNumber: event.prNumber,
         repo: event.repo,
       });
-    }, SUBSCRIBER_TIMEOUT_MS);
+    }, this.subscriberTimeoutMs);
 
     try {
       const subscriberWork = async () => {
@@ -152,10 +172,13 @@ export class EventBus {
       await work();
 
       if (timedOut) {
-        logger.warn(`Subscriber ${sub.name} completed after timeout (${SUBSCRIBER_TIMEOUT_MS}ms)`, {
-          prNumber: event.prNumber,
-          repo: event.repo,
-        });
+        logger.warn(
+          `Subscriber ${sub.name} completed after timeout (${this.subscriberTimeoutMs}ms)`,
+          {
+            prNumber: event.prNumber,
+            repo: event.repo,
+          },
+        );
         return;
       }
 
@@ -256,5 +279,34 @@ export class EventBus {
     if (cb) {
       cb.reset();
     }
+  }
+
+  /**
+   * Get the circuit breaker state for a specific subscriber.
+   *
+   * @param subscriberName - Name of the subscriber.
+   * @returns The circuit state, or null when the subscriber has no breaker.
+   */
+  getSubscriberCircuitState(subscriberName: string): string | null {
+    const cb = this.circuitBreakers.get(subscriberName);
+    return cb ? cb.getState() : null;
+  }
+
+  /**
+   * Get the configured concurrency limit.
+   *
+   * @returns The maximum number of subscribers executed concurrently.
+   */
+  getConcurrency(): number {
+    return this.concurrency;
+  }
+
+  /**
+   * Get the configured per-subscriber timeout.
+   *
+   * @returns The per-subscriber timeout in milliseconds.
+   */
+  getSubscriberTimeoutMs(): number {
+    return this.subscriberTimeoutMs;
   }
 }
