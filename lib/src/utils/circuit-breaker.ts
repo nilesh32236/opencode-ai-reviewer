@@ -29,6 +29,14 @@ export interface CircuitBreakerOptions {
   successThreshold?: number;
   /** Cooldown period in ms before transitioning from OPEN to HALF_OPEN (default: 30000) */
   cooldownMs?: number;
+  /**
+   * Jitter ratio applied to the cooldown to prevent thundering-herd recovery
+   * when many breakers trip simultaneously (e.g. a shared downstream outage).
+   * Effective cooldown becomes `cooldownMs * (1 + rand * jitterRatio)` where
+   * `rand` is uniform in [0, 1). Default: 0 (no jitter, deterministic).
+   * Recommended for self-healing pipelines: 0.15–0.25.
+   */
+  jitterRatio?: number;
   /** Name for this circuit breaker, used in log messages (default: "CircuitBreaker") */
   name?: string;
   /**
@@ -61,6 +69,7 @@ const DEFAULT_OPTIONS: RequiredCircuitBreakerOptions = {
   failureThreshold: 5,
   successThreshold: 2,
   cooldownMs: 30000,
+  jitterRatio: 0,
   name: 'CircuitBreaker',
 };
 
@@ -80,6 +89,7 @@ export class CircuitBreaker {
   private lastSuccessAt: number | null = null;
   private options: RequiredCircuitBreakerOptions;
   private inFlightProbe = false;
+  private effectiveCooldownMs: number;
 
   /**
    * Create a new CircuitBreaker.
@@ -88,6 +98,7 @@ export class CircuitBreaker {
    */
   constructor(options: CircuitBreakerOptions = {}) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
+    this.effectiveCooldownMs = this.options.cooldownMs;
   }
 
   private safeInvokeHook(
@@ -105,7 +116,7 @@ export class CircuitBreaker {
   }
 
   private transitionState(): void {
-    if (this.state === 'OPEN' && Date.now() - this.lastFailureTime >= this.options.cooldownMs) {
+    if (this.state === 'OPEN' && Date.now() - this.lastFailureTime >= this.effectiveCooldownMs) {
       this.state = 'HALF_OPEN';
       core.info(`[${this.options.name}] Circuit transitioning OPEN -> HALF_OPEN after cooldown`);
       this.safeInvokeHook(this.options.onHalfOpen, this.getMetrics());
@@ -130,11 +141,33 @@ export class CircuitBreaker {
    * @returns The result of the function.
    * @throws Error if the circuit is OPEN or if the function itself throws.
    */
+  /**
+   * Get the remaining cooldown time in milliseconds before the circuit
+   * transitions from OPEN to HALF_OPEN. Returns 0 when not OPEN or when
+   * the cooldown has already elapsed.
+   *
+   * @returns Remaining cooldown in milliseconds.
+   */
+  getRemainingCooldownMs(): number {
+    if (this.state !== 'OPEN') return 0;
+    const elapsed = Date.now() - this.lastFailureTime;
+    return Math.max(0, this.effectiveCooldownMs - elapsed);
+  }
+
+  /**
+   * Execute a function through the circuit breaker.
+   * If the circuit is OPEN, the function is not called and an error is thrown immediately.
+   * If HALF_OPEN, only one probe request is allowed at a time.
+   *
+   * @param fn - Async function to execute.
+   * @returns The result of the function.
+   * @throws Error if the circuit is OPEN or if the function itself throws.
+   */
   async call<T>(fn: () => Promise<T>): Promise<T> {
     this.transitionState();
     if (this.state === 'OPEN') {
       throw new Error(
-        `[${this.options.name}] Circuit is OPEN — request not attempted (cooldown: ${this.options.cooldownMs}ms)`,
+        `[${this.options.name}] Circuit is OPEN — request not attempted (cooldown: ${this.effectiveCooldownMs}ms, remaining: ${this.getRemainingCooldownMs()}ms)`,
       );
     }
 
@@ -207,6 +240,18 @@ export class CircuitBreaker {
     }
   }
 
+  /**
+   * Compute the effective cooldown with optional jitter.
+   *
+   * @returns Effective cooldown in milliseconds, with jitter applied when configured.
+   */
+  private computeEffectiveCooldown(): number {
+    const base = this.options.cooldownMs;
+    const ratio = this.options.jitterRatio ?? 0;
+    if (ratio <= 0) return base;
+    return Math.round(base * (1 + Math.random() * ratio));
+  }
+
   private onFailure(): void {
     this.failureCount++;
     this.lastFailureTime = Date.now();
@@ -216,16 +261,18 @@ export class CircuitBreaker {
       this.state = 'OPEN';
       this.successCount = 0;
       this.tripCount++;
+      this.effectiveCooldownMs = this.computeEffectiveCooldown();
       core.warning(
-        `[${this.options.name}] Circuit HALF_OPEN -> OPEN after failure in half-open state`,
+        `[${this.options.name}] Circuit HALF_OPEN -> OPEN after failure in half-open state (cooldown: ${this.effectiveCooldownMs}ms)`,
       );
       this.safeInvokeHook(this.options.onOpen, this.getMetrics());
     } else if (this.state === 'CLOSED' && this.failureCount >= this.options.failureThreshold) {
       this.state = 'OPEN';
       this.successCount = 0;
       this.tripCount++;
+      this.effectiveCooldownMs = this.computeEffectiveCooldown();
       core.warning(
-        `[${this.options.name}] Circuit CLOSED -> OPEN after ${this.failureCount} consecutive failures`,
+        `[${this.options.name}] Circuit CLOSED -> OPEN after ${this.failureCount} consecutive failures (cooldown: ${this.effectiveCooldownMs}ms)`,
       );
       this.safeInvokeHook(this.options.onOpen, this.getMetrics());
     }
@@ -240,6 +287,7 @@ export class CircuitBreaker {
     this.state = 'CLOSED';
     this.failureCount = 0;
     this.successCount = 0;
+    this.effectiveCooldownMs = this.options.cooldownMs;
     if (priorState === 'OPEN' || priorState === 'HALF_OPEN') {
       this.safeInvokeHook(this.options.onClose, this.getMetrics());
     }
