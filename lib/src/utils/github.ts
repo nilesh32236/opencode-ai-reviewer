@@ -729,7 +729,10 @@ export class GitHubHelper implements PlatformAdapter {
       ? buildInlineComments(workingResult, await this.getDiffLines(prNumber), suppressLowConfidence)
       : [];
 
-    const placedInlineKeys = new Set(inlineComments.map((c) => `${c.path}:${c.line}`));
+    const placedInlineKeys = new Set<string>();
+    for (const c of inlineComments) {
+      placedInlineKeys.add(`${c.path}:${c.line}`);
+    }
     const issuesForBody = postInlineComments
       ? workingResult.issues.filter(
           (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),

@@ -478,7 +478,11 @@ export async function queryOSV(
   // never sink the whole scan: a persistent 5xx/403/rate-limit failure on one
   // advisory is skipped (returns undefined) so the remaining advisories still
   // surface. The per-attempt retry + circuit breaker still count the failure.
-  const uniqueIds = [...new Set(matched.map((m) => m.match.id))];
+  const uniqueIdSet = new Set<string>();
+  for (const m of matched) {
+    uniqueIdSet.add(m.match.id);
+  }
+  const uniqueIds = [...uniqueIdSet];
   const hydrated = await mapWithConcurrency(
     uniqueIds,
     concurrency,

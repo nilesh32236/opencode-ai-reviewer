@@ -84,7 +84,10 @@ export class CodebaseIndex {
       }
       return value;
     };
-    const changedSet = new Set(changedFiles.map((file) => normalize(file)));
+    const changedSet = new Set<string>();
+    for (const file of changedFiles) {
+      changedSet.add(normalize(file));
+    }
     const isChanged = (file: string): boolean => changedSet.has(normalize(file));
 
     const localSymbols: IndexedSymbol[] = [];
