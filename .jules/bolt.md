@@ -67,3 +67,7 @@
 ## 2026-09-06 - Optimize array allocation in extractTextFromResult
 **Learning:** Found that `extractTextFromResult` in `lib/src/mcp/client.ts` used an array chain (`.filter().map().join()`) to concatenate text from MCP results. This creates unnecessary intermediate arrays, adding GC pressure. A single pass for loop over the content array directly accumulating the string removes all intermediate array allocations.
 **Action:** Replace `.filter().map().join()` chains with a single pass string accumulation loop where applicable to avoid intermediate arrays.
+## 2026-09-08 - Optimize Set allocation in mapping and filtering
+**Learning:** Found multiple instances where `.map()` chains were used to extract specific data from arrays (e.g. `inlineComments.map((c) => ...)` or `changedFiles.map((file) => ...)`), only to be immediately passed to `new Set()`. These chains iterate over the array multiple times and create intermediate array allocations that are thrown away, increasing GC pressure.
+**Action:** Replace `new Set(array.map(...))` with a standard `for...of` loop that calls `Set.add()` directly, eliminating the need for any intermediate array allocation.
+**Refs:** `lib/src/utils/github.ts:732`, `lib/src/utils/gitlab-adapter.ts:611`, `lib/src/codebase-index/index.ts:87`, `lib/src/sca/osv-client.ts:481`.
