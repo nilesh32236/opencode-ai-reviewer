@@ -36,7 +36,7 @@ inputs:
     required: false
 
   opencode_api_key:
-    description: 'OpenCode gateway API key for opencode-go/* models (e.g. opencode-go/muse-spark-1.2-contributor). Pass your OPENCODE_API_KEY GitHub secret as the value of this input.'
+    description: 'OpenCode gateway API key for opencode-go/* models (e.g. opencode-go/muse-spark-1.3-contributor). Pass your OPENCODE_API_KEY GitHub secret as the value of this input.'
     required: false
 
   llm_default_provider:
@@ -82,12 +82,12 @@ inputs:
   review_model:
     description: 'Model to use for PR review'
     required: false
-    default: 'opencode/muse-spark-1.2-contributor-free'
+    default: 'opencode/muse-spark-1.3-contributor-free'
 
   fix_model:
     description: 'Model to use for auto-fix'
     required: false
-    default: 'opencode/muse-spark-1.2-contributor-free'
+    default: 'opencode/muse-spark-1.3-contributor-free'
 
   audit_model:
     description: 'Model to use for codebase audit'
@@ -380,6 +380,10 @@ outputs:
     description: 'URL of the created release-prep changelog PR (changelog mode with changelog.createPR)'
   changelog_pr_number:
     description: 'Number of the created release-prep changelog PR (changelog mode with changelog.createPR)'
+  model_used:
+    description: 'Model identifier used for the run (stage-resolved, e.g. review/fix/audit model)'
+  duration_ms:
+    description: 'Wall-clock duration of the run in milliseconds'
 
 runs:
   using: 'node24'

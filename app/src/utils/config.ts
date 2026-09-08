@@ -73,7 +73,7 @@ function parseEnvInt(envVar: string | undefined, fallback: number): number {
  *
  * Explicit `REVIEW_MODEL` / `FIX_MODEL` / etc. env overrides always win; this
  * only upgrades the built-in `*-free` defaults.
- * @param fallback - The default model string (e.g. `opencode/muse-spark-1.2-contributor-free`).
+ * @param fallback - The default model string (e.g. `opencode/muse-spark-1.3-contributor-free`).
  * @returns The model to use, upgrading `*-free` to the paid `opencode-go`
  * variant when a key is set.
  */
@@ -81,7 +81,7 @@ function resolveModel(fallback: string): string {
   const hasKey = Boolean(process.env.OPENCODE_API_KEY || process.env.INPUT_OPENCODE_API_KEY);
   if (!hasKey) return fallback;
   // Map `opencode/<name>-free` → `opencode-go/<name>` (paid) when a key is set.
-  // Include dots for versioned models like muse-spark-1.2.
+  // Include dots for versioned models like muse-spark-1.3.
   return fallback.replace(/^opencode\/([a-z0-9._-]+)-free$/i, 'opencode-go/$1');
 }
 

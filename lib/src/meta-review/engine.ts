@@ -82,7 +82,7 @@ export class MetaReviewEngine {
       model:
         this.config?.metaReviewModel ??
         this.config?.reviewModel ??
-        'opencode/muse-spark-1.2-contributor-free',
+        'opencode/muse-spark-1.3-contributor-free',
       signal,
       llm: this.config?.llm,
     });

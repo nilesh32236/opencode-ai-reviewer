@@ -337,10 +337,10 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
 
   const reviewModel =
     resolveModel(modelInput('review_model') || globalModel) ||
-    'opencode/muse-spark-1.2-contributor-free';
+    'opencode/muse-spark-1.3-contributor-free';
   const fixModel =
     resolveModel(modelInput('fix_model') || globalModel) ||
-    'opencode/muse-spark-1.2-contributor-free';
+    'opencode/muse-spark-1.3-contributor-free';
   const auditModel = resolveModel(modelInput('audit_model') || globalModel) || undefined;
   const synthesisModel = resolveModel(modelInput('synthesis_model') || globalModel) || undefined;
   const verificationModel =

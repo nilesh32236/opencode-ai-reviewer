@@ -1557,7 +1557,7 @@ export class MetaReviewEngine {
     const prompt = buildMetaReviewPrompt(context);
 
     await runOpenCode(prompt, {
-      model: 'opencode/muse-spark-1.2-contributor-free',
+      model: 'opencode/muse-spark-1.3-contributor-free',
     });
 
     let result: Record<string, unknown> = {};

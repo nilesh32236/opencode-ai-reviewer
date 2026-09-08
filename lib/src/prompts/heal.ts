@@ -78,9 +78,13 @@ export function buildSelfHealPrompt(
     sections.push('');
   }
 
-  sections.push('## Research Instructions (MANDATORY)');
+  sections.push(
+    '## Research Instructions (OPTIONAL — use deterministic fallback when unavailable)',
+  );
   sections.push('');
-  sections.push('Before writing any fix, you MUST research the problem:');
+  sections.push(
+    'Before writing any fix, research the problem when tools are available. If Context7 or web search is unavailable, proceed with the deterministic fallback: local codebase inspection via `read`, `glob`, and `grep`. Note the fallback in the diagnosis report.',
+  );
   sections.push('');
   sections.push('### Context7 MCP (for library/API issues)');
   sections.push('');

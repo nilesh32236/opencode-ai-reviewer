@@ -507,11 +507,11 @@ export const AgentConfigSchema = z.object({
   reviewModel: z
     .string()
     .regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR)
-    .default('opencode/muse-spark-1.2-contributor-free'),
+    .default('opencode/muse-spark-1.3-contributor-free'),
   fixModel: z
     .string()
     .regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR)
-    .default('opencode/muse-spark-1.2-contributor-free'),
+    .default('opencode/muse-spark-1.3-contributor-free'),
   auditModel: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),
   docsModel: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),
   synthesisModel: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),

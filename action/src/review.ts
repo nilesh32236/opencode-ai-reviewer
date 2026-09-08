@@ -279,6 +279,12 @@ export async function runReview(
   core.setOutput('critical_count', String(result.stats.critical));
   core.setOutput('important_count', String(result.stats.important));
   core.setOutput('minor_count', String(result.stats.minor));
+  // Additive observability outputs (always set; independent of cost tracking).
+  core.setOutput('model_used', config.reviewModel);
+  const runTelemetry = engine.getLastTelemetry();
+  if (runTelemetry) {
+    core.setOutput('duration_ms', String(runTelemetry.durationMs));
+  }
 
   // Fail the action when the severity threshold is exceeded. This is what makes
   // the job usable as a required status check in branch protection rules.

@@ -1417,8 +1417,13 @@ export async function runOpenCode(
     const val = process.env[key];
     if (val !== undefined) safeEnv[key] = val;
   }
-  safeEnv.GITHUB_TOKEN = githubToken;
-  safeEnv.GH_TOKEN = githubToken;
+  // Only forward GitHub tokens when non-empty so the child never inherits
+  // an empty-string credential (fail-closed: no auth header is sent rather
+  // than an invalid empty one).
+  if (githubToken) {
+    safeEnv.GITHUB_TOKEN = githubToken;
+    safeEnv.GH_TOKEN = githubToken;
+  }
   if (openaiApiKey) safeEnv.OPENAI_API_KEY = openaiApiKey;
   if (anthropicApiKey) safeEnv.ANTHROPIC_API_KEY = anthropicApiKey;
   if (geminiApiKey) safeEnv.GEMINI_API_KEY = geminiApiKey;

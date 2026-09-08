@@ -19,7 +19,7 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
-  actions: write
+  actions: read
 
 concurrency:
   group: hourly-orchestrator
@@ -70,6 +70,7 @@ jobs:
         id: process-prs
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -139,7 +140,7 @@ jobs:
           5. Do NOT run git commit or git push yourself.
           CONFLICT_EOF
 
-                opencode run --auto --model opencode/muse-spark-1.2-contributor-free \
+                timeout 10m opencode run --auto --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" \
                   "$(cat /tmp/conflict-prompt.txt)" < /dev/null || true
 
                 # Verify conflict resolution
@@ -184,8 +185,23 @@ jobs:
           Return a JSON summary on the last line: {"approved": true, "confidence": "high", "reason": "..."} or {"approved": false, "confidence": "low", "reason": "..."}
           REVIEW_PROMPT_EOF
 
-            REVIEW_OUT=$(opencode run --auto --model opencode/muse-spark-1.2-contributor-free "$(cat /tmp/review-prompt.txt)" < /dev/null || true)
-            APPROVED=$(echo "$REVIEW_OUT" | tail -20 | grep -oP '\{\s*"approved"\s*:\s*(true|false)' | grep -o 'true\|false' | tail -1 || echo "false")
+            REVIEW_OUT_FILE=$(mktemp)
+            if timeout 10m opencode run --auto --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" "$(cat /tmp/review-prompt.txt)" < /dev/null > "$REVIEW_OUT_FILE" 2>&1; then
+              REVIEW_OUT=$(cat "$REVIEW_OUT_FILE" || true)
+            else
+              REVIEW_EXIT=$?
+              echo "::warning::AI review execution failed or timed out (exit ${REVIEW_EXIT}); treating as not approved."
+              REVIEW_OUT=$(cat "$REVIEW_OUT_FILE" 2>/dev/null || true)
+            fi
+            rm -f "$REVIEW_OUT_FILE" || true
+            # Fail-closed schema validation: require approved==true AND
+            # confidence==high on the last JSON object. Tolerates partial
+            # output (missing/garbled JSON simply leaves APPROVED=false).
+            APPROVED=false
+            REVIEW_JSON=$(echo "$REVIEW_OUT" | tail -20 | grep -o '{[^}]*"approved"[^}]*}' | tail -1 || true)
+            if [ -n "$REVIEW_JSON" ] && echo "$REVIEW_JSON" | jq -e 'select(.approved == true and .confidence == "high")' > /dev/null 2>&1; then
+              APPROVED=true
+            fi
 
             if [ "$APPROVED" = "true" ]; then
               echo "PR #${PR_NUMBER} approved with high confidence — squash merging to main..."
@@ -222,6 +238,7 @@ jobs:
         id: process-issue
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -274,7 +291,7 @@ jobs:
           3. Write your answer to /tmp/ai-answer.txt.
           QUESTION_PROMPT_EOF
 
-            opencode run --auto --model opencode/muse-spark-1.2-contributor-free \
+            timeout 10m opencode run --auto --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" \
               "$(cat /tmp/answer-questions-prompt.txt)" < /dev/null || true
 
             if [ -s /tmp/ai-answer.txt ]; then
@@ -300,7 +317,7 @@ jobs:
         uses: ./
         with:
           mode: fix
-          model: 'opencode/muse-spark-1.2-contributor-free'
+          model: ${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}
           max_fix_iterations: 1
           run_checks_after_fix: 'pnpm build && pnpm typecheck && pnpm test && pnpm lint'
           pr-number: ${{ steps.process-issue.outputs.issue_number }}

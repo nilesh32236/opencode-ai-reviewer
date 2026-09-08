@@ -1644,8 +1644,8 @@ export const DEFAULT_CHANGELOG_CONFIG: ChangelogConfig = {
 
 export const DEFAULT_CONFIG: AgentConfig = {
   platform: 'github',
-  reviewModel: 'opencode/muse-spark-1.2-contributor-free',
-  fixModel: 'opencode/muse-spark-1.2-contributor-free',
+  reviewModel: 'opencode/muse-spark-1.3-contributor-free',
+  fixModel: 'opencode/muse-spark-1.3-contributor-free',
   auditModel: undefined,
   synthesisModel: undefined,
   verificationModel: undefined,

@@ -920,8 +920,8 @@ describe('LLM provider support', () => {
 
 describe('validateModelString()', () => {
   it.each([
-    'opencode/muse-spark-1.2-contributor-free',
-    'opencode-go/muse-spark-1.2-contributor',
+    'opencode/muse-spark-1.3-contributor-free',
+    'opencode-go/muse-spark-1.3-contributor',
     'anthropic/claude-sonnet-4-20250514',
     'openai/gpt-4o',
     'google/gemini-2.0-flash',

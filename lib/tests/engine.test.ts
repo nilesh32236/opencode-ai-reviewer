@@ -3491,7 +3491,7 @@ describe('ReviewEngine', () => {
 
     it('leaves estimatedCost undefined for unknown free models', async () => {
       const eng = new ReviewEngine(
-        makeCostTrackingConfig({ reviewModel: 'opencode/muse-spark-1.2-contributor-free' }),
+        makeCostTrackingConfig({ reviewModel: 'opencode/muse-spark-1.3-contributor-free' }),
         mockAdapter,
       );
 
