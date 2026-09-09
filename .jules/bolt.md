@@ -71,3 +71,6 @@
 **Learning:** Found multiple instances where `.map()` chains were used to extract specific data from arrays (e.g. `inlineComments.map((c) => ...)` or `changedFiles.map((file) => ...)`), only to be immediately passed to `new Set()`. These chains iterate over the array multiple times and create intermediate array allocations that are thrown away, increasing GC pressure.
 **Action:** Replace `new Set(array.map(...))` with a standard `for...of` loop that calls `Set.add()` directly, eliminating the need for any intermediate array allocation.
 **Refs:** `lib/src/utils/github.ts:732`, `lib/src/utils/gitlab-adapter.ts:611`, `lib/src/codebase-index/index.ts:87`, `lib/src/sca/osv-client.ts:481`.
+## 2026-09-09 - Optimize Set allocation and Regex recompilation in tokenizeMessage
+**Learning:** Found that `tokenizeMessage` recompiled regexes on every call and used a `.filter().map()` array chain that populated a `new Set()`, which led to unnecessary memory allocations and increased GC pressure in a frequently accessed function.
+**Action:** Always hoist regular expressions to module scope and replace array chains with a direct `for...of` loop to insert elements into `Set`s and `Map`s directly, avoiding intermediate arrays.
