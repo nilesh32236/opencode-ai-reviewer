@@ -185,6 +185,7 @@ async function createChangelogPR(
     }
 
     const defaultBranch = await gh.getDefaultBranch();
+    validateRefName(defaultBranch);
 
     if (signal?.aborted) return;
 

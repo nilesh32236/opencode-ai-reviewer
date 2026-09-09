@@ -596,6 +596,7 @@ export async function handleDocsCommand(
     }
 
     const defaultBranch = await gh.getDefaultBranch();
+    validateRefName(defaultBranch);
     // Base the docs branch on the source PR's head so the changed code the PR
     // adds or modifies is on disk before the docs engine runs. Creating it from
     // the default branch would document pre-PR revisions and miss newly-added
@@ -942,6 +943,7 @@ async function createAutofixPR(
     }
 
     const defaultBranch = await gh.getDefaultBranch();
+    validateRefName(defaultBranch);
 
     if (signal?.aborted) return null;
 
