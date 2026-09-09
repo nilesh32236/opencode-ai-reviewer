@@ -4,6 +4,28 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.12.4] — 2026-09-09
+
+
+### Fixed
+
+- schema-validated merge gate, model centralization and hardening (Phase B)
+
+### Changed
+
+- ⚡ Bolt: Optimize Set allocation in mapping and filtering (#434) (#434)
+- [Self-Improvement] Autonomous Codebase Enhancement (#431) (#431)
+- ⚡ Bolt: Optimize array allocation in extractTextFromResult (#432) (#432)
+- 🛡️ Sentinel Daily Guard: Fix token leaks in audit handler (#424) (#424)
+- Optimize Map allocation in test-gap-detector.ts (#430) (#430)
+- ⚡ Bolt: Optimize Map instantiations in hot paths (#429) (#429)
+
+### Performance
+
+- optimize `tokenizeMessage` Set allocation and regexes (#435) (#435)
+
+[v1.12.4]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.12.3...v1.12.4
+
 ## [v1.12.3] — 2026-09-01
 
 
