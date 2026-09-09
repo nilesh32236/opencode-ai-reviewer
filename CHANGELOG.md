@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.13.0] — 2026-09-09
+
+### Added
+
+- add upstream ecosystem monitor and AI multi-agent review workflows
+
+[v1.13.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.12.4...v1.13.0
+
 ## [v1.12.4] — 2026-09-09
 
 
