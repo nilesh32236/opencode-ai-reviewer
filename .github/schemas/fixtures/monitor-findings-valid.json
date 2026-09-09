@@ -50,14 +50,8 @@
         }
       ],
       "implementation": {
-        "files": [
-          "cli/src/index.ts",
-          "lib/src/analytics/metrics.ts"
-        ],
-        "functions": [
-          "runReview",
-          "MetricsService.getReport"
-        ]
+        "files": ["cli/src/index.ts", "lib/src/analytics/metrics.ts"],
+        "functions": ["runReview", "MetricsService.getReport"]
       },
       "estimated_impact": {
         "queries": 0,
@@ -96,12 +90,8 @@
         }
       ],
       "implementation": {
-        "files": [
-          "lib/src/analytics/metrics.ts"
-        ],
-        "functions": [
-          "MetricsService.getReport"
-        ]
+        "files": ["lib/src/analytics/metrics.ts"],
+        "functions": ["MetricsService.getReport"]
       },
       "estimated_impact": {
         "queries": 0,

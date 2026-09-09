@@ -22,3 +22,6 @@
 ## 2026-08-29 - Token Leak Fixed in app/src/handlers/audit.ts
 **Learning:** Found that errors thrown during file reading or review engine audits could include sensitive information or tokens, and were being logged directly as raw strings or error objects in `logger.error` without sanitization.
 **Prevention:** Wrapped `err` in `sanitizeErrorMessage(err)` before passing to `logger.error` to ensure any exposed GitHub Token or credentials are redacted from logs in `handleAudit`.
+## 2026-09-09 - Argument Injection Risk Fixed in Handlers and Actions
+**Learning:** Found that `defaultBranch` and `baseBranch` variables were fetched from the GitHub API using `gh.getDefaultBranch()` and used in sensitive operations (like git checkout, pull, and creating PRs) without prior validation. This could potentially allow for argument injection attacks if an attacker were somehow able to poison the API response.
+**Prevention:** Added `validateRefName` for `defaultBranch` and `baseBranch` immediately after fetching them via `gh.getDefaultBranch()` in `app/src/handlers/commands.ts`, `app/src/handlers/changelog.ts`, `action/src/changelog.ts`, and `action/src/fix.ts` to proactively ensure they meet strict structure and character constraints before being passed to Git commands.

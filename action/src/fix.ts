@@ -205,6 +205,7 @@ export async function runFixIssue(
   validateRefName(branchName);
 
   const defaultBranch = await gh.getDefaultBranch();
+  validateRefName(defaultBranch);
 
   // Reuse an existing `origin/${branchName}` only when its tip commit was
   // authored by this bot (the configured git email). Any collaborator with push
@@ -372,6 +373,7 @@ export async function runFixIssue(
   await gh.ensureLabels(['autofix']);
 
   const baseBranch = await gh.getDefaultBranch();
+  validateRefName(baseBranch);
 
   const prResult = await gh.createPR(prTitle, prBody, branchName, baseBranch);
   const prUrl = prResult?.url || '';
