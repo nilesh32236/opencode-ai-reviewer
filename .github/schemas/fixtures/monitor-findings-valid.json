@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "run": {
+    "commit": "0000000000000000000000000000000000000000",
+    "upstream_target": "opencode-cli >=1.18.29",
+    "node_target": ">=20.0.0",
+    "date": "2026-09-09"
+  },
+  "lanes": [
+    {
+      "name": "core-researcher",
+      "searches_performed": 5,
+      "sources_consulted": 7,
+      "findings": 1
+    },
+    {
+      "name": "competitor-researcher",
+      "searches_performed": 4,
+      "sources_consulted": 6,
+      "findings": 1
+    }
+  ],
+  "findings": [
+    {
+      "id": "958b46f37bdb93bb1a7dc3058074ba0ef32fe6fd4bc3137eda677a701428b976",
+      "category": "competitor-gap",
+      "title": "Stream review findings as JSON Lines to stdout for downstream automation",
+      "status": "candidate",
+      "priority": "high",
+      "difficulty": "medium",
+      "risk": "medium",
+      "risk_numeric": 2,
+      "confidence": 0.9,
+      "score": 201.6,
+      "performance_impact": 8,
+      "user_value": 8,
+      "feasibility": 7,
+      "classification": "PRODUCT_UNIQUE",
+      "tier": "A",
+      "evidence": [
+        {
+          "url": "https://opencode.ai/docs/cli",
+          "version": "1.18.29",
+          "published": "2026-08-20"
+        },
+        {
+          "url": "https://github.com/nilesh32236/opencode-ai-reviewer#readme",
+          "version": "1.12.3",
+          "published": "2026-09-01"
+        }
+      ],
+      "implementation": {
+        "files": [
+          "cli/src/index.ts",
+          "lib/src/analytics/metrics.ts"
+        ],
+        "functions": [
+          "runReview",
+          "MetricsService.getReport"
+        ]
+      },
+      "estimated_impact": {
+        "queries": 0,
+        "frontend_kb": 0,
+        "request_ms": 50
+      },
+      "measured_impact": null,
+      "fallback": "If the streaming output conflicts with the existing JSON envelope, emit the same findings as a single final JSON object and note the format change in the changelog; never break the CI contract.",
+      "acceptance_criteria": [
+        "Given a review run on a branch, When findings are produced, Then each finding is emitted as one JSONL record and the run exits 0",
+        "Given a non-JSON TTY environment, When streaming is unsupported, Then the CLI degrades to pretty-printed output without error",
+        "Given CI parsing JSONL, When a finding is malformed, Then that record is skipped and the remaining stream continues"
+      ]
+    },
+    {
+      "id": "29287efc12b3ca90ae46177ee224b21132eeee5fd2c6cf42beb2c3b2fc8e3539",
+      "category": "ai-feature",
+      "title": "Experiment: autonomous PR merge with learned merge-quality scoring",
+      "status": "candidate",
+      "priority": "low",
+      "difficulty": "hard",
+      "risk": "high",
+      "risk_numeric": 4,
+      "confidence": 0.4,
+      "score": 10,
+      "performance_impact": 5,
+      "user_value": 5,
+      "feasibility": 4,
+      "classification": "EXPERIMENTAL",
+      "tier": "C",
+      "evidence": [
+        {
+          "url": "https://docs.github.com/en/rest/pulls",
+          "version": "2026",
+          "published": "2026-01-20"
+        }
+      ],
+      "implementation": {
+        "files": [
+          "lib/src/analytics/metrics.ts"
+        ],
+        "functions": [
+          "MetricsService.getReport"
+        ]
+      },
+      "estimated_impact": {
+        "queries": 0,
+        "frontend_kb": 0,
+        "request_ms": 0
+      },
+      "fallback": "Read-only scoring report: if merge-history metrics are insufficient, output nothing and disable itself.",
+      "acceptance_criteria": [
+        "Given stored review metrics, When a merge-quality score is computed, Then a read-only suggestion is logged without side effects"
+      ]
+    }
+  ]
+}

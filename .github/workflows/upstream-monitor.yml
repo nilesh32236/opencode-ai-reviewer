@@ -1,0 +1,199 @@
+name: Upstream Ecosystem Monitor
+
+on:
+  schedule:
+    # Weekly: Sunday 04:00 UTC
+    - cron: '0 4 * * 0'
+  workflow_dispatch:
+    inputs:
+      create_issues:
+        description: Create GitHub issues from Tier-A findings (false = report only)
+        type: boolean
+        default: true
+      force_check:
+        description: FOCUS FEATURE slug — scope the research run to a single upstream target (e.g. opencode-cli)
+        type: string
+        default: ''
+        required: false
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-monitor
+  cancel-in-progress: false
+
+jobs:
+  research:
+    name: Research upstream ecosystem
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      improvements_found: ${{ steps.research.outputs.improvements_found }}
+      actionable_found: ${{ steps.research.outputs.actionable_found }}
+    env:
+      MONITOR_OUT_DIR: ${{ runner.temp }}/monitor
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Run offline engine check (schema + fixture + gate)
+        run: bash .github/scripts/upstream-monitor.sh check
+
+      - name: Install pinned OpenCode CLI
+        run: bash .github/scripts/setup-opencode.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          OPENCODE_VERSION: v1.18.29
+
+      - name: Research upstream ecosystem
+        id: research
+        run: bash .github/scripts/upstream-monitor.sh research
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          OPENCODE_MODEL: ${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+          FORCE_CHECK: ${{ inputs.force_check }}
+
+      - name: Upload research report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitor-research-report
+          path: ${{ runner.temp }}/monitor/research-output.txt
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload findings JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitor-findings-json
+          path: |
+            ${{ runner.temp }}/monitor/findings.json
+            ${{ runner.temp }}/monitor/actionable-findings.json
+          retention-days: 30
+          if-no-files-found: ignore
+
+  notify-failure:
+    name: Notify research failure
+    needs: research
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Open or update monitor-failure issue
+        run: |
+          gh label create monitor-failure --force --color d93f0b --description 'Upstream monitor research failed' 2>/dev/null || true
+          EXISTING="$(gh issue list --repo "${{ github.repository }}" --label monitor-failure --state open --json number --jq '.[0].number' 2>/dev/null || true)"
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "${{ github.repository }}" --body "Run failed again: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" || true
+          else
+            gh issue create --repo "${{ github.repository }}" \
+              --title "[Monitor] Upstream ecosystem research failed" \
+              --label monitor-failure \
+              --body "The weekly upstream research run failed at ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Investigate logs and re-run the workflow." || true
+          fi
+
+  create-issues:
+    name: Create improvement issues
+    needs: research
+    if: needs.research.outputs.actionable_found != '0' && (github.event_name == 'schedule' || inputs.create_issues != 'false')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+    env:
+      MONITOR_OUT_DIR: ${{ runner.temp }}/monitor
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Download findings JSON
+        uses: actions/download-artifact@v4
+        with:
+          name: monitor-findings-json
+          path: ${{ runner.temp }}/monitor
+
+      - name: Install pinned OpenCode CLI
+        run: bash .github/scripts/setup-opencode.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          OPENCODE_VERSION: v1.18.29
+
+      - name: Publish improvement issues
+        id: publish
+        run: bash .github/scripts/upstream-monitor.sh publish
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          OPENCODE_MODEL: ${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}
+
+      - name: Upload created issues JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitor-created-issues-json
+          path: ${{ runner.temp }}/monitor/created-issues.json
+          retention-days: 30
+          if-no-files-found: ignore
+
+  summary:
+    name: Monitor summary
+    needs: [research, create-issues]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    env:
+      MONITOR_OUT_DIR: ${{ runner.temp }}/monitor
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Download research report
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: monitor-research-report
+          path: ${{ runner.temp }}/monitor
+
+      - name: Download findings JSON
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: monitor-findings-json
+          path: ${{ runner.temp }}/monitor
+
+      - name: Download created issues JSON
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: monitor-created-issues-json
+          path: ${{ runner.temp }}/monitor
+
+      - name: Post summary
+        run: bash .github/scripts/upstream-monitor.sh report

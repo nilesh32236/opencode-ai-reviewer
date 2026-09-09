@@ -44,3 +44,7 @@ lib/vitest.benchmark.config.d.ts
 lib/bench-results.json
 lib/bench-metrics.json
 
+
+# Local platform env (never commit)
+.env.platform
+.env.platform.local

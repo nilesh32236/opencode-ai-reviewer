@@ -1,0 +1,56 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "monitor-researcher": {
+      "description": "Weekly upstream ecosystem research orchestrator. Researches new opencode ecosystem features, GitHub Actions updates, MCP SDK changes and competitor AI-review tool capabilities, then orchestrates lane researchers and emits findings JSON conforming to .github/schemas/monitor-findings.schema.json. Output is pure JSON on stdout (no markdown fences, no commentary) so CI can parse it deterministically.",
+      "permission": {
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "webfetch": "allow",
+        "websearch": "allow",
+        "bash": "allow",
+        "edit": "deny",
+        "task": {
+          "*": "deny",
+          "monitor-lane-researcher*": "allow"
+        }
+      }
+    },
+    "monitor-lane-researcher": {
+      "description": "Single-lane upstream researcher. Investigates one research lane (core, competitor, security, user-voice, code-audit, benchmark, compatibility, reviewer) within the trust boundary allowlist, collects evidence with version+published dates, and reports structured findings back to the orchestrator. Never edits files.",
+      "mode": "subagent",
+      "hidden": true,
+      "permission": {
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "webfetch": "allow",
+        "websearch": "allow",
+        "bash": "allow",
+        "edit": "deny",
+        "task": "deny"
+      }
+    },
+    "monitor-issue-publisher": {
+      "description": "Publishes validated monitor findings as GitHub issues via the gh CLI only. Creates one issue per Tier-A finding with the deterministic [Monitor][category] title, evidence footer comment, and risk-based labels (monitor, monitor-epic, autofix-trigger). Never edits files, never fetches web content.",
+      "permission": {
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "edit": "deny",
+        "webfetch": "deny",
+        "websearch": "deny",
+        "bash": {
+          "*": "deny",
+          "gh issue create*": "allow",
+          "gh issue list*": "allow",
+          "sleep *": "allow",
+          "jq *": "allow",
+          "echo *": "allow"
+        },
+        "task": "deny"
+      }
+    }
+  }
+}
