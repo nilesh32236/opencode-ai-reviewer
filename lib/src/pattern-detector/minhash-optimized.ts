@@ -24,6 +24,10 @@ const tokenSetCache = new Map<string, Set<string>>();
 /** Maximum number of token sets retained in the cache before FIFO eviction. */
 const MAX_TOKEN_CACHE_ENTRIES = 10_000;
 
+// Tokenize: lowercase, remove non-alphanumeric, split on whitespace, filter short tokens
+const NON_ALPHANUMERIC_REGEX = /[^a-z0-9\s]/g;
+const WHITESPACE_REGEX = /\s+/;
+
 /**
  * FNV-1a style 32-bit string hash with a Murmur3-style finalizer for good
  * avalanche. Non-cryptographic but fast and sufficiently uniform for MinHash.
@@ -70,17 +74,16 @@ export function tokenizeMessage(message: string): Set<string> {
     return tokens;
   }
 
-  // Tokenize: lowercase, remove non-alphanumeric, split on whitespace, filter short tokens
-  const NON_ALPHANUMERIC_REGEX = /[^a-z0-9\s]/g;
-  const WHITESPACE_REGEX = /\s+/;
-
-  tokens = new Set(
-    message
-      .toLowerCase()
-      .replace(NON_ALPHANUMERIC_REGEX, '')
-      .split(WHITESPACE_REGEX)
-      .filter((t) => t.length > 2),
-  );
+  tokens = new Set<string>();
+  const splitTokens = message
+    .toLowerCase()
+    .replace(NON_ALPHANUMERIC_REGEX, '')
+    .split(WHITESPACE_REGEX);
+  for (const t of splitTokens) {
+    if (t.length > 2) {
+      tokens.add(t);
+    }
+  }
 
   // Cache the result (with FIFO eviction at the cap)
   if (tokenSetCache.size >= MAX_TOKEN_CACHE_ENTRIES) {
