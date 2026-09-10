@@ -348,6 +348,21 @@ describe('SetupEngine', () => {
       expect(check.message).toContain('download');
     });
 
+    it('forwards requireChecksum to resolveOpenCodePath', async () => {
+      const engine = new SetupEngine(makeConfig(), {
+        workingDirectory: tmpDir,
+        opencodeVersion: 'v1.2.0',
+        requireChecksum: true,
+      });
+      const check = await engine.checkOpenCodeCLI();
+      expect(check.status).toBe('pass');
+      expect(mockResolveOpenCodePath).toHaveBeenCalledWith(
+        'v1.2.0',
+        '1.1.1',
+        expect.objectContaining({ requireChecksum: true }),
+      );
+    });
+
     it('fails when the minimum version is not a valid semantic version', async () => {
       const engine = new SetupEngine(makeConfig(), {
         workingDirectory: tmpDir,

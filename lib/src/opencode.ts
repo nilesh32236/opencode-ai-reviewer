@@ -455,6 +455,24 @@ function classifyDownloadError(error: unknown, version: string, downloadUrl: str
   }
 
   if (
+    /no checksum available|require_opencode_checksum/i.test(message)
+  ) {
+    // Fail-closed integrity error under strict enforcement: re-running the
+    // workflow without changes deterministically fails again, so point at the
+    // pin-or-disable recovery steps instead of a blind retry. The Details line
+    // preserves the pin-plus-sha256 remediation from buildMissingChecksumError
+    // verbatim.
+    return (
+      `The downloaded OpenCode binary (${version}) could not be checksum-verified and require_opencode_checksum is enabled.\n` +
+      `Details: ${message}\n` +
+      `Download URL: ${downloadUrl}\n` +
+      `Pin opencode_version to a release that publishes a checksum asset, or re-run ` +
+      `with require_opencode_checksum disabled (the default warn-and-continue behavior) ` +
+      `while you obtain the expected sha256.`
+    );
+  }
+
+  if (
     /timed out|timeout|fetch failed|network|econnrefused|econnreset|enotfound|etimedout|eai_again|socket/i.test(
       lower,
     )
@@ -506,8 +524,9 @@ export interface SetupOpenCodeOptions {
    * Maps to the `require_opencode_checksum` action input (surfaced as the
    * `INPUT_REQUIRE_OPENCODE_CHECKSUM` env var). Defaults to false
    * (warn-and-continue). Note: this gate only guards fresh downloads — a
-   * binary already present on PATH is returned as-is (with a warning when
-   * strict mode is on) without checksum verification.
+   * binary already present on PATH or restored from the tool cache is
+   * returned as-is (with a warning when strict mode is on) without checksum
+   * verification, because no archive was downloaded to verify.
    */
   requireChecksum?: boolean;
 }
@@ -531,8 +550,9 @@ export function resolveRequireChecksum(options?: SetupOpenCodeOptions): boolean 
  * Checks PATH first; if not found, downloads and caches the specified version.
  *
  * The `options.requireChecksum` integrity gate only guards fresh downloads: a
- * binary already on PATH is returned after the health check (with a warning
- * when strict mode is on) without checksum verification.
+ * binary already on PATH or restored from the tool cache is returned after
+ * the health check (with a warning when strict mode is on) without checksum
+ * verification.
  * @param version - Version tag to download (defaults to 'latest').
  * @param token - Optional GitHub token used for the authenticated release lookup.
  * @param minimumVersion - Minimum acceptable installed version (default: {@link MINIMUM_OPENCODE_VERSION}).
@@ -650,6 +670,16 @@ export async function setupOpenCode(
       const actualChecksum = await computeSha256(cachedBinPath);
       if (actualChecksum === storedChecksum) {
         core.info(`Using cached OpenCode ${semver} from ${cachedBinPath}`);
+        if (requireChecksum) {
+          // The cached .checksum is self-written by this same installer after
+          // any download (verified or warn-and-continue), so a cache entry
+          // created in default mode cannot prove integrity: surface a warning
+          // so the bypass is visible instead of silently passing the gate.
+          core.warning(
+            `require_opencode_checksum is enabled but using cached OpenCode ${semver} from ${cachedBinPath} — ` +
+              `the integrity gate only guards fresh downloads.`,
+          );
+        }
         if (platform !== 'win32') fs.chmodSync(cachedBinPath, 0o755);
         core.addPath(cachedToolDir);
         opencodePath = cachedBinPath;
@@ -811,8 +841,9 @@ async function verifyDownloadedArchive(
  * via `setupOpenCode`.
  *
  * Note: like {@link setupOpenCode}, the `requireChecksum` integrity gate only
- * guards fresh downloads. A binary already on PATH is returned as-is; when
- * strict mode is on a warning is logged so the bypass is visible.
+ * guards fresh downloads. A binary already on PATH or restored from the tool
+ * cache is returned as-is; when strict mode is on a warning is logged so the
+ * bypass is visible.
  * @param version - Version to install when opencode is missing (defaults to 'latest').
  * @param minimumVersion - Minimum acceptable installed version (default: {@link MINIMUM_OPENCODE_VERSION}).
  * @param options - Optional setup options (see {@link SetupOpenCodeOptions}).

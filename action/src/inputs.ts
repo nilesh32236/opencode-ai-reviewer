@@ -359,12 +359,19 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
 
   // Opt-in strict integrity gate (default false for backward compat).
   // core.getBooleanInput throws on invalid values, so fall back to a
-  // permissive parse that treats only 'true' as enabled.
+  // permissive parse that treats only 'true' as enabled — with a warning so
+  // a typo (e.g. 'ture') cannot silently leave the gate fail-open.
   const requireOpencodeChecksum = (() => {
     try {
       return core.getBooleanInput('require_opencode_checksum');
     } catch {
-      return core.getInput('require_opencode_checksum').trim().toLowerCase() === 'true';
+      const raw = core.getInput('require_opencode_checksum').trim();
+      if (raw !== '') {
+        core.warning(
+          `Ignoring invalid require_opencode_checksum "${raw}". Must be "true" or "false"; falling back to "false".`,
+        );
+      }
+      return raw.toLowerCase() === 'true';
     }
   })();
 

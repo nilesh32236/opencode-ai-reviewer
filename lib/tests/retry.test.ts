@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { buildMissingChecksumError } from '../src/utils/checksum.js';
+import { markIntegrityError } from '../src/utils/checksum.js';
 import { withRetry, withRetryAndTimeout } from '../src/utils/retry.js';
 
 describe('withRetry', () => {
@@ -49,6 +50,22 @@ describe('withRetry', () => {
 
     await expect(withRetry(fn, { maxRetries: 3, baseDelayMs: 10 })).rejects.toThrow(
       'no checksum available',
+    );
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails fast on tagged checksum-mismatch errors', async () => {
+    // Symmetric to the missing-checksum case above: the second verifyChecksum
+    // call site in verifyDownloadedArchive tags mismatches via
+    // markIntegrityError, so a regression to an untagged throw is caught here.
+    const fn = vi
+      .fn()
+      .mockRejectedValue(
+        markIntegrityError(new Error('Checksum mismatch: expected abc, got def')),
+      );
+
+    await expect(withRetry(fn, { maxRetries: 3, baseDelayMs: 10 })).rejects.toThrow(
+      'Checksum mismatch',
     );
     expect(fn).toHaveBeenCalledTimes(1);
   });

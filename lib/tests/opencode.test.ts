@@ -1751,7 +1751,7 @@ describe('requireChecksum integrity gate', () => {
       );
     });
 
-    it('tags checksum mismatches as non-retryable so downloads fail fast', async () => {
+    it('tags checksum mismatches via markIntegrityError', async () => {
       mockFindChecksumAsset.mockReturnValue({
         name: 'opencode-linux-x64.tar.gz.sha256',
         browser_download_url: 'https://example.com/checksum.sha256',
@@ -1766,6 +1766,15 @@ describe('requireChecksum integrity gate', () => {
         setupOpenCode('v1.2.0', undefined, undefined, { requireChecksum: true }),
       ).rejects.toThrow(/failed checksum verification/i);
       expect(mockMarkIntegrityError).toHaveBeenCalledWith(mismatch);
+    });
+
+    it('reports pin-or-disable recovery (not a blind retry) for fail-closed errors', async () => {
+      await expect(
+        setupOpenCode('v1.2.0', undefined, undefined, { requireChecksum: true }),
+      ).rejects.toThrow(/Pin opencode_version.*require_opencode_checksum disabled/s);
+      await expect(
+        setupOpenCode('v1.2.0', undefined, undefined, { requireChecksum: true }),
+      ).rejects.not.toThrow(/Please re-run the workflow to retry/);
     });
   });
 
@@ -1798,6 +1807,41 @@ describe('requireChecksum integrity gate', () => {
 
       expect(result).toBe('/usr/local/bin/opencode');
       expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('already on PATH'));
+    });
+  });
+
+  describe('tool-cache bypass', () => {
+    async function mockCacheHit(): Promise<void> {
+      mockToolFind.mockReturnValue('/cache/opencode/1.2.0/linux-x64');
+      mockComputeSha256.mockResolvedValue('abc123');
+      const fsModule = await import('fs');
+      (fsModule.existsSync as ReturnType<typeof vi.fn>).mockImplementation(
+        (p: string) => p.endsWith('.checksum') || p.endsWith('opencode'),
+      );
+      (fsModule.readFileSync as ReturnType<typeof vi.fn>).mockReturnValue('abc123\n');
+    }
+
+    it('warns but returns the cached binary when strict mode is on', async () => {
+      await mockCacheHit();
+
+      const result = await setupOpenCode('v1.2.0', undefined, undefined, {
+        requireChecksum: true,
+      });
+
+      expect(result).toBe('/cache/opencode/1.2.0/linux-x64/opencode');
+      expect(core.warning).toHaveBeenCalledWith(
+        expect.stringContaining('using cached OpenCode'),
+      );
+      expect(mockDownloadTool).not.toHaveBeenCalled();
+    });
+
+    it('stays silent about checksums for cached binaries in default mode', async () => {
+      await mockCacheHit();
+
+      const result = await setupOpenCode('v1.2.0');
+
+      expect(result).toBe('/cache/opencode/1.2.0/linux-x64/opencode');
+      expect(core.warning).not.toHaveBeenCalled();
     });
   });
 });
