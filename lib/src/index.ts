@@ -110,6 +110,7 @@ export { EventBus } from './event-bus/bus.js';
 export type { SubscriberHealth } from './event-bus/bus.js';
 export { EventRouter } from './event-bus/router.js';
 export { LoggingSubscriber } from './event-bus/logging-subscriber.js';
+export { sanitizePayload } from './event-bus/logging-subscriber.js';
 export { registerEventSubscribers } from './event-bus/register-event-subscribers.js';
 export { LearningStore } from './learning/store.js';
 export { connectDb } from './learning/db/index.js';
@@ -147,6 +148,20 @@ export { gatherReviewThread } from './utils/review-thread.js';
 export type { ThreadComment, ReviewThreadResult } from './utils/review-thread.js';
 export { sanitizeString } from './utils/sanitize.js';
 export { escapeInlineCode, sanitizeMarkdown } from './utils/markdown.js';
+export {
+  ALLOWED_LINTER_COMMANDS,
+  ALLOWED_MCP_LOCAL_COMMANDS,
+  DEFAULT_EVENT_LOG_PATH,
+  EVENT_SUBSCRIBERS_ENV,
+  isAllowedLinterCommand,
+  isAllowedMcpLocalCommand,
+  isBlockedIpHost,
+  isConfinedPath,
+  isEventSubscribersEnabled,
+  isSafeRemoteMcpUrl,
+  resolveConfinedEventLogPath,
+  resolveConfinedWorkingDir,
+} from './utils/safe-exec.js';
 export { sanitizePromptInput } from './utils/prompt-sanitizer.js';
 export { detectSecrets, shannonEntropy, mergeSecretFindings } from './utils/secret-detect.js';
 export type { SecretFinding, SecretDetectOptions } from './utils/secret-detect.js';
@@ -275,6 +290,8 @@ export {
   meetsSeverityThreshold,
   resolveWebhookUrl,
   defaultPrUrl,
+  isHttpsUrl,
+  redactWebhookUrl,
 } from './utils/notifier.js';
 export type {
   NotificationContext,

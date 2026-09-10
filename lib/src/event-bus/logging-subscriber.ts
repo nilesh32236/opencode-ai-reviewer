@@ -2,6 +2,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import type { GitHubEvent, Subscriber } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
+import { sanitizeString } from '../utils/sanitize.js';
 
 /** Maximum log file size in bytes before it is rotated to `*.ndjson.1`. */
 const MAX_LOG_BYTES = 10 * 1024 * 1024;
@@ -17,21 +18,57 @@ const SENSITIVE_KEYS = new Set([
   'token',
   'password',
   'secret',
+  'authorization',
+  'avatar_url',
+  'client_secret',
+  'api_key',
+  'apikey',
+  'access_token',
+  'refresh_token',
+  'private_key',
+  'cookie',
+  'set-cookie',
+  'diff',
+  'patch',
 ]);
 
 /**
- * Deep-sanitize an event payload for the log: redact sensitive keys and truncate
- * long strings so the log cannot grow unbounded or leak raw user content.
+ * Check whether a payload key is sensitive. Matches exact known keys plus
+ * `*_token`, `*_secret`, `*_key`, `*password*`, and `*auth*` variants,
+ * case-insensitively, so `GITHUB_TOKEN`, `clientSecret`, `deploy-key`, and
+ * `Authorization` are all redacted.
+ */
+function isSensitiveKey(key: string): boolean {
+  const normalized = key.toLowerCase().replace(/-/g, '_');
+  if (SENSITIVE_KEYS.has(key) || SENSITIVE_KEYS.has(normalized)) return true;
+  return (
+    normalized.endsWith('_token') ||
+    normalized.endsWith('_secret') ||
+    normalized.endsWith('_key') ||
+    normalized.includes('password') ||
+    normalized.includes('auth') ||
+    normalized.includes('secret') ||
+    normalized === 'token' ||
+    normalized === 'cookie'
+  );
+}
+
+/**
+ * Deep-sanitize an event payload for the log: redact sensitive keys, scrub
+ * credential patterns from every string via `sanitizeString` (webhook payloads
+ * routinely embed diffs/patches containing leaked secrets), and truncate long
+ * strings so the log cannot grow unbounded or leak raw user content.
  * @param value - The value to sanitize.
  * @param depth - Current recursion depth (guards against cyclic/abusive structures).
  * @returns A sanitized copy safe to serialize.
  */
-function sanitizePayload(value: unknown, depth = 0): unknown {
+export function sanitizePayload(value: unknown, depth = 0): unknown {
   if (value === null || typeof value === 'undefined') return value;
   if (typeof value === 'string') {
-    if (value.length > MAX_STRING_LENGTH)
-      return `${value.slice(0, MAX_STRING_LENGTH)}...[truncated]`;
-    return value;
+    const scrubbed = sanitizeString(value);
+    if (scrubbed.length > MAX_STRING_LENGTH)
+      return `${scrubbed.slice(0, MAX_STRING_LENGTH)}...[truncated]`;
+    return scrubbed;
   }
   if (typeof value === 'number' || typeof value === 'boolean') return value;
   if (depth > 4) return typeof value === 'object' ? '[truncated]' : value;
@@ -40,7 +77,7 @@ function sanitizePayload(value: unknown, depth = 0): unknown {
   }
   const out: Record<string, unknown> = {};
   for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
-    out[key] = SENSITIVE_KEYS.has(key) ? '[redacted]' : sanitizePayload(val, depth + 1);
+    out[key] = isSensitiveKey(key) ? '[redacted]' : sanitizePayload(val, depth + 1);
   }
   return out;
 }

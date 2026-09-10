@@ -207,12 +207,12 @@ describe('MCPManager', () => {
       mockListTools.mockResolvedValue({ tools: [{ name: 'search' }] });
 
       const manager = new MCPManager([
-        makeConfig({ type: 'remote', url: 'http://localhost:3000', command: undefined }),
+        makeConfig({ type: 'remote', url: 'https://mcp.example.com/sse', command: undefined }),
       ]);
       await manager.connect();
 
       expect(mockSSEClientTransportCtor).toHaveBeenCalledWith(
-        new URL('http://localhost:3000'),
+        new URL('https://mcp.example.com/sse'),
         expect.objectContaining({ requestInit: expect.anything() }),
       );
       expect(mockConnect).toHaveBeenCalledTimes(1);
@@ -226,7 +226,7 @@ describe('MCPManager', () => {
       const manager = new MCPManager([
         makeConfig({
           type: 'remote',
-          url: 'http://localhost:3000',
+          url: 'https://mcp.example.com/sse',
           command: undefined,
           environment: { Authorization: 'Bearer token123', 'X-API-Key': 'abc' },
         }),
@@ -234,7 +234,7 @@ describe('MCPManager', () => {
       await manager.connect();
 
       expect(mockSSEClientTransportCtor).toHaveBeenCalledWith(
-        new URL('http://localhost:3000'),
+        new URL('https://mcp.example.com/sse'),
         expect.objectContaining({
           requestInit: { headers: { Authorization: 'Bearer token123', 'X-API-Key': 'abc' } },
         }),
@@ -245,7 +245,7 @@ describe('MCPManager', () => {
       mockConnect.mockRejectedValue(new Error('Connection refused'));
 
       const manager = new MCPManager([
-        makeConfig({ type: 'remote', url: 'http://localhost:3000', command: undefined }),
+        makeConfig({ type: 'remote', url: 'https://mcp.example.com/sse', command: undefined }),
       ]);
       await manager.connect();
 
@@ -260,7 +260,7 @@ describe('MCPManager', () => {
       const manager = new MCPManager([
         makeConfig({
           type: 'remote',
-          url: 'http://localhost:3000',
+          url: 'https://mcp.example.com/sse',
           command: undefined,
           timeoutMs: 50,
         }),

@@ -194,10 +194,22 @@ describe('buildSuggestionComment', () => {
     expect(body).not.toContain('`fix: add `select` support`');
   });
 
-  it('escapes backslashes before backticks to prevent smuggled escapes', () => {
+  it('escapes backticks via the shared markdown helper', () => {
     const body = buildSuggestionComment({ title: 'fix: add \\`code\\`', labels: [] }, 1);
-    expect(body).toContain('fix: add \\\\\\`code\\\\\\`');
+    expect(body).toContain('fix: add \\\\`code\\\\`');
     expect(body).not.toContain('`fix: add \\`code\\``');
+  });
+
+  it('neutralizes newline and image markdown injection in titles and labels', () => {
+    const body = buildSuggestionComment(
+      { title: 'feat: x\n![evil](https://exfil.example/p)', labels: ['a\nb', 'c`d'] },
+      1,
+    );
+    // Newline breakout is collapsed to a space; image syntax is neutralized.
+    expect(body).not.toContain('\n![evil]');
+    expect(body).toContain('feat: x !&#91;evil]');
+    expect(body).toContain('`c\\`d`');
+    expect(body).toContain('- `a b`');
   });
 
   it('does not include the dedup marker (added by postOrUpdateComment)', () => {

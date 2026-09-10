@@ -88,7 +88,13 @@ export const ReviewEntrySchema = z.discriminatedUnion('type', [
 ]);
 
 // ─── Configuration Schema ─────────────────────────────────
-/** Zod schema validating MCP server configuration. */
+/**
+ * Zod schema validating MCP server configuration.
+ * Shape-only by design (fail-open): `command` launchers and `url` hosts are
+ * untrusted repo-file input, so allowlist/SSRF enforcement lives at the
+ * connect sink (`mcp/client.ts` via `utils/safe-exec.ts`), never at parse
+ * time where a rejection would discard unrelated review settings.
+ */
 export const MCPServerConfigSchema = z.object({
   name: z.string(),
   type: z.enum(['local', 'remote']),
@@ -303,7 +309,13 @@ export const LearningConfigSchema = z.object({
     .default({}),
 });
 
-/** Zod schema for linter configuration. */
+/**
+ * Zod schema for linter configuration.
+ * Shape-only by design (fail-open): `command` and `workingDirectory` are
+ * untrusted repo-file input, so the basename allowlist and checkout
+ * confinement are enforced in `validateConfig()` (config.ts) and
+ * defensively at the exec sink (`engine.ts` via `utils/safe-exec.ts`).
+ */
 export const LinterConfigSchema = z.object({
   pattern: z.string().min(1),
   command: z.string().min(1),
@@ -377,7 +389,12 @@ export const RateLimitingConfigSchema = z.object({
   retentionHours: z.number().int().min(1).max(8760).default(48),
 });
 
-/** Zod schema validating structured event logging configuration. */
+/**
+ * Zod schema validating structured event logging configuration.
+ * `path` drives runner filesystem writes and is untrusted repo-file input:
+ * checkout confinement is enforced in `validateConfig()` (config.ts) and at
+ * registration (`event-bus/register-event-subscribers.ts`).
+ */
 export const EventLoggingConfigSchema = z.object({
   enabled: z.boolean().default(false),
   path: z.string().default('.opencode/events.ndjson'),
@@ -427,7 +444,13 @@ export const SCAConfigSchema = z
     excludePatterns: [],
   });
 
-/** Zod schema validating a pluggable event subscriber configuration entry. */
+/**
+ * Zod schema validating a pluggable event subscriber configuration entry.
+ * `path` is loaded via dynamic `import()` (arbitrary checkout code execution)
+ * and is untrusted repo-file input: loading is default-denied unless the
+ * operator opts in via `OPENCODE_ENABLE_EVENT_SUBSCRIBERS=1` (see
+ * `event-bus/register-event-subscribers.ts`).
+ */
 export const PluggableSubscriberConfigSchema = z.object({
   name: z.string().min(1),
   path: z.string().min(1),
