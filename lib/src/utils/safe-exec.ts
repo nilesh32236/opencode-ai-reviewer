@@ -40,6 +40,12 @@ import * as path from 'node:path';
  * extra binary can extend the set with `OPENCODE_ALLOWED_LINTERS`
  * (comma-separated basenames, same structural rules apply) — only add
  * single-purpose binaries, never toolchains or shells.
+ *
+ * BREAKING: generic language toolchains (`go`, `cargo`, `dotnet`, `dart`,
+ * `flutter`) are intentionally NOT allowlisted: they are arbitrary-code
+ * primitives via config-controlled `args`. Operators relying on them must
+ * migrate to a single-purpose wrapper binary exposed via
+ * `OPENCODE_ALLOWED_LINTERS`.
  */
 export const ALLOWED_LINTER_COMMANDS: ReadonlySet<string> = new Set([
   'eslint',
@@ -108,6 +114,8 @@ const MAX_LINTER_ARG_LENGTH = 2048;
  * execution primitive by loading plugins/formatters/requirements from
  * attacker-controlled checkout files (`eslint --rulesdir ./evil`,
  * `prettier --plugin ./evil`, `stylelint --custom-formatter ./evil`,
+ * `eslint --config ./evil.js` (flat config is executed JS),
+ * `--formatter ./evil-formatter` custom-formatter paths,
  * linter `--require`/`--loader` hooks, ...). The attacker controls both the
  * yml `args` and the checkout files, so these are rejected even though the
  * binary itself is allowlisted. Matching is prefix-aware: `--flag=value` and
@@ -125,7 +133,11 @@ const BLOCKED_LINTER_ARGS: ReadonlySet<string> = new Set([
   '--custom-syntax',
   '--loader',
   '--import',
+  '--config',
+  '--config-file',
+  '--formatter',
   '-r',
+  '-c',
 ]);
 
 /**
@@ -141,8 +153,8 @@ function isBlockedLinterArg(arg: string): boolean {
       return true;
     }
   }
-  // Joined short-flag form (`-revil`, `-r evil.js` loader shorthand).
-  if (/^-r\S/.test(v)) return true;
+  // Joined short-flag forms (`-revil`, `-c evil.js` config shorthand, `-r evil.js` loader shorthand).
+  if (/^-[rc]\S/.test(v)) return true;
   return false;
 }
 
@@ -205,7 +217,11 @@ function realpathRevealsEscape(baseResolved: string, target: string): boolean {
       if (rel === '') return false;
       return rel.startsWith('..') || path.isAbsolute(rel);
     } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') return false;
+      // Fail closed on unexpected filesystem errors: an attacker-crafted
+      // symlink loop (ELOOP), permission error (EACCES), or overlong name
+      // (ENAMETOOLONG) must not be treated as confined. Only a missing path
+      // (ENOENT — ancestor walk continues) falls back to the lexical verdict.
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') return true;
       const parent = path.dirname(probe);
       if (parent === probe) return false;
       probe = parent;
@@ -250,10 +266,15 @@ export function isConfinedPath(base: string, requested: string): boolean {
  * @returns The confined absolute directory, or null when it escapes.
  */
 export function resolveConfinedWorkingDir(workDir: string, requested?: string): string | null {
-  if (requested === undefined || requested === null || String(requested).trim() === '') {
-    return path.resolve(workDir);
-  }
-  const value = String(requested);
+  // Empty/absent values resolve to the trusted base itself. Route through the
+  // same lexical + realpath checks as an explicit '.' (rather than returning
+  // the base unchecked) so both spellings of the checkout root take the same
+  // checked path. The base is trusted, so the check trivially passes unless
+  // the filesystem reveals an escape.
+  const value =
+    requested === undefined || requested === null || String(requested).trim() === ''
+      ? '.'
+      : String(requested);
   const baseResolved = path.resolve(workDir);
   const target = path.isAbsolute(value) ? path.normalize(value) : path.resolve(baseResolved, value);
   const rel = path.relative(baseResolved, target);
@@ -419,6 +440,14 @@ function isBlockedMcpLocalArg(arg: string): boolean {
  * ends with a script extension (`server.js`, `evil.py`, `run evil.ts`) would
  * execute attacker-controlled checkout code with credentials inherited via
  * the subprocess environment, so it is rejected.
+ *
+ * NOTE: extension heuristics alone cannot stop extensionless checkout files:
+ * `node server` resolves `server.js` via extension probing and `python3 run`
+ * executes an exact relative path with no extension. Callers additionally
+ * reject any bare non-flag positional arg for the script launchers
+ * (`node`/`python`/`python3`/`deno`) — see {@link isAllowedMcpLocalCommand}.
+ * This is intentionally fail-closed: legitimate servers needing positional
+ * args under these launchers must run outside PR-editable config.
  * @param arg - Single configured argument string.
  * @returns True when the arg looks like a script file reference.
  */
@@ -427,6 +456,28 @@ function isMcpScriptFileArg(arg: string): boolean {
   if (v.includes('/') || v.includes('\\')) return true;
   const lower = v.toLowerCase();
   return SCRIPT_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+/** Launchers that execute a file/positional program arg directly. */
+const SCRIPT_LAUNCHERS: ReadonlySet<string> = new Set(['node', 'python', 'python3', 'deno']);
+
+/**
+ * Check whether a launcher executes script files from positional args.
+ * @param launcher - Bare launcher basename.
+ * @returns True for node/python/deno family launchers.
+ */
+function isScriptLauncher(launcher: string): boolean {
+  return SCRIPT_LAUNCHERS.has(launcher);
+}
+
+/**
+ * Check whether an arg is a bare positional (not a `-`/`--` flag).
+ * @param arg - Single configured argument string.
+ * @returns True when the trimmed arg is non-empty and not flag-shaped.
+ */
+function isBarePositionalArg(arg: string): boolean {
+  const v = arg.trim();
+  return v !== '' && !v.startsWith('-');
 }
 
 /**
@@ -441,6 +492,15 @@ function isMcpScriptFileArg(arg: string): boolean {
  * launchers (`npx`/`uvx`/`bunx`) may additionally only fetch the pinned
  * built-in packages in {@link PINNED_MCP_NPM_PACKAGES} — any other package
  * name would fetch and run arbitrary registry code.
+ *
+ * BREAKING: local file-path script servers (`node server.js`, `python3 run`,
+ * extensionless checkout files) are rejected, unpinned npx/uvx/bunx packages
+ * are rejected, and `isAllowedLinterCommand` no longer allowlists the generic
+ * toolchains (`go`/`cargo`/`dotnet`/`dart`/`flutter`). Migration: move custom
+ * repo-local servers outside PR-editable config (operator-managed transport),
+ * pin package-runner servers to the built-ins in `mcp/servers.ts`, and use
+ * `OPENCODE_ALLOWED_LINTERS` only for single-purpose binaries (never shells
+ * or toolchains). Filtered entries are skipped, never executed.
  * @param command - Configured `mcpServers[].command` vector.
  * @returns True when the vector may be spawned via `StdioClientTransport`.
  */
@@ -469,6 +529,14 @@ export function isAllowedMcpLocalCommand(command: unknown): boolean {
     if (typeof arg !== 'string') return false;
     if (isBlockedMcpLocalArg(arg)) return false;
     if (arg !== packageSpec && isMcpScriptFileArg(arg)) return false;
+    // Extensionless bypass guard: node extension-probing (`node server` →
+    // `server.js`) and exact-path execution (`python3 run`) work without a
+    // script extension or separator, so any bare non-flag positional arg to a
+    // script launcher is a checkout-code reference. Fail closed (this also
+    // rejects benign `prog 8080` port args — run those outside PR config).
+    if (!isPackageRunner && isScriptLauncher(launcher) && isBarePositionalArg(arg)) {
+      return false;
+    }
   }
   if (isPackageRunner) {
     // No positional package means there is nothing legitimate to run — reject.
@@ -580,7 +648,10 @@ function isBlockedIPv4Bytes(bytes: readonly [number, number, number, number]): b
  * @returns True when the host must be rejected.
  */
 export function isBlockedIpHost(host: string): boolean {
-  const h = host.toLowerCase().replace(/\.$/, '');
+  // Strip any IPv6 zone ID (`fe80::1%eth0`) before canonicalization:
+  // zones are interface-scoped link-local addresses and must classify as
+  // blocked, but `net.isIP` rejects the `%zone` form outright.
+  const h = host.toLowerCase().replace(/\.$/, '').split('%')[0] ?? '';
   if (h === '' || h === 'localhost') return true;
   if (BLOCKED_HOSTNAMES.has(h)) return true;
   if (BLOCKED_SUFFIXES.some((s) => h.endsWith(s))) return true;
@@ -667,8 +738,13 @@ export function isSafeRemoteMcpUrl(url: string): boolean {
     if (parsed.protocol !== 'https:') return false;
     if (parsed.username !== '' || parsed.password !== '') return false;
     // `URL.hostname` retains brackets for IPv6 literals (`[::1]`), but
-    // `isBlockedIpHost` expects a bare host — strip them first.
-    const host = parsed.hostname.toLowerCase().replace(/^\[(.*)\]$/, '$1');
+    // `isBlockedIpHost` expects a bare host — strip them first (non-greedy
+    // bracket class) and drop any `%zone` suffix before the host check.
+    const host =
+      parsed.hostname
+        .toLowerCase()
+        .replace(/^\[([^\]]*)\]$/, '$1')
+        .split('%')[0] ?? '';
     return !isBlockedIpHost(host);
   } catch {
     return false;

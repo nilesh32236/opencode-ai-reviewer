@@ -289,7 +289,12 @@ describe('MCPManager', () => {
       mockConnect.mockResolvedValue(undefined);
       mockListTools.mockResolvedValue({ tools: [{ name: 'search' }] });
 
-      for (const url of ['http://localhost:3000/sse', 'http://169.254.169.254/latest']) {
+      for (const url of [
+        'http://localhost:3000/sse',
+        'http://169.254.169.254/latest',
+        'https://localhost:3000/sse',
+        'https://169.254.169.254/latest',
+      ]) {
         vi.clearAllMocks();
         const manager = new MCPManager([makeConfig({ type: 'remote', url, command: undefined })]);
         await manager.connect();

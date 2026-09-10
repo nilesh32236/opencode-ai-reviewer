@@ -162,21 +162,32 @@ describe('registerEventSubscribers', () => {
     // though they reach the sink directly (fail-closed).
     const outside = path.join(tmpDir, 'events.ndjson');
     const fallback = path.resolve(process.cwd(), '.opencode', 'events.ndjson');
+    // Snapshot any pre-existing fallback log so the test neither destroys it
+    // nor flakes on lines appended concurrently by parallel workers.
+    const before = await fs.readFile(fallback, 'utf-8').catch(() => '');
+    const marker = `fallback-marker-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     const registered = await registerEventSubscribers(bus, { enabled: true, path: outside });
 
     try {
       expect(registered).toHaveLength(1);
 
-      await bus.publish({ type: 'pr.opened', category: 'pr', payload: {}, timestamp: 1 });
-      // The event lands in the confined default log (which may already exist
-      // from other tests — assert on the appended last line), never outside.
-      const lines = (await fs.readFile(fallback, 'utf-8')).trim().split('\n');
-      expect(lines.length).toBeGreaterThanOrEqual(1);
-      expect((JSON.parse(lines[lines.length - 1]) as GitHubEvent).type).toBe('pr.opened');
+      await bus.publish({ type: 'pr.opened', category: 'pr', payload: { marker }, timestamp: 1 });
+      // Assert on the newly appended slice containing our unique marker,
+      // never on the last line of the shared file.
+      const after = await fs.readFile(fallback, 'utf-8');
+      expect(after.length).toBeGreaterThan(before.length);
+      expect(after.slice(before.length)).toContain(marker);
       await expect(fs.stat(outside)).rejects.toThrow();
     } finally {
-      await fs.rm(fallback, { force: true });
+      // Restore the pre-existing contents instead of unconditionally deleting
+      // the shared default log.
+      if (before === '') {
+        await fs.rm(fallback, { force: true });
+      } else {
+        await fs.mkdir(path.dirname(fallback), { recursive: true });
+        await fs.writeFile(fallback, before);
+      }
     }
   });
 

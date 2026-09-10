@@ -7,6 +7,9 @@ describe('sanitizeString', () => {
     expect(sanitizeString(`gemini key ${key} here`)).toBe('gemini key [REDACTED_GEMINI_KEY] here');
   });
 
+  // NOTE: the values below are AWS's published documentation example
+  // placeholders (EXAMPLE key material, not real credentials) used solely to
+  // exercise the redaction regexes. No live secret is embedded here.
   it('redacts AWS access key IDs', () => {
     expect(sanitizeString('id AKIAIOSFODNN7EXAMPLE here')).toBe(
       'id [REDACTED_AWS_ACCESS_KEY] here',
