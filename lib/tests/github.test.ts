@@ -576,6 +576,51 @@ diff --git a/src/a.ts b/src/a.ts
       expect(lines.size).toBe(4);
     });
 
+    it('returns a defensive copy so caller mutations do not corrupt the cache', async () => {
+      const diffText = `diff --git a/src/a.ts b/src/a.ts
+--- a/src/a.ts
++++ b/src/a.ts
+@@ -1,3 +1,4 @@
+ line1
+ line2
++line3
++line4`;
+      fetchMock.mockImplementation(async () =>
+        mockResponse({ text: vi.fn().mockResolvedValue(diffText) }),
+      );
+      const first = await helper.getDiffLines(42);
+      expect(first.size).toBe(4);
+      first.clear();
+      first.add('evil:1');
+      const second = await helper.getDiffLines(42);
+      expect(second.has('src/a.ts:1')).toBe(true);
+      expect(second.has('evil:1')).toBe(false);
+      expect(second.size).toBe(4);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('scopes the diff cache by head SHA', async () => {
+      const diffText = `diff --git a/src/a.ts b/src/a.ts
+--- a/src/a.ts
++++ b/src/a.ts
+@@ -1,3 +1,4 @@
+ line1
+ line2
++line3
++line4`;
+      fetchMock.mockImplementation(async () =>
+        mockResponse({ text: vi.fn().mockResolvedValue(diffText) }),
+      );
+      await helper.getDiffLines(42, 'sha-a');
+      await helper.getDiffLines(42, 'sha-a');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await helper.getDiffLines(42, 'sha-b');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      helper.clearDiffLinesCache(42);
+      await helper.getDiffLines(42, 'sha-a');
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
     it('does not register lines from deleted files', async () => {
       const diffText = `diff --git a/file1.ts b/file1.ts
 --- a/file1.ts
@@ -1947,6 +1992,18 @@ diff --git a/deleted.ts b/deleted.ts
       const result = await helper.paginate('/issues/1/comments');
       expect(result).toHaveLength(100);
       expect(warning).toHaveBeenCalledWith(expect.stringContaining('Failed to fetch page'));
+    });
+
+    it('rethrows AbortError instead of returning truncated partial data', async () => {
+      const { warning } = await import('@actions/core');
+      const controller = new AbortController();
+      controller.abort();
+      fetchMock.mockRejectedValue(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+
+      await expect(helper.paginate('/issues/1/comments', {}, controller.signal)).rejects.toThrow(
+        'aborted',
+      );
+      expect(warning).not.toHaveBeenCalledWith(expect.stringContaining('Failed to fetch page'));
     });
 
     it('stops fetching further pages as soon as stopWhen returns true', async () => {

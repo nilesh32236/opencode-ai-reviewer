@@ -328,6 +328,29 @@ describe('LearningStore', () => {
     expect(typeof result.responseMs).toBe('number');
     expect(result.responseMs).toBeGreaterThanOrEqual(0);
   });
+
+  it('reconnect() recovers the store and keeps it usable', async () => {
+    await store.recordFinding({
+      prNumber: 1,
+      type: 'issue',
+      severity: 'minor',
+      file: 'src/a.ts',
+      line: 1,
+      message: 'before reconnect',
+    });
+    await store.reconnect();
+    await store.recordFinding({
+      prNumber: 1,
+      type: 'issue',
+      severity: 'minor',
+      file: 'src/b.ts',
+      line: 2,
+      message: 'after reconnect',
+    });
+    const findings = await store.getFindings(1);
+    expect(findings.map((f) => f.message).sort()).toEqual(['after reconnect', 'before reconnect']);
+    await expect(store.ping()).resolves.toMatchObject({ ok: true });
+  });
 });
 
 describe('LearningStore Analytics', () => {

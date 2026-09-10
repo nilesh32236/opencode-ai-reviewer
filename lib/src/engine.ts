@@ -3898,25 +3898,25 @@ export class ReviewEngine {
   }
 
   /**
-   * Query-key factory for the lessons cache: `lessons:v1:<sorted-unique-paths>`.
+   * Query-key factory for the lessons cache: `lessons` NUL `v1` NUL `<sorted-unique-path>...` (NUL-separated segments).
    * Sorting + deduping makes the key order-insensitive; the `v1` version
    * segment allows invalidation on future key-schema changes.
    * @param filePaths - File paths being reviewed.
    * @returns The canonical cache key.
    */
   private static lessonsKey(filePaths: string[]): string {
-    return ['lessons', 'v1', [...new Set(filePaths)].sort()].join('\u0000');
+    return ['lessons', 'v1', ...[...new Set(filePaths)].sort()].join('\u0000');
   }
 
   /**
-   * Query-key factory for the MCP docs cache: `mcpDocs:v1:<sorted-unique-libs>`.
+   * Query-key factory for the MCP docs cache: `mcpDocs` NUL `v1` NUL `<sorted-unique-lib>...` (NUL-separated segments).
    * Sorting + deduping makes the key order-insensitive; the `v1` version
    * segment allows invalidation on future key-schema changes.
    * @param libraries - Library names documentation was fetched for.
    * @returns The canonical cache key.
    */
   private static mcpDocsKey(libraries: string[]): string {
-    return ['mcpDocs', 'v1', [...new Set(libraries)].sort()].join('\u0000');
+    return ['mcpDocs', 'v1', ...[...new Set(libraries)].sort()].join('\u0000');
   }
 
   /**

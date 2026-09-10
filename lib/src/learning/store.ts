@@ -37,6 +37,7 @@ import type {
  */
 export class LearningStore {
   private repoPromise: Promise<LearningRepository>;
+  private reconnectPromise: Promise<LearningRepository> | null = null;
   private cleanupPromise: Promise<number> | undefined;
   private readonly dbPathOrUrl?: string;
   private lastFailureAt: number | null = null;
@@ -93,16 +94,30 @@ export class LearningStore {
     } catch (err) {
       const now = Date.now();
       if (
-        this.lastFailureAt === null ||
-        now - this.lastFailureAt >= LearningStore.RECONNECT_COOLDOWN_MS
+        this.lastFailureAt !== null &&
+        now - this.lastFailureAt < LearningStore.RECONNECT_COOLDOWN_MS
       ) {
-        this.lastFailureAt = now;
-        this.repoPromise = this.connect();
-        const repo = await this.repoPromise;
+        throw err;
+      }
+      // Single-flight the recovery so concurrent callers that all observe the
+      // rejected promise share one reconnect instead of each opening (and
+      // leaking) their own connection.
+      if (this.reconnectPromise) {
+        return this.reconnectPromise;
+      }
+      this.lastFailureAt = now;
+      const next = this.connect();
+      this.reconnectPromise = next;
+      this.repoPromise = next;
+      try {
+        const repo = await next;
         this.lastFailureAt = null;
         return repo;
+      } finally {
+        if (this.reconnectPromise === next) {
+          this.reconnectPromise = null;
+        }
       }
-      throw err;
     }
   }
 
@@ -111,9 +126,29 @@ export class LearningStore {
    * rejected) promise. Used by health checks to recover a dead store.
    */
   async reconnect(): Promise<void> {
-    this.repoPromise = this.connect();
-    await this.repoPromise;
-    this.lastFailureAt = null;
+    const prior = this.repoPromise;
+    const next = this.connect();
+    this.reconnectPromise = next;
+    this.repoPromise = next;
+    try {
+      await next;
+      this.lastFailureAt = null;
+      // Close the previously settled repo (if any) so health-check-triggered
+      // recovery does not leak SQLite handles/pools. Close failures are
+      // ignored; a never-connected prior settles as a rejection.
+      await prior.then((r) => r.close().catch(() => {})).catch(() => {});
+    } catch (err) {
+      // Recovery failed: keep serving from the prior connection instead of
+      // leaving the store wedged on a rejected promise with no live repo.
+      if (this.repoPromise === next) {
+        this.repoPromise = prior;
+      }
+      throw err;
+    } finally {
+      if (this.reconnectPromise === next) {
+        this.reconnectPromise = null;
+      }
+    }
   }
 
   /**

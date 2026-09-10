@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import * as core from '@actions/core';
 import { buildInlineComments } from '../jsonl-parser.js';
 import type { PlatformAdapter, ReviewPostResult, ReviewThreadInfo } from '../platform/adapter.js';
@@ -266,6 +267,16 @@ export class GitHubHelper implements PlatformAdapter {
         if (stopWhen?.(allItems)) break;
         if (items.length < perPage) break;
       } catch (err) {
+        // Preserve cancellation semantics: an aborted caller signal (or an
+        // AbortError from the transport) must propagate instead of being
+        // downgraded to truncated partial data.
+        if (
+          signal?.aborted ||
+          (err instanceof DOMException && err.name === 'AbortError') ||
+          (err instanceof Error && err.name === 'AbortError')
+        ) {
+          throw err;
+        }
         core.warning(
           `Failed to fetch page ${page} for ${endpoint}: ${err instanceof Error ? err.message : err} (truncated:true, returned ${allItems.length} items from ${page - 1} pages)`,
         );
@@ -502,16 +513,19 @@ export class GitHubHelper implements PlatformAdapter {
    *
    * Results are cached per instance keyed by PR number with a 60s TTL so
    * repeated calls within one pipeline run (e.g. per review batch) share a
-   * single fetch. Call {@link clearDiffLinesCache} when the PR head moves.
+   * single fetch. Pass `headSha` (e.g. the commit SHA being reviewed) so
+   * entries are scoped per head; unscoped entries fall back to the short TTL.
+   * Call {@link clearDiffLinesCache} when the PR head moves.
    *
    * @param prNumber - PR number.
+   * @param headSha - Optional head SHA scoping the cache entry.
    * @returns Set of "file:line" strings for lines in the diff.
    */
-  async getDiffLines(prNumber: number): Promise<Set<string>> {
-    const cacheKey = `${prNumber}`;
+  async getDiffLines(prNumber: number, headSha?: string): Promise<Set<string>> {
+    const cacheKey = headSha ? `${prNumber}:${headSha}` : `${prNumber}`;
     const cached = this.diffLinesCache.get(cacheKey);
     if (cached && Date.now() - cached.ts < GitHubHelper.DIFF_CACHE_TTL_MS) {
-      return cached.lines;
+      return new Set(cached.lines);
     }
     try {
       const diffText = await this.api<string>(
@@ -546,7 +560,7 @@ export class GitHubHelper implements PlatformAdapter {
         }
       }
       this.diffLinesCache.set(cacheKey, { lines, ts: Date.now() });
-      return lines;
+      return new Set(lines);
     } catch (err) {
       core.warning(`Could not fetch PR diff for line validation: ${String(err)}`);
       return new Set();
@@ -565,6 +579,10 @@ export class GitHubHelper implements PlatformAdapter {
       return;
     }
     this.diffLinesCache.delete(`${prNumber}`);
+    const prefix = `${prNumber}:`;
+    for (const key of [...this.diffLinesCache.keys()]) {
+      if (key.startsWith(prefix)) this.diffLinesCache.delete(key);
+    }
   }
 
   /**
@@ -773,7 +791,11 @@ export class GitHubHelper implements PlatformAdapter {
       : result;
 
     const inlineComments = postInlineComments
-      ? buildInlineComments(workingResult, await this.getDiffLines(prNumber), suppressLowConfidence)
+      ? buildInlineComments(
+          workingResult,
+          await this.getDiffLines(prNumber, commitSha),
+          suppressLowConfidence,
+        )
       : [];
 
     const placedInlineKeys = new Set<string>();
@@ -1923,11 +1945,9 @@ export class GitHubHelper implements PlatformAdapter {
    * @returns A short hash string identifying the token.
    */
   private static hashToken(token: string): string {
-    let h = 0;
-    for (let i = 0; i < token.length; i++) {
-      h = (Math.imul(h, 31) + token.charCodeAt(i)) | 0;
-    }
-    return `${token.length}:${(h >>> 0).toString(16)}`;
+    // SHA-256 truncated to 64 bits: collision-resistant cache scoping without
+    // retaining the secret itself in memory.
+    return createHash('sha256').update(token).digest('hex').slice(0, 16);
   }
 
   /**
