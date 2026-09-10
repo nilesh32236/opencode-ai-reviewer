@@ -18,6 +18,11 @@ describe('mergeDescribeBody', () => {
     expect(merged).toContain(DESCRIBE_BODY_END);
   });
 
+  it('returns just the marker block for undefined body', () => {
+    const merged = mergeDescribeBody(undefined, 'new content');
+    expect(merged).toBe(`${DESCRIBE_BODY_START}\nnew content\n${DESCRIBE_BODY_END}`);
+  });
+
   it('replaces content in place when markers are present', () => {
     const existing = `user intro\n${DESCRIBE_BODY_START}\nold\n${DESCRIBE_BODY_END}\nuser outro`;
     const merged = mergeDescribeBody(existing, 'new');

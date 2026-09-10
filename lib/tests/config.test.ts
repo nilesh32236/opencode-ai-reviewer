@@ -1620,4 +1620,30 @@ review:
       }
     });
   });
+
+  describe('validateConfig describe', () => {
+    it('round-trips useMarkers/publishAsComment true/false', () => {
+      const result = validateConfig({
+        describe: { enabled: true, useMarkers: true, publishAsComment: false },
+      });
+      expect(result.describe?.useMarkers).toBe(true);
+      expect(result.describe?.publishAsComment).toBe(false);
+      expect(result.describe?.enabled).toBe(true);
+    });
+
+    it('applies defaults when the describe block is present without the new flags', () => {
+      const result = validateConfig({ describe: {} });
+      expect(result.describe?.useMarkers).toBe(false);
+      expect(result.describe?.publishAsComment).toBe(true);
+      expect(result.describe?.enabled).toBe(true);
+    });
+
+    it('rejects non-boolean values by falling back to defaults', () => {
+      const result = validateConfig({
+        describe: { useMarkers: 'yes', publishAsComment: 1 },
+      } as never);
+      expect(result.describe?.useMarkers).toBe(false);
+      expect(result.describe?.publishAsComment).toBe(true);
+    });
+  });
 });

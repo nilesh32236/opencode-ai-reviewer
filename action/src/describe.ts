@@ -53,14 +53,6 @@ export async function runDescribe(
       return;
     }
 
-    const description = await engine.runDescribe(
-      pr,
-      undefined,
-      undefined,
-      inputs.describePromptFile,
-      inputs.describePromptExtra,
-    );
-
     const publishAsComment = config.describe?.publishAsComment ?? true;
     const useMarkers = config.describe?.useMarkers ?? false;
 
@@ -68,7 +60,16 @@ export async function runDescribe(
       core.warning(
         'Both describe outputs are disabled (publishAsComment=false, useMarkers=false) — skipping output',
       );
+      return;
     }
+
+    const description = await engine.runDescribe(
+      pr,
+      undefined,
+      undefined,
+      inputs.describePromptFile,
+      inputs.describePromptExtra,
+    );
 
     let commentPosted = false;
     let bodyMerged = false;
@@ -95,7 +96,7 @@ export async function runDescribe(
         }
       } catch (e) {
         core.warning(
-          `PR body merge failed, kept comment output: ${e instanceof Error ? e.message : String(e)}`,
+          `PR body merge failed, kept ${commentPosted ? 'comment output' : 'existing PR body'}: ${e instanceof Error ? e.message : String(e)}`,
         );
       }
     }

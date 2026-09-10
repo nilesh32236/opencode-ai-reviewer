@@ -17,11 +17,14 @@ export const DESCRIBE_BODY_END = '<!-- opencode-describe:end -->';
  * - If `existingBody` is null/empty, returns just the marker block.
  * - If markers are present, only the content between them is replaced.
  * - If markers are absent, the marker block is appended (never replaces body).
- * @param existingBody - Current PR body (may be null/empty).
+ * @param existingBody - Current PR body (may be null/undefined/empty).
  * @param generated - Generated describe markdown to place between markers.
  * @returns Merged PR body with user content preserved.
  */
-export function mergeDescribeBody(existingBody: string | null, generated: string): string {
+export function mergeDescribeBody(
+  existingBody: string | null | undefined,
+  generated: string,
+): string {
   // Strip marker strings echoed in generated content so LLM output can never
   // nest/spoof marker blocks or break out of the managed section.
   const clean = generated.split(DESCRIBE_BODY_START).join('').split(DESCRIBE_BODY_END).join('');

@@ -528,9 +528,6 @@ export async function handleDescribeCommand(
   const engine = new ReviewEngine(config, gh, undefined, eventBus, repo, correlationId);
 
   try {
-    const pr = await gh.getMR(issueNumber);
-    const description = await engine.runDescribe(pr, tempDir);
-
     const publishAsComment = config.describe?.publishAsComment ?? true;
     const useMarkers = config.describe?.useMarkers ?? false;
 
@@ -538,13 +535,21 @@ export async function handleDescribeCommand(
       logger.warn(
         'Both describe outputs are disabled (publishAsComment=false, useMarkers=false) — skipping output',
       );
+      return;
     }
+
+    const pr = await gh.getMR(issueNumber);
+    const description = await engine.runDescribe(pr, tempDir);
 
     let commentPosted = false;
     let bodyMerged = false;
 
     if (publishAsComment !== false) {
-      await gh.postOrUpdateComment(issueNumber, '<!-- pr-description -->', description);
+      await gh.postOrUpdateComment(
+        issueNumber,
+        '<!-- pr-description -->',
+        sanitizeMarkdown(description),
+      );
       commentPosted = true;
     }
 

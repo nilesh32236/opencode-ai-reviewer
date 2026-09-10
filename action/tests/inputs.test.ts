@@ -362,6 +362,57 @@ describe('parseStreamBatchSize()', () => {
   });
 });
 
+describe('parseInputs() describe_use_markers/describe_publish_as_comment', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('defaults to markers off and comment on when inputs are omitted', () => {
+    setInputs(BASE_INPUTS);
+    const inputs = parseInputs();
+    expect(inputs.describeUseMarkers).toBe(false);
+    expect(inputs.describeUseMarkersExplicit).toBe(false);
+    expect(inputs.describePublishAsComment).toBe(true);
+    expect(inputs.describePublishAsCommentExplicit).toBe(false);
+  });
+
+  it('parses explicit true/false values', () => {
+    setInputs({
+      ...BASE_INPUTS,
+      describe_use_markers: 'true',
+      describe_publish_as_comment: 'false',
+    });
+    const inputs = parseInputs();
+    expect(inputs.describeUseMarkers).toBe(true);
+    expect(inputs.describeUseMarkersExplicit).toBe(true);
+    expect(inputs.describePublishAsComment).toBe(false);
+    expect(inputs.describePublishAsCommentExplicit).toBe(true);
+  });
+
+  it('parses explicit false/true values', () => {
+    setInputs({
+      ...BASE_INPUTS,
+      describe_use_markers: 'false',
+      describe_publish_as_comment: 'true',
+    });
+    const inputs = parseInputs();
+    expect(inputs.describeUseMarkers).toBe(false);
+    expect(inputs.describeUseMarkersExplicit).toBe(true);
+    expect(inputs.describePublishAsComment).toBe(true);
+    expect(inputs.describePublishAsCommentExplicit).toBe(true);
+  });
+
+  it('rejects invalid describe_use_markers values', () => {
+    setInputs({ ...BASE_INPUTS, describe_use_markers: 'yes' });
+    expect(() => parseInputs()).toThrow(/Invalid describe_use_markers/);
+  });
+
+  it('rejects invalid describe_publish_as_comment values', () => {
+    setInputs({ ...BASE_INPUTS, describe_publish_as_comment: 'yes' });
+    expect(() => parseInputs()).toThrow(/Invalid describe_publish_as_comment/);
+  });
+});
+
 describe('parseInputs() audit_labels', () => {
   beforeEach(() => {
     vi.clearAllMocks();
