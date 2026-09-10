@@ -95,7 +95,7 @@ export class GitLabAdapter implements PlatformAdapter {
               ...options,
               signal: controller.signal,
               headers: {
-                'PRIVATE-TOKEN': this.token,
+                Authorization: `Bearer ${this.token}`,
                 Accept: 'application/json',
                 ...options.headers,
               },

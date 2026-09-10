@@ -143,7 +143,8 @@ export function shannonEntropy(s: string): number {
 }
 
 function redactValue(value: string): string {
-  if (value.length <= 8) return value;
+  if (value.length === 0) return value;
+  if (value.length <= 8) return `${value.slice(0, 2)}${ELLIPSIS}`;
   return `${value.slice(0, 4)}${ELLIPSIS}${value.slice(-4)}`;
 }
 

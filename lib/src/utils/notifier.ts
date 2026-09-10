@@ -499,6 +499,22 @@ export async function sendNotification(
   if (!config || config.enabled !== true) return;
 
   const env = options.env ?? process.env;
+  const logger =
+    options.logger ?? new Logger('Notifier', { prNumber: context.number, repo: context.repo });
+
+  if (config.slack?.webhookUrl?.trim() && !env.SLACK_WEBHOOK_URL?.trim()) {
+    logger.warn(
+      'Using Slack webhook URL from the config file, which is PR-editable and may embed ' +
+        'credentials. Prefer supplying SLACK_WEBHOOK_URL via environment variable.',
+    );
+  }
+  if (config.teams?.webhookUrl?.trim() && !env.TEAMS_WEBHOOK_URL?.trim()) {
+    logger.warn(
+      'Using Teams webhook URL from the config file, which is PR-editable and may embed ' +
+        'credentials. Prefer supplying TEAMS_WEBHOOK_URL via environment variable.',
+    );
+  }
+
   const slackUrl = resolveWebhookUrl(config.slack?.webhookUrl, env.SLACK_WEBHOOK_URL);
   const teamsUrl = resolveWebhookUrl(config.teams?.webhookUrl, env.TEAMS_WEBHOOK_URL);
   if (!slackUrl && !teamsUrl) return;
@@ -507,9 +523,6 @@ export async function sendNotification(
   if (!meetsSeverityThreshold(result.stats, minSeverity)) {
     return;
   }
-
-  const logger =
-    options.logger ?? new Logger('Notifier', { prNumber: context.number, repo: context.repo });
 
   // Slack incoming webhooks normally post to the channel bound to the URL, but
   // a top-level `channel` override is honored when the integration allows it.

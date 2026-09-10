@@ -985,6 +985,23 @@ function applyLLMEnvOverrides(safeEnv: Record<string, string>, llm: LLMConfig | 
       if (provider.region?.trim() && !safeEnv.AWS_REGION) {
         safeEnv.AWS_REGION = provider.region.trim();
       }
+      // Bedrock runs are the only subprocess invocations that need AWS
+      // credentials. Forward ambient parent-process AWS_* vars only here so a
+      // non-Bedrock run (over untrusted repo content with --auto) never carries
+      // ambient AWS credentials into the agent subprocess (audit authz).
+      for (const key of [
+        'AWS_ACCESS_KEY_ID',
+        'AWS_SECRET_ACCESS_KEY',
+        'AWS_SESSION_TOKEN',
+        'AWS_REGION',
+        'AWS_PROFILE',
+        'AWS_BEARER_TOKEN_BEDROCK',
+        'AWS_WEB_IDENTITY_TOKEN_FILE',
+        'AWS_ROLE_ARN',
+      ]) {
+        const val = process.env[key];
+        if (val !== undefined && safeEnv[key] === undefined) safeEnv[key] = val;
+      }
     }
   }
 }
@@ -1388,7 +1405,6 @@ export async function runOpenCode(
     'RUNNER_TEMP',
     'RUNNER_TOOL_CACHE',
     'NODE_PATH',
-    'DATABASE_URL',
     'GIT_ASKPASS',
     'GIT_AUTHOR_NAME',
     'GIT_AUTHOR_EMAIL',
@@ -1404,15 +1420,11 @@ export async function runOpenCode(
     'AZURE_OPENAI_ENDPOINT',
     'AZURE_RESOURCE_NAME',
     'AZURE_OPENAI_API_VERSION',
-    'AWS_ACCESS_KEY_ID',
-    'AWS_SECRET_ACCESS_KEY',
-    'AWS_SESSION_TOKEN',
-    'AWS_REGION',
-    'AWS_PROFILE',
-    'AWS_BEARER_TOKEN_BEDROCK',
-    'AWS_WEB_IDENTITY_TOKEN_FILE',
-    'AWS_ROLE_ARN',
   ];
+  // NOTE: DATABASE_URL is intentionally NOT forwarded — it is consumed by the
+  // reviewer's own learning store in the parent process only. AWS_* ambient
+  // credentials are intentionally NOT in the allowlist either; they are
+  // forwarded only for Bedrock provider runs (see applyLLMEnvOverrides).
   for (const key of WHITELISTED_KEYS) {
     const val = process.env[key];
     if (val !== undefined) safeEnv[key] = val;
@@ -1420,6 +1432,11 @@ export async function runOpenCode(
   // Only forward GitHub tokens when non-empty so the child never inherits
   // an empty-string credential (fail-closed: no auth header is sent rather
   // than an invalid empty one).
+  // SECURITY: GITHUB_TOKEN/GH_TOKEN and the LLM API keys below are required by
+  // the CLI subprocess (git-push fix flows, provider access), but the
+  // subprocess runs with `--auto` over untrusted repo content (prompt-injection
+  // surface). Prefer a repo-scoped fine-grained PAT for GITHUB_TOKEN and keep
+  // tool permissions least-privilege.
   if (githubToken) {
     safeEnv.GITHUB_TOKEN = githubToken;
     safeEnv.GH_TOKEN = githubToken;

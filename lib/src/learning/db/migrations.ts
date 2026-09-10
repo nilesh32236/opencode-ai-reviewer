@@ -3,6 +3,10 @@
  * This module provides SQL migration scripts to add missing indexes and optimize queries.
  */
 
+import { Logger } from '../../utils/logger.js';
+import { sanitizeDbError } from './sql-adapter.js';
+
+const migrationsLogger = new Logger('Migrations');
 /**
  * Migration definition with version, description, and SQL statements.
  */
@@ -231,9 +235,8 @@ export async function applyMigrations(repo: {
         migrationsApplied++;
       } catch (err) {
         // Log error but continue with other migrations
-        console.error(
-          `Failed to apply migration ${migration.version}: ${migration.description}`,
-          err,
+        migrationsLogger.error(
+          `Failed to apply migration ${migration.version}: ${migration.description}: ${sanitizeDbError(err)}`,
         );
       }
     }

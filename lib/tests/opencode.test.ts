@@ -668,6 +668,7 @@ describe('LLM provider support', () => {
       'AZURE_OPENAI_API_KEY',
       'AZURE_OPENAI_ENDPOINT',
       'AZURE_OPENAI_API_VERSION',
+      'DATABASE_URL',
     ]) {
       delete process.env[key];
     }
@@ -752,6 +753,8 @@ describe('LLM provider support', () => {
     process.env.AWS_SESSION_TOKEN = 'token';
     process.env.AZURE_OPENAI_API_KEY = 'azure-key';
     process.env.AZURE_OPENAI_ENDPOINT = 'https://res.openai.azure.com';
+    // An azure run must forward AZURE_* but must NOT carry ambient AWS_*
+    // credentials into the agent subprocess (audit authz).
     const proc = makeMockProcess();
     mockSpawn.mockReturnValue(proc);
 
@@ -763,12 +766,59 @@ describe('LLM provider support', () => {
 
     const spawnCall = mockSpawn.mock.calls[0];
     const env = spawnCall[2].env;
+    expect(env.AWS_REGION).toBeUndefined();
+    expect(env.AWS_ACCESS_KEY_ID).toBeUndefined();
+    expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+    expect(env.AWS_SESSION_TOKEN).toBeUndefined();
+    expect(env.AZURE_OPENAI_API_KEY).toBe('azure-key');
+    expect(env.AZURE_OPENAI_ENDPOINT).toBe('https://res.openai.azure.com');
+  });
+
+  it('forwards ambient AWS credentials only for bedrock provider runs', async () => {
+    process.env.AWS_REGION = 'us-east-1';
+    process.env.AWS_ACCESS_KEY_ID = 'AKIA-test';
+    process.env.AWS_SECRET_ACCESS_KEY = 'secret';
+    process.env.AWS_SESSION_TOKEN = 'token';
+    setLLMProviderConfig({
+      providers: {
+        bedrock: {
+          type: 'bedrock',
+          region: 'us-east-1',
+          modelId: 'us.anthropic.claude-sonnet-4-5-v2:0',
+        },
+      },
+    });
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const resultPromise = runOpenCode('test', { model: 'bedrock/my-model' });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    proc.emitClose(0);
+    await resultPromise;
+
+    const spawnCall = mockSpawn.mock.calls[0];
+    const env = spawnCall[2].env;
     expect(env.AWS_REGION).toBe('us-east-1');
     expect(env.AWS_ACCESS_KEY_ID).toBe('AKIA-test');
     expect(env.AWS_SECRET_ACCESS_KEY).toBe('secret');
     expect(env.AWS_SESSION_TOKEN).toBe('token');
-    expect(env.AZURE_OPENAI_API_KEY).toBe('azure-key');
-    expect(env.AZURE_OPENAI_ENDPOINT).toBe('https://res.openai.azure.com');
+  });
+
+  it('does not forward DATABASE_URL to the subprocess', async () => {
+    process.env.DATABASE_URL = 'postgres://user:secret@localhost/db';
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const resultPromise = runOpenCode('test', { model: 'ollama/llama3' });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    proc.emitClose(0);
+    await resultPromise;
+
+    const spawnCall = mockSpawn.mock.calls[0];
+    const env = spawnCall[2].env;
+    expect(env.DATABASE_URL).toBeUndefined();
   });
 
   it('prefixes a bare model with the configured default provider', async () => {
