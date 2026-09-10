@@ -44,8 +44,13 @@ export interface SecretDetectOptions {
 const SECRET_PATTERNS: { name: string; pattern: RegExp; type: string }[] = [
   {
     name: 'AWS access key ID',
-    pattern: /AKIA[0-9A-Z]{16}/,
+    pattern: /A(?:KIA|SIA|BIA|CCA)[0-9A-Z]{16}/,
     type: 'aws-access-key-id',
+  },
+  {
+    name: 'GitLab personal access token',
+    pattern: /glpat-[A-Za-z0-9_-]{20,}/,
+    type: 'gitlab-pat',
   },
   {
     name: 'AWS secret access key',

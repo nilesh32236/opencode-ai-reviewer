@@ -1,5 +1,5 @@
 import type { ReviewIssue, ReviewResult, Severity, TokenUsage } from '../types/index.js';
-import { escapeInlineCode, sanitizeMarkdown } from './markdown.js';
+import { escapeInlineCode, sanitizeFencedCode, sanitizeMarkdown } from './markdown.js';
 
 /**
  * Compute a 0-5 merge-readiness score from a review result, modeled on
@@ -228,7 +228,7 @@ export function buildReviewBody(result: ReviewResult): string {
         lines.push('<details><summary>Show suggested fix</summary>');
         lines.push('');
         lines.push('```suggestion');
-        lines.push(i.suggestionCode.trim());
+        lines.push(sanitizeFencedCode(i.suggestionCode).trim());
         lines.push('```');
         lines.push('</details>');
       }

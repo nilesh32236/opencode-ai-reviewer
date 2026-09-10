@@ -45,7 +45,12 @@ export function buildCacheKey(prefix: string, repo?: string, branch?: string): s
   const repoNwo = repo || `${github.context.repo.owner}/${github.context.repo.repo}`;
   const branchRef = branch || github.context.ref.replace('refs/heads/', '');
   const key = `${prefix}-${repoNwo}-${sanitizeBranchForCacheKey(branchRef)}`;
-  return key.slice(0, MAX_CACHE_KEY_LENGTH);
+  // Preserve the disambiguating hash suffix on truncation: a naive tail-cut
+  // could slice off the hash when prefix/repo segments are long, collapsing
+  // distinct branches back onto one key.
+  if (key.length <= MAX_CACHE_KEY_LENGTH) return key;
+  const hash = createHash('sha256').update(key).digest('hex').slice(0, 12);
+  return `${key.slice(0, MAX_CACHE_KEY_LENGTH - 13)}-${hash}`;
 }
 
 /**

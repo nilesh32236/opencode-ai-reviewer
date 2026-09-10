@@ -43,7 +43,9 @@ describe('sanitizeMarkdown', () => {
 
 describe('escapeInlineCode', () => {
   it('escapes backticks and newlines', () => {
-    expect(escapeInlineCode('a`b\nc')).toBe('a\\`b c');
+    // Backticks become an inert glyph (backslash-escaping is literal inside
+    // GFM code spans and would not prevent breakout); newlines collapse.
+    expect(escapeInlineCode('a`b\nc')).toBe('a’b c');
   });
 
   it('leaves plain paths untouched', () => {

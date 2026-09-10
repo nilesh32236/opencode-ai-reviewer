@@ -145,7 +145,7 @@ export type { CircuitState, CircuitBreakerOptions } from './utils/circuit-breake
 export { gatherReviewThread } from './utils/review-thread.js';
 export type { ThreadComment, ReviewThreadResult } from './utils/review-thread.js';
 export { sanitizeString } from './utils/sanitize.js';
-export { escapeInlineCode, sanitizeMarkdown } from './utils/markdown.js';
+export { escapeInlineCode, sanitizeFencedCode, sanitizeMarkdown } from './utils/markdown.js';
 export { sanitizePromptInput } from './utils/prompt-sanitizer.js';
 export { detectSecrets, shannonEntropy, mergeSecretFindings } from './utils/secret-detect.js';
 export type { SecretFinding, SecretDetectOptions } from './utils/secret-detect.js';

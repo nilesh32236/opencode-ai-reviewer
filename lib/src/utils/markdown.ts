@@ -44,7 +44,23 @@ function stripDisallowedControls(text: string): string {
  * @returns The escaped value, safe for `` `...` `` interpolation.
  */
 export function escapeInlineCode(text: string): string {
-  return text.replace(/`/g, '\\`').replace(/[\r\n]+/g, ' ');
+  // Backslash-escaping does NOT work inside CommonMark/GFM code spans
+  // (backslashes are literal there), so replace backticks with an inert
+  // glyph and collapse newlines instead of prefixing with `\`.
+  return text.replace(/`/g, '’').replace(/[\r\n]+/g, ' ');
+}
+
+/**
+ * Neutralize fenced-code-block breakout for LLM-controlled text placed
+ * inside a ``` fence. A run of triple (or more) backticks would close the
+ * fence and inject arbitrary markdown/HTML, so replace such runs with an
+ * inert glyph sequence that renders visibly without breaking the fence.
+ *
+ * @param text - The untrusted code/suggestion text.
+ * @returns The text safe to interpolate inside a ``` fence.
+ */
+export function sanitizeFencedCode(text: string): string {
+  return text.replace(/```+/g, '···');
 }
 
 /**
@@ -87,9 +103,9 @@ export function sanitizeMarkdown(
   // Neutralize dangerous link schemes; ordinary http(s)/relative links stay
   // clickable. GitHub strips `javascript:` anyway, but `data:`/`file:` and
   // `vbscript:` variants must never reach the renderer.
-  out = out.replace(/\]\(javascript:/gi, '](blocked:');
-  out = out.replace(/\]\(data:/gi, '](blocked:');
-  out = out.replace(/\]\(vbscript:/gi, '](blocked:');
-  out = out.replace(/\]\(file:/gi, '](blocked:');
+  out = out.replace(/\]\(\s*(javascript|data|vbscript|file):/gi, '](blocked:');
+  // Reference-style link definitions (`[id]: javascript:...`) with optional
+  // leading whitespace and case variations bypass the inline-link filter.
+  out = out.replace(/^(\s*\[[^\]]+\]:\s*)(javascript|data|vbscript|file):/gim, '$1blocked:');
   return out;
 }

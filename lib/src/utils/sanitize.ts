@@ -35,7 +35,8 @@ export function sanitizeString(input: string): string {
       '$1=[REDACTED]',
     )
     .replace(/AIza[0-9A-Za-z_-]{35}/g, '[REDACTED_GEMINI_KEY]')
-    .replace(/AKIA[0-9A-Z]{16}/g, '[REDACTED_AWS_ACCESS_KEY]')
+    .replace(/A(?:KIA|SIA|BIA|CCA)[0-9A-Z]{16}/g, '[REDACTED_AWS_ACCESS_KEY]')
+    .replace(/glpat-[A-Za-z0-9_-]{20,}/g, '[REDACTED_GITLAB_TOKEN]')
     .replace(/(azure[_-]?openai[_-]?key|azure[_-]?api[_-]?key)[=":\s]+[^&\s'"]+/gi, '$1=[REDACTED]')
     .replace(/(opencode[_-]?api[_-]?key)[=":\s]+[^&\s'"]+/gi, '$1=[REDACTED]')
     .replace(/(ollama[_-]?api[_-]?key)[=":\s]+[^&\s'"]+/gi, '$1=[REDACTED]')

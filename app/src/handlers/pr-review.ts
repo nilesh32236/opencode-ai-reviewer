@@ -255,6 +255,7 @@ export async function handlePRReview(
             ? async (batchIndex, totalBatches, batchResult) => {
                 for (const issue of batchResult.issues) {
                   if (issue.inline && issue.file && issue.line) {
+                    if (!Number.isInteger(issue.line) || issue.line < 1) continue;
                     const key = `${issue.file}:${issue.line}`;
                     // Never post the same file:line twice across batches, and
                     // only mark a finding as streamed when the inline post

@@ -11,7 +11,7 @@ import type {
   SummaryFinding,
   VerdictFinding,
 } from './types/index.js';
-import { sanitizeMarkdown } from './utils/markdown.js';
+import { sanitizeFencedCode, sanitizeMarkdown } from './utils/markdown.js';
 import { formatConfidenceLabel, getSeverityBadge } from './utils/review-body.js';
 
 const VALID_TYPES: FindingType[] = ['summary', 'verdict', 'strength', 'issue'];
@@ -552,22 +552,24 @@ export function buildInlineComments(
         builder.append(`\n\n> \ud83d\udca1 **How to fix:** ${sanitizeMarkdown(issue.suggestion)}`);
       }
       if (issue.suggestionCode) {
-        builder.append(`\n\n\`\`\`suggestion\n${issue.suggestionCode.trim()}\n\`\`\``);
+        builder.append(
+          `\n\n\`\`\`suggestion\n${sanitizeFencedCode(issue.suggestionCode).trim()}\n\`\`\``,
+        );
       } else if (issue.suggestion) {
         const suggestion = issue.suggestion.trim();
         if (suggestion.includes('\n')) {
           const lines = suggestion.split('\n').filter((l) => l.trim());
           const hasDiffPrefixes = lines.some((l) => l.startsWith('+') || l.startsWith('-'));
           if (hasDiffPrefixes) {
-            const diffSuggestion = lines
-              .map((l) => (l.startsWith('+') || l.startsWith('-') ? l : ` ${l}`))
-              .join('\n');
+            const diffSuggestion = sanitizeFencedCode(
+              lines.map((l) => (l.startsWith('+') || l.startsWith('-') ? l : ` ${l}`)).join('\n'),
+            );
             builder.append(`\n\n\`\`\`diff\n${diffSuggestion}\n\`\`\``);
           } else if (looksLikeCode(suggestion)) {
-            builder.append(`\n\n\`\`\`suggestion\n${suggestion}\n\`\`\``);
+            builder.append(`\n\n\`\`\`suggestion\n${sanitizeFencedCode(suggestion)}\n\`\`\``);
           }
         } else if (looksLikeCode(suggestion)) {
-          builder.append(`\n\n\`\`\`suggestion\n${suggestion}\n\`\`\``);
+          builder.append(`\n\n\`\`\`suggestion\n${sanitizeFencedCode(suggestion)}\n\`\`\``);
         }
       }
 

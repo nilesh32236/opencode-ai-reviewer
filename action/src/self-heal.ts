@@ -227,29 +227,56 @@ export function readConstrainedLogFile(logsFilePath: string): string {
   const workspace = process.env.GITHUB_WORKSPACE || process.cwd();
   const safeRoots = [path.resolve(workspace), path.resolve('/tmp'), path.resolve(process.cwd())];
   const resolved = path.resolve(workspace, logsFilePath);
-  const contained = safeRoots.some(
-    (root) => resolved === root || resolved.startsWith(`${root}${path.sep}`),
+  // Resolve symlinks before the containment check: a symlink inside a safe
+  // root (e.g. workspace/logs.txt -> /etc/passwd, plantable via checked-out
+  // PR contents since git supports symlinks) would otherwise pass the lexical
+  // check yet exfiltrate its target into LLM context.
+  let realPath: string;
+  try {
+    realPath = fs.realpathSync(resolved);
+  } catch {
+    throw new Error(`CI_FAILURE_LOGS_FILE cannot be resolved: ${logsFilePath}`);
+  }
+  const realRoots = safeRoots.map((root) => {
+    try {
+      return fs.realpathSync(root);
+    } catch {
+      return root;
+    }
+  });
+  const contained = realRoots.some(
+    (root) => realPath === root || realPath.startsWith(`${root}${path.sep}`),
   );
   if (!contained) {
     throw new Error(
       `CI_FAILURE_LOGS_FILE must point inside GITHUB_WORKSPACE, /tmp, or the working directory: ${logsFilePath}`,
     );
   }
-  const stat = fs.statSync(resolved);
-  if (!stat.isFile()) {
+  // Reject symlinks outright and use open+fstat+read on the same fd so the
+  // type/size check cannot race a concurrent swap between stat and read.
+  const lst = fs.lstatSync(realPath);
+  if (lst.isSymbolicLink() || !lst.isFile()) {
     throw new Error(`CI_FAILURE_LOGS_FILE is not a regular file: ${logsFilePath}`);
   }
-  if (stat.size > MAX_CI_LOGS_BYTES) {
-    const fd = fs.openSync(resolved, 'r');
-    try {
-      const buf = Buffer.alloc(MAX_CI_LOGS_BYTES);
-      fs.readSync(fd, buf, 0, MAX_CI_LOGS_BYTES, 0);
-      return buf.toString('utf-8');
-    } finally {
-      fs.closeSync(fd);
+  const fd = fs.openSync(realPath, 'r');
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) {
+      throw new Error(`CI_FAILURE_LOGS_FILE is not a regular file: ${logsFilePath}`);
     }
+    const size = Math.min(stat.size, MAX_CI_LOGS_BYTES);
+    if (size === 0) return '';
+    const buf = Buffer.alloc(size);
+    let offset = 0;
+    while (offset < size) {
+      const n = fs.readSync(fd, buf, offset, size - offset, offset);
+      if (n === 0) break;
+      offset += n;
+    }
+    return buf.subarray(0, offset).toString('utf-8');
+  } finally {
+    fs.closeSync(fd);
   }
-  return fs.readFileSync(resolved, 'utf-8');
 }
 
 /**

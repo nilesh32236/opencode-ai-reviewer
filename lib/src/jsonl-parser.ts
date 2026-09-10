@@ -14,7 +14,7 @@ import type {
   SummaryFinding,
   VerdictFinding,
 } from './types/index.js';
-import { sanitizeMarkdown } from './utils/markdown.js';
+import { sanitizeFencedCode, sanitizeMarkdown } from './utils/markdown.js';
 import { formatConfidenceLabel, getSeverityBadge } from './utils/review-body.js';
 
 const VALID_TYPES: FindingType[] = ['summary', 'verdict', 'strength', 'issue'];
@@ -526,7 +526,7 @@ export function buildInlineComments(
         body += `\n\n> 💡 **How to fix:** ${sanitizeMarkdown(issue.suggestion)}`;
       }
       if (issue.suggestionCode) {
-        body += `\n\n\`\`\`suggestion\n${issue.suggestionCode.trim()}\n\`\`\``;
+        body += `\n\n\`\`\`suggestion\n${sanitizeFencedCode(issue.suggestionCode).trim()}\n\`\`\``;
       } else if (issue.suggestion) {
         const suggestion = issue.suggestion.trim();
         if (suggestion.includes('\n')) {
@@ -535,17 +535,17 @@ export function buildInlineComments(
           const hasDiffPrefixes = lines.some((l) => l.startsWith('+') || l.startsWith('-'));
           if (hasDiffPrefixes) {
             // Render diff-shaped content in a diff fence
-            const diffSuggestion = lines
-              .map((l) => (l.startsWith('+') || l.startsWith('-') ? l : ` ${l}`))
-              .join('\n');
+            const diffSuggestion = sanitizeFencedCode(
+              lines.map((l) => (l.startsWith('+') || l.startsWith('-') ? l : ` ${l}`)).join('\n'),
+            );
             body += `\n\n\`\`\`diff\n${diffSuggestion}\n\`\`\``;
           } else if (looksLikeCode(suggestion)) {
             // Multi-line code replacement — wrap as suggestion block
-            body += `\n\n\`\`\`suggestion\n${suggestion}\n\`\`\``;
+            body += `\n\n\`\`\`suggestion\n${sanitizeFencedCode(suggestion)}\n\`\`\``;
           }
         } else if (looksLikeCode(suggestion)) {
           // Single-line code suggestion — use native GitHub suggestion block
-          body += `\n\n\`\`\`suggestion\n${suggestion}\n\`\`\``;
+          body += `\n\n\`\`\`suggestion\n${sanitizeFencedCode(suggestion)}\n\`\`\``;
         }
       }
       return {

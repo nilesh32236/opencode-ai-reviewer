@@ -41,5 +41,10 @@ export async function resolvePrNumber(): Promise<number | null> {
   }
   const fromIssue = github.context.payload.issue?.number;
   const fromPR = github.context.payload.pull_request?.number;
-  return fromPR || fromIssue || null;
+  const fromPayload = fromPR ?? fromIssue ?? null;
+  if (fromPayload == null) return null;
+  if (!Number.isInteger(fromPayload) || fromPayload < 1 || fromPayload > MAX_PR_NUMBER) {
+    return null;
+  }
+  return fromPayload;
 }
