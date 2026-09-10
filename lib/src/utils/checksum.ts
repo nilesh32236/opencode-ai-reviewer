@@ -117,9 +117,9 @@ export const INTEGRITY_ERROR_STATUS = 422;
  * @param err - The integrity error to tag.
  * @returns The same error instance, with a non-retryable `status` attached.
  */
-export function markIntegrityError<T extends Error>(err: T): T {
+export function markIntegrityError<T extends Error>(err: T): T & { status: number } {
   (err as Error & { status?: number }).status = INTEGRITY_ERROR_STATUS;
-  return err;
+  return err as T & { status: number };
 }
 
 /**
@@ -137,7 +137,11 @@ export function markIntegrityError<T extends Error>(err: T): T {
  *   fast instead of re-downloading a deterministically unverifiable archive.
  * @since NEXT
  */
-export function buildMissingChecksumError(version: string, assetName: string, arch: string): Error {
+export function buildMissingChecksumError(
+  version: string,
+  assetName: string,
+  arch: string,
+): Error & { status: number } {
   const err = new Error(
     `OpenCode integrity verification failed: no checksum available for ${assetName} ` +
       `(version ${version}, arch ${arch}) and require_opencode_checksum is enabled.\n` +

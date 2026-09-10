@@ -462,8 +462,10 @@ describe('parseInputs() require_opencode_checksum', () => {
     );
   });
 
-  it('parses true/TRUE as enabled', () => {
+  it('parses true/True/TRUE as enabled', () => {
     setInputs({ ...BASE_INPUTS, require_opencode_checksum: 'true' });
+    expect(parseInputs().requireOpencodeChecksum).toBe(true);
+    setInputs({ ...BASE_INPUTS, require_opencode_checksum: 'True' });
     expect(parseInputs().requireOpencodeChecksum).toBe(true);
     setInputs({ ...BASE_INPUTS, require_opencode_checksum: 'TRUE' });
     expect(parseInputs().requireOpencodeChecksum).toBe(true);

@@ -445,12 +445,16 @@ function classifyDownloadError(error: unknown, version: string, downloadUrl: str
       message,
     )
   ) {
+    // Mismatch errors are tagged non-retryable (INTEGRITY_ERROR_STATUS) because
+    // re-downloading the same release yields identical bytes — a retry cannot
+    // succeed, so advise pinning a different version instead of re-running.
     return (
       `The downloaded OpenCode binary (${version}) failed checksum verification.\n` +
       `Details: ${message}\n` +
-      `This usually indicates a corrupted download or an intercepted network transfer. ` +
-      `Re-run the workflow to retry with a fresh download; if the error persists, ` +
-      `contact support or verify the release assets at:\n${downloadUrl}`
+      `This usually indicates a corrupted download or an intercepted network transfer, ` +
+      `but re-downloading the same release yields identical bytes, so retrying alone will fail again. ` +
+      `Pin opencode_version to a different release and verify its published checksum asset; ` +
+      `if the error persists across releases, contact support. Release assets:\n${downloadUrl}`
     );
   }
 
@@ -544,6 +548,21 @@ export function resolveRequireChecksum(options?: SetupOpenCodeOptions): boolean 
 }
 
 /**
+ * Log the strict-mode bypass warning for a pre-installed PATH binary.
+ * The `requireChecksum` gate only guards fresh downloads (no archive exists to
+ * verify for a binary that was already installed), so the bypass is surfaced
+ * visibly instead of silently passing the gate.
+ * @param existingPath - Absolute path of the pre-installed binary.
+ */
+function warnPreinstalledBypass(existingPath: string): void {
+  core.warning(
+    `require_opencode_checksum is enabled but opencode was already on PATH at ${existingPath} — ` +
+      `skipping checksum verification for the pre-installed binary. ` +
+      `The integrity gate only guards fresh downloads.`,
+  );
+}
+
+/**
  * Ensure the OpenCode CLI binary is available.
  * Checks PATH first; if not found, downloads and caches the specified version.
  *
@@ -572,11 +591,7 @@ export async function setupOpenCode(
       // Strict mode cannot verify a pre-installed binary (no archive was
       // downloaded, so there is nothing to checksum): surface a warning so
       // the bypass is visible instead of silently passing the gate.
-      core.warning(
-        `require_opencode_checksum is enabled but opencode was already on PATH at ${existingPath} — ` +
-          `skipping checksum verification for the pre-installed binary. ` +
-          `The integrity gate only guards fresh downloads.`,
-      );
+      warnPreinstalledBypass(existingPath);
     }
     const health = await checkHealth({ binPath: existingPath, minimumVersion });
     if (!health.compatible) {
@@ -783,11 +798,30 @@ async function verifyDownloadedArchive(
   requireChecksum = false,
 ): Promise<void> {
   const checksumAsset = findChecksumAsset(assets, assetName);
+  // Normalized once so the KNOWN_CHECKSUMS lookup, the error message, and the
+  // tool-cache semver (which strips the leading 'v') all agree. Release
+  // tag_name values carry a 'v' prefix (e.g. "v1.2.0") while KNOWN_CHECKSUMS
+  // keys are stored without it.
+  const normalizedVersion = version.replace(/^v/, '');
+  let checksumAssetFound = false;
+  let checksumAssetName = '';
 
   if (checksumAsset) {
+    checksumAssetFound = true;
+    checksumAssetName = checksumAsset.name;
     core.info(`Downloading checksum file: ${checksumAsset.name}`);
     const checksumPath = await tc.downloadTool(checksumAsset.browser_download_url);
     const checksumContent = fs.readFileSync(checksumPath, 'utf-8');
+    if (!checksumContent.trim()) {
+      // Empty/truncated checksum file: likely a transient fetch corruption, not
+      // a deterministic integrity outcome. Throw untagged (no
+      // INTEGRITY_ERROR_STATUS) so withRetry retries the download instead of
+      // failing fast.
+      throw new Error(
+        `Checksum file ${checksumAsset.name} for ${assetName} was empty or could not be read — ` +
+          `this looks like a transient download corruption. Re-running the workflow retries the download.`,
+      );
+    }
     const expectedHash = parseChecksumFile(checksumContent, assetName);
 
     if (expectedHash) {
@@ -804,13 +838,16 @@ async function verifyDownloadedArchive(
       core.info(`Checksum verified for ${assetName}`);
       return;
     }
-    if (requireChecksum) {
-      throw buildMissingChecksumError(version, assetName, arch);
+    // The checksum file was fully retrieved but holds no entry for this asset:
+    // a deterministic outcome. Fall through to the KNOWN_CHECKSUMS lookup
+    // below so a pinned known-good hash can still satisfy the gate; the
+    // strict-mode throw after that covers this path.
+    if (!requireChecksum) {
+      core.warning(`Could not extract checksum for ${assetName} from ${checksumAsset.name}`);
     }
-    core.warning(`Could not extract checksum for ${assetName} from ${checksumAsset.name}`);
   }
 
-  const knownChecksum = getKnownChecksum(version, arch);
+  const knownChecksum = getKnownChecksum(normalizedVersion, arch);
   if (knownChecksum) {
     // Same fail-fast treatment as the release-asset path above: a mismatch
     // against the pinned known-good hash can never succeed on retry.
@@ -819,15 +856,23 @@ async function verifyDownloadedArchive(
     } catch (err) {
       throw markIntegrityError(err instanceof Error ? err : new Error(String(err)));
     }
-    core.info(`Checksum verified using known-good checksum for ${version}`);
+    core.info(`Checksum verified using known-good checksum for ${normalizedVersion}`);
     return;
   }
 
   if (requireChecksum) {
-    throw buildMissingChecksumError(version, assetName, arch);
+    throw buildMissingChecksumError(normalizedVersion, assetName, arch);
+  }
+  if (checksumAssetFound) {
+    core.warning(
+      `Checksum file ${checksumAssetName} contained no entry for ${assetName} and no known-good checksum for ${normalizedVersion}. ` +
+        `Skipping integrity verification — this could be a security concern. ` +
+        `Pin an opencode_version whose checksum asset covers ${assetName} to enable verification.`,
+    );
+    return;
   }
   core.warning(
-    `No checksum file found for ${assetName} and no known-good checksum for ${version}. ` +
+    `No checksum file found for ${assetName} and no known-good checksum for ${normalizedVersion}. ` +
       `Skipping integrity verification — this could be a security concern. ` +
       `Pin an opencode_version and add its sha256 to KNOWN_CHECKSUMS to enable verification.`,
   );
@@ -857,11 +902,7 @@ export async function resolveOpenCodePath(
   if (existingPath) {
     opencodePath = existingPath;
     if (resolveRequireChecksum(options)) {
-      core.warning(
-        `require_opencode_checksum is enabled but opencode was already on PATH at ${existingPath} — ` +
-          `skipping checksum verification for the pre-installed binary. ` +
-          `The integrity gate only guards fresh downloads.`,
-      );
+      warnPreinstalledBypass(existingPath);
     }
     return existingPath;
   }

@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildMissingChecksumError } from '../src/utils/checksum.js';
-import { markIntegrityError } from '../src/utils/checksum.js';
+import { buildMissingChecksumError, markIntegrityError } from '../src/utils/checksum.js';
 import { withRetry, withRetryAndTimeout } from '../src/utils/retry.js';
 
 describe('withRetry', () => {

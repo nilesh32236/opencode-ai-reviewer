@@ -306,7 +306,7 @@ inputs:
     default: 'latest'
 
   require_opencode_checksum:
-    description: 'Fail closed when the downloaded OpenCode CLI cannot be checksum-verified (pin opencode_version to a release that publishes a checksum asset). Default false preserves warn-and-continue.'
+    description: 'Fail closed when a freshly downloaded OpenCode CLI cannot be checksum-verified (pin opencode_version to a release that publishes a checksum asset). Only guards fresh downloads: a pre-installed PATH binary or tool-cache hit is used as-is with a warning. Default false preserves warn-and-continue.'
     required: false
     default: 'false'
 

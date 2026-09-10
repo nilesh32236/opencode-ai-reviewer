@@ -1414,6 +1414,10 @@ describe('setupOpenCode()', () => {
     mockParseChecksumFile.mockReturnValue('abc123checksum');
     mockVerifyChecksum.mockResolvedValue(true);
     mockComputeSha256.mockResolvedValue('stored-checksum');
+    const fsModule = await import('fs');
+    (fsModule.readFileSync as ReturnType<typeof vi.fn>).mockReturnValue(
+      'abc123checksum  opencode-linux-x64.tar.gz\n',
+    );
 
     const result = await setupOpenCode('v1.2.0');
 
@@ -1447,6 +1451,10 @@ describe('setupOpenCode()', () => {
     });
     mockParseChecksumFile.mockReturnValue('expected-hash-value');
     mockVerifyChecksum.mockRejectedValue(new Error('Checksum mismatch'));
+    const fsModule = await import('fs');
+    (fsModule.readFileSync as ReturnType<typeof vi.fn>).mockReturnValue(
+      'expected-hash-value  opencode-linux-x64.tar.gz\n',
+    );
 
     await expect(setupOpenCode('v1.2.0')).rejects.toThrow('Checksum mismatch');
   });
@@ -1589,12 +1597,19 @@ describe('setupOpenCode()', () => {
     });
     mockParseChecksumFile.mockReturnValue('expected-hash-value');
     mockVerifyChecksum.mockRejectedValue(new Error('Checksum mismatch'));
+    const fsModule = await import('fs');
+    (fsModule.readFileSync as ReturnType<typeof vi.fn>).mockReturnValue(
+      'expected-hash-value  opencode-linux-x64.tar.gz\n',
+    );
 
     const promise = setupOpenCode('v1.2.0');
 
     await expect(promise).rejects.toThrow(/failed checksum verification/i);
     await expect(promise).rejects.toThrow(/corrupted download/i);
-    await expect(promise).rejects.toThrow(/re-run the workflow/i);
+    // Mismatch errors are non-retryable (re-downloading yields identical
+    // bytes), so guidance pins a different release instead of a blind retry.
+    await expect(promise).rejects.toThrow(/different release/i);
+    await expect(promise).rejects.not.toThrow(/re-run the workflow to retry/i);
   });
 
   it('produces an actionable error message when the release asset is missing', async () => {
@@ -1724,11 +1739,14 @@ describe('requireChecksum integrity gate', () => {
       await expect(
         setupOpenCode('v1.2.0', undefined, undefined, { requireChecksum: true }),
       ).rejects.toThrow(/no checksum available/);
+      // The release tag carries a 'v' prefix but KNOWN_CHECKSUMS keys and the
+      // tool-cache semver are stored without it, so the gate normalizes once.
       expect(mockBuildMissingChecksumError).toHaveBeenCalledWith(
-        'v1.2.0',
+        '1.2.0',
         expect.any(String),
         expect.any(String),
       );
+      expect(mockGetKnownChecksum).toHaveBeenCalledWith('1.2.0', expect.any(String));
     });
 
     it('fails closed via the INPUT_REQUIRE_OPENCODE_CHECKSUM env var', async () => {
@@ -1757,6 +1775,10 @@ describe('requireChecksum integrity gate', () => {
         browser_download_url: 'https://example.com/checksum.sha256',
       });
       mockParseChecksumFile.mockReturnValue('expected-hash-value');
+      const fsModule = await import('fs');
+      (fsModule.readFileSync as ReturnType<typeof vi.fn>).mockReturnValue(
+        'expected-hash-value  opencode-linux-x64.tar.gz\n',
+      );
       const mismatch = new Error(
         'Checksum mismatch for /tmp/opencode.tar.gz: expected expected-hash-value, got deadbeef',
       );
@@ -1775,6 +1797,63 @@ describe('requireChecksum integrity gate', () => {
       await expect(
         setupOpenCode('v1.2.0', undefined, undefined, { requireChecksum: true }),
       ).rejects.not.toThrow(/Please re-run the workflow to retry/);
+    });
+
+    it('falls back to KNOWN_CHECKSUMS when the checksum file lacks an entry (strict mode)', async () => {
+      mockFindChecksumAsset.mockReturnValue({
+        name: 'opencode-linux-x64.tar.gz.sha256',
+        browser_download_url: 'https://example.com/checksum.sha256',
+      });
+      const fsModule = await import('fs');
+      (fsModule.readFileSync as ReturnType<typeof vi.fn>).mockReturnValue(
+        'deadbeef  some-other-asset.tar.gz\n',
+      );
+      mockParseChecksumFile.mockReturnValue(null);
+      mockGetKnownChecksum.mockReturnValue('known-good-hash');
+      mockVerifyChecksum.mockResolvedValue(true);
+
+      const result = await setupOpenCode('v1.2.0', undefined, undefined, {
+        requireChecksum: true,
+      });
+
+      expect(result).toBe('/tmp/opencode-cached/opencode');
+      expect(mockBuildMissingChecksumError).not.toHaveBeenCalled();
+      expect(mockVerifyChecksum).toHaveBeenCalledWith('/tmp/opencode.tar.gz', 'known-good-hash');
+    });
+
+    it('treats an empty checksum file as transient (retryable) rather than fail-closed', async () => {
+      mockFindChecksumAsset.mockReturnValue({
+        name: 'opencode-linux-x64.tar.gz.sha256',
+        browser_download_url: 'https://example.com/checksum.sha256',
+      });
+      const fsModule = await import('fs');
+      (fsModule.readFileSync as ReturnType<typeof vi.fn>).mockReturnValue('');
+
+      await expect(
+        setupOpenCode('v1.2.0', undefined, undefined, { requireChecksum: true }),
+      ).rejects.toThrow(/empty or could not be read/);
+      expect(mockBuildMissingChecksumError).not.toHaveBeenCalled();
+    });
+
+    it('warns accurately in default mode when the checksum file lacks an entry', async () => {
+      mockFindChecksumAsset.mockReturnValue({
+        name: 'opencode-linux-x64.tar.gz.sha256',
+        browser_download_url: 'https://example.com/checksum.sha256',
+      });
+      const fsModule = await import('fs');
+      (fsModule.readFileSync as ReturnType<typeof vi.fn>).mockReturnValue(
+        'deadbeef  some-other-asset.tar.gz\n',
+      );
+      mockParseChecksumFile.mockReturnValue(null);
+      mockGetKnownChecksum.mockReturnValue(null);
+
+      const result = await setupOpenCode('v1.2.0');
+
+      expect(result).toBe('/tmp/opencode-cached/opencode');
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('contained no entry for'));
+      expect(core.warning).not.toHaveBeenCalledWith(
+        expect.stringContaining('No checksum file found'),
+      );
     });
   });
 
