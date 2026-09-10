@@ -301,6 +301,22 @@ multiAgent:
       expect(result.project?.conventions).toEqual(['good', 'bad']);
     });
 
+    it('passes through project autoLoadAgentsMd/attributionFooter booleans', () => {
+      const result = validateConfig({
+        project: { autoLoadAgentsMd: true, attributionFooter: false },
+      } as never);
+      expect(result.project?.autoLoadAgentsMd).toBe(true);
+      expect(result.project?.attributionFooter).toBe(false);
+    });
+
+    it('drops non-boolean project auto-load flags', () => {
+      const result = validateConfig({
+        project: { autoLoadAgentsMd: 'yes', attributionFooter: 1 },
+      } as never);
+      expect(result.project?.autoLoadAgentsMd).toBeUndefined();
+      expect(result.project?.attributionFooter).toBeUndefined();
+    });
+
     it('passes through audit booleans', () => {
       const result = validateConfig({
         audit: { createIssues: true, autoFix: true },

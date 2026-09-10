@@ -129,6 +129,8 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     description: null,
     conventions: null,
     commandReference: null,
+    autoLoadAgentsMd: null,
+    attributionFooter: null,
   },
   conversation: {
     maxTurns: null,
@@ -794,6 +796,12 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     }
     if (config.project.commandReference && typeof config.project.commandReference === 'object') {
       result.project.commandReference = { ...config.project.commandReference };
+    }
+    if (typeof config.project.autoLoadAgentsMd === 'boolean') {
+      result.project.autoLoadAgentsMd = config.project.autoLoadAgentsMd;
+    }
+    if (typeof config.project.attributionFooter === 'boolean') {
+      result.project.attributionFooter = config.project.attributionFooter;
     }
   }
 

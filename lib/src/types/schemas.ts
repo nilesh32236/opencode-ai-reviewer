@@ -114,6 +114,8 @@ export const ProjectContextConfigSchema = z.object({
   typecheckCommands: z.array(z.string()).default([]),
   lintCommands: z.array(z.string()).default([]),
   customRules: z.string().optional(),
+  autoLoadAgentsMd: z.boolean().optional().default(false),
+  attributionFooter: z.boolean().optional(),
 });
 
 /** Zod schema validating token budget configuration. */
@@ -666,6 +668,8 @@ export const PromptConfigSchema = z.object({
       description: z.string().optional(),
       conventions: z.array(z.string()).optional(),
       commandReference: z.record(z.string()).optional(),
+      autoLoadAgentsMd: z.boolean().optional(),
+      attributionFooter: z.boolean().optional(),
     })
     .optional(),
   conversation: z
