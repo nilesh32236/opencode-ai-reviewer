@@ -388,6 +388,9 @@ export class GitHubHelper implements PlatformAdapter {
   /**
    * Check whether a given issue/PR number refers to a pull request.
    *
+   * Returns false only on HTTP 404 (definitively not a PR). Rethrows
+   * 401/403/429/5xx and network errors — callers must wrap in try/catch
+   * and fail closed (log with status, do not fall back to the issue path).
    * @param number - Issue/PR number.
    * @returns True if the number corresponds to a pull request.
    */
@@ -2334,9 +2337,8 @@ export class GitHubHelper implements PlatformAdapter {
     );
     const filePaths: string[] = [];
     for (const f of files) {
-      if (typeof f.filename === 'string' && f.filename.length > 0) {
-        filePaths.push(f.filename);
-      }
+      const p = typeof f.filename === 'string' && f.filename.length > 0 ? f.filename : f.path;
+      if (typeof p === 'string' && p.length > 0) filePaths.push(p);
     }
     return filePaths;
   }

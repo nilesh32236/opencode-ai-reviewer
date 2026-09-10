@@ -309,7 +309,10 @@ export class GitLabAdapter implements PlatformAdapter {
     }
 
     const mr = mrResult.value;
-    let changes = changesResult.status === 'fulfilled' ? changesResult.value.changes : [];
+    // Coerce malformed /changes shapes (undefined/null/non-array on partial
+    // failure) to [] instead of crashing on `.length`.
+    const rawChanges = changesResult.status === 'fulfilled' ? changesResult.value.changes : [];
+    let changes = Array.isArray(rawChanges) ? rawChanges : [];
     // Bound unbounded MR payloads: cap file count and per-file diff bytes so
     // large MRs neither truncate silently nor balloon LLM prompts / OOM.
     if (changes.length > MAX_DIFF_FILES) {
@@ -471,9 +474,16 @@ export class GitLabAdapter implements PlatformAdapter {
         'text',
       );
       const lines = new Set<string>();
-      const truncatedText =
-        diffText.length > MAX_DIFF_TEXT_BYTES ? diffText.slice(0, MAX_DIFF_TEXT_BYTES) : diffText;
+      // Slice at the last newline within the cap so the parser never sees a
+      // partial trailing line (e.g. a cut `+++ b/` file header that would
+      // poison currentFile, or a cut hunk header). Intact leading hunks still
+      // expand to their full declared range (safe direction: allows extra
+      // comments rather than dropping valid lines).
+      let truncatedText = diffText;
       if (diffText.length > MAX_DIFF_TEXT_BYTES) {
+        const cutAt = diffText.lastIndexOf('\n', MAX_DIFF_TEXT_BYTES);
+        truncatedText =
+          cutAt > 0 ? diffText.slice(0, cutAt) : diffText.slice(0, MAX_DIFF_TEXT_BYTES);
         core.warning(
           `MR !${mrNumber} diff truncated: ${diffText.length} bytes exceeds cap of ${MAX_DIFF_TEXT_BYTES} (truncated:true)`,
         );
@@ -1497,8 +1507,12 @@ export class GitLabAdapter implements PlatformAdapter {
       const user = (await this.apiBase<{ username: string }>('/user', {}, 'json')) as {
         username: string;
       };
-      this.currentUserLogin = user.username;
-      return user.username;
+      const username: unknown = (user as { username?: unknown }).username;
+      if (typeof username !== 'string' || username.length === 0) {
+        throw new Error('GitLab /user missing username');
+      }
+      this.currentUserLogin = username;
+      return username;
     } catch (err) {
       const status = (err as { status?: number }).status;
       const suffix = status !== undefined ? ` (status ${status})` : '';

@@ -533,7 +533,20 @@ async function run(): Promise<void> {
               // via the platform API: an issue number routes to the issue-fix flow
               // instead of 404ing on /pulls/<issue>.
               const explicitNum = await resolvePrNumber();
-              if (explicitNum !== null && !(await gh.isMR(explicitNum))) {
+              let isExplicitMr = true;
+              if (explicitNum !== null) {
+                try {
+                  isExplicitMr = await gh.isMR(explicitNum);
+                } catch (err) {
+                  const status = (err as { status?: number }).status;
+                  const suffix = status !== undefined ? ` (status ${status})` : '';
+                  core.setFailed(
+                    `Failed to classify #${explicitNum} as PR/issue${suffix}: ${err instanceof Error ? err.message : err}`,
+                  );
+                  return;
+                }
+              }
+              if (explicitNum !== null && !isExplicitMr) {
                 await runFixIssue(inputs, config, engine, gh, repo, gitEmail);
               } else if (inputs.enableFix) {
                 await runAutofixLoop(inputs, config, engine, gh, repo, token);

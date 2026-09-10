@@ -53,8 +53,23 @@ export async function runReview(
     !github.context.payload.pull_request?.number
   ) {
     const issueNum = github.context.payload.issue?.number;
-    if (issueNum === prNumber && !(await gh.isMR(issueNum))) {
-      prNumber = null;
+    if (issueNum === prNumber) {
+      let isMr = true;
+      try {
+        isMr = await gh.isMR(issueNum);
+      } catch (err) {
+        const status = (err as { status?: number }).status;
+        const suffix = status !== undefined ? ` (status ${status})` : '';
+        core.setFailed(
+          sanitize(
+            `Failed to classify #${issueNum} as PR/issue${suffix}: ${err instanceof Error ? err.message : err}`,
+          ),
+        );
+        return;
+      }
+      if (!isMr) {
+        prNumber = null;
+      }
     }
   }
 

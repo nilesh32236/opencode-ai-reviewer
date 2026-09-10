@@ -209,7 +209,17 @@ export async function handleCommand(
         }
 
         case 'describe': {
-          if (!(await gh.isMR(issueNumber))) {
+          let isMr: boolean;
+          try {
+            isMr = await gh.isMR(issueNumber);
+          } catch (err) {
+            const status = (err as { status?: number }).status;
+            logger.warn(
+              `Skipping /describe on #${issueNumber}: failed to classify PR/issue${status !== undefined ? ` (status ${status})` : ''}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+            break;
+          }
+          if (!isMr) {
             logger.info(`Ignoring /describe on #${issueNumber}: not a pull request`);
             break;
           }
@@ -226,7 +236,17 @@ export async function handleCommand(
         }
 
         case 'review': {
-          if (await gh.isMR(issueNumber)) {
+          let isMr: boolean;
+          try {
+            isMr = await gh.isMR(issueNumber);
+          } catch (err) {
+            const status = (err as { status?: number }).status;
+            logger.warn(
+              `Skipping /review on #${issueNumber}: failed to classify PR/issue${status !== undefined ? ` (status ${status})` : ''}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+            break;
+          }
+          if (isMr) {
             await handlePRReview(
               issueNumber,
               repo,
@@ -246,7 +266,16 @@ export async function handleCommand(
         case 'fix': {
           if (signal?.aborted) return;
           const force = parsed?.flags?.force === true;
-          const isPR = await gh.isMR(issueNumber);
+          let isPR: boolean;
+          try {
+            isPR = await gh.isMR(issueNumber);
+          } catch (err) {
+            const status = (err as { status?: number }).status;
+            logger.warn(
+              `Skipping /fix on #${issueNumber}: failed to classify PR/issue${status !== undefined ? ` (status ${status})` : ''}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+            break;
+          }
           if (isPR) {
             await handleAutofixLoop({
               prNumber: issueNumber,
@@ -323,7 +352,17 @@ export async function handleCommand(
         }
 
         case 'docs': {
-          if (!(await gh.isMR(issueNumber))) {
+          let isMr: boolean;
+          try {
+            isMr = await gh.isMR(issueNumber);
+          } catch (err) {
+            const status = (err as { status?: number }).status;
+            logger.warn(
+              `Skipping /docs on #${issueNumber}: failed to classify PR/issue${status !== undefined ? ` (status ${status})` : ''}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+            break;
+          }
+          if (!isMr) {
             logger.info(`Ignoring /docs on #${issueNumber}: not a pull request`);
             break;
           }

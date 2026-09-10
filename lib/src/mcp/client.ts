@@ -450,12 +450,15 @@ export class MCPManager {
  * `resolve`, `resolve:lib`, `resolve-library`, `resolve_library`,
  * `resolve.docs`, and `resolve/docs` — but NOT `my-resolve-tool`.
  * Substring matching (`includes`) is intentionally avoided to prevent
- * authorization over-grant.
+ * authorization over-grant. Matching is case-sensitive; empty patterns or
+ * tool names never match.
  * @param toolName - Full MCP tool name (e.g. `resolve-library-documents`).
  * @param pattern - Allowlist pattern (e.g. `resolve`).
  * @returns True when the tool name matches the pattern.
  */
 export function isAllowedTool(toolName: string, pattern: string): boolean {
+  // Empty patterns or tool names never match (fail closed on misconfiguration).
+  if (!pattern || !toolName) return false;
   if (toolName === pattern) return true;
   return (
     toolName.startsWith(`${pattern}:`) ||

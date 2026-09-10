@@ -2049,6 +2049,58 @@ diff --git a/deleted.ts b/deleted.ts
     });
   });
 
+  describe('getPRFilePaths', () => {
+    it('paginates across multiple pages', async () => {
+      fetchMock.mockImplementation(async (url: string) => {
+        // NOTE: match on the exact page param — `page=10` contains `page=1`.
+        if (/[?&]page=1(&|$)/.test(url)) {
+          return mockResponse({
+            body: Array.from({ length: 100 }, (_, i) => ({ filename: `src/f${i}.ts` })),
+          });
+        }
+        return mockResponse({ body: [{ filename: 'src/last.ts' }] });
+      });
+
+      const paths = await helper.getPRFilePaths(42);
+
+      expect(paths).toHaveLength(101);
+      expect(paths).toContain('src/last.ts');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('falls back to the path field when filename is absent', async () => {
+      fetchMock.mockResolvedValue(mockResponse({ body: [{ path: 'src/only-path.ts' }] }));
+
+      const paths = await helper.getPRFilePaths(42);
+
+      expect(paths).toEqual(['src/only-path.ts']);
+    });
+  });
+
+  describe('getTags', () => {
+    it('paginates so the newest tag is found past page one', async () => {
+      fetchMock.mockImplementation(async (url: string) => {
+        // NOTE: match on the exact page param — `page=10` contains `page=1`.
+        if (/[?&]page=1(&|$)/.test(url)) {
+          return mockResponse({
+            body: Array.from({ length: 100 }, (_, i) => ({
+              ref: `refs/tags/v1.0.${i}`,
+              object: { sha: `sha-old-${i}` },
+            })),
+          });
+        }
+        return mockResponse({
+          body: [{ ref: 'refs/tags/v2.0.0', object: { sha: 'sha-new' } }],
+        });
+      });
+
+      const latest = await helper.getLatestTag();
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(latest).toEqual({ name: 'v2.0.0', commitSha: 'sha-new' });
+    });
+  });
+
   describe('getFileContent', () => {
     it('fetches the raw file content via the contents API', async () => {
       fetchMock.mockResolvedValue(

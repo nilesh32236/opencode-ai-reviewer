@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { MCPManager } from '../src/mcp/client.js';
+import { MCPManager, isAllowedTool } from '../src/mcp/client.js';
 import type { MCPServerConfig } from '../src/types/index.js';
 
 // ─── Hoisted mock classes & functions (accessible inside vi.mock factories) ──
@@ -735,6 +735,38 @@ describe('MCPManager', () => {
 
       expect(result).toBe('');
       expect(mockCallTool).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── isAllowedTool() ───────────────────────────────────────────────────────
+
+  describe('isAllowedTool', () => {
+    it.each([
+      ['resolve', 'resolve'],
+      ['resolve:lib', 'resolve'],
+      ['resolve-library', 'resolve'],
+      ['resolve_library', 'resolve'],
+      ['resolve.docs', 'resolve'],
+      ['resolve/docs', 'resolve'],
+    ])('matches tool %s against pattern %s', (tool, pattern) => {
+      expect(isAllowedTool(tool, pattern)).toBe(true);
+    });
+
+    it.each([
+      ['my-resolve-tool', 'resolve'],
+      ['resolveEvil', 'resolve'],
+      ['resolves', 'resolve'],
+      ['RESOLVE', 'resolve'],
+      ['resolve', 'RESOLVE'],
+      ['other', 'resolve'],
+    ])('rejects tool %s against pattern %s', (tool, pattern) => {
+      expect(isAllowedTool(tool, pattern)).toBe(false);
+    });
+
+    it('never matches empty patterns or tool names', () => {
+      expect(isAllowedTool('resolve', '')).toBe(false);
+      expect(isAllowedTool('', 'resolve')).toBe(false);
+      expect(isAllowedTool('', '')).toBe(false);
     });
   });
 });

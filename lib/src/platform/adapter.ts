@@ -88,6 +88,10 @@ export interface PlatformAdapter {
   getFileContent(mrNumber: number, filePath: string, ref?: string): Promise<string | null>;
   /**
    * Check if a given number refers to a merge request (not an issue).
+   * Returns false only when the platform confirms the number is not an
+   * MR/PR (HTTP 404). Rethrows authentication (401/403), rate-limit (429),
+   * server (5xx), and network errors so callers are not misrouted down the
+   * issue path — wrap probes in try/catch and fail closed on throw.
    * @param number - Issue/PR number.
    * @returns Promise resolving to true if the number refers to a merge request.
    */
