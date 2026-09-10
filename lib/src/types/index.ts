@@ -232,6 +232,16 @@ export interface DescribeConfig {
   enabled: boolean;
   /** Optional model override for PR description generation (defaults to `describeModel` / `reviewModel`). */
   model?: string;
+  /**
+   * When true, merge generated sections into the PR body between stable
+   * markers, preserving user text outside markers (default: false, opt-in).
+   */
+  useMarkers?: boolean;
+  /**
+   * When false, skip posting the description as a PR comment (default: true,
+   * preserving current behavior).
+   */
+  publishAsComment?: boolean;
 }
 
 // ─── Custom LLM Providers ───────────────────────────────
@@ -1496,6 +1506,8 @@ export interface PromptConfig {
   describe?: {
     enabled?: boolean;
     model?: string;
+    useMarkers?: boolean;
+    publishAsComment?: boolean;
   };
   /** Changelog / release-notes generation (`/changelog`) configuration */
   changelog?: ChangelogConfig;
@@ -1737,6 +1749,8 @@ export const DEFAULT_CONFIG: AgentConfig = {
   },
   describe: {
     enabled: true,
+    useMarkers: false,
+    publishAsComment: true,
   },
   changelog: DEFAULT_CHANGELOG_CONFIG,
   learning: {

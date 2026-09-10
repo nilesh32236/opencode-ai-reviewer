@@ -355,6 +355,14 @@ async function run(): Promise<void> {
         enabled: loadedConfig?.describe?.enabled ?? DEFAULT_CONFIG.describe.enabled,
         model:
           inputs.describeModel || loadedConfig?.describe?.model || DEFAULT_CONFIG.describe.model,
+        useMarkers: inputs.describeUseMarkersExplicit
+          ? inputs.describeUseMarkers
+          : (loadedConfig?.describe?.useMarkers ?? DEFAULT_CONFIG.describe.useMarkers ?? false),
+        publishAsComment: inputs.describePublishAsCommentExplicit
+          ? inputs.describePublishAsComment
+          : (loadedConfig?.describe?.publishAsComment ??
+            DEFAULT_CONFIG.describe.publishAsComment ??
+            true),
       },
       learning: loadedConfig?.learning
         ? {

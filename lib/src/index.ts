@@ -301,6 +301,11 @@ export type { DocsPRBodyOptions } from './utils/pr-body.js';
 export { buildChangelogPRBody } from './utils/pr-body.js';
 export type { ChangelogPRBodyOptions } from './utils/pr-body.js';
 export {
+  DESCRIBE_BODY_START,
+  DESCRIBE_BODY_END,
+  mergeDescribeBody,
+} from './utils/describe-markers.js';
+export {
   categorizePRs,
   formatMarkdown,
   formatJson,

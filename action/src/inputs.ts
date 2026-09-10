@@ -146,6 +146,14 @@ export interface ActionInputs {
   describePromptFile?: string;
   /** Optional extra instructions appended to the describe prompt. */
   describePromptExtra?: string;
+  /** Whether describe merges generated sections into the PR body via markers. */
+  describeUseMarkers: boolean;
+  /** Whether the describe_use_markers input was explicitly set by the workflow. */
+  describeUseMarkersExplicit: boolean;
+  /** Whether describe posts the description as a PR comment. */
+  describePublishAsComment: boolean;
+  /** Whether the describe_publish_as_comment input was explicitly set. */
+  describePublishAsCommentExplicit: boolean;
   /** Optional path to a custom config file (overrides .opencode-reviewer.yml discovery). */
   configFile?: string;
   /** Whether automated fix mode is enabled. */
@@ -445,6 +453,33 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   const scaEnabled = scaEnabledRaw === '' ? true : scaEnabledRaw === 'true';
   const scaEnabledExplicit = scaEnabledRaw !== '';
 
+  const describeUseMarkersRaw = core.getInput('describe_use_markers').trim();
+  if (
+    describeUseMarkersRaw !== '' &&
+    describeUseMarkersRaw !== 'true' &&
+    describeUseMarkersRaw !== 'false'
+  ) {
+    throw new Error(
+      `Invalid describe_use_markers: "${describeUseMarkersRaw}". Must be true or false.`,
+    );
+  }
+  const describeUseMarkers = describeUseMarkersRaw === 'true';
+  const describeUseMarkersExplicit = describeUseMarkersRaw !== '';
+
+  const describePublishAsCommentRaw = core.getInput('describe_publish_as_comment').trim();
+  if (
+    describePublishAsCommentRaw !== '' &&
+    describePublishAsCommentRaw !== 'true' &&
+    describePublishAsCommentRaw !== 'false'
+  ) {
+    throw new Error(
+      `Invalid describe_publish_as_comment: "${describePublishAsCommentRaw}". Must be true or false.`,
+    );
+  }
+  const describePublishAsComment =
+    describePublishAsCommentRaw === '' ? true : describePublishAsCommentRaw === 'true';
+  const describePublishAsCommentExplicit = describePublishAsCommentRaw !== '';
+
   const scaMinSeverityInput = core.getInput('sca_min_severity');
   const scaMinSeverityRaw = (scaMinSeverityInput || 'important').trim().toLowerCase();
   if (!VALID_SCA_SEVERITIES.includes(scaMinSeverityRaw as Severity)) {
@@ -591,6 +626,10 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     scaEnabled,
     scaMinSeverity,
     scaEnabledExplicit,
+    describeUseMarkers,
+    describeUseMarkersExplicit,
+    describePublishAsComment,
+    describePublishAsCommentExplicit,
     scaMinSeverityExplicit,
   };
 }

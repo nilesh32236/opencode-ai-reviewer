@@ -247,6 +247,8 @@ export const DocsConfigSchema = z.object({
 export const DescribeConfigSchema = z.object({
   enabled: z.boolean().default(true),
   model: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),
+  useMarkers: z.boolean().default(false),
+  publishAsComment: z.boolean().default(true),
 });
 
 /** Zod schema validating the `/changelog` release-notes configuration. */

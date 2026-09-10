@@ -80,6 +80,14 @@ export interface ActionInputs {
     describePromptFile?: string;
     /** Optional extra instructions appended to the describe prompt. */
     describePromptExtra?: string;
+    /** Whether describe merges generated sections into the PR body via markers. */
+    describeUseMarkers: boolean;
+    /** Whether the describe_use_markers input was explicitly set by the workflow. */
+    describeUseMarkersExplicit: boolean;
+    /** Whether describe posts the description as a PR comment. */
+    describePublishAsComment: boolean;
+    /** Whether the describe_publish_as_comment input was explicitly set. */
+    describePublishAsCommentExplicit: boolean;
     /** Optional path to a custom config file (overrides .opencode-reviewer.yml discovery). */
     configFile?: string;
     /** Whether automated fix mode is enabled. */

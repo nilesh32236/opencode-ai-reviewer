@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
+import { mergeDescribeBody } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { resolvePrNumber, sanitize } from './utils.js';
 
@@ -60,7 +61,26 @@ export async function runDescribe(
       inputs.describePromptExtra,
     );
 
-    await gh.postOrUpdateComment(prNumber, '<!-- pr-description -->', description);
+    const publishAsComment = config.describe?.publishAsComment ?? true;
+    const useMarkers = config.describe?.useMarkers ?? false;
+
+    if (publishAsComment !== false) {
+      await gh.postOrUpdateComment(prNumber, '<!-- pr-description -->', description);
+    }
+
+    if (useMarkers === true) {
+      try {
+        const current = pr.body ?? '';
+        const merged = mergeDescribeBody(current, description);
+        if (merged !== current) {
+          await gh.updateMR(prNumber, { body: merged });
+        }
+      } catch (e) {
+        core.warning(
+          `PR body merge failed, kept comment output: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
 
     core.setOutput('description', description);
     core.info(`Posted PR description for PR #${prNumber}`);

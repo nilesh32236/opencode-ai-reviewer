@@ -143,6 +143,16 @@ inputs:
     description: 'Extra context to append to the describe prompt'
     required: false
 
+  describe_use_markers:
+    description: 'Merge describe output into the PR body between markers, preserving user text (default false)'
+    required: false
+    default: 'false'
+
+  describe_publish_as_comment:
+    description: 'Post describe output as a PR comment (default true)'
+    required: false
+    default: 'true'
+
   docs_model:
     description: 'Model to use for documentation generation (mode=docs)'
     required: false

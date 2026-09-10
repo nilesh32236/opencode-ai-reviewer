@@ -106,6 +106,8 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
   describe: {
     enabled: null,
     model: null,
+    useMarkers: null,
+    publishAsComment: null,
   },
   changelog: {
     enabled: null,
@@ -661,12 +663,18 @@ export function validateConfig(config: PromptConfig): PromptConfig {
 
   if (config.describe && typeof config.describe === 'object') {
     const desc = config.describe;
-    const describe: DescribeConfig = { enabled: true };
+    const describe: DescribeConfig = { enabled: true, useMarkers: false, publishAsComment: true };
     if (typeof desc.enabled === 'boolean') {
       describe.enabled = desc.enabled;
     }
     if (typeof desc.model === 'string' && desc.model.trim() !== '') {
       describe.model = desc.model.trim();
+    }
+    if (typeof desc.useMarkers === 'boolean') {
+      describe.useMarkers = desc.useMarkers;
+    }
+    if (typeof desc.publishAsComment === 'boolean') {
+      describe.publishAsComment = desc.publishAsComment;
     }
     result.describe = describe;
   }

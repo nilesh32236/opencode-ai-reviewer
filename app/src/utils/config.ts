@@ -162,6 +162,8 @@ export function buildConfig(): AgentConfig {
     describe: {
       enabled: process.env.DESCRIBE_ENABLED !== 'false',
       model: process.env.DESCRIBE_MODEL || undefined,
+      useMarkers: process.env.DESCRIBE_USE_MARKERS === 'true',
+      publishAsComment: process.env.DESCRIBE_PUBLISH_AS_COMMENT !== 'false',
     },
     review: {
       ...DEFAULT_CONFIG.review,

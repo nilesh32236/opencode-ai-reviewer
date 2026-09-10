@@ -23,6 +23,7 @@ import {
   configureGit,
   isDocStyle,
   markAnalysisReady,
+  mergeDescribeBody,
   parseAnalysisPlan,
   postBlockingQuestions,
   sanitizeErrorMessage,
@@ -531,7 +532,26 @@ export async function handleDescribeCommand(
     const pr = await gh.getMR(issueNumber);
     const description = await engine.runDescribe(pr, tempDir);
 
-    await gh.postOrUpdateComment(issueNumber, '<!-- pr-description -->', description);
+    const publishAsComment = config.describe?.publishAsComment ?? true;
+    const useMarkers = config.describe?.useMarkers ?? false;
+
+    if (publishAsComment !== false) {
+      await gh.postOrUpdateComment(issueNumber, '<!-- pr-description -->', description);
+    }
+
+    if (useMarkers === true) {
+      try {
+        const current = pr.body ?? '';
+        const merged = mergeDescribeBody(current, description);
+        if (merged !== current) {
+          await gh.updateMR(issueNumber, { body: merged });
+        }
+      } catch (updateErr) {
+        logger.warn(
+          `PR body merge failed, kept comment output: ${updateErr instanceof Error ? updateErr.message : String(updateErr)}`,
+        );
+      }
+    }
 
     logger.info(`Posted PR description for PR #${issueNumber}`);
   } catch (err) {
