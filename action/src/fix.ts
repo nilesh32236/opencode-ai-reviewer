@@ -15,6 +15,7 @@ import {
   buildAutofixPRBody,
   buildAutofixStatusBody,
   buildFixBody,
+  buildFunctionScoreOptions,
   buildReadyBody,
   markAnalysisReady,
   parseAnalysisPlan,
@@ -559,7 +560,14 @@ export async function runAutofixLoop(
     }
 
     try {
-      const reviewResult = await gh.postReview(prNumber, prHeadSha, result, config.review.inline);
+      const reviewResult = await gh.postReview(
+        prNumber,
+        prHeadSha,
+        result,
+        config.review.inline,
+        undefined,
+        buildFunctionScoreOptions(config.review.showFunctionScores, pr.changedFiles),
+      );
       if (reviewResult.commentIds) {
         currentCommentIds = reviewResult.commentIds;
       }

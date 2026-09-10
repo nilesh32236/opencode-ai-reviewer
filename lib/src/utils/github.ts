@@ -18,6 +18,7 @@ import { getLabelColor } from './label-color.js';
 import { withRetry } from './retry.js';
 import type { RetryOptions } from './retry.js';
 import { buildReviewBody } from './review-body.js';
+import type { ReviewBodyOptions } from './review-body.js';
 import { gatherReviewThread } from './review-thread.js';
 import type { ThreadComment } from './review-thread.js';
 
@@ -823,6 +824,7 @@ export class GitHubHelper implements PlatformAdapter {
    * @param result - Review result with issues and summary.
    * @param postInlineComments - Whether to attempt inline comments (default: true).
    * @param suppressLowConfidence - Whether to suppress low-confidence findings (default: false).
+   * @param options - Optional display flags (e.g. deterministic function scores).
    * @returns Object indicating success and which posting method was used.
    */
   async postReview(
@@ -831,6 +833,7 @@ export class GitHubHelper implements PlatformAdapter {
     result: ReviewResult,
     postInlineComments = true,
     suppressLowConfidence?: boolean,
+    options?: ReviewBodyOptions,
   ): Promise<ReviewPostResult> {
     const workingResult = suppressLowConfidence
       ? {
@@ -856,7 +859,7 @@ export class GitHubHelper implements PlatformAdapter {
           (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
         )
       : workingResult.issues;
-    const body = buildReviewBody({ ...workingResult, issues: issuesForBody });
+    const body = buildReviewBody({ ...workingResult, issues: issuesForBody }, options);
 
     const commentIds: Array<{
       file: string;

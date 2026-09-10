@@ -1,5 +1,23 @@
 import type { ReviewIssue, ReviewResult, Severity, TokenUsage } from '../types/index.js';
+import {
+  type FunctionScore,
+  type FunctionScoreInput,
+  buildFunctionScoreTable,
+} from './function-scores.js';
+import { Logger } from './logger.js';
 import { escapeInlineCode, sanitizeMarkdown } from './markdown.js';
+
+/** Optional rendering options for {@link buildReviewBody}. */
+export interface ReviewBodyOptions {
+  /** When true, append the deterministic per-function score table. */
+  showFunctionScores?: boolean;
+  /** Changed-function inputs used to compute the score table. */
+  functionScores?: Array<FunctionScoreInput | FunctionScore>;
+  /** Attribution footer for auto-loaded review conventions (e.g. AGENTS.md @
+   * head SHA). Appended after the issues section when non-empty. Falls back to
+   * `result.attributionFooter` when omitted. */
+  attributionFooter?: string;
+}
 
 /**
  * Compute a 0-5 merge-readiness score from a review result, modeled on
@@ -152,14 +170,10 @@ export function formatIssueBullet(issue: ReviewIssue): string {
 }
 
 /**
- * Options accepted by {@link buildReviewBody}.
+ * @deprecated Use {@link ReviewBodyOptions} instead — retained as an alias for
+ * backward compatibility with callers written against the earlier name.
  */
-export interface BuildReviewBodyOptions {
-  /** Attribution footer for auto-loaded review conventions (e.g. AGENTS.md @
-   * head SHA). Appended after the issues section when non-empty. Falls back to
-   * `result.attributionFooter` when omitted. */
-  attributionFooter?: string;
-}
+export type BuildReviewBodyOptions = ReviewBodyOptions;
 
 /**
  * Build the attribution footer for review conventions auto-loaded from the PR
@@ -181,11 +195,11 @@ export function buildAgentsMdAttributionFooter(
 
 /**
  * Build a markdown review body from a ReviewResult.
- * @param result - Review result to render.
- * @param opts - Optional rendering options (e.g. attribution footer).
+ * @param options - Optional rendering options (attribution footer and/or
+ * deterministic function scores).
  * @returns Formatted markdown string.
  */
-export function buildReviewBody(result: ReviewResult, opts?: BuildReviewBodyOptions): string {
+export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOptions): string {
   const lines: string[] = [];
 
   if (result.failedBatches !== undefined && result.failedBatches > 0) {
@@ -278,12 +292,28 @@ export function buildReviewBody(result: ReviewResult, opts?: BuildReviewBodyOpti
   // via the dedicated post-step comment (action/src/post.ts), which is gated on
   // the saved state and is verbosity-aware. Rendering it here too would show
   // the same totals twice on the same PR.
-  const footer = opts?.attributionFooter ?? result.attributionFooter;
+  const footer = options?.attributionFooter ?? result.attributionFooter;
   if (footer?.trim()) {
     lines.push('');
     lines.push('---');
     lines.push('');
     lines.push(sanitizeMarkdown(footer));
+  }
+
+  if (options?.showFunctionScores === true) {
+    try {
+      const inputs: Array<FunctionScoreInput | FunctionScore> = options.functionScores ?? [];
+      const table = inputs.length === 0 ? '' : buildFunctionScoreTable(inputs);
+      if (table) {
+        lines.push('');
+        lines.push(table);
+      }
+    } catch (error) {
+      // Fail-open: symbol extraction or scoring must never break the review.
+      new Logger('review-body').info(
+        `Omitting function score table: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   return lines.join('\n');

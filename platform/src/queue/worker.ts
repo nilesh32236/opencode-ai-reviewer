@@ -7,7 +7,13 @@
  * records task status/result in Postgres.
  */
 
-import { DEFAULT_CONFIG, GitHubHelper, Logger, ReviewEngine } from '@opencode-pr-agent/lib';
+import {
+  DEFAULT_CONFIG,
+  GitHubHelper,
+  Logger,
+  ReviewEngine,
+  buildFunctionScoreOptions,
+} from '@opencode-pr-agent/lib';
 import type { AgentConfig, PlatformAdapter, ReviewResult } from '@opencode-pr-agent/lib';
 import { Worker } from 'bullmq';
 import type { Redis } from 'ioredis';
@@ -65,14 +71,16 @@ export function resolveConfig(config?: AgentConfig): AgentConfig {
  * @param prNumber - PR number.
  * @param workspace - The workspace path the clone lives in.
  * @param inline - Whether to post inline comments (default true).
+ * @param config - Optional agent config driving display flags.
  * @returns The review result.
  */
-async function runReview(
+export async function runReview(
   engine: ReviewEngine,
   gh: PlatformAdapter,
   prNumber: number,
   workspace: string,
   inline: boolean,
+  config?: AgentConfig,
 ): Promise<ReviewResult> {
   const pr = await gh.getMR(prNumber);
   const result = await engine.reviewPR(
@@ -85,7 +93,14 @@ async function runReview(
     workspace,
   );
   if (!result.skipped) {
-    await gh.postReview(prNumber, pr.headSha, result, inline);
+    await gh.postReview(
+      prNumber,
+      pr.headSha,
+      result,
+      inline,
+      undefined,
+      buildFunctionScoreOptions(config?.review.showFunctionScores, pr.changedFiles),
+    );
   }
   return result;
 }
@@ -96,16 +111,18 @@ async function runReview(
  * @param engine - The review engine.
  * @param gh - The GitHub platform adapter.
  * @param workspace - The workspace path.
+ * @param config - Optional agent config driving display flags.
  */
-async function dispatchTask(
+export async function dispatchTask(
   data: TaskJobData,
   engine: ReviewEngine,
   gh: PlatformAdapter,
   workspace: string,
+  config?: AgentConfig,
 ): Promise<void> {
   if (data.type === 'review') {
     if (!data.prNumber) throw new Error('Review task missing prNumber');
-    await runReview(engine, gh, data.prNumber, workspace, true);
+    await runReview(engine, gh, data.prNumber, workspace, true, config);
     return;
   }
   if (data.type === 'analyze') {
@@ -170,7 +187,7 @@ export function startWorker(options: WorkerOptions): PlatformWorkerHandle {
         const gh: PlatformAdapter = new GitHubHelper(githubToken, repo);
         const engine = new ReviewEngine(baseConfig, gh, undefined, undefined, repo, correlationId);
 
-        await dispatchTask(job.data, engine, gh, ws.path);
+        await dispatchTask(job.data, engine, gh, ws.path, baseConfig);
 
         await updateTask(db, taskId, {
           status: 'completed',

@@ -656,6 +656,9 @@ export interface ReviewConfig {
    * corresponding test updates and surfaces structured gap context to the
    * review prompt (default: false). */
   enableTestGapDetection: boolean;
+  /** Deterministic per-function quality table in review body (default: false).
+   * Heuristic only, no verdict influence. */
+  showFunctionScores: boolean;
   /** Whether to suppress low-confidence findings from review output */
   suppressLowConfidence?: boolean;
   /** Whether to enable lightweight reachability analysis on security findings */
@@ -1466,6 +1469,9 @@ export interface PromptConfig {
     enableMetaVerification?: boolean;
     /** Enable test-gap detection that flags code changes lacking test updates (default: false) */
     enableTestGapDetection?: boolean;
+    /** Deterministic per-function quality table in review body (default: false).
+     * Heuristic only, no verdict influence. */
+    showFunctionScores?: boolean;
     /** Enable codebase indexing for cross-file review context (default: true) */
     enableCodebaseIndex?: boolean;
     /** Review pre-existing (non-PR) code at full audit priority (default: false) */
@@ -1741,6 +1747,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     ],
     enableMetaVerification: false,
     enableTestGapDetection: false,
+    showFunctionScores: false,
     suppressLowConfidence: false,
     enableReachability: true,
     enableCodebaseIndex: true,

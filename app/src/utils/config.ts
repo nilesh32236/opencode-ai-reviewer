@@ -177,6 +177,9 @@ export function buildConfig(): AgentConfig {
       ...(process.env.REVIEW_TEST_GAP_DETECTION !== undefined
         ? { enableTestGapDetection: process.env.REVIEW_TEST_GAP_DETECTION === 'true' }
         : {}),
+      ...(process.env.REVIEW_SHOW_FUNCTION_SCORES !== undefined
+        ? { showFunctionScores: process.env.REVIEW_SHOW_FUNCTION_SCORES === 'true' }
+        : {}),
       ...(process.env.ENABLE_CODEBASE_INDEX !== undefined
         ? { enableCodebaseIndex: process.env.ENABLE_CODEBASE_INDEX !== 'false' }
         : {}),
@@ -310,6 +313,7 @@ export function buildConfig(): AgentConfig {
  *
  * Only the `review.sensitivity` / `review.categories` / `review.pathInstructions` / `review.enableCodebaseIndex`
  * / `review.enableMetaVerification` / `review.enableTestGapDetection` /
+ * `review.showFunctionScores` /
  * `review.suppressLowConfidence` / `review.failOnSeverity` /
  * `review.suggestTitleAndLabels` fields, the `notifications`, `secrets`, `llm`,
  * and `sca` sections are merged
@@ -340,6 +344,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const streamComments = repoConfig?.review?.streamComments;
   const streamBatchSize = repoConfig?.review?.streamBatchSize;
   const pathInstructions = repoConfig?.review?.pathInstructions;
+  const showFunctionScores = repoConfig?.review?.showFunctionScores;
   const notifications = repoConfig?.notifications;
   const secrets = repoConfig?.secrets;
   const llm = repoConfig?.llm;
@@ -359,6 +364,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
     streamComments === undefined &&
     streamBatchSize === undefined &&
     !pathInstructions &&
+    showFunctionScores === undefined &&
     !notifications &&
     !secrets &&
     !llm &&
@@ -396,6 +402,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
           }).slice(0, 10),
         ),
       }),
+      ...(showFunctionScores !== undefined && { showFunctionScores }),
     },
     ...(notifications && {
       notifications: {
