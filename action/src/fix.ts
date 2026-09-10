@@ -2,7 +2,6 @@ import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import type {
   AgentConfig,
-  FixResult,
   IssueComment,
   PlatformAdapter,
   PreviousFindingIteration,
@@ -83,10 +82,10 @@ export async function runFix(
       ]);
       validateRefName(pr.headRef);
       await exec.exec('git', ['push', 'origin', pr.headRef]);
+      changesMade = true;
     } catch (err) {
       core.warning(sanitize(`Git operations failed: ${err instanceof Error ? err.message : err}`));
     }
-    changesMade = true;
   }
 
   if (inputs.runChecksAfterFix && changesMade) {
@@ -343,7 +342,7 @@ export async function runFixIssue(
   }
 
   await exec.exec('git', ['add', '-A']);
-  await exec.exec('git', ['commit', '-m', `fix: address issue #${issueNumber} [skip ci]`]);
+  await exec.exec('git', ['commit', '-m', `fix: address issue #${issueNumber}`]);
   try {
     if (reuseBotBranch) {
       // Reusing a bot-authored branch: guard against a concurrent remote update.
