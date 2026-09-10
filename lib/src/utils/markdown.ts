@@ -38,13 +38,19 @@ function stripDisallowedControls(text: string): string {
  * Escape a string for interpolation inside a markdown inline-code span.
  * Neutralizes backtick breakout and newline injection so a crafted value
  * (e.g. a file path or target directory) cannot close the code span and
- * inject arbitrary markdown into the rendered body.
+ * inject arbitrary markdown into the rendered body. Backslashes are escaped
+ * first so a trailing backslash cannot escape the closing backtick (order
+ * matters: escaping backticks first would leave `...\`` + `` ` `` fusing
+ * into an escaped backtick followed by a live span terminator).
  *
  * @param text - The raw value to escape.
  * @returns The escaped value, safe for `` `...` `` interpolation.
  */
 export function escapeInlineCode(text: string): string {
-  return text.replace(/`/g, '\\`').replace(/[\r\n]+/g, ' ');
+  return text
+    .replace(/\\/g, '\\\\')
+    .replace(/`/g, '\\`')
+    .replace(/[\r\n]+/g, ' ');
 }
 
 /**

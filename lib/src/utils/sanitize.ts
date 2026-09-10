@@ -3,7 +3,7 @@
  *
  * Redacts the following patterns:
  * - GitHub tokens (ghp_, github_pat, gho_, ghs_, ghu_, ghr_)
- * - GitLab tokens (glpat-, gldt-, glr_, GR1348941 runner tokens, deploy tokens)
+ * - GitLab tokens (glpat-, glrt-, glft-, gloas-, glod-, gldt-, glr_, GR1348941 runner tokens, glcbt-, deploy tokens)
  * - OpenAI API keys (sk-...)
  * - Anthropic API keys (sk-ant-...)
  * - Bearer tokens from Authorization headers
@@ -13,7 +13,7 @@
  * - Google/Gemini API keys (AIza...)
  * - AWS access key IDs (AKIA...) and secret access keys
  * - Azure / OpenCode / generic LLM API keys and endpoints
- * - Generic `token`/`secret` assignments as a fallback
+ * - Generic `*token` assignments as a fallback (access/auth/client-secret token forms)
  *
  * Matching is intentionally case-insensitive for the named `*_API_KEY`
  * assignment form so lowercase variants (e.g. `azure_api_key`,
@@ -28,6 +28,10 @@ export function sanitizeString(input: string): string {
   return input
     .replace(/(ghp|github_pat|gho|ghs|ghu|ghr)_[a-zA-Z0-9_-]{36,}/g, '[REDACTED_GITHUB_TOKEN]')
     .replace(/glpat-[A-Za-z0-9_\-]{20,}/g, '[REDACTED_GITLAB_TOKEN]')
+    .replace(/glrt-[A-Za-z0-9_\-]{20,}/g, '[REDACTED_GITLAB_TOKEN]')
+    .replace(/glft-[A-Za-z0-9_\-]{20,}/g, '[REDACTED_GITLAB_TOKEN]')
+    .replace(/gloas-[A-Za-z0-9_\-]{20,}/g, '[REDACTED_GITLAB_TOKEN]')
+    .replace(/glod-[A-Za-z0-9_\-]{8,}/g, '[REDACTED_GITLAB_TOKEN]')
     .replace(/gldt-[A-Za-z0-9_\-]{20,}/g, '[REDACTED_GITLAB_TOKEN]')
     .replace(/glr_[A-Za-z0-9_\-]{20,}/g, '[REDACTED_GITLAB_TOKEN]')
     .replace(/GR1348941[A-Za-z0-9_\-]{8,}/g, '[REDACTED_GITLAB_TOKEN]')

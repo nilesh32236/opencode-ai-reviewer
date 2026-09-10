@@ -1,3 +1,4 @@
+import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as path from 'node:path';
 
@@ -20,19 +21,25 @@ import * as path from 'node:path';
  *   hex, IPv4-mapped IPv6) so SSRF guards cannot be bypassed. The check stays
  *   purely synchronous by design: no DNS lookups are performed (CI sandboxes
  *   may block DNS, and fail-closed-on-resolution-failure would break legitimate
- *   webhooks on transient DNS errors).
+ *   webhooks on transient DNS errors). Residual risk: attacker-controlled
+ *   hostnames that resolve to internal addresses (DNS rebinding) are out of
+ *   scope — pin URLs to operator-known hosts or validate at fetch time (see
+ *   `isSafeRemoteMcpUrl`).
  */
 
 // ─── Linter commands ────────────────────────────────────────────
 
 /**
  * Basename allowlist for `linters[].command` from repo-file config.
- * Only bare binary basenames resolved via `PATH` are permitted — never paths,
- * never generic runners (`sh`, `bash`, `node`, `python`, `curl`, `wget`,
- * `npx`, `npm`, ...) which are arbitrary-code primitives on their own via
- * config-controlled `args`. Operators needing an extra binary can extend the
- * set with `OPENCODE_ALLOWED_LINTERS` (comma-separated basenames, same
- * structural rules apply).
+ * Only bare single-purpose linter/formatter binary basenames resolved via
+ * `PATH` are permitted — never paths, never generic runners (`sh`, `bash`,
+ * `node`, `python`, `curl`, `wget`, `npx`, `npm`, ...) and never generic
+ * language toolchains (`go`, `cargo`, `dotnet`, `dart`, `flutter`, ...) which
+ * are arbitrary-code primitives on their own via config-controlled `args`
+ * (e.g. `go run evil.go`, `cargo run`, `dotnet run`). Operators needing an
+ * extra binary can extend the set with `OPENCODE_ALLOWED_LINTERS`
+ * (comma-separated basenames, same structural rules apply) — only add
+ * single-purpose binaries, never toolchains or shells.
  */
 export const ALLOWED_LINTER_COMMANDS: ReadonlySet<string> = new Set([
   'eslint',
@@ -49,8 +56,6 @@ export const ALLOWED_LINTER_COMMANDS: ReadonlySet<string> = new Set([
   'rubocop',
   'golangci-lint',
   'gofmt',
-  'go',
-  'cargo',
   'clippy-driver',
   'shellcheck',
   'hadolint',
@@ -62,9 +67,6 @@ export const ALLOWED_LINTER_COMMANDS: ReadonlySet<string> = new Set([
   'ktlint',
   'swiftlint',
   'scalafmt',
-  'dart',
-  'flutter',
-  'dotnet',
 ]);
 
 /** Shell metacharacters / separators that must never appear in a command basename. */
@@ -91,19 +93,132 @@ export function isAllowedLinterCommand(cmd: unknown): boolean {
     .split(',')
     .map((s) => s.trim())
     .filter((s) => s !== '');
-  if (extra.length > 0 && extra.includes(value)) {
-    if (extra.some((s) => UNSAFE_COMMAND_CHARS.test(s) || s.includes('..'))) return false;
-    return true;
-  }
+  // Validate only the matched value: the requested basename already passed
+  // the structural checks above, so an unrelated malformed operator entry
+  // must not DoS an otherwise-valid custom linter.
+  if (extra.includes(value)) return true;
   return false;
+}
+
+/** Maximum accepted length for a single linter argument (DoS guard). */
+const MAX_LINTER_ARG_LENGTH = 2048;
+
+/**
+ * Flags that turn an allowlisted single-purpose linter into a checkout-code
+ * execution primitive by loading plugins/formatters/requirements from
+ * attacker-controlled checkout files (`eslint --rulesdir ./evil`,
+ * `prettier --plugin ./evil`, `stylelint --custom-formatter ./evil`,
+ * linter `--require`/`--loader` hooks, ...). The attacker controls both the
+ * yml `args` and the checkout files, so these are rejected even though the
+ * binary itself is allowlisted. Matching is prefix-aware: `--flag=value` and
+ * `--flag:value` concatenated forms are blocked the same as the bare flag.
+ */
+const BLOCKED_LINTER_ARGS: ReadonlySet<string> = new Set([
+  '--rulesdir',
+  '--plugin',
+  '--plugin-search-dir',
+  '--resolve-plugins-relative-to',
+  '--load-rules',
+  '--load',
+  '--require',
+  '--custom-formatter',
+  '--custom-syntax',
+  '--loader',
+  '--import',
+  '-r',
+]);
+
+/**
+ * Check whether a single linter arg is a blocked plugin/code-loading flag.
+ * @param arg - Single configured argument string.
+ * @returns True when the arg must be rejected.
+ */
+function isBlockedLinterArg(arg: string): boolean {
+  const v = arg.trim();
+  if (BLOCKED_LINTER_ARGS.has(v)) return true;
+  for (const blocked of BLOCKED_LINTER_ARGS) {
+    if (blocked.startsWith('--') && (v.startsWith(`${blocked}=`) || v.startsWith(`${blocked}:`))) {
+      return true;
+    }
+  }
+  // Joined short-flag form (`-revil`, `-r evil.js` loader shorthand).
+  if (/^-r\S/.test(v)) return true;
+  return false;
+}
+
+/**
+ * Check whether configured linter `args` are safe strings for `execFile`.
+ * `execFile` spawns without a shell, so metacharacters are inert — but args
+ * must still be well-formed strings: rejects non-strings, embedded NUL bytes
+ * (which truncate C-level argv and can confuse argument parsing), overlong
+ * values, and plugin/code-loading flags (see {@link BLOCKED_LINTER_ARGS})
+ * that would execute checkout-controlled code via the linter. Matched file
+ * paths are appended by the engine itself and are not covered here.
+ * @param args - Configured `linters[].args` value.
+ * @returns True when every arg is a safe string.
+ */
+export function isSafeLinterArgs(args: unknown): boolean {
+  if (args === undefined) return true;
+  if (!Array.isArray(args)) return false;
+  return args.every(
+    (a) =>
+      typeof a === 'string' &&
+      a.length <= MAX_LINTER_ARG_LENGTH &&
+      !a.includes('\0') &&
+      !isBlockedLinterArg(a),
+  );
 }
 
 // ─── Path confinement ───────────────────────────────────────────
 
 /**
+ * Resolve the nearest existing ancestor of `target` via realpath and check
+ * whether the fully-resolved target stays inside the (realpath-resolved)
+ * base. Lexical `path.resolve`/`path.relative` confinement alone can be
+ * bypassed by a checkout symlink (e.g. `workingDirectory: link` where
+ * `link -> /etc`): the lexical check passes but the exec cwd / log write
+ * follows the link outside the checkout. When nothing on the path exists yet
+ * (e.g. a not-yet-created log file in a fresh checkout) there is nothing to
+ * resolve and the lexical verdict stands.
+ *
+ * Residual risk: TOCTOU — a symlink swapped in between this check and the
+ * exec/mkdir still escapes. Sinks should re-check immediately before use;
+ * fully untrusted checkouts should run with OS-level sandboxing.
+ * @param baseResolved - Lexically resolved trusted base directory.
+ * @param target - Lexically resolved untrusted target path.
+ * @returns True when realpath resolution reveals an escape outside the base.
+ */
+function realpathRevealsEscape(baseResolved: string, target: string): boolean {
+  let baseReal = baseResolved;
+  try {
+    baseReal = fs.realpathSync(baseResolved);
+  } catch {
+    // Base does not exist (yet) — fall back to the lexical base.
+  }
+  let probe = target;
+  while (true) {
+    try {
+      const real = fs.realpathSync(probe);
+      const remainder = path.relative(probe, target);
+      const realTarget = remainder ? path.join(real, remainder) : real;
+      const rel = path.relative(baseReal, realTarget);
+      if (rel === '') return false;
+      return rel.startsWith('..') || path.isAbsolute(rel);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') return false;
+      const parent = path.dirname(probe);
+      if (parent === probe) return false;
+      probe = parent;
+    }
+  }
+}
+
+/**
  * Check whether `requested` resolves inside `base` (the checkout working dir).
  * Rejects absolute escapes and `..` traversal. Both arguments may be relative;
- * they are resolved against `process.cwd()` first.
+ * they are resolved against `process.cwd()` first. When the target exists on
+ * disk, its realpath is also checked so a checkout symlink pointing outside
+ * the checkout is rejected (see {@link realpathRevealsEscape}).
  * @param base - Trusted base directory (the checkout working dir).
  * @param requested - Untrusted configured path.
  * @returns True when the resolved path stays inside the base.
@@ -115,12 +230,21 @@ export function isConfinedPath(base: string, requested: string): boolean {
     ? path.normalize(requested)
     : path.resolve(baseResolved, requested);
   const rel = path.relative(baseResolved, target);
-  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+  // `rel === ''` is the base directory itself — confined. This agrees with
+  // `resolveConfinedWorkingDir`, which resolves an empty/absent value to the
+  // base, so `workingDirectory: '.'` (checkout root) is benign.
+  if (rel === '') {
+    return !realpathRevealsEscape(baseResolved, target);
+  }
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return false;
+  return !realpathRevealsEscape(baseResolved, target);
 }
 
 /**
  * Resolve an untrusted configured working directory against the checkout dir,
- * returning null when it would escape the checkout.
+ * returning null when it would escape the checkout. The lexical check is
+ * followed by a realpath check so a checkout symlink pointing outside the
+ * checkout is rejected (see {@link realpathRevealsEscape}).
  * @param workDir - Trusted checkout working directory.
  * @param requested - Untrusted `workingDirectory` value (may be undefined).
  * @returns The confined absolute directory, or null when it escapes.
@@ -134,6 +258,7 @@ export function resolveConfinedWorkingDir(workDir: string, requested?: string): 
   const target = path.isAbsolute(value) ? path.normalize(value) : path.resolve(baseResolved, value);
   const rel = path.relative(baseResolved, target);
   if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  if (realpathRevealsEscape(baseResolved, target)) return null;
   return target;
 }
 
@@ -160,7 +285,8 @@ export function isEventSubscribersEnabled(): boolean {
 /**
  * Resolve an untrusted configured event-log path against the checkout dir.
  * Absolute paths and `..` escapes are rejected (fail-closed → null) so a
- * hostile value cannot append/rename arbitrary runner files.
+ * hostile value cannot append/rename arbitrary runner files. A realpath check
+ * additionally rejects checkout symlinks pointing outside the checkout.
  * @param workDir - Trusted checkout working directory.
  * @param requested - Untrusted `eventLogging.path` value (may be undefined).
  * @returns The confined absolute log path, or null when it escapes.
@@ -176,6 +302,7 @@ export function resolveConfinedEventLogPath(workDir: string, requested?: string)
   const rel = path.relative(baseResolved, target);
   if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) return null;
   if (path.extname(target) === '') return null;
+  if (realpathRevealsEscape(baseResolved, target)) return null;
   return target;
 }
 
@@ -199,9 +326,121 @@ export const ALLOWED_MCP_LOCAL_COMMANDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Argument tokens that turn an allowlisted launcher into an arbitrary-code
+ * primitive (`node -e '...'`, `python3 -c '...'`, `deno eval '...'`,
+ * `--loader/--require/--import` hooks loading checkout code). Any command
+ * vector containing one of these is rejected. Matching is prefix-aware (see
+ * {@link isBlockedMcpLocalArg}): `--eval=x`, `-econsole.log(1)`,
+ * `-cimport os`, and `-p8080` concatenated forms are blocked the same as the
+ * bare flags, since node/python/deno all accept `--flag=value` and joined
+ * short flags.
+ *
+ * This is intentionally fail-closed: a legitimate server that needs e.g.
+ * `-c config.json` or `-p 8080` as literal flags is also rejected and must be
+ * run outside PR-editable config. NOTE: `-y`/`--yes` (used by the pinned
+ * built-in `npx` servers in `mcp/servers.ts`) remain permitted, but `npx`
+ * package names are additionally pinned (see {@link PINNED_MCP_NPM_PACKAGES}):
+ * `npx -y <attacker-package>` would otherwise fetch and execute an arbitrary
+ * npm package named in config with forwarded `environment` credentials.
+ */
+const BLOCKED_MCP_LOCAL_ARGS: ReadonlySet<string> = new Set([
+  '-e',
+  '--eval',
+  '--evaluate',
+  '-c',
+  '--code',
+  '-p',
+  '--print',
+  'eval',
+  '-r',
+  '--require',
+  '--import',
+  '--loader',
+  '--experimental-loader',
+  '--package',
+]);
+
+/**
+ * Npm packages that repo-file config may ask a package-runner launcher
+ * (`npx`/`uvx`/`bunx`) to fetch and execute. These mirror the pinned
+ * built-in servers in `mcp/servers.ts` (`MCP_PACKAGE_VERSIONS`); any other
+ * package name (including typosquats and attacker-published packages) is
+ * rejected. Version suffixes are allowed (`pkg@1.2.3`).
+ */
+export const PINNED_MCP_NPM_PACKAGES: ReadonlySet<string> = new Set([
+  '@upstash/context7-mcp',
+  '@modelcontextprotocol/server-github',
+]);
+
+/** Script-file extensions that indicate a checkout-controlled program file. */
+const SCRIPT_FILE_EXTENSIONS = ['.js', '.cjs', '.mjs', '.ts', '.tsx', '.mts', '.cts', '.py'];
+
+/**
+ * Extract the bare package name from an npm package specifier, stripping a
+ * trailing `@version` suffix (`@scope/pkg@1.2.3` → `@scope/pkg`,
+ * `pkg@1.2.3` → `pkg`).
+ * @param spec - Raw package specifier from the command vector.
+ * @returns The bare package name.
+ */
+function extractNpmPackageName(spec: string): string {
+  const s = spec.trim();
+  if (s.startsWith('@')) {
+    const secondAt = s.indexOf('@', 1);
+    return secondAt === -1 ? s : s.slice(0, secondAt);
+  }
+  const at = s.indexOf('@');
+  return at === -1 ? s : s.slice(0, at);
+}
+
+/**
+ * Check whether a single MCP local-server arg is a blocked code-evaluation /
+ * code-loading flag, including `--flag=value` / `--flag:value` concatenated
+ * forms and joined short flags (`-e<code>`, `-c<code>`, `-p<port>`,
+ * `-r<module>`).
+ * @param arg - Single configured argument string.
+ * @returns True when the arg must be rejected.
+ */
+function isBlockedMcpLocalArg(arg: string): boolean {
+  const v = arg.trim();
+  if (BLOCKED_MCP_LOCAL_ARGS.has(v)) return true;
+  for (const blocked of BLOCKED_MCP_LOCAL_ARGS) {
+    if (blocked.startsWith('--') && (v.startsWith(`${blocked}=`) || v.startsWith(`${blocked}:`))) {
+      return true;
+    }
+  }
+  if (/^-[ecpr]\S/.test(v)) return true;
+  if (/^eval[=:.]/.test(v)) return true;
+  return false;
+}
+
+/**
+ * Check whether an MCP local-server arg names a checkout-controlled script
+ * file. Any arg that looks like a file path (contains a path separator) or
+ * ends with a script extension (`server.js`, `evil.py`, `run evil.ts`) would
+ * execute attacker-controlled checkout code with credentials inherited via
+ * the subprocess environment, so it is rejected.
+ * @param arg - Single configured argument string.
+ * @returns True when the arg looks like a script file reference.
+ */
+function isMcpScriptFileArg(arg: string): boolean {
+  const v = arg.trim();
+  if (v.includes('/') || v.includes('\\')) return true;
+  const lower = v.toLowerCase();
+  return SCRIPT_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+/**
  * Check whether a local MCP server command vector is safe to spawn.
  * Requires a non-empty argv whose launcher is a bare basename on the launcher
- * allowlist (no paths, no shell metacharacters).
+ * allowlist (no paths, no shell metacharacters). Remaining arguments must
+ * contain none of the code-evaluation/loading flags (see
+ * {@link BLOCKED_MCP_LOCAL_ARGS}, prefix-aware) and none of the
+ * checkout-controlled script-file references: `node server.js`,
+ * `python3 evil.py`, and `deno run evil.ts` would execute PR-checkout code
+ * with credentials inherited via the subprocess environment. Package-runner
+ * launchers (`npx`/`uvx`/`bunx`) may additionally only fetch the pinned
+ * built-in packages in {@link PINNED_MCP_NPM_PACKAGES} — any other package
+ * name would fetch and run arbitrary registry code.
  * @param command - Configured `mcpServers[].command` vector.
  * @returns True when the vector may be spawned via `StdioClientTransport`.
  */
@@ -214,7 +453,29 @@ export function isAllowedMcpLocalCommand(command: unknown): boolean {
   if (launcher.includes('..') || UNSAFE_COMMAND_CHARS.test(launcher)) return false;
   if (path.isAbsolute(launcher)) return false;
   if (path.basename(launcher) !== launcher) return false;
-  return ALLOWED_MCP_LOCAL_COMMANDS.has(launcher);
+  if (!ALLOWED_MCP_LOCAL_COMMANDS.has(launcher)) return false;
+  const args = command.slice(1);
+  // For package runners the positional package spec (a scoped npm name such
+  // as `@upstash/context7-mcp@3.2.5`, which legitimately contains a `/`) is
+  // validated against the pinned-package set below instead of the
+  // script-file rule.
+  const isPackageRunner = launcher === 'npx' || launcher === 'uvx' || launcher === 'bunx';
+  const packageSpec = isPackageRunner
+    ? args.find(
+        (a): a is string => typeof a === 'string' && a.trim() !== '' && !a.trim().startsWith('-'),
+      )
+    : undefined;
+  for (const arg of args) {
+    if (typeof arg !== 'string') return false;
+    if (isBlockedMcpLocalArg(arg)) return false;
+    if (arg !== packageSpec && isMcpScriptFileArg(arg)) return false;
+  }
+  if (isPackageRunner) {
+    // No positional package means there is nothing legitimate to run — reject.
+    if (!packageSpec) return false;
+    if (!PINNED_MCP_NPM_PACKAGES.has(extractNpmPackageName(packageSpec))) return false;
+  }
+  return true;
 }
 
 // ─── SSRF host policy (synchronous canonicalization) ────────────
@@ -332,7 +593,11 @@ export function isBlockedIpHost(host: string): boolean {
   }
   if (ipVersion === 6) {
     if (h === '::' || h === '::1') return true;
-    if (h.startsWith('fe80:') || h.startsWith('fe80::')) return true; // link-local
+    // Link-local fe80::/10 spans first hextet fe80–febf (not just fe80:).
+    const firstHextet = Number.parseInt(h.split(':')[0], 16);
+    if (Number.isInteger(firstHextet) && firstHextet >= 0xfe80 && firstHextet <= 0xfebf) {
+      return true;
+    }
     if (h.startsWith('fc') || h.startsWith('fd')) return true; // unique-local fc00::/7
     // IPv4-mapped / compatible forms: check the embedded IPv4 tail too.
     const tail = h.split(':').pop() ?? '';
@@ -344,14 +609,23 @@ export function isBlockedIpHost(host: string): boolean {
       return true;
     }
     if (h.includes('ffff:')) {
-      const hexTail = h.split(':').slice(-2).join('');
-      if (/^[0-9a-f]{1,8}$/.test(hexTail)) {
-        const n = Number.parseInt(hexTail, 16);
+      // Each hextet is exactly 16 bits: parse the last two groups separately
+      // with zero-padding semantics (joining `c0a8` + `1` into `c0a81` and
+      // parsing as one number mis-decodes `::ffff:c0a8:1` as public).
+      const groups = h.split(':').slice(-2);
+      const hi = Number.parseInt(groups[0].padStart(4, '0'), 16);
+      const lo = Number.parseInt(groups[1].padStart(4, '0'), 16);
+      if (
+        groups.length === 2 &&
+        groups.every((g) => /^[0-9a-f]{1,4}$/.test(g)) &&
+        Number.isSafeInteger(hi) &&
+        Number.isSafeInteger(lo)
+      ) {
         const bytes: [number, number, number, number] = [
-          (n >>> 24) & 0xff,
-          (n >>> 16) & 0xff,
-          (n >>> 8) & 0xff,
-          n & 0xff,
+          (hi >>> 8) & 0xff,
+          hi & 0xff,
+          (lo >>> 8) & 0xff,
+          lo & 0xff,
         ];
         return isBlockedIPv4Bytes(bytes);
       }
@@ -377,6 +651,13 @@ export function isBlockedIpHost(host: string): boolean {
  * no credentials in the URL, and no blocked/internal hosts (same policy as
  * webhook URLs). Purely synchronous — hostnames that do not parse as IPs are
  * checked against hostname blocklists only (no DNS resolution, by design).
+ *
+ * NOTE (residual risk): this check cannot stop DNS-based bypass. An
+ * attacker-controlled hostname that *resolves* to `169.254.169.254` or
+ * RFC1918 space (DNS rebinding, malicious dynamic-DNS) passes this check and
+ * would be fetched. Mitigate by pinning remote MCP/webhook URLs to
+ * operator-known hosts, or by adding resolve-and-validate at fetch time as a
+ * follow-up; do not rely on this check alone for hostile DNS.
  * @param url - Candidate remote MCP server URL.
  * @returns True when the URL is safe to open an SSE transport to.
  */
@@ -385,7 +666,10 @@ export function isSafeRemoteMcpUrl(url: string): boolean {
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:') return false;
     if (parsed.username !== '' || parsed.password !== '') return false;
-    return !isBlockedIpHost(parsed.hostname.toLowerCase());
+    // `URL.hostname` retains brackets for IPv6 literals (`[::1]`), but
+    // `isBlockedIpHost` expects a bare host — strip them first.
+    const host = parsed.hostname.toLowerCase().replace(/^\[(.*)\]$/, '$1');
+    return !isBlockedIpHost(host);
   } catch {
     return false;
   }
