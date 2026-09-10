@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFIG } from '../src/types/index.js';
 import { Logger } from '../src/utils/logger.js';
 
@@ -45,9 +45,18 @@ function makeAdapter() {
   };
 }
 
+/** Floor-related warnings only, so future unrelated warnings don't break these tests. */
+function floorWarnings(warnSpy: { mock: { calls: unknown[][] } }): unknown[][] {
+  return warnSpy.mock.calls.filter((args) => String(args[0]).includes('below the'));
+}
+
 describe('ReviewEngine node floor', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('warns and continues by default when below the floor', () => {
@@ -61,9 +70,8 @@ describe('ReviewEngine node floor', () => {
     expect(
       () => new ReviewEngine({ ...DEFAULT_CONFIG, timeoutMinutes: 10 }, makeAdapter() as never),
     ).not.toThrow();
-    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('below the'));
     expect(warnSpy.mock.calls[0][0]).toContain('22.0.0');
-    warnSpy.mockRestore();
   });
 
   it('throws when enforcement is enabled and below the floor', () => {
@@ -85,7 +93,6 @@ describe('ReviewEngine node floor', () => {
           makeAdapter() as never,
         ),
     ).toThrow(/enforced minimum/);
-    (Logger.prototype.warn as unknown as { mockRestore: () => void }).mockRestore();
   });
 
   it('does not warn when at or above the floor', () => {
@@ -107,8 +114,7 @@ describe('ReviewEngine node floor', () => {
           makeAdapter() as never,
         ),
     ).not.toThrow();
-    expect(warnSpy).not.toHaveBeenCalled();
-    warnSpy.mockRestore();
+    expect(floorWarnings(warnSpy)).toHaveLength(0);
   });
 
   it('fails open on unparseable versions even with enforcement enabled', () => {
@@ -118,7 +124,7 @@ describe('ReviewEngine node floor', () => {
       floor: '24.18.1',
       unparseable: true,
     });
-    const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
     expect(
       () =>
         new ReviewEngine(
@@ -130,7 +136,6 @@ describe('ReviewEngine node floor', () => {
           makeAdapter() as never,
         ),
     ).not.toThrow();
-    warnSpy.mockRestore();
   });
 
   it('fails open when the floor check itself throws', () => {
@@ -149,8 +154,7 @@ describe('ReviewEngine node floor', () => {
           makeAdapter() as never,
         ),
     ).not.toThrow();
-    expect(warnSpy).toHaveBeenCalled();
-    warnSpy.mockRestore();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Node floor check skipped'));
   });
 
   it('does not re-throw unrelated errors containing the enforcement phrase', () => {
@@ -169,7 +173,7 @@ describe('ReviewEngine node floor', () => {
           makeAdapter() as never,
         ),
     ).not.toThrow();
-    warnSpy.mockRestore();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Node floor check skipped'));
   });
 
   it('stays fail-open when logging itself throws (warn-only mode)', () => {
@@ -185,6 +189,5 @@ describe('ReviewEngine node floor', () => {
     expect(
       () => new ReviewEngine({ ...DEFAULT_CONFIG, timeoutMinutes: 10 }, makeAdapter() as never),
     ).not.toThrow();
-    (Logger.prototype.warn as unknown as { mockRestore: () => void }).mockRestore();
   });
 });

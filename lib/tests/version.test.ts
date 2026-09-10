@@ -92,38 +92,43 @@ describe('MINIMUM_OPENCODE_VERSION', () => {
 
 describe('checkNodeFloor()', () => {
   it('fails below the floor', () => {
-    const result = checkNodeFloor('22.0.0', '24.18.1');
+    const result = checkNodeFloor('22.0.0', MINIMUM_NODE_VERSION);
     expect(result.ok).toBe(false);
     expect(result.unparseable).toBe(false);
     expect(result.current).toBe('22.0.0');
-    expect(result.floor).toBe('24.18.1');
+    expect(result.floor).toBe(MINIMUM_NODE_VERSION);
   });
 
   it('passes at the floor', () => {
-    const result = checkNodeFloor('24.18.1', '24.18.1');
-    expect(result).toEqual({ ok: true, current: '24.18.1', floor: '24.18.1', unparseable: false });
+    const result = checkNodeFloor(MINIMUM_NODE_VERSION, MINIMUM_NODE_VERSION);
+    expect(result).toEqual({
+      ok: true,
+      current: MINIMUM_NODE_VERSION,
+      floor: MINIMUM_NODE_VERSION,
+      unparseable: false,
+    });
   });
 
   it('passes above the floor', () => {
-    expect(checkNodeFloor('24.19.0', '24.18.1').ok).toBe(true);
-    expect(checkNodeFloor('v24.18.1', '24.18.1').ok).toBe(true);
+    expect(checkNodeFloor('24.19.0', MINIMUM_NODE_VERSION).ok).toBe(true);
+    expect(checkNodeFloor(`v${MINIMUM_NODE_VERSION}`, MINIMUM_NODE_VERSION).ok).toBe(true);
   });
 
   it('sorts pre-releases below the floor', () => {
-    const result = checkNodeFloor('24.18.1-rc.1', '24.18.1');
+    const result = checkNodeFloor(`${MINIMUM_NODE_VERSION}-rc.1`, MINIMUM_NODE_VERSION);
     expect(result.ok).toBe(false);
     expect(result.unparseable).toBe(false);
   });
 
   it('fails open on unparseable input', () => {
-    expect(checkNodeFloor('latest', '24.18.1')).toEqual({
+    expect(checkNodeFloor('latest', MINIMUM_NODE_VERSION)).toEqual({
       ok: true,
       current: 'latest',
-      floor: '24.18.1',
+      floor: MINIMUM_NODE_VERSION,
       unparseable: true,
     });
-    expect(checkNodeFloor('', '24.18.1').unparseable).toBe(true);
-    expect(checkNodeFloor('', '24.18.1').ok).toBe(true);
+    expect(checkNodeFloor('', MINIMUM_NODE_VERSION).unparseable).toBe(true);
+    expect(checkNodeFloor('', MINIMUM_NODE_VERSION).ok).toBe(true);
   });
 
   it('defaults to the minimum Node floor and process.version', () => {

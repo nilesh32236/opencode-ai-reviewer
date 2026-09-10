@@ -545,14 +545,17 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   const scaMinSeverity = scaMinSeverityRaw as Severity;
   const scaMinSeverityExplicit = scaMinSeverityInput.trim() !== '';
 
-  const enforceNodeFloorRaw = core.getInput('toolchain_enforce_node_floor').trim().toLowerCase();
+  // Case-insensitive on purpose (unlike the strict sca_enabled parser): a
+  // boolean gate must never fail a run over 'True' vs 'true' capitalisation.
+  const enforceNodeFloorInput = core.getInput('toolchain_enforce_node_floor');
+  const enforceNodeFloorRaw = enforceNodeFloorInput.trim().toLowerCase();
   if (
     enforceNodeFloorRaw !== '' &&
     enforceNodeFloorRaw !== 'true' &&
     enforceNodeFloorRaw !== 'false'
   ) {
     throw new Error(
-      `Invalid toolchain_enforce_node_floor: "${core.getInput('toolchain_enforce_node_floor').trim()}". Must be true or false.`,
+      `Invalid toolchain_enforce_node_floor: "${enforceNodeFloorInput.trim()}". Must be true or false.`,
     );
   }
   const enforceNodeFloor = enforceNodeFloorRaw === 'true';
