@@ -750,7 +750,8 @@ export function isBlockedIpHost(host: string): boolean {
  * operator-known hosts, or by adding resolve-and-validate at fetch time as a
  * follow-up; do not rely on this check alone for hostile DNS.
  * @param url - Candidate remote MCP server URL.
- * @returns True when the URL is safe to open an SSE transport to.
+ * @returns True when the URL is safe to open a remote MCP transport
+ * (Streamable HTTP or SSE) to.
  */
 export function isSafeRemoteMcpUrl(url: string): boolean {
   try {
