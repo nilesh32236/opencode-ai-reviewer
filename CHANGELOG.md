@@ -4,6 +4,48 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.13.1] — 2026-09-10
+
+
+### Fixed
+
+- verification errors (attempt 1) [skip ci]
+- autofix iteration 2 [skip ci]
+- autofix iteration 2 [skip ci]
+- autofix iteration 3 [skip ci]
+- autofix iteration 3 [skip ci]
+- autofix iteration 1 [skip ci]
+- autofix iteration 1 [skip ci]
+- autofix iteration 2 [skip ci]
+- autofix iteration 2 [skip ci]
+- autofix iteration 1 [skip ci]
+- autofix iteration 1 [skip ci]
+- address issue #412
+- address issue #428
+- address issue #403
+- address issue #409
+- address issue #405
+
+### Changed
+
+- chore: rebuild action bundles for integrated audit autofixes (#405 #409 #403 #412 #428)
+- Merge remote-tracking branch 'origin/autofix/issue-428' into chore/merge-audit-autofix-prs
+- Merge remote-tracking branch 'origin/autofix/issue-412' into chore/merge-audit-autofix-prs
+- Merge remote-tracking branch 'origin/autofix/issue-403' into chore/merge-audit-autofix-prs
+- Merge remote-tracking branch 'origin/autofix/issue-409' into chore/merge-audit-autofix-prs
+- Merge remote-tracking branch 'origin/autofix/issue-405' into chore/merge-audit-autofix-prs
+- fix(review): skip generated/vendored bundles in secret scan and review
+- chore: rebuild action bundles for #405 accessibility fix
+- test(ui): align formatMergeScore expectations with labeled output
+- fix(security): address audit #433 — mask secrets, sanitize inline comments, harden redaction (#437) (#433
+#437)
+- fix(fix): only mark changes on successful push; drop skip-ci on autofix PR commits
+- fix(workflows): repair invalid upstream-monitor env and route issue targets in fix mode
+- ⚡ Bolt: Optimize Set allocation in test gap detector (#438) (#438)
+- 🛡️ Sentinel Daily Guard: Fix missing validation for API-fetched Git branch names (#436) (#436)
+
+[v1.13.1]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.0...v1.13.1
+
 ## [v1.13.0] — 2026-09-09
 
 ### Added
