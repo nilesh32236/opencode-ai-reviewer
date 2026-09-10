@@ -7,8 +7,7 @@
  * records task status/result in Postgres.
  */
 
-import { DEFAULT_CONFIG, GitHubHelper, Logger, ReviewEngine } from '@opencode-pr-agent/lib';
-import { buildFunctionScoreOptions } from '@opencode-pr-agent/lib';
+import { DEFAULT_CONFIG, GitHubHelper, Logger, ReviewEngine, buildFunctionScoreOptions } from '@opencode-pr-agent/lib';
 import type { AgentConfig, PlatformAdapter, ReviewResult } from '@opencode-pr-agent/lib';
 import { Worker } from 'bullmq';
 import type { Redis } from 'ioredis';
@@ -69,7 +68,7 @@ export function resolveConfig(config?: AgentConfig): AgentConfig {
  * @param config - Optional agent config driving display flags.
  * @returns The review result.
  */
-async function runReview(
+export async function runReview(
   engine: ReviewEngine,
   gh: PlatformAdapter,
   prNumber: number,
@@ -106,8 +105,9 @@ async function runReview(
  * @param engine - The review engine.
  * @param gh - The GitHub platform adapter.
  * @param workspace - The workspace path.
+ * @param config - Optional agent config driving display flags.
  */
-async function dispatchTask(
+export async function dispatchTask(
   data: TaskJobData,
   engine: ReviewEngine,
   gh: PlatformAdapter,

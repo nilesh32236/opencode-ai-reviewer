@@ -392,7 +392,7 @@ export async function handlePRReview(
         prNumber,
         pr.headSha,
         finalResult,
-        config.review.inline,
+        effectiveConfig.review.inline,
         undefined,
         buildFunctionScoreOptions(effectiveConfig.review.showFunctionScores, pr.changedFiles),
       );

@@ -177,6 +177,9 @@ export function buildConfig(): AgentConfig {
       ...(process.env.REVIEW_TEST_GAP_DETECTION !== undefined
         ? { enableTestGapDetection: process.env.REVIEW_TEST_GAP_DETECTION === 'true' }
         : {}),
+      ...(process.env.REVIEW_SHOW_FUNCTION_SCORES !== undefined
+        ? { showFunctionScores: process.env.REVIEW_SHOW_FUNCTION_SCORES === 'true' }
+        : {}),
       ...(process.env.ENABLE_CODEBASE_INDEX !== undefined
         ? { enableCodebaseIndex: process.env.ENABLE_CODEBASE_INDEX !== 'false' }
         : {}),
@@ -308,9 +311,10 @@ export function buildConfig(): AgentConfig {
  * vars + defaults (no per-repo context at startup), so per-repo tuning
  * is applied here at the point where a repo working directory exists.
  *
- * Only the `review.sensitivity` / `review.categories` / `review.enableCodebaseIndex`
- * / `review.enableMetaVerification` / `review.enableTestGapDetection` /
- * `review.suppressLowConfidence` / `review.failOnSeverity` /
+  * Only the `review.sensitivity` / `review.categories` / `review.enableCodebaseIndex`
+  * / `review.enableMetaVerification` / `review.enableTestGapDetection` /
+  * `review.showFunctionScores` /
+  * `review.suppressLowConfidence` / `review.failOnSeverity` /
  * `review.suggestTitleAndLabels` fields, the `notifications`, `secrets`, `llm`,
  * and `sca` sections are merged
  * (the engine filters findings off those fields and respects the codebase-index /
@@ -339,6 +343,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const suggestTitleAndLabels = repoConfig?.review?.suggestTitleAndLabels;
   const streamComments = repoConfig?.review?.streamComments;
   const streamBatchSize = repoConfig?.review?.streamBatchSize;
+  const showFunctionScores = repoConfig?.review?.showFunctionScores;
   const notifications = repoConfig?.notifications;
   const secrets = repoConfig?.secrets;
   const llm = repoConfig?.llm;
@@ -355,6 +360,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
     suggestTitleAndLabels === undefined &&
     streamComments === undefined &&
     streamBatchSize === undefined &&
+    showFunctionScores === undefined &&
     !notifications &&
     !secrets &&
     !llm &&
@@ -382,6 +388,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       ...(suggestTitleAndLabels !== undefined && { suggestTitleAndLabels }),
       ...(streamComments !== undefined && { streamComments }),
       ...(streamBatchSize !== undefined && { streamBatchSize }),
+      ...(showFunctionScores !== undefined && { showFunctionScores }),
     },
     ...(notifications && {
       notifications: {

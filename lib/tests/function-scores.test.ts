@@ -190,6 +190,66 @@ describe('collectFunctionScoreInputs', () => {
       ]),
     ).toEqual([]);
   });
+
+  it('skips deletion-only hunks with zero added lines', () => {
+    const inputs = collectFunctionScoreInputs([
+      {
+        path: 'src/a.ts',
+        status: 'modified',
+        additions: 0,
+        deletions: 2,
+        patch: ['@@ -1,2 +1,0 @@ function gone() {', '-  old();', '-}'].join('\n'),
+      },
+    ]);
+    expect(inputs).toEqual([]);
+  });
+
+  it('skips non-source files so docs-only PRs yield no table', () => {
+    const inputs = collectFunctionScoreInputs([
+      {
+        path: 'docs/guide.md',
+        status: 'modified',
+        additions: 3,
+        deletions: 0,
+        patch: '@@ -1 +1,3 @@\n+line1\n+line2\n+line3',
+      },
+    ]);
+    expect(inputs).toEqual([]);
+  });
+
+  it('recognizes underscore/dash test affixes as test files', () => {
+    for (const testPath of ['pkg/foo_test.go', 'tests/test_foo.py', 'src/foo-test.ts']) {
+      const inputs = collectFunctionScoreInputs([
+        {
+          path: 'src/a.ts',
+          status: 'modified',
+          additions: 1,
+          deletions: 0,
+          patch: '@@ -1 +1 @@\n+x',
+        },
+        { path: testPath, status: 'added', additions: 1, deletions: 0, patch: '@@ -0,0 +1 @@\n+y' },
+      ]);
+      expect(inputs[0].hasTestGap).toBe(false);
+    }
+    // A similarly-named source file must not count as a test change.
+    const inputs = collectFunctionScoreInputs([
+      {
+        path: 'src/a.ts',
+        status: 'modified',
+        additions: 1,
+        deletions: 0,
+        patch: '@@ -1 +1 @@\n+x',
+      },
+      {
+        path: 'src/contest.ts',
+        status: 'added',
+        additions: 1,
+        deletions: 0,
+        patch: '@@ -0,0 +1 @@\n+y',
+      },
+    ]);
+    expect(inputs[0].hasTestGap).toBe(true);
+  });
 });
 
 describe('buildFunctionScoreOptions', () => {

@@ -92,8 +92,11 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
 
   const gh: PlatformAdapter =
     config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
+  // Resolve the merged config once so the engine and the review-posting display
+  // flags (inline comments, function scores) observe the same per-repo values.
+  const effectiveConfig = mergeRepoConfig(config, tempDir);
   const engine = new ReviewEngine(
-    mergeRepoConfig(config, tempDir),
+    effectiveConfig,
     gh,
     undefined,
     eventBus,
@@ -246,9 +249,9 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           prNumber,
           pr.headSha,
           result,
-          config.review.inline,
+          effectiveConfig.review.inline,
           undefined,
-          buildFunctionScoreOptions(config.review.showFunctionScores, pr.changedFiles),
+          buildFunctionScoreOptions(effectiveConfig.review.showFunctionScores, pr.changedFiles),
         );
         if (reviewResult.commentIds) {
           currentCommentIds = reviewResult.commentIds;

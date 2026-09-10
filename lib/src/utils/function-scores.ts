@@ -133,7 +133,11 @@ export function buildFunctionScoreTable(
 }
 
 const HUNK_HEADER_RE = /^@@\s+-[0-9]+(?:,[0-9]+)?\s+\+([0-9]+)(?:,[0-9]+)?\s+@@(?:\s+(.*))?$/;
-const TEST_PATH_RE = /(?:^|\/)(?:__tests__|[Tt]est|[Tt]ests|[Ss]pec)(?:\/|$)|[.](?:test|spec)[.]/;
+// Matches common test-file conventions: __tests__/Test/Tests/Spec path
+// segments, .test./.spec. infixes (foo.test.ts), and _test/test_/-test affixes
+// (foo_test.go, test_foo.py, foo-test.ts).
+const TEST_PATH_RE =
+  /(?:^|\/)(?:__tests__|[Tt]est|[Tt]ests|[Ss]pec)(?:\/|$)|[.](?:test|spec)[.]|[_-]test(?=$|[./])|(?:^|\/)test[_-]/;
 
 /** Whether a changed file looks like a test file. */
 function isTestFile(filePath: string): boolean {
@@ -151,7 +155,9 @@ function isSourceFile(filePath: string): boolean {
 /**
  * Estimate nesting depth from the indentation of added lines: the deepest
  * leading indent (tabs count as 2 spaces) halved, a cheap deterministic
- * proxy for block nesting without parsing.
+ * proxy for block nesting without parsing. Assumes 2-space indentation, so
+ * 4-space-indented repos report roughly double the true depth; the score only
+ * uses this as a relative static signal.
  */
 function estimateNesting(addedLines: string[]): number {
   let maxIndent = 0;
@@ -167,10 +173,16 @@ function estimateNesting(addedLines: string[]): number {
 
 /**
  * Collect deterministic per-function score inputs from a PR's changed files.
- * Each diff hunk becomes one row: the hunk header's trailing function context
- * (or the file basename when absent) names the row, added-line count is the
- * churn signal, indentation of added lines estimates nesting, and a source
- * file with no test file among the changed files is treated as a test gap.
+ * Each diff hunk with added lines becomes one row: the hunk header's trailing
+ * function context (or the file basename when absent) names the row,
+ * added-line count is the churn signal, indentation of added lines estimates
+ * nesting, and a source file is treated as a test gap when no test file is
+ * among the changed files. The test-gap signal is a coarse repo-wide
+ * heuristic — an unrelated test change clears the gap for all source files;
+ * per-file/test-target correlation is intentionally out of scope.
+ * Only reviewable source files (by extension, excluding test files) produce
+ * rows: docs/config/test-only and deletion-only hunks (zero added lines) are
+ * skipped, so docs-only or deletion-only PRs yield no table.
  * Pure and dependency-free — no model call, no I/O.
  * @param changedFiles - Changed files from the PR context.
  * @returns Score inputs in diff order (scoring/sorting happens downstream).
@@ -183,12 +195,17 @@ export function collectFunctionScoreInputs(
   const inputs: FunctionScoreInput[] = [];
   for (const file of changedFiles) {
     if (!file || file.status === 'removed' || !file.patch) continue;
+    // Skip non-source hunks (docs, config, test files): scoring them would
+    // render misleading rows on docs-only or test-only PRs.
+    if (!isSourceFile(file.path)) continue;
     const fallbackName = file.path.split('/').pop() || file.path;
     let hunkName: string | null = null;
     let hunkLine = 0;
     let added: string[] = [];
     const flush = (): void => {
-      if (added.length === 0 && hunkLine === 0) return;
+      // Skip deletion-only hunks: zero added lines carry no churn signal and
+      // would otherwise emit zero-churn rows.
+      if (added.length === 0) return;
       inputs.push({
         file: file.path,
         name: hunkName?.trim() ? hunkName.trim().slice(0, 120) : fallbackName,
