@@ -232,6 +232,9 @@ function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {
     ...DEFAULT_CONFIG,
     timeoutMinutes: 10,
+    // The single-process subagent path is now the default; pin the legacy
+    // path here so the existing assertions keep testing it explicitly.
+    multiAgent: { ...DEFAULT_CONFIG.multiAgent, enabled: false },
     ...overrides,
     review: {
       ...DEFAULT_CONFIG.review,
@@ -803,7 +806,17 @@ describe('ReviewEngine', () => {
     });
 
     describe('multi-agent review path (single-process subagent dispatch)', () => {
-      const agentPr = makePRContext();
+      // Multi-file PR so files.length > batchSize (3) and the review routes
+      // through the single-process subagent path instead of the legacy
+      // single-batch fast path.
+      const agentPr = makePRContext({
+        changedFiles: [
+          { path: 'src/a.ts', status: 'modified', additions: 10, deletions: 2, patch: 'diff-a' },
+          { path: 'src/b.ts', status: 'modified', additions: 10, deletions: 2, patch: 'diff-b' },
+          { path: 'src/c.ts', status: 'modified', additions: 10, deletions: 2, patch: 'diff-c' },
+          { path: 'src/d.ts', status: 'modified', additions: 10, deletions: 2, patch: 'diff-d' },
+        ],
+      });
 
       function makeMultiAgentEngine(): ReviewEngine {
         return new ReviewEngine(
@@ -1128,6 +1141,177 @@ describe('ReviewEngine', () => {
 
         expect(capturedPrompt).toContain('## Open Review Threads (Unresolved)');
         expect(capturedPrompt).toContain('Already fixed in a later commit.');
+      });
+    });
+
+    describe('single-process subagent review is the default (multiAgent.enabled defaults to true)', () => {
+      // Multi-file PR so files.length > batchSize (3) and the review routes
+      // through the single-process subagent path instead of the legacy
+      // single-batch fast path.
+      const multiFilePr = makePRContext({
+        changedFiles: [
+          { path: 'src/a.ts', status: 'modified', additions: 10, deletions: 2, patch: 'diff-a' },
+          { path: 'src/b.ts', status: 'modified', additions: 10, deletions: 2, patch: 'diff-b' },
+          { path: 'src/c.ts', status: 'modified', additions: 10, deletions: 2, patch: 'diff-c' },
+          { path: 'src/d.ts', status: 'modified', additions: 10, deletions: 2, patch: 'diff-d' },
+        ],
+      });
+
+      function defaultEngine(): ReviewEngine {
+        // DEFAULT_CONFIG.multiAgent.enabled is now true; spread it explicitly
+        // so the default-on behavior is what is under test.
+        return new ReviewEngine(
+          makeConfig({ multiAgent: { ...DEFAULT_CONFIG.multiAgent } }),
+          mockAdapter,
+        );
+      }
+
+      it('runs a single opencode process with all category subagents injected by default', async () => {
+        const eng = defaultEngine();
+        let capturedSubagents: unknown;
+        mockRunOpenCode.mockImplementation(async (_p: string, opts?: { subagents?: unknown }) => {
+          capturedSubagents = opts?.subagents;
+          return { success: true, output: '', durationMs: 500, tokensUsed: 10 };
+        });
+        mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+        await eng.reviewPR(multiFilePr);
+
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(1);
+        const subagents = capturedSubagents as Record<string, Record<string, unknown>>;
+        for (const cat of ['security', 'performance', 'quality', 'logic']) {
+          expect(subagents[`${cat}-reviewer`]).toBeDefined();
+          expect(subagents[`${cat}-reviewer`].mode).toBe('subagent');
+        }
+      });
+
+      it('keeps the legacy single-batch fast path for small PRs (no subagents)', async () => {
+        const eng = defaultEngine();
+        let capturedSubagents: unknown;
+        mockRunOpenCode.mockImplementation(async (_p: string, opts?: { subagents?: unknown }) => {
+          capturedSubagents = opts?.subagents;
+          return { success: true, output: '', durationMs: 500, tokensUsed: 10 };
+        });
+        mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+        await eng.reviewPR(makePRContext()); // 1 file
+
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(1);
+        expect(capturedSubagents).toBeUndefined();
+      });
+
+      it('falls back to the legacy batch path when the orchestrator context overflows', async () => {
+        const bigPatch = 'x'.repeat(15_000);
+        const oversizedPr = makePRContext({
+          changedFiles: [
+            { path: 'src/a.ts', status: 'modified', additions: 200, deletions: 0, patch: bigPatch },
+            { path: 'src/b.ts', status: 'modified', additions: 200, deletions: 0, patch: bigPatch },
+            { path: 'src/c.ts', status: 'modified', additions: 200, deletions: 0, patch: bigPatch },
+            { path: 'src/d.ts', status: 'modified', additions: 200, deletions: 0, patch: bigPatch },
+          ],
+        });
+        const eng = defaultEngine();
+        let capturedSubagents: unknown;
+        mockRunOpenCode.mockImplementation(async (_p: string, opts?: { subagents?: unknown }) => {
+          capturedSubagents = opts?.subagents;
+          return { success: true, output: '', durationMs: 500, tokensUsed: 10 };
+        });
+        mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+        await eng.reviewPR(oversizedPr);
+
+        // 4 files / batchSize 3 = 2 batches + 1 synthesis = 3 calls; no subagents.
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(3);
+        expect(capturedSubagents).toBeUndefined();
+      });
+
+      it('streams the real parsed result through onBatchComplete (not a placeholder)', async () => {
+        const eng = defaultEngine();
+        mockRunOpenCode.mockResolvedValue({
+          success: true,
+          output: '',
+          durationMs: 500,
+          tokensUsed: 10,
+        });
+        mockParseJsonlFile.mockResolvedValue({
+          ...mockEmptyResult(),
+          issues: [
+            {
+              type: 'issue',
+              severity: 'critical',
+              file: 'src/a.ts',
+              line: 4,
+              message: 'boom',
+              agent: 'security',
+              category: 'security',
+            },
+          ],
+        });
+
+        let streamed: ReviewResult | undefined;
+        await eng.reviewPR(
+          multiFilePr,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          async (_i, _t, result) => {
+            streamed = result;
+          },
+        );
+
+        expect(streamed).toBeDefined();
+        expect(streamed!.issues).toHaveLength(1);
+        expect(streamed!.issues[0].message).toBe('boom');
+      });
+
+      it('returns an empty merged result for a zero-file PR without spawning opencode', async () => {
+        const eng = defaultEngine();
+        mockRunOpenCode.mockResolvedValue({
+          success: true,
+          output: '',
+          durationMs: 500,
+          tokensUsed: 10,
+        });
+        mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+        const result = await eng.reviewPR(makePRContext({ changedFiles: [] }));
+
+        expect(mockRunOpenCode).not.toHaveBeenCalled();
+        expect(result.issues).toHaveLength(0);
+        expect(result.verdict.ready).toBe(false);
+      });
+
+      it('falls back to the legacy path when every agent is explicitly disabled', async () => {
+        const eng = new ReviewEngine(
+          makeConfig({
+            multiAgent: {
+              ...DEFAULT_CONFIG.multiAgent,
+              enabled: true,
+              agents: {
+                security: { enabled: false },
+                performance: { enabled: false },
+                quality: { enabled: false },
+                logic: { enabled: false },
+              },
+            },
+          }),
+          mockAdapter,
+        );
+        let capturedSubagents: unknown;
+        mockRunOpenCode.mockImplementation(async (_p: string, opts?: { subagents?: unknown }) => {
+          capturedSubagents = opts?.subagents;
+          return { success: true, output: '', durationMs: 500, tokensUsed: 10 };
+        });
+        mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+        await eng.reviewPR(multiFilePr);
+
+        expect(capturedSubagents).toBeUndefined();
       });
     });
 

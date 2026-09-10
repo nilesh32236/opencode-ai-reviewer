@@ -378,7 +378,8 @@ export function isBlockedIpHost(host: string): boolean {
  * webhook URLs). Purely synchronous — hostnames that do not parse as IPs are
  * checked against hostname blocklists only (no DNS resolution, by design).
  * @param url - Candidate remote MCP server URL.
- * @returns True when the URL is safe to open an SSE transport to.
+ * @returns True when the URL is safe to open a remote MCP transport
+ * (Streamable HTTP or SSE) to.
  */
 export function isSafeRemoteMcpUrl(url: string): boolean {
   try {
