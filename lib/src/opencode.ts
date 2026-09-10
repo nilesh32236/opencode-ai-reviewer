@@ -956,6 +956,23 @@ function mergeEnvProviderEntry(
 }
 
 /**
+ * AWS keys the Bedrock SDK actually reads (credentials + region + shared-config
+ * / IRSA resolution inputs). Ambient forwarding and the options.env Bedrock
+ * exception are both restricted to this list so a Bedrock run can never receive
+ * an arbitrary AWS_* key that the ambient path would not forward.
+ */
+const BEDROCK_AWS_KEYS = [
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'AWS_REGION',
+  'AWS_PROFILE',
+  'AWS_BEARER_TOKEN_BEDROCK',
+  'AWS_WEB_IDENTITY_TOKEN_FILE',
+  'AWS_ROLE_ARN',
+] as const;
+
+/**
  * Translate Azure / Bedrock LLM provider config blocks into the standard
  * environment variables the OpenCode CLI and its AI SDK providers read.
  * Explicit environment variables always win; config-file values only fill gaps.
@@ -999,16 +1016,7 @@ function applyLLMEnvOverrides(safeEnv: Record<string, string>, llm: LLMConfig | 
       // they are still forwarded only here because the SDK resolves them into
       // live credentials (SSO / role assumption) — needed for Bedrock auth via
       // shared-config and IRSA-style setups, harmless to omit elsewhere.
-      for (const key of [
-        'AWS_ACCESS_KEY_ID',
-        'AWS_SECRET_ACCESS_KEY',
-        'AWS_SESSION_TOKEN',
-        'AWS_REGION',
-        'AWS_PROFILE',
-        'AWS_BEARER_TOKEN_BEDROCK',
-        'AWS_WEB_IDENTITY_TOKEN_FILE',
-        'AWS_ROLE_ARN',
-      ]) {
+      for (const key of BEDROCK_AWS_KEYS) {
         const val = process.env[key];
         if (val !== undefined && safeEnv[key] === undefined) safeEnv[key] = val;
       }
@@ -1460,17 +1468,20 @@ export async function runOpenCode(
   // the subprocess hardening (audit authz) from being silently bypassed by a
   // future caller, DATABASE_URL is never accepted here and AWS_* keys are only
   // accepted when a Bedrock provider is configured — both cases warn and skip.
+  // The Bedrock exception is restricted to BEDROCK_AWS_KEYS (same list as
+  // ambient forwarding) so arbitrary AWS_* cannot slip in via options.env.
   if (options.env) {
     const hasBedrockProvider = Object.values(llm?.providers ?? {}).some(
       (p) => p?.type === 'bedrock',
     );
+    const bedrockAwsKeys = new Set<string>(BEDROCK_AWS_KEYS);
     for (const [key, value] of Object.entries(options.env)) {
       if (value === undefined || key === 'OPENCODE_CONFIG_CONTENT') continue;
       if (key === 'DATABASE_URL') {
         core.warning('options.env DATABASE_URL is never forwarded to the subprocess; skipping.');
         continue;
       }
-      if (key.startsWith('AWS_') && !hasBedrockProvider) {
+      if (key.startsWith('AWS_') && !(hasBedrockProvider && bedrockAwsKeys.has(key))) {
         core.warning(`options.env ${key} skipped: AWS_* is only forwarded for Bedrock runs.`);
         continue;
       }

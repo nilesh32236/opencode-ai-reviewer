@@ -50,8 +50,12 @@ const req = createRequire(__filename);
  * @returns The sanitized error message string with credentials redacted.
  */
 export function sanitizeDbError(err: unknown): string {
-  const msg = err instanceof Error ? err.message : String(err);
-  return msg.replace(/((?:postgres|mysql|mongodb):\/\/)[^@\s]+@/gi, '$1<redacted>@');
+  const msg =
+    err instanceof Error ? (err.stack ?? err.message) : typeof err === 'string' ? err : String(err);
+  return msg.replace(
+    /((?:postgres|mysql|mongodb|redis|amqp)(?:\+srv)?:\/\/)[^@\s]+@/gi,
+    '$1<redacted>@',
+  );
 }
 
 /**

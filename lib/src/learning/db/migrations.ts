@@ -234,10 +234,15 @@ export async function applyMigrations(repo: {
         await recordMigrationVersion(repo, migration.version);
         migrationsApplied++;
       } catch (err) {
-        // Log error but continue with other migrations
+        // Log error but continue with other migrations.
+        // Never pass raw err as Logger data: Logger sanitizes only via
+        // sanitizeString (no DB connection-string rule), so a connection-string
+        // password in message/stack would be logged verbatim. Pass a
+        // DB-sanitized stack/message string instead to preserve debugging info
+        // without leaking credentials.
         migrationsLogger.error(
-          `Failed to apply migration ${migration.version}: ${migration.description}: ${sanitizeDbError(err)}`,
-          err,
+          `Failed to apply migration ${migration.version}: ${migration.description}`,
+          sanitizeDbError(err instanceof Error ? (err.stack ?? err.message) : err),
         );
       }
     }

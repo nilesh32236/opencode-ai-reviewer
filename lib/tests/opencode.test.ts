@@ -638,6 +638,41 @@ describe('runOpenCode()', () => {
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('AWS_ACCESS_KEY_ID'));
   });
 
+  it('forwards options.env AWS_* when a Bedrock provider is configured', async () => {
+    setLLMProviderConfig({
+      providers: {
+        bedrock: {
+          type: 'bedrock',
+          region: 'us-east-1',
+          modelId: 'us.anthropic.claude-sonnet-4-5-v2:0',
+        },
+      },
+    });
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const resultPromise = runOpenCode('test', {
+      model: 'bedrock/my-model',
+      env: {
+        AWS_ACCESS_KEY_ID: 'AKIA-test',
+        AWS_FOO_BAR: 'arbitrary',
+      },
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    proc.emitClose(0);
+    await resultPromise;
+
+    const spawnCall = mockSpawn.mock.calls[0];
+    const env = spawnCall[2].env;
+    // Allowlisted Bedrock key is forwarded with no skip warning for that key.
+    expect(env.AWS_ACCESS_KEY_ID).toBe('AKIA-test');
+    expect(core.warning).not.toHaveBeenCalledWith(expect.stringContaining('AWS_ACCESS_KEY_ID'));
+    // Arbitrary AWS_* outside the Bedrock allowlist is still skipped.
+    expect(env.AWS_FOO_BAR).toBeUndefined();
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('AWS_FOO_BAR'));
+  });
+
   it('sets OPENCODE_CONFIG_CONTENT env var', async () => {
     const proc = makeMockProcess();
     mockSpawn.mockReturnValue(proc);

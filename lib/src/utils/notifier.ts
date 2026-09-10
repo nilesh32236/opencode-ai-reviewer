@@ -502,19 +502,6 @@ export async function sendNotification(
   const logger =
     options.logger ?? new Logger('Notifier', { prNumber: context.number, repo: context.repo });
 
-  if (config.slack?.webhookUrl?.trim() && !env.SLACK_WEBHOOK_URL?.trim()) {
-    logger.warn(
-      'Using Slack webhook URL from the config file, which is PR-editable and may embed ' +
-        'credentials. Prefer supplying SLACK_WEBHOOK_URL via environment variable.',
-    );
-  }
-  if (config.teams?.webhookUrl?.trim() && !env.TEAMS_WEBHOOK_URL?.trim()) {
-    logger.warn(
-      'Using Teams webhook URL from the config file, which is PR-editable and may embed ' +
-        'credentials. Prefer supplying TEAMS_WEBHOOK_URL via environment variable.',
-    );
-  }
-
   const slackUrl = resolveWebhookUrl(config.slack?.webhookUrl, env.SLACK_WEBHOOK_URL);
   const teamsUrl = resolveWebhookUrl(config.teams?.webhookUrl, env.TEAMS_WEBHOOK_URL);
   if (!slackUrl && !teamsUrl) return;
@@ -522,6 +509,22 @@ export async function sendNotification(
   const minSeverity = config.minSeverity ?? 'critical';
   if (!meetsSeverityThreshold(result.stats, minSeverity)) {
     return;
+  }
+
+  // Config-file fallback warnings fire only on an actual send (after the
+  // empty-URL and severity-threshold early returns) and only for the channel
+  // that will actually be used, to avoid noise when nothing will be sent.
+  if (slackUrl && config.slack?.webhookUrl?.trim() && !env.SLACK_WEBHOOK_URL?.trim()) {
+    logger.warn(
+      'Using Slack webhook URL from the config file, which is PR-editable and may embed ' +
+        'credentials. Prefer supplying SLACK_WEBHOOK_URL via environment variable.',
+    );
+  }
+  if (teamsUrl && config.teams?.webhookUrl?.trim() && !env.TEAMS_WEBHOOK_URL?.trim()) {
+    logger.warn(
+      'Using Teams webhook URL from the config file, which is PR-editable and may embed ' +
+        'credentials. Prefer supplying TEAMS_WEBHOOK_URL via environment variable.',
+    );
   }
 
   // Slack incoming webhooks normally post to the channel bound to the URL, but
