@@ -237,6 +237,7 @@ export async function applyMigrations(repo: {
         // Log error but continue with other migrations
         migrationsLogger.error(
           `Failed to apply migration ${migration.version}: ${migration.description}: ${sanitizeDbError(err)}`,
+          err,
         );
       }
     }

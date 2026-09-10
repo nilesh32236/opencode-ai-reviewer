@@ -66,12 +66,18 @@ export function context7Server(): MCPServerConfig {
  * @param token - GitHub personal access token for authentication
  * @returns MCPServerConfig for the GitHub MCP server
  */
+/** Tracks whether the third-party-token warning has been emitted (log once). */
+let githubTokenWarningLogged = false;
+
 export const githubMCPServer = (token: string): MCPServerConfig => {
-  new Logger('MCPManager').warn(
-    'Passing full GITHUB_TOKEN to third-party npx MCP server package — ' +
-      'prefer a repo-scoped, minimally-privileged token and keep MCP servers ' +
-      'disabled by default in CI.',
-  );
+  if (!githubTokenWarningLogged) {
+    githubTokenWarningLogged = true;
+    new Logger('MCPManager').warn(
+      'Passing full GITHUB_TOKEN to third-party npx MCP server package — ' +
+        'prefer a repo-scoped, minimally-privileged token and keep MCP servers ' +
+        'disabled by default in CI.',
+    );
+  }
   return {
     name: 'github',
     type: 'local',
