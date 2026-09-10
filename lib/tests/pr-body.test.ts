@@ -13,7 +13,8 @@ describe('buildAutofixPRBody', () => {
       analysisApproach: 'Check for null input at entry point',
     });
 
-    expect(body).toContain('## Fixes #42');
+    expect(body).toContain('Fixes #42');
+    expect(body).not.toContain('## Fixes #42');
     expect(body).toContain('## What Was Changed');
     expect(body).toContain('Added null check before iterating over items');
     expect(body).toContain('- `lib/src/parser.ts`');
@@ -33,7 +34,7 @@ describe('buildAutofixPRBody', () => {
       hasTests: false,
     });
 
-    expect(body).toContain('## Fixes #10');
+    expect(body).toContain('Fixes #10');
     expect(body).toContain('The fix agent applied changes to address the issue.');
     expect(body).toContain('- Please verify the fix manually before merging');
   });
