@@ -38,7 +38,7 @@ import { runReview } from './review.js';
 import { runSelfHeal } from './self-heal.js';
 import { runSetup } from './setup.js';
 import { StateCacheManager } from './state-cache.js';
-import { sanitize } from './utils.js';
+import { resolvePrNumber, sanitize } from './utils.js';
 
 async function run(): Promise<void> {
   // The GitHub Action defaults to human-readable logs because CI already
@@ -463,10 +463,19 @@ async function run(): Promise<void> {
               await runAutofixLoop(inputs, config, engine, gh, repo, token);
             } else if (issueNum && !isPr) {
               await runFixIssue(inputs, config, engine, gh, repo, gitEmail);
-            } else if (inputs.enableFix) {
-              await runAutofixLoop(inputs, config, engine, gh, repo, token);
             } else {
-              await runFix(inputs, config, engine, gh);
+              // No PR/issue in the event payload (e.g. schedule/workflow_dispatch).
+              // Fall back to the explicit `pr-number` input and classify the target
+              // via the platform API: an issue number routes to the issue-fix flow
+              // instead of 404ing on /pulls/<issue>.
+              const explicitNum = await resolvePrNumber();
+              if (explicitNum !== null && !(await gh.isMR(explicitNum))) {
+                await runFixIssue(inputs, config, engine, gh, repo, gitEmail);
+              } else if (inputs.enableFix) {
+                await runAutofixLoop(inputs, config, engine, gh, repo, token);
+              } else {
+                await runFix(inputs, config, engine, gh);
+              }
             }
           }
           break;
