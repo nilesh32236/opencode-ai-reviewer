@@ -69,16 +69,28 @@ let runModeOverride: OpenCodeRunMode | undefined;
  * `dualEmitSubagentPermissions` option on {@link runOpenCode}, process-wide via
  * {@link setDualEmitSubagentPermissions}, or via the
  * `OPENCODE_DUAL_EMIT_SUBAGENT_PERMISSIONS` env var (`false` disables).
- * @since NEXT
+ *
+ * Strict-schema note: the V2 docs quoted on
+ * {@link SUBAGENT_V2_PERMISSIONS_CUTOFF} say "Do not use `permission`..." in V2
+ * configuration. Dual-emit therefore assumes V2 CLIs tolerate (ignore or warn
+ * on) the extra legacy `permission` key alongside `permissions`. If a V2 CLI
+ * ever performs strict-schema validation and rejects the legacy key, disable
+ * dual-emit via one of the opt-outs above (e.g. pass `false` per call/run, call
+ * `setDualEmitSubagentPermissions(false)`, or set
+ * `OPENCODE_DUAL_EMIT_SUBAGENT_PERMISSIONS=false`) to fall back to gated
+ * single-shape behavior (V2-only on new CLIs, legacy-only on old/unknown).
  */
 let dualEmitSubagentPermissionsDefault = true;
 
 /**
  * Configure whether V2-capable subagent configs emit both the legacy V1
  * `permission` object and the V2 `permissions` array side by side.
+ *
+ * See the module-default comment above for the strict-schema caveat: if a V2
+ * CLI rejects the legacy key, call `setDualEmitSubagentPermissions(false)` or
+ * set `OPENCODE_DUAL_EMIT_SUBAGENT_PERMISSIONS=false`.
  * @param enabled - `true` (default) to dual-emit, `false` for gated
  * single-shape behavior, `undefined` to restore the default (`true`).
- * @since NEXT
  */
 export function setDualEmitSubagentPermissions(enabled?: boolean): void {
   dualEmitSubagentPermissionsDefault = enabled ?? true;
@@ -91,7 +103,6 @@ export function setDualEmitSubagentPermissions(enabled?: boolean): void {
  * Unrecognized env values fall through to the module default (fail-open).
  * @param explicit - Optional explicit override for this call.
  * @returns The effective dual-emit setting.
- * @since NEXT
  */
 export function resolveDualEmitSubagentPermissions(explicit?: boolean): boolean {
   if (typeof explicit === 'boolean') return explicit;
@@ -1326,7 +1337,6 @@ function convertV1PermissionToV2Array(permission: unknown): Array<Record<string,
  * @param cliVersion - Raw detected CLI version; defaults to the last probed version.
  * @param dualEmit - Optional dual-emit override; env/module default applies when omitted.
  * @returns The (possibly upgraded) subagent map.
- * @since NEXT dual-emit support.
  */
 export function normalizeSubagentPermissionsForVersion(
   subagents: Record<string, Record<string, unknown>>,
@@ -1384,12 +1394,16 @@ export function normalizeSubagentPermissionsForVersion(
  * so the same config works on newer and older CLIs. With dual-emit disabled the
  * gate falls back to single-shape behavior (V2-only on new CLIs, legacy-only on
  * old/unknown versions). Fail-open: gating errors fall back to legacy.
+ * Strict-schema note: dual-emit assumes V2 CLIs tolerate the extra legacy
+ * `permission` key (the V2 docs say "Do not use `permission`..."). If a V2 CLI
+ * strictly validates and rejects it, pass `dualEmit: false` (or use the
+ * `dualEmitSubagentPermissions` run option, `setDualEmitSubagentPermissions`,
+ * or `OPENCODE_DUAL_EMIT_SUBAGENT_PERMISSIONS=false`) for V2-only output.
  * @param description - The subagent's role description (shown to the primary agent).
  * @param model - Optional per-subagent model override (defaults to the primary's model).
  * @param cliVersion - Optional detected CLI version; defaults to the last probed version.
  * @param dualEmit - Optional dual-emit override; env/module default applies when omitted.
  * @returns A subagent config object for the `agent` block.
- * @since NEXT dual-emit support.
  */
 export function buildReviewSubagent(
   description: string,
@@ -1405,6 +1419,8 @@ export function buildReviewSubagent(
     const version = cliVersion ?? cachedOpenCodeVersionRaw;
     if (shouldUseV2SubagentPermissions(version)) {
       if (resolveDualEmitSubagentPermissions(dualEmit)) {
+        // Dual-emit assumes V2 CLIs tolerate the legacy key alongside
+        // `permissions` (see module-default docs for the strict-schema opt-out).
         def.permission = { ...LEGACY_SUBAGENT_PERMISSION };
         def.permissions = buildV2SubagentDenyPermissions();
       } else {
@@ -1414,6 +1430,8 @@ export function buildReviewSubagent(
       def.permission = { ...LEGACY_SUBAGENT_PERMISSION };
     }
   } catch {
+    // biome-ignore lint/performance/noDelete: fail-open must remove a half-written key
+    delete def.permissions;
     def.permission = { ...LEGACY_SUBAGENT_PERMISSION };
   }
   if (model) def.model = model;
@@ -1584,6 +1602,9 @@ export {
  * `permissions` array. Set to false for gated single-shape behavior. When
  * omitted, the `OPENCODE_DUAL_EMIT_SUBAGENT_PERMISSIONS` env var or the module
  * default (see {@link setDualEmitSubagentPermissions}) applies.
+ * Strict-schema note: dual-emit assumes V2 CLIs tolerate the extra legacy key
+ * (V2 docs say "Do not use `permission`..."). If a V2 CLI strictly validates
+ * and rejects it, pass `false` here or set the env var to `false`.
  * @param options.llm - Custom LLM provider configuration for this run. When
  * provided, it is used instead of the module-level config set via
  * {@link setLLMProviderConfig}, so long-lived processes can dispatch concurrent

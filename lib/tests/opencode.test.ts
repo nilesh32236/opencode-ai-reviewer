@@ -718,6 +718,53 @@ describe('runOpenCode()', () => {
     expect(env.OPENCODE_DISABLE_AUTOUPDATE).toBe('true');
   });
 
+  it('dual-emits subagent permissions in OPENCODE_CONFIG_CONTENT by default, V2-only when disabled', async () => {
+    const subagents = {
+      'sec-reviewer': {
+        description: 'reviewer',
+        mode: 'subagent',
+        permission: { edit: 'deny', bash: 'deny' },
+      },
+    };
+
+    // Default (mocked probe is v1.2.3, above the V2 cutoff): both keys present.
+    const defaultProc = makeMockProcess();
+    mockSpawn.mockReturnValueOnce(defaultProc);
+    const defaultPromise = runOpenCode('test', { model: 'openai/gpt-4', subagents });
+    await new Promise((resolve) => setImmediate(resolve));
+    defaultProc.emitClose(0);
+    await defaultPromise;
+    const defaultEnv = mockSpawn.mock.calls[0][2].env;
+    const defaultConfig = JSON.parse(defaultEnv.OPENCODE_CONFIG_CONTENT);
+    expect(defaultConfig.agent['sec-reviewer'].permission).toEqual({
+      edit: 'deny',
+      bash: 'deny',
+    });
+    expect(defaultConfig.agent['sec-reviewer'].permissions).toEqual([
+      { action: 'edit', resource: '*', effect: 'deny' },
+      { action: 'shell', resource: '*', effect: 'deny' },
+    ]);
+
+    // Opt-out: only the V2 array is emitted on V2-capable CLIs.
+    const singleProc = makeMockProcess();
+    mockSpawn.mockReturnValueOnce(singleProc);
+    const singlePromise = runOpenCode('test', {
+      model: 'openai/gpt-4',
+      subagents,
+      dualEmitSubagentPermissions: false,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    singleProc.emitClose(0);
+    await singlePromise;
+    const singleEnv = mockSpawn.mock.calls[1][2].env;
+    const singleConfig = JSON.parse(singleEnv.OPENCODE_CONFIG_CONTENT);
+    expect(singleConfig.agent['sec-reviewer'].permission).toBeUndefined();
+    expect(singleConfig.agent['sec-reviewer'].permissions).toEqual([
+      { action: 'edit', resource: '*', effect: 'deny' },
+      { action: 'shell', resource: '*', effect: 'deny' },
+    ]);
+  });
+
   it('pipes a large prompt via stdin instead of argv (E2BIG prevention)', async () => {
     const proc = makeMockProcess();
     mockSpawn.mockReturnValue(proc);
