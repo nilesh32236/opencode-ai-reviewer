@@ -5,6 +5,8 @@ import {
   markAnalysisReady,
   parseAnalysisPlan,
   postBlockingQuestions,
+  sanitizeErrorMessage,
+  sanitizeMarkdown,
 } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { sanitize } from './utils.js';
@@ -42,7 +44,11 @@ export async function runAnalyze(
     const planMarkdown = await engine.runAnalyze(issueNumber, issueContext);
     const parsed = parseAnalysisPlan(planMarkdown);
 
-    await gh.postOrUpdateComment(issueNumber, '<!-- issue-analysis-plan -->', planMarkdown);
+    await gh.postOrUpdateComment(
+      issueNumber,
+      '<!-- issue-analysis-plan -->',
+      sanitizeMarkdown(planMarkdown),
+    );
 
     if (parsed.hasBlockingQuestions) {
       await postBlockingQuestions(gh, issueNumber, parsed);
@@ -54,12 +60,14 @@ export async function runAnalyze(
     core.setOutput('confidence_level', parsed.confidenceLevel);
     core.info(`Posted analysis plan for issue #${issueNumber}`);
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    core.setFailed(sanitize(`Analysis failed for issue #${issueNumber}: ${message}`));
+    core.warning(
+      sanitize(`Analysis failed for issue #${issueNumber}: ${sanitizeErrorMessage(err)}`),
+    );
+    core.setFailed(sanitize(`Analysis failed for issue #${issueNumber}`));
     await gh.postOrUpdateComment(
       issueNumber,
       '<!-- issue-analysis-error -->',
-      `❌ **Analysis Failed**: ${sanitize(message)}`,
+      `❌ **Analysis Failed**: Analysis failed for issue #${issueNumber}. See the action logs for details.`,
     );
   }
 }

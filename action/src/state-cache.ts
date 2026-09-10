@@ -39,12 +39,28 @@ export function sanitizeBranchForCacheKey(branch: string): string {
  * @param prefix - Cache key prefix (e.g. `learning-state`).
  * @param repo - Repository in `owner/name` format; defaults to the GitHub context.
  * @param branch - Branch ref; defaults to the GitHub context ref without `refs/heads/`.
+ * @param sha - Commit SHA; when provided, embedded in the key so each commit
+ * gets an isolated cache entry. Omit for a stable branch-scoped key.
  * @returns The composite cache key string.
  */
-export function buildCacheKey(prefix: string, repo?: string, branch?: string): string {
+export function buildCacheKey(
+  prefix: string,
+  repo?: string,
+  branch?: string,
+  sha?: string,
+): string {
   const repoNwo = repo || `${github.context.repo.owner}/${github.context.repo.repo}`;
   const branchRef = branch || github.context.ref.replace('refs/heads/', '');
-  const key = `${prefix}-${repoNwo}-${sanitizeBranchForCacheKey(branchRef)}`;
+  // Note: env/context SHAs are resolved by StateCacheManager and passed
+  // explicitly. A direct call without `sha` stays branch-scoped so existing
+  // callers and tests keep stable keys.
+  const rawSha = sha ?? '';
+  // Full ref/SHA segment: a bare repo-wide prefix lets one ref restore
+  // another's cached state (cache poisoning). The SHA is commit-scoped and
+  // hex-only so it cannot collide across refs or inject key structure.
+  const shaSegment = rawSha.replace(/[^a-fA-F0-9]/g, '').slice(0, 40);
+  const base = `${prefix}-${repoNwo}-${sanitizeBranchForCacheKey(branchRef)}`;
+  const key = shaSegment ? `${base}-${shaSegment}` : base;
   return key.slice(0, MAX_CACHE_KEY_LENGTH);
 }
 
@@ -59,6 +75,8 @@ export interface StateCacheManagerOptions {
   repo?: string;
   /** Branch ref. Defaults to the GitHub Actions context. */
   branch?: string;
+  /** Commit SHA. Defaults to GITHUB_SHA / the GitHub context. */
+  sha?: string;
 }
 
 /**
@@ -81,6 +99,7 @@ export class StateCacheManager {
   private readonly cacheKeyPrefix: string;
   private readonly repo: string;
   private readonly branch: string;
+  private readonly sha: string;
   private readonly logger: Logger;
   private savePromise: Promise<void> | undefined;
   private readonly circuitBreaker = new CircuitBreaker({
@@ -101,6 +120,7 @@ export class StateCacheManager {
     this.stateDir = options.stateDir ?? path.resolve(process.cwd(), '.opencode');
     this.repo = options.repo ?? `${github.context.repo.owner}/${github.context.repo.repo}`;
     this.branch = options.branch ?? github.context.ref.replace('refs/heads/', '');
+    this.sha = options.sha ?? process.env.GITHUB_SHA ?? github.context.sha ?? '';
     this.logger = new Logger('StateCache', { repo: this.repo, branch: this.branch });
   }
 
@@ -139,8 +159,11 @@ export class StateCacheManager {
     }
 
     core.info('Restoring learning state from cache...');
-    const primaryKey = buildCacheKey(this.cacheKeyPrefix, this.repo, this.branch);
-    const restoreKeys = [`${this.cacheKeyPrefix}-${this.repo}-`];
+    const primaryKey = buildCacheKey(this.cacheKeyPrefix, this.repo, this.branch, this.sha);
+    // Exact-key-only restore: a bare repo-wide prefix would let any ref
+    // restore any other ref's cached state. The primary key already embeds
+    // the full ref/SHA, so no fallback prefix is offered.
+    const restoreKeys = [primaryKey];
     try {
       const cacheKey = await this.circuitBreaker.call(() =>
         withRetry(() => restoreCache([this.stateDir], primaryKey, restoreKeys), {
@@ -209,7 +232,7 @@ export class StateCacheManager {
     }
 
     const baseKey =
-      this.restoredCacheKey ?? buildCacheKey(this.cacheKeyPrefix, this.repo, this.branch);
+      this.restoredCacheKey ?? buildCacheKey(this.cacheKeyPrefix, this.repo, this.branch, this.sha);
     const cacheKey = `${baseKey}-${this.hashLearningDbContent()}`;
     try {
       await this.circuitBreaker.call(() =>
