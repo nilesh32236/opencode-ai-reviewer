@@ -51,9 +51,17 @@ jobs:
         run: |
           set -euo pipefail
           known_hosts="$RUNNER_TEMP/ec2_known_hosts"
-          ssh-keyscan -T 10 -t ed25519 -H "$EC2_HOST" > "$known_hosts"
-          test -s "$known_hosts"
-          ssh-keygen -lf "$known_hosts" -E sha256 | awk '{print $2}' | grep -Fx -- "$EC2_HOST_FINGERPRINT"
+          if ! ssh-keyscan -T 10 -t ed25519 -H "$EC2_HOST" > "$known_hosts" 2>/dev/null || [ ! -s "$known_hosts" ]; then
+            echo "::error::Unable to scan an ed25519 host key from the configured EC2 host (unreachable or not advertising ed25519)."
+            exit 1
+          fi
+          actual="$(ssh-keygen -lf "$known_hosts" -E sha256 | awk '{print $2}')"
+          # EC2_HOST_FINGERPRINT may hold a comma/whitespace-separated allowlist
+          # so a host key can be rotated without a hard cutover.
+          if ! printf '%s\n' "$EC2_HOST_FINGERPRINT" | tr ', ' '\n' | tr -s '\n' | grep -Fx -- "$actual" >/dev/null; then
+            echo "::error::EC2 host key fingerprint mismatch. The scanned key is $actual; set the EC2_HOST_FINGERPRINT secret to that value."
+            exit 1
+          fi
           echo "path=$known_hosts" >> "$GITHUB_OUTPUT"
 
       - name: Sync files to EC2 via Rsync

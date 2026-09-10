@@ -121,7 +121,15 @@ jobs:
               echo "PR #${PR_NUMBER} has merge conflicts or is behind main — attempting merge..."
               git fetch origin main
 
-              if ! git merge origin/main --no-commit --no-ff; then
+              if git merge origin/main --no-commit --no-ff; then
+                # Merge applied cleanly — persist it so the branch is up to date
+                # and the working tree is left clean for the next loop iteration
+                # (a dangling staged merge would make the next `git checkout` fail).
+                git commit -m "chore: merge main into ${HEAD_REF} [autofix]"
+                git push origin "${HEAD_REF}" --force-with-lease || {
+                  echo "::warning::Failed to push merge commit for PR #${PR_NUMBER}"
+                }
+              else
                 echo "Merge conflicts detected on PR #${PR_NUMBER}. Attempting AI conflict resolution..."
 
                 cat << CONFLICT_EOF > /tmp/conflict-prompt.txt
