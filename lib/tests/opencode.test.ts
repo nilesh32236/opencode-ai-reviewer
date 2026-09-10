@@ -620,7 +620,7 @@ describe('runOpenCode()', () => {
       model: 'openai/gpt-4',
       env: {
         CUSTOM_VAR: 'custom-value',
-        DATABASE_URL: 'postgres://user@localhost/db',
+        DATABASE_URL: 'postgres://localhost/testdb',
         AWS_ACCESS_KEY_ID: 'AKIA-test',
       },
     });
@@ -889,7 +889,7 @@ describe('LLM provider support', () => {
   it('does not forward DATABASE_URL to the subprocess', async () => {
     // Dummy fixture value (no real credential): the test only asserts the key
     // is absent from the subprocess env.
-    process.env.DATABASE_URL = 'postgres://user@localhost/db';
+    process.env.DATABASE_URL = 'postgres://localhost/testdb';
     const proc = makeMockProcess();
     mockSpawn.mockReturnValue(proc);
 

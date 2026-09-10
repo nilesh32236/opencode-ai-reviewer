@@ -53,7 +53,7 @@ export function sanitizeDbError(err: unknown): string {
   const msg =
     err instanceof Error ? (err.stack ?? err.message) : typeof err === 'string' ? err : String(err);
   return msg.replace(
-    /((?:postgres|mysql|mongodb|redis|amqp)(?:\+srv)?:\/\/)[^@\s]+@/gi,
+    /((?:postgre(?:s|sql)|mysql|mongodb|redis|amqp)(?:\+srv)?:\/\/)[^@\s]+@/gi,
     '$1<redacted>@',
   );
 }

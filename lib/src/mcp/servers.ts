@@ -52,6 +52,18 @@ export function context7Server(): MCPServerConfig {
   };
 }
 
+/** Tracks whether the third-party-token warning has been emitted (log once). */
+let githubTokenWarningLogged = false;
+
+/**
+ * Reset the log-once flag for the GitHub MCP token warning.
+ * Test-only helper so warning assertions stay order-independent within a
+ * single process.
+ */
+export function resetGithubMCPWarningForTesting(): void {
+  githubTokenWarningLogged = false;
+}
+
 /**
  * GitHub MCP server — provides repository-aware context.
  * Reads files, searches code, understands PR structure.
@@ -66,18 +78,6 @@ export function context7Server(): MCPServerConfig {
  * @param token - GitHub personal access token for authentication
  * @returns MCPServerConfig for the GitHub MCP server
  */
-/** Tracks whether the third-party-token warning has been emitted (log once). */
-let githubTokenWarningLogged = false;
-
-/**
- * Reset the log-once flag for the GitHub MCP token warning.
- * Test-only helper so warning assertions stay order-independent within a
- * single process.
- */
-export function resetGithubMCPWarningForTesting(): void {
-  githubTokenWarningLogged = false;
-}
-
 export const githubMCPServer = (token: string): MCPServerConfig => {
   if (!githubTokenWarningLogged) {
     githubTokenWarningLogged = true;
