@@ -125,16 +125,20 @@ vi.stubGlobal('fetch', mockFetch);
 
 import {
   buildLLMProviderMap,
+  buildReviewSubagent,
+  buildV2SubagentDenyPermissions,
   checkHealth,
   configureGit,
   getGitStatus,
   isVersionCompatible,
+  normalizeSubagentPermissionsForVersion,
   parseOpenCodeVersion,
   resetOpenCodeState,
   resolveOpenCodePath,
   runOpenCode,
   setLLMProviderConfig,
   setupOpenCode,
+  shouldUseV2SubagentPermissions,
   validateModelString,
 } from '../src/opencode.js';
 
@@ -1624,5 +1628,99 @@ describe('getGitStatus()', () => {
       encoding: 'utf-8',
       cwd: '/tmp/test',
     });
+  });
+});
+
+describe('subagent V2 permissions gate', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('emits the V2 permissions-array shape on CLI 1.1.1 and newer', () => {
+    for (const version of ['1.1.1', 'v1.1.1', '1.2.0', 'v2.0.0']) {
+      expect(shouldUseV2SubagentPermissions(version)).toBe(true);
+      const def = buildReviewSubagent('reviewer', undefined, version);
+      expect(def.permission).toBeUndefined();
+      expect(def.permissions).toEqual(buildV2SubagentDenyPermissions());
+      expect(def.permissions).toEqual([
+        { action: 'edit', resource: '*', effect: 'deny' },
+        { action: 'shell', resource: '*', effect: 'deny' },
+      ]);
+    }
+  });
+
+  it('emits the legacy object shape unchanged on older CLIs', () => {
+    for (const version of ['1.1.0', '1.0.5', 'v1.0.0']) {
+      expect(shouldUseV2SubagentPermissions(version)).toBe(false);
+      const def = buildReviewSubagent('reviewer', 'openai/gpt-4', version);
+      expect(def.permissions).toBeUndefined();
+      expect(def.permission).toEqual({ edit: 'deny', bash: 'deny' });
+      expect(def.model).toBe('openai/gpt-4');
+    }
+  });
+
+  it('treats pre-release 1.1.1-rc.1 as older (legacy shape)', () => {
+    expect(shouldUseV2SubagentPermissions('1.1.1-rc.1')).toBe(false);
+    expect(buildReviewSubagent('reviewer', undefined, '1.1.1-rc.1').permission).toEqual({
+      edit: 'deny',
+      bash: 'deny',
+    });
+  });
+
+  it('fails open to legacy with a warning on unparseable versions', () => {
+    for (const version of [undefined, null, '', '   ', 'latest', 'garbage'] as const) {
+      expect(shouldUseV2SubagentPermissions(version)).toBe(false);
+      const def = buildReviewSubagent('reviewer', undefined, version);
+      expect(def.permissions).toBeUndefined();
+      expect(def.permission).toEqual({ edit: 'deny', bash: 'deny' });
+    }
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('legacy permission shape'));
+  });
+
+  it('defaults to the last probed version and upgrades at the runOpenCode choke point', async () => {
+    mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+    mockVersionOutput('opencode v1.2.3\n');
+    await checkHealth();
+
+    // No explicit version: the cached probe result drives the V2 shape.
+    const def = buildReviewSubagent('reviewer');
+    expect(def.permissions).toEqual([
+      { action: 'edit', resource: '*', effect: 'deny' },
+      { action: 'shell', resource: '*', effect: 'deny' },
+    ]);
+
+    const upgraded = normalizeSubagentPermissionsForVersion({
+      'sec-reviewer': {
+        description: 'reviewer',
+        mode: 'subagent',
+        permission: { edit: 'deny', bash: 'deny' },
+      },
+    });
+    expect(upgraded['sec-reviewer'].permissions).toEqual([
+      { action: 'edit', resource: '*', effect: 'deny' },
+      { action: 'shell', resource: '*', effect: 'deny' },
+    ]);
+    expect(upgraded['sec-reviewer'].permission).toBeUndefined();
+  });
+
+  it('leaves legacy blocks untouched when no version was ever probed', () => {
+    const input = {
+      'sec-reviewer': {
+        description: 'reviewer',
+        mode: 'subagent',
+        permission: { edit: 'deny', bash: 'deny' },
+      },
+    };
+    const out = normalizeSubagentPermissionsForVersion(input);
+    expect(out['sec-reviewer'].permission).toEqual({ edit: 'deny', bash: 'deny' });
+    expect(out['sec-reviewer'].permissions).toBeUndefined();
+  });
+
+  it('never throws from the gate path', () => {
+    expect(() =>
+      normalizeSubagentPermissionsForVersion(
+        undefined as unknown as Record<string, Record<string, unknown>>,
+      ),
+    ).not.toThrow();
   });
 });
