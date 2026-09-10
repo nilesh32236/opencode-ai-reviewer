@@ -305,8 +305,19 @@ export async function runReview(
   // Optional dedicated gate: fail the action whenever the deterministic secret
   // scanner flagged a hardcoded credential, independent of failOnSeverity.
   // Secrets are reported as critical findings, so `failOnSeverity: critical`
-  // also covers this without the dedicated toggle.
-  if (config.secrets?.failCI && result.issues.some((i) => i.message.startsWith('Hardcoded'))) {
+  // also covers this without the dedicated toggle. Gate on the structured
+  // category/severity fields (set by mergeSecretFindings) rather than
+  // prefix-matching the rendered message text, which would silently stop
+  // firing if the scanner's wording ever changes. The legacy message-prefix
+  // check is kept as a fallback for findings produced by older lib versions.
+  if (
+    config.secrets?.failCI &&
+    result.issues.some(
+      (i) =>
+        (i.category === 'security' && i.severity === 'critical') ||
+        i.message.startsWith('Hardcoded'),
+    )
+  ) {
     core.setFailed('Hardcoded secrets detected in PR. See review comments for details.');
   }
 

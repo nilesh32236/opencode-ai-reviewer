@@ -48,7 +48,16 @@ export async function runFix(
 
   let comments: IssueComment[];
   try {
-    comments = await gh.getIssueComments(prNumber, { throwOnError: true });
+    // Bound the fetch: only the marker count is needed to derive the
+    // iteration, so a capped page of recent comments avoids over-fetching
+    // the full comment history (up to 1000 bodies) on every fix run.
+    const recent = await gh.listComments(prNumber, { perPage: 100, maxPages: 2 });
+    comments = recent.map((c) => ({
+      id: typeof c.id === 'number' ? c.id : 0,
+      author: '',
+      createdAt: '',
+      body: typeof c.body === 'string' ? c.body : '',
+    }));
   } catch (err) {
     core.setFailed(
       sanitize(
@@ -84,7 +93,13 @@ export async function runFix(
       await exec.exec('git', ['push', 'origin', pr.headRef]);
       changesMade = true;
     } catch (err) {
-      core.warning(sanitize(`Git operations failed: ${err instanceof Error ? err.message : err}`));
+      const msg = `Git operations failed: ${err instanceof Error ? err.message : err}`;
+      core.warning(sanitize(msg));
+      // Fail loudly: a lost push must never be reported as success via
+      // changes_made=true (mirrors runDocs, which rethrows on git failure).
+      core.setFailed(sanitize(msg));
+      core.setOutput('changes_made', 'false');
+      return;
     }
   }
 

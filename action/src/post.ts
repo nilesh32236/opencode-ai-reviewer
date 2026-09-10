@@ -94,23 +94,31 @@ export async function runPost(
   const tokenUsageState = core.getState('token_usage');
   if (prNumber && tokenUsageState) {
     try {
+      // Saved STATE_* values are untrusted strings: a corrupt value would
+      // parse to NaN/Infinity and render a misleading usage summary, so each
+      // conversion is guarded and non-finite values are skipped with a warning.
       const usage: TokenUsage = {
-        totalTokens: Number(tokenUsageState),
-        durationMs: Number(core.getState('token_usage_duration') ?? 0),
+        totalTokens: parseFiniteState('token_usage', tokenUsageState) ?? 0,
+        durationMs:
+          parseFiniteState('token_usage_duration', core.getState('token_usage_duration') ?? '0') ??
+          0,
       };
       // Detailed verbosity saves the prompt/completion breakdown, which
       // review.ts persists to state only when verbosity is 'detailed'.
       const promptTokens = core.getState('token_usage_prompt');
       if (promptTokens) {
-        usage.promptTokens = Number(promptTokens);
+        const parsed = parseFiniteState('token_usage_prompt', promptTokens);
+        if (parsed !== undefined) usage.promptTokens = parsed;
       }
       const completionTokens = core.getState('token_usage_completion');
       if (completionTokens) {
-        usage.completionTokens = Number(completionTokens);
+        const parsed = parseFiniteState('token_usage_completion', completionTokens);
+        if (parsed !== undefined) usage.completionTokens = parsed;
       }
       const cost = core.getState('cost');
       if (cost) {
-        usage.estimatedCost = Number(cost);
+        const parsed = parseFiniteState('cost', cost);
+        if (parsed !== undefined) usage.estimatedCost = parsed;
       }
       // buildTokenUsageSection is the single canonical renderer shared with the
       // lib — it omits rows for undefined fields and returns '' when nothing
@@ -191,4 +199,21 @@ export async function runPost(
       ),
     );
   }
+}
+
+/**
+ * Parse a saved STATE_* metric value, returning undefined (with a warning)
+ * when the value is not a finite number instead of propagating NaN/Infinity
+ * into the rendered token-usage summary.
+ * @param name - State key (for the warning message).
+ * @param raw - Raw state string.
+ * @returns The finite number, or undefined when invalid.
+ */
+function parseFiniteState(name: string, raw: string): number | undefined {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    core.warning(`Ignoring non-finite saved state ${name}="${raw}"`);
+    return undefined;
+  }
+  return parsed;
 }

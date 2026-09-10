@@ -456,6 +456,18 @@ async function run(): Promise<void> {
         platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
       engine = new ReviewEngine(config, gh, learningStore, eventBus, repo, correlationId);
 
+      // Authorization gate: issue-comment triggered commands (/fix, /analyze,
+      // manual re-review) must only be honored when the commenter holds
+      // write/admin permission. Without this, any user who can comment could
+      // trigger LLM runs, force-push branches, open PRs, and post comments
+      // with the repo-scoped token. Fail closed on lookup failure.
+      if (platform === 'github' && github.context.eventName === 'issue_comment') {
+        const authorized = await verifyCommentActorPermission(token);
+        if (!authorized) {
+          return;
+        }
+      }
+
       switch (inputs.mode) {
         case 'analyze':
           await runAnalyze(inputs, config, engine, gh, repo, token);
@@ -580,6 +592,49 @@ function withDownloadRemediation(message: string): string {
     return `${message}\n\nIf this is a transient network or GitHub server error, re-run the workflow to retry. For checksum errors, clear the action cache and re-run.`;
   }
   return message;
+}
+
+/**
+ * Verify that the actor who triggered an `issue_comment` event holds
+ * write/admin permission on the repository before honoring manual commands
+ * (/fix, /analyze, manual re-review). Fails closed: any lookup failure or a
+ * read/none permission marks the action failed and returns false.
+ * @param token - GitHub token used for the permission lookup.
+ * @returns True when the actor is authorized to trigger the command.
+ */
+async function verifyCommentActorPermission(token: string): Promise<boolean> {
+  const actor =
+    (github.context.payload.comment as { user?: { login?: string } } | undefined)?.user?.login ||
+    github.context.actor;
+  const { owner, repo: repoName } = github.context.repo;
+  if (!actor) {
+    core.setFailed('Refusing issue_comment trigger: could not determine comment author');
+    return false;
+  }
+  try {
+    const octokit = github.getOctokit(token);
+    const { data } = await octokit.rest.repos.getCollaboratorPermissionLevel({
+      owner,
+      repo: repoName,
+      username: actor,
+    });
+    const permission = data.permission as string;
+    if (permission === 'admin' || permission === 'write') {
+      core.info(`Authorized issue_comment trigger from @${actor} (${permission})`);
+      return true;
+    }
+    core.setFailed(
+      `Refusing issue_comment trigger: @${actor} has '${permission}' permission (write access required)`,
+    );
+    return false;
+  } catch (err) {
+    core.setFailed(
+      sanitize(
+        `Refusing issue_comment trigger: could not verify @${actor}'s permission (${err instanceof Error ? err.message : err})`,
+      ),
+    );
+    return false;
+  }
 }
 
 run();

@@ -21,11 +21,12 @@ const MAX_PR_NUMBER = 2147483647;
  * @returns The PR number, or `null` when no PR number can be determined.
  */
 export async function resolvePrNumber(): Promise<number | null> {
-  const prNumberInput = core.getInput('pr-number');
+  const prNumberInput = core.getInput('pr-number').trim();
   if (prNumberInput) {
     const trimmed = prNumberInput.trim();
     // Require a canonical integer string: parseInt alone would accept "12abc"
-    // or "1.5" (truncating to 1), so verify the round-trip first.
+    // or "1.5" (truncating to 1), so verify the round-trip first. This also
+    // rejects partially-numeric values that would route against the wrong PR.
     const prNumber = Number.parseInt(trimmed, 10);
     if (
       Number.isNaN(prNumber) ||
