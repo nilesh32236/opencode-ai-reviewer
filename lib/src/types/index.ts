@@ -492,6 +492,13 @@ export interface NotificationsConfig {
   teams?: TeamsConfig;
 }
 
+/** Remote MCP transport selection for `remote` servers.
+ * - `auto` (default): try Streamable HTTP first, fall back to SSE on protocol-mismatch handshake failure.
+ * - `sse`: pin the legacy SSE transport.
+ * - `streamable-http`: Streamable HTTP only, no SSE fallback.
+ * @since NEXT */
+export type RemoteTransportMode = 'auto' | 'sse' | 'streamable-http';
+
 /** Configuration for an MCP server used for context enrichment. */
 export interface MCPServerConfig {
   /** Name of the MCP server */
@@ -518,7 +525,7 @@ export interface MCPServerConfig {
    * - `sse`: pin legacy SSE transport.
    * - `streamable-http`: Streamable HTTP only, no SSE fallback.
    * @since NEXT */
-  remoteTransport?: 'auto' | 'sse' | 'streamable-http';
+  remoteTransport?: RemoteTransportMode;
 }
 
 /** Project-level context config fed into review prompts. */

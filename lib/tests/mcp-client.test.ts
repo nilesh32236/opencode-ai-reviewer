@@ -1,5 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { MCPManager, isAllowedTool } from '../src/mcp/client.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  MCPManager,
+  buildRemoteHeaders,
+  createRemoteTransportFactories,
+  isAllowedTool,
+  isStreamableHandshakeMismatch,
+  resolveRemoteTransportMode,
+} from '../src/mcp/client.js';
 import type { MCPServerConfig } from '../src/types/index.js';
 
 // ─── Hoisted mock classes & functions (accessible inside vi.mock factories) ──
@@ -348,7 +355,12 @@ describe('MCPManager', () => {
       mockConnect.mockRejectedValue(new Error('Connection refused'));
 
       const manager = new MCPManager([
-        makeConfig({ type: 'remote', url: 'https://mcp.example.com/sse', command: undefined }),
+        makeConfig({
+          type: 'remote',
+          url: 'https://mcp.example.com/sse',
+          command: undefined,
+          remoteTransport: 'sse',
+        }),
       ]);
       await manager.connect();
 
@@ -365,6 +377,7 @@ describe('MCPManager', () => {
           type: 'remote',
           url: 'https://mcp.example.com/sse',
           command: undefined,
+          remoteTransport: 'sse',
           timeoutMs: 50,
         }),
       ]);
@@ -374,6 +387,51 @@ describe('MCPManager', () => {
       expect(mockClose).not.toHaveBeenCalled();
       expect(mockSSETransportClose).toHaveBeenCalled();
     }, 10000);
+
+    it('does not fall back to SSE on auth failure in auto mode', async () => {
+      mockConnect.mockRejectedValue(new Error('Unauthorized: 401'));
+      mockListTools.mockResolvedValue({ tools: [{ name: 'search' }] });
+
+      const manager = new MCPManager([
+        makeConfig({ type: 'remote', url: 'https://mcp.example.com/mcp', command: undefined }),
+      ]);
+      await manager.connect();
+
+      expect(mockStreamableTransportCtor).toHaveBeenCalledTimes(1);
+      expect(mockSSEClientTransportCtor).not.toHaveBeenCalled();
+      expect(manager.getStatus().connectedServers).toBe(0);
+    });
+
+    it('does not fall back to SSE on timeout in auto mode', async () => {
+      mockConnect.mockRejectedValue(new Error('Connection timed out after 5000ms'));
+      mockListTools.mockResolvedValue({ tools: [{ name: 'search' }] });
+
+      const manager = new MCPManager([
+        makeConfig({ type: 'remote', url: 'https://mcp.example.com/mcp', command: undefined }),
+      ]);
+      await manager.connect();
+
+      expect(mockStreamableTransportCtor).toHaveBeenCalledTimes(1);
+      expect(mockSSEClientTransportCtor).not.toHaveBeenCalled();
+      expect(manager.getStatus().connectedServers).toBe(0);
+    });
+
+    it('scopes retries: first auto leg uses a single handshake attempt', async () => {
+      mockConnect.mockRejectedValueOnce(new Error('Not Found: 404')).mockResolvedValue(undefined);
+      mockListTools.mockResolvedValue({ tools: [{ name: 'search' }] });
+
+      const manager = new MCPManager([
+        makeConfig({ type: 'remote', url: 'https://mcp.example.com/mcp', command: undefined }),
+      ]);
+      await manager.connect();
+
+      const calls = vi.mocked(withRetry).mock.calls;
+      // First handshake call (Streamable leg) must be single-attempt.
+      expect(calls[0]?.[1]).toMatchObject({ maxRetries: 0 });
+      // Fallback SSE leg keeps the standard retry budget.
+      expect(calls[1]?.[1]).toMatchObject({ maxRetries: 3, baseDelayMs: 2000 });
+      expect(manager.getStatus().connectedServers).toBe(1);
+    });
 
     it('skips local server with undefined command', async () => {
       const manager = new MCPManager([
@@ -870,6 +928,128 @@ describe('MCPManager', () => {
       expect(isAllowedTool('resolve', '')).toBe(false);
       expect(isAllowedTool('', 'resolve')).toBe(false);
       expect(isAllowedTool('', '')).toBe(false);
+    });
+  });
+
+  // ─── remote transport helpers ──────────────────────────────────────
+
+  describe('resolveRemoteTransportMode', () => {
+    const OLD_ENV = process.env.OPENCODE_MCP_REMOTE_TRANSPORT;
+    afterEach(() => {
+      process.env.OPENCODE_MCP_REMOTE_TRANSPORT = OLD_ENV ?? '';
+    });
+
+    it('defaults to auto when neither per-server nor env is set', () => {
+      process.env.OPENCODE_MCP_REMOTE_TRANSPORT = '';
+      expect(resolveRemoteTransportMode(makeConfig({ type: 'remote' }))).toBe('auto');
+    });
+
+    it('prefers per-server value over env', () => {
+      process.env.OPENCODE_MCP_REMOTE_TRANSPORT = 'sse';
+      expect(
+        resolveRemoteTransportMode(
+          makeConfig({ type: 'remote', remoteTransport: 'streamable-http' }),
+        ),
+      ).toBe('streamable-http');
+    });
+
+    it('uses env global when per-server is unset', () => {
+      process.env.OPENCODE_MCP_REMOTE_TRANSPORT = 'sse';
+      expect(resolveRemoteTransportMode(makeConfig({ type: 'remote' }))).toBe('sse');
+    });
+
+    it('degrades unknown per-server and env values to auto', () => {
+      process.env.OPENCODE_MCP_REMOTE_TRANSPORT = 'bogus';
+      expect(
+        resolveRemoteTransportMode(
+          makeConfig({ type: 'remote', remoteTransport: 'bogus' as unknown as 'auto' }),
+        ),
+      ).toBe('auto');
+      expect(resolveRemoteTransportMode(makeConfig({ type: 'remote' }))).toBe('auto');
+    });
+  });
+
+  describe('buildRemoteHeaders', () => {
+    it('maps environment entries to headers', () => {
+      expect(
+        buildRemoteHeaders(makeConfig({ environment: { Authorization: 'Bearer x' } })),
+      ).toEqual({ Authorization: 'Bearer x' });
+    });
+
+    it('returns empty headers when environment is unset', () => {
+      expect(buildRemoteHeaders(makeConfig({ environment: undefined }))).toEqual({});
+    });
+  });
+
+  describe('isStreamableHandshakeMismatch', () => {
+    it.each(['Not Found: 404', '405 Method Not Allowed', '406 Not Acceptable'])(
+      'treats %s as a mismatch',
+      (msg) => {
+        expect(isStreamableHandshakeMismatch(new Error(msg))).toBe(true);
+      },
+    );
+
+    it.each(['Unauthorized: 401', 'Forbidden: 403', 'Connection timed out after 5000ms'])(
+      'does not treat %s as a mismatch',
+      (msg) => {
+        expect(isStreamableHandshakeMismatch(new Error(msg))).toBe(false);
+      },
+    );
+  });
+
+  describe('createRemoteTransportFactories', () => {
+    it('orders [streamable, sse] in auto mode', () => {
+      const factories = createRemoteTransportFactories(
+        makeConfig({ type: 'remote', url: 'https://mcp.example.com/mcp', command: undefined }),
+        {},
+      );
+      expect(factories).toHaveLength(2);
+      factories[0]!();
+      expect(mockStreamableTransportCtor).toHaveBeenCalledTimes(1);
+      factories[1]!();
+      expect(mockSSEClientTransportCtor).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns only [sse] when pinned', () => {
+      const factories = createRemoteTransportFactories(
+        makeConfig({
+          type: 'remote',
+          url: 'https://mcp.example.com/mcp',
+          command: undefined,
+          remoteTransport: 'sse',
+        }),
+        {},
+      );
+      expect(factories).toHaveLength(1);
+      factories[0]!();
+      expect(mockSSEClientTransportCtor).toHaveBeenCalledTimes(1);
+      expect(mockStreamableTransportCtor).not.toHaveBeenCalled();
+    });
+
+    it('throws on invalid URL', () => {
+      expect(() =>
+        createRemoteTransportFactories(
+          makeConfig({ type: 'remote', url: 'not-a-url', command: undefined }),
+          {},
+        ),
+      ).toThrow();
+    });
+
+    it('builds fresh URL/headers per factory invocation', () => {
+      const headers = { Authorization: 'Bearer x' };
+      const factories = createRemoteTransportFactories(
+        makeConfig({ type: 'remote', url: 'https://mcp.example.com/mcp', command: undefined }),
+        headers,
+      );
+      factories[0]!();
+      factories[0]!();
+      const [url1, opts1] = mockStreamableTransportCtor.mock.calls[0] as [URL, unknown];
+      const [url2, opts2] = mockStreamableTransportCtor.mock.calls[1] as [URL, unknown];
+      expect(url1).not.toBe(url2);
+      expect(url1.href).toBe(url2.href);
+      expect((opts1 as { requestInit: { headers: object } }).requestInit.headers).not.toBe(
+        (opts2 as { requestInit: { headers: object } }).requestInit.headers,
+      );
     });
   });
 });
