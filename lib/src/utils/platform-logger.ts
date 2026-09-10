@@ -259,10 +259,63 @@ abstract class BasePlatformLogger implements PlatformLogger {
 }
 
 /**
+ * Resolve whether console color output should be enabled, honoring the
+ * NO_COLOR / CLICOLOR conventions on top of TTY detection.
+ *
+ * Precedence (evaluated in order):
+ * - `NO_COLOR` present and non-empty → disabled (https://no-color.org).
+ * - `CLICOLOR === '0'` → disabled.
+ * - `CLICOLOR_FORCE` / `FORCE_COLOR` set to a non-zero, non-empty value →
+ *   enabled, even when stdout is not a TTY.
+ * - Otherwise → `process.stdout.isTTY` (preserves historical behavior).
+ *
+ * @param env - Environment record to read (defaults to `process.env`).
+ * @param isTTY - TTY flag to use (defaults to `process.stdout.isTTY`).
+ * @returns True when ANSI colors should be emitted.
+ */
+export function shouldUseConsoleColors(
+  env: NodeJS.ProcessEnv = process.env,
+  isTTY: boolean | undefined = process.stdout.isTTY,
+): boolean {
+  if (env.NO_COLOR !== undefined && env.NO_COLOR !== '') return false;
+  if (env.CLICOLOR === '0') return false;
+  const force = env.CLICOLOR_FORCE ?? env.FORCE_COLOR;
+  if (force !== undefined && force !== '' && force !== '0') return true;
+  return Boolean(isTTY);
+}
+
+/**
+ * Detect a light terminal background via the `COLORFGBG` variable
+ * (rxvt convention `"fg;bg"` where the last component is the background
+ * xterm color index). An index `>= 7` (7 = light gray, 15 = white)
+ * indicates a light background; anything else (including unset or
+ * unparsable values) is treated as dark/unknown.
+ *
+ * @param colorfgbg - Raw `COLORFGBG` value (defaults to `process.env.COLORFGBG`).
+ * @returns True when the terminal background looks light.
+ */
+export function isLightTerminalBackground(colorfgbg?: string): boolean {
+  const raw = colorfgbg ?? process.env.COLORFGBG;
+  if (!raw) return false;
+  const parts = raw.split(';');
+  const bgRaw = parts[parts.length - 1].trim();
+  const bg = Number.parseInt(bgRaw, 10);
+  if (Number.isNaN(bg)) return false;
+  return bg >= 7;
+}
+
+/**
  * Console implementation of PlatformLogger for CLI and development environments.
+ *
+ * Color output honors `NO_COLOR` / `CLICOLOR` / `CLICOLOR_FORCE` /
+ * `FORCE_COLOR`, adapts the palette to the detected terminal background
+ * (`COLORFGBG`), and always keeps the `[LEVEL]` tag emitted by
+ * `formatMessage()` as the primary, non-color level cue so color is never
+ * the sole indicator.
  */
 export class ConsolePlatformLogger extends BasePlatformLogger {
   private readonly useColors: boolean;
+  private readonly lightBackground: boolean;
 
   /**
    * Create a console platform logger.
@@ -272,10 +325,16 @@ export class ConsolePlatformLogger extends BasePlatformLogger {
    */
   constructor(name: string, level?: LogLevel, context: LogContext = {}) {
     super(name, level, context);
-    this.useColors = process.stdout.isTTY;
+    this.useColors = shouldUseConsoleColors();
+    this.lightBackground = isLightTerminalBackground();
   }
 
-  private static readonly COLORS = {
+  /**
+   * Bright ANSI palette tuned for dark terminal backgrounds. Each color is
+   * highly legible against black (~16.7:1 for cyan/yellow) and is always
+   * paired with the `[LEVEL]` tag so hue is never the only cue.
+   */
+  private static readonly DARK_BG_COLORS: Record<LogLevel, string> & { reset: string } = {
     trace: '\x1b[90m',
     debug: '\x1b[90m',
     info: '\x1b[36m',
@@ -285,10 +344,31 @@ export class ConsolePlatformLogger extends BasePlatformLogger {
     reset: '\x1b[0m',
   };
 
+  /**
+   * Bold truecolor palette tuned for light terminal backgrounds. Each entry
+   * meets WCAG AA 4.5:1 against white: trace/debug dark gray #586069
+   * (~6.4:1), info dark blue #005cc5 (~6.3:1), warn dark amber #735c0f
+   * (~6.4:1), error dark red #d73a49 (~4.6:1), fatal dark purple #6f42c1
+   * (~6.5:1). Used when `COLORFGBG` indicates a light background; when the
+   * background is unknown the dark-background palette is kept (Option A).
+   */
+  private static readonly LIGHT_BG_COLORS: Record<LogLevel, string> & { reset: string } = {
+    trace: '\x1b[1m\x1b[38;2;88;96;105m',
+    debug: '\x1b[1m\x1b[38;2;88;96;105m',
+    info: '\x1b[1m\x1b[38;2;0;92;197m',
+    warn: '\x1b[1m\x1b[38;2;115;92;15m',
+    error: '\x1b[1m\x1b[38;2;215;58;73m',
+    fatal: '\x1b[1m\x1b[38;2;111;66;193m',
+    reset: '\x1b[0m',
+  };
+
   private colorize(level: LogLevel, message: string): string {
     if (!this.useColors) return message;
-    const color = ConsolePlatformLogger.COLORS[level] || '';
-    const reset = ConsolePlatformLogger.COLORS.reset;
+    const palette = this.lightBackground
+      ? ConsolePlatformLogger.LIGHT_BG_COLORS
+      : ConsolePlatformLogger.DARK_BG_COLORS;
+    const color = palette[level] || '';
+    const reset = palette.reset;
     return `${color}${message}${reset}`;
   }
 
