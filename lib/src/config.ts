@@ -58,6 +58,79 @@ export const MAX_PATH_INSTRUCTIONS_ENTRIES = 10;
 /** Max UTF-8 bytes kept per `review.pathInstructions` entry. */
 export const MAX_PATH_INSTRUCTION_BYTES = 2048;
 
+/**
+ * Validate a `review.pathInstructions` glob without relying on minimatch
+ * throwing (it does not throw on malformed patterns like `[` — it just never
+ * matches). Rejects empty/whitespace-only patterns and patterns with
+ * unbalanced `[]`, `{}`, or `()` delimiters (honoring backslash escapes).
+ * @param glob - The glob pattern to check.
+ * @returns True when the glob is usable for matching.
+ */
+export function isValidPathGlob(glob: string): boolean {
+  if (typeof glob !== 'string' || glob.trim().length === 0) return false;
+  const closers: Record<string, string> = { ']': '[', '}': '{', ')': '(' };
+  const openers = new Set(['[', '{', '(']);
+  const stack: string[] = [];
+  let escaped = false;
+  for (const ch of glob) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (openers.has(ch)) {
+      stack.push(ch);
+    } else if (ch in closers) {
+      if (stack.length === 0 || stack.pop() !== closers[ch]) return false;
+    }
+  }
+  return stack.length === 0;
+}
+
+/**
+ * Sanitize a raw `review.pathInstructions` value fail-open: rejects arrays
+ * and non-objects, caps at MAX_PATH_INSTRUCTIONS_ENTRIES entries, and drops
+ * non-string/empty/oversize values and invalid globs with a warning.
+ * @param raw - The raw map value to sanitize.
+ * @returns The sanitized map, or undefined when nothing usable remains.
+ */
+export function sanitizePathInstructions(raw: unknown): Record<string, string> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    if (Array.isArray(raw)) {
+      core.warning(
+        'Ignoring review.pathInstructions: expected a map of glob patterns to instructions, got an array',
+      );
+    }
+    return undefined;
+  }
+  const sanitized: Record<string, string> = {};
+  for (const [glob, value] of Object.entries(raw)) {
+    if (Object.keys(sanitized).length >= MAX_PATH_INSTRUCTIONS_ENTRIES) {
+      core.warning(
+        `review.pathInstructions exceeds ${MAX_PATH_INSTRUCTIONS_ENTRIES} entries, ignoring extras`,
+      );
+      break;
+    }
+    if (glob.length === 0 || !isValidPathGlob(glob)) {
+      core.warning(`Ignoring review.pathInstructions entry: invalid glob "${glob}"`);
+      continue;
+    }
+    if (typeof value !== 'string' || value.length === 0) {
+      core.warning(`Ignoring review.pathInstructions entry for glob "${glob}": not a string`);
+      continue;
+    }
+    if (Buffer.byteLength(value, 'utf8') > MAX_PATH_INSTRUCTION_BYTES) {
+      core.warning(`Ignoring review.pathInstructions entry for glob "${glob}": exceeds 2 KB cap`);
+      continue;
+    }
+    sanitized[glob] = value;
+  }
+  return Object.keys(sanitized).length > 0 ? sanitized : undefined;
+}
+
 const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
   platform: null,
   review: {
@@ -389,6 +462,17 @@ export function resolveConfig(config: PromptConfig, options: ResolveConfigOption
           ...override.review.pathInstructions,
         };
       }
+      // Re-apply the 10-entry/2KB/invalid-glob caps after merging so
+      // base(10)+override(N) cannot exceed the documented cap or reintroduce
+      // invalid/oversize entries after validateConfig.
+      if (result.review?.pathInstructions) {
+        const recapped = sanitizePathInstructions(result.review.pathInstructions);
+        if (recapped) {
+          result.review.pathInstructions = recapped;
+        } else {
+          result.review.pathInstructions = undefined;
+        }
+      }
     }
 
     if (override.fix?.maxIterations !== undefined) {
@@ -608,34 +692,8 @@ export function validateConfig(config: PromptConfig): PromptConfig {
       result.review.categories = categories;
     }
     if (config.review.pathInstructions && typeof config.review.pathInstructions === 'object') {
-      const sanitized: Record<string, string> = {};
-      for (const [glob, value] of Object.entries(config.review.pathInstructions)) {
-        if (Object.keys(sanitized).length >= MAX_PATH_INSTRUCTIONS_ENTRIES) {
-          core.warning(
-            `review.pathInstructions exceeds ${MAX_PATH_INSTRUCTIONS_ENTRIES} entries, ignoring extras`,
-          );
-          break;
-        }
-        if (typeof glob !== 'string' || glob.length === 0) continue;
-        if (typeof value !== 'string' || value.length === 0) {
-          core.warning(`Ignoring review.pathInstructions entry for glob "${glob}": not a string`);
-          continue;
-        }
-        if (Buffer.byteLength(value, 'utf8') > MAX_PATH_INSTRUCTION_BYTES) {
-          core.warning(
-            `Ignoring review.pathInstructions entry for glob "${glob}": exceeds 2 KB cap`,
-          );
-          continue;
-        }
-        try {
-          minimatch('', glob);
-        } catch {
-          core.warning(`Ignoring review.pathInstructions entry: invalid glob "${glob}"`);
-          continue;
-        }
-        sanitized[glob] = value;
-      }
-      if (Object.keys(sanitized).length > 0) {
+      const sanitized = sanitizePathInstructions(config.review.pathInstructions);
+      if (sanitized) {
         result.review.pathInstructions = sanitized;
       }
     }
@@ -901,7 +959,9 @@ export function validateConfig(config: PromptConfig): PromptConfig {
       if (typeof o.branch === 'string') validated.branch = o.branch;
       if (
         o.review &&
-        (Array.isArray(o.review.customRules) || typeof o.review.inline === 'boolean')
+        (Array.isArray(o.review.customRules) ||
+          typeof o.review.inline === 'boolean' ||
+          (o.review.pathInstructions && typeof o.review.pathInstructions === 'object'))
       ) {
         validated.review = {};
         if (Array.isArray(o.review.customRules)) {
@@ -911,6 +971,12 @@ export function validateConfig(config: PromptConfig): PromptConfig {
         }
         if (typeof o.review.inline === 'boolean') {
           (validated.review as Record<string, unknown>).inline = o.review.inline;
+        }
+        if (o.review.pathInstructions && typeof o.review.pathInstructions === 'object') {
+          const sanitizedOverride = sanitizePathInstructions(o.review.pathInstructions);
+          if (sanitizedOverride) {
+            (validated.review as Record<string, unknown>).pathInstructions = sanitizedOverride;
+          }
         }
       }
       if (o.fix && typeof o.fix.maxIterations === 'number') {

@@ -303,9 +303,10 @@ async function run(): Promise<void> {
             DEFAULT_CONFIG.review.sensitivity?.ignorePatterns,
         },
         categories: loadedConfig?.review?.categories ?? DEFAULT_CONFIG.review.categories,
-        ...(loadedConfig?.review?.pathInstructions && {
-          pathInstructions: loadedConfig.review.pathInstructions,
-        }),
+        ...(loadedConfig?.review?.pathInstructions &&
+          Object.keys(loadedConfig.review.pathInstructions).length > 0 && {
+            pathInstructions: loadedConfig.review.pathInstructions,
+          }),
       },
       audit: {
         ...DEFAULT_CONFIG.audit,

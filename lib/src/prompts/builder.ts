@@ -2,6 +2,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as core from '@actions/core';
 import { minimatch } from 'minimatch';
+import {
+  MAX_PATH_INSTRUCTIONS_ENTRIES,
+  MAX_PATH_INSTRUCTION_BYTES,
+  isValidPathGlob,
+} from '../config.js';
 import type {
   DocStyle,
   PreviousFindingIteration,
@@ -24,10 +29,12 @@ const PROMPT_TRUNCATION_MARKER = '... [prompt truncated at 200KB cap]';
 const MAX_CODEBASE_INDEX_BYTES = 96 * 1024;
 const logger = new Logger('prompt-builder');
 
-/** Max `review.pathInstructions` entries honored per prompt (fail-open). */
-export const MAX_PATH_INSTRUCTIONS = 10;
-/** Max UTF-8 bytes honored per matched path instruction. */
-export const MAX_PATH_INSTRUCTION_BYTES = 2048;
+/** Max `review.pathInstructions` entries honored per prompt (fail-open).
+ * Canonical caps live in `../config.js`; these aliases preserve the existing
+ * public import path. */
+export const MAX_PATH_INSTRUCTIONS = MAX_PATH_INSTRUCTIONS_ENTRIES;
+/** Max UTF-8 bytes honored per matched path instruction (alias of the config cap). */
+export { MAX_PATH_INSTRUCTION_BYTES };
 
 /**
  * Truncate a string to a UTF-8 byte budget on a code-point boundary so
@@ -158,8 +165,12 @@ export function getMatchedPathInstructions(
   if (!map || !filePaths || filePaths.length === 0) return [];
   const matched: Array<{ glob: string; instruction: string }> = [];
   for (const [glob, instruction] of Object.entries(map)) {
-    if (matched.length >= MAX_PATH_INSTRUCTIONS) break;
-    if (typeof glob !== 'string' || glob.length === 0) continue;
+    if (matched.length >= MAX_PATH_INSTRUCTIONS_ENTRIES) break;
+    // Object.entries keys are always strings; only the empty/invalid check applies.
+    if (glob.length === 0 || !isValidPathGlob(glob)) {
+      logger.warn(`Ignoring pathInstructions entry: invalid glob "${glob}"`);
+      continue;
+    }
     if (typeof instruction !== 'string' || instruction.length === 0) continue;
     let isMatch = false;
     try {
@@ -193,7 +204,15 @@ export function buildPathInstructionsSection(
       sanitizePromptInput(instruction, { maxLength: 50_000 }),
       MAX_PATH_INSTRUCTION_BYTES,
     );
-    lines.push(`### Glob \`${glob}\``);
+    // The glob is repo-controlled: keep the header single-line by stripping
+    // backticks/newlines that could break markdown structure. The glob is a
+    // label (not instructions), so a plain strip — not the multi-line
+    // untrusted-context wrapper — is the right sanitization here.
+    const safeGlob = glob
+      .replace(/[`\r\n]+/g, ' ')
+      .trim()
+      .slice(0, 200);
+    lines.push(`### Glob \`${safeGlob}\``);
     lines.push('');
     lines.push(safe);
     lines.push('');

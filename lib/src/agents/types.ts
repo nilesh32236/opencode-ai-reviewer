@@ -22,4 +22,8 @@ export interface AgentPromptContext {
    * untested exports, missing error-case tests). Injected as a dedicated
    * `## Test Gap Analysis` section when non-empty, mirroring the legacy prompt. */
   testGapContext?: string;
+  /** Repo-relative paths of the files covered by this review (for per-path instructions). */
+  filePaths?: string[];
+  /** Opt-in glob → extra-instructions map (`review.pathInstructions`). */
+  pathInstructions?: Record<string, string>;
 }

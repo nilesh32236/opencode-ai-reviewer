@@ -1728,6 +1728,10 @@ export class ReviewEngine {
         budgetMode,
         totalDiffLines,
         testGapContext: this.filterTestGapContext(testGapResult, files),
+        filePaths: files
+          .map((f) => f?.path)
+          .filter((p): p is string => typeof p === 'string' && Boolean(p)),
+        pathInstructions: this.config.review.pathInstructions,
       },
       categories,
     );

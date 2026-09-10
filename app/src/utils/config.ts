@@ -384,7 +384,12 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       ...(suggestTitleAndLabels !== undefined && { suggestTitleAndLabels }),
       ...(streamComments !== undefined && { streamComments }),
       ...(streamBatchSize !== undefined && { streamBatchSize }),
-      ...(pathInstructions && { pathInstructions }),
+      ...(pathInstructions && {
+        pathInstructions: {
+          ...baseConfig.review.pathInstructions,
+          ...pathInstructions,
+        },
+      }),
     },
     ...(notifications && {
       notifications: {
