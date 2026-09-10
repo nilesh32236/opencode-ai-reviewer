@@ -2,6 +2,7 @@ import type { PlatformAdapter } from '../platform/adapter.js';
 import type { ChangedFile, PRContext, ReviewResult } from '../types/index.js';
 import { CircuitBreaker } from './circuit-breaker.js';
 import { Logger } from './logger.js';
+import { escapeInlineCode, sanitizeMarkdown } from './markdown.js';
 import { withRetry } from './retry.js';
 
 /**
@@ -247,30 +248,27 @@ export function deriveSuggestedLabels(
 }
 
 /**
- * Escape backslashes and backticks in a title so PR-controlled input cannot
- * terminate the Markdown inline-code span it is interpolated into. Backslashes
- * are escaped first so a crafted `\`` sequence cannot smuggle a raw backtick
- * through.
- * @param title - The suggested title to escape.
- * @returns The title with backslashes and backticks escaped.
- */
-function escapeInlineCode(title: string): string {
-  return title.replace(/\\/g, '\\\\').replace(/`/g, '\\`');
-}
-
-/**
  * Build the full suggestion comment markdown body.
  * Includes the suggested conventional-commit title, the suggested labels as a
  * bullet list, and instructions on how to apply the suggestion manually.
+ *
+ * SECURITY: titles and labels are model- and PR-influenced (untrusted). Both
+ * are sanitized with the shared `sanitizeMarkdown` (neutralizes `![image]`
+ * viewer-IP exfiltration, dangerous link schemes, raw HTML) and escaped with
+ * the shared `escapeInlineCode` (backtick + newline neutralization) before
+ * being wrapped in code spans, so a crafted value cannot break out of the
+ * span and inject markdown into the persistent PR comment.
  * @param suggestion - Derived title and labels.
  * @param prNumber - PR number referenced in the manual-apply hint.
  * @returns Markdown comment body.
  */
 export function buildSuggestionComment(suggestion: TitleSuggestion, prNumber: number): string {
   const labels = suggestion.labels.length
-    ? suggestion.labels.map((label) => `- \`${label}\``).join('\n')
+    ? suggestion.labels
+        .map((label) => `- \`${escapeInlineCode(sanitizeMarkdown(label))}\``)
+        .join('\n')
     : '- No specific labels suggested';
-  const safeTitle = escapeInlineCode(suggestion.title);
+  const safeTitle = escapeInlineCode(sanitizeMarkdown(suggestion.title));
   return [
     '## Suggested Title & Labels 🏷️',
     '',

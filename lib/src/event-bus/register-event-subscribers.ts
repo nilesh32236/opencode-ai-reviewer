@@ -1,6 +1,11 @@
 import * as path from 'node:path';
 import type { EventLoggingConfig, PluggableSubscriberConfig, Subscriber } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
+import {
+  DEFAULT_EVENT_LOG_PATH,
+  isEventSubscribersEnabled,
+  resolveConfinedEventLogPath,
+} from '../utils/safe-exec.js';
 import type { EventBus } from './bus.js';
 import { LoggingSubscriber } from './logging-subscriber.js';
 
@@ -10,8 +15,10 @@ const logger = new Logger('EventSubscribers');
  * Resolve a configured subscriber module path to an absolute path that must
  * live inside the working directory (the repo checkout). Relative paths are
  * resolved against `process.cwd()`, and absolute paths that escape the checkout
- * are rejected so a hostile repository cannot load arbitrary code into the
- * runner via `eventSubscribers`.
+ * are rejected. Note this confinement alone does not make PR-editable config
+ * safe — the checkout itself contains attacker-controlled PR files — so
+ * `registerEventSubscribers` additionally requires operator opt-in via
+ * `OPENCODE_ENABLE_EVENT_SUBSCRIBERS=1` before loading any pluggable module.
  * @param modulePath - Configured module path (relative or absolute).
  * @returns The resolved absolute path, or null when it escapes the checkout.
  */
@@ -67,8 +74,13 @@ async function resolveSubscriberModule(modulePath: string): Promise<Subscriber |
  * Register the built-in logging subscriber (when enabled) plus any pluggable
  * subscribers declared in `eventSubscribers` on the given event bus.
  *
- * Pluggable subscribers are treated as trusted first-party configuration: their
- * module paths must resolve inside the working directory (the repo checkout).
+ * SECURITY: `eventSubscribers` and `eventLogging.path` come from PR-editable
+ * repo-file config (untrusted). Pluggable subscriber modules are loaded via
+ * dynamic `import()` and execute arbitrary checkout code on the CI runner with
+ * credentials in scope, so loading is default-denied unless the operator opts
+ * in via `OPENCODE_ENABLE_EVENT_SUBSCRIBERS=1`. Module paths must additionally
+ * resolve inside the working directory, and the event-log path is confined to
+ * the checkout (absolute paths and `..` escapes fall back to the default).
  * @param bus - The event bus to register subscribers on.
  * @param eventLogging - Event logging config controlling the LoggingSubscriber.
  * @param eventSubscribers - Pluggable subscriber config entries to load.
@@ -84,11 +96,32 @@ export async function registerEventSubscribers(
   const subscriberConfigs: PluggableSubscriberConfig[] = eventSubscribers ?? [];
 
   if (loggingConfig.enabled) {
-    const logPath = loggingConfig.path ?? '.opencode/events.ndjson';
+    const rawPath = loggingConfig.path ?? DEFAULT_EVENT_LOG_PATH;
+    // Relative paths are confined to the checkout working directory (a hostile
+    // value cannot mkdir/append/rm/rename outside it). Absolute paths are
+    // accepted as-is: they can only arrive via `validateConfig()` — which
+    // rewrites escaping repo-file values to the default — or from trusted
+    // direct API callers (e.g. operator-specified log locations, tests).
+    const confined = path.isAbsolute(rawPath)
+      ? path.normalize(rawPath)
+      : resolveConfinedEventLogPath(process.cwd(), rawPath);
+    const logPath = confined ?? path.resolve(process.cwd(), DEFAULT_EVENT_LOG_PATH);
+    if (!confined) {
+      logger.warn(
+        `Refusing eventLogging.path outside the working directory ("${rawPath}"), using default "${DEFAULT_EVENT_LOG_PATH}"`,
+      );
+    }
     const loggingSub = new LoggingSubscriber(logPath);
     bus.register(loggingSub);
     registered.push(loggingSub);
     logger.info(`Registered LoggingSubscriber (path: ${logPath})`);
+  }
+
+  if (subscriberConfigs.length > 0 && !isEventSubscribersEnabled()) {
+    logger.warn(
+      'Skipping pluggable event subscribers from repo config: set OPENCODE_ENABLE_EVENT_SUBSCRIBERS=1 to opt in (repo-file subscriber config is untrusted)',
+    );
+    return registered;
   }
 
   const seenPaths = new Set<string>();

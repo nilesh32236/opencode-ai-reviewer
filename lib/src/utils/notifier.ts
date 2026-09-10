@@ -8,6 +8,7 @@ import type {
 import { CircuitBreaker } from './circuit-breaker.js';
 import { Logger } from './logger.js';
 import { withRetryAndTimeout } from './retry.js';
+import { isBlockedIpHost } from './safe-exec.js';
 import { countAtOrAboveSeverity } from './threshold.js';
 import type { SeverityStats } from './threshold.js';
 
@@ -440,36 +441,39 @@ export async function postToWebhook(
  * cleartext. Config-file URLs are PR-editable (untrusted), so loopback,
  * link-local, RFC1918, and cloud-metadata hosts are also rejected to avoid
  * SSRF/exfiltration when no env secret override is set.
+ *
+ * Host canonicalization covers alternate IP representations that naive
+ * dotted-decimal regexes miss: single-decimal (`http://2130706433/`),
+ * octal/hex dotted (`0x7f.0.0.1`, `0177.0.0.1`), short forms (`127.1`), and
+ * IPv4-mapped IPv6 (`::ffff:127.0.0.1`, `[::ffff:7f00:1]`). The check stays
+ * synchronous by design (no DNS resolution): hostnames that do not parse as
+ * IPs are checked against hostname blocklists only.
  * @param url - Candidate URL string.
  * @returns True when the URL is a safe https endpoint.
  */
-function isHttpsUrl(url: string): boolean {
+export function isHttpsUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:') return false;
-    const host = parsed.hostname.toLowerCase();
-    if (host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal')) {
-      return false;
-    }
-    if (host === '0.0.0.0' || host === '::' || host === '::1') return false;
-    if (/^(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host)) {
-      return false;
-    }
-    return true;
+    if (parsed.username !== '' || parsed.password !== '') return false;
+    return !isBlockedIpHost(parsed.hostname.toLowerCase());
   } catch {
     return false;
   }
 }
 
 /**
- * Redact the query/path tokens of a webhook URL for safe logging so a secret
- * signature embedded in the URL is never written to the log output.
+ * Redact a webhook URL for safe logging so secrets embedded in the URL are
+ * never written to the log output. Masks the path/query/hash and strips any
+ * `userinfo` (`username:password@`) credentials.
  * @param url - Full webhook URL.
- * @returns A redacted URL string (origin + masked path).
+ * @returns A redacted URL string (origin + masked path, no credentials).
  */
-function redactWebhookUrl(url: string): string {
+export function redactWebhookUrl(url: string): string {
   try {
     const parsed = new URL(url);
+    parsed.username = '';
+    parsed.password = '';
     parsed.pathname = '/***';
     parsed.search = '';
     parsed.hash = '';

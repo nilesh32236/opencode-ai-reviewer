@@ -17,6 +17,7 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { MCPContextEntry, MCPQueryResult, MCPServerConfig } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
 import { withRetry } from '../utils/retry.js';
+import { isAllowedMcpLocalCommand, isSafeRemoteMcpUrl } from '../utils/safe-exec.js';
 import { estimateTokens } from '../utils/token-estimate.js';
 
 /**
@@ -64,6 +65,28 @@ const DEFAULT_MCP_ALLOWED_ENV = [
 ];
 
 /**
+ * Environment variable names that must never be forwarded to a local MCP
+ * subprocess via `allowedEnv`. Local MCP servers execute third-party packages
+ * that would receive these credentials verbatim.
+ */
+const BLOCKED_MCP_ENV_KEYS = new Set([
+  'GITHUB_TOKEN',
+  'GH_TOKEN',
+  'GITLAB_TOKEN',
+  'GL_TOKEN',
+  'CONTEXT7_API_KEY',
+  'OPENAI_API_KEY',
+  'ANTHROPIC_API_KEY',
+  'GEMINI_API_KEY',
+  'AZURE_API_KEY',
+  'AZURE_OPENAI_KEY',
+  'OPENCODE_API_KEY',
+  'LLM_API_KEY',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+]);
+
+/**
  * Filter the parent process environment down to an allowlisted subset before
  * handing it to a local MCP subprocess.
  * Uses the server's `allowedEnv` when set — an explicit empty array forwards no
@@ -72,6 +95,13 @@ const DEFAULT_MCP_ALLOWED_ENV = [
  * names and are case-sensitive on POSIX, so a warning is logged when a custom
  * `allowedEnv` key is not present in the parent environment (likely a typo).
  * The server's explicit `environment` vars are always merged on top afterward.
+ *
+ * SECURITY: `allowedEnv` entries naming credentials (e.g. `GITHUB_TOKEN`) are
+ * forwarded only on explicit per-server opt-in and always log a warning —
+ * forwarding runner secrets to third-party MCP packages via PR-editable config
+ * hands tokens to attacker-influenced code. Prefer the pinned built-in
+ * servers' explicit `environment` after operator review, and keep MCP disabled
+ * by default in CI.
  * @param server - MCP server configuration
  * @returns A sanitized env object safe to pass to a subprocess
  */
@@ -81,6 +111,12 @@ function filterEnv(server: MCPServerConfig): Record<string, string> {
   const filtered: Record<string, string> = {};
   const logger = new Logger('MCPManager');
   for (const key of allowlist) {
+    if (custom && BLOCKED_MCP_ENV_KEYS.has(key)) {
+      logger.warn(
+        `MCP server "${server.name}": allowedEnv key "${key}" looks like a credential — ` +
+          'it will be visible to the third-party MCP subprocess. Prefer a minimally-privileged token.',
+      );
+    }
     const value = process.env[key];
     if (value !== undefined) {
       filtered[key] = value;
@@ -138,7 +174,17 @@ export class MCPManager {
 
     const results = await Promise.allSettled(
       this.servers.map((server) => {
+        // SECURITY: `mcpServers` entries may come from PR-editable repo-file
+        // config (untrusted). Local commands are constrained to a launcher
+        // allowlist (no shells/paths) and remote URLs must pass the SSRF
+        // policy; anything else is skipped without connecting.
         if (server.type === 'local' && server.command) {
+          if (!isAllowedMcpLocalCommand(server.command)) {
+            this.logger.warn(
+              `Skipping MCP server "${server.name}": local command launcher is not on the allowed list`,
+            );
+            return Promise.resolve();
+          }
           const cmd = server.command;
           return this.connectServer(
             server,
@@ -151,6 +197,12 @@ export class MCPManager {
           );
         }
         if (server.type === 'remote' && server.url) {
+          if (!isSafeRemoteMcpUrl(server.url)) {
+            this.logger.warn(
+              `Skipping MCP server "${server.name}": remote URL failed the SSRF policy (https-only, no internal hosts)`,
+            );
+            return Promise.resolve();
+          }
           const headers: Record<string, string> = {};
           if (server.environment) {
             for (const [key, value] of Object.entries(server.environment)) {

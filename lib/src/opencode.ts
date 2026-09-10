@@ -1596,8 +1596,7 @@ export async function runOpenCode(
   // Interactive TTY path: large prompts are inherently argv-limited (the user
   // is typing at the terminal, not pasting multi-hundred-KiB diffs).
   const MAX_ARG_BYTES = 96 * 1024;
-  const useStdinForPrompt =
-    autoApprove && Buffer.byteLength(prompt, 'utf8') > MAX_ARG_BYTES;
+  const useStdinForPrompt = autoApprove && Buffer.byteLength(prompt, 'utf8') > MAX_ARG_BYTES;
   if (useStdinForPrompt) {
     core.info(
       `Prompt is ${Buffer.byteLength(prompt, 'utf8')} bytes (threshold ${MAX_ARG_BYTES}) — ` +

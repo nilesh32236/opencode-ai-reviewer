@@ -770,13 +770,7 @@ describe('runOpenCode()', () => {
 
     // Small prompt must be in argv
     expect(spawnArgs).toContain(smallPrompt);
-    expect(spawnArgs).toEqual([
-      'run',
-      '--auto',
-      '--model',
-      'openai/gpt-4',
-      smallPrompt,
-    ]);
+    expect(spawnArgs).toEqual(['run', '--auto', '--model', 'openai/gpt-4', smallPrompt]);
 
     // stdio[0] must be 'ignore' (CI auto-approve path, small prompt)
     expect(spawnOpts.stdio[0]).toBe('ignore');

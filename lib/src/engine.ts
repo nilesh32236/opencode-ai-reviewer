@@ -87,6 +87,7 @@ import { sanitizePromptInput } from './utils/prompt-sanitizer.js';
 import { analyzeBatchReachability } from './utils/reachability.js';
 import { withRetry } from './utils/retry.js';
 import { buildAgentsMdAttributionFooter } from './utils/review-body.js';
+import { isAllowedLinterCommand, resolveConfinedWorkingDir } from './utils/safe-exec.js';
 import { sanitizeString } from './utils/sanitize.js';
 import { detectSecrets, mergeSecretFindings } from './utils/secret-detect.js';
 import type { SecretDetectOptions, SecretFinding } from './utils/secret-detect.js';
@@ -4020,6 +4021,12 @@ export class ReviewEngine {
 
   /**
    * Run configured linters against changed files.
+   *
+   * SECURITY: `linters[]` comes from PR-editable repo-file config (untrusted).
+   * `command` must be a bare basename on the allowlist (see
+   * `utils/safe-exec.ts`) and `workingDirectory` must stay inside `workDir`;
+   * entries failing either check are skipped defensively at this sink even if
+   * config validation already filtered them.
    * @param changedFiles - Array of changed file paths.
    * @param workDir - Working directory for running linters.
    * @returns Array of linter results.
@@ -4034,6 +4041,15 @@ export class ReviewEngine {
 
     for (const linterConfig of this.config.linters) {
       try {
+        // Defense in depth at the exec sink: never run a linter binary that
+        // is not on the basename allowlist (PR-editable config is untrusted).
+        if (!isAllowedLinterCommand(linterConfig.command)) {
+          this.logger.warn(
+            `Skipping linter: command "${linterConfig.command}" is not on the allowed list`,
+          );
+          continue;
+        }
+
         const matchedFiles = changedFiles
           .map((f) => f.path)
           .filter((p): p is string => typeof p === 'string' && Boolean(p))
@@ -4041,9 +4057,15 @@ export class ReviewEngine {
 
         if (matchedFiles.length === 0) continue;
 
-        const linterDir = linterConfig.workingDirectory
-          ? path.resolve(workDir, linterConfig.workingDirectory)
-          : workDir;
+        // Confine the working directory to the checkout: `path.resolve`
+        // alone permits `../../` escapes to arbitrary runner directories.
+        const linterDir = resolveConfinedWorkingDir(workDir, linterConfig.workingDirectory);
+        if (!linterDir) {
+          this.logger.warn(
+            `Skipping linter "${linterConfig.command}": workingDirectory "${linterConfig.workingDirectory}" escapes the working directory`,
+          );
+          continue;
+        }
 
         const args = [...(linterConfig.args || []), ...matchedFiles];
         const start = Date.now();
@@ -4097,7 +4119,7 @@ export class ReviewEngine {
         const duration = Date.now() - start;
 
         const result: LinterResult = {
-          tool: linterConfig.command.split('/').pop() || linterConfig.command,
+          tool: path.basename(linterConfig.command) || linterConfig.command,
           command: `${linterConfig.command} ${args.join(' ')}`,
           exitCode: status ?? -1,
           stdout: stdout || '',

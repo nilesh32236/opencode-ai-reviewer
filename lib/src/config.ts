@@ -34,6 +34,11 @@ import { PromptConfigSchema } from './types/schemas.js';
 import { DEFAULT_ALLOWLIST } from './utils/command.js';
 import { Logger } from './utils/logger.js';
 import { parseReviewEffort } from './utils/review-effort.js';
+import {
+  DEFAULT_EVENT_LOG_PATH,
+  isAllowedLinterCommand,
+  isConfinedPath,
+} from './utils/safe-exec.js';
 
 /**
  * Shape descriptor used to detect unknown keys in a raw config object.
@@ -1038,21 +1043,52 @@ export function validateConfig(config: PromptConfig): PromptConfig {
   }
 
   if (Array.isArray(config.linters)) {
+    // SECURITY: repo-file linter config is PR-editable (untrusted). Drop
+    // entries whose `command` is not a bare allowlisted basename or whose
+    // `workingDirectory` escapes the checkout; the exec sink in
+    // engine.ts re-checks both defensively.
     result.linters = config.linters.filter((l): l is LinterConfig => {
       if (!l || typeof l !== 'object') return false;
       if (typeof l.pattern !== 'string' || typeof l.command !== 'string') return false;
       if (l.args && !Array.isArray(l.args)) return false;
       if (l.parseFormat && !['eslint', 'ruff', 'generic'].includes(l.parseFormat)) return false;
+      if (!isAllowedLinterCommand(l.command)) {
+        core.warning(
+          `Ignoring linters entry for pattern "${l.pattern}": command "${l.command}" is not on the allowed list`,
+        );
+        return false;
+      }
+      if (
+        typeof l.workingDirectory === 'string' &&
+        l.workingDirectory.trim() !== '' &&
+        !isConfinedPath(process.cwd(), l.workingDirectory)
+      ) {
+        core.warning(
+          `Ignoring linters entry for pattern "${l.pattern}": workingDirectory "${l.workingDirectory}" escapes the working directory`,
+        );
+        return false;
+      }
       return true;
     });
   }
 
   if (config.eventLogging && typeof config.eventLogging === 'object') {
     const el = config.eventLogging;
+    // SECURITY: `eventLogging.path` drives mkdir/appendFile/rm/rename on the
+    // runner. Confine it to the checkout; fall back to the default on escape.
+    const rawPath =
+      typeof el.path === 'string' && el.path.trim() !== ''
+        ? el.path.trim()
+        : DEFAULT_EVENT_LOG_PATH;
+    const safePath = isConfinedPath(process.cwd(), rawPath) ? rawPath : DEFAULT_EVENT_LOG_PATH;
+    if (safePath !== rawPath) {
+      core.warning(
+        `Ignoring eventLogging.path "${rawPath}": escapes the working directory, using "${DEFAULT_EVENT_LOG_PATH}"`,
+      );
+    }
     result.eventLogging = {
       enabled: typeof el.enabled === 'boolean' ? el.enabled : false,
-      path:
-        typeof el.path === 'string' && el.path.trim() !== '' ? el.path : '.opencode/events.ndjson',
+      path: safePath,
     };
   }
 
