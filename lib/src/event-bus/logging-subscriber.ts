@@ -37,6 +37,8 @@ const SENSITIVE_KEYS = new Set([
  * `*_token`, `*_secret`, `*_key`, `*password*`, and `*auth*` variants,
  * case-insensitively, so `GITHUB_TOKEN`, `clientSecret`, `deploy-key`, and
  * `Authorization` are all redacted.
+ * @param key - Payload object key to classify.
+ * @returns True when the key identifies a sensitive value that must be redacted.
  */
 function isSensitiveKey(key: string): boolean {
   const normalized = key.toLowerCase().replace(/-/g, '_');

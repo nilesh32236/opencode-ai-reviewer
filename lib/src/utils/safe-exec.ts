@@ -236,6 +236,8 @@ const BLOCKED_SUFFIXES = ['.local', '.internal', '.localhost', '.lan', '.home', 
 /**
  * Parse one numeric IP part in decimal, octal (`0...`), or hex (`0x...`) form.
  * Returns null when the part is not numeric.
+ * @param part - Single dot-separated host segment.
+ * @returns The parsed integer, or null when not a valid numeric form.
  */
 function parseNumericPart(part: string): number | null {
   if (/^0x[0-9a-fA-F]+$/.test(part)) return Number.parseInt(part, 16);
@@ -251,6 +253,8 @@ function parseNumericPart(part: string): number | null {
  * Convert an `inet_aton`-style host (`2130706433`, `0x7f.0.0.1`, `0177.0.0.1`,
  * `127.1`, `10.0.1`) to four IPv4 bytes. Returns null when the host is not a
  * fully numeric address form.
+ * @param host - Lowercased host string without port or brackets.
+ * @returns The four IPv4 bytes, or null when not an alternate numeric form.
  */
 function parseAlternateIPv4(host: string): [number, number, number, number] | null {
   if (!/^[0-9a-fA-Fx.]+$/.test(host) || !/[0-9]/.test(host)) return null;
@@ -287,6 +291,8 @@ function parseAlternateIPv4(host: string): [number, number, number, number] | nu
 /**
  * Check whether four IPv4 bytes fall in a blocked range (loopback, RFC1918,
  * link-local, CGNAT, `0/8`, or cloud-metadata `169.254.169.254` via link-local).
+ * @param bytes - Four octets of an IPv4 address.
+ * @returns True when the address targets a blocked internal range.
  */
 function isBlockedIPv4Bytes(bytes: readonly [number, number, number, number]): boolean {
   const [a, b] = bytes;
