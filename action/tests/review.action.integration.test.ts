@@ -146,7 +146,14 @@ describe('runReview (action wrapper)', () => {
       undefined,
       { forceReview: false },
     );
-    expect(mockPostReview).toHaveBeenCalledWith(42, 'abc123', reviewResult, config.review.inline);
+    expect(mockPostReview).toHaveBeenCalledWith(
+      42,
+      'abc123',
+      reviewResult,
+      config.review.inline,
+      undefined,
+      undefined,
+    );
     expect(mockSetOutput).toHaveBeenCalledWith('review_summary', reviewResult.summary);
     expect(mockSetOutput).toHaveBeenCalledWith('verdict', 'true');
     expect(mockSetOutput).toHaveBeenCalledWith('critical_count', '0');

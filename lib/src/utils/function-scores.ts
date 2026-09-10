@@ -40,12 +40,20 @@ function clampScore(value: number): number {
   return Math.min(100, Math.max(0, Math.round(value)));
 }
 
-/** Normalize a numeric signal to a finite non-negative value (0 when unknown). */
+/**
+ * Normalize a numeric signal to a finite non-negative value (0 when unknown).
+ * @param value - Raw signal value from diff metadata.
+ * @returns Finite non-negative number, or 0 when the input is not a number.
+ */
 function normalizeSignal(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0;
 }
 
-/** True when the entry already carries a finite pre-computed score. */
+/**
+ * True when the entry already carries a finite pre-computed score.
+ * @param entry - Raw input or already-scored function entry.
+ * @returns True when the entry is a scored function.
+ */
 function isScored(entry: FunctionScoreInput | FunctionScore): entry is FunctionScore {
   return (
     typeof (entry as FunctionScore).score === 'number' &&
@@ -56,6 +64,9 @@ function isScored(entry: FunctionScoreInput | FunctionScore): entry is FunctionS
 /**
  * Canonical riskiest-first ordering: score descending, ties broken by file
  * then name so equal-score rows render deterministically.
+ * @param a - First scored function.
+ * @param b - Second scored function.
+ * @returns Negative when `a` sorts first, positive when `b` sorts first.
  */
 function compareFunctionScores(a: FunctionScore, b: FunctionScore): number {
   if (b.score !== a.score) return b.score - a.score;
@@ -139,12 +150,20 @@ const HUNK_HEADER_RE = /^@@\s+-[0-9]+(?:,[0-9]+)?\s+\+([0-9]+)(?:,[0-9]+)?\s+@@(
 const TEST_PATH_RE =
   /(?:^|\/)(?:__tests__|[Tt]est|[Tt]ests|[Ss]pec)(?:\/|$)|[.](?:test|spec)[.]|[_-]test(?=$|[./])|(?:^|\/)test[_-]/;
 
-/** Whether a changed file looks like a test file. */
+/**
+ * Whether a changed file looks like a test file.
+ * @param filePath - Repository-relative file path.
+ * @returns True when the path matches common test-file conventions.
+ */
 function isTestFile(filePath: string): boolean {
   return TEST_PATH_RE.test(filePath);
 }
 
-/** Whether a changed file looks like reviewable source (not docs/config). */
+/**
+ * Whether a changed file looks like reviewable source (not docs/config).
+ * @param filePath - Repository-relative file path.
+ * @returns True when the path has a recognized source-code extension.
+ */
 function isSourceFile(filePath: string): boolean {
   if (isTestFile(filePath)) return false;
   return /\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|rb|php|cs|swift|kt|scala|c|cc|cpp|h|hpp)$/.test(
@@ -158,6 +177,8 @@ function isSourceFile(filePath: string): boolean {
  * proxy for block nesting without parsing. Assumes 2-space indentation, so
  * 4-space-indented repos report roughly double the true depth; the score only
  * uses this as a relative static signal.
+ * @param addedLines - Raw added diff lines for the function.
+ * @returns Estimated nesting depth (non-negative integer).
  */
 function estimateNesting(addedLines: string[]): number {
   let maxIndent = 0;

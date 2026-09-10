@@ -195,6 +195,7 @@ export function buildAgentsMdAttributionFooter(
 
 /**
  * Build a markdown review body from a ReviewResult.
+ * @param result - Review result to render.
  * @param options - Optional rendering options (attribution footer and/or
  * deterministic function scores).
  * @returns Formatted markdown string.
