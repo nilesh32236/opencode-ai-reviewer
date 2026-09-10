@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as core from '@actions/core';
+import { minimatch } from 'minimatch';
 import type {
   DocStyle,
   PreviousFindingIteration,
@@ -22,6 +23,11 @@ const PROMPT_TRUNCATION_MARKER = '... [prompt truncated at 200KB cap]';
 // below, which would drop those framing instructions first.
 const MAX_CODEBASE_INDEX_BYTES = 96 * 1024;
 const logger = new Logger('prompt-builder');
+
+/** Max `review.pathInstructions` entries honored per prompt (fail-open). */
+export const MAX_PATH_INSTRUCTIONS = 10;
+/** Max UTF-8 bytes honored per matched path instruction. */
+export const MAX_PATH_INSTRUCTION_BYTES = 2048;
 
 /**
  * Truncate a string to a UTF-8 byte budget on a code-point boundary so
@@ -131,6 +137,68 @@ export interface ReviewPromptOptions {
   repoRulesContext?: string;
   /** Compact `git log --oneline base..head` commit list (author intent). */
   commitMessages?: string;
+  /** Repo-relative paths of the files covered by this prompt batch. */
+  filePaths?: string[];
+  /** Opt-in glob → extra-instructions map (`review.pathInstructions`). */
+  pathInstructions?: Record<string, string>;
+}
+
+/**
+ * Match reviewed file paths against a `review.pathInstructions` glob map.
+ * Fail-open: returns `[]` when the map is empty/unset, no glob matches, or
+ * entries are invalid. Invalid globs are skipped with a warning and never throw.
+ * @param map - Glob pattern to extra-instructions map.
+ * @param filePaths - Repo-relative file paths covered by this prompt.
+ * @returns Matched `{ glob, instruction }` pairs, at most MAX_PATH_INSTRUCTIONS.
+ */
+export function getMatchedPathInstructions(
+  map: Record<string, string> | undefined,
+  filePaths: string[] | undefined,
+): Array<{ glob: string; instruction: string }> {
+  if (!map || !filePaths || filePaths.length === 0) return [];
+  const matched: Array<{ glob: string; instruction: string }> = [];
+  for (const [glob, instruction] of Object.entries(map)) {
+    if (matched.length >= MAX_PATH_INSTRUCTIONS) break;
+    if (typeof glob !== 'string' || glob.length === 0) continue;
+    if (typeof instruction !== 'string' || instruction.length === 0) continue;
+    let isMatch = false;
+    try {
+      isMatch = filePaths.some((f) => minimatch(f, glob));
+    } catch {
+      logger.warn(`Ignoring pathInstructions entry: invalid glob "${glob}"`);
+      continue;
+    }
+    if (isMatch) matched.push({ glob, instruction });
+  }
+  return matched;
+}
+
+/**
+ * Render matched path instructions as a scoped prompt section. Each
+ * instruction is sanitized and truncated to MAX_PATH_INSTRUCTION_BYTES.
+ * @param matched - Output of getMatchedPathInstructions().
+ * @returns The markdown section, or an empty string when nothing matched.
+ */
+export function buildPathInstructionsSection(
+  matched: Array<{ glob: string; instruction: string }>,
+): string {
+  if (matched.length === 0) return '';
+  const lines: string[] = ['## Path-Specific Review Instructions', ''];
+  lines.push(
+    'The following additional instructions apply only to files matching the given glob patterns. Apply each rule to matching files alongside the general review rules:',
+  );
+  lines.push('');
+  for (const { glob, instruction } of matched) {
+    const safe = truncateUtf8Bytes(
+      sanitizePromptInput(instruction, { maxLength: 50_000 }),
+      MAX_PATH_INSTRUCTION_BYTES,
+    );
+    lines.push(`### Glob \`${glob}\``);
+    lines.push('');
+    lines.push(safe);
+    lines.push('');
+  }
+  return lines.join('\n');
 }
 
 /**
@@ -167,6 +235,9 @@ export function buildReviewPrompt(
   const testGapContext = options.testGapContext;
   const repoRulesContext = options.repoRulesContext;
   const commitMessages = options.commitMessages;
+  const pathInstructionsSection = buildPathInstructionsSection(
+    getMatchedPathInstructions(options.pathInstructions, options.filePaths),
+  );
 
   if (inputs.reviewPromptFile) {
     const customPrompt = loadPromptFile(inputs.reviewPromptFile);
@@ -201,6 +272,9 @@ export function buildReviewPrompt(
         sections.push('\n## Additional Instructions');
         sections.push('');
         sections.push(inputs.reviewPromptExtra);
+      }
+      if (pathInstructionsSection) {
+        sections.push('\n' + pathInstructionsSection);
       }
       if (effectiveBudgetMode && effectiveBudgetMode !== 'full') {
         sections.push('\n' + buildBudgetBanner(effectiveBudgetMode, effectiveTotalDiffLines));
@@ -507,6 +581,10 @@ export function buildReviewPrompt(
     sections.push('\n## Additional Instructions');
     sections.push('');
     sections.push(inputs.reviewPromptExtra);
+  }
+
+  if (pathInstructionsSection) {
+    sections.push('\n' + pathInstructionsSection);
   }
 
   return capPromptLength(sections.join('\n'));

@@ -53,6 +53,11 @@ const CATEGORY_OVERRIDE_SHAPE: Record<string, ConfigShape> = {
   maxFindings: null,
 };
 
+/** Max entries kept from `review.pathInstructions` (fail-open truncation). */
+export const MAX_PATH_INSTRUCTIONS_ENTRIES = 10;
+/** Max UTF-8 bytes kept per `review.pathInstructions` entry. */
+export const MAX_PATH_INSTRUCTION_BYTES = 2048;
+
 const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
   platform: null,
   review: {
@@ -85,6 +90,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
       ignorePatterns: null,
     },
     categories: [CATEGORY_OVERRIDE_SHAPE],
+    pathInstructions: null,
   },
   fix: {
     systemPrompt: null,
@@ -372,9 +378,16 @@ export function resolveConfig(config: PromptConfig, options: ResolveConfigOption
 
     if (override.review) {
       const existingRules = result.review?.customRules || [];
+      const existingPathInstructions = result.review?.pathInstructions;
       result.review = { ...result.review, ...override.review };
       if (override.review.customRules) {
         result.review.customRules = [...existingRules, ...override.review.customRules];
+      }
+      if (override.review.pathInstructions && existingPathInstructions) {
+        result.review.pathInstructions = {
+          ...existingPathInstructions,
+          ...override.review.pathInstructions,
+        };
       }
     }
 
@@ -593,6 +606,38 @@ export function validateConfig(config: PromptConfig): PromptConfig {
         categories[name] = validated;
       }
       result.review.categories = categories;
+    }
+    if (config.review.pathInstructions && typeof config.review.pathInstructions === 'object') {
+      const sanitized: Record<string, string> = {};
+      for (const [glob, value] of Object.entries(config.review.pathInstructions)) {
+        if (Object.keys(sanitized).length >= MAX_PATH_INSTRUCTIONS_ENTRIES) {
+          core.warning(
+            `review.pathInstructions exceeds ${MAX_PATH_INSTRUCTIONS_ENTRIES} entries, ignoring extras`,
+          );
+          break;
+        }
+        if (typeof glob !== 'string' || glob.length === 0) continue;
+        if (typeof value !== 'string' || value.length === 0) {
+          core.warning(`Ignoring review.pathInstructions entry for glob "${glob}": not a string`);
+          continue;
+        }
+        if (Buffer.byteLength(value, 'utf8') > MAX_PATH_INSTRUCTION_BYTES) {
+          core.warning(
+            `Ignoring review.pathInstructions entry for glob "${glob}": exceeds 2 KB cap`,
+          );
+          continue;
+        }
+        try {
+          minimatch('', glob);
+        } catch {
+          core.warning(`Ignoring review.pathInstructions entry: invalid glob "${glob}"`);
+          continue;
+        }
+        sanitized[glob] = value;
+      }
+      if (Object.keys(sanitized).length > 0) {
+        result.review.pathInstructions = sanitized;
+      }
     }
   }
 

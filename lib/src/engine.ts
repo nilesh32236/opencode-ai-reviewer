@@ -1130,6 +1130,10 @@ export class ReviewEngine {
           testGapContext,
           repoRulesContext,
           commitMessages,
+          filePaths: files
+            .map((f) => f?.path)
+            .filter((p): p is string => typeof p === 'string' && Boolean(p)),
+          pathInstructions: this.config.review.pathInstructions,
           languages: detectLanguages(
             files
               .map((f) => f?.path)
@@ -1300,6 +1304,10 @@ export class ReviewEngine {
               testGapContext: this.filterTestGapContext(testGapResult, batch),
               repoRulesContext,
               commitMessages,
+              filePaths: batch
+                .map((f) => f?.path)
+                .filter((p): p is string => typeof p === 'string' && Boolean(p)),
+              pathInstructions: this.config.review.pathInstructions,
               languages: detectLanguages(
                 batch
                   .map((f) => f?.path)
