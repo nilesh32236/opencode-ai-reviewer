@@ -72,6 +72,7 @@ import { filterBlameToPatch, getGitBlame, parsePatchHunks } from './utils/blame.
 import { MAX_BLAME_LINES_PER_FILE, UNCOMMITTED_SHA } from './utils/blame.js';
 import type { BlameRange } from './utils/blame.js';
 import { computeReviewStats, filterFindings, severityRank } from './utils/filter-findings.js';
+import { isGeneratedArtifact, isGeneratedArtifactPath } from './utils/generated-files.js';
 import { Logger } from './utils/logger.js';
 import {
   detectDotnetLibraries,
@@ -2919,7 +2920,12 @@ export class ReviewEngine {
     const buffer = await fs.readFile(fullPath);
     if (buffer.length === 0) return [];
     if (buffer.subarray(0, 8192).includes(0)) return [];
-    return detectSecrets(buffer.subarray(0, MAX_SECRET_SCAN_BYTES).toString('utf-8'), options);
+    const text = buffer.subarray(0, MAX_SECRET_SCAN_BYTES).toString('utf-8');
+    // Generated/vendored/minified files (e.g. the committed action/lib bundle)
+    // legitimately contain high-entropy base64 tables that are not secrets.
+    // Skip them so the scanner does not raise false-positive criticals.
+    if (isGeneratedArtifact(fullPath, text)) return [];
+    return detectSecrets(text, options);
   }
 
   /**
@@ -2947,6 +2953,7 @@ export class ReviewEngine {
     for (const file of files) {
       if (!file?.path) continue;
       if (excludePatterns.some((pattern) => minimatch(file.path, pattern))) continue;
+      if (isGeneratedArtifactPath(file.path)) continue;
       try {
         const findings = await this.detectSecretsFromFile(path.join(workDir, file.path), options);
         if (findings.length > 0) {
@@ -3013,6 +3020,7 @@ export class ReviewEngine {
         if (!entry.isFile()) continue;
         const rel = path.relative(repoRoot, full);
         if (excludePatterns.some((pattern) => minimatch(rel, pattern))) continue;
+        if (isGeneratedArtifactPath(rel)) continue;
         try {
           const findings = await this.detectSecretsFromFile(full, options);
           if (findings.length > 0) {
