@@ -456,7 +456,15 @@ export function isHttpsUrl(url: string): boolean {
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:') return false;
     if (parsed.username !== '' || parsed.password !== '') return false;
-    return !isBlockedIpHost(parsed.hostname.toLowerCase());
+    // `URL.hostname` retains brackets for IPv6 literals (`[::1]`), but
+    // `isBlockedIpHost` expects a bare host — strip them first (non-greedy
+    // bracket class) and drop any `%zone` suffix before the host check.
+    const host =
+      parsed.hostname
+        .toLowerCase()
+        .replace(/^\[([^\]]*)\]$/, '$1')
+        .split('%')[0] ?? '';
+    return !isBlockedIpHost(host);
   } catch {
     return false;
   }
