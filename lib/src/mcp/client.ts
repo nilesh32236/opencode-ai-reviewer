@@ -12,6 +12,7 @@ import * as core from '@actions/core';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { MCPContextEntry, MCPQueryResult, MCPServerConfig } from '../types/index.js';
@@ -131,9 +132,90 @@ function filterEnv(server: MCPServerConfig): Record<string, string> {
 }
 
 /**
+ * Remote MCP transport selection for `remote` servers.
+ * - `auto` (default): try Streamable HTTP first, fall back to SSE on handshake failure.
+ * - `sse`: pin the legacy SSE transport.
+ * - `streamable-http`: Streamable HTTP only, no SSE fallback.
+ * @since NEXT
+ */
+export type RemoteTransportMode = 'auto' | 'sse' | 'streamable-http';
+
+/**
+ * Resolve the effective remote transport mode for a server.
+ * Per-server `remoteTransport` wins; otherwise the
+ * `OPENCODE_MCP_REMOTE_TRANSPORT` env var acts as a global default;
+ * otherwise `auto`. Unknown values degrade to `auto` (fail-open).
+ * @param server - MCP server configuration
+ * @returns Effective remote transport mode
+ * @since NEXT
+ */
+export function resolveRemoteTransportMode(server: MCPServerConfig): RemoteTransportMode {
+  if (
+    server.remoteTransport === 'auto' ||
+    server.remoteTransport === 'sse' ||
+    server.remoteTransport === 'streamable-http'
+  ) {
+    return server.remoteTransport;
+  }
+  const env = process.env.OPENCODE_MCP_REMOTE_TRANSPORT?.toLowerCase().trim();
+  if (env === 'auto' || env === 'sse' || env === 'streamable-http') {
+    return env;
+  }
+  return 'auto';
+}
+
+/**
+ * Build HTTP headers forwarded to a remote MCP server from its explicit
+ * `environment` map. No keys are forwarded beyond this allowlist-shaped
+ * explicit map (privacy-safe; AI features stay optional).
+ * @param server - MCP server configuration
+ * @returns Header map for `requestInit`
+ * @since NEXT
+ */
+export function buildRemoteHeaders(server: MCPServerConfig): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (server.environment) {
+    for (const [key, value] of Object.entries(server.environment)) {
+      if (value !== undefined) headers[key] = value;
+    }
+  }
+  return headers;
+}
+
+/**
+ * Ordered transport factories for a remote MCP server per its effective mode.
+ * `auto` → `[streamable, sse]`; `streamable-http` → `[streamable]`;
+ * `sse` → `[sse]`. When the Streamable HTTP export is unavailable at runtime
+ * (older bundled SDK), degrades to `[sse]` (fail-open).
+ * @param server - MCP server configuration (must have `url` for remote servers)
+ * @param headers - HTTP headers applied to both transports via `requestInit`
+ * @returns Ordered factories tried in sequence by `connectRemoteWithFallback`
+ * @since NEXT
+ */
+export function createRemoteTransportFactories(
+  server: MCPServerConfig,
+  headers: Record<string, string>,
+): Array<() => Transport> {
+  const url = new URL(server.url!);
+  const requestInit = { headers };
+  const sseFactory = (): Transport => new SSEClientTransport(url, { requestInit });
+  // Guard for older bundled SDKs where the module exists but the export does not.
+  if (typeof StreamableHTTPClientTransport !== 'function') {
+    return [sseFactory];
+  }
+  const streamableFactory = (): Transport =>
+    new StreamableHTTPClientTransport(url, { requestInit });
+  const mode = resolveRemoteTransportMode(server);
+  if (mode === 'sse') return [sseFactory];
+  if (mode === 'streamable-http') return [streamableFactory];
+  return [streamableFactory, sseFactory];
+}
+
+/**
  * Manages connections to MCP (Model Context Protocol) servers.
- * Supports local (stdio) and remote (SSE) transports and provides
- * unified methods for querying context and library documentation.
+ * Supports local (stdio) and remote (Streamable HTTP with SSE fallback)
+ * transports and provides unified methods for querying context and
+ * library documentation.
  */
 export class MCPManager {
   private clients: Map<string, { client: Client; transport: Transport }> = new Map();
@@ -203,16 +285,8 @@ export class MCPManager {
             );
             return Promise.resolve();
           }
-          const headers: Record<string, string> = {};
-          if (server.environment) {
-            for (const [key, value] of Object.entries(server.environment)) {
-              if (value !== undefined) headers[key] = value;
-            }
-          }
-          return this.connectServer(
-            server,
-            () => new SSEClientTransport(new URL(server.url!), { requestInit: { headers } }),
-          );
+          const headers = buildRemoteHeaders(server);
+          return this.connectRemoteWithFallback(server, headers);
         }
         return Promise.resolve();
       }),
@@ -226,6 +300,38 @@ export class MCPManager {
 
     this.initialized = true;
     core.endGroup();
+  }
+
+  /**
+   * Connect to a remote MCP server trying Streamable HTTP first with SSE
+   * fallback (in `auto` mode). Any transport error is fail-open: it is logged
+   * and review continues without MCP enrichment from that server. Only the
+   * fallback handshake adds latency (+~50-150ms).
+   * @param server - Configuration for the remote MCP server to connect to
+   * @param headers - HTTP headers applied to both transports via `requestInit`
+   * @since NEXT
+   */
+  private async connectRemoteWithFallback(
+    server: MCPServerConfig,
+    headers: Record<string, string>,
+  ): Promise<void> {
+    let factories: Array<() => Transport>;
+    try {
+      factories = createRemoteTransportFactories(server, headers);
+    } catch (err) {
+      this.logger.warn(`Failed to create remote transport for ${server.name}`, err);
+      return;
+    }
+    for (let i = 0; i < factories.length; i++) {
+      const factory = factories[i]!;
+      if (i > 0) {
+        this.logger.debug(
+          `MCP server "${server.name}": Streamable HTTP handshake failed, falling back to SSE`,
+        );
+      }
+      await this.connectServer(server, factory);
+      if (this.clients.has(server.name)) return;
+    }
   }
 
   /**

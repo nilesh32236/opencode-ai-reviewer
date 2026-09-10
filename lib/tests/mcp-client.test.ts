@@ -12,9 +12,12 @@ const {
   mockStdioTransportCtor,
   mockSSEClientTransportCtor,
   mockSSETransportClose,
+  mockStreamableTransportCtor,
+  mockStreamableTransportClose,
   MockClient,
   MockStdioClientTransport,
   MockSSEClientTransport,
+  MockStreamableHTTPClientTransport,
 } = vi.hoisted(() => {
   const _connect = vi.fn();
   const _close = vi.fn();
@@ -47,6 +50,16 @@ const {
     }
   }
 
+  const _streamableCtor = vi.fn();
+  const _streamableClose = vi.fn();
+
+  class _MockStreamableHTTPClientTransport {
+    close = _streamableClose;
+    constructor(url: URL, opts?: Record<string, unknown>) {
+      _streamableCtor(url, opts);
+    }
+  }
+
   return {
     mockConnect: _connect,
     mockClose: _close,
@@ -56,9 +69,12 @@ const {
     mockStdioTransportCtor: _stdioCtor,
     mockSSEClientTransportCtor: _sseCtor,
     mockSSETransportClose: _sseClose,
+    mockStreamableTransportCtor: _streamableCtor,
+    mockStreamableTransportClose: _streamableClose,
     MockClient: _MockClient,
     MockStdioClientTransport: _MockStdioTransport,
     MockSSEClientTransport: _MockSSEClientTransport,
+    MockStreamableHTTPClientTransport: _MockStreamableHTTPClientTransport,
   };
 });
 
@@ -68,6 +84,10 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
 
 vi.mock('@modelcontextprotocol/sdk/client/sse.js', () => ({
   SSEClientTransport: MockSSEClientTransport,
+}));
+
+vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({
+  StreamableHTTPClientTransport: MockStreamableHTTPClientTransport,
 }));
 
 vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => ({
@@ -202,12 +222,17 @@ describe('MCPManager', () => {
       expect(opts).toMatchObject({ maxRetries: 3, baseDelayMs: 2000 });
     });
 
-    it('connects to remote servers via SSE transport', async () => {
+    it('connects to remote servers via SSE transport when pinned', async () => {
       mockConnect.mockResolvedValue(undefined);
       mockListTools.mockResolvedValue({ tools: [{ name: 'search' }] });
 
       const manager = new MCPManager([
-        makeConfig({ type: 'remote', url: 'https://mcp.example.com/sse', command: undefined }),
+        makeConfig({
+          type: 'remote',
+          url: 'https://mcp.example.com/sse',
+          command: undefined,
+          remoteTransport: 'sse',
+        }),
       ]);
       await manager.connect();
 
@@ -215,8 +240,63 @@ describe('MCPManager', () => {
         new URL('https://mcp.example.com/sse'),
         expect.objectContaining({ requestInit: expect.anything() }),
       );
+      expect(mockStreamableTransportCtor).not.toHaveBeenCalled();
       expect(mockConnect).toHaveBeenCalledTimes(1);
       expect(mockListTools).toHaveBeenCalledTimes(1);
+    });
+
+    it('uses Streamable HTTP by default in auto mode', async () => {
+      mockConnect.mockResolvedValue(undefined);
+      mockListTools.mockResolvedValue({ tools: [{ name: 'search' }] });
+
+      const manager = new MCPManager([
+        makeConfig({ type: 'remote', url: 'https://mcp.example.com/mcp', command: undefined }),
+      ]);
+      await manager.connect();
+
+      expect(mockStreamableTransportCtor).toHaveBeenCalledWith(
+        new URL('https://mcp.example.com/mcp'),
+        expect.objectContaining({ requestInit: expect.anything() }),
+      );
+      expect(mockSSEClientTransportCtor).not.toHaveBeenCalled();
+      expect(mockConnect).toHaveBeenCalledTimes(1);
+      expect(mockListTools).toHaveBeenCalledTimes(1);
+      expect(manager.getStatus().connectedServers).toBe(1);
+    });
+
+    it('falls back to SSE when Streamable HTTP handshake fails in auto mode', async () => {
+      mockConnect.mockRejectedValueOnce(new Error('Not Found: 404')).mockResolvedValue(undefined);
+      mockListTools.mockResolvedValue({ tools: [{ name: 'search' }] });
+
+      const manager = new MCPManager([
+        makeConfig({ type: 'remote', url: 'https://mcp.example.com/mcp', command: undefined }),
+      ]);
+      await manager.connect();
+
+      expect(mockStreamableTransportCtor).toHaveBeenCalledTimes(1);
+      expect(mockSSEClientTransportCtor).toHaveBeenCalledTimes(1);
+      expect(manager.getStatus().connectedServers).toBe(1);
+      expect(mockListTools).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not fall back to SSE in streamable-http-only mode', async () => {
+      mockConnect.mockRejectedValue(new Error('Not Found: 404'));
+      mockListTools.mockResolvedValue({ tools: [{ name: 'search' }] });
+
+      const manager = new MCPManager([
+        makeConfig({
+          type: 'remote',
+          url: 'https://mcp.example.com/mcp',
+          command: undefined,
+          remoteTransport: 'streamable-http',
+        }),
+      ]);
+      await manager.connect();
+
+      expect(mockStreamableTransportCtor).toHaveBeenCalledTimes(1);
+      expect(mockSSEClientTransportCtor).not.toHaveBeenCalled();
+      expect(mockStreamableTransportClose).toHaveBeenCalled();
+      expect(manager.getStatus().connectedServers).toBe(0);
     });
 
     it('passes environment vars as HTTP headers for remote servers', async () => {
@@ -228,6 +308,7 @@ describe('MCPManager', () => {
           type: 'remote',
           url: 'https://mcp.example.com/sse',
           command: undefined,
+          remoteTransport: 'sse',
           environment: { Authorization: 'Bearer token123', 'X-API-Key': 'abc' },
         }),
       ]);
@@ -235,6 +316,28 @@ describe('MCPManager', () => {
 
       expect(mockSSEClientTransportCtor).toHaveBeenCalledWith(
         new URL('https://mcp.example.com/sse'),
+        expect.objectContaining({
+          requestInit: { headers: { Authorization: 'Bearer token123', 'X-API-Key': 'abc' } },
+        }),
+      );
+    });
+
+    it('passes environment vars as HTTP headers for Streamable HTTP transport', async () => {
+      mockConnect.mockResolvedValue(undefined);
+      mockListTools.mockResolvedValue({ tools: [{ name: 'search' }] });
+
+      const manager = new MCPManager([
+        makeConfig({
+          type: 'remote',
+          url: 'https://mcp.example.com/mcp',
+          command: undefined,
+          environment: { Authorization: 'Bearer token123', 'X-API-Key': 'abc' },
+        }),
+      ]);
+      await manager.connect();
+
+      expect(mockStreamableTransportCtor).toHaveBeenCalledWith(
+        new URL('https://mcp.example.com/mcp'),
         expect.objectContaining({
           requestInit: { headers: { Authorization: 'Bearer token123', 'X-API-Key': 'abc' } },
         }),

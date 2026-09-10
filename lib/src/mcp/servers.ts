@@ -104,9 +104,10 @@ export const githubMCPServer = (token: string): MCPServerConfig => {
 
 /**
  * Example remote MCP server configuration.
- * Connects to a remote MCP service via HTTP SSE transport.
- * Use `environment` to pass authentication headers.
- * @param url - URL of the remote MCP server SSE endpoint
+ * Connects to a remote MCP service via Streamable HTTP with automatic SSE
+ * fallback (`remoteTransport: 'auto'`). Use `environment` to pass
+ * authentication headers.
+ * @param url - URL of the remote MCP server endpoint (Streamable HTTP or SSE)
  * @returns MCPServerConfig for a remote MCP server
  */
 export function exampleRemoteServer(url = 'https://mcp.example.com/sse'): MCPServerConfig {
