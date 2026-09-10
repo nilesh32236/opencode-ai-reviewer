@@ -67,9 +67,9 @@ async function run(): Promise<void> {
     // model inputs (parseInputs would otherwise fail a bare "llama3" before the
     // config default provider could ever apply). The configFile input is read
     // directly here; parseInputs re-reads it for the ActionInputs.configFile field.
-    const rawPlatform = process.env.PLATFORM || 'github';
+    const rawPlatform = (process.env.PLATFORM || 'github').trim().toLowerCase();
     if (rawPlatform !== 'github' && rawPlatform !== 'gitlab') {
-      core.setFailed(`Unsupported PLATFORM: ${rawPlatform}`);
+      core.setFailed(`Unsupported PLATFORM: ${process.env.PLATFORM}`);
       return;
     }
     const platform = rawPlatform;
