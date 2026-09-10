@@ -98,13 +98,14 @@ export function computeFunctionScores(inputs: FunctionScoreInput[]): FunctionSco
 
 /**
  * Escape a value for interpolation inside a backtick markdown table cell.
- * Backslashes are escaped first so a trailing backslash cannot escape the
- * closing backtick; then the shared inline-code escaping applies.
+ * The shared `escapeInlineCode` already escapes backslashes first (so a
+ * trailing backslash cannot escape the closing backtick); only the table
+ * pipe separator needs additional handling here.
  * @param value - Raw value from diff/symbol metadata.
  * @returns Escaped cell text (without surrounding backticks).
  */
 function escapeTableCell(value: unknown): string {
-  const escaped = escapeInlineCode(String(value ?? '').replace(/\\/g, '\\\\'));
+  const escaped = escapeInlineCode(String(value ?? ''));
   return escaped.replace(/\|/g, '\\|');
 }
 

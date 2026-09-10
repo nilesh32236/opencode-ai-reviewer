@@ -241,8 +241,13 @@ inputs:
     required: false
     default: 'true'
 
+  enable_reviews_array_inline:
+    description: 'Bundle mappable inline findings into a single reviews-array request (POST /pulls/{n}/reviews with comments[]), falling back to summary-only on 422/403/429 so no finding is lost (false = legacy behavior). Takes precedence over stream_comments: when both are true, streaming is disabled so findings are posted only via the single batched request.'
+    required: false
+    default: 'false'
+
   stream_comments:
-    description: 'Post review findings incrementally as each file batch completes (streaming) instead of only after the full review finishes'
+    description: 'Post review findings incrementally as each file batch completes (streaming) instead of only after the full review finishes. Ignored when enable_reviews_array_inline is true (batched single-request path takes precedence).'
     required: false
     default: 'false'
 
@@ -304,6 +309,11 @@ inputs:
     description: 'OpenCode CLI version to use (e.g. "latest" or a specific tag like "v0.1.0")'
     required: false
     default: 'latest'
+
+  require_opencode_checksum:
+    description: 'Fail closed when the downloaded OpenCode CLI cannot be checksum-verified (pin opencode_version to a release that publishes a checksum asset). Default false preserves warn-and-continue.'
+    required: false
+    default: 'false'
 
   probe_all_models:
     description: 'In setup mode, probe every configured model (review, fix, audit, etc.) instead of only the review model'

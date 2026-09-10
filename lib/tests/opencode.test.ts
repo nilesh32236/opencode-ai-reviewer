@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   mockSpawn,
@@ -17,6 +17,8 @@ const {
   mockGetKnownChecksum,
   mockParseChecksumFile,
   mockVerifyChecksum,
+  mockBuildMissingChecksumError,
+  mockMarkIntegrityError,
   mockFetch,
 } = vi.hoisted(() => {
   const _mockSpawn = vi.fn();
@@ -34,6 +36,18 @@ const {
   const _mockGetKnownChecksum = vi.fn().mockReturnValue(null);
   const _mockParseChecksumFile = vi.fn();
   const _mockVerifyChecksum = vi.fn();
+  const _mockBuildMissingChecksumError = vi
+    .fn()
+    .mockImplementation((version: string, assetName: string, arch: string) =>
+      Object.assign(
+        new Error(
+          `OpenCode integrity verification failed: no checksum available for ${assetName} ` +
+            `(version ${version}, arch ${arch}) and require_opencode_checksum is enabled.`,
+        ),
+        { status: 422 },
+      ),
+    );
+  const _mockMarkIntegrityError = vi.fn().mockImplementation((err: Error) => err);
   const _mockFetch = vi.fn();
 
   return {
@@ -52,6 +66,8 @@ const {
     mockGetKnownChecksum: _mockGetKnownChecksum,
     mockParseChecksumFile: _mockParseChecksumFile,
     mockVerifyChecksum: _mockVerifyChecksum,
+    mockBuildMissingChecksumError: _mockBuildMissingChecksumError,
+    mockMarkIntegrityError: _mockMarkIntegrityError,
     mockFetch: _mockFetch,
   };
 });
@@ -100,6 +116,8 @@ vi.mock('../src/utils/checksum.js', () => ({
   getKnownChecksum: mockGetKnownChecksum,
   parseChecksumFile: mockParseChecksumFile,
   verifyChecksum: mockVerifyChecksum,
+  buildMissingChecksumError: mockBuildMissingChecksumError,
+  markIntegrityError: mockMarkIntegrityError,
 }));
 
 // Mock fs to allow chmodSync on our fake paths without throwing ENOENT
@@ -136,6 +154,7 @@ import {
   resetOpenCodeState,
   resolveDualEmitSubagentPermissions,
   resolveOpenCodePath,
+  resolveRequireChecksum,
   runOpenCode,
   setDualEmitSubagentPermissions,
   setLLMProviderConfig,
@@ -1675,6 +1694,202 @@ describe('setupOpenCode()', () => {
     expect(timeoutArg).toBe(RELEASE_FETCH_TIMEOUT_MS);
     const fetchInit = mockFetch.mock.calls[0]?.[1] as RequestInit | undefined;
     expect(fetchInit?.signal).toBeInstanceOf(AbortSignal);
+  });
+});
+
+describe('requireChecksum integrity gate', () => {
+  const ENV_KEY = 'INPUT_REQUIRE_OPENCODE_CHECKSUM';
+  let prevEnv: string | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    prevEnv = process.env[ENV_KEY];
+    delete process.env[ENV_KEY];
+    mockVersionOutput('opencode v1.2.3\n');
+    mockIoWhich.mockResolvedValue(null);
+    mockToolFind.mockReturnValue('');
+    mockFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          tag_name: 'v1.2.0',
+          assets: [
+            {
+              name: 'opencode-linux-x64.tar.gz',
+              browser_download_url: 'https://example.com/opencode-linux-x64.tar.gz',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    mockDownloadTool.mockResolvedValue('/tmp/opencode.tar.gz');
+    mockCacheDir.mockResolvedValue('/tmp/opencode-cached');
+    mockComputeSha256.mockResolvedValue('stored-checksum');
+    mockFindChecksumAsset.mockReturnValue(null);
+    mockGetKnownChecksum.mockReturnValue(null);
+    mockVerifyChecksum.mockResolvedValue(true);
+  });
+
+  afterEach(() => {
+    if (prevEnv === undefined) {
+      delete process.env[ENV_KEY];
+    } else {
+      process.env[ENV_KEY] = prevEnv;
+    }
+  });
+
+  describe('resolveRequireChecksum()', () => {
+    it('defaults to false when neither option nor env is set', () => {
+      expect(resolveRequireChecksum()).toBe(false);
+      expect(resolveRequireChecksum({})).toBe(false);
+    });
+
+    it('follows the INPUT_REQUIRE_OPENCODE_CHECKSUM env var', () => {
+      process.env[ENV_KEY] = 'true';
+      expect(resolveRequireChecksum()).toBe(true);
+      expect(resolveRequireChecksum({})).toBe(true);
+    });
+
+    it('treats the env var case-insensitively with surrounding whitespace', () => {
+      process.env[ENV_KEY] = ' True ';
+      expect(resolveRequireChecksum()).toBe(true);
+    });
+
+    it('treats other env values as false', () => {
+      process.env[ENV_KEY] = '1';
+      expect(resolveRequireChecksum()).toBe(false);
+    });
+
+    it('lets an explicit option win over the env var', () => {
+      process.env[ENV_KEY] = 'true';
+      expect(resolveRequireChecksum({ requireChecksum: false })).toBe(false);
+      process.env[ENV_KEY] = 'false';
+      expect(resolveRequireChecksum({ requireChecksum: true })).toBe(true);
+    });
+  });
+
+  describe('setupOpenCode() strict mode', () => {
+    it('fails closed when no checksum is available and requireChecksum is set', async () => {
+      await expect(
+        setupOpenCode('v1.2.0', undefined, undefined, { requireChecksum: true }),
+      ).rejects.toThrow(/no checksum available/);
+      expect(mockBuildMissingChecksumError).toHaveBeenCalledWith(
+        'v1.2.0',
+        expect.any(String),
+        expect.any(String),
+      );
+    });
+
+    it('fails closed via the INPUT_REQUIRE_OPENCODE_CHECKSUM env var', async () => {
+      process.env[ENV_KEY] = 'true';
+
+      await expect(setupOpenCode('v1.2.0')).rejects.toThrow(/no checksum available/);
+    });
+
+    it('lets an explicit requireChecksum:false override the env var (warn-and-continue)', async () => {
+      process.env[ENV_KEY] = 'true';
+
+      const result = await setupOpenCode('v1.2.0', undefined, undefined, {
+        requireChecksum: false,
+      });
+
+      expect(result).toBe('/tmp/opencode-cached/opencode');
+      expect(mockBuildMissingChecksumError).not.toHaveBeenCalled();
+      expect(core.warning).toHaveBeenCalledWith(
+        expect.stringContaining('Skipping integrity verification'),
+      );
+    });
+
+    it('tags checksum mismatches via markIntegrityError', async () => {
+      mockFindChecksumAsset.mockReturnValue({
+        name: 'opencode-linux-x64.tar.gz.sha256',
+        browser_download_url: 'https://example.com/checksum.sha256',
+      });
+      mockParseChecksumFile.mockReturnValue('expected-hash-value');
+      const mismatch = new Error(
+        'Checksum mismatch for /tmp/opencode.tar.gz: expected expected-hash-value, got deadbeef',
+      );
+      mockVerifyChecksum.mockRejectedValue(mismatch);
+
+      await expect(
+        setupOpenCode('v1.2.0', undefined, undefined, { requireChecksum: true }),
+      ).rejects.toThrow(/failed checksum verification/i);
+      expect(mockMarkIntegrityError).toHaveBeenCalledWith(mismatch);
+    });
+
+    it('reports pin-or-disable recovery (not a blind retry) for fail-closed errors', async () => {
+      await expect(
+        setupOpenCode('v1.2.0', undefined, undefined, { requireChecksum: true }),
+      ).rejects.toThrow(/Pin opencode_version.*require_opencode_checksum disabled/s);
+      await expect(
+        setupOpenCode('v1.2.0', undefined, undefined, { requireChecksum: true }),
+      ).rejects.not.toThrow(/Please re-run the workflow to retry/);
+    });
+  });
+
+  describe('pre-installed binary bypass', () => {
+    it('warns but returns the PATH binary when strict mode is on', async () => {
+      mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+
+      const result = await setupOpenCode('v1.2.0', undefined, undefined, {
+        requireChecksum: true,
+      });
+
+      expect(result).toBe('/usr/local/bin/opencode');
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('already on PATH'));
+      expect(mockDownloadTool).not.toHaveBeenCalled();
+    });
+
+    it('stays silent about checksums for PATH binaries in default mode', async () => {
+      mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+
+      const result = await setupOpenCode('v1.2.0');
+
+      expect(result).toBe('/usr/local/bin/opencode');
+      expect(core.warning).not.toHaveBeenCalled();
+    });
+
+    it('resolveOpenCodePath warns for PATH binaries in strict mode', async () => {
+      mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+
+      const result = await resolveOpenCodePath('v1.2.0', undefined, { requireChecksum: true });
+
+      expect(result).toBe('/usr/local/bin/opencode');
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('already on PATH'));
+    });
+  });
+
+  describe('tool-cache bypass', () => {
+    async function mockCacheHit(): Promise<void> {
+      mockToolFind.mockReturnValue('/cache/opencode/1.2.0/linux-x64');
+      mockComputeSha256.mockResolvedValue('abc123');
+      const fsModule = await import('fs');
+      (fsModule.existsSync as ReturnType<typeof vi.fn>).mockImplementation(
+        (p: string) => p.endsWith('.checksum') || p.endsWith('opencode'),
+      );
+      (fsModule.readFileSync as ReturnType<typeof vi.fn>).mockReturnValue('abc123\n');
+    }
+
+    it('warns but returns the cached binary when strict mode is on', async () => {
+      await mockCacheHit();
+
+      const result = await setupOpenCode('v1.2.0', undefined, undefined, {
+        requireChecksum: true,
+      });
+
+      expect(result).toBe('/cache/opencode/1.2.0/linux-x64/opencode');
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('using cached OpenCode'));
+      expect(mockDownloadTool).not.toHaveBeenCalled();
+    });
+
+    it('stays silent about checksums for cached binaries in default mode', async () => {
+      await mockCacheHit();
+
+      const result = await setupOpenCode('v1.2.0');
+
+      expect(result).toBe('/cache/opencode/1.2.0/linux-x64/opencode');
+      expect(core.warning).not.toHaveBeenCalled();
+    });
   });
 });
 

@@ -7,9 +7,11 @@ import * as io from '@actions/io';
 import * as tc from '@actions/tool-cache';
 import type { LLMConfig, LLMProviderConfig } from './types/index.js';
 import {
+  buildMissingChecksumError,
   computeSha256,
   findChecksumAsset,
   getKnownChecksum,
+  markIntegrityError,
   parseChecksumFile,
   verifyChecksum,
 } from './utils/checksum.js';
@@ -507,6 +509,22 @@ function classifyDownloadError(error: unknown, version: string, downloadUrl: str
     );
   }
 
+  if (/no checksum available|require_opencode_checksum/i.test(message)) {
+    // Fail-closed integrity error under strict enforcement: re-running the
+    // workflow without changes deterministically fails again, so point at the
+    // pin-or-disable recovery steps instead of a blind retry. The Details line
+    // preserves the pin-plus-sha256 remediation from buildMissingChecksumError
+    // verbatim.
+    return (
+      `The downloaded OpenCode binary (${version}) could not be checksum-verified and require_opencode_checksum is enabled.\n` +
+      `Details: ${message}\n` +
+      `Download URL: ${downloadUrl}\n` +
+      `Pin opencode_version to a release that publishes a checksum asset, or re-run ` +
+      `with require_opencode_checksum disabled (the default warn-and-continue behavior) ` +
+      `while you obtain the expected sha256.`
+    );
+  }
+
   if (
     /timed out|timeout|fetch failed|network|econnrefused|econnreset|enotfound|etimedout|eai_again|socket/i.test(
       lower,
@@ -550,22 +568,71 @@ function classifyDownloadError(error: unknown, version: string, downloadUrl: str
 }
 
 /**
+ * Options for {@link setupOpenCode}.
+ * @since NEXT
+ */
+export interface SetupOpenCodeOptions {
+  /**
+   * Fail closed when no checksum is available for the downloaded archive.
+   * Maps to the `require_opencode_checksum` action input (surfaced as the
+   * `INPUT_REQUIRE_OPENCODE_CHECKSUM` env var). Defaults to false
+   * (warn-and-continue). Note: this gate only guards fresh downloads — a
+   * binary already present on PATH or restored from the tool cache is
+   * returned as-is (with a warning when strict mode is on) without checksum
+   * verification, because no archive was downloaded to verify.
+   */
+  requireChecksum?: boolean;
+}
+
+/**
+ * Resolve whether checksum enforcement is on. An explicit option wins;
+ * otherwise the `INPUT_REQUIRE_OPENCODE_CHECKSUM` env var (set by the
+ * `require_opencode_checksum` action input) applies. Defaults to false so
+ * existing workflows keep the warn-and-continue behavior.
+ * @param options - Optional setup options.
+ * @returns True when missing-checksum downloads must fail closed.
+ * @since NEXT
+ */
+export function resolveRequireChecksum(options?: SetupOpenCodeOptions): boolean {
+  if (options?.requireChecksum !== undefined) return options.requireChecksum;
+  return process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM?.trim().toLowerCase() === 'true';
+}
+
+/**
  * Ensure the OpenCode CLI binary is available.
  * Checks PATH first; if not found, downloads and caches the specified version.
+ *
+ * The `options.requireChecksum` integrity gate only guards fresh downloads: a
+ * binary already on PATH or restored from the tool cache is returned after
+ * the health check (with a warning when strict mode is on) without checksum
+ * verification.
  * @param version - Version tag to download (defaults to 'latest').
  * @param token - Optional GitHub token used for the authenticated release lookup.
  * @param minimumVersion - Minimum acceptable installed version (default: {@link MINIMUM_OPENCODE_VERSION}).
+ * @param options - Optional setup options (see {@link SetupOpenCodeOptions}).
  * @returns A Promise resolving to the path of the OpenCode binary.
+ * @since NEXT - Added `options.requireChecksum` fail-closed integrity gate.
  */
 export async function setupOpenCode(
   version = 'latest',
   token?: string,
   minimumVersion: string = MINIMUM_OPENCODE_VERSION,
+  options: SetupOpenCodeOptions = {},
 ): Promise<string> {
   const existingPath = await io.which('opencode', false);
   if (existingPath) {
     core.info(`OpenCode already available at: ${existingPath}`);
     opencodePath = existingPath;
+    if (resolveRequireChecksum(options)) {
+      // Strict mode cannot verify a pre-installed binary (no archive was
+      // downloaded, so there is nothing to checksum): surface a warning so
+      // the bypass is visible instead of silently passing the gate.
+      core.warning(
+        `require_opencode_checksum is enabled but opencode was already on PATH at ${existingPath} — ` +
+          `skipping checksum verification for the pre-installed binary. ` +
+          `The integrity gate only guards fresh downloads.`,
+      );
+    }
     const health = await checkHealth({ binPath: existingPath, minimumVersion });
     if (!health.compatible) {
       throw new Error(health.message);
@@ -594,6 +661,7 @@ export async function setupOpenCode(
 
   const arch = detectArch();
   core.info(`Setting up OpenCode ${version} (${arch})...`);
+  const requireChecksum = resolveRequireChecksum(options);
 
   let releaseUrl: string;
   if (version === 'latest') {
@@ -655,6 +723,16 @@ export async function setupOpenCode(
       const actualChecksum = await computeSha256(cachedBinPath);
       if (actualChecksum === storedChecksum) {
         core.info(`Using cached OpenCode ${semver} from ${cachedBinPath}`);
+        if (requireChecksum) {
+          // The cached .checksum is self-written by this same installer after
+          // any download (verified or warn-and-continue), so a cache entry
+          // created in default mode cannot prove integrity: surface a warning
+          // so the bypass is visible instead of silently passing the gate.
+          core.warning(
+            `require_opencode_checksum is enabled but using cached OpenCode ${semver} from ${cachedBinPath} — ` +
+              `the integrity gate only guards fresh downloads.`,
+          );
+        }
         if (platform !== 'win32') fs.chmodSync(cachedBinPath, 0o755);
         core.addPath(cachedToolDir);
         opencodePath = cachedBinPath;
@@ -705,6 +783,7 @@ export async function setupOpenCode(
           assetName,
           release.tag_name || version,
           arch,
+          requireChecksum,
         );
 
         let extPath: string;
@@ -756,6 +835,7 @@ async function verifyDownloadedArchive(
   assetName: string,
   version: string,
   arch: string,
+  requireChecksum = false,
 ): Promise<void> {
   const checksumAsset = findChecksumAsset(assets, assetName);
 
@@ -766,20 +846,41 @@ async function verifyDownloadedArchive(
     const expectedHash = parseChecksumFile(checksumContent, assetName);
 
     if (expectedHash) {
-      await verifyChecksum(dlPath, expectedHash);
+      // verifyChecksum throws `Checksum mismatch ... expected ..., got ...`
+      // and classifyDownloadError() surfaces it — never swallowed here, in
+      // either mode. The mismatch is deterministic, so it is tagged
+      // non-retryable: withRetry fails fast instead of re-downloading an
+      // archive whose bytes are already known to be wrong.
+      try {
+        await verifyChecksum(dlPath, expectedHash);
+      } catch (err) {
+        throw markIntegrityError(err instanceof Error ? err : new Error(String(err)));
+      }
       core.info(`Checksum verified for ${assetName}`);
       return;
+    }
+    if (requireChecksum) {
+      throw buildMissingChecksumError(version, assetName, arch);
     }
     core.warning(`Could not extract checksum for ${assetName} from ${checksumAsset.name}`);
   }
 
   const knownChecksum = getKnownChecksum(version, arch);
   if (knownChecksum) {
-    await verifyChecksum(dlPath, knownChecksum);
+    // Same fail-fast treatment as the release-asset path above: a mismatch
+    // against the pinned known-good hash can never succeed on retry.
+    try {
+      await verifyChecksum(dlPath, knownChecksum);
+    } catch (err) {
+      throw markIntegrityError(err instanceof Error ? err : new Error(String(err)));
+    }
     core.info(`Checksum verified using known-good checksum for ${version}`);
     return;
   }
 
+  if (requireChecksum) {
+    throw buildMissingChecksumError(version, assetName, arch);
+  }
   core.warning(
     `No checksum file found for ${assetName} and no known-good checksum for ${version}. ` +
       `Skipping integrity verification — this could be a security concern. ` +
@@ -792,20 +893,34 @@ async function verifyDownloadedArchive(
  * Prefers an existing PATH binary; otherwise downloads the requested version
  * via `setupOpenCode`.
  *
+ * Note: like {@link setupOpenCode}, the `requireChecksum` integrity gate only
+ * guards fresh downloads. A binary already on PATH or restored from the tool
+ * cache is returned as-is; when strict mode is on a warning is logged so the
+ * bypass is visible.
  * @param version - Version to install when opencode is missing (defaults to 'latest').
  * @param minimumVersion - Minimum acceptable installed version (default: {@link MINIMUM_OPENCODE_VERSION}).
+ * @param options - Optional setup options (see {@link SetupOpenCodeOptions}).
  * @returns The absolute path to the opencode binary.
+ * @since NEXT - Added `options` passthrough for the checksum integrity gate.
  */
 export async function resolveOpenCodePath(
   version = 'latest',
   minimumVersion: string = MINIMUM_OPENCODE_VERSION,
+  options: SetupOpenCodeOptions = {},
 ): Promise<string> {
   const existingPath = await io.which('opencode', false);
   if (existingPath) {
     opencodePath = existingPath;
+    if (resolveRequireChecksum(options)) {
+      core.warning(
+        `require_opencode_checksum is enabled but opencode was already on PATH at ${existingPath} — ` +
+          `skipping checksum verification for the pre-installed binary. ` +
+          `The integrity gate only guards fresh downloads.`,
+      );
+    }
     return existingPath;
   }
-  return setupOpenCode(version, undefined, minimumVersion);
+  return setupOpenCode(version, undefined, minimumVersion, options);
 }
 
 /**

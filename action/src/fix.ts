@@ -193,6 +193,62 @@ export async function runFix(
 }
 
 /**
+ * Check whether an existing bot-authored `autofix/issue-N` branch is based on
+ * the current default-branch tip. A branch is fresh when the default tip is an
+ * ancestor of (or equal to) the branch tip — i.e. `merge-base(branch, default)`
+ * equals the default tip, or `merge-base --is-ancestor default branch` exits 0.
+ * Probes fail closed toward "stale" (returns false) so an orphaned branch
+ * whose base predates already-merged work is discarded rather than reused.
+ * Callers must `validateRefName()` both args before calling (refs are
+ * interpolated into git arguments).
+ */
+async function isAutofixBranchFresh(branchName: string, defaultBranch: string): Promise<boolean> {
+  try {
+    const defaultTip = await exec.getExecOutput('git', ['rev-parse', `origin/${defaultBranch}`], {
+      ignoreReturnCode: true,
+    });
+    if (defaultTip.exitCode !== 0 || !defaultTip.stdout.trim()) {
+      core.info(
+        'Autofix branch freshness check: could not resolve default tip — treating as stale',
+      );
+      return false;
+    }
+    const mergeBase = await exec.getExecOutput(
+      'git',
+      ['merge-base', `origin/${branchName}`, `origin/${defaultBranch}`],
+      { ignoreReturnCode: true },
+    );
+    if (mergeBase.exitCode !== 0 || !mergeBase.stdout.trim()) {
+      core.info('Autofix branch freshness check: could not resolve merge-base — treating as stale');
+      return false;
+    }
+    const defaultSha = defaultTip.stdout.trim();
+    const baseSha = mergeBase.stdout.trim();
+    if (baseSha === defaultSha) {
+      core.info(`Autofix branch is fresh (merge-base ${baseSha} == origin/${defaultBranch} tip)`);
+      return true;
+    }
+    const isAncestorExit = await exec.exec(
+      'git',
+      ['merge-base', '--is-ancestor', `origin/${defaultBranch}`, `origin/${branchName}`],
+      { ignoreReturnCode: true },
+    );
+    const fresh = isAncestorExit === 0;
+    core.info(
+      `Autofix branch freshness check: merge-base ${baseSha}, origin/${defaultBranch} tip ${defaultSha} — ${fresh ? 'fresh (default tip is ancestor)' : 'STALE'}`,
+    );
+    return fresh;
+  } catch (err) {
+    core.info(
+      sanitize(
+        `Autofix branch freshness check failed (${err instanceof Error ? err.message : err}) — treating as stale`,
+      ),
+    );
+    return false;
+  }
+}
+
+/**
  * Run a fix triggered from an issue (non-PR): create a branch, apply the fix,
  * commit, push, and open a new PR.
  * Includes wall-clock timeout guarding against queue wait time.
@@ -238,19 +294,37 @@ export async function runFixIssue(
   validateRefName(defaultBranch);
 
   // Reuse an existing `origin/${branchName}` only when its tip commit was
-  // authored by this bot (the configured git email). Any collaborator with push
-  // access can create a branch under the deterministic `autofix/issue-N` name,
-  // so reusing an unverified branch would make attacker-seeded content the base
-  // of the fix PR (which is force-pushed below). A bot-authored tip is safe to
-  // reuse, which preserves the update-PR flow when `/fix` is re-triggered
-  // before the previous autofix PR merges. Any other tip (or no existing
-  // branch) is recreated from the repository's default branch. `-B` also
-  // force-resets any stale local branch of the same name instead of failing,
-  // which keeps re-triggered /fix runs robust on self-hosted runners. Note this
-  // email check is a stale-branch-reuse heuristic, not a security boundary —
-  // git author emails are self-asserted and forgeable, so an attacker can pass
-  // it; the recreate-from-default path below is the actual security control.
+  // authored by this bot (the configured git email) AND its base is fresh
+  // (i.e. it contains the current `origin/${defaultBranch}` tip). Any
+  // collaborator with push access can create a branch under the deterministic
+  // `autofix/issue-N` name, so reusing an unverified branch would make
+  // attacker-seeded content the base of the fix PR (which is force-pushed
+  // below). A bot-authored tip is safe to reuse only when fresh, which
+  // preserves the update-PR flow when `/fix` is re-triggered before the
+  // previous autofix PR merges. A bot-authored but stale branch (base predates
+  // already-merged work on the default branch) is discarded and recreated
+  // from the default branch — otherwise the fix PR inherits stale history,
+  // producing a conflicting PR with an inflated diff. Any other tip (or no
+  // existing branch) is recreated from the repository's default branch. `-B`
+  // also force-resets any stale local branch of the same name instead of
+  // failing, which keeps re-triggered /fix runs robust on self-hosted
+  // runners. Note this email check is a stale-branch-reuse heuristic, not a
+  // security boundary — git author emails are self-asserted and forgeable, so
+  // an attacker can pass it; the recreate-from-default path below is the
+  // actual security control.
   let reuseBotBranch = false;
+  // Best-effort refresh of remote refs so the freshness check below sees
+  // current remote tips even on runners with stale refs.
+  try {
+    await exec.exec('git', ['fetch', 'origin', defaultBranch], { ignoreReturnCode: true });
+  } catch {
+    /* ignore — freshness probes below fail closed toward "stale" */
+  }
+  try {
+    await exec.exec('git', ['fetch', 'origin', branchName], { ignoreReturnCode: true });
+  } catch {
+    /* ignore — freshness probes below fail closed toward "stale" */
+  }
   const tipEmail = await exec
     .getExecOutput('git', ['log', '-1', '--format=%ae', `origin/${branchName}`], {
       ignoreReturnCode: true,
@@ -259,8 +333,15 @@ export async function runFixIssue(
     .catch(() => '');
 
   if (tipEmail === gitEmail) {
-    reuseBotBranch = true;
-    await exec.exec('git', ['checkout', '-B', branchName, `origin/${branchName}`]);
+    if (await isAutofixBranchFresh(branchName, defaultBranch)) {
+      reuseBotBranch = true;
+      await exec.exec('git', ['checkout', '-B', branchName, `origin/${branchName}`]);
+    } else {
+      core.info(
+        `Existing branch origin/${branchName} is bot-authored but stale — recreating from origin/${defaultBranch}`,
+      );
+      await exec.exec('git', ['checkout', '-B', branchName, `origin/${defaultBranch}`]);
+    }
   } else {
     await exec.exec('git', ['checkout', '-B', branchName, `origin/${defaultBranch}`]);
   }
@@ -380,7 +461,8 @@ export async function runFixIssue(
   await exec.exec('git', ['commit', '-m', `fix: address issue #${issueNumber}`]);
   try {
     if (reuseBotBranch) {
-      // Reusing a bot-authored branch: guard against a concurrent remote update.
+      // Reusing a bot-authored branch that is based on the current default
+      // tip: guard against a concurrent remote update.
       await exec.exec('git', ['push', 'origin', branchName, '--force-with-lease']);
     } else {
       // Recreating from the trusted default branch: the remote tip is being

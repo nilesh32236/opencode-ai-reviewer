@@ -140,12 +140,16 @@ export interface ActionInputs {
     auditLabels: string[];
     /** Version of opencode to use. */
     opencodeVersion: string;
+    /** Fail closed when the downloaded OpenCode CLI cannot be checksum-verified. */
+    requireOpencodeChecksum: boolean;
     /** In setup mode, probe every configured model instead of only the review model. */
     probeAllModels: boolean;
     /** Timeout in minutes for the operation. */
     timeoutMinutes: number;
     /** Whether to post review comments inline on the diff. */
     reviewInline: boolean;
+    /** Opt-in to a single reviews-array request with summary-only 422 fallback (default: false). */
+    enableReviewsArrayInline: boolean;
     /** Whether to stream review findings as batches complete. */
     streamComments: boolean;
     /** Number of findings to accumulate before posting a streaming batch (0 = per-batch). */

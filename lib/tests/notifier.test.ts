@@ -5,8 +5,10 @@ import {
   formatSlackMessage,
   formatTeamsMessage,
   getTopFindings,
+  isHttpsUrl,
   meetsSeverityThreshold,
   postToWebhook,
+  redactWebhookUrl,
   resolveWebhookUrl,
   sendNotification,
 } from '../src/utils/notifier.js';
@@ -415,6 +417,48 @@ describe('postToWebhook', () => {
       vi.restoreAllMocks();
     }
   }, 15_000);
+});
+
+describe('isHttpsUrl', () => {
+  it('accepts public https endpoints', () => {
+    expect(isHttpsUrl('https://hooks.slack.com/services/T/B/S')).toBe(true);
+  });
+
+  it('rejects userinfo credentials in the URL', () => {
+    expect(isHttpsUrl('https://user:pass@hooks.slack.com/x')).toBe(false);
+    expect(isHttpsUrl('https://user@hooks.slack.com/x')).toBe(false);
+  });
+
+  it('rejects alternate IP representations of blocked ranges', () => {
+    // Single-decimal, octal, hex, short-form, and IPv4-mapped IPv6 loopback.
+    expect(isHttpsUrl('https://2130706433/hook')).toBe(false);
+    expect(isHttpsUrl('https://0x7f.0.0.1/hook')).toBe(false);
+    expect(isHttpsUrl('https://0177.0.0.1/hook')).toBe(false);
+    expect(isHttpsUrl('https://127.1/hook')).toBe(false);
+    expect(isHttpsUrl('https://[::ffff:127.0.0.1]/hook')).toBe(false);
+    expect(isHttpsUrl('https://[::ffff:7f00:1]/hook')).toBe(false);
+    expect(isHttpsUrl('https://169.254.169.254/latest')).toBe(false);
+  });
+
+  it('rejects non-https and invalid URLs', () => {
+    expect(isHttpsUrl('http://hooks.slack.com/x')).toBe(false);
+    expect(isHttpsUrl('not a url')).toBe(false);
+  });
+});
+
+describe('redactWebhookUrl', () => {
+  it('strips userinfo credentials and masks path/query/hash', () => {
+    const redacted = redactWebhookUrl('https://user:pass@hooks.slack.com/a?x=1#frag');
+    expect(redacted).not.toContain('user');
+    expect(redacted).not.toContain('pass');
+    expect(redacted).not.toContain('x=1');
+    expect(redacted).not.toContain('frag');
+    expect(redacted).toContain('hooks.slack.com');
+  });
+
+  it('returns a placeholder for invalid URLs', () => {
+    expect(redactWebhookUrl('not a url')).toBe('<invalid webhook URL>');
+  });
 });
 
 describe('sendNotification', () => {
