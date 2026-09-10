@@ -52,26 +52,55 @@ export function context7Server(): MCPServerConfig {
   };
 }
 
+/** Tracks whether the third-party-token warning has been emitted (log once). */
+let githubTokenWarningLogged = false;
+
+/**
+ * Reset the log-once flag for the GitHub MCP token warning.
+ * Test-only helper so warning assertions stay order-independent within a
+ * single process.
+ */
+export function resetGithubMCPWarningForTesting(): void {
+  githubTokenWarningLogged = false;
+}
+
 /**
  * GitHub MCP server — provides repository-aware context.
  * Reads files, searches code, understands PR structure.
  * Package version is pinned to mitigate supply-chain attacks (audit 4.2).
+ *
+ * SECURITY: `token` is passed verbatim into the environment of a third-party
+ * npx-executed npm package. Prefer a repo-scoped, minimally-privileged
+ * (fine-grained PAT) token; a full-scope PAT exposed to compromised/
+ * typosquatted package code would grant broad account access. MCP servers are
+ * disabled by default in CI — enable them only with trusted packages, and
+ * consider sandboxing the npx subprocess (containers/namespaces).
  * @param token - GitHub personal access token for authentication
  * @returns MCPServerConfig for the GitHub MCP server
  */
-export const githubMCPServer = (token: string): MCPServerConfig => ({
-  name: 'github',
-  type: 'local',
-  command: [
-    'npx',
-    '-y',
-    '--quiet',
-    `@modelcontextprotocol/server-github@${MCP_PACKAGE_VERSIONS['@modelcontextprotocol/server-github']}`,
-  ],
-  environment: {
-    GITHUB_TOKEN: token,
-  },
-});
+export const githubMCPServer = (token: string): MCPServerConfig => {
+  if (!githubTokenWarningLogged) {
+    githubTokenWarningLogged = true;
+    new Logger('MCPManager').warn(
+      'Passing full GITHUB_TOKEN to third-party npx MCP server package — ' +
+        'prefer a repo-scoped, minimally-privileged token and keep MCP servers ' +
+        'disabled by default in CI.',
+    );
+  }
+  return {
+    name: 'github',
+    type: 'local',
+    command: [
+      'npx',
+      '-y',
+      '--quiet',
+      `@modelcontextprotocol/server-github@${MCP_PACKAGE_VERSIONS['@modelcontextprotocol/server-github']}`,
+    ],
+    environment: {
+      GITHUB_TOKEN: token,
+    },
+  };
+};
 
 /**
  * Example remote MCP server configuration.

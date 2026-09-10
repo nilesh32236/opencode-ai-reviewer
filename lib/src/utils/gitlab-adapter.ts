@@ -95,6 +95,10 @@ export class GitLabAdapter implements PlatformAdapter {
               ...options,
               signal: controller.signal,
               headers: {
+                Authorization: `Bearer ${this.token}`,
+                // Very old self-hosted GitLab instances only accept the legacy
+                // header; send both (Bearer preferred) so callers work everywhere.
+                // options.headers spread below still allows an explicit override.
                 'PRIVATE-TOKEN': this.token,
                 Accept: 'application/json',
                 ...options.headers,

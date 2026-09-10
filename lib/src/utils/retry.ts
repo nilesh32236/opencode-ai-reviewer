@@ -1,4 +1,5 @@
 import * as core from '@actions/core';
+import { sanitizeString } from './sanitize.js';
 
 /** Options for configuring retry behavior in withRetry and withRetryAndTimeout. */
 export interface RetryOptions {
@@ -120,7 +121,7 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
       const totalDelay = Math.min(delay + jitter, Math.max(maxDelayMs, maxRetryAfterMs));
       const hint = retryAfterMs > 0 ? ' (Retry-After hint honored)' : '';
       core.warning(
-        `${opName}Retryable error (attempt ${attempt}/${maxRetries}): ${err instanceof Error ? err.message : err}. Retrying in ${Math.round(totalDelay / 1000)}s${hint}...`,
+        `${opName}Retryable error (attempt ${attempt}/${maxRetries}): ${sanitizeString(err instanceof Error ? err.message : String(err))}. Retrying in ${Math.round(totalDelay / 1000)}s${hint}...`,
       );
       await sleep(totalDelay, signal);
     }

@@ -612,6 +612,67 @@ describe('runOpenCode()', () => {
     expect(env.CUSTOM_VAR).toBe('custom-value');
   });
 
+  it('skips DATABASE_URL and non-Bedrock AWS_* from options.env with a warning', async () => {
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const resultPromise = runOpenCode('test', {
+      model: 'openai/gpt-4',
+      env: {
+        CUSTOM_VAR: 'custom-value',
+        DATABASE_URL: 'postgres://localhost/testdb',
+        AWS_ACCESS_KEY_ID: 'AKIA-test',
+      },
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    proc.emitClose(0);
+    await resultPromise;
+
+    const spawnCall = mockSpawn.mock.calls[0];
+    const env = spawnCall[2].env;
+    expect(env.CUSTOM_VAR).toBe('custom-value');
+    expect(env.DATABASE_URL).toBeUndefined();
+    expect(env.AWS_ACCESS_KEY_ID).toBeUndefined();
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('DATABASE_URL'));
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('AWS_ACCESS_KEY_ID'));
+  });
+
+  it('forwards options.env AWS_* when a Bedrock provider is configured', async () => {
+    setLLMProviderConfig({
+      providers: {
+        bedrock: {
+          type: 'bedrock',
+          region: 'us-east-1',
+          modelId: 'us.anthropic.claude-sonnet-4-5-v2:0',
+        },
+      },
+    });
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const resultPromise = runOpenCode('test', {
+      model: 'bedrock/my-model',
+      env: {
+        AWS_ACCESS_KEY_ID: 'AKIA-test',
+        AWS_FOO_BAR: 'arbitrary',
+      },
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    proc.emitClose(0);
+    await resultPromise;
+
+    const spawnCall = mockSpawn.mock.calls[0];
+    const env = spawnCall[2].env;
+    // Allowlisted Bedrock key is forwarded with no skip warning for that key.
+    expect(env.AWS_ACCESS_KEY_ID).toBe('AKIA-test');
+    expect(core.warning).not.toHaveBeenCalledWith(expect.stringContaining('AWS_ACCESS_KEY_ID'));
+    // Arbitrary AWS_* outside the Bedrock allowlist is still skipped.
+    expect(env.AWS_FOO_BAR).toBeUndefined();
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('AWS_FOO_BAR'));
+  });
+
   it('sets OPENCODE_CONFIG_CONTENT env var', async () => {
     const proc = makeMockProcess();
     mockSpawn.mockReturnValue(proc);
@@ -665,9 +726,14 @@ describe('LLM provider support', () => {
       'AWS_ACCESS_KEY_ID',
       'AWS_SECRET_ACCESS_KEY',
       'AWS_SESSION_TOKEN',
+      'AWS_PROFILE',
+      'AWS_BEARER_TOKEN_BEDROCK',
+      'AWS_WEB_IDENTITY_TOKEN_FILE',
+      'AWS_ROLE_ARN',
       'AZURE_OPENAI_API_KEY',
       'AZURE_OPENAI_ENDPOINT',
       'AZURE_OPENAI_API_VERSION',
+      'DATABASE_URL',
     ]) {
       delete process.env[key];
     }
@@ -745,13 +811,19 @@ describe('LLM provider support', () => {
     });
   });
 
-  it('forwards standard Azure and AWS credential env vars to the subprocess', async () => {
+  it('forwards Azure credentials but not ambient AWS credentials to the subprocess', async () => {
     process.env.AWS_REGION = 'us-east-1';
     process.env.AWS_ACCESS_KEY_ID = 'AKIA-test';
     process.env.AWS_SECRET_ACCESS_KEY = 'secret';
     process.env.AWS_SESSION_TOKEN = 'token';
+    process.env.AWS_PROFILE = 'test-profile';
+    process.env.AWS_BEARER_TOKEN_BEDROCK = 'bearer-token';
+    process.env.AWS_WEB_IDENTITY_TOKEN_FILE = '/tmp/token';
+    process.env.AWS_ROLE_ARN = 'arn:aws:iam::123:role/test';
     process.env.AZURE_OPENAI_API_KEY = 'azure-key';
     process.env.AZURE_OPENAI_ENDPOINT = 'https://res.openai.azure.com';
+    // An azure run must forward AZURE_* but must NOT carry ambient AWS_*
+    // credentials into the agent subprocess (audit authz).
     const proc = makeMockProcess();
     mockSpawn.mockReturnValue(proc);
 
@@ -763,12 +835,73 @@ describe('LLM provider support', () => {
 
     const spawnCall = mockSpawn.mock.calls[0];
     const env = spawnCall[2].env;
+    expect(env.AWS_REGION).toBeUndefined();
+    expect(env.AWS_ACCESS_KEY_ID).toBeUndefined();
+    expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+    expect(env.AWS_SESSION_TOKEN).toBeUndefined();
+    expect(env.AWS_PROFILE).toBeUndefined();
+    expect(env.AWS_BEARER_TOKEN_BEDROCK).toBeUndefined();
+    expect(env.AWS_WEB_IDENTITY_TOKEN_FILE).toBeUndefined();
+    expect(env.AWS_ROLE_ARN).toBeUndefined();
+    expect(env.AZURE_OPENAI_API_KEY).toBe('azure-key');
+    expect(env.AZURE_OPENAI_ENDPOINT).toBe('https://res.openai.azure.com');
+  });
+
+  it('forwards ambient AWS credentials only for bedrock provider runs', async () => {
+    process.env.AWS_REGION = 'us-east-1';
+    process.env.AWS_ACCESS_KEY_ID = 'AKIA-test';
+    process.env.AWS_SECRET_ACCESS_KEY = 'secret';
+    process.env.AWS_SESSION_TOKEN = 'token';
+    process.env.AWS_PROFILE = 'test-profile';
+    process.env.AWS_BEARER_TOKEN_BEDROCK = 'bearer-token';
+    process.env.AWS_WEB_IDENTITY_TOKEN_FILE = '/tmp/token';
+    process.env.AWS_ROLE_ARN = 'arn:aws:iam::123:role/test';
+    setLLMProviderConfig({
+      providers: {
+        bedrock: {
+          type: 'bedrock',
+          region: 'us-east-1',
+          modelId: 'us.anthropic.claude-sonnet-4-5-v2:0',
+        },
+      },
+    });
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const resultPromise = runOpenCode('test', { model: 'bedrock/my-model' });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    proc.emitClose(0);
+    await resultPromise;
+
+    const spawnCall = mockSpawn.mock.calls[0];
+    const env = spawnCall[2].env;
     expect(env.AWS_REGION).toBe('us-east-1');
     expect(env.AWS_ACCESS_KEY_ID).toBe('AKIA-test');
     expect(env.AWS_SECRET_ACCESS_KEY).toBe('secret');
     expect(env.AWS_SESSION_TOKEN).toBe('token');
-    expect(env.AZURE_OPENAI_API_KEY).toBe('azure-key');
-    expect(env.AZURE_OPENAI_ENDPOINT).toBe('https://res.openai.azure.com');
+    expect(env.AWS_PROFILE).toBe('test-profile');
+    expect(env.AWS_BEARER_TOKEN_BEDROCK).toBe('bearer-token');
+    expect(env.AWS_WEB_IDENTITY_TOKEN_FILE).toBe('/tmp/token');
+    expect(env.AWS_ROLE_ARN).toBe('arn:aws:iam::123:role/test');
+  });
+
+  it('does not forward DATABASE_URL to the subprocess', async () => {
+    // Dummy fixture value (no real credential): the test only asserts the key
+    // is absent from the subprocess env.
+    process.env.DATABASE_URL = 'postgres://localhost/testdb';
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const resultPromise = runOpenCode('test', { model: 'ollama/llama3' });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    proc.emitClose(0);
+    await resultPromise;
+
+    const spawnCall = mockSpawn.mock.calls[0];
+    const env = spawnCall[2].env;
+    expect(env.DATABASE_URL).toBeUndefined();
   });
 
   it('prefixes a bare model with the configured default provider', async () => {
@@ -787,6 +920,10 @@ describe('LLM provider support', () => {
   });
 
   it('translates an azure config block into AZURE_* env vars for the subprocess', async () => {
+    // Ambient AWS credentials must not leak into a non-Bedrock run even when
+    // an azure config block is present (audit authz).
+    process.env.AWS_ACCESS_KEY_ID = 'AKIA-test';
+    process.env.AWS_SECRET_ACCESS_KEY = 'secret';
     setLLMProviderConfig({
       providers: {
         azure: {
@@ -812,6 +949,8 @@ describe('LLM provider support', () => {
     expect(env.AZURE_OPENAI_ENDPOINT).toBe('https://res.openai.azure.com');
     expect(env.AZURE_OPENAI_API_KEY).toBe('azure-key');
     expect(env.AZURE_OPENAI_API_VERSION).toBe('2024-02-15-preview');
+    expect(env.AWS_ACCESS_KEY_ID).toBeUndefined();
+    expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
   });
 
   it('forwards only allowlisted {env:VAR} references into the subprocess env', async () => {

@@ -790,6 +790,11 @@ export const DEFAULT_OLLAMA_BASE_URL = 'http://localhost:11434/v1';
  * supported LLM providers are forwarded; any other reference is skipped (with
  * a warning) and the CLI's `{env:VAR}` expansion would then yield an empty
  * value for that variable.
+ *
+ * NOTE: AWS_* names are intentionally excluded here. Bedrock credentials flow
+ * via ambient forwarding in applyLLMEnvOverrides (Bedrock runs only), not via
+ * `{env:}` references, so a `{env:AWS_REGION}` reference warns-and-skips by
+ * design — Bedrock auth still works through the ambient path.
  */
 const LLM_REF_ALLOWLIST = new Set([
   'LLM_API_KEY',
@@ -951,6 +956,23 @@ function mergeEnvProviderEntry(
 }
 
 /**
+ * AWS keys the Bedrock SDK actually reads (credentials + region + shared-config
+ * / IRSA resolution inputs). Ambient forwarding and the options.env Bedrock
+ * exception are both restricted to this list so a Bedrock run can never receive
+ * an arbitrary AWS_* key that the ambient path would not forward.
+ */
+const BEDROCK_AWS_KEYS = [
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'AWS_REGION',
+  'AWS_PROFILE',
+  'AWS_BEARER_TOKEN_BEDROCK',
+  'AWS_WEB_IDENTITY_TOKEN_FILE',
+  'AWS_ROLE_ARN',
+] as const;
+
+/**
  * Translate Azure / Bedrock LLM provider config blocks into the standard
  * environment variables the OpenCode CLI and its AI SDK providers read.
  * Explicit environment variables always win; config-file values only fill gaps.
@@ -984,6 +1006,19 @@ function applyLLMEnvOverrides(safeEnv: Record<string, string>, llm: LLMConfig | 
     } else if (provider.type === 'bedrock') {
       if (provider.region?.trim() && !safeEnv.AWS_REGION) {
         safeEnv.AWS_REGION = provider.region.trim();
+      }
+      // Bedrock runs are the only subprocess invocations that need AWS
+      // credentials. Forward ambient parent-process AWS_* vars only here so a
+      // non-Bedrock run (over untrusted repo content with --auto) never carries
+      // ambient AWS credentials into the agent subprocess (audit authz).
+      // NOTE: AWS_PROFILE and AWS_WEB_IDENTITY_TOKEN_FILE are indirect
+      // references (a named profile / a token-file path), not raw secrets, but
+      // they are still forwarded only here because the SDK resolves them into
+      // live credentials (SSO / role assumption) — needed for Bedrock auth via
+      // shared-config and IRSA-style setups, harmless to omit elsewhere.
+      for (const key of BEDROCK_AWS_KEYS) {
+        const val = process.env[key];
+        if (val !== undefined && safeEnv[key] === undefined) safeEnv[key] = val;
       }
     }
   }
@@ -1388,7 +1423,6 @@ export async function runOpenCode(
     'RUNNER_TEMP',
     'RUNNER_TOOL_CACHE',
     'NODE_PATH',
-    'DATABASE_URL',
     'GIT_ASKPASS',
     'GIT_AUTHOR_NAME',
     'GIT_AUTHOR_EMAIL',
@@ -1404,15 +1438,11 @@ export async function runOpenCode(
     'AZURE_OPENAI_ENDPOINT',
     'AZURE_RESOURCE_NAME',
     'AZURE_OPENAI_API_VERSION',
-    'AWS_ACCESS_KEY_ID',
-    'AWS_SECRET_ACCESS_KEY',
-    'AWS_SESSION_TOKEN',
-    'AWS_REGION',
-    'AWS_PROFILE',
-    'AWS_BEARER_TOKEN_BEDROCK',
-    'AWS_WEB_IDENTITY_TOKEN_FILE',
-    'AWS_ROLE_ARN',
   ];
+  // NOTE: DATABASE_URL is intentionally NOT forwarded — it is consumed by the
+  // reviewer's own learning store in the parent process only. AWS_* ambient
+  // credentials are intentionally NOT in the allowlist either; they are
+  // forwarded only for Bedrock provider runs (see applyLLMEnvOverrides).
   for (const key of WHITELISTED_KEYS) {
     const val = process.env[key];
     if (val !== undefined) safeEnv[key] = val;
@@ -1420,6 +1450,11 @@ export async function runOpenCode(
   // Only forward GitHub tokens when non-empty so the child never inherits
   // an empty-string credential (fail-closed: no auth header is sent rather
   // than an invalid empty one).
+  // SECURITY: GITHUB_TOKEN/GH_TOKEN and the LLM API keys below are required by
+  // the CLI subprocess (git-push fix flows, provider access), but the
+  // subprocess runs with `--auto` over untrusted repo content (prompt-injection
+  // surface). Prefer a repo-scoped fine-grained PAT for GITHUB_TOKEN and keep
+  // tool permissions least-privilege.
   if (githubToken) {
     safeEnv.GITHUB_TOKEN = githubToken;
     safeEnv.GH_TOKEN = githubToken;
@@ -1428,11 +1463,29 @@ export async function runOpenCode(
   if (anthropicApiKey) safeEnv.ANTHROPIC_API_KEY = anthropicApiKey;
   if (geminiApiKey) safeEnv.GEMINI_API_KEY = geminiApiKey;
   if (opencodeApiKey) safeEnv.OPENCODE_API_KEY = opencodeApiKey;
+  // NOTE: options.env is a trusted-caller escape hatch (programmatic API only,
+  // never repo-controlled input) and merges after the allowlist above. To keep
+  // the subprocess hardening (audit authz) from being silently bypassed by a
+  // future caller, DATABASE_URL is never accepted here and AWS_* keys are only
+  // accepted when a Bedrock provider is configured — both cases warn and skip.
+  // The Bedrock exception is restricted to BEDROCK_AWS_KEYS (same list as
+  // ambient forwarding) so arbitrary AWS_* cannot slip in via options.env.
   if (options.env) {
+    const hasBedrockProvider = Object.values(llm?.providers ?? {}).some(
+      (p) => p?.type === 'bedrock',
+    );
+    const bedrockAwsKeys = new Set<string>(BEDROCK_AWS_KEYS);
     for (const [key, value] of Object.entries(options.env)) {
-      if (value !== undefined && key !== 'OPENCODE_CONFIG_CONTENT') {
-        safeEnv[key] = value;
+      if (value === undefined || key === 'OPENCODE_CONFIG_CONTENT') continue;
+      if (key === 'DATABASE_URL') {
+        core.warning('options.env DATABASE_URL is never forwarded to the subprocess; skipping.');
+        continue;
       }
+      if (key.startsWith('AWS_') && !(hasBedrockProvider && bedrockAwsKeys.has(key))) {
+        core.warning(`options.env ${key} skipped: AWS_* is only forwarded for Bedrock runs.`);
+        continue;
+      }
+      safeEnv[key] = value;
     }
   }
   // Azure / Bedrock config blocks provide the standard AZURE_* / AWS_* vars
