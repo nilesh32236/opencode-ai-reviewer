@@ -15,6 +15,7 @@ import type {
   ReviewResult,
 } from '../types/index.js';
 import { CircuitBreaker, countHttpError } from './circuit-breaker.js';
+import { getErrorStatus } from './errors.js';
 import { getLabelColor } from './label-color.js';
 import { withRetry } from './retry.js';
 import { buildReviewBody } from './review-body.js';
@@ -408,7 +409,7 @@ export class GitLabAdapter implements PlatformAdapter {
       await this.api(`/merge_requests/${number}`, { method: 'HEAD' });
       return true;
     } catch (err) {
-      const status = (err as { status?: number }).status;
+      const status = getErrorStatus(err);
       // Only 404 means "not an MR"; auth/rate-limit/server failures must
       // propagate instead of misrouting into the issue-API path.
       if (status === 404) return false;
@@ -548,7 +549,7 @@ export class GitLabAdapter implements PlatformAdapter {
       }
       return lines;
     } catch (err) {
-      const status = (err as { status?: number }).status;
+      const status = getErrorStatus(err);
       const suffix = status !== undefined ? ` (status ${status})` : '';
       core.warning(`Could not fetch MR diff for line validation${suffix}: ${String(err)}`);
       return new Set();
@@ -1389,7 +1390,7 @@ export class GitLabAdapter implements PlatformAdapter {
       });
       return true;
     } catch (err) {
-      const status = (err as { status?: number }).status;
+      const status = getErrorStatus(err);
       const suffix = status !== undefined ? ` (status ${status})` : '';
       core.warning(
         `Failed to merge MR !${mrNumber}${suffix}: ${err instanceof Error ? err.message : err}`,
@@ -1412,7 +1413,7 @@ export class GitLabAdapter implements PlatformAdapter {
       });
       return true;
     } catch (err) {
-      const status = (err as { status?: number }).status;
+      const status = getErrorStatus(err);
       const suffix = status !== undefined ? ` (status ${status})` : '';
       core.warning(
         `Failed to enable auto-merge on MR !${mrNumber}${suffix}: ${err instanceof Error ? err.message : err}`,
@@ -1549,7 +1550,7 @@ export class GitLabAdapter implements PlatformAdapter {
       this.currentUserLogin = username;
       return username;
     } catch (err) {
-      const status = (err as { status?: number }).status;
+      const status = getErrorStatus(err);
       const suffix = status !== undefined ? ` (status ${status})` : '';
       core.warning(
         `Failed to fetch GitLab current user${suffix}, falling back to opencode-reviewer[bot]: ${err instanceof Error ? err.message : err}`,

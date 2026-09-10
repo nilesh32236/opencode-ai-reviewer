@@ -5,6 +5,7 @@ import {
   GitLabAdapter,
   Logger,
   countAtOrAboveSeverity,
+  getErrorStatus,
   postSuggestionComment,
   sanitizeMarkdown,
   sendNotification,
@@ -58,8 +59,7 @@ export async function runReview(
       try {
         isMr = await gh.isMR(issueNum);
       } catch (err) {
-        const status =
-          typeof err === 'object' && err !== null ? (err as { status?: number }).status : undefined;
+        const status = getErrorStatus(err);
         const suffix = status !== undefined ? ` (status ${status})` : '';
         core.setFailed(
           sanitize(

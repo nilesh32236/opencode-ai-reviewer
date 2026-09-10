@@ -13,6 +13,7 @@ import type {
   ReviewStrength,
 } from '../types/index.js';
 import { CircuitBreaker, countHttpError } from './circuit-breaker.js';
+import { getErrorStatus } from './errors.js';
 import { getLabelColor } from './label-color.js';
 import { withRetry } from './retry.js';
 import type { RetryOptions } from './retry.js';
@@ -399,7 +400,7 @@ export class GitHubHelper implements PlatformAdapter {
       await this.api(`/pulls/${number}`, { method: 'HEAD' });
       return true;
     } catch (err) {
-      const status = (err as { status?: number }).status;
+      const status = getErrorStatus(err);
       // Only a 404 definitively means "not a PR". Auth/rate-limit/server
       // failures must propagate so callers are not routed down the wrong path.
       if (status === 404) return false;
@@ -583,7 +584,7 @@ export class GitHubHelper implements PlatformAdapter {
       this.setDiffLinesCache(cacheKey, lines);
       return new Set(lines);
     } catch (err) {
-      const status = (err as { status?: number }).status;
+      const status = getErrorStatus(err);
       const suffix = status !== undefined ? ` (status ${status})` : '';
       core.warning(`Could not fetch PR diff for line validation${suffix}: ${String(err)}`);
       return new Set();
@@ -1391,7 +1392,7 @@ export class GitHubHelper implements PlatformAdapter {
       });
       return { number: result.number, url: result.html_url };
     } catch (err) {
-      const status = (err as { status?: number }).status;
+      const status = getErrorStatus(err);
       const suffix = status !== undefined ? ` (status ${status})` : '';
       core.warning(`Failed to create issue${suffix}: ${err instanceof Error ? err.message : err}`);
       return null;
@@ -1421,7 +1422,7 @@ export class GitHubHelper implements PlatformAdapter {
       });
       return { number: result.number, url: result.html_url };
     } catch (err) {
-      const status = (err as { status?: number }).status;
+      const status = getErrorStatus(err);
       const suffix = status !== undefined ? ` (status ${status})` : '';
       core.warning(
         `Failed to create PR "${title}" (${head} → ${base})${suffix}: ${err instanceof Error ? err.message : err}`,
@@ -1710,7 +1711,7 @@ export class GitHubHelper implements PlatformAdapter {
       });
       return true;
     } catch (err) {
-      const status = (err as { status?: number }).status;
+      const status = getErrorStatus(err);
       const suffix = status !== undefined ? ` (status ${status})` : '';
       core.warning(
         `Failed to merge PR #${prNumber}${suffix}: ${err instanceof Error ? err.message : err}`,
@@ -1744,7 +1745,7 @@ export class GitHubHelper implements PlatformAdapter {
       });
       return true;
     } catch (err) {
-      const status = (err as { status?: number }).status;
+      const status = getErrorStatus(err);
       const suffix = status !== undefined ? ` (status ${status})` : '';
       core.warning(
         `Failed to enable auto-merge on PR #${prNumber}${suffix}: ${err instanceof Error ? err.message : err}`,
