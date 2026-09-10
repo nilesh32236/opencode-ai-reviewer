@@ -242,12 +242,12 @@ inputs:
     default: 'true'
 
   enable_reviews_array_inline:
-    description: 'Bundle mappable inline findings into a single reviews-array request (POST /pulls/{n}/reviews with comments[]), falling back to summary-only on 422/403/429 so no finding is lost (false = legacy behavior)'
+    description: 'Bundle mappable inline findings into a single reviews-array request (POST /pulls/{n}/reviews with comments[]), falling back to summary-only on 422/403/429 so no finding is lost (false = legacy behavior). Takes precedence over stream_comments: when both are true, streaming is disabled so findings are posted only via the single batched request.'
     required: false
     default: 'false'
 
   stream_comments:
-    description: 'Post review findings incrementally as each file batch completes (streaming) instead of only after the full review finishes'
+    description: 'Post review findings incrementally as each file batch completes (streaming) instead of only after the full review finishes. Ignored when enable_reviews_array_inline is true (batched single-request path takes precedence).'
     required: false
     default: 'false'
 

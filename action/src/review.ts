@@ -130,7 +130,12 @@ export async function runReview(
     });
   }
 
-  const streamEnabled = inputs.streamComments;
+  // The reviews-array path bundles all inline findings into a single
+  // POST /pulls/{n}/reviews request. Streaming would fan out N per-comment
+  // postInlineComment requests first, defeating that single-request goal, so
+  // the reviews-array flag takes precedence and disables streaming.
+  const reviewsArrayEnabled = config.review.enableReviewsArrayInline === true;
+  const streamEnabled = inputs.streamComments && !reviewsArrayEnabled;
 
   // Track findings posted via streaming so the final summary avoids duplicates.
   const streamedIssueKeys = new Set<string>();

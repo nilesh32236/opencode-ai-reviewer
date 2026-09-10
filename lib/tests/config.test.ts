@@ -225,6 +225,17 @@ multiAgent:
       expect(result.review_inline).toBe('false');
     });
 
+    it('extracts review.enableReviewsArrayInline as enable_reviews_array_inline string', () => {
+      const config = { review: { enableReviewsArrayInline: true } as never };
+      const result = mergeConfigWithInputs(config, {});
+      expect(result.enable_reviews_array_inline).toBe('true');
+    });
+
+    it('omits enable_reviews_array_inline when unset', () => {
+      const result = mergeConfigWithInputs({ review: {} }, {});
+      expect(result.enable_reviews_array_inline).toBeUndefined();
+    });
+
     it('extracts fix maxIterations as string', () => {
       const config = { fix: { maxIterations: 7 } };
       const result = mergeConfigWithInputs(config, {});
@@ -359,6 +370,22 @@ multiAgent:
     it('skips review.inline when not a boolean', () => {
       const result = validateConfig({ review: { inline: 'yes' } } as never);
       expect(result.review?.inline).toBeUndefined();
+    });
+
+    it('passes through review.enableReviewsArrayInline booleans', () => {
+      expect(
+        validateConfig({ review: { enableReviewsArrayInline: true } } as never).review
+          ?.enableReviewsArrayInline,
+      ).toBe(true);
+      expect(
+        validateConfig({ review: { enableReviewsArrayInline: false } } as never).review
+          ?.enableReviewsArrayInline,
+      ).toBe(false);
+    });
+
+    it('skips review.enableReviewsArrayInline when not a boolean', () => {
+      const result = validateConfig({ review: { enableReviewsArrayInline: 'yes' } } as never);
+      expect(result.review?.enableReviewsArrayInline).toBeUndefined();
     });
 
     it('passes through review.suppressLowConfidence', () => {
