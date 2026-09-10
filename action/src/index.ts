@@ -69,10 +69,17 @@ async function run(): Promise<void> {
     // directly here; parseInputs re-reads it for the ActionInputs.configFile field.
     const rawPlatform = (process.env.PLATFORM || 'github').trim().toLowerCase();
     if (rawPlatform !== 'github' && rawPlatform !== 'gitlab') {
-      core.setFailed(`Unsupported PLATFORM: ${process.env.PLATFORM}`);
+      core.setFailed(
+        sanitize(
+          `Unsupported PLATFORM: ${(process.env.PLATFORM ?? '')
+            .replace(/[\r\n]+/g, ' ')
+            .trim()
+            .slice(0, 100)}`,
+        ),
+      );
       return;
     }
-    const platform = rawPlatform;
+    const platform: 'github' | 'gitlab' = rawPlatform;
     const loadedConfig = loadConfig(undefined, platform, core.getInput('config') || undefined);
 
     // Assign into the outer function-scoped `inputs` (declared above the try)
