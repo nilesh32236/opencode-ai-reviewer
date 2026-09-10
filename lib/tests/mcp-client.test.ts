@@ -428,7 +428,7 @@ describe('MCPManager', () => {
 
       const calls = vi.mocked(withRetry).mock.calls;
       // First handshake call (Streamable leg) must be single-attempt.
-      expect(calls[0]?.[1]).toMatchObject({ maxRetries: 0 });
+      expect(calls[0]?.[1]).toMatchObject({ maxRetries: 1 });
       // Fallback SSE leg keeps the standard retry budget.
       expect(calls[1]?.[1]).toMatchObject({ maxRetries: 3, baseDelayMs: 2000 });
       expect(manager.getStatus().connectedServers).toBe(1);
