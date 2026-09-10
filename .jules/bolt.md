@@ -74,3 +74,7 @@
 ## 2026-09-09 - Optimize Set allocation and Regex recompilation in tokenizeMessage
 **Learning:** Found that `tokenizeMessage` recompiled regexes on every call and used a `.filter().map()` array chain that populated a `new Set()`, which led to unnecessary memory allocations and increased GC pressure in a frequently accessed function.
 **Action:** Always hoist regular expressions to module scope and replace array chains with a direct `for...of` loop to insert elements into `Set`s and `Map`s directly, avoiding intermediate arrays.
+## 2026-09-10 - Optimize Set allocation in test-gap-detector
+**Learning:** Found that `new Set(changedFiles.filter().map())` in `TestGapDetector.analyze` iterates over the `changedFiles` array multiple times and creates intermediate array allocations. Converting this to a single-pass `for...of` loop that directly populates the target `Set` and `Array` avoids this overhead and reduces GC pressure in a hot path.
+**Action:** Replace `.filter().map()` chains with single-pass loops (`for...of`) when extracting and filtering data into Sets or Arrays.
+**Refs:** `lib/src/utils/test-gap-detector.ts:508` (changedTestFileSet population).
