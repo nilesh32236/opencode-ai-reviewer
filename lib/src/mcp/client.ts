@@ -284,7 +284,9 @@ export class MCPManager {
         }
         const serverConfig = this.servers.find((s) => s.name === name);
         const allowedPatterns = serverConfig?.allowedTools ?? ['resolve', 'search'];
-        const searchTool = toolsList.find((t) => allowedPatterns.some((p) => t.name.includes(p)));
+        const searchTool = toolsList.find((t) =>
+          allowedPatterns.some((p) => isAllowedTool(t.name, p)),
+        );
 
         if (searchTool) {
           const result = await withRetry(
@@ -352,7 +354,9 @@ export class MCPManager {
         }
         const serverConfig = this.servers.find((s) => s.name === 'context7');
         const allowedPatterns = serverConfig?.allowedTools ?? ['resolve', 'search'];
-        const resolveTool = toolsList.find((t) => allowedPatterns.some((p) => t.name.includes(p)));
+        const resolveTool = toolsList.find((t) =>
+          allowedPatterns.some((p) => isAllowedTool(t.name, p)),
+        );
 
         if (resolveTool) {
           const result = await withRetry(
@@ -436,6 +440,30 @@ export class MCPManager {
     this.toolsCache.clear();
     this.initialized = false;
   }
+}
+
+/**
+ * Check whether an MCP tool name matches an allowlist pattern using exact
+ * match or anchored-prefix semantics. A pattern matches when the tool name
+ * equals it exactly or starts with the pattern followed by a namespace
+ * separator (`:`, `-`, `_`, `.`, `/`), e.g. pattern `resolve` matches
+ * `resolve`, `resolve:lib`, `resolve-library`, `resolve_library`,
+ * `resolve.docs`, and `resolve/docs` — but NOT `my-resolve-tool`.
+ * Substring matching (`includes`) is intentionally avoided to prevent
+ * authorization over-grant.
+ * @param toolName - Full MCP tool name (e.g. `resolve-library-documents`).
+ * @param pattern - Allowlist pattern (e.g. `resolve`).
+ * @returns True when the tool name matches the pattern.
+ */
+export function isAllowedTool(toolName: string, pattern: string): boolean {
+  if (toolName === pattern) return true;
+  return (
+    toolName.startsWith(`${pattern}:`) ||
+    toolName.startsWith(`${pattern}-`) ||
+    toolName.startsWith(`${pattern}_`) ||
+    toolName.startsWith(`${pattern}.`) ||
+    toolName.startsWith(`${pattern}/`)
+  );
 }
 
 // ─── Helpers ──────────────────────────────────────────────

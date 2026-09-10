@@ -395,8 +395,12 @@ export class GitHubHelper implements PlatformAdapter {
     try {
       await this.api(`/pulls/${number}`, { method: 'HEAD' });
       return true;
-    } catch {
-      return false;
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      // Only a 404 definitively means "not a PR". Auth/rate-limit/server
+      // failures must propagate so callers are not routed down the wrong path.
+      if (status === 404) return false;
+      throw err;
     }
   }
 
@@ -575,7 +579,9 @@ export class GitHubHelper implements PlatformAdapter {
       this.setDiffLinesCache(cacheKey, lines);
       return new Set(lines);
     } catch (err) {
-      core.warning(`Could not fetch PR diff for line validation: ${String(err)}`);
+      const status = (err as { status?: number }).status;
+      const suffix = status !== undefined ? ` (status ${status})` : '';
+      core.warning(`Could not fetch PR diff for line validation${suffix}: ${String(err)}`);
       return new Set();
     }
   }
@@ -1381,7 +1387,9 @@ export class GitHubHelper implements PlatformAdapter {
       });
       return { number: result.number, url: result.html_url };
     } catch (err) {
-      core.warning(`Failed to create issue: ${err instanceof Error ? err.message : err}`);
+      const status = (err as { status?: number }).status;
+      const suffix = status !== undefined ? ` (status ${status})` : '';
+      core.warning(`Failed to create issue${suffix}: ${err instanceof Error ? err.message : err}`);
       return null;
     }
   }
@@ -1409,8 +1417,10 @@ export class GitHubHelper implements PlatformAdapter {
       });
       return { number: result.number, url: result.html_url };
     } catch (err) {
+      const status = (err as { status?: number }).status;
+      const suffix = status !== undefined ? ` (status ${status})` : '';
       core.warning(
-        `Failed to create PR "${title}" (${head} → ${base}): ${err instanceof Error ? err.message : err}`,
+        `Failed to create PR "${title}" (${head} → ${base})${suffix}: ${err instanceof Error ? err.message : err}`,
       );
       return null;
     }
@@ -1696,7 +1706,11 @@ export class GitHubHelper implements PlatformAdapter {
       });
       return true;
     } catch (err) {
-      core.warning(`Failed to merge PR #${prNumber}: ${err instanceof Error ? err.message : err}`);
+      const status = (err as { status?: number }).status;
+      const suffix = status !== undefined ? ` (status ${status})` : '';
+      core.warning(
+        `Failed to merge PR #${prNumber}${suffix}: ${err instanceof Error ? err.message : err}`,
+      );
       return false;
     }
   }
@@ -1726,8 +1740,10 @@ export class GitHubHelper implements PlatformAdapter {
       });
       return true;
     } catch (err) {
+      const status = (err as { status?: number }).status;
+      const suffix = status !== undefined ? ` (status ${status})` : '';
       core.warning(
-        `Failed to enable auto-merge on PR #${prNumber}: ${err instanceof Error ? err.message : err}`,
+        `Failed to enable auto-merge on PR #${prNumber}${suffix}: ${err instanceof Error ? err.message : err}`,
       );
       return false;
     }
@@ -2211,8 +2227,12 @@ export class GitHubHelper implements PlatformAdapter {
    * @returns Array of tags with name and commit SHA, newest first.
    */
   async getTags(): Promise<Array<{ name: string; commitSha: string }>> {
-    const refs =
-      await this.api<Array<{ ref: string; object: { sha: string } }>>('/git/matching-refs/tags');
+    // Paginated: repos with many tags would otherwise yield a truncated list
+    // and getLatestTag() could pick the wrong "latest" tag.
+    const refs = await this.paginate<{ ref: string; object: { sha: string } }>(
+      '/git/matching-refs/tags',
+      { perPage: 100, maxPages: 10, throwOnError: true },
+    );
     const tags = refs.map((r) => ({
       name: r.ref.replace('refs/tags/', ''),
       commitSha: r.object.sha,
@@ -2306,7 +2326,12 @@ export class GitHubHelper implements PlatformAdapter {
    * @returns Array of repo-relative file paths touched by the PR.
    */
   async getPRFilePaths(prNumber: number): Promise<string[]> {
-    const files = await this.api<Array<{ filename: string }>>(`/pulls/${prNumber}/files`);
+    // Paginated (mirrors getPR()): a single page caps at 30 files and
+    // downstream monorepo filters would silently miss the rest.
+    const files = await this.paginate<{ filename?: string; path?: string }>(
+      `/pulls/${prNumber}/files`,
+      { perPage: 100, maxPages: 10, throwOnError: true },
+    );
     const filePaths: string[] = [];
     for (const f of files) {
       if (typeof f.filename === 'string' && f.filename.length > 0) {

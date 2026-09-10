@@ -515,7 +515,9 @@ describe('MCPManager', () => {
       const manager = await createConnectedManager(
         [makeConfig({ allowedTools: ['resolve', 'search', 'context'] })],
         () => {
-          mockListTools.mockResolvedValue({ tools: [{ name: 'get-context' }] });
+          // Anchored-prefix match: `context-get` matches pattern `context`;
+          // a bare substring such as `get-context` must NOT match.
+          mockListTools.mockResolvedValue({ tools: [{ name: 'context-get' }] });
         },
       );
       mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'context data' }] });
@@ -524,6 +526,20 @@ describe('MCPManager', () => {
 
       expect(mockCallTool).toHaveBeenCalled();
       expect(result.entries).toHaveLength(1);
+    });
+
+    it('does not call a tool whose name merely contains the pattern', async () => {
+      const manager = await createConnectedManager(
+        [makeConfig({ allowedTools: ['resolve'] })],
+        () => {
+          mockListTools.mockResolvedValue({ tools: [{ name: 'my-resolve-tool' }] });
+        },
+      );
+
+      const result = await manager.queryContext('test');
+
+      expect(mockCallTool).not.toHaveBeenCalled();
+      expect(result.entries).toHaveLength(0);
     });
 
     it('returns empty entries when no matching tool found', async () => {

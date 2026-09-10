@@ -270,11 +270,10 @@ describe('GitHubHelper', () => {
       expect(result).toBe(false);
     });
 
-    it('returns false on network error', async () => {
+    it('throws on network error instead of misclassifying as not-a-PR', async () => {
       fetchMock.mockRejectedValue(new Error('Network failure'));
 
-      const result = await helper.isPR(42);
-      expect(result).toBe(false);
+      await expect(helper.isPR(42)).rejects.toThrow('Network failure');
     });
   });
 
@@ -1947,7 +1946,9 @@ diff --git a/deleted.ts b/deleted.ts
         return mockResponse({ ok: false, status: 429, headers });
       });
 
-      await helper.isPR(1);
+      // 429 is rethrown by isPR (only 404 means "not a PR"); the rate-limit
+      // warning is still emitted by checkRateLimit before the throw.
+      await expect(helper.isPR(1)).rejects.toThrow('429');
 
       expect(warning).toHaveBeenCalledWith(expect.stringContaining('rate limited'));
     });

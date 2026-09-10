@@ -302,11 +302,10 @@ describe('GitLabAdapter', () => {
       expect(result).toBe(false);
     });
 
-    it('returns false on network error', async () => {
+    it('throws on network error instead of misclassifying as not-an-MR', async () => {
       fetchMock.mockRejectedValue(new Error('Network failure'));
 
-      const result = await adapter.isMR(42);
-      expect(result).toBe(false);
+      await expect(adapter.isMR(42)).rejects.toThrow('Network failure');
     });
   });
 
@@ -1665,7 +1664,9 @@ diff --git a/src/a.ts b/src/a.ts
         return res;
       });
 
-      await adapter.isMR(1);
+      // 429 is rethrown by isMR (only 404 means "not an MR"); the rate-limit
+      // warning is still emitted by checkRateLimit before the throw.
+      await expect(adapter.isMR(1)).rejects.toThrow('429');
 
       expect(warning).toHaveBeenCalledWith(expect.stringContaining('rate limited'));
     });
@@ -1676,7 +1677,7 @@ diff --git a/src/a.ts b/src/a.ts
       Object.assign(response, { headers });
       fetchMock.mockResolvedValue(response);
 
-      await adapter.isMR(1);
+      await expect(adapter.isMR(1)).rejects.toThrow('429');
 
       expect(retryErrors).toHaveLength(1);
       expect((retryErrors[0] as { headers?: Headers }).headers).toBe(headers);
