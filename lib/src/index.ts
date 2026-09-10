@@ -9,6 +9,7 @@ export {
   getGitStatus,
   setupWorkspaceDependencies,
   resolveOpenCodePath,
+  resolveRequireChecksum,
   parseTokenUsage,
   parseTokenUsageDetailed,
   checkHealth,
@@ -26,6 +27,7 @@ export type {
   OpenCodeVersion,
   CheckHealthOptions,
   OpenCodeRunMode,
+  SetupOpenCodeOptions,
 } from './opencode.js';
 export { GitHubHelper } from './utils/github.js';
 export { GitLabAdapter } from './utils/gitlab-adapter.js';
@@ -248,6 +250,9 @@ export {
   getKnownChecksum,
   parseChecksumFile,
   verifyChecksum,
+  buildMissingChecksumError,
+  markIntegrityError,
+  INTEGRITY_ERROR_STATUS,
 } from './utils/checksum.js';
 export { FeedbackSubscriber } from './learning/feedback-subscriber.js';
 export { SuppressionSubscriber } from './learning/suppression-subscriber.js';

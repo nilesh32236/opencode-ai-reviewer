@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { buildMissingChecksumError } from '../src/utils/checksum.js';
 import { withRetry, withRetryAndTimeout } from '../src/utils/retry.js';
 
 describe('withRetry', () => {
@@ -32,6 +33,23 @@ describe('withRetry', () => {
     const fn = vi.fn().mockRejectedValue(Object.assign(new Error('Bad request'), { status: 400 }));
 
     await expect(withRetry(fn, { maxRetries: 3, baseDelayMs: 10 })).rejects.toThrow('Bad request');
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails fast on deterministic integrity errors without re-downloading', async () => {
+    // Integrity failures (missing checksum under strict enforcement, checksum
+    // mismatch) carry INTEGRITY_ERROR_STATUS so the download retry loop in
+    // setupOpenCode surfaces them on the first attempt instead of burning
+    // retries with backoff on an outcome that cannot succeed.
+    const fn = vi
+      .fn()
+      .mockRejectedValue(
+        buildMissingChecksumError('v1.2.0', 'opencode-linux-x64.tar.gz', 'linux-x64'),
+      );
+
+    await expect(withRetry(fn, { maxRetries: 3, baseDelayMs: 10 })).rejects.toThrow(
+      'no checksum available',
+    );
     expect(fn).toHaveBeenCalledTimes(1);
   });
 

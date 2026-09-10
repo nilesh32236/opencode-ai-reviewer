@@ -102,25 +102,53 @@ export function getKnownChecksum(version: string, arch: string): string | null {
 }
 
 /**
+ * HTTP-style status attached to deterministic integrity failures (missing
+ * checksum under strict enforcement, checksum mismatch) so {@link withRetry}
+ * fails fast instead of re-downloading with backoff. 422 is never in the
+ * default `retryableStatuses`, matching the repo convention for deterministic
+ * application errors (see github/gitlab adapter tests).
+ */
+export const INTEGRITY_ERROR_STATUS = 422;
+
+/**
+ * Tag a deterministic integrity error as non-retryable for `withRetry`.
+ * Transient network/download errors stay status-less (retryable); only the
+ * integrity outcome itself fails fast.
+ * @param err - The integrity error to tag.
+ * @returns The same error instance, with a non-retryable `status` attached.
+ */
+export function markIntegrityError<T extends Error>(err: T): T {
+  (err as Error & { status?: number }).status = INTEGRITY_ERROR_STATUS;
+  return err;
+}
+
+/**
  * Build the fail-closed error thrown when checksum enforcement is on but no
  * checksum is available for the downloaded archive.
  *
+ * Enforcement is enabled via the `require_opencode_checksum` action input
+ * (surfaced to `lib` as the `INPUT_REQUIRE_OPENCODE_CHECKSUM` env var, see
+ * `resolveRequireChecksum` in `opencode.ts`).
  * @param version - Pinned version string (e.g. "1.2.3").
- * @param assetName - Release asset file name (e.g. "opencode-linux-amd64.tar.gz").
- * @param arch - Architecture identifier (e.g. "linux-amd64").
- * @returns A human-friendly Error with pin + sha256 remediation steps.
+ * @param assetName - Release asset file name (e.g. "opencode-linux-x64.tar.gz").
+ * @param arch - Architecture identifier (e.g. "linux-x64").
+ * @returns A human-friendly Error with pin-plus-sha256 remediation steps.
+ *   The error carries {@link INTEGRITY_ERROR_STATUS} so download retries fail
+ *   fast instead of re-downloading a deterministically unverifiable archive.
  * @since NEXT
  */
 export function buildMissingChecksumError(version: string, assetName: string, arch: string): Error {
-  return new Error(
+  const err = new Error(
     `OpenCode integrity verification failed: no checksum available for ${assetName} ` +
-      `(version ${version}, arch ${arch}) and security.require_opencode_checksum is enabled.\n` +
-      `Pin opencode_version to a specific tag and add its sha256 to KNOWN_CHECKSUMS ` +
-      `in lib/src/utils/checksum.ts, or ensure the release publishes a checksum asset ` +
+      `(version ${version}, arch ${arch}) and require_opencode_checksum is enabled.\n` +
+      `Pin opencode_version to a release that publishes a checksum asset ` +
       `(e.g. "${assetName}.sha256" or "checksums.txt") containing an entry for ${assetName}.\n` +
-      `To recover quickly, re-run with security.require_opencode_checksum disabled ` +
-      `(fail-open, warn-and-continue) while you obtain the expected sha256.`,
+      `(Maintainers can additionally record a manually verified sha256 in KNOWN_CHECKSUMS ` +
+      `in lib/src/utils/checksum.ts for pinned versions.)\n` +
+      `To recover quickly, re-run with require_opencode_checksum disabled ` +
+      `(the default fail-open, warn-and-continue behavior) while you obtain the expected sha256.`,
   );
+  return markIntegrityError(err);
 }
 
 /**
