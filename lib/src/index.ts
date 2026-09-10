@@ -190,6 +190,18 @@ export {
   formatIssueBullet,
   getSeverityBadge,
 } from './utils/review-body.js';
+export type { ReviewBodyOptions } from './utils/review-body.js';
+export {
+  buildFunctionScoreOptions,
+  buildFunctionScoreTable,
+  collectFunctionScoreInputs,
+  computeFunctionScores,
+  CHURN_WEIGHT,
+  MAX_FUNCTION_SCORE_ROWS,
+  NESTING_WEIGHT,
+  TEST_GAP_PENALTY,
+} from './utils/function-scores.js';
+export type { FunctionScore, FunctionScoreInput } from './utils/function-scores.js';
 export {
   analyzeFindingReachability,
   analyzeBatchReachability,

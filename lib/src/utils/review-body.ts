@@ -3,7 +3,6 @@ import {
   type FunctionScore,
   type FunctionScoreInput,
   buildFunctionScoreTable,
-  computeFunctionScores,
 } from './function-scores.js';
 import { Logger } from './logger.js';
 import { escapeInlineCode, sanitizeMarkdown } from './markdown.js';
@@ -268,15 +267,8 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
 
   if (options?.showFunctionScores === true) {
     try {
-      const inputs = options.functionScores ?? [];
-      const table =
-        inputs.length === 0
-          ? ''
-          : buildFunctionScoreTable(
-              inputs.every((s) => typeof (s as FunctionScore).score === 'number')
-                ? (inputs as FunctionScore[])
-                : computeFunctionScores(inputs as FunctionScoreInput[]),
-            );
+      const inputs: Array<FunctionScoreInput | FunctionScore> = options.functionScores ?? [];
+      const table = inputs.length === 0 ? '' : buildFunctionScoreTable(inputs);
       if (table) {
         lines.push('');
         lines.push(table);

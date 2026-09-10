@@ -11,6 +11,7 @@ import {
   GitLabAdapter,
   Logger,
   ReviewEngine,
+  buildFunctionScoreOptions,
   postSuggestionComment,
   sanitizeErrorMessage,
   sanitizeMarkdown,
@@ -387,7 +388,14 @@ export async function handlePRReview(
               ),
             }
           : result;
-      reviewResult = await gh.postReview(prNumber, pr.headSha, finalResult, config.review.inline);
+      reviewResult = await gh.postReview(
+        prNumber,
+        pr.headSha,
+        finalResult,
+        config.review.inline,
+        undefined,
+        buildFunctionScoreOptions(effectiveConfig.review.showFunctionScores, pr.changedFiles),
+      );
     } catch (err) {
       logger.error(
         `Failed to post review for PR #${prNumber}: ${err instanceof Error ? err.message : err}`,

@@ -25,6 +25,7 @@ import {
   buildAutofixPRBody,
   buildAutofixStatusBody,
   buildFixBody,
+  buildFunctionScoreOptions,
   buildReadyBody,
   configureGit,
   parseRunChecksCommands,
@@ -246,6 +247,8 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           pr.headSha,
           result,
           config.review.inline,
+          undefined,
+          buildFunctionScoreOptions(config.review.showFunctionScores, pr.changedFiles),
         );
         if (reviewResult.commentIds) {
           currentCommentIds = reviewResult.commentIds;

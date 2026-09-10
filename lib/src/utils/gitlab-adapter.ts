@@ -18,6 +18,7 @@ import { CircuitBreaker, countHttpError } from './circuit-breaker.js';
 import { getLabelColor } from './label-color.js';
 import { withRetry } from './retry.js';
 import { buildReviewBody } from './review-body.js';
+import type { ReviewBodyOptions } from './review-body.js';
 
 /**
  * Single-flight registry for marker-based comment upserts (postOrUpdateComment),
@@ -724,6 +725,7 @@ export class GitLabAdapter implements PlatformAdapter {
    * @param result
    * @param postInlineComments
    * @param suppressLowConfidence - suppressLowConfidence argument.
+   * @param options - Optional display flags (e.g. deterministic function scores).
    * @returns Description.
    */
   async postReview(
@@ -732,10 +734,7 @@ export class GitLabAdapter implements PlatformAdapter {
     result: ReviewResult,
     postInlineComments = true,
     suppressLowConfidence?: boolean,
-    options?: {
-      showFunctionScores?: boolean;
-      functionScores?: import('./function-scores.js').FunctionScoreInput[];
-    },
+    options?: ReviewBodyOptions,
   ): Promise<ReviewPostResult> {
     const workingResult = suppressLowConfidence
       ? {

@@ -646,7 +646,7 @@ export interface ReviewConfig {
   enableTestGapDetection: boolean;
   /** Deterministic per-function quality table in review body (default: false).
    * Heuristic only, no verdict influence. */
-  showFunctionScores?: boolean;
+  showFunctionScores: boolean;
   /** Whether to suppress low-confidence findings from review output */
   suppressLowConfidence?: boolean;
   /** Whether to enable lightweight reachability analysis on security findings */

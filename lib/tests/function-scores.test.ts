@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { ReviewResult } from '../src/types/index.js';
-import { buildFunctionScoreTable, computeFunctionScores } from '../src/utils/function-scores.js';
+import {
+  buildFunctionScoreOptions,
+  buildFunctionScoreTable,
+  collectFunctionScoreInputs,
+  computeFunctionScores,
+} from '../src/utils/function-scores.js';
 import { buildReviewBody } from '../src/utils/review-body.js';
 
 function baseResult(): ReviewResult {
@@ -75,6 +80,133 @@ describe('function-scores', () => {
     );
     expect(table).not.toContain('evil`name');
     expect(table).toContain('evil\\`name');
+  });
+
+  it('escapes trailing backslashes so cells cannot break out of code spans', () => {
+    const table = buildFunctionScoreTable(
+      computeFunctionScores([
+        { file: 'a.ts', name: 'trail\\', line: 1, churnLines: 5, hasTestGap: false },
+      ]),
+    );
+    expect(table).toContain('trail\\\\');
+  });
+
+  it('normalizes non-finite churn/nesting to 0', () => {
+    const [scored] = computeFunctionScores([
+      {
+        file: 'a.ts',
+        name: 'f',
+        line: 1,
+        churnLines: Number.NaN,
+        nestingDepth: Number.POSITIVE_INFINITY,
+        hasTestGap: false,
+      },
+    ]);
+    expect(scored.churnLines).toBe(0);
+    expect(scored.nestingDepth).toBe(0);
+    expect(scored.score).toBe(0);
+  });
+
+  it('orders equal scores deterministically by file then name', () => {
+    const table = buildFunctionScoreTable([
+      { file: 'b.ts', name: 'z', line: 1, churnLines: 5, hasTestGap: false },
+      { file: 'a.ts', name: 'a', line: 1, churnLines: 5, hasTestGap: false },
+    ]);
+    expect(table.indexOf('a.ts')).toBeLessThan(table.indexOf('b.ts'));
+  });
+
+  it('falls back to line 1 for invalid line numbers', () => {
+    const table = buildFunctionScoreTable(
+      computeFunctionScores([
+        { file: 'a.ts', name: 'f', line: Number.NaN, churnLines: 5, hasTestGap: false },
+      ]),
+    );
+    expect(table).toContain('`a.ts:1`');
+  });
+});
+
+describe('collectFunctionScoreInputs', () => {
+  const patch = [
+    '@@ -1,3 +1,6 @@ function risky() {',
+    ' context',
+    '+  if (x) {',
+    '+    doThing();',
+    '+  }',
+    '@@ -10,2 +13,3 @@ function calm() {',
+    '+  return 1;',
+  ].join('\n');
+
+  it('produces one row per hunk with churn and hunk context', () => {
+    const inputs = collectFunctionScoreInputs([
+      { path: 'src/a.ts', status: 'modified', additions: 4, deletions: 0, patch },
+    ]);
+    expect(inputs).toHaveLength(2);
+    expect(inputs[0]).toMatchObject({
+      file: 'src/a.ts',
+      name: 'function risky() {',
+      line: 1,
+      churnLines: 3,
+    });
+    expect(inputs[1]).toMatchObject({ line: 13, churnLines: 1 });
+    expect(inputs[0].nestingDepth).toBeGreaterThan(0);
+  });
+
+  it('marks source files without test changes as a test gap', () => {
+    const inputs = collectFunctionScoreInputs([
+      {
+        path: 'src/a.ts',
+        status: 'modified',
+        additions: 1,
+        deletions: 0,
+        patch: '@@ -1 +1 @@\n+x',
+      },
+    ]);
+    expect(inputs[0].hasTestGap).toBe(true);
+    const withTest = collectFunctionScoreInputs([
+      {
+        path: 'src/a.ts',
+        status: 'modified',
+        additions: 1,
+        deletions: 0,
+        patch: '@@ -1 +1 @@\n+x',
+      },
+      {
+        path: 'src/a.test.ts',
+        status: 'added',
+        additions: 1,
+        deletions: 0,
+        patch: '@@ -0,0 +1 @@\n+y',
+      },
+    ]);
+    expect(withTest[0].hasTestGap).toBe(false);
+  });
+
+  it('skips removed files and empty input', () => {
+    expect(collectFunctionScoreInputs([])).toEqual([]);
+    expect(collectFunctionScoreInputs(undefined)).toEqual([]);
+    expect(
+      collectFunctionScoreInputs([
+        { path: 'old.ts', status: 'removed', additions: 0, deletions: 5 },
+      ]),
+    ).toEqual([]);
+  });
+});
+
+describe('buildFunctionScoreOptions', () => {
+  it('returns undefined when the flag is off and options when on', () => {
+    expect(buildFunctionScoreOptions(false, [])).toBeUndefined();
+    expect(buildFunctionScoreOptions(undefined, [])).toBeUndefined();
+    const options = buildFunctionScoreOptions(true, [
+      {
+        path: 'src/a.ts',
+        status: 'modified',
+        additions: 1,
+        deletions: 0,
+        patch: '@@ -1 +1 @@\n+x',
+      },
+    ]);
+    expect(options?.showFunctionScores).toBe(true);
+    expect(options?.functionScores).toHaveLength(1);
   });
 });
 
