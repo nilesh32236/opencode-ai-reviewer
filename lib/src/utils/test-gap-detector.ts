@@ -505,12 +505,17 @@ export class TestGapDetector {
     this.testFileCache.clear();
     this.testContentCache.clear();
 
-    const sourceFiles = changedFiles.filter(
-      (f) => !isTestFile(f.path) && SOURCE_EXTENSIONS.has(path.posix.extname(f.path)),
-    );
-    const changedTestFileSet = new Set(
-      changedFiles.filter((f) => isTestFile(f.path)).map((f) => f.path),
-    );
+    const sourceFiles: ChangedFile[] = [];
+    const changedTestFileSet = new Set<string>();
+    // Optimized: Use a single pass to populate both sourceFiles and changedTestFileSet
+    // directly, avoiding intermediate array allocations from .filter().map() chains.
+    for (const f of changedFiles) {
+      if (isTestFile(f.path)) {
+        changedTestFileSet.add(f.path);
+      } else if (SOURCE_EXTENSIONS.has(path.posix.extname(f.path))) {
+        sourceFiles.push(f);
+      }
+    }
 
     const modifiedSymbols: SourceSymbol[] = [];
     const newSymbols: SourceSymbol[] = [];

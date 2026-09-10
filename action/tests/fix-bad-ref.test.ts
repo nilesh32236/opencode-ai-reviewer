@@ -1,7 +1,7 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
 import * as exec from '@actions/exec';
-import { runFixIssue } from '../src/fix';
 import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { runFixIssue } from '../src/fix';
 import type { ActionInputs } from '../src/inputs';
 
 vi.mock('@actions/exec', () => ({
@@ -32,7 +32,9 @@ describe('runFixIssue with invalid refs', () => {
     const inputs = {} as ActionInputs;
     const config = {} as AgentConfig;
 
-    await expect(runFixIssue(inputs, config, engine, gh, 123)).rejects.toThrow(/Ref name must not begin with a dash/);
+    await expect(runFixIssue(inputs, config, engine, gh, 123)).rejects.toThrow(
+      /Ref name must not begin with a dash/,
+    );
     expect(exec.exec).not.toHaveBeenCalled();
   });
 });
