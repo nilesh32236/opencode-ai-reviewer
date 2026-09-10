@@ -385,10 +385,12 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       ...(streamComments !== undefined && { streamComments }),
       ...(streamBatchSize !== undefined && { streamBatchSize }),
       ...(pathInstructions && {
-        pathInstructions: {
-          ...baseConfig.review.pathInstructions,
-          ...pathInstructions,
-        },
+        pathInstructions: Object.fromEntries(
+          Object.entries({
+            ...baseConfig.review.pathInstructions,
+            ...pathInstructions,
+          }).slice(0, 10),
+        ),
       }),
     },
     ...(notifications && {

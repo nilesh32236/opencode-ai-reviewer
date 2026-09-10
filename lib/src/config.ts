@@ -114,16 +114,21 @@ export function sanitizePathInstructions(raw: unknown): Record<string, string> |
       );
       break;
     }
-    if (glob.length === 0 || !isValidPathGlob(glob)) {
-      core.warning(`Ignoring review.pathInstructions entry: invalid glob "${glob}"`);
+    if (glob.length === 0 || glob.length > 256 || !isValidPathGlob(glob)) {
+      const safeGlob = glob.replace(/[\r\n]+/g, ' ').slice(0, 200);
+      core.warning(`Ignoring review.pathInstructions entry: invalid glob "${safeGlob}"`);
       continue;
     }
-    if (typeof value !== 'string' || value.length === 0) {
-      core.warning(`Ignoring review.pathInstructions entry for glob "${glob}": not a string`);
+    if (typeof value !== 'string' || value.trim().length === 0) {
+      const safeGlob = glob.replace(/[\r\n]+/g, ' ').slice(0, 200);
+      core.warning(`Ignoring review.pathInstructions entry for glob "${safeGlob}": not a string`);
       continue;
     }
     if (Buffer.byteLength(value, 'utf8') > MAX_PATH_INSTRUCTION_BYTES) {
-      core.warning(`Ignoring review.pathInstructions entry for glob "${glob}": exceeds 2 KB cap`);
+      const safeGlob = glob.replace(/[\r\n]+/g, ' ').slice(0, 200);
+      core.warning(
+        `Ignoring review.pathInstructions entry for glob "${safeGlob}": exceeds 2 KB cap`,
+      );
       continue;
     }
     sanitized[glob] = value;

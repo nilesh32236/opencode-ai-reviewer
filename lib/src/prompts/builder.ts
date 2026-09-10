@@ -171,10 +171,13 @@ export function getMatchedPathInstructions(
       logger.warn(`Ignoring pathInstructions entry: invalid glob "${glob}"`);
       continue;
     }
-    if (typeof instruction !== 'string' || instruction.length === 0) continue;
+    if (typeof instruction !== 'string' || instruction.length === 0) {
+      logger.warn(`Ignoring pathInstructions entry for glob "${glob}": empty or not a string`);
+      continue;
+    }
     let isMatch = false;
     try {
-      isMatch = filePaths.some((f) => minimatch(f, glob));
+      isMatch = filePaths.some((f) => minimatch(f, glob, { dot: true }));
     } catch {
       logger.warn(`Ignoring pathInstructions entry: invalid glob "${glob}"`);
       continue;
@@ -200,8 +203,13 @@ export function buildPathInstructionsSection(
   );
   lines.push('');
   for (const { glob, instruction } of matched) {
+    // Path instructions are trusted repo-owner instructions (like
+    // repoRulesContext/reviewPromptExtra): strip control chars and truncate,
+    // but do NOT wrap as untrusted data (sanitizePromptInput would neuter them
+    // by instructing the model to never follow them).
     const safe = truncateUtf8Bytes(
-      sanitizePromptInput(instruction, { maxLength: 50_000 }),
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional strip of C0 controls/DEL from trusted repo-owner instructions
+      instruction.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, ''),
       MAX_PATH_INSTRUCTION_BYTES,
     );
     // The glob is repo-controlled: keep the header single-line by stripping
@@ -209,7 +217,7 @@ export function buildPathInstructionsSection(
     // label (not instructions), so a plain strip — not the multi-line
     // untrusted-context wrapper — is the right sanitization here.
     const safeGlob = glob
-      .replace(/[`\r\n]+/g, ' ')
+      .replace(/[`\r\n\u2028\u2029]+/g, ' ')
       .trim()
       .slice(0, 200);
     lines.push(`### Glob \`${safeGlob}\``);

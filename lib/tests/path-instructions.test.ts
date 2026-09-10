@@ -78,8 +78,12 @@ describe('pathInstructions', () => {
     );
     const map = resolved.review?.pathInstructions ?? {};
     // Recapped to 10 entries, invalid glob dropped, base entries preserved.
-    expect(Object.keys(map).length).toBeLessThanOrEqual(10);
+    // First-10-wins: base already holds 10 entries so the override's new
+    // 'extra/**' entry is dropped, while 'base0/**' is overridden in place.
+    expect(Object.keys(map).length).toBe(10);
     expect(map['[']).toBeUndefined();
+    expect(map['extra/**']).toBeUndefined();
+    expect(map['base0/**']).toBe('override');
     expect(map['base1/**']).toBe('base 1');
   });
 

@@ -605,6 +605,9 @@ export const PromptConfigSchema = z.object({
       costTracking: CostTrackingConfigSchema.optional(),
       sensitivity: ReviewSensitivitySchema.optional(),
       categories: z.record(CategoryOverrideSchema).optional(),
+      // Permissive by design (fail-open): entry caps (10 entries / 2 KB each) and
+      // glob validation live in sanitizePathInstructions (lib/src/config.ts) and
+      // getMatchedPathInstructions (lib/src/prompts/builder.ts).
       pathInstructions: z.record(z.string()).optional(),
       failOnSeverity: z.enum(['off', 'critical', 'important', 'minor']).optional(),
       suggestTitleAndLabels: z.boolean().optional(),
