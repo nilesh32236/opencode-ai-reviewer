@@ -112,6 +112,12 @@ export class GitLabAdapter implements PlatformAdapter {
    * Top-level (non-project-scoped) API request, e.g. `/user`. Shares
    * circuit-breaker/retry/timeout logic with {@link api} but omits the
    * `/projects/:id` prefix which would otherwise 404.
+   *
+   * @param path - Top-level API path beginning with `/` (e.g. `/user`).
+   * @param options - Optional fetch options (method, body, headers).
+   * @param responseType - When `text`, resolve the raw body instead of JSON.
+   * @param signal - Optional AbortSignal to cancel the request.
+   * @returns The parsed response body cast to `T`.
    */
   private async apiBase<T>(
     path: string,
