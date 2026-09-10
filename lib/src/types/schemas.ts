@@ -221,6 +221,7 @@ export const ReviewConfigSchema = z.object({
       '**/action/lib/**',
       '**/*.bundle.js',
     ]),
+  exclude_agent_configs: z.boolean().optional().default(true),
   enableReachability: z.boolean().optional().default(true),
   enableMetaVerification: z.boolean().optional().default(false),
   enableTestGapDetection: z.boolean().optional().default(false),

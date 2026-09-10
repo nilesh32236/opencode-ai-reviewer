@@ -42,8 +42,8 @@ export function buildAgentConfigSkippedNote(skipped: readonly string[] | undefin
     if (!Array.isArray(skipped) || skipped.length === 0) return '';
     const names = skipped.filter((s) => typeof s === 'string' && s.length > 0);
     if (names.length === 0) return '';
-    const shown = names.slice(0, 5).join(', ');
-    const more = names.length > 5 ? ` (+${names.length - 5} more)` : '';
+    const shown = names.slice(0, 10).join(', ');
+    const more = names.length > 10 ? ` (+${names.length - 10} more)` : '';
     const plural = names.length === 1 ? 'file' : 'files';
     return (
       `Skipped ${names.length} agent-config ${plural} from inline review ` +
