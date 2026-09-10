@@ -73,6 +73,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     suggestTitleAndLabels: null,
     streamComments: null,
     streamBatchSize: null,
+    effort: null,
     tokenBudget: null,
     budget: null,
     costTracking: null,
@@ -458,6 +459,13 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     }
     if (typeof config.review.streamBatchSize === 'number' && config.review.streamBatchSize >= 0) {
       result.review.streamBatchSize = config.review.streamBatchSize;
+    }
+    if (config.review.effort === 'lite' || config.review.effort === 'balanced') {
+      result.review.effort = config.review.effort;
+    } else if (config.review.effort !== undefined) {
+      core.warning(
+        `Ignoring invalid review.effort "${String(config.review.effort)}". Must be "lite" or "balanced"; falling back to defaults.`,
+      );
     }
     if (
       config.review.failOnSeverity === 'off' ||

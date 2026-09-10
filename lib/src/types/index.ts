@@ -624,6 +624,10 @@ export interface ReviewSensitivityConfig {
  * this severity are found. `'off'` disables failure from findings entirely. */
 export type FailOnSeverity = 'off' | 'critical' | 'important' | 'minor';
 
+/** Preset trading review depth for speed and cost. Unset means current behavior;
+ * explicit per-setting values always override the preset. */
+export type ReviewEffort = 'lite' | 'balanced';
+
 /** Main review configuration controlling what is reviewed and how findings are reported. */
 export interface ReviewConfig {
   /** Skip review for PRs with these labels */
@@ -678,6 +682,11 @@ export interface ReviewConfig {
   /** Number of findings to accumulate before posting a streaming batch
    * (default: 0 = post per-batch as soon as the batch completes). */
   streamBatchSize?: number;
+  /** Effort preset trading review depth for speed/cost (unset = current
+   * behavior; explicit per-setting values always override the preset).
+   * `lite`: smaller batches, lower maxLinesPerFile, meta-verification off.
+   * `balanced`: current defaults (no overrides). */
+  effort?: ReviewEffort;
 }
 
 /** Configuration for deterministic hardcoded secret / credential scanning. */
@@ -1465,6 +1474,9 @@ export interface PromptConfig {
     /** Number of findings to accumulate before posting a streaming batch
      * (default: 0 = per-batch). */
     streamBatchSize?: number;
+    /** Effort preset trading review depth for speed/cost (unset = current
+     * behavior; explicit per-setting values always override the preset). */
+    effort?: ReviewEffort;
   };
   /** Fix prompt configuration */
   fix?: {

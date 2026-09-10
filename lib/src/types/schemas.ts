@@ -226,6 +226,7 @@ export const ReviewConfigSchema = z.object({
   suggestTitleAndLabels: z.boolean().optional().default(false),
   streamComments: z.boolean().optional().default(false),
   streamBatchSize: z.number().int().min(0).optional().default(0),
+  effort: z.enum(['lite', 'balanced']).optional(),
 });
 
 /** Zod schema validating audit configuration. */
@@ -608,6 +609,7 @@ export const PromptConfigSchema = z.object({
       suggestTitleAndLabels: z.boolean().optional(),
       streamComments: z.boolean().optional(),
       streamBatchSize: z.number().int().min(0).optional(),
+      effort: z.enum(['lite', 'balanced']).optional(),
     })
     .optional(),
   fix: z

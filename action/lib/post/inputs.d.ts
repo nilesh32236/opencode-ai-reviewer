@@ -52,6 +52,8 @@ export interface ActionInputs {
     verificationModel?: string;
     /** Whether the meta-verification pass is enabled. */
     enableMetaVerification: boolean;
+    /** Whether the enable_meta_verification input was explicitly set by the workflow. */
+    enableMetaVerificationExplicit: boolean;
     /** Whether test-gap detection (modified code without test updates) is enabled (default: false). */
     enableTestGapDetection: boolean;
     /** Whether the enable_test_gap_detection input was explicitly set by the workflow. */
@@ -94,8 +96,16 @@ export interface ActionInputs {
     auditTargetDirs: string[];
     /** Maximum files to include per review batch. */
     maxFilesPerBatch: number;
+    /** Whether the max_files_per_batch input was explicitly set by the workflow. */
+    maxFilesPerBatchExplicit: boolean;
     /** Maximum lines per file to process. */
     maxLinesPerFile: number;
+    /** Whether the max_lines_per_file input was explicitly set by the workflow. */
+    maxLinesPerFileExplicit: boolean;
+    /** Review effort preset (lite | balanced); unset means current behavior. */
+    reviewEffort?: string;
+    /** Whether the review_effort input was explicitly set by the workflow. */
+    reviewEffortExplicit: boolean;
     /** Optional project context/description string. */
     projectContext?: string;
     /** Whether MCP (Model Context Protocol) servers are enabled. */

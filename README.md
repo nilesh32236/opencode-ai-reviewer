@@ -163,6 +163,7 @@ docs:
 | `audit_target_dir`       | —                                    | Directory to audit                             |
 | `max_files_per_batch`    | `3`                                  | Files per sub-agent batch                      |
 | `max_lines_per_file`     | `500`                                | Max lines per file included in context         |
+| `review_effort`          | _(unset = current behavior)_         | Effort preset trading depth for speed/cost: `lite` (2 files/batch, 200 lines/file, meta-verification off) or `balanced` (current defaults). Explicit `max_files_per_batch` / `max_lines_per_file` / `enable_meta_verification` always override the preset; invalid values warn and fall back to defaults |
 | `project_context`        | —                                    | Project description for review prompts         |
 | `enable_mcp`             | `false`                              | Enable MCP servers for context enrichment. **Security:** local MCP servers are spawned from npm at runtime and receive only an allowlisted subset of the parent environment (credentials such as `GITHUB_TOKEN` are NOT forwarded unless you pass them explicitly via `environment`/`allowedEnv`) — only configure trusted servers via the `mcp-servers` input. |
 | `include_strengths`      | `true`                               | Include positive feedback in output            |
@@ -205,6 +206,7 @@ Set `review_inline: false` in your workflow inputs or `.opencode-reviewer.yml` (
 ```yaml
 review:
   inline: true    # or false for summary-only
+  effort: lite    # or balanced (default unset = current behavior)
   budget:
     enabled: false              # enable budget-based review adaptation (default: false — opt-in)
     summaryThreshold: 500       # PRs with >= this many diff lines use summary-only mode
@@ -219,6 +221,18 @@ When budget review is enabled and a PR exceeds the configured thresholds (based 
 - **>= 1000 lines** (default `splitThreshold`): critical patterns are checked, and a "Large PR Detected" banner recommending a split is prepended to the final review.
 
 > **Note:** Budget modes focus the model's *output* on critical patterns; they do not reduce the embedded diff context, so input token consumption and runtime are essentially unchanged. For the largest PRs, consider splitting the PR or raising `maxLinesPerFile`/`batchSize` instead.
+
+#### Review effort preset (`review.effort` / `review_effort`)
+
+A single opt-in knob to trade review depth for speed and cost on small PRs versus risky ones:
+
+| Preset     | `batchSize` (files/batch) | `maxLinesPerFile` | `enableMetaVerification` |
+| ---------- | ------------------------- | ----------------- | ------------------------ |
+| _(unset)_  | current behavior          | current behavior  | configured value         |
+| `lite`     | `2`                       | `200`             | `false`                  |
+| `balanced` | current defaults (no overrides) | current defaults (no overrides) | configured value |
+
+Rules: explicit `max_files_per_batch` / `max_lines_per_file` / `enable_meta_verification` (action inputs) and config-file `review.enableMetaVerification` always override the preset; an unset or invalid value logs a warning and falls back to current defaults without failing the run.
 
 #### Per-path overrides
 

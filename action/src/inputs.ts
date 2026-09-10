@@ -118,6 +118,8 @@ export interface ActionInputs {
   verificationModel?: string;
   /** Whether the meta-verification pass is enabled. */
   enableMetaVerification: boolean;
+  /** Whether the enable_meta_verification input was explicitly set by the workflow. */
+  enableMetaVerificationExplicit: boolean;
   /** Whether test-gap detection (modified code without test updates) is enabled (default: false). */
   enableTestGapDetection: boolean;
   /** Whether the enable_test_gap_detection input was explicitly set by the workflow. */
@@ -160,8 +162,16 @@ export interface ActionInputs {
   auditTargetDirs: string[];
   /** Maximum files to include per review batch. */
   maxFilesPerBatch: number;
+  /** Whether the max_files_per_batch input was explicitly set by the workflow. */
+  maxFilesPerBatchExplicit: boolean;
   /** Maximum lines per file to process. */
   maxLinesPerFile: number;
+  /** Whether the max_lines_per_file input was explicitly set by the workflow. */
+  maxLinesPerFileExplicit: boolean;
+  /** Review effort preset (lite | balanced); unset means current behavior. */
+  reviewEffort?: string;
+  /** Whether the review_effort input was explicitly set by the workflow. */
+  reviewEffortExplicit: boolean;
   /** Optional project context/description string. */
   projectContext?: string;
   /** Whether MCP (Model Context Protocol) servers are enabled. */
@@ -270,14 +280,32 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     throw new Error('max_fix_iterations must be between 1 and 10');
   }
 
-  const maxFilesPerBatch = Number.parseInt(core.getInput('max_files_per_batch') || '3', 10);
+  const maxFilesPerBatchRaw = core.getInput('max_files_per_batch').trim();
+  const maxFilesPerBatchExplicit = maxFilesPerBatchRaw !== '';
+  const maxFilesPerBatch = Number.parseInt(maxFilesPerBatchRaw || '3', 10);
   if (isNaN(maxFilesPerBatch) || maxFilesPerBatch < 1) {
     throw new Error('max_files_per_batch must be a positive integer');
   }
 
-  const maxLinesPerFile = Number.parseInt(core.getInput('max_lines_per_file') || '500', 10);
+  const maxLinesPerFileRaw = core.getInput('max_lines_per_file').trim();
+  const maxLinesPerFileExplicit = maxLinesPerFileRaw !== '';
+  const maxLinesPerFile = Number.parseInt(maxLinesPerFileRaw || '500', 10);
   if (isNaN(maxLinesPerFile) || maxLinesPerFile < 1) {
     throw new Error('max_lines_per_file must be a positive integer');
+  }
+
+  const reviewEffortRaw = core.getInput('review_effort').trim().toLowerCase();
+  let reviewEffort: string | undefined;
+  const reviewEffortExplicit = reviewEffortRaw !== '';
+  if (reviewEffortRaw === '') {
+    reviewEffort = undefined;
+  } else if (reviewEffortRaw === 'lite' || reviewEffortRaw === 'balanced') {
+    reviewEffort = reviewEffortRaw;
+  } else {
+    core.warning(
+      `Ignoring invalid review_effort "${reviewEffortRaw}". Must be "lite" or "balanced"; falling back to defaults.`,
+    );
+    reviewEffort = undefined;
   }
 
   const auditLabelsStr = core.getInput('audit_labels') || 'audit';
@@ -403,7 +431,9 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   }
   const docStyle: DocStyle = isDocStyle(docStyleRaw) ? docStyleRaw : 'auto';
 
-  const enableMetaVerification = core.getInput('enable_meta_verification') === 'true';
+  const enableMetaVerificationRaw = core.getInput('enable_meta_verification').trim();
+  const enableMetaVerification = enableMetaVerificationRaw === 'true';
+  const enableMetaVerificationExplicit = enableMetaVerificationRaw !== '';
   const enableAudit = core.getInput('enable_audit') === 'true';
 
   const enableTestGapDetectionInput = core.getInput('enable_test_gap_detection');
@@ -537,6 +567,7 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     synthesisModel,
     verificationModel,
     enableMetaVerification,
+    enableMetaVerificationExplicit,
     enableTestGapDetection,
     enableTestGapDetectionExplicit,
     includePreExisting: core.getInput('include_pre_existing') === 'true',
@@ -559,6 +590,10 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     auditTargetDirs,
     maxFilesPerBatch,
     maxLinesPerFile,
+    maxFilesPerBatchExplicit,
+    maxLinesPerFileExplicit,
+    reviewEffort,
+    reviewEffortExplicit,
     projectContext: core.getInput('project_context') || undefined,
     enableMCP: core.getInput('enable_mcp').trim().toLowerCase() === 'true',
     includeStrengths: core.getInput('include_strengths') !== 'false',

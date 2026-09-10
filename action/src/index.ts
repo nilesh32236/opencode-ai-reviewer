@@ -22,7 +22,9 @@ import {
   getDefaultMCPServers,
   loadConfig,
   mergeConfigWithInputs,
+  parseReviewEffort,
   registerEventSubscribers,
+  resolveReviewEffort,
   setupOpenCode,
   setupWorkspaceDependencies,
 } from '@opencode-pr-agent/lib';
@@ -190,6 +192,17 @@ async function run(): Promise<void> {
 
     const mergedDefaults = mergeConfigWithInputs(loadedConfig, {});
 
+    // Single `review.effort` / `review_effort` preset knob: action input wins
+    // over the config file; explicit per-setting values always override the
+    // preset; `balanced` and unset resolve to current behavior (identity).
+    const effectiveEffort =
+      (inputs.reviewEffortExplicit ? parseReviewEffort(inputs.reviewEffort) : null) ??
+      parseReviewEffort(loadedConfig?.review?.effort);
+    const effortPreset = resolveReviewEffort(effectiveEffort);
+    if (effectiveEffort) {
+      core.info(`Using review effort preset: ${effectiveEffort}`);
+    }
+
     const config: AgentConfig = {
       ...DEFAULT_CONFIG,
       reviewModel: inputs.reviewModel,
@@ -203,8 +216,14 @@ async function run(): Promise<void> {
       analysisModel: inputs.analysisModel,
       docsModel: inputs.docsModel,
       describeModel: inputs.describeModel,
-      batchSize: inputs.maxFilesPerBatch,
-      maxLinesPerFile: inputs.maxLinesPerFile,
+      batchSize:
+        effortPreset && !inputs.maxFilesPerBatchExplicit
+          ? effortPreset.batchSize
+          : inputs.maxFilesPerBatch,
+      maxLinesPerFile:
+        effortPreset && !inputs.maxLinesPerFileExplicit
+          ? effortPreset.maxLinesPerFile
+          : inputs.maxLinesPerFile,
       maxIterations: loadedConfig?.fix?.maxIterations ?? inputs.maxFixIterations,
       timeoutMinutes: inputs.timeoutMinutes,
       enableMCP: inputs.enableMCP,
@@ -232,7 +251,11 @@ async function run(): Promise<void> {
           suppressLowConfidence: loadedConfig.review.suppressLowConfidence,
         }),
         enableMetaVerification:
-          loadedConfig?.review?.enableMetaVerification ?? inputs.enableMetaVerification,
+          effortPreset &&
+          !inputs.enableMetaVerificationExplicit &&
+          loadedConfig?.review?.enableMetaVerification === undefined
+            ? effortPreset.enableMetaVerification
+            : (loadedConfig?.review?.enableMetaVerification ?? inputs.enableMetaVerification),
         // Explicit workflow inputs are authoritative; only when the input is
         // omitted does the repo config value (or the opt-in default) apply.
         enableTestGapDetection: inputs.enableTestGapDetectionExplicit
