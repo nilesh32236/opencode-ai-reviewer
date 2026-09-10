@@ -41,13 +41,23 @@ export function computeMergeScore(result: ReviewResult): number {
 }
 
 /**
- * Render a merge-readiness score as a short markdown line.
+ * Render a merge-readiness score as a short markdown line with an explicit
+ * text label so the readiness band does not rely on color or emoji alone.
+ * Screen readers and color-blind readers get the band meaning from the label.
  * @param score - The 0-5 score.
- * @returns A markdown string like "**Merge-readiness:** 🟢 5/5".
+ * @returns A markdown string like "**Merge-readiness:** 🟢 ready 5/5".
  */
 export function formatMergeScore(score: number): string {
   const badge = score >= 5 ? '🟢' : score >= 4 ? '🟡' : score >= 3 ? '🟠' : '🔴';
-  return `${badge} ${score}/5`;
+  const label =
+    score >= 5
+      ? 'ready'
+      : score === 4
+        ? 'minor polish'
+        : score === 3
+          ? 'address feedback'
+          : 'needs work';
+  return `${badge} ${label} ${score}/5`;
 }
 
 /**

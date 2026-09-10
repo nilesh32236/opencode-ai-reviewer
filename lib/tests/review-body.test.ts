@@ -275,12 +275,12 @@ describe('review-body', () => {
 
   describe('formatMergeScore', () => {
     it('maps each score level to a distinct gradient badge', () => {
-      expect(formatMergeScore(5)).toBe('🟢 5/5');
-      expect(formatMergeScore(4)).toBe('🟡 4/5');
-      expect(formatMergeScore(3)).toBe('🟠 3/5');
-      expect(formatMergeScore(2)).toBe('🔴 2/5');
-      expect(formatMergeScore(1)).toBe('🔴 1/5');
-      expect(formatMergeScore(0)).toBe('🔴 0/5');
+      expect(formatMergeScore(5)).toBe('🟢 ready 5/5');
+      expect(formatMergeScore(4)).toBe('🟡 minor polish 4/5');
+      expect(formatMergeScore(3)).toBe('🟠 address feedback 3/5');
+      expect(formatMergeScore(2)).toBe('🔴 needs work 2/5');
+      expect(formatMergeScore(1)).toBe('🔴 needs work 1/5');
+      expect(formatMergeScore(0)).toBe('🔴 needs work 0/5');
     });
 
     it('never conflates production-ready (5) with minor polish (4)', () => {
