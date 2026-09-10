@@ -684,6 +684,23 @@ export interface ReviewConfig {
   commandTriggers: string[];
   /** Glob patterns for files to exclude from review (e.g., lockfiles, generated code) */
   excludePatterns: string[];
+  /**
+   * Default-exclude agent-config paths (`.agents/`, `.claude/`, `SKILL.md`)
+   * from LLM findings while counting them as skipped in the summary.
+   * Explicit `false` restores the previous behavior (review as before).
+   * Absent or unparseable values fail open to excluding.
+   *
+   * Security tradeoff: excluded files skip LLM inline findings, so a
+   * malicious instruction or tool/MCP permission change in these paths
+   * surfaces only as a summary skip count with no severity. The
+   * deterministic secret scan runs on the reviewed (filtered) file set,
+   * so excluded files skip secret scanning as well. Set to `false` to
+   * force full review of agent-config diffs when prompt-content
+   * integrity matters.
+   * @default true
+   * @since NEXT
+   */
+  exclude_agent_configs?: boolean;
   /** Whether to run a meta-verification pass that drops false-positive findings */
   enableMetaVerification: boolean;
   /** Whether to run test-gap detection that flags code changes lacking
@@ -1199,6 +1216,12 @@ export interface ReviewResult {
    * head SHA). Set by the engine when context.autoLoadAgentsMd loads files;
    * rendered by buildReviewBody/postReview. Absent when nothing was loaded. */
   attributionFooter?: string;
+  /** Agent-config files default-excluded from inline findings
+   * (`.agents/`, `.claude/`, `SKILL.md`) but counted as skipped.
+   * Rendered by buildReviewBody in the summary. Absent when none were skipped.
+   * @since NEXT
+   */
+  excludedAgentConfigs?: string[];
 }
 
 /** Result of an auto-fix operation. */
@@ -1509,6 +1532,23 @@ export interface PromptConfig {
     suppressLowConfidence?: boolean;
     /** Patterns to exclude from review */
     excludePatterns?: string[];
+    /**
+     * Default-exclude agent-config paths (`.agents/`, `.claude/`, `SKILL.md`)
+     * from LLM findings while counting them as skipped in the summary.
+     * Explicit `false` restores the previous behavior (review as before).
+     * Absent or unparseable values fail open to excluding.
+     *
+     * Security tradeoff: excluded files skip LLM inline findings, so a
+     * malicious instruction or tool/MCP permission change in these paths
+     * surfaces only as a summary skip count with no severity. The
+     * deterministic secret scan runs on the reviewed (filtered) file set,
+     * so excluded files skip secret scanning as well. Set to `false` to
+     * force full review of agent-config diffs when prompt-content
+     * integrity matters.
+     * @default true
+     * @since NEXT
+     */
+    exclude_agent_configs?: boolean;
     /** Token budget configuration for smart context allocation */
     tokenBudget?: TokenBudgetConfig;
     /** Enable lightweight reachability analysis on security findings (default: true) */
@@ -1808,6 +1848,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     enableTestGapDetection: false,
     showFunctionScores: false,
     suppressLowConfidence: false,
+    exclude_agent_configs: true,
     enableReachability: true,
     enableCodebaseIndex: true,
     tokenBudget: {

@@ -27,6 +27,34 @@ export interface ReviewBodyOptions {
 }
 
 /**
+ * Build the one-line note describing agent-config files that were
+ * default-excluded from inline findings but counted as skipped.
+ *
+ * Fail-open: returns an empty string when the list is empty or invalid, so
+ * callers can append unconditionally. Never throws.
+ *
+ * @param skipped - Agent-config file paths excluded from inline review.
+ * @returns A human-readable note, or '' when there is nothing to report.
+ * @since NEXT
+ */
+export function buildAgentConfigSkippedNote(skipped: readonly string[] | undefined): string {
+  try {
+    if (!Array.isArray(skipped) || skipped.length === 0) return '';
+    const names = skipped.filter((s) => typeof s === 'string' && s.length > 0);
+    if (names.length === 0) return '';
+    const shown = names.slice(0, 10).join(', ');
+    const more = names.length > 10 ? ` (+${names.length - 10} more)` : '';
+    const plural = names.length === 1 ? 'file' : 'files';
+    return (
+      `Skipped ${names.length} agent-config ${plural} from inline review ` +
+      `(default-excluded: ${shown}${more}). Disable with review.exclude_agent_configs: false.`
+    );
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Compute a 0-5 merge-readiness score from a review result, modeled on
  * Greptile's confidence score. Weighted by severity counts (critical weighs
  * more than important/minor), the verdict, and whether the review was partial.
@@ -265,6 +293,11 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
     `**Reasoning:** ${sanitizeMarkdown(result.verdict.reasoning)}`,
     '',
   );
+
+  const agentConfigNote = buildAgentConfigSkippedNote(result.excludedAgentConfigs);
+  if (agentConfigNote) {
+    lines.push(`*${sanitizeMarkdown(agentConfigNote)}*`, '');
+  }
 
   if (result.strengths.length > 0) {
     lines.push('### Strengths');

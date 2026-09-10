@@ -54,6 +54,24 @@ const GENERATED_FILE_RE =
 const BUNDLED_ACTION_RE = /(?:^|\/)action\/lib\//;
 
 /**
+ * Directory segments that hold agent/authoring configuration rather than
+ * reviewable source. These files churn frequently but rarely need
+ * line-by-line code review, so they are default-excluded from LLM findings
+ * (while still counted as skipped in the review summary).
+ *
+ * @since NEXT
+ */
+const AGENT_CONFIG_SEGMENTS: ReadonlySet<string> = new Set(['.agents', '.claude']);
+
+/**
+ * Basename pattern for agent skill definitions, matched case-insensitively
+ * against the final path segment regardless of directory.
+ *
+ * @since NEXT
+ */
+const AGENT_CONFIG_BASENAME_RE = /^skill\.md$/i;
+
+/**
  * A first line longer than this many characters is almost certainly a
  * minified bundle (human-authored lines are far shorter).
  */
@@ -77,6 +95,38 @@ export function isGeneratedArtifactPath(filePath: string): boolean {
   }
   const base = segments[lastIndex] ?? '';
   return GENERATED_FILE_RE.test(base);
+}
+
+/**
+ * Determine whether a file path identifies agent/authoring configuration
+ * (`.agents/`, `.claude/` directories or a `SKILL.md` file) that is
+ * default-excluded from line-by-line review findings.
+ *
+ * This is intentionally a separate signal from {@link isGeneratedArtifactPath}
+ * so existing generated-artifact consumers (secret scanning, bundle guards)
+ * are unaffected.
+ *
+ * Fail-open: any error (or empty input) returns false so the file is
+ * reviewed rather than silently dropped. Never throws.
+ *
+ * @param filePath - Repo-relative or absolute POSIX or Windows path.
+ * @returns True when the path should be skipped for LLM findings.
+ * @since NEXT
+ */
+export function isAgentConfigPath(filePath: string): boolean {
+  try {
+    if (!filePath) return false;
+    const normalized = filePath.replace(/\\/g, '/');
+    const segments = normalized.split('/');
+    const lastIndex = segments.length - 1;
+    for (let i = 0; i < lastIndex; i++) {
+      if (AGENT_CONFIG_SEGMENTS.has(segments[i] ?? '')) return true;
+    }
+    const base = segments[lastIndex] ?? '';
+    return AGENT_CONFIG_BASENAME_RE.test(base);
+  } catch {
+    return false;
+  }
 }
 
 /**

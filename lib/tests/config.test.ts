@@ -395,6 +395,23 @@ multiAgent:
       expect(result.review?.suppressLowConfidence).toBe(true);
     });
 
+    it('passes through review.exclude_agent_configs booleans (absent stays undefined = fail-open exclude)', () => {
+      expect(
+        validateConfig({ review: { exclude_agent_configs: false } } as never).review
+          ?.exclude_agent_configs,
+      ).toBe(false);
+      expect(
+        validateConfig({ review: { exclude_agent_configs: true } } as never).review
+          ?.exclude_agent_configs,
+      ).toBe(true);
+      expect(validateConfig({ review: {} }).review?.exclude_agent_configs).toBeUndefined();
+    });
+
+    it('skips review.exclude_agent_configs when not a boolean', () => {
+      const result = validateConfig({ review: { exclude_agent_configs: 'yes' } } as never);
+      expect(result.review?.exclude_agent_configs).toBeUndefined();
+    });
+
     it('skips review.suppressLowConfidence when not a boolean', () => {
       const result = validateConfig({ review: { suppressLowConfidence: 'yes' } } as never);
       expect(result.review?.suppressLowConfidence).toBeUndefined();

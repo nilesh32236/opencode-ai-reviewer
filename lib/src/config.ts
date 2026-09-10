@@ -156,6 +156,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     enableReviewsArrayInline: null,
     suppressLowConfidence: null,
     excludePatterns: null,
+    exclude_agent_configs: null,
     enableReachability: null,
     enableMetaVerification: null,
     enableTestGapDetection: null,
@@ -569,6 +570,9 @@ export function validateConfig(
       result.review.excludePatterns = config.review.excludePatterns.filter(
         (p) => typeof p === 'string',
       );
+    }
+    if (typeof config.review.exclude_agent_configs === 'boolean') {
+      result.review.exclude_agent_configs = config.review.exclude_agent_configs;
     }
     if (typeof config.review.enableReachability === 'boolean') {
       result.review.enableReachability = config.review.enableReachability;

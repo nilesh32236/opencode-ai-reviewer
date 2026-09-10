@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ReviewResult } from '../src/types/index.js';
 import {
+  buildAgentConfigSkippedNote,
   buildAgentsMdAttributionFooter,
   buildReviewBody,
   computeMergeScore,
@@ -142,6 +143,39 @@ describe('review-body', () => {
 
       const body = buildReviewBody(emptyResult);
       expect(body).toContain('MR Review Summary');
+    });
+
+    it('renders the skipped agent-config note when excludedAgentConfigs is set', () => {
+      const result: ReviewResult = {
+        summary: 'Clean PR.',
+        verdict: { ready: true, reasoning: 'All good.' },
+        strengths: [],
+        issues: [],
+        stats: { total: 0, critical: 0, important: 0, minor: 0 },
+        rawLines: [],
+        failedLines: 0,
+        excludedAgentConfigs: ['.agents/foo.md', 'SKILL.md'],
+      };
+
+      const body = buildReviewBody(result);
+      expect(body).toContain('Skipped 2 agent-config files from inline review');
+      expect(body).toContain('.agents/foo.md');
+    });
+
+    it('omits the skipped agent-config note when nothing was excluded', () => {
+      const result: ReviewResult = {
+        summary: 'Clean PR.',
+        verdict: { ready: true, reasoning: 'All good.' },
+        strengths: [],
+        issues: [],
+        stats: { total: 0, critical: 0, important: 0, minor: 0 },
+        rawLines: [],
+        failedLines: 0,
+      };
+
+      expect(buildReviewBody(result)).not.toContain('agent-config');
+      expect(buildAgentConfigSkippedNote(undefined)).toBe('');
+      expect(buildAgentConfigSkippedNote([])).toBe('');
     });
 
     it('renders a partial-review banner when failedBatches is set', () => {
