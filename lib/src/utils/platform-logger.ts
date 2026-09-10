@@ -285,6 +285,11 @@ export function shouldUseConsoleColors(
 }
 
 /**
+ * Terminal background polarity used to pick a legible ANSI palette.
+ */
+export type TerminalBackground = 'light' | 'dark';
+
+/**
  * Detect a light terminal background via the `COLORFGBG` variable
  * (rxvt convention `"fg;bg"` where the last component is the background
  * xterm color index). An index `>= 7` (7 = light gray, 15 = white)
@@ -305,17 +310,40 @@ export function isLightTerminalBackground(colorfgbg?: string): boolean {
 }
 
 /**
+ * Resolve the terminal background polarity for palette selection.
+ *
+ * Resolution order:
+ * 1. Explicit override `OPENCODE_LOG_BACKGROUND` (or `TERM_BACKGROUND`) set
+ *    to `light` / `dark` — lets users of terminals that do not export
+ *    `COLORFGBG` (iTerm2, VS Code, most CI) force the correct palette.
+ * 2. `COLORFGBG` heuristic via {@link isLightTerminalBackground}.
+ * 3. Default `dark` (historical behavior; the dark palette is legible on
+ *    black and, while not ideal on white, remains readable for the colorblind-
+ *    safe `[LEVEL]` tag which is always emitted as the primary cue).
+ *
+ * @param env - Environment record to read (defaults to `process.env`).
+ * @returns The resolved background polarity.
+ */
+export function resolveTerminalBackground(
+  env: NodeJS.ProcessEnv = process.env,
+): TerminalBackground {
+  const explicit = (env.OPENCODE_LOG_BACKGROUND ?? env.TERM_BACKGROUND ?? '').trim().toLowerCase();
+  if (explicit === 'light' || explicit === 'dark') return explicit;
+  return isLightTerminalBackground(env.COLORFGBG) ? 'light' : 'dark';
+}
+
+/**
  * Console implementation of PlatformLogger for CLI and development environments.
  *
  * Color output honors `NO_COLOR` / `CLICOLOR` / `CLICOLOR_FORCE` /
- * `FORCE_COLOR`, adapts the palette to the detected terminal background
- * (`COLORFGBG`), and always keeps the `[LEVEL]` tag emitted by
- * `formatMessage()` as the primary, non-color level cue so color is never
- * the sole indicator.
+ * `FORCE_COLOR`, adapts the palette to the terminal background (explicit
+ * `OPENCODE_LOG_BACKGROUND` / `TERM_BACKGROUND` override, else `COLORFGBG`),
+ * and always keeps the `[LEVEL]` tag emitted by `formatMessage()` as the
+ * primary, non-color level cue so color is never the sole indicator.
  */
 export class ConsolePlatformLogger extends BasePlatformLogger {
   private readonly useColors: boolean;
-  private readonly lightBackground: boolean;
+  private readonly background: TerminalBackground;
 
   /**
    * Create a console platform logger.
@@ -326,7 +354,7 @@ export class ConsolePlatformLogger extends BasePlatformLogger {
   constructor(name: string, level?: LogLevel, context: LogContext = {}) {
     super(name, level, context);
     this.useColors = shouldUseConsoleColors();
-    this.lightBackground = isLightTerminalBackground();
+    this.background = resolveTerminalBackground();
   }
 
   /**
@@ -349,8 +377,9 @@ export class ConsolePlatformLogger extends BasePlatformLogger {
    * meets WCAG AA 4.5:1 against white: trace/debug dark gray #586069
    * (~6.4:1), info dark blue #005cc5 (~6.3:1), warn dark amber #735c0f
    * (~6.4:1), error dark red #d73a49 (~4.6:1), fatal dark purple #6f42c1
-   * (~6.5:1). Used when `COLORFGBG` indicates a light background; when the
-   * background is unknown the dark-background palette is kept (Option A).
+   * (~6.5:1). Used when the background resolves to `light` via
+   * {@link resolveTerminalBackground} (`OPENCODE_LOG_BACKGROUND=light` /
+   * `COLORFGBG`); otherwise the dark-background palette is kept.
    */
   private static readonly LIGHT_BG_COLORS: Record<LogLevel, string> & { reset: string } = {
     trace: '\x1b[1m\x1b[38;2;88;96;105m',
@@ -364,9 +393,10 @@ export class ConsolePlatformLogger extends BasePlatformLogger {
 
   private colorize(level: LogLevel, message: string): string {
     if (!this.useColors) return message;
-    const palette = this.lightBackground
-      ? ConsolePlatformLogger.LIGHT_BG_COLORS
-      : ConsolePlatformLogger.DARK_BG_COLORS;
+    const palette =
+      this.background === 'light'
+        ? ConsolePlatformLogger.LIGHT_BG_COLORS
+        : ConsolePlatformLogger.DARK_BG_COLORS;
     const color = palette[level] || '';
     const reset = palette.reset;
     return `${color}${message}${reset}`;

@@ -20,6 +20,9 @@ export declare function runReview(inputs: ActionInputs, config: AgentConfig, eng
  * (without structured fields) stay covered and the gate never fires on
  * unrelated critical security findings (SQLi, XSS, auth bypass).
  * @param issue - A review finding with optional structured fields and a message.
+ * @param issue.category - Optional finding category (e.g. `security`).
+ * @param issue.severity - Optional finding severity (e.g. `critical`).
+ * @param issue.message - The finding message; secret findings start with `Hardcoded`.
  * @returns True when the finding is a hardcoded-secret finding.
  */
 export declare function isHardcodedSecretFinding(issue: {

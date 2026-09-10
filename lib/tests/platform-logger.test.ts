@@ -7,7 +7,10 @@ import {
   createNullPlatformLogger,
   createPlatformLogger,
   getPlatformLoggerFactory,
+  isLightTerminalBackground,
+  resolveTerminalBackground,
   setPlatformLoggerFactory,
+  shouldUseConsoleColors,
 } from '../src/utils/platform-logger.js';
 
 describe('ConsolePlatformLogger', () => {
@@ -62,6 +65,24 @@ describe('ConsolePlatformLogger', () => {
     expect(logSpy).not.toHaveBeenCalled();
     expect(errorSpy).toHaveBeenCalledTimes(1);
     expect(String(errorSpy.mock.calls[0][0])).toContain('emitted');
+  });
+
+  it('switches to the light-background palette when overridden', () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.stubEnv('OPENCODE_LOG_BACKGROUND', 'light');
+    vi.stubEnv('FORCE_COLOR', '1');
+    try {
+      const logger = new ConsolePlatformLogger('Test');
+      logger.info('light line');
+      const line = String(spy.mock.calls[0][0]);
+      // light info color is bold truecolor #005cc5
+      expect(line).toContain('38;2;0;92;197');
+      expect(line).not.toContain('\x1b[36m');
+      // the non-color [LEVEL] cue is always present
+      expect(line).toContain('[INFO]');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 
@@ -137,5 +158,90 @@ describe('createPlatformLogger', () => {
 
   it('restores the default factory after the configured factory is replaced', () => {
     expect(getPlatformLoggerFactory()).toBe(createConsolePlatformLogger);
+  });
+});
+
+describe('shouldUseConsoleColors', () => {
+  it('disables color when NO_COLOR is set to any non-empty value', () => {
+    expect(shouldUseConsoleColors({ NO_COLOR: '1' } as NodeJS.ProcessEnv, true)).toBe(false);
+    expect(shouldUseConsoleColors({ NO_COLOR: 'false' } as NodeJS.ProcessEnv, true)).toBe(false);
+  });
+
+  it('ignores an empty NO_COLOR', () => {
+    expect(shouldUseConsoleColors({ NO_COLOR: '' } as NodeJS.ProcessEnv, true)).toBe(true);
+  });
+
+  it('disables color when CLICOLOR is "0"', () => {
+    expect(shouldUseConsoleColors({ CLICOLOR: '0' } as NodeJS.ProcessEnv, true)).toBe(false);
+  });
+
+  it('forces color via CLICOLOR_FORCE / FORCE_COLOR even without a TTY', () => {
+    expect(shouldUseConsoleColors({ CLICOLOR_FORCE: '1' } as NodeJS.ProcessEnv, false)).toBe(true);
+    expect(shouldUseConsoleColors({ FORCE_COLOR: '1' } as NodeJS.ProcessEnv, false)).toBe(true);
+  });
+
+  it('lets NO_COLOR win over FORCE_COLOR', () => {
+    expect(
+      shouldUseConsoleColors({ NO_COLOR: '1', FORCE_COLOR: '1' } as NodeJS.ProcessEnv, true),
+    ).toBe(false);
+  });
+
+  it('falls back to TTY detection', () => {
+    expect(shouldUseConsoleColors({} as NodeJS.ProcessEnv, true)).toBe(true);
+    expect(shouldUseConsoleColors({} as NodeJS.ProcessEnv, false)).toBe(false);
+    expect(shouldUseConsoleColors({} as NodeJS.ProcessEnv, undefined)).toBe(false);
+  });
+});
+
+describe('isLightTerminalBackground', () => {
+  it('treats xterm color indices >= 7 as light', () => {
+    expect(isLightTerminalBackground('0;15')).toBe(true);
+    expect(isLightTerminalBackground('0;7')).toBe(true);
+  });
+
+  it('treats indices < 7 as dark', () => {
+    expect(isLightTerminalBackground('15;0')).toBe(false);
+    expect(isLightTerminalBackground('7;0')).toBe(false);
+  });
+
+  it('treats unset or unparsable values as dark', () => {
+    expect(isLightTerminalBackground('')).toBe(false);
+    expect(isLightTerminalBackground('not-a-color')).toBe(false);
+  });
+});
+
+describe('resolveTerminalBackground', () => {
+  it('honors the explicit OPENCODE_LOG_BACKGROUND override', () => {
+    expect(
+      resolveTerminalBackground({ OPENCODE_LOG_BACKGROUND: 'light' } as NodeJS.ProcessEnv),
+    ).toBe('light');
+    expect(
+      resolveTerminalBackground({ OPENCODE_LOG_BACKGROUND: 'DARK' } as NodeJS.ProcessEnv),
+    ).toBe('dark');
+  });
+
+  it('honors the TERM_BACKGROUND fallback override', () => {
+    expect(resolveTerminalBackground({ TERM_BACKGROUND: 'light' } as NodeJS.ProcessEnv)).toBe(
+      'light',
+    );
+  });
+
+  it('falls back to COLORFGBG detection when no override is set', () => {
+    expect(resolveTerminalBackground({ COLORFGBG: '0;15' } as NodeJS.ProcessEnv)).toBe('light');
+    expect(resolveTerminalBackground({ COLORFGBG: '15;0' } as NodeJS.ProcessEnv)).toBe('dark');
+  });
+
+  it('defaults to dark when nothing is known', () => {
+    expect(resolveTerminalBackground({} as NodeJS.ProcessEnv)).toBe('dark');
+    expect(resolveTerminalBackground({ COLORFGBG: 'garbage' } as NodeJS.ProcessEnv)).toBe('dark');
+  });
+
+  it('lets an explicit override win over COLORFGBG', () => {
+    expect(
+      resolveTerminalBackground({
+        COLORFGBG: '15;0',
+        OPENCODE_LOG_BACKGROUND: 'light',
+      } as NodeJS.ProcessEnv),
+    ).toBe('light');
   });
 });
