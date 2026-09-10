@@ -10,7 +10,7 @@ import { resolvePrNumber, sanitize } from './utils.js';
  * description as a PR comment (upserted by a stable marker so it is updated on
  * subsequent pushes).
  * @param inputs - Parsed action inputs.
- * @param _config - Full agent configuration (unused).
+ * @param config - Full agent configuration (used for skip-label/skip-actor checks).
  * @param engine - Review engine instance.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param _repo - Repository string (owner/repo, unused).
@@ -18,7 +18,7 @@ import { resolvePrNumber, sanitize } from './utils.js';
  */
 export async function runDescribe(
   inputs: ActionInputs,
-  _config: AgentConfig,
+  config: AgentConfig,
   engine: ReviewEngine,
   gh: PlatformAdapter,
   _repo: string,
@@ -40,8 +40,8 @@ export async function runDescribe(
   try {
     const pr = await gh.getMR(prNumber);
 
-    const hasSkipLabel = pr.labels.some((l: string) => _config.review.skipLabels.includes(l));
-    const isSkippedActor = _config.review.skipActors.includes(pr.author);
+    const hasSkipLabel = pr.labels.some((l: string) => config.review.skipLabels.includes(l));
+    const isSkippedActor = config.review.skipActors.includes(pr.author);
 
     if (hasSkipLabel && !isManualTrigger) {
       core.info(`PR has skip label — skipping description generation`);

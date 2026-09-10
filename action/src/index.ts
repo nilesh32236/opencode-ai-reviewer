@@ -67,7 +67,7 @@ async function run(): Promise<void> {
     // model inputs (parseInputs would otherwise fail a bare "llama3" before the
     // config default provider could ever apply). The configFile input is read
     // directly here; parseInputs re-reads it for the ActionInputs.configFile field.
-    const platform = (process.env.PLATFORM || 'github') as string as 'github' | 'gitlab';
+    const platform = (process.env.PLATFORM || 'github') as 'github' | 'gitlab';
     const loadedConfig = loadConfig(undefined, platform, core.getInput('config') || undefined);
 
     // Assign into the outer function-scoped `inputs` (declared above the try)
@@ -582,4 +582,4 @@ function withDownloadRemediation(message: string): string {
   return message;
 }
 
-run();
+void run();

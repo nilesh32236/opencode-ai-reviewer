@@ -129,15 +129,6 @@ export async function runPost(
     }
   }
 
-  const verdict = core.getInput('verdict');
-  if (prNumber) {
-    if (verdict === 'true') {
-      core.info('PR is approved — no annotations needed');
-    } else {
-      core.warning('PR has unresolved issues — check review output');
-    }
-  }
-
   // Post telemetry & metrics summary
   try {
     const learningEnabled = core.getInput('learning_enabled') !== 'false';
