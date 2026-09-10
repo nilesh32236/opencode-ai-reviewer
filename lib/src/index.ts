@@ -17,6 +17,8 @@ export {
   isVersionCompatible,
   setOpenCodeRunMode,
   setLLMProviderConfig,
+  setDualEmitSubagentPermissions,
+  resolveDualEmitSubagentPermissions,
   buildLocalOpenCodeConfig,
   buildLLMProviderMap,
   MINIMUM_OPENCODE_VERSION,
