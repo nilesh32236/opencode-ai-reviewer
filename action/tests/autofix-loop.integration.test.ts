@@ -512,6 +512,12 @@ describe('runFixIssue', () => {
       if (cmd === 'git' && args.includes('log')) {
         return { exitCode: 0, stdout: botEmail, stderr: '' };
       }
+      if (cmd === 'git' && args.includes('rev-parse')) {
+        return { exitCode: 0, stdout: 'fresh-default-sha', stderr: '' };
+      }
+      if (cmd === 'git' && args.includes('merge-base')) {
+        return { exitCode: 0, stdout: 'fresh-default-sha', stderr: '' };
+      }
       return { exitCode: 0, stdout: '', stderr: '' };
     });
 
