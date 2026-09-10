@@ -732,6 +732,10 @@ export class GitLabAdapter implements PlatformAdapter {
     result: ReviewResult,
     postInlineComments = true,
     suppressLowConfidence?: boolean,
+    options?: {
+      showFunctionScores?: boolean;
+      functionScores?: import('./function-scores.js').FunctionScoreInput[];
+    },
   ): Promise<ReviewPostResult> {
     const workingResult = suppressLowConfidence
       ? {
@@ -753,7 +757,7 @@ export class GitLabAdapter implements PlatformAdapter {
           (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
         )
       : workingResult.issues;
-    const body = buildReviewBody({ ...workingResult, issues: issuesForBody });
+    const body = buildReviewBody({ ...workingResult, issues: issuesForBody }, options);
 
     const commentIds: Array<{
       file: string;

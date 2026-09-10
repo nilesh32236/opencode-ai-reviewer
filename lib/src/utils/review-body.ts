@@ -1,5 +1,20 @@
 import type { ReviewIssue, ReviewResult, Severity, TokenUsage } from '../types/index.js';
+import {
+  type FunctionScore,
+  type FunctionScoreInput,
+  buildFunctionScoreTable,
+  computeFunctionScores,
+} from './function-scores.js';
+import { Logger } from './logger.js';
 import { escapeInlineCode, sanitizeMarkdown } from './markdown.js';
+
+/** Optional rendering options for {@link buildReviewBody}. */
+export interface ReviewBodyOptions {
+  /** When true, append the deterministic per-function score table. */
+  showFunctionScores?: boolean;
+  /** Changed-function inputs used to compute the score table. */
+  functionScores?: Array<FunctionScoreInput | FunctionScore>;
+}
 
 /**
  * Compute a 0-5 merge-readiness score from a review result, modeled on
@@ -154,9 +169,10 @@ export function formatIssueBullet(issue: ReviewIssue): string {
 /**
  * Build a markdown review body from a ReviewResult.
  * @param result - Review result to render.
+ * @param options - Optional display flags (e.g. deterministic function scores).
  * @returns Formatted markdown string.
  */
-export function buildReviewBody(result: ReviewResult): string {
+export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOptions): string {
   const lines: string[] = [];
 
   if (result.failedBatches !== undefined && result.failedBatches > 0) {
@@ -249,6 +265,29 @@ export function buildReviewBody(result: ReviewResult): string {
   // via the dedicated post-step comment (action/src/post.ts), which is gated on
   // the saved state and is verbosity-aware. Rendering it here too would show
   // the same totals twice on the same PR.
+
+  if (options?.showFunctionScores === true) {
+    try {
+      const inputs = options.functionScores ?? [];
+      const table =
+        inputs.length === 0
+          ? ''
+          : buildFunctionScoreTable(
+              inputs.every((s) => typeof (s as FunctionScore).score === 'number')
+                ? (inputs as FunctionScore[])
+                : computeFunctionScores(inputs as FunctionScoreInput[]),
+            );
+      if (table) {
+        lines.push('');
+        lines.push(table);
+      }
+    } catch (error) {
+      // Fail-open: symbol extraction or scoring must never break the review.
+      new Logger('review-body').info(
+        `Omitting function score table: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
 
   return lines.join('\n');
 }

@@ -239,6 +239,7 @@ async function run(): Promise<void> {
           ? inputs.enableTestGapDetection
           : (loadedConfig?.review?.enableTestGapDetection ?? inputs.enableTestGapDetection),
         includePreExisting: loadedConfig?.review?.includePreExisting ?? inputs.includePreExisting,
+        showFunctionScores: loadedConfig?.review?.showFunctionScores ?? false,
         suggestTitleAndLabels:
           loadedConfig?.review?.suggestTitleAndLabels ??
           DEFAULT_CONFIG.review.suggestTitleAndLabels,
