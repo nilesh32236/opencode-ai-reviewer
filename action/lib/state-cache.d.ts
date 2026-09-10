@@ -1,4 +1,16 @@
 /**
+ * Sanitize a branch ref for embedding in a cache key. Branches are
+ * PR-author-controlled and may contain slashes, dots, colons, spaces, or
+ * "../" segments that cause collisions or poisoning across refs. Invalid
+ * characters are replaced, the slug is truncated, and a short content hash
+ * is appended whenever the slug was transformed so distinct branches never
+ * collapse to the same key.
+ *
+ * @param branch - Raw branch ref.
+ * @returns A safe, bounded slug with a disambiguating hash suffix when needed.
+ */
+export declare function sanitizeBranchForCacheKey(branch: string): string;
+/**
  * Build a primary cache key for restore. Combines the prefix with the
  * repository NWO and branch ref so state cached for one branch is never
  * restored onto another. Falls back to the GitHub Actions context when the

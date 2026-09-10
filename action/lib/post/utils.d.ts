@@ -6,6 +6,8 @@
 export declare const sanitize: (message: string) => string;
 /**
  * Resolves the PR number from the `pr-number` input or the GitHub event context.
+ * Rejects non-integer, zero, negative, and excessively large values so they
+ * never reach the issues/pulls APIs (which would leak internal errors).
  * @returns The PR number, or `null` when no PR number can be determined.
  */
 export declare function resolvePrNumber(): Promise<number | null>;

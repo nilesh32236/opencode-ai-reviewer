@@ -11,6 +11,7 @@ import type {
   SummaryFinding,
   VerdictFinding,
 } from './types/index.js';
+import { sanitizeMarkdown } from './utils/markdown.js';
 import { formatConfidenceLabel, getSeverityBadge } from './utils/review-body.js';
 
 const VALID_TYPES: FindingType[] = ['summary', 'verdict', 'strength', 'issue'];
@@ -544,11 +545,11 @@ export function buildInlineComments(
     .map((issue) => {
       const builder = new StringBuilder();
       builder.append(
-        `${getSeverityBadge(issue.severity)} **${issue.severity.toUpperCase()}**: ${issue.message}${formatConfidenceLabel(issue.confidence)}`,
+        `${getSeverityBadge(issue.severity)} **${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}${formatConfidenceLabel(issue.confidence)}`,
       );
 
       if (issue.suggestion) {
-        builder.append(`\n\n> \ud83d\udca1 **How to fix:** ${issue.suggestion}`);
+        builder.append(`\n\n> \ud83d\udca1 **How to fix:** ${sanitizeMarkdown(issue.suggestion)}`);
       }
       if (issue.suggestionCode) {
         builder.append(`\n\n\`\`\`suggestion\n${issue.suggestionCode.trim()}\n\`\`\``);

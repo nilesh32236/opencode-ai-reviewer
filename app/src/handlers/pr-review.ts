@@ -13,6 +13,7 @@ import {
   ReviewEngine,
   postSuggestionComment,
   sanitizeErrorMessage,
+  sanitizeMarkdown,
   sendNotification,
   shouldFailOnSeverity,
 } from '@opencode-pr-agent/lib';
@@ -263,7 +264,7 @@ export async function handlePRReview(
                     const posted = await gh.postInlineComment(prNumber, pr.headSha, {
                       path: issue.file,
                       line: issue.line,
-                      body: `**${issue.severity.toUpperCase()}**: ${issue.message}`,
+                      body: `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}`,
                     });
                     if (posted) {
                       streamedIssueKeys.add(key);

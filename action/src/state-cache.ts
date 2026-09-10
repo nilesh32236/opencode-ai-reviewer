@@ -8,6 +8,29 @@ import { CircuitBreaker, Logger, withRetry } from '@opencode-pr-agent/lib';
 import { sanitize } from './utils.js';
 
 /**
+ * Maximum cache key length (GitHub Actions caps keys at 512 characters).
+ */
+const MAX_CACHE_KEY_LENGTH = 512;
+
+/**
+ * Sanitize a branch ref for embedding in a cache key. Branches are
+ * PR-author-controlled and may contain slashes, dots, colons, spaces, or
+ * "../" segments that cause collisions or poisoning across refs. Invalid
+ * characters are replaced, the slug is truncated, and a short content hash
+ * is appended whenever the slug was transformed so distinct branches never
+ * collapse to the same key.
+ *
+ * @param branch - Raw branch ref.
+ * @returns A safe, bounded slug with a disambiguating hash suffix when needed.
+ */
+export function sanitizeBranchForCacheKey(branch: string): string {
+  const slug = branch.replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 80);
+  if (slug === branch) return slug;
+  const hash = createHash('sha256').update(branch).digest('hex').slice(0, 12);
+  return `${slug}-${hash}`;
+}
+
+/**
  * Build a primary cache key for restore. Combines the prefix with the
  * repository NWO and branch ref so state cached for one branch is never
  * restored onto another. Falls back to the GitHub Actions context when the
@@ -21,7 +44,8 @@ import { sanitize } from './utils.js';
 export function buildCacheKey(prefix: string, repo?: string, branch?: string): string {
   const repoNwo = repo || `${github.context.repo.owner}/${github.context.repo.repo}`;
   const branchRef = branch || github.context.ref.replace('refs/heads/', '');
-  return `${prefix}-${repoNwo}-${branchRef}`;
+  const key = `${prefix}-${repoNwo}-${sanitizeBranchForCacheKey(branchRef)}`;
+  return key.slice(0, MAX_CACHE_KEY_LENGTH);
 }
 
 /**

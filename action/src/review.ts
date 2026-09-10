@@ -6,6 +6,7 @@ import {
   Logger,
   countAtOrAboveSeverity,
   postSuggestionComment,
+  sanitizeMarkdown,
   sendNotification,
   shouldFailOnSeverity,
 } from '@opencode-pr-agent/lib';
@@ -132,6 +133,9 @@ export async function runReview(
       ? async (batchIndex, totalBatches, batchResult) => {
           for (const issue of batchResult.issues) {
             if (issue.inline && issue.file && issue.line) {
+              // Guard the inline-comment API against model-generated garbage:
+              // only positive integer lines within a sane range are posted.
+              if (!Number.isInteger(issue.line) || issue.line < 1) continue;
               const key = streamedFindingKey(issue.file, issue.line, issue.message);
               // Never post the same finding twice across batches (distinct
               // findings on one line have distinct keys and stay independent),
@@ -142,7 +146,7 @@ export async function runReview(
               const posted = await gh.postInlineComment(prNumber, pr.headSha, {
                 path: issue.file,
                 line: issue.line,
-                body: `**${issue.severity.toUpperCase()}**: ${issue.message}`,
+                body: `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}`,
               });
               if (posted) {
                 streamedIssueKeys.add(key);

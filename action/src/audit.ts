@@ -6,6 +6,8 @@ import {
   Logger,
   type PlatformAdapter,
   type ReviewEngine,
+  escapeInlineCode,
+  sanitizeMarkdown,
 } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { sanitize } from './utils.js';
@@ -284,15 +286,19 @@ function buildAuditIssueBody(
   // `category` is the canonical safe slug (see normalizeAuditCategory), matching
   // the label, title prefix, and update marker so the public body header never
   // diverges from — or interpolates raw untrusted text into — the issue.
+  // All remaining LLM-generated fields are markdown-sanitized below, and the
+  // caller-supplied target directory is inline-code-escaped, so a crafted
+  // value cannot break out of the code span or inject exfiltration markup
+  // into an issue that auto-triggers /fix workflows.
   const lines: string[] = [
     '<!-- audit-issue -->',
     '',
     `## Audit: ${category}`,
     '',
-    `**Target directory:** \`${targetDir}\``,
+    `**Target directory:** \`${escapeInlineCode(targetDir)}\``,
     `**Results:** ${result.stats.critical} critical, ${result.stats.important} important, ${result.stats.minor} minor`,
     '',
-    `**Summary:** ${result.summary}`,
+    `**Summary:** ${sanitizeMarkdown(result.summary)}`,
     '',
     '### Findings',
     '',
@@ -300,10 +306,10 @@ function buildAuditIssueBody(
 
   for (const issue of result.issues) {
     lines.push(
-      `- **${issue.severity.toUpperCase()}** \`${issue.file}:${issue.line}\` — ${issue.message}`,
+      `- **${issue.severity.toUpperCase()}** \`${escapeInlineCode(`${issue.file}:${issue.line}`)}\` — ${sanitizeMarkdown(issue.message)}`,
     );
     if (issue.suggestion) {
-      lines.push(`  - *Fix:* ${issue.suggestion}`);
+      lines.push(`  - *Fix:* ${sanitizeMarkdown(issue.suggestion)}`);
     }
   }
 

@@ -9,7 +9,13 @@
  * - Slack tokens (xoxb-, xoxp-, xoxa-, xoxs-, xoxr-)
  * - x-access-token credentials in URLs
  * - Environment variable assignments for known API keys
+ * - Google/Gemini API keys (AIza...)
+ * - AWS access key IDs (AKIA...) and secret access keys
+ * - Azure / OpenCode / generic LLM API keys and endpoints
  *
+ * Matching is intentionally case-insensitive for the named `*_API_KEY`
+ * assignment form so lowercase variants (e.g. `azure_api_key`,
+ * `gemini_api_key`, `llm_api_key`) are redacted as well.
  * Use this function whenever logging or displaying untrusted input,
  * error messages, or configuration values that may contain credentials.
  *
@@ -25,7 +31,16 @@ export function sanitizeString(input: string): string {
     .replace(/(xox[bpras]-\d+-)[a-zA-Z0-9-]+/g, '$1[REDACTED]')
     .replace(/x-access-token:[^@]+@/g, 'x-access-token:[REDACTED]@')
     .replace(
-      /(OPENAI_API_KEY|ANTHROPIC_API_KEY|GEMINI_API_KEY|GITHUB_TOKEN)[=":]+[^&\s'"]+/gi,
+      /(OPENAI_API_KEY|ANTHROPIC_API_KEY|GEMINI_API_KEY|GITHUB_TOKEN|AZURE_OPENAI_KEY|AZURE_API_KEY|OPENCODE_API_KEY|LLM_API_KEY|OLLAMA_API_KEY|AWS_SECRET_ACCESS_KEY)[=":]+[^&\s'"]+/gi,
       '$1=[REDACTED]',
-    );
+    )
+    .replace(/AIza[0-9A-Za-z_-]{35}/g, '[REDACTED_GEMINI_KEY]')
+    .replace(/AKIA[0-9A-Z]{16}/g, '[REDACTED_AWS_ACCESS_KEY]')
+    .replace(/(azure[_-]?openai[_-]?key|azure[_-]?api[_-]?key)[=":\s]+[^&\s'"]+/gi, '$1=[REDACTED]')
+    .replace(/(opencode[_-]?api[_-]?key)[=":\s]+[^&\s'"]+/gi, '$1=[REDACTED]')
+    .replace(/(ollama[_-]?api[_-]?key)[=":\s]+[^&\s'"]+/gi, '$1=[REDACTED]')
+    .replace(/(aws[_-]?secret[_-]?access[_-]?key)[=":\s]+[^&\s'"]+/gi, '$1=[REDACTED]')
+    .replace(/(api[_-]?key)[=":\s]+[^&\s'"]+/gi, '$1=[REDACTED]')
+    .replace(/(x-api-key:\s*)[^\s'"]+/gi, '$1[REDACTED]')
+    .replace(/(api-key:\s*)[^\s'"]+/gi, '$1[REDACTED]');
 }
