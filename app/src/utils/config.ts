@@ -179,6 +179,9 @@ export function buildConfig(): AgentConfig {
       ...(process.env.REVIEW_TEST_GAP_DETECTION !== undefined
         ? { enableTestGapDetection: process.env.REVIEW_TEST_GAP_DETECTION === 'true' }
         : {}),
+      ...(process.env.REVIEW_SHOW_FUNCTION_SCORES !== undefined
+        ? { showFunctionScores: process.env.REVIEW_SHOW_FUNCTION_SCORES === 'true' }
+        : {}),
       ...(process.env.ENABLE_CODEBASE_INDEX !== undefined
         ? { enableCodebaseIndex: process.env.ENABLE_CODEBASE_INDEX !== 'false' }
         : {}),
@@ -310,8 +313,9 @@ export function buildConfig(): AgentConfig {
  * vars + defaults (no per-repo context at startup), so per-repo tuning
  * is applied here at the point where a repo working directory exists.
  *
- * Only the `review.sensitivity` / `review.categories` / `review.enableCodebaseIndex`
+ * Only the `review.sensitivity` / `review.categories` / `review.pathInstructions` / `review.enableCodebaseIndex`
  * / `review.enableMetaVerification` / `review.enableTestGapDetection` /
+ * `review.showFunctionScores` /
  * `review.suppressLowConfidence` / `review.failOnSeverity` /
  * `review.suggestTitleAndLabels` fields, the `notifications`, `secrets`, `llm`,
  * and `sca` sections are merged
@@ -341,11 +345,15 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const suggestTitleAndLabels = repoConfig?.review?.suggestTitleAndLabels;
   const streamComments = repoConfig?.review?.streamComments;
   const streamBatchSize = repoConfig?.review?.streamBatchSize;
+  const pathInstructions = repoConfig?.review?.pathInstructions;
+  const showFunctionScores = repoConfig?.review?.showFunctionScores;
   const notifications = repoConfig?.notifications;
   const secrets = repoConfig?.secrets;
   const llm = repoConfig?.llm;
   const sca = repoConfig?.sca;
   const changelog = repoConfig?.changelog;
+  const projectAutoLoadAgentsMd = repoConfig?.project?.autoLoadAgentsMd;
+  const projectAttributionFooter = repoConfig?.project?.attributionFooter;
   if (
     !sensitivity &&
     !categories &&
@@ -357,11 +365,15 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
     suggestTitleAndLabels === undefined &&
     streamComments === undefined &&
     streamBatchSize === undefined &&
+    !pathInstructions &&
+    showFunctionScores === undefined &&
     !notifications &&
     !secrets &&
     !llm &&
     !sca &&
-    !changelog
+    !changelog &&
+    projectAutoLoadAgentsMd === undefined &&
+    projectAttributionFooter === undefined
   ) {
     return baseConfig;
   }
@@ -384,6 +396,15 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       ...(suggestTitleAndLabels !== undefined && { suggestTitleAndLabels }),
       ...(streamComments !== undefined && { streamComments }),
       ...(streamBatchSize !== undefined && { streamBatchSize }),
+      ...(pathInstructions && {
+        pathInstructions: Object.fromEntries(
+          Object.entries({
+            ...baseConfig.review.pathInstructions,
+            ...pathInstructions,
+          }).slice(0, 10),
+        ),
+      }),
+      ...(showFunctionScores !== undefined && { showFunctionScores }),
     },
     ...(notifications && {
       notifications: {
@@ -430,6 +451,19 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       changelog: {
         ...baseConfig.changelog,
         ...changelog,
+      },
+    }),
+    // Opt-in head-SHA convention auto-load (`project.autoLoadAgentsMd`) and its
+    // attribution footer (`project.attributionFooter`) via `.opencode-reviewer.yml`.
+    ...((projectAutoLoadAgentsMd !== undefined || projectAttributionFooter !== undefined) && {
+      projectContext: {
+        ...baseConfig.projectContext,
+        ...(projectAutoLoadAgentsMd !== undefined && {
+          autoLoadAgentsMd: projectAutoLoadAgentsMd,
+        }),
+        ...(projectAttributionFooter !== undefined && {
+          attributionFooter: projectAttributionFooter,
+        }),
       },
     }),
   };

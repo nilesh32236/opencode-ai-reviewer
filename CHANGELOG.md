@@ -4,6 +4,41 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.13.3] — 2026-09-10
+
+
+### Fixed
+
+- address issue #451 (#461) (#451
+#461)
+
+### Changed
+
+- docs(opencode): add missing JSDoc @param/@returns for mapV1PermissionKeyToV2Action
+- fix(autofix): emit plain-text 'Fixes #N' so autofix PRs auto-close their issue
+
+[v1.13.3]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.2...v1.13.3
+
+## [v1.13.2] — 2026-09-10
+
+
+### Fixed
+
+- address issue #453 (#458) (#453
+#458)
+
+### Changed
+
+- fix(lib): add safe getErrorStatus helper and adopt it in adapters/action/app
+- [Autofix] [Audit:api-endpoints] 1 critical, 9 important, 0 minor (#445) (#445)
+- fix(ci): set up pnpm before cached setup-node in upstream-monitor
+- ci: include doc:check in autofix verification gates
+- chore(ci): remove EC2 deploy workflows (Probot app retired)
+- fix(ci): harden script injection, fix clean-merge leak, improve EC2 host-key diagnostics
+- fix(logging): add OPENCODE_LOG_BACKGROUND override for light terminals; docs(review): complete JSDoc params
+
+[v1.13.2]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.1...v1.13.2
+
 ## [v1.13.1] — 2026-09-10
 
 

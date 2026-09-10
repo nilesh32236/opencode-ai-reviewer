@@ -25,6 +25,7 @@ import {
   buildAutofixPRBody,
   buildAutofixStatusBody,
   buildFixBody,
+  buildFunctionScoreOptions,
   buildReadyBody,
   configureGit,
   parseRunChecksCommands,
@@ -91,14 +92,10 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
 
   const gh: PlatformAdapter =
     config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
-  const engine = new ReviewEngine(
-    mergeRepoConfig(config, tempDir),
-    gh,
-    undefined,
-    eventBus,
-    repo,
-    correlationId,
-  );
+  // Resolve the merged config once so the engine and the review-posting display
+  // flags (inline comments, function scores) observe the same per-repo values.
+  const effectiveConfig = mergeRepoConfig(config, tempDir);
+  const engine = new ReviewEngine(effectiveConfig, gh, undefined, eventBus, repo, correlationId);
   const history: IterationRecord[] = [];
   const previousFindings: PreviousFindingIteration[] = [];
   let approved = false;
@@ -245,7 +242,9 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           prNumber,
           pr.headSha,
           result,
-          config.review.inline,
+          effectiveConfig.review.inline,
+          undefined,
+          buildFunctionScoreOptions(effectiveConfig.review.showFunctionScores, pr.changedFiles),
         );
         if (reviewResult.commentIds) {
           currentCommentIds = reviewResult.commentIds;

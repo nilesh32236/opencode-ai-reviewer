@@ -20,9 +20,12 @@ import {
   TelemetrySubscriber,
   configureGit,
   getDefaultMCPServers,
+  getErrorStatus,
   loadConfig,
   mergeConfigWithInputs,
+  parseReviewEffort,
   registerEventSubscribers,
+  resolveReviewEffort,
   setupOpenCode,
   setupWorkspaceDependencies,
 } from '@opencode-pr-agent/lib';
@@ -190,6 +193,19 @@ async function run(): Promise<void> {
 
     const mergedDefaults = mergeConfigWithInputs(loadedConfig, {});
 
+    // Single `review.effort` / `review_effort` preset knob: action input wins
+    // over the config file; explicit per-setting values always override the
+    // preset; `balanced` and unset resolve to current behavior (identity).
+    // An explicitly-set-but-invalid input blocks the config-file fallback so
+    // invalid values fall back to defaults (fail-open) per the README.
+    const effectiveEffort = inputs.reviewEffortExplicit
+      ? parseReviewEffort(inputs.reviewEffort)
+      : parseReviewEffort(loadedConfig?.review?.effort);
+    const effortPreset = resolveReviewEffort(effectiveEffort);
+    if (effortPreset && effectiveEffort) {
+      core.info(`Using review effort preset: ${effectiveEffort}`);
+    }
+
     const config: AgentConfig = {
       ...DEFAULT_CONFIG,
       reviewModel: inputs.reviewModel,
@@ -203,8 +219,14 @@ async function run(): Promise<void> {
       analysisModel: inputs.analysisModel,
       docsModel: inputs.docsModel,
       describeModel: inputs.describeModel,
-      batchSize: inputs.maxFilesPerBatch,
-      maxLinesPerFile: inputs.maxLinesPerFile,
+      batchSize:
+        effortPreset && !inputs.maxFilesPerBatchExplicit
+          ? effortPreset.batchSize
+          : inputs.maxFilesPerBatch,
+      maxLinesPerFile:
+        effortPreset && !inputs.maxLinesPerFileExplicit
+          ? effortPreset.maxLinesPerFile
+          : inputs.maxLinesPerFile,
       maxIterations: loadedConfig?.fix?.maxIterations ?? inputs.maxFixIterations,
       timeoutMinutes: inputs.timeoutMinutes,
       enableMCP: inputs.enableMCP,
@@ -214,6 +236,10 @@ async function run(): Promise<void> {
         typecheckCommands: loadedConfig?.fix?.runChecks || [],
         lintCommands: [],
         customRules: loadedConfig?.review?.customRules?.join('\n') || undefined,
+        autoLoadAgentsMd: loadedConfig?.project?.autoLoadAgentsMd ?? false,
+        ...(loadedConfig?.project?.attributionFooter !== undefined && {
+          attributionFooter: loadedConfig.project.attributionFooter,
+        }),
       },
       review: {
         ...DEFAULT_CONFIG.review,
@@ -232,13 +258,18 @@ async function run(): Promise<void> {
           suppressLowConfidence: loadedConfig.review.suppressLowConfidence,
         }),
         enableMetaVerification:
-          loadedConfig?.review?.enableMetaVerification ?? inputs.enableMetaVerification,
+          effortPreset &&
+          !inputs.enableMetaVerificationExplicit &&
+          loadedConfig?.review?.enableMetaVerification === undefined
+            ? effortPreset.enableMetaVerification
+            : (loadedConfig?.review?.enableMetaVerification ?? inputs.enableMetaVerification),
         // Explicit workflow inputs are authoritative; only when the input is
         // omitted does the repo config value (or the opt-in default) apply.
         enableTestGapDetection: inputs.enableTestGapDetectionExplicit
           ? inputs.enableTestGapDetection
           : (loadedConfig?.review?.enableTestGapDetection ?? inputs.enableTestGapDetection),
         includePreExisting: loadedConfig?.review?.includePreExisting ?? inputs.includePreExisting,
+        showFunctionScores: loadedConfig?.review?.showFunctionScores ?? false,
         suggestTitleAndLabels:
           loadedConfig?.review?.suggestTitleAndLabels ??
           DEFAULT_CONFIG.review.suggestTitleAndLabels,
@@ -303,6 +334,10 @@ async function run(): Promise<void> {
             DEFAULT_CONFIG.review.sensitivity?.ignorePatterns,
         },
         categories: loadedConfig?.review?.categories ?? DEFAULT_CONFIG.review.categories,
+        ...(loadedConfig?.review?.pathInstructions &&
+          Object.keys(loadedConfig.review.pathInstructions).length > 0 && {
+            pathInstructions: loadedConfig.review.pathInstructions,
+          }),
       },
       audit: {
         ...DEFAULT_CONFIG.audit,
@@ -363,6 +398,11 @@ async function run(): Promise<void> {
           : (loadedConfig?.describe?.publishAsComment ??
             DEFAULT_CONFIG.describe.publishAsComment ??
             true),
+        enableDiagram:
+          inputs.enableDiagram ??
+          loadedConfig?.describe?.enableDiagram ??
+          DEFAULT_CONFIG.describe.enableDiagram ??
+          false,
       },
       learning: loadedConfig?.learning
         ? {
@@ -546,10 +586,7 @@ async function run(): Promise<void> {
                 try {
                   isExplicitMr = await gh.isMR(explicitNum);
                 } catch (err) {
-                  const status =
-                    typeof err === 'object' && err !== null
-                      ? (err as { status?: number }).status
-                      : undefined;
+                  const status = getErrorStatus(err);
                   const suffix = status !== undefined ? ` (status ${status})` : '';
                   core.setFailed(
                     sanitize(

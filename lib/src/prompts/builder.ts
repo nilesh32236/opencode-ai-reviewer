@@ -1,6 +1,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as core from '@actions/core';
+import { minimatch } from 'minimatch';
+import {
+  MAX_PATH_INSTRUCTIONS_ENTRIES,
+  MAX_PATH_INSTRUCTION_BYTES,
+  isValidPathGlob,
+} from '../config.js';
 import type {
   DocStyle,
   PreviousFindingIteration,
@@ -22,6 +28,13 @@ const PROMPT_TRUNCATION_MARKER = '... [prompt truncated at 200KB cap]';
 // below, which would drop those framing instructions first.
 const MAX_CODEBASE_INDEX_BYTES = 96 * 1024;
 const logger = new Logger('prompt-builder');
+
+/** Max `review.pathInstructions` entries honored per prompt (fail-open).
+ * Canonical caps live in `../config.js`; these aliases preserve the existing
+ * public import path. */
+export const MAX_PATH_INSTRUCTIONS = MAX_PATH_INSTRUCTIONS_ENTRIES;
+/** Max UTF-8 bytes honored per matched path instruction (alias of the config cap). */
+export { MAX_PATH_INSTRUCTION_BYTES };
 
 /**
  * Truncate a string to a UTF-8 byte budget on a code-point boundary so
@@ -92,6 +105,7 @@ export interface PromptBuilderInputs {
   reviewPromptExtra?: string;
   describePromptFile?: string;
   describePromptExtra?: string;
+  enableDiagram?: boolean;
   maxFilesPerBatch?: number;
   projectContext?: string;
   runChecksAfterFix?: string;
@@ -131,6 +145,88 @@ export interface ReviewPromptOptions {
   repoRulesContext?: string;
   /** Compact `git log --oneline base..head` commit list (author intent). */
   commitMessages?: string;
+  /** Repo-relative paths of the files covered by this prompt batch. */
+  filePaths?: string[];
+  /** Opt-in glob → extra-instructions map (`review.pathInstructions`). */
+  pathInstructions?: Record<string, string>;
+}
+
+/**
+ * Match reviewed file paths against a `review.pathInstructions` glob map.
+ * Fail-open: returns `[]` when the map is empty/unset, no glob matches, or
+ * entries are invalid. Invalid globs are skipped with a warning and never throw.
+ * @param map - Glob pattern to extra-instructions map.
+ * @param filePaths - Repo-relative file paths covered by this prompt.
+ * @returns Matched `{ glob, instruction }` pairs, at most MAX_PATH_INSTRUCTIONS.
+ */
+export function getMatchedPathInstructions(
+  map: Record<string, string> | undefined,
+  filePaths: string[] | undefined,
+): Array<{ glob: string; instruction: string }> {
+  if (!map || !filePaths || filePaths.length === 0) return [];
+  const matched: Array<{ glob: string; instruction: string }> = [];
+  for (const [glob, instruction] of Object.entries(map)) {
+    if (matched.length >= MAX_PATH_INSTRUCTIONS_ENTRIES) break;
+    // Object.entries keys are always strings; only the empty/invalid check applies.
+    if (glob.length === 0 || !isValidPathGlob(glob)) {
+      logger.warn(`Ignoring pathInstructions entry: invalid glob "${glob}"`);
+      continue;
+    }
+    if (typeof instruction !== 'string' || instruction.length === 0) {
+      logger.warn(`Ignoring pathInstructions entry for glob "${glob}": empty or not a string`);
+      continue;
+    }
+    let isMatch = false;
+    try {
+      isMatch = filePaths.some((f) => minimatch(f, glob, { dot: true }));
+    } catch {
+      logger.warn(`Ignoring pathInstructions entry: invalid glob "${glob}"`);
+      continue;
+    }
+    if (isMatch) matched.push({ glob, instruction });
+  }
+  return matched;
+}
+
+/**
+ * Render matched path instructions as a scoped prompt section. Each
+ * instruction is sanitized and truncated to MAX_PATH_INSTRUCTION_BYTES.
+ * @param matched - Output of getMatchedPathInstructions().
+ * @returns The markdown section, or an empty string when nothing matched.
+ */
+export function buildPathInstructionsSection(
+  matched: Array<{ glob: string; instruction: string }>,
+): string {
+  if (matched.length === 0) return '';
+  const lines: string[] = ['## Path-Specific Review Instructions', ''];
+  lines.push(
+    'The following additional instructions apply only to files matching the given glob patterns. Apply each rule to matching files alongside the general review rules:',
+  );
+  lines.push('');
+  for (const { glob, instruction } of matched) {
+    // Path instructions are trusted repo-owner instructions (like
+    // repoRulesContext/reviewPromptExtra): strip control chars and truncate,
+    // but do NOT wrap as untrusted data (sanitizePromptInput would neuter them
+    // by instructing the model to never follow them).
+    const safe = truncateUtf8Bytes(
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional strip of C0 controls/DEL from trusted repo-owner instructions
+      instruction.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, ''),
+      MAX_PATH_INSTRUCTION_BYTES,
+    );
+    // The glob is repo-controlled: keep the header single-line by stripping
+    // backticks/newlines that could break markdown structure. The glob is a
+    // label (not instructions), so a plain strip — not the multi-line
+    // untrusted-context wrapper — is the right sanitization here.
+    const safeGlob = glob
+      .replace(/[`\r\n\u2028\u2029]+/g, ' ')
+      .trim()
+      .slice(0, 200);
+    lines.push(`### Glob \`${safeGlob}\``);
+    lines.push('');
+    lines.push(safe);
+    lines.push('');
+  }
+  return lines.join('\n');
 }
 
 /**
@@ -167,6 +263,9 @@ export function buildReviewPrompt(
   const testGapContext = options.testGapContext;
   const repoRulesContext = options.repoRulesContext;
   const commitMessages = options.commitMessages;
+  const pathInstructionsSection = buildPathInstructionsSection(
+    getMatchedPathInstructions(options.pathInstructions, options.filePaths),
+  );
 
   if (inputs.reviewPromptFile) {
     const customPrompt = loadPromptFile(inputs.reviewPromptFile);
@@ -201,6 +300,9 @@ export function buildReviewPrompt(
         sections.push('\n## Additional Instructions');
         sections.push('');
         sections.push(inputs.reviewPromptExtra);
+      }
+      if (pathInstructionsSection) {
+        sections.push('\n' + pathInstructionsSection);
       }
       if (effectiveBudgetMode && effectiveBudgetMode !== 'full') {
         sections.push('\n' + buildBudgetBanner(effectiveBudgetMode, effectiveTotalDiffLines));
@@ -507,6 +609,10 @@ export function buildReviewPrompt(
     sections.push('\n## Additional Instructions');
     sections.push('');
     sections.push(inputs.reviewPromptExtra);
+  }
+
+  if (pathInstructionsSection) {
+    sections.push('\n' + pathInstructionsSection);
   }
 
   return capPromptLength(sections.join('\n'));
@@ -1387,7 +1493,7 @@ Read the PR diff and commit messages above and generate a structured PR descript
 3. **Breaking Changes**: Flag whether the PR introduces breaking changes. If yes, list each one with a short migration note; if no, state "None".
 4. **Suggested Labels**: Propose 2-5 concise GitHub labels that fit this PR (e.g. \`feature\`, \`bug\`, \`dependencies\`, \`tests\`).
 5. **Suggested Conventional-commit Title**: Propose a single conventional-commit title for this PR (e.g. \`feat: add describe mode for PR summaries\`).
-
+${inputs.enableDiagram === true ? '6. **Architecture Diagram**: Sketch a compact data-flow diagram of the changed components (at most 12 nodes) as a Mermaid `flowchart TD` block.\n' : ''}
 ## Output Format
 Write your response as a single markdown document directly to \`.opencode/describe-output.md\`.
 Use this structure:
@@ -1411,8 +1517,8 @@ Use this structure:
 
 ## Suggested Conventional-commit Title
 \`<type(scope): subject>\`
-\`\`\`
-
+${inputs.enableDiagram === true ? '\n## Diagram\n```mermaid\nflowchart TD\n    A[Component] --> B[Component]\n```\n' : ''}\`\`\`
+${inputs.enableDiagram === true ? '\nWhen writing the Diagram section, keep the flowchart to at most 12 nodes with simple alphanumeric node ids (e.g. A, B, C) and short labels. Use only `flowchart TD` syntax with `-->` edges.' : ''}
 Do NOT wrap in JSON. Be concise but thorough.`);
 
   if (inputs.describePromptExtra) {

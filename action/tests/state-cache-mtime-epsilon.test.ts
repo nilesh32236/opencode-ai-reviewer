@@ -137,4 +137,37 @@ describe('StateCacheManager mtime comparison (issue #188 regression)', () => {
     expect(keyFor('feature/../../evil branch:name')).not.toContain(':');
     expect(keyFor('a'.repeat(200)).length).toBeLessThanOrEqual(512);
   });
+
+  it('restores with the exact primary key only, never a repo-wide prefix', async () => {
+    const sha = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+    const manager = new StateCacheManager('state', {
+      stateDir: path.join(tempDir, 'fresh-state'),
+      repo: 'owner/repo',
+      branch: 'main',
+      sha,
+    });
+    await manager.restore();
+
+    expect(mockRestoreCache).toHaveBeenCalledTimes(1);
+    const [paths, primaryKey, restoreKeys] = mockRestoreCache.mock.calls[0] as [
+      string[],
+      string,
+      string[],
+    ];
+    expect(paths).toEqual([path.join(tempDir, 'fresh-state')]);
+    expect(primaryKey).toContain(sha);
+    // Exact-key-only restore: no bare `prefix-repo-` fallback that would let
+    // one ref restore another ref's cached state.
+    expect(restoreKeys).toEqual([primaryKey]);
+  });
+
+  it('isolates cache keys per commit SHA', () => {
+    const shaA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+    const shaB = 'ffffffffffffffffffffffffffffffffffffffff';
+    expect(buildCacheKey('state', 'owner/repo', 'main', shaA)).not.toBe(
+      buildCacheKey('state', 'owner/repo', 'main', shaB),
+    );
+    // Omitting the SHA keeps the stable branch-scoped key for existing callers.
+    expect(buildCacheKey('state', 'group/project', 'main')).toBe('state-group/project-main');
+  });
 });

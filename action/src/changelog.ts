@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from 'node:fs';
+import * as path from 'node:path';
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import type { AgentConfig, ChangelogConfig, PlatformAdapter } from '@opencode-pr-agent/lib';
@@ -103,7 +104,15 @@ export async function runChangelog(config: AgentConfig, gh: PlatformAdapter): Pr
       core.info(`Created branch ${branchName} from ${defaultBranch}`);
     }
 
-    const changelogPath = changelogConfig.filePath;
+    let changelogPath: string;
+    try {
+      changelogPath = resolveChangelogPath(changelogConfig.filePath);
+    } catch (err) {
+      core.setFailed(
+        sanitize(`Invalid changelog filePath: ${err instanceof Error ? err.message : err}`),
+      );
+      return;
+    }
     let existingContent: string | null = null;
     try {
       existingContent = readFileSync(changelogPath, 'utf-8');
@@ -163,6 +172,31 @@ export async function runChangelog(config: AgentConfig, gh: PlatformAdapter): Pr
       sanitize(`Changelog PR creation failed: ${err instanceof Error ? err.message : err}`),
     );
   }
+}
+
+/**
+ * Resolve a repo/PR-controlled changelog `filePath` to an absolute path
+ * confined to `GITHUB_WORKSPACE`. Rejects absolute paths and `..` escapes so
+ * a crafted `.opencode-reviewer.yml` cannot redirect the changelog write
+ * outside the workspace (e.g. `/etc/passwd`, `../../tmp/evil.md`).
+ * @param rawPath - Raw `changelog.filePath` config value.
+ * @returns The resolved absolute path inside the workspace.
+ * @throws {Error} When the path escapes the workspace or is empty.
+ */
+export function resolveChangelogPath(rawPath: string): string {
+  const trimmed = (rawPath ?? '').trim();
+  if (!trimmed) {
+    throw new Error('changelog filePath must not be empty');
+  }
+  const workspace = path.resolve(process.env.GITHUB_WORKSPACE || process.cwd());
+  const resolved = path.resolve(workspace, trimmed);
+  if (resolved !== workspace && !resolved.startsWith(`${workspace}${path.sep}`)) {
+    throw new Error(`changelog filePath must point inside GITHUB_WORKSPACE: ${trimmed}`);
+  }
+  if (resolved === workspace) {
+    throw new Error(`changelog filePath must point to a file, not the workspace root: ${trimmed}`);
+  }
+  return resolved;
 }
 
 /**

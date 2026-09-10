@@ -1,5 +1,23 @@
 import type { ReviewIssue, ReviewResult, Severity, TokenUsage } from '../types/index.js';
+import {
+  type FunctionScore,
+  type FunctionScoreInput,
+  buildFunctionScoreTable,
+} from './function-scores.js';
+import { Logger } from './logger.js';
 import { escapeInlineCode, sanitizeMarkdown } from './markdown.js';
+
+/** Optional rendering options for {@link buildReviewBody}. */
+export interface ReviewBodyOptions {
+  /** When true, append the deterministic per-function score table. */
+  showFunctionScores?: boolean;
+  /** Changed-function inputs used to compute the score table. */
+  functionScores?: Array<FunctionScoreInput | FunctionScore>;
+  /** Attribution footer for auto-loaded review conventions (e.g. AGENTS.md @
+   * head SHA). Appended after the issues section when non-empty. Falls back to
+   * `result.attributionFooter` when omitted. */
+  attributionFooter?: string;
+}
 
 /**
  * Compute a 0-5 merge-readiness score from a review result, modeled on
@@ -152,11 +170,37 @@ export function formatIssueBullet(issue: ReviewIssue): string {
 }
 
 /**
+ * @deprecated Use {@link ReviewBodyOptions} instead — retained as an alias for
+ * backward compatibility with callers written against the earlier name.
+ */
+export type BuildReviewBodyOptions = ReviewBodyOptions;
+
+/**
+ * Build the attribution footer for review conventions auto-loaded from the PR
+ * head SHA (AGENTS.md / copilot-instructions.md). Pure function, safe to unit
+ * test. Returns undefined when nothing was loaded so callers render no footer.
+ * @param headSha - Full head commit SHA the conventions were read at.
+ * @param sources - Convention filenames that were loaded (e.g. ['AGENTS.md']).
+ * @returns A one-line markdown footer, or undefined when sources is empty.
+ */
+export function buildAgentsMdAttributionFooter(
+  headSha: string,
+  sources: string[],
+): string | undefined {
+  if (!sources || sources.length === 0) return undefined;
+  const shortSha = sanitizeMarkdown(String(headSha || '').slice(0, 7) || 'unknown');
+  const names = sources.map((s) => `\`${escapeInlineCode(sanitizeMarkdown(s))}\``).join(', ');
+  return `*Review conventions auto-loaded from ${names} @ \`${shortSha}\`*`;
+}
+
+/**
  * Build a markdown review body from a ReviewResult.
  * @param result - Review result to render.
+ * @param options - Optional rendering options (attribution footer and/or
+ * deterministic function scores).
  * @returns Formatted markdown string.
  */
-export function buildReviewBody(result: ReviewResult): string {
+export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOptions): string {
   const lines: string[] = [];
 
   if (result.failedBatches !== undefined && result.failedBatches > 0) {
@@ -249,6 +293,29 @@ export function buildReviewBody(result: ReviewResult): string {
   // via the dedicated post-step comment (action/src/post.ts), which is gated on
   // the saved state and is verbosity-aware. Rendering it here too would show
   // the same totals twice on the same PR.
+  const footer = options?.attributionFooter ?? result.attributionFooter;
+  if (footer?.trim()) {
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+    lines.push(sanitizeMarkdown(footer));
+  }
+
+  if (options?.showFunctionScores === true) {
+    try {
+      const inputs: Array<FunctionScoreInput | FunctionScore> = options.functionScores ?? [];
+      const table = inputs.length === 0 ? '' : buildFunctionScoreTable(inputs);
+      if (table) {
+        lines.push('');
+        lines.push(table);
+      }
+    } catch (error) {
+      // Fail-open: symbol extraction or scoring must never break the review.
+      new Logger('review-body').info(
+        `Omitting function score table: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
 
   return lines.join('\n');
 }

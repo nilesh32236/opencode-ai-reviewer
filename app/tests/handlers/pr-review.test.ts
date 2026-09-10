@@ -305,15 +305,16 @@ describe('handlePRReview check run reporting', () => {
     // The inline post failed, so the finding must NOT be filtered out of the
     // final review body (it should be retried there), and no inline post attempt
     // was made that would leave it orphaned.
-    expect(mockPostReview).toHaveBeenCalledWith(
-      42,
-      'abc123',
+    expect(mockPostReview).toHaveBeenCalled();
+    const postReviewCall = mockPostReview.mock.calls.at(-1);
+    expect(postReviewCall?.[0]).toBe(42);
+    expect(postReviewCall?.[1]).toBe('abc123');
+    expect(postReviewCall?.[2]).toEqual(
       expect.objectContaining({
         issues: expect.arrayContaining([
           expect.objectContaining({ message: 'Streamed-then-failed finding' }),
         ]),
       }),
-      expect.anything(),
     );
   });
 

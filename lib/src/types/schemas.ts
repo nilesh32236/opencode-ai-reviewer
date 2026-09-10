@@ -114,6 +114,8 @@ export const ProjectContextConfigSchema = z.object({
   typecheckCommands: z.array(z.string()).default([]),
   lintCommands: z.array(z.string()).default([]),
   customRules: z.string().optional(),
+  autoLoadAgentsMd: z.boolean().default(false),
+  attributionFooter: z.boolean().optional(),
 });
 
 /** Zod schema validating token budget configuration. */
@@ -214,6 +216,7 @@ export const ReviewConfigSchema = z.object({
   enableReachability: z.boolean().optional().default(true),
   enableMetaVerification: z.boolean().optional().default(false),
   enableTestGapDetection: z.boolean().optional().default(false),
+  showFunctionScores: z.boolean().optional().default(false),
   suppressLowConfidence: z.boolean().optional().default(false),
   enableCodebaseIndex: z.boolean().optional().default(true),
   includePreExisting: z.boolean().optional().default(false),
@@ -222,10 +225,15 @@ export const ReviewConfigSchema = z.object({
   costTracking: CostTrackingConfigSchema.optional(),
   sensitivity: ReviewSensitivitySchema.optional(),
   categories: z.record(CategoryOverrideSchema).optional(),
+  pathInstructions: z.record(z.string()).optional(),
   failOnSeverity: z.enum(['off', 'critical', 'important', 'minor']).default('off'),
   suggestTitleAndLabels: z.boolean().optional().default(false),
   streamComments: z.boolean().optional().default(false),
   streamBatchSize: z.number().int().min(0).optional().default(0),
+  effort: z.preprocess(
+    (v) => (typeof v === 'string' ? v.trim().toLowerCase() : v),
+    z.enum(['lite', 'balanced']).optional().catch(undefined),
+  ),
 });
 
 /** Zod schema validating audit configuration. */
@@ -249,6 +257,7 @@ export const DescribeConfigSchema = z.object({
   model: z.string().regex(MODEL_STRING_REGEX, MODEL_STRING_ERROR).optional(),
   useMarkers: z.boolean().default(false),
   publishAsComment: z.boolean().default(true),
+  enableDiagram: z.boolean().default(false),
 });
 
 /** Zod schema validating the `/changelog` release-notes configuration. */
@@ -594,6 +603,7 @@ export const PromptConfigSchema = z.object({
       enableReachability: z.boolean().optional(),
       enableMetaVerification: z.boolean().optional(),
       enableTestGapDetection: z.boolean().optional(),
+      showFunctionScores: z.boolean().optional(),
       enableCodebaseIndex: z.boolean().optional(),
       includePreExisting: z.boolean().optional(),
       budget: z
@@ -606,10 +616,18 @@ export const PromptConfigSchema = z.object({
       costTracking: CostTrackingConfigSchema.optional(),
       sensitivity: ReviewSensitivitySchema.optional(),
       categories: z.record(CategoryOverrideSchema).optional(),
+      // Permissive by design (fail-open): entry caps (10 entries / 2 KB each) and
+      // glob validation live in sanitizePathInstructions (lib/src/config.ts) and
+      // getMatchedPathInstructions (lib/src/prompts/builder.ts).
+      pathInstructions: z.record(z.string()).optional(),
       failOnSeverity: z.enum(['off', 'critical', 'important', 'minor']).optional(),
       suggestTitleAndLabels: z.boolean().optional(),
       streamComments: z.boolean().optional(),
       streamBatchSize: z.number().int().min(0).optional(),
+      effort: z.preprocess(
+        (v) => (typeof v === 'string' ? v.trim().toLowerCase() : v),
+        z.enum(['lite', 'balanced']).optional().catch(undefined),
+      ),
     })
     .optional(),
   fix: z
@@ -668,6 +686,8 @@ export const PromptConfigSchema = z.object({
       description: z.string().optional(),
       conventions: z.array(z.string()).optional(),
       commandReference: z.record(z.string()).optional(),
+      autoLoadAgentsMd: z.boolean().optional(),
+      attributionFooter: z.boolean().optional(),
     })
     .optional(),
   conversation: z

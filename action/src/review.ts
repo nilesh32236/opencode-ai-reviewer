@@ -4,7 +4,9 @@ import type { AgentConfig, PRContext, PlatformAdapter, ReviewEngine } from '@ope
 import {
   GitLabAdapter,
   Logger,
+  buildFunctionScoreOptions,
   countAtOrAboveSeverity,
+  getErrorStatus,
   postSuggestionComment,
   sanitizeMarkdown,
   sendNotification,
@@ -58,8 +60,7 @@ export async function runReview(
       try {
         isMr = await gh.isMR(issueNum);
       } catch (err) {
-        const status =
-          typeof err === 'object' && err !== null ? (err as { status?: number }).status : undefined;
+        const status = getErrorStatus(err);
         const suffix = status !== undefined ? ` (status ${status})` : '';
         core.setFailed(
           sanitize(
@@ -224,7 +225,14 @@ export async function runReview(
       }
     : result;
 
-  const reviewResult = await gh.postReview(prNumber, pr.headSha, finalResult, config.review.inline);
+  const reviewResult = await gh.postReview(
+    prNumber,
+    pr.headSha,
+    finalResult,
+    config.review.inline,
+    undefined,
+    buildFunctionScoreOptions(config.review.showFunctionScores, pr.changedFiles),
+  );
 
   if (!reviewResult.success) {
     core.warning('Failed to post review to GitHub');

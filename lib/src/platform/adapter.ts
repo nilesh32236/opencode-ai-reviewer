@@ -5,6 +5,7 @@ import type {
   PRContext,
   ReviewResult,
 } from '../types/index.js';
+import type { ReviewBodyOptions } from '../utils/review-body.js';
 
 /** Result of posting a review. */
 export interface ReviewPostResult {
@@ -203,6 +204,7 @@ export interface PlatformAdapter {
    * @param result - Review result data.
    * @param postInlineComments - Whether to post inline comments.
    * @param suppressLowConfidence - Whether to suppress low confidence comments.
+   * @param options - Optional display flags (e.g. deterministic function scores).
    * @returns Promise resolving to review post result.
    */
   postReview(
@@ -211,6 +213,7 @@ export interface PlatformAdapter {
     result: ReviewResult,
     postInlineComments?: boolean,
     suppressLowConfidence?: boolean,
+    options?: ReviewBodyOptions,
   ): Promise<ReviewPostResult>;
   /**
    * Post a single inline review comment immediately (streaming). Implementations

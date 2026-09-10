@@ -44,3 +44,29 @@ export async function resolvePrNumber(): Promise<number | null> {
   const fromPR = github.context.payload.pull_request?.number;
   return fromPR || fromIssue || null;
 }
+
+/**
+ * Strictly parse `CI_MERGE_REQUEST_IID` (GitLab MR IID) into a positive
+ * integer. `Number()` alone accepts "", hex, scientific notation, floats
+ * (truncated), and NaN/Infinity, which could route comments to the wrong MR.
+ * @param raw - Raw IID string; defaults to `process.env.CI_MERGE_REQUEST_IID`.
+ * @returns The MR IID, or `undefined` when unset or invalid (with a warning).
+ */
+export function resolveGitLabMrIid(raw?: string): number | undefined {
+  const value = (raw ?? process.env.CI_MERGE_REQUEST_IID ?? '').trim();
+  if (!value) return undefined;
+  // Canonical integer string only: rejects "12abc", "1.5", "0x10", "1e2".
+  const parsed = Number.parseInt(value, 10);
+  if (
+    Number.isNaN(parsed) ||
+    !Number.isInteger(parsed) ||
+    String(parsed) !== value ||
+    parsed < 1 ||
+    parsed > MAX_PR_NUMBER ||
+    !Number.isFinite(parsed)
+  ) {
+    core.warning(sanitize(`Ignoring invalid CI_MERGE_REQUEST_IID="${value}"`));
+    return undefined;
+  }
+  return parsed;
+}

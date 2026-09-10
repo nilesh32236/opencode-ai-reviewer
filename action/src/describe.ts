@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
-import { mergeDescribeBody } from '@opencode-pr-agent/lib';
+import { mergeDescribeBody, sanitizeErrorMessage, sanitizeMarkdown } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { resolvePrNumber, sanitize } from './utils.js';
 
@@ -65,7 +65,11 @@ export async function runDescribe(
     const useMarkers = config.describe?.useMarkers ?? false;
 
     if (publishAsComment !== false) {
-      await gh.postOrUpdateComment(prNumber, '<!-- pr-description -->', description);
+      await gh.postOrUpdateComment(
+        prNumber,
+        '<!-- pr-description -->',
+        sanitizeMarkdown(description),
+      );
     }
 
     if (useMarkers === true) {
@@ -85,12 +89,14 @@ export async function runDescribe(
     core.setOutput('description', description);
     core.info(`Posted PR description for PR #${prNumber}`);
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    core.setFailed(sanitize(`Description generation failed for PR #${prNumber}: ${message}`));
+    core.warning(
+      sanitize(`Description generation failed for PR #${prNumber}: ${sanitizeErrorMessage(err)}`),
+    );
+    core.setFailed(sanitize(`Description generation failed for PR #${prNumber}`));
     await gh.postOrUpdateComment(
       prNumber,
       '<!-- pr-description-error -->',
-      `❌ **Description Generation Failed**: ${sanitize(message)}`,
+      `❌ **Description Generation Failed**: Description generation failed for PR #${prNumber}. See the action logs for details.`,
     );
   }
 }

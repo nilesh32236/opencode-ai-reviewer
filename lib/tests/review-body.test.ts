@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ReviewResult } from '../src/types/index.js';
 import {
+  buildAgentsMdAttributionFooter,
   buildReviewBody,
   computeMergeScore,
   formatConfidenceLabel,
@@ -208,6 +209,94 @@ describe('review-body', () => {
       // Readiness must agree with the 1/5 merge score for partial reviews.
       expect(body).toContain('**Ready to merge?** No');
       expect(body).toContain('1/5');
+    });
+
+    it('appends the attribution footer when passed via opts', () => {
+      const result: ReviewResult = {
+        summary: 'Clean PR.',
+        verdict: { ready: true, reasoning: 'All good.' },
+        strengths: [],
+        issues: [],
+        stats: { total: 0, critical: 0, important: 0, minor: 0 },
+        rawLines: [],
+        failedLines: 0,
+      };
+
+      const body = buildReviewBody(result, {
+        attributionFooter: 'custom footer @ `abc1234`',
+      });
+      expect(body).toContain('custom footer @ `abc1234`');
+    });
+
+    it('falls back to result.attributionFooter when opts are omitted', () => {
+      const result: ReviewResult = {
+        summary: 'Clean PR.',
+        verdict: { ready: true, reasoning: 'All good.' },
+        strengths: [],
+        issues: [],
+        stats: { total: 0, critical: 0, important: 0, minor: 0 },
+        rawLines: [],
+        failedLines: 0,
+        attributionFooter: 'from result @ `abc1234`',
+      };
+
+      const body = buildReviewBody(result);
+      expect(body).toContain('from result @ `abc1234`');
+    });
+
+    it('renders no footer by default', () => {
+      const result: ReviewResult = {
+        summary: 'Clean PR.',
+        verdict: { ready: true, reasoning: 'All good.' },
+        strengths: [],
+        issues: [],
+        stats: { total: 0, critical: 0, important: 0, minor: 0 },
+        rawLines: [],
+        failedLines: 0,
+      };
+
+      const body = buildReviewBody(result);
+      expect(body).not.toContain('auto-loaded from');
+      expect(body.split('---').length).toBeLessThanOrEqual(2);
+    });
+
+    it('prefers opts.attributionFooter over result.attributionFooter and suppresses whitespace-only footers', () => {
+      const base: ReviewResult = {
+        summary: 'Clean PR.',
+        verdict: { ready: true, reasoning: 'All good.' },
+        strengths: [],
+        issues: [],
+        stats: { total: 0, critical: 0, important: 0, minor: 0 },
+        rawLines: [],
+        failedLines: 0,
+        attributionFooter: 'from result',
+      };
+
+      const precedence = buildReviewBody(base, { attributionFooter: 'from opts' });
+      expect(precedence).toContain('from opts');
+      expect(precedence).not.toContain('from result');
+
+      const blank = buildReviewBody(base, { attributionFooter: '   ' });
+      expect(blank).not.toContain('from result');
+      expect(blank).not.toContain('from opts');
+      expect(blank).not.toContain('auto-loaded from');
+      expect(blank.split('---').length).toBeLessThanOrEqual(2);
+    });
+  });
+
+  describe('buildAgentsMdAttributionFooter', () => {
+    it('names loaded sources with the short SHA', () => {
+      const footer = buildAgentsMdAttributionFooter('abc1234567890', [
+        'AGENTS.md',
+        '.github/copilot-instructions.md',
+      ]);
+      expect(footer).toContain('`AGENTS.md`');
+      expect(footer).toContain('`.github/copilot-instructions.md`');
+      expect(footer).toContain('`abc1234`');
+    });
+
+    it('returns undefined when no sources were loaded', () => {
+      expect(buildAgentsMdAttributionFooter('abc1234', [])).toBeUndefined();
     });
   });
 

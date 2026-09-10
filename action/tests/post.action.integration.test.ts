@@ -128,6 +128,30 @@ describe('runPost token usage comment', () => {
     expect(mockPostOrUpdateComment).not.toHaveBeenCalled();
   });
 
+  it('sanitizes prompt-injected markdown in the review summary comment', async () => {
+    const hostile =
+      'All good ![tracker](https://exfil.example/pixel.png) ' +
+      '<img src="x" onerror="alert(1)"> <!-- review-summary --> ' +
+      '[click me](javascript:alert(1))';
+    mockGetInput.mockImplementation((name: string) => {
+      if (name === 'review_summary') return hostile;
+      if (name === 'learning_enabled') return 'false';
+      return '';
+    });
+
+    await runPost(makeInputs({ reviewCommentSummary: true }), mockGh, 'owner/repo', 'token');
+
+    expect(mockPostOrUpdateComment).toHaveBeenCalledWith(
+      42,
+      '<!-- review-summary -->',
+      expect.not.stringContaining('![tracker]'),
+    );
+    const [, , body] = mockPostOrUpdateComment.mock.calls[0] as [number, string, string];
+    expect(body).not.toContain('<img');
+    expect(body).not.toContain('<!-- review-summary -->');
+    expect(body).not.toContain('](javascript:');
+  });
+
   it('renders summary rows without the prompt/completion breakdown when not saved', async () => {
     mockGetState.mockImplementation((key: string) => {
       switch (key) {

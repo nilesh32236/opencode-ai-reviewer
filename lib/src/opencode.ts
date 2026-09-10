@@ -32,6 +32,14 @@ let opencodePath: string | null = null;
 /** Path of the opencode binary most recently confirmed compatible by checkHealth(). */
 let validatedOpenCodePath: string | null = null;
 let cachedCIConfig: string | null = null;
+/**
+ * Raw version string (e.g. "v1.2.3") from the most recent successful
+ * `opencode --version` probe. Used to gate version-dependent config shapes
+ * (e.g. the V2 subagent permissions array) without spawning a new process.
+ */
+let cachedOpenCodeVersionRaw: string | null = null;
+/** Per-version cache of V2 subagent-permission gate decisions (no extra spawns). */
+const subagentV2DecisionCache = new Map<string, boolean>();
 const askPassDirs: string[] = [];
 /** Custom LLM provider configuration applied to every OpenCode run. */
 let llmProviderConfig: LLMConfig | undefined;
@@ -113,6 +121,8 @@ export function resetOpenCodeState(): void {
   opencodePath = null;
   validatedOpenCodePath = null;
   cachedCIConfig = null;
+  cachedOpenCodeVersionRaw = null;
+  subagentV2DecisionCache.clear();
   runModeOverride = undefined;
   llmProviderConfig = undefined;
   signalHandlersRegistered = false;
@@ -303,6 +313,11 @@ export async function checkHealth(options: CheckHealthOptions = {}): Promise<Ope
   try {
     const stdout = await execVersion(binPath, timeoutMs);
     const version = parseOpenCodeVersion(stdout || '');
+    if (version) {
+      // Remember the probed version so version-gated config emission (e.g.
+      // the V2 subagent permissions array) can reuse it with zero extra spawns.
+      cachedOpenCodeVersionRaw = version.raw;
+    }
     if (!version) {
       return {
         available: true,
@@ -1140,19 +1155,197 @@ export function mergeSubagentConfig(
 }
 
 /**
+ * CLI version at or above which the injected subagent deny block uses the V2
+ * permissions-array shape (`permissions: [{ action, resource, effect }]`,
+ * with `bash` renamed to `shell`). Older or unknown versions keep the legacy
+ * object shape (`permission: { edit: 'deny', bash: 'deny' }`).
+ *
+ * Docs: https://v2.opencode.ai/docs/permissions ("Do not use `permission`,
+ * `bash`, or `task` in V2 configuration; use `permissions`, `shell`, and
+ * `subagent`") and https://opencode.ai/docs/permissions (V1 object syntax).
+ */
+export const SUBAGENT_V2_PERMISSIONS_CUTOFF = MINIMUM_OPENCODE_VERSION;
+
+/** Legacy (V1) read-only deny block, emitted byte-for-byte for old/unknown CLIs. */
+export const LEGACY_SUBAGENT_PERMISSION: Record<string, string> = {
+  edit: 'deny',
+  bash: 'deny',
+};
+
+const V2_DENY_EFFECTS = new Set(['allow', 'ask', 'deny']);
+
+/**
+ * Map a V1 permission key to its V2 action name (`bash` → `shell`, `task` → `subagent`).
+ * @param key - The V1 permission key to translate.
+ * @returns The equivalent V2 action name, or the original key when no mapping exists.
+ */
+function mapV1PermissionKeyToV2Action(key: string): string {
+  if (key === 'bash') return 'shell';
+  if (key === 'task') return 'subagent';
+  return key;
+}
+
+/**
+ * Decide whether the subagent deny block should use the V2 permissions-array
+ * shape for a given detected CLI version. Fail-open: unknown, missing, or
+ * unparseable versions return false (legacy shape) so subagent dispatch never
+ * fails because of this gate. Results are cached per version string.
+ * @param cliVersion - Raw detected CLI version (e.g. "v1.2.3"), or null/undefined when unknown.
+ * @returns True when the CLI is at or above {@link SUBAGENT_V2_PERMISSIONS_CUTOFF}.
+ */
+export function shouldUseV2SubagentPermissions(cliVersion?: string | null): boolean {
+  try {
+    if (typeof cliVersion !== 'string') return false;
+    const key = cliVersion.trim();
+    if (!key) return false;
+    const cached = subagentV2DecisionCache.get(key);
+    if (cached !== undefined) return cached;
+    const cmp = compareVersions(key, SUBAGENT_V2_PERMISSIONS_CUTOFF);
+    if (cmp === UNPARSEABLE_VERSION) {
+      core.warning(
+        `OpenCode version "${key}" could not be parsed for the subagent permission gate — using the legacy permission shape.`,
+      );
+      subagentV2DecisionCache.set(key, false);
+      return false;
+    }
+    const result = cmp >= 0;
+    subagentV2DecisionCache.set(key, result);
+    return result;
+  } catch (err) {
+    core.warning(
+      `Subagent permission version gate failed (${err instanceof Error ? err.message : String(err)}) — using the legacy permission shape.`,
+    );
+    return false;
+  }
+}
+
+/**
+ * Build the V2 permissions-array deny block equivalent to the legacy
+ * `{ edit: 'deny', bash: 'deny' }` object. `bash` is renamed to `shell` per
+ * the V2 schema; `resource: '*'` denies all targets for that action.
+ * Docs: https://v2.opencode.ai/docs/permissions (rule schema + agent overrides).
+ * @returns The V2 deny rules for a read-only review subagent.
+ */
+export function buildV2SubagentDenyPermissions(): Array<Record<string, string>> {
+  return [
+    { action: 'edit', resource: '*', effect: 'deny' },
+    { action: 'shell', resource: '*', effect: 'deny' },
+  ];
+}
+
+/**
+ * Convert a legacy V1 `permission` value to its V2 `permissions`-array
+ * equivalent, preserving each rule's effect. String shorthands map to a
+ * single wildcard rule; object entries map per key (`bash` → `shell`,
+ * `task` → `subagent`), with granular pattern objects expanded per pattern.
+ * Entries with unrecognized effects are skipped rather than mis-emitted.
+ * @param permission - The legacy V1 `permission` value.
+ * @returns The equivalent V2 rules, or null when nothing convertible remains.
+ */
+function convertV1PermissionToV2Array(permission: unknown): Array<Record<string, string>> | null {
+  if (typeof permission === 'string') {
+    const effect = permission.trim();
+    if (!V2_DENY_EFFECTS.has(effect)) return null;
+    return [{ action: '*', resource: '*', effect }];
+  }
+  if (!permission || typeof permission !== 'object' || Array.isArray(permission)) return null;
+  const rules: Array<Record<string, string>> = [];
+  for (const [tool, value] of Object.entries(permission as Record<string, unknown>)) {
+    const action = mapV1PermissionKeyToV2Action(tool);
+    if (typeof value === 'string') {
+      if (!V2_DENY_EFFECTS.has(value)) continue;
+      rules.push({ action, resource: '*', effect: value });
+    } else if (value && typeof value === 'object' && !Array.isArray(value)) {
+      for (const [pattern, effect] of Object.entries(value as Record<string, unknown>)) {
+        if (typeof effect !== 'string' || !V2_DENY_EFFECTS.has(effect)) continue;
+        rules.push({ action, resource: pattern, effect });
+      }
+    }
+  }
+  return rules.length > 0 ? rules : null;
+}
+
+/**
+ * Normalize subagent definitions to the V2 permissions-array shape when the
+ * detected CLI version is at or above {@link SUBAGENT_V2_PERMISSIONS_CUTOFF}.
+ * Definitions already carrying a `permissions` array pass through untouched;
+ * when the gate is off (older/unknown version) the input is returned unchanged.
+ * Fail-open: any error returns the input unchanged so dispatch never fails.
+ * @param subagents - Map of subagent name → definition.
+ * @param cliVersion - Raw detected CLI version; defaults to the last probed version.
+ * @returns The (possibly upgraded) subagent map.
+ */
+export function normalizeSubagentPermissionsForVersion(
+  subagents: Record<string, Record<string, unknown>>,
+  cliVersion?: string | null,
+): Record<string, Record<string, unknown>> {
+  try {
+    const version = cliVersion ?? cachedOpenCodeVersionRaw;
+    if (!shouldUseV2SubagentPermissions(version)) return subagents;
+    const upgraded: Record<string, Record<string, unknown>> = {};
+    for (const [name, def] of Object.entries(subagents ?? {})) {
+      if (!def || typeof def !== 'object' || Array.isArray(def)) {
+        upgraded[name] = def;
+        continue;
+      }
+      const rec = def as Record<string, unknown>;
+      if (Array.isArray(rec.permissions)) {
+        upgraded[name] = rec;
+        continue;
+      }
+      const converted =
+        rec.permission !== undefined ? convertV1PermissionToV2Array(rec.permission) : null;
+      if (!converted) {
+        upgraded[name] = rec;
+        continue;
+      }
+      const rest: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(rec)) {
+        if (key !== 'permission') rest[key] = value;
+      }
+      upgraded[name] = { ...rest, permissions: converted };
+    }
+    return upgraded;
+  } catch (err) {
+    core.warning(
+      `Subagent permission normalization failed (${err instanceof Error ? err.message : String(err)}) — using the legacy permission shape.`,
+    );
+    return subagents;
+  }
+}
+
+/**
  * Build a read-only review subagent definition for the OpenCode config.
- * Subagents run with edit and bash denied so they can only inspect code and
- * report findings; they are dispatched by the primary agent via the task tool.
+ * Subagents run with edit and bash/shell denied so they can only inspect code
+ * and report findings; they are dispatched by the primary agent via the task tool.
+ *
+ * The deny-block shape is version-gated: CLI >= {@link SUBAGENT_V2_PERMISSIONS_CUTOFF}
+ * gets the V2 `permissions` array, older or unknown versions keep the legacy
+ * `permission` object byte-for-byte. Fail-open: gating errors fall back to legacy.
  * @param description - The subagent's role description (shown to the primary agent).
  * @param model - Optional per-subagent model override (defaults to the primary's model).
+ * @param cliVersion - Optional detected CLI version; defaults to the last probed version.
  * @returns A subagent config object for the `agent` block.
  */
-export function buildReviewSubagent(description: string, model?: string): Record<string, unknown> {
+export function buildReviewSubagent(
+  description: string,
+  model?: string,
+  cliVersion?: string | null,
+): Record<string, unknown> {
   const def: Record<string, unknown> = {
     description,
     mode: 'subagent',
-    permission: { edit: 'deny', bash: 'deny' },
   };
+  try {
+    const version = cliVersion ?? cachedOpenCodeVersionRaw;
+    if (shouldUseV2SubagentPermissions(version)) {
+      def.permissions = buildV2SubagentDenyPermissions();
+    } else {
+      def.permission = { ...LEGACY_SUBAGENT_PERMISSION };
+    }
+  } catch {
+    def.permission = { ...LEGACY_SUBAGENT_PERMISSION };
+  }
   if (model) def.model = model;
   return def;
 }
@@ -1500,10 +1693,14 @@ export async function runOpenCode(
   // into OPENCODE_CONFIG_CONTENT; forward the referenced variables so the CLI's
   // own substitution resolves them inside the sandboxed subprocess environment.
   applyLLMEnvVarReferences(safeEnv, llm);
+  // Upgrade legacy subagent deny blocks to the V2 permissions array when the
+  // probed binary is new enough. The version comes from the already-completed
+  // checkHealth()/setupOpenCode() probe (cachedOpenCodeVersionRaw), so this
+  // adds zero extra spawns. Unknown versions fail open to the legacy shape.
   safeEnv.OPENCODE_CONFIG_CONTENT = mergeLLMProviderConfig(
     mergeSubagentConfig(
       options.opencodeConfig ?? runModeOverride?.opencodeConfig ?? buildCIConfig(),
-      options.subagents ?? {},
+      normalizeSubagentPermissionsForVersion(options.subagents ?? {}),
     ),
     llm,
   );

@@ -21,6 +21,7 @@ import {
   buildAutofixPRBody,
   buildDocsPRBody,
   configureGit,
+  getErrorStatus,
   isDocStyle,
   markAnalysisReady,
   mergeDescribeBody,
@@ -189,10 +190,7 @@ export async function handleCommand(
         try {
           return await gh.isMR(issueNumber);
         } catch (err) {
-          const status =
-            typeof err === 'object' && err !== null
-              ? (err as { status?: number }).status
-              : undefined;
+          const status = getErrorStatus(err);
           logger.warn(
             `Skipping /${commandName} on #${issueNumber}: failed to classify PR/issue${status !== undefined ? ` (status ${status})` : ''}: ${sanitizeErrorMessage(err)}`,
           );

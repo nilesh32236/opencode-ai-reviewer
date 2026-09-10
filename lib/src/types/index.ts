@@ -242,6 +242,8 @@ export interface DescribeConfig {
    * preserving current behavior).
    */
   publishAsComment?: boolean;
+  /** Whether to append an LLM-generated Mermaid flowchart (default: false). */
+  enableDiagram?: boolean;
 }
 
 // ─── Custom LLM Providers ───────────────────────────────
@@ -525,6 +527,12 @@ export interface ProjectContextConfig {
   lintCommands: string[];
   /** Custom rules to append to the prompt */
   customRules?: string;
+  /** Opt-in: auto-load AGENTS.md and .github/copilot-instructions.md at the PR
+   * head SHA into the review prompt (default: false). */
+  autoLoadAgentsMd?: boolean;
+  /** Whether the posted review carries an attribution footer naming the
+   * convention sources and head SHA. Defaults to true when auto-load is on. */
+  attributionFooter?: boolean;
 }
 
 /** Configuration for token budget-based context allocation. */
@@ -634,6 +642,10 @@ export interface ReviewSensitivityConfig {
  * this severity are found. `'off'` disables failure from findings entirely. */
 export type FailOnSeverity = 'off' | 'critical' | 'important' | 'minor';
 
+/** Preset trading review depth for speed and cost. Unset means current behavior;
+ * explicit per-setting values always override the preset. */
+export type ReviewEffort = 'lite' | 'balanced';
+
 /** Main review configuration controlling what is reviewed and how findings are reported. */
 export interface ReviewConfig {
   /** Skip review for PRs with these labels */
@@ -654,6 +666,9 @@ export interface ReviewConfig {
    * corresponding test updates and surfaces structured gap context to the
    * review prompt (default: false). */
   enableTestGapDetection: boolean;
+  /** Deterministic per-function quality table in review body (default: false).
+   * Heuristic only, no verdict influence. */
+  showFunctionScores: boolean;
   /** Whether to suppress low-confidence findings from review output */
   suppressLowConfidence?: boolean;
   /** Whether to enable lightweight reachability analysis on security findings */
@@ -674,6 +689,11 @@ export interface ReviewConfig {
   sensitivity?: ReviewSensitivityConfig;
   /** Per-category overrides for review sensitivity */
   categories?: Record<string, CategoryOverride>;
+  /** Opt-in map of glob pattern to extra review instructions, applied
+   * additively per reviewed file when the file path matches the glob
+   * (e.g. `{ "docs/**": "Check spelling." }`). Max 10 entries, each capped
+   * at 2 KB. Absent/empty means no per-path instructions. */
+  pathInstructions?: Record<string, string>;
   /** Severity threshold at or above which the action/check run fails
    * (default: 'critical'). Use 'off' to never fail from findings. */
   failOnSeverity: FailOnSeverity;
@@ -688,6 +708,14 @@ export interface ReviewConfig {
   /** Number of findings to accumulate before posting a streaming batch
    * (default: 0 = post per-batch as soon as the batch completes). */
   streamBatchSize?: number;
+  /** Effort preset trading review depth for speed/cost (unset = current
+   * behavior; explicit per-setting values always override the preset).
+   * `lite`: smaller batches (3 → 2 files/batch); `maxLinesPerFile: 200` and
+   * meta-verification off already match the lib defaults, so vs lib defaults
+   * only the batch size changes (vs the Action input default of 500 lines/file
+   * it also constrains per-file context to 200).
+   * `balanced`: current defaults (no overrides). */
+  effort?: ReviewEffort;
 }
 
 /** Configuration for deterministic hardcoded secret / credential scanning. */
@@ -1135,6 +1163,10 @@ export interface ReviewResult {
   executiveSummary?: ExecutiveSummary;
   /** Optional token usage / cost data accumulated for this run (server-side, not AI-derived) */
   usage?: TokenUsage;
+  /** Attribution footer for auto-loaded review conventions (e.g. AGENTS.md @
+   * head SHA). Set by the engine when context.autoLoadAgentsMd loads files;
+   * rendered by buildReviewBody/postReview. Absent when nothing was loaded. */
+  attributionFooter?: string;
 }
 
 /** Result of an auto-fix operation. */
@@ -1350,6 +1382,8 @@ export interface ConfigOverride {
     customRules?: string[];
     /** Whether to use inline comments */
     inline?: boolean;
+    /** Glob → extra-instructions map merged additively for this path/branch */
+    pathInstructions?: Record<string, string>;
   };
   /** Fix config overrides */
   fix?: {
@@ -1445,6 +1479,9 @@ export interface PromptConfig {
     enableMetaVerification?: boolean;
     /** Enable test-gap detection that flags code changes lacking test updates (default: false) */
     enableTestGapDetection?: boolean;
+    /** Deterministic per-function quality table in review body (default: false).
+     * Heuristic only, no verdict influence. */
+    showFunctionScores?: boolean;
     /** Enable codebase indexing for cross-file review context (default: true) */
     enableCodebaseIndex?: boolean;
     /** Review pre-existing (non-PR) code at full audit priority (default: false) */
@@ -1464,6 +1501,10 @@ export interface PromptConfig {
     sensitivity?: ReviewSensitivityConfig;
     /** Per-category overrides for review sensitivity */
     categories?: Record<string, CategoryOverride>;
+    /** Opt-in map of glob pattern to extra review instructions, applied
+     * additively per reviewed file when the file path matches the glob.
+     * Max 10 entries, each capped at 2 KB. */
+    pathInstructions?: Record<string, string>;
     /** Severity threshold at or above which the action/check run fails
      * (default: 'critical'). Use 'off' to never fail from findings. */
     failOnSeverity?: FailOnSeverity;
@@ -1475,6 +1516,9 @@ export interface PromptConfig {
     /** Number of findings to accumulate before posting a streaming batch
      * (default: 0 = per-batch). */
     streamBatchSize?: number;
+    /** Effort preset trading review depth for speed/cost (unset = current
+     * behavior; explicit per-setting values always override the preset). */
+    effort?: ReviewEffort;
   };
   /** Fix prompt configuration */
   fix?: {
@@ -1508,6 +1552,7 @@ export interface PromptConfig {
     model?: string;
     useMarkers?: boolean;
     publishAsComment?: boolean;
+    enableDiagram?: boolean;
   };
   /** Changelog / release-notes generation (`/changelog`) configuration */
   changelog?: ChangelogConfig;
@@ -1561,6 +1606,12 @@ export interface PromptConfig {
     conventions?: string[];
     /** Reference for shell commands (name → command) */
     commandReference?: Record<string, string>;
+    /** Opt-in: auto-load AGENTS.md and .github/copilot-instructions.md at the
+     * PR head SHA into the review prompt (default: false). */
+    autoLoadAgentsMd?: boolean;
+    /** Whether the posted review carries an attribution footer naming the
+     * convention sources and head SHA. Defaults to true when auto-load is on. */
+    attributionFooter?: boolean;
   };
   /** Conversation / @mention context-window management configuration */
   conversation?: {
@@ -1708,6 +1759,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     ],
     enableMetaVerification: false,
     enableTestGapDetection: false,
+    showFunctionScores: false,
     suppressLowConfidence: false,
     enableReachability: true,
     enableCodebaseIndex: true,
@@ -1751,6 +1803,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     enabled: true,
     useMarkers: false,
     publishAsComment: true,
+    enableDiagram: false,
   },
   changelog: DEFAULT_CHANGELOG_CONFIG,
   learning: {

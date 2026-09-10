@@ -142,6 +142,7 @@ export type { AutoCloseDecision } from './conversation/state.js';
 export { DEFAULT_ALLOWLIST, validateRunChecksCommand } from './utils/command.js';
 export { CircuitBreaker } from './utils/circuit-breaker.js';
 export type { CircuitState, CircuitBreakerOptions } from './utils/circuit-breaker.js';
+export { getErrorStatus } from './utils/errors.js';
 export { gatherReviewThread } from './utils/review-thread.js';
 export type { ThreadComment, ReviewThreadResult } from './utils/review-thread.js';
 export { sanitizeString } from './utils/sanitize.js';
@@ -190,6 +191,18 @@ export {
   formatIssueBullet,
   getSeverityBadge,
 } from './utils/review-body.js';
+export type { ReviewBodyOptions } from './utils/review-body.js';
+export {
+  buildFunctionScoreOptions,
+  buildFunctionScoreTable,
+  collectFunctionScoreInputs,
+  computeFunctionScores,
+  CHURN_WEIGHT,
+  MAX_FUNCTION_SCORE_ROWS,
+  NESTING_WEIGHT,
+  TEST_GAP_PENALTY,
+} from './utils/function-scores.js';
+export type { FunctionScore, FunctionScoreInput } from './utils/function-scores.js';
 export {
   analyzeFindingReachability,
   analyzeBatchReachability,
@@ -245,6 +258,12 @@ export {
 } from './pattern-detector/minhash.js';
 export { RuleApprovalSubscriber } from './pattern-detector/rule-approval.js';
 export * from './utils/validation.js';
+export {
+  REVIEW_EFFORT_PRESETS,
+  parseReviewEffort,
+  resolveReviewEffort,
+} from './utils/review-effort.js';
+export type { ReviewEffortPreset } from './utils/review-effort.js';
 export { countAtOrAboveSeverity, shouldFailOnSeverity } from './utils/threshold.js';
 export type { SeverityStats } from './utils/threshold.js';
 export {
