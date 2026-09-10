@@ -352,6 +352,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const llm = repoConfig?.llm;
   const sca = repoConfig?.sca;
   const changelog = repoConfig?.changelog;
+  const describe = repoConfig?.describe;
   const projectAutoLoadAgentsMd = repoConfig?.project?.autoLoadAgentsMd;
   const projectAttributionFooter = repoConfig?.project?.attributionFooter;
   if (
@@ -372,6 +373,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
     !llm &&
     !sca &&
     !changelog &&
+    !describe &&
     projectAutoLoadAgentsMd === undefined &&
     projectAttributionFooter === undefined
   ) {
@@ -451,6 +453,15 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       changelog: {
         ...baseConfig.changelog,
         ...changelog,
+      },
+    }),
+    // Mirror the sca/changelog merges so app-hosted repos can tune the
+    // `/describe` output (useMarkers/publishAsComment) via
+    // `.opencode-reviewer.yml`.
+    ...(describe && {
+      describe: {
+        ...baseConfig.describe,
+        ...describe,
       },
     }),
     // Opt-in head-SHA convention auto-load (`project.autoLoadAgentsMd`) and its

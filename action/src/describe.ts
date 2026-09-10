@@ -64,20 +64,34 @@ export async function runDescribe(
     const publishAsComment = config.describe?.publishAsComment ?? true;
     const useMarkers = config.describe?.useMarkers ?? false;
 
+    if (publishAsComment === false && useMarkers !== true) {
+      core.warning(
+        'Both describe outputs are disabled (publishAsComment=false, useMarkers=false) — skipping output',
+      );
+    }
+
+    let commentPosted = false;
+    let bodyMerged = false;
+
     if (publishAsComment !== false) {
       await gh.postOrUpdateComment(
         prNumber,
         '<!-- pr-description -->',
         sanitizeMarkdown(description),
       );
+      commentPosted = true;
     }
 
     if (useMarkers === true) {
       try {
-        const current = pr.body ?? '';
-        const merged = mergeDescribeBody(current, description);
+        // Re-fetch so the merge base is fresh — pr.body was read before the
+        // long LLM call and may have been edited concurrently.
+        const fresh = await gh.getMR(prNumber);
+        const current = fresh.body ?? '';
+        const merged = mergeDescribeBody(current, sanitizeMarkdown(description));
         if (merged !== current) {
           await gh.updateMR(prNumber, { body: merged });
+          bodyMerged = true;
         }
       } catch (e) {
         core.warning(
@@ -87,7 +101,9 @@ export async function runDescribe(
     }
 
     core.setOutput('description', description);
-    core.info(`Posted PR description for PR #${prNumber}`);
+    core.info(
+      `Describe output for PR #${prNumber}: comment ${commentPosted ? 'posted' : 'skipped'}, PR-body merge ${bodyMerged ? 'applied' : useMarkers === true ? 'skipped (unchanged or failed)' : 'skipped (disabled)'}`,
+    );
   } catch (err) {
     core.warning(
       sanitize(`Description generation failed for PR #${prNumber}: ${sanitizeErrorMessage(err)}`),

@@ -28,6 +28,7 @@ import {
   parseAnalysisPlan,
   postBlockingQuestions,
   sanitizeErrorMessage,
+  sanitizeMarkdown,
   validateRefName,
 } from '@opencode-pr-agent/lib';
 import { isBotLogin } from '../utils/bot.js';
@@ -533,16 +534,30 @@ export async function handleDescribeCommand(
     const publishAsComment = config.describe?.publishAsComment ?? true;
     const useMarkers = config.describe?.useMarkers ?? false;
 
+    if (publishAsComment === false && useMarkers !== true) {
+      logger.warn(
+        'Both describe outputs are disabled (publishAsComment=false, useMarkers=false) — skipping output',
+      );
+    }
+
+    let commentPosted = false;
+    let bodyMerged = false;
+
     if (publishAsComment !== false) {
       await gh.postOrUpdateComment(issueNumber, '<!-- pr-description -->', description);
+      commentPosted = true;
     }
 
     if (useMarkers === true) {
       try {
-        const current = pr.body ?? '';
-        const merged = mergeDescribeBody(current, description);
+        // Re-fetch so the merge base is fresh — pr.body was read before the
+        // long LLM call and may have been edited concurrently.
+        const fresh = await gh.getMR(issueNumber);
+        const current = fresh.body ?? '';
+        const merged = mergeDescribeBody(current, sanitizeMarkdown(description));
         if (merged !== current) {
           await gh.updateMR(issueNumber, { body: merged });
+          bodyMerged = true;
         }
       } catch (updateErr) {
         logger.warn(
@@ -551,7 +566,9 @@ export async function handleDescribeCommand(
       }
     }
 
-    logger.info(`Posted PR description for PR #${issueNumber}`);
+    logger.info(
+      `Describe output for PR #${issueNumber}: comment ${commentPosted ? 'posted' : 'skipped'}, PR-body merge ${bodyMerged ? 'applied' : useMarkers === true ? 'skipped (unchanged or failed)' : 'skipped (disabled)'}`,
+    );
   } catch (err) {
     logger.error(
       `Failed to describe PR #${issueNumber}: ${err instanceof Error ? err.message : err}`,

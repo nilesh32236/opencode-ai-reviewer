@@ -146,12 +146,10 @@ inputs:
   describe_use_markers:
     description: 'Merge describe output into the PR body between markers, preserving user text (default false)'
     required: false
-    default: 'false'
 
   describe_publish_as_comment:
     description: 'Post describe output as a PR comment (default true)'
     required: false
-    default: 'true'
 
   enable_diagram:
     description: 'Append an LLM-generated Mermaid flowchart to describe output (mode=describe)'
