@@ -667,6 +667,14 @@ export interface ReviewConfig {
   skipActors: string[];
   /** Whether to post findings as inline review comments on the PR diff */
   inline: boolean;
+  /**
+   * Opt-in to bundling mappable findings into a single reviews-array request
+   * (`POST /pulls/{n}/reviews` with `comments[]`), falling back to a
+   * summary-only review preserving all findings on 422/403/429.
+   * Default false (legacy behavior unchanged).
+   * @since NEXT
+   */
+  enableReviewsArrayInline?: boolean;
   /** Whether to require a verdict */
   requireVerdict: boolean;
   /** Command triggers (e.g., /oc, /review) */
@@ -1480,6 +1488,12 @@ export interface PromptConfig {
     customRules?: string[];
     /** Post findings as inline review comments (default: true) */
     inline?: boolean;
+    /**
+     * Bundle mappable findings into a single reviews-array request with
+     * summary-only 422 fallback (default: false, opt-in).
+     * @since NEXT
+     */
+    enableReviewsArrayInline?: boolean;
     /** Suppress low-confidence findings from review output (default: false) */
     suppressLowConfidence?: boolean;
     /** Patterns to exclude from review */

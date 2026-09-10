@@ -153,6 +153,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     extraContext: null,
     customRules: null,
     inline: null,
+    enableReviewsArrayInline: null,
     suppressLowConfidence: null,
     excludePatterns: null,
     enableReachability: null,
@@ -554,6 +555,9 @@ export function validateConfig(
     }
     if (typeof config.review.inline === 'boolean') {
       result.review.inline = config.review.inline;
+    }
+    if (typeof config.review.enableReviewsArrayInline === 'boolean') {
+      result.review.enableReviewsArrayInline = config.review.enableReviewsArrayInline;
     }
     if (typeof config.review.suppressLowConfidence === 'boolean') {
       result.review.suppressLowConfidence = config.review.suppressLowConfidence;
@@ -1377,6 +1381,9 @@ function extractDefaultsFromConfig(config: PromptConfig): Record<string, unknown
   }
   if (config.review?.inline !== undefined) {
     defaults.review_inline = String(config.review.inline);
+  }
+  if (config.review?.enableReviewsArrayInline !== undefined) {
+    defaults.enable_reviews_array_inline = String(config.review.enableReviewsArrayInline);
   }
   if (config.fix?.maxIterations) {
     defaults.max_fix_iterations = String(config.fix.maxIterations);

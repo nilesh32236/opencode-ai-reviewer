@@ -248,6 +248,8 @@ async function run(): Promise<void> {
         ...(loadedConfig?.review?.skipLabels && { skipLabels: loadedConfig.review.skipLabels }),
         ...(loadedConfig?.review?.skipActors && { skipActors: loadedConfig.review.skipActors }),
         inline: loadedConfig?.review?.inline ?? inputs.reviewInline,
+        enableReviewsArrayInline:
+          loadedConfig?.review?.enableReviewsArrayInline ?? inputs.enableReviewsArrayInline,
         streamComments: inputs.streamComments,
         streamBatchSize: inputs.streamBatchSize,
         // When the workflow explicitly sets fail_on_severity it is authoritative

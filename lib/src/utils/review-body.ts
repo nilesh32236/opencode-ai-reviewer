@@ -13,6 +13,13 @@ export interface ReviewBodyOptions {
   showFunctionScores?: boolean;
   /** Changed-function inputs used to compute the score table. */
   functionScores?: Array<FunctionScoreInput | FunctionScore>;
+  /**
+   * Opt-in to posting mappable findings as a single reviews-array request
+   * (`POST /pulls/{n}/reviews` with `comments[]`) with a summary-only retry
+   * on 422/403/429. Default false (legacy behavior unchanged).
+   * @since NEXT
+   */
+  enableReviewsArrayInline?: boolean;
   /** Attribution footer for auto-loaded review conventions (e.g. AGENTS.md @
    * head SHA). Appended after the issues section when non-empty. Falls back to
    * `result.attributionFooter` when omitted. */

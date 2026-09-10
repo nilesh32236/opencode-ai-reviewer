@@ -182,6 +182,9 @@ export function buildConfig(): AgentConfig {
       ...(process.env.REVIEW_SHOW_FUNCTION_SCORES !== undefined
         ? { showFunctionScores: process.env.REVIEW_SHOW_FUNCTION_SCORES === 'true' }
         : {}),
+      ...(process.env.ENABLE_REVIEWS_ARRAY_INLINE !== undefined
+        ? { enableReviewsArrayInline: process.env.ENABLE_REVIEWS_ARRAY_INLINE === 'true' }
+        : {}),
       ...(process.env.ENABLE_CODEBASE_INDEX !== undefined
         ? { enableCodebaseIndex: process.env.ENABLE_CODEBASE_INDEX !== 'false' }
         : {}),
@@ -315,7 +318,7 @@ export function buildConfig(): AgentConfig {
  *
  * Only the `review.sensitivity` / `review.categories` / `review.pathInstructions` / `review.enableCodebaseIndex`
  * / `review.enableMetaVerification` / `review.enableTestGapDetection` /
- * `review.showFunctionScores` /
+ * `review.showFunctionScores` / `review.enableReviewsArrayInline` /
  * `review.suppressLowConfidence` / `review.failOnSeverity` /
  * `review.suggestTitleAndLabels` fields, the `notifications`, `secrets`, `llm`,
  * and `sca` sections are merged
@@ -347,6 +350,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const streamBatchSize = repoConfig?.review?.streamBatchSize;
   const pathInstructions = repoConfig?.review?.pathInstructions;
   const showFunctionScores = repoConfig?.review?.showFunctionScores;
+  const enableReviewsArrayInline = repoConfig?.review?.enableReviewsArrayInline;
   const notifications = repoConfig?.notifications;
   const secrets = repoConfig?.secrets;
   const llm = repoConfig?.llm;
@@ -369,6 +373,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
     streamBatchSize === undefined &&
     !pathInstructions &&
     showFunctionScores === undefined &&
+    enableReviewsArrayInline === undefined &&
     !notifications &&
     !secrets &&
     !llm &&
@@ -409,6 +414,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
         ),
       }),
       ...(showFunctionScores !== undefined && { showFunctionScores }),
+      ...(enableReviewsArrayInline !== undefined && { enableReviewsArrayInline }),
     },
     ...(notifications && {
       notifications: {
