@@ -388,13 +388,19 @@ export async function handlePRReview(
               ),
             }
           : result;
+      const scoreOptions = buildFunctionScoreOptions(
+        effectiveConfig.review.showFunctionScores,
+        pr.changedFiles,
+      );
       reviewResult = await gh.postReview(
         prNumber,
         pr.headSha,
         finalResult,
         effectiveConfig.review.inline,
         undefined,
-        buildFunctionScoreOptions(effectiveConfig.review.showFunctionScores, pr.changedFiles),
+        effectiveConfig.review.enableReviewsArrayInline === true
+          ? { ...(scoreOptions ?? {}), enableReviewsArrayInline: true as const }
+          : scoreOptions,
       );
     } catch (err) {
       logger.error(

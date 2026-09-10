@@ -241,6 +241,11 @@ inputs:
     required: false
     default: 'true'
 
+  enable_reviews_array_inline:
+    description: 'Bundle mappable inline findings into a single reviews-array request (POST /pulls/{n}/reviews with comments[]), falling back to summary-only on 422/403/429 so no finding is lost (false = legacy behavior)'
+    required: false
+    default: 'false'
+
   stream_comments:
     description: 'Post review findings incrementally as each file batch completes (streaming) instead of only after the full review finishes'
     required: false

@@ -225,13 +225,16 @@ export async function runReview(
       }
     : result;
 
+  const scoreOptions = buildFunctionScoreOptions(config.review.showFunctionScores, pr.changedFiles);
   const reviewResult = await gh.postReview(
     prNumber,
     pr.headSha,
     finalResult,
     config.review.inline,
     undefined,
-    buildFunctionScoreOptions(config.review.showFunctionScores, pr.changedFiles),
+    config.review.enableReviewsArrayInline === true
+      ? { ...(scoreOptions ?? {}), enableReviewsArrayInline: true as const }
+      : scoreOptions,
   );
 
   if (!reviewResult.success) {

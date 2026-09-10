@@ -819,6 +819,13 @@ export class GitHubHelper implements PlatformAdapter {
    * Inline comments rejected with 422 are gracefully downgraded to
    * general issue comments with a file:line reference.
    *
+   * When `options.enableReviewsArrayInline` is true (opt-in, default false),
+   * mappable findings are bundled into a single `POST /pulls/{n}/reviews`
+   * with a `comments[]` reviews-array instead of N per-comment requests.
+   * On 422/403/429 the batched request is retried once as a summary-only
+   * review preserving all findings. When the flag is absent or false, the
+   * legacy behavior below runs unchanged.
+   *
    * @param prNumber - PR number.
    * @param commitSha - SHA of the commit to attach the review to.
    * @param result - Review result with issues and summary.
@@ -826,6 +833,7 @@ export class GitHubHelper implements PlatformAdapter {
    * @param suppressLowConfidence - Whether to suppress low-confidence findings (default: false).
    * @param options - Optional display flags (e.g. deterministic function scores).
    * @returns Object indicating success and which posting method was used.
+   * @since NEXT `options.enableReviewsArrayInline` guards the reviews-array path.
    */
   async postReview(
     prNumber: number,
@@ -841,6 +849,19 @@ export class GitHubHelper implements PlatformAdapter {
           issues: result.issues.filter((i) => i.confidence !== 'low'),
         }
       : result;
+
+    // Additive opt-in path: single reviews-array request with fail-open
+    // summary-only retry. Legacy path below runs byte-for-byte unchanged
+    // when the flag is absent or false.
+    if (options?.enableReviewsArrayInline === true && postInlineComments) {
+      return this.postReviewWithReviewsArray(
+        prNumber,
+        commitSha,
+        workingResult,
+        suppressLowConfidence,
+        options,
+      );
+    }
 
     const inlineComments = postInlineComments
       ? buildInlineComments(
@@ -978,6 +999,115 @@ export class GitHubHelper implements PlatformAdapter {
     }
 
     return { success: true, method: 'partial', reviewId, commentIds };
+  }
+
+  /**
+   * Opt-in reviews-array path for {@link postReview}.
+   *
+   * Bundles diff-validated findings into a single `POST /pulls/{n}/reviews`
+   * with `event: COMMENT` and a `comments[]` array (path, line, side, body).
+   * Unmappable findings stay in the summary body by design. On 422 (stale or
+   * out-of-range position), 403, or 429 the batch is retried once as a
+   * summary-only review built from the full result so no finding is lost.
+   * Never fans out to N per-comment requests.
+   *
+   * @param prNumber - PR number.
+   * @param commitSha - Head commit SHA the review anchors to.
+   * @param workingResult - Review result after confidence filtering.
+   * @param suppressLowConfidence - Passed through to inline mapping.
+   * @param options - Display flags (flag itself is read by the caller).
+   * @returns Review post result (`full` on batch success, `body-only` on fallback).
+   * @since NEXT
+   */
+  private async postReviewWithReviewsArray(
+    prNumber: number,
+    commitSha: string,
+    workingResult: ReviewResult,
+    suppressLowConfidence: boolean | undefined,
+    options: ReviewBodyOptions | undefined,
+  ): Promise<ReviewPostResult> {
+    let diffLines: Set<string>;
+    try {
+      diffLines = await this.getDiffLines(prNumber, commitSha);
+    } catch (err) {
+      core.warning(`Diff validation unavailable, posting summary-only review: ${err}`);
+      diffLines = new Set<string>();
+    }
+
+    const inlineComments = buildInlineComments(workingResult, diffLines, suppressLowConfidence);
+
+    const placedInlineKeys = new Set<string>();
+    for (const c of inlineComments) {
+      placedInlineKeys.add(`${c.path}:${c.line}`);
+    }
+    // Mappable findings ride inline; unmappable findings stay in the body.
+    const issuesForBody = workingResult.issues.filter(
+      (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
+    );
+    const body = buildReviewBody({ ...workingResult, issues: issuesForBody }, options);
+    // Full-finding body used for the fail-open summary-only retry.
+    const fullBody = buildReviewBody(workingResult, options);
+
+    const commentIds: ReviewPostResult['commentIds'] = [];
+
+    const postSummaryOnly = async (): Promise<ReviewPostResult> => {
+      try {
+        const reviewResponse = await this.api<{ id: number }>(`/pulls/${prNumber}/reviews`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ commit_id: commitSha, event: 'COMMENT', body: fullBody }),
+        });
+        return { success: true, method: 'body-only', reviewId: reviewResponse.id };
+      } catch (err) {
+        core.warning(`Summary-only review retry failed: ${err}`);
+        return { success: false, method: 'failed' };
+      }
+    };
+
+    if (inlineComments.length === 0) {
+      return postSummaryOnly();
+    }
+
+    try {
+      const reviewResponse = await this.api<{
+        id: number;
+        comments?: Array<{ id: number; path: string; line?: number }>;
+      }>(`/pulls/${prNumber}/reviews`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          commit_id: commitSha,
+          event: 'COMMENT',
+          body,
+          comments: inlineComments.map((c) => ({
+            path: c.path,
+            line: c.line,
+            side: c.side,
+            body: c.body,
+          })),
+        }),
+      });
+      if (reviewResponse.comments) {
+        for (const rc of reviewResponse.comments) {
+          const matched = inlineComments.find((c) => c.path === rc.path && c.line === rc.line);
+          if (matched) {
+            commentIds?.push({
+              file: rc.path,
+              line: rc.line ?? matched.line,
+              commentId: rc.id,
+              side: matched.side,
+            });
+          }
+        }
+      }
+      return { success: true, method: 'full', reviewId: reviewResponse.id, commentIds };
+    } catch (err) {
+      const status = getErrorStatus(err);
+      core.warning(
+        `Reviews-array post failed${status !== undefined ? ` (status ${status})` : ''}, retrying summary-only: ${err}`,
+      );
+      return postSummaryOnly();
+    }
   }
 
   /**
