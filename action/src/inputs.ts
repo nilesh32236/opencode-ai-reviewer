@@ -7,8 +7,10 @@ import {
   type DocStyle,
   type FailOnSeverity,
   type LLMConfig,
+  type ReviewEffort,
   type Severity,
   isDocStyle,
+  parseReviewEffort,
   validateModelString,
   validateRunChecksCommand,
 } from '@opencode-pr-agent/lib';
@@ -169,7 +171,7 @@ export interface ActionInputs {
   /** Whether the max_lines_per_file input was explicitly set by the workflow. */
   maxLinesPerFileExplicit: boolean;
   /** Review effort preset (lite | balanced); unset means current behavior. */
-  reviewEffort?: string;
+  reviewEffort?: ReviewEffort;
   /** Whether the review_effort input was explicitly set by the workflow. */
   reviewEffortExplicit: boolean;
   /** Optional project context/description string. */
@@ -294,18 +296,21 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     throw new Error('max_lines_per_file must be a positive integer');
   }
 
-  const reviewEffortRaw = core.getInput('review_effort').trim().toLowerCase();
-  let reviewEffort: string | undefined;
-  const reviewEffortExplicit = reviewEffortRaw !== '';
-  if (reviewEffortRaw === '') {
+  const reviewEffortRaw = core.getInput('review_effort');
+  const reviewEffortExplicit = reviewEffortRaw.trim() !== '';
+  let reviewEffort: ReviewEffort | undefined;
+  if (!reviewEffortExplicit) {
     reviewEffort = undefined;
-  } else if (reviewEffortRaw === 'lite' || reviewEffortRaw === 'balanced') {
-    reviewEffort = reviewEffortRaw;
   } else {
-    core.warning(
-      `Ignoring invalid review_effort "${reviewEffortRaw}". Must be "lite" or "balanced"; falling back to defaults.`,
-    );
-    reviewEffort = undefined;
+    const parsed = parseReviewEffort(reviewEffortRaw);
+    if (parsed !== null) {
+      reviewEffort = parsed;
+    } else {
+      core.warning(
+        `Ignoring invalid review_effort "${reviewEffortRaw.trim()}". Must be "lite" or "balanced"; falling back to defaults.`,
+      );
+      reviewEffort = undefined;
+    }
   }
 
   const auditLabelsStr = core.getInput('audit_labels') || 'audit';

@@ -1,4 +1,4 @@
-import { type ActionMode, type CostTrackingVerbosity, DEFAULT_ALLOWLIST, type DocStyle, type FailOnSeverity, type LLMConfig, type Severity, validateRunChecksCommand } from '@opencode-pr-agent/lib';
+import { type ActionMode, type CostTrackingVerbosity, DEFAULT_ALLOWLIST, type DocStyle, type FailOnSeverity, type LLMConfig, type ReviewEffort, type Severity, validateRunChecksCommand } from '@opencode-pr-agent/lib';
 export { DEFAULT_ALLOWLIST, validateRunChecksCommand };
 /**
  * Parse and validate a timeout value from a raw string.
@@ -103,7 +103,7 @@ export interface ActionInputs {
     /** Whether the max_lines_per_file input was explicitly set by the workflow. */
     maxLinesPerFileExplicit: boolean;
     /** Review effort preset (lite | balanced); unset means current behavior. */
-    reviewEffort?: string;
+    reviewEffort?: ReviewEffort;
     /** Whether the review_effort input was explicitly set by the workflow. */
     reviewEffortExplicit: boolean;
     /** Optional project context/description string. */

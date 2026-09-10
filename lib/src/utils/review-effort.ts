@@ -12,12 +12,20 @@ export interface ReviewEffortPreset {
 
 /**
  * Preset mapping for `review.effort` / `review_effort`.
- * - `lite`: smaller batches, lower maxLinesPerFile, meta-verification off.
- * - `balanced`: current defaults (identity — no overrides applied).
+ *
+ * Only `lite` carries concrete overrides. `balanced` is intentionally absent:
+ * it resolves to null (identity — keep current defaults) so it never overrides
+ * explicit values.
+ *
+ * `lite` effect vs defaults: it reduces batchSize 3 → 2. Its
+ * `maxLinesPerFile: 200` and `enableMetaVerification: false` already match the
+ * lib defaults (`DEFAULT_CONFIG`: 200 / false), so against lib defaults only
+ * the batch size changes; against the Action input defaults
+ * (`max_files_per_batch: 3`, `max_lines_per_file: 500`) it also constrains
+ * per-file context 500 → 200.
  */
-export const REVIEW_EFFORT_PRESETS: Record<ReviewEffort, ReviewEffortPreset> = {
+export const REVIEW_EFFORT_PRESETS: Record<'lite', ReviewEffortPreset> = {
   lite: { batchSize: 2, maxLinesPerFile: 200, enableMetaVerification: false },
-  balanced: { batchSize: 3, maxLinesPerFile: 500, enableMetaVerification: false },
 };
 
 /**

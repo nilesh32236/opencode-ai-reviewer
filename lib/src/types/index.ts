@@ -684,7 +684,10 @@ export interface ReviewConfig {
   streamBatchSize?: number;
   /** Effort preset trading review depth for speed/cost (unset = current
    * behavior; explicit per-setting values always override the preset).
-   * `lite`: smaller batches, lower maxLinesPerFile, meta-verification off.
+   * `lite`: smaller batches (3 → 2 files/batch); `maxLinesPerFile: 200` and
+   * meta-verification off already match the lib defaults, so vs lib defaults
+   * only the batch size changes (vs the Action input default of 500 lines/file
+   * it also constrains per-file context to 200).
    * `balanced`: current defaults (no overrides). */
   effort?: ReviewEffort;
 }

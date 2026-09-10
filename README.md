@@ -222,9 +222,11 @@ When budget review is enabled and a PR exceeds the configured thresholds (based 
 
 > **Note:** Budget modes focus the model's *output* on critical patterns; they do not reduce the embedded diff context, so input token consumption and runtime are essentially unchanged. For the largest PRs, consider splitting the PR or raising `maxLinesPerFile`/`batchSize` instead.
 
-#### Review effort preset (`review.effort` / `review_effort`)
+#### Review effort preset (`review.effort` / `review_effort`) — GitHub Action only
 
-A single opt-in knob to trade review depth for speed and cost on small PRs versus risky ones:
+A single opt-in knob to trade review depth for speed and cost on small PRs versus risky ones.
+Currently resolved in the GitHub Action entrypoint (`action/src/index.ts`) only; the Probot App
+ignores `review.effort` (no preset effect there).
 
 | Preset     | `batchSize` (files/batch) | `maxLinesPerFile` | `enableMetaVerification` |
 | ---------- | ------------------------- | ----------------- | ------------------------ |
@@ -232,7 +234,12 @@ A single opt-in knob to trade review depth for speed and cost on small PRs versu
 | `lite`     | `2`                       | `200`             | `false`                  |
 | `balanced` | current defaults (no overrides) | current defaults (no overrides) | configured value |
 
-Rules: explicit `max_files_per_batch` / `max_lines_per_file` / `enable_meta_verification` (action inputs) and config-file `review.enableMetaVerification` always override the preset; an unset or invalid value logs a warning and falls back to current defaults without failing the run.
+`lite` vs defaults: it reduces batch size 3 → 2. Its `maxLinesPerFile: 200` and
+`enableMetaVerification: false` already match the lib defaults, so against lib defaults only
+the batch size changes; against the Action input default (`max_lines_per_file: 500`) it also
+constrains per-file context 500 → 200.
+
+Rules: explicit `max_files_per_batch` / `max_lines_per_file` / `enable_meta_verification` (action inputs) and config-file `review.enableMetaVerification` always override the preset; an unset or invalid value logs a warning and falls back to current defaults without failing the run. An explicitly-set-but-invalid `review_effort` input blocks the config-file fallback (fail-open to defaults).
 
 #### Per-path overrides
 

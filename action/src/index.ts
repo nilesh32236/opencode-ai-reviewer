@@ -195,11 +195,13 @@ async function run(): Promise<void> {
     // Single `review.effort` / `review_effort` preset knob: action input wins
     // over the config file; explicit per-setting values always override the
     // preset; `balanced` and unset resolve to current behavior (identity).
-    const effectiveEffort =
-      (inputs.reviewEffortExplicit ? parseReviewEffort(inputs.reviewEffort) : null) ??
-      parseReviewEffort(loadedConfig?.review?.effort);
+    // An explicitly-set-but-invalid input blocks the config-file fallback so
+    // invalid values fall back to defaults (fail-open) per the README.
+    const effectiveEffort = inputs.reviewEffortExplicit
+      ? parseReviewEffort(inputs.reviewEffort)
+      : parseReviewEffort(loadedConfig?.review?.effort);
     const effortPreset = resolveReviewEffort(effectiveEffort);
-    if (effectiveEffort) {
+    if (effortPreset && effectiveEffort) {
       core.info(`Using review effort preset: ${effectiveEffort}`);
     }
 
