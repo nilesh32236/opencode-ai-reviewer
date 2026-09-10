@@ -257,6 +257,30 @@ describe('review-body', () => {
 
       const body = buildReviewBody(result);
       expect(body).not.toContain('auto-loaded from');
+      expect(body.split('---').length).toBeLessThanOrEqual(2);
+    });
+
+    it('prefers opts.attributionFooter over result.attributionFooter and suppresses whitespace-only footers', () => {
+      const base: ReviewResult = {
+        summary: 'Clean PR.',
+        verdict: { ready: true, reasoning: 'All good.' },
+        strengths: [],
+        issues: [],
+        stats: { total: 0, critical: 0, important: 0, minor: 0 },
+        rawLines: [],
+        failedLines: 0,
+        attributionFooter: 'from result',
+      };
+
+      const precedence = buildReviewBody(base, { attributionFooter: 'from opts' });
+      expect(precedence).toContain('from opts');
+      expect(precedence).not.toContain('from result');
+
+      const blank = buildReviewBody(base, { attributionFooter: '   ' });
+      expect(blank).not.toContain('from result');
+      expect(blank).not.toContain('from opts');
+      expect(blank).not.toContain('auto-loaded from');
+      expect(blank.split('---').length).toBeLessThanOrEqual(2);
     });
   });
 

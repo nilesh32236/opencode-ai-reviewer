@@ -175,7 +175,7 @@ export function buildAgentsMdAttributionFooter(
 ): string | undefined {
   if (!sources || sources.length === 0) return undefined;
   const shortSha = sanitizeMarkdown(String(headSha || '').slice(0, 7) || 'unknown');
-  const names = sources.map((s) => `\`${sanitizeMarkdown(s)}\``).join(', ');
+  const names = sources.map((s) => `\`${escapeInlineCode(sanitizeMarkdown(s))}\``).join(', ');
   return `*Review conventions auto-loaded from ${names} @ \`${shortSha}\`*`;
 }
 

@@ -114,7 +114,7 @@ export const ProjectContextConfigSchema = z.object({
   typecheckCommands: z.array(z.string()).default([]),
   lintCommands: z.array(z.string()).default([]),
   customRules: z.string().optional(),
-  autoLoadAgentsMd: z.boolean().optional().default(false),
+  autoLoadAgentsMd: z.boolean().default(false),
   attributionFooter: z.boolean().optional(),
 });
 
