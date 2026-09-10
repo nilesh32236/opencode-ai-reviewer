@@ -48,7 +48,28 @@ export async function runFix(
 
   let comments: IssueComment[];
   try {
-    comments = await gh.getIssueComments(prNumber, { throwOnError: true });
+    // Bound the fetch while preserving full-history semantics: pages stop
+    // early once enough REVIEW_MARKERs are seen to trip the maxIterations
+    // gate, and throwOnError keeps page failures loud so the count is never
+    // silently computed from a truncated list. Note: GitHub's list-issue-
+    // comments endpoint ignores sort direction (always oldest-first; GitLab
+    // honors sort), so early-stop savings apply on GitLab while GitHub scans
+    // oldest-first within the 10-page bound.
+    const recent = await gh.listComments(prNumber, {
+      perPage: 100,
+      maxPages: 10,
+      direction: 'desc',
+      throwOnError: true,
+      stopWhen: (items) =>
+        items.filter((c) => String((c as { body?: unknown }).body ?? '').includes(REVIEW_MARKER))
+          .length >= config.maxIterations,
+    });
+    comments = recent.map((c) => ({
+      id: typeof c.id === 'number' ? c.id : 0,
+      author: '',
+      createdAt: '',
+      body: typeof c.body === 'string' ? c.body : '',
+    }));
   } catch (err) {
     core.setFailed(
       sanitize(
@@ -84,7 +105,13 @@ export async function runFix(
       await exec.exec('git', ['push', 'origin', pr.headRef]);
       changesMade = true;
     } catch (err) {
-      core.warning(sanitize(`Git operations failed: ${err instanceof Error ? err.message : err}`));
+      const msg = `Git operations failed: ${err instanceof Error ? err.message : err}`;
+      core.warning(sanitize(msg));
+      // Fail loudly: a lost push must never be reported as success via
+      // changes_made=true (mirrors runDocs, which rethrows on git failure).
+      core.setFailed(sanitize(msg));
+      core.setOutput('changes_made', 'false');
+      return;
     }
   }
 
@@ -145,11 +172,13 @@ export async function runFix(
             validateRefName(pr.headRef);
             await exec.exec('git', ['push', 'origin', pr.headRef]);
           } catch (err) {
-            core.warning(
-              sanitize(
-                `Git operations during verification retry failed: ${err instanceof Error ? err.message : err}`,
-              ),
-            );
+            // Mirror the main push path: a lost verification push must never
+            // report changes_made=true, so fail loudly and return.
+            const msg = `Git operations during verification retry failed: ${err instanceof Error ? err.message : err}`;
+            core.warning(sanitize(msg));
+            core.setFailed(sanitize(msg));
+            core.setOutput('changes_made', 'false');
+            return;
           }
         }
       }
@@ -748,14 +777,19 @@ export async function runAutofixLoop(
             validateRefName(pr.headRef);
             await exec.exec('git', ['push', 'origin', pr.headRef]);
           } catch (err) {
-            core.warning(
-              sanitize(
-                `Git operations failed during verification retry: ${err instanceof Error ? err.message : err}`,
-              ),
-            );
+            // Mirror the main push path and runFix retry handling: a lost
+            // verification push must never be silently dropped, so fail loudly
+            // and stop the outer loop instead of continuing with lost fixes.
+            const msg = `Git operations failed during verification retry: ${err instanceof Error ? err.message : err}`;
+            core.warning(sanitize(msg));
+            core.setFailed(sanitize(msg));
+            exitReason = 'git-failure';
             break;
           }
         }
+      }
+      if (exitReason === 'git-failure') {
+        break;
       }
     }
   }

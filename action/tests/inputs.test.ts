@@ -19,7 +19,7 @@ vi.mock('@actions/core', () => ({
   setSecret: mockSetSecret,
 }));
 
-import { parseInputs } from '../src/inputs.js';
+import { parseInputs, parseStreamBatchSize } from '../src/inputs.js';
 
 const BASE_INPUTS: Record<string, string> = {
   mode: 'review',
@@ -335,5 +335,51 @@ describe('parseInputs() secret masking', () => {
     parseInputs();
     expect(mockSetSecret).toHaveBeenCalledTimes(1);
     expect(mockSetSecret).toHaveBeenCalledWith('ghs_token');
+  });
+});
+
+describe('parseStreamBatchSize()', () => {
+  it('returns 0 for empty input', () => {
+    expect(parseStreamBatchSize('')).toBe(0);
+    expect(parseStreamBatchSize('   ')).toBe(0);
+  });
+
+  it('accepts boundary values 0 and 100', () => {
+    expect(parseStreamBatchSize('0')).toBe(0);
+    expect(parseStreamBatchSize('100')).toBe(100);
+    expect(parseStreamBatchSize(' 5 ')).toBe(5);
+  });
+
+  it('rejects out-of-range values', () => {
+    expect(() => parseStreamBatchSize('101')).toThrow(/stream_batch_size/);
+    expect(() => parseStreamBatchSize('-1')).toThrow(/stream_batch_size/);
+  });
+
+  it('rejects non-canonical numeric forms (hex, scientific, float, text)', () => {
+    for (const raw of ['1e2', '0x10', '3.0', 'abc', '10px', '+5']) {
+      expect(() => parseStreamBatchSize(raw)).toThrow(/stream_batch_size/);
+    }
+  });
+});
+
+describe('parseInputs() audit_labels', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('accepts labels containing spaces', () => {
+    setInputs({ ...BASE_INPUTS, audit_labels: 'help wanted, good first issue' });
+    const inputs = parseInputs();
+    expect(inputs.auditLabels).toEqual(['help wanted', 'good first issue']);
+  });
+
+  it('rejects labels longer than 50 characters', () => {
+    setInputs({ ...BASE_INPUTS, audit_labels: `${'a'.repeat(51)}` });
+    expect(() => parseInputs()).toThrow(/Invalid audit label/);
+  });
+
+  it('rejects labels with control characters', () => {
+    setInputs({ ...BASE_INPUTS, audit_labels: 'bad\tlabel' });
+    expect(() => parseInputs()).toThrow(/Invalid audit label/);
   });
 });

@@ -167,6 +167,8 @@ export interface PlatformAdapter {
    * @param options.perPage - Items per page.
    * @param options.maxPages - Maximum pages to fetch.
    * @param options.direction - Sort direction.
+   * @param options.throwOnError - When true, rethrow a page-fetch error instead of
+   * silently returning partial data (default: false).
    * @param options.stopWhen - Predicate evaluated against the accumulated items after
    * each page; when it returns true, pagination stops early (default: never).
    * @param signal - Optional AbortSignal to cancel the request.
@@ -178,6 +180,7 @@ export interface PlatformAdapter {
       perPage?: number;
       maxPages?: number;
       direction?: 'asc' | 'desc';
+      throwOnError?: boolean;
       stopWhen?: (items: Array<Record<string, unknown>>) => boolean;
     },
     signal?: AbortSignal,

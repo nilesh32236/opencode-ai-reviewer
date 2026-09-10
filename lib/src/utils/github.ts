@@ -590,6 +590,8 @@ export class GitHubHelper implements PlatformAdapter {
    * @param options.perPage - Items per page (default: 100).
    * @param options.maxPages - Maximum pages to fetch (default: 10).
    * @param options.direction - Sort direction (optional, e.g. 'asc' or 'desc').
+   * @param options.throwOnError - When true, rethrow a page-fetch error instead of
+   * silently returning partial data (default: false).
    * @param options.stopWhen - Predicate evaluated against the accumulated comments
    * after each page; when it returns true, pagination stops early (default: never).
    * @param signal - Optional AbortSignal to cancel the paginated fetch.
@@ -601,6 +603,7 @@ export class GitHubHelper implements PlatformAdapter {
       perPage?: number;
       maxPages?: number;
       direction?: 'asc' | 'desc';
+      throwOnError?: boolean;
       stopWhen?: (items: Array<Record<string, unknown>>) => boolean;
     },
     signal?: AbortSignal,

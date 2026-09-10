@@ -206,6 +206,14 @@ export async function runAudit(
         `/issues?state=${issueState}&labels=audit:${encodeURIComponent(safeCategory)}`,
         { perPage: 100, maxPages: 10, throwOnError: true },
       )) as Array<{ number: number; title: string }>;
+      // The dedup scan caps at 1000 issues (10 pages of 100). A full result
+      // set may mean pagination ended naturally at exactly 1000 with nothing
+      // truncated, so this is worded as a possibility rather than a certainty.
+      if (openAuditIssues.length >= 1000) {
+        core.warning(
+          `Dedup scan may have hit the 1000-issue cap for category ${safeCategory} — an existing issue may have been missed and a duplicate could be created`,
+        );
+      }
       const match = openAuditIssues.find((issue: { number: number; title: string }) =>
         issue.title.startsWith(titlePrefix),
       );

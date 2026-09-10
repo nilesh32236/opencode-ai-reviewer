@@ -160,6 +160,16 @@ export interface ActionInputs {
     scaMinSeverityExplicit: boolean;
 }
 /**
+ * Parse and validate the stream_batch_size input: an empty value means 0
+ * (per-batch posting); otherwise it must be a canonical non-negative integer
+ * string within a sane upper bound, mirroring the strict integer style used
+ * in resolvePrNumber (Number() alone would accept hex, scientific, or float
+ * forms such as 0x10, 1e2, or 3.0).
+ * @param raw - The raw stream_batch_size string.
+ * @returns The validated batch size.
+ */
+export declare function parseStreamBatchSize(raw: string): number;
+/**
  * Parse and validate all GitHub Action inputs from workflow environment.
  *
  * @param configLlm - The `.opencode-reviewer.yml` `llm:` block (when one is

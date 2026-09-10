@@ -29,6 +29,7 @@ import {
 import { runAnalyze } from './analyze.js';
 import { runAudit } from './audit.js';
 import { runChangelog } from './changelog.js';
+import { extractCommentCommand, verifyCommentActorPermission } from './comment-commands.js';
 import { runDescribe } from './describe.js';
 import { runDocs } from './docs.js';
 import { runAutofixLoop, runFix, runFixIssue } from './fix.js';
@@ -467,6 +468,41 @@ async function run(): Promise<void> {
       const gh: PlatformAdapter =
         platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
       engine = new ReviewEngine(config, gh, learningStore, eventBus, repo, correlationId);
+
+      // Authorization gate: comment-triggered commands (/fix, /analyze,
+      // manual re-review) must only be honored when the commenter holds
+      // write/admin permission. Without this, any user who can comment could
+      // trigger LLM runs, force-push branches, open PRs, and post comments
+      // with the repo-scoped token. Fail closed on lookup failure.
+      //
+      // Scope notes:
+      // - GitHub-only. On GitLab the action is invoked from .gitlab-ci.yml
+      //   pipeline jobs and never parses a comment webhook in-process (there
+      //   is no note-event payload or actor available), so there is no
+      //   untrusted comment-actor vector to gate here.
+      // - pull_request_review (submitted-review) events are out of scope: the
+      //   action parses slash-commands only from comment bodies, and a bare
+      //   review approval/request-changes carries no command.
+      // - The gate runs only when the comment body actually contains a
+      //   slash-command, so stray non-command comments neither fail the run
+      //   nor require permission.
+      if (platform === 'github') {
+        const gatedEvent =
+          github.context.eventName === 'issue_comment' ||
+          github.context.eventName === 'pull_request_review_comment'
+            ? (github.context.payload.comment as { body?: unknown } | undefined)
+            : undefined;
+        const commentBody =
+          gatedEvent && typeof gatedEvent.body === 'string' ? gatedEvent.body : '';
+        if (gatedEvent && extractCommentCommand(commentBody) !== null) {
+          const authorized = await verifyCommentActorPermission(token);
+          if (!authorized) {
+            return;
+          }
+        } else if (gatedEvent) {
+          core.info('Ignoring non-command comment event — skipping authorization gate');
+        }
+      }
 
       switch (inputs.mode) {
         case 'analyze':

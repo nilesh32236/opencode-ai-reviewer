@@ -500,6 +500,8 @@ export class GitLabAdapter implements PlatformAdapter {
    * @param options.perPage
    * @param options.maxPages
    * @param options.direction - options.direction argument.
+   * @param options.throwOnError - When true, rethrow a page-fetch error instead of
+   * silently returning partial data (default: false).
    * @param options.stopWhen - Predicate evaluated against the accumulated comments
    * after each page; when it returns true, pagination stops early (default: never).
    * @param signal - Optional AbortSignal to cancel the paginated fetch.
@@ -511,6 +513,7 @@ export class GitLabAdapter implements PlatformAdapter {
       perPage?: number;
       maxPages?: number;
       direction?: 'asc' | 'desc';
+      throwOnError?: boolean;
       stopWhen?: (items: Array<Record<string, unknown>>) => boolean;
     },
     signal?: AbortSignal,

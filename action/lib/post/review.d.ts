@@ -12,3 +12,18 @@ import type { ActionInputs } from './inputs.js';
  * @param repo - Repository string (owner/repo).
  */
 export declare function runReview(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, repo: string): Promise<void>;
+/**
+ * Secret-specific predicate for the `secrets.failCI` gate: a finding only
+ * counts when its message carries the hardcoded-secret prefix (emitted by
+ * mergeSecretFindings). Structured `category`/`severity` fields are
+ * intentionally not required here so findings produced by older lib versions
+ * (without structured fields) stay covered and the gate never fires on
+ * unrelated critical security findings (SQLi, XSS, auth bypass).
+ * @param issue - A review finding with optional structured fields and a message.
+ * @returns True when the finding is a hardcoded-secret finding.
+ */
+export declare function isHardcodedSecretFinding(issue: {
+    category?: string;
+    severity?: string;
+    message: string;
+}): boolean;

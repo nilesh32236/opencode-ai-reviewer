@@ -116,6 +116,15 @@ export async function runChangelog(config: AgentConfig, gh: PlatformAdapter): Pr
       'utf-8',
     );
 
+    // Skip the commit when the generated content is identical to the existing
+    // changelog: an unconditional `git commit` would fail on an empty commit
+    // and report the whole run as failed even though generation succeeded.
+    const dirty = await exec.getExecOutput('git', ['status', '--porcelain', '--', changelogPath]);
+    if (dirty.stdout.trim().length === 0) {
+      core.info('Changelog is already up to date — nothing to commit');
+      return;
+    }
+
     await exec.exec('git', ['add', '-A']);
     await exec.exec('git', ['commit', '-m', `chore(release): update changelog for ${version}`]);
     await exec.exec('git', ['push', 'origin', branchName, '--force-with-lease']);

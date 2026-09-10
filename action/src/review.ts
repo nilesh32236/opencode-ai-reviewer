@@ -305,8 +305,12 @@ export async function runReview(
   // Optional dedicated gate: fail the action whenever the deterministic secret
   // scanner flagged a hardcoded credential, independent of failOnSeverity.
   // Secrets are reported as critical findings, so `failOnSeverity: critical`
-  // also covers this without the dedicated toggle.
-  if (config.secrets?.failCI && result.issues.some((i) => i.message.startsWith('Hardcoded'))) {
+  // also covers this without the dedicated toggle. The gate stays
+  // secret-specific by requiring the secret message prefix
+  // (see isHardcodedSecretFinding): matching on structured
+  // category/severity alone would also fire for non-secret critical findings
+  // (SQLi, XSS, auth bypass) with a misleading 'Hardcoded secrets' message.
+  if (config.secrets?.failCI && result.issues.some(isHardcodedSecretFinding)) {
     core.setFailed('Hardcoded secrets detected in PR. See review comments for details.');
   }
 
@@ -345,4 +349,22 @@ export async function runReview(
       }
     }
   }
+}
+
+/**
+ * Secret-specific predicate for the `secrets.failCI` gate: a finding only
+ * counts when its message carries the hardcoded-secret prefix (emitted by
+ * mergeSecretFindings). Structured `category`/`severity` fields are
+ * intentionally not required here so findings produced by older lib versions
+ * (without structured fields) stay covered and the gate never fires on
+ * unrelated critical security findings (SQLi, XSS, auth bypass).
+ * @param issue - A review finding with optional structured fields and a message.
+ * @returns True when the finding is a hardcoded-secret finding.
+ */
+export function isHardcodedSecretFinding(issue: {
+  category?: string;
+  severity?: string;
+  message: string;
+}): boolean {
+  return issue.message.startsWith('Hardcoded');
 }
