@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  isAgentConfigPath,
   isGeneratedArtifact,
   isGeneratedArtifactPath,
   isMinifiedContent,
@@ -37,6 +38,41 @@ describe('isGeneratedArtifactPath', () => {
   it('handles Windows-style separators', () => {
     expect(isGeneratedArtifactPath('action\\lib\\index.js')).toBe(true);
     expect(isGeneratedArtifactPath('lib\\src\\engine.ts')).toBe(false);
+  });
+});
+
+describe('isAgentConfigPath', () => {
+  it('flags .agents and .claude directory contents', () => {
+    expect(isAgentConfigPath('.agents/foo.md')).toBe(true);
+    expect(isAgentConfigPath('.agents/skills/bar/SKILL.md')).toBe(true);
+    expect(isAgentConfigPath('.claude/settings.json')).toBe(true);
+    expect(isAgentConfigPath('docs/.claude/notes.md')).toBe(true);
+  });
+
+  it('flags SKILL.md basenames case-insensitively in any directory', () => {
+    expect(isAgentConfigPath('SKILL.md')).toBe(true);
+    expect(isAgentConfigPath('skills/my-skill/SKILL.md')).toBe(true);
+    expect(isAgentConfigPath('skills/my-skill/skill.md')).toBe(true);
+  });
+
+  it('does not flag ordinary source files or generated artifacts', () => {
+    expect(isAgentConfigPath('lib/src/engine.ts')).toBe(false);
+    expect(isAgentConfigPath('src/skills-helper.ts')).toBe(false);
+    expect(isAgentConfigPath('agents/foo.md')).toBe(false);
+    expect(isAgentConfigPath('claude/notes.md')).toBe(false);
+    expect(isAgentConfigPath('SKILL.md.bak')).toBe(false);
+    expect(isAgentConfigPath('')).toBe(false);
+  });
+
+  it('does not widen the generated-artifact signal', () => {
+    expect(isGeneratedArtifactPath('.agents/foo.md')).toBe(false);
+    expect(isGeneratedArtifactPath('SKILL.md')).toBe(false);
+    expect(isGeneratedArtifact('.agents/foo.md')).toBe(false);
+  });
+
+  it('handles Windows-style separators', () => {
+    expect(isAgentConfigPath('.agents\\foo.md')).toBe(true);
+    expect(isAgentConfigPath('lib\\src\\engine.ts')).toBe(false);
   });
 });
 

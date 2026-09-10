@@ -284,6 +284,12 @@ async function run(): Promise<void> {
         ...(loadedConfig?.review?.enableCodebaseIndex !== undefined && {
           enableCodebaseIndex: loadedConfig.review.enableCodebaseIndex,
         }),
+        // Agent-config dirs (.agents/, .claude/, SKILL.md) are
+        // default-excluded from inline findings; explicit false opts out.
+        exclude_agent_configs:
+          loadedConfig?.review?.exclude_agent_configs ??
+          DEFAULT_CONFIG.review.exclude_agent_configs ??
+          true,
         reviewBudget: {
           enabled:
             loadedConfig?.review?.budget?.enabled ??

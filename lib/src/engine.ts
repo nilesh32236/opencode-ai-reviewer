@@ -74,7 +74,11 @@ import { MAX_BLAME_LINES_PER_FILE, UNCOMMITTED_SHA } from './utils/blame.js';
 import type { BlameRange } from './utils/blame.js';
 import { sanitizeDescribeDiagram } from './utils/describe-diagram.js';
 import { computeReviewStats, filterFindings, severityRank } from './utils/filter-findings.js';
-import { isGeneratedArtifact, isGeneratedArtifactPath } from './utils/generated-files.js';
+import {
+  isAgentConfigPath,
+  isGeneratedArtifact,
+  isGeneratedArtifactPath,
+} from './utils/generated-files.js';
 import { Logger } from './utils/logger.js';
 import {
   detectDotnetLibraries,
@@ -86,7 +90,10 @@ import { validateModelString } from './utils/model-string.js';
 import { sanitizePromptInput } from './utils/prompt-sanitizer.js';
 import { analyzeBatchReachability } from './utils/reachability.js';
 import { withRetry } from './utils/retry.js';
-import { buildAgentsMdAttributionFooter } from './utils/review-body.js';
+import {
+  buildAgentConfigSkippedNote,
+  buildAgentsMdAttributionFooter,
+} from './utils/review-body.js';
 import {
   isAllowedLinterCommand,
   isSafeLinterArgs,
@@ -927,14 +934,34 @@ export class ReviewEngine {
     }
 
     // Filter out excluded files (lockfiles, generated code, dist/, etc.)
+    // plus agent-config paths (.agents/, .claude/, SKILL.md), which churn
+    // frequently but rarely need line-by-line review. The agent-config
+    // exclusion is on by default (review.exclude_agent_configs, fail-open to
+    // excluding when absent) and explicit `false` restores prior behavior.
+    // Skipped agent-config files are tracked on the result (excludedAgentConfigs)
+    // so they stay visible in the summary count instead of vanishing silently.
     const excludePatterns = this.config.review.excludePatterns || [];
-    const files =
-      excludePatterns.length > 0
-        ? pr.changedFiles.filter((f) => {
-            if (!f?.path) return false;
-            return !excludePatterns.some((pattern: string) => minimatch(f.path, pattern));
-          })
-        : pr.changedFiles;
+    const excludeAgentConfigs = this.config.review.exclude_agent_configs ?? true;
+    const excludedAgentConfigs: string[] = [];
+    const files = pr.changedFiles.filter((f) => {
+      if (!f?.path) return false;
+      if (excludePatterns.some((pattern: string) => minimatch(f.path, pattern))) return false;
+      if (excludeAgentConfigs) {
+        try {
+          if (isAgentConfigPath(f.path)) {
+            excludedAgentConfigs.push(f.path);
+            return false;
+          }
+        } catch (err) {
+          // Fail-open: filtering errors include the file rather than
+          // dropping the whole review.
+          this.logger.warn(
+            `Agent-config exclusion check failed for ${f.path}, including file: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      return true;
+    });
 
     // Deterministic Software Composition Analysis (SCA) pass. Runs before the
     // "all files excluded" early-return so a PR that only touches lock files
@@ -968,21 +995,42 @@ export class ReviewEngine {
       }
     }
 
+    // Shared annotator: stamps the skipped agent-config list onto any result
+    // so it stays visible in the summary count. No-op when nothing was skipped.
+    const annotateAgentConfigSkipped = (r: ReviewResult): ReviewResult => {
+      if (excludedAgentConfigs.length === 0) return r;
+      if (r.excludedAgentConfigs && r.excludedAgentConfigs.length > 0) return r;
+      return { ...r, excludedAgentConfigs: [...excludedAgentConfigs] };
+    };
+
     if (files.length === 0 && pr.changedFiles.length > 0) {
       this.logger.info(
         `All ${pr.changedFiles.length} changed file(s) matched exclude patterns — skipping review`,
       );
       // Even when every source file is excluded, deterministic SCA findings on
       // the excluded lock files still surface (a lock-file-only PR is the
-      // primary SCA use case).
+      // primary SCA use case). Agent-config-only PRs surface a summary note
+      // (no inline findings) so the skip stays visible instead of silent.
+      const skippedNote = buildAgentConfigSkippedNote(excludedAgentConfigs);
+      const annotateSkipped = (r: ReviewResult): ReviewResult => {
+        const annotated = annotateAgentConfigSkipped(r);
+        if (skippedNote && !annotated.summary) {
+          return { ...annotated, summary: skippedNote };
+        }
+        return annotated;
+      };
       if (scaIssues.length > 0) {
-        return this.mergeScaIssues(emptyResult(), scaIssues);
+        return annotateSkipped(this.mergeScaIssues(emptyResult(), scaIssues));
       }
-      return emptyResult();
+      return annotateSkipped(emptyResult());
     }
     if (files.length < pr.changedFiles.length) {
+      const agentNote =
+        excludedAgentConfigs.length > 0
+          ? ` (includes ${excludedAgentConfigs.length} agent-config file(s) default-excluded from inline review)`
+          : '';
       this.logger.info(
-        `Excluded ${pr.changedFiles.length - files.length} file(s) from review by exclude patterns`,
+        `Excluded ${pr.changedFiles.length - files.length} file(s) from review by exclude patterns${agentNote}`,
       );
     }
 
@@ -1224,32 +1272,34 @@ export class ReviewEngine {
         );
 
         if (orchestratorContext.length <= SUBAGENT_REVIEW_CONTEXT_LIMIT) {
-          return await this.runMultiAgentReview(
-            pr,
-            files,
-            baseContext,
-            mcpDocs,
-            openThreadsContext,
-            workDir,
-            promptFile,
-            promptExtra,
-            timeoutMinutes,
-            codebaseIndex,
-            codebaseIndexData,
-            linterResults,
-            budgetMode,
-            totalDiffLines,
-            lessons,
-            falsePositiveRules,
-            deltaContext,
-            previousFindings,
-            previousBotComments,
-            scaIssues,
-            testGapResult,
-            onBatchComplete,
-            repoRulesContext,
-            commitMessages,
-            orchestratorContext,
+          return annotateAgentConfigSkipped(
+            await this.runMultiAgentReview(
+              pr,
+              files,
+              baseContext,
+              mcpDocs,
+              openThreadsContext,
+              workDir,
+              promptFile,
+              promptExtra,
+              timeoutMinutes,
+              codebaseIndex,
+              codebaseIndexData,
+              linterResults,
+              budgetMode,
+              totalDiffLines,
+              lessons,
+              falsePositiveRules,
+              deltaContext,
+              previousFindings,
+              previousBotComments,
+              scaIssues,
+              testGapResult,
+              onBatchComplete,
+              repoRulesContext,
+              commitMessages,
+              orchestratorContext,
+            ),
           );
         }
         // Oversized context → fall through to the legacy batch path so
@@ -1325,7 +1375,9 @@ export class ReviewEngine {
         const r = emptyResult();
         r.verdict.reasoning = 'Review execution failed';
         const withSca = scaIssues.length > 0 ? this.mergeScaIssues(r, scaIssues) : r;
-        return this.applyBudgetModeBanner(withSca, budgetMode, totalDiffLines);
+        return annotateAgentConfigSkipped(
+          this.applyBudgetModeBanner(withSca, budgetMode, totalDiffLines),
+        );
       }
 
       try {
@@ -1352,7 +1404,7 @@ export class ReviewEngine {
         this.logTokenSavings(budgetMetrics);
 
         const singleBatchResult = await this.verifyReviewResult(
-          finalResult,
+          annotateAgentConfigSkipped(finalResult),
           baseContext,
           workDir,
           timeoutMinutes,
@@ -1373,13 +1425,15 @@ export class ReviewEngine {
           });
         }
 
-        return singleBatchResult;
+        return annotateAgentConfigSkipped(singleBatchResult);
       } catch {
         this.logger.warn(`Failed to parse review output at ${outputPath}, returning empty result`);
         const r = emptyResult();
         r.verdict.reasoning = 'Failed to parse review output';
         const withSca = scaIssues.length > 0 ? this.mergeScaIssues(r, scaIssues) : r;
-        return this.applyBudgetModeBanner(withSca, budgetMode, totalDiffLines);
+        return annotateAgentConfigSkipped(
+          this.applyBudgetModeBanner(withSca, budgetMode, totalDiffLines),
+        );
       }
     }
 
@@ -1623,7 +1677,7 @@ export class ReviewEngine {
         failedBatches,
       );
       return await this.verifyReviewResult(
-        fallback,
+        annotateAgentConfigSkipped(fallback),
         baseContext,
         workDir,
         timeoutMinutes,
@@ -1683,7 +1737,7 @@ export class ReviewEngine {
       }
 
       return await this.verifyReviewResult(
-        finalResult,
+        annotateAgentConfigSkipped(finalResult),
         baseContext,
         workDir,
         timeoutMinutes,
@@ -1710,7 +1764,7 @@ export class ReviewEngine {
         );
       }
       return await this.verifyReviewResult(
-        fallback,
+        annotateAgentConfigSkipped(fallback),
         baseContext,
         workDir,
         timeoutMinutes,

@@ -643,6 +643,7 @@ export const PromptConfigSchema = z.object({
       inline: z.boolean().optional(),
       suppressLowConfidence: z.boolean().optional(),
       excludePatterns: z.array(z.string()).optional(),
+      exclude_agent_configs: z.boolean().optional(),
       tokenBudget: TokenBudgetConfigSchema.optional(),
       enableReachability: z.boolean().optional(),
       enableMetaVerification: z.boolean().optional(),
