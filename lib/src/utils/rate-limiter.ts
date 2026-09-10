@@ -184,8 +184,10 @@ export class RateLimiter {
     // last-action time, token sum share the same windows but separate queries).
     // Limit checks below still apply in the original priority order
     // (repo_hourly → user_daily → pr_cooldown → token_budget) against the
-    // resolved values, so allow/deny semantics are unchanged.
-    const [repoCount, userCount, lastTime, tokensUsed] = await Promise.all([
+    // resolved values, so allow/deny semantics are unchanged. allSettled is
+    // used so an earlier-priority deny still wins when a later read fails;
+    // a store error is only thrown when no deny applies.
+    const [repoRes, userRes, lastRes, tokenRes] = await Promise.allSettled([
       tier === 'command'
         ? this.store.countRateLimitActions({ repo, tier: 'command', sinceMs: hourStart })
         : Promise.resolve(0),
@@ -194,7 +196,15 @@ export class RateLimiter {
       this.store.sumRateLimitTokens(dayStart),
     ]);
 
-    if (tier === 'command' && repoCount >= this.config.reviewsPerRepoPerHour) {
+    const firstRejection = [repoRes, userRes, lastRes, tokenRes].find(
+      (r): r is PromiseRejectedResult => r.status === 'rejected',
+    )?.reason;
+
+    if (
+      tier === 'command' &&
+      repoRes.status === 'fulfilled' &&
+      repoRes.value >= this.config.reviewsPerRepoPerHour
+    ) {
       return {
         allowed: false,
         reason: 'repo_hourly',
@@ -203,7 +213,10 @@ export class RateLimiter {
       };
     }
 
-    if (userCount >= this.config.reviewsPerUserPerDay) {
+    if (
+      userRes.status === 'fulfilled' &&
+      userRes.value >= this.config.reviewsPerUserPerDay
+    ) {
       return {
         allowed: false,
         reason: 'user_daily',
@@ -212,23 +225,36 @@ export class RateLimiter {
       };
     }
 
-    if (lastTime !== null && now - lastTime < cooldownMs) {
+    if (
+      lastRes.status === 'fulfilled' &&
+      lastRes.value !== null &&
+      now - lastRes.value < cooldownMs
+    ) {
       return {
         allowed: false,
         reason: 'pr_cooldown',
         remaining: 0,
-        resetAt: lastTime + cooldownMs,
+        resetAt: lastRes.value + cooldownMs,
       };
     }
 
-    if (tokensUsed + estimatedTokens > this.config.dailyTokenBudget) {
+    if (
+      tokenRes.status === 'fulfilled' &&
+      tokenRes.value + estimatedTokens > this.config.dailyTokenBudget
+    ) {
       return {
         allowed: false,
         reason: 'token_budget',
-        remaining: Math.max(0, this.config.dailyTokenBudget - tokensUsed),
+        remaining: Math.max(0, this.config.dailyTokenBudget - tokenRes.value),
         resetAt: dayStart + DAY_MS,
       };
     }
+    // No deny applies: surface the first store failure (if any) so DB errors
+    // are never silently treated as "allowed".
+    if (firstRejection !== undefined) throw firstRejection;
+    const repoCount = (repoRes as PromiseFulfilledResult<number>).value;
+    const userCount = (userRes as PromiseFulfilledResult<number>).value;
+    const tokensUsed = (tokenRes as PromiseFulfilledResult<number>).value;
 
     let reservationId: string | undefined;
     try {

@@ -3661,8 +3661,16 @@ describe('ReviewEngine', () => {
       expect(keys.mcpDocsKey(['a,b', 'c'])).not.toBe(keys.mcpDocsKey(['a', 'b,c']));
     });
 
-    it('invalidateCaches() is callable without prior cache state', () => {
+    it('invalidateCaches() clears seeded lessons and MCP-docs entries', () => {
+      const peer = engine as unknown as {
+        lessonsCache: { lessons: string[]; filePaths: string; timestamp: number } | null;
+        mcpDocsCache: { docs: string; libraries: string; timestamp: number } | null;
+      };
+      peer.lessonsCache = { lessons: ['stale'], filePaths: 'stale-key', timestamp: Date.now() };
+      peer.mcpDocsCache = { docs: 'stale-docs', libraries: 'stale-key', timestamp: Date.now() };
       expect(() => engine.invalidateCaches()).not.toThrow();
+      expect(peer.lessonsCache).toBeNull();
+      expect(peer.mcpDocsCache).toBeNull();
     });
   });
 });

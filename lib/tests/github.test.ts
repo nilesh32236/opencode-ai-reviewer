@@ -2006,6 +2006,28 @@ diff --git a/deleted.ts b/deleted.ts
       expect(warning).not.toHaveBeenCalledWith(expect.stringContaining('Failed to fetch page'));
     });
 
+    it('lets the onTruncated hook own the log line (debug, not warning)', async () => {
+      const core = await import('@actions/core');
+      let callCount = 0;
+      fetchMock.mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1)
+          return mockResponse({ body: Array.from({ length: 100 }, (_, i) => ({ id: i })) });
+        return mockErrorResponse(500);
+      });
+      const onTruncated = vi.fn();
+
+      const result = await helper.paginate('/issues/1/comments', { onTruncated });
+
+      expect(result).toHaveLength(100);
+      expect(onTruncated).toHaveBeenCalledTimes(1);
+      expect(onTruncated).toHaveBeenCalledWith(2, expect.anything());
+      expect(core.warning).not.toHaveBeenCalledWith(
+        expect.stringContaining('Failed to fetch page'),
+      );
+      expect(core.debug).toHaveBeenCalledWith(expect.stringContaining('Failed to fetch page'));
+    });
+
     it('stops fetching further pages as soon as stopWhen returns true', async () => {
       let callCount = 0;
       fetchMock.mockImplementation(async () => {

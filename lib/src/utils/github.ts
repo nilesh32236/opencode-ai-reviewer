@@ -123,6 +123,12 @@ export class GitHubHelper implements PlatformAdapter {
    */
   private diffLinesCache = new Map<string, { lines: Set<string>; ts: number }>();
   private static readonly DIFF_CACHE_TTL_MS = 60_000;
+  /**
+   * Upper bound for diff-line entries so a long-lived helper serving many PRs
+   * cannot grow the map without bound. Oldest-inserted (or expired) entries
+   * are evicted on write.
+   */
+  private static readonly DIFF_CACHE_MAX_ENTRIES = 500;
 
   private async api<T>(
     path: string,
@@ -232,6 +238,8 @@ export class GitHubHelper implements PlatformAdapter {
    * @param options.onTruncated - Optional hook invoked when a page fetch fails and
    * partial data is returned (only when throwOnError is false). Receives the
    * failed page number and the error so callers can log/metric the truncation.
+   * When provided, the hook owns the log line and the generic truncation log
+   * is demoted to debug so one event yields one warning.
    * @param signal - Optional AbortSignal to cancel the paginated fetch.
    * @returns Array of items from all pages.
    */
@@ -277,16 +285,21 @@ export class GitHubHelper implements PlatformAdapter {
         ) {
           throw err;
         }
-        core.warning(
-          `Failed to fetch page ${page} for ${endpoint}: ${err instanceof Error ? err.message : err} (truncated:true, returned ${allItems.length} items from ${page - 1} pages)`,
-        );
+        const truncationDetail = `Failed to fetch page ${page} for ${endpoint}: ${err instanceof Error ? err.message : err} (truncated:true, returned ${allItems.length} items from ${page - 1} pages)`;
         if (options?.throwOnError) {
+          core.warning(truncationDetail);
           throw err;
         }
         try {
           options?.onTruncated?.(page, err);
         } catch {
           /* hook must never break pagination */
+        }
+        if (options?.onTruncated) {
+          // The contextual hook owns the log line — keep one warning per event.
+          core.debug(truncationDetail);
+        } else {
+          core.warning(truncationDetail);
         }
         break;
       }
@@ -559,7 +572,7 @@ export class GitHubHelper implements PlatformAdapter {
           }
         }
       }
-      this.diffLinesCache.set(cacheKey, { lines, ts: Date.now() });
+      this.setDiffLinesCache(cacheKey, lines);
       return new Set(lines);
     } catch (err) {
       core.warning(`Could not fetch PR diff for line validation: ${String(err)}`);
@@ -583,6 +596,28 @@ export class GitHubHelper implements PlatformAdapter {
     for (const key of [...this.diffLinesCache.keys()]) {
       if (key.startsWith(prefix)) this.diffLinesCache.delete(key);
     }
+  }
+
+  /**
+   * Insert into the diff-lines cache with a size bound. Refreshing an existing
+   * key never evicts; otherwise expired entries are swept first and the
+   * oldest-inserted entry is evicted when still at capacity.
+   * @param key - Cache key (PR number, optionally suffixed with head SHA).
+   * @param lines - Parsed diff lines to cache.
+   */
+  private setDiffLinesCache(key: string, lines: Set<string>): void {
+    if (!this.diffLinesCache.has(key) && this.diffLinesCache.size > 0) {
+      const now = Date.now();
+      for (const [k, v] of this.diffLinesCache) {
+        if (now - v.ts >= GitHubHelper.DIFF_CACHE_TTL_MS) this.diffLinesCache.delete(k);
+        if (this.diffLinesCache.size < GitHubHelper.DIFF_CACHE_MAX_ENTRIES) break;
+      }
+      if (this.diffLinesCache.size >= GitHubHelper.DIFF_CACHE_MAX_ENTRIES) {
+        const oldest = this.diffLinesCache.keys().next();
+        if (!oldest.done) this.diffLinesCache.delete(oldest.value);
+      }
+    }
+    this.diffLinesCache.set(key, { lines, ts: Date.now() });
   }
 
   /**

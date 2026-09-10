@@ -28,7 +28,7 @@ function fakeRepo(overrides: Partial<LearningRepository> = {}): LearningReposito
 
 describe('LearningStore reconnect', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     mockApplyMigrations.mockResolvedValue(undefined);
   });
 

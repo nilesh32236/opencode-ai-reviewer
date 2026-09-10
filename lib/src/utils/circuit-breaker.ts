@@ -115,11 +115,23 @@ export class CircuitBreaker {
     }
   }
 
+  private snapshot(): CircuitBreakerMetrics {
+    return {
+      state: this.state,
+      failureCount: this.failureCount,
+      successCount: this.successCount,
+      callCount: this.callCount,
+      tripCount: this.tripCount,
+      lastFailureAt: this.lastFailureAt,
+      lastSuccessAt: this.lastSuccessAt,
+    };
+  }
+
   private transitionState(): void {
     if (this.state === 'OPEN' && Date.now() - this.lastFailureTime >= this.effectiveCooldownMs) {
       this.state = 'HALF_OPEN';
       core.info(`[${this.options.name}] Circuit transitioning OPEN -> HALF_OPEN after cooldown`);
-      this.safeInvokeHook(this.options.onHalfOpen, this.getMetrics());
+      this.safeInvokeHook(this.options.onHalfOpen, this.snapshot());
     }
   }
 
@@ -233,7 +245,7 @@ export class CircuitBreaker {
       if (this.successCount >= this.options.successThreshold) {
         const count = this.successCount;
         this.state = 'CLOSED';
-        const metrics = this.getMetrics();
+        const metrics = this.snapshot();
         this.failureCount = 0;
         this.successCount = 0;
         core.info(
@@ -271,7 +283,7 @@ export class CircuitBreaker {
       core.warning(
         `[${this.options.name}] Circuit HALF_OPEN -> OPEN after failure in half-open state (cooldown: ${this.effectiveCooldownMs}ms)`,
       );
-      this.safeInvokeHook(this.options.onOpen, this.getMetrics());
+      this.safeInvokeHook(this.options.onOpen, this.snapshot());
     } else if (this.state === 'CLOSED' && this.failureCount >= this.options.failureThreshold) {
       this.state = 'OPEN';
       this.successCount = 0;
@@ -280,7 +292,7 @@ export class CircuitBreaker {
       core.warning(
         `[${this.options.name}] Circuit CLOSED -> OPEN after ${this.failureCount} consecutive failures (cooldown: ${this.effectiveCooldownMs}ms)`,
       );
-      this.safeInvokeHook(this.options.onOpen, this.getMetrics());
+      this.safeInvokeHook(this.options.onOpen, this.snapshot());
     }
   }
 
@@ -295,7 +307,7 @@ export class CircuitBreaker {
     this.successCount = 0;
     this.effectiveCooldownMs = this.options.cooldownMs;
     if (priorState === 'OPEN' || priorState === 'HALF_OPEN') {
-      this.safeInvokeHook(this.options.onClose, this.getMetrics());
+      this.safeInvokeHook(this.options.onClose, this.snapshot());
     }
   }
 
@@ -310,15 +322,7 @@ export class CircuitBreaker {
    */
   getMetrics(): CircuitBreakerMetrics {
     this.transitionState();
-    return {
-      state: this.state,
-      failureCount: this.failureCount,
-      successCount: this.successCount,
-      callCount: this.callCount,
-      tripCount: this.tripCount,
-      lastFailureAt: this.lastFailureAt,
-      lastSuccessAt: this.lastSuccessAt,
-    };
+    return this.snapshot();
   }
 }
 

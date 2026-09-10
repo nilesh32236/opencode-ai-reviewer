@@ -1364,6 +1364,31 @@ describe('setupOpenCode()', () => {
     expect(core.error).toHaveBeenCalledWith(expect.stringContaining('Could not find asset'));
     expect(mockDownloadTool).not.toHaveBeenCalled();
   });
+
+  it('fetches release metadata via withRetryAndTimeout with a 30s per-attempt timeout', async () => {
+    const retry = await import('../src/utils/retry.js');
+    const { RELEASE_FETCH_TIMEOUT_MS } = await import('../src/opencode.js');
+    expect(RELEASE_FETCH_TIMEOUT_MS).toBe(30_000);
+    mockIoWhich.mockResolvedValue(null);
+    mockToolFind.mockReturnValue('');
+    mockDownloadTool.mockResolvedValue('/tmp/opencode.tar.gz');
+    mockCacheDir.mockResolvedValue('/tmp/opencode-cached');
+    mockFindChecksumAsset.mockReturnValue(null);
+    mockGetKnownChecksum.mockReturnValue(null);
+    mockComputeSha256.mockResolvedValue('stored-checksum');
+
+    await setupOpenCode('v1.2.0');
+
+    // Full per-attempt timeout/retry semantics are covered by retry.test.ts;
+    // here we assert the release-metadata path is wired to that policy and
+    // forwards a live AbortSignal to fetch.
+    const mocked = retry.withRetryAndTimeout as ReturnType<typeof vi.fn>;
+    expect(mocked).toHaveBeenCalled();
+    const timeoutArg = mocked.mock.calls[0][1];
+    expect(timeoutArg).toBe(RELEASE_FETCH_TIMEOUT_MS);
+    const fetchInit = mockFetch.mock.calls[0]?.[1] as RequestInit | undefined;
+    expect(fetchInit?.signal).toBeInstanceOf(AbortSignal);
+  });
 });
 
 describe('configureGit()', () => {
