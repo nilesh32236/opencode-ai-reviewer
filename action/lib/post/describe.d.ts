@@ -6,10 +6,10 @@ import type { ActionInputs } from './inputs.js';
  * description as a PR comment (upserted by a stable marker so it is updated on
  * subsequent pushes).
  * @param inputs - Parsed action inputs.
- * @param _config - Full agent configuration (unused).
+ * @param config - Full agent configuration (used for skip-label/skip-actor checks).
  * @param engine - Review engine instance.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param _repo - Repository string (owner/repo, unused).
  * @param _token - GitHub authentication token (unused).
  */
-export declare function runDescribe(inputs: ActionInputs, _config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, _repo: string, _token: string): Promise<void>;
+export declare function runDescribe(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, _repo: string, _token: string): Promise<void>;

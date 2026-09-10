@@ -1,6 +1,6 @@
-import fs from 'fs';
 import { createHash } from 'node:crypto';
-import path from 'path';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { restoreCache, saveCache } from '@actions/cache';
 import * as core from '@actions/core';
 import * as github from '@actions/github';

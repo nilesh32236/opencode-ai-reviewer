@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import type { AgentConfig, ChangelogConfig, PlatformAdapter } from '@opencode-pr-agent/lib';
@@ -118,7 +118,6 @@ export async function runChangelog(config: AgentConfig, gh: PlatformAdapter): Pr
 
     await exec.exec('git', ['add', '-A']);
     await exec.exec('git', ['commit', '-m', `chore(release): update changelog for ${version}`]);
-    validateRefName(branchName);
     await exec.exec('git', ['push', 'origin', branchName, '--force-with-lease']);
 
     const prTitle = `[Changelog] Release notes for ${version}`;
