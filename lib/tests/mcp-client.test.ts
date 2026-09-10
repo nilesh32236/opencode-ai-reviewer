@@ -139,6 +139,7 @@ async function createConnectedManager(
 describe('MCPManager', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.OPENCODE_MCP_REMOTE_TRANSPORT;
   });
 
   it('getStatus() reports configured totals and initialization state', async () => {
@@ -936,7 +937,11 @@ describe('MCPManager', () => {
   describe('resolveRemoteTransportMode', () => {
     const OLD_ENV = process.env.OPENCODE_MCP_REMOTE_TRANSPORT;
     afterEach(() => {
-      process.env.OPENCODE_MCP_REMOTE_TRANSPORT = OLD_ENV ?? '';
+      if (OLD_ENV === undefined) {
+        delete process.env.OPENCODE_MCP_REMOTE_TRANSPORT;
+      } else {
+        process.env.OPENCODE_MCP_REMOTE_TRANSPORT = OLD_ENV;
+      }
     });
 
     it('defaults to auto when neither per-server nor env is set', () => {
@@ -982,19 +987,31 @@ describe('MCPManager', () => {
   });
 
   describe('isStreamableHandshakeMismatch', () => {
-    it.each(['Not Found: 404', '405 Method Not Allowed', '406 Not Acceptable'])(
-      'treats %s as a mismatch',
-      (msg) => {
-        expect(isStreamableHandshakeMismatch(new Error(msg))).toBe(true);
-      },
-    );
+    it.each([
+      'Not Found: 404',
+      '405 Method Not Allowed',
+      '406 Not Acceptable',
+      '405 method not allowed',
+      '406 not acceptable',
+      'protocol version mismatch',
+      'Streamable version mismatch',
+      'server does not support Streamable',
+      'unsupported Streamable transport',
+      'expected text/event-stream response',
+    ])('treats %s as a mismatch', (msg) => {
+      expect(isStreamableHandshakeMismatch(new Error(msg))).toBe(true);
+    });
 
-    it.each(['Unauthorized: 401', 'Forbidden: 403', 'Connection timed out after 5000ms'])(
-      'does not treat %s as a mismatch',
-      (msg) => {
-        expect(isStreamableHandshakeMismatch(new Error(msg))).toBe(false);
-      },
-    );
+    it.each([
+      'Unauthorized: 401',
+      'Forbidden: 403',
+      'Connection timed out after 5000ms',
+      'Streamable HTTP connection timed out',
+      'Streamable HTTP 401 Unauthorized',
+      'fetch failed: DNS ENOTFOUND',
+    ])('does not treat %s as a mismatch', (msg) => {
+      expect(isStreamableHandshakeMismatch(new Error(msg))).toBe(false);
+    });
   });
 
   describe('createRemoteTransportFactories', () => {

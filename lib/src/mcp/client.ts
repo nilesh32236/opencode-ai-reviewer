@@ -158,7 +158,9 @@ export function isStreamableHandshakeMismatch(err: unknown): boolean {
     /not acceptable/i.test(raw) ||
     /version mismatch/i.test(raw) ||
     /protocol version/i.test(raw) ||
-    /streamable/i.test(raw) ||
+    /unsupported.*streamable/i.test(raw) ||
+    /streamable.*(version|unsupported|not support)/i.test(raw) ||
+    /not support.*streamable/i.test(raw) ||
     /text\/event-stream/i.test(raw)
   );
 }
@@ -222,8 +224,9 @@ export function createRemoteTransportFactories(
   headers: Record<string, string>,
 ): Array<() => Transport> {
   // Validate eagerly so a malformed URL fails fast (fail-open at the caller).
-  new URL(server.url!);
-  const rawUrl = server.url!;
+  const rawUrl = server.url;
+  if (!rawUrl) throw new Error(`Missing url for remote MCP server ${server.name}`);
+  new URL(rawUrl);
   // NOTE: `StreamableHTTPClientTransport` is a static import from
   // `@modelcontextprotocol/sdk/client/streamableHttp.js` (SDK ^1.30.0 always
   // ships it), so no runtime `typeof` guard is needed — a missing export would
@@ -360,7 +363,10 @@ export class MCPManager {
       // Scope retries across the fallback: the first leg is a single
       // handshake attempt (no retry amplification); later legs keep the
       // standard budget. Single-factory modes always use the default budget.
-      const retryOpts = factories.length > 1 && i === 0 ? { maxRetries: 0 } : undefined;
+      // NOTE: withRetry treats maxRetries as total attempts, so a single
+      // attempt is { maxRetries: 1 } — { maxRetries: 0 } would run zero
+      // attempts and throw undefined.
+      const retryOpts = factories.length > 1 && i === 0 ? { maxRetries: 1 } : undefined;
       const err = await this.connectServer(server, factory, retryOpts);
       if (err === null) return;
       if (i < factories.length - 1) {
@@ -390,9 +396,9 @@ export class MCPManager {
     server: MCPServerConfig,
     createTransport: () => Transport,
     retryOpts?: { maxRetries?: number; baseDelayMs?: number },
-  ): Promise<unknown> {
+  ): Promise<Error | null> {
     const result: { client?: Client; transport?: Transport } = {};
-    let lastError: unknown = null;
+    let lastError: Error | null = null;
     try {
       await withRetry(
         async () => {
@@ -450,7 +456,7 @@ export class MCPManager {
       if (this.clients.has(server.name)) return null;
       return lastError ?? new Error(`Failed to connect to ${server.name}`);
     } catch (err) {
-      lastError = err;
+      lastError = err instanceof Error ? err : new Error(String(err ?? 'Unknown error'));
       this.logger.warn(`Failed to connect to ${server.name}`, err);
       this.clients.delete(server.name);
       if (result.client) {
