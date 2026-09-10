@@ -181,6 +181,23 @@ export async function handleCommand(
     }
 
     async function dispatchCommand(): Promise<void> {
+      // Classify an issue number as MR/PR, failing closed on transient API
+      // errors. Returns null (after logging a sanitized warning) when the
+      // probe itself fails so callers skip just this command via `break`.
+      async function classifyAsMr(commandName: string): Promise<boolean | null> {
+        try {
+          return await gh.isMR(issueNumber);
+        } catch (err) {
+          const status =
+            typeof err === 'object' && err !== null
+              ? (err as { status?: number }).status
+              : undefined;
+          logger.warn(
+            `Skipping /${commandName} on #${issueNumber}: failed to classify PR/issue${status !== undefined ? ` (status ${status})` : ''}: ${sanitizeErrorMessage(err)}`,
+          );
+          return null;
+        }
+      }
       switch (command) {
         case 'analyze': {
           await handleAnalyzeCommand(
@@ -209,7 +226,10 @@ export async function handleCommand(
         }
 
         case 'describe': {
-          if (!(await gh.isMR(issueNumber))) {
+          const probed = await classifyAsMr('describe');
+          if (probed === null) break;
+          const isMr: boolean = probed;
+          if (!isMr) {
             logger.info(`Ignoring /describe on #${issueNumber}: not a pull request`);
             break;
           }
@@ -226,7 +246,10 @@ export async function handleCommand(
         }
 
         case 'review': {
-          if (await gh.isMR(issueNumber)) {
+          const probed = await classifyAsMr('review');
+          if (probed === null) break;
+          const isMr: boolean = probed;
+          if (isMr) {
             await handlePRReview(
               issueNumber,
               repo,
@@ -246,7 +269,9 @@ export async function handleCommand(
         case 'fix': {
           if (signal?.aborted) return;
           const force = parsed?.flags?.force === true;
-          const isPR = await gh.isMR(issueNumber);
+          const probedFix = await classifyAsMr('fix');
+          if (probedFix === null) break;
+          const isPR: boolean = probedFix;
           if (isPR) {
             await handleAutofixLoop({
               prNumber: issueNumber,
@@ -323,7 +348,10 @@ export async function handleCommand(
         }
 
         case 'docs': {
-          if (!(await gh.isMR(issueNumber))) {
+          const probed = await classifyAsMr('docs');
+          if (probed === null) break;
+          const isMr: boolean = probed;
+          if (!isMr) {
             logger.info(`Ignoring /docs on #${issueNumber}: not a pull request`);
             break;
           }

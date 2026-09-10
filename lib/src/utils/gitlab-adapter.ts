@@ -33,6 +33,36 @@ const commentUpserts = new Map<
   }
 >();
 
+/** Maximum diff payload (bytes) retained per file before truncation. */
+const MAX_DIFF_BYTES_PER_FILE = 100_000;
+/** Maximum files retained from an MR changes payload before truncation. */
+const MAX_DIFF_FILES = 300;
+/** Maximum raw diff text (bytes) parsed by getDiffLines before truncation. */
+const MAX_DIFF_TEXT_BYTES = 512 * 1024;
+
+/**
+ * Measure a string's UTF-8 byte length. `String.length` counts UTF-16 code
+ * units and undercounts non-ASCII text, so byte caps must use this helper.
+ * @param text - String to measure.
+ * @returns UTF-8 byte length.
+ */
+function utf8ByteLength(text: string): number {
+  return Buffer.byteLength(text, 'utf8');
+}
+
+/**
+ * Truncate a string to a UTF-8 byte budget without splitting a multi-byte
+ * sequence (decoding re-emits a replacement character instead of corrupt
+ * bytes, and callers re-align to a newline boundary afterwards).
+ * @param text - String to truncate.
+ * @param maxBytes - Maximum UTF-8 bytes to retain.
+ * @returns Truncated string within the byte budget.
+ */
+function truncateToBytes(text: string, maxBytes: number): string {
+  if (utf8ByteLength(text) <= maxBytes) return text;
+  return Buffer.from(text, 'utf8').subarray(0, maxBytes).toString('utf8');
+}
+
 /** GitLab adapter. */
 export class GitLabAdapter implements PlatformAdapter {
   private circuitBreaker = new CircuitBreaker({
@@ -70,7 +100,41 @@ export class GitLabAdapter implements PlatformAdapter {
     responseType?: 'json' | 'text',
     signal?: AbortSignal,
   ): Promise<T> {
-    const url = `${this.apiUrl}/projects/${this.projectPath}${path}`;
+    return this.request<T>(
+      `${this.apiUrl}/projects/${this.projectPath}${path}`,
+      options,
+      responseType,
+      signal,
+    );
+  }
+
+  /**
+   * Top-level (non-project-scoped) API request, e.g. `/user`. Shares
+   * circuit-breaker/retry/timeout logic with {@link api} but omits the
+   * `/projects/:id` prefix which would otherwise 404.
+   *
+   * @param path - Top-level API path beginning with `/` (e.g. `/user`).
+   * @param options - Optional fetch options (method, body, headers).
+   * @param responseType - When `text`, resolve the raw body instead of JSON.
+   * @param signal - Optional AbortSignal to cancel the request.
+   * @returns The parsed response body cast to `T`.
+   */
+  private async apiBase<T>(
+    path: string,
+    options: RequestInit = {},
+    responseType?: 'json' | 'text',
+    signal?: AbortSignal,
+  ): Promise<T> {
+    return this.request<T>(`${this.apiUrl}${path}`, options, responseType, signal);
+  }
+
+  private async request<T>(
+    url: string,
+    options: RequestInit = {},
+    responseType?: 'json' | 'text',
+    signal?: AbortSignal,
+  ): Promise<T> {
+    const path = url.startsWith(this.apiUrl) ? url.slice(this.apiUrl.length) : url;
     const method = (options.method ?? 'GET').toUpperCase();
     const isIdempotent =
       method === 'GET' || method === 'HEAD' || method === 'PUT' || method === 'DELETE';
@@ -168,6 +232,11 @@ export class GitLabAdapter implements PlatformAdapter {
    * silently returning partial data (default: false).
    * @param options.stopWhen - Predicate evaluated against the accumulated items after
    * each page; when it returns true, pagination stops early (default: never).
+   * @param options.onTruncated - Optional hook invoked when a page fetch fails and
+   * partial data is returned (only when throwOnError is false). Receives the
+   * failed page number and the error so callers can log/metric the truncation.
+   * When provided, the hook owns the log line and the generic truncation log
+   * is demoted to debug so one event yields one warning.
    * @param signal - Optional AbortSignal to cancel the paginated fetch.
    * @returns Description.
    */
@@ -179,6 +248,7 @@ export class GitLabAdapter implements PlatformAdapter {
       direction?: 'asc' | 'desc';
       throwOnError?: boolean;
       stopWhen?: (items: T[]) => boolean;
+      onTruncated?: (page: number, err: unknown) => void;
     },
     signal?: AbortSignal,
   ): Promise<T[]> {
@@ -203,11 +273,30 @@ export class GitLabAdapter implements PlatformAdapter {
         if (stopWhen?.(allItems)) break;
         if (items.length < perPage) break;
       } catch (err) {
-        core.warning(
-          `Failed to fetch page ${page} for ${endpoint}: ${err instanceof Error ? err.message : err}`,
-        );
-        if (options?.throwOnError) {
+        // Preserve cancellation semantics: an aborted caller signal (or an
+        // AbortError from the transport) must propagate instead of being
+        // downgraded to truncated partial data.
+        if (
+          signal?.aborted ||
+          (err instanceof DOMException && err.name === 'AbortError') ||
+          (err instanceof Error && err.name === 'AbortError')
+        ) {
           throw err;
+        }
+        const truncationDetail = `Failed to fetch page ${page} for ${endpoint}: ${err instanceof Error ? err.message : err} (truncated:true, returned ${allItems.length} items from ${page - 1} pages)`;
+        if (options?.throwOnError) {
+          core.warning(truncationDetail);
+          throw err;
+        }
+        try {
+          options?.onTruncated?.(page, err);
+        } catch {
+          /* hook must never break pagination */
+        }
+        if (options?.onTruncated) {
+          core.debug(truncationDetail);
+        } else {
+          core.warning(truncationDetail);
         }
         break;
       }
@@ -254,7 +343,27 @@ export class GitLabAdapter implements PlatformAdapter {
     }
 
     const mr = mrResult.value;
-    const changes = changesResult.status === 'fulfilled' ? changesResult.value.changes : [];
+    // Coerce malformed /changes shapes (undefined/null/non-array on partial
+    // failure) to [] instead of crashing on `.length`.
+    const rawChanges = changesResult.status === 'fulfilled' ? changesResult.value.changes : [];
+    let changes = Array.isArray(rawChanges) ? rawChanges : [];
+    // Bound unbounded MR payloads: cap file count and per-file diff bytes so
+    // large MRs neither truncate silently nor balloon LLM prompts / OOM.
+    if (changes.length > MAX_DIFF_FILES) {
+      core.warning(
+        `MR !${number} changes truncated: ${changes.length} files exceeds cap of ${MAX_DIFF_FILES} (truncated:true)`,
+      );
+      changes = changes.slice(0, MAX_DIFF_FILES);
+    }
+    changes = changes.map((f) => {
+      if (!f.diff || utf8ByteLength(f.diff) <= MAX_DIFF_BYTES_PER_FILE) return f;
+      const truncatedDiff = truncateToBytes(f.diff, MAX_DIFF_BYTES_PER_FILE);
+      const overflow = utf8ByteLength(f.diff) - utf8ByteLength(truncatedDiff);
+      return {
+        ...f,
+        diff: `${truncatedDiff}\n... [truncated ${overflow} bytes]`,
+      };
+    });
 
     let linkedIssue: number | undefined;
     if (mr.description) {
@@ -298,8 +407,12 @@ export class GitLabAdapter implements PlatformAdapter {
     try {
       await this.api(`/merge_requests/${number}`, { method: 'HEAD' });
       return true;
-    } catch {
-      return false;
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      // Only 404 means "not an MR"; auth/rate-limit/server failures must
+      // propagate instead of misrouting into the issue-API path.
+      if (status === 404) return false;
+      throw err;
     }
   }
 
@@ -396,8 +509,22 @@ export class GitLabAdapter implements PlatformAdapter {
         'text',
       );
       const lines = new Set<string>();
+      // Slice at the last newline within the cap so the parser never sees a
+      // partial trailing line (e.g. a cut `+++ b/` file header that would
+      // poison currentFile, or a cut hunk header). Intact leading hunks still
+      // expand to their full declared range (safe direction: allows extra
+      // comments rather than dropping valid lines).
+      let truncatedText = diffText;
+      if (utf8ByteLength(diffText) > MAX_DIFF_TEXT_BYTES) {
+        const byteTruncated = truncateToBytes(diffText, MAX_DIFF_TEXT_BYTES);
+        const cutAt = byteTruncated.lastIndexOf('\n');
+        truncatedText = cutAt > 0 ? byteTruncated.slice(0, cutAt) : byteTruncated;
+        core.warning(
+          `MR !${mrNumber} diff truncated: ${utf8ByteLength(diffText)} bytes exceeds cap of ${MAX_DIFF_TEXT_BYTES} (truncated:true)`,
+        );
+      }
       let currentFile = '';
-      const linesArray = diffText.split('\n');
+      const linesArray = truncatedText.split('\n');
       const hunkRegex = /^@@\s+-[0-9,]+\s+\+([0-9]+)(?:,([0-9]+))?\s+@@/;
 
       for (const line of linesArray) {
@@ -421,7 +548,9 @@ export class GitLabAdapter implements PlatformAdapter {
       }
       return lines;
     } catch (err) {
-      core.warning(`Could not fetch MR diff for line validation: ${String(err)}`);
+      const status = (err as { status?: number }).status;
+      const suffix = status !== undefined ? ` (status ${status})` : '';
+      core.warning(`Could not fetch MR diff for line validation${suffix}: ${String(err)}`);
       return new Set();
     }
   }
@@ -1259,7 +1388,12 @@ export class GitLabAdapter implements PlatformAdapter {
         headers: { 'Content-Type': 'application/json' },
       });
       return true;
-    } catch {
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      const suffix = status !== undefined ? ` (status ${status})` : '';
+      core.warning(
+        `Failed to merge MR !${mrNumber}${suffix}: ${err instanceof Error ? err.message : err}`,
+      );
       return false;
     }
   }
@@ -1277,7 +1411,12 @@ export class GitLabAdapter implements PlatformAdapter {
         body: JSON.stringify({ merge_when_pipeline_succeeds: true }),
       });
       return true;
-    } catch {
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      const suffix = status !== undefined ? ` (status ${status})` : '';
+      core.warning(
+        `Failed to enable auto-merge on MR !${mrNumber}${suffix}: ${err instanceof Error ? err.message : err}`,
+      );
       return false;
     }
   }
@@ -1400,12 +1539,21 @@ export class GitLabAdapter implements PlatformAdapter {
     }
 
     try {
-      const user = (await this.api<{ username: string }>('/user', {}, 'json')) as {
+      const user = (await this.apiBase<{ username: string }>('/user', {}, 'json')) as {
         username: string;
       };
-      this.currentUserLogin = user.username;
-      return user.username;
-    } catch {
+      const username: unknown = (user as { username?: unknown } | null | undefined)?.username;
+      if (typeof username !== 'string' || username.length === 0) {
+        throw new Error('GitLab /user missing username');
+      }
+      this.currentUserLogin = username;
+      return username;
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      const suffix = status !== undefined ? ` (status ${status})` : '';
+      core.warning(
+        `Failed to fetch GitLab current user${suffix}, falling back to opencode-reviewer[bot]: ${err instanceof Error ? err.message : err}`,
+      );
       this.currentUserLogin = 'opencode-reviewer[bot]';
       return this.currentUserLogin;
     }

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { MCPManager } from '../src/mcp/client.js';
+import { MCPManager, isAllowedTool } from '../src/mcp/client.js';
 import type { MCPServerConfig } from '../src/types/index.js';
 
 // ─── Hoisted mock classes & functions (accessible inside vi.mock factories) ──
@@ -515,7 +515,9 @@ describe('MCPManager', () => {
       const manager = await createConnectedManager(
         [makeConfig({ allowedTools: ['resolve', 'search', 'context'] })],
         () => {
-          mockListTools.mockResolvedValue({ tools: [{ name: 'get-context' }] });
+          // Anchored-prefix match: `context-get` matches pattern `context`;
+          // a bare substring such as `get-context` must NOT match.
+          mockListTools.mockResolvedValue({ tools: [{ name: 'context-get' }] });
         },
       );
       mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'context data' }] });
@@ -524,6 +526,20 @@ describe('MCPManager', () => {
 
       expect(mockCallTool).toHaveBeenCalled();
       expect(result.entries).toHaveLength(1);
+    });
+
+    it('does not call a tool whose name merely contains the pattern', async () => {
+      const manager = await createConnectedManager(
+        [makeConfig({ allowedTools: ['resolve'] })],
+        () => {
+          mockListTools.mockResolvedValue({ tools: [{ name: 'my-resolve-tool' }] });
+        },
+      );
+
+      const result = await manager.queryContext('test');
+
+      expect(mockCallTool).not.toHaveBeenCalled();
+      expect(result.entries).toHaveLength(0);
     });
 
     it('returns empty entries when no matching tool found', async () => {
@@ -719,6 +735,38 @@ describe('MCPManager', () => {
 
       expect(result).toBe('');
       expect(mockCallTool).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── isAllowedTool() ───────────────────────────────────────────────────────
+
+  describe('isAllowedTool', () => {
+    it.each([
+      ['resolve', 'resolve'],
+      ['resolve:lib', 'resolve'],
+      ['resolve-library', 'resolve'],
+      ['resolve_library', 'resolve'],
+      ['resolve.docs', 'resolve'],
+      ['resolve/docs', 'resolve'],
+    ])('matches tool %s against pattern %s', (tool, pattern) => {
+      expect(isAllowedTool(tool, pattern)).toBe(true);
+    });
+
+    it.each([
+      ['my-resolve-tool', 'resolve'],
+      ['resolveEvil', 'resolve'],
+      ['resolves', 'resolve'],
+      ['RESOLVE', 'resolve'],
+      ['resolve', 'RESOLVE'],
+      ['other', 'resolve'],
+    ])('rejects tool %s against pattern %s', (tool, pattern) => {
+      expect(isAllowedTool(tool, pattern)).toBe(false);
+    });
+
+    it('never matches empty patterns or tool names', () => {
+      expect(isAllowedTool('resolve', '')).toBe(false);
+      expect(isAllowedTool('', 'resolve')).toBe(false);
+      expect(isAllowedTool('', '')).toBe(false);
     });
   });
 });

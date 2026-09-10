@@ -388,6 +388,9 @@ export class GitHubHelper implements PlatformAdapter {
   /**
    * Check whether a given issue/PR number refers to a pull request.
    *
+   * Returns false only on HTTP 404 (definitively not a PR). Rethrows
+   * 401/403/429/5xx and network errors — callers must wrap in try/catch
+   * and fail closed (log with status, do not fall back to the issue path).
    * @param number - Issue/PR number.
    * @returns True if the number corresponds to a pull request.
    */
@@ -395,14 +398,19 @@ export class GitHubHelper implements PlatformAdapter {
     try {
       await this.api(`/pulls/${number}`, { method: 'HEAD' });
       return true;
-    } catch {
-      return false;
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      // Only a 404 definitively means "not a PR". Auth/rate-limit/server
+      // failures must propagate so callers are not routed down the wrong path.
+      if (status === 404) return false;
+      throw err;
     }
   }
 
   /**
    * PlatformAdapter alias for isPR.
    *
+   * Returns false only on HTTP 404; rethrows 401/403/429/5xx and network errors.
    * @param number - Issue/PR number.
    * @returns True if the number corresponds to a pull request.
    */
@@ -575,7 +583,9 @@ export class GitHubHelper implements PlatformAdapter {
       this.setDiffLinesCache(cacheKey, lines);
       return new Set(lines);
     } catch (err) {
-      core.warning(`Could not fetch PR diff for line validation: ${String(err)}`);
+      const status = (err as { status?: number }).status;
+      const suffix = status !== undefined ? ` (status ${status})` : '';
+      core.warning(`Could not fetch PR diff for line validation${suffix}: ${String(err)}`);
       return new Set();
     }
   }
@@ -1381,7 +1391,9 @@ export class GitHubHelper implements PlatformAdapter {
       });
       return { number: result.number, url: result.html_url };
     } catch (err) {
-      core.warning(`Failed to create issue: ${err instanceof Error ? err.message : err}`);
+      const status = (err as { status?: number }).status;
+      const suffix = status !== undefined ? ` (status ${status})` : '';
+      core.warning(`Failed to create issue${suffix}: ${err instanceof Error ? err.message : err}`);
       return null;
     }
   }
@@ -1409,8 +1421,10 @@ export class GitHubHelper implements PlatformAdapter {
       });
       return { number: result.number, url: result.html_url };
     } catch (err) {
+      const status = (err as { status?: number }).status;
+      const suffix = status !== undefined ? ` (status ${status})` : '';
       core.warning(
-        `Failed to create PR "${title}" (${head} → ${base}): ${err instanceof Error ? err.message : err}`,
+        `Failed to create PR "${title}" (${head} → ${base})${suffix}: ${err instanceof Error ? err.message : err}`,
       );
       return null;
     }
@@ -1696,7 +1710,11 @@ export class GitHubHelper implements PlatformAdapter {
       });
       return true;
     } catch (err) {
-      core.warning(`Failed to merge PR #${prNumber}: ${err instanceof Error ? err.message : err}`);
+      const status = (err as { status?: number }).status;
+      const suffix = status !== undefined ? ` (status ${status})` : '';
+      core.warning(
+        `Failed to merge PR #${prNumber}${suffix}: ${err instanceof Error ? err.message : err}`,
+      );
       return false;
     }
   }
@@ -1726,8 +1744,10 @@ export class GitHubHelper implements PlatformAdapter {
       });
       return true;
     } catch (err) {
+      const status = (err as { status?: number }).status;
+      const suffix = status !== undefined ? ` (status ${status})` : '';
       core.warning(
-        `Failed to enable auto-merge on PR #${prNumber}: ${err instanceof Error ? err.message : err}`,
+        `Failed to enable auto-merge on PR #${prNumber}${suffix}: ${err instanceof Error ? err.message : err}`,
       );
       return false;
     }
@@ -2211,8 +2231,19 @@ export class GitHubHelper implements PlatformAdapter {
    * @returns Array of tags with name and commit SHA, newest first.
    */
   async getTags(): Promise<Array<{ name: string; commitSha: string }>> {
-    const refs =
-      await this.api<Array<{ ref: string; object: { sha: string } }>>('/git/matching-refs/tags');
+    // Paginated: repos with many tags would otherwise yield a truncated list
+    // and getLatestTag() could pick the wrong "latest" tag.
+    const perPage = 100;
+    const maxPages = 10;
+    const refs = await this.paginate<{ ref: string; object: { sha: string } }>(
+      '/git/matching-refs/tags',
+      { perPage, maxPages, throwOnError: true },
+    );
+    if (refs.length >= perPage * maxPages) {
+      core.warning(
+        `Tag list may be truncated: reached pagination cap of ${perPage * maxPages} tags (truncated:true)`,
+      );
+    }
     const tags = refs.map((r) => ({
       name: r.ref.replace('refs/tags/', ''),
       commitSha: r.object.sha,
@@ -2306,12 +2337,23 @@ export class GitHubHelper implements PlatformAdapter {
    * @returns Array of repo-relative file paths touched by the PR.
    */
   async getPRFilePaths(prNumber: number): Promise<string[]> {
-    const files = await this.api<Array<{ filename: string }>>(`/pulls/${prNumber}/files`);
+    // Paginated (mirrors getPR()): a single page caps at 30 files and
+    // downstream monorepo filters would silently miss the rest.
+    const perPage = 100;
+    const maxPages = 10;
+    const files = await this.paginate<{ filename?: string; path?: string }>(
+      `/pulls/${prNumber}/files`,
+      { perPage, maxPages, throwOnError: true },
+    );
+    if (files.length >= perPage * maxPages) {
+      core.warning(
+        `PR #${prNumber} file list may be truncated: reached pagination cap of ${perPage * maxPages} files (truncated:true)`,
+      );
+    }
     const filePaths: string[] = [];
     for (const f of files) {
-      if (typeof f.filename === 'string' && f.filename.length > 0) {
-        filePaths.push(f.filename);
-      }
+      const p = typeof f.filename === 'string' && f.filename.length > 0 ? f.filename : f.path;
+      if (typeof p === 'string' && p.length > 0) filePaths.push(p);
     }
     return filePaths;
   }

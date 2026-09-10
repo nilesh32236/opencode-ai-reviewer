@@ -285,6 +285,70 @@ describe('GitLabAdapter', () => {
       const mr = await adapter.getMR(42);
       expect(mr.labels).toEqual([]);
     });
+
+    it.each([{}, { changes: null }, { changes: 'oops' }])(
+      'degrades to no changed files on malformed /changes shape %s',
+      async (changesBody) => {
+        fetchMock.mockImplementation(async (url: string) => {
+          if (url.includes('/changes')) return mockResponse({ body: changesBody });
+          return mockResponse({ body: mrData });
+        });
+
+        const mr = await adapter.getMR(42);
+        expect(mr.changedFiles).toEqual([]);
+      },
+    );
+
+    it('caps changed files at 300 with a truncated warning', async () => {
+      const core = await import('@actions/core');
+      const bigChanges = {
+        changes: Array.from({ length: 350 }, (_, i) => ({
+          new_path: `src/f${i}.ts`,
+          old_path: `src/f${i}.ts`,
+          new_file: false,
+          renamed_file: false,
+          deleted_file: false,
+          diff: '@@ -1 +1 @@',
+        })),
+      };
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes('/changes')) return mockResponse({ body: bigChanges });
+        return mockResponse({ body: mrData });
+      });
+
+      const mr = await adapter.getMR(42);
+      expect(mr.changedFiles).toHaveLength(300);
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('truncated:true'));
+    });
+
+    it('truncates per-file diffs exceeding 100KB', async () => {
+      const hugeDiff = 'x'.repeat(100_001);
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes('/changes'))
+          return mockResponse({
+            body: {
+              changes: [
+                {
+                  new_path: 'big.ts',
+                  old_path: 'big.ts',
+                  new_file: false,
+                  renamed_file: false,
+                  deleted_file: false,
+                  diff: hugeDiff,
+                },
+              ],
+            },
+          });
+        return mockResponse({ body: mrData });
+      });
+
+      const mr = await adapter.getMR(42);
+      expect(mr.changedFiles).toHaveLength(1);
+      // Truncation keeps the leading bytes and appends a marker (so the patch
+      // is marker-bytes longer than the raw cap, not shorter than input).
+      expect(mr.changedFiles[0].patch).toContain('[truncated 1 bytes]');
+      expect(mr.changedFiles[0].patch!.startsWith(hugeDiff.slice(0, 100))).toBe(true);
+    });
   });
 
   describe('isMR', () => {
@@ -302,11 +366,10 @@ describe('GitLabAdapter', () => {
       expect(result).toBe(false);
     });
 
-    it('returns false on network error', async () => {
+    it('throws on network error instead of misclassifying as not-an-MR', async () => {
       fetchMock.mockRejectedValue(new Error('Network failure'));
 
-      const result = await adapter.isMR(42);
-      expect(result).toBe(false);
+      await expect(adapter.isMR(42)).rejects.toThrow('Network failure');
     });
   });
 
@@ -648,6 +711,49 @@ diff --git a/src/a.ts b/src/a.ts
       expect(lines.has('src/a.ts:3')).toBe(true);
       expect(lines.has('src/a.ts:4')).toBe(true);
       expect(lines.size).toBe(4);
+    });
+
+    it('truncates oversized diffs with a truncated:true warning', async () => {
+      const core = await import('@actions/core');
+      // Header + 200k single-char added lines (~600KB) with one hunk declaring
+      // all 200k lines: the retained prefix keeps the intact hunk header, so
+      // the full declared range is claimed (safe direction: allows extra
+      // comments rather than dropping valid lines).
+      const header =
+        'diff --git a/big.ts b/big.ts\n--- a/big.ts\n+++ b/big.ts\n@@ -1 +1,200000 @@\n';
+      const diffText = header + '+x\n'.repeat(200_000);
+      expect(diffText.length).toBeGreaterThan(512 * 1024);
+      fetchMock.mockImplementation(async () =>
+        mockResponse({ text: vi.fn().mockResolvedValue(diffText) }),
+      );
+
+      const lines = await adapter.getDiffLines(42);
+
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('truncated:true'));
+      expect(lines.size).toBe(200_000);
+      expect(lines.has('big.ts:1')).toBe(true);
+      expect(lines.has('big.ts:200000')).toBe(true);
+    });
+
+    it('ignores content past the truncation cap', async () => {
+      // A newline-free pad pushes the second file's header past the 512KB cap:
+      // only the first file's intact hunk parses, and no partial trailing
+      // line leaks into the claimed set.
+      const first =
+        'diff --git a/first.ts b/first.ts\n--- a/first.ts\n+++ b/first.ts\n@@ -1 +1,2 @@\n a\n+b\n';
+      const diffText = `${first}${'x'.repeat(512 * 1024)}\n+++ b/second.ts\n@@ -1 +1 @@\n+z\n`;
+      expect(diffText.length).toBeGreaterThan(512 * 1024);
+      fetchMock.mockImplementation(async () =>
+        mockResponse({ text: vi.fn().mockResolvedValue(diffText) }),
+      );
+
+      const lines = await adapter.getDiffLines(42);
+
+      expect(lines.has('first.ts:1')).toBe(true);
+      expect(lines.has('first.ts:2')).toBe(true);
+      for (const key of lines) {
+        expect(key.startsWith('first.ts:')).toBe(true);
+      }
     });
   });
 
@@ -1446,6 +1552,26 @@ diff --git a/src/a.ts b/src/a.ts
 
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
+
+    it('calls top-level /user without the /projects prefix', async () => {
+      fetchMock.mockResolvedValue(mockResponse({ body: { username: 'api-user' } }));
+
+      await adapter.getCurrentUser();
+
+      const url = fetchMock.mock.calls[0][0] as string;
+      expect(url).toBe(`${API_URL}/user`);
+      expect(url).not.toContain('/projects/');
+    });
+
+    it.each([{}, { username: null }, { username: '' }])(
+      'falls back to bot name on malformed /user shape %s',
+      async (body) => {
+        fetchMock.mockResolvedValue(mockResponse({ body }));
+
+        const result = await adapter.getCurrentUser();
+        expect(result).toBe('opencode-reviewer[bot]');
+      },
+    );
   });
 
   describe('createIssue', () => {
@@ -1611,6 +1737,40 @@ diff --git a/src/a.ts b/src/a.ts
       const url = fetchMock.mock.calls[0][0] as string;
       expect(url).toContain('per_page=10&page=1');
     });
+
+    it('rethrows AbortError instead of returning truncated partial data', async () => {
+      const { warning } = await import('@actions/core');
+      const controller = new AbortController();
+      controller.abort();
+      fetchMock.mockRejectedValue(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+
+      await expect(adapter.paginate('/issues/1/notes', {}, controller.signal)).rejects.toThrow(
+        'aborted',
+      );
+      expect(warning).not.toHaveBeenCalledWith(expect.stringContaining('Failed to fetch page'));
+    });
+
+    it('lets the onTruncated hook own the log line (debug, not warning)', async () => {
+      const core = await import('@actions/core');
+      let callCount = 0;
+      fetchMock.mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1)
+          return mockResponse({ body: Array.from({ length: 100 }, (_, i) => ({ id: i })) });
+        return mockErrorResponse(500);
+      });
+      const onTruncated = vi.fn();
+
+      const result = await adapter.paginate('/issues/1/notes', { onTruncated });
+
+      expect(result).toHaveLength(100);
+      expect(onTruncated).toHaveBeenCalledTimes(1);
+      expect(onTruncated).toHaveBeenCalledWith(2, expect.anything());
+      expect(core.warning).not.toHaveBeenCalledWith(
+        expect.stringContaining('Failed to fetch page'),
+      );
+      expect(core.debug).toHaveBeenCalledWith(expect.stringContaining('Failed to fetch page'));
+    });
   });
 
   describe('getFileContent', () => {
@@ -1665,7 +1825,9 @@ diff --git a/src/a.ts b/src/a.ts
         return res;
       });
 
-      await adapter.isMR(1);
+      // 429 is rethrown by isMR (only 404 means "not an MR"); the rate-limit
+      // warning is still emitted by checkRateLimit before the throw.
+      await expect(adapter.isMR(1)).rejects.toThrow('429');
 
       expect(warning).toHaveBeenCalledWith(expect.stringContaining('rate limited'));
     });
@@ -1676,7 +1838,7 @@ diff --git a/src/a.ts b/src/a.ts
       Object.assign(response, { headers });
       fetchMock.mockResolvedValue(response);
 
-      await adapter.isMR(1);
+      await expect(adapter.isMR(1)).rejects.toThrow('429');
 
       expect(retryErrors).toHaveLength(1);
       expect((retryErrors[0] as { headers?: Headers }).headers).toBe(headers);

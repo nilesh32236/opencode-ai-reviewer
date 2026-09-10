@@ -270,11 +270,10 @@ describe('GitHubHelper', () => {
       expect(result).toBe(false);
     });
 
-    it('returns false on network error', async () => {
+    it('throws on network error instead of misclassifying as not-a-PR', async () => {
       fetchMock.mockRejectedValue(new Error('Network failure'));
 
-      const result = await helper.isPR(42);
-      expect(result).toBe(false);
+      await expect(helper.isPR(42)).rejects.toThrow('Network failure');
     });
   });
 
@@ -1947,7 +1946,9 @@ diff --git a/deleted.ts b/deleted.ts
         return mockResponse({ ok: false, status: 429, headers });
       });
 
-      await helper.isPR(1);
+      // 429 is rethrown by isPR (only 404 means "not a PR"); the rate-limit
+      // warning is still emitted by checkRateLimit before the throw.
+      await expect(helper.isPR(1)).rejects.toThrow('429');
 
       expect(warning).toHaveBeenCalledWith(expect.stringContaining('rate limited'));
     });
@@ -2045,6 +2046,58 @@ diff --git a/deleted.ts b/deleted.ts
 
       expect(callCount).toBe(2);
       expect(result).toHaveLength(200);
+    });
+  });
+
+  describe('getPRFilePaths', () => {
+    it('paginates across multiple pages', async () => {
+      fetchMock.mockImplementation(async (url: string) => {
+        // NOTE: match on the exact page param — `page=10` contains `page=1`.
+        if (/[?&]page=1(&|$)/.test(url)) {
+          return mockResponse({
+            body: Array.from({ length: 100 }, (_, i) => ({ filename: `src/f${i}.ts` })),
+          });
+        }
+        return mockResponse({ body: [{ filename: 'src/last.ts' }] });
+      });
+
+      const paths = await helper.getPRFilePaths(42);
+
+      expect(paths).toHaveLength(101);
+      expect(paths).toContain('src/last.ts');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('falls back to the path field when filename is absent', async () => {
+      fetchMock.mockResolvedValue(mockResponse({ body: [{ path: 'src/only-path.ts' }] }));
+
+      const paths = await helper.getPRFilePaths(42);
+
+      expect(paths).toEqual(['src/only-path.ts']);
+    });
+  });
+
+  describe('getTags', () => {
+    it('paginates so the newest tag is found past page one', async () => {
+      fetchMock.mockImplementation(async (url: string) => {
+        // NOTE: match on the exact page param — `page=10` contains `page=1`.
+        if (/[?&]page=1(&|$)/.test(url)) {
+          return mockResponse({
+            body: Array.from({ length: 100 }, (_, i) => ({
+              ref: `refs/tags/v1.0.${i}`,
+              object: { sha: `sha-old-${i}` },
+            })),
+          });
+        }
+        return mockResponse({
+          body: [{ ref: 'refs/tags/v2.0.0', object: { sha: 'sha-new' } }],
+        });
+      });
+
+      const latest = await helper.getLatestTag();
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(latest).toEqual({ name: 'v2.0.0', commitSha: 'sha-new' });
     });
   });
 
