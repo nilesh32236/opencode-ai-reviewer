@@ -114,7 +114,7 @@ function makeConfig(overrides: Partial<MCPServerConfig> = {}): MCPServerConfig {
   return {
     name: 'test-server',
     type: 'local',
-    command: ['node', 'server.js'],
+    command: ['npx', '-y', '--quiet', '@upstash/context7-mcp@3.2.5'],
     environment: { FOO: 'bar' },
     timeoutMs: 5000,
     ...overrides,
@@ -181,7 +181,10 @@ describe('MCPManager', () => {
       await manager.connect();
 
       expect(mockStdioTransportCtor).toHaveBeenCalledWith(
-        expect.objectContaining({ command: 'node', args: ['server.js'] }),
+        expect.objectContaining({
+          command: 'npx',
+          args: ['-y', '--quiet', '@upstash/context7-mcp@3.2.5'],
+        }),
       );
       expect(mockConnect).toHaveBeenCalledTimes(1);
       expect(mockListTools).toHaveBeenCalledTimes(1);
@@ -439,6 +442,37 @@ describe('MCPManager', () => {
       const manager = new MCPManager([
         makeConfig({ command: undefined as unknown as [string, ...string[]] }),
       ]);
+      await manager.connect();
+
+      expect(mockStdioTransportCtor).not.toHaveBeenCalled();
+      expect(mockConnect).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      'http://localhost:3000/sse',
+      'http://169.254.169.254/latest',
+      // https variants isolate the hostname/IP blocklist from the
+      // https-only scheme check: these pass the scheme gate and must still
+      // be rejected by isBlockedIpHost.
+      'https://localhost:3000/sse',
+      'https://169.254.169.254/latest',
+    ])('skips remote server failing the SSRF policy: %s', async (url) => {
+      mockConnect.mockResolvedValue(undefined);
+      mockListTools.mockResolvedValue({ tools: [{ name: 'search' }] });
+
+      const manager = new MCPManager([makeConfig({ type: 'remote', url, command: undefined })]);
+      await manager.connect();
+
+      expect(mockSSEClientTransportCtor).not.toHaveBeenCalled();
+      expect(mockConnect).not.toHaveBeenCalled();
+      expect(mockListTools).not.toHaveBeenCalled();
+    });
+
+    it('skips local servers failing the command allowlist', async () => {
+      mockConnect.mockResolvedValue(undefined);
+      mockListTools.mockResolvedValue({ tools: [{ name: 'search' }] });
+
+      const manager = new MCPManager([makeConfig({ command: ['node', '-e', 'evil()'] })]);
       await manager.connect();
 
       expect(mockStdioTransportCtor).not.toHaveBeenCalled();
@@ -800,7 +834,12 @@ describe('MCPManager', () => {
 
     it('resolves a single library', async () => {
       const manager = await createConnectedManager(
-        [makeConfig({ name: 'context7', command: ['node', 'c7.mjs'] })],
+        [
+          makeConfig({
+            name: 'context7',
+            command: ['npx', '-y', '--quiet', '@upstash/context7-mcp@3.2.5'],
+          }),
+        ],
         () => {
           mockListTools.mockResolvedValue({ tools: [{ name: 'resolve' }] });
         },
@@ -815,7 +854,12 @@ describe('MCPManager', () => {
 
     it('resolves multiple libraries', async () => {
       const manager = await createConnectedManager(
-        [makeConfig({ name: 'context7', command: ['node', 'c7.mjs'] })],
+        [
+          makeConfig({
+            name: 'context7',
+            command: ['npx', '-y', '--quiet', '@upstash/context7-mcp@3.2.5'],
+          }),
+        ],
         () => {
           mockListTools.mockResolvedValue({ tools: [{ name: 'resolve' }] });
         },
@@ -834,7 +878,12 @@ describe('MCPManager', () => {
 
     it('returns empty when resolve tool not found', async () => {
       const manager = await createConnectedManager(
-        [makeConfig({ name: 'context7', command: ['node', 'c7.mjs'] })],
+        [
+          makeConfig({
+            name: 'context7',
+            command: ['npx', '-y', '--quiet', '@upstash/context7-mcp@3.2.5'],
+          }),
+        ],
         () => {
           mockListTools.mockResolvedValue({ tools: [{ name: 'other-tool' }] });
         },
@@ -848,7 +897,12 @@ describe('MCPManager', () => {
 
     it('handles resolution failure gracefully', async () => {
       const manager = await createConnectedManager(
-        [makeConfig({ name: 'context7', command: ['node', 'c7.mjs'] })],
+        [
+          makeConfig({
+            name: 'context7',
+            command: ['npx', '-y', '--quiet', '@upstash/context7-mcp@3.2.5'],
+          }),
+        ],
         () => {
           mockListTools.mockResolvedValue({ tools: [{ name: 'resolve' }] });
         },
@@ -865,7 +919,7 @@ describe('MCPManager', () => {
         [
           makeConfig({
             name: 'context7',
-            command: ['node', 'c7.mjs'],
+            command: ['npx', '-y', '--quiet', '@upstash/context7-mcp@3.2.5'],
             allowedTools: ['resolve'],
           }),
         ],
@@ -885,7 +939,7 @@ describe('MCPManager', () => {
         [
           makeConfig({
             name: 'context7',
-            command: ['node', 'c7.mjs'],
+            command: ['npx', '-y', '--quiet', '@upstash/context7-mcp@3.2.5'],
             allowedTools: ['search-only'],
           }),
         ],

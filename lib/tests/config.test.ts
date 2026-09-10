@@ -515,6 +515,38 @@ multiAgent:
       });
       expect(result.linters).toEqual([]);
     });
+
+    it('drops generic toolchain commands but keeps single-purpose linters', () => {
+      const result = validateConfig({
+        linters: [
+          { pattern: '**/*.go', command: 'go', args: ['vet'] },
+          { pattern: '**/*.ts', command: 'eslint' },
+        ],
+      } as never);
+      expect(result.linters).toHaveLength(1);
+      expect(result.linters![0].command).toBe('eslint');
+    });
+
+    it('drops linter entries with unsafe args', () => {
+      const result = validateConfig({
+        linters: [{ pattern: '**/*.ts', command: 'eslint', args: ['ok\0evil'] }],
+      } as never);
+      expect(result.linters).toEqual([]);
+    });
+
+    it('keeps checkout-root workingDirectory "." (agrees with the exec sink)', () => {
+      const result = validateConfig({
+        linters: [{ pattern: '**/*.ts', command: 'eslint', workingDirectory: '.' }],
+      } as never);
+      expect(result.linters).toHaveLength(1);
+    });
+
+    it('rewrites escaping eventLogging.path to the default', () => {
+      const result = validateConfig({
+        eventLogging: { enabled: true, path: '../../evil.ndjson' },
+      } as never);
+      expect(result.eventLogging?.path).toBe('.opencode/events.ndjson');
+    });
   });
 
   describe('resolveConfig', () => {

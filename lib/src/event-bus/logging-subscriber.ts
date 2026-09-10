@@ -33,26 +33,79 @@ const SENSITIVE_KEYS = new Set([
 ]);
 
 /**
+ * Commit-author attribution keys (`author`, `authors`, `author_login`,
+ * `author_association`, `authorLogin`, ...) describe who wrote a commit — not
+ * credentials. They are carved out of the `auth` substring match below via an
+ * explicit allowlist so audit logs keep attribution; any other `author*` key
+ * (e.g. `author_auth`, `author_cookie`, `authorAuthorization`) still redacts
+ * via the `*auth*`/`cookie` rules.
+ */
+const AUTHOR_ATTRIBUTION_EXACT = new Set([
+  'author',
+  'authors',
+  'author_login',
+  'authors_login',
+  'author_association',
+  'authors_association',
+  'author_name',
+  'authors_name',
+  'author_username',
+  'authors_username',
+  'author_type',
+  'authors_type',
+]);
+const AUTHOR_ATTRIBUTION_CAMEL = new Set([
+  'authorLogin',
+  'authorsLogin',
+  'authorAssociation',
+  'authorsAssociation',
+  'authorName',
+  'authorsName',
+  'authorUsername',
+  'authorsUsername',
+  'authorType',
+  'authorsType',
+]);
+
+/**
  * Check whether a payload key is sensitive. Matches exact known keys plus
- * `*_token`, `*_secret`, `*_key`, `*password*`, and `*auth*` variants,
- * case-insensitively, so `GITHUB_TOKEN`, `clientSecret`, `deploy-key`, and
- * `Authorization` are all redacted.
+ * separator-insensitive `*token` / `*secret` / `*key` suffixes, `*password*`,
+ * and anchored `*auth*` variants, case-insensitively, so `GITHUB_TOKEN`,
+ * `accessToken`, `privateKey`, `refresh_token`, `clientSecret`, `deploy-key`,
+ * and `Authorization` are all redacted — including separator-less camelCase
+ * forms (`authorToken`, `authorKey`) — while bare `author` / `authors` /
+ * `author_association` commit metadata is preserved for audit utility. The
+ * suffix check runs before the author carve-out so `authorToken` still
+ * redacts; only keys with no credential suffix fall through to it.
  * @param key - Payload object key to classify.
  * @returns True when the key identifies a sensitive value that must be redacted.
  */
 function isSensitiveKey(key: string): boolean {
   const normalized = key.toLowerCase().replace(/-/g, '_');
   if (SENSITIVE_KEYS.has(key) || SENSITIVE_KEYS.has(normalized)) return true;
-  return (
-    normalized.endsWith('_token') ||
-    normalized.endsWith('_secret') ||
-    normalized.endsWith('_key') ||
+  // Separator-insensitive suffix match: catches `accessToken`,
+  // `accesstoken`, `access_token`, `privateKey`, `refreshToken`, and
+  // `authorToken`/`authorKey` alike. Over-redaction of rare ordinary words
+  // ending in these suffixes (e.g. `monkey`) is accepted fail-closed.
+  const compact = normalized.replace(/_/g, '');
+  if (
+    compact.endsWith('token') ||
+    compact.endsWith('secret') ||
+    compact.endsWith('key') ||
     normalized.includes('password') ||
-    normalized.includes('auth') ||
     normalized.includes('secret') ||
     normalized === 'token' ||
     normalized === 'cookie'
-  );
+  ) {
+    return true;
+  }
+  if (!normalized.includes('auth')) return false;
+  // `author*` attribution is allowlisted explicitly — but a compound such as
+  // `author_token` already returned true above via the suffix rule, and any
+  // non-allowlisted `author*` credential (e.g. `author_auth`,
+  // `author_cookie`, `authorAuthorization`) falls through to redact.
+  if (AUTHOR_ATTRIBUTION_EXACT.has(normalized) || AUTHOR_ATTRIBUTION_CAMEL.has(key)) return false;
+  return true;
 }
 
 /**
