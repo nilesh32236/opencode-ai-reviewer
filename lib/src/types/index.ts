@@ -692,9 +692,11 @@ export interface ReviewConfig {
    *
    * Security tradeoff: excluded files skip LLM inline findings, so a
    * malicious instruction or tool/MCP permission change in these paths
-   * surfaces only as a summary skip count with no severity. Deterministic
-   * secret scanning still applies. Set to `false` to force full review of
-   * agent-config diffs when prompt-content integrity matters.
+   * surfaces only as a summary skip count with no severity. The
+   * deterministic secret scan runs on the reviewed (filtered) file set,
+   * so excluded files skip secret scanning as well. Set to `false` to
+   * force full review of agent-config diffs when prompt-content
+   * integrity matters.
    * @default true
    * @since NEXT
    */
@@ -1538,9 +1540,11 @@ export interface PromptConfig {
      *
      * Security tradeoff: excluded files skip LLM inline findings, so a
      * malicious instruction or tool/MCP permission change in these paths
-     * surfaces only as a summary skip count with no severity. Deterministic
-     * secret scanning still applies. Set to `false` to force full review of
-     * agent-config diffs when prompt-content integrity matters.
+     * surfaces only as a summary skip count with no severity. The
+     * deterministic secret scan runs on the reviewed (filtered) file set,
+     * so excluded files skip secret scanning as well. Set to `false` to
+     * force full review of agent-config diffs when prompt-content
+     * integrity matters.
      * @default true
      * @since NEXT
      */
