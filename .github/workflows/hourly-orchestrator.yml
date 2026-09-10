@@ -44,6 +44,17 @@ jobs:
           git config --global user.name "opencode-ai-reviewer[bot]"
           git config --global user.email "opencode-ai-reviewer[bot]@users.noreply.github.com"
 
+      # gh pr edit --add-label fails when the label does not yet exist in the
+      # repository (e.g. "'autofix:skipped' not found"), which silently breaks
+      # the orchestrator's state transitions. Create the managed labels first.
+      - name: Ensure autofix labels exist
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          for label in autofix autofix:ready autofix:skipped autofix:completed autofix:needs-manual-review autofix:approved autofix:merged; do
+            gh label create "$label" --repo "${{ github.repository }}" --color "1d76db" --description "Managed by opencode-ai-reviewer automation" 2>/dev/null || true
+          done
+
       - name: Setup PNPM
         uses: pnpm/action-setup@v6
         with:
@@ -113,6 +124,12 @@ jobs:
               continue
             fi
 
+            # Ensure a pristine tree before switching branches. A previous
+            # iteration may have left conflict-resolution edits or rebuilt
+            # bundles in the working tree (e.g. after a failed verification),
+            # which would otherwise make `git checkout` abort the whole step.
+            git reset --hard HEAD >/dev/null 2>&1 || true
+            git clean -fd >/dev/null 2>&1 || true
             git fetch origin "${HEAD_REF}:${HEAD_REF}" 2>/dev/null || git checkout -b "${HEAD_REF}" "origin/${HEAD_REF}"
             git checkout "${HEAD_REF}"
 
@@ -160,6 +177,11 @@ jobs:
                 else
                   echo "❌ AI could not resolve merge conflicts cleanly."
                   git merge --abort 2>/dev/null || true
+                  # Restore a pristine tree so the next loop iteration can
+                  # safely checkout another branch (otherwise the whole step
+                  # aborts with "local changes would be overwritten").
+                  git reset --hard HEAD >/dev/null 2>&1 || true
+                  git clean -fd >/dev/null 2>&1 || true
                   gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "autofix:skipped" || true
                   gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
                     --body "⚠️ **Merge Conflict Resolution Skipped**: Could not automatically resolve merge conflicts with \`main\`. Marked as \`autofix:skipped\` for manual review." || true
