@@ -10,14 +10,30 @@ import { sanitizeString } from '@opencode-pr-agent/lib';
 export const sanitize = (message: string): string => sanitizeString(message);
 
 /**
+ * Maximum valid PR/issue number (signed 32-bit int, matching GitHub's range).
+ */
+const MAX_PR_NUMBER = 2147483647;
+
+/**
  * Resolves the PR number from the `pr-number` input or the GitHub event context.
+ * Rejects non-integer, zero, negative, and excessively large values so they
+ * never reach the issues/pulls APIs (which would leak internal errors).
  * @returns The PR number, or `null` when no PR number can be determined.
  */
 export async function resolvePrNumber(): Promise<number | null> {
   const prNumberInput = core.getInput('pr-number');
   if (prNumberInput) {
-    const prNumber = Number.parseInt(prNumberInput, 10);
-    if (Number.isNaN(prNumber)) {
+    const trimmed = prNumberInput.trim();
+    // Require a canonical integer string: parseInt alone would accept "12abc"
+    // or "1.5" (truncating to 1), so verify the round-trip first.
+    const prNumber = Number.parseInt(trimmed, 10);
+    if (
+      Number.isNaN(prNumber) ||
+      !Number.isInteger(prNumber) ||
+      String(prNumber) !== trimmed ||
+      prNumber < 1 ||
+      prNumber > MAX_PR_NUMBER
+    ) {
       core.setFailed(sanitize(`Invalid pr-number: ${prNumberInput}`));
       return null;
     }

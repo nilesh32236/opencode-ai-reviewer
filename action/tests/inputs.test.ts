@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockGetInput, mockWarning } = vi.hoisted(() => {
+const { mockGetInput, mockWarning, mockSetSecret } = vi.hoisted(() => {
   const _mockGetInput = vi.fn();
   const _mockWarning = vi.fn();
-  return { mockGetInput: _mockGetInput, mockWarning: _mockWarning };
+  const _mockSetSecret = vi.fn();
+  return { mockGetInput: _mockGetInput, mockWarning: _mockWarning, mockSetSecret: _mockSetSecret };
 });
 
 vi.mock('@actions/core', () => ({
@@ -15,6 +16,7 @@ vi.mock('@actions/core', () => ({
   setOutput: vi.fn(),
   setFailed: vi.fn(),
   saveState: vi.fn(),
+  setSecret: mockSetSecret,
 }));
 
 import { parseInputs } from '../src/inputs.js';
@@ -296,5 +298,42 @@ describe('parseInputs() LLM model resolution', () => {
     setInputs({ ...BASE_INPUTS, llm_default_provider: 'ollama', review_model: 'openai/gpt-4o' });
     const inputs = parseInputs();
     expect(inputs.reviewModel).toBe('openai/gpt-4o');
+  });
+});
+
+describe('parseInputs() secret masking', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('registers every secret input with core.setSecret', () => {
+    setInputs({
+      ...BASE_INPUTS,
+      openai_api_key: 'sk-test-openai',
+      anthropic_api_key: 'sk-ant-test',
+      gemini_api_key: 'AIza-test',
+      opencode_api_key: 'opencode-test',
+      llm_api_key: 'llm-test',
+      azure_openai_key: 'azure-test',
+    });
+    parseInputs();
+    for (const secret of [
+      'ghs_token',
+      'sk-test-openai',
+      'sk-ant-test',
+      'AIza-test',
+      'opencode-test',
+      'llm-test',
+      'azure-test',
+    ]) {
+      expect(mockSetSecret).toHaveBeenCalledWith(secret);
+    }
+  });
+
+  it('skips setSecret for empty secret inputs', () => {
+    setInputs({ ...BASE_INPUTS });
+    parseInputs();
+    expect(mockSetSecret).toHaveBeenCalledTimes(1);
+    expect(mockSetSecret).toHaveBeenCalledWith('ghs_token');
   });
 });

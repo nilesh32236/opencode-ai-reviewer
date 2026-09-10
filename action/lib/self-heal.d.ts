@@ -18,3 +18,14 @@ import type { ActionInputs } from './inputs.js';
  * @param _token - GitHub authentication token.
  */
 export declare function runSelfHeal(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, _repo: string, _token: string): Promise<void>;
+/**
+ * Read a CI failure-logs file confined to safe directories.
+ * Resolves the path and requires containment in GITHUB_WORKSPACE, /tmp, or
+ * the current working directory; rejects anything else (including `..`
+ * escapes to outside roots) and caps the read at MAX_CI_LOGS_BYTES.
+ *
+ * @param logsFilePath - Raw CI_FAILURE_LOGS_FILE value.
+ * @returns The file contents, truncated to the size cap.
+ * @throws {Error} When the path escapes the safe roots or cannot be read.
+ */
+export declare function readConstrainedLogFile(logsFilePath: string): string;

@@ -1,4 +1,5 @@
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
@@ -31,12 +32,17 @@ export async function runSelfHeal(
   _repo: string,
   _token: string,
 ): Promise<void> {
-  // Read CI failure logs from input or from a file
+  // Read CI failure logs from input or from a file. The file path comes from
+  // the CI_FAILURE_LOGS_FILE env var, which may be attacker-influenced via
+  // workflow injection — so it is confined to GITHUB_WORKSPACE (falling back
+  // to /tmp and cwd for local runs) and size-capped before reading. Contents
+  // are forwarded to the LLM, so an unconstrained path would exfiltrate
+  // arbitrary workspace files (e.g. .env).
   let ciFailureLogs = inputs.ciFailureLogs;
   const logsFilePath = process.env.CI_FAILURE_LOGS_FILE;
   if ((!ciFailureLogs || ciFailureLogs.trim().length === 0) && logsFilePath) {
     try {
-      ciFailureLogs = fs.readFileSync(logsFilePath, 'utf-8');
+      ciFailureLogs = readConstrainedLogFile(logsFilePath);
       core.info(`Read CI failure logs from ${logsFilePath} (${ciFailureLogs.length} bytes)`);
     } catch (err) {
       core.warning(sanitize(`Failed to read CI failure logs from ${logsFilePath}: ${err}`));
@@ -199,6 +205,51 @@ export async function runSelfHeal(
 
   core.setOutput('changes_made', String(changesMade));
   core.setOutput('verification_passed', String(lastVerificationError === undefined));
+}
+
+/**
+ * Maximum bytes read from a CI failure-logs file. Bounds LLM context and
+ * prevents a crafted path from paging huge files into memory.
+ */
+const MAX_CI_LOGS_BYTES = 1024 * 1024;
+
+/**
+ * Read a CI failure-logs file confined to safe directories.
+ * Resolves the path and requires containment in GITHUB_WORKSPACE, /tmp, or
+ * the current working directory; rejects anything else (including `..`
+ * escapes to outside roots) and caps the read at MAX_CI_LOGS_BYTES.
+ *
+ * @param logsFilePath - Raw CI_FAILURE_LOGS_FILE value.
+ * @returns The file contents, truncated to the size cap.
+ * @throws {Error} When the path escapes the safe roots or cannot be read.
+ */
+export function readConstrainedLogFile(logsFilePath: string): string {
+  const workspace = process.env.GITHUB_WORKSPACE || process.cwd();
+  const safeRoots = [path.resolve(workspace), path.resolve('/tmp'), path.resolve(process.cwd())];
+  const resolved = path.resolve(workspace, logsFilePath);
+  const contained = safeRoots.some(
+    (root) => resolved === root || resolved.startsWith(`${root}${path.sep}`),
+  );
+  if (!contained) {
+    throw new Error(
+      `CI_FAILURE_LOGS_FILE must point inside GITHUB_WORKSPACE, /tmp, or the working directory: ${logsFilePath}`,
+    );
+  }
+  const stat = fs.statSync(resolved);
+  if (!stat.isFile()) {
+    throw new Error(`CI_FAILURE_LOGS_FILE is not a regular file: ${logsFilePath}`);
+  }
+  if (stat.size > MAX_CI_LOGS_BYTES) {
+    const fd = fs.openSync(resolved, 'r');
+    try {
+      const buf = Buffer.alloc(MAX_CI_LOGS_BYTES);
+      fs.readSync(fd, buf, 0, MAX_CI_LOGS_BYTES, 0);
+      return buf.toString('utf-8');
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+  return fs.readFileSync(resolved, 'utf-8');
 }
 
 /**

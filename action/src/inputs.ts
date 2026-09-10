@@ -288,6 +288,10 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   if (!githubToken) {
     throw new Error('github_token input is required but was empty');
   }
+  // Mask the token so the Actions runtime redacts it from all subsequent log
+  // output — downstream code logs configs and error messages that could
+  // otherwise leak the secret in plaintext.
+  core.setSecret(githubToken);
 
   // A configured default LLM provider lets workflow authors write bare model
   // names (e.g. "llama3") that resolve to "ollama/llama3" before validation.
@@ -460,20 +464,33 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     }
   }
 
+  // Secret-bearing LLM provider inputs. Each non-empty value is registered
+  // with core.setSecret so the Actions runtime masks it in all subsequent
+  // log output (configs, errors, and diagnostics included).
+  const openAiKey = core.getInput('openai_api_key') || undefined;
+  const anthropicKey = core.getInput('anthropic_api_key') || undefined;
+  const geminiKey = core.getInput('gemini_api_key') || undefined;
+  const opencodeKey = core.getInput('opencode_api_key') || undefined;
+  const llmApiKey = core.getInput('llm_api_key') || undefined;
+  const azureKey = core.getInput('azure_openai_key') || undefined;
+  for (const secret of [openAiKey, anthropicKey, geminiKey, opencodeKey, llmApiKey, azureKey]) {
+    if (secret) core.setSecret(secret);
+  }
+
   return {
     mode,
     githubToken,
-    openAiKey: core.getInput('openai_api_key') || undefined,
-    anthropicKey: core.getInput('anthropic_api_key') || undefined,
-    geminiKey: core.getInput('gemini_api_key') || undefined,
-    opencodeKey: core.getInput('opencode_api_key') || undefined,
+    openAiKey,
+    anthropicKey,
+    geminiKey,
+    opencodeKey,
     llmDefaultProvider: llmDefaultProviderInput,
     llmBaseUrl: core.getInput('llm_base_url') || undefined,
-    llmApiKey: core.getInput('llm_api_key') || undefined,
+    llmApiKey,
     ollamaBaseUrl: core.getInput('ollama_base_url') || undefined,
     ollamaModel: core.getInput('ollama_model') || undefined,
     azureEndpoint: core.getInput('azure_openai_endpoint') || undefined,
-    azureKey: core.getInput('azure_openai_key') || undefined,
+    azureKey,
     azureDeployment: core.getInput('azure_deployment_name') || undefined,
     bedrockModelId: core.getInput('aws_bedrock_model_id') || undefined,
     bedrockRegion: core.getInput('aws_region') || undefined,

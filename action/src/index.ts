@@ -4,6 +4,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import {
   type AgentConfig,
+  DEFAULT_ALLOWLIST,
   DEFAULT_CONFIG,
   EventBus,
   FeedbackSubscriber,
@@ -85,8 +86,23 @@ async function run(): Promise<void> {
       }
     }
 
+    // The verification allowlist is workflow-authoritative: the repo config
+    // file lives in the PR branch, so a PR author must never be able to widen
+    // it (e.g. adding "bash"/"curl"/"sh" to reach parseRunChecksCommands
+    // execution). Config entries outside DEFAULT_ALLOWLIST are dropped with a
+    // warning; narrowing (e.g. ["pnpm"]) is preserved.
     if (loadedConfig?.fix?.checkAllowlist?.length) {
-      inputs.checkAllowlist = loadedConfig.fix.checkAllowlist;
+      const requested = loadedConfig.fix.checkAllowlist;
+      const allowed = requested.filter((c) => DEFAULT_ALLOWLIST.includes(c));
+      const dropped = requested.filter((c) => !DEFAULT_ALLOWLIST.includes(c));
+      if (dropped.length > 0) {
+        core.warning(
+          `Ignoring checkAllowlist entries not in the workflow allowlist (${DEFAULT_ALLOWLIST.join(', ')}): ${dropped.join(', ')}`,
+        );
+      }
+      if (allowed.length > 0) {
+        inputs.checkAllowlist = allowed;
+      }
     }
 
     const token = inputs.githubToken;

@@ -122,6 +122,19 @@ describe('StateCacheManager mtime comparison (issue #188 regression)', () => {
     const keyFor = (branch: string) => buildCacheKey('state', 'group/project', branch);
     expect(keyFor('main')).not.toBe(keyFor('feature/foo'));
     expect(keyFor('main')).toBe('state-group/project-main');
-    expect(keyFor('feature/foo')).toBe('state-group/project-feature/foo');
+    // Slashes are PR-author-controlled, so the branch segment is slugified
+    // (with a disambiguating hash) instead of embedded raw. (The repo NWO
+    // legitimately contains one slash; only the branch part is sanitized.)
+    expect(keyFor('feature/foo')).toBe(keyFor('feature/foo'));
+    expect(keyFor('feature/foo').split('group/project-')[1]).not.toContain('/');
+    expect(keyFor('feature/foo')).not.toBe(keyFor('feature-foo'));
+  });
+
+  it('sanitizes hostile branch refs for cache keys', () => {
+    const keyFor = (branch: string) => buildCacheKey('state', 'group/project', branch);
+    expect(keyFor('feature/../../evil branch:name')).not.toContain('../');
+    expect(keyFor('feature/../../evil branch:name')).not.toContain(' ');
+    expect(keyFor('feature/../../evil branch:name')).not.toContain(':');
+    expect(keyFor('a'.repeat(200)).length).toBeLessThanOrEqual(512);
   });
 });

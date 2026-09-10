@@ -1,4 +1,5 @@
 import type { ReviewIssue, ReviewResult, Severity, TokenUsage } from '../types/index.js';
+import { escapeInlineCode, sanitizeMarkdown } from './markdown.js';
 
 /**
  * Compute a 0-5 merge-readiness score from a review result, modeled on
@@ -134,8 +135,10 @@ export function formatIssueBullet(issue: ReviewIssue): string {
   // Insert a zero-width space after each '/' so long file paths inside the
   // inline code span can break at directory boundaries on narrow viewports
   // instead of overflowing horizontally.
-  const codePath = `${issue.file}:${issue.line}`.replace(/\//g, '/\u200b');
-  return `- ${getSeverityBadge(issue.severity)} **${issue.severity.toUpperCase()}:** \`${codePath}\` — ${issue.message}${formatConfidenceLabel(issue.confidence)}`;
+  // The path is inline-code-escaped first: it is model-generated and could
+  // otherwise break out of the code span with backticks or newlines.
+  const codePath = escapeInlineCode(`${issue.file}:${issue.line}`).replace(/\//g, '/\u200b');
+  return `- ${getSeverityBadge(issue.severity)} **${issue.severity.toUpperCase()}:** \`${codePath}\` — ${sanitizeMarkdown(issue.message)}${formatConfidenceLabel(issue.confidence)}`;
 }
 
 /**
@@ -165,14 +168,16 @@ export function buildReviewBody(result: ReviewResult): string {
     const riskEmoji = es.riskLevel === 'high' ? '🔴' : es.riskLevel === 'medium' ? '🟡' : '🟢';
     lines.push('## Executive Summary');
     lines.push('');
-    lines.push(`**Purpose:** ${es.purpose}`);
+    lines.push(`**Purpose:** ${sanitizeMarkdown(es.purpose)}`);
     lines.push('');
-    lines.push(`**Risk:** ${riskEmoji} ${es.riskLevel.toUpperCase()} — ${es.riskRationale}`);
+    lines.push(
+      `**Risk:** ${riskEmoji} ${es.riskLevel.toUpperCase()} — ${sanitizeMarkdown(es.riskRationale)}`,
+    );
     if (es.breakingChanges.length > 0) {
       lines.push('');
       lines.push('**Breaking Changes:**');
       for (const bc of es.breakingChanges) {
-        lines.push(`- ⚠️ ${bc}`);
+        lines.push(`- ⚠️ ${sanitizeMarkdown(bc)}`);
       }
     }
     lines.push('');
@@ -183,7 +188,7 @@ export function buildReviewBody(result: ReviewResult): string {
   lines.push(
     '## MR Review Summary',
     '',
-    result.summary,
+    sanitizeMarkdown(result.summary),
     '',
     // A partial review (failed batches/agents) was never fully verified, so it
     // must never be displayed as ready to merge even when the verdict says so.
@@ -196,7 +201,7 @@ export function buildReviewBody(result: ReviewResult): string {
     '',
     `**Merge-readiness:** ${formatMergeScore(computeMergeScore(result))}`,
     '',
-    `**Reasoning:** ${result.verdict.reasoning}`,
+    `**Reasoning:** ${sanitizeMarkdown(result.verdict.reasoning)}`,
     '',
   );
 
@@ -204,7 +209,9 @@ export function buildReviewBody(result: ReviewResult): string {
     lines.push('### Strengths');
     lines.push('');
     for (const s of result.strengths) {
-      lines.push(`- **${s.file}:${s.line}** — ${s.message}`);
+      lines.push(
+        `- **${escapeInlineCode(`${s.file}:${s.line}`)}** — ${sanitizeMarkdown(s.message)}`,
+      );
     }
     lines.push('');
   }
@@ -215,7 +222,7 @@ export function buildReviewBody(result: ReviewResult): string {
     for (const i of result.issues) {
       lines.push(formatIssueBullet(i));
       if (i.suggestion) {
-        lines.push(`  > 💡 **How to fix:** ${i.suggestion}`);
+        lines.push(`  > 💡 **How to fix:** ${sanitizeMarkdown(i.suggestion)}`);
       }
       if (i.suggestionCode) {
         lines.push('<details><summary>Show suggested fix</summary>');
