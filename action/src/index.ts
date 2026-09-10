@@ -20,6 +20,7 @@ import {
   TelemetrySubscriber,
   configureGit,
   getDefaultMCPServers,
+  getErrorStatus,
   loadConfig,
   mergeConfigWithInputs,
   registerEventSubscribers,
@@ -538,10 +539,7 @@ async function run(): Promise<void> {
                 try {
                   isExplicitMr = await gh.isMR(explicitNum);
                 } catch (err) {
-                  const status =
-                    typeof err === 'object' && err !== null
-                      ? (err as { status?: number }).status
-                      : undefined;
+                  const status = getErrorStatus(err);
                   const suffix = status !== undefined ? ` (status ${status})` : '';
                   core.setFailed(
                     sanitize(

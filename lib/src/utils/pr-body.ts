@@ -50,7 +50,10 @@ export function buildAutofixPRBody(opts: PRBodyOptions): string {
   const lines: string[] = [];
 
   if (opts.issueNumber) {
-    lines.push(`## Fixes #${opts.issueNumber}`);
+    // Plain-text closing keyword (NOT a heading): GitHub only auto-closes the
+    // linked issue when the keyword is plain text. A `## Fixes #N` heading is
+    // not recognized, which left autofix issues open after their PR merged.
+    lines.push(`Fixes #${opts.issueNumber}`);
     lines.push('');
   }
 
