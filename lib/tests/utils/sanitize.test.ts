@@ -14,6 +14,19 @@ describe('sanitizeString', () => {
     expect(sanitizeString(`id ${exampleId} here`)).toBe('id [REDACTED_AWS_ACCESS_KEY] here');
   });
 
+  it.each([['AKIA'], ['ASIA'], ['ABIA'], ['ACCA']])(
+    'redacts AWS %s-prefixed access key IDs',
+    (prefix) => {
+      const id = `${prefix}${'IOSFODNN7EXAMPLE'}`;
+      expect(sanitizeString(`id ${id} here`)).toBe('id [REDACTED_AWS_ACCESS_KEY] here');
+    },
+  );
+
+  it('redacts GitLab personal access tokens (glpat-)', () => {
+    const token = `${'glpat-'}${'abcdefghijklmnopqrst'}`;
+    expect(sanitizeString(`token ${token} here`)).toBe('token [REDACTED_GITLAB_TOKEN] here');
+  });
+
   it('redacts AWS secret access keys (named assignment)', () => {
     // AWS documentation example key, assembled dynamically to avoid a
     // contiguous secret literal in source.
@@ -36,8 +49,8 @@ describe('sanitizeString', () => {
   });
 
   it('redacts generic api-key assignments and api-key headers', () => {
-    expect(sanitizeString('api-key: hunter2-secret')).not.toContain('hunter2');
-    expect(sanitizeString('x-api-key: hunter2-secret')).not.toContain('hunter2');
+    expect(sanitizeString('api-key: hunter2-secret')).toBe('api-key=[REDACTED]');
+    expect(sanitizeString('x-api-key: hunter2-secret')).toBe('x-api-key=[REDACTED]');
   });
 
   it('redacts lowercase gemini_api_key assignment form', () => {
