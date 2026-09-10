@@ -208,6 +208,8 @@ export interface ActionInputs {
   auditLabels: string[];
   /** Version of opencode to use. */
   opencodeVersion: string;
+  /** Fail closed when the downloaded OpenCode CLI cannot be checksum-verified. */
+  requireOpencodeChecksum: boolean;
   /** In setup mode, probe every configured model instead of only the review model. */
   probeAllModels: boolean;
   /** Timeout in minutes for the operation. */
@@ -354,6 +356,17 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
 
   const opencodeVersion =
     core.getInput('opencode_version') || core.getInput('opencode-version') || 'latest';
+
+  // Opt-in strict integrity gate (default false for backward compat).
+  // core.getBooleanInput throws on invalid values, so fall back to a
+  // permissive parse that treats only 'true' as enabled.
+  const requireOpencodeChecksum = (() => {
+    try {
+      return core.getBooleanInput('require_opencode_checksum');
+    } catch {
+      return core.getInput('require_opencode_checksum').trim().toLowerCase() === 'true';
+    }
+  })();
 
   const mode = modeStr as ActionMode;
   const globalModel = core.getInput('model').trim();
@@ -663,6 +676,7 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     auditAutoFix: core.getInput('audit_auto_fix') === 'true',
     auditLabels,
     opencodeVersion,
+    requireOpencodeChecksum,
     probeAllModels: core.getInput('probe_all_models') === 'true',
     timeoutMinutes: parseTimeoutMinutes(core.getInput('timeout_minutes')),
     reviewInline: core.getInput('review_inline') !== 'false',

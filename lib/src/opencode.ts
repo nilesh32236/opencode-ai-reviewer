@@ -7,6 +7,7 @@ import * as io from '@actions/io';
 import * as tc from '@actions/tool-cache';
 import type { LLMConfig, LLMProviderConfig } from './types/index.js';
 import {
+  buildMissingChecksumError,
   computeSha256,
   findChecksumAsset,
   getKnownChecksum,
@@ -495,17 +496,47 @@ function classifyDownloadError(error: unknown, version: string, downloadUrl: str
 }
 
 /**
+ * Options for {@link setupOpenCode}.
+ * @since NEXT
+ */
+export interface SetupOpenCodeOptions {
+  /**
+   * Fail closed when no checksum is available for the downloaded archive.
+   * Maps to the `security.require_opencode_checksum` setting / the
+   * `require_opencode_checksum` action input. Defaults to false (warn-and-continue).
+   */
+  requireChecksum?: boolean;
+}
+
+/**
+ * Resolve whether checksum enforcement is on. An explicit option wins;
+ * otherwise the `INPUT_REQUIRE_OPENCODE_CHECKSUM` env var (set by the
+ * `require_opencode_checksum` action input) applies. Defaults to false so
+ * existing workflows keep the warn-and-continue behavior.
+ * @param options - Optional setup options.
+ * @returns True when missing-checksum downloads must fail closed.
+ * @since NEXT
+ */
+export function resolveRequireChecksum(options?: SetupOpenCodeOptions): boolean {
+  if (options?.requireChecksum !== undefined) return options.requireChecksum;
+  return process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM?.trim().toLowerCase() === 'true';
+}
+
+/**
  * Ensure the OpenCode CLI binary is available.
  * Checks PATH first; if not found, downloads and caches the specified version.
  * @param version - Version tag to download (defaults to 'latest').
  * @param token - Optional GitHub token used for the authenticated release lookup.
  * @param minimumVersion - Minimum acceptable installed version (default: {@link MINIMUM_OPENCODE_VERSION}).
+ * @param options - Optional setup options (see {@link SetupOpenCodeOptions}).
  * @returns A Promise resolving to the path of the OpenCode binary.
+ * @since NEXT - Added `options.requireChecksum` fail-closed integrity gate.
  */
 export async function setupOpenCode(
   version = 'latest',
   token?: string,
   minimumVersion: string = MINIMUM_OPENCODE_VERSION,
+  options: SetupOpenCodeOptions = {},
 ): Promise<string> {
   const existingPath = await io.which('opencode', false);
   if (existingPath) {
@@ -539,6 +570,7 @@ export async function setupOpenCode(
 
   const arch = detectArch();
   core.info(`Setting up OpenCode ${version} (${arch})...`);
+  const requireChecksum = resolveRequireChecksum(options);
 
   let releaseUrl: string;
   if (version === 'latest') {
@@ -650,6 +682,7 @@ export async function setupOpenCode(
           assetName,
           release.tag_name || version,
           arch,
+          requireChecksum,
         );
 
         let extPath: string;
@@ -701,6 +734,7 @@ async function verifyDownloadedArchive(
   assetName: string,
   version: string,
   arch: string,
+  requireChecksum = false,
 ): Promise<void> {
   const checksumAsset = findChecksumAsset(assets, assetName);
 
@@ -711,9 +745,15 @@ async function verifyDownloadedArchive(
     const expectedHash = parseChecksumFile(checksumContent, assetName);
 
     if (expectedHash) {
+      // verifyChecksum throws `Checksum mismatch ... expected ..., got ...`
+      // and classifyDownloadError() surfaces it — never swallowed here, in
+      // either mode.
       await verifyChecksum(dlPath, expectedHash);
       core.info(`Checksum verified for ${assetName}`);
       return;
+    }
+    if (requireChecksum) {
+      throw buildMissingChecksumError(version, assetName, arch);
     }
     core.warning(`Could not extract checksum for ${assetName} from ${checksumAsset.name}`);
   }
@@ -725,6 +765,9 @@ async function verifyDownloadedArchive(
     return;
   }
 
+  if (requireChecksum) {
+    throw buildMissingChecksumError(version, assetName, arch);
+  }
   core.warning(
     `No checksum file found for ${assetName} and no known-good checksum for ${version}. ` +
       `Skipping integrity verification — this could be a security concern. ` +
@@ -739,18 +782,21 @@ async function verifyDownloadedArchive(
  *
  * @param version - Version to install when opencode is missing (defaults to 'latest').
  * @param minimumVersion - Minimum acceptable installed version (default: {@link MINIMUM_OPENCODE_VERSION}).
+ * @param options - Optional setup options (see {@link SetupOpenCodeOptions}).
  * @returns The absolute path to the opencode binary.
+ * @since NEXT - Added `options` passthrough for the checksum integrity gate.
  */
 export async function resolveOpenCodePath(
   version = 'latest',
   minimumVersion: string = MINIMUM_OPENCODE_VERSION,
+  options: SetupOpenCodeOptions = {},
 ): Promise<string> {
   const existingPath = await io.which('opencode', false);
   if (existingPath) {
     opencodePath = existingPath;
     return existingPath;
   }
-  return setupOpenCode(version, undefined, minimumVersion);
+  return setupOpenCode(version, undefined, minimumVersion, options);
 }
 
 /**

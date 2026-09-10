@@ -102,6 +102,28 @@ export function getKnownChecksum(version: string, arch: string): string | null {
 }
 
 /**
+ * Build the fail-closed error thrown when checksum enforcement is on but no
+ * checksum is available for the downloaded archive.
+ *
+ * @param version - Pinned version string (e.g. "1.2.3").
+ * @param assetName - Release asset file name (e.g. "opencode-linux-amd64.tar.gz").
+ * @param arch - Architecture identifier (e.g. "linux-amd64").
+ * @returns A human-friendly Error with pin + sha256 remediation steps.
+ * @since NEXT
+ */
+export function buildMissingChecksumError(version: string, assetName: string, arch: string): Error {
+  return new Error(
+    `OpenCode integrity verification failed: no checksum available for ${assetName} ` +
+      `(version ${version}, arch ${arch}) and security.require_opencode_checksum is enabled.\n` +
+      `Pin opencode_version to a specific tag and add its sha256 to KNOWN_CHECKSUMS ` +
+      `in lib/src/utils/checksum.ts, or ensure the release publishes a checksum asset ` +
+      `(e.g. "${assetName}.sha256" or "checksums.txt") containing an entry for ${assetName}.\n` +
+      `To recover quickly, re-run with security.require_opencode_checksum disabled ` +
+      `(fail-open, warn-and-continue) while you obtain the expected sha256.`,
+  );
+}
+
+/**
  * Verify a file's SHA-256 checksum against an expected value.
  * Throws on mismatch rather than returning false.
  *

@@ -140,6 +140,8 @@ export interface ActionInputs {
     auditLabels: string[];
     /** Version of opencode to use. */
     opencodeVersion: string;
+    /** Fail closed when the downloaded OpenCode CLI cannot be checksum-verified. */
+    requireOpencodeChecksum: boolean;
     /** In setup mode, probe every configured model instead of only the review model. */
     probeAllModels: boolean;
     /** Timeout in minutes for the operation. */

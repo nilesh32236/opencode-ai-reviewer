@@ -305,6 +305,11 @@ inputs:
     required: false
     default: 'latest'
 
+  require_opencode_checksum:
+    description: 'Fail closed when the downloaded OpenCode CLI cannot be checksum-verified (pin opencode_version and add its sha256 to KNOWN_CHECKSUMS). Default false preserves warn-and-continue.'
+    required: false
+    default: 'false'
+
   probe_all_models:
     description: 'In setup mode, probe every configured model (review, fix, audit, etc.) instead of only the review model'
     required: false
