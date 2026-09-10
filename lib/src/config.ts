@@ -33,6 +33,7 @@ import {
 import { PromptConfigSchema } from './types/schemas.js';
 import { DEFAULT_ALLOWLIST } from './utils/command.js';
 import { Logger } from './utils/logger.js';
+import { parseReviewEffort } from './utils/review-effort.js';
 
 /**
  * Shape descriptor used to detect unknown keys in a raw config object.
@@ -73,6 +74,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     suggestTitleAndLabels: null,
     streamComments: null,
     streamBatchSize: null,
+    effort: null,
     tokenBudget: null,
     budget: null,
     costTracking: null,
@@ -459,6 +461,14 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     }
     if (typeof config.review.streamBatchSize === 'number' && config.review.streamBatchSize >= 0) {
       result.review.streamBatchSize = config.review.streamBatchSize;
+    }
+    const parsedEffort = parseReviewEffort(config.review.effort);
+    if (parsedEffort !== null) {
+      result.review.effort = parsedEffort;
+    } else if (config.review.effort !== undefined) {
+      core.warning(
+        `Ignoring invalid review.effort "${String(config.review.effort)}". Must be "lite" or "balanced"; falling back to defaults.`,
+      );
     }
     if (
       config.review.failOnSeverity === 'off' ||
