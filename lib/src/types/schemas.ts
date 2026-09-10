@@ -452,7 +452,7 @@ export const SCAConfigSchema = z
  */
 export const ToolchainConfigSchema = z
   .object({
-    enforceNodeFloor: z.boolean().optional().default(false),
+    enforceNodeFloor: z.boolean().default(false),
   })
   .catch({
     enforceNodeFloor: false,

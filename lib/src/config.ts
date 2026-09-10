@@ -1233,6 +1233,8 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     const raw = config.toolchain;
     if (typeof raw.enforceNodeFloor === 'boolean') {
       result.toolchain = { enforceNodeFloor: raw.enforceNodeFloor };
+    } else if (raw.enforceNodeFloor !== undefined) {
+      core.warning('Ignoring invalid toolchain.enforceNodeFloor: expected a boolean.');
     }
   }
 
