@@ -357,6 +357,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const sca = repoConfig?.sca;
   const changelog = repoConfig?.changelog;
   const describe = repoConfig?.describe;
+  const multiAgent = repoConfig?.multiAgent;
   const projectAutoLoadAgentsMd = repoConfig?.project?.autoLoadAgentsMd;
   const projectAttributionFooter = repoConfig?.project?.attributionFooter;
   if (
@@ -379,6 +380,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
     !sca &&
     !changelog &&
     !describe &&
+    !multiAgent &&
     projectAutoLoadAgentsMd === undefined &&
     projectAttributionFooter === undefined
   ) {
@@ -468,6 +470,22 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       describe: {
         ...baseConfig.describe,
         ...describe,
+      },
+    }),
+    // Mirror the multi-agent config so app-hosted repos can enable/disable
+    // and tune the multi-agent review path via `.opencode-reviewer.yml`.
+    ...(multiAgent && {
+      multiAgent: {
+        ...baseConfig.multiAgent,
+        ...multiAgent,
+        agents: {
+          ...(baseConfig.multiAgent?.agents ?? {}),
+          ...(multiAgent.agents ?? {}),
+        },
+        synthesis: {
+          ...(baseConfig.multiAgent?.synthesis ?? {}),
+          ...(multiAgent.synthesis ?? {}),
+        },
       },
     }),
     // Opt-in head-SHA convention auto-load (`project.autoLoadAgentsMd`) and its

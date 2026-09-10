@@ -111,6 +111,7 @@ export const MCPServerConfigSchema = z.object({
         'case-sensitive. Unset → built-in safe default; empty array → no parent vars ' +
         'forwarded; `environment` always overrides.',
     ),
+  remoteTransport: z.enum(['auto', 'sse', 'streamable-http']).optional(),
 });
 
 /** Zod schema validating project context configuration. */
@@ -474,17 +475,21 @@ const AGENT_CATEGORY_KEYS = ['security', 'performance', 'quality', 'logic'] as c
 
 /**
  * Zod schema validating the multi-agent review architecture configuration.
- * Multi-agent mode is opt-in and non-critical. The `agents` record is keyed
- * leniently (any string) and filtered to known categories in a transform so a
- * single mistyped agent-category key (e.g. `secuirty:`) drops only the offending
- * block instead of failing the whole parse — mirroring `validateConfig`'s skip
+ * Multi-agent mode is enabled by default: a single `opencode run` process
+ * dispatches read-only review subagents (security, performance, quality,
+ * logic) via the task tool, replacing the legacy N-process batch path for
+ * multi-batch PRs. Set `enabled: false` to revert to the legacy path
+ * everywhere. The `agents` record is keyed leniently (any string) and
+ * filtered to known categories in a transform so a single mistyped
+ * agent-category key (e.g. `secuirty:`) drops only the offending block
+ * instead of failing the whole parse — mirroring `validateConfig`'s skip
  * behavior. The outer `.catch(...)` (mirroring `NotificationsConfigSchema`)
  * still guards a fully malformed `multiAgent:` section so unrelated review
  * settings are never silently discarded.
  */
 export const MultiAgentConfigSchema = z
   .object({
-    enabled: z.boolean().default(false),
+    enabled: z.boolean().default(true),
     agents: z
       .record(z.string(), z.unknown())
       .transform((agents: Record<string, unknown>) => {
@@ -506,7 +511,7 @@ export const MultiAgentConfigSchema = z
       })
       .default({ enabled: true }),
   })
-  .catch({ enabled: false, agents: {}, synthesis: { enabled: true } });
+  .catch({ enabled: true, agents: {}, synthesis: { enabled: true } });
 
 /**
  * Zod schema validating Slack incoming-webhook notification configuration.

@@ -141,7 +141,9 @@ async function run(): Promise<void> {
     }
 
     if (inputs.mode !== 'setup') {
-      await setupOpenCode(inputs.opencodeVersion, token);
+      await setupOpenCode(inputs.opencodeVersion, token, undefined, {
+        requireChecksum: inputs.requireOpencodeChecksum,
+      });
       await setupWorkspaceDependencies(process.cwd());
     }
 
