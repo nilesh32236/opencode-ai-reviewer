@@ -372,9 +372,6 @@ export class MCPManager {
         this.logger.warn(
           `MCP server "${server.name}": Streamable HTTP handshake failed (${err instanceof Error ? err.message : String(err)}), falling back to SSE`,
         );
-        this.logger.debug(
-          `MCP server "${server.name}": Streamable HTTP handshake failed, falling back to SSE`,
-        );
       }
     }
   }
