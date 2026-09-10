@@ -43,6 +43,13 @@ describe('extractCommentCommand()', () => {
     expect(extractCommentCommand('  /Analyze --full  ')).toBe('analyze');
   });
 
+  it('matches mid-body commands like production workflow triggers', () => {
+    expect(extractCommentCommand('please /fix this')).toBe('fix');
+    expect(extractCommentCommand('Hi\n/fix')).toBe('fix');
+    expect(extractCommentCommand('/oc please review')).toBe('oc');
+    expect(extractCommentCommand('can you /review this PR?')).toBe('review');
+  });
+
   it('returns null for non-command comments', () => {
     expect(extractCommentCommand('looks good, thanks!')).toBeNull();
     expect(extractCommentCommand('please fix this')).toBeNull();
@@ -75,6 +82,8 @@ describe('verifyCommentActorPermission()', () => {
     mockPermission('admin');
     await expect(verifyCommentActorPermission('token')).resolves.toBe(true);
     mockPermission('write');
+    await expect(verifyCommentActorPermission('token')).resolves.toBe(true);
+    mockPermission('maintain');
     await expect(verifyCommentActorPermission('token')).resolves.toBe(true);
     expect(mockSetFailed).not.toHaveBeenCalled();
   });

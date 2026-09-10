@@ -1,7 +1,10 @@
 /**
- * Extract the leading slash-command from a comment body, or null when the
- * body carries no known command. A leading '/' is required so bare words in
- * comments never count as commands.
+ * Extract a slash-command from a comment body, or null when the body carries
+ * no known command. Mirrors production workflow trigger semantics, which fire
+ * on substring `contains(body, '/fix')` / `contains(body, '/review')` / '/oc':
+ * the whole body is scanned (multiline) for a command token with a word
+ * boundary, so mid-body commands like 'please /fix this' or 'Hi\n/fix' are
+ * still gated for authorization instead of bypassing the check.
  * @param body - The raw comment body (may be undefined for event payloads
  * without a comment).
  * @returns The lowercase command name, or null.

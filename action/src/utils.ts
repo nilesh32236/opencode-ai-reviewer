@@ -23,7 +23,7 @@ const MAX_PR_NUMBER = 2147483647;
 export async function resolvePrNumber(): Promise<number | null> {
   const prNumberInput = core.getInput('pr-number').trim();
   if (prNumberInput) {
-    const trimmed = prNumberInput.trim();
+    const trimmed = prNumberInput;
     // Require a canonical integer string: parseInt alone would accept "12abc"
     // or "1.5" (truncating to 1), so verify the round-trip first. This also
     // rejects partially-numeric values that would route against the wrong PR.

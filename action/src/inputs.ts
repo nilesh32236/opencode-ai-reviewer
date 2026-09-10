@@ -294,8 +294,10 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
       const code = ch.codePointAt(0) ?? 0;
       return code < 0x20 || code === 0x7f;
     });
-    if (label.length > 50 || hasControlChar || label.includes(',')) {
-      throw new Error(`Invalid audit label "${label}": labels must be ≤ 50 characters`);
+    if (label.length > 50 || hasControlChar) {
+      throw new Error(
+        `Invalid audit label "${label}": labels must be ≤ 50 characters and contain no control characters`,
+      );
     }
   }
 

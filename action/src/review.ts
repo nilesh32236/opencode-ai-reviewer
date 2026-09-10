@@ -353,12 +353,11 @@ export async function runReview(
 
 /**
  * Secret-specific predicate for the `secrets.failCI` gate: a finding only
- * counts when its message carries the hardcoded-secret prefix. The structured
- * `category === 'security' && severity === 'critical'` check (set by
- * mergeSecretFindings) is required alongside the prefix so the gate gains the
- * structured signal without firing on unrelated critical security findings
- * (SQLi, XSS, auth bypass); the bare-prefix clause keeps findings produced by
- * older lib versions (without structured fields) covered.
+ * counts when its message carries the hardcoded-secret prefix (emitted by
+ * mergeSecretFindings). Structured `category`/`severity` fields are
+ * intentionally not required here so findings produced by older lib versions
+ * (without structured fields) stay covered and the gate never fires on
+ * unrelated critical security findings (SQLi, XSS, auth bypass).
  * @param issue - A review finding with optional structured fields and a message.
  * @returns True when the finding is a hardcoded-secret finding.
  */
@@ -367,10 +366,5 @@ export function isHardcodedSecretFinding(issue: {
   severity?: string;
   message: string;
 }): boolean {
-  return (
-    (issue.category === 'security' &&
-      issue.severity === 'critical' &&
-      issue.message.startsWith('Hardcoded')) ||
-    issue.message.startsWith('Hardcoded')
-  );
+  return issue.message.startsWith('Hardcoded');
 }

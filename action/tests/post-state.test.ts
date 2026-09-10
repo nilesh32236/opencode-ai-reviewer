@@ -55,7 +55,9 @@ describe('parseFiniteState()', () => {
   });
 
   it('sanitizes the warning so embedded secrets are redacted', () => {
-    const raw = 'sk-ant-0000000000000000000000000000000000000000';
+    // Synthetic fixture only: built dynamically so no secret-like literal is
+    // stored in the repo. Not a real credential and never sent anywhere.
+    const raw = `sk-ant-${'0'.repeat(40)}`; // gitleaks:allow
     expect(parseFiniteState('token_usage', raw)).toBeUndefined();
     expect(mockWarning).toHaveBeenCalledTimes(1);
     const warned = String(mockWarning.mock.calls[0]?.[0] ?? '');

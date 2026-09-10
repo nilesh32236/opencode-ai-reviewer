@@ -48,10 +48,13 @@ export async function runFix(
 
   let comments: IssueComment[];
   try {
-    // Bound the fetch while preserving full-history semantics: newest-first
-    // pages stop early once enough REVIEW_MARKERs are seen to trip the
-    // maxIterations gate, and throwOnError keeps page failures loud so the
-    // count is never silently computed from a truncated list.
+    // Bound the fetch while preserving full-history semantics: pages stop
+    // early once enough REVIEW_MARKERs are seen to trip the maxIterations
+    // gate, and throwOnError keeps page failures loud so the count is never
+    // silently computed from a truncated list. Note: GitHub's list-issue-
+    // comments endpoint ignores sort direction (always oldest-first; GitLab
+    // honors sort), so early-stop savings apply on GitLab while GitHub scans
+    // oldest-first within the 10-page bound.
     const recent = await gh.listComments(prNumber, {
       perPage: 100,
       maxPages: 10,
@@ -774,14 +777,19 @@ export async function runAutofixLoop(
             validateRefName(pr.headRef);
             await exec.exec('git', ['push', 'origin', pr.headRef]);
           } catch (err) {
-            core.warning(
-              sanitize(
-                `Git operations failed during verification retry: ${err instanceof Error ? err.message : err}`,
-              ),
-            );
+            // Mirror the main push path and runFix retry handling: a lost
+            // verification push must never be silently dropped, so fail loudly
+            // and stop the outer loop instead of continuing with lost fixes.
+            const msg = `Git operations failed during verification retry: ${err instanceof Error ? err.message : err}`;
+            core.warning(sanitize(msg));
+            core.setFailed(sanitize(msg));
+            exitReason = 'git-failure';
             break;
           }
         }
+      }
+      if (exitReason === 'git-failure') {
+        break;
       }
     }
   }
