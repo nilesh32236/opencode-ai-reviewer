@@ -37,7 +37,12 @@ import type {
  */
 export class LearningStore {
   private repoPromise: Promise<LearningRepository>;
+  private reconnectPromise: Promise<LearningRepository> | null = null;
   private cleanupPromise: Promise<number> | undefined;
+  private readonly dbPathOrUrl?: string;
+  private lastFailureAt: number | null = null;
+  /** Cooldown before a rejected connection is retried (long-lived Probot). */
+  private static readonly RECONNECT_COOLDOWN_MS = 60_000;
 
   /**
    * @param dbPathOrUrl - Database path or connection URL.
@@ -45,26 +50,105 @@ export class LearningStore {
    *                      Retries connection up to 3 times with 1s backoff between attempts.
    */
   constructor(dbPathOrUrl?: string) {
-    this.repoPromise = (async () => {
-      const target = process.env.DATABASE_URL || dbPathOrUrl || getDbPath();
-      return withRetry(
-        async () => {
-          const repo = await connectDb(target);
-          try {
-            await applyMigrations(repo);
-            return repo;
-          } catch (err) {
-            await repo.close().catch(() => {});
-            throw err;
-          }
-        },
-        {
-          maxRetries: 3,
-          baseDelayMs: 1000,
-          operationName: 'LearningStore',
-        },
-      );
-    })();
+    this.dbPathOrUrl = dbPathOrUrl;
+    this.repoPromise = this.connect();
+  }
+
+  /**
+   * Establish a fresh database connection with retry + migrations.
+   * @returns The connected learning repository.
+   */
+  private connect(): Promise<LearningRepository> {
+    const target = process.env.DATABASE_URL || this.dbPathOrUrl || getDbPath();
+    return withRetry(
+      async () => {
+        const repo = await connectDb(target);
+        try {
+          await applyMigrations(repo);
+          return repo;
+        } catch (err) {
+          await repo.close().catch(() => {});
+          throw err;
+        }
+      },
+      {
+        maxRetries: 3,
+        baseDelayMs: 1000,
+        operationName: 'LearningStore',
+      },
+    );
+  }
+
+  /**
+   * Resolve the repository, retrying the connection when a previous attempt
+   * failed and the reconnect cooldown has elapsed. Prevents a single startup
+   * failure from permanently disabling the store in long-lived processes.
+   * @returns The connected learning repository.
+   * @throws The connection error when still within cooldown or on retry failure.
+   */
+  private async getRepo(): Promise<LearningRepository> {
+    try {
+      const repo = await this.repoPromise;
+      this.lastFailureAt = null;
+      return repo;
+    } catch (err) {
+      const now = Date.now();
+      if (
+        this.lastFailureAt !== null &&
+        now - this.lastFailureAt < LearningStore.RECONNECT_COOLDOWN_MS
+      ) {
+        throw err;
+      }
+      // Single-flight the recovery so concurrent callers that all observe the
+      // rejected promise share one reconnect instead of each opening (and
+      // leaking) their own connection.
+      if (this.reconnectPromise) {
+        return this.reconnectPromise;
+      }
+      this.lastFailureAt = now;
+      const next = this.connect();
+      this.reconnectPromise = next;
+      this.repoPromise = next;
+      try {
+        const repo = await next;
+        this.lastFailureAt = null;
+        return repo;
+      } finally {
+        if (this.reconnectPromise === next) {
+          this.reconnectPromise = null;
+        }
+      }
+    }
+  }
+
+  /**
+   * Force a fresh database connection, discarding any cached (possibly
+   * rejected) promise. Used by health checks to recover a dead store.
+   */
+  async reconnect(): Promise<void> {
+    const prior = this.repoPromise;
+    const next = this.connect();
+    this.reconnectPromise = next;
+    this.repoPromise = next;
+    try {
+      await next;
+      this.lastFailureAt = null;
+      // Close the previously settled repo (if any) so health-check-triggered
+      // recovery does not leak SQLite handles/pools. Close failures are
+      // ignored; a never-connected prior settles as a rejection.
+      await prior.then((r) => r.close().catch(() => {})).catch(() => {});
+    } catch (err) {
+      // Recovery failed: keep serving from the prior connection instead of
+      // leaving the store wedged on a rejected promise with no live repo.
+      if (this.repoPromise === next) {
+        this.repoPromise = prior;
+      }
+      throw err;
+    } finally {
+      if (this.reconnectPromise === next) {
+        this.reconnectPromise = null;
+      }
+    }
   }
 
   /**
@@ -107,7 +191,7 @@ export class LearningStore {
    * @throws If the database operation fails.
    */
   async recordFinding(finding: FindingInput): Promise<string> {
-    const repo = await this.repoPromise;
+    const repo = await this.getRepo();
     return repo.recordFinding(finding);
   }
 
@@ -120,7 +204,7 @@ export class LearningStore {
    */
   async recordFindings(findings: FindingInput[]): Promise<string[]> {
     if (findings.length === 0) return [];
-    const repo = await this.repoPromise;
+    const repo = await this.getRepo();
     return repo.recordFindings(findings);
   }
 
@@ -131,7 +215,7 @@ export class LearningStore {
    * @returns Number of deleted finding rows.
    */
   async deleteFindings(prNumber: number): Promise<number> {
-    const repo = await this.repoPromise;
+    const repo = await this.getRepo();
     return repo.deleteFindings(prNumber);
   }
 
@@ -143,7 +227,7 @@ export class LearningStore {
    * @returns Array of finding rows.
    */
   async getFindingsByType(type: string, limit = 50): Promise<FindingRow[]> {
-    const repo = await this.repoPromise;
+    const repo = await this.getRepo();
     return repo.getFindingsByType(type, limit);
   }
 
@@ -155,7 +239,7 @@ export class LearningStore {
    * @returns Array of finding rows.
    */
   async getFindings(prNumber?: number, limit = 100): Promise<FindingRow[]> {
-    const repo = await this.repoPromise;
+    const repo = await this.getRepo();
     return repo.getFindings(prNumber, limit);
   }
 
@@ -176,7 +260,7 @@ export class LearningStore {
     prNumber: number;
   }): Promise<void> {
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       await repo.recordFeedback(feedback);
     } catch (err) {
       const logger = new Logger('LearningStore');
@@ -198,7 +282,7 @@ export class LearningStore {
     }>,
   ): Promise<void> {
     if (feedbacks.length === 0) return;
-    const repo = await this.repoPromise;
+    const repo = await this.getRepo();
     await repo.recordFeedbackBatch(feedbacks);
   }
 
@@ -213,7 +297,7 @@ export class LearningStore {
     limit = 100,
     sinceDays?: number,
   ): Promise<Array<{ message: string; file?: string }>> {
-    const repo = await this.repoPromise;
+    const repo = await this.getRepo();
     return repo.getFindingMessages(limit, sinceDays);
   }
 
@@ -229,7 +313,7 @@ export class LearningStore {
     limit = 100,
     sinceDays?: number,
   ): Promise<Array<{ message: string; file?: string }>> {
-    const repo = await this.repoPromise;
+    const repo = await this.getRepo();
     return repo.getDistinctFindingMessages(limit, sinceDays);
   }
 
@@ -246,7 +330,7 @@ export class LearningStore {
     limit = 100,
     sinceDays?: number,
   ): Promise<Array<{ message: string; file?: string }>> {
-    const repo = await this.repoPromise;
+    const repo = await this.getRepo();
     return repo.getFindingMessagesByFileType(fileType, limit, sinceDays);
   }
 
@@ -257,7 +341,7 @@ export class LearningStore {
    * @returns A number between 0 and 1 representing the FP rate.
    */
   async getFalsePositiveRate(): Promise<number> {
-    const repo = await this.repoPromise;
+    const repo = await this.getRepo();
     return repo.getFalsePositiveRate();
   }
 
@@ -270,7 +354,7 @@ export class LearningStore {
    */
   async ping(): Promise<{ ok: boolean; responseMs: number }> {
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       return await repo.ping();
     } catch {
       return { ok: false, responseMs: 0 };
@@ -286,7 +370,7 @@ export class LearningStore {
    */
   async getRelevantLessons(filePaths: string[]): Promise<string[]> {
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       return repo.getRelevantLessons(filePaths);
     } catch {
       return [];
@@ -304,7 +388,7 @@ export class LearningStore {
    */
   async getFalsePositiveRules(filePaths: string[], limit = 20): Promise<string[]> {
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       return repo.getFalsePositiveRules(filePaths, limit);
     } catch {
       return [];
@@ -322,7 +406,7 @@ export class LearningStore {
    */
   async generateSuppressionRules(options: SuppressionRuleGenerationOptions): Promise<number> {
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       return await repo.generateSuppressionRules(options);
     } catch (err) {
       const logger = new Logger('LearningStore');
@@ -340,7 +424,7 @@ export class LearningStore {
    */
   async expireSuppressionRules(maxReviews: number): Promise<number> {
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       return await repo.expireSuppressionRules(maxReviews);
     } catch (err) {
       const logger = new Logger('LearningStore');
@@ -357,7 +441,7 @@ export class LearningStore {
    */
   async getSuppressionRuleStats(): Promise<SuppressionRuleStats> {
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       return await repo.getSuppressionRuleStats();
     } catch (err) {
       const logger = new Logger('LearningStore');
@@ -374,7 +458,7 @@ export class LearningStore {
    */
   async recordQuality(quality: LearningQuality): Promise<void> {
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       await repo.recordQuality(quality);
     } catch (err) {
       const logger = new Logger('LearningStore');
@@ -390,7 +474,7 @@ export class LearningStore {
    */
   async getTelemetryStats(sinceDays?: number): Promise<TelemetryStats> {
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       return repo.getTelemetryStats(sinceDays);
     } catch (err) {
       const logger = new Logger('LearningStore');
@@ -406,7 +490,7 @@ export class LearningStore {
    * @returns Array of review_quality rows.
    */
   async getQualityTrends(limit = 20): Promise<ReviewQualityRow[]> {
-    const repo = await this.repoPromise;
+    const repo = await this.getRepo();
     return repo.getQualityTrends(limit);
   }
 
@@ -417,7 +501,7 @@ export class LearningStore {
    * @returns True if a meta-review should be run.
    */
   async incrementAndCheckMetaReviewInterval(interval: number): Promise<boolean> {
-    const repo = await this.repoPromise;
+    const repo = await this.getRepo();
     return repo.incrementAndCheckMetaReviewInterval(interval);
   }
 
@@ -436,7 +520,7 @@ export class LearningStore {
     frequency: number;
     fileTypes: string[];
   }): Promise<void> {
-    const repo = await this.repoPromise;
+    const repo = await this.getRepo();
     await repo.recordPattern(pattern);
   }
 
@@ -454,7 +538,7 @@ export class LearningStore {
     }>,
   ): Promise<void> {
     if (patterns.length === 0) return;
-    const repo = await this.repoPromise;
+    const repo = await this.getRepo();
     await repo.recordPatterns(patterns);
   }
 
@@ -465,7 +549,7 @@ export class LearningStore {
    * @returns Array of pattern rows.
    */
   async getPatterns(minFrequency = 3): Promise<PatternRow[]> {
-    const repo = await this.repoPromise;
+    const repo = await this.getRepo();
     return repo.getPatterns(minFrequency);
   }
 
@@ -477,7 +561,7 @@ export class LearningStore {
    * @returns The generated rule ID.
    */
   async addCustomRule(ruleText: string, source: 'auto' | 'manual'): Promise<string> {
-    const repo = await this.repoPromise;
+    const repo = await this.getRepo();
     return repo.addCustomRule(ruleText, source);
   }
 
@@ -487,7 +571,7 @@ export class LearningStore {
    * @returns Array of pending rule rows.
    */
   async getPendingRules(): Promise<CustomRuleRow[]> {
-    const repo = await this.repoPromise;
+    const repo = await this.getRepo();
     return repo.getPendingRules();
   }
 
@@ -497,7 +581,7 @@ export class LearningStore {
    * @param ruleId - ID of the rule to approve.
    */
   async approveRule(ruleId: string): Promise<void> {
-    const repo = await this.repoPromise;
+    const repo = await this.getRepo();
     await repo.approveRule(ruleId);
   }
 
@@ -507,7 +591,7 @@ export class LearningStore {
    * @param ruleId - ID of the rule to decline.
    */
   async declineRule(ruleId: string): Promise<void> {
-    const repo = await this.repoPromise;
+    const repo = await this.getRepo();
     await repo.declineRule(ruleId);
   }
 
@@ -525,7 +609,7 @@ export class LearningStore {
     fpRateBefore: number,
   ): Promise<void> {
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       await repo.addPromptOverride(category, overrideText, fpRateBefore);
     } catch (err) {
       const logger = new Logger('LearningStore');
@@ -537,7 +621,7 @@ export class LearningStore {
    * Reset the meta-review counter to 0.
    */
   async resetCounter(): Promise<void> {
-    const repo = await this.repoPromise;
+    const repo = await this.getRepo();
     await repo.resetCounter();
   }
 
@@ -549,7 +633,7 @@ export class LearningStore {
    */
   async getPerPRStats(sinceDays?: number): Promise<PerPRStats> {
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       return repo.getPerPRStats(sinceDays);
     } catch {
       return {
@@ -571,7 +655,7 @@ export class LearningStore {
    */
   async getFeedbackBreakdown(sinceDays?: number): Promise<FeedbackBreakdown> {
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       return repo.getFeedbackBreakdown(sinceDays);
     } catch {
       return {
@@ -592,7 +676,7 @@ export class LearningStore {
    */
   async getFeedbackForFinding(findingId: string): Promise<LearningFeedback[]> {
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       return await repo.getFeedbackForFinding(findingId);
     } catch {
       return [];
@@ -607,7 +691,7 @@ export class LearningStore {
    */
   async getLatencyStats(sinceDays?: number): Promise<LatencyStats> {
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       return repo.getLatencyStats(sinceDays);
     } catch {
       return {
@@ -627,7 +711,7 @@ export class LearningStore {
    */
   async aggregateMetrics(periodType: 'daily' | 'weekly'): Promise<void> {
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       await repo.aggregateMetrics(periodType);
     } catch (err) {
       const logger = new Logger('LearningStore');
@@ -644,7 +728,7 @@ export class LearningStore {
    */
   async getMetrics(periodType: 'daily' | 'weekly', limit = 10): Promise<ReviewMetricsRow[]> {
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       return repo.getMetrics(periodType, limit);
     } catch {
       return [];
@@ -659,7 +743,7 @@ export class LearningStore {
    */
   async getSeverityDistribution(sinceDays?: number): Promise<SeverityDistribution> {
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       return repo.getSeverityDistribution(sinceDays);
     } catch {
       return { critical: 0, important: 0, minor: 0, unknown: 0 };
@@ -675,7 +759,7 @@ export class LearningStore {
    */
   async recordRateLimitAction(input: RateLimitActionInput): Promise<string> {
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       return await repo.recordRateLimitAction(input);
     } catch (err) {
       const logger = new Logger('LearningStore');
@@ -694,7 +778,7 @@ export class LearningStore {
   async completeRateLimitAction(id: string, tokensUsed: number): Promise<void> {
     if (!id) return;
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       await repo.completeRateLimitAction(id, tokensUsed);
     } catch (err) {
       const logger = new Logger('LearningStore');
@@ -710,7 +794,7 @@ export class LearningStore {
    */
   async countRateLimitActions(filter: RateLimitCountFilter): Promise<number> {
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       return await repo.countRateLimitActions(filter);
     } catch (err) {
       const logger = new Logger('LearningStore');
@@ -727,7 +811,7 @@ export class LearningStore {
    */
   async sumRateLimitTokens(sinceMs: number): Promise<number> {
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       return await repo.sumRateLimitTokens(sinceMs);
     } catch (err) {
       const logger = new Logger('LearningStore');
@@ -746,7 +830,7 @@ export class LearningStore {
    */
   async getLastRateLimitTime(repo: string, prNumber: number, tier: string): Promise<number | null> {
     try {
-      const storeRepo = await this.repoPromise;
+      const storeRepo = await this.getRepo();
       return await storeRepo.getLastRateLimitTime(repo, prNumber, tier);
     } catch (err) {
       const logger = new Logger('LearningStore');
@@ -769,7 +853,7 @@ export class LearningStore {
     tier?: string,
   ): Promise<Array<{ repo: string; count: number }>> {
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       return await repo.getRateLimitUsageByRepo(sinceMs, limit, tier);
     } catch (err) {
       const logger = new Logger('LearningStore');
@@ -790,7 +874,7 @@ export class LearningStore {
     limit = 10,
   ): Promise<Array<{ user: string; count: number }>> {
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       return await repo.getRateLimitUsageByUser(sinceMs, limit);
     } catch (err) {
       const logger = new Logger('LearningStore');
@@ -808,7 +892,7 @@ export class LearningStore {
    */
   async resetRateLimits(repo?: string, user?: string): Promise<number> {
     try {
-      const storeRepo = await this.repoPromise;
+      const storeRepo = await this.getRepo();
       return await storeRepo.resetRateLimits(repo, user);
     } catch (err) {
       const logger = new Logger('LearningStore');
@@ -825,7 +909,7 @@ export class LearningStore {
    */
   async cleanupRateLimits(olderThanMs: number): Promise<number> {
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       return await repo.cleanupRateLimits(olderThanMs);
     } catch (err) {
       const logger = new Logger('LearningStore');
@@ -844,7 +928,7 @@ export class LearningStore {
    */
   async getOrCreateConversationSession(input: ConversationSessionInput): Promise<string> {
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       return await repo.getOrCreateConversationSession(input);
     } catch (err) {
       const logger = new Logger('LearningStore');
@@ -862,7 +946,7 @@ export class LearningStore {
   async getConversationSession(id: string): Promise<ConversationSessionRow | null> {
     if (!id) return null;
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       return await repo.getConversationSession(id);
     } catch (err) {
       const logger = new Logger('LearningStore');
@@ -880,7 +964,7 @@ export class LearningStore {
   async updateConversationSession(id: string, patch: ConversationSessionPatch): Promise<void> {
     if (!id) return;
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       await repo.updateConversationSession(id, patch);
     } catch (err) {
       const logger = new Logger('LearningStore');
@@ -896,7 +980,7 @@ export class LearningStore {
    */
   async addConversationTurn(input: ConversationTurnInput): Promise<string> {
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       return await repo.addConversationTurn(input);
     } catch (err) {
       const logger = new Logger('LearningStore');
@@ -914,7 +998,7 @@ export class LearningStore {
   async saveConversationExchange(input: ConversationExchangeInput): Promise<void> {
     if (!input.sessionId) return;
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       await repo.saveConversationExchange(input);
     } catch (err) {
       const logger = new Logger('LearningStore');
@@ -932,7 +1016,7 @@ export class LearningStore {
   async getConversationTurns(sessionId: string, limit = 100): Promise<ConversationTurnRow[]> {
     if (!sessionId) return [];
     try {
-      const repo = await this.repoPromise;
+      const repo = await this.getRepo();
       return await repo.getConversationTurns(sessionId, limit);
     } catch (err) {
       const logger = new Logger('LearningStore');
@@ -954,7 +1038,7 @@ export class LearningStore {
 
     const cleanupPromise = (async () => {
       try {
-        const repo = await this.repoPromise;
+        const repo = await this.getRepo();
         return await repo.cleanupConversations(olderThanMs);
       } catch (err) {
         const logger = new Logger('LearningStore');

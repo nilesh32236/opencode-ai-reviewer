@@ -303,6 +303,49 @@ describe('RateLimiter', () => {
     expect(result.reason).toBe('token_budget');
   });
 
+  it('returns an earlier deny even when a later store read fails', async () => {
+    limiter = new RateLimiter(makeConfig({ reviewsPerUserPerDay: 1 }), store);
+    await limiter.recordReview('org/repo', 'alice', 1, 'review', 'command');
+    const failingStore: RateLimitStore = {
+      ...store,
+      countRateLimitActions: (filter) =>
+        filter.user ? store.countRateLimitActions(filter) : Promise.resolve(0),
+      getLastRateLimitTime: () => Promise.resolve(null),
+      sumRateLimitTokens: () => Promise.reject(new Error('token sum boom')),
+      recordRateLimitAction: (input) => store.recordRateLimitAction(input),
+      completeRateLimitAction: (id, tokens) => store.completeRateLimitAction(id, tokens),
+      getRateLimitUsageByRepo: (sinceMs, limit, tier) =>
+        store.getRateLimitUsageByRepo(sinceMs, limit, tier),
+      getRateLimitUsageByUser: (sinceMs, limit) => store.getRateLimitUsageByUser(sinceMs, limit),
+      resetRateLimits: (repo, user) => store.resetRateLimits(repo, user),
+      cleanupRateLimits: (cutoff) => store.cleanupRateLimits(cutoff),
+    };
+    const limited = new RateLimiter(makeConfig({ reviewsPerUserPerDay: 1 }), failingStore);
+    const result = await limited.checkReview('org/repo', 'alice', 2, { tier: 'command' });
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toBe('user_daily');
+  });
+
+  it('throws the store error when no deny applies', async () => {
+    const failingStore: RateLimitStore = {
+      ...store,
+      countRateLimitActions: () => Promise.resolve(0),
+      getLastRateLimitTime: () => Promise.resolve(null),
+      sumRateLimitTokens: () => Promise.reject(new Error('token sum boom')),
+      recordRateLimitAction: (input) => store.recordRateLimitAction(input),
+      completeRateLimitAction: (id, tokens) => store.completeRateLimitAction(id, tokens),
+      getRateLimitUsageByRepo: (sinceMs, limit, tier) =>
+        store.getRateLimitUsageByRepo(sinceMs, limit, tier),
+      getRateLimitUsageByUser: (sinceMs, limit) => store.getRateLimitUsageByUser(sinceMs, limit),
+      resetRateLimits: (repo, user) => store.resetRateLimits(repo, user),
+      cleanupRateLimits: (cutoff) => store.cleanupRateLimits(cutoff),
+    };
+    const limited = new RateLimiter(makeConfig(), failingStore);
+    await expect(limited.checkReview('org/repo', 'alice', 1, { tier: 'command' })).rejects.toThrow(
+      'token sum boom',
+    );
+  });
+
   it('shares the token budget across command and interactive tiers', async () => {
     limiter = new RateLimiter(
       makeConfig({

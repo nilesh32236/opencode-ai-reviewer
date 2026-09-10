@@ -3644,4 +3644,33 @@ describe('ReviewEngine', () => {
       expect(secondEntry).toContain('"model":"claude-3-5-sonnet"');
     });
   });
+
+  describe('lessons / MCP-docs cache keys', () => {
+    const keys = ReviewEngine as unknown as {
+      lessonsKey: (filePaths: string[]) => string;
+      mcpDocsKey: (libraries: string[]) => string;
+    };
+
+    it('is order-insensitive and dedupes entries', () => {
+      expect(keys.lessonsKey(['b', 'a'])).toBe(keys.lessonsKey(['a', 'b', 'a']));
+      expect(keys.mcpDocsKey(['y', 'x'])).toBe(keys.mcpDocsKey(['x', 'y', 'x']));
+    });
+
+    it('never collides on commas inside entries (NUL-separated)', () => {
+      expect(keys.lessonsKey(['a,b', 'c'])).not.toBe(keys.lessonsKey(['a', 'b,c']));
+      expect(keys.mcpDocsKey(['a,b', 'c'])).not.toBe(keys.mcpDocsKey(['a', 'b,c']));
+    });
+
+    it('invalidateCaches() clears seeded lessons and MCP-docs entries', () => {
+      const peer = engine as unknown as {
+        lessonsCache: { lessons: string[]; filePaths: string; timestamp: number } | null;
+        mcpDocsCache: { docs: string; libraries: string; timestamp: number } | null;
+      };
+      peer.lessonsCache = { lessons: ['stale'], filePaths: 'stale-key', timestamp: Date.now() };
+      peer.mcpDocsCache = { docs: 'stale-docs', libraries: 'stale-key', timestamp: Date.now() };
+      expect(() => engine.invalidateCaches()).not.toThrow();
+      expect(peer.lessonsCache).toBeNull();
+      expect(peer.mcpDocsCache).toBeNull();
+    });
+  });
 });

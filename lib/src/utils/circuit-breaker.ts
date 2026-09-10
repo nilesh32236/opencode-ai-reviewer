@@ -115,20 +115,38 @@ export class CircuitBreaker {
     }
   }
 
+  private snapshot(): CircuitBreakerMetrics {
+    return {
+      state: this.state,
+      failureCount: this.failureCount,
+      successCount: this.successCount,
+      callCount: this.callCount,
+      tripCount: this.tripCount,
+      lastFailureAt: this.lastFailureAt,
+      lastSuccessAt: this.lastSuccessAt,
+    };
+  }
+
   private transitionState(): void {
     if (this.state === 'OPEN' && Date.now() - this.lastFailureTime >= this.effectiveCooldownMs) {
       this.state = 'HALF_OPEN';
       core.info(`[${this.options.name}] Circuit transitioning OPEN -> HALF_OPEN after cooldown`);
-      this.safeInvokeHook(this.options.onHalfOpen, this.getMetrics());
+      this.safeInvokeHook(this.options.onHalfOpen, this.snapshot());
     }
   }
 
   /**
    * Get the current circuit breaker state.
    *
+   * Runs the cooldown transition first so idle-time recovery is observable:
+   * after the cooldown elapses, polling `getState()` reports HALF_OPEN without
+   * requiring an incoming `call()`. Note that actual recovery still requires a
+   * `call()` probe — this only makes the pending transition visible.
+   *
    * @returns The current CircuitState (CLOSED, OPEN, or HALF_OPEN).
    */
   getState(): CircuitState {
+    this.transitionState();
     return this.state;
   }
 
@@ -227,7 +245,7 @@ export class CircuitBreaker {
       if (this.successCount >= this.options.successThreshold) {
         const count = this.successCount;
         this.state = 'CLOSED';
-        const metrics = this.getMetrics();
+        const metrics = this.snapshot();
         this.failureCount = 0;
         this.successCount = 0;
         core.info(
@@ -265,7 +283,7 @@ export class CircuitBreaker {
       core.warning(
         `[${this.options.name}] Circuit HALF_OPEN -> OPEN after failure in half-open state (cooldown: ${this.effectiveCooldownMs}ms)`,
       );
-      this.safeInvokeHook(this.options.onOpen, this.getMetrics());
+      this.safeInvokeHook(this.options.onOpen, this.snapshot());
     } else if (this.state === 'CLOSED' && this.failureCount >= this.options.failureThreshold) {
       this.state = 'OPEN';
       this.successCount = 0;
@@ -274,7 +292,7 @@ export class CircuitBreaker {
       core.warning(
         `[${this.options.name}] Circuit CLOSED -> OPEN after ${this.failureCount} consecutive failures (cooldown: ${this.effectiveCooldownMs}ms)`,
       );
-      this.safeInvokeHook(this.options.onOpen, this.getMetrics());
+      this.safeInvokeHook(this.options.onOpen, this.snapshot());
     }
   }
 
@@ -289,7 +307,7 @@ export class CircuitBreaker {
     this.successCount = 0;
     this.effectiveCooldownMs = this.options.cooldownMs;
     if (priorState === 'OPEN' || priorState === 'HALF_OPEN') {
-      this.safeInvokeHook(this.options.onClose, this.getMetrics());
+      this.safeInvokeHook(this.options.onClose, this.snapshot());
     }
   }
 
@@ -297,18 +315,14 @@ export class CircuitBreaker {
    * Get current circuit breaker metrics, including cumulative observability
    * counters (call count, trip count) and last success/failure timestamps.
    *
+   * Runs the cooldown transition first so the reported `state` reflects
+   * idle-time recovery (see `getState()`).
+   *
    * @returns A snapshot of the current state and counters.
    */
   getMetrics(): CircuitBreakerMetrics {
-    return {
-      state: this.state,
-      failureCount: this.failureCount,
-      successCount: this.successCount,
-      callCount: this.callCount,
-      tripCount: this.tripCount,
-      lastFailureAt: this.lastFailureAt,
-      lastSuccessAt: this.lastSuccessAt,
-    };
+    this.transitionState();
+    return this.snapshot();
   }
 }
 
