@@ -29,6 +29,9 @@ export function makeAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConf
   return {
     ...DEFAULT_CONFIG,
     timeoutMinutes: 10,
+    // The single-process subagent path is now the default; pin the legacy
+    // batch path here so the integration tests keep testing it explicitly.
+    multiAgent: { ...DEFAULT_CONFIG.multiAgent, enabled: false },
     ...overrides,
     review: {
       ...DEFAULT_CONFIG.review,
