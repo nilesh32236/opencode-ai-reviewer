@@ -48,10 +48,19 @@ export async function runFix(
 
   let comments: IssueComment[];
   try {
-    // Bound the fetch: only the marker count is needed to derive the
-    // iteration, so a capped page of recent comments avoids over-fetching
-    // the full comment history (up to 1000 bodies) on every fix run.
-    const recent = await gh.listComments(prNumber, { perPage: 100, maxPages: 2 });
+    // Bound the fetch while preserving full-history semantics: newest-first
+    // pages stop early once enough REVIEW_MARKERs are seen to trip the
+    // maxIterations gate, and throwOnError keeps page failures loud so the
+    // count is never silently computed from a truncated list.
+    const recent = await gh.listComments(prNumber, {
+      perPage: 100,
+      maxPages: 10,
+      direction: 'desc',
+      throwOnError: true,
+      stopWhen: (items) =>
+        items.filter((c) => String((c as { body?: unknown }).body ?? '').includes(REVIEW_MARKER))
+          .length >= config.maxIterations,
+    });
     comments = recent.map((c) => ({
       id: typeof c.id === 'number' ? c.id : 0,
       author: '',
@@ -160,11 +169,13 @@ export async function runFix(
             validateRefName(pr.headRef);
             await exec.exec('git', ['push', 'origin', pr.headRef]);
           } catch (err) {
-            core.warning(
-              sanitize(
-                `Git operations during verification retry failed: ${err instanceof Error ? err.message : err}`,
-              ),
-            );
+            // Mirror the main push path: a lost verification push must never
+            // report changes_made=true, so fail loudly and return.
+            const msg = `Git operations during verification retry failed: ${err instanceof Error ? err.message : err}`;
+            core.warning(sanitize(msg));
+            core.setFailed(sanitize(msg));
+            core.setOutput('changes_made', 'false');
+            return;
           }
         }
       }

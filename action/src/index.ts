@@ -29,6 +29,7 @@ import {
 import { runAnalyze } from './analyze.js';
 import { runAudit } from './audit.js';
 import { runChangelog } from './changelog.js';
+import { extractCommentCommand, verifyCommentActorPermission } from './comment-commands.js';
 import { runDescribe } from './describe.js';
 import { runDocs } from './docs.js';
 import { runAutofixLoop, runFix, runFixIssue } from './fix.js';
@@ -456,15 +457,38 @@ async function run(): Promise<void> {
         platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
       engine = new ReviewEngine(config, gh, learningStore, eventBus, repo, correlationId);
 
-      // Authorization gate: issue-comment triggered commands (/fix, /analyze,
+      // Authorization gate: comment-triggered commands (/fix, /analyze,
       // manual re-review) must only be honored when the commenter holds
       // write/admin permission. Without this, any user who can comment could
       // trigger LLM runs, force-push branches, open PRs, and post comments
       // with the repo-scoped token. Fail closed on lookup failure.
-      if (platform === 'github' && github.context.eventName === 'issue_comment') {
-        const authorized = await verifyCommentActorPermission(token);
-        if (!authorized) {
-          return;
+      //
+      // Scope notes:
+      // - GitHub-only. On GitLab the action is invoked from .gitlab-ci.yml
+      //   pipeline jobs and never parses a comment webhook in-process (there
+      //   is no note-event payload or actor available), so there is no
+      //   untrusted comment-actor vector to gate here.
+      // - pull_request_review (submitted-review) events are out of scope: the
+      //   action parses slash-commands only from comment bodies, and a bare
+      //   review approval/request-changes carries no command.
+      // - The gate runs only when the comment body actually contains a
+      //   slash-command, so stray non-command comments neither fail the run
+      //   nor require permission.
+      if (platform === 'github') {
+        const gatedEvent =
+          github.context.eventName === 'issue_comment' ||
+          github.context.eventName === 'pull_request_review_comment'
+            ? (github.context.payload.comment as { body?: unknown } | undefined)
+            : undefined;
+        const commentBody =
+          gatedEvent && typeof gatedEvent.body === 'string' ? gatedEvent.body : '';
+        if (gatedEvent && extractCommentCommand(commentBody) !== null) {
+          const authorized = await verifyCommentActorPermission(token);
+          if (!authorized) {
+            return;
+          }
+        } else if (gatedEvent) {
+          core.info('Ignoring non-command comment event — skipping authorization gate');
         }
       }
 
@@ -592,49 +616,6 @@ function withDownloadRemediation(message: string): string {
     return `${message}\n\nIf this is a transient network or GitHub server error, re-run the workflow to retry. For checksum errors, clear the action cache and re-run.`;
   }
   return message;
-}
-
-/**
- * Verify that the actor who triggered an `issue_comment` event holds
- * write/admin permission on the repository before honoring manual commands
- * (/fix, /analyze, manual re-review). Fails closed: any lookup failure or a
- * read/none permission marks the action failed and returns false.
- * @param token - GitHub token used for the permission lookup.
- * @returns True when the actor is authorized to trigger the command.
- */
-async function verifyCommentActorPermission(token: string): Promise<boolean> {
-  const actor =
-    (github.context.payload.comment as { user?: { login?: string } } | undefined)?.user?.login ||
-    github.context.actor;
-  const { owner, repo: repoName } = github.context.repo;
-  if (!actor) {
-    core.setFailed('Refusing issue_comment trigger: could not determine comment author');
-    return false;
-  }
-  try {
-    const octokit = github.getOctokit(token);
-    const { data } = await octokit.rest.repos.getCollaboratorPermissionLevel({
-      owner,
-      repo: repoName,
-      username: actor,
-    });
-    const permission = data.permission as string;
-    if (permission === 'admin' || permission === 'write') {
-      core.info(`Authorized issue_comment trigger from @${actor} (${permission})`);
-      return true;
-    }
-    core.setFailed(
-      `Refusing issue_comment trigger: @${actor} has '${permission}' permission (write access required)`,
-    );
-    return false;
-  } catch (err) {
-    core.setFailed(
-      sanitize(
-        `Refusing issue_comment trigger: could not verify @${actor}'s permission (${err instanceof Error ? err.message : err})`,
-      ),
-    );
-    return false;
-  }
 }
 
 run();

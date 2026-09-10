@@ -203,16 +203,18 @@ export async function runPost(
 
 /**
  * Parse a saved STATE_* metric value, returning undefined (with a warning)
- * when the value is not a finite number instead of propagating NaN/Infinity
- * into the rendered token-usage summary.
+ * when the value is not a finite, non-negative number instead of propagating
+ * NaN/Infinity/negatives into the rendered token-usage summary. Saved STATE_*
+ * values are untrusted strings, so the warning is sanitized to block log-line
+ * or workflow-command injection via newlines or `::` sequences.
  * @param name - State key (for the warning message).
  * @param raw - Raw state string.
- * @returns The finite number, or undefined when invalid.
+ * @returns The finite non-negative number, or undefined when invalid.
  */
-function parseFiniteState(name: string, raw: string): number | undefined {
+export function parseFiniteState(name: string, raw: string): number | undefined {
   const parsed = Number(raw);
-  if (!Number.isFinite(parsed)) {
-    core.warning(`Ignoring non-finite saved state ${name}="${raw}"`);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    core.warning(sanitize(`Ignoring non-finite saved state ${name}="${raw}"`));
     return undefined;
   }
   return parsed;

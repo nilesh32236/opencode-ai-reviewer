@@ -228,16 +228,21 @@ export interface ActionInputs {
 
 /**
  * Parse and validate the stream_batch_size input: an empty value means 0
- * (per-batch posting); otherwise it must be a non-negative integer within a
- * sane upper bound, mirroring the other numeric input validators.
+ * (per-batch posting); otherwise it must be a canonical non-negative integer
+ * string within a sane upper bound, mirroring the strict integer style used
+ * in resolvePrNumber (Number() alone would accept hex, scientific, or float
+ * forms such as 0x10, 1e2, or 3.0).
  * @param raw - The raw stream_batch_size string.
  * @returns The validated batch size.
  */
 export function parseStreamBatchSize(raw: string): number {
   const trimmed = (raw || '').trim();
   if (trimmed === '') return 0;
-  const parsed = Number(trimmed);
-  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 100) {
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error('stream_batch_size must be a non-negative integer between 0 and 100');
+  }
+  const parsed = Number.parseInt(trimmed, 10);
+  if (parsed < 0 || parsed > 100) {
     throw new Error('stream_batch_size must be a non-negative integer between 0 and 100');
   }
   return parsed;
@@ -280,13 +285,17 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     .split(',')
     .map((l) => l.trim())
     .filter(Boolean);
-  // Fail fast on labels GitHub would reject later at API time (max 50 chars,
-  // no whitespace): surfacing here keeps the error next to the input parsing.
+  // Fail fast on labels GitHub would reject later at API time. GitHub labels
+  // legitimately contain spaces (e.g. 'good first issue'), so only the 50-char
+  // limit and control characters are enforced here (commas/newlines would
+  // break the API; commas cannot occur since labels are comma-split above).
   for (const label of auditLabels) {
-    if (label.length > 50 || /\s/.test(label)) {
-      throw new Error(
-        `Invalid audit label "${label}": labels must be ≤ 50 characters with no spaces`,
-      );
+    const hasControlChar = [...label].some((ch) => {
+      const code = ch.codePointAt(0) ?? 0;
+      return code < 0x20 || code === 0x7f;
+    });
+    if (label.length > 50 || hasControlChar || label.includes(',')) {
+      throw new Error(`Invalid audit label "${label}": labels must be ≤ 50 characters`);
     }
   }
 
