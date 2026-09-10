@@ -5,9 +5,12 @@ import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  INTEGRITY_ERROR_STATUS,
+  buildMissingChecksumError,
   computeSha256,
   findChecksumAsset,
   getKnownChecksum,
+  markIntegrityError,
   parseChecksumFile,
   verifyChecksum,
 } from '../src/utils/checksum.js';
@@ -194,5 +197,46 @@ describe('getKnownChecksum()', () => {
 
   it('returns null for empty version', () => {
     expect(getKnownChecksum('', 'linux-x64')).toBeNull();
+  });
+});
+
+describe('buildMissingChecksumError()', () => {
+  it('names the version, asset, and arch with pin-plus-sha256 guidance', () => {
+    const err = buildMissingChecksumError('v1.2.0', 'opencode-linux-x64.tar.gz', 'linux-x64');
+
+    expect(err.message).toContain('opencode-linux-x64.tar.gz');
+    expect(err.message).toContain('v1.2.0');
+    expect(err.message).toContain('linux-x64');
+    expect(err.message).toContain('require_opencode_checksum');
+    expect(err.message).toContain('Pin opencode_version');
+  });
+
+  it('references the real action input instead of lib-internal config names', () => {
+    const err = buildMissingChecksumError('v1.2.0', 'opencode-linux-x64.tar.gz', 'linux-x64');
+
+    expect(err.message).not.toContain('security.require_opencode_checksum');
+  });
+
+  it('carries a non-retryable status so withRetry fails fast', () => {
+    const err = buildMissingChecksumError('v1.2.0', 'opencode-linux-x64.tar.gz', 'linux-x64');
+
+    expect((err as Error & { status?: number }).status).toBe(INTEGRITY_ERROR_STATUS);
+    // 422 is never a transient status: it must stay outside the default
+    // retryable set or deterministic failures get re-downloaded with backoff.
+    expect([429, 500, 502, 503, 504]).not.toContain(INTEGRITY_ERROR_STATUS);
+  });
+});
+
+describe('markIntegrityError()', () => {
+  it('tags the error as non-retryable while preserving the message', () => {
+    const err = markIntegrityError(new Error('Checksum mismatch: expected abc, got def'));
+
+    expect(err.message).toContain('Checksum mismatch');
+    expect((err as Error & { status?: number }).status).toBe(INTEGRITY_ERROR_STATUS);
+  });
+
+  it('returns the same error instance', () => {
+    const original = new Error('integrity failure');
+    expect(markIntegrityError(original)).toBe(original);
   });
 });
