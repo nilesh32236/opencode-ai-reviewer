@@ -314,6 +314,8 @@ describe('handlePRReview check run reporting', () => {
         ]),
       }),
       expect.anything(),
+      undefined,
+      undefined,
     );
   });
 
