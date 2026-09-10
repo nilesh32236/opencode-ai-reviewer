@@ -87,7 +87,11 @@ import { sanitizePromptInput } from './utils/prompt-sanitizer.js';
 import { analyzeBatchReachability } from './utils/reachability.js';
 import { withRetry } from './utils/retry.js';
 import { buildAgentsMdAttributionFooter } from './utils/review-body.js';
-import { isAllowedLinterCommand, resolveConfinedWorkingDir } from './utils/safe-exec.js';
+import {
+  isAllowedLinterCommand,
+  isSafeLinterArgs,
+  resolveConfinedWorkingDir,
+} from './utils/safe-exec.js';
 import { sanitizeString } from './utils/sanitize.js';
 import { detectSecrets, mergeSecretFindings } from './utils/secret-detect.js';
 import type { SecretDetectOptions, SecretFinding } from './utils/secret-detect.js';
@@ -4042,11 +4046,17 @@ export class ReviewEngine {
     for (const linterConfig of this.config.linters) {
       try {
         // Defense in depth at the exec sink: never run a linter binary that
-        // is not on the basename allowlist (PR-editable config is untrusted).
+        // is not on the basename allowlist, or whose args are not safe
+        // strings (PR-editable config is untrusted; config may bypass
+        // validateConfig when constructed programmatically).
         if (!isAllowedLinterCommand(linterConfig.command)) {
           this.logger.warn(
             `Skipping linter: command "${linterConfig.command}" is not on the allowed list`,
           );
+          continue;
+        }
+        if (!isSafeLinterArgs(linterConfig.args)) {
+          this.logger.warn(`Skipping linter "${linterConfig.command}": args are not safe strings`);
           continue;
         }
 

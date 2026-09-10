@@ -20,19 +20,25 @@ import * as path from 'node:path';
  *   hex, IPv4-mapped IPv6) so SSRF guards cannot be bypassed. The check stays
  *   purely synchronous by design: no DNS lookups are performed (CI sandboxes
  *   may block DNS, and fail-closed-on-resolution-failure would break legitimate
- *   webhooks on transient DNS errors).
+ *   webhooks on transient DNS errors). Residual risk: attacker-controlled
+ *   hostnames that resolve to internal addresses (DNS rebinding) are out of
+ *   scope — pin URLs to operator-known hosts or validate at fetch time (see
+ *   `isSafeRemoteMcpUrl`).
  */
 
 // ─── Linter commands ────────────────────────────────────────────
 
 /**
  * Basename allowlist for `linters[].command` from repo-file config.
- * Only bare binary basenames resolved via `PATH` are permitted — never paths,
- * never generic runners (`sh`, `bash`, `node`, `python`, `curl`, `wget`,
- * `npx`, `npm`, ...) which are arbitrary-code primitives on their own via
- * config-controlled `args`. Operators needing an extra binary can extend the
- * set with `OPENCODE_ALLOWED_LINTERS` (comma-separated basenames, same
- * structural rules apply).
+ * Only bare single-purpose linter/formatter binary basenames resolved via
+ * `PATH` are permitted — never paths, never generic runners (`sh`, `bash`,
+ * `node`, `python`, `curl`, `wget`, `npx`, `npm`, ...) and never generic
+ * language toolchains (`go`, `cargo`, `dotnet`, `dart`, `flutter`, ...) which
+ * are arbitrary-code primitives on their own via config-controlled `args`
+ * (e.g. `go run evil.go`, `cargo run`, `dotnet run`). Operators needing an
+ * extra binary can extend the set with `OPENCODE_ALLOWED_LINTERS`
+ * (comma-separated basenames, same structural rules apply) — only add
+ * single-purpose binaries, never toolchains or shells.
  */
 export const ALLOWED_LINTER_COMMANDS: ReadonlySet<string> = new Set([
   'eslint',
@@ -49,8 +55,6 @@ export const ALLOWED_LINTER_COMMANDS: ReadonlySet<string> = new Set([
   'rubocop',
   'golangci-lint',
   'gofmt',
-  'go',
-  'cargo',
   'clippy-driver',
   'shellcheck',
   'hadolint',
@@ -62,9 +66,6 @@ export const ALLOWED_LINTER_COMMANDS: ReadonlySet<string> = new Set([
   'ktlint',
   'swiftlint',
   'scalafmt',
-  'dart',
-  'flutter',
-  'dotnet',
 ]);
 
 /** Shell metacharacters / separators that must never appear in a command basename. */
@@ -98,6 +99,27 @@ export function isAllowedLinterCommand(cmd: unknown): boolean {
   return false;
 }
 
+/** Maximum accepted length for a single linter argument (DoS guard). */
+const MAX_LINTER_ARG_LENGTH = 2048;
+
+/**
+ * Check whether configured linter `args` are safe strings for `execFile`.
+ * `execFile` spawns without a shell, so metacharacters are inert — but args
+ * must still be well-formed strings: rejects non-strings, embedded NUL bytes
+ * (which truncate C-level argv and can confuse argument parsing), and
+ * overlong values. Matched file paths are appended by the engine itself and
+ * are not covered here.
+ * @param args - Configured `linters[].args` value.
+ * @returns True when every arg is a safe string.
+ */
+export function isSafeLinterArgs(args: unknown): boolean {
+  if (args === undefined) return true;
+  if (!Array.isArray(args)) return false;
+  return args.every(
+    (a) => typeof a === 'string' && a.length <= MAX_LINTER_ARG_LENGTH && !a.includes('\0'),
+  );
+}
+
 // ─── Path confinement ───────────────────────────────────────────
 
 /**
@@ -115,7 +137,11 @@ export function isConfinedPath(base: string, requested: string): boolean {
     ? path.normalize(requested)
     : path.resolve(baseResolved, requested);
   const rel = path.relative(baseResolved, target);
-  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+  // `rel === ''` is the base directory itself — confined. This agrees with
+  // `resolveConfinedWorkingDir`, which resolves an empty/absent value to the
+  // base, so `workingDirectory: '.'` (checkout root) is benign.
+  if (rel === '') return true;
+  return !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
 /**
@@ -199,9 +225,34 @@ export const ALLOWED_MCP_LOCAL_COMMANDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Argument tokens that turn an allowlisted launcher into an arbitrary-code
+ * primitive (`node -e '...'`, `python3 -c '...'`, `deno eval '...'`). Any
+ * command vector containing one of these as a standalone argument is
+ * rejected. This is intentionally fail-closed: a legitimate server that needs
+ * e.g. `-c config.json` or `-p 8080` as literal flags is also rejected and
+ * must be run outside PR-editable config. NOTE: `-y`/`--yes` (used by the
+ * pinned built-in `npx` servers in `mcp/servers.ts`) remain permitted, so
+ * `npx -y <package>` can still fetch and execute an arbitrary npm package
+ * named in config — custom local MCP servers from PR-editable config must
+ * therefore still be operator-reviewed (prefer the pinned built-ins), and
+ * forwarded `environment` credentials are visible to the executed package.
+ */
+const BLOCKED_MCP_LOCAL_ARGS: ReadonlySet<string> = new Set([
+  '-e',
+  '--eval',
+  '--evaluate',
+  '-c',
+  '--code',
+  '-p',
+  '--print',
+  'eval',
+]);
+
+/**
  * Check whether a local MCP server command vector is safe to spawn.
  * Requires a non-empty argv whose launcher is a bare basename on the launcher
- * allowlist (no paths, no shell metacharacters).
+ * allowlist (no paths, no shell metacharacters) and whose remaining arguments
+ * contain none of the code-evaluation flags in {@link BLOCKED_MCP_LOCAL_ARGS}.
  * @param command - Configured `mcpServers[].command` vector.
  * @returns True when the vector may be spawned via `StdioClientTransport`.
  */
@@ -214,7 +265,12 @@ export function isAllowedMcpLocalCommand(command: unknown): boolean {
   if (launcher.includes('..') || UNSAFE_COMMAND_CHARS.test(launcher)) return false;
   if (path.isAbsolute(launcher)) return false;
   if (path.basename(launcher) !== launcher) return false;
-  return ALLOWED_MCP_LOCAL_COMMANDS.has(launcher);
+  if (!ALLOWED_MCP_LOCAL_COMMANDS.has(launcher)) return false;
+  for (const arg of command.slice(1)) {
+    if (typeof arg !== 'string') return false;
+    if (BLOCKED_MCP_LOCAL_ARGS.has(arg.trim())) return false;
+  }
+  return true;
 }
 
 // ─── SSRF host policy (synchronous canonicalization) ────────────
@@ -332,7 +388,11 @@ export function isBlockedIpHost(host: string): boolean {
   }
   if (ipVersion === 6) {
     if (h === '::' || h === '::1') return true;
-    if (h.startsWith('fe80:') || h.startsWith('fe80::')) return true; // link-local
+    // Link-local fe80::/10 spans first hextet fe80–febf (not just fe80:).
+    const firstHextet = Number.parseInt(h.split(':')[0], 16);
+    if (Number.isInteger(firstHextet) && firstHextet >= 0xfe80 && firstHextet <= 0xfebf) {
+      return true;
+    }
     if (h.startsWith('fc') || h.startsWith('fd')) return true; // unique-local fc00::/7
     // IPv4-mapped / compatible forms: check the embedded IPv4 tail too.
     const tail = h.split(':').pop() ?? '';
@@ -344,14 +404,23 @@ export function isBlockedIpHost(host: string): boolean {
       return true;
     }
     if (h.includes('ffff:')) {
-      const hexTail = h.split(':').slice(-2).join('');
-      if (/^[0-9a-f]{1,8}$/.test(hexTail)) {
-        const n = Number.parseInt(hexTail, 16);
+      // Each hextet is exactly 16 bits: parse the last two groups separately
+      // with zero-padding semantics (joining `c0a8` + `1` into `c0a81` and
+      // parsing as one number mis-decodes `::ffff:c0a8:1` as public).
+      const groups = h.split(':').slice(-2);
+      const hi = Number.parseInt(groups[0].padStart(4, '0'), 16);
+      const lo = Number.parseInt(groups[1].padStart(4, '0'), 16);
+      if (
+        groups.length === 2 &&
+        groups.every((g) => /^[0-9a-f]{1,4}$/.test(g)) &&
+        Number.isSafeInteger(hi) &&
+        Number.isSafeInteger(lo)
+      ) {
         const bytes: [number, number, number, number] = [
-          (n >>> 24) & 0xff,
-          (n >>> 16) & 0xff,
-          (n >>> 8) & 0xff,
-          n & 0xff,
+          (hi >>> 8) & 0xff,
+          hi & 0xff,
+          (lo >>> 8) & 0xff,
+          lo & 0xff,
         ];
         return isBlockedIPv4Bytes(bytes);
       }
@@ -377,6 +446,13 @@ export function isBlockedIpHost(host: string): boolean {
  * no credentials in the URL, and no blocked/internal hosts (same policy as
  * webhook URLs). Purely synchronous — hostnames that do not parse as IPs are
  * checked against hostname blocklists only (no DNS resolution, by design).
+ *
+ * NOTE (residual risk): this check cannot stop DNS-based bypass. An
+ * attacker-controlled hostname that *resolves* to `169.254.169.254` or
+ * RFC1918 space (DNS rebinding, malicious dynamic-DNS) passes this check and
+ * would be fetched. Mitigate by pinning remote MCP/webhook URLs to
+ * operator-known hosts, or by adding resolve-and-validate at fetch time as a
+ * follow-up; do not rely on this check alone for hostile DNS.
  * @param url - Candidate remote MCP server URL.
  * @returns True when the URL is safe to open an SSE transport to.
  */

@@ -158,6 +158,7 @@ export {
   isBlockedIpHost,
   isConfinedPath,
   isEventSubscribersEnabled,
+  isSafeLinterArgs,
   isSafeRemoteMcpUrl,
   resolveConfinedEventLogPath,
   resolveConfinedWorkingDir,
