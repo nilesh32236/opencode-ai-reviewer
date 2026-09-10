@@ -356,6 +356,11 @@ async function run(): Promise<void> {
         enabled: loadedConfig?.describe?.enabled ?? DEFAULT_CONFIG.describe.enabled,
         model:
           inputs.describeModel || loadedConfig?.describe?.model || DEFAULT_CONFIG.describe.model,
+        enableDiagram:
+          inputs.enableDiagram ??
+          loadedConfig?.describe?.enableDiagram ??
+          DEFAULT_CONFIG.describe.enableDiagram ??
+          false,
       },
       learning: loadedConfig?.learning
         ? {

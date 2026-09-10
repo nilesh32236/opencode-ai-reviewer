@@ -143,6 +143,11 @@ inputs:
     description: 'Extra context to append to the describe prompt'
     required: false
 
+  enable_diagram:
+    description: 'Append an LLM-generated Mermaid flowchart to describe output (mode=describe)'
+    required: false
+    default: 'false'
+
   docs_model:
     description: 'Model to use for documentation generation (mode=docs)'
     required: false

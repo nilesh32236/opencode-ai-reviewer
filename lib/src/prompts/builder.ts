@@ -92,6 +92,7 @@ export interface PromptBuilderInputs {
   reviewPromptExtra?: string;
   describePromptFile?: string;
   describePromptExtra?: string;
+  enableDiagram?: boolean;
   maxFilesPerBatch?: number;
   projectContext?: string;
   runChecksAfterFix?: string;
@@ -1387,7 +1388,7 @@ Read the PR diff and commit messages above and generate a structured PR descript
 3. **Breaking Changes**: Flag whether the PR introduces breaking changes. If yes, list each one with a short migration note; if no, state "None".
 4. **Suggested Labels**: Propose 2-5 concise GitHub labels that fit this PR (e.g. \`feature\`, \`bug\`, \`dependencies\`, \`tests\`).
 5. **Suggested Conventional-commit Title**: Propose a single conventional-commit title for this PR (e.g. \`feat: add describe mode for PR summaries\`).
-
+${inputs.enableDiagram === true ? '6. **Architecture Diagram**: Sketch a compact data-flow diagram of the changed components (at most 12 nodes) as a Mermaid `flowchart TD` block.\n' : ''}
 ## Output Format
 Write your response as a single markdown document directly to \`.opencode/describe-output.md\`.
 Use this structure:
@@ -1411,8 +1412,8 @@ Use this structure:
 
 ## Suggested Conventional-commit Title
 \`<type(scope): subject>\`
-\`\`\`
-
+${inputs.enableDiagram === true ? '\n## Diagram\n```mermaid\nflowchart TD\n    A[Component] --> B[Component]\n```\n' : ''}\`\`\`
+${inputs.enableDiagram === true ? '\nWhen writing the Diagram section, keep the flowchart to at most 12 nodes with simple alphanumeric node ids (e.g. A, B, C) and short labels. Use only `flowchart TD` syntax with `-->` edges.' : ''}
 Do NOT wrap in JSON. Be concise but thorough.`);
 
   if (inputs.describePromptExtra) {

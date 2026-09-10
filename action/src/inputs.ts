@@ -146,6 +146,10 @@ export interface ActionInputs {
   describePromptFile?: string;
   /** Optional extra instructions appended to the describe prompt. */
   describePromptExtra?: string;
+  /** Whether to append an LLM-generated Mermaid flowchart to describe output. */
+  enableDiagram?: boolean;
+  /** Whether the enable_diagram input was explicitly set by the workflow. */
+  enableDiagramExplicit: boolean;
   /** Optional path to a custom config file (overrides .opencode-reviewer.yml discovery). */
   configFile?: string;
   /** Whether automated fix mode is enabled. */
@@ -424,6 +428,18 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     enableTestGapDetectionRaw === '' ? false : enableTestGapDetectionRaw === 'true';
   const enableTestGapDetectionExplicit = enableTestGapDetectionRaw !== '';
 
+  const enableDiagramInput = core.getInput('enable_diagram');
+  const enableDiagramRaw = enableDiagramInput.trim();
+  if (enableDiagramRaw !== '' && enableDiagramRaw !== 'true' && enableDiagramRaw !== 'false') {
+    throw new Error(
+      `Invalid enable_diagram: "${enableDiagramInput.trim()}". Must be true or false.`,
+    );
+  }
+  // Empty (omitted) resolves to undefined so `.opencode-reviewer.yml`
+  // `describe.enableDiagram` wins when the workflow leaves it unset.
+  const enableDiagram = enableDiagramRaw === '' ? undefined : enableDiagramRaw === 'true';
+  const enableDiagramExplicit = enableDiagramRaw !== '';
+
   const failOnSeverityInput = core.getInput('fail_on_severity');
   const failOnSeverityRaw = (failOnSeverityInput || 'off').trim().toLowerCase();
   if (!VALID_FAIL_ON_SEVERITIES.includes(failOnSeverityRaw as FailOnSeverity)) {
@@ -551,6 +567,8 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     reviewPromptExtra: core.getInput('review_prompt_extra') || undefined,
     describePromptFile: core.getInput('describe_prompt_file') || undefined,
     describePromptExtra: core.getInput('describe_prompt_extra') || undefined,
+    enableDiagram,
+    enableDiagramExplicit,
     configFile: core.getInput('config') || undefined,
     enableFix: core.getInput('enable_fix') !== 'false',
     maxFixIterations,
