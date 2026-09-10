@@ -71,14 +71,18 @@ describe('ReviewBudgetConfigSchema', () => {
 describe('MultiAgentConfigSchema', () => {
   it('applies defaults when an empty multiAgent object is parsed', () => {
     expect(MultiAgentConfigSchema.parse({})).toEqual({
-      enabled: false,
+      enabled: true,
       agents: {},
       synthesis: { enabled: true },
     });
   });
 
-  it('defaults enabled to false (opt-in)', () => {
-    expect(MultiAgentConfigSchema.parse({}).enabled).toBe(false);
+  it('defaults enabled to true (single-process subagent review)', () => {
+    expect(MultiAgentConfigSchema.parse({}).enabled).toBe(true);
+  });
+
+  it('explicit enabled:false opts out of the single-process subagent path', () => {
+    expect(MultiAgentConfigSchema.parse({ enabled: false }).enabled).toBe(false);
   });
 
   it('parses valid agent categories and per-agent fields', () => {

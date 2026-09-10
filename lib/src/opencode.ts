@@ -7,9 +7,11 @@ import * as io from '@actions/io';
 import * as tc from '@actions/tool-cache';
 import type { LLMConfig, LLMProviderConfig } from './types/index.js';
 import {
+  buildMissingChecksumError,
   computeSha256,
   findChecksumAsset,
   getKnownChecksum,
+  markIntegrityError,
   parseChecksumFile,
   verifyChecksum,
 } from './utils/checksum.js';
@@ -60,6 +62,60 @@ export interface OpenCodeRunMode {
 }
 
 let runModeOverride: OpenCodeRunMode | undefined;
+
+/**
+ * Default for dual-emitting V2 permissions-array subagent rules alongside V1
+ * permission keys. `true` keeps subagent reviews working on both newer CLIs
+ * (which prefer `permissions`) and older CLIs (which require `permission`).
+ * Overridable per call via an explicit `dualEmit` argument, per run via the
+ * `dualEmitSubagentPermissions` option on {@link runOpenCode}, process-wide via
+ * {@link setDualEmitSubagentPermissions}, or via the
+ * `OPENCODE_DUAL_EMIT_SUBAGENT_PERMISSIONS` env var (`false` disables).
+ *
+ * Strict-schema note: the V2 docs quoted on
+ * {@link SUBAGENT_V2_PERMISSIONS_CUTOFF} say "Do not use `permission`..." in V2
+ * configuration. Dual-emit therefore assumes V2 CLIs tolerate (ignore or warn
+ * on) the extra legacy `permission` key alongside `permissions`. If a V2 CLI
+ * ever performs strict-schema validation and rejects the legacy key, disable
+ * dual-emit via one of the opt-outs above (e.g. pass `false` per call/run, call
+ * `setDualEmitSubagentPermissions(false)`, or set
+ * `OPENCODE_DUAL_EMIT_SUBAGENT_PERMISSIONS=false`) to fall back to gated
+ * single-shape behavior (V2-only on new CLIs, legacy-only on old/unknown).
+ */
+let dualEmitSubagentPermissionsDefault = true;
+
+/**
+ * Configure whether V2-capable subagent configs emit both the legacy V1
+ * `permission` object and the V2 `permissions` array side by side.
+ *
+ * See the module-default comment above for the strict-schema caveat: if a V2
+ * CLI rejects the legacy key, call `setDualEmitSubagentPermissions(false)` or
+ * set `OPENCODE_DUAL_EMIT_SUBAGENT_PERMISSIONS=false`.
+ * @param enabled - `true` (default) to dual-emit, `false` for gated
+ * single-shape behavior, `undefined` to restore the default (`true`).
+ */
+export function setDualEmitSubagentPermissions(enabled?: boolean): void {
+  dualEmitSubagentPermissionsDefault = enabled ?? true;
+}
+
+/**
+ * Resolve the effective dual-emit flag: an explicit per-call/per-run boolean
+ * wins, then the `OPENCODE_DUAL_EMIT_SUBAGENT_PERMISSIONS` env var, then the
+ * module default set via {@link setDualEmitSubagentPermissions} (`true`).
+ * Unrecognized env values fall through to the module default (fail-open).
+ * @param explicit - Optional explicit override for this call.
+ * @returns The effective dual-emit setting.
+ */
+export function resolveDualEmitSubagentPermissions(explicit?: boolean): boolean {
+  if (typeof explicit === 'boolean') return explicit;
+  const raw = process.env.OPENCODE_DUAL_EMIT_SUBAGENT_PERMISSIONS;
+  if (raw !== undefined) {
+    const normalized = raw.trim().toLowerCase();
+    if (['0', 'false', 'no', 'off', 'disabled'].includes(normalized)) return false;
+    if (['1', 'true', 'yes', 'on', 'enabled'].includes(normalized)) return true;
+  }
+  return dualEmitSubagentPermissionsDefault;
+}
 
 /**
  * Configure how the OpenCode CLI is invoked for the current process.
@@ -124,6 +180,7 @@ export function resetOpenCodeState(): void {
   cachedOpenCodeVersionRaw = null;
   subagentV2DecisionCache.clear();
   runModeOverride = undefined;
+  dualEmitSubagentPermissionsDefault = true;
   llmProviderConfig = undefined;
   signalHandlersRegistered = false;
 }
@@ -452,6 +509,22 @@ function classifyDownloadError(error: unknown, version: string, downloadUrl: str
     );
   }
 
+  if (/no checksum available|require_opencode_checksum/i.test(message)) {
+    // Fail-closed integrity error under strict enforcement: re-running the
+    // workflow without changes deterministically fails again, so point at the
+    // pin-or-disable recovery steps instead of a blind retry. The Details line
+    // preserves the pin-plus-sha256 remediation from buildMissingChecksumError
+    // verbatim.
+    return (
+      `The downloaded OpenCode binary (${version}) could not be checksum-verified and require_opencode_checksum is enabled.\n` +
+      `Details: ${message}\n` +
+      `Download URL: ${downloadUrl}\n` +
+      `Pin opencode_version to a release that publishes a checksum asset, or re-run ` +
+      `with require_opencode_checksum disabled (the default warn-and-continue behavior) ` +
+      `while you obtain the expected sha256.`
+    );
+  }
+
   if (
     /timed out|timeout|fetch failed|network|econnrefused|econnreset|enotfound|etimedout|eai_again|socket/i.test(
       lower,
@@ -495,22 +568,71 @@ function classifyDownloadError(error: unknown, version: string, downloadUrl: str
 }
 
 /**
+ * Options for {@link setupOpenCode}.
+ * @since NEXT
+ */
+export interface SetupOpenCodeOptions {
+  /**
+   * Fail closed when no checksum is available for the downloaded archive.
+   * Maps to the `require_opencode_checksum` action input (surfaced as the
+   * `INPUT_REQUIRE_OPENCODE_CHECKSUM` env var). Defaults to false
+   * (warn-and-continue). Note: this gate only guards fresh downloads — a
+   * binary already present on PATH or restored from the tool cache is
+   * returned as-is (with a warning when strict mode is on) without checksum
+   * verification, because no archive was downloaded to verify.
+   */
+  requireChecksum?: boolean;
+}
+
+/**
+ * Resolve whether checksum enforcement is on. An explicit option wins;
+ * otherwise the `INPUT_REQUIRE_OPENCODE_CHECKSUM` env var (set by the
+ * `require_opencode_checksum` action input) applies. Defaults to false so
+ * existing workflows keep the warn-and-continue behavior.
+ * @param options - Optional setup options.
+ * @returns True when missing-checksum downloads must fail closed.
+ * @since NEXT
+ */
+export function resolveRequireChecksum(options?: SetupOpenCodeOptions): boolean {
+  if (options?.requireChecksum !== undefined) return options.requireChecksum;
+  return process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM?.trim().toLowerCase() === 'true';
+}
+
+/**
  * Ensure the OpenCode CLI binary is available.
  * Checks PATH first; if not found, downloads and caches the specified version.
+ *
+ * The `options.requireChecksum` integrity gate only guards fresh downloads: a
+ * binary already on PATH or restored from the tool cache is returned after
+ * the health check (with a warning when strict mode is on) without checksum
+ * verification.
  * @param version - Version tag to download (defaults to 'latest').
  * @param token - Optional GitHub token used for the authenticated release lookup.
  * @param minimumVersion - Minimum acceptable installed version (default: {@link MINIMUM_OPENCODE_VERSION}).
+ * @param options - Optional setup options (see {@link SetupOpenCodeOptions}).
  * @returns A Promise resolving to the path of the OpenCode binary.
+ * @since NEXT - Added `options.requireChecksum` fail-closed integrity gate.
  */
 export async function setupOpenCode(
   version = 'latest',
   token?: string,
   minimumVersion: string = MINIMUM_OPENCODE_VERSION,
+  options: SetupOpenCodeOptions = {},
 ): Promise<string> {
   const existingPath = await io.which('opencode', false);
   if (existingPath) {
     core.info(`OpenCode already available at: ${existingPath}`);
     opencodePath = existingPath;
+    if (resolveRequireChecksum(options)) {
+      // Strict mode cannot verify a pre-installed binary (no archive was
+      // downloaded, so there is nothing to checksum): surface a warning so
+      // the bypass is visible instead of silently passing the gate.
+      core.warning(
+        `require_opencode_checksum is enabled but opencode was already on PATH at ${existingPath} — ` +
+          `skipping checksum verification for the pre-installed binary. ` +
+          `The integrity gate only guards fresh downloads.`,
+      );
+    }
     const health = await checkHealth({ binPath: existingPath, minimumVersion });
     if (!health.compatible) {
       throw new Error(health.message);
@@ -539,6 +661,7 @@ export async function setupOpenCode(
 
   const arch = detectArch();
   core.info(`Setting up OpenCode ${version} (${arch})...`);
+  const requireChecksum = resolveRequireChecksum(options);
 
   let releaseUrl: string;
   if (version === 'latest') {
@@ -600,6 +723,16 @@ export async function setupOpenCode(
       const actualChecksum = await computeSha256(cachedBinPath);
       if (actualChecksum === storedChecksum) {
         core.info(`Using cached OpenCode ${semver} from ${cachedBinPath}`);
+        if (requireChecksum) {
+          // The cached .checksum is self-written by this same installer after
+          // any download (verified or warn-and-continue), so a cache entry
+          // created in default mode cannot prove integrity: surface a warning
+          // so the bypass is visible instead of silently passing the gate.
+          core.warning(
+            `require_opencode_checksum is enabled but using cached OpenCode ${semver} from ${cachedBinPath} — ` +
+              `the integrity gate only guards fresh downloads.`,
+          );
+        }
         if (platform !== 'win32') fs.chmodSync(cachedBinPath, 0o755);
         core.addPath(cachedToolDir);
         opencodePath = cachedBinPath;
@@ -650,6 +783,7 @@ export async function setupOpenCode(
           assetName,
           release.tag_name || version,
           arch,
+          requireChecksum,
         );
 
         let extPath: string;
@@ -701,6 +835,7 @@ async function verifyDownloadedArchive(
   assetName: string,
   version: string,
   arch: string,
+  requireChecksum = false,
 ): Promise<void> {
   const checksumAsset = findChecksumAsset(assets, assetName);
 
@@ -711,20 +846,41 @@ async function verifyDownloadedArchive(
     const expectedHash = parseChecksumFile(checksumContent, assetName);
 
     if (expectedHash) {
-      await verifyChecksum(dlPath, expectedHash);
+      // verifyChecksum throws `Checksum mismatch ... expected ..., got ...`
+      // and classifyDownloadError() surfaces it — never swallowed here, in
+      // either mode. The mismatch is deterministic, so it is tagged
+      // non-retryable: withRetry fails fast instead of re-downloading an
+      // archive whose bytes are already known to be wrong.
+      try {
+        await verifyChecksum(dlPath, expectedHash);
+      } catch (err) {
+        throw markIntegrityError(err instanceof Error ? err : new Error(String(err)));
+      }
       core.info(`Checksum verified for ${assetName}`);
       return;
+    }
+    if (requireChecksum) {
+      throw buildMissingChecksumError(version, assetName, arch);
     }
     core.warning(`Could not extract checksum for ${assetName} from ${checksumAsset.name}`);
   }
 
   const knownChecksum = getKnownChecksum(version, arch);
   if (knownChecksum) {
-    await verifyChecksum(dlPath, knownChecksum);
+    // Same fail-fast treatment as the release-asset path above: a mismatch
+    // against the pinned known-good hash can never succeed on retry.
+    try {
+      await verifyChecksum(dlPath, knownChecksum);
+    } catch (err) {
+      throw markIntegrityError(err instanceof Error ? err : new Error(String(err)));
+    }
     core.info(`Checksum verified using known-good checksum for ${version}`);
     return;
   }
 
+  if (requireChecksum) {
+    throw buildMissingChecksumError(version, assetName, arch);
+  }
   core.warning(
     `No checksum file found for ${assetName} and no known-good checksum for ${version}. ` +
       `Skipping integrity verification — this could be a security concern. ` +
@@ -737,20 +893,34 @@ async function verifyDownloadedArchive(
  * Prefers an existing PATH binary; otherwise downloads the requested version
  * via `setupOpenCode`.
  *
+ * Note: like {@link setupOpenCode}, the `requireChecksum` integrity gate only
+ * guards fresh downloads. A binary already on PATH or restored from the tool
+ * cache is returned as-is; when strict mode is on a warning is logged so the
+ * bypass is visible.
  * @param version - Version to install when opencode is missing (defaults to 'latest').
  * @param minimumVersion - Minimum acceptable installed version (default: {@link MINIMUM_OPENCODE_VERSION}).
+ * @param options - Optional setup options (see {@link SetupOpenCodeOptions}).
  * @returns The absolute path to the opencode binary.
+ * @since NEXT - Added `options` passthrough for the checksum integrity gate.
  */
 export async function resolveOpenCodePath(
   version = 'latest',
   minimumVersion: string = MINIMUM_OPENCODE_VERSION,
+  options: SetupOpenCodeOptions = {},
 ): Promise<string> {
   const existingPath = await io.which('opencode', false);
   if (existingPath) {
     opencodePath = existingPath;
+    if (resolveRequireChecksum(options)) {
+      core.warning(
+        `require_opencode_checksum is enabled but opencode was already on PATH at ${existingPath} — ` +
+          `skipping checksum verification for the pre-installed binary. ` +
+          `The integrity gate only guards fresh downloads.`,
+      );
+    }
     return existingPath;
   }
-  return setupOpenCode(version, undefined, minimumVersion);
+  return setupOpenCode(version, undefined, minimumVersion, options);
 }
 
 /**
@@ -1266,22 +1436,32 @@ function convertV1PermissionToV2Array(permission: unknown): Array<Record<string,
 }
 
 /**
- * Normalize subagent definitions to the V2 permissions-array shape when the
- * detected CLI version is at or above {@link SUBAGENT_V2_PERMISSIONS_CUTOFF}.
- * Definitions already carrying a `permissions` array pass through untouched;
- * when the gate is off (older/unknown version) the input is returned unchanged.
+ * Normalize subagent definitions for the detected CLI version.
+ *
+ * When the CLI is at or above {@link SUBAGENT_V2_PERMISSIONS_CUTOFF} and
+ * dual-emit is enabled (the default — see {@link resolveDualEmitSubagentPermissions}),
+ * a V2 `permissions` array converted from the legacy `permission` value is ADDED
+ * while the original `permission` key is PRESERVED byte-for-byte, so both newer
+ * CLIs (which prefer `permissions`) and older CLIs (which require `permission`)
+ * accept the same config. When dual-emit is disabled the legacy key is replaced
+ * by the converted array (gated single-shape behavior). Definitions already
+ * carrying a `permissions` array pass through untouched; when the gate is off
+ * (older/unknown version) the input is returned unchanged.
  * Fail-open: any error returns the input unchanged so dispatch never fails.
  * @param subagents - Map of subagent name → definition.
  * @param cliVersion - Raw detected CLI version; defaults to the last probed version.
+ * @param dualEmit - Optional dual-emit override; env/module default applies when omitted.
  * @returns The (possibly upgraded) subagent map.
  */
 export function normalizeSubagentPermissionsForVersion(
   subagents: Record<string, Record<string, unknown>>,
   cliVersion?: string | null,
+  dualEmit?: boolean,
 ): Record<string, Record<string, unknown>> {
   try {
     const version = cliVersion ?? cachedOpenCodeVersionRaw;
     if (!shouldUseV2SubagentPermissions(version)) return subagents;
+    const dual = resolveDualEmitSubagentPermissions(dualEmit);
     const upgraded: Record<string, Record<string, unknown>> = {};
     for (const [name, def] of Object.entries(subagents ?? {})) {
       if (!def || typeof def !== 'object' || Array.isArray(def)) {
@@ -1297,6 +1477,10 @@ export function normalizeSubagentPermissionsForVersion(
         rec.permission !== undefined ? convertV1PermissionToV2Array(rec.permission) : null;
       if (!converted) {
         upgraded[name] = rec;
+        continue;
+      }
+      if (dual) {
+        upgraded[name] = { ...rec, permissions: converted };
         continue;
       }
       const rest: Record<string, unknown> = {};
@@ -1320,17 +1504,27 @@ export function normalizeSubagentPermissionsForVersion(
  * and report findings; they are dispatched by the primary agent via the task tool.
  *
  * The deny-block shape is version-gated: CLI >= {@link SUBAGENT_V2_PERMISSIONS_CUTOFF}
- * gets the V2 `permissions` array, older or unknown versions keep the legacy
- * `permission` object byte-for-byte. Fail-open: gating errors fall back to legacy.
+ * with dual-emit enabled (the default) gets BOTH the legacy `permission` object
+ * (byte-for-byte) AND the V2 `permissions` array with equivalent deny semantics,
+ * so the same config works on newer and older CLIs. With dual-emit disabled the
+ * gate falls back to single-shape behavior (V2-only on new CLIs, legacy-only on
+ * old/unknown versions). Fail-open: gating errors fall back to legacy.
+ * Strict-schema note: dual-emit assumes V2 CLIs tolerate the extra legacy
+ * `permission` key (the V2 docs say "Do not use `permission`..."). If a V2 CLI
+ * strictly validates and rejects it, pass `dualEmit: false` (or use the
+ * `dualEmitSubagentPermissions` run option, `setDualEmitSubagentPermissions`,
+ * or `OPENCODE_DUAL_EMIT_SUBAGENT_PERMISSIONS=false`) for V2-only output.
  * @param description - The subagent's role description (shown to the primary agent).
  * @param model - Optional per-subagent model override (defaults to the primary's model).
  * @param cliVersion - Optional detected CLI version; defaults to the last probed version.
+ * @param dualEmit - Optional dual-emit override; env/module default applies when omitted.
  * @returns A subagent config object for the `agent` block.
  */
 export function buildReviewSubagent(
   description: string,
   model?: string,
   cliVersion?: string | null,
+  dualEmit?: boolean,
 ): Record<string, unknown> {
   const def: Record<string, unknown> = {
     description,
@@ -1339,11 +1533,20 @@ export function buildReviewSubagent(
   try {
     const version = cliVersion ?? cachedOpenCodeVersionRaw;
     if (shouldUseV2SubagentPermissions(version)) {
-      def.permissions = buildV2SubagentDenyPermissions();
+      if (resolveDualEmitSubagentPermissions(dualEmit)) {
+        // Dual-emit assumes V2 CLIs tolerate the legacy key alongside
+        // `permissions` (see module-default docs for the strict-schema opt-out).
+        def.permission = { ...LEGACY_SUBAGENT_PERMISSION };
+        def.permissions = buildV2SubagentDenyPermissions();
+      } else {
+        def.permissions = buildV2SubagentDenyPermissions();
+      }
     } else {
       def.permission = { ...LEGACY_SUBAGENT_PERMISSION };
     }
   } catch {
+    // biome-ignore lint/performance/noDelete: fail-open must remove a half-written key
+    delete def.permissions;
     def.permission = { ...LEGACY_SUBAGENT_PERMISSION };
   }
   if (model) def.model = model;
@@ -1509,6 +1712,14 @@ export {
  * can dispatch these read-only subagents via the task tool within this run.
  * @param options.autoApprove - When true (default), pass `--auto` to auto-approve
  * tool permissions. Set to false for interactive local use.
+ * @param options.dualEmitSubagentPermissions - When true (default), V2-capable
+ * subagent configs carry both the legacy `permission` object and the V2
+ * `permissions` array. Set to false for gated single-shape behavior. When
+ * omitted, the `OPENCODE_DUAL_EMIT_SUBAGENT_PERMISSIONS` env var or the module
+ * default (see {@link setDualEmitSubagentPermissions}) applies.
+ * Strict-schema note: dual-emit assumes V2 CLIs tolerate the extra legacy key
+ * (V2 docs say "Do not use `permission`..."). If a V2 CLI strictly validates
+ * and rejects it, pass `false` here or set the env var to `false`.
  * @param options.llm - Custom LLM provider configuration for this run. When
  * provided, it is used instead of the module-level config set via
  * {@link setLLMProviderConfig}, so long-lived processes can dispatch concurrent
@@ -1535,6 +1746,8 @@ export async function runOpenCode(
     subagents?: Record<string, Record<string, unknown>>;
     /** Pass `--auto` to auto-approve tool permissions (default: true). */
     autoApprove?: boolean;
+    /** Dual-emit V2 `permissions` alongside legacy `permission` (default: true). */
+    dualEmitSubagentPermissions?: boolean;
     /** Custom LLM provider configuration for this run (see JSDoc above). */
     llm?: LLMConfig;
   },
@@ -1718,10 +1931,16 @@ export async function runOpenCode(
   // probed binary is new enough. The version comes from the already-completed
   // checkHealth()/setupOpenCode() probe (cachedOpenCodeVersionRaw), so this
   // adds zero extra spawns. Unknown versions fail open to the legacy shape.
+  // Dual-emit (default) preserves the legacy `permission` key alongside the V2
+  // `permissions` array for maximum CLI compatibility.
   safeEnv.OPENCODE_CONFIG_CONTENT = mergeLLMProviderConfig(
     mergeSubagentConfig(
       options.opencodeConfig ?? runModeOverride?.opencodeConfig ?? buildCIConfig(),
-      normalizeSubagentPermissionsForVersion(options.subagents ?? {}),
+      normalizeSubagentPermissionsForVersion(
+        options.subagents ?? {},
+        undefined,
+        options.dualEmitSubagentPermissions,
+      ),
     ),
     llm,
   );

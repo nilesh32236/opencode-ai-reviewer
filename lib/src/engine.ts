@@ -87,7 +87,11 @@ import { sanitizePromptInput } from './utils/prompt-sanitizer.js';
 import { analyzeBatchReachability } from './utils/reachability.js';
 import { withRetry } from './utils/retry.js';
 import { buildAgentsMdAttributionFooter } from './utils/review-body.js';
-import { isAllowedLinterCommand, resolveConfinedWorkingDir } from './utils/safe-exec.js';
+import {
+  isAllowedLinterCommand,
+  isSafeLinterArgs,
+  resolveConfinedWorkingDir,
+} from './utils/safe-exec.js';
 import { sanitizeString } from './utils/sanitize.js';
 import { detectSecrets, mergeSecretFindings } from './utils/secret-detect.js';
 import type { SecretDetectOptions, SecretFinding } from './utils/secret-detect.js';
@@ -97,6 +101,15 @@ import { checkNodeFloor as checkNodeFloorVersion } from './utils/version.js';
 
 /** Maximum number of batch chunks processed concurrently by `reviewPR`. */
 export const MAX_BATCH_CONCURRENCY = 8;
+
+/**
+ * Maximum character length of the assembled orchestrator context for the
+ * single-process subagent review path. When the context exceeds this gate the
+ * review falls back to the legacy N-process batch path so per-batch context
+ * budgeting is preserved (the 50k truncation in `buildSubagentReviewPrompt`
+ * becomes unreachable for subagent-routed reviews).
+ */
+export const SUBAGENT_REVIEW_CONTEXT_LIMIT = 45_000;
 
 /** Fixed inter-chunk backoff delay in milliseconds between concurrent chunks. */
 export const INTER_CHUNK_DELAY_MS = 150;
@@ -1167,37 +1180,86 @@ export class ReviewEngine {
       }
     }
 
-    // Multi-agent review path (opt-in): dispatch specialized agents (security,
-    // performance, quality, logic) each with its own focused prompt, then
-    // consolidate their findings through the synthesis agent. Falls back to the
-    // legacy single-agent/batch path when multi-agent mode is disabled.
-    if (this.getActiveAgentCategories().length > 0) {
-      return await this.runMultiAgentReview(
-        pr,
-        files,
-        baseContext,
-        mcpDocs,
-        openThreadsContext,
-        workDir,
-        promptFile,
-        promptExtra,
-        timeoutMinutes,
-        codebaseIndex,
-        codebaseIndexData,
-        linterResults,
-        budgetMode,
-        totalDiffLines,
-        lessons,
-        falsePositiveRules,
-        deltaContext,
-        previousFindings,
-        previousBotComments,
-        scaIssues,
-        testGapResult,
-        onBatchComplete,
-        repoRulesContext,
-        commitMessages,
-      );
+    // Zero changed files: early-return merged-empty so no `opencode run` is
+    // ever spawned. Handles PRs with `pr.changedFiles.length === 0` (the
+    // exclude-pattern guard above already returns for non-empty changedFiles).
+    if (files.length === 0) {
+      return this.mergeScaIssues(emptyResult(), scaIssues);
+    }
+
+    // Multi-agent review path (default-on): dispatch specialized agents
+    // (security, performance, quality, logic) as read-only subagents within a
+    // single `opencode run` process. The single-process path is preferred when:
+    //  - active agent categories > 0,
+    //  - files.length > batchSize (multi-batch PRs — the only case that
+    //    previously spawned N concurrent processes), AND
+    //  - the assembled orchestrator context fits within the context-size gate.
+    //
+    // Small PRs (files.length <= batchSize) keep the legacy single-batch fast
+    // path (1 process, 1 model pass — no cost regression). Oversized-context
+    // multi-batch PRs fall through to the legacy batch path (context budgeting
+    // preserved). All agents explicitly disabled → legacy path.
+    const activeCategories = this.getActiveAgentCategories();
+    if (activeCategories.length > 0) {
+      // Context-aware gate: build orchestrator context once and measure it.
+      // Small PRs still take the single-batch fast path below (no context build).
+      if (files.length > batchSize) {
+        const codebaseIndexContext = this.formatCodebaseContext(
+          codebaseIndex,
+          codebaseIndexData,
+          files,
+        );
+        const orchestratorContext = this.buildAgentBatchContext(
+          baseContext,
+          mcpDocs,
+          openThreadsContext,
+          codebaseIndexContext,
+          deltaContext,
+          lessons,
+          falsePositiveRules,
+          previousFindings,
+          previousBotComments,
+          repoRulesContext,
+          commitMessages,
+        );
+
+        if (orchestratorContext.length <= SUBAGENT_REVIEW_CONTEXT_LIMIT) {
+          return await this.runMultiAgentReview(
+            pr,
+            files,
+            baseContext,
+            mcpDocs,
+            openThreadsContext,
+            workDir,
+            promptFile,
+            promptExtra,
+            timeoutMinutes,
+            codebaseIndex,
+            codebaseIndexData,
+            linterResults,
+            budgetMode,
+            totalDiffLines,
+            lessons,
+            falsePositiveRules,
+            deltaContext,
+            previousFindings,
+            previousBotComments,
+            scaIssues,
+            testGapResult,
+            onBatchComplete,
+            repoRulesContext,
+            commitMessages,
+            orchestratorContext,
+          );
+        }
+        // Oversized context → fall through to the legacy batch path so
+        // per-batch context budgeting is preserved.
+        this.logger.warn(
+          `Orchestrator context (${orchestratorContext.length} chars) exceeds SUBAGENT_REVIEW_CONTEXT_LIMIT (${SUBAGENT_REVIEW_CONTEXT_LIMIT}) — falling back to legacy batch path`,
+        );
+      }
+      // Small PR (files.length <= batchSize) with multi-agent enabled:
+      // single-batch fast path (no subagents, no cost regression).
     }
 
     // If PR is small enough for a single batch, skip concurrent processing
@@ -1739,6 +1801,10 @@ export class ReviewEngine {
    * @param repoRulesContext - Optional repository rules context
    * (AGENTS.md/CLAUDE.md/GEMINI.md/RULES.md) threaded into the orchestrator prompt.
    * @param commitMessages - Optional compact git log commit list for the PR.
+   * @param prebuiltOrchestratorContext - Optional pre-assembled orchestrator context
+   * string (from the context-aware gate in `runReviewPipeline`). When provided the
+   * duplicate context assembly is skipped. Also logs a warning if `synthesisModel`
+   * is configured, since it is inert in the subagent path.
    * @returns The consolidated, verified ReviewResult.
    */
   private async runMultiAgentReview(
@@ -1775,11 +1841,21 @@ export class ReviewEngine {
     ) => Promise<void>,
     repoRulesContext?: string,
     commitMessages?: string,
+    prebuiltOrchestratorContext?: string,
   ): Promise<ReviewResult> {
     const categories = this.getActiveAgentCategories();
     this.logger.info(
       `Multi-agent review (single-process subagent dispatch): ${categories.join(', ')}`,
     );
+
+    // Warn if synthesisModel is configured — it is inert in the subagent path
+    // because synthesis happens on the aggregated orchestrator run, not a
+    // separate synthesis pass.
+    if (this.config.synthesisModel) {
+      this.logger.warn(
+        'synthesisModel is configured but inert in the single-process subagent path — synthesis is performed on the aggregated orchestrator run',
+      );
+    }
 
     // Build read-only review subagents injected into the OpenCode config. A
     // single primary agent dispatches them via the task tool, so the whole
@@ -1795,24 +1871,30 @@ export class ReviewEngine {
 
     // Assemble a single rich context (base PR context + codebase index +
     // learning/false-positive/delta enrichment) once, shared by the orchestrator.
-    const codebaseIndexContext = this.formatCodebaseContext(
-      codebaseIndex,
-      codebaseIndexData,
-      files,
-    );
-    const orchestratorContext = this.buildAgentBatchContext(
-      baseContext,
-      mcpDocs,
-      openThreadsContext,
-      codebaseIndexContext,
-      deltaContext,
-      lessons,
-      falsePositiveRules,
-      previousFindings,
-      previousBotComments,
-      repoRulesContext,
-      commitMessages,
-    );
+    // When the caller has already assembled the context (context-aware gate),
+    // skip the duplicate build.
+    const orchestratorContext =
+      prebuiltOrchestratorContext ??
+      (() => {
+        const codebaseIndexContext = this.formatCodebaseContext(
+          codebaseIndex,
+          codebaseIndexData,
+          files,
+        );
+        return this.buildAgentBatchContext(
+          baseContext,
+          mcpDocs,
+          openThreadsContext,
+          codebaseIndexContext,
+          deltaContext,
+          lessons,
+          falsePositiveRules,
+          previousFindings,
+          previousBotComments,
+          repoRulesContext,
+          commitMessages,
+        );
+      })();
 
     const promptBuilderInputs = {
       projectContext: this.config.projectContext.description || undefined,
@@ -1858,31 +1940,6 @@ export class ReviewEngine {
         completionTokens: undefined,
       };
     });
-
-    // Single completion hook (the subagent path has no per-batch granularity):
-    // fire one callback with the run result once the orchestrator settles so
-    // streamComments callers still get notified. Never breaks the pipeline.
-    if (onBatchComplete) {
-      const completion: ReviewResult = {
-        summary: 'Subagent review findings',
-        verdict: {
-          ready: false,
-          reasoning: '',
-          autoFixable: false,
-          confidence: 'medium',
-        },
-        strengths: [],
-        issues: [],
-        stats: { total: 0, critical: 0, important: 0, minor: 0 },
-        rawLines: [],
-        failedLines: 0,
-      };
-      await onBatchComplete(0, 1, completion).catch((err) => {
-        this.logger.warn(
-          `Streaming batch callback failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      });
-    }
 
     await this.recordTelemetry(
       pr.number,
@@ -2008,7 +2065,7 @@ export class ReviewEngine {
       }
     }
 
-    return await this.verifyReviewResult(
+    const verifiedResult = await this.verifyReviewResult(
       result,
       baseContext,
       workDir,
@@ -2019,6 +2076,21 @@ export class ReviewEngine {
       files,
       scaIssues,
     );
+
+    // Single completion hook (the subagent path has no per-batch granularity):
+    // fire one callback with the REAL parsed/verified result once the
+    // orchestrator output has been parsed and verified (mirroring the legacy
+    // single-batch fast path), so streamComments callers receive findings
+    // instead of a placeholder. Never breaks the pipeline.
+    if (onBatchComplete) {
+      await onBatchComplete(0, 1, verifiedResult).catch((err) => {
+        this.logger.warn(
+          `Streaming batch callback failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    }
+
+    return verifiedResult;
   }
 
   /**
@@ -4084,11 +4156,17 @@ export class ReviewEngine {
     for (const linterConfig of this.config.linters) {
       try {
         // Defense in depth at the exec sink: never run a linter binary that
-        // is not on the basename allowlist (PR-editable config is untrusted).
+        // is not on the basename allowlist, or whose args are not safe
+        // strings (PR-editable config is untrusted; config may bypass
+        // validateConfig when constructed programmatically).
         if (!isAllowedLinterCommand(linterConfig.command)) {
           this.logger.warn(
             `Skipping linter: command "${linterConfig.command}" is not on the allowed list`,
           );
+          continue;
+        }
+        if (!isSafeLinterArgs(linterConfig.args)) {
+          this.logger.warn(`Skipping linter "${linterConfig.command}": args are not safe strings`);
           continue;
         }
 

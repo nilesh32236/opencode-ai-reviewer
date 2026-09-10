@@ -441,9 +441,9 @@ export interface AgentResult {
   error?: string;
 }
 
-/** Default multi-agent configuration (opt-in, all agents enabled when active). */
+/** Default multi-agent configuration (enabled by default; set `enabled: false` to opt out). */
 export const DEFAULT_MULTI_AGENT_CONFIG: MultiAgentConfig = {
-  enabled: false,
+  enabled: true,
   agents: {
     security: { enabled: true },
     performance: { enabled: true },
@@ -495,6 +495,13 @@ export interface NotificationsConfig {
   teams?: TeamsConfig;
 }
 
+/** Remote MCP transport selection for `remote` servers.
+ * - `auto` (default): try Streamable HTTP first, fall back to SSE on protocol-mismatch handshake failure.
+ * - `sse`: pin the legacy SSE transport.
+ * - `streamable-http`: Streamable HTTP only, no SSE fallback.
+ * @since NEXT */
+export type RemoteTransportMode = 'auto' | 'sse' | 'streamable-http';
+
 /** Configuration for an MCP server used for context enrichment. */
 export interface MCPServerConfig {
   /** Name of the MCP server */
@@ -516,6 +523,12 @@ export interface MCPServerConfig {
    * a built-in safe default set is used; an explicit empty array forwards no parent variables.
    * `environment` vars are always merged on top. */
   allowedEnv?: string[];
+  /** Remote transport selection for `remote` servers. Remote-only; ignored for `local`.
+   * - `auto` (default): try Streamable HTTP first, fall back to SSE on handshake failure.
+   * - `sse`: pin legacy SSE transport.
+   * - `streamable-http`: Streamable HTTP only, no SSE fallback.
+   * @since NEXT */
+  remoteTransport?: RemoteTransportMode;
 }
 
 /** Project-level context config fed into review prompts. */
@@ -657,6 +670,14 @@ export interface ReviewConfig {
   skipActors: string[];
   /** Whether to post findings as inline review comments on the PR diff */
   inline: boolean;
+  /**
+   * Opt-in to bundling mappable findings into a single reviews-array request
+   * (`POST /pulls/{n}/reviews` with `comments[]`), falling back to a
+   * summary-only review preserving all findings on 422/403/429.
+   * Default false (legacy behavior unchanged).
+   * @since NEXT
+   */
+  enableReviewsArrayInline?: boolean;
   /** Whether to require a verdict */
   requireVerdict: boolean;
   /** Command triggers (e.g., /oc, /review) */
@@ -1478,6 +1499,12 @@ export interface PromptConfig {
     customRules?: string[];
     /** Post findings as inline review comments (default: true) */
     inline?: boolean;
+    /**
+     * Bundle mappable findings into a single reviews-array request with
+     * summary-only 422 fallback (default: false, opt-in).
+     * @since NEXT
+     */
+    enableReviewsArrayInline?: boolean;
     /** Suppress low-confidence findings from review output (default: false) */
     suppressLowConfidence?: boolean;
     /** Patterns to exclude from review */

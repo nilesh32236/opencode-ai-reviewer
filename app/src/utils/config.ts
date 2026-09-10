@@ -182,6 +182,9 @@ export function buildConfig(): AgentConfig {
       ...(process.env.REVIEW_SHOW_FUNCTION_SCORES !== undefined
         ? { showFunctionScores: process.env.REVIEW_SHOW_FUNCTION_SCORES === 'true' }
         : {}),
+      ...(process.env.ENABLE_REVIEWS_ARRAY_INLINE !== undefined
+        ? { enableReviewsArrayInline: process.env.ENABLE_REVIEWS_ARRAY_INLINE === 'true' }
+        : {}),
       ...(process.env.ENABLE_CODEBASE_INDEX !== undefined
         ? { enableCodebaseIndex: process.env.ENABLE_CODEBASE_INDEX !== 'false' }
         : {}),
@@ -315,7 +318,7 @@ export function buildConfig(): AgentConfig {
  *
  * Only the `review.sensitivity` / `review.categories` / `review.pathInstructions` / `review.enableCodebaseIndex`
  * / `review.enableMetaVerification` / `review.enableTestGapDetection` /
- * `review.showFunctionScores` /
+ * `review.showFunctionScores` / `review.enableReviewsArrayInline` /
  * `review.suppressLowConfidence` / `review.failOnSeverity` /
  * `review.suggestTitleAndLabels` fields, the `notifications`, `secrets`, `llm`,
  * and `sca` sections are merged
@@ -347,12 +350,14 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const streamBatchSize = repoConfig?.review?.streamBatchSize;
   const pathInstructions = repoConfig?.review?.pathInstructions;
   const showFunctionScores = repoConfig?.review?.showFunctionScores;
+  const enableReviewsArrayInline = repoConfig?.review?.enableReviewsArrayInline;
   const notifications = repoConfig?.notifications;
   const secrets = repoConfig?.secrets;
   const llm = repoConfig?.llm;
   const sca = repoConfig?.sca;
   const changelog = repoConfig?.changelog;
   const describe = repoConfig?.describe;
+  const multiAgent = repoConfig?.multiAgent;
   const projectAutoLoadAgentsMd = repoConfig?.project?.autoLoadAgentsMd;
   const projectAttributionFooter = repoConfig?.project?.attributionFooter;
   if (
@@ -368,12 +373,14 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
     streamBatchSize === undefined &&
     !pathInstructions &&
     showFunctionScores === undefined &&
+    enableReviewsArrayInline === undefined &&
     !notifications &&
     !secrets &&
     !llm &&
     !sca &&
     !changelog &&
     !describe &&
+    !multiAgent &&
     projectAutoLoadAgentsMd === undefined &&
     projectAttributionFooter === undefined
   ) {
@@ -407,6 +414,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
         ),
       }),
       ...(showFunctionScores !== undefined && { showFunctionScores }),
+      ...(enableReviewsArrayInline !== undefined && { enableReviewsArrayInline }),
     },
     ...(notifications && {
       notifications: {
@@ -462,6 +470,22 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       describe: {
         ...baseConfig.describe,
         ...describe,
+      },
+    }),
+    // Mirror the multi-agent config so app-hosted repos can enable/disable
+    // and tune the multi-agent review path via `.opencode-reviewer.yml`.
+    ...(multiAgent && {
+      multiAgent: {
+        ...baseConfig.multiAgent,
+        ...multiAgent,
+        agents: {
+          ...(baseConfig.multiAgent?.agents ?? {}),
+          ...(multiAgent.agents ?? {}),
+        },
+        synthesis: {
+          ...(baseConfig.multiAgent?.synthesis ?? {}),
+          ...(multiAgent.synthesis ?? {}),
+        },
       },
     }),
     // Opt-in head-SHA convention auto-load (`project.autoLoadAgentsMd`) and its

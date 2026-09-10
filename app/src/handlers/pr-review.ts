@@ -225,7 +225,12 @@ export async function handlePRReview(
     // from reviewResult.commentIds and must be tracked separately.
     const streamedCommentIds = new Map<string, number>();
     let streamedFindingCount = 0;
-    const streamEnabled = effectiveConfig.review.streamComments === true;
+    // The reviews-array path bundles all inline findings into a single
+    // POST /pulls/{n}/reviews request. Streaming would fan out N per-comment
+    // postInlineComment requests first, defeating that single-request goal,
+    // so the reviews-array flag takes precedence and disables streaming.
+    const reviewsArrayEnabled = effectiveConfig.review.enableReviewsArrayInline === true;
+    const streamEnabled = effectiveConfig.review.streamComments === true && !reviewsArrayEnabled;
     try {
       try {
         await gh.postOrUpdateComment(
@@ -377,7 +382,7 @@ export async function handlePRReview(
       // When streaming was enabled, inline findings were already posted as
       // batches completed, so the final review posts only the summary +
       // non-inline findings to avoid duplicate comments.
-      const streamEnabled = effectiveConfig.review.streamComments === true;
+      const streamEnabled = effectiveConfig.review.streamComments === true && !reviewsArrayEnabled;
       const finalResult =
         streamEnabled && streamedIssueKeys.size > 0
           ? {
@@ -388,13 +393,19 @@ export async function handlePRReview(
               ),
             }
           : result;
+      const scoreOptions = buildFunctionScoreOptions(
+        effectiveConfig.review.showFunctionScores,
+        pr.changedFiles,
+      );
       reviewResult = await gh.postReview(
         prNumber,
         pr.headSha,
         finalResult,
         effectiveConfig.review.inline,
         undefined,
-        buildFunctionScoreOptions(effectiveConfig.review.showFunctionScores, pr.changedFiles),
+        effectiveConfig.review.enableReviewsArrayInline === true
+          ? { ...(scoreOptions ?? {}), enableReviewsArrayInline: true as const }
+          : scoreOptions,
       );
     } catch (err) {
       logger.error(

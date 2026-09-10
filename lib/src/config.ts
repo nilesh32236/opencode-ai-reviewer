@@ -37,7 +37,9 @@ import { parseReviewEffort } from './utils/review-effort.js';
 import {
   DEFAULT_EVENT_LOG_PATH,
   isAllowedLinterCommand,
-  isConfinedPath,
+  isSafeLinterArgs,
+  resolveConfinedEventLogPath,
+  resolveConfinedWorkingDir,
 } from './utils/safe-exec.js';
 
 /**
@@ -151,6 +153,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     extraContext: null,
     customRules: null,
     inline: null,
+    enableReviewsArrayInline: null,
     suppressLowConfidence: null,
     excludePatterns: null,
     enableReachability: null,
@@ -392,7 +395,7 @@ export function loadConfig(
       const raw = yaml.load(content) as Record<string, unknown>;
       warnUnknownKeys(raw, KNOWN_CONFIG_SHAPE, '');
       const config = PromptConfigSchema.parse(raw);
-      return validateConfig(config);
+      return validateConfig(config, path.resolve(workingDir));
     } catch (error) {
       core.warning(`Failed to parse ${configPath}: ${String(error)}`);
       return null;
@@ -409,7 +412,7 @@ export function loadConfig(
         const raw = yaml.load(content) as Record<string, unknown>;
         warnUnknownKeys(raw, KNOWN_CONFIG_SHAPE, '');
         const config = PromptConfigSchema.parse(raw);
-        return validateConfig(config);
+        return validateConfig(config, path.resolve(workingDir));
       } catch (error) {
         core.warning(`Failed to parse ${filename}: ${String(error)}`);
         return null;
@@ -519,10 +522,21 @@ export function resolveConfig(config: PromptConfig, options: ResolveConfigOption
  * Filters unknown properties, clamps numeric values to allowed ranges,
  * and applies allowlist filtering on check commands.
  *
+ * SECURITY: confinement checks use `baseDir` as the trusted checkout root —
+ * the same base the `execFile` sink (`engine.ts`, via `workDir`) and the
+ * event-log sink (`register-event-subscribers.ts`, via `process.cwd()`)
+ * confine against. Callers must pass the checkout directory the config was
+ * loaded from (see `loadConfig`); the default (`process.cwd()`) preserves
+ * the historical behavior for direct callers.
+ *
  * @param config - Raw PromptConfig to validate.
+ * @param baseDir - Trusted checkout root for path-confinement checks.
  * @returns A sanitized PromptConfig with only recognized, valid fields.
  */
-export function validateConfig(config: PromptConfig): PromptConfig {
+export function validateConfig(
+  config: PromptConfig,
+  baseDir: string = process.cwd(),
+): PromptConfig {
   const result: PromptConfig = {};
 
   if (config.review) {
@@ -544,6 +558,9 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     }
     if (typeof config.review.inline === 'boolean') {
       result.review.inline = config.review.inline;
+    }
+    if (typeof config.review.enableReviewsArrayInline === 'boolean') {
+      result.review.enableReviewsArrayInline = config.review.enableReviewsArrayInline;
     }
     if (typeof config.review.suppressLowConfidence === 'boolean') {
       result.review.suppressLowConfidence = config.review.suppressLowConfidence;
@@ -1047,9 +1064,12 @@ export function validateConfig(config: PromptConfig): PromptConfig {
 
   if (Array.isArray(config.linters)) {
     // SECURITY: repo-file linter config is PR-editable (untrusted). Drop
-    // entries whose `command` is not a bare allowlisted basename or whose
-    // `workingDirectory` escapes the checkout; the exec sink in
-    // engine.ts re-checks both defensively.
+    // entries whose `command` is not a bare allowlisted basename, whose
+    // `args` are not safe strings, or whose `workingDirectory` escapes the
+    // checkout. Confinement goes through `resolveConfinedWorkingDir` — the
+    // same resolver the exec sink in engine.ts enforces — so validation and
+    // sink cannot disagree (e.g. `workingDirectory: '.'`, the checkout root,
+    // is benign in both layers).
     result.linters = config.linters.filter((l): l is LinterConfig => {
       if (!l || typeof l !== 'object') return false;
       if (typeof l.pattern !== 'string' || typeof l.command !== 'string') return false;
@@ -1061,10 +1081,16 @@ export function validateConfig(config: PromptConfig): PromptConfig {
         );
         return false;
       }
+      if (!isSafeLinterArgs(l.args)) {
+        core.warning(
+          `Ignoring linters entry for pattern "${l.pattern}": args are not safe strings`,
+        );
+        return false;
+      }
       if (
         typeof l.workingDirectory === 'string' &&
         l.workingDirectory.trim() !== '' &&
-        !isConfinedPath(process.cwd(), l.workingDirectory)
+        resolveConfinedWorkingDir(baseDir, l.workingDirectory) === null
       ) {
         core.warning(
           `Ignoring linters entry for pattern "${l.pattern}": workingDirectory "${l.workingDirectory}" escapes the working directory`,
@@ -1078,20 +1104,25 @@ export function validateConfig(config: PromptConfig): PromptConfig {
   if (config.eventLogging && typeof config.eventLogging === 'object') {
     const el = config.eventLogging;
     // SECURITY: `eventLogging.path` drives mkdir/appendFile/rm/rename on the
-    // runner. Confine it to the checkout; fall back to the default on escape.
+    // runner. Confine it to the checkout via `resolveConfinedEventLogPath` —
+    // the same resolver the log sink enforces — and fall back to the default
+    // on escape (absolute paths and `..` traversals from repo-file config are
+    // rewritten, never used verbatim).
     const rawPath =
       typeof el.path === 'string' && el.path.trim() !== ''
         ? el.path.trim()
         : DEFAULT_EVENT_LOG_PATH;
-    const safePath = isConfinedPath(process.cwd(), rawPath) ? rawPath : DEFAULT_EVENT_LOG_PATH;
-    if (safePath !== rawPath) {
+    // The sink (`register-event-subscribers.ts`) resolves relative paths the
+    // same way, so a value accepted here is accepted there (and vice versa).
+    const confined = resolveConfinedEventLogPath(baseDir, rawPath);
+    if (!confined) {
       core.warning(
         `Ignoring eventLogging.path "${rawPath}": escapes the working directory, using "${DEFAULT_EVENT_LOG_PATH}"`,
       );
     }
     result.eventLogging = {
       enabled: typeof el.enabled === 'boolean' ? el.enabled : false,
-      path: safePath,
+      path: confined ? rawPath : DEFAULT_EVENT_LOG_PATH,
     };
   }
 
@@ -1362,6 +1393,9 @@ function extractDefaultsFromConfig(config: PromptConfig): Record<string, unknown
   }
   if (config.review?.inline !== undefined) {
     defaults.review_inline = String(config.review.inline);
+  }
+  if (config.review?.enableReviewsArrayInline !== undefined) {
+    defaults.enable_reviews_array_inline = String(config.review.enableReviewsArrayInline);
   }
   if (config.fix?.maxIterations) {
     defaults.max_fix_iterations = String(config.fix.maxIterations);
