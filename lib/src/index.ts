@@ -153,6 +153,7 @@ export {
   ALLOWED_MCP_LOCAL_COMMANDS,
   DEFAULT_EVENT_LOG_PATH,
   EVENT_SUBSCRIBERS_ENV,
+  PINNED_MCP_NPM_PACKAGES,
   isAllowedLinterCommand,
   isAllowedMcpLocalCommand,
   isBlockedIpHost,

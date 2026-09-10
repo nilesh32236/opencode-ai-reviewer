@@ -40,6 +40,19 @@ describe('sanitizeString', () => {
     expect(sanitizeString('gemini_api_key=AIza-secret-value')).toBe('gemini_api_key=[REDACTED]');
   });
 
+  it('redacts GitLab token families', () => {
+    for (const token of [
+      `glpat-${'a'.repeat(20)}`,
+      `glrt-${'b'.repeat(20)}`,
+      `glft-${'c'.repeat(20)}`,
+      `gloas-${'d'.repeat(20)}`,
+      `glod-${'e'.repeat(8)}`,
+      `gldt-${'f'.repeat(20)}`,
+    ]) {
+      expect(sanitizeString(`token ${token} here`)).toBe('token [REDACTED_GITLAB_TOKEN] here');
+    }
+  });
+
   it('leaves ordinary prose untouched', () => {
     const prose = 'Fixed the login bug and updated the docs.';
     expect(sanitizeString(prose)).toBe(prose);

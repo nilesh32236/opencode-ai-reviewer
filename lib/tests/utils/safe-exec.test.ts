@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
 import {
   isAllowedLinterCommand,
   isAllowedMcpLocalCommand,
@@ -27,6 +30,17 @@ describe('isAllowedLinterCommand', () => {
     expect(isAllowedLinterCommand('sh')).toBe(false);
     expect(isAllowedLinterCommand('npx')).toBe(false);
   });
+
+  it('validates only the matched value from OPENCODE_ALLOWED_LINTERS', () => {
+    // One malformed operator entry must not DoS an otherwise-valid custom linter.
+    vi.stubEnv('OPENCODE_ALLOWED_LINTERS', 'my-linter,evil;cmd');
+    try {
+      expect(isAllowedLinterCommand('my-linter')).toBe(true);
+      expect(isAllowedLinterCommand('other-linter')).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });
 
 describe('isSafeLinterArgs', () => {
@@ -41,6 +55,26 @@ describe('isSafeLinterArgs', () => {
     expect(isSafeLinterArgs(['x'.repeat(2049)])).toBe(false);
     expect(isSafeLinterArgs('not-an-array')).toBe(false);
   });
+
+  it('rejects plugin/code-loading flags including --flag=value forms', () => {
+    for (const args of [
+      ['--rulesdir', './evil-rules'],
+      ['--rulesdir=./evil-rules'],
+      ['--plugin', './evil-plugin'],
+      ['--plugin=./evil-plugin'],
+      ['--plugin-search-dir', './evil'],
+      ['--load-rules', './evil'],
+      ['--require', './evil-hook'],
+      ['-r', './evil-hook'],
+      ['-revil-hook'],
+      ['--loader', './evil-loader'],
+      ['--custom-formatter', './evil-formatter'],
+    ]) {
+      expect(isSafeLinterArgs(args)).toBe(false);
+    }
+    // Ordinary linter flags still pass.
+    expect(isSafeLinterArgs(['--format', 'json', '--quiet'])).toBe(true);
+  });
 });
 
 describe('isAllowedMcpLocalCommand', () => {
@@ -48,7 +82,27 @@ describe('isAllowedMcpLocalCommand', () => {
     expect(isAllowedMcpLocalCommand(['npx', '-y', '--quiet', '@upstash/context7-mcp@3.2.5'])).toBe(
       true,
     );
-    expect(isAllowedMcpLocalCommand(['node', 'server.js'])).toBe(true);
+    expect(
+      isAllowedMcpLocalCommand([
+        'npx',
+        '-y',
+        '--quiet',
+        '@modelcontextprotocol/server-github@2025.4.8',
+      ]),
+    ).toBe(true);
+  });
+
+  it('rejects checkout-controlled script-file args', () => {
+    expect(isAllowedMcpLocalCommand(['node', 'server.js'])).toBe(false);
+    expect(isAllowedMcpLocalCommand(['python3', 'evil.py'])).toBe(false);
+    expect(isAllowedMcpLocalCommand(['deno', 'run', 'evil.ts'])).toBe(false);
+    expect(isAllowedMcpLocalCommand(['node', './scripts/c7.mjs'])).toBe(false);
+  });
+
+  it('rejects unpinned npx packages', () => {
+    expect(isAllowedMcpLocalCommand(['npx', '-y', 'evil-pkg'])).toBe(false);
+    expect(isAllowedMcpLocalCommand(['npx', '-y', '@upstash/context7-mcp-fake@1.0.0'])).toBe(false);
+    expect(isAllowedMcpLocalCommand(['uvx', 'evil-pkg'])).toBe(false);
   });
 
   it('rejects code-evaluation flags', () => {
@@ -57,6 +111,16 @@ describe('isAllowedMcpLocalCommand', () => {
     expect(isAllowedMcpLocalCommand(['python3', '-c', 'evil()'])).toBe(false);
     expect(isAllowedMcpLocalCommand(['deno', 'eval', 'evil'])).toBe(false);
     expect(isAllowedMcpLocalCommand(['python3', '-p', '8080'])).toBe(false);
+  });
+
+  it('rejects concatenated --flag=value and joined short-flag forms', () => {
+    expect(isAllowedMcpLocalCommand(['node', '--eval=evil()'])).toBe(false);
+    expect(isAllowedMcpLocalCommand(['node', '--code=evil()'])).toBe(false);
+    expect(isAllowedMcpLocalCommand(['node', '-econsole.log(1)'])).toBe(false);
+    expect(isAllowedMcpLocalCommand(['python3', '-cimport os'])).toBe(false);
+    expect(isAllowedMcpLocalCommand(['python3', '-p8080'])).toBe(false);
+    expect(isAllowedMcpLocalCommand(['node', '--require=./evil-hook'])).toBe(false);
+    expect(isAllowedMcpLocalCommand(['node', '--loader', './evil-loader'])).toBe(false);
   });
 
   it('rejects non-allowlisted launchers and non-string args', () => {
@@ -86,6 +150,24 @@ describe('resolveConfinedWorkingDir', () => {
     expect(resolveConfinedWorkingDir('/checkout', undefined)).toBe('/checkout');
     expect(resolveConfinedWorkingDir('/checkout', 'sub')).toBe('/checkout/sub');
     expect(resolveConfinedWorkingDir('/checkout', '../escape')).toBeNull();
+  });
+
+  it('rejects checkout symlinks pointing outside the checkout', () => {
+    const outside = mkdtempSync(join(tmpdir(), 'safe-exec-outside-'));
+    const checkout = mkdtempSync(join(tmpdir(), 'safe-exec-checkout-'));
+    writeFileSync(join(outside, 'secret.txt'), 'secret');
+    symlinkSync(outside, join(checkout, 'link'));
+    try {
+      expect(resolveConfinedWorkingDir(checkout, 'link')).toBeNull();
+      expect(isConfinedPath(checkout, 'link')).toBe(false);
+      // A symlink staying inside the checkout remains confined.
+      mkdirSync(join(checkout, 'real-sub'));
+      symlinkSync(join(checkout, 'real-sub'), join(checkout, 'inner-link'));
+      expect(resolveConfinedWorkingDir(checkout, 'inner-link')).not.toBeNull();
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+      rmSync(checkout, { recursive: true, force: true });
+    }
   });
 });
 
@@ -126,5 +208,9 @@ describe('isSafeRemoteMcpUrl', () => {
     expect(isSafeRemoteMcpUrl('http://mcp.example.com/sse')).toBe(false);
     expect(isSafeRemoteMcpUrl('https://user:pass@mcp.example.com/sse')).toBe(false);
     expect(isSafeRemoteMcpUrl('https://169.254.169.254/latest')).toBe(false);
+    // Bracketed IPv6 literals (as returned by `URL.hostname`) are stripped
+    // before the host-policy check — mapped loopback must still be blocked.
+    expect(isSafeRemoteMcpUrl('https://[::ffff:127.0.0.1]/sse')).toBe(false);
+    expect(isSafeRemoteMcpUrl('https://[::1]/sse')).toBe(false);
   });
 });

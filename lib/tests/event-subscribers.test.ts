@@ -89,6 +89,37 @@ describe('LoggingSubscriber', () => {
     expect(out.GITHUB_TOKEN).toBe('[redacted]');
   });
 
+  it('redacts separator-less camelCase token/key forms before the author exemption', () => {
+    const out = sanitizePayload({
+      accesstoken: 'secret',
+      accessToken: 'secret',
+      privatekey: 'secret',
+      privateKey: 'secret',
+      refreshtoken: 'secret',
+      refreshToken: 'secret',
+      authorToken: 'secret',
+      authorKey: 'secret',
+      author_token: 'secret',
+      author: 'alice',
+      authors: ['bob'],
+    }) as Record<string, unknown>;
+    for (const key of [
+      'accesstoken',
+      'accessToken',
+      'privatekey',
+      'privateKey',
+      'refreshtoken',
+      'refreshToken',
+      'authorToken',
+      'authorKey',
+      'author_token',
+    ]) {
+      expect(out[key]).toBe('[redacted]');
+    }
+    expect(out.author).toBe('alice');
+    expect(out.authors).toEqual(['bob']);
+  });
+
   it('tolerates write failures without throwing', async () => {
     // Points at a path that cannot be created (an existing file used as a dir).
     await fs.mkdir(tmpDir, { recursive: true });
