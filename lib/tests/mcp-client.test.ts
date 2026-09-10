@@ -139,6 +139,7 @@ async function createConnectedManager(
 describe('MCPManager', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // biome-ignore lint/performance/noDelete: test isolation requires removing the env var, not emptying it
     delete process.env.OPENCODE_MCP_REMOTE_TRANSPORT;
   });
 
@@ -938,6 +939,7 @@ describe('MCPManager', () => {
     const OLD_ENV = process.env.OPENCODE_MCP_REMOTE_TRANSPORT;
     afterEach(() => {
       if (OLD_ENV === undefined) {
+        // biome-ignore lint/performance/noDelete: restore unset state so later tests see no leaked var
         delete process.env.OPENCODE_MCP_REMOTE_TRANSPORT;
       } else {
         process.env.OPENCODE_MCP_REMOTE_TRANSPORT = OLD_ENV;
