@@ -7,7 +7,13 @@
  * records task status/result in Postgres.
  */
 
-import { DEFAULT_CONFIG, GitHubHelper, Logger, ReviewEngine, buildFunctionScoreOptions } from '@opencode-pr-agent/lib';
+import {
+  DEFAULT_CONFIG,
+  GitHubHelper,
+  Logger,
+  ReviewEngine,
+  buildFunctionScoreOptions,
+} from '@opencode-pr-agent/lib';
 import type { AgentConfig, PlatformAdapter, ReviewResult } from '@opencode-pr-agent/lib';
 import { Worker } from 'bullmq';
 import type { Redis } from 'ioredis';

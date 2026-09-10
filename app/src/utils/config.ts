@@ -311,10 +311,10 @@ export function buildConfig(): AgentConfig {
  * vars + defaults (no per-repo context at startup), so per-repo tuning
  * is applied here at the point where a repo working directory exists.
  *
-  * Only the `review.sensitivity` / `review.categories` / `review.enableCodebaseIndex`
-  * / `review.enableMetaVerification` / `review.enableTestGapDetection` /
-  * `review.showFunctionScores` /
-  * `review.suppressLowConfidence` / `review.failOnSeverity` /
+ * Only the `review.sensitivity` / `review.categories` / `review.enableCodebaseIndex`
+ * / `review.enableMetaVerification` / `review.enableTestGapDetection` /
+ * `review.showFunctionScores` /
+ * `review.suppressLowConfidence` / `review.failOnSeverity` /
  * `review.suggestTitleAndLabels` fields, the `notifications`, `secrets`, `llm`,
  * and `sca` sections are merged
  * (the engine filters findings off those fields and respects the codebase-index /

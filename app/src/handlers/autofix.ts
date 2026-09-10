@@ -95,14 +95,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
   // Resolve the merged config once so the engine and the review-posting display
   // flags (inline comments, function scores) observe the same per-repo values.
   const effectiveConfig = mergeRepoConfig(config, tempDir);
-  const engine = new ReviewEngine(
-    effectiveConfig,
-    gh,
-    undefined,
-    eventBus,
-    repo,
-    correlationId,
-  );
+  const engine = new ReviewEngine(effectiveConfig, gh, undefined, eventBus, repo, correlationId);
   const history: IterationRecord[] = [];
   const previousFindings: PreviousFindingIteration[] = [];
   let approved = false;

@@ -65,14 +65,7 @@ describe('worker function-score forwarding', () => {
 
   it('forwards a function-score options bag when the flag is on', async () => {
     const { engine, gh } = mocks();
-    await runReview(
-      engine as never,
-      gh as never,
-      1,
-      '/tmp/ws',
-      true,
-      configWithFlag(true),
-    );
+    await runReview(engine as never, gh as never, 1, '/tmp/ws', true, configWithFlag(true));
     expect(gh.postReview).toHaveBeenCalledOnce();
     const options = (gh.postReview as ReturnType<typeof vi.fn>).mock.calls[0][5] as {
       showFunctionScores: boolean;
@@ -84,28 +77,14 @@ describe('worker function-score forwarding', () => {
 
   it('forwards undefined when the flag is off', async () => {
     const { engine, gh } = mocks();
-    await runReview(
-      engine as never,
-      gh as never,
-      1,
-      '/tmp/ws',
-      true,
-      configWithFlag(false),
-    );
+    await runReview(engine as never, gh as never, 1, '/tmp/ws', true, configWithFlag(false));
     expect(gh.postReview).toHaveBeenCalledOnce();
     expect((gh.postReview as ReturnType<typeof vi.fn>).mock.calls[0][5]).toBeUndefined();
   });
 
   it('skips postReview for deduplicated (skipped) results', async () => {
     const { engine, gh } = mocks({ skipped: true });
-    await runReview(
-      engine as never,
-      gh as never,
-      1,
-      '/tmp/ws',
-      true,
-      configWithFlag(true),
-    );
+    await runReview(engine as never, gh as never, 1, '/tmp/ws', true, configWithFlag(true));
     expect(gh.postReview).not.toHaveBeenCalled();
   });
 
