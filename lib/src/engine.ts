@@ -3868,7 +3868,7 @@ export class ReviewEngine {
 
   private async getRelevantLessons(filePaths: string[]): Promise<string[]> {
     const now = Date.now();
-    const key = [...new Set(filePaths)].sort().join(',');
+    const key = ReviewEngine.lessonsKey(filePaths);
     if (
       this.lessonsCache &&
       this.lessonsCache.filePaths === key &&
@@ -3884,7 +3884,7 @@ export class ReviewEngine {
 
   private async getCachedMcpDocs(libraries: string[]): Promise<string> {
     const now = Date.now();
-    const key = [...new Set(libraries)].sort().join(',');
+    const key = ReviewEngine.mcpDocsKey(libraries);
     if (
       this.mcpDocsCache &&
       this.mcpDocsCache.libraries === key &&
@@ -3895,6 +3895,38 @@ export class ReviewEngine {
     const docs = await this.mcp.getLibraryDocs(libraries);
     this.mcpDocsCache = { docs, libraries: key, timestamp: now };
     return docs;
+  }
+
+  /**
+   * Query-key factory for the lessons cache: `lessons:v1:<sorted-unique-paths>`.
+   * Sorting + deduping makes the key order-insensitive; the `v1` version
+   * segment allows invalidation on future key-schema changes.
+   * @param filePaths - File paths being reviewed.
+   * @returns The canonical cache key.
+   */
+  private static lessonsKey(filePaths: string[]): string {
+    return ['lessons', 'v1', [...new Set(filePaths)].sort()].join('\u0000');
+  }
+
+  /**
+   * Query-key factory for the MCP docs cache: `mcpDocs:v1:<sorted-unique-libs>`.
+   * Sorting + deduping makes the key order-insensitive; the `v1` version
+   * segment allows invalidation on future key-schema changes.
+   * @param libraries - Library names documentation was fetched for.
+   * @returns The canonical cache key.
+   */
+  private static mcpDocsKey(libraries: string[]): string {
+    return ['mcpDocs', 'v1', [...new Set(libraries)].sort()].join('\u0000');
+  }
+
+  /**
+   * Invalidate the per-engine lessons and MCP-docs caches.
+   * Call on config reload so a changed MCP server list or learning-store
+   * config cannot serve stale entries keyed under the old configuration.
+   */
+  invalidateCaches(): void {
+    this.lessonsCache = null;
+    this.mcpDocsCache = null;
   }
 
   /**

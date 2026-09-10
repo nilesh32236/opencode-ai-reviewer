@@ -180,27 +180,29 @@ export class RateLimiter {
         ? this.config.estimatedTokensPerInteractive
         : this.config.estimatedTokensPerCommand;
 
-    let repoCount = 0;
-    if (tier === 'command') {
-      repoCount = await this.store.countRateLimitActions({
-        repo,
-        tier: 'command',
-        sinceMs: hourStart,
-      });
-      if (repoCount >= this.config.reviewsPerRepoPerHour) {
-        return {
-          allowed: false,
-          reason: 'repo_hourly',
-          remaining: 0,
-          resetAt: hourStart + HOUR_MS,
-        };
-      }
+    // Fire the independent store reads concurrently (repo/user counts,
+    // last-action time, token sum share the same windows but separate queries).
+    // Limit checks below still apply in the original priority order
+    // (repo_hourly → user_daily → pr_cooldown → token_budget) against the
+    // resolved values, so allow/deny semantics are unchanged.
+    const [repoCount, userCount, lastTime, tokensUsed] = await Promise.all([
+      tier === 'command'
+        ? this.store.countRateLimitActions({ repo, tier: 'command', sinceMs: hourStart })
+        : Promise.resolve(0),
+      this.store.countRateLimitActions({ user, sinceMs: dayStart }),
+      this.store.getLastRateLimitTime(repo, prNumber, tier),
+      this.store.sumRateLimitTokens(dayStart),
+    ]);
+
+    if (tier === 'command' && repoCount >= this.config.reviewsPerRepoPerHour) {
+      return {
+        allowed: false,
+        reason: 'repo_hourly',
+        remaining: 0,
+        resetAt: hourStart + HOUR_MS,
+      };
     }
 
-    const userCount = await this.store.countRateLimitActions({
-      user,
-      sinceMs: dayStart,
-    });
     if (userCount >= this.config.reviewsPerUserPerDay) {
       return {
         allowed: false,
@@ -210,7 +212,6 @@ export class RateLimiter {
       };
     }
 
-    const lastTime = await this.store.getLastRateLimitTime(repo, prNumber, tier);
     if (lastTime !== null && now - lastTime < cooldownMs) {
       return {
         allowed: false,
@@ -220,7 +221,6 @@ export class RateLimiter {
       };
     }
 
-    const tokensUsed = await this.store.sumRateLimitTokens(dayStart);
     if (tokensUsed + estimatedTokens > this.config.dailyTokenBudget) {
       return {
         allowed: false,

@@ -259,6 +259,8 @@ export class MCPManager {
 
   /**
    * Query all MCP servers for context relevant to the given query.
+   * Partial failures are surfaced via `errors` on the result so callers can
+   * log/metric the degradation instead of silently receiving fewer entries.
    * @param query - The search query to retrieve context for
    * @param maxTokens - Maximum token budget for the returned context
    * @returns Aggregated context entries from all MCP servers within the token budget
@@ -270,6 +272,8 @@ export class MCPManager {
       return { entries: [], totalTokens: 0 };
     }
 
+    const serverNames = [...this.clients].map(([name]) => name);
+    const errors: string[] = [];
     const results = await Promise.allSettled(
       [...this.clients].map(async ([name, { client }]) => {
         let toolsList = this.toolsCache.get(name);
@@ -308,15 +312,24 @@ export class MCPManager {
       }),
     );
 
-    for (const result of results) {
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i];
       if (result.status === 'rejected') {
-        this.logger.warn('MCP query failed', result.reason);
+        const server = serverNames[i] ?? 'unknown';
+        const detail =
+          result.reason instanceof Error ? result.reason.message : String(result.reason);
+        this.logger.warn(
+          `MCP query failed on server ${server} (${i + 1}/${results.length})`,
+          result.reason,
+        );
+        errors.push(`${server}: ${detail}`);
       }
     }
 
     // Sort by relevance and trim to token budget
     entries.sort((a, b) => b.relevance - a.relevance);
-    return trimToTokenBudget(entries, maxTokens);
+    const trimmed = trimToTokenBudget(entries, maxTokens);
+    return errors.length > 0 ? { ...trimmed, errors } : trimmed;
   }
 
   /**
@@ -365,10 +378,23 @@ export class MCPManager {
     );
 
     const sections: string[] = [];
-    for (const result of results) {
+    const errors: string[] = [];
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i];
       if (result.status === 'fulfilled' && result.value) {
         sections.push(result.value);
+      } else if (result.status === 'rejected') {
+        const lib = libraries[i] ?? 'unknown';
+        const detail =
+          result.reason instanceof Error ? result.reason.message : String(result.reason);
+        errors.push(`${lib}: ${detail}`);
       }
+    }
+    if (errors.length > 0) {
+      this.logger.warn(
+        `MCP getLibraryDocs partial failure: ${errors.length}/${results.length} libraries failed`,
+        errors.join('; '),
+      );
     }
 
     return sections.join('\n\n');

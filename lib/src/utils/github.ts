@@ -114,6 +114,15 @@ export class GitHubHelper implements PlatformAdapter {
 
   private static readonly RATE_LIMIT_THRESHOLD = 50;
 
+  /**
+   * Per-instance cache of parsed PR diff lines keyed by PR number.
+   * Entries expire after DIFF_CACHE_TTL_MS. The helper has no headSha, so
+   * staleness across pushes is bounded by the short TTL; callers that need
+   * strict freshness should call clearDiffLinesCache() when headSha changes.
+   */
+  private diffLinesCache = new Map<string, { lines: Set<string>; ts: number }>();
+  private static readonly DIFF_CACHE_TTL_MS = 60_000;
+
   private async api<T>(
     path: string,
     options: RequestInit = {},
@@ -219,6 +228,9 @@ export class GitHubHelper implements PlatformAdapter {
    * silently returning partial data (default: false).
    * @param options.stopWhen - Predicate evaluated against the accumulated items after
    * each page; when it returns true, pagination stops early (default: never).
+   * @param options.onTruncated - Optional hook invoked when a page fetch fails and
+   * partial data is returned (only when throwOnError is false). Receives the
+   * failed page number and the error so callers can log/metric the truncation.
    * @param signal - Optional AbortSignal to cancel the paginated fetch.
    * @returns Array of items from all pages.
    */
@@ -230,6 +242,7 @@ export class GitHubHelper implements PlatformAdapter {
       direction?: 'asc' | 'desc';
       throwOnError?: boolean;
       stopWhen?: (items: T[]) => boolean;
+      onTruncated?: (page: number, err: unknown) => void;
     },
     signal?: AbortSignal,
   ): Promise<T[]> {
@@ -254,10 +267,15 @@ export class GitHubHelper implements PlatformAdapter {
         if (items.length < perPage) break;
       } catch (err) {
         core.warning(
-          `Failed to fetch page ${page} for ${endpoint}: ${err instanceof Error ? err.message : err}`,
+          `Failed to fetch page ${page} for ${endpoint}: ${err instanceof Error ? err.message : err} (truncated:true, returned ${allItems.length} items from ${page - 1} pages)`,
         );
         if (options?.throwOnError) {
           throw err;
+        }
+        try {
+          options?.onTruncated?.(page, err);
+        } catch {
+          /* hook must never break pagination */
         }
         break;
       }
@@ -400,7 +418,12 @@ export class GitHubHelper implements PlatformAdapter {
         user: { login: string };
         created_at: string;
         body: string;
-      }>(`/issues/${number}/comments`),
+      }>(`/issues/${number}/comments`, {
+        onTruncated: (page, err) =>
+          core.warning(
+            `getIssue(${number}): comments truncated at page ${page} — review context may be incomplete: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+      }),
     ]);
 
     if (issueResult.status === 'rejected') throw issueResult.reason;
@@ -477,10 +500,19 @@ export class GitHubHelper implements PlatformAdapter {
    * Fetch the raw diff for a PR and parse it into a set of "file:line" strings
    * representing lines added/modified in the diff. Used for inline comment validation.
    *
+   * Results are cached per instance keyed by PR number with a 60s TTL so
+   * repeated calls within one pipeline run (e.g. per review batch) share a
+   * single fetch. Call {@link clearDiffLinesCache} when the PR head moves.
+   *
    * @param prNumber - PR number.
    * @returns Set of "file:line" strings for lines in the diff.
    */
   async getDiffLines(prNumber: number): Promise<Set<string>> {
+    const cacheKey = `${prNumber}`;
+    const cached = this.diffLinesCache.get(cacheKey);
+    if (cached && Date.now() - cached.ts < GitHubHelper.DIFF_CACHE_TTL_MS) {
+      return cached.lines;
+    }
     try {
       const diffText = await this.api<string>(
         `/pulls/${prNumber}`,
@@ -513,11 +545,26 @@ export class GitHubHelper implements PlatformAdapter {
           }
         }
       }
+      this.diffLinesCache.set(cacheKey, { lines, ts: Date.now() });
       return lines;
     } catch (err) {
       core.warning(`Could not fetch PR diff for line validation: ${String(err)}`);
       return new Set();
     }
+  }
+
+  /**
+   * Invalidate cached diff lines, optionally scoped to one PR.
+   * Call when the PR head SHA changes so stale line sets are not reused.
+   *
+   * @param prNumber - Optional PR number to invalidate; clears all when omitted.
+   */
+  clearDiffLinesCache(prNumber?: number): void {
+    if (prNumber === undefined) {
+      this.diffLinesCache.clear();
+      return;
+    }
+    this.diffLinesCache.delete(`${prNumber}`);
   }
 
   /**
@@ -1427,11 +1474,22 @@ export class GitHubHelper implements PlatformAdapter {
             line?: number;
             original_line?: number;
             body: string;
-          }>(`/pulls/${options.prNumber}/comments`)
+          }>(`/pulls/${options.prNumber}/comments`, {
+            onTruncated: (page, err) =>
+              core.warning(
+                `gatherContext(pr ${options.prNumber}): review comments truncated at page ${page} — review context may be incomplete: ${err instanceof Error ? err.message : String(err)}`,
+              ),
+          })
         : Promise.resolve([]),
       options.prNumber
         ? this.paginate<{ user: { login: string }; state: string; body: string }>(
             `/pulls/${options.prNumber}/reviews`,
+            {
+              onTruncated: (page, err) =>
+                core.warning(
+                  `gatherContext(pr ${options.prNumber}): reviews truncated at page ${page} — review context may be incomplete: ${err instanceof Error ? err.message : String(err)}`,
+                ),
+            },
           )
         : Promise.resolve([]),
     ]);
@@ -1734,6 +1792,10 @@ export class GitHubHelper implements PlatformAdapter {
   }
 
   private currentUserLogin: string | null = null;
+  private currentUserLoginAt = 0;
+  private currentUserTokenHash: string | null = null;
+  /** TTL for the cached authenticated-user login (long-lived Probot reuse). */
+  private static readonly CURRENT_USER_TTL_MS = 10 * 60 * 1000;
 
   /**
    * Fetch the permissions the authenticated token has on the configured repository.
@@ -1776,12 +1838,26 @@ export class GitHubHelper implements PlatformAdapter {
    * Get the authenticated user's login name.
    * Falls back to GITHUB_ACTOR env var or resolves via /user and /app API endpoints.
    *
+   * The login is cached per instance scoped to the token hash with a 10-minute
+   * TTL so long-lived Probot helpers that rotate tokens do not reuse a stale
+   * identity for bot/human thread filtering. Call {@link clearCurrentUserCache}
+   * on token rotation for immediate freshness.
+   *
    * @returns The login name of the authenticated user or bot.
    */
   async getCurrentUser(): Promise<string> {
-    if (this.currentUserLogin) return this.currentUserLogin;
+    const tokenHash = GitHubHelper.hashToken(this.token);
+    if (
+      this.currentUserLogin &&
+      this.currentUserTokenHash === tokenHash &&
+      Date.now() - this.currentUserLoginAt < GitHubHelper.CURRENT_USER_TTL_MS
+    ) {
+      return this.currentUserLogin;
+    }
     if (process.env.GITHUB_ACTOR) {
       this.currentUserLogin = process.env.GITHUB_ACTOR;
+      this.currentUserLoginAt = Date.now();
+      this.currentUserTokenHash = tokenHash;
       return this.currentUserLogin;
     }
 
@@ -1827,7 +1903,31 @@ export class GitHubHelper implements PlatformAdapter {
     this.currentUserLogin = await this.circuitBreaker.call(() =>
       withRetry(executeUser, { retryableStatuses: [429, 500, 502, 503, 504] }),
     );
+    this.currentUserLoginAt = Date.now();
+    this.currentUserTokenHash = tokenHash;
     return this.currentUserLogin;
+  }
+
+  /**
+   * Clear the cached authenticated-user login (e.g. after token rotation).
+   */
+  clearCurrentUserCache(): void {
+    this.currentUserLogin = null;
+    this.currentUserLoginAt = 0;
+    this.currentUserTokenHash = null;
+  }
+
+  /**
+   * Non-secret hash of a token for cache scoping (never logged).
+   * @param token - The token to hash.
+   * @returns A short hash string identifying the token.
+   */
+  private static hashToken(token: string): string {
+    let h = 0;
+    for (let i = 0; i < token.length; i++) {
+      h = (Math.imul(h, 31) + token.charCodeAt(i)) | 0;
+    }
+    return `${token.length}:${(h >>> 0).toString(16)}`;
   }
 
   /**

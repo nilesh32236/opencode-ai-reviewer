@@ -14,7 +14,7 @@ import {
   verifyChecksum,
 } from './utils/checksum.js';
 import { validateModelString } from './utils/model-string.js';
-import { withRetry } from './utils/retry.js';
+import { withRetry, withRetryAndTimeout } from './utils/retry.js';
 import {
   MINIMUM_OPENCODE_VERSION,
   UNPARSEABLE_VERSION,
@@ -378,21 +378,26 @@ function detectArch(): string {
   return `${osName}-${archName}`;
 }
 
+/** Per-attempt timeout for the GitHub release-metadata lookup (matches OSV 30s). */
+export const RELEASE_FETCH_TIMEOUT_MS = 30_000;
+
 async function fetchWithRetry(url: string, retries = 3, token?: string): Promise<Response> {
-  return withRetry(
-    async () => {
+  return withRetryAndTimeout(
+    async (attemptSignal) => {
       const response = await fetch(url, {
         headers: {
           Accept: 'application/vnd.github+json',
           'X-GitHub-Api-Version': '2022-11-28',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
+        signal: attemptSignal,
       });
       if (response.ok) return response;
       const err = new Error(`HTTP ${response.status}: ${response.statusText}`);
       (err as Error & { status: number }).status = response.status;
       throw err;
     },
+    RELEASE_FETCH_TIMEOUT_MS,
     {
       maxRetries: retries,
       // 403 is NOT retryable here: on the authenticated attempt a rejected

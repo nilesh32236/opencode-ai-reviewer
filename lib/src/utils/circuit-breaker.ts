@@ -126,9 +126,15 @@ export class CircuitBreaker {
   /**
    * Get the current circuit breaker state.
    *
+   * Runs the cooldown transition first so idle-time recovery is observable:
+   * after the cooldown elapses, polling `getState()` reports HALF_OPEN without
+   * requiring an incoming `call()`. Note that actual recovery still requires a
+   * `call()` probe — this only makes the pending transition visible.
+   *
    * @returns The current CircuitState (CLOSED, OPEN, or HALF_OPEN).
    */
   getState(): CircuitState {
+    this.transitionState();
     return this.state;
   }
 
@@ -297,9 +303,13 @@ export class CircuitBreaker {
    * Get current circuit breaker metrics, including cumulative observability
    * counters (call count, trip count) and last success/failure timestamps.
    *
+   * Runs the cooldown transition first so the reported `state` reflects
+   * idle-time recovery (see `getState()`).
+   *
    * @returns A snapshot of the current state and counters.
    */
   getMetrics(): CircuitBreakerMetrics {
+    this.transitionState();
     return {
       state: this.state,
       failureCount: this.failureCount,

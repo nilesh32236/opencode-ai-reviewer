@@ -88,6 +88,10 @@ vi.mock('@actions/tool-cache', () => ({
 
 vi.mock('../src/utils/retry.js', () => ({
   withRetry: vi.fn(async (fn: () => Promise<unknown>, _opts?: unknown) => fn()),
+  withRetryAndTimeout: vi.fn(
+    async (fn: (signal: AbortSignal) => Promise<unknown>, _timeoutMs?: unknown, _opts?: unknown) =>
+      fn(new AbortController().signal),
+  ),
 }));
 
 vi.mock('../src/utils/checksum.js', () => ({

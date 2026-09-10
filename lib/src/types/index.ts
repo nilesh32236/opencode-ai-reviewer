@@ -903,6 +903,12 @@ export interface MCPQueryResult {
   entries: MCPContextEntry[];
   /** Total token count consumed */
   totalTokens: number;
+  /**
+   * Per-server failure descriptions for servers that errored during the query.
+   * Present (non-empty) when the result is a partial degradation — entries
+   * only cover the healthy servers. Absent/empty on full success.
+   */
+  errors?: string[];
 }
 
 // ─── Action/App Inputs ────────────────────────────────────

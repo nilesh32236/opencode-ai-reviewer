@@ -12,7 +12,7 @@
 // degraded gracefully by the caller: the SCA pass never crashes a review.
 
 import type { SCADependency, SCAVulnerability, Severity } from '../types/index.js';
-import { CircuitBreaker } from '../utils/circuit-breaker.js';
+import { CircuitBreaker, countHttpError } from '../utils/circuit-breaker.js';
 import { withRetryAndTimeout } from '../utils/retry.js';
 import type {
   OSVQuery,
@@ -37,7 +37,12 @@ const OSV_TIMEOUT_MS = 30_000;
  * starting fresh retries for every batch and advisory. Reset automatically
  * after the cooldown window via the standard half-open probe.
  */
-const osvCircuitBreaker = new CircuitBreaker({ name: 'osv-client' });
+const osvCircuitBreaker = new CircuitBreaker({
+  name: 'osv-client',
+  // Deterministic 4xx (400 bad query, 404 advisory removed) must not trip the
+  // circuit — hydrateVuln treats 404 as an expected skip. 429/5xx still count.
+  shouldCountFailure: countHttpError,
+});
 
 /**
  * Severity derived from a CVSS v3 score.
