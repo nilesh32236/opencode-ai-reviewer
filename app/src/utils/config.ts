@@ -308,7 +308,7 @@ export function buildConfig(): AgentConfig {
  * vars + defaults (no per-repo context at startup), so per-repo tuning
  * is applied here at the point where a repo working directory exists.
  *
- * Only the `review.sensitivity` / `review.categories` / `review.enableCodebaseIndex`
+ * Only the `review.sensitivity` / `review.categories` / `review.pathInstructions` / `review.enableCodebaseIndex`
  * / `review.enableMetaVerification` / `review.enableTestGapDetection` /
  * `review.suppressLowConfidence` / `review.failOnSeverity` /
  * `review.suggestTitleAndLabels` fields, the `notifications`, `secrets`, `llm`,
@@ -339,6 +339,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const suggestTitleAndLabels = repoConfig?.review?.suggestTitleAndLabels;
   const streamComments = repoConfig?.review?.streamComments;
   const streamBatchSize = repoConfig?.review?.streamBatchSize;
+  const pathInstructions = repoConfig?.review?.pathInstructions;
   const notifications = repoConfig?.notifications;
   const secrets = repoConfig?.secrets;
   const llm = repoConfig?.llm;
@@ -355,6 +356,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
     suggestTitleAndLabels === undefined &&
     streamComments === undefined &&
     streamBatchSize === undefined &&
+    !pathInstructions &&
     !notifications &&
     !secrets &&
     !llm &&
@@ -382,6 +384,14 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       ...(suggestTitleAndLabels !== undefined && { suggestTitleAndLabels }),
       ...(streamComments !== undefined && { streamComments }),
       ...(streamBatchSize !== undefined && { streamBatchSize }),
+      ...(pathInstructions && {
+        pathInstructions: Object.fromEntries(
+          Object.entries({
+            ...baseConfig.review.pathInstructions,
+            ...pathInstructions,
+          }).slice(0, 10),
+        ),
+      }),
     },
     ...(notifications && {
       notifications: {

@@ -7,8 +7,10 @@
 
 import {
   buildBudgetBanner,
+  buildPathInstructionsSection,
   buildTestGapSection,
   capPromptLength,
+  getMatchedPathInstructions,
   loadPromptFile,
 } from '../prompts/builder.js';
 import type { AgentCategory } from '../types/index.js';
@@ -191,6 +193,14 @@ function buildAgentPrompt(context: AgentPromptContext, category: AgentCategory):
     sections.push(context.inputs.reviewPromptExtra);
   }
 
+  const pathSection = buildPathInstructionsSection(
+    getMatchedPathInstructions(context.pathInstructions, context.filePaths),
+  );
+  if (pathSection) {
+    sections.push('');
+    sections.push(pathSection);
+  }
+
   return capPromptLength(sections.join('\n'));
 }
 
@@ -343,6 +353,14 @@ You MUST write the JSONL content directly to the file \`review-output.jsonl\` in
     sections.push('## Additional Instructions');
     sections.push('');
     sections.push(context.inputs.reviewPromptExtra);
+  }
+
+  const subagentPathSection = buildPathInstructionsSection(
+    getMatchedPathInstructions(context.pathInstructions, context.filePaths),
+  );
+  if (subagentPathSection) {
+    sections.push('');
+    sections.push(subagentPathSection);
   }
 
   return capPromptLength(sections.join('\n'));

@@ -670,6 +670,11 @@ export interface ReviewConfig {
   sensitivity?: ReviewSensitivityConfig;
   /** Per-category overrides for review sensitivity */
   categories?: Record<string, CategoryOverride>;
+  /** Opt-in map of glob pattern to extra review instructions, applied
+   * additively per reviewed file when the file path matches the glob
+   * (e.g. `{ "docs/**": "Check spelling." }`). Max 10 entries, each capped
+   * at 2 KB. Absent/empty means no per-path instructions. */
+  pathInstructions?: Record<string, string>;
   /** Severity threshold at or above which the action/check run fails
    * (default: 'critical'). Use 'off' to never fail from findings. */
   failOnSeverity: FailOnSeverity;
@@ -1354,6 +1359,8 @@ export interface ConfigOverride {
     customRules?: string[];
     /** Whether to use inline comments */
     inline?: boolean;
+    /** Glob → extra-instructions map merged additively for this path/branch */
+    pathInstructions?: Record<string, string>;
   };
   /** Fix config overrides */
   fix?: {
@@ -1468,6 +1475,10 @@ export interface PromptConfig {
     sensitivity?: ReviewSensitivityConfig;
     /** Per-category overrides for review sensitivity */
     categories?: Record<string, CategoryOverride>;
+    /** Opt-in map of glob pattern to extra review instructions, applied
+     * additively per reviewed file when the file path matches the glob.
+     * Max 10 entries, each capped at 2 KB. */
+    pathInstructions?: Record<string, string>;
     /** Severity threshold at or above which the action/check run fails
      * (default: 'critical'). Use 'off' to never fail from findings. */
     failOnSeverity?: FailOnSeverity;
