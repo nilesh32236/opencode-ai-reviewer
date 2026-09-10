@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.13.3] — 2026-09-10
+
+
+### Fixed
+
+- address issue #451 (#461) (#451
+#461)
+
+### Changed
+
+- docs(opencode): add missing JSDoc @param/@returns for mapV1PermissionKeyToV2Action
+- fix(autofix): emit plain-text 'Fixes #N' so autofix PRs auto-close their issue
+
+[v1.13.3]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.2...v1.13.3
+
 ## [v1.13.2] — 2026-09-10
 
 
