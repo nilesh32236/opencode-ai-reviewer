@@ -71,6 +71,7 @@ import { DEFAULT_SCA_CONFIG, DEFAULT_SECRET_DETECTOR_CONFIG } from './types/inde
 import { filterBlameToPatch, getGitBlame, parsePatchHunks } from './utils/blame.js';
 import { MAX_BLAME_LINES_PER_FILE, UNCOMMITTED_SHA } from './utils/blame.js';
 import type { BlameRange } from './utils/blame.js';
+import { sanitizeDescribeDiagram } from './utils/describe-diagram.js';
 import { computeReviewStats, filterFindings, severityRank } from './utils/filter-findings.js';
 import { isGeneratedArtifact, isGeneratedArtifactPath } from './utils/generated-files.js';
 import { Logger } from './utils/logger.js';
@@ -2714,11 +2715,13 @@ export class ReviewEngine {
     ensureOutputDir(outputPath);
 
     const { context: prContext } = this.buildPRContextString(pr);
+    const enableDiagram = this.config.describe?.enableDiagram === true;
     const prompt = buildDescribePrompt(
       {
         projectContext: this.config.projectContext.description || undefined,
         describePromptFile: promptFile,
         describePromptExtra: promptExtra,
+        enableDiagram,
       },
       prContext,
     );
@@ -2751,14 +2754,26 @@ export class ReviewEngine {
         prNumber: pr.number,
         modelUsed: this.config.describe?.model || this.resolveModel('describeModel'),
       });
-      return content.trim();
+      const trimmed = content.trim();
+      if (!enableDiagram) return trimmed;
+      const sanitized = sanitizeDescribeDiagram(trimmed);
+      if (sanitized !== trimmed) {
+        this.logger.info('Describe diagram failed validation — omitting Diagram section');
+      }
+      return sanitized;
     } catch {
       if (runResult.output && runResult.output.trim().length > 0) {
         this.publishCompleted(PIPELINE_EVENT_TYPES.DESCRIBE_COMPLETED, {
           prNumber: pr.number,
           modelUsed: this.config.describe?.model || this.resolveModel('describeModel'),
         });
-        return runResult.output.trim();
+        const trimmed = runResult.output.trim();
+        if (!enableDiagram) return trimmed;
+        const sanitized = sanitizeDescribeDiagram(trimmed);
+        if (sanitized !== trimmed) {
+          this.logger.info('Describe diagram failed validation — omitting Diagram section');
+        }
+        return sanitized;
       }
       this.publishCompleted(PIPELINE_EVENT_TYPES.DESCRIBE_COMPLETED, {
         prNumber: pr.number,

@@ -232,6 +232,8 @@ export interface DescribeConfig {
   enabled: boolean;
   /** Optional model override for PR description generation (defaults to `describeModel` / `reviewModel`). */
   model?: string;
+  /** Whether to append an LLM-generated Mermaid flowchart (default: false). */
+  enableDiagram?: boolean;
 }
 
 // ─── Custom LLM Providers ───────────────────────────────
@@ -1496,6 +1498,7 @@ export interface PromptConfig {
   describe?: {
     enabled?: boolean;
     model?: string;
+    enableDiagram?: boolean;
   };
   /** Changelog / release-notes generation (`/changelog`) configuration */
   changelog?: ChangelogConfig;
@@ -1737,6 +1740,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   },
   describe: {
     enabled: true,
+    enableDiagram: false,
   },
   changelog: DEFAULT_CHANGELOG_CONFIG,
   learning: {

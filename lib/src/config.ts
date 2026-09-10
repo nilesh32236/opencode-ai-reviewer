@@ -106,6 +106,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
   describe: {
     enabled: null,
     model: null,
+    enableDiagram: null,
   },
   changelog: {
     enabled: null,
@@ -661,12 +662,15 @@ export function validateConfig(config: PromptConfig): PromptConfig {
 
   if (config.describe && typeof config.describe === 'object') {
     const desc = config.describe;
-    const describe: DescribeConfig = { enabled: true };
+    const describe: DescribeConfig = { enabled: true, enableDiagram: false };
     if (typeof desc.enabled === 'boolean') {
       describe.enabled = desc.enabled;
     }
     if (typeof desc.model === 'string' && desc.model.trim() !== '') {
       describe.model = desc.model.trim();
+    }
+    if (typeof desc.enableDiagram === 'boolean') {
+      describe.enableDiagram = desc.enableDiagram;
     }
     result.describe = describe;
   }

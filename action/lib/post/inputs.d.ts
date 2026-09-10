@@ -80,6 +80,10 @@ export interface ActionInputs {
     describePromptFile?: string;
     /** Optional extra instructions appended to the describe prompt. */
     describePromptExtra?: string;
+    /** Whether to append an LLM-generated Mermaid flowchart to describe output. */
+    enableDiagram?: boolean;
+    /** Whether the enable_diagram input was explicitly set by the workflow. */
+    enableDiagramExplicit: boolean;
     /** Optional path to a custom config file (overrides .opencode-reviewer.yml discovery). */
     configFile?: string;
     /** Whether automated fix mode is enabled. */
