@@ -438,9 +438,9 @@ export interface AgentResult {
   error?: string;
 }
 
-/** Default multi-agent configuration (opt-in, all agents enabled when active). */
+/** Default multi-agent configuration (enabled by default; set `enabled: false` to opt out). */
 export const DEFAULT_MULTI_AGENT_CONFIG: MultiAgentConfig = {
-  enabled: false,
+  enabled: true,
   agents: {
     security: { enabled: true },
     performance: { enabled: true },
