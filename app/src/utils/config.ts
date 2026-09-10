@@ -345,6 +345,8 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const llm = repoConfig?.llm;
   const sca = repoConfig?.sca;
   const changelog = repoConfig?.changelog;
+  const projectAutoLoadAgentsMd = repoConfig?.project?.autoLoadAgentsMd;
+  const projectAttributionFooter = repoConfig?.project?.attributionFooter;
   if (
     !sensitivity &&
     !categories &&
@@ -361,7 +363,9 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
     !secrets &&
     !llm &&
     !sca &&
-    !changelog
+    !changelog &&
+    projectAutoLoadAgentsMd === undefined &&
+    projectAttributionFooter === undefined
   ) {
     return baseConfig;
   }
@@ -438,6 +442,19 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       changelog: {
         ...baseConfig.changelog,
         ...changelog,
+      },
+    }),
+    // Opt-in head-SHA convention auto-load (`project.autoLoadAgentsMd`) and its
+    // attribution footer (`project.attributionFooter`) via `.opencode-reviewer.yml`.
+    ...((projectAutoLoadAgentsMd !== undefined || projectAttributionFooter !== undefined) && {
+      projectContext: {
+        ...baseConfig.projectContext,
+        ...(projectAutoLoadAgentsMd !== undefined && {
+          autoLoadAgentsMd: projectAutoLoadAgentsMd,
+        }),
+        ...(projectAttributionFooter !== undefined && {
+          attributionFooter: projectAttributionFooter,
+        }),
       },
     }),
   };

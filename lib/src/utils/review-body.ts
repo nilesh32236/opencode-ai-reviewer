@@ -152,11 +152,40 @@ export function formatIssueBullet(issue: ReviewIssue): string {
 }
 
 /**
+ * Options accepted by {@link buildReviewBody}.
+ */
+export interface BuildReviewBodyOptions {
+  /** Attribution footer for auto-loaded review conventions (e.g. AGENTS.md @
+   * head SHA). Appended after the issues section when non-empty. Falls back to
+   * `result.attributionFooter` when omitted. */
+  attributionFooter?: string;
+}
+
+/**
+ * Build the attribution footer for review conventions auto-loaded from the PR
+ * head SHA (AGENTS.md / copilot-instructions.md). Pure function, safe to unit
+ * test. Returns undefined when nothing was loaded so callers render no footer.
+ * @param headSha - Full head commit SHA the conventions were read at.
+ * @param sources - Convention filenames that were loaded (e.g. ['AGENTS.md']).
+ * @returns A one-line markdown footer, or undefined when sources is empty.
+ */
+export function buildAgentsMdAttributionFooter(
+  headSha: string,
+  sources: string[],
+): string | undefined {
+  if (!sources || sources.length === 0) return undefined;
+  const shortSha = sanitizeMarkdown(String(headSha || '').slice(0, 7) || 'unknown');
+  const names = sources.map((s) => `\`${escapeInlineCode(sanitizeMarkdown(s))}\``).join(', ');
+  return `*Review conventions auto-loaded from ${names} @ \`${shortSha}\`*`;
+}
+
+/**
  * Build a markdown review body from a ReviewResult.
  * @param result - Review result to render.
+ * @param opts - Optional rendering options (e.g. attribution footer).
  * @returns Formatted markdown string.
  */
-export function buildReviewBody(result: ReviewResult): string {
+export function buildReviewBody(result: ReviewResult, opts?: BuildReviewBodyOptions): string {
   const lines: string[] = [];
 
   if (result.failedBatches !== undefined && result.failedBatches > 0) {
@@ -249,6 +278,13 @@ export function buildReviewBody(result: ReviewResult): string {
   // via the dedicated post-step comment (action/src/post.ts), which is gated on
   // the saved state and is verbosity-aware. Rendering it here too would show
   // the same totals twice on the same PR.
+  const footer = opts?.attributionFooter ?? result.attributionFooter;
+  if (footer?.trim()) {
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+    lines.push(sanitizeMarkdown(footer));
+  }
 
   return lines.join('\n');
 }

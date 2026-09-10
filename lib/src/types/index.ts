@@ -517,6 +517,12 @@ export interface ProjectContextConfig {
   lintCommands: string[];
   /** Custom rules to append to the prompt */
   customRules?: string;
+  /** Opt-in: auto-load AGENTS.md and .github/copilot-instructions.md at the PR
+   * head SHA into the review prompt (default: false). */
+  autoLoadAgentsMd?: boolean;
+  /** Whether the posted review carries an attribution footer naming the
+   * convention sources and head SHA. Defaults to true when auto-load is on. */
+  attributionFooter?: boolean;
 }
 
 /** Configuration for token budget-based context allocation. */
@@ -1144,6 +1150,10 @@ export interface ReviewResult {
   executiveSummary?: ExecutiveSummary;
   /** Optional token usage / cost data accumulated for this run (server-side, not AI-derived) */
   usage?: TokenUsage;
+  /** Attribution footer for auto-loaded review conventions (e.g. AGENTS.md @
+   * head SHA). Set by the engine when context.autoLoadAgentsMd loads files;
+   * rendered by buildReviewBody/postReview. Absent when nothing was loaded. */
+  attributionFooter?: string;
 }
 
 /** Result of an auto-fix operation. */
@@ -1578,6 +1588,12 @@ export interface PromptConfig {
     conventions?: string[];
     /** Reference for shell commands (name → command) */
     commandReference?: Record<string, string>;
+    /** Opt-in: auto-load AGENTS.md and .github/copilot-instructions.md at the
+     * PR head SHA into the review prompt (default: false). */
+    autoLoadAgentsMd?: boolean;
+    /** Whether the posted review carries an attribution footer naming the
+     * convention sources and head SHA. Defaults to true when auto-load is on. */
+    attributionFooter?: boolean;
   };
   /** Conversation / @mention context-window management configuration */
   conversation?: {
