@@ -427,6 +427,45 @@ describe('parseInputs() describe_use_markers/describe_publish_as_comment', () =>
   });
 });
 
+describe('parseInputs() toolchain_enforce_node_floor', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('defaults to warn-only (false, not explicit) when omitted', () => {
+    setInputs(BASE_INPUTS);
+    const inputs = parseInputs();
+    expect(inputs.enforceNodeFloor).toBe(false);
+    expect(inputs.enforceNodeFloorExplicit).toBe(false);
+  });
+
+  it('parses explicit true', () => {
+    setInputs({ ...BASE_INPUTS, toolchain_enforce_node_floor: 'true' });
+    const inputs = parseInputs();
+    expect(inputs.enforceNodeFloor).toBe(true);
+    expect(inputs.enforceNodeFloorExplicit).toBe(true);
+  });
+
+  it('parses explicit false', () => {
+    setInputs({ ...BASE_INPUTS, toolchain_enforce_node_floor: 'false' });
+    const inputs = parseInputs();
+    expect(inputs.enforceNodeFloor).toBe(false);
+    expect(inputs.enforceNodeFloorExplicit).toBe(true);
+  });
+
+  it('is case-insensitive (accepts True)', () => {
+    setInputs({ ...BASE_INPUTS, toolchain_enforce_node_floor: 'True' });
+    const inputs = parseInputs();
+    expect(inputs.enforceNodeFloor).toBe(true);
+    expect(inputs.enforceNodeFloorExplicit).toBe(true);
+  });
+
+  it('rejects invalid values like yes', () => {
+    setInputs({ ...BASE_INPUTS, toolchain_enforce_node_floor: 'yes' });
+    expect(() => parseInputs()).toThrow(/Invalid toolchain_enforce_node_floor/);
+  });
+});
+
 describe('parseInputs() audit_labels', () => {
   beforeEach(() => {
     vi.clearAllMocks();

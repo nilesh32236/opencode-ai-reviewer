@@ -97,6 +97,7 @@ import { detectSecrets, mergeSecretFindings } from './utils/secret-detect.js';
 import type { SecretDetectOptions, SecretFinding } from './utils/secret-detect.js';
 import { TestGapDetector, buildContextString, isTestFile } from './utils/test-gap-detector.js';
 import type { TestGapResult } from './utils/test-gap-detector.js';
+import { checkNodeFloor as checkNodeFloorVersion } from './utils/version.js';
 
 /** Maximum number of batch chunks processed concurrently by `reviewPR`. */
 export const MAX_BATCH_CONCURRENCY = 8;
@@ -249,12 +250,53 @@ export class ReviewEngine {
     // undefined while the logger falls back to its own generated UUID, so
     // published events would not share the engine logs' trace ID.
     this.correlationId = this.logger.getCorrelationId();
+    this.checkRuntimeNodeFloor();
   }
 
   /** Clear static dedup caches (for test isolation). */
   static resetReviewDedup(): void {
     ReviewEngine.IN_FLIGHT_REVIEWS.clear();
     ReviewEngine.REVIEWED_CACHE.clear();
+  }
+
+  /**
+   * Warn when the Node runtime is below the patched LTS floor
+   * (`MINIMUM_NODE_VERSION`, July 2026 HIGH CVE fixes). Fail-open: an
+   * unparseable version or a check failure only warns and the review
+   * continues. Opt-in strict mode (`toolchain.enforceNodeFloor`) throws.
+   * @since NEXT
+   */
+  private checkRuntimeNodeFloor(): void {
+    let enforcementError: Error | null = null;
+    try {
+      const result = checkNodeFloorVersion();
+      if (result.unparseable || result.ok) return;
+      const message =
+        `Node runtime ${result.current} is below the recommended minimum ${result.floor} ` +
+        `(July 2026 HIGH CVE fixes in Node v${result.floor}; see https://nodejs.org/en/blog/release/v${result.floor}). ` +
+        `Upgrade to Node >= ${result.floor} for security. Review continues.`;
+      if (this.config.toolchain?.enforceNodeFloor === true) {
+        enforcementError = new Error(
+          `Node runtime ${result.current} is below the enforced minimum ${result.floor} ` +
+            `(toolchain.enforceNodeFloor=true). Upgrade to Node >= ${result.floor} ` +
+            `(see https://nodejs.org/en/blog/release/v${result.floor}).`,
+        );
+        throw enforcementError;
+      }
+      this.logger.warn(message);
+    } catch (err) {
+      // Fail-open unless this is the explicit enforcement error tracked above.
+      // Identity comparison (not message substring) keeps strict mode robust
+      // against future message rewording and avoids re-throwing unrelated errors.
+      if (err === enforcementError && enforcementError !== null) throw err;
+      try {
+        this.logger.warn(
+          `Node floor check skipped: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      } catch {
+        // Fail-open: never break a review when logging itself fails.
+      }
+    }
   }
 
   private getReviewDedupKey(pr: PRContext): string {

@@ -184,6 +184,10 @@ export interface ActionInputs {
     scaEnabledExplicit: boolean;
     /** Whether the sca_min_severity input was explicitly set by the workflow. */
     scaMinSeverityExplicit: boolean;
+    /** Fail closed when the Node runtime is below the patched LTS floor (default: false, warn-only). */
+    enforceNodeFloor: boolean;
+    /** Whether the toolchain_enforce_node_floor input was explicitly set by the workflow. */
+    enforceNodeFloorExplicit: boolean;
 }
 /**
  * Parse and validate the stream_batch_size input: an empty value means 0

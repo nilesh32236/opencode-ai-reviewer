@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  MINIMUM_NODE_VERSION,
   MINIMUM_OPENCODE_VERSION,
   UNPARSEABLE_VERSION,
+  checkNodeFloor,
   compareVersions,
   formatVersion,
   parseVersion,
@@ -85,5 +87,54 @@ describe('MINIMUM_OPENCODE_VERSION', () => {
     expect(MINIMUM_OPENCODE_VERSION).toBe('1.1.1');
     expect(parseVersion(MINIMUM_OPENCODE_VERSION)).not.toBeNull();
     expect(compareVersions(MINIMUM_OPENCODE_VERSION, '1.1.0')).toBeGreaterThan(0);
+  });
+});
+
+describe('checkNodeFloor()', () => {
+  it('fails below the floor', () => {
+    const result = checkNodeFloor('22.0.0', MINIMUM_NODE_VERSION);
+    expect(result.ok).toBe(false);
+    expect(result.unparseable).toBe(false);
+    expect(result.current).toBe('22.0.0');
+    expect(result.floor).toBe(MINIMUM_NODE_VERSION);
+  });
+
+  it('passes at the floor', () => {
+    const result = checkNodeFloor(MINIMUM_NODE_VERSION, MINIMUM_NODE_VERSION);
+    expect(result).toEqual({
+      ok: true,
+      current: MINIMUM_NODE_VERSION,
+      floor: MINIMUM_NODE_VERSION,
+      unparseable: false,
+    });
+  });
+
+  it('passes above the floor', () => {
+    expect(checkNodeFloor('24.19.0', MINIMUM_NODE_VERSION).ok).toBe(true);
+    expect(checkNodeFloor(`v${MINIMUM_NODE_VERSION}`, MINIMUM_NODE_VERSION).ok).toBe(true);
+  });
+
+  it('sorts pre-releases below the floor', () => {
+    const result = checkNodeFloor(`${MINIMUM_NODE_VERSION}-rc.1`, MINIMUM_NODE_VERSION);
+    expect(result.ok).toBe(false);
+    expect(result.unparseable).toBe(false);
+  });
+
+  it('fails open on unparseable input', () => {
+    expect(checkNodeFloor('latest', MINIMUM_NODE_VERSION)).toEqual({
+      ok: true,
+      current: 'latest',
+      floor: MINIMUM_NODE_VERSION,
+      unparseable: true,
+    });
+    expect(checkNodeFloor('', MINIMUM_NODE_VERSION).unparseable).toBe(true);
+    expect(checkNodeFloor('', MINIMUM_NODE_VERSION).ok).toBe(true);
+  });
+
+  it('defaults to the minimum Node floor and process.version', () => {
+    expect(MINIMUM_NODE_VERSION).toBe('24.18.1');
+    const result = checkNodeFloor();
+    expect(result.floor).toBe(MINIMUM_NODE_VERSION);
+    expect(result.current).toBe(process.version);
   });
 });

@@ -447,6 +447,20 @@ export const SCAConfigSchema = z
   });
 
 /**
+ * Zod schema validating toolchain / runtime floor configuration.
+ * Additive and fail-open: a malformed `toolchain:` block falls back to
+ * warn-only defaults so a broken section never fails the whole config parse.
+ * @since NEXT
+ */
+export const ToolchainConfigSchema = z
+  .object({
+    enforceNodeFloor: z.boolean().default(false),
+  })
+  .catch({
+    enforceNodeFloor: false,
+  });
+
+/**
  * Zod schema validating a pluggable event subscriber configuration entry.
  * `path` is loaded via dynamic `import()` (arbitrary checkout code execution)
  * and is untrusted repo-file input: loading is default-denied unless the
@@ -589,6 +603,7 @@ export const AgentConfigSchema = z.object({
   multiAgent: MultiAgentConfigSchema.default(MultiAgentConfigSchema.parse({})),
   secrets: SecretsConfigSchema.default(SecretsConfigSchema.parse({})),
   sca: SCAConfigSchema.default(SCAConfigSchema.parse({})),
+  toolchain: ToolchainConfigSchema.default(ToolchainConfigSchema.parse({})),
   llm: LLMConfigSchema.optional(),
 });
 
@@ -738,5 +753,6 @@ export const PromptConfigSchema = z.object({
   multiAgent: MultiAgentConfigSchema.optional(),
   secrets: SecretsConfigSchema.optional(),
   sca: SCAConfigSchema.optional(),
+  toolchain: ToolchainConfigSchema.optional(),
   llm: LLMConfigSchema.optional(),
 });

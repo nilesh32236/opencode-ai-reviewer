@@ -252,6 +252,10 @@ export interface ActionInputs {
   scaEnabledExplicit: boolean;
   /** Whether the sca_min_severity input was explicitly set by the workflow. */
   scaMinSeverityExplicit: boolean;
+  /** Fail closed when the Node runtime is below the patched LTS floor (default: false, warn-only). */
+  enforceNodeFloor: boolean;
+  /** Whether the toolchain_enforce_node_floor input was explicitly set by the workflow. */
+  enforceNodeFloorExplicit: boolean;
 }
 
 /**
@@ -563,6 +567,22 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   const scaMinSeverity = scaMinSeverityRaw as Severity;
   const scaMinSeverityExplicit = scaMinSeverityInput.trim() !== '';
 
+  // Case-insensitive on purpose (unlike the strict sca_enabled parser): a
+  // boolean gate must never fail a run over 'True' vs 'true' capitalisation.
+  const enforceNodeFloorInput = core.getInput('toolchain_enforce_node_floor');
+  const enforceNodeFloorRaw = enforceNodeFloorInput.trim().toLowerCase();
+  if (
+    enforceNodeFloorRaw !== '' &&
+    enforceNodeFloorRaw !== 'true' &&
+    enforceNodeFloorRaw !== 'false'
+  ) {
+    throw new Error(
+      `Invalid toolchain_enforce_node_floor: "${enforceNodeFloorInput.trim()}". Must be true or false.`,
+    );
+  }
+  const enforceNodeFloor = enforceNodeFloorRaw === 'true';
+  const enforceNodeFloorExplicit = enforceNodeFloorRaw !== '';
+
   // Models for features that are active in the selected mode are hard-gated so
   // an invalid value fails the action before any work starts. Models whose
   // feature is disabled (or that the action never runs, e.g. conversation) only
@@ -713,5 +733,7 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     describePublishAsComment,
     describePublishAsCommentExplicit,
     scaMinSeverityExplicit,
+    enforceNodeFloor,
+    enforceNodeFloorExplicit,
   };
 }

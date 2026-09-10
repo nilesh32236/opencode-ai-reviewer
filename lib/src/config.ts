@@ -284,6 +284,9 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     lockFilePatterns: null,
     excludePatterns: null,
   },
+  toolchain: {
+    enforceNodeFloor: null,
+  },
   llm: {
     defaultProvider: null,
     providers: [
@@ -1255,6 +1258,15 @@ export function validateConfig(
         : [],
     };
     result.sca = scaConfig;
+  }
+
+  if (config.toolchain && typeof config.toolchain === 'object') {
+    const raw = config.toolchain;
+    if (typeof raw.enforceNodeFloor === 'boolean') {
+      result.toolchain = { enforceNodeFloor: raw.enforceNodeFloor };
+    } else if (raw.enforceNodeFloor !== undefined) {
+      core.warning('Ignoring invalid toolchain.enforceNodeFloor: expected a boolean.');
+    }
   }
 
   if (config.llm && typeof config.llm === 'object') {

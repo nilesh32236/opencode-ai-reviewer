@@ -21,6 +21,46 @@ export const UNPARSEABLE_VERSION = Number.MAX_SAFE_INTEGER;
 export const MINIMUM_OPENCODE_VERSION = '1.1.1';
 
 /**
+ * Minimum recommended Node.js runtime version. The v24.18.1 release ships
+ * fixes for July 2026 HIGH CVEs, so CI and the `node24`-bundled action
+ * runtime should stay on a patched 24.x LTS.
+ * @since NEXT
+ */
+export const MINIMUM_NODE_VERSION = '24.18.1';
+
+/** Result of {@link checkNodeFloor}. */
+export interface NodeFloorCheck {
+  /** True when the runtime meets the floor or the version is unparseable (fail-open). */
+  ok: boolean;
+  /** The runtime version that was checked (defaults to `process.version`). */
+  current: string;
+  /** The minimum version required. */
+  floor: string;
+  /** True when either version was unparseable (fail-open). */
+  unparseable: boolean;
+}
+
+/**
+ * Check a Node runtime version against the minimum supported floor.
+ * Fail-open: unparseable versions (e.g. "latest", "") report `ok: true`
+ * with `unparseable: true` so callers warn-and-continue instead of breaking.
+ * @param current - Runtime version to check (defaults to `process.version`).
+ * @param floor - Minimum version required (defaults to {@link MINIMUM_NODE_VERSION}).
+ * @returns The floor-check result.
+ * @since NEXT
+ */
+export function checkNodeFloor(
+  current: string = process.version,
+  floor: string = MINIMUM_NODE_VERSION,
+): NodeFloorCheck {
+  const cmp = compareVersions(current, floor);
+  if (cmp === UNPARSEABLE_VERSION) {
+    return { ok: true, current, floor, unparseable: true };
+  }
+  return { ok: cmp >= 0, current, floor, unparseable: false };
+}
+
+/**
  * Parse a semantic version string (e.g. "v1.2.3", "1.2.3-rc.1").
  * Build metadata is ignored; pre-release suffixes are captured for ordering.
  * @param text - The version text to parse.
