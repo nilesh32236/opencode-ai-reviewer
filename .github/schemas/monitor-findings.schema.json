@@ -4,12 +4,7 @@
   "description": "Strict schema for the monitor research job's findings JSON. The OpenCode researcher's final message must parse against this; CI validates, recomputes scores, and applies the deterministic Tier-A gate.",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "schema_version",
-    "run",
-    "lanes",
-    "findings"
-  ],
+  "required": ["schema_version", "run", "lanes", "findings"],
   "properties": {
     "schema_version": {
       "const": 1
@@ -19,12 +14,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "name",
-          "searches_performed",
-          "sources_consulted",
-          "findings"
-        ],
+        "required": ["name", "searches_performed", "sources_consulted", "findings"],
         "properties": {
           "name": {
             "type": "string"
@@ -47,12 +37,7 @@
     "run": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "commit",
-        "upstream_target",
-        "node_target",
-        "date"
-      ],
+      "required": ["commit", "upstream_target", "node_target", "date"],
       "properties": {
         "commit": {
           "type": "string"
@@ -122,25 +107,13 @@
             ]
           },
           "priority": {
-            "enum": [
-              "high",
-              "medium",
-              "low"
-            ]
+            "enum": ["high", "medium", "low"]
           },
           "difficulty": {
-            "enum": [
-              "easy",
-              "medium",
-              "hard"
-            ]
+            "enum": ["easy", "medium", "hard"]
           },
           "risk": {
-            "enum": [
-              "low",
-              "medium",
-              "high"
-            ]
+            "enum": ["low", "medium", "high"]
           },
           "risk_numeric": {
             "type": "integer",
@@ -185,20 +158,14 @@
             ]
           },
           "tier": {
-            "enum": [
-              "A",
-              "B",
-              "C"
-            ]
+            "enum": ["A", "B", "C"]
           },
           "evidence": {
             "type": "array",
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": [
-                "url"
-              ],
+              "required": ["url"],
               "properties": {
                 "url": {
                   "type": "string",
@@ -217,10 +184,7 @@
           "implementation": {
             "type": "object",
             "additionalProperties": false,
-            "required": [
-              "files",
-              "functions"
-            ],
+            "required": ["files", "functions"],
             "properties": {
               "files": {
                 "type": "array",
@@ -241,11 +205,7 @@
           "estimated_impact": {
             "type": "object",
             "additionalProperties": false,
-            "required": [
-              "queries",
-              "frontend_kb",
-              "request_ms"
-            ],
+            "required": ["queries", "frontend_kb", "request_ms"],
             "properties": {
               "queries": {
                 "type": "number"
@@ -259,34 +219,18 @@
             }
           },
           "measured_impact": {
-            "type": [
-              "object",
-              "null"
-            ],
+            "type": ["object", "null"],
             "additionalProperties": false,
-            "required": [
-              "queries",
-              "frontend_kb",
-              "request_ms"
-            ],
+            "required": ["queries", "frontend_kb", "request_ms"],
             "properties": {
               "queries": {
-                "type": [
-                  "number",
-                  "null"
-                ]
+                "type": ["number", "null"]
               },
               "frontend_kb": {
-                "type": [
-                  "number",
-                  "null"
-                ]
+                "type": ["number", "null"]
               },
               "request_ms": {
-                "type": [
-                  "number",
-                  "null"
-                ]
+                "type": ["number", "null"]
               }
             }
           },
