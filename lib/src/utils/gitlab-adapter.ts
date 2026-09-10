@@ -40,6 +40,29 @@ const MAX_DIFF_FILES = 300;
 /** Maximum raw diff text (bytes) parsed by getDiffLines before truncation. */
 const MAX_DIFF_TEXT_BYTES = 512 * 1024;
 
+/**
+ * Measure a string's UTF-8 byte length. `String.length` counts UTF-16 code
+ * units and undercounts non-ASCII text, so byte caps must use this helper.
+ * @param text - String to measure.
+ * @returns UTF-8 byte length.
+ */
+function utf8ByteLength(text: string): number {
+  return Buffer.byteLength(text, 'utf8');
+}
+
+/**
+ * Truncate a string to a UTF-8 byte budget without splitting a multi-byte
+ * sequence (decoding re-emits a replacement character instead of corrupt
+ * bytes, and callers re-align to a newline boundary afterwards).
+ * @param text - String to truncate.
+ * @param maxBytes - Maximum UTF-8 bytes to retain.
+ * @returns Truncated string within the byte budget.
+ */
+function truncateToBytes(text: string, maxBytes: number): string {
+  if (utf8ByteLength(text) <= maxBytes) return text;
+  return Buffer.from(text, 'utf8').subarray(0, maxBytes).toString('utf8');
+}
+
 /** GitLab adapter. */
 export class GitLabAdapter implements PlatformAdapter {
   private circuitBreaker = new CircuitBreaker({
@@ -203,6 +226,11 @@ export class GitLabAdapter implements PlatformAdapter {
    * silently returning partial data (default: false).
    * @param options.stopWhen - Predicate evaluated against the accumulated items after
    * each page; when it returns true, pagination stops early (default: never).
+   * @param options.onTruncated - Optional hook invoked when a page fetch fails and
+   * partial data is returned (only when throwOnError is false). Receives the
+   * failed page number and the error so callers can log/metric the truncation.
+   * When provided, the hook owns the log line and the generic truncation log
+   * is demoted to debug so one event yields one warning.
    * @param signal - Optional AbortSignal to cancel the paginated fetch.
    * @returns Description.
    */
@@ -321,14 +349,15 @@ export class GitLabAdapter implements PlatformAdapter {
       );
       changes = changes.slice(0, MAX_DIFF_FILES);
     }
-    changes = changes.map((f) =>
-      f.diff && f.diff.length > MAX_DIFF_BYTES_PER_FILE
-        ? {
-            ...f,
-            diff: `${f.diff.slice(0, MAX_DIFF_BYTES_PER_FILE)}\n... [truncated ${f.diff.length - MAX_DIFF_BYTES_PER_FILE} bytes]`,
-          }
-        : f,
-    );
+    changes = changes.map((f) => {
+      if (!f.diff || utf8ByteLength(f.diff) <= MAX_DIFF_BYTES_PER_FILE) return f;
+      const truncatedDiff = truncateToBytes(f.diff, MAX_DIFF_BYTES_PER_FILE);
+      const overflow = utf8ByteLength(f.diff) - utf8ByteLength(truncatedDiff);
+      return {
+        ...f,
+        diff: `${truncatedDiff}\n... [truncated ${overflow} bytes]`,
+      };
+    });
 
     let linkedIssue: number | undefined;
     if (mr.description) {
@@ -480,12 +509,12 @@ export class GitLabAdapter implements PlatformAdapter {
       // expand to their full declared range (safe direction: allows extra
       // comments rather than dropping valid lines).
       let truncatedText = diffText;
-      if (diffText.length > MAX_DIFF_TEXT_BYTES) {
-        const cutAt = diffText.lastIndexOf('\n', MAX_DIFF_TEXT_BYTES);
-        truncatedText =
-          cutAt > 0 ? diffText.slice(0, cutAt) : diffText.slice(0, MAX_DIFF_TEXT_BYTES);
+      if (utf8ByteLength(diffText) > MAX_DIFF_TEXT_BYTES) {
+        const byteTruncated = truncateToBytes(diffText, MAX_DIFF_TEXT_BYTES);
+        const cutAt = byteTruncated.lastIndexOf('\n');
+        truncatedText = cutAt > 0 ? byteTruncated.slice(0, cutAt) : byteTruncated;
         core.warning(
-          `MR !${mrNumber} diff truncated: ${diffText.length} bytes exceeds cap of ${MAX_DIFF_TEXT_BYTES} (truncated:true)`,
+          `MR !${mrNumber} diff truncated: ${utf8ByteLength(diffText)} bytes exceeds cap of ${MAX_DIFF_TEXT_BYTES} (truncated:true)`,
         );
       }
       let currentFile = '';
@@ -1507,7 +1536,7 @@ export class GitLabAdapter implements PlatformAdapter {
       const user = (await this.apiBase<{ username: string }>('/user', {}, 'json')) as {
         username: string;
       };
-      const username: unknown = (user as { username?: unknown }).username;
+      const username: unknown = (user as { username?: unknown } | null | undefined)?.username;
       if (typeof username !== 'string' || username.length === 0) {
         throw new Error('GitLab /user missing username');
       }

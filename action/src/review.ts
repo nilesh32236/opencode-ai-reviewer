@@ -58,7 +58,8 @@ export async function runReview(
       try {
         isMr = await gh.isMR(issueNum);
       } catch (err) {
-        const status = (err as { status?: number }).status;
+        const status =
+          typeof err === 'object' && err !== null ? (err as { status?: number }).status : undefined;
         const suffix = status !== undefined ? ` (status ${status})` : '';
         core.setFailed(
           sanitize(

@@ -538,10 +538,15 @@ async function run(): Promise<void> {
                 try {
                   isExplicitMr = await gh.isMR(explicitNum);
                 } catch (err) {
-                  const status = (err as { status?: number }).status;
+                  const status =
+                    typeof err === 'object' && err !== null
+                      ? (err as { status?: number }).status
+                      : undefined;
                   const suffix = status !== undefined ? ` (status ${status})` : '';
                   core.setFailed(
-                    `Failed to classify #${explicitNum} as PR/issue${suffix}: ${err instanceof Error ? err.message : err}`,
+                    sanitize(
+                      `Failed to classify #${explicitNum} as PR/issue${suffix}: ${err instanceof Error ? err.message : err}`,
+                    ),
                   );
                   return;
                 }

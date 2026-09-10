@@ -410,6 +410,7 @@ export class GitHubHelper implements PlatformAdapter {
   /**
    * PlatformAdapter alias for isPR.
    *
+   * Returns false only on HTTP 404; rethrows 401/403/429/5xx and network errors.
    * @param number - Issue/PR number.
    * @returns True if the number corresponds to a pull request.
    */
@@ -2232,10 +2233,17 @@ export class GitHubHelper implements PlatformAdapter {
   async getTags(): Promise<Array<{ name: string; commitSha: string }>> {
     // Paginated: repos with many tags would otherwise yield a truncated list
     // and getLatestTag() could pick the wrong "latest" tag.
+    const perPage = 100;
+    const maxPages = 10;
     const refs = await this.paginate<{ ref: string; object: { sha: string } }>(
       '/git/matching-refs/tags',
-      { perPage: 100, maxPages: 10, throwOnError: true },
+      { perPage, maxPages, throwOnError: true },
     );
+    if (refs.length >= perPage * maxPages) {
+      core.warning(
+        `Tag list may be truncated: reached pagination cap of ${perPage * maxPages} tags (truncated:true)`,
+      );
+    }
     const tags = refs.map((r) => ({
       name: r.ref.replace('refs/tags/', ''),
       commitSha: r.object.sha,
@@ -2331,10 +2339,17 @@ export class GitHubHelper implements PlatformAdapter {
   async getPRFilePaths(prNumber: number): Promise<string[]> {
     // Paginated (mirrors getPR()): a single page caps at 30 files and
     // downstream monorepo filters would silently miss the rest.
+    const perPage = 100;
+    const maxPages = 10;
     const files = await this.paginate<{ filename?: string; path?: string }>(
       `/pulls/${prNumber}/files`,
-      { perPage: 100, maxPages: 10, throwOnError: true },
+      { perPage, maxPages, throwOnError: true },
     );
+    if (files.length >= perPage * maxPages) {
+      core.warning(
+        `PR #${prNumber} file list may be truncated: reached pagination cap of ${perPage * maxPages} files (truncated:true)`,
+      );
+    }
     const filePaths: string[] = [];
     for (const f of files) {
       const p = typeof f.filename === 'string' && f.filename.length > 0 ? f.filename : f.path;
