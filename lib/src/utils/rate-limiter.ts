@@ -213,10 +213,7 @@ export class RateLimiter {
       };
     }
 
-    if (
-      userRes.status === 'fulfilled' &&
-      userRes.value >= this.config.reviewsPerUserPerDay
-    ) {
+    if (userRes.status === 'fulfilled' && userRes.value >= this.config.reviewsPerUserPerDay) {
       return {
         allowed: false,
         reason: 'user_daily',
