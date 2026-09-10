@@ -281,6 +281,9 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     lockFilePatterns: null,
     excludePatterns: null,
   },
+  toolchain: {
+    enforceNodeFloor: null,
+  },
   llm: {
     defaultProvider: null,
     providers: [
@@ -1224,6 +1227,13 @@ export function validateConfig(config: PromptConfig): PromptConfig {
         : [],
     };
     result.sca = scaConfig;
+  }
+
+  if (config.toolchain && typeof config.toolchain === 'object') {
+    const raw = config.toolchain;
+    if (typeof raw.enforceNodeFloor === 'boolean') {
+      result.toolchain = { enforceNodeFloor: raw.enforceNodeFloor };
+    }
   }
 
   if (config.llm && typeof config.llm === 'object') {

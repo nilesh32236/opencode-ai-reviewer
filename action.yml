@@ -358,6 +358,11 @@ inputs:
     description: 'Cost per 1K output tokens (USD) used for cost estimation'
     required: false
 
+  toolchain_enforce_node_floor:
+    description: 'Fail the run when the Node runtime is below the patched LTS floor (>=24.18.1, July 2026 HIGH CVE fixes). Default false (warn-only); also settable via toolchain.enforceNodeFloor in the config file'
+    required: false
+    default: 'false'
+
 outputs:
   review_summary:
     description: 'Summary of the review'

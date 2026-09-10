@@ -377,6 +377,9 @@ export interface AgentConfig {
   secrets?: SecretDetectorConfig;
   /** Deterministic Software Composition Analysis (SCA) of changed dependency lock files (default: enabled). */
   sca?: SCAConfig;
+  /** Toolchain / runtime floor configuration (default: warn-only).
+   * @since NEXT */
+  toolchain?: ToolchainConfig;
   /** Custom LLM providers (self-hosted OpenAI-compatible, Azure, Bedrock, Ollama). */
   llm?: LLMConfig;
 }
@@ -787,6 +790,14 @@ export interface SCAConfig {
   lockFilePatterns: string[];
   /** Glob patterns for lock files to skip during the SCA scan. */
   excludePatterns: string[];
+}
+
+/** Toolchain / runtime configuration (additive, fail-open).
+ * @since NEXT */
+export interface ToolchainConfig {
+  /** When true, a Node runtime below the minimum floor fails closed
+   * instead of warn-and-continue (default: false). */
+  enforceNodeFloor?: boolean;
 }
 
 /** Default glob patterns for the lock files supported by the SCA pass. */
@@ -1644,6 +1655,9 @@ export interface PromptConfig {
   sca?: SCAConfig;
   /** Multi-agent review architecture configuration (default: disabled). */
   multiAgent?: MultiAgentConfig;
+  /** Toolchain / runtime floor configuration (default: warn-only).
+   * @since NEXT */
+  toolchain?: ToolchainConfig;
   /** Custom LLM providers (self-hosted OpenAI-compatible, Azure, Bedrock, Ollama). */
   llm?: LLMConfig;
 }
@@ -1683,6 +1697,12 @@ export const DEFAULT_SCA_CONFIG: SCAConfig = {
   minSeverity: 'important',
   lockFilePatterns: DEFAULT_SCA_LOCK_FILE_PATTERNS,
   excludePatterns: [],
+};
+
+/** Default values for toolchain / runtime floor checks (warn-only).
+ * @since NEXT */
+export const DEFAULT_TOOLCHAIN_CONFIG: ToolchainConfig = {
+  enforceNodeFloor: false,
 };
 
 /** Default conventional-commit type → heading map for changelog categories. */
@@ -1853,6 +1873,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   multiAgent: DEFAULT_MULTI_AGENT_CONFIG,
   secrets: DEFAULT_SECRET_DETECTOR_CONFIG,
   sca: DEFAULT_SCA_CONFIG,
+  toolchain: DEFAULT_TOOLCHAIN_CONFIG,
 };
 
 // ─── Event Bus ───────────────────────────────────────────

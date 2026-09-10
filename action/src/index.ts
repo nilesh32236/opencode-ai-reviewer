@@ -488,6 +488,15 @@ async function run(): Promise<void> {
         excludePatterns:
           loadedConfig?.sca?.excludePatterns ?? DEFAULT_CONFIG.sca?.excludePatterns ?? [],
       },
+      // Explicit workflow input is authoritative when true so a PR cannot
+      // disable enforcement by editing .opencode-reviewer.yml; otherwise the
+      // repo config value (or the warn-only default) applies. Fail-open: the
+      // engine warns and continues unless enforcement is on.
+      toolchain: {
+        enforceNodeFloor: inputs.enforceNodeFloorExplicit
+          ? inputs.enforceNodeFloor
+          : (loadedConfig?.toolchain?.enforceNodeFloor ?? inputs.enforceNodeFloor),
+      },
       llm: buildLLMConfig(inputs, loadedConfig),
     };
 

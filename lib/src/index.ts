@@ -282,6 +282,15 @@ export type { ReviewEffortPreset } from './utils/review-effort.js';
 export { countAtOrAboveSeverity, shouldFailOnSeverity } from './utils/threshold.js';
 export type { SeverityStats } from './utils/threshold.js';
 export {
+  MINIMUM_NODE_VERSION,
+  UNPARSEABLE_VERSION,
+  checkNodeFloor,
+  compareVersions,
+  formatVersion,
+  parseVersion,
+} from './utils/version.js';
+export type { NodeFloorCheck, ParsedVersion } from './utils/version.js';
+export {
   sendNotification,
   formatSlackMessage,
   formatTeamsMessage,
