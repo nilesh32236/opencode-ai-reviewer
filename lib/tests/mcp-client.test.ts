@@ -285,24 +285,24 @@ describe('MCPManager', () => {
       expect(mockConnect).not.toHaveBeenCalled();
     });
 
-    it('skips remote servers failing the SSRF policy', async () => {
+    it.each([
+      'http://localhost:3000/sse',
+      'http://169.254.169.254/latest',
+      // https variants isolate the hostname/IP blocklist from the
+      // https-only scheme check: these pass the scheme gate and must still
+      // be rejected by isBlockedIpHost.
+      'https://localhost:3000/sse',
+      'https://169.254.169.254/latest',
+    ])('skips remote server failing the SSRF policy: %s', async (url) => {
       mockConnect.mockResolvedValue(undefined);
       mockListTools.mockResolvedValue({ tools: [{ name: 'search' }] });
 
-      for (const url of [
-        'http://localhost:3000/sse',
-        'http://169.254.169.254/latest',
-        'https://localhost:3000/sse',
-        'https://169.254.169.254/latest',
-      ]) {
-        vi.clearAllMocks();
-        const manager = new MCPManager([makeConfig({ type: 'remote', url, command: undefined })]);
-        await manager.connect();
+      const manager = new MCPManager([makeConfig({ type: 'remote', url, command: undefined })]);
+      await manager.connect();
 
-        expect(mockSSEClientTransportCtor).not.toHaveBeenCalled();
-        expect(mockConnect).not.toHaveBeenCalled();
-        expect(mockListTools).not.toHaveBeenCalled();
-      }
+      expect(mockSSEClientTransportCtor).not.toHaveBeenCalled();
+      expect(mockConnect).not.toHaveBeenCalled();
+      expect(mockListTools).not.toHaveBeenCalled();
     });
 
     it('skips local servers failing the command allowlist', async () => {

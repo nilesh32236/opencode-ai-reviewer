@@ -33,12 +33,39 @@ const SENSITIVE_KEYS = new Set([
 ]);
 
 /**
- * Commit-author metadata keys (`author`, `authors`, `author_login`,
+ * Commit-author attribution keys (`author`, `authors`, `author_login`,
  * `author_association`, `authorLogin`, ...) describe who wrote a commit — not
- * credentials. They are carved out of the `auth` substring match below so
- * audit logs keep attribution; every other `*auth*` key still redacts.
+ * credentials. They are carved out of the `auth` substring match below via an
+ * explicit allowlist so audit logs keep attribution; any other `author*` key
+ * (e.g. `author_auth`, `author_cookie`, `authorAuthorization`) still redacts
+ * via the `*auth*`/`cookie` rules.
  */
-const AUTHOR_METADATA_KEY = /^authors?([_-]|$)/;
+const AUTHOR_ATTRIBUTION_EXACT = new Set([
+  'author',
+  'authors',
+  'author_login',
+  'authors_login',
+  'author_association',
+  'authors_association',
+  'author_name',
+  'authors_name',
+  'author_username',
+  'authors_username',
+  'author_type',
+  'authors_type',
+]);
+const AUTHOR_ATTRIBUTION_CAMEL = new Set([
+  'authorLogin',
+  'authorsLogin',
+  'authorAssociation',
+  'authorsAssociation',
+  'authorName',
+  'authorsName',
+  'authorUsername',
+  'authorsUsername',
+  'authorType',
+  'authorsType',
+]);
 
 /**
  * Check whether a payload key is sensitive. Matches exact known keys plus
@@ -73,9 +100,11 @@ function isSensitiveKey(key: string): boolean {
     return true;
   }
   if (!normalized.includes('auth')) return false;
-  // `author*` metadata is attribution, not a credential — but a compound such
-  // as `author_token` already returned true above via the suffix rule.
-  if (AUTHOR_METADATA_KEY.test(normalized) || /^authors?[A-Z]/.test(key)) return false;
+  // `author*` attribution is allowlisted explicitly — but a compound such as
+  // `author_token` already returned true above via the suffix rule, and any
+  // non-allowlisted `author*` credential (e.g. `author_auth`,
+  // `author_cookie`, `authorAuthorization`) falls through to redact.
+  if (AUTHOR_ATTRIBUTION_EXACT.has(normalized) || AUTHOR_ATTRIBUTION_CAMEL.has(key)) return false;
   return true;
 }
 

@@ -200,6 +200,16 @@ export function isSafeLinterArgs(args: unknown): boolean {
  * @param target - Lexically resolved untrusted target path.
  * @returns True when realpath resolution reveals an escape outside the base.
  */
+/**
+ * Check whether a lexical `path.relative` result escapes the base.
+ * A bare `startsWith('..')` false-positives on benign in-base names such as
+ * `..foo` (rel `..foo` stays inside the base). Only the exact parent (`..`),
+ * the `../` prefix, and the Windows `..\` prefix are traversals.
+ */
+function isTraversalRel(rel: string): boolean {
+  return rel === '..' || rel.startsWith('../') || rel.startsWith('..\\');
+}
+
 function realpathRevealsEscape(baseResolved: string, target: string): boolean {
   let baseReal = baseResolved;
   try {
@@ -215,7 +225,7 @@ function realpathRevealsEscape(baseResolved: string, target: string): boolean {
       const realTarget = remainder ? path.join(real, remainder) : real;
       const rel = path.relative(baseReal, realTarget);
       if (rel === '') return false;
-      return rel.startsWith('..') || path.isAbsolute(rel);
+      return isTraversalRel(rel) || path.isAbsolute(rel);
     } catch (err) {
       // Fail closed on unexpected filesystem errors: an attacker-crafted
       // symlink loop (ELOOP), permission error (EACCES), or overlong name
@@ -252,7 +262,7 @@ export function isConfinedPath(base: string, requested: string): boolean {
   if (rel === '') {
     return !realpathRevealsEscape(baseResolved, target);
   }
-  if (rel.startsWith('..') || path.isAbsolute(rel)) return false;
+  if (isTraversalRel(rel) || path.isAbsolute(rel)) return false;
   return !realpathRevealsEscape(baseResolved, target);
 }
 
@@ -265,20 +275,23 @@ export function isConfinedPath(base: string, requested: string): boolean {
  * @param requested - Untrusted `workingDirectory` value (may be undefined).
  * @returns The confined absolute directory, or null when it escapes.
  */
-export function resolveConfinedWorkingDir(workDir: string, requested?: string): string | null {
+export function resolveConfinedWorkingDir(workDir: string, requested?: unknown): string | null {
   // Empty/absent values resolve to the trusted base itself. Route through the
   // same lexical + realpath checks as an explicit '.' (rather than returning
   // the base unchecked) so both spellings of the checkout root take the same
   // checked path. The base is trusted, so the check trivially passes unless
   // the filesystem reveals an escape.
+  // Fail closed on non-string input (objects/numbers must not coerce into the
+  // base via String()); mirrors resolveConfinedEventLogPath's typeof guard.
+  if (requested !== undefined && requested !== null && typeof requested !== 'string') return null;
   const value =
-    requested === undefined || requested === null || String(requested).trim() === ''
+    requested === undefined || requested === null || (requested as string).trim() === ''
       ? '.'
-      : String(requested);
+      : (requested as string);
   const baseResolved = path.resolve(workDir);
   const target = path.isAbsolute(value) ? path.normalize(value) : path.resolve(baseResolved, value);
   const rel = path.relative(baseResolved, target);
-  if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  if (isTraversalRel(rel) || path.isAbsolute(rel)) return null;
   if (realpathRevealsEscape(baseResolved, target)) return null;
   return target;
 }
@@ -321,7 +334,7 @@ export function resolveConfinedEventLogPath(workDir: string, requested?: string)
   const baseResolved = path.resolve(workDir);
   const target = path.resolve(baseResolved, value);
   const rel = path.relative(baseResolved, target);
-  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  if (rel === '' || isTraversalRel(rel) || path.isAbsolute(rel)) return null;
   if (path.extname(target) === '') return null;
   if (realpathRevealsEscape(baseResolved, target)) return null;
   return target;
@@ -349,10 +362,12 @@ export const ALLOWED_MCP_LOCAL_COMMANDS: ReadonlySet<string> = new Set([
 /**
  * Argument tokens that turn an allowlisted launcher into an arbitrary-code
  * primitive (`node -e '...'`, `python3 -c '...'`, `deno eval '...'`,
- * `--loader/--require/--import` hooks loading checkout code). Any command
+ * `--loader/--require/--import` hooks loading checkout code, `python -m`
+ * module execution (including joined `-mevil`), `node --run` package-script
+ * execution, `uvx --from/--with` arbitrary-package fetch). Any command
  * vector containing one of these is rejected. Matching is prefix-aware (see
  * {@link isBlockedMcpLocalArg}): `--eval=x`, `-econsole.log(1)`,
- * `-cimport os`, and `-p8080` concatenated forms are blocked the same as the
+ * `-cimport os`, `-mevil`, and `-p8080` concatenated forms are blocked the same as the
  * bare flags, since node/python/deno all accept `--flag=value` and joined
  * short flags.
  *
@@ -379,6 +394,11 @@ const BLOCKED_MCP_LOCAL_ARGS: ReadonlySet<string> = new Set([
   '--loader',
   '--experimental-loader',
   '--package',
+  '-m',
+  '--run',
+  '--from',
+  '--with',
+  '--import-map',
 ]);
 
 /**
@@ -417,7 +437,7 @@ function extractNpmPackageName(spec: string): string {
  * Check whether a single MCP local-server arg is a blocked code-evaluation /
  * code-loading flag, including `--flag=value` / `--flag:value` concatenated
  * forms and joined short flags (`-e<code>`, `-c<code>`, `-p<port>`,
- * `-r<module>`).
+ * `-r<module>`, `-m<module>`).
  * @param arg - Single configured argument string.
  * @returns True when the arg must be rejected.
  */
@@ -429,7 +449,7 @@ function isBlockedMcpLocalArg(arg: string): boolean {
       return true;
     }
   }
-  if (/^-[ecpr]\S/.test(v)) return true;
+  if (/^-[ecprm]\S/.test(v)) return true;
   if (/^eval[=:.]/.test(v)) return true;
   return false;
 }

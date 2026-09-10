@@ -69,6 +69,12 @@ describe('isSafeLinterArgs', () => {
       ['-revil-hook'],
       ['--loader', './evil-loader'],
       ['--custom-formatter', './evil-formatter'],
+      ['--config', './evil.js'],
+      ['--config=./evil.js'],
+      ['--config-file', './evil.js'],
+      ['--formatter', './evil-formatter'],
+      ['-c', './evil.js'],
+      ['-cevil.js'],
     ]) {
       expect(isSafeLinterArgs(args)).toBe(false);
     }
@@ -121,6 +127,13 @@ describe('isAllowedMcpLocalCommand', () => {
     expect(isAllowedMcpLocalCommand(['python3', '-p8080'])).toBe(false);
     expect(isAllowedMcpLocalCommand(['node', '--require=./evil-hook'])).toBe(false);
     expect(isAllowedMcpLocalCommand(['node', '--loader', './evil-loader'])).toBe(false);
+    expect(isAllowedMcpLocalCommand(['python3', '-m', 'evil'])).toBe(false);
+    expect(isAllowedMcpLocalCommand(['python3', '-mevil'])).toBe(false);
+    expect(isAllowedMcpLocalCommand(['node', '--run', 'dev'])).toBe(false);
+    expect(isAllowedMcpLocalCommand(['node', '--run=dev'])).toBe(false);
+    expect(isAllowedMcpLocalCommand(['uvx', '--from', 'evil-pkg', 'tool'])).toBe(false);
+    expect(isAllowedMcpLocalCommand(['uvx', '--with', 'evil-pkg', 'tool'])).toBe(false);
+    expect(isAllowedMcpLocalCommand(['node', '--import-map', './evil.json'])).toBe(false);
   });
 
   it('rejects non-allowlisted launchers and non-string args', () => {
@@ -141,6 +154,8 @@ describe('isConfinedPath', () => {
     expect(isConfinedPath(base, 'sub/dir')).toBe(true);
     expect(isConfinedPath(base, '../outside')).toBe(false);
     expect(isConfinedPath(base, '/etc/passwd')).toBe(false);
+    // Benign dot-dot-prefixed names stay inside the base (segment check).
+    expect(isConfinedPath(base, '..foo')).toBe(true);
   });
 });
 
@@ -150,6 +165,8 @@ describe('resolveConfinedWorkingDir', () => {
     expect(resolveConfinedWorkingDir('/checkout', undefined)).toBe('/checkout');
     expect(resolveConfinedWorkingDir('/checkout', 'sub')).toBe('/checkout/sub');
     expect(resolveConfinedWorkingDir('/checkout', '../escape')).toBeNull();
+    expect(resolveConfinedWorkingDir('/checkout', '..foo')).toBe('/checkout/..foo');
+    expect(resolveConfinedWorkingDir('/checkout', 42 as unknown as string)).toBeNull();
   });
 
   it('rejects checkout symlinks pointing outside the checkout', () => {
