@@ -454,9 +454,7 @@ function classifyDownloadError(error: unknown, version: string, downloadUrl: str
     );
   }
 
-  if (
-    /no checksum available|require_opencode_checksum/i.test(message)
-  ) {
+  if (/no checksum available|require_opencode_checksum/i.test(message)) {
     // Fail-closed integrity error under strict enforcement: re-running the
     // workflow without changes deterministically fails again, so point at the
     // pin-or-disable recovery steps instead of a blind retry. The Details line

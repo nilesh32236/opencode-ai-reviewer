@@ -293,11 +293,9 @@ export class SetupEngine {
 
     let binaryPath: string;
     try {
-      binaryPath = await resolveOpenCodePath(
-        this.options.opencodeVersion || 'latest',
-        minimum,
-        { requireChecksum: this.options.requireChecksum },
-      );
+      binaryPath = await resolveOpenCodePath(this.options.opencodeVersion || 'latest', minimum, {
+        requireChecksum: this.options.requireChecksum,
+      });
     } catch (err) {
       return this.fail(
         'OpenCode CLI',

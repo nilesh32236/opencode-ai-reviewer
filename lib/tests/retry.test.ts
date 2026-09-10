@@ -60,9 +60,7 @@ describe('withRetry', () => {
     // markIntegrityError, so a regression to an untagged throw is caught here.
     const fn = vi
       .fn()
-      .mockRejectedValue(
-        markIntegrityError(new Error('Checksum mismatch: expected abc, got def')),
-      );
+      .mockRejectedValue(markIntegrityError(new Error('Checksum mismatch: expected abc, got def')));
 
     await expect(withRetry(fn, { maxRetries: 3, baseDelayMs: 10 })).rejects.toThrow(
       'Checksum mismatch',

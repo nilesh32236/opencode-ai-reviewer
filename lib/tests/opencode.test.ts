@@ -1829,9 +1829,7 @@ describe('requireChecksum integrity gate', () => {
       });
 
       expect(result).toBe('/cache/opencode/1.2.0/linux-x64/opencode');
-      expect(core.warning).toHaveBeenCalledWith(
-        expect.stringContaining('using cached OpenCode'),
-      );
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('using cached OpenCode'));
       expect(mockDownloadTool).not.toHaveBeenCalled();
     });
 

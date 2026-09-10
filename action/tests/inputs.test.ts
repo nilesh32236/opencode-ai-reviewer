@@ -8,9 +8,7 @@ const { mockGetInput, mockGetBooleanInput, mockWarning, mockSetSecret } = vi.hoi
     const val = _mockGetInput(name) ?? '';
     if (['true', 'True', 'TRUE'].includes(val)) return true;
     if (['false', 'False', 'FALSE'].includes(val)) return false;
-    throw new TypeError(
-      `Input does not meet YAML 1.2 "Core Schema" specification: ${name}`,
-    );
+    throw new TypeError(`Input does not meet YAML 1.2 "Core Schema" specification: ${name}`);
   });
   const _mockWarning = vi.fn();
   const _mockSetSecret = vi.fn();
