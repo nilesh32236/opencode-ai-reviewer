@@ -189,6 +189,10 @@ function makeMockProcess() {
     kill: vi.fn(),
     stdout: makeStdio(),
     stderr: makeStdio(),
+    stdin: {
+      on: vi.fn(),
+      end: vi.fn(),
+    },
     on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
       if (!listeners[event]) listeners[event] = [];
       listeners[event].push(handler);
@@ -710,6 +714,103 @@ describe('runOpenCode()', () => {
     const spawnCall = mockSpawn.mock.calls[0];
     const env = spawnCall[2].env;
     expect(env.OPENCODE_DISABLE_AUTOUPDATE).toBe('true');
+  });
+
+  it('pipes a large prompt via stdin instead of argv (E2BIG prevention)', async () => {
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    // 100 KiB prompt — exceeds the 96 KiB threshold
+    const largePrompt = 'x'.repeat(100 * 1024);
+
+    const resultPromise = runOpenCode(largePrompt, { model: 'openai/gpt-4' });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    proc.emitClose(0);
+    const result = await resultPromise;
+
+    expect(result.success).toBe(true);
+    const spawnCall = mockSpawn.mock.calls[0];
+    const spawnArgs = spawnCall[1] as string[];
+    const spawnOpts = spawnCall[2] as { stdio: string[] };
+
+    // The large prompt must NOT be in argv
+    expect(spawnArgs).not.toContain(largePrompt);
+    // argv should still have run --auto --model <model>
+    expect(spawnArgs).toEqual(['run', '--auto', '--model', 'openai/gpt-4']);
+
+    // stdio[0] must be 'pipe' so the caller can write to stdin
+    expect(spawnOpts.stdio[0]).toBe('pipe');
+    // stdout/stderr remain piped as before
+    expect(spawnOpts.stdio[1]).toBe('pipe');
+    expect(spawnOpts.stdio[2]).toBe('pipe');
+
+    // The mock stdin.end must have been called with the full prompt
+    expect(proc.stdin.end).toHaveBeenCalledWith(largePrompt, 'utf8');
+    // The mock stdin.on must have been called to attach the EPIPE guard
+    expect(proc.stdin.on).toHaveBeenCalledWith('error', expect.any(Function));
+  });
+
+  it('keeps a small prompt in argv (no stdin piping)', async () => {
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const smallPrompt = 'review this PR';
+
+    const resultPromise = runOpenCode(smallPrompt, { model: 'openai/gpt-4' });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    proc.emitClose(0);
+    const result = await resultPromise;
+
+    expect(result.success).toBe(true);
+    const spawnCall = mockSpawn.mock.calls[0];
+    const spawnArgs = spawnCall[1] as string[];
+    const spawnOpts = spawnCall[2] as { stdio: string[] };
+
+    // Small prompt must be in argv
+    expect(spawnArgs).toContain(smallPrompt);
+    expect(spawnArgs).toEqual([
+      'run',
+      '--auto',
+      '--model',
+      'openai/gpt-4',
+      smallPrompt,
+    ]);
+
+    // stdio[0] must be 'ignore' (CI auto-approve path, small prompt)
+    expect(spawnOpts.stdio[0]).toBe('ignore');
+
+    // stdin.end must NOT have been called
+    expect(proc.stdin.end).not.toHaveBeenCalled();
+  });
+
+  it('still uses argv for large prompts in interactive (non-autoApprove) mode', async () => {
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const largePrompt = 'x'.repeat(100 * 1024);
+
+    const resultPromise = runOpenCode(largePrompt, {
+      model: 'openai/gpt-4',
+      autoApprove: false,
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    proc.emitClose(0);
+    const result = await resultPromise;
+
+    expect(result.success).toBe(true);
+    const spawnCall = mockSpawn.mock.calls[0];
+    const spawnArgs = spawnCall[1] as string[];
+    const spawnOpts = spawnCall[2] as { stdio: string[] };
+
+    // Interactive mode: prompt stays in argv regardless of size
+    expect(spawnArgs).toContain(largePrompt);
+    // stdio[0] must be 'inherit' (interactive TTY)
+    expect(spawnOpts.stdio[0]).toBe('inherit');
+    // stdin.end must NOT have been called
+    expect(proc.stdin.end).not.toHaveBeenCalled();
   });
 });
 
