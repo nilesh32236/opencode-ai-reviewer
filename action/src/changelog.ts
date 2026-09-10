@@ -86,9 +86,7 @@ export async function runChangelog(config: AgentConfig, gh: PlatformAdapter): Pr
     const defaultBranch = await withRetry(() => gh.getDefaultBranch(), {
       operationName: 'changelog.getDefaultBranch',
     });
-    validateRefName(defaultBranch);
 
-    // git fetch origin uses no dynamic refs
     await exec.exec('git', ['fetch', 'origin']);
     const branchExists =
       (await exec.exec('git', ['rev-parse', '--verify', `origin/${branchName}`], {
@@ -98,7 +96,6 @@ export async function runChangelog(config: AgentConfig, gh: PlatformAdapter): Pr
     if (branchExists) {
       await exec.exec('git', ['checkout', '-B', branchName, `origin/${branchName}`]);
       core.info(`Checked out existing branch ${branchName}`);
-      validateRefName(defaultBranch);
       await exec.exec('git', ['pull', '--rebase', 'origin', defaultBranch]);
     } else {
       await exec.exec('git', ['checkout', '-b', branchName, `origin/${defaultBranch}`]);
@@ -132,7 +129,6 @@ export async function runChangelog(config: AgentConfig, gh: PlatformAdapter): Pr
     });
 
     await gh.ensureLabels(['changelog']);
-    validateRefName(defaultBranch);
     const newPR = await gh.createPR(prTitle, prBody, branchName, defaultBranch);
     if (newPR) {
       try {
