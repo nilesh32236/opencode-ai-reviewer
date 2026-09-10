@@ -54,6 +54,8 @@ const mockEngine = {
 const mockGh = {
   gatherContext: mockGatherContext,
   postOrUpdateComment: mockPostOrUpdateComment,
+  ensureLabels: vi.fn(),
+  addLabels: vi.fn(),
 } as unknown as PlatformAdapter;
 
 describe('runAnalyze (action wrapper)', () => {
@@ -63,26 +65,28 @@ describe('runAnalyze (action wrapper)', () => {
     mockGatherContext.mockResolvedValue('## Issue Context\nSome details');
   });
 
-  it('sanitizes secret-bearing error messages before posting to the public issue comment', async () => {
+  it('posts a generic public comment so secret-bearing errors never reach the issue', async () => {
     const secret = 'sk-ant-api03secretkeyvalue1234567890abcdefghijkl';
     mockRunAnalyze.mockRejectedValue(new Error(`LLM request failed: ${secret}`));
 
     await runAnalyze(makeInputs(), makeConfig(), mockEngine, mockGh, 'owner/repo', 'token');
 
-    expect(mockSetFailed).toHaveBeenCalledWith(expect.stringContaining('[REDACTED_ANTHROPIC_KEY]'));
+    // Public comment is generic: no internal error text and no secret.
     expect(mockPostOrUpdateComment).toHaveBeenCalledWith(
       42,
       '<!-- issue-analysis-error -->',
-      expect.stringContaining('[REDACTED_ANTHROPIC_KEY]'),
+      expect.stringContaining('See the action logs for details'),
     );
     expect(mockPostOrUpdateComment).toHaveBeenCalledWith(
       42,
       '<!-- issue-analysis-error -->',
       expect.not.stringContaining(secret),
     );
+    // The failure signal is generic too, so secrets stay in the logs only.
+    expect(mockSetFailed).toHaveBeenCalledWith(expect.not.stringContaining(secret));
   });
 
-  it('redacts bearer tokens in error messages posted to the issue comment', async () => {
+  it('never posts bearer tokens to the issue comment on failure', async () => {
     // Keep the three JWT segments as separate literals and join them at runtime
     // so secret scanners do not flag the fixture as a real token.
     const jwtHeader = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9';
@@ -96,12 +100,35 @@ describe('runAnalyze (action wrapper)', () => {
     expect(mockPostOrUpdateComment).toHaveBeenCalledWith(
       42,
       '<!-- issue-analysis-error -->',
-      expect.stringContaining('[REDACTED]'),
+      expect.stringContaining('See the action logs for details'),
     );
     expect(mockPostOrUpdateComment).toHaveBeenCalledWith(
       42,
       '<!-- issue-analysis-error -->',
       expect.not.stringContaining(bearer),
     );
+    expect(mockSetFailed).toHaveBeenCalledWith(expect.not.stringContaining(bearer));
+  });
+
+  it('sanitizes prompt-injected markdown in the posted analysis plan', async () => {
+    const hostile =
+      'Plan looks good ![tracker](https://exfil.example/pixel.png) ' +
+      '<img src="x" onerror="alert(1)"> <!-- issue-analysis-plan --> ' +
+      '[click me](javascript:alert(1))';
+    mockRunAnalyze.mockResolvedValue(`## Plan\n\n${hostile}`);
+
+    await runAnalyze(makeInputs(), makeConfig(), mockEngine, mockGh, 'owner/repo', 'token');
+
+    expect(mockPostOrUpdateComment).toHaveBeenCalledWith(
+      42,
+      '<!-- issue-analysis-plan -->',
+      expect.not.stringContaining('![tracker]'),
+    );
+    const [, , body] = mockPostOrUpdateComment.mock.calls.find(
+      (call) => (call as unknown[])[1] === '<!-- issue-analysis-plan -->',
+    ) as unknown as [number, string, string];
+    expect(body).not.toContain('<img');
+    expect(body).not.toContain('<!-- issue-analysis-plan -->');
+    expect(body).not.toContain('](javascript:');
   });
 });

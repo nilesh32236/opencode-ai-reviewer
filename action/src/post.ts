@@ -8,8 +8,9 @@ import {
   parseRunChecksCommands,
   withRetry,
 } from '@opencode-pr-agent/lib';
+import { sanitizeMarkdown } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { sanitize } from './utils.js';
+import { resolveGitLabMrIid, sanitize } from './utils.js';
 
 /**
  * Run post-processing after a review/fix action: optionally run a
@@ -25,9 +26,10 @@ export async function runPost(
   _repo: string,
   _token: string,
 ): Promise<void> {
-  const prNumber = process.env.CI_MERGE_REQUEST_IID
-    ? Number(process.env.CI_MERGE_REQUEST_IID)
-    : github.context.payload.pull_request?.number || github.context.payload.issue?.number;
+  const gitlabMrIid = resolveGitLabMrIid();
+  const prNumber =
+    gitlabMrIid ??
+    (github.context.payload.pull_request?.number || github.context.payload.issue?.number);
   if (!prNumber) {
     // Audit / scheduled / changelog runs have no PR or issue context. Posting a
     // review-summary or token-usage comment is meaningless there, but the job
@@ -67,7 +69,7 @@ export async function runPost(
       await gh.postOrUpdateComment(
         prNumber,
         '<!-- review-summary -->',
-        `## Review Summary\n\n${reviewSummary}`,
+        `## Review Summary\n\n${sanitizeMarkdown(reviewSummary)}`,
       );
       core.info('Posted review summary comment');
     } catch (err) {

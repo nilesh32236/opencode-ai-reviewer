@@ -18,3 +18,13 @@ import type { AgentConfig, PlatformAdapter } from '@opencode-pr-agent/lib';
  * early instead of rejecting.
  */
 export declare function runChangelog(config: AgentConfig, gh: PlatformAdapter): Promise<void>;
+/**
+ * Resolve a repo/PR-controlled changelog `filePath` to an absolute path
+ * confined to `GITHUB_WORKSPACE`. Rejects absolute paths and `..` escapes so
+ * a crafted `.opencode-reviewer.yml` cannot redirect the changelog write
+ * outside the workspace (e.g. `/etc/passwd`, `../../tmp/evil.md`).
+ * @param rawPath - Raw `changelog.filePath` config value.
+ * @returns The resolved absolute path inside the workspace.
+ * @throws {Error} When the path escapes the workspace or is empty.
+ */
+export declare function resolveChangelogPath(rawPath: string): string;

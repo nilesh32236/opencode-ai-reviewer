@@ -17,7 +17,7 @@ vi.mock('@actions/github', () => ({
   context: { payload: {}, repo: { owner: 'o', repo: 'r' } },
 }));
 
-import { resolvePrNumber } from '../src/utils.js';
+import { resolveGitLabMrIid, resolvePrNumber } from '../src/utils.js';
 
 describe('resolvePrNumber()', () => {
   beforeEach(() => {
@@ -58,5 +58,28 @@ describe('resolvePrNumber()', () => {
     mockGetInput.mockReturnValue('abc');
     await expect(resolvePrNumber()).resolves.toBeNull();
     expect(mockSetFailed).toHaveBeenCalled();
+  });
+});
+
+describe('resolveGitLabMrIid()', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('accepts a canonical IID string', () => {
+    expect(resolveGitLabMrIid('42')).toBe(42);
+    expect(resolveGitLabMrIid('  7  ')).toBe(7);
+  });
+
+  it.each(['12abc', '1.5', '0x10', '1e2', '-1', '0', 'NaN', 'Infinity', '9999999999'])(
+    'rejects %s with undefined',
+    (raw) => {
+      expect(resolveGitLabMrIid(raw)).toBeUndefined();
+    },
+  );
+
+  it('returns undefined when unset or blank', () => {
+    expect(resolveGitLabMrIid('')).toBeUndefined();
+    expect(resolveGitLabMrIid('   ')).toBeUndefined();
   });
 });

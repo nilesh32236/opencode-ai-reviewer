@@ -23,6 +23,7 @@ import {
   resolveFixedComments,
   validateRefName,
 } from '@opencode-pr-agent/lib';
+import { sanitizeMarkdown } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { resolvePrNumber, sanitize } from './utils.js';
 
@@ -276,7 +277,11 @@ export async function runFixIssue(
     core.info('No implementation plan found — running analyze first');
     const planMarkdown = await engine.runAnalyze(issueNumber, issueContext);
     const parsed = parseAnalysisPlan(planMarkdown);
-    await gh.postOrUpdateComment(issueNumber, '<!-- issue-analysis-plan -->', planMarkdown);
+    await gh.postOrUpdateComment(
+      issueNumber,
+      '<!-- issue-analysis-plan -->',
+      sanitizeMarkdown(planMarkdown),
+    );
 
     if (parsed.hasBlockingQuestions) {
       await postBlockingQuestions(gh, issueNumber, parsed);

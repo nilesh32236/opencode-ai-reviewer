@@ -19,9 +19,11 @@ export declare function sanitizeBranchForCacheKey(branch: string): string;
  * @param prefix - Cache key prefix (e.g. `learning-state`).
  * @param repo - Repository in `owner/name` format; defaults to the GitHub context.
  * @param branch - Branch ref; defaults to the GitHub context ref without `refs/heads/`.
+ * @param sha - Commit SHA; when provided, embedded in the key so each commit
+ * gets an isolated cache entry. Omit for a stable branch-scoped key.
  * @returns The composite cache key string.
  */
-export declare function buildCacheKey(prefix: string, repo?: string, branch?: string): string;
+export declare function buildCacheKey(prefix: string, repo?: string, branch?: string, sha?: string): string;
 /**
  * Options controlling which learning state the cache manager reads and writes.
  * All fields are optional and fall back to the GitHub Actions runtime context.
@@ -33,6 +35,8 @@ export interface StateCacheManagerOptions {
     repo?: string;
     /** Branch ref. Defaults to the GitHub Actions context. */
     branch?: string;
+    /** Commit SHA. Defaults to GITHUB_SHA / the GitHub context. */
+    sha?: string;
 }
 /**
  * Manages the round-trip of the `.opencode` learning state through the Actions
@@ -54,6 +58,7 @@ export declare class StateCacheManager {
     private readonly cacheKeyPrefix;
     private readonly repo;
     private readonly branch;
+    private readonly sha;
     private readonly logger;
     private savePromise;
     private readonly circuitBreaker;
