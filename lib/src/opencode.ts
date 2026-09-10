@@ -1583,7 +1583,29 @@ export async function runOpenCode(
   if (autoApprove) {
     args.push('--auto');
   }
-  args.push('--model', model, prompt);
+  args.push('--model', model);
+
+  // Linux MAX_ARG_STRLEN is ~128 KiB (131 072 bytes).  The entire execve()
+  // argv — binary path, flags, model string, and prompt — must stay below that
+  // limit or the kernel throws E2BIG and child_process.spawn fails.  We allow
+  // 96 KiB for the prompt alone, leaving ~32 KiB of headroom for the other
+  // argv elements.  When the prompt exceeds this threshold in CI/autoApprove
+  // mode, we pipe it via stdin instead of passing it as an argv element.
+  // The opencode CLI reads ALL of stdin to EOF as the message when stdin is
+  // not a TTY (see packages/opencode/src/cli/cmd/run.ts).
+  // Interactive TTY path: large prompts are inherently argv-limited (the user
+  // is typing at the terminal, not pasting multi-hundred-KiB diffs).
+  const MAX_ARG_BYTES = 96 * 1024;
+  const useStdinForPrompt =
+    autoApprove && Buffer.byteLength(prompt, 'utf8') > MAX_ARG_BYTES;
+  if (useStdinForPrompt) {
+    core.info(
+      `Prompt is ${Buffer.byteLength(prompt, 'utf8')} bytes (threshold ${MAX_ARG_BYTES}) — ` +
+        'piping via stdin to avoid E2BIG.',
+    );
+  } else {
+    args.push(prompt);
+  }
 
   core.info(`Running OpenCode (model: ${model}, timeout: ${options.timeoutMinutes ?? 20}m)...`);
 
@@ -1706,15 +1728,27 @@ export async function runOpenCode(
   );
   safeEnv.OPENCODE_DISABLE_AUTOUPDATE = 'true';
 
+  const stdio: cp.StdioOptions = useStdinForPrompt
+    ? ['pipe', 'pipe', 'pipe'] // pipe stdin so we can send the large prompt
+    : autoApprove
+      ? ['ignore', 'pipe', 'pipe'] // small prompt via argv, stdin ignored
+      : ['inherit', 'pipe', 'pipe']; // interactive: forward terminal stdin
+
   const childProcess = cp.spawn(binaryPath, args, {
     cwd,
-    // Forward the caller's stdin when interactive (autoApprove off) so the
-    // user can approve tool permissions at the prompt. CI auto-approve runs
-    // keep stdin ignored, exactly as before.
-    stdio: autoApprove ? ['ignore', 'pipe', 'pipe'] : ['inherit', 'pipe', 'pipe'],
+    stdio,
     env: safeEnv,
     detached: true,
   });
+
+  // When the prompt was too large for argv, pipe the full payload through stdin
+  // and close the stream immediately so the CLI receives EOF and starts work.
+  // The stdin 'error' listener prevents an uncaught EPIPE if the child exits
+  // before consuming all of stdin.
+  if (useStdinForPrompt) {
+    childProcess.stdin!.on('error', () => {});
+    childProcess.stdin!.end(prompt, 'utf8');
+  }
 
   // Cap retained output to prevent memory exhaustion on verbose or stuck runs.
   // We keep only the last 50 KB which is sufficient for token parsing while
