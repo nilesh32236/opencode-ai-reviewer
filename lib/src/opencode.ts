@@ -1174,7 +1174,11 @@ export const LEGACY_SUBAGENT_PERMISSION: Record<string, string> = {
 
 const V2_DENY_EFFECTS = new Set(['allow', 'ask', 'deny']);
 
-/** Map a V1 permission key to its V2 action name (`bash` → `shell`, `task` → `subagent`). */
+/**
+ * Map a V1 permission key to its V2 action name (`bash` → `shell`, `task` → `subagent`).
+ * @param key - The V1 permission key to translate.
+ * @returns The equivalent V2 action name, or the original key when no mapping exists.
+ */
 function mapV1PermissionKeyToV2Action(key: string): string {
   if (key === 'bash') return 'shell';
   if (key === 'task') return 'subagent';
