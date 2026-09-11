@@ -510,51 +510,69 @@ export function buildInlineComments(
   diffLines?: Set<string>,
   suppressLowConfidence?: boolean,
 ): InlineComment[] {
-  return result.issues
-    .filter((issue) => {
-      if (issue.inline !== true || !issue.line || issue.line < 1) return false;
-      if (suppressLowConfidence && issue.confidence === 'low') return false;
-      if (diffLines && diffLines.size > 0) {
-        const key = `${issue.file.replace(/^\//, '')}:${issue.line}`;
-        return diffLines.has(key);
-      }
-      return true;
-    })
-    .map((issue) => {
-      let body = `${getSeverityBadge(issue.severity)} **${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}${formatConfidenceLabel(issue.confidence)}`;
-      if (issue.suggestion) {
-        body += `\n\n> 💡 **How to fix:** ${sanitizeMarkdown(issue.suggestion)}`;
-      }
-      if (issue.suggestionCode) {
-        body += `\n\n\`\`\`suggestion\n${issue.suggestionCode.trim()}\n\`\`\``;
-      } else if (issue.suggestion) {
-        const suggestion = issue.suggestion.trim();
-        if (suggestion.includes('\n')) {
-          // Multi-line suggestion: check if it has diff-style +/- prefixes
-          const lines = suggestion.split('\n').filter((l) => l.trim());
-          const hasDiffPrefixes = lines.some((l) => l.startsWith('+') || l.startsWith('-'));
-          if (hasDiffPrefixes) {
-            // Render diff-shaped content in a diff fence
-            const diffSuggestion = lines
-              .map((l) => (l.startsWith('+') || l.startsWith('-') ? l : ` ${l}`))
-              .join('\n');
-            body += `\n\n\`\`\`diff\n${diffSuggestion}\n\`\`\``;
-          } else if (looksLikeCode(suggestion)) {
-            // Multi-line code replacement — wrap as suggestion block
-            body += `\n\n\`\`\`suggestion\n${suggestion}\n\`\`\``;
+  const comments: InlineComment[] = [];
+
+  for (const issue of result.issues) {
+    if (issue.inline !== true || !issue.line || issue.line < 1) continue;
+    if (suppressLowConfidence && issue.confidence === 'low') continue;
+    if (diffLines && diffLines.size > 0) {
+      const key = `${issue.file.replace(/^\//, '')}:${issue.line}`;
+      if (!diffLines.has(key)) continue;
+    }
+
+    let body = `${getSeverityBadge(issue.severity)} **${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}${formatConfidenceLabel(issue.confidence)}`;
+    if (issue.suggestion) {
+      body += `\n\n> 💡 **How to fix:** ${sanitizeMarkdown(issue.suggestion)}`;
+    }
+    if (issue.suggestionCode) {
+      body += `\n\n\`\`\`suggestion\n${issue.suggestionCode.trim()}\n\`\`\``;
+    } else if (issue.suggestion) {
+      const suggestion = issue.suggestion.trim();
+      if (suggestion.includes('\n')) {
+        // Multi-line suggestion: check if it has diff-style +/- prefixes
+        const rawLines = suggestion.split('\n');
+        let hasDiffPrefixes = false;
+
+        for (let i = 0; i < rawLines.length; i++) {
+          const l = rawLines[i].trim();
+          if (l) {
+            if (l.startsWith('+') || l.startsWith('-')) {
+              hasDiffPrefixes = true;
+              break;
+            }
           }
+        }
+
+        if (hasDiffPrefixes) {
+          // Render diff-shaped content in a diff fence without intermediate arrays
+          let diffSuggestion = '';
+          for (let i = 0; i < rawLines.length; i++) {
+            const l = rawLines[i];
+            if (!l.trim()) continue;
+
+            if (diffSuggestion.length > 0) diffSuggestion += '\n';
+            diffSuggestion += l.startsWith('+') || l.startsWith('-') ? l : ` ${l}`;
+          }
+          body += `\n\n\`\`\`diff\n${diffSuggestion}\n\`\`\``;
         } else if (looksLikeCode(suggestion)) {
-          // Single-line code suggestion — use native GitHub suggestion block
+          // Multi-line code replacement — wrap as suggestion block
           body += `\n\n\`\`\`suggestion\n${suggestion}\n\`\`\``;
         }
+      } else if (looksLikeCode(suggestion)) {
+        // Single-line code suggestion — use native GitHub suggestion block
+        body += `\n\n\`\`\`suggestion\n${suggestion}\n\`\`\``;
       }
-      return {
-        path: issue.file.replace(/^\//, ''),
-        line: issue.line,
-        side: 'RIGHT' as const,
-        body,
-      };
+    }
+
+    comments.push({
+      path: issue.file.replace(/^\//, ''),
+      line: issue.line,
+      side: 'RIGHT' as const,
+      body,
     });
+  }
+
+  return comments;
 }
 
 // Declaration keywords that strongly indicate code when combined with other
