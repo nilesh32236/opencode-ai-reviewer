@@ -49,6 +49,26 @@ import { handlePRReview } from './pr-review.js';
 const logger = new Logger('Command');
 
 /**
+ * Owner/repo slug pattern. Rejects path separators beyond the single slash,
+ * whitespace, `..` segments, and empty parts so a webhook-supplied repo value
+ * can never escape into a crafted clone URL or git remote.
+ */
+const REPO_SLUG_PATTERN = /^[^/\s]+\/[^/\s]+$/;
+
+/**
+ * Whether a repository slug is safe to interpolate into a clone/remote URL.
+ * @param repo - Repository string in "owner/repo" form.
+ * @returns True when the slug matches `owner/repo` with no traversal.
+ *
+ * Exported for unit testing.
+ */
+export function isValidRepoSlug(repo: string): boolean {
+  if (!REPO_SLUG_PATTERN.test(repo)) return false;
+  if (repo.includes('..')) return false;
+  return true;
+}
+
+/**
  * Handle a slash command (fix/review/audit/analyze): clone the repo, execute
  * the appropriate handler (PR review, autofix loop, audit, or analyze) in a
  * temp workspace, and clean up.
@@ -92,6 +112,14 @@ export async function handleCommand(
   const effectiveRepoFilter = repoFilter ?? defaultRepoFilter;
   if (!isRepoAllowed(repo, effectiveRepoFilter)) {
     logger.info(`Skipping /${command} — repository ${repo} is filtered out`);
+    return;
+  }
+
+  // Validate the webhook-supplied repo slug before interpolating it into the
+  // clone URL. GitHub normally sends a well-formed owner/repo, but failing
+  // closed here avoids attempting a git operation on a malformed value.
+  if (!isValidRepoSlug(repo)) {
+    logger.warn(`Skipping /${command} — invalid repository slug "${repo}"`);
     return;
   }
 
@@ -681,18 +709,24 @@ export async function handleDocsCommand(
     // ref instead of assuming `origin/<headRef>`.
     let forkRemote: string | undefined;
     if (pr.headRepoFullName && pr.headRepoFullName !== repo) {
-      try {
-        await execGit(
-          ['remote', 'add', 'fork', `https://github.com/${pr.headRepoFullName}.git`],
-          gitOpts,
-        );
-        await execGit(['fetch', 'fork', baseRef], gitOpts);
-        forkRemote = 'fork';
-        logger.info(`Fetched docs base branch ${baseRef} from fork ${pr.headRepoFullName}`);
-      } catch (err) {
+      if (!isValidRepoSlug(pr.headRepoFullName)) {
         logger.warn(
-          `Could not fetch docs base branch from fork ${pr.headRepoFullName}: ${err instanceof Error ? err.message : String(err)} — falling back to origin`,
+          `Skipping fork fetch — invalid head repo slug "${pr.headRepoFullName}" — falling back to origin`,
         );
+      } else {
+        try {
+          await execGit(
+            ['remote', 'add', 'fork', `https://github.com/${pr.headRepoFullName}.git`],
+            gitOpts,
+          );
+          await execGit(['fetch', 'fork', baseRef], gitOpts);
+          forkRemote = 'fork';
+          logger.info(`Fetched docs base branch ${baseRef} from fork ${pr.headRepoFullName}`);
+        } catch (err) {
+          logger.warn(
+            `Could not fetch docs base branch from fork ${pr.headRepoFullName}: ${err instanceof Error ? err.message : String(err)} — falling back to origin`,
+          );
+        }
       }
     }
 

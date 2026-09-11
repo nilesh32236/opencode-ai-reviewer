@@ -15,6 +15,12 @@ const STATUS_MARKER = '<!-- rate-limits-status -->';
  * `/rate-limits-reset` (reset limits) admin commands. Only GitHub users listed
  * in `rateLimiting.adminUsers` (compared case-insensitively) are allowed to run
  * these.
+ *
+ * Unauthorized attempts are intentionally dropped silently (no denial comment):
+ * replying would confirm the command exists to non-admins, leak the admin
+ * allowlist through trial-and-error, and add comment spam on every typo or
+ * probe. This silent-drop is deliberate, matching the dismiss-subscriber
+ * pattern of skipping unprivileged callers without feedback.
  * @param rateLimiter - The shared RateLimiter instance.
  * @param config - The resolved agent configuration (source of adminUsers).
  * @returns A subscriber object for admin rate limit commands.
@@ -41,6 +47,9 @@ export function createAdminSubscriber(rateLimiter: RateLimiter, config: AgentCon
         const adminUsers = config.rateLimiting.adminUsers || [];
         const author = (comment?.user as Record<string, string> | undefined)?.login || '';
         if (!adminUsers.some((u) => u.toLowerCase() === author.toLowerCase())) {
+          // Intentional silent drop (see JSDoc): no denial comment so the
+          // admin allowlist cannot be probed and PRs are not spammed.
+          logger.info(`Ignoring /${parsed.command} from non-admin "${author || 'unknown'}"`);
           return;
         }
 

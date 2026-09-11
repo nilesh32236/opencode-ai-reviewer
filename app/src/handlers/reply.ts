@@ -6,6 +6,11 @@ import {
   buildReplyPrompt,
   runOpenCode,
 } from '@opencode-pr-agent/lib';
+import {
+  type RepoFilter,
+  repoFilter as defaultRepoFilter,
+  isRepoAllowed,
+} from '../utils/repo-filter.js';
 import { truncateToUtf8Bytes } from './pr-review.js';
 
 /**
@@ -27,8 +32,15 @@ export async function handleReply(
   config: AgentConfig,
   parentCommentId: number,
   userCommentBody: string,
+  repoFilter?: RepoFilter,
 ): Promise<void> {
   const logger = new Logger('Reply', { repo, prNumber });
+  // Repository allowlist/denylist gate: never spend LLM budget on repos the
+  // operator excluded. Matches the handleCommand/handlePRReview gate.
+  if (!isRepoAllowed(repo, repoFilter ?? defaultRepoFilter)) {
+    logger.info(`Skipping reply for PR #${prNumber} — repository ${repo} is filtered out`);
+    return;
+  }
   const gh: PlatformAdapter =
     config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
 

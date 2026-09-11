@@ -13,6 +13,11 @@ import type {
 import { handleConversation } from '../handlers/conversation.js';
 import { isBotLogin } from '../utils/bot.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
+import {
+  type RepoFilter,
+  repoFilter as defaultRepoFilter,
+  isRepoAllowed,
+} from '../utils/repo-filter.js';
 import { getToken } from '../utils/token.js';
 
 /**
@@ -42,6 +47,7 @@ export function createConversationSubscriber(
   rateLimiter: RateLimiter,
   config: AgentConfig,
   eventBus?: EventBus,
+  repoFilter?: RepoFilter,
 ): Subscriber {
   const logger = new Logger('ConversationSubscriber');
   const conversationStateManager = new ConversationStateManager();
@@ -77,6 +83,15 @@ export function createConversationSubscriber(
 
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;
+
+        // Repository allowlist/denylist gate: never spend LLM budget on repos
+        // the operator excluded.
+        if (!isRepoAllowed(event.repo || '', repoFilter ?? defaultRepoFilter)) {
+          logger.info(
+            `Skipping conversation for ${event.repo}#${prNumber} — repository filtered out`,
+          );
+          return;
+        }
 
         const commentId = (convComment?.id as number) || 0;
         if (!commentId) return;

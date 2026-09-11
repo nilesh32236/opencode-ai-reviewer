@@ -23,6 +23,11 @@ import {
   resolveCodeReferences,
 } from '@opencode-pr-agent/lib';
 import { mergeRepoConfig } from '../utils/config.js';
+import {
+  type RepoFilter,
+  repoFilter as defaultRepoFilter,
+  isRepoAllowed,
+} from '../utils/repo-filter.js';
 
 /**
  * Handle an interactive conversation triggered by an @mention or an `/ask`
@@ -61,8 +66,17 @@ export async function handleConversation(
   stateManager?: ConversationStateManager,
   eventBus?: EventBus,
   correlationId?: string,
+  repoFilter?: RepoFilter,
 ): Promise<void> {
   const logger = new Logger('Conversation', { prNumber, repo, correlationId });
+  // Repository allowlist/denylist gate: never spend LLM budget on repos the
+  // operator excluded. Matches the handleCommand/handlePRReview gate.
+  if (!isRepoAllowed(repo, repoFilter ?? defaultRepoFilter)) {
+    logger.info(
+      `Skipping conversation for comment ${commentId} — repository ${repo} is filtered out`,
+    );
+    return;
+  }
   logger.info(`Handling conversation for comment ${commentId} on PR #${prNumber}`);
 
   const gh: PlatformAdapter =

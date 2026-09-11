@@ -5,6 +5,11 @@ import type {
   PlatformAdapter,
 } from '@opencode-pr-agent/lib';
 import { GitHubHelper, Logger } from '@opencode-pr-agent/lib';
+import { isPrivilegedAuthor } from '../utils/privilege.js';
+
+// Re-export the shared privileged-author check so existing importers
+// (`handlers/dismiss.ts`) keep working while all callers share one definition.
+export { isPrivilegedAuthor };
 
 /** Structured dismissal reasons a user can pick from. */
 const DISMISS_REASONS = ['false_positive', 'intentional', 'out_of_scope', 'other'] as const;
@@ -12,27 +17,8 @@ const DISMISS_REASONS = ['false_positive', 'intentional', 'out_of_scope', 'other
 /** Default reason applied when none is given or the value is not recognized. */
 const DEFAULT_DISMISS_REASON = 'other';
 
-/**
- * GitHub `author_association` values allowed to dismiss bot findings.
- * Dismissals write feedback into the shared learning store and hide bot
- * comments, so they must be restricted to repository owners, members, and
- * collaborators (GitHub's guidance for bot commands).
- */
-const PRIVILEGED_AUTHOR_ASSOCIATIONS = ['OWNER', 'MEMBER', 'COLLABORATOR'] as const;
-
 /** Maximum number of findings fetched when correlating a dismissed comment. */
 const MAX_FINDINGS = 1000;
-
-/**
- * Whether a GitHub `author_association` value is privileged enough to dismiss
- * a bot review comment.
- * @param association - The commenter's `author_association` value (or undefined).
- * @returns True when the association indicates an owner, member, or collaborator.
- */
-export function isPrivilegedAuthor(association?: string): boolean {
-  if (!association) return false;
-  return (PRIVILEGED_AUTHOR_ASSOCIATIONS as readonly string[]).includes(association);
-}
 
 /**
  * Extract a structured dismissal reason from a parsed `/dismiss` command.

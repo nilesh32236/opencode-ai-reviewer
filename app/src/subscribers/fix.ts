@@ -8,6 +8,7 @@ import type {
   Subscriber,
 } from '@opencode-pr-agent/lib';
 import { handleCommand } from '../handlers/commands.js';
+import { postPrivilegeDenial, satisfiesPrivilegeGate } from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
@@ -49,6 +50,13 @@ export function createFixSubscriber(
 
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;
+
+        // Cost-incurring command: only privileged authors may trigger it.
+        if (!satisfiesPrivilegeGate(event.payload)) {
+          logger.info(`Skipping /fix for ${event.repo}#${prNumber} — unprivileged author`);
+          await postPrivilegeDenial(event.repo || '', prNumber, 'fix');
+          return;
+        }
 
         const reservation = await checkRateLimit(rateLimiter, event, 'command', 'fix');
         if (!reservation) return;

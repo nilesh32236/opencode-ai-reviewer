@@ -1,5 +1,10 @@
 import { GitHubHelper, Logger, MetricsService, parseCommand } from '@opencode-pr-agent/lib';
 import type { GitHubEvent, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
+import {
+  type RepoFilter,
+  repoFilter as defaultRepoFilter,
+  isRepoAllowed,
+} from '../utils/repo-filter.js';
 import { getToken } from '../utils/token.js';
 
 /**
@@ -7,7 +12,10 @@ import { getToken } from '../utils/token.js';
  * @param learningStore - The learning store instance for metrics data.
  * @returns A subscriber object for the metrics command.
  */
-export function createMetricsSubscriber(learningStore: LearningStore): Subscriber {
+export function createMetricsSubscriber(
+  learningStore: LearningStore,
+  repoFilter?: RepoFilter,
+): Subscriber {
   const logger = new Logger('MetricsSubscriber');
   return {
     name: 'MetricsSubscriber',
@@ -22,6 +30,11 @@ export function createMetricsSubscriber(learningStore: LearningStore): Subscribe
 
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;
+
+        if (!isRepoAllowed(event.repo || '', repoFilter ?? defaultRepoFilter)) {
+          logger.info(`Skipping /metrics for ${event.repo}#${prNumber} — repository filtered out`);
+          return;
+        }
 
         const gh = new GitHubHelper(getToken(), event.repo || '');
         const metricsService = new MetricsService(learningStore);

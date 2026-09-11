@@ -8,6 +8,7 @@ import type {
   Subscriber,
 } from '@opencode-pr-agent/lib';
 import { handleCommand } from '../handlers/commands.js';
+import { postPrivilegeDenial, satisfiesPrivilegeGate } from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
@@ -45,6 +46,12 @@ export function createChangelogSubscriber(
 
         if (config.changelog?.enabled === false) {
           logger.info(`Skipping /changelog for ${event.repo}#${prNumber} — changelog disabled`);
+          return;
+        }
+
+        if (!satisfiesPrivilegeGate(event.payload)) {
+          logger.info(`Skipping /changelog for ${event.repo}#${prNumber} — unprivileged author`);
+          await postPrivilegeDenial(event.repo || '', prNumber, 'changelog');
           return;
         }
 

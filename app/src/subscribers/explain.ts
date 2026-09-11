@@ -7,6 +7,7 @@ import type {
   Subscriber,
 } from '@opencode-pr-agent/lib';
 import { handleCommand } from '../handlers/commands.js';
+import { postPrivilegeDenial, satisfiesPrivilegeGate } from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
@@ -35,6 +36,11 @@ export function createExplainSubscriber(
         if (!parsed || parsed.command !== 'explain') return;
         const issueNumber = event.prNumber || 0;
         if (!issueNumber) return;
+        if (!satisfiesPrivilegeGate(event.payload)) {
+          logger.info(`Skipping /explain for ${event.repo}#${issueNumber} — unprivileged author`);
+          await postPrivilegeDenial(event.repo || '', issueNumber, 'explain');
+          return;
+        }
         const reservation = await checkRateLimit(rateLimiter, event, 'command', 'explain');
         if (!reservation) return;
         await handleCommand(
