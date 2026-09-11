@@ -78,3 +78,7 @@
 **Learning:** Found that `new Set(changedFiles.filter().map())` in `TestGapDetector.analyze` iterates over the `changedFiles` array multiple times and creates intermediate array allocations. Converting this to a single-pass `for...of` loop that directly populates the target `Set` and `Array` avoids this overhead and reduces GC pressure in a hot path.
 **Action:** Replace `.filter().map()` chains with single-pass loops (`for...of`) when extracting and filtering data into Sets or Arrays.
 **Refs:** `lib/src/utils/test-gap-detector.ts:508` (changedTestFileSet population).
+## 2026-09-11 - Optimize array allocation in buildInlineComments
+**Learning:** Found that `buildInlineComments` used chained `.filter().map()` and nested `.filter().some()` and `.map().join()` operations to construct PR inline comments. This led to multiple intermediate array allocations that added unnecessary memory overhead and Garbage Collection (GC) pressure in a hot path when processing many review issues.
+**Action:** Replace array method chains (`.filter().map()`) with single-pass `for...of` loops and direct string accumulation to eliminate intermediate array allocations.
+**Refs:** `lib/src/jsonl-parser.ts:510`
