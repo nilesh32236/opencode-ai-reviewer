@@ -9,10 +9,38 @@ import {
 import type { Probot } from 'probot';
 import { createHealthRouter } from './health.js';
 import { registerSubscribers } from './subscribers/index.js';
+import { isBotUser } from './utils/bot.js';
 import { buildConfig } from './utils/config.js';
-import { logRepoFilter, repoFilter } from './utils/repo-filter.js';
+import { isRepoAllowed, logRepoFilter, repoFilter } from './utils/repo-filter.js';
 
 const logger = new Logger('App');
+
+/**
+ * Shared pre-dispatch gate applied before the EventRouter: payload shape
+ * check, bot filter, and repo allowlist gate. New subscribers inherit it
+ * instead of each re-implementing bot/rate-limit/repo checks inconsistently.
+ * Per-subscriber rate-limit and privilege checks still run inside subscribers.
+ * @param payload - Raw webhook payload.
+ * @returns True when the event should be routed.
+ *
+ * Exported for unit testing.
+ */
+export function isEventAllowed(payload: unknown): boolean {
+  if (typeof payload !== 'object' || payload === null) return false;
+  const p = payload as Record<string, unknown>;
+  // Bot filter: never spend budget on bot-authored events.
+  const sender = p.sender as { type?: string; login?: string } | undefined;
+  const comment = p.comment as { user?: { type?: string; login?: string } } | undefined;
+  if (isBotUser(sender) || isBotUser(comment?.user)) return false;
+  // Repo allowlist/denylist gate: a denied repo never reaches subscribers.
+  // When the payload carries no repository (e.g. synthetic events), let it
+  // through so subscribers can decide based on event.repo.
+  const repo = (p.repository as { full_name?: string } | undefined)?.full_name;
+  if (typeof repo === 'string' && repo.length > 0 && !isRepoAllowed(repo, repoFilter)) {
+    return false;
+  }
+  return true;
+}
 
 /**
  * Initialize the Probot app with event subscribers for review, fix, and audit.
@@ -67,7 +95,9 @@ export default (app: Probot, options?: { getRouter?: (path?: string) => unknown 
     // routes internally, so a `.use('/health', ...)` mount would strip the
     // prefix and make them unreachable (they'd become `/health/health`).
     (appRouter as { use: (p: string, r: unknown) => void }).use('/', healthRouter);
-    logger.info('Health endpoints mounted: GET /health, GET /ready');
+    logger.info(
+      'Health endpoints mounted: GET /health, GET /ready, GET /api/v1/health, GET /api/v1/ready',
+    );
   } else {
     logger.warn('getRouter() unavailable — health endpoints not mounted');
   }
@@ -95,6 +125,10 @@ export default (app: Probot, options?: { getRouter?: (path?: string) => unknown 
       // while the EventRouter maps `issue_comment.created`-style keys. Compose
       // the full `name.action` so routing actually matches subscriber events.
       const payload = context.payload as Record<string, unknown>;
+      // Shared validate → bot-filter → repo-allowlist gate before dispatch.
+      if (!isEventAllowed(payload)) {
+        return;
+      }
       const action = typeof payload?.action === 'string' ? payload.action : undefined;
       const eventName = action ? `${context.name}.${action}` : context.name;
       await router.handle(eventName, payload);

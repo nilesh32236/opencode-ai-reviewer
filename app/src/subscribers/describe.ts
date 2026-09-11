@@ -7,6 +7,7 @@ import type {
   Subscriber,
 } from '@opencode-pr-agent/lib';
 import { handleCommand } from '../handlers/commands.js';
+import { postPrivilegeDenial, satisfiesPrivilegeGate } from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
@@ -39,6 +40,12 @@ export function createDescribeSubscriber(
 
         if (config.describe?.enabled === false) {
           logger.info(`Skipping /describe for ${event.repo}#${issueNumber} — describe disabled`);
+          return;
+        }
+
+        if (!satisfiesPrivilegeGate(event.payload)) {
+          logger.info(`Skipping /describe for ${event.repo}#${issueNumber} — unprivileged author`);
+          await postPrivilegeDenial(event.repo || '', issueNumber, 'describe');
           return;
         }
 

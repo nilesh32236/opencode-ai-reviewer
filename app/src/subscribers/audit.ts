@@ -7,6 +7,7 @@ import type {
   Subscriber,
 } from '@opencode-pr-agent/lib';
 import { handleAudit } from '../handlers/audit.js';
+import { postPrivilegeDenial, satisfiesPrivilegeGate } from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
@@ -33,6 +34,15 @@ export function createAuditSubscriber(
         const auditComment = auditPayload.comment as Record<string, string> | undefined;
         const parsed = auditComment?.body ? parseCommand(auditComment.body) : null;
         if (!parsed || parsed.command !== 'audit') return;
+        if (!satisfiesPrivilegeGate(event.payload)) {
+          const deniedTarget =
+            auditPayload.issue && typeof auditPayload.issue === 'object'
+              ? ((auditPayload.issue as Record<string, unknown>).number as number | undefined)
+              : undefined;
+          logger.info(`Skipping /audit for ${event.repo}#${deniedTarget} — unprivileged author`);
+          if (deniedTarget) await postPrivilegeDenial(event.repo || '', deniedTarget, 'audit');
+          return;
+        }
         const auditIssue =
           auditPayload.issue && typeof auditPayload.issue === 'object'
             ? ((auditPayload.issue as Record<string, unknown>).number as number | undefined)

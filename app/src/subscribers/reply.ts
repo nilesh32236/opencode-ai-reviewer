@@ -3,6 +3,11 @@ import type { AgentConfig, GitHubEvent, RateLimiter, Subscriber } from '@opencod
 import { handleReply } from '../handlers/reply.js';
 import { isBotUser } from '../utils/bot.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
+import {
+  type RepoFilter,
+  repoFilter as defaultRepoFilter,
+  isRepoAllowed,
+} from '../utils/repo-filter.js';
 import { getToken } from '../utils/token.js';
 
 /**
@@ -11,7 +16,11 @@ import { getToken } from '../utils/token.js';
  * @param config - The resolved agent configuration (built once at startup).
  * @returns A subscriber object for the reply event.
  */
-export function createReplySubscriber(rateLimiter: RateLimiter, config: AgentConfig): Subscriber {
+export function createReplySubscriber(
+  rateLimiter: RateLimiter,
+  config: AgentConfig,
+  repoFilter?: RepoFilter,
+): Subscriber {
   const logger = new Logger('ReplySubscriber');
   return {
     name: 'ReplySubscriber',
@@ -57,6 +66,11 @@ export function createReplySubscriber(rateLimiter: RateLimiter, config: AgentCon
 
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;
+
+        if (!isRepoAllowed(event.repo || '', repoFilter ?? defaultRepoFilter)) {
+          logger.info(`Skipping reply for ${event.repo}#${prNumber} — repository filtered out`);
+          return;
+        }
 
         const reservation = await checkRateLimit(rateLimiter, event, 'interactive', 'reply');
         if (!reservation) return;

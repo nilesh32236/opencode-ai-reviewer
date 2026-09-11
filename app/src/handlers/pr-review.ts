@@ -29,6 +29,15 @@ import { handleAutofixLoop } from './autofix.js';
 /** Marker identifying the "review in progress" status comment on a PR. */
 const REVIEW_IN_PROGRESS_MARKER = '<!-- review-in-progress -->';
 
+/**
+ * Maximum streamed inline comments posted per review. Streaming posts one
+ * GitHub API request per issue inside a loop, so large reviews could fan out
+ * many sequential write calls per webhook and exhaust rate limits. Findings
+ * beyond the cap stay in the final review body (or the single-request
+ * reviews-array path when enabled) instead of being dropped.
+ */
+export const MAX_STREAMED_INLINE_COMMENTS = 10;
+
 /** Safety bound for check-run output text (GitHub caps it at 65535 bytes). */
 const MAX_CHECK_TEXT_BYTES = 60_000;
 
@@ -267,6 +276,9 @@ export async function handlePRReview(
                     // actually succeeded — otherwise the final-result filter
                     // below would drop it entirely (neither inline nor body).
                     if (streamedIssueKeys.has(key)) continue;
+                    // Cap streamed write calls per review: remainder stays in
+                    // the final review body instead of fanning out N requests.
+                    if (streamedFindingCount >= MAX_STREAMED_INLINE_COMMENTS) continue;
                     const posted = await gh.postInlineComment(prNumber, pr.headSha, {
                       path: issue.file,
                       line: issue.line,
