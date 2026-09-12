@@ -64,10 +64,18 @@ export async function runAnalyze(
       sanitize(`Analysis failed for issue #${issueNumber}: ${sanitizeErrorMessage(err)}`),
     );
     core.setFailed(sanitize(`Analysis failed for issue #${issueNumber}`));
-    await gh.postOrUpdateComment(
-      issueNumber,
-      '<!-- issue-analysis-error -->',
-      `❌ **Analysis Failed**: Analysis failed for issue #${issueNumber}. See the action logs for details.`,
-    );
+    try {
+      await gh.postOrUpdateComment(
+        issueNumber,
+        '<!-- issue-analysis-error -->',
+        `❌ **Analysis Failed**: Analysis failed for issue #${issueNumber}. See the action logs for details.`,
+      );
+    } catch (commentErr) {
+      core.warning(
+        sanitize(
+          `Failed to post analysis error comment: ${commentErr instanceof Error ? commentErr.message : commentErr}`,
+        ),
+      );
+    }
   }
 }

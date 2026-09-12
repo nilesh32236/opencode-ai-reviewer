@@ -66,10 +66,14 @@ export async function runPost(
   const reviewSummary = core.getInput('review_summary');
   if (prNumber && reviewSummary && inputs.reviewCommentSummary) {
     try {
-      await gh.postOrUpdateComment(
-        prNumber,
-        '<!-- review-summary -->',
-        `## Review Summary\n\n${sanitizeMarkdown(reviewSummary)}`,
+      await withRetry(
+        () =>
+          gh.postOrUpdateComment(
+            prNumber,
+            '<!-- review-summary -->',
+            `## Review Summary\n\n${sanitizeMarkdown(reviewSummary)}`,
+          ),
+        { operationName: 'post review summary' },
       );
       core.info('Posted review summary comment');
     } catch (err) {

@@ -1,7 +1,12 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
-import { mergeDescribeBody, sanitizeErrorMessage, sanitizeMarkdown } from '@opencode-pr-agent/lib';
+import {
+  mergeDescribeBody,
+  sanitizeErrorMessage,
+  sanitizeMarkdown,
+  withRetry,
+} from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { resolvePrNumber, sanitize } from './utils.js';
 
@@ -75,12 +80,27 @@ export async function runDescribe(
     let bodyMerged = false;
 
     if (publishAsComment !== false) {
-      await gh.postOrUpdateComment(
-        prNumber,
-        '<!-- pr-description -->',
-        sanitizeMarkdown(description),
-      );
-      commentPosted = true;
+      try {
+        await withRetry(
+          () =>
+            gh.postOrUpdateComment(
+              prNumber,
+              '<!-- pr-description -->',
+              sanitizeMarkdown(description),
+            ),
+          { operationName: 'describe.postDescription' },
+        );
+        commentPosted = true;
+      } catch (e) {
+        // Warn-and-continue: the description was generated successfully and is
+        // still exposed via the `description` step output, so a transient
+        // comment-upsert failure must not fail the whole describe run.
+        core.warning(
+          sanitize(
+            `Failed to post PR description comment: ${e instanceof Error ? e.message : String(e)}`,
+          ),
+        );
+      }
     }
 
     if (useMarkers === true) {
@@ -110,10 +130,18 @@ export async function runDescribe(
       sanitize(`Description generation failed for PR #${prNumber}: ${sanitizeErrorMessage(err)}`),
     );
     core.setFailed(sanitize(`Description generation failed for PR #${prNumber}`));
-    await gh.postOrUpdateComment(
-      prNumber,
-      '<!-- pr-description-error -->',
-      `❌ **Description Generation Failed**: Description generation failed for PR #${prNumber}. See the action logs for details.`,
-    );
+    try {
+      await gh.postOrUpdateComment(
+        prNumber,
+        '<!-- pr-description-error -->',
+        `❌ **Description Generation Failed**: Description generation failed for PR #${prNumber}. See the action logs for details.`,
+      );
+    } catch (commentErr) {
+      core.warning(
+        sanitize(
+          `Failed to post description error comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+        ),
+      );
+    }
   }
 }

@@ -73,8 +73,8 @@ export declare class StateCacheManager {
     private hashLearningDbContent;
     /**
      * Restore the learning state from the Actions cache into `stateDir`.
-     * Skips when the state directory already exists (it already holds a fresh
-     * database for this run). Records the resolved cache key so `save()` can
+     * Skips when the state directory already holds a `learning.db` database
+     * for this run. Records the resolved cache key so `save()` can
      * derive a unique snapshot key instead of overwriting the restore key.
      *
      * @returns A promise that resolves when the restore attempt completes.
