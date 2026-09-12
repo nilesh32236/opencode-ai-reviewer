@@ -11,6 +11,7 @@ import {
   type CheckExecution,
   FIX_MARKER,
   type IterationRecord,
+  Logger,
   REVIEW_MARKER,
   buildAutofixPRBody,
   buildAutofixStatusBody,
@@ -23,6 +24,7 @@ import {
   postBlockingQuestions,
   resolveFixedComments,
   validateRefName,
+  withRetry,
 } from '@opencode-pr-agent/lib';
 import { sanitizeMarkdown } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
@@ -80,6 +82,18 @@ export async function runFix(
     );
     return;
   }
+  // listComments is bounded to 10 pages x 100 comments (1000 total). On repos
+  // with more than 1000 comments the REVIEW_MARKER count below is computed
+  // from a truncated oldest-first list (GitHub ignores sort direction), so
+  // the maxIterations gate may be bypassed. Warn loudly when the cap is hit
+  // so the truncation is visible in logs instead of silent.
+  if (comments.length >= 10 * 100) {
+    core.warning(
+      sanitize(
+        `Issue comment list truncated at ${comments.length} comments (10 pages x 100); REVIEW_MARKER iteration count may be incomplete and maxIterations (${config.maxIterations}) could be bypassed.`,
+      ),
+    );
+  }
   const iteration = comments.filter((c: IssueComment) => c.body.includes(REVIEW_MARKER)).length;
 
   if (iteration >= config.maxIterations) {
@@ -89,8 +103,32 @@ export async function runFix(
     return;
   }
 
-  const pr = await gh.getMR(prNumber);
-  const contextMarkdown = await gh.gatherContext({ prNumber });
+  const pr = await (async () => {
+    try {
+      return await withRetry(() => gh.getMR(prNumber), { operationName: 'fix.getMR' });
+    } catch (err) {
+      core.setFailed(
+        sanitize(`Failed to get PR #${prNumber}: ${err instanceof Error ? err.message : err}`),
+      );
+      return undefined;
+    }
+  })();
+  if (!pr) {
+    return;
+  }
+  let contextMarkdown: string;
+  try {
+    contextMarkdown = await withRetry(() => gh.gatherContext({ prNumber }), {
+      operationName: 'fix.gatherContext',
+    });
+  } catch (err) {
+    core.setFailed(
+      sanitize(
+        `Failed to gather context for PR #${prNumber}: ${err instanceof Error ? err.message : err}`,
+      ),
+    );
+    return;
+  }
 
   const fixResult = await engine.runFix(prNumber, iteration, contextMarkdown, pr);
 
@@ -592,8 +630,14 @@ export async function runAutofixLoop(
           body: t.firstComment.body,
           commentId: t.firstComment.databaseId,
         }));
-    } catch {
-      /* ignore */
+    } catch (err) {
+      const message = `Failed to fetch previous bot review threads: ${err instanceof Error ? err.message : err}`;
+      core.warning(sanitize(message));
+      new Logger('Autofix').warn('Failed to fetch previous bot review threads', {
+        operation: 'autofix.threads',
+        prNumber,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
 
     const result = await engine.reviewPR(

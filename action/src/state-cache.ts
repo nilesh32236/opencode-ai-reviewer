@@ -145,14 +145,17 @@ export class StateCacheManager {
 
   /**
    * Restore the learning state from the Actions cache into `stateDir`.
-   * Skips when the state directory already exists (it already holds a fresh
-   * database for this run). Records the resolved cache key so `save()` can
+   * Skips when the state directory already holds a `learning.db` database
+   * for this run. Records the resolved cache key so `save()` can
    * derive a unique snapshot key instead of overwriting the restore key.
    *
    * @returns A promise that resolves when the restore attempt completes.
    */
   async restore(): Promise<void> {
-    if (fs.existsSync(this.stateDir)) {
+    // Skip only when a usable state is already present. A pre-existing empty
+    // directory (e.g. a checkout artifact) without learning.db holds no state,
+    // so restore must still proceed instead of silently starting fresh.
+    if (fs.existsSync(this.stateDir) && fs.existsSync(path.join(this.stateDir, 'learning.db'))) {
       core.info('.opencode/ directory already exists — skipping cache restore');
       this.learningDbMtimeMs = this.getLearningDbMtime();
       return;

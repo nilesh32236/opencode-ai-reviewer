@@ -64,7 +64,9 @@ export async function runSelfHeal(
   // Ensure we're on a fix branch
   const runId = process.env.GITHUB_RUN_ID || String(Date.now());
   const branchName = `fix/ci-heal-${runId}`;
-  const defaultBranch = await gh.getDefaultBranch();
+  const defaultBranch = await withRetry(() => gh.getDefaultBranch(), {
+    operationName: 'self-heal.getDefaultBranch',
+  });
 
   try {
     validateRefName(branchName);
