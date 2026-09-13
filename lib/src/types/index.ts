@@ -707,6 +707,13 @@ export interface ReviewConfig {
    * @since NEXT
    */
   enableReviewsArrayInline?: boolean;
+  /**
+   * Opt-in to appending a one-click Fix-with-AI payload (```suggestion block
+   * plus a Fix-with-AI prompt) to rendered findings for coding-agent handoff.
+   * Default false (legacy output unchanged).
+   * @since NEXT
+   */
+  emitFixPayload?: boolean;
   /** Whether to require a verdict */
   requireVerdict: boolean;
   /** Command triggers (e.g., /oc, /review) */
@@ -1540,6 +1547,12 @@ export interface PromptConfig {
      * @since NEXT
      */
     enableReviewsArrayInline?: boolean;
+    /**
+     * Opt-in to appending a one-click Fix-with-AI payload to rendered findings.
+     * Default false (legacy output unchanged).
+     * @since NEXT
+     */
+    emitFixPayload?: boolean;
     /** Suppress low-confidence findings from review output (default: false) */
     suppressLowConfidence?: boolean;
     /** Patterns to exclude from review */
@@ -1846,6 +1859,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     ],
     enableMetaVerification: false,
     enableTestGapDetection: false,
+    emitFixPayload: false,
     showFunctionScores: false,
     suppressLowConfidence: false,
     enableReachability: true,
