@@ -179,6 +179,19 @@ export const CategoryOverrideSchema = z.object({
   maxFindings: z.number().int().optional(),
 });
 
+/** Zod schema validating a single path-based routing rule. Permissive by
+ * design (fail-open): entry caps and glob validation live in
+ * `sanitizePathRules` (lib/src/config.ts) and `matchPathRules`
+ * (lib/src/review/pathRules.ts).
+ * @since NEXT
+ */
+export const PathRuleSchema = z.object({
+  paths: z.array(z.string()).min(1),
+  suggest_reviewers: z.array(z.string()).optional(),
+  add_labels: z.array(z.string()).optional(),
+  skip: z.boolean().optional(),
+});
+
 /**
  * Zod schema validating per-repository sensitivity configuration.
  * Numeric caps intentionally omit `.min()/.max()` bounds — out-of-range values
@@ -234,6 +247,7 @@ export const ReviewConfigSchema = z.object({
   sensitivity: ReviewSensitivitySchema.optional(),
   categories: z.record(CategoryOverrideSchema).optional(),
   pathInstructions: z.record(z.string()).optional(),
+  pathRules: z.array(PathRuleSchema).optional(),
   failOnSeverity: z.enum(['off', 'critical', 'important', 'minor']).default('off'),
   suggestTitleAndLabels: z.boolean().optional().default(false),
   streamComments: z.boolean().optional().default(false),
@@ -665,6 +679,10 @@ export const PromptConfigSchema = z.object({
       // glob validation live in sanitizePathInstructions (lib/src/config.ts) and
       // getMatchedPathInstructions (lib/src/prompts/builder.ts).
       pathInstructions: z.record(z.string()).optional(),
+      // Permissive by design (fail-open): caps and glob validation live in
+      // sanitizePathRules (lib/src/config.ts) and matchPathRules
+      // (lib/src/review/pathRules.ts).
+      pathRules: z.array(PathRuleSchema).optional(),
       failOnSeverity: z.enum(['off', 'critical', 'important', 'minor']).optional(),
       suggestTitleAndLabels: z.boolean().optional(),
       streamComments: z.boolean().optional(),

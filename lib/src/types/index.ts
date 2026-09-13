@@ -662,6 +662,23 @@ export type FailOnSeverity = 'off' | 'critical' | 'important' | 'minor';
  * explicit per-setting values always override the preset. */
 export type ReviewEffort = 'lite' | 'balanced';
 
+/** A single path-based routing rule: glob(s) mapped to suggested reviewers,
+ * auto-labels, and/or a per-path review skip. Suggested reviewers are
+ * summary-only (no reviewer-request API call); labels are applied best-effort
+ * via the platform adapter; `skip: true` excludes matched files from review.
+ * @since NEXT
+ */
+export interface PathRule {
+  /** Glob patterns matched against repo-relative file paths (e.g. `docs/**`). */
+  paths: string[];
+  /** Suggested reviewer logins/teams appended to the review summary (no API call). */
+  suggest_reviewers?: string[];
+  /** Labels applied best-effort via the platform adapter when any file matches. */
+  add_labels?: string[];
+  /** When true, matched files are skipped (log only, other files still reviewed). */
+  skip?: boolean;
+}
+
 /** Main review configuration controlling what is reviewed and how findings are reported. */
 export interface ReviewConfig {
   /** Skip review for PRs with these labels */
@@ -718,6 +735,12 @@ export interface ReviewConfig {
    * (e.g. `{ "docs/**": "Check spelling." }`). Max 10 entries, each capped
    * at 2 KB. Absent/empty means no per-path instructions. */
   pathInstructions?: Record<string, string>;
+  /** Optional path-based routing rules mapping file globs to suggested
+   * reviewers, auto-labels, and per-path skips. All matching is fail-open:
+   * absent/invalid rules never block review.
+   * @since NEXT
+   */
+  pathRules?: PathRule[];
   /** Severity threshold at or above which the action/check run fails
    * (default: 'critical'). Use 'off' to never fail from findings. */
   failOnSeverity: FailOnSeverity;
@@ -1543,6 +1566,11 @@ export interface PromptConfig {
      * additively per reviewed file when the file path matches the glob.
      * Max 10 entries, each capped at 2 KB. */
     pathInstructions?: Record<string, string>;
+    /** Optional path-based routing rules (suggested reviewers, auto-labels,
+     * per-path skips). Fail-open: absent/invalid rules never block review.
+     * @since NEXT
+     */
+    pathRules?: PathRule[];
     /** Severity threshold at or above which the action/check run fails
      * (default: 'critical'). Use 'off' to never fail from findings. */
     failOnSeverity?: FailOnSeverity;

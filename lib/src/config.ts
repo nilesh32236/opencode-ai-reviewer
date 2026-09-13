@@ -16,6 +16,7 @@ import type {
   MultiAgentAgentConfig,
   MultiAgentConfig,
   NotificationsConfig,
+  PathRule,
   PromptConfig,
   ReviewSensitivityConfig,
   SCAConfig,
@@ -65,6 +66,14 @@ const CATEGORY_OVERRIDE_SHAPE: Record<string, ConfigShape> = {
 export const MAX_PATH_INSTRUCTIONS_ENTRIES = 10;
 /** Max UTF-8 bytes kept per `review.pathInstructions` entry. */
 export const MAX_PATH_INSTRUCTION_BYTES = 2048;
+/** Max rules kept from `review.pathRules` (fail-open truncation).
+ * @since NEXT
+ */
+export const MAX_PATH_RULES = 20;
+/** Max entries kept per `review.pathRules` string list (reviewers/labels).
+ * @since NEXT
+ */
+export const MAX_PATH_RULE_ENTRIES = 20;
 
 /**
  * Validate a `review.pathInstructions` glob without relying on minimatch
@@ -144,6 +153,83 @@ export function sanitizePathInstructions(raw: unknown): Record<string, string> |
   return Object.keys(sanitized).length > 0 ? sanitized : undefined;
 }
 
+/**
+ * Sanitize a raw `review.pathRules` value fail-open: returns undefined when
+ * absent/invalid, drops invalid globs individually, drops rules with no
+ * usable paths or no effective action, and truncates extras with a warning.
+ * Never throws; invalid input means "review all files" downstream.
+ * @param raw - The raw pathRules value to sanitize.
+ * @returns The sanitized rules, or undefined when nothing usable remains.
+ * @since NEXT
+ */
+export function sanitizePathRules(raw: unknown): PathRule[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!Array.isArray(raw)) {
+    core.warning('Ignoring review.pathRules: expected an array of { paths, ... } rules');
+    return undefined;
+  }
+  const sanitized: PathRule[] = [];
+  for (const entry of raw) {
+    if (sanitized.length >= MAX_PATH_RULES) {
+      core.warning(`review.pathRules exceeds ${MAX_PATH_RULES} entries, ignoring extras`);
+      break;
+    }
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      core.warning('Ignoring review.pathRules entry: expected an object with a paths array');
+      continue;
+    }
+    const candidate = entry as {
+      paths?: unknown;
+      suggest_reviewers?: unknown;
+      add_labels?: unknown;
+      skip?: unknown;
+    };
+    if (!Array.isArray(candidate.paths) || candidate.paths.length === 0) {
+      core.warning('Ignoring review.pathRules entry: paths must be a non-empty string array');
+      continue;
+    }
+    const paths: string[] = [];
+    for (const g of candidate.paths) {
+      if (typeof g !== 'string' || g.length === 0 || g.length > 256 || !isValidPathGlob(g)) {
+        const safeGlob =
+          typeof g === 'string' ? g.replace(/[\r\n]+/g, ' ').slice(0, 200) : String(g);
+        core.warning(`Ignoring review.pathRules glob: invalid glob "${safeGlob}"`);
+        continue;
+      }
+      if (!paths.includes(g)) paths.push(g);
+    }
+    if (paths.length === 0) {
+      core.warning('Ignoring review.pathRules entry: no valid globs remain');
+      continue;
+    }
+    const cleanStrings = (value: unknown): string[] | undefined => {
+      if (value === undefined) return undefined;
+      if (!Array.isArray(value)) return undefined;
+      const out: string[] = [];
+      for (const v of value) {
+        if (typeof v !== 'string' || v.trim().length === 0) continue;
+        const trimmed = v.trim().slice(0, 256);
+        if (!out.includes(trimmed)) out.push(trimmed);
+        if (out.length >= MAX_PATH_RULE_ENTRIES) break;
+      }
+      return out.length > 0 ? out : undefined;
+    };
+    const reviewers = cleanStrings(candidate.suggest_reviewers);
+    const labels = cleanStrings(candidate.add_labels);
+    const skip = candidate.skip === true ? true : undefined;
+    if (!reviewers && !labels && !skip) {
+      core.warning('Ignoring review.pathRules entry: no effective action (reviewers/labels/skip)');
+      continue;
+    }
+    const rule: PathRule = { paths };
+    if (reviewers) rule.suggest_reviewers = reviewers;
+    if (labels) rule.add_labels = labels;
+    if (skip) rule.skip = true;
+    sanitized.push(rule);
+  }
+  return sanitized.length > 0 ? sanitized : undefined;
+}
+
 const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
   platform: null,
   review: {
@@ -180,6 +266,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     },
     categories: [CATEGORY_OVERRIDE_SHAPE],
     pathInstructions: null,
+    pathRules: null,
   },
   fix: {
     systemPrompt: null,
@@ -744,6 +831,12 @@ export function validateConfig(
       const sanitized = sanitizePathInstructions(config.review.pathInstructions);
       if (sanitized) {
         result.review.pathInstructions = sanitized;
+      }
+    }
+    if (config.review.pathRules !== undefined) {
+      const sanitized = sanitizePathRules(config.review.pathRules);
+      if (sanitized) {
+        result.review.pathRules = sanitized;
       }
     }
   }
