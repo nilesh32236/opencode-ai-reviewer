@@ -179,6 +179,70 @@ export const CategoryOverrideSchema = z.object({
   maxFindings: z.number().int().optional(),
 });
 
+/** Max characters per path-rule string (mirrors `sanitizePathRules` truncation). */
+const MAX_PATH_RULE_STRING_LENGTH = 256;
+/** Max globs per path rule (mirrors `sanitizePathRules` per-rule handling). */
+const MAX_PATH_RULE_PATHS = 20;
+/** Max reviewers/labels per path rule (mirrors `MAX_PATH_RULE_ENTRIES`). */
+const MAX_PATH_RULE_LIST_ENTRIES = 20;
+/** Max path rules kept (mirrors `MAX_PATH_RULES` in lib/src/config.ts). */
+const MAX_PATH_RULES_ENTRIES = 20;
+
+/** Non-empty trimmed string for path-rule globs, reviewers, and labels. */
+const PathRuleStringSchema = z.string().trim().min(1).max(MAX_PATH_RULE_STRING_LENGTH);
+
+/** Zod schema validating a single path-based routing rule. Accepts both the
+ * canonical camelCase keys (`suggestReviewers`/`addLabels`) and the legacy
+ * snake_case aliases (`suggest_reviewers`/`add_labels`); `sanitizePathRules`
+ * (lib/src/config.ts) normalizes aliases to camelCase. String bounds mirror
+ * the sanitizer caps so oversized repo config fails fast per-rule instead of
+ * allocating unbounded arrays. A rule with no effective action is rejected
+ * here (refine) and dropped individually by the fail-open array wrapper, so
+ * one no-op rule never blocks its valid peers.
+ * @since NEXT
+ */
+export const PathRuleSchema = z
+  .object({
+    paths: z.array(PathRuleStringSchema).min(1).max(MAX_PATH_RULE_PATHS),
+    suggestReviewers: z.array(PathRuleStringSchema).max(MAX_PATH_RULE_LIST_ENTRIES).optional(),
+    addLabels: z.array(PathRuleStringSchema).max(MAX_PATH_RULE_LIST_ENTRIES).optional(),
+    suggest_reviewers: z.array(PathRuleStringSchema).max(MAX_PATH_RULE_LIST_ENTRIES).optional(),
+    add_labels: z.array(PathRuleStringSchema).max(MAX_PATH_RULE_LIST_ENTRIES).optional(),
+    skip: z.boolean().optional(),
+  })
+  .refine(
+    (rule) =>
+      (rule.suggestReviewers?.length ?? 0) > 0 ||
+      (rule.suggest_reviewers?.length ?? 0) > 0 ||
+      (rule.addLabels?.length ?? 0) > 0 ||
+      (rule.add_labels?.length ?? 0) > 0 ||
+      rule.skip === true,
+    {
+      message:
+        'PathRule must define at least one effective action: suggestReviewers, addLabels, or skip: true',
+    },
+  );
+
+/**
+ * Fail-open wrapper for `review.pathRules`: drops invalid/no-op entries
+ * individually (via `PathRuleSchema.safeParse`) and truncates extras instead
+ * of failing the whole config parse, so one mistyped rule never discards
+ * unrelated review settings. Non-array input degrades to `undefined` (review
+ * all files). Final caps, glob validation, and alias normalization live in
+ * `sanitizePathRules` (lib/src/config.ts).
+ */
+const PathRulesArraySchema = z.preprocess((value: unknown): unknown => {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) return undefined;
+  const kept: unknown[] = [];
+  for (const entry of value) {
+    if (kept.length >= MAX_PATH_RULES_ENTRIES) break;
+    const parsed = PathRuleSchema.safeParse(entry);
+    if (parsed.success) kept.push(parsed.data);
+  }
+  return kept;
+}, z.array(PathRuleSchema).max(MAX_PATH_RULES_ENTRIES).optional());
+
 /**
  * Zod schema validating per-repository sensitivity configuration.
  * Numeric caps intentionally omit `.min()/.max()` bounds — out-of-range values
@@ -235,6 +299,7 @@ export const ReviewConfigSchema = z.object({
   sensitivity: ReviewSensitivitySchema.optional(),
   categories: z.record(CategoryOverrideSchema).optional(),
   pathInstructions: z.record(z.string()).optional(),
+  pathRules: PathRulesArraySchema,
   failOnSeverity: z.enum(['off', 'critical', 'important', 'minor']).default('off'),
   suggestTitleAndLabels: z.boolean().optional().default(false),
   streamComments: z.boolean().optional().default(false),
@@ -667,6 +732,11 @@ export const PromptConfigSchema = z.object({
       // glob validation live in sanitizePathInstructions (lib/src/config.ts) and
       // getMatchedPathInstructions (lib/src/prompts/builder.ts).
       pathInstructions: z.record(z.string()).optional(),
+      // Fail-open by design: invalid/no-op entries are dropped individually
+      // and extras truncated by PathRulesArraySchema; caps, glob validation,
+      // and alias normalization live in sanitizePathRules (lib/src/config.ts)
+      // and matchPathRules (lib/src/review/pathRules.ts).
+      pathRules: PathRulesArraySchema,
       failOnSeverity: z.enum(['off', 'critical', 'important', 'minor']).optional(),
       suggestTitleAndLabels: z.boolean().optional(),
       streamComments: z.boolean().optional(),
