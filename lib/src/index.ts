@@ -214,6 +214,13 @@ export {
 } from './utils/review-body.js';
 export type { ReviewBodyOptions } from './utils/review-body.js';
 export {
+  buildFixPayload,
+  buildFixWithAiPrompt,
+  formatFixPayloadMarkdown,
+  isCodeLikeSuggestion,
+} from './utils/fix-payload.js';
+export type { FixPayload } from './utils/fix-payload.js';
+export {
   buildFunctionScoreOptions,
   buildFunctionScoreTable,
   collectFunctionScoreInputs,

@@ -11,6 +11,7 @@ import type {
   SummaryFinding,
   VerdictFinding,
 } from './types/index.js';
+import { buildFixPayload, formatFixPayloadMarkdown } from './utils/fix-payload.js';
 import { sanitizeMarkdown } from './utils/markdown.js';
 import { formatConfidenceLabel, getSeverityBadge } from './utils/review-body.js';
 
@@ -531,6 +532,7 @@ export function buildInlineComments(
   result: ReviewResult,
   diffLines?: Set<string>,
   suppressLowConfidence?: boolean,
+  emitFixPayload?: boolean,
 ): InlineComment[] {
   return result.issues
     .filter((issue) => {
@@ -568,6 +570,15 @@ export function buildInlineComments(
           }
         } else if (looksLikeCode(suggestion)) {
           builder.append(`\n\n\`\`\`suggestion\n${suggestion}\n\`\`\``);
+        }
+      }
+
+      if (emitFixPayload === true) {
+        try {
+          const rendered = formatFixPayloadMarkdown(buildFixPayload(issue));
+          if (rendered) builder.append(`\n\n${rendered}`);
+        } catch {
+          // Fail-open: keep the plain comment when payload rendering fails.
         }
       }
 

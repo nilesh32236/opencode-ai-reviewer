@@ -14,6 +14,7 @@ import type {
   SummaryFinding,
   VerdictFinding,
 } from './types/index.js';
+import { buildFixPayload, formatFixPayloadMarkdown } from './utils/fix-payload.js';
 import { sanitizeMarkdown } from './utils/markdown.js';
 import { formatConfidenceLabel, getSeverityBadge } from './utils/review-body.js';
 
@@ -503,12 +504,14 @@ export interface InlineComment {
  * @param result - The review result containing issues.
  * @param diffLines - Optional set of "file:line" strings to filter inline comments to diff lines.
  * @param suppressLowConfidence - When true, filters out issues with low confidence.
+ * @param emitFixPayload - Opt-in to appending a Fix-with-AI payload (default false, legacy output unchanged).
  * @returns An array of inline comment objects.
  */
 export function buildInlineComments(
   result: ReviewResult,
   diffLines?: Set<string>,
   suppressLowConfidence?: boolean,
+  emitFixPayload?: boolean,
 ): InlineComment[] {
   const comments: InlineComment[] = [];
 
@@ -561,6 +564,15 @@ export function buildInlineComments(
       } else if (looksLikeCode(suggestion)) {
         // Single-line code suggestion — use native GitHub suggestion block
         body += `\n\n\`\`\`suggestion\n${suggestion}\n\`\`\``;
+      }
+    }
+
+    if (emitFixPayload === true) {
+      try {
+        const rendered = formatFixPayloadMarkdown(buildFixPayload(issue));
+        if (rendered) body += `\n\n${rendered}`;
+      } catch {
+        // Fail-open: keep the plain comment when payload rendering fails.
       }
     }
 

@@ -154,6 +154,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     customRules: null,
     inline: null,
     enableReviewsArrayInline: null,
+    emitFixPayload: null,
     suppressLowConfidence: null,
     excludePatterns: null,
     enableReachability: null,
@@ -561,6 +562,9 @@ export function validateConfig(
     }
     if (typeof config.review.enableReviewsArrayInline === 'boolean') {
       result.review.enableReviewsArrayInline = config.review.enableReviewsArrayInline;
+    }
+    if (typeof config.review.emitFixPayload === 'boolean') {
+      result.review.emitFixPayload = config.review.emitFixPayload;
     }
     if (typeof config.review.suppressLowConfidence === 'boolean') {
       result.review.suppressLowConfidence = config.review.suppressLowConfidence;

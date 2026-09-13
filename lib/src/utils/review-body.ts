@@ -1,4 +1,5 @@
 import type { ReviewIssue, ReviewResult, Severity, TokenUsage } from '../types/index.js';
+import { buildFixPayload, formatFixPayloadMarkdown } from './fix-payload.js';
 import {
   type FunctionScore,
   type FunctionScoreInput,
@@ -20,6 +21,13 @@ export interface ReviewBodyOptions {
    * @since NEXT
    */
   enableReviewsArrayInline?: boolean;
+  /**
+   * Opt-in to appending a one-click Fix-with-AI payload (```suggestion block
+   * plus a Fix-with-AI prompt) to each rendered finding. Default false
+   * (legacy output unchanged). Fail-open: payload errors render plain finding.
+   * @since NEXT
+   */
+  emitFixPayload?: boolean;
   /** Attribution footer for auto-loaded review conventions (e.g. AGENTS.md @
    * head SHA). Appended after the issues section when non-empty. Falls back to
    * `result.attributionFooter` when omitted. */
@@ -292,6 +300,17 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
         lines.push(i.suggestionCode.trim());
         lines.push('```');
         lines.push('</details>');
+      }
+      if (options?.emitFixPayload === true) {
+        try {
+          const rendered = formatFixPayloadMarkdown(buildFixPayload(i));
+          if (rendered) {
+            lines.push('');
+            lines.push(rendered);
+          }
+        } catch {
+          // Fail-open: keep the plain finding when payload rendering fails.
+        }
       }
     }
   }

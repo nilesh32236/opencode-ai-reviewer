@@ -201,6 +201,7 @@ export const ReviewConfigSchema = z.object({
   skipActors: z.array(z.string()).default(['github-actions[bot]']),
   inline: z.boolean().default(true),
   enableReviewsArrayInline: z.boolean().optional().default(false),
+  emitFixPayload: z.boolean().optional().default(false),
   requireVerdict: z.boolean().default(true),
   commandTriggers: z.array(z.string()).default(['/oc', '/review']),
   excludePatterns: z
@@ -649,6 +650,7 @@ export const PromptConfigSchema = z.object({
       enableTestGapDetection: z.boolean().optional(),
       showFunctionScores: z.boolean().optional(),
       enableReviewsArrayInline: z.boolean().optional(),
+      emitFixPayload: z.boolean().optional(),
       enableCodebaseIndex: z.boolean().optional(),
       includePreExisting: z.boolean().optional(),
       budget: z
