@@ -190,6 +190,47 @@ export function resolveRemoteTransportMode(server: MCPServerConfig): RemoteTrans
 }
 
 /**
+ * Client identity sent on the Streamable HTTP leg so Streamable-preferred
+ * servers/gateways can route on explicit MCP identity headers.
+ * Matches the `name` passed to `new Client({ name })` in `connectServer`.
+ * @since NEXT
+ */
+export const MCP_CLIENT_NAME = 'opencode-ai-reviewer';
+
+/**
+ * Default method advertised via the `Mcp-Method` header on the Streamable
+ * HTTP handshake leg. Static handshake-safe default (`initialize`).
+ * @since NEXT
+ */
+export const MCP_HANDSHAKE_METHOD = 'initialize';
+
+/**
+ * Build Streamable HTTP headers by merging MCP identity headers
+ * (`Mcp-Name` / `Mcp-Method`) over a base header map.
+ * User-supplied keys always win on (case-insensitive) collision, and a fresh
+ * object is returned per call so no mutable state leaks between the
+ * Streamable/SSE retry legs.
+ * @param server - MCP server configuration (provides the default `Mcp-Name`)
+ * @param baseHeaders - Base headers (e.g. from `buildRemoteHeaders`)
+ * @returns Fresh header map for the Streamable HTTP `requestInit`
+ * @since NEXT
+ */
+export function buildStreamableHeaders(
+  server: MCPServerConfig,
+  baseHeaders: Record<string, string>,
+): Record<string, string> {
+  const headers: Record<string, string> = { ...baseHeaders };
+  const lowerKeys = new Set(Object.keys(headers).map((k) => k.toLowerCase()));
+  if (!lowerKeys.has('mcp-name')) {
+    headers['Mcp-Name'] = server.name || MCP_CLIENT_NAME;
+  }
+  if (!lowerKeys.has('mcp-method')) {
+    headers['Mcp-Method'] = MCP_HANDSHAKE_METHOD;
+  }
+  return headers;
+}
+
+/**
  * Build HTTP headers forwarded to a remote MCP server from its explicit
  * `environment` map. No keys are forwarded beyond this allowlist-shaped
  * explicit map (privacy-safe; AI features stay optional).
@@ -235,7 +276,10 @@ export function createRemoteTransportFactories(
     new SSEClientTransport(new URL(rawUrl), { requestInit: { headers: { ...headers } } });
   const streamableFactory = (): Transport =>
     new StreamableHTTPClientTransport(new URL(rawUrl), {
-      requestInit: { headers: { ...headers } },
+      // Streamable leg only: merge Mcp-Name/Mcp-Method identity headers so
+      // Streamable-preferred gateways can route. The legacy SSE leg keeps
+      // byte-identical headers. Fresh object per invocation (no shared state).
+      requestInit: { headers: buildStreamableHeaders(server, headers) },
     });
   const mode = resolveRemoteTransportMode(server);
   if (mode === 'sse') return [sseFactory];

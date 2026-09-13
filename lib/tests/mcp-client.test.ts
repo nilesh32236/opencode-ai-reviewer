@@ -351,7 +351,14 @@ describe('MCPManager', () => {
       expect(mockStreamableTransportCtor).toHaveBeenCalledWith(
         new URL('https://mcp.example.com/mcp'),
         expect.objectContaining({
-          requestInit: { headers: { Authorization: 'Bearer token123', 'X-API-Key': 'abc' } },
+          requestInit: {
+            headers: {
+              Authorization: 'Bearer token123',
+              'X-API-Key': 'abc',
+              'Mcp-Name': 'test-server',
+              'Mcp-Method': 'initialize',
+            },
+          },
         }),
       );
     });
