@@ -4,6 +4,26 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.13.5] — 2026-09-13
+
+
+### Fixed
+
+- address issue #496 (#497) (#496
+#497)
+
+### Changed
+
+- [Autofix] [Monitor][competitor-gap] One-click Fix-with-AI suggested-change payload for coding-agent handoff (#498) (#498)
+- [Autofix] [Monitor][competitor-gap] Path-based suggested reviewers, auto-labels, and per-path skip rules (#501) (#501)
+- [Self-Improvement] Autonomous Codebase Enhancement (#489) (#489)
+- perf(jsonl-parser): optimize array allocations in buildInlineComments (#485) (#485)
+- [Autofix] [Monitor][toolchain] Enforce Node >=24.18.1 floor in CI matrix and engine check (#480) (#480)
+- [Autofix] [Monitor][opencode-cli] Emit V2 permissions-array subagent rules alongside V1 permission keys (#481) (#481)
+- [Autofix] [Monitor][platform] Post inline findings via reviews-array API with 422 position fallback to summary (#482) (#482)
+
+[v1.13.5]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.4...v1.13.5
+
 ## [v1.13.4] — 2026-09-10
 
 
