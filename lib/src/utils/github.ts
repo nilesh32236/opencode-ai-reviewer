@@ -868,6 +868,7 @@ export class GitHubHelper implements PlatformAdapter {
           workingResult,
           await this.getDiffLines(prNumber, commitSha),
           suppressLowConfidence,
+          options?.emitFixPayload,
         )
       : [];
 
@@ -1034,7 +1035,12 @@ export class GitHubHelper implements PlatformAdapter {
       diffLines = new Set<string>();
     }
 
-    const inlineComments = buildInlineComments(workingResult, diffLines, suppressLowConfidence);
+    const inlineComments = buildInlineComments(
+      workingResult,
+      diffLines,
+      suppressLowConfidence,
+      options?.emitFixPayload,
+    );
 
     const placedInlineKeys = new Set<string>();
     for (const c of inlineComments) {

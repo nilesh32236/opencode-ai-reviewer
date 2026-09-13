@@ -662,6 +662,35 @@ export type FailOnSeverity = 'off' | 'critical' | 'important' | 'minor';
  * explicit per-setting values always override the preset. */
 export type ReviewEffort = 'lite' | 'balanced';
 
+/** A single path-based routing rule: glob(s) mapped to suggested reviewers,
+ * auto-labels, and/or a per-path review skip. Suggested reviewers are
+ * summary-only (no reviewer-request API call); labels are applied best-effort
+ * via the platform adapter; `skip: true` excludes matched files from review.
+ * @since NEXT
+ */
+export interface PathRule {
+  /** Glob patterns matched against repo-relative file paths (e.g. `docs/**`). */
+  paths: string[];
+  /** Suggested reviewer logins/teams appended to the review summary (no API call). */
+  suggestReviewers?: string[];
+  /** Labels applied best-effort via the platform adapter when any file matches. */
+  addLabels?: string[];
+  /** When true, matched files are skipped (log only, other files still reviewed). */
+  skip?: boolean;
+  /**
+   * Deprecated alias for `suggestReviewers` (accepted for backward
+   * compatibility, normalized to `suggestReviewers` by `sanitizePathRules`).
+   * @deprecated Use `suggestReviewers` instead.
+   */
+  suggest_reviewers?: string[];
+  /**
+   * Deprecated alias for `addLabels` (accepted for backward compatibility,
+   * normalized to `addLabels` by `sanitizePathRules`).
+   * @deprecated Use `addLabels` instead.
+   */
+  add_labels?: string[];
+}
+
 /** Main review configuration controlling what is reviewed and how findings are reported. */
 export interface ReviewConfig {
   /** Skip review for PRs with these labels */
@@ -678,6 +707,13 @@ export interface ReviewConfig {
    * @since NEXT
    */
   enableReviewsArrayInline?: boolean;
+  /**
+   * Opt-in to appending a one-click Fix-with-AI payload (```suggestion block
+   * plus a Fix-with-AI prompt) to rendered findings for coding-agent handoff.
+   * Default false (legacy output unchanged).
+   * @since NEXT
+   */
+  emitFixPayload?: boolean;
   /** Whether to require a verdict */
   requireVerdict: boolean;
   /** Command triggers (e.g., /oc, /review) */
@@ -718,6 +754,12 @@ export interface ReviewConfig {
    * (e.g. `{ "docs/**": "Check spelling." }`). Max 10 entries, each capped
    * at 2 KB. Absent/empty means no per-path instructions. */
   pathInstructions?: Record<string, string>;
+  /** Optional path-based routing rules mapping file globs to suggested
+   * reviewers, auto-labels, and per-path skips. All matching is fail-open:
+   * absent/invalid rules never block review.
+   * @since NEXT
+   */
+  pathRules?: PathRule[];
   /** Severity threshold at or above which the action/check run fails
    * (default: 'critical'). Use 'off' to never fail from findings. */
   failOnSeverity: FailOnSeverity;
@@ -1505,6 +1547,12 @@ export interface PromptConfig {
      * @since NEXT
      */
     enableReviewsArrayInline?: boolean;
+    /**
+     * Opt-in to appending a one-click Fix-with-AI payload to rendered findings.
+     * Default false (legacy output unchanged).
+     * @since NEXT
+     */
+    emitFixPayload?: boolean;
     /** Suppress low-confidence findings from review output (default: false) */
     suppressLowConfidence?: boolean;
     /** Patterns to exclude from review */
@@ -1543,6 +1591,11 @@ export interface PromptConfig {
      * additively per reviewed file when the file path matches the glob.
      * Max 10 entries, each capped at 2 KB. */
     pathInstructions?: Record<string, string>;
+    /** Optional path-based routing rules (suggested reviewers, auto-labels,
+     * per-path skips). Fail-open: absent/invalid rules never block review.
+     * @since NEXT
+     */
+    pathRules?: PathRule[];
     /** Severity threshold at or above which the action/check run fails
      * (default: 'critical'). Use 'off' to never fail from findings. */
     failOnSeverity?: FailOnSeverity;
@@ -1806,6 +1859,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     ],
     enableMetaVerification: false,
     enableTestGapDetection: false,
+    emitFixPayload: false,
     showFunctionScores: false,
     suppressLowConfidence: false,
     enableReachability: true,
