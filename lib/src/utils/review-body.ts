@@ -303,7 +303,11 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
       }
       if (options?.emitFixPayload === true) {
         try {
-          const rendered = formatFixPayloadMarkdown(buildFixPayload(i));
+          const payload = buildFixPayload(i);
+          // Summary body above already renders the suggestion fence; keep only
+          // the Fix-with-AI prompt to avoid a duplicate suggestion block.
+          if (i.suggestionCode?.trim()) payload.suggestedChange = undefined;
+          const rendered = formatFixPayloadMarkdown(payload);
           if (rendered) {
             lines.push('');
             lines.push(rendered);

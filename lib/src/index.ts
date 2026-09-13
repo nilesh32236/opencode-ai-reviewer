@@ -213,6 +213,7 @@ export {
   getSeverityBadge,
 } from './utils/review-body.js';
 export type { ReviewBodyOptions } from './utils/review-body.js';
+export { looksLikeCode } from './utils/code-heuristic.js';
 export {
   buildFixPayload,
   buildFixWithAiPrompt,

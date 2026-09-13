@@ -1,4 +1,5 @@
 import type { ReviewIssue } from '../types/index.js';
+import { looksLikeCode } from './code-heuristic.js';
 import { sanitizeMarkdown } from './markdown.js';
 
 /**
@@ -14,24 +15,15 @@ export interface FixPayload {
   files: string[];
 }
 
-const STRONG_KEYWORD_PATTERN =
-  /^(const|let|var|import|export|return|if|else|for|while|async|await|function|class|interface|type|enum)\b/;
-
-const WEAK_CODE_PATTERNS = [/[{};()=]/, /^\s*\/\//, /\.\w+\(/, /=>\s*/, /\?\.\w+/, /\?\?\s/];
-
 /**
  * Heuristic to determine if a suggestion string looks like code rather than prose.
- * Mirrors the `looksLikeCode` heuristic in jsonl-parser.ts (>=2 code patterns).
+ * Canonical implementation lives in `./code-heuristic.js`; this is a
+ * backward-compatible alias so existing callers keep working.
  * @param suggestion - The suggestion string to evaluate.
  * @returns True when the suggestion is code-like enough for a suggestion block.
  */
 export function isCodeLikeSuggestion(suggestion: string): boolean {
-  let matchCount = 0;
-  if (STRONG_KEYWORD_PATTERN.test(suggestion)) matchCount++;
-  for (const pattern of WEAK_CODE_PATTERNS) {
-    if (pattern.test(suggestion)) matchCount++;
-  }
-  return matchCount >= 2;
+  return looksLikeCode(suggestion);
 }
 
 /**
@@ -92,8 +84,11 @@ export function formatFixPayloadMarkdown(payload: FixPayload): string {
   try {
     const lines: string[] = [];
     if (payload.suggestedChange?.trim()) {
+      // Neutralize inner fences so model-generated code containing ``` cannot
+      // break out of the fenced block and inject markdown/HTML.
+      const safe = payload.suggestedChange.trim().replace(/```/g, '``\u200b`');
       lines.push('```suggestion');
-      lines.push(payload.suggestedChange.trim());
+      lines.push(safe);
       lines.push('```');
     }
     if (payload.prompt?.trim()) {

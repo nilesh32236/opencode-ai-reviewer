@@ -201,7 +201,7 @@ export const ReviewConfigSchema = z.object({
   skipActors: z.array(z.string()).default(['github-actions[bot]']),
   inline: z.boolean().default(true),
   enableReviewsArrayInline: z.boolean().optional().default(false),
-  emitFixPayload: z.boolean().optional().default(false),
+  emitFixPayload: z.boolean().default(false),
   requireVerdict: z.boolean().default(true),
   commandTriggers: z.array(z.string()).default(['/oc', '/review']),
   excludePatterns: z
