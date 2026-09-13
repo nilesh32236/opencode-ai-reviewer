@@ -37,6 +37,7 @@ import {
 import { buildSelfHealPrompt } from './prompts/heal.js';
 import { detectLanguages } from './prompts/language/index.js';
 import { buildVerificationPrompt } from './prompts/verify.js';
+import { buildPathRulesSection, collectPathRuleOutcomes } from './review/pathRules.js';
 import { runSCAScan } from './sca/index.js';
 import type {
   AgentCategory,
@@ -828,6 +829,38 @@ export class ReviewEngine {
     if (dedupKey) this.setInFlightReview(dedupKey, promise);
 
     const result = await promise;
+    // Path-based routing (`review.pathRules`): suggested reviewers (summary-only,
+    // no reviewer-request API call) and best-effort auto-labels. Fail-open:
+    // absent/invalid config or API failures never break the review.
+    try {
+      const pathRules = this.config.review.pathRules;
+      if (!result.skipped && Array.isArray(pathRules) && pathRules.length > 0) {
+        const outcomes = collectPathRuleOutcomes(
+          pr.changedFiles
+            .map((f) => f?.path)
+            .filter((p): p is string => typeof p === 'string' && Boolean(p)),
+          pathRules,
+        );
+        if (outcomes.labelsToApply.length > 0) {
+          try {
+            await this.adapter.addLabels(pr.number, outcomes.labelsToApply);
+            this.logger.info(`Applied path-rule labels: ${outcomes.labelsToApply.join(', ')}`);
+          } catch (err) {
+            this.logger.warn(
+              `Failed to apply path-rule labels, continuing review: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
+        const section = buildPathRulesSection(outcomes);
+        if (section) {
+          result.summary = result.summary ? `${result.summary}\n\n${section}` : section;
+        }
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Path-rule routing failed, continuing review: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     // Only cache a genuinely reviewed result. A failed pipeline (execution or
     // parse error) must NOT be cached, so a retry within the TTL re-runs the
     // review instead of being silently skipped.
@@ -928,13 +961,36 @@ export class ReviewEngine {
 
     // Filter out excluded files (lockfiles, generated code, dist/, etc.)
     const excludePatterns = this.config.review.excludePatterns || [];
-    const files =
+    let files =
       excludePatterns.length > 0
         ? pr.changedFiles.filter((f) => {
             if (!f?.path) return false;
             return !excludePatterns.some((pattern: string) => minimatch(f.path, pattern));
           })
         : pr.changedFiles;
+
+    // Per-path skip rules (`review.pathRules` with `skip: true`). Fail-open:
+    // invalid config or match errors keep the full file list.
+    try {
+      const pathRules = this.config.review.pathRules;
+      if (Array.isArray(pathRules) && pathRules.length > 0) {
+        const outcomes = collectPathRuleOutcomes(
+          files.map((f) => f?.path).filter((p): p is string => typeof p === 'string' && Boolean(p)),
+          pathRules,
+        );
+        if (outcomes.skippedFiles.length > 0) {
+          const skippedSet = new Set(outcomes.skippedFiles);
+          this.logger.info(
+            `Skipped ${outcomes.skippedFiles.length} file(s) by pathRules skip (not reviewed): ${outcomes.skippedFiles.slice(0, 10).join(', ')}${outcomes.skippedFiles.length > 10 ? ', ...' : ''}`,
+          );
+          files = files.filter((f) => !f?.path || !skippedSet.has(f.path));
+        }
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Path-rule skip filtering failed, reviewing all files: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
 
     // Deterministic Software Composition Analysis (SCA) pass. Runs before the
     // "all files excluded" early-return so a PR that only touches lock files
