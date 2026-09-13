@@ -21,6 +21,21 @@ You are auditing error handling and system resilience patterns. Focus on error b
 - Retry attempts limited with a max cap (no infinite retries)
 - Jitter applied to retry delays to avoid thundering herd
 - Operations time out after a reasonable duration
+- Server-provided `Retry-After` hints honored (header or `retryAfterSeconds`), clamped to a max
+- Retry predicates fail fast on deterministic errors (4xx, integrity/checksum errors) — never retry what cannot succeed
+- Non-idempotent operations (POST) retried only on 429/rate-limit, never blindly on 5xx
+
+### Cancellation & Timeouts
+- Long-running operations accept and thread `AbortSignal` through every async layer
+- Combined cancellation sources composed with `AbortSignal.any()` (outer cancel + per-attempt timeout), not hand-rolled listener chains
+- Timeout aborts distinguishable from deliberate cancels (`TimeoutError` vs `AbortError` via abort `reason`)
+- Already-aborted signals checked before starting work (`throwIfAborted`), not just between retries
+
+### Self-Healing Guardrails
+- Autonomous remediation bounded: max ~3 attempts per run, then escalate to a human with the trail attached
+- Fixes scoped to recoverable classes (transient infra, lint drift, lockfile mismatch) — never auto-patch critical paths (auth, payments, migrations) without review
+- Every auto-fix leaves an auditable trail: original failure, patch applied, verification result
+- Verification re-runs the same gates that failed (never a weakened subset); uncertain classification is a stop condition, not a guess
 
 ### Logging & Observability
 - Errors logged with sufficient context (operation, input, error message)
