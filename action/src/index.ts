@@ -252,6 +252,7 @@ async function run(): Promise<void> {
           loadedConfig?.review?.enableReviewsArrayInline ?? inputs.enableReviewsArrayInline,
         streamComments: inputs.streamComments,
         streamBatchSize: inputs.streamBatchSize,
+        dedupFingerprints: loadedConfig?.review?.dedupFingerprints ?? inputs.dedupFingerprints,
         // When the workflow explicitly sets fail_on_severity it is authoritative
         // so a PR cannot disable its own gate by editing .opencode-reviewer.yml.
         // Only when the input is omitted does the repo config value apply.

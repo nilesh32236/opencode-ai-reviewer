@@ -14,6 +14,7 @@ import type {
 } from '../types/index.js';
 import { CircuitBreaker, countHttpError } from './circuit-breaker.js';
 import { getErrorStatus } from './errors.js';
+import { filterDuplicateInlineComments } from './inline-fingerprint.js';
 import { getLabelColor } from './label-color.js';
 import { withRetry } from './retry.js';
 import type { RetryOptions } from './retry.js';
@@ -863,13 +864,37 @@ export class GitHubHelper implements PlatformAdapter {
       );
     }
 
-    const inlineComments = postInlineComments
+    let inlineComments = postInlineComments
       ? buildInlineComments(
           workingResult,
           await this.getDiffLines(prNumber, commitSha),
           suppressLowConfidence,
         )
       : [];
+
+    // Persistent fingerprint dedup: skip inline findings already posted as
+    // bot threads so re-pushes never re-post identical findings. Fail-open:
+    // disabled via review.dedup_fingerprints=false or when no thread history
+    // is supplied, every finding posts as today.
+    if (
+      inlineComments.length > 0 &&
+      options?.dedupFingerprints !== false &&
+      options?.previousBotComments &&
+      options.previousBotComments.length > 0
+    ) {
+      try {
+        const { kept, skipped } = filterDuplicateInlineComments(
+          inlineComments,
+          options.previousBotComments,
+        );
+        if (skipped > 0) {
+          core.debug(`Skipping ${skipped} duplicate inline finding(s) already posted`);
+          inlineComments = kept;
+        }
+      } catch (err) {
+        core.warning(`Inline fingerprint dedup unavailable, posting all findings: ${err}`);
+      }
+    }
 
     const placedInlineKeys = new Set<string>();
     for (const c of inlineComments) {
@@ -1034,7 +1059,28 @@ export class GitHubHelper implements PlatformAdapter {
       diffLines = new Set<string>();
     }
 
-    const inlineComments = buildInlineComments(workingResult, diffLines, suppressLowConfidence);
+    let inlineComments = buildInlineComments(workingResult, diffLines, suppressLowConfidence);
+
+    // Same persistent fingerprint gate as postReview (see above).
+    if (
+      inlineComments.length > 0 &&
+      options?.dedupFingerprints !== false &&
+      options?.previousBotComments &&
+      options.previousBotComments.length > 0
+    ) {
+      try {
+        const { kept, skipped } = filterDuplicateInlineComments(
+          inlineComments,
+          options.previousBotComments,
+        );
+        if (skipped > 0) {
+          core.debug(`Skipping ${skipped} duplicate inline finding(s) already posted`);
+          inlineComments = kept;
+        }
+      } catch (err) {
+        core.warning(`Inline fingerprint dedup unavailable, posting all findings: ${err}`);
+      }
+    }
 
     const placedInlineKeys = new Set<string>();
     for (const c of inlineComments) {

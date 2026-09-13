@@ -7,6 +7,7 @@ import {
   buildFunctionScoreOptions,
   countAtOrAboveSeverity,
   getErrorStatus,
+  isDuplicateOfThreads,
   postSuggestionComment,
   sanitizeMarkdown,
   sendNotification,
@@ -158,6 +159,17 @@ export async function runReview(
               // Guard the inline-comment API against model-generated garbage:
               // only positive integer lines within a sane range are posted.
               if (!Number.isInteger(issue.line) || issue.line < 1) continue;
+              // Persistent fingerprint dedup: never re-post a finding already
+              // posted as a bot thread on a previous push (fail-open when
+              // disabled or when history is unavailable).
+              if (
+                config.review.dedupFingerprints !== false &&
+                previousComments &&
+                isDuplicateOfThreads(issue, previousComments)
+              ) {
+                core.debug(`Skipping duplicate inline finding ${issue.file}:${issue.line}`);
+                continue;
+              }
               const key = streamedFindingKey(issue.file, issue.line, issue.message);
               // Never post the same finding twice across batches (distinct
               // findings on one line have distinct keys and stay independent),
@@ -231,6 +243,11 @@ export async function runReview(
     : result;
 
   const scoreOptions = buildFunctionScoreOptions(config.review.showFunctionScores, pr.changedFiles);
+  const dedupOptions = {
+    ...(scoreOptions ?? {}),
+    dedupFingerprints: config.review.dedupFingerprints !== false,
+    previousBotComments: previousComments,
+  };
   const reviewResult = await gh.postReview(
     prNumber,
     pr.headSha,
@@ -238,8 +255,8 @@ export async function runReview(
     config.review.inline,
     undefined,
     config.review.enableReviewsArrayInline === true
-      ? { ...(scoreOptions ?? {}), enableReviewsArrayInline: true as const }
-      : scoreOptions,
+      ? { ...dedupOptions, enableReviewsArrayInline: true as const }
+      : dedupOptions,
   );
 
   if (!reviewResult.success) {

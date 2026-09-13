@@ -154,6 +154,8 @@ export interface ActionInputs {
     streamComments: boolean;
     /** Number of findings to accumulate before posting a streaming batch (0 = per-batch). */
     streamBatchSize: number;
+    /** Skip inline findings already posted as bot threads (default: true). */
+    dedupFingerprints: boolean;
     /** Severity threshold at or above which the action fails (default: 'off'). */
     failOnSeverity: FailOnSeverity;
     /** Whether the fail_on_severity input was explicitly set by the workflow. */

@@ -20,6 +20,17 @@ export interface ReviewBodyOptions {
    * @since NEXT
    */
   enableReviewsArrayInline?: boolean;
+  /** Skip inline findings already posted as bot threads (default true).
+   * Fail-open: when false, or when no thread history is supplied, every
+   * finding posts as today.
+   * @since NEXT
+   */
+  dedupFingerprints?: boolean;
+  /** Previously posted bot inline threads used as the persistent dedup
+   * baseline across re-pushes. Omit when unavailable (fail-open).
+   * @since NEXT
+   */
+  previousBotComments?: Array<{ file: string; line: number | null; body: string }>;
   /** Attribution footer for auto-loaded review conventions (e.g. AGENTS.md @
    * head SHA). Appended after the issues section when non-empty. Falls back to
    * `result.attributionFooter` when omitted. */

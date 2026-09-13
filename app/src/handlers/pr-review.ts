@@ -12,6 +12,7 @@ import {
   Logger,
   ReviewEngine,
   buildFunctionScoreOptions,
+  isDuplicateOfThreads,
   postSuggestionComment,
   sanitizeErrorMessage,
   sanitizeMarkdown,
@@ -261,6 +262,16 @@ export async function handlePRReview(
             ? async (batchIndex, totalBatches, batchResult) => {
                 for (const issue of batchResult.issues) {
                   if (issue.inline && issue.file && issue.line) {
+                    // Persistent fingerprint dedup: skip findings already
+                    // posted as bot threads on a previous push (fail-open).
+                    if (
+                      effectiveConfig.review.dedupFingerprints !== false &&
+                      previousBotComments &&
+                      isDuplicateOfThreads(issue, previousBotComments)
+                    ) {
+                      logger.debug(`Skipping duplicate inline finding ${issue.file}:${issue.line}`);
+                      continue;
+                    }
                     const key = `${issue.file}:${issue.line}`;
                     // Never post the same file:line twice across batches, and
                     // only mark a finding as streamed when the inline post
@@ -397,6 +408,11 @@ export async function handlePRReview(
         effectiveConfig.review.showFunctionScores,
         pr.changedFiles,
       );
+      const dedupOptions = {
+        ...(scoreOptions ?? {}),
+        dedupFingerprints: effectiveConfig.review.dedupFingerprints !== false,
+        previousBotComments,
+      };
       reviewResult = await gh.postReview(
         prNumber,
         pr.headSha,
@@ -404,8 +420,8 @@ export async function handlePRReview(
         effectiveConfig.review.inline,
         undefined,
         effectiveConfig.review.enableReviewsArrayInline === true
-          ? { ...(scoreOptions ?? {}), enableReviewsArrayInline: true as const }
-          : scoreOptions,
+          ? { ...dedupOptions, enableReviewsArrayInline: true as const }
+          : dedupOptions,
       );
     } catch (err) {
       logger.error(

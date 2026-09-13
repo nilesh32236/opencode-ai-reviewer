@@ -238,6 +238,7 @@ export const ReviewConfigSchema = z.object({
   suggestTitleAndLabels: z.boolean().optional().default(false),
   streamComments: z.boolean().optional().default(false),
   streamBatchSize: z.number().int().min(0).optional().default(0),
+  dedupFingerprints: z.boolean().optional().default(true),
   effort: z.preprocess(
     (v) => (typeof v === 'string' ? v.trim().toLowerCase() : v),
     z.enum(['lite', 'balanced']).optional().catch(undefined),
@@ -669,6 +670,7 @@ export const PromptConfigSchema = z.object({
       suggestTitleAndLabels: z.boolean().optional(),
       streamComments: z.boolean().optional(),
       streamBatchSize: z.number().int().min(0).optional(),
+      dedupFingerprints: z.boolean().optional(),
       effort: z.preprocess(
         (v) => (typeof v === 'string' ? v.trim().toLowerCase() : v),
         z.enum(['lite', 'balanced']).optional().catch(undefined),

@@ -16,6 +16,7 @@ import type {
 } from '../types/index.js';
 import { CircuitBreaker, countHttpError } from './circuit-breaker.js';
 import { getErrorStatus } from './errors.js';
+import { filterDuplicateInlineComments } from './inline-fingerprint.js';
 import { getLabelColor } from './label-color.js';
 import { withRetry } from './retry.js';
 import { buildReviewBody } from './review-body.js';
@@ -744,9 +745,31 @@ export class GitLabAdapter implements PlatformAdapter {
         }
       : result;
 
-    const inlineComments = postInlineComments
+    let inlineComments = postInlineComments
       ? buildInlineComments(workingResult, await this.getDiffLines(mrNumber), suppressLowConfidence)
       : [];
+
+    // Same persistent fingerprint gate as GitHubHelper.postReview: skip
+    // inline findings already posted (fail-open when disabled/unavailable).
+    if (
+      inlineComments.length > 0 &&
+      options?.dedupFingerprints !== false &&
+      options?.previousBotComments &&
+      options.previousBotComments.length > 0
+    ) {
+      try {
+        const { kept, skipped } = filterDuplicateInlineComments(
+          inlineComments,
+          options.previousBotComments,
+        );
+        if (skipped > 0) {
+          core.debug(`Skipping ${skipped} duplicate inline finding(s) already posted`);
+          inlineComments = kept;
+        }
+      } catch (err) {
+        core.warning(`Inline fingerprint dedup unavailable, posting all findings: ${err}`);
+      }
+    }
 
     const placedInlineKeys = new Set<string>();
     for (const c of inlineComments) {

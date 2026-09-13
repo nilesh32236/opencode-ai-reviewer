@@ -185,6 +185,9 @@ export function buildConfig(): AgentConfig {
       ...(process.env.ENABLE_REVIEWS_ARRAY_INLINE !== undefined
         ? { enableReviewsArrayInline: process.env.ENABLE_REVIEWS_ARRAY_INLINE === 'true' }
         : {}),
+      ...(process.env.DEDUP_FINGERPRINTS !== undefined
+        ? { dedupFingerprints: process.env.DEDUP_FINGERPRINTS !== 'false' }
+        : {}),
       ...(process.env.ENABLE_CODEBASE_INDEX !== undefined
         ? { enableCodebaseIndex: process.env.ENABLE_CODEBASE_INDEX !== 'false' }
         : {}),
@@ -320,7 +323,7 @@ export function buildConfig(): AgentConfig {
  * / `review.enableMetaVerification` / `review.enableTestGapDetection` /
  * `review.showFunctionScores` / `review.enableReviewsArrayInline` /
  * `review.suppressLowConfidence` / `review.failOnSeverity` /
- * `review.suggestTitleAndLabels` fields, the `notifications`, `secrets`, `llm`,
+ * `review.suggestTitleAndLabels` / `review.dedupFingerprints` fields, the `notifications`, `secrets`, `llm`,
  * and `sca` sections are merged
  * (the engine filters findings off those fields and respects the codebase-index /
  * meta-verification / low-confidence-suppression toggles, the check-run
@@ -348,6 +351,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const suggestTitleAndLabels = repoConfig?.review?.suggestTitleAndLabels;
   const streamComments = repoConfig?.review?.streamComments;
   const streamBatchSize = repoConfig?.review?.streamBatchSize;
+  const dedupFingerprints = repoConfig?.review?.dedupFingerprints;
   const pathInstructions = repoConfig?.review?.pathInstructions;
   const showFunctionScores = repoConfig?.review?.showFunctionScores;
   const enableReviewsArrayInline = repoConfig?.review?.enableReviewsArrayInline;
@@ -371,6 +375,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
     suggestTitleAndLabels === undefined &&
     streamComments === undefined &&
     streamBatchSize === undefined &&
+    dedupFingerprints === undefined &&
     !pathInstructions &&
     showFunctionScores === undefined &&
     enableReviewsArrayInline === undefined &&
@@ -405,6 +410,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       ...(suggestTitleAndLabels !== undefined && { suggestTitleAndLabels }),
       ...(streamComments !== undefined && { streamComments }),
       ...(streamBatchSize !== undefined && { streamBatchSize }),
+      ...(dedupFingerprints !== undefined && { dedupFingerprints }),
       ...(pathInstructions && {
         pathInstructions: Object.fromEntries(
           Object.entries({

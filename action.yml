@@ -256,6 +256,11 @@ inputs:
     required: false
     default: '0'
 
+  dedup_fingerprints:
+    description: 'Skip inline findings already posted as bot review threads so re-pushes never re-post identical findings (fail-open when history is unavailable). Set to false to post every finding on every run.'
+    required: false
+    default: 'true'
+
   review_comment_summary:
     description: 'Include a summary comment on the PR'
     required: false

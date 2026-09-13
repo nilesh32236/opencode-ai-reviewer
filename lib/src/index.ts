@@ -229,6 +229,22 @@ export {
   analyzeBatchReachability,
 } from './utils/reachability.js';
 export type { ReachabilityResult } from './utils/reachability.js';
+export {
+  fingerprintFinding,
+  fingerprintForInlineComment,
+  fingerprintForIssue,
+  filterDuplicateInlineComments,
+  isDuplicateOfThreads,
+  shouldPostFingerprint,
+  snippetHashFor,
+  normalizeFingerprintPath,
+  normalizeFingerprintText,
+  InlineFingerprintStore,
+} from './utils/inline-fingerprint.js';
+export type {
+  KnownInlineThread,
+  InlineCommentCandidate,
+} from './utils/inline-fingerprint.js';
 export { Logger, sanitizeError, sanitizeErrorMessage } from './utils/logger.js';
 export type {
   LogLevel,

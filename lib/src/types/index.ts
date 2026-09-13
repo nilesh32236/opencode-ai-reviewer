@@ -729,6 +729,12 @@ export interface ReviewConfig {
    * (default: false). When true, findings appear progressively instead of only
    * after the full review finishes. */
   streamComments?: boolean;
+  /** Skip inline findings already posted as bot review threads (fingerprint
+   * dedup across re-pushes). Default true; fail-open when history is
+   * unavailable. Set false to post every finding on every run.
+   * @since NEXT
+   */
+  dedupFingerprints?: boolean;
   /** Number of findings to accumulate before posting a streaming batch
    * (default: 0 = post per-batch as soon as the batch completes). */
   streamBatchSize?: number;
@@ -1554,6 +1560,10 @@ export interface PromptConfig {
     /** Number of findings to accumulate before posting a streaming batch
      * (default: 0 = per-batch). */
     streamBatchSize?: number;
+    /** Skip inline findings already posted as bot threads (default: true).
+     * @since NEXT
+     */
+    dedupFingerprints?: boolean;
     /** Effort preset trading review depth for speed/cost (unset = current
      * behavior; explicit per-setting values always override the preset). */
     effort?: ReviewEffort;
@@ -1834,6 +1844,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     suggestTitleAndLabels: false,
     streamComments: false,
     streamBatchSize: 0,
+    dedupFingerprints: true,
   },
   audit: {
     promptsDir: '.audit-prompts',

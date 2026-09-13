@@ -152,7 +152,7 @@ describe('runReview (action wrapper)', () => {
       reviewResult,
       config.review.inline,
       undefined,
-      undefined,
+      { dedupFingerprints: true, previousBotComments: [] },
     );
     expect(mockSetOutput).toHaveBeenCalledWith('review_summary', reviewResult.summary);
     expect(mockSetOutput).toHaveBeenCalledWith('verdict', 'true');

@@ -166,6 +166,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     suggestTitleAndLabels: null,
     streamComments: null,
     streamBatchSize: null,
+    dedupFingerprints: null,
     effort: null,
     tokenBudget: null,
     budget: null,
@@ -596,6 +597,9 @@ export function validateConfig(
     }
     if (typeof config.review.streamBatchSize === 'number' && config.review.streamBatchSize >= 0) {
       result.review.streamBatchSize = config.review.streamBatchSize;
+    }
+    if (typeof config.review.dedupFingerprints === 'boolean') {
+      result.review.dedupFingerprints = config.review.dedupFingerprints;
     }
     const parsedEffort = parseReviewEffort(config.review.effort);
     if (parsedEffort !== null) {
