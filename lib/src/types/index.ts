@@ -672,11 +672,23 @@ export interface PathRule {
   /** Glob patterns matched against repo-relative file paths (e.g. `docs/**`). */
   paths: string[];
   /** Suggested reviewer logins/teams appended to the review summary (no API call). */
-  suggest_reviewers?: string[];
+  suggestReviewers?: string[];
   /** Labels applied best-effort via the platform adapter when any file matches. */
-  add_labels?: string[];
+  addLabels?: string[];
   /** When true, matched files are skipped (log only, other files still reviewed). */
   skip?: boolean;
+  /**
+   * Deprecated alias for `suggestReviewers` (accepted for backward
+   * compatibility, normalized to `suggestReviewers` by `sanitizePathRules`).
+   * @deprecated Use `suggestReviewers` instead.
+   */
+  suggest_reviewers?: string[];
+  /**
+   * Deprecated alias for `addLabels` (accepted for backward compatibility,
+   * normalized to `addLabels` by `sanitizePathRules`).
+   * @deprecated Use `addLabels` instead.
+   */
+  add_labels?: string[];
 }
 
 /** Main review configuration controlling what is reviewed and how findings are reported. */

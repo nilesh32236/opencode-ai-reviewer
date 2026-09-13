@@ -157,7 +157,10 @@ export function sanitizePathInstructions(raw: unknown): Record<string, string> |
  * Sanitize a raw `review.pathRules` value fail-open: returns undefined when
  * absent/invalid, drops invalid globs individually, drops rules with no
  * usable paths or no effective action, and truncates extras with a warning.
- * Never throws; invalid input means "review all files" downstream.
+ * Accepts both the canonical camelCase keys (`suggestReviewers`/`addLabels`)
+ * and the legacy snake_case aliases (`suggest_reviewers`/`add_labels`),
+ * normalizing output to camelCase. Never throws; invalid input means
+ * "review all files" downstream.
  * @param raw - The raw pathRules value to sanitize.
  * @returns The sanitized rules, or undefined when nothing usable remains.
  * @since NEXT
@@ -180,6 +183,8 @@ export function sanitizePathRules(raw: unknown): PathRule[] | undefined {
     }
     const candidate = entry as {
       paths?: unknown;
+      suggestReviewers?: unknown;
+      addLabels?: unknown;
       suggest_reviewers?: unknown;
       add_labels?: unknown;
       skip?: unknown;
@@ -190,13 +195,18 @@ export function sanitizePathRules(raw: unknown): PathRule[] | undefined {
     }
     const paths: string[] = [];
     for (const g of candidate.paths) {
-      if (typeof g !== 'string' || g.length === 0 || g.length > 256 || !isValidPathGlob(g)) {
-        const safeGlob =
-          typeof g === 'string' ? g.replace(/[\r\n]+/g, ' ').slice(0, 200) : String(g);
+      if (typeof g !== 'string') {
+        core.warning('Ignoring review.pathRules glob: invalid glob "(non-string)"');
+        continue;
+      }
+      const trimmed = g.trim();
+      if (trimmed.length === 0 || trimmed.length > 256 || !isValidPathGlob(trimmed)) {
+        const safeGlob = trimmed.replace(/[\r\n]+/g, ' ').slice(0, 200);
         core.warning(`Ignoring review.pathRules glob: invalid glob "${safeGlob}"`);
         continue;
       }
-      if (!paths.includes(g)) paths.push(g);
+      if (!paths.includes(trimmed)) paths.push(trimmed);
+      if (paths.length >= MAX_PATH_RULE_ENTRIES) break;
     }
     if (paths.length === 0) {
       core.warning('Ignoring review.pathRules entry: no valid globs remain');
@@ -214,16 +224,16 @@ export function sanitizePathRules(raw: unknown): PathRule[] | undefined {
       }
       return out.length > 0 ? out : undefined;
     };
-    const reviewers = cleanStrings(candidate.suggest_reviewers);
-    const labels = cleanStrings(candidate.add_labels);
+    const reviewers = cleanStrings(candidate.suggestReviewers ?? candidate.suggest_reviewers);
+    const labels = cleanStrings(candidate.addLabels ?? candidate.add_labels);
     const skip = candidate.skip === true ? true : undefined;
     if (!reviewers && !labels && !skip) {
       core.warning('Ignoring review.pathRules entry: no effective action (reviewers/labels/skip)');
       continue;
     }
     const rule: PathRule = { paths };
-    if (reviewers) rule.suggest_reviewers = reviewers;
-    if (labels) rule.add_labels = labels;
+    if (reviewers) rule.suggestReviewers = reviewers;
+    if (labels) rule.addLabels = labels;
     if (skip) rule.skip = true;
     sanitized.push(rule);
   }

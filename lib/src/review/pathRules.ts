@@ -5,6 +5,24 @@ import { Logger } from '../utils/logger.js';
 
 const logger = new Logger('path-rules');
 
+/**
+ * Suggested reviewers for a rule, reading the canonical camelCase key with a
+ * fallback to the legacy snake_case alias (for rules that bypassed
+ * `sanitizePathRules` normalization).
+ */
+function reviewersOf(rule: PathRule): string[] {
+  return rule.suggestReviewers ?? rule.suggest_reviewers ?? [];
+}
+
+/**
+ * Auto-labels for a rule, reading the canonical camelCase key with a fallback
+ * to the legacy snake_case alias (for rules that bypassed `sanitizePathRules`
+ * normalization).
+ */
+function labelsOf(rule: PathRule): string[] {
+  return rule.addLabels ?? rule.add_labels ?? [];
+}
+
 /** Aggregated outcome of matching path rules against a changed-file list.
  * @since NEXT
  */
@@ -83,13 +101,13 @@ export function collectPathRuleOutcomes(
     for (const rule of matched) {
       matchedSet.add(rule);
       if (rule.skip === true) skipped.add(file);
-      for (const r of rule.suggest_reviewers ?? []) {
+      for (const r of reviewersOf(rule)) {
         if (!reviewerSet.has(r)) {
           reviewerSet.add(r);
           reviewers.push(r);
         }
       }
-      for (const label of rule.add_labels ?? []) {
+      for (const label of labelsOf(rule)) {
         if (!labelSet.has(label)) {
           labelSet.add(label);
           labels.push(label);
