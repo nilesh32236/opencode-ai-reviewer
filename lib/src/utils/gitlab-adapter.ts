@@ -81,8 +81,8 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Constructor.
-   * @param token
-   * @param repo
+   * @param token - GitLab personal access token for API authentication.
+   * @param repo - Repository path with namespace (e.g. 'group/project').
    * @param apiUrl - apiUrl argument.
    * @returns Description.
    */
@@ -225,9 +225,9 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Paginate through GitLab API endpoints.
-   * @param endpoint
-   * @param options
-   * @param options.perPage
+   * @param endpoint - API path relative to the project base (e.g. '/merge_requests').
+   * @param options - Pagination and error-handling options.
+   * @param options.perPage - Items requested per page (max 100).
    * @param options.maxPages
    * @param options.direction - options.direction argument.
    * @param options.throwOnError - When true, rethrow a page-fetch error instead of
