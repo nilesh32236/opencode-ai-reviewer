@@ -1,8 +1,6 @@
-import { execFile, execFileSync } from 'child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
-import { promisify } from 'util';
 import type {
   AgentConfig,
   DocStyle,
@@ -33,6 +31,7 @@ import {
 } from '@opencode-pr-agent/lib';
 import { isBotLogin } from '../utils/bot.js';
 import { runWithConcurrencyLimit } from '../utils/concurrency.js';
+import { execProcess } from '../utils/exec.js';
 import { execGit } from '../utils/git.js';
 import type { ExecGitOptions } from '../utils/git.js';
 import {
@@ -48,44 +47,13 @@ import { handlePRReview } from './pr-review.js';
 /** Module-scope logger for helper functions that have no per-call context. */
 const logger = new Logger('Command');
 
-/** Base options for non-git child processes (install/build steps). */
-interface ExecProcessOptions {
-  cwd?: string;
-  env?: Record<string, string>;
-  timeout?: number;
-  signal?: AbortSignal;
-}
-
 /**
- * Run a binary asynchronously (non-blocking) with timeout + AbortSignal
- * support, so long install/build steps never stall the webhook event loop.
+ * Return true when an error represents cancellation: an aborted signal or an
+ * `AbortError` (e.g. `signal.throwIfAborted()` thrown inside a try).
  */
-async function execProcess(
-  file: string,
-  args: string[],
-  options: ExecProcessOptions = {},
-): Promise<{ stdout: string; stderr: string }> {
-  options.signal?.throwIfAborted();
-  if (typeof execFile === 'function') {
-    const execFileAsync = promisify(execFile);
-    const { stdout, stderr } = await execFileAsync(file, args, {
-      cwd: options.cwd,
-      env: options.env ? { ...process.env, ...options.env } : process.env,
-      timeout: options.timeout ?? 600_000,
-      signal: options.signal,
-      maxBuffer: 20 * 1024 * 1024,
-    });
-    return { stdout: String(stdout ?? ''), stderr: String(stderr ?? '') };
-  }
-  // Fallback for environments/tests that mock only execFileSync.
-  const out = execFileSync(file, args, {
-    cwd: options.cwd,
-    env: options.env ? { ...process.env, ...options.env } : process.env,
-    timeout: options.timeout ?? 600_000,
-    encoding: 'utf-8',
-    maxBuffer: 20 * 1024 * 1024,
-  });
-  return { stdout: String(out ?? ''), stderr: '' };
+function isAbortError(err: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return true;
+  return err instanceof Error && err.name === 'AbortError';
 }
 
 /**
@@ -422,19 +390,23 @@ export async function handleCommand(
       }
     }
   } catch (err) {
-    logger.error(
-      `Command ${command} failed for issue ${issueNumber} in ${repo}: ${err instanceof Error ? err.message : err}`,
-    );
-    try {
-      await gh.postOrUpdateComment(
-        issueNumber,
-        '<!-- command-error -->',
-        `❌ **/${command} failed**: ${sanitizeErrorMessage(err)}`,
+    if (isAbortError(err, signal)) {
+      logger.info(`Command ${command} aborted for issue ${issueNumber} in ${repo}`);
+    } else {
+      logger.error(
+        `Command ${command} failed for issue ${issueNumber} in ${repo}: ${err instanceof Error ? err.message : err}`,
       );
-    } catch (commentErr) {
-      logger.warn(
-        `Failed to post command-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-      );
+      try {
+        await gh.postOrUpdateComment(
+          issueNumber,
+          '<!-- command-error -->',
+          `❌ **/${command} failed**: ${sanitizeErrorMessage(err)}`,
+        );
+      } catch (commentErr) {
+        logger.warn(
+          `Failed to post command-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+        );
+      }
     }
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
@@ -485,6 +457,10 @@ export async function handleAnalyzeCommand(
 
     logger.info(`Posted analysis plan for issue #${issueNumber}`);
   } catch (err) {
+    if (isAbortError(err)) {
+      logger.info(`Analyze aborted for issue #${issueNumber}`);
+      return;
+    }
     logger.error(
       `Failed to analyze issue #${issueNumber}: ${err instanceof Error ? err.message : err}`,
     );
@@ -545,6 +521,10 @@ export async function handleExplainCommand(
 
     logger.info(`Posted explanation for PR #${issueNumber}`);
   } catch (err) {
+    if (isAbortError(err)) {
+      logger.info(`Explain aborted for PR #${issueNumber}`);
+      return;
+    }
     logger.error(
       `Failed to explain PR #${issueNumber}: ${err instanceof Error ? err.message : err}`,
     );
@@ -650,6 +630,10 @@ export async function handleDescribeCommand(
       `Describe output for PR #${issueNumber}: comment ${commentPosted ? 'posted' : 'skipped'}, PR-body merge ${bodyMerged ? 'applied' : useMarkers === true ? 'skipped (unchanged or failed)' : 'skipped (disabled)'}`,
     );
   } catch (err) {
+    if (isAbortError(err)) {
+      logger.info(`Describe aborted for PR #${issueNumber}`);
+      return;
+    }
     logger.error(
       `Failed to describe PR #${issueNumber}: ${err instanceof Error ? err.message : err}`,
     );
@@ -928,12 +912,22 @@ export async function handleDocsCommand(
     }
 
     logger.error('Failed to create PR via GitHub API');
-    await gh.postOrUpdateComment(
-      issueNumber,
-      '<!-- docs-error -->',
-      `❌ Failed to create docs PR from branch \`${branchName}\`. A PR may already exist from this branch or the API rejected the request.`,
-    );
+    try {
+      await gh.postOrUpdateComment(
+        issueNumber,
+        '<!-- docs-error -->',
+        `❌ Failed to create docs PR from branch \`${branchName}\`. A PR may already exist from this branch or the API rejected the request.`,
+      );
+    } catch (commentErr) {
+      logger.warn(
+        `Failed to post docs-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+      );
+    }
   } catch (err) {
+    if (isAbortError(err, signal)) {
+      logger.info(`Docs aborted for PR #${issueNumber}`);
+      return;
+    }
     logger.error(
       `Docs PR creation failed for PR #${issueNumber}: ${err instanceof Error ? err.message : err}`,
     );

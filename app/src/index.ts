@@ -20,9 +20,10 @@ const logger = new Logger('App');
  * logs instead of silently destabilizing the Node process.
  *
  * Policy: log-and-continue for `unhandledRejection` (keeps the Probot
- * process observable; orchestrators decide restarts); log for
- * `uncaughtException` (Node still exits — no manual `process.exit` here so
- * the default crash semantics are preserved).
+ * process observable; orchestrators decide restarts); log-then-exit(1) for
+ * `uncaughtException` so the orchestrator restarts a potentially corrupt
+ * process (any listener suppresses Node's default crash, so we exit
+ * explicitly).
  *
  * Idempotent: safe to call multiple times (e.g. in tests) — handlers are
  * registered once per process.
@@ -40,6 +41,7 @@ export function setupGlobalErrorHandlers(): void {
       const message = err instanceof Error ? err.message : String(err);
       const stack = err instanceof Error ? err.stack : undefined;
       logger.error(`Uncaught exception: ${message}${stack ? `\n${stack}` : ''}`);
+      process.exit(1);
     });
   }
 }

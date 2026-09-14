@@ -111,7 +111,7 @@ export async function handleAudit(
         return;
       }
       selectedFile = specific;
-      category = promptName;
+      category = safeName;
     } else {
       const rand = Math.floor(Math.random() * mdFiles.length);
       selectedFile = path.join(promptsDir, mdFiles[rand]);
@@ -211,7 +211,7 @@ export async function handleAudit(
     try {
       await engine.cleanup();
     } catch (err) {
-      logger.error(`Engine cleanup failed: ${sanitizeErrorMessage(err)}`, err);
+      logger.warn(`Engine cleanup failed: ${sanitizeErrorMessage(err)}`);
     }
   }
 }
