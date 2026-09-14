@@ -1,6 +1,19 @@
 import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 /**
+ * Determine whether a PR/MR has already been closed or merged, so a fix
+ * loop can stop pushing iteration commits instead of force-pushing onto a
+ * merged branch (which is what orphaned PR #466's hardening).
+ *
+ * GitHub reports state as 'open' | 'closed' | 'merged'; GitLab reports
+ * 'opened' | 'closed' | 'merged'. An undefined state (older adapter builds
+ * that did not populate it) is treated as still open so existing callers are
+ * never silently blocked.
+ * @param state - The PR/MR state string, when known.
+ * @returns True when the PR/MR is closed or merged.
+ */
+export declare function isPrClosedOrMerged(state?: string): boolean;
+/**
  * Run a single fix iteration on a PR: resolve PR, gather context, apply
  * changes, optionally verify with a user-configured command, and push.
  * @param inputs - Parsed action inputs.
