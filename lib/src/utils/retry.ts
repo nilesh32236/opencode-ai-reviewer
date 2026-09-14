@@ -102,6 +102,18 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
     } catch (err) {
       lastError = err;
 
+      // Cancellation is never retryable: an aborted outer signal or an
+      // AbortError from the operation itself must fail fast instead of
+      // burning retries on an outcome the caller explicitly cancelled.
+      if (signal?.aborted) {
+        throw signal.reason instanceof Error
+          ? signal.reason
+          : new DOMException('Retry aborted by signal', 'AbortError');
+      }
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        throw err;
+      }
+
       if (attempt === maxRetries) break;
 
       const status =
@@ -223,11 +235,17 @@ function parseRetryAfterHeader(value: string): number | null {
 /**
  * Retry an async function with a per-attempt timeout.
  * Wraps `withRetry` and creates a new AbortController for each attempt
- * that fires after `timeoutMs` milliseconds.
+ * that fires after `timeoutMs` milliseconds. When `options.signal` is
+ * provided, the per-attempt signal is combined with the outer signal via
+ * `AbortSignal.any()` (with a manual fallback for runtimes without it),
+ * so an outer cancellation aborts the in-flight attempt immediately
+ * instead of only being checked between retries. The combined signal's
+ * `reason` preserves which source fired first, letting callers distinguish
+ * a deadline (`TimeoutError`) from a deliberate cancel (`AbortError`).
  *
  * @param fn - Async function that receives an AbortSignal for the per-attempt timeout.
  * @param timeoutMs - Per-attempt timeout in milliseconds.
- * @param options - Standard retry options forwarded to `withRetry`.
+ * @param options - Standard retry options forwarded to `withRetry` (including `signal`).
  * @returns The result of the function on success.
  * @throws The last error encountered once all retries are exhausted, or a TimeoutError (DOMException).
  */
@@ -236,13 +254,52 @@ export async function withRetryAndTimeout<T>(
   timeoutMs: number,
   options: RetryOptions = {},
 ): Promise<T> {
+  const outerSignal = options.signal;
+  if (outerSignal?.aborted) {
+    throw outerSignal.reason instanceof Error
+      ? outerSignal.reason
+      : new DOMException('Retry aborted by signal', 'AbortError');
+  }
   return withRetry(async () => {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const timeoutId = setTimeout(
+      () => controller.abort(new DOMException('Operation timed out', 'TimeoutError')),
+      timeoutMs,
+    );
     try {
-      return await fn(controller.signal);
+      const attemptSignal = combineSignals(outerSignal, controller.signal);
+      return await fn(attemptSignal);
     } finally {
       clearTimeout(timeoutId);
     }
   }, options);
+}
+
+/**
+ * Combine an optional outer AbortSignal with a per-attempt timeout signal.
+ * Prefers `AbortSignal.any()` (Node 20.3+); falls back to manual event
+ * wiring on runtimes without it.
+ *
+ * @param outer - The caller-provided cancellation signal, if any.
+ * @param timeoutSignal - The per-attempt timeout signal.
+ * @returns A signal that aborts when either input aborts.
+ */
+function combineSignals(outer: AbortSignal | undefined, timeoutSignal: AbortSignal): AbortSignal {
+  if (!outer) {
+    return timeoutSignal;
+  }
+  if (typeof AbortSignal.any === 'function') {
+    return AbortSignal.any([outer, timeoutSignal]);
+  }
+  const controller = new AbortController();
+  const forward = (source: AbortSignal): void => {
+    if (source.aborted) {
+      controller.abort(source.reason);
+      return;
+    }
+    source.addEventListener('abort', () => controller.abort(source.reason), { once: true });
+  };
+  forward(outer);
+  forward(timeoutSignal);
+  return controller.signal;
 }

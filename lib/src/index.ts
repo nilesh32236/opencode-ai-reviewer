@@ -9,6 +9,7 @@ export {
   getGitStatus,
   setupWorkspaceDependencies,
   resolveOpenCodePath,
+  resolveRequireChecksum,
   parseTokenUsage,
   parseTokenUsageDetailed,
   checkHealth,
@@ -16,6 +17,8 @@ export {
   isVersionCompatible,
   setOpenCodeRunMode,
   setLLMProviderConfig,
+  setDualEmitSubagentPermissions,
+  resolveDualEmitSubagentPermissions,
   buildLocalOpenCodeConfig,
   buildLLMProviderMap,
   MINIMUM_OPENCODE_VERSION,
@@ -26,6 +29,7 @@ export type {
   OpenCodeVersion,
   CheckHealthOptions,
   OpenCodeRunMode,
+  SetupOpenCodeOptions,
 } from './opencode.js';
 export { GitHubHelper } from './utils/github.js';
 export { GitLabAdapter } from './utils/gitlab-adapter.js';
@@ -153,11 +157,13 @@ export {
   ALLOWED_MCP_LOCAL_COMMANDS,
   DEFAULT_EVENT_LOG_PATH,
   EVENT_SUBSCRIBERS_ENV,
+  PINNED_MCP_NPM_PACKAGES,
   isAllowedLinterCommand,
   isAllowedMcpLocalCommand,
   isBlockedIpHost,
   isConfinedPath,
   isEventSubscribersEnabled,
+  isSafeLinterArgs,
   isSafeRemoteMcpUrl,
   resolveConfinedEventLogPath,
   resolveConfinedWorkingDir,
@@ -207,6 +213,14 @@ export {
   getSeverityBadge,
 } from './utils/review-body.js';
 export type { ReviewBodyOptions } from './utils/review-body.js';
+export { looksLikeCode } from './utils/code-heuristic.js';
+export {
+  buildFixPayload,
+  buildFixWithAiPrompt,
+  formatFixPayloadMarkdown,
+  isCodeLikeSuggestion,
+} from './utils/fix-payload.js';
+export type { FixPayload } from './utils/fix-payload.js';
 export {
   buildFunctionScoreOptions,
   buildFunctionScoreTable,
@@ -248,6 +262,9 @@ export {
   getKnownChecksum,
   parseChecksumFile,
   verifyChecksum,
+  buildMissingChecksumError,
+  markIntegrityError,
+  INTEGRITY_ERROR_STATUS,
 } from './utils/checksum.js';
 export { FeedbackSubscriber } from './learning/feedback-subscriber.js';
 export { SuppressionSubscriber } from './learning/suppression-subscriber.js';
@@ -281,6 +298,8 @@ export {
 export type { ReviewEffortPreset } from './utils/review-effort.js';
 export { countAtOrAboveSeverity, shouldFailOnSeverity } from './utils/threshold.js';
 export type { SeverityStats } from './utils/threshold.js';
+export { MINIMUM_NODE_VERSION, checkNodeFloor } from './utils/version.js';
+export type { NodeFloorCheck, ParsedVersion } from './utils/version.js';
 export {
   sendNotification,
   formatSlackMessage,

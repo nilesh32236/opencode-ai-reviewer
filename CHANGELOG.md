@@ -4,6 +4,88 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.13.6] — 2026-09-14
+
+
+### Fixed
+
+- gate V2 subagent permissions on 2.x and tolerate clean-tree fix iterations
+
+### Changed
+
+- [Autofix] [Audit:error-handling-resilience] 1 critical, 9 important, 0 minor (#503) (#503)
+
+[v1.13.6]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.5...v1.13.6
+
+## [v1.13.5] — 2026-09-13
+
+
+### Fixed
+
+- address issue #496 (#497) (#496
+#497)
+
+### Changed
+
+- [Autofix] [Monitor][competitor-gap] One-click Fix-with-AI suggested-change payload for coding-agent handoff (#498) (#498)
+- [Autofix] [Monitor][competitor-gap] Path-based suggested reviewers, auto-labels, and per-path skip rules (#501) (#501)
+- [Self-Improvement] Autonomous Codebase Enhancement (#489) (#489)
+- perf(jsonl-parser): optimize array allocations in buildInlineComments (#485) (#485)
+- [Autofix] [Monitor][toolchain] Enforce Node >=24.18.1 floor in CI matrix and engine check (#480) (#480)
+- [Autofix] [Monitor][opencode-cli] Emit V2 permissions-array subagent rules alongside V1 permission keys (#481) (#481)
+- [Autofix] [Monitor][platform] Post inline findings via reviews-array API with 422 position fallback to summary (#482) (#482)
+
+[v1.13.5]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.4...v1.13.5
+
+## [v1.13.4] — 2026-09-10
+
+
+### Fixed
+
+- address issue #467 (#468) (#467
+#468)
+- pipe oversized prompts via stdin to avoid E2BIG spawn failures
+- autofix iteration 2 [skip ci]
+- autofix iteration 1 [skip ci]
+- verification errors (attempt 1) [skip ci]
+- autofix iteration 2 [skip ci]
+- address issue #462
+- autofix iteration 2 [skip ci]
+- autofix iteration 1 [skip ci]
+- autofix iteration 1 [skip ci]
+- autofix iteration 1 [skip ci]
+- autofix iteration 1 [skip ci]
+- address issue #449
+- address issue #454
+- address issue #452
+- address issue #446
+- address issue #448
+- address issue #450
+
+### Changed
+
+- [Hardening] Port lost autofix iterations from PR #466 (branch race orphaning) (#472) (#466
+#472)
+- [Autofix] [Monitor][supply-chain] Fail-closed opencode CLI integrity gate for opencode_version (#477) (#477)
+- [Autofix] [Monitor][mcp] Migrate remote MCP transport from SSE to Streamable HTTP (#478) (#478)
+- feat(review): single-process subagent dispatch is the default (#483) (#483)
+- [Autofix] [Audit:security-privacy] 2 critical, 8 important, 0 minor (#466) (#466)
+- fix(action): restore default values for describe_use_markers and describe_publish_as_comment inputs
+- Merge remote-tracking branch 'origin/main' into autofix/issue-449
+- Merge remote-tracking branch 'origin/main' into chore/merge-autofix
+- chore: rebuild bundles; align postReview tests and JSDoc for integrated autofixes
+- Merge remote-tracking branch 'origin/autofix/issue-462' into chore/merge-autofix
+- Merge remote-tracking branch 'origin/autofix/issue-454' into chore/merge-autofix
+- Merge remote-tracking branch 'origin/autofix/issue-452' into chore/merge-autofix
+- Merge remote-tracking branch 'origin/autofix/issue-446' into chore/merge-autofix
+- chore: release v1.13.3 [skip ci]
+- Merge remote-tracking branch 'origin/autofix/issue-448' into chore/merge-autofix
+- Merge remote-tracking branch 'origin/autofix/issue-450' into chore/merge-autofix
+- fix(orchestrator): reset working tree between PR iterations; ensure managed labels exist
+- chore: resolve merge conflicts with main [autofix]
+
+[v1.13.4]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.3...v1.13.4
+
 ## [v1.13.3] — 2026-09-10
 
 

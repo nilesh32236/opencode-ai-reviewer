@@ -97,14 +97,14 @@ export async function registerEventSubscribers(
 
   if (loggingConfig.enabled) {
     const rawPath = loggingConfig.path ?? DEFAULT_EVENT_LOG_PATH;
-    // Relative paths are confined to the checkout working directory (a hostile
-    // value cannot mkdir/append/rm/rename outside it). Absolute paths are
-    // accepted as-is: they can only arrive via `validateConfig()` — which
-    // rewrites escaping repo-file values to the default — or from trusted
-    // direct API callers (e.g. operator-specified log locations, tests).
-    const confined = path.isAbsolute(rawPath)
-      ? path.normalize(rawPath)
-      : resolveConfinedEventLogPath(process.cwd(), rawPath);
+    // Every value — relative or absolute — goes through the shared checkout
+    // confinement resolver and falls back to the default on rejection. An
+    // absolute path can no longer mkdir/append/rm/rename outside the checkout
+    // even when it reaches this sink directly (e.g. a PromptConfig built
+    // programmatically without `validateConfig()`). Trusted operators that
+    // need a log location outside the checkout should construct
+    // `LoggingSubscriber` directly instead of going through this function.
+    const confined = resolveConfinedEventLogPath(process.cwd(), rawPath);
     const logPath = confined ?? path.resolve(process.cwd(), DEFAULT_EVENT_LOG_PATH);
     if (!confined) {
       logger.warn(

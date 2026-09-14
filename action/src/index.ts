@@ -141,7 +141,9 @@ async function run(): Promise<void> {
     }
 
     if (inputs.mode !== 'setup') {
-      await setupOpenCode(inputs.opencodeVersion, token);
+      await setupOpenCode(inputs.opencodeVersion, token, undefined, {
+        requireChecksum: inputs.requireOpencodeChecksum,
+      });
       await setupWorkspaceDependencies(process.cwd());
     }
 
@@ -246,6 +248,8 @@ async function run(): Promise<void> {
         ...(loadedConfig?.review?.skipLabels && { skipLabels: loadedConfig.review.skipLabels }),
         ...(loadedConfig?.review?.skipActors && { skipActors: loadedConfig.review.skipActors }),
         inline: loadedConfig?.review?.inline ?? inputs.reviewInline,
+        enableReviewsArrayInline:
+          loadedConfig?.review?.enableReviewsArrayInline ?? inputs.enableReviewsArrayInline,
         streamComments: inputs.streamComments,
         streamBatchSize: inputs.streamBatchSize,
         // When the workflow explicitly sets fail_on_severity it is authoritative
@@ -487,6 +491,15 @@ async function run(): Promise<void> {
           loadedConfig?.sca?.lockFilePatterns ?? DEFAULT_CONFIG.sca?.lockFilePatterns ?? [],
         excludePatterns:
           loadedConfig?.sca?.excludePatterns ?? DEFAULT_CONFIG.sca?.excludePatterns ?? [],
+      },
+      // Explicit workflow input (true or false) takes precedence over repo
+      // config; otherwise the repo config value (or the warn-only default)
+      // applies. Fail-open: the engine warns and continues unless
+      // enforcement is on.
+      toolchain: {
+        enforceNodeFloor: inputs.enforceNodeFloorExplicit
+          ? inputs.enforceNodeFloor
+          : (loadedConfig?.toolchain?.enforceNodeFloor ?? inputs.enforceNodeFloor),
       },
       llm: buildLLMConfig(inputs, loadedConfig),
     };

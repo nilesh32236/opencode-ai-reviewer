@@ -58,6 +58,13 @@ export interface SetupEngineOptions {
   minimumOpenCodeVersion?: string;
   /** OpenCode CLI version to install when missing (default: 'latest'). */
   opencodeVersion?: string;
+  /**
+   * Fail closed when a freshly downloaded OpenCode CLI cannot be
+   * checksum-verified. Maps to the `require_opencode_checksum` action input.
+   * Only guards fresh downloads — a PATH or tool-cache binary is still
+   * returned with a warning (see `SetupOpenCodeOptions` in `opencode.ts`).
+   */
+  requireChecksum?: boolean;
   /** Per-model connectivity probe timeout in milliseconds (default: 30000). */
   probeTimeoutMs?: number;
 }

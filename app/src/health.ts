@@ -6,7 +6,7 @@
  */
 
 import { type LearningStore, Logger } from '@opencode-pr-agent/lib';
-import type { Request, Response, Router } from 'express';
+import type { NextFunction, Request, Response, Router } from 'express';
 import { Router as createRouter } from 'express';
 
 /** Status of a single health-checked component. */
@@ -99,14 +99,36 @@ export function createHealthRouter(
     return { status: allOk ? 'ok' : 'degraded', components };
   }
 
-  router.get('/health', async (_req: Request, res: Response) => {
-    const result = await check(false);
-    res.status(result.status === 'error' ? 503 : 200).json(result);
+  router.get('/health', async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await check(false);
+      res.status(result.status === 'error' ? 503 : 200).json(result);
+    } catch (err) {
+      logger.error(`Health probe failed: ${err instanceof Error ? err.message : String(err)}`);
+      next(err);
+    }
   });
 
-  router.get('/ready', async (_req: Request, res: Response) => {
-    const result = await check(true);
-    res.status(result.status === 'ok' ? 200 : 503).json(result);
+  router.get('/ready', async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await check(true);
+      res.status(result.status === 'ok' ? 200 : 503).json(result);
+    } catch (err) {
+      logger.error(`Readiness probe failed: ${err instanceof Error ? err.message : String(err)}`);
+      next(err);
+    }
+  });
+
+  // Fallback error handler so probe failures always produce a 503 JSON
+  // payload instead of hanging or leaking a stack trace.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  router.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    logger.error(`Health router error: ${err instanceof Error ? err.message : String(err)}`);
+    if (res.headersSent) return;
+    res.status(503).json({
+      status: 'error',
+      components: [{ name: 'probe', ok: false, detail: 'probe failure' }],
+    });
   });
 
   return router;

@@ -377,6 +377,9 @@ export interface AgentConfig {
   secrets?: SecretDetectorConfig;
   /** Deterministic Software Composition Analysis (SCA) of changed dependency lock files (default: enabled). */
   sca?: SCAConfig;
+  /** Toolchain / runtime floor configuration (default: warn-only).
+   * @since NEXT */
+  toolchain?: ToolchainConfig;
   /** Custom LLM providers (self-hosted OpenAI-compatible, Azure, Bedrock, Ollama). */
   llm?: LLMConfig;
 }
@@ -492,6 +495,13 @@ export interface NotificationsConfig {
   teams?: TeamsConfig;
 }
 
+/** Remote MCP transport selection for `remote` servers.
+ * - `auto` (default): try Streamable HTTP first, fall back to SSE on protocol-mismatch handshake failure.
+ * - `sse`: pin the legacy SSE transport.
+ * - `streamable-http`: Streamable HTTP only, no SSE fallback.
+ * @since NEXT */
+export type RemoteTransportMode = 'auto' | 'sse' | 'streamable-http';
+
 /** Configuration for an MCP server used for context enrichment. */
 export interface MCPServerConfig {
   /** Name of the MCP server */
@@ -513,6 +523,12 @@ export interface MCPServerConfig {
    * a built-in safe default set is used; an explicit empty array forwards no parent variables.
    * `environment` vars are always merged on top. */
   allowedEnv?: string[];
+  /** Remote transport selection for `remote` servers. Remote-only; ignored for `local`.
+   * - `auto` (default): try Streamable HTTP first, fall back to SSE on handshake failure.
+   * - `sse`: pin legacy SSE transport.
+   * - `streamable-http`: Streamable HTTP only, no SSE fallback.
+   * @since NEXT */
+  remoteTransport?: RemoteTransportMode;
 }
 
 /** Project-level context config fed into review prompts. */
@@ -646,6 +662,35 @@ export type FailOnSeverity = 'off' | 'critical' | 'important' | 'minor';
  * explicit per-setting values always override the preset. */
 export type ReviewEffort = 'lite' | 'balanced';
 
+/** A single path-based routing rule: glob(s) mapped to suggested reviewers,
+ * auto-labels, and/or a per-path review skip. Suggested reviewers are
+ * summary-only (no reviewer-request API call); labels are applied best-effort
+ * via the platform adapter; `skip: true` excludes matched files from review.
+ * @since NEXT
+ */
+export interface PathRule {
+  /** Glob patterns matched against repo-relative file paths (e.g. `docs/**`). */
+  paths: string[];
+  /** Suggested reviewer logins/teams appended to the review summary (no API call). */
+  suggestReviewers?: string[];
+  /** Labels applied best-effort via the platform adapter when any file matches. */
+  addLabels?: string[];
+  /** When true, matched files are skipped (log only, other files still reviewed). */
+  skip?: boolean;
+  /**
+   * Deprecated alias for `suggestReviewers` (accepted for backward
+   * compatibility, normalized to `suggestReviewers` by `sanitizePathRules`).
+   * @deprecated Use `suggestReviewers` instead.
+   */
+  suggest_reviewers?: string[];
+  /**
+   * Deprecated alias for `addLabels` (accepted for backward compatibility,
+   * normalized to `addLabels` by `sanitizePathRules`).
+   * @deprecated Use `addLabels` instead.
+   */
+  add_labels?: string[];
+}
+
 /** Main review configuration controlling what is reviewed and how findings are reported. */
 export interface ReviewConfig {
   /** Skip review for PRs with these labels */
@@ -654,6 +699,21 @@ export interface ReviewConfig {
   skipActors: string[];
   /** Whether to post findings as inline review comments on the PR diff */
   inline: boolean;
+  /**
+   * Opt-in to bundling mappable findings into a single reviews-array request
+   * (`POST /pulls/{n}/reviews` with `comments[]`), falling back to a
+   * summary-only review preserving all findings on 422/403/429.
+   * Default false (legacy behavior unchanged).
+   * @since NEXT
+   */
+  enableReviewsArrayInline?: boolean;
+  /**
+   * Opt-in to appending a one-click Fix-with-AI payload (```suggestion block
+   * plus a Fix-with-AI prompt) to rendered findings for coding-agent handoff.
+   * Default false (legacy output unchanged).
+   * @since NEXT
+   */
+  emitFixPayload?: boolean;
   /** Whether to require a verdict */
   requireVerdict: boolean;
   /** Command triggers (e.g., /oc, /review) */
@@ -694,6 +754,12 @@ export interface ReviewConfig {
    * (e.g. `{ "docs/**": "Check spelling." }`). Max 10 entries, each capped
    * at 2 KB. Absent/empty means no per-path instructions. */
   pathInstructions?: Record<string, string>;
+  /** Optional path-based routing rules mapping file globs to suggested
+   * reviewers, auto-labels, and per-path skips. All matching is fail-open:
+   * absent/invalid rules never block review.
+   * @since NEXT
+   */
+  pathRules?: PathRule[];
   /** Severity threshold at or above which the action/check run fails
    * (default: 'critical'). Use 'off' to never fail from findings. */
   failOnSeverity: FailOnSeverity;
@@ -787,6 +853,14 @@ export interface SCAConfig {
   lockFilePatterns: string[];
   /** Glob patterns for lock files to skip during the SCA scan. */
   excludePatterns: string[];
+}
+
+/** Toolchain / runtime configuration (additive, fail-open).
+ * @since NEXT */
+export interface ToolchainConfig {
+  /** When true, a Node runtime below the minimum floor fails closed
+   * instead of warn-and-continue (default: false). */
+  enforceNodeFloor?: boolean;
 }
 
 /** Default glob patterns for the lock files supported by the SCA pass. */
@@ -1467,6 +1541,18 @@ export interface PromptConfig {
     customRules?: string[];
     /** Post findings as inline review comments (default: true) */
     inline?: boolean;
+    /**
+     * Bundle mappable findings into a single reviews-array request with
+     * summary-only 422 fallback (default: false, opt-in).
+     * @since NEXT
+     */
+    enableReviewsArrayInline?: boolean;
+    /**
+     * Opt-in to appending a one-click Fix-with-AI payload to rendered findings.
+     * Default false (legacy output unchanged).
+     * @since NEXT
+     */
+    emitFixPayload?: boolean;
     /** Suppress low-confidence findings from review output (default: false) */
     suppressLowConfidence?: boolean;
     /** Patterns to exclude from review */
@@ -1505,6 +1591,11 @@ export interface PromptConfig {
      * additively per reviewed file when the file path matches the glob.
      * Max 10 entries, each capped at 2 KB. */
     pathInstructions?: Record<string, string>;
+    /** Optional path-based routing rules (suggested reviewers, auto-labels,
+     * per-path skips). Fail-open: absent/invalid rules never block review.
+     * @since NEXT
+     */
+    pathRules?: PathRule[];
     /** Severity threshold at or above which the action/check run fails
      * (default: 'critical'). Use 'off' to never fail from findings. */
     failOnSeverity?: FailOnSeverity;
@@ -1644,6 +1735,9 @@ export interface PromptConfig {
   sca?: SCAConfig;
   /** Multi-agent review architecture configuration (default: disabled). */
   multiAgent?: MultiAgentConfig;
+  /** Toolchain / runtime floor configuration (default: warn-only).
+   * @since NEXT */
+  toolchain?: ToolchainConfig;
   /** Custom LLM providers (self-hosted OpenAI-compatible, Azure, Bedrock, Ollama). */
   llm?: LLMConfig;
 }
@@ -1683,6 +1777,12 @@ export const DEFAULT_SCA_CONFIG: SCAConfig = {
   minSeverity: 'important',
   lockFilePatterns: DEFAULT_SCA_LOCK_FILE_PATTERNS,
   excludePatterns: [],
+};
+
+/** Default values for toolchain / runtime floor checks (warn-only).
+ * @since NEXT */
+export const DEFAULT_TOOLCHAIN_CONFIG: ToolchainConfig = {
+  enforceNodeFloor: false,
 };
 
 /** Default conventional-commit type → heading map for changelog categories. */
@@ -1759,6 +1859,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     ],
     enableMetaVerification: false,
     enableTestGapDetection: false,
+    emitFixPayload: false,
     showFunctionScores: false,
     suppressLowConfidence: false,
     enableReachability: true,
@@ -1853,6 +1954,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   multiAgent: DEFAULT_MULTI_AGENT_CONFIG,
   secrets: DEFAULT_SECRET_DETECTOR_CONFIG,
   sca: DEFAULT_SCA_CONFIG,
+  toolchain: DEFAULT_TOOLCHAIN_CONFIG,
 };
 
 // ─── Event Bus ───────────────────────────────────────────

@@ -172,3 +172,62 @@ describe('mergeRepoConfig suggestTitleAndLabels merge', () => {
     }
   });
 });
+
+describe('buildConfig ENABLE_REVIEWS_ARRAY_INLINE override', () => {
+  const ENV_KEY = 'ENABLE_REVIEWS_ARRAY_INLINE';
+  const ORIGINAL = process.env[ENV_KEY];
+
+  afterEach(() => {
+    if (ORIGINAL === undefined) {
+      delete process.env[ENV_KEY];
+    } else {
+      process.env[ENV_KEY] = ORIGINAL;
+    }
+  });
+
+  it('leaves enableReviewsArrayInline unset when env is absent', () => {
+    delete process.env[ENV_KEY];
+    expect(buildConfig().review.enableReviewsArrayInline).toBeUndefined();
+  });
+
+  it('honors ENABLE_REVIEWS_ARRAY_INLINE=true', () => {
+    process.env.ENABLE_REVIEWS_ARRAY_INLINE = 'true';
+    expect(buildConfig().review.enableReviewsArrayInline).toBe(true);
+  });
+
+  it('honors ENABLE_REVIEWS_ARRAY_INLINE=false', () => {
+    process.env.ENABLE_REVIEWS_ARRAY_INLINE = 'false';
+    expect(buildConfig().review.enableReviewsArrayInline).toBe(false);
+  });
+});
+
+describe('mergeRepoConfig enableReviewsArrayInline merge', () => {
+  it('applies review.enableReviewsArrayInline from the repo config', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'app-config-reviews-array-'));
+    try {
+      writeFileSync(
+        join(dir, '.opencode-reviewer.yml'),
+        ['review:', '  enableReviewsArrayInline: true', ''].join('\n'),
+      );
+      const merged = mergeRepoConfig(buildConfig(), dir);
+      expect(merged.review.enableReviewsArrayInline).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns base config untouched when repo has no enableReviewsArrayInline', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'app-config-no-reviews-array-'));
+    try {
+      writeFileSync(
+        join(dir, '.opencode-reviewer.yml'),
+        ['review:', '  failOnSeverity: important', ''].join('\n'),
+      );
+      const base = buildConfig();
+      const merged = mergeRepoConfig(base, dir);
+      expect(merged.review.enableReviewsArrayInline).toBe(base.review.enableReviewsArrayInline);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

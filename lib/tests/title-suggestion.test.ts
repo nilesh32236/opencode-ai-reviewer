@@ -196,8 +196,15 @@ describe('buildSuggestionComment', () => {
 
   it('escapes backticks via the shared markdown helper', () => {
     const body = buildSuggestionComment({ title: 'fix: add \\`code\\`', labels: [] }, 1);
-    expect(body).toContain('fix: add \\\\`code\\\\`');
+    // Backslashes are escaped before backticks, so `\`` becomes `\\\``: the
+    // span renders a literal backslash + backtick instead of breaking out.
+    expect(body).toContain('fix: add \\\\\\`code\\\\\\`');
     expect(body).not.toContain('`fix: add \\`code\\``');
+  });
+
+  it('escapes a trailing backslash so titles cannot break out of the code span', () => {
+    const body = buildSuggestionComment({ title: 'fix: trailing\\', labels: [] }, 1);
+    expect(body).toContain('`fix: trailing\\\\`');
   });
 
   it('neutralizes newline and image markdown injection in titles and labels', () => {

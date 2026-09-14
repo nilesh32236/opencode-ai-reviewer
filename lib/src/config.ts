@@ -16,6 +16,7 @@ import type {
   MultiAgentAgentConfig,
   MultiAgentConfig,
   NotificationsConfig,
+  PathRule,
   PromptConfig,
   ReviewSensitivityConfig,
   SCAConfig,
@@ -37,7 +38,9 @@ import { parseReviewEffort } from './utils/review-effort.js';
 import {
   DEFAULT_EVENT_LOG_PATH,
   isAllowedLinterCommand,
-  isConfinedPath,
+  isSafeLinterArgs,
+  resolveConfinedEventLogPath,
+  resolveConfinedWorkingDir,
 } from './utils/safe-exec.js';
 
 /**
@@ -63,6 +66,14 @@ const CATEGORY_OVERRIDE_SHAPE: Record<string, ConfigShape> = {
 export const MAX_PATH_INSTRUCTIONS_ENTRIES = 10;
 /** Max UTF-8 bytes kept per `review.pathInstructions` entry. */
 export const MAX_PATH_INSTRUCTION_BYTES = 2048;
+/** Max rules kept from `review.pathRules` (fail-open truncation).
+ * @since NEXT
+ */
+export const MAX_PATH_RULES = 20;
+/** Max entries kept per `review.pathRules` string list (reviewers/labels).
+ * @since NEXT
+ */
+export const MAX_PATH_RULE_ENTRIES = 20;
 
 /**
  * Validate a `review.pathInstructions` glob without relying on minimatch
@@ -142,6 +153,93 @@ export function sanitizePathInstructions(raw: unknown): Record<string, string> |
   return Object.keys(sanitized).length > 0 ? sanitized : undefined;
 }
 
+/**
+ * Sanitize a raw `review.pathRules` value fail-open: returns undefined when
+ * absent/invalid, drops invalid globs individually, drops rules with no
+ * usable paths or no effective action, and truncates extras with a warning.
+ * Accepts both the canonical camelCase keys (`suggestReviewers`/`addLabels`)
+ * and the legacy snake_case aliases (`suggest_reviewers`/`add_labels`),
+ * normalizing output to camelCase. Never throws; invalid input means
+ * "review all files" downstream.
+ * @param raw - The raw pathRules value to sanitize.
+ * @returns The sanitized rules, or undefined when nothing usable remains.
+ * @since NEXT
+ */
+export function sanitizePathRules(raw: unknown): PathRule[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!Array.isArray(raw)) {
+    core.warning('Ignoring review.pathRules: expected an array of { paths, ... } rules');
+    return undefined;
+  }
+  const sanitized: PathRule[] = [];
+  for (const entry of raw) {
+    if (sanitized.length >= MAX_PATH_RULES) {
+      core.warning(`review.pathRules exceeds ${MAX_PATH_RULES} entries, ignoring extras`);
+      break;
+    }
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      core.warning('Ignoring review.pathRules entry: expected an object with a paths array');
+      continue;
+    }
+    const candidate = entry as {
+      paths?: unknown;
+      suggestReviewers?: unknown;
+      addLabels?: unknown;
+      suggest_reviewers?: unknown;
+      add_labels?: unknown;
+      skip?: unknown;
+    };
+    if (!Array.isArray(candidate.paths) || candidate.paths.length === 0) {
+      core.warning('Ignoring review.pathRules entry: paths must be a non-empty string array');
+      continue;
+    }
+    const paths: string[] = [];
+    for (const g of candidate.paths) {
+      if (typeof g !== 'string') {
+        core.warning('Ignoring review.pathRules glob: invalid glob "(non-string)"');
+        continue;
+      }
+      const trimmed = g.trim();
+      if (trimmed.length === 0 || trimmed.length > 256 || !isValidPathGlob(trimmed)) {
+        const safeGlob = trimmed.replace(/[\r\n]+/g, ' ').slice(0, 200);
+        core.warning(`Ignoring review.pathRules glob: invalid glob "${safeGlob}"`);
+        continue;
+      }
+      if (!paths.includes(trimmed)) paths.push(trimmed);
+      if (paths.length >= MAX_PATH_RULE_ENTRIES) break;
+    }
+    if (paths.length === 0) {
+      core.warning('Ignoring review.pathRules entry: no valid globs remain');
+      continue;
+    }
+    const cleanStrings = (value: unknown): string[] | undefined => {
+      if (value === undefined) return undefined;
+      if (!Array.isArray(value)) return undefined;
+      const out: string[] = [];
+      for (const v of value) {
+        if (typeof v !== 'string' || v.trim().length === 0) continue;
+        const trimmed = v.trim().slice(0, 256);
+        if (!out.includes(trimmed)) out.push(trimmed);
+        if (out.length >= MAX_PATH_RULE_ENTRIES) break;
+      }
+      return out.length > 0 ? out : undefined;
+    };
+    const reviewers = cleanStrings(candidate.suggestReviewers ?? candidate.suggest_reviewers);
+    const labels = cleanStrings(candidate.addLabels ?? candidate.add_labels);
+    const skip = candidate.skip === true ? true : undefined;
+    if (!reviewers && !labels && !skip) {
+      core.warning('Ignoring review.pathRules entry: no effective action (reviewers/labels/skip)');
+      continue;
+    }
+    const rule: PathRule = { paths };
+    if (reviewers) rule.suggestReviewers = reviewers;
+    if (labels) rule.addLabels = labels;
+    if (skip) rule.skip = true;
+    sanitized.push(rule);
+  }
+  return sanitized.length > 0 ? sanitized : undefined;
+}
+
 const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
   platform: null,
   review: {
@@ -151,6 +249,8 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     extraContext: null,
     customRules: null,
     inline: null,
+    enableReviewsArrayInline: null,
+    emitFixPayload: null,
     suppressLowConfidence: null,
     excludePatterns: null,
     enableReachability: null,
@@ -177,6 +277,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     },
     categories: [CATEGORY_OVERRIDE_SHAPE],
     pathInstructions: null,
+    pathRules: null,
   },
   fix: {
     systemPrompt: null,
@@ -280,6 +381,9 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     minSeverity: null,
     lockFilePatterns: null,
     excludePatterns: null,
+  },
+  toolchain: {
+    enforceNodeFloor: null,
   },
   llm: {
     defaultProvider: null,
@@ -389,7 +493,7 @@ export function loadConfig(
       const raw = yaml.load(content) as Record<string, unknown>;
       warnUnknownKeys(raw, KNOWN_CONFIG_SHAPE, '');
       const config = PromptConfigSchema.parse(raw);
-      return validateConfig(config);
+      return validateConfig(config, path.resolve(workingDir));
     } catch (error) {
       core.warning(`Failed to parse ${configPath}: ${String(error)}`);
       return null;
@@ -406,7 +510,7 @@ export function loadConfig(
         const raw = yaml.load(content) as Record<string, unknown>;
         warnUnknownKeys(raw, KNOWN_CONFIG_SHAPE, '');
         const config = PromptConfigSchema.parse(raw);
-        return validateConfig(config);
+        return validateConfig(config, path.resolve(workingDir));
       } catch (error) {
         core.warning(`Failed to parse ${filename}: ${String(error)}`);
         return null;
@@ -516,10 +620,21 @@ export function resolveConfig(config: PromptConfig, options: ResolveConfigOption
  * Filters unknown properties, clamps numeric values to allowed ranges,
  * and applies allowlist filtering on check commands.
  *
+ * SECURITY: confinement checks use `baseDir` as the trusted checkout root —
+ * the same base the `execFile` sink (`engine.ts`, via `workDir`) and the
+ * event-log sink (`register-event-subscribers.ts`, via `process.cwd()`)
+ * confine against. Callers must pass the checkout directory the config was
+ * loaded from (see `loadConfig`); the default (`process.cwd()`) preserves
+ * the historical behavior for direct callers.
+ *
  * @param config - Raw PromptConfig to validate.
+ * @param baseDir - Trusted checkout root for path-confinement checks.
  * @returns A sanitized PromptConfig with only recognized, valid fields.
  */
-export function validateConfig(config: PromptConfig): PromptConfig {
+export function validateConfig(
+  config: PromptConfig,
+  baseDir: string = process.cwd(),
+): PromptConfig {
   const result: PromptConfig = {};
 
   if (config.review) {
@@ -541,6 +656,12 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     }
     if (typeof config.review.inline === 'boolean') {
       result.review.inline = config.review.inline;
+    }
+    if (typeof config.review.enableReviewsArrayInline === 'boolean') {
+      result.review.enableReviewsArrayInline = config.review.enableReviewsArrayInline;
+    }
+    if (typeof config.review.emitFixPayload === 'boolean') {
+      result.review.emitFixPayload = config.review.emitFixPayload;
     }
     if (typeof config.review.suppressLowConfidence === 'boolean') {
       result.review.suppressLowConfidence = config.review.suppressLowConfidence;
@@ -724,6 +845,12 @@ export function validateConfig(config: PromptConfig): PromptConfig {
       const sanitized = sanitizePathInstructions(config.review.pathInstructions);
       if (sanitized) {
         result.review.pathInstructions = sanitized;
+      }
+    }
+    if (config.review.pathRules !== undefined) {
+      const sanitized = sanitizePathRules(config.review.pathRules);
+      if (sanitized) {
+        result.review.pathRules = sanitized;
       }
     }
   }
@@ -1044,9 +1171,12 @@ export function validateConfig(config: PromptConfig): PromptConfig {
 
   if (Array.isArray(config.linters)) {
     // SECURITY: repo-file linter config is PR-editable (untrusted). Drop
-    // entries whose `command` is not a bare allowlisted basename or whose
-    // `workingDirectory` escapes the checkout; the exec sink in
-    // engine.ts re-checks both defensively.
+    // entries whose `command` is not a bare allowlisted basename, whose
+    // `args` are not safe strings, or whose `workingDirectory` escapes the
+    // checkout. Confinement goes through `resolveConfinedWorkingDir` — the
+    // same resolver the exec sink in engine.ts enforces — so validation and
+    // sink cannot disagree (e.g. `workingDirectory: '.'`, the checkout root,
+    // is benign in both layers).
     result.linters = config.linters.filter((l): l is LinterConfig => {
       if (!l || typeof l !== 'object') return false;
       if (typeof l.pattern !== 'string' || typeof l.command !== 'string') return false;
@@ -1058,10 +1188,16 @@ export function validateConfig(config: PromptConfig): PromptConfig {
         );
         return false;
       }
+      if (!isSafeLinterArgs(l.args)) {
+        core.warning(
+          `Ignoring linters entry for pattern "${l.pattern}": args are not safe strings`,
+        );
+        return false;
+      }
       if (
         typeof l.workingDirectory === 'string' &&
         l.workingDirectory.trim() !== '' &&
-        !isConfinedPath(process.cwd(), l.workingDirectory)
+        resolveConfinedWorkingDir(baseDir, l.workingDirectory) === null
       ) {
         core.warning(
           `Ignoring linters entry for pattern "${l.pattern}": workingDirectory "${l.workingDirectory}" escapes the working directory`,
@@ -1075,20 +1211,25 @@ export function validateConfig(config: PromptConfig): PromptConfig {
   if (config.eventLogging && typeof config.eventLogging === 'object') {
     const el = config.eventLogging;
     // SECURITY: `eventLogging.path` drives mkdir/appendFile/rm/rename on the
-    // runner. Confine it to the checkout; fall back to the default on escape.
+    // runner. Confine it to the checkout via `resolveConfinedEventLogPath` —
+    // the same resolver the log sink enforces — and fall back to the default
+    // on escape (absolute paths and `..` traversals from repo-file config are
+    // rewritten, never used verbatim).
     const rawPath =
       typeof el.path === 'string' && el.path.trim() !== ''
         ? el.path.trim()
         : DEFAULT_EVENT_LOG_PATH;
-    const safePath = isConfinedPath(process.cwd(), rawPath) ? rawPath : DEFAULT_EVENT_LOG_PATH;
-    if (safePath !== rawPath) {
+    // The sink (`register-event-subscribers.ts`) resolves relative paths the
+    // same way, so a value accepted here is accepted there (and vice versa).
+    const confined = resolveConfinedEventLogPath(baseDir, rawPath);
+    if (!confined) {
       core.warning(
         `Ignoring eventLogging.path "${rawPath}": escapes the working directory, using "${DEFAULT_EVENT_LOG_PATH}"`,
       );
     }
     result.eventLogging = {
       enabled: typeof el.enabled === 'boolean' ? el.enabled : false,
-      path: safePath,
+      path: confined ? rawPath : DEFAULT_EVENT_LOG_PATH,
     };
   }
 
@@ -1226,6 +1367,15 @@ export function validateConfig(config: PromptConfig): PromptConfig {
     result.sca = scaConfig;
   }
 
+  if (config.toolchain && typeof config.toolchain === 'object') {
+    const raw = config.toolchain;
+    if (typeof raw.enforceNodeFloor === 'boolean') {
+      result.toolchain = { enforceNodeFloor: raw.enforceNodeFloor };
+    } else if (raw.enforceNodeFloor !== undefined) {
+      core.warning('Ignoring invalid toolchain.enforceNodeFloor: expected a boolean.');
+    }
+  }
+
   if (config.llm && typeof config.llm === 'object') {
     const raw = config.llm;
     const llmConfig: LLMConfig = {};
@@ -1350,6 +1500,9 @@ function extractDefaultsFromConfig(config: PromptConfig): Record<string, unknown
   }
   if (config.review?.inline !== undefined) {
     defaults.review_inline = String(config.review.inline);
+  }
+  if (config.review?.enableReviewsArrayInline !== undefined) {
+    defaults.enable_reviews_array_inline = String(config.review.enableReviewsArrayInline);
   }
   if (config.fix?.maxIterations) {
     defaults.max_fix_iterations = String(config.fix.maxIterations);

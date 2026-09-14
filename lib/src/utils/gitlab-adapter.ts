@@ -745,7 +745,12 @@ export class GitLabAdapter implements PlatformAdapter {
       : result;
 
     const inlineComments = postInlineComments
-      ? buildInlineComments(workingResult, await this.getDiffLines(mrNumber), suppressLowConfidence)
+      ? buildInlineComments(
+          workingResult,
+          await this.getDiffLines(mrNumber),
+          suppressLowConfidence,
+          options?.emitFixPayload,
+        )
       : [];
 
     const placedInlineKeys = new Set<string>();

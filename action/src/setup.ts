@@ -35,6 +35,7 @@ export async function runSetup(
     repo: platform === 'github' ? repo : undefined,
     ...(inputs.probeAllModels ? { probeAllModels: true } : { probeModels: [config.reviewModel] }),
     opencodeVersion: inputs.opencodeVersion,
+    requireChecksum: inputs.requireOpencodeChecksum,
   });
 
   try {

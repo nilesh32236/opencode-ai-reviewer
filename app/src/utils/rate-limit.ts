@@ -102,15 +102,22 @@ export async function recordRateLimit(
   const prNumber = event.prNumber ?? 0;
   if (!repo || !prNumber) return;
   const user = extractActor(event.payload);
-  await limiter.recordReview(
-    repo,
-    user,
-    prNumber,
-    action,
-    tier,
-    tokensUsed,
-    reservation?.reservationId,
-  );
+  try {
+    await limiter.recordReview(
+      repo,
+      user,
+      prNumber,
+      action,
+      tier,
+      tokensUsed,
+      reservation?.reservationId,
+    );
+  } catch (err) {
+    // Non-critical bookkeeping must never fail user-visible work.
+    logger.warn(
+      `Failed to record rate limit for ${repo}#${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 /**

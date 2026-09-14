@@ -1,14 +1,28 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockGetInput, mockWarning, mockSetSecret } = vi.hoisted(() => {
+const { mockGetInput, mockGetBooleanInput, mockWarning, mockSetSecret } = vi.hoisted(() => {
   const _mockGetInput = vi.fn();
+  // Mirror the real core.getBooleanInput (YAML 1.2 core schema): only
+  // true/True/TRUE and false/False/FALSE are accepted, anything else throws.
+  const _mockGetBooleanInput = vi.fn((name: string) => {
+    const val = _mockGetInput(name) ?? '';
+    if (['true', 'True', 'TRUE'].includes(val)) return true;
+    if (['false', 'False', 'FALSE'].includes(val)) return false;
+    throw new TypeError(`Input does not meet YAML 1.2 "Core Schema" specification: ${name}`);
+  });
   const _mockWarning = vi.fn();
   const _mockSetSecret = vi.fn();
-  return { mockGetInput: _mockGetInput, mockWarning: _mockWarning, mockSetSecret: _mockSetSecret };
+  return {
+    mockGetInput: _mockGetInput,
+    mockGetBooleanInput: _mockGetBooleanInput,
+    mockWarning: _mockWarning,
+    mockSetSecret: _mockSetSecret,
+  };
 });
 
 vi.mock('@actions/core', () => ({
   getInput: mockGetInput,
+  getBooleanInput: mockGetBooleanInput,
   info: vi.fn(),
   warning: mockWarning,
   error: vi.fn(),
@@ -413,6 +427,45 @@ describe('parseInputs() describe_use_markers/describe_publish_as_comment', () =>
   });
 });
 
+describe('parseInputs() toolchain_enforce_node_floor', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('defaults to warn-only (false, not explicit) when omitted', () => {
+    setInputs(BASE_INPUTS);
+    const inputs = parseInputs();
+    expect(inputs.enforceNodeFloor).toBe(false);
+    expect(inputs.enforceNodeFloorExplicit).toBe(false);
+  });
+
+  it('parses explicit true', () => {
+    setInputs({ ...BASE_INPUTS, toolchain_enforce_node_floor: 'true' });
+    const inputs = parseInputs();
+    expect(inputs.enforceNodeFloor).toBe(true);
+    expect(inputs.enforceNodeFloorExplicit).toBe(true);
+  });
+
+  it('parses explicit false', () => {
+    setInputs({ ...BASE_INPUTS, toolchain_enforce_node_floor: 'false' });
+    const inputs = parseInputs();
+    expect(inputs.enforceNodeFloor).toBe(false);
+    expect(inputs.enforceNodeFloorExplicit).toBe(true);
+  });
+
+  it('is case-insensitive (accepts True)', () => {
+    setInputs({ ...BASE_INPUTS, toolchain_enforce_node_floor: 'True' });
+    const inputs = parseInputs();
+    expect(inputs.enforceNodeFloor).toBe(true);
+    expect(inputs.enforceNodeFloorExplicit).toBe(true);
+  });
+
+  it('rejects invalid values like yes', () => {
+    setInputs({ ...BASE_INPUTS, toolchain_enforce_node_floor: 'yes' });
+    expect(() => parseInputs()).toThrow(/Invalid toolchain_enforce_node_floor/);
+  });
+});
+
 describe('parseInputs() audit_labels', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -432,5 +485,42 @@ describe('parseInputs() audit_labels', () => {
   it('rejects labels with control characters', () => {
     setInputs({ ...BASE_INPUTS, audit_labels: 'bad\tlabel' });
     expect(() => parseInputs()).toThrow(/Invalid audit label/);
+  });
+});
+
+describe('parseInputs() require_opencode_checksum', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('defaults to false when the input is unset', () => {
+    setInputs({ ...BASE_INPUTS });
+    expect(parseInputs().requireOpencodeChecksum).toBe(false);
+    expect(mockWarning).not.toHaveBeenCalledWith(
+      expect.stringContaining('require_opencode_checksum'),
+    );
+  });
+
+  it('parses true/TRUE as enabled', () => {
+    setInputs({ ...BASE_INPUTS, require_opencode_checksum: 'true' });
+    expect(parseInputs().requireOpencodeChecksum).toBe(true);
+    setInputs({ ...BASE_INPUTS, require_opencode_checksum: 'TRUE' });
+    expect(parseInputs().requireOpencodeChecksum).toBe(true);
+  });
+
+  it('parses false as disabled without warning', () => {
+    setInputs({ ...BASE_INPUTS, require_opencode_checksum: 'false' });
+    expect(parseInputs().requireOpencodeChecksum).toBe(false);
+    expect(mockWarning).not.toHaveBeenCalledWith(
+      expect.stringContaining('require_opencode_checksum'),
+    );
+  });
+
+  it('warns and falls back to false on invalid values', () => {
+    setInputs({ ...BASE_INPUTS, require_opencode_checksum: 'ture' });
+    expect(parseInputs().requireOpencodeChecksum).toBe(false);
+    expect(mockWarning).toHaveBeenCalledWith(
+      expect.stringContaining('Ignoring invalid require_opencode_checksum "ture"'),
+    );
   });
 });

@@ -12,9 +12,15 @@ import * as core from '@actions/core';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import type { MCPContextEntry, MCPQueryResult, MCPServerConfig } from '../types/index.js';
+import type {
+  MCPContextEntry,
+  MCPQueryResult,
+  MCPServerConfig,
+  RemoteTransportMode,
+} from '../types/index.js';
 import { Logger } from '../utils/logger.js';
 import { withRetry } from '../utils/retry.js';
 import { isAllowedMcpLocalCommand, isSafeRemoteMcpUrl } from '../utils/safe-exec.js';
@@ -130,10 +136,162 @@ function filterEnv(server: MCPServerConfig): Record<string, string> {
   return filtered;
 }
 
+// Re-exported so existing `import { RemoteTransportMode } from '../mcp/client.js'`
+// call sites keep working; the canonical definition lives in `types/index.ts`.
+export type { RemoteTransportMode } from '../types/index.js';
+
+/**
+ * Whether a Streamable HTTP handshake error looks like a protocol mismatch
+ * (server speaks SSE-only) rather than an auth/outage failure. Only mismatch
+ * signals may trigger the SSE fallback in `auto` mode; auth errors (401/403),
+ * timeouts, and DNS failures fail fast so the real error is not masked and no
+ * second full connect cycle is wasted.
+ * @param err - Error thrown by the Streamable HTTP handshake attempt
+ * @returns True when the error signals SSE-only (404/405/406, method-not-allowed, version mismatch)
+ * @since NEXT
+ */
+export function isStreamableHandshakeMismatch(err: unknown): boolean {
+  const raw = err instanceof Error ? `${err.name}: ${err.message}` : String(err ?? '');
+  return (
+    /\b(404|405|406)\b/i.test(raw) ||
+    /method not allowed/i.test(raw) ||
+    /not acceptable/i.test(raw) ||
+    /version mismatch/i.test(raw) ||
+    /protocol version/i.test(raw) ||
+    /unsupported.*streamable/i.test(raw) ||
+    /streamable.*(version|unsupported|not support)/i.test(raw) ||
+    /not support.*streamable/i.test(raw) ||
+    /text\/event-stream/i.test(raw)
+  );
+}
+
+/**
+ * Resolve the effective remote transport mode for a server.
+ * Per-server `remoteTransport` wins; otherwise the
+ * `OPENCODE_MCP_REMOTE_TRANSPORT` env var acts as a global default;
+ * otherwise `auto`. Unknown values degrade to `auto` (fail-open).
+ * @param server - MCP server configuration
+ * @returns Effective remote transport mode
+ * @since NEXT
+ */
+export function resolveRemoteTransportMode(server: MCPServerConfig): RemoteTransportMode {
+  if (
+    server.remoteTransport === 'auto' ||
+    server.remoteTransport === 'sse' ||
+    server.remoteTransport === 'streamable-http'
+  ) {
+    return server.remoteTransport;
+  }
+  const env = process.env.OPENCODE_MCP_REMOTE_TRANSPORT?.toLowerCase().trim();
+  if (env === 'auto' || env === 'sse' || env === 'streamable-http') {
+    return env;
+  }
+  return 'auto';
+}
+
+/**
+ * Client identity sent on the Streamable HTTP leg so Streamable-preferred
+ * servers/gateways can route on explicit MCP identity headers.
+ * Matches the `name` passed to `new Client({ name })` in `connectServer`.
+ * @since NEXT
+ */
+export const MCP_CLIENT_NAME = 'opencode-ai-reviewer';
+
+/**
+ * Default method advertised via the `Mcp-Method` header on the Streamable
+ * HTTP handshake leg. Static handshake-safe default (`initialize`).
+ * @since NEXT
+ */
+export const MCP_HANDSHAKE_METHOD = 'initialize';
+
+/**
+ * Build Streamable HTTP headers by merging MCP identity headers
+ * (`Mcp-Name` / `Mcp-Method`) over a base header map.
+ * User-supplied keys always win on (case-insensitive) collision, and a fresh
+ * object is returned per call so no mutable state leaks between the
+ * Streamable/SSE retry legs.
+ * @param server - MCP server configuration (provides the default `Mcp-Name`)
+ * @param baseHeaders - Base headers (e.g. from `buildRemoteHeaders`)
+ * @returns Fresh header map for the Streamable HTTP `requestInit`
+ * @since NEXT
+ */
+export function buildStreamableHeaders(
+  server: MCPServerConfig,
+  baseHeaders: Record<string, string>,
+): Record<string, string> {
+  const headers: Record<string, string> = { ...baseHeaders };
+  const lowerKeys = new Set(Object.keys(headers).map((k) => k.toLowerCase()));
+  if (!lowerKeys.has('mcp-name')) {
+    headers['Mcp-Name'] = server.name || MCP_CLIENT_NAME;
+  }
+  if (!lowerKeys.has('mcp-method')) {
+    headers['Mcp-Method'] = MCP_HANDSHAKE_METHOD;
+  }
+  return headers;
+}
+
+/**
+ * Build HTTP headers forwarded to a remote MCP server from its explicit
+ * `environment` map. No keys are forwarded beyond this allowlist-shaped
+ * explicit map (privacy-safe; AI features stay optional).
+ * @param server - MCP server configuration
+ * @returns Header map for `requestInit`
+ * @since NEXT
+ */
+export function buildRemoteHeaders(server: MCPServerConfig): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (server.environment) {
+    for (const [key, value] of Object.entries(server.environment)) {
+      if (value !== undefined) headers[key] = value;
+    }
+  }
+  return headers;
+}
+
+/**
+ * Ordered transport factories for a remote MCP server per its effective mode.
+ * `auto` → `[streamable, sse]`; `streamable-http` → `[streamable]`;
+ * `sse` → `[sse]`. Each factory builds a fresh `URL` and a fresh headers
+ * object so no mutable state leaks between Streamable/SSE attempts or across
+ * `withRetry` re-creations. Throws on invalid `url` (callers treat this as
+ * fail-open and skip the server).
+ * @param server - MCP server configuration (must have `url` for remote servers)
+ * @param headers - HTTP headers applied to both transports via `requestInit`
+ * @returns Ordered factories tried in sequence by `connectRemoteWithFallback`
+ * @since NEXT
+ */
+export function createRemoteTransportFactories(
+  server: MCPServerConfig,
+  headers: Record<string, string>,
+): Array<() => Transport> {
+  // Validate eagerly so a malformed URL fails fast (fail-open at the caller).
+  const rawUrl = server.url;
+  if (!rawUrl) throw new Error(`Missing url for remote MCP server ${server.name}`);
+  new URL(rawUrl);
+  // NOTE: `StreamableHTTPClientTransport` is a static import from
+  // `@modelcontextprotocol/sdk/client/streamableHttp.js` (SDK ^1.30.0 always
+  // ships it), so no runtime `typeof` guard is needed — a missing export would
+  // fail at module load, not per-connection.
+  const sseFactory = (): Transport =>
+    new SSEClientTransport(new URL(rawUrl), { requestInit: { headers: { ...headers } } });
+  const streamableFactory = (): Transport =>
+    new StreamableHTTPClientTransport(new URL(rawUrl), {
+      // Streamable leg only: merge Mcp-Name/Mcp-Method identity headers so
+      // Streamable-preferred gateways can route. The legacy SSE leg keeps
+      // byte-identical headers. Fresh object per invocation (no shared state).
+      requestInit: { headers: buildStreamableHeaders(server, headers) },
+    });
+  const mode = resolveRemoteTransportMode(server);
+  if (mode === 'sse') return [sseFactory];
+  if (mode === 'streamable-http') return [streamableFactory];
+  return [streamableFactory, sseFactory];
+}
+
 /**
  * Manages connections to MCP (Model Context Protocol) servers.
- * Supports local (stdio) and remote (SSE) transports and provides
- * unified methods for querying context and library documentation.
+ * Supports local (stdio) and remote (Streamable HTTP with SSE fallback)
+ * transports and provides unified methods for querying context and
+ * library documentation.
  */
 export class MCPManager {
   private clients: Map<string, { client: Client; transport: Transport }> = new Map();
@@ -203,16 +361,8 @@ export class MCPManager {
             );
             return Promise.resolve();
           }
-          const headers: Record<string, string> = {};
-          if (server.environment) {
-            for (const [key, value] of Object.entries(server.environment)) {
-              if (value !== undefined) headers[key] = value;
-            }
-          }
-          return this.connectServer(
-            server,
-            () => new SSEClientTransport(new URL(server.url!), { requestInit: { headers } }),
-          );
+          const headers = buildRemoteHeaders(server);
+          return this.connectRemoteWithFallback(server, headers);
         }
         return Promise.resolve();
       }),
@@ -229,16 +379,70 @@ export class MCPManager {
   }
 
   /**
+   * Connect to a remote MCP server trying Streamable HTTP first with SSE
+   * fallback (in `auto` mode). Fallback fires only on protocol-mismatch
+   * signals (404/405/406, method-not-allowed, version mismatch); auth
+   * failures, timeouts, and DNS errors fail fast so the real error is not
+   * masked. The first handshake runs with no retries (single attempt) so
+   * `auto` fallback costs ~one handshake; the fallback leg keeps the normal
+   * retry budget. Any transport error is fail-open: it is logged and review
+   * continues without MCP enrichment from that server.
+   * @param server - Configuration for the remote MCP server to connect to
+   * @param headers - HTTP headers applied to both transports via `requestInit`
+   * @since NEXT
+   */
+  private async connectRemoteWithFallback(
+    server: MCPServerConfig,
+    headers: Record<string, string>,
+  ): Promise<void> {
+    let factories: Array<() => Transport>;
+    try {
+      factories = createRemoteTransportFactories(server, headers);
+    } catch (err) {
+      this.logger.warn(`Failed to create remote transport for ${server.name}`, err);
+      return;
+    }
+    for (let i = 0; i < factories.length; i++) {
+      const factory = factories[i]!;
+      // Scope retries across the fallback: the first leg is a single
+      // handshake attempt (no retry amplification); later legs keep the
+      // standard budget. Single-factory modes always use the default budget.
+      // NOTE: withRetry treats maxRetries as total attempts, so a single
+      // attempt is { maxRetries: 1 } — { maxRetries: 0 } would run zero
+      // attempts and throw undefined.
+      const retryOpts = factories.length > 1 && i === 0 ? { maxRetries: 1 } : undefined;
+      const err = await this.connectServer(server, factory, retryOpts);
+      if (err === null) return;
+      if (i < factories.length - 1) {
+        if (!isStreamableHandshakeMismatch(err)) {
+          // Fail fast: auth/outage/timeout — connectServer already logged the
+          // underlying error at warn level; do not mask it with an SSE retry.
+          return;
+        }
+        this.logger.warn(
+          `MCP server "${server.name}": Streamable HTTP handshake failed (${err instanceof Error ? err.message : String(err)}), falling back to SSE`,
+        );
+      }
+    }
+  }
+
+  /**
    * Connect to a single MCP server with retry and timeout support.
    * Creates the transport, initializes the client, and caches available tools.
    * @param server - Configuration for the MCP server to connect to
    * @param createTransport - Factory function that creates the transport for this server
+   * @param retryOpts - Optional retry-budget override for the handshake
+   * (used to scope retries across Streamable→SSE fallback). Defaults to
+   * `{ maxRetries: 3, baseDelayMs: 2000 }`.
+   * @returns Null on success, otherwise the connection error (fail-open; already logged)
    */
   private async connectServer(
     server: MCPServerConfig,
     createTransport: () => Transport,
-  ): Promise<void> {
+    retryOpts?: { maxRetries?: number; baseDelayMs?: number },
+  ): Promise<Error | null> {
     const result: { client?: Client; transport?: Transport } = {};
+    let lastError: Error | null = null;
     try {
       await withRetry(
         async () => {
@@ -279,8 +483,8 @@ export class MCPManager {
           this.clients.set(server.name, { client: clientInstance, transport: newTransport });
         },
         {
-          maxRetries: 3,
-          baseDelayMs: 2000,
+          maxRetries: retryOpts?.maxRetries ?? 3,
+          baseDelayMs: retryOpts?.baseDelayMs ?? 2000,
         },
       );
 
@@ -293,7 +497,10 @@ export class MCPManager {
         this.logger.info(`${server.name}: ${tools.tools.length} tools available`);
         this.toolsCache.set(server.name, tools.tools);
       }
+      if (this.clients.has(server.name)) return null;
+      return lastError ?? new Error(`Failed to connect to ${server.name}`);
     } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err ?? 'Unknown error'));
       this.logger.warn(`Failed to connect to ${server.name}`, err);
       this.clients.delete(server.name);
       if (result.client) {
@@ -306,6 +513,7 @@ export class MCPManager {
           await result.transport.close();
         } catch {}
       }
+      return lastError;
     }
   }
 

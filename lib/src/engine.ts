@@ -37,6 +37,7 @@ import {
 import { buildSelfHealPrompt } from './prompts/heal.js';
 import { detectLanguages } from './prompts/language/index.js';
 import { buildVerificationPrompt } from './prompts/verify.js';
+import { buildPathRulesSection, collectPathRuleOutcomes } from './review/pathRules.js';
 import { runSCAScan } from './sca/index.js';
 import type {
   AgentCategory,
@@ -87,12 +88,17 @@ import { sanitizePromptInput } from './utils/prompt-sanitizer.js';
 import { analyzeBatchReachability } from './utils/reachability.js';
 import { withRetry } from './utils/retry.js';
 import { buildAgentsMdAttributionFooter } from './utils/review-body.js';
-import { isAllowedLinterCommand, resolveConfinedWorkingDir } from './utils/safe-exec.js';
+import {
+  isAllowedLinterCommand,
+  isSafeLinterArgs,
+  resolveConfinedWorkingDir,
+} from './utils/safe-exec.js';
 import { sanitizeString } from './utils/sanitize.js';
 import { detectSecrets, mergeSecretFindings } from './utils/secret-detect.js';
 import type { SecretDetectOptions, SecretFinding } from './utils/secret-detect.js';
 import { TestGapDetector, buildContextString, isTestFile } from './utils/test-gap-detector.js';
 import type { TestGapResult } from './utils/test-gap-detector.js';
+import { checkNodeFloor as checkNodeFloorVersion } from './utils/version.js';
 
 /** Maximum number of batch chunks processed concurrently by `reviewPR`. */
 export const MAX_BATCH_CONCURRENCY = 8;
@@ -245,12 +251,53 @@ export class ReviewEngine {
     // undefined while the logger falls back to its own generated UUID, so
     // published events would not share the engine logs' trace ID.
     this.correlationId = this.logger.getCorrelationId();
+    this.checkRuntimeNodeFloor();
   }
 
   /** Clear static dedup caches (for test isolation). */
   static resetReviewDedup(): void {
     ReviewEngine.IN_FLIGHT_REVIEWS.clear();
     ReviewEngine.REVIEWED_CACHE.clear();
+  }
+
+  /**
+   * Warn when the Node runtime is below the patched LTS floor
+   * (`MINIMUM_NODE_VERSION`, July 2026 HIGH CVE fixes). Fail-open: an
+   * unparseable version or a check failure only warns and the review
+   * continues. Opt-in strict mode (`toolchain.enforceNodeFloor`) throws.
+   * @since NEXT
+   */
+  private checkRuntimeNodeFloor(): void {
+    let enforcementError: Error | null = null;
+    try {
+      const result = checkNodeFloorVersion();
+      if (result.unparseable || result.ok) return;
+      const message =
+        `Node runtime ${result.current} is below the recommended minimum ${result.floor} ` +
+        `(July 2026 HIGH CVE fixes in Node v${result.floor}; see https://nodejs.org/en/blog/release/v${result.floor}). ` +
+        `Upgrade to Node >= ${result.floor} for security. Review continues.`;
+      if (this.config.toolchain?.enforceNodeFloor === true) {
+        enforcementError = new Error(
+          `Node runtime ${result.current} is below the enforced minimum ${result.floor} ` +
+            `(toolchain.enforceNodeFloor=true). Upgrade to Node >= ${result.floor} ` +
+            `(see https://nodejs.org/en/blog/release/v${result.floor}).`,
+        );
+        throw enforcementError;
+      }
+      this.logger.warn(message);
+    } catch (err) {
+      // Fail-open unless this is the explicit enforcement error tracked above.
+      // Identity comparison (not message substring) keeps strict mode robust
+      // against future message rewording and avoids re-throwing unrelated errors.
+      if (err === enforcementError && enforcementError !== null) throw err;
+      try {
+        this.logger.warn(
+          `Node floor check skipped: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      } catch {
+        // Fail-open: never break a review when logging itself fails.
+      }
+    }
   }
 
   private getReviewDedupKey(pr: PRContext): string {
@@ -782,6 +829,38 @@ export class ReviewEngine {
     if (dedupKey) this.setInFlightReview(dedupKey, promise);
 
     const result = await promise;
+    // Path-based routing (`review.pathRules`): suggested reviewers (summary-only,
+    // no reviewer-request API call) and best-effort auto-labels. Fail-open:
+    // absent/invalid config or API failures never break the review.
+    try {
+      const pathRules = this.config.review.pathRules;
+      if (!result.skipped && Array.isArray(pathRules) && pathRules.length > 0) {
+        const outcomes = collectPathRuleOutcomes(
+          pr.changedFiles
+            .map((f) => f?.path)
+            .filter((p): p is string => typeof p === 'string' && Boolean(p)),
+          pathRules,
+        );
+        if (outcomes.labelsToApply.length > 0) {
+          try {
+            await this.adapter.addLabels(pr.number, outcomes.labelsToApply);
+            this.logger.info(`Applied path-rule labels: ${outcomes.labelsToApply.join(', ')}`);
+          } catch (err) {
+            this.logger.warn(
+              `Failed to apply path-rule labels, continuing review: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
+        const section = buildPathRulesSection(outcomes);
+        if (section) {
+          result.summary = result.summary ? `${result.summary}\n\n${section}` : section;
+        }
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Path-rule routing failed, continuing review: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     // Only cache a genuinely reviewed result. A failed pipeline (execution or
     // parse error) must NOT be cached, so a retry within the TTL re-runs the
     // review instead of being silently skipped.
@@ -882,13 +961,36 @@ export class ReviewEngine {
 
     // Filter out excluded files (lockfiles, generated code, dist/, etc.)
     const excludePatterns = this.config.review.excludePatterns || [];
-    const files =
+    let files =
       excludePatterns.length > 0
         ? pr.changedFiles.filter((f) => {
             if (!f?.path) return false;
             return !excludePatterns.some((pattern: string) => minimatch(f.path, pattern));
           })
         : pr.changedFiles;
+
+    // Per-path skip rules (`review.pathRules` with `skip: true`). Fail-open:
+    // invalid config or match errors keep the full file list.
+    try {
+      const pathRules = this.config.review.pathRules;
+      if (Array.isArray(pathRules) && pathRules.length > 0) {
+        const outcomes = collectPathRuleOutcomes(
+          files.map((f) => f?.path).filter((p): p is string => typeof p === 'string' && Boolean(p)),
+          pathRules,
+        );
+        if (outcomes.skippedFiles.length > 0) {
+          const skippedSet = new Set(outcomes.skippedFiles);
+          this.logger.info(
+            `Skipped ${outcomes.skippedFiles.length} file(s) by pathRules skip (not reviewed): ${outcomes.skippedFiles.slice(0, 10).join(', ')}${outcomes.skippedFiles.length > 10 ? ', ...' : ''}`,
+          );
+          files = files.filter((f) => !f?.path || !skippedSet.has(f.path));
+        }
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Path-rule skip filtering failed, reviewing all files: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
 
     // Deterministic Software Composition Analysis (SCA) pass. Runs before the
     // "all files excluded" early-return so a PR that only touches lock files
@@ -4110,11 +4212,17 @@ export class ReviewEngine {
     for (const linterConfig of this.config.linters) {
       try {
         // Defense in depth at the exec sink: never run a linter binary that
-        // is not on the basename allowlist (PR-editable config is untrusted).
+        // is not on the basename allowlist, or whose args are not safe
+        // strings (PR-editable config is untrusted; config may bypass
+        // validateConfig when constructed programmatically).
         if (!isAllowedLinterCommand(linterConfig.command)) {
           this.logger.warn(
             `Skipping linter: command "${linterConfig.command}" is not on the allowed list`,
           );
+          continue;
+        }
+        if (!isSafeLinterArgs(linterConfig.args)) {
+          this.logger.warn(`Skipping linter "${linterConfig.command}": args are not safe strings`);
           continue;
         }
 

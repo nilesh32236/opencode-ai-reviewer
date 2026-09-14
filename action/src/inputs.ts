@@ -208,12 +208,16 @@ export interface ActionInputs {
   auditLabels: string[];
   /** Version of opencode to use. */
   opencodeVersion: string;
+  /** Fail closed when the downloaded OpenCode CLI cannot be checksum-verified. */
+  requireOpencodeChecksum: boolean;
   /** In setup mode, probe every configured model instead of only the review model. */
   probeAllModels: boolean;
   /** Timeout in minutes for the operation. */
   timeoutMinutes: number;
   /** Whether to post review comments inline on the diff. */
   reviewInline: boolean;
+  /** Opt-in to a single reviews-array request with summary-only 422 fallback (default: false). */
+  enableReviewsArrayInline: boolean;
   /** Whether to stream review findings as batches complete. */
   streamComments: boolean;
   /** Number of findings to accumulate before posting a streaming batch (0 = per-batch). */
@@ -248,6 +252,10 @@ export interface ActionInputs {
   scaEnabledExplicit: boolean;
   /** Whether the sca_min_severity input was explicitly set by the workflow. */
   scaMinSeverityExplicit: boolean;
+  /** Fail closed when the Node runtime is below the patched LTS floor (default: false, warn-only). */
+  enforceNodeFloor: boolean;
+  /** Whether the toolchain_enforce_node_floor input was explicitly set by the workflow. */
+  enforceNodeFloorExplicit: boolean;
 }
 
 /**
@@ -354,6 +362,24 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
 
   const opencodeVersion =
     core.getInput('opencode_version') || core.getInput('opencode-version') || 'latest';
+
+  // Opt-in strict integrity gate (default false for backward compat).
+  // core.getBooleanInput throws on invalid values, so fall back to a
+  // permissive parse that treats only 'true' as enabled — with a warning so
+  // a typo (e.g. 'ture') cannot silently leave the gate fail-open.
+  const requireOpencodeChecksum = (() => {
+    try {
+      return core.getBooleanInput('require_opencode_checksum');
+    } catch {
+      const raw = core.getInput('require_opencode_checksum').trim();
+      if (raw !== '') {
+        core.warning(
+          `Ignoring invalid require_opencode_checksum "${raw}". Must be "true" or "false"; falling back to "false".`,
+        );
+      }
+      return raw.toLowerCase() === 'true';
+    }
+  })();
 
   const mode = modeStr as ActionMode;
   const globalModel = core.getInput('model').trim();
@@ -541,6 +567,22 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   const scaMinSeverity = scaMinSeverityRaw as Severity;
   const scaMinSeverityExplicit = scaMinSeverityInput.trim() !== '';
 
+  // Case-insensitive on purpose (unlike the strict sca_enabled parser): a
+  // boolean gate must never fail a run over 'True' vs 'true' capitalisation.
+  const enforceNodeFloorInput = core.getInput('toolchain_enforce_node_floor');
+  const enforceNodeFloorRaw = enforceNodeFloorInput.trim().toLowerCase();
+  if (
+    enforceNodeFloorRaw !== '' &&
+    enforceNodeFloorRaw !== 'true' &&
+    enforceNodeFloorRaw !== 'false'
+  ) {
+    throw new Error(
+      `Invalid toolchain_enforce_node_floor: "${enforceNodeFloorInput.trim()}". Must be true or false.`,
+    );
+  }
+  const enforceNodeFloor = enforceNodeFloorRaw === 'true';
+  const enforceNodeFloorExplicit = enforceNodeFloorRaw !== '';
+
   // Models for features that are active in the selected mode are hard-gated so
   // an invalid value fails the action before any work starts. Models whose
   // feature is disabled (or that the action never runs, e.g. conversation) only
@@ -663,9 +705,11 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     auditAutoFix: core.getInput('audit_auto_fix') === 'true',
     auditLabels,
     opencodeVersion,
+    requireOpencodeChecksum,
     probeAllModels: core.getInput('probe_all_models') === 'true',
     timeoutMinutes: parseTimeoutMinutes(core.getInput('timeout_minutes')),
     reviewInline: core.getInput('review_inline') !== 'false',
+    enableReviewsArrayInline: core.getInput('enable_reviews_array_inline') === 'true',
     streamComments: core.getInput('stream_comments') === 'true',
     streamBatchSize: parseStreamBatchSize(core.getInput('stream_batch_size')),
     failOnSeverity,
@@ -689,5 +733,7 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     describePublishAsComment,
     describePublishAsCommentExplicit,
     scaMinSeverityExplicit,
+    enforceNodeFloor,
+    enforceNodeFloorExplicit,
   };
 }

@@ -130,7 +130,12 @@ export async function runReview(
     });
   }
 
-  const streamEnabled = inputs.streamComments;
+  // The reviews-array path bundles all inline findings into a single
+  // POST /pulls/{n}/reviews request. Streaming would fan out N per-comment
+  // postInlineComment requests first, defeating that single-request goal, so
+  // the reviews-array flag takes precedence and disables streaming.
+  const reviewsArrayEnabled = config.review.enableReviewsArrayInline === true;
+  const streamEnabled = inputs.streamComments && !reviewsArrayEnabled;
 
   // Track findings posted via streaming so the final summary avoids duplicates.
   const streamedIssueKeys = new Set<string>();
@@ -225,13 +230,16 @@ export async function runReview(
       }
     : result;
 
+  const scoreOptions = buildFunctionScoreOptions(config.review.showFunctionScores, pr.changedFiles);
   const reviewResult = await gh.postReview(
     prNumber,
     pr.headSha,
     finalResult,
     config.review.inline,
     undefined,
-    buildFunctionScoreOptions(config.review.showFunctionScores, pr.changedFiles),
+    config.review.enableReviewsArrayInline === true
+      ? { ...(scoreOptions ?? {}), enableReviewsArrayInline: true as const }
+      : scoreOptions,
   );
 
   if (!reviewResult.success) {

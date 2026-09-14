@@ -49,4 +49,9 @@ describe('escapeInlineCode', () => {
   it('leaves plain paths untouched', () => {
     expect(escapeInlineCode('src/index.ts:12')).toBe('src/index.ts:12');
   });
+
+  it('escapes backslashes first so a trailing backslash cannot break out', () => {
+    expect(escapeInlineCode('trail\\')).toBe('trail\\\\');
+    expect(escapeInlineCode('a\\`b')).toBe('a\\\\\\`b');
+  });
 });

@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   mockSpawn,
@@ -17,6 +17,8 @@ const {
   mockGetKnownChecksum,
   mockParseChecksumFile,
   mockVerifyChecksum,
+  mockBuildMissingChecksumError,
+  mockMarkIntegrityError,
   mockFetch,
 } = vi.hoisted(() => {
   const _mockSpawn = vi.fn();
@@ -34,6 +36,18 @@ const {
   const _mockGetKnownChecksum = vi.fn().mockReturnValue(null);
   const _mockParseChecksumFile = vi.fn();
   const _mockVerifyChecksum = vi.fn();
+  const _mockBuildMissingChecksumError = vi
+    .fn()
+    .mockImplementation((version: string, assetName: string, arch: string) =>
+      Object.assign(
+        new Error(
+          `OpenCode integrity verification failed: no checksum available for ${assetName} ` +
+            `(version ${version}, arch ${arch}) and require_opencode_checksum is enabled.`,
+        ),
+        { status: 422 },
+      ),
+    );
+  const _mockMarkIntegrityError = vi.fn().mockImplementation((err: Error) => err);
   const _mockFetch = vi.fn();
 
   return {
@@ -52,6 +66,8 @@ const {
     mockGetKnownChecksum: _mockGetKnownChecksum,
     mockParseChecksumFile: _mockParseChecksumFile,
     mockVerifyChecksum: _mockVerifyChecksum,
+    mockBuildMissingChecksumError: _mockBuildMissingChecksumError,
+    mockMarkIntegrityError: _mockMarkIntegrityError,
     mockFetch: _mockFetch,
   };
 });
@@ -100,6 +116,8 @@ vi.mock('../src/utils/checksum.js', () => ({
   getKnownChecksum: mockGetKnownChecksum,
   parseChecksumFile: mockParseChecksumFile,
   verifyChecksum: mockVerifyChecksum,
+  buildMissingChecksumError: mockBuildMissingChecksumError,
+  markIntegrityError: mockMarkIntegrityError,
 }));
 
 // Mock fs to allow chmodSync on our fake paths without throwing ENOENT
@@ -134,8 +152,11 @@ import {
   normalizeSubagentPermissionsForVersion,
   parseOpenCodeVersion,
   resetOpenCodeState,
+  resolveDualEmitSubagentPermissions,
   resolveOpenCodePath,
+  resolveRequireChecksum,
   runOpenCode,
+  setDualEmitSubagentPermissions,
   setLLMProviderConfig,
   setupOpenCode,
   shouldUseV2SubagentPermissions,
@@ -714,6 +735,55 @@ describe('runOpenCode()', () => {
     const spawnCall = mockSpawn.mock.calls[0];
     const env = spawnCall[2].env;
     expect(env.OPENCODE_DISABLE_AUTOUPDATE).toBe('true');
+  });
+
+  it('dual-emits subagent permissions in OPENCODE_CONFIG_CONTENT by default, V2-only when disabled', async () => {
+    // Probed CLI is 2.x here (V2-capable): both keys present by default.
+    mockVersionOutput('opencode v2.0.0\n');
+    const subagents = {
+      'sec-reviewer': {
+        description: 'reviewer',
+        mode: 'subagent',
+        permission: { edit: 'deny', bash: 'deny' },
+      },
+    };
+
+    // Default: both keys present on a V2-capable CLI.
+    const defaultProc = makeMockProcess();
+    mockSpawn.mockReturnValueOnce(defaultProc);
+    const defaultPromise = runOpenCode('test', { model: 'openai/gpt-4', subagents });
+    await new Promise((resolve) => setImmediate(resolve));
+    defaultProc.emitClose(0);
+    await defaultPromise;
+    const defaultEnv = mockSpawn.mock.calls[0][2].env;
+    const defaultConfig = JSON.parse(defaultEnv.OPENCODE_CONFIG_CONTENT);
+    expect(defaultConfig.agent['sec-reviewer'].permission).toEqual({
+      edit: 'deny',
+      bash: 'deny',
+    });
+    expect(defaultConfig.agent['sec-reviewer'].permissions).toEqual([
+      { action: 'edit', resource: '*', effect: 'deny' },
+      { action: 'shell', resource: '*', effect: 'deny' },
+    ]);
+
+    // Opt-out: only the V2 array is emitted on V2-capable CLIs.
+    const singleProc = makeMockProcess();
+    mockSpawn.mockReturnValueOnce(singleProc);
+    const singlePromise = runOpenCode('test', {
+      model: 'openai/gpt-4',
+      subagents,
+      dualEmitSubagentPermissions: false,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    singleProc.emitClose(0);
+    await singlePromise;
+    const singleEnv = mockSpawn.mock.calls[1][2].env;
+    const singleConfig = JSON.parse(singleEnv.OPENCODE_CONFIG_CONTENT);
+    expect(singleConfig.agent['sec-reviewer'].permission).toBeUndefined();
+    expect(singleConfig.agent['sec-reviewer'].permissions).toEqual([
+      { action: 'edit', resource: '*', effect: 'deny' },
+      { action: 'shell', resource: '*', effect: 'deny' },
+    ]);
   });
 
   it('pipes a large prompt via stdin instead of argv (E2BIG prevention)', async () => {
@@ -1629,6 +1699,202 @@ describe('setupOpenCode()', () => {
   });
 });
 
+describe('requireChecksum integrity gate', () => {
+  const ENV_KEY = 'INPUT_REQUIRE_OPENCODE_CHECKSUM';
+  let prevEnv: string | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    prevEnv = process.env[ENV_KEY];
+    delete process.env[ENV_KEY];
+    mockVersionOutput('opencode v1.2.3\n');
+    mockIoWhich.mockResolvedValue(null);
+    mockToolFind.mockReturnValue('');
+    mockFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          tag_name: 'v1.2.0',
+          assets: [
+            {
+              name: 'opencode-linux-x64.tar.gz',
+              browser_download_url: 'https://example.com/opencode-linux-x64.tar.gz',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    mockDownloadTool.mockResolvedValue('/tmp/opencode.tar.gz');
+    mockCacheDir.mockResolvedValue('/tmp/opencode-cached');
+    mockComputeSha256.mockResolvedValue('stored-checksum');
+    mockFindChecksumAsset.mockReturnValue(null);
+    mockGetKnownChecksum.mockReturnValue(null);
+    mockVerifyChecksum.mockResolvedValue(true);
+  });
+
+  afterEach(() => {
+    if (prevEnv === undefined) {
+      delete process.env[ENV_KEY];
+    } else {
+      process.env[ENV_KEY] = prevEnv;
+    }
+  });
+
+  describe('resolveRequireChecksum()', () => {
+    it('defaults to false when neither option nor env is set', () => {
+      expect(resolveRequireChecksum()).toBe(false);
+      expect(resolveRequireChecksum({})).toBe(false);
+    });
+
+    it('follows the INPUT_REQUIRE_OPENCODE_CHECKSUM env var', () => {
+      process.env[ENV_KEY] = 'true';
+      expect(resolveRequireChecksum()).toBe(true);
+      expect(resolveRequireChecksum({})).toBe(true);
+    });
+
+    it('treats the env var case-insensitively with surrounding whitespace', () => {
+      process.env[ENV_KEY] = ' True ';
+      expect(resolveRequireChecksum()).toBe(true);
+    });
+
+    it('treats other env values as false', () => {
+      process.env[ENV_KEY] = '1';
+      expect(resolveRequireChecksum()).toBe(false);
+    });
+
+    it('lets an explicit option win over the env var', () => {
+      process.env[ENV_KEY] = 'true';
+      expect(resolveRequireChecksum({ requireChecksum: false })).toBe(false);
+      process.env[ENV_KEY] = 'false';
+      expect(resolveRequireChecksum({ requireChecksum: true })).toBe(true);
+    });
+  });
+
+  describe('setupOpenCode() strict mode', () => {
+    it('fails closed when no checksum is available and requireChecksum is set', async () => {
+      await expect(
+        setupOpenCode('v1.2.0', undefined, undefined, { requireChecksum: true }),
+      ).rejects.toThrow(/no checksum available/);
+      expect(mockBuildMissingChecksumError).toHaveBeenCalledWith(
+        'v1.2.0',
+        expect.any(String),
+        expect.any(String),
+      );
+    });
+
+    it('fails closed via the INPUT_REQUIRE_OPENCODE_CHECKSUM env var', async () => {
+      process.env[ENV_KEY] = 'true';
+
+      await expect(setupOpenCode('v1.2.0')).rejects.toThrow(/no checksum available/);
+    });
+
+    it('lets an explicit requireChecksum:false override the env var (warn-and-continue)', async () => {
+      process.env[ENV_KEY] = 'true';
+
+      const result = await setupOpenCode('v1.2.0', undefined, undefined, {
+        requireChecksum: false,
+      });
+
+      expect(result).toBe('/tmp/opencode-cached/opencode');
+      expect(mockBuildMissingChecksumError).not.toHaveBeenCalled();
+      expect(core.warning).toHaveBeenCalledWith(
+        expect.stringContaining('Skipping integrity verification'),
+      );
+    });
+
+    it('tags checksum mismatches via markIntegrityError', async () => {
+      mockFindChecksumAsset.mockReturnValue({
+        name: 'opencode-linux-x64.tar.gz.sha256',
+        browser_download_url: 'https://example.com/checksum.sha256',
+      });
+      mockParseChecksumFile.mockReturnValue('expected-hash-value');
+      const mismatch = new Error(
+        'Checksum mismatch for /tmp/opencode.tar.gz: expected expected-hash-value, got deadbeef',
+      );
+      mockVerifyChecksum.mockRejectedValue(mismatch);
+
+      await expect(
+        setupOpenCode('v1.2.0', undefined, undefined, { requireChecksum: true }),
+      ).rejects.toThrow(/failed checksum verification/i);
+      expect(mockMarkIntegrityError).toHaveBeenCalledWith(mismatch);
+    });
+
+    it('reports pin-or-disable recovery (not a blind retry) for fail-closed errors', async () => {
+      await expect(
+        setupOpenCode('v1.2.0', undefined, undefined, { requireChecksum: true }),
+      ).rejects.toThrow(/Pin opencode_version.*require_opencode_checksum disabled/s);
+      await expect(
+        setupOpenCode('v1.2.0', undefined, undefined, { requireChecksum: true }),
+      ).rejects.not.toThrow(/Please re-run the workflow to retry/);
+    });
+  });
+
+  describe('pre-installed binary bypass', () => {
+    it('warns but returns the PATH binary when strict mode is on', async () => {
+      mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+
+      const result = await setupOpenCode('v1.2.0', undefined, undefined, {
+        requireChecksum: true,
+      });
+
+      expect(result).toBe('/usr/local/bin/opencode');
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('already on PATH'));
+      expect(mockDownloadTool).not.toHaveBeenCalled();
+    });
+
+    it('stays silent about checksums for PATH binaries in default mode', async () => {
+      mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+
+      const result = await setupOpenCode('v1.2.0');
+
+      expect(result).toBe('/usr/local/bin/opencode');
+      expect(core.warning).not.toHaveBeenCalled();
+    });
+
+    it('resolveOpenCodePath warns for PATH binaries in strict mode', async () => {
+      mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+
+      const result = await resolveOpenCodePath('v1.2.0', undefined, { requireChecksum: true });
+
+      expect(result).toBe('/usr/local/bin/opencode');
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('already on PATH'));
+    });
+  });
+
+  describe('tool-cache bypass', () => {
+    async function mockCacheHit(): Promise<void> {
+      mockToolFind.mockReturnValue('/cache/opencode/1.2.0/linux-x64');
+      mockComputeSha256.mockResolvedValue('abc123');
+      const fsModule = await import('fs');
+      (fsModule.existsSync as ReturnType<typeof vi.fn>).mockImplementation(
+        (p: string) => p.endsWith('.checksum') || p.endsWith('opencode'),
+      );
+      (fsModule.readFileSync as ReturnType<typeof vi.fn>).mockReturnValue('abc123\n');
+    }
+
+    it('warns but returns the cached binary when strict mode is on', async () => {
+      await mockCacheHit();
+
+      const result = await setupOpenCode('v1.2.0', undefined, undefined, {
+        requireChecksum: true,
+      });
+
+      expect(result).toBe('/cache/opencode/1.2.0/linux-x64/opencode');
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('using cached OpenCode'));
+      expect(mockDownloadTool).not.toHaveBeenCalled();
+    });
+
+    it('stays silent about checksums for cached binaries in default mode', async () => {
+      await mockCacheHit();
+
+      const result = await setupOpenCode('v1.2.0');
+
+      expect(result).toBe('/cache/opencode/1.2.0/linux-x64/opencode');
+      expect(core.warning).not.toHaveBeenCalled();
+    });
+  });
+});
+
 describe('configureGit()', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1731,11 +1997,11 @@ describe('subagent V2 permissions gate', () => {
     vi.clearAllMocks();
   });
 
-  it('emits the V2 permissions-array shape on CLI 1.1.1 and newer', () => {
-    for (const version of ['1.1.1', 'v1.1.1', '1.2.0', 'v2.0.0']) {
+  it('dual-emits both permission shapes on CLI 2.x by default', () => {
+    for (const version of ['2.0.0', 'v2.0.0', '2.1.3']) {
       expect(shouldUseV2SubagentPermissions(version)).toBe(true);
       const def = buildReviewSubagent('reviewer', undefined, version);
-      expect(def.permission).toBeUndefined();
+      expect(def.permission).toEqual({ edit: 'deny', bash: 'deny' });
       expect(def.permissions).toEqual(buildV2SubagentDenyPermissions());
       expect(def.permissions).toEqual([
         { action: 'edit', resource: '*', effect: 'deny' },
@@ -1744,8 +2010,35 @@ describe('subagent V2 permissions gate', () => {
     }
   });
 
+  it('emits V1-only config on the whole 1.x line (V1 CLIs strictly reject the V2 key)', () => {
+    // Regression: 1.18.30 (V1) exited 1 with "V2 permissions are not
+    // supported by OpenCode V1" when the V2 array was dual-emitted.
+    for (const version of ['1.1.1', 'v1.1.1', '1.2.0', '1.2.3', '1.18.30', 'v1.18.30']) {
+      expect(shouldUseV2SubagentPermissions(version)).toBe(false);
+      const def = buildReviewSubagent('reviewer', undefined, version);
+      expect(def.permission).toEqual({ edit: 'deny', bash: 'deny' });
+      expect(def.permissions).toBeUndefined();
+    }
+  });
+
+  it('uses gated single-shape behavior when dual-emit is disabled', () => {
+    for (const version of ['2.0.0', 'v2.3.1']) {
+      const def = buildReviewSubagent('reviewer', undefined, version, false);
+      expect(def.permission).toBeUndefined();
+      expect(def.permissions).toEqual([
+        { action: 'edit', resource: '*', effect: 'deny' },
+        { action: 'shell', resource: '*', effect: 'deny' },
+      ]);
+    }
+    for (const version of ['1.1.0', '1.0.5', 'v1.0.0', '1.1.1', '1.18.30']) {
+      const def = buildReviewSubagent('reviewer', undefined, version, false);
+      expect(def.permissions).toBeUndefined();
+      expect(def.permission).toEqual({ edit: 'deny', bash: 'deny' });
+    }
+  });
+
   it('emits the legacy object shape unchanged on older CLIs', () => {
-    for (const version of ['1.1.0', '1.0.5', 'v1.0.0']) {
+    for (const version of ['1.1.0', '1.0.5', 'v1.0.0', '1.1.1', '1.18.30']) {
       expect(shouldUseV2SubagentPermissions(version)).toBe(false);
       const def = buildReviewSubagent('reviewer', 'openai/gpt-4', version);
       expect(def.permissions).toBeUndefined();
@@ -1772,13 +2065,35 @@ describe('subagent V2 permissions gate', () => {
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('legacy permission shape'));
   });
 
-  it('defaults to the last probed version and upgrades at the runOpenCode choke point', async () => {
+  it('defaults to the last probed version at the runOpenCode choke point', async () => {
     mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
-    mockVersionOutput('opencode v1.2.3\n');
+    mockVersionOutput('opencode v1.18.30\n');
     await checkHealth();
 
-    // No explicit version: the cached probe result drives the V2 shape.
+    // No explicit version: the cached probe result drives the shape. A 1.x
+    // probe must yield V1-only config (no `permissions` key).
     const def = buildReviewSubagent('reviewer');
+    expect(def.permission).toEqual({ edit: 'deny', bash: 'deny' });
+    expect(def.permissions).toBeUndefined();
+
+    const upgraded = normalizeSubagentPermissionsForVersion({
+      'sec-reviewer': {
+        description: 'reviewer',
+        mode: 'subagent',
+        permission: { edit: 'deny', bash: 'deny' },
+      },
+    });
+    expect(upgraded['sec-reviewer'].permissions).toBeUndefined();
+    expect(upgraded['sec-reviewer'].permission).toEqual({ edit: 'deny', bash: 'deny' });
+  });
+
+  it('dual-emits at the runOpenCode choke point for a probed 2.x CLI', async () => {
+    mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+    mockVersionOutput('opencode v2.0.1\n');
+    await checkHealth();
+
+    const def = buildReviewSubagent('reviewer');
+    expect(def.permission).toEqual({ edit: 'deny', bash: 'deny' });
     expect(def.permissions).toEqual([
       { action: 'edit', resource: '*', effect: 'deny' },
       { action: 'shell', resource: '*', effect: 'deny' },
@@ -1795,7 +2110,82 @@ describe('subagent V2 permissions gate', () => {
       { action: 'edit', resource: '*', effect: 'deny' },
       { action: 'shell', resource: '*', effect: 'deny' },
     ]);
+    expect(upgraded['sec-reviewer'].permission).toEqual({ edit: 'deny', bash: 'deny' });
+  });
+
+  it('replaces the legacy key with the V2 array when dual-emit is disabled', () => {
+    const upgraded = normalizeSubagentPermissionsForVersion(
+      {
+        'sec-reviewer': {
+          description: 'reviewer',
+          mode: 'subagent',
+          permission: { edit: 'deny', bash: 'deny' },
+        },
+      },
+      'v2.0.0',
+      false,
+    );
+    expect(upgraded['sec-reviewer'].permissions).toEqual([
+      { action: 'edit', resource: '*', effect: 'deny' },
+      { action: 'shell', resource: '*', effect: 'deny' },
+    ]);
     expect(upgraded['sec-reviewer'].permission).toBeUndefined();
+  });
+
+  it('leaves 1.x definitions untouched when dual-emit is disabled (gate off)', () => {
+    const upgraded = normalizeSubagentPermissionsForVersion(
+      {
+        'sec-reviewer': {
+          description: 'reviewer',
+          mode: 'subagent',
+          permission: { edit: 'deny', bash: 'deny' },
+        },
+      },
+      'v1.18.30',
+      false,
+    );
+    expect(upgraded['sec-reviewer'].permissions).toBeUndefined();
+    expect(upgraded['sec-reviewer'].permission).toEqual({ edit: 'deny', bash: 'deny' });
+  });
+
+  it('passes through already-dual definitions untouched', () => {
+    const input = {
+      'sec-reviewer': {
+        description: 'reviewer',
+        mode: 'subagent',
+        permission: { edit: 'deny', bash: 'deny' },
+        permissions: [{ action: 'edit', resource: '*', effect: 'deny' }],
+      },
+    };
+    const out = normalizeSubagentPermissionsForVersion(input, 'v1.2.3');
+    expect(out['sec-reviewer']).toBe(input['sec-reviewer']);
+  });
+
+  it('honors the module default and env override for dual-emit', () => {
+    expect(resolveDualEmitSubagentPermissions()).toBe(true);
+    setDualEmitSubagentPermissions(false);
+    expect(resolveDualEmitSubagentPermissions()).toBe(false);
+    // Explicit per-call argument wins over the module default.
+    expect(resolveDualEmitSubagentPermissions(true)).toBe(true);
+    const def = buildReviewSubagent('reviewer', undefined, 'v2.0.0');
+    expect(def.permission).toBeUndefined();
+    expect(def.permissions).toEqual(buildV2SubagentDenyPermissions());
+
+    setDualEmitSubagentPermissions(undefined);
+    vi.stubEnv('OPENCODE_DUAL_EMIT_SUBAGENT_PERMISSIONS', 'false');
+    try {
+      expect(resolveDualEmitSubagentPermissions()).toBe(false);
+      const envDef = buildReviewSubagent('reviewer', undefined, 'v2.0.0');
+      expect(envDef.permission).toBeUndefined();
+      expect(envDef.permissions).toEqual(buildV2SubagentDenyPermissions());
+      // Explicit per-call argument wins over the env var.
+      expect(buildReviewSubagent('reviewer', undefined, 'v2.0.0', true).permissions).toEqual(
+        buildV2SubagentDenyPermissions(),
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(resolveDualEmitSubagentPermissions()).toBe(true);
   });
 
   it('leaves legacy blocks untouched when no version was ever probed', () => {

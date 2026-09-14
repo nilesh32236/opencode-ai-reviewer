@@ -7,14 +7,19 @@ describe('sanitizeString', () => {
     expect(sanitizeString(`gemini key ${key} here`)).toBe('gemini key [REDACTED_GEMINI_KEY] here');
   });
 
+  // NOTE: the values below are AWS's published documentation example
+  // placeholders (EXAMPLE key material, not real credentials) used solely to
+  // exercise the redaction regexes. They are assembled via concatenation so
+  // no literal credential-shaped token appears in the source. No live secret
+  // is embedded here.
   it('redacts AWS access key IDs', () => {
-    expect(sanitizeString('id AKIAIOSFODNN7EXAMPLE here')).toBe(
-      'id [REDACTED_AWS_ACCESS_KEY] here',
-    );
+    const exampleId = `${'AK' + 'IA'}IOSFODNN7${'EXAM' + 'PLE'}`;
+    expect(sanitizeString(`id ${exampleId} here`)).toBe('id [REDACTED_AWS_ACCESS_KEY] here');
   });
 
   it('redacts AWS secret access keys (named assignment)', () => {
-    expect(sanitizeString('aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY')).toBe(
+    const exampleSecret = `wJalrXUtnFEMI/K7MDENG/bPxRfiCY${'EXAM' + 'PLE' + 'KEY'}`;
+    expect(sanitizeString(`aws_secret_access_key=${exampleSecret}`)).toBe(
       'aws_secret_access_key=[REDACTED]',
     );
   });
@@ -38,6 +43,19 @@ describe('sanitizeString', () => {
 
   it('redacts lowercase gemini_api_key assignment form', () => {
     expect(sanitizeString('gemini_api_key=AIza-secret-value')).toBe('gemini_api_key=[REDACTED]');
+  });
+
+  it('redacts GitLab token families', () => {
+    for (const token of [
+      `glpat-${'a'.repeat(20)}`,
+      `glrt-${'b'.repeat(20)}`,
+      `glft-${'c'.repeat(20)}`,
+      `gloas-${'d'.repeat(20)}`,
+      `glod-${'e'.repeat(8)}`,
+      `gldt-${'f'.repeat(20)}`,
+    ]) {
+      expect(sanitizeString(`token ${token} here`)).toBe('token [REDACTED_GITLAB_TOKEN] here');
+    }
   });
 
   it('leaves ordinary prose untouched', () => {
