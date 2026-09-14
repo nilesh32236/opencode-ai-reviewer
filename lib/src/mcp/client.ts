@@ -434,6 +434,8 @@ export class MCPManager {
    * @param retryOpts - Optional retry-budget override for the handshake
    * (used to scope retries across Streamable→SSE fallback). Defaults to
    * `{ maxRetries: 3, baseDelayMs: 2000 }`.
+   * @param retryOpts.maxRetries - Handshake attempts before giving up.
+   * @param retryOpts.baseDelayMs - Base delay between attempts in milliseconds.
    * @returns Null on success, otherwise the connection error (fail-open; already logged)
    */
   private async connectServer(

@@ -9,6 +9,8 @@ const logger = new Logger('path-rules');
  * Suggested reviewers for a rule, reading the canonical camelCase key with a
  * fallback to the legacy snake_case alias (for rules that bypassed
  * `sanitizePathRules` normalization).
+ * @param rule - Path rule to read reviewers from.
+ * @returns Reviewer slugs (canonical key preferred, legacy alias as fallback).
  */
 function reviewersOf(rule: PathRule): string[] {
   return rule.suggestReviewers ?? rule.suggest_reviewers ?? [];
@@ -18,6 +20,8 @@ function reviewersOf(rule: PathRule): string[] {
  * Auto-labels for a rule, reading the canonical camelCase key with a fallback
  * to the legacy snake_case alias (for rules that bypassed `sanitizePathRules`
  * normalization).
+ * @param rule - Path rule to read labels from.
+ * @returns Label names (canonical key preferred, legacy alias as fallback).
  */
 function labelsOf(rule: PathRule): string[] {
   return rule.addLabels ?? rule.add_labels ?? [];

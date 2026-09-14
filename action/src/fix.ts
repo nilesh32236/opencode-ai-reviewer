@@ -239,6 +239,9 @@ export async function runFix(
  * whose base predates already-merged work is discarded rather than reused.
  * Callers must `validateRefName()` both args before calling (refs are
  * interpolated into git arguments).
+ * @param branchName - Remote branch to check (e.g. 'autofix/issue-123').
+ * @param defaultBranch - Default branch name (e.g. 'main').
+ * @returns True when the branch tip contains the current default tip.
  */
 async function isAutofixBranchFresh(branchName: string, defaultBranch: string): Promise<boolean> {
   try {

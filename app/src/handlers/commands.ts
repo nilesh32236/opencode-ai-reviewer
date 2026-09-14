@@ -50,6 +50,9 @@ const logger = new Logger('Command');
 /**
  * Return true when an error represents cancellation: an aborted signal or an
  * `AbortError` (e.g. `signal.throwIfAborted()` thrown inside a try).
+ * @param err - Error value to classify.
+ * @param signal - Optional abort signal that marks cancellation when aborted.
+ * @returns True when the error represents cancellation.
  */
 function isAbortError(err: unknown, signal?: AbortSignal): boolean {
   if (signal?.aborted) return true;

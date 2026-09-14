@@ -121,7 +121,8 @@ export function createHealthRouter(
 
   // Fallback error handler so probe failures always produce a 503 JSON
   // payload instead of hanging or leaking a stack trace.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  // NOTE: no eslint-disable needed here — the repo eslint config carries no
+  // unused-vars rule, and Express requires the 4-arg error-handler signature.
   router.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     logger.error(`Health router error: ${err instanceof Error ? err.message : String(err)}`);
     if (res.headersSent) return;
