@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.13.6] — 2026-09-14
+
+
+### Fixed
+
+- gate V2 subagent permissions on 2.x and tolerate clean-tree fix iterations
+
+### Changed
+
+- [Autofix] [Audit:error-handling-resilience] 1 critical, 9 important, 0 minor (#503) (#503)
+
+[v1.13.6]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.5...v1.13.6
+
 ## [v1.13.5] — 2026-09-13
 
 
