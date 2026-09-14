@@ -1359,6 +1359,10 @@ async function createAutofixPR(
     }
     return null;
   } catch (err) {
+    if (isAbortError(err, signal)) {
+      logger.info(`Autofix PR creation aborted for issue #${issueNumber}`);
+      return null;
+    }
     logger.error(
       `Autofix PR creation failed for issue #${issueNumber}: ${err instanceof Error ? err.message : err}`,
     );

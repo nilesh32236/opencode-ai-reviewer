@@ -513,6 +513,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
               logger.info('Verification passed');
               break;
             } catch (err) {
+              if (signal?.aborted) return;
               const errWithStderr =
                 typeof err === 'object' && err !== null
                   ? (err as { stderr?: Buffer | string })
@@ -558,6 +559,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
                     break;
                   }
                 } catch (innerErr) {
+                  if (signal?.aborted) return;
                   logger.error(
                     `Verification retry failed: ${innerErr instanceof Error ? innerErr.message : innerErr}`,
                   );
