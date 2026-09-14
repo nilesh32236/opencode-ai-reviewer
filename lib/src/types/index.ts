@@ -133,6 +133,13 @@ export interface PRContext {
   changedFiles: ChangedFile[];
   /** Linked issue number parsed from PR body, if any */
   linkedIssue?: number;
+  /**
+   * Merge state of the request as reported by the platform (e.g. 'open',
+   * 'closed', 'merged' on GitHub; 'opened', 'merged', 'closed' on GitLab).
+   * Optional for backward compatibility with callers that construct a
+   * PRContext without fetching state.
+   */
+  state?: string;
 }
 
 /** A file that was changed in a pull request. */

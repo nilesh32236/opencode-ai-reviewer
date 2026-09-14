@@ -321,6 +321,8 @@ export class GitLabAdapter implements PlatformAdapter {
         iid: number;
         title: string;
         description: string | null;
+        /** 'opened' | 'closed' | 'merged' | 'locked'. */
+        state: string;
         source_branch: string;
         sha: string;
         target_branch: string;
@@ -382,6 +384,9 @@ export class GitLabAdapter implements PlatformAdapter {
       headSha: mr.sha,
       baseRef: mr.target_branch,
       author: mr.author.username,
+      // GitLab reports MR state as 'opened' | 'closed' | 'merged'. Carried
+      // through so fix loops can stop pushing once an MR has been merged.
+      state: mr.state,
       labels: mr.labels || [],
       changedFiles: changes.map((f) => ({
         path: f.new_path,

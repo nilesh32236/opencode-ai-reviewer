@@ -327,6 +327,8 @@ export class GitHubHelper implements PlatformAdapter {
         number: number;
         title: string;
         body: string | null;
+        /** 'open' | 'closed' | 'merged' (merged only when merged via the API view). */
+        state: string;
         head: { ref: string; sha: string; repo?: { full_name: string } | null };
         base: { ref: string; sha?: string };
         user: { login: string };
@@ -365,6 +367,9 @@ export class GitHubHelper implements PlatformAdapter {
       baseRef: pr.base.ref,
       baseSha: pr.base.sha,
       author: pr.user.login,
+      // GitHub reports PR state as 'open' | 'closed' | 'merged'. Carried
+      // through so fix loops can stop pushing once a PR has been merged.
+      state: pr.state,
       labels: pr.labels.map((l) => l.name),
       changedFiles: files.map((f) => ({
         path: f.filename || f.path || '',
