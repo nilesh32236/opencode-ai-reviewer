@@ -400,25 +400,35 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
 
       try {
         await execGit(['add', '-A'], gitOpts);
-        await execGit(
-          ['commit', '-m', `fix: address review feedback (iteration ${i + 1}) [skip ci]`],
-          gitOpts,
-        );
-        validateRefName(pr.headRef);
-        await execGit(['push', 'origin', pr.headRef], gitOpts);
-        previousFindings.push({
-          iteration: i + 1,
-          issues: result.issues,
-          fixSummary: fixResult.summary,
-          filesChanged: fixResult.filesChanged,
-          headSha: pr.headSha,
-          commentIds: currentCommentIds?.map((c) => ({
-            file: c.file,
-            line: c.line,
-            commentId: c.commentId,
-            nodeId: c.nodeId,
-          })),
-        });
+        // The fix agent can report changes while leaving the tree clean (only
+        // ignored files written, or edits identical to HEAD). Committing then
+        // fails with "nothing to commit" — a clean tree is not a git failure,
+        // so skip the commit and let the loop continue to verification and
+        // the next review iteration instead of misreporting git-failure.
+        const treeState = await execGit(['status', '--porcelain'], gitOpts);
+        if (treeState.stdout.trim() === '') {
+          logger.info('Working tree clean after fix — skipping commit, continuing loop');
+        } else {
+          await execGit(
+            ['commit', '-m', `fix: address review feedback (iteration ${i + 1}) [skip ci]`],
+            gitOpts,
+          );
+          validateRefName(pr.headRef);
+          await execGit(['push', 'origin', pr.headRef], gitOpts);
+          previousFindings.push({
+            iteration: i + 1,
+            issues: result.issues,
+            fixSummary: fixResult.summary,
+            filesChanged: fixResult.filesChanged,
+            headSha: pr.headSha,
+            commentIds: currentCommentIds?.map((c) => ({
+              file: c.file,
+              line: c.line,
+              commentId: c.commentId,
+              nodeId: c.nodeId,
+            })),
+          });
+        }
       } catch (err) {
         logger.error(
           `Git operations failed in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
@@ -548,6 +558,13 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
 
                   if (retryResult?.changesMade) {
                     await execGit(['add', '-A'], gitOpts);
+                    // Same clean-tree guard as the main iteration commit:
+                    // "nothing to commit" must not fail verification loudly.
+                    const retryTreeState = await execGit(['status', '--porcelain'], gitOpts);
+                    if (retryTreeState.stdout.trim() === '') {
+                      logger.info('Working tree clean after verification retry — skipping commit');
+                      break;
+                    }
                     await execGit(
                       ['commit', '-m', `fix: verification errors (attempt ${v + 1}) [skip ci]`],
                       gitOpts,
