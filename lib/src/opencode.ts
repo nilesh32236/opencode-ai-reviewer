@@ -33,7 +33,9 @@ export const DEFAULT_HEALTH_TIMEOUT_MS = 5_000;
 let opencodePath: string | null = null;
 /** Path of the opencode binary most recently confirmed compatible by checkHealth(). */
 let validatedOpenCodePath: string | null = null;
+/** CI config cache keyed by the resolved dual-emit flag (V1-only vs dual). */
 let cachedCIConfig: string | null = null;
+let cachedCIConfigDual: string | null = null;
 /**
  * Raw version string (e.g. "v1.2.3") from the most recent successful
  * `opencode --version` probe. Used to gate version-dependent config shapes
@@ -118,6 +120,54 @@ export function resolveDualEmitSubagentPermissions(explicit?: boolean): boolean 
 }
 
 /**
+ * Default for dual-emitting Opencode V2 top-level config names alongside V1
+ * names (`permissions` + `permission`, `agents` + `agent`,
+ * `mcpServers` + `mcp`, `plugins` + `plugin`). `true` keeps the same injected
+ * `OPENCODE_CONFIG_CONTENT` parseable on both V1-only and V2 CLIs with zero
+ * config migration. Overridable per run via the `dualEmitV2Config` option on
+ * {@link runOpenCode}, process-wide via {@link setDualEmitV2Config}, or via
+ * the `OPENCODE_DUAL_EMIT_V2` env var (`false` disables → V1-only as today).
+ *
+ * Strict-schema note: dual-emit assumes CLIs tolerate (ignore or warn on)
+ * extra unknown keys. If a CLI ever performs strict-schema validation and
+ * rejects the extra variant, disable dual-emit via one of the opt-outs above
+ * to fall back to V1-only output.
+ * @since NEXT
+ */
+let dualEmitV2ConfigDefault = true;
+
+/**
+ * Configure whether generated top-level OpenCode config dual-emits V2 names
+ * alongside V1 names.
+ * @param enabled - `true` (default) to dual-emit, `false` for V1-only output,
+ * `undefined` to restore the default (`true`).
+ * @since NEXT
+ */
+export function setDualEmitV2Config(enabled?: boolean): void {
+  dualEmitV2ConfigDefault = enabled ?? true;
+}
+
+/**
+ * Resolve the effective top-level dual-emit flag: an explicit per-run boolean
+ * wins, then the `OPENCODE_DUAL_EMIT_V2` env var, then the module default set
+ * via {@link setDualEmitV2Config} (`true`). Unrecognized env values fall
+ * through to the module default (fail-open).
+ * @param explicit - Optional explicit override for this call.
+ * @returns The effective dual-emit setting.
+ * @since NEXT
+ */
+export function resolveDualEmitV2Config(explicit?: boolean): boolean {
+  if (typeof explicit === 'boolean') return explicit;
+  const raw = process.env.OPENCODE_DUAL_EMIT_V2;
+  if (raw !== undefined) {
+    const normalized = raw.trim().toLowerCase();
+    if (['0', 'false', 'no', 'off', 'disabled'].includes(normalized)) return false;
+    if (['1', 'true', 'yes', 'on', 'enabled'].includes(normalized)) return true;
+  }
+  return dualEmitV2ConfigDefault;
+}
+
+/**
  * Configure how the OpenCode CLI is invoked for the current process.
  *
  * The GitHub Action and App never call this and keep the default CI behavior
@@ -177,10 +227,12 @@ export function resetOpenCodeState(): void {
   opencodePath = null;
   validatedOpenCodePath = null;
   cachedCIConfig = null;
+  cachedCIConfigDual = null;
   cachedOpenCodeVersionRaw = null;
   subagentV2DecisionCache.clear();
   runModeOverride = undefined;
   dualEmitSubagentPermissionsDefault = true;
+  dualEmitV2ConfigDefault = true;
   llmProviderConfig = undefined;
   signalHandlersRegistered = false;
 }
@@ -942,11 +994,23 @@ export async function resolveOpenCodePath(
  * We inject this as OPENCODE_CONFIG_CONTENT (highest-precedence env var,
  * overrides even a project-level opencode.json) so no file needs to be written
  * and the config can never be overridden by a repo's own config.
+ *
+ * When top-level dual-emit is enabled (the default — see
+ * {@link resolveDualEmitV2Config}), V2 names (`permissions`, `agents`,
+ * `mcpServers`, `plugins`) are written alongside the V1 names (`permission`,
+ * `agent`, `mcp`, `plugin`) so the same config parses on both V1-only and V2
+ * CLIs. When disabled, output is V1-only exactly as before. Fail-open: V2
+ * augmentation errors fall back to V1-only with a warning.
+ * @param explicitDualEmit - Optional dual-emit override; env/module default
+ * applies when omitted.
  * @returns A JSON string of the CI config.
+ * @since NEXT - Added V2 dual-emit.
  */
-function buildCIConfig(): string {
-  if (cachedCIConfig) return cachedCIConfig;
-  const config = {
+function buildCIConfig(explicitDualEmit?: boolean): string {
+  const dualEmit = resolveDualEmitV2Config(explicitDualEmit);
+  if (dualEmit && cachedCIConfigDual) return cachedCIConfigDual;
+  if (!dualEmit && cachedCIConfig) return cachedCIConfig;
+  const config: Record<string, unknown> = {
     $schema: 'https://opencode.ai/config.json',
     // "allow" as a string is the shorthand that enables every tool without
     // prompting. Docs: https://opencode.ai/docs/permissions#configuration
@@ -958,8 +1022,34 @@ function buildCIConfig(): string {
     mcp: {},
     plugin: [],
   };
-  cachedCIConfig = JSON.stringify(config);
-  return cachedCIConfig;
+  if (!dualEmit) {
+    cachedCIConfig = JSON.stringify(config);
+    core.info('Emitted V1-only OpenCode CI config (dual_emit_v2 disabled).');
+    return cachedCIConfig;
+  }
+  try {
+    const permissions = convertV1PermissionToV2Array('allow');
+    const dualConfig: Record<string, unknown> = {
+      ...config,
+      permissions: permissions ?? [{ action: '*', resource: '*', effect: 'allow' }],
+      // V1 `agent` (singular) has no entries at CI level; emit both empty maps
+      // so either CLI finds its expected key. Real subagents are merged later
+      // by mergeSubagentConfig(), which mirrors to both keys.
+      agent: {},
+      agents: {},
+      mcpServers: { ...(config.mcp as Record<string, unknown>) },
+      plugins: [...(config.plugin as unknown[])],
+    };
+    cachedCIConfigDual = JSON.stringify(dualConfig);
+    core.info('Emitted dual (V1+V2) OpenCode CI config (dual_emit_v2 enabled).');
+    return cachedCIConfigDual;
+  } catch (err) {
+    core.warning(
+      `V2 CI config dual-emit failed (${err instanceof Error ? err.message : String(err)}) — falling back to V1-only config.`,
+    );
+    cachedCIConfig = JSON.stringify(config);
+    return cachedCIConfig;
+  }
 }
 
 /** AI SDK adapter used for any OpenAI-compatible endpoint (incl. Ollama). */
@@ -1271,6 +1361,9 @@ function applyLLMEnvVarReferences(
 /**
  * Merge the built LLM provider map into a base OpenCode config JSON string,
  * preserving any existing `provider` keys (e.g. a caller-supplied custom config).
+ * All other top-level keys — including both V1 (`permission`, `agent`, `mcp`,
+ * `plugin`) and V2 (`permissions`, `agents`, `mcpServers`, `plugins`) variants
+ * — pass through untouched.
  * @param baseConfig - The base OpenCode config JSON (CI or custom).
  * @param llm - The custom LLM provider configuration (may be `undefined`).
  * @returns The config JSON with the provider map merged in.
@@ -1302,22 +1395,51 @@ function mergeLLMProviderConfig(baseConfig: string, llm: LLMConfig | undefined):
  * previously spawned one process per category now runs as one process whose
  * primary agent delegates to these focused subagents.
  *
+ * Top-level dual-emit (default — see {@link resolveDualEmitV2Config}): on
+ * read, an existing `agents` (V2) map is preferred when both `agent` and
+ * `agents` are present (the variant used is logged); on write, the merged map
+ * is mirrored to both `agent` and `agents`. When disabled, only the legacy
+ * `agent` key is read/written (V1-only as before). Fail-open: any error
+ * returns `baseConfig` unchanged.
+ *
  * @param baseConfig - The base OpenCode config JSON (CI or custom).
  * @param subagents - Map of subagent name → definition to merge.
+ * @param explicitDualEmit - Optional top-level dual-emit override; env/module
+ * default applies when omitted.
  * @returns The config JSON with the `agent` block merged in.
+ * @since NEXT - Added `explicitDualEmit` and `agents` alias handling.
  */
 export function mergeSubagentConfig(
   baseConfig: string,
   subagents: Record<string, Record<string, unknown>>,
+  explicitDualEmit?: boolean,
 ): string {
   if (!subagents || Object.keys(subagents).length === 0) return baseConfig;
   try {
     const parsed = JSON.parse(baseConfig) as Record<string, unknown>;
-    const existing =
-      parsed.agent && typeof parsed.agent === 'object' && !Array.isArray(parsed.agent)
-        ? (parsed.agent as Record<string, unknown>)
-        : {};
-    parsed.agent = { ...existing, ...subagents };
+    const isMap = (v: unknown): v is Record<string, unknown> =>
+      !!v && typeof v === 'object' && !Array.isArray(v);
+    const v1 = isMap(parsed.agent) ? (parsed.agent as Record<string, unknown>) : undefined;
+    const v2 = isMap(parsed.agents) ? (parsed.agents as Record<string, unknown>) : undefined;
+    let existing: Record<string, unknown> = {};
+    if (v1 !== undefined && v2 !== undefined) {
+      existing = { ...v1, ...v2 };
+      core.info(
+        'OpenCode config has both `agent` and `agents` blocks — preferring `agents` on read.',
+      );
+    } else if (v2 !== undefined) {
+      existing = { ...v2 };
+    } else if (v1 !== undefined) {
+      existing = { ...v1 };
+    }
+    const merged = { ...existing, ...subagents };
+    const dualEmit = resolveDualEmitV2Config(explicitDualEmit);
+    if (dualEmit) {
+      parsed.agent = { ...merged };
+      parsed.agents = { ...merged };
+    } else {
+      parsed.agent = { ...merged };
+    }
     return JSON.stringify(parsed);
   } catch {
     return baseConfig;
@@ -1729,6 +1851,11 @@ export {
  * Strict-schema note: dual-emit assumes V2 CLIs tolerate the extra legacy key
  * (V2 docs say "Do not use `permission`..."). If a V2 CLI strictly validates
  * and rejects it, pass `false` here or set the env var to `false`.
+ * @param options.dualEmitV2Config - When true (default), the generated
+ * top-level config dual-emits V2 names (`permissions`, `agents`, `mcpServers`,
+ * `plugins`) alongside V1 names (`permission`, `agent`, `mcp`, `plugin`). Set
+ * to `false` for V1-only output. When omitted, the `OPENCODE_DUAL_EMIT_V2` env
+ * var or the module default (see {@link setDualEmitV2Config}) applies.
  * @param options.llm - Custom LLM provider configuration for this run. When
  * provided, it is used instead of the module-level config set via
  * {@link setLLMProviderConfig}, so long-lived processes can dispatch concurrent
@@ -1757,6 +1884,8 @@ export async function runOpenCode(
     autoApprove?: boolean;
     /** Dual-emit V2 `permissions` alongside legacy `permission` (default: true). */
     dualEmitSubagentPermissions?: boolean;
+    /** Dual-emit V2 top-level config names alongside V1 names (default: true). */
+    dualEmitV2Config?: boolean;
     /** Custom LLM provider configuration for this run (see JSDoc above). */
     llm?: LLMConfig;
   },
@@ -1941,15 +2070,20 @@ export async function runOpenCode(
   // checkHealth()/setupOpenCode() probe (cachedOpenCodeVersionRaw), so this
   // adds zero extra spawns. Unknown versions fail open to the legacy shape.
   // Dual-emit (default) preserves the legacy `permission` key alongside the V2
-  // `permissions` array for maximum CLI compatibility.
+  // `permissions` array for maximum CLI compatibility. Top-level CI config
+  // dual-emits V2 names (`permissions`, `agents`, `mcpServers`, `plugins`)
+  // alongside V1 names when `dualEmitV2Config` is enabled (default).
   safeEnv.OPENCODE_CONFIG_CONTENT = mergeLLMProviderConfig(
     mergeSubagentConfig(
-      options.opencodeConfig ?? runModeOverride?.opencodeConfig ?? buildCIConfig(),
+      options.opencodeConfig ??
+        runModeOverride?.opencodeConfig ??
+        buildCIConfig(options.dualEmitV2Config),
       normalizeSubagentPermissionsForVersion(
         options.subagents ?? {},
         undefined,
         options.dualEmitSubagentPermissions,
       ),
+      options.dualEmitV2Config,
     ),
     llm,
   );

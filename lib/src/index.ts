@@ -19,6 +19,8 @@ export {
   setLLMProviderConfig,
   setDualEmitSubagentPermissions,
   resolveDualEmitSubagentPermissions,
+  setDualEmitV2Config,
+  resolveDualEmitV2Config,
   buildLocalOpenCodeConfig,
   buildLLMProviderMap,
   MINIMUM_OPENCODE_VERSION,
