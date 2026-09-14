@@ -1421,24 +1421,29 @@ export function mergeSubagentConfig(
       !!v && typeof v === 'object' && !Array.isArray(v);
     const v1 = isMap(parsed.agent) ? (parsed.agent as Record<string, unknown>) : undefined;
     const v2 = isMap(parsed.agents) ? (parsed.agents as Record<string, unknown>) : undefined;
-    let existing: Record<string, unknown> = {};
-    if (v1 !== undefined && v2 !== undefined) {
-      existing = { ...v1, ...v2 };
-      core.info(
-        'OpenCode config has both `agent` and `agents` blocks — preferring `agents` on read.',
-      );
-    } else if (v2 !== undefined) {
-      existing = { ...v2 };
-    } else if (v1 !== undefined) {
-      existing = { ...v1 };
-    }
-    const merged = { ...existing, ...subagents };
     const dualEmit = resolveDualEmitV2Config(explicitDualEmit);
     if (dualEmit) {
+      let existing: Record<string, unknown> = {};
+      if (v1 !== undefined && v2 !== undefined) {
+        existing = { ...v1, ...v2 };
+        core.info(
+          'OpenCode config has both `agent` and `agents` blocks — preferring `agents` on read.',
+        );
+      } else if (v2 !== undefined) {
+        existing = { ...v2 };
+      } else if (v1 !== undefined) {
+        existing = { ...v1 };
+      }
+      const merged = { ...existing, ...subagents };
       parsed.agent = { ...merged };
       parsed.agents = { ...merged };
     } else {
-      parsed.agent = { ...merged };
+      // V1-only as before: ignore any pre-existing `agents` (V2) map on read
+      // and drop it on write so output contains the legacy `agent` key only.
+      const v1Only = v1 !== undefined ? { ...v1, ...subagents } : { ...subagents };
+      parsed.agent = { ...v1Only };
+      // biome-ignore lint/performance/noDelete: V1-only output must not carry the V2 alias
+      delete parsed.agents;
     }
     return JSON.stringify(parsed);
   } catch {
