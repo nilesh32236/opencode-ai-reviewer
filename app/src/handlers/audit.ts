@@ -62,11 +62,27 @@ export async function handleAudit(
 
   let promptsDir = config.audit.promptsDir;
 
+  async function notifyEarlyExit(message: string): Promise<void> {
+    if (issueNumber === undefined) return;
+    try {
+      await gh.postOrUpdateComment(
+        issueNumber,
+        '<!-- audit-error -->',
+        `⚠️ **Audit skipped:** ${sanitizeErrorMessage(message)}`,
+      );
+    } catch (commentErr) {
+      logger.warn(
+        `Failed to post audit early-exit comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+      );
+    }
+  }
+
   if (!existsSync(promptsDir)) {
     if (promptsDir === '.audit-prompts' && existsSync('prompts/audit-categories')) {
       promptsDir = 'prompts/audit-categories';
     } else {
       logger.warn(`Audit prompts directory not found: ${promptsDir}`);
+      await notifyEarlyExit(`Audit prompts directory not found: ${promptsDir}.`);
       return;
     }
   }
@@ -80,6 +96,7 @@ export async function handleAudit(
 
     if (mdFiles.length === 0) {
       logger.info(`No prompt files found in ${promptsDir}`);
+      await notifyEarlyExit(`No audit prompt files found in ${promptsDir}.`);
       return;
     }
 
@@ -90,6 +107,7 @@ export async function handleAudit(
         await fs.access(specific, fs.constants.R_OK);
       } catch {
         logger.info(`Prompt '${promptName}' not found`);
+        await notifyEarlyExit(`Audit prompt '${sanitizeErrorMessage(promptName)}' not found.`);
         return;
       }
       selectedFile = specific;
@@ -104,6 +122,7 @@ export async function handleAudit(
       `Error reading audit prompts: ${sanitizeErrorMessage(err)}`,
       sanitizeErrorMessage(err),
     );
+    await notifyEarlyExit(`Could not read audit prompts: ${sanitizeErrorMessage(err)}.`);
     return;
   }
 
@@ -117,6 +136,7 @@ export async function handleAudit(
     promptContent = await fs.readFile(selectedFile, 'utf-8');
   } catch (err) {
     logger.error(`Failed to read audit prompt file: ${sanitizeErrorMessage(err)}`, err);
+    await notifyEarlyExit(`Could not read audit prompt file: ${sanitizeErrorMessage(err)}.`);
     return;
   }
 
@@ -147,7 +167,7 @@ export async function handleAudit(
           await gh.postOrUpdateComment(
             issueNumber,
             '<!-- audit-error -->',
-            `❌ **Audit failed.** ${err instanceof Error ? err.message : String(err)}`,
+            `❌ **Audit failed.** ${sanitizeErrorMessage(err)}`,
           );
         } catch (commentErr) {
           logger.warn(
@@ -160,6 +180,7 @@ export async function handleAudit(
 
     if (!result.summary && result.issues.length === 0) {
       logger.warn('Audit returned no meaningful content — skipping issue creation');
+      await notifyEarlyExit('Audit completed but returned no meaningful content.');
       return;
     }
 

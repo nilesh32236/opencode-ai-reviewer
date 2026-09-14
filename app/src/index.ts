@@ -15,6 +15,36 @@ import { logRepoFilter, repoFilter } from './utils/repo-filter.js';
 const logger = new Logger('App');
 
 /**
+ * Register process-level resilience handlers so rejected promises and
+ * uncaught exceptions outside the onAny guard are observed via structured
+ * logs instead of silently destabilizing the Node process.
+ *
+ * Policy: log-and-continue for `unhandledRejection` (keeps the Probot
+ * process observable; orchestrators decide restarts); log for
+ * `uncaughtException` (Node still exits — no manual `process.exit` here so
+ * the default crash semantics are preserved).
+ *
+ * Idempotent: safe to call multiple times (e.g. in tests) — handlers are
+ * registered once per process.
+ */
+export function setupGlobalErrorHandlers(): void {
+  if (process.listenerCount('unhandledRejection') === 0) {
+    process.on('unhandledRejection', (reason: unknown) => {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      const stack = reason instanceof Error ? reason.stack : undefined;
+      logger.error(`Unhandled promise rejection: ${message}${stack ? `\n${stack}` : ''}`);
+    });
+  }
+  if (process.listenerCount('uncaughtException') === 0) {
+    process.on('uncaughtException', (err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      const stack = err instanceof Error ? err.stack : undefined;
+      logger.error(`Uncaught exception: ${message}${stack ? `\n${stack}` : ''}`);
+    });
+  }
+}
+
+/**
  * Initialize the Probot app with event subscribers for review, fix, and audit.
  * Registers all subscribers with the event bus and handles SIGTERM cleanup.
  * Mounts health/readiness probes on the Probot Express router.
@@ -117,6 +147,8 @@ export default (app: Probot, options?: { getRouter?: (path?: string) => unknown 
     }
     process.exit(0);
   });
+
+  setupGlobalErrorHandlers();
 
   logger.info('OpenCode PR Agent app loaded (self-improving)');
 };

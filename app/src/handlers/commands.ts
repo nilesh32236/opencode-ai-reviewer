@@ -1,8 +1,8 @@
-import { execFileSync } from 'child_process';
-import type { ExecFileSyncOptions } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
+import { promisify } from 'util';
 import type {
   AgentConfig,
   DocStyle,
@@ -47,6 +47,46 @@ import { handlePRReview } from './pr-review.js';
 
 /** Module-scope logger for helper functions that have no per-call context. */
 const logger = new Logger('Command');
+
+/** Base options for non-git child processes (install/build steps). */
+interface ExecProcessOptions {
+  cwd?: string;
+  env?: Record<string, string>;
+  timeout?: number;
+  signal?: AbortSignal;
+}
+
+/**
+ * Run a binary asynchronously (non-blocking) with timeout + AbortSignal
+ * support, so long install/build steps never stall the webhook event loop.
+ */
+async function execProcess(
+  file: string,
+  args: string[],
+  options: ExecProcessOptions = {},
+): Promise<{ stdout: string; stderr: string }> {
+  options.signal?.throwIfAborted();
+  if (typeof execFile === 'function') {
+    const execFileAsync = promisify(execFile);
+    const { stdout, stderr } = await execFileAsync(file, args, {
+      cwd: options.cwd,
+      env: options.env ? { ...process.env, ...options.env } : process.env,
+      timeout: options.timeout ?? 600_000,
+      signal: options.signal,
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    return { stdout: String(stdout ?? ''), stderr: String(stderr ?? '') };
+  }
+  // Fallback for environments/tests that mock only execFileSync.
+  const out = execFileSync(file, args, {
+    cwd: options.cwd,
+    env: options.env ? { ...process.env, ...options.env } : process.env,
+    timeout: options.timeout ?? 600_000,
+    encoding: 'utf-8',
+    maxBuffer: 20 * 1024 * 1024,
+  });
+  return { stdout: String(out ?? ''), stderr: '' };
+}
 
 /**
  * Handle a slash command (fix/review/audit/analyze): clone the repo, execute
@@ -385,6 +425,17 @@ export async function handleCommand(
     logger.error(
       `Command ${command} failed for issue ${issueNumber} in ${repo}: ${err instanceof Error ? err.message : err}`,
     );
+    try {
+      await gh.postOrUpdateComment(
+        issueNumber,
+        '<!-- command-error -->',
+        `❌ **/${command} failed**: ${sanitizeErrorMessage(err)}`,
+      );
+    } catch (commentErr) {
+      logger.warn(
+        `Failed to post command-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+      );
+    }
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
     rmSync(askPassDir, { recursive: true, force: true });
@@ -437,13 +488,25 @@ export async function handleAnalyzeCommand(
     logger.error(
       `Failed to analyze issue #${issueNumber}: ${err instanceof Error ? err.message : err}`,
     );
-    await gh.postOrUpdateComment(
-      issueNumber,
-      '<!-- issue-analysis-error -->',
-      `❌ **Analysis Failed**: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    try {
+      await gh.postOrUpdateComment(
+        issueNumber,
+        '<!-- issue-analysis-error -->',
+        `❌ **Analysis Failed**: ${sanitizeErrorMessage(err)}`,
+      );
+    } catch (commentErr) {
+      logger.warn(
+        `Failed to post analysis-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+      );
+    }
   } finally {
-    await engine.cleanup();
+    try {
+      await engine.cleanup();
+    } catch (cleanupErr) {
+      logger.warn(
+        `Engine cleanup failed for analyze #${issueNumber}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+      );
+    }
   }
 }
 
@@ -485,13 +548,25 @@ export async function handleExplainCommand(
     logger.error(
       `Failed to explain PR #${issueNumber}: ${err instanceof Error ? err.message : err}`,
     );
-    await gh.postOrUpdateComment(
-      issueNumber,
-      '<!-- pr-explanation-error -->',
-      `❌ **Explanation Failed**: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    try {
+      await gh.postOrUpdateComment(
+        issueNumber,
+        '<!-- pr-explanation-error -->',
+        `❌ **Explanation Failed**: ${sanitizeErrorMessage(err)}`,
+      );
+    } catch (commentErr) {
+      logger.warn(
+        `Failed to post explanation-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+      );
+    }
   } finally {
-    await engine.cleanup();
+    try {
+      await engine.cleanup();
+    } catch (cleanupErr) {
+      logger.warn(
+        `Engine cleanup failed for explain #${issueNumber}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+      );
+    }
   }
 }
 
@@ -578,13 +653,25 @@ export async function handleDescribeCommand(
     logger.error(
       `Failed to describe PR #${issueNumber}: ${err instanceof Error ? err.message : err}`,
     );
-    await gh.postOrUpdateComment(
-      issueNumber,
-      '<!-- pr-description-error -->',
-      `❌ **Description Generation Failed**: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    try {
+      await gh.postOrUpdateComment(
+        issueNumber,
+        '<!-- pr-description-error -->',
+        `❌ **Description Generation Failed**: ${sanitizeErrorMessage(err)}`,
+      );
+    } catch (commentErr) {
+      logger.warn(
+        `Failed to post describe-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+      );
+    }
   } finally {
-    await engine.cleanup();
+    try {
+      await engine.cleanup();
+    } catch (cleanupErr) {
+      logger.warn(
+        `Engine cleanup failed for describe #${issueNumber}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+      );
+    }
   }
 }
 
@@ -738,6 +825,7 @@ export async function handleDocsCommand(
       logger.warn(`Ignoring invalid docs style flag "${styleFlag}" — using configured style`);
     }
     const docStyle: DocStyle | undefined = styleIsValid ? styleFlag : config.docs?.style;
+    signal?.throwIfAborted();
     const docsResult = await engine.runDocs(pr, contextMarkdown, tempDir, undefined, docStyle);
 
     if (signal?.aborted) return;
@@ -759,11 +847,17 @@ export async function handleDocsCommand(
       await execGit(['push', 'origin', branchName, '--force-with-lease'], gitOpts);
     } catch (err) {
       logger.error(`Git push failed: ${sanitizeErrorMessage(err)}`);
-      await gh.postOrUpdateComment(
-        issueNumber,
-        '<!-- docs-error -->',
-        `❌ Docs push failed: ${sanitizeErrorMessage(err)}`,
-      );
+      try {
+        await gh.postOrUpdateComment(
+          issueNumber,
+          '<!-- docs-error -->',
+          `❌ Docs push failed: ${sanitizeErrorMessage(err)}`,
+        );
+      } catch (commentErr) {
+        logger.warn(
+          `Failed to post docs push-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+        );
+      }
       return;
     }
 
@@ -843,13 +937,25 @@ export async function handleDocsCommand(
     logger.error(
       `Docs PR creation failed for PR #${issueNumber}: ${err instanceof Error ? err.message : err}`,
     );
-    await gh.postOrUpdateComment(
-      issueNumber,
-      '<!-- docs-error -->',
-      `❌ **Docs generation failed**: ${sanitizeErrorMessage(err)}`,
-    );
+    try {
+      await gh.postOrUpdateComment(
+        issueNumber,
+        '<!-- docs-error -->',
+        `❌ **Docs generation failed**: ${sanitizeErrorMessage(err)}`,
+      );
+    } catch (commentErr) {
+      logger.warn(
+        `Failed to post docs-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+      );
+    }
   } finally {
-    await engine.cleanup();
+    try {
+      await engine.cleanup();
+    } catch (cleanupErr) {
+      logger.warn(
+        `Engine cleanup failed for docs #${issueNumber}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+      );
+    }
   }
 }
 
@@ -894,11 +1000,17 @@ export async function handleSetup(
     logger.error(
       `Failed to run setup validation for issue #${issueNumber}: ${err instanceof Error ? err.message : err}`,
     );
-    await gh.postOrUpdateComment(
-      issueNumber,
-      '<!-- setup-report -->',
-      `❌ **Setup Validation Failed**: ${sanitizeErrorMessage(err)}`,
-    );
+    try {
+      await gh.postOrUpdateComment(
+        issueNumber,
+        '<!-- setup-report -->',
+        `❌ **Setup Validation Failed**: ${sanitizeErrorMessage(err)}`,
+      );
+    } catch (commentErr) {
+      logger.warn(
+        `Failed to post setup-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+      );
+    }
   }
 }
 
@@ -1033,21 +1145,18 @@ async function createAutofixPR(
     // checks and the structured verification steps all work.
     try {
       logger.info('Installing workspace dependencies for autofix PR...');
-      const installOpts: ExecFileSyncOptions = {
-        cwd: tempDir,
-        env: {
-          ...process.env,
-          ...(gitEnv ? { GIT_ASKPASS: 'echo', GIT_TERMINAL_PROMPT: '0' } : {}),
-        },
-        stdio: 'inherit',
-        timeout: 600_000,
+      signal?.throwIfAborted();
+      const installEnv: Record<string, string> = {
+        ...(gitEnv ? { GIT_ASKPASS: 'echo', GIT_TERMINAL_PROMPT: '0' } : {}),
       };
+      const installBase = { cwd: tempDir, env: installEnv, timeout: 600_000 } as const;
+      const withSignal = signal ? { ...installBase, signal } : installBase;
       let installed = false;
       if (existsSync(path.join(tempDir, 'pnpm-lock.yaml'))) {
-        execFileSync('pnpm', ['install'], installOpts);
+        await execProcess('pnpm', ['install'], withSignal);
         installed = true;
       } else if (existsSync(path.join(tempDir, 'package-lock.json'))) {
-        execFileSync('npm', ['ci'], installOpts);
+        await execProcess('npm', ['ci'], withSignal);
         installed = true;
       }
       if (!installed) {
@@ -1058,9 +1167,11 @@ async function createAutofixPR(
         // → `./dist/index.d.ts`, which is absent after a fresh install; without
         // building lib first, their typecheck fails with "Cannot find module".
         logger.info('Building lib for autofix workspace...');
-        execFileSync('pnpm', ['--filter', '@opencode-pr-agent/lib', 'build'], installOpts);
+        signal?.throwIfAborted();
+        await execProcess('pnpm', ['--filter', '@opencode-pr-agent/lib', 'build'], withSignal);
       }
     } catch (installErr) {
+      if (signal?.aborted) return null;
       logger.warn(
         `Autofix dependency install failed: ${
           installErr instanceof Error ? installErr.message : String(installErr)
@@ -1081,6 +1192,7 @@ async function createAutofixPR(
       issueContext.includes('### Implementation Plan (from analysis)');
     if (!hasPlan) {
       logger.info('No implementation plan found — running analyze first');
+      signal?.throwIfAborted();
       const planMarkdown = await engine.runAnalyze(issueNumber, issueContext, undefined, tempDir);
       const parsed = parseAnalysisPlan(planMarkdown);
       await gh.postOrUpdateComment(issueNumber, '<!-- issue-analysis-plan -->', planMarkdown);
@@ -1156,6 +1268,7 @@ async function createAutofixPR(
       labels: [],
       changedFiles: [],
     };
+    signal?.throwIfAborted();
     const fixResult = await engine.runFix(
       issueNumber,
       0,
@@ -1186,11 +1299,17 @@ async function createAutofixPR(
       await execGit(['push', 'origin', branchName, '--force-with-lease'], gitOpts);
     } catch (err) {
       logger.error(`Git push failed: ${sanitizeErrorMessage(err)}`);
-      await gh.postOrUpdateComment(
-        issueNumber,
-        '<!-- autofix-error -->',
-        `❌ Autofix push failed: ${sanitizeErrorMessage(err)}`,
-      );
+      try {
+        await gh.postOrUpdateComment(
+          issueNumber,
+          '<!-- autofix-error -->',
+          `❌ Autofix push failed: ${sanitizeErrorMessage(err)}`,
+        );
+      } catch (commentErr) {
+        logger.warn(
+          `Failed to post autofix push-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+        );
+      }
       return null;
     }
 
@@ -1233,19 +1352,42 @@ async function createAutofixPR(
     }
 
     logger.error('Failed to create PR via GitHub API');
-    await gh.postOrUpdateComment(
-      issueNumber,
-      '<!-- autofix-error -->',
-      `❌ Failed to create autofix PR from branch \`${branchName}\`. A PR may already exist from this branch or the API rejected the request.`,
-    );
+    try {
+      await gh.postOrUpdateComment(
+        issueNumber,
+        '<!-- autofix-error -->',
+        `❌ Failed to create autofix PR from branch \`${branchName}\`. A PR may already exist from this branch or the API rejected the request.`,
+      );
+    } catch (commentErr) {
+      logger.warn(
+        `Failed to post autofix-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+      );
+    }
     return null;
   } catch (err) {
     logger.error(
       `Autofix PR creation failed for issue #${issueNumber}: ${err instanceof Error ? err.message : err}`,
     );
+    try {
+      await gh.postOrUpdateComment(
+        issueNumber,
+        '<!-- autofix-error -->',
+        `❌ **Autofix failed**: ${sanitizeErrorMessage(err)}`,
+      );
+    } catch (commentErr) {
+      logger.warn(
+        `Failed to post autofix-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+      );
+    }
     return null;
   } finally {
-    await engine.cleanup();
+    try {
+      await engine.cleanup();
+    } catch (cleanupErr) {
+      logger.warn(
+        `Engine cleanup failed for autofix #${issueNumber}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+      );
+    }
   }
 }
 

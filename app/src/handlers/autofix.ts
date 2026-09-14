@@ -1,8 +1,8 @@
-import { execFileSync } from 'child_process';
-import type { ExecFileSyncOptions } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
+import { promisify } from 'util';
 import type {
   AgentConfig,
   EventBus,
@@ -35,6 +35,39 @@ import {
 import { mergeRepoConfig } from '../utils/config.js';
 import { execGit } from '../utils/git.js';
 import type { ExecGitOptions } from '../utils/git.js';
+
+/**
+ * Run a verification/install binary asynchronously with timeout + signal
+ * support so blocking steps never stall the webhook event loop.
+ */
+async function execProcessAsync(
+  file: string,
+  args: string[],
+  options: { cwd?: string; env?: NodeJS.ProcessEnv; timeout?: number; signal?: AbortSignal } = {},
+): Promise<string> {
+  options.signal?.throwIfAborted();
+  if (typeof execFile === 'function') {
+    const execFileAsync = promisify(execFile);
+    const { stdout } = await execFileAsync(file, args, {
+      cwd: options.cwd,
+      env: options.env,
+      timeout: options.timeout ?? 300_000,
+      signal: options.signal,
+      encoding: 'utf-8',
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    return String(stdout ?? '');
+  }
+  // Fallback for environments/tests that mock only execFileSync.
+  const out = execFileSync(file, args, {
+    cwd: options.cwd,
+    env: options.env,
+    timeout: options.timeout ?? 300_000,
+    encoding: 'utf-8',
+    maxBuffer: 20 * 1024 * 1024,
+  });
+  return String(out ?? '');
+}
 
 /**
  * Options for {@link handleAutofixLoop}. A single options object (instead of a
@@ -128,21 +161,27 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
     if (workingDir) {
       try {
         logger.info('Installing workspace dependencies for autofix...');
-        const installOpts: ExecFileSyncOptions = {
-          cwd: workingDir,
-          env: {
-            ...process.env,
-            ...(gitEnv ? { GIT_ASKPASS: 'echo', GIT_TERMINAL_PROMPT: '0' } : {}),
-          },
-          stdio: 'inherit',
-          timeout: 600_000,
+        signal?.throwIfAborted();
+        const installEnv = {
+          ...process.env,
+          ...(gitEnv ? { GIT_ASKPASS: 'echo', GIT_TERMINAL_PROMPT: '0' } : {}),
         };
         let installed = false;
         if (existsSync(path.join(workingDir, 'pnpm-lock.yaml'))) {
-          execFileSync('pnpm', ['install'], installOpts);
+          await execProcessAsync('pnpm', ['install'], {
+            cwd: workingDir,
+            env: installEnv,
+            timeout: 600_000,
+            ...(signal ? { signal } : {}),
+          });
           installed = true;
         } else if (existsSync(path.join(workingDir, 'package-lock.json'))) {
-          execFileSync('npm', ['ci'], installOpts);
+          await execProcessAsync('npm', ['ci'], {
+            cwd: workingDir,
+            env: installEnv,
+            timeout: 600_000,
+            ...(signal ? { signal } : {}),
+          });
           installed = true;
         }
         if (!installed) {
@@ -151,9 +190,16 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           // Build the shared lib so its compiled `.d.ts` exists for workspace
           // typechecks that resolve `@opencode-pr-agent/lib` via its `exports`.
           logger.info('Building lib for autofix workspace...');
-          execFileSync('pnpm', ['--filter', '@opencode-pr-agent/lib', 'build'], installOpts);
+          signal?.throwIfAborted();
+          await execProcessAsync('pnpm', ['--filter', '@opencode-pr-agent/lib', 'build'], {
+            cwd: workingDir,
+            env: installEnv,
+            timeout: 600_000,
+            ...(signal ? { signal } : {}),
+          });
         }
       } catch (installErr) {
+        if (signal?.aborted) return;
         logger.warn(
           `Autofix dependency install failed: ${
             installErr instanceof Error ? installErr.message : String(installErr)
@@ -163,6 +209,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
     }
 
     for (let i = 0; i < config.maxIterations; i++) {
+      if (signal?.aborted) return;
       let verificationPassed = false;
       logger.info(`=== Autofix iteration ${i + 1}/${config.maxIterations} ===`);
 
@@ -198,6 +245,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
       const reviewWorkingDir = workingDir || process.cwd();
       let result: ReviewResult;
       try {
+        signal?.throwIfAborted();
         result = await engine.reviewPR(
           pr,
           i,
@@ -324,6 +372,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         : {};
       let fixResult: FixResult | undefined;
       try {
+        signal?.throwIfAborted();
         fixResult = await engine.runFix(
           prNumber,
           i,
@@ -437,13 +486,9 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           // verification commands (pnpm build/typecheck/lint) cannot run.
           // Install dependencies once per iteration before checking.
           const baseCwd = workingDir ?? process.cwd();
-          const execOpts = {
-            encoding: 'utf-8' as const,
-            stdio: 'pipe' as const,
-            timeout: 300_000,
-          };
           try {
             logger.info('Installing workspace dependencies before verification...');
+            signal?.throwIfAborted();
             const installEnv = {
               ...process.env,
               ...(gitEnv ? { GIT_ASKPASS: 'echo', GIT_TERMINAL_PROMPT: '0' } : {}),
@@ -454,19 +499,19 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
               const installCmd = lockfile.includes('lockfileVersion: 9')
                 ? ['install', '--frozen-lockfile']
                 : ['install'];
-              execFileSync('pnpm', installCmd, {
-                ...execOpts,
+              await execProcessAsync('pnpm', installCmd, {
                 cwd: baseCwd,
                 env: installEnv,
-                stdio: 'inherit',
+                timeout: 300_000,
+                ...(signal ? { signal } : {}),
               });
               installOk = true;
             } else if (existsSync(path.join(baseCwd, 'package-lock.json'))) {
-              execFileSync('npm', ['ci'], {
-                ...execOpts,
+              await execProcessAsync('npm', ['ci'], {
                 cwd: baseCwd,
                 env: installEnv,
-                stdio: 'inherit',
+                timeout: 300_000,
+                ...(signal ? { signal } : {}),
               });
               installOk = true;
             }
@@ -474,6 +519,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
               logger.warn('No lockfile found — skipping dependency install before verification');
             }
           } catch (installErr) {
+            if (signal?.aborted) return;
             logger.warn(
               `Dependency install failed before verification: ${
                 installErr instanceof Error ? installErr.message : String(installErr)
@@ -483,12 +529,15 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
 
           const maxVerificationRetries = 2;
           for (let v = 0; v <= maxVerificationRetries; v++) {
+            if (signal?.aborted) return;
             let checkOutput = '';
             try {
               for (const step of steps) {
-                const stdout = execFileSync(step.program, step.args, {
-                  ...execOpts,
+                signal?.throwIfAborted();
+                const stdout = await execProcessAsync(step.program, step.args, {
                   cwd: step.cwd ? path.resolve(baseCwd, step.cwd) : baseCwd,
+                  timeout: 300_000,
+                  ...(signal ? { signal } : {}),
                 });
                 checkOutput += stdout;
               }
@@ -515,6 +564,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
                   `Feeding verification error to fix engine (retry ${v + 1}/${maxVerificationRetries})...`,
                 );
                 try {
+                  signal?.throwIfAborted();
                   const freshPr = await gh.getMR(prNumber);
                   const retryResult = await engine.runFix(
                     prNumber,
@@ -605,7 +655,13 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
       }
     }
   } finally {
-    await engine.cleanup();
+    try {
+      await engine.cleanup();
+    } catch (err) {
+      logger.warn(
+        `Engine cleanup failed for autofix loop #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     if (ownTempDir) {
       try {
         rmSync(ownTempDir, { recursive: true, force: true });
