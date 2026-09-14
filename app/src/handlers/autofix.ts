@@ -33,6 +33,7 @@ import {
 import { mergeRepoConfig } from '../utils/config.js';
 import { execProcess } from '../utils/exec.js';
 import { execGit } from '../utils/git.js';
+import type { ExecGitOptions } from '../utils/git.js';
 
 /**
  * Options for {@link handleAutofixLoop}. A single options object (instead of a
