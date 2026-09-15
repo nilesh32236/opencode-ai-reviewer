@@ -3,6 +3,8 @@ import {
   type GitHubHelper,
   type ReviewEngine,
   type ReviewResult,
+  fingerprintForIssue,
+  withFingerprintMarker,
 } from '@opencode-pr-agent/lib';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeConfig, makeInputs, makePRContext } from './helpers/mock-factories.js';
@@ -537,6 +539,257 @@ describe('runReview (action wrapper)', () => {
     expect(mockSetFailed).toHaveBeenCalledWith(
       expect.stringContaining('at or above severity "important" threshold'),
     );
+  });
+
+  it('passes cross-run fingerprints to postReview when a marked thread exists', async () => {
+    const pr = makePRContext();
+    mockGetPR.mockResolvedValue(pr);
+    const issue = {
+      type: 'issue',
+      severity: 'important',
+      file: 'src/foo.ts',
+      line: 42,
+      message: 'Null dereference on user input',
+      inline: true,
+    };
+    const fp = fingerprintForIssue({ ...issue });
+    mockGetBotReviewThreads.mockResolvedValue([
+      {
+        threadId: 't1',
+        isResolved: false,
+        firstComment: {
+          commentId: 'c1',
+          databaseId: 111,
+          body: withFingerprintMarker(`**IMPORTANT**: ${issue.message}`, fp),
+          filePath: 'src/foo.ts',
+          lineNumber: 42,
+          author: 'bot',
+          createdAt: new Date().toISOString(),
+        },
+      },
+    ]);
+    mockReviewPR.mockResolvedValue({
+      summary: 'Found issues.',
+      verdict: { ready: false, reasoning: 'Issues', autoFixable: false, confidence: 'medium' },
+      strengths: [],
+      issues: [issue],
+      stats: { total: 1, critical: 0, important: 1, minor: 0 },
+    } as unknown as ReviewResult);
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+
+    await runReview(
+      makeInputs(),
+      makeConfig({ enableMCP: false, mcpServers: [] }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+    );
+
+    expect(mockPostReview).toHaveBeenCalledWith(
+      42,
+      'abc123',
+      expect.anything(),
+      expect.anything(),
+      undefined,
+      expect.objectContaining({ dedupFingerprints: true }),
+    );
+    const options = mockPostReview.mock.calls[0][5] as {
+      previousFingerprints?: Set<string>;
+    };
+    expect(options.previousFingerprints?.has(fp)).toBe(true);
+  });
+
+  it('passes legacy keys to postReview for pre-marker threads', async () => {
+    const pr = makePRContext();
+    mockGetPR.mockResolvedValue(pr);
+    mockGetBotReviewThreads.mockResolvedValue([
+      {
+        threadId: 't1',
+        isResolved: false,
+        firstComment: {
+          commentId: 'c1',
+          databaseId: 111,
+          body: '**IMPORTANT**: Null dereference on user input',
+          filePath: 'src/foo.ts',
+          lineNumber: 42,
+          author: 'bot',
+          createdAt: new Date().toISOString(),
+        },
+      },
+    ]);
+    mockReviewPR.mockResolvedValue({
+      summary: 'Found issues.',
+      verdict: { ready: false, reasoning: 'Issues', autoFixable: false, confidence: 'medium' },
+      strengths: [],
+      issues: [
+        {
+          type: 'issue',
+          severity: 'important',
+          file: 'src/foo.ts',
+          line: 42,
+          message: 'Null dereference on user input',
+          inline: true,
+        },
+      ],
+      stats: { total: 1, critical: 0, important: 1, minor: 0 },
+    } as unknown as ReviewResult);
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+
+    await runReview(
+      makeInputs(),
+      makeConfig({ enableMCP: false, mcpServers: [] }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+    );
+
+    const options = mockPostReview.mock.calls[0][5] as {
+      previousInlineKeys?: Set<string>;
+    };
+    expect(options.previousInlineKeys?.size).toBeGreaterThan(0);
+  });
+
+  it('disables dedup gate when repo config opts out', async () => {
+    const pr = makePRContext();
+    mockGetPR.mockResolvedValue(pr);
+    mockGetBotReviewThreads.mockResolvedValue([
+      {
+        threadId: 't1',
+        isResolved: false,
+        firstComment: {
+          commentId: 'c1',
+          databaseId: 111,
+          body: '**IMPORTANT**: old',
+          filePath: 'src/foo.ts',
+          lineNumber: 1,
+          author: 'bot',
+          createdAt: new Date().toISOString(),
+        },
+      },
+    ]);
+    mockReviewPR.mockResolvedValue({
+      summary: '## Review\nGood PR.',
+      verdict: { ready: true, reasoning: 'LGTM', autoFixable: false, confidence: 'high' },
+      strengths: [],
+      issues: [],
+      stats: { total: 0, critical: 0, important: 0, minor: 0 },
+    });
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+
+    await runReview(
+      makeInputs(),
+      makeConfig({
+        enableMCP: false,
+        mcpServers: [],
+        review: { ...DEFAULT_CONFIG.review, dedupFingerprints: false },
+      }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+    );
+
+    expect(mockPostReview).toHaveBeenCalledWith(
+      42,
+      'abc123',
+      expect.anything(),
+      expect.anything(),
+      undefined,
+      { dedupFingerprints: false },
+    );
+  });
+
+  it('streaming skips findings already posted in a previous run', async () => {
+    const pr = makePRContext();
+    mockGetPR.mockResolvedValue(pr);
+    const issue = {
+      type: 'issue',
+      severity: 'important',
+      file: 'src/foo.ts',
+      line: 42,
+      message: 'Null dereference on user input',
+      inline: true,
+    };
+    const fp = fingerprintForIssue({ ...issue });
+    mockGetBotReviewThreads.mockResolvedValue([
+      {
+        threadId: 't1',
+        isResolved: false,
+        firstComment: {
+          commentId: 'c1',
+          databaseId: 111,
+          body: withFingerprintMarker(`**IMPORTANT**: ${issue.message}`, fp),
+          filePath: 'src/foo.ts',
+          lineNumber: 42,
+          author: 'bot',
+          createdAt: new Date().toISOString(),
+        },
+      },
+    ]);
+    const mockPostInlineComment = vi.fn().mockResolvedValue({ commentId: 1 });
+    const mockPostStreamingProgress = vi.fn().mockResolvedValue(undefined);
+    const streamingGh = {
+      ...mockGh,
+      postInlineComment: mockPostInlineComment,
+      postStreamingProgress: mockPostStreamingProgress,
+    } as unknown as GitHubHelper;
+    mockReviewPR.mockImplementation(
+      async (
+        _pr: unknown,
+        _a: unknown,
+        _b: unknown,
+        _c: unknown,
+        _d: unknown,
+        _e: unknown,
+        _f: unknown,
+        _g: unknown,
+        _prev: unknown,
+        onBatch: (
+          batchIndex: number,
+          totalBatches: number,
+          batchResult: { issues: unknown[] },
+        ) => Promise<void>,
+      ) => {
+        await onBatch(0, 1, { issues: [issue] });
+        return {
+          summary: 'Found issues.',
+          verdict: { ready: false, reasoning: 'Issues', autoFixable: false, confidence: 'medium' },
+          strengths: [],
+          issues: [issue],
+          stats: { total: 1, critical: 0, important: 1, minor: 0 },
+        } as unknown as ReviewResult;
+      },
+    );
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+
+    await runReview(
+      makeInputs({ streamComments: true }),
+      makeConfig({ enableMCP: false, mcpServers: [] }),
+      mockEngine,
+      streamingGh,
+      'owner/repo',
+    );
+
+    expect(mockPostInlineComment).not.toHaveBeenCalled();
   });
 
   it('preserves existing behavior when failOnSeverity is off', async () => {

@@ -930,7 +930,9 @@ export class GitLabAdapter implements PlatformAdapter {
         core.debug(
           `Skipping GitLab review post — all ${skippedInlineCount} inline finding(s) already posted (fingerprints)`,
         );
-        return { success: true, method: 'body-only' };
+        // Distinct no-op signal (not 'body-only'): nothing was posted, so
+        // there is no reviewId and callers should skip notifications.
+        return { success: true, method: 'skipped' };
       }
     }
     const body = buildReviewBody({ ...dedupedResult, issues: issuesForBody }, options);

@@ -201,6 +201,79 @@ describe('buildConfig ENABLE_REVIEWS_ARRAY_INLINE override', () => {
   });
 });
 
+describe('buildConfig DEDUP_FINGERPRINTS override', () => {
+  const ENV_KEY = 'DEDUP_FINGERPRINTS';
+  const ORIGINAL = process.env[ENV_KEY];
+
+  afterEach(() => {
+    if (ORIGINAL === undefined) {
+      delete process.env[ENV_KEY];
+    } else {
+      process.env[ENV_KEY] = ORIGINAL;
+    }
+  });
+
+  it('defaults dedupFingerprints to true when env is absent', () => {
+    delete process.env[ENV_KEY];
+    expect(buildConfig().review.dedupFingerprints).toBe(true);
+  });
+
+  it('honors DEDUP_FINGERPRINTS=false', () => {
+    process.env.DEDUP_FINGERPRINTS = 'false';
+    expect(buildConfig().review.dedupFingerprints).toBe(false);
+  });
+
+  it('honors DEDUP_FINGERPRINTS=true', () => {
+    process.env.DEDUP_FINGERPRINTS = 'true';
+    expect(buildConfig().review.dedupFingerprints).toBe(true);
+  });
+});
+
+describe('mergeRepoConfig dedupFingerprints merge', () => {
+  it('applies review.dedupFingerprints from the repo config (including false)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'app-config-dedup-'));
+    try {
+      writeFileSync(
+        join(dir, '.opencode-reviewer.yml'),
+        ['review:', '  dedupFingerprints: false', ''].join('\n'),
+      );
+      const merged = mergeRepoConfig(buildConfig(), dir);
+      expect(merged.review.dedupFingerprints).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('applies review.dedup_fingerprints snake_case alias from the repo config', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'app-config-dedup-alias-'));
+    try {
+      writeFileSync(
+        join(dir, '.opencode-reviewer.yml'),
+        ['review:', '  dedup_fingerprints: false', ''].join('\n'),
+      );
+      const merged = mergeRepoConfig(buildConfig(), dir);
+      expect(merged.review.dedupFingerprints).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns base config untouched when repo has no dedupFingerprints', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'app-config-no-dedup-'));
+    try {
+      writeFileSync(
+        join(dir, '.opencode-reviewer.yml'),
+        ['review:', '  failOnSeverity: important', ''].join('\n'),
+      );
+      const base = buildConfig();
+      const merged = mergeRepoConfig(base, dir);
+      expect(merged.review.dedupFingerprints).toBe(base.review.dedupFingerprints);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('mergeRepoConfig enableReviewsArrayInline merge', () => {
   it('applies review.enableReviewsArrayInline from the repo config', () => {
     const dir = mkdtempSync(join(tmpdir(), 'app-config-reviews-array-'));

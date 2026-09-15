@@ -187,7 +187,7 @@ export function buildConfig(): AgentConfig {
         ? { enableReviewsArrayInline: process.env.ENABLE_REVIEWS_ARRAY_INLINE === 'true' }
         : {}),
       ...(process.env.DEDUP_FINGERPRINTS !== undefined
-        ? { dedupFingerprints: process.env.DEDUP_FINGERPRINTS !== 'false' }
+        ? { dedupFingerprints: process.env.DEDUP_FINGERPRINTS.trim().toLowerCase() !== 'false' }
         : {}),
       ...(process.env.ENABLE_CODEBASE_INDEX !== undefined
         ? { enableCodebaseIndex: process.env.ENABLE_CODEBASE_INDEX !== 'false' }

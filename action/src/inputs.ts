@@ -87,7 +87,7 @@ function parseDedupFingerprintsInput(): {
   dedupFingerprints: boolean;
   dedupFingerprintsExplicit: boolean;
 } {
-  const raw = core.getInput('dedup_fingerprints').trim();
+  const raw = core.getInput('dedup_fingerprints').trim().toLowerCase();
   if (raw === '') return { dedupFingerprints: true, dedupFingerprintsExplicit: false };
   return { dedupFingerprints: raw !== 'false', dedupFingerprintsExplicit: true };
 }

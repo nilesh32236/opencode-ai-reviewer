@@ -197,7 +197,18 @@ export async function runReview(
                   issueFingerprint = fingerprintForIssue(issue);
                   if (
                     (previousFingerprints.size > 0 && previousFingerprints.has(issueFingerprint)) ||
-                    streamedFingerprints.has(issueFingerprint)
+                    streamedFingerprints.has(issueFingerprint) ||
+                    (previousLegacyKeys.size > 0 &&
+                      (previousLegacyKeys.has(
+                        legacyInlineKey(issue.file, issue.line, issue.message ?? ''),
+                      ) ||
+                        previousLegacyKeys.has(
+                          legacyInlineKey(
+                            issue.file,
+                            issue.line,
+                            `${issue.message ?? ''} ${issue.suggestion ?? ''}`,
+                          ),
+                        )))
                   ) {
                     core.debug(
                       `Skipping duplicate inline finding (fp ${issueFingerprint}) at ${issue.file}:${issue.line}`,
@@ -357,7 +368,8 @@ export async function runReview(
   // its own errors and is additionally guarded against unexpected throws here.
   // Only notify about a review that actually reached the pull request; the
   // message links to the PR, so a link to a PR without a review is misleading.
-  if (reviewResult.success) {
+  // A `skipped` (fully-deduped) result posted nothing, so it never notifies.
+  if (reviewResult.success && reviewResult.method !== 'skipped') {
     try {
       await sendNotification(result, config.notifications, {
         number: prNumber,
@@ -375,8 +387,13 @@ export async function runReview(
 
   // Best-effort conventional-commit title & label suggestion. Only posts when
   // enabled; read-only, never modifies the PR. Non-critical: a failure must
-  // not fail the action.
-  if (config.review.suggestTitleAndLabels && reviewResult.success) {
+  // not fail the action. Skipped (fully-deduped) results posted nothing, so
+  // no suggestion is posted for them.
+  if (
+    config.review.suggestTitleAndLabels &&
+    reviewResult.success &&
+    reviewResult.method !== 'skipped'
+  ) {
     try {
       await postSuggestionComment(gh, prNumber, pr, result, config.review);
     } catch (err) {

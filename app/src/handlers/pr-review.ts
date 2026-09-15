@@ -303,6 +303,9 @@ export async function handlePRReview(
             ? async (batchIndex, totalBatches, batchResult) => {
                 for (const issue of batchResult.issues) {
                   if (issue.inline && issue.file && issue.line) {
+                    // Guard the inline-comment API against model-generated
+                    // garbage: only positive integer lines are posted.
+                    if (!Number.isInteger(issue.line) || (issue.line as number) < 1) continue;
                     // Fingerprint-aware key: file + line + normalized message
                     // content. Distinct findings on the same line stay
                     // independent (each posts inline), while identical findings
@@ -314,7 +317,22 @@ export async function handlePRReview(
                         if (
                           (previousFingerprints.size > 0 &&
                             previousFingerprints.has(issueFingerprint)) ||
-                          streamedFingerprints.has(issueFingerprint)
+                          streamedFingerprints.has(issueFingerprint) ||
+                          (previousLegacyKeys.size > 0 &&
+                            (previousLegacyKeys.has(
+                              legacyInlineKey(
+                                issue.file ?? '',
+                                issue.line ?? null,
+                                issue.message ?? '',
+                              ),
+                            ) ||
+                              previousLegacyKeys.has(
+                                legacyInlineKey(
+                                  issue.file ?? '',
+                                  issue.line ?? null,
+                                  `${issue.message ?? ''} ${issue.suggestion ?? ''}`,
+                                ),
+                              )))
                         ) {
                           logger.debug(
                             `Skipping duplicate inline finding (fp ${issueFingerprint}) at ${issue.file}:${issue.line}`,
@@ -482,22 +500,19 @@ export async function handlePRReview(
                 // Mirror the streaming key exactly (fingerprint when
                 // computable, coarse file:line otherwise) so only
                 // successfully streamed findings are removed and distinct
-                // findings on one line stay independent.
+                // findings on one line stay independent. The fingerprint is
+                // computed once and reused for both membership checks.
+                let fp: string | undefined;
                 let key: string;
                 try {
-                  key = dedupEnabled ? fingerprintForIssue(i) : `${i.file}:${i.line}`;
+                  fp = dedupEnabled ? fingerprintForIssue(i) : undefined;
+                  key = fp ?? `${i.file}:${i.line}`;
                 } catch {
+                  fp = undefined;
                   key = `${i.file}:${i.line}`;
                 }
                 if (streamedIssueKeys.has(key)) return false;
-                if (dedupEnabled) {
-                  try {
-                    const fp = fingerprintForIssue(i);
-                    if (streamedFingerprints.has(fp)) return false;
-                  } catch {
-                    // Fail-open: keep the finding on fingerprint errors.
-                  }
-                }
+                if (fp && streamedFingerprints.has(fp)) return false;
                 return true;
               }),
             }
@@ -549,7 +564,15 @@ export async function handlePRReview(
     }
 
     if (reviewResult.success) {
-      logger.info(`Review posted to PR #${prNumber} (${reviewResult.method})`);
+      // `skipped` is a no-op success: fingerprint dedup found every inline
+      // finding already posted, so nothing was posted and `reviewId` is
+      // absent. Log distinctly and skip notifications/suggestions below so a
+      // non-post is never presented as a posted review.
+      if (reviewResult.method === 'skipped') {
+        logger.info(`Review skipped for PR #${prNumber} — all inline findings already posted`);
+      } else {
+        logger.info(`Review posted to PR #${prNumber} (${reviewResult.method})`);
+      }
       try {
         await gh.postOrUpdateComment(
           prNumber,
@@ -580,23 +603,27 @@ export async function handlePRReview(
       // the check run that branch protection consumes must never wait on
       // Slack/Teams delivery. sendNotification swallows its own errors; the
       // defensive catch keeps an unexpected throw from surfacing as an
-      // unhandled rejection on the handler path.
-      void sendNotification(result, effectiveConfig.notifications, {
-        number: prNumber,
-        title: pr.title,
-        repo,
-        platform: gh instanceof GitLabAdapter ? 'gitlab' : 'github',
-      }).catch((err) => {
-        logger.warn(
-          `Failed to send review notification: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      });
+      // unhandled rejection on the handler path. Skipped (fully-deduped)
+      // results posted nothing, so they never notify.
+      if (reviewResult.method !== 'skipped') {
+        void sendNotification(result, effectiveConfig.notifications, {
+          number: prNumber,
+          title: pr.title,
+          repo,
+          platform: gh instanceof GitLabAdapter ? 'gitlab' : 'github',
+        }).catch((err) => {
+          logger.warn(
+            `Failed to send review notification: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
+      }
 
       // Best-effort conventional-commit title & label suggestion. Only posts
       // when enabled; read-only, never modifies the PR. Non-critical: a
       // failure must never fail the review flow. Uses `effectiveConfig` so a
       // repository-level override can enable or disable the suggestion.
-      if (effectiveConfig.review.suggestTitleAndLabels) {
+      // Skipped results posted nothing, so no suggestion is posted for them.
+      if (effectiveConfig.review.suggestTitleAndLabels && reviewResult.method !== 'skipped') {
         void postSuggestionComment(gh, prNumber, pr, result, effectiveConfig.review).catch(
           (err) => {
             logger.warn(

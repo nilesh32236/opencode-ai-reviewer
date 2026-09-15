@@ -242,9 +242,8 @@ inputs:
     default: 'true'
 
   dedup_fingerprints:
-    description: 'Skip inline findings whose fingerprint already appears in a previously posted bot thread, so re-pushes never re-post identical findings (false = post as today)'
+    description: 'Skip inline findings whose fingerprint already appears in a previously posted bot thread, so re-pushes never re-post identical findings (false = post as today). Defaults to true when omitted; omit to let repo review.dedupFingerprints apply.'
     required: false
-    default: 'true'
 
   enable_reviews_array_inline:
     description: 'Bundle mappable inline findings into a single reviews-array request (POST /pulls/{n}/reviews with comments[]), falling back to summary-only on 422/403/429 so no finding is lost (false = legacy behavior). Takes precedence over stream_comments: when both are true, streaming is disabled so findings are posted only via the single batched request.'

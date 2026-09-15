@@ -17,6 +17,8 @@ import {
   filterIssuesByFingerprints,
   fingerprintFinding,
   fingerprintForIssue,
+  legacyInlineKey,
+  normalizeLegacyThreadBody,
   shouldPostFingerprint,
   withFingerprintMarker,
 } from '../src/utils/inline-fingerprint.js';
@@ -93,6 +95,28 @@ describe('inline-fingerprint', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('skips legacy threads via coarse keys built from rendered bodies', () => {
+    // A pre-marker thread renders as "**SEVERITY**: message"; the handler
+    // builds legacyKeys via normalizeLegacyThreadBody + legacyInlineKey from
+    // that rendered body. The filter must skip a matching fresh issue but
+    // keep an issue on a different line.
+    const renderedBody = `**IMPORTANT**: ${ISSUE.message}`;
+    const legacyKeys = new Set([
+      legacyInlineKey(ISSUE.file, ISSUE.line, normalizeLegacyThreadBody(renderedBody)),
+    ]);
+    const matching = { ...ISSUE };
+    const otherLine = { ...ISSUE, line: ISSUE.line + 1 };
+    const { kept, skipped } = filterIssuesByFingerprints([matching, otherLine], new Set(), {
+      legacyKeys,
+    });
+    expect(skipped).toHaveLength(1);
+    expect(kept).toHaveLength(1);
+    expect(kept[0].line).toBe(ISSUE.line + 1);
+    // normalizeLegacyThreadBody strips markers and severity prefixes.
+    const fp = fingerprintForIssue({ ...ISSUE });
+    expect(normalizeLegacyThreadBody(`**IMPORTANT**: msg\n\n<!-- inline-fp:${fp} -->`)).toBe('msg');
   });
 
   it('persists posted fingerprints across instances', () => {

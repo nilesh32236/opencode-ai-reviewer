@@ -10,7 +10,13 @@ import type { ReviewBodyOptions } from '../utils/review-body.js';
 /** Result of posting a review. */
 export interface ReviewPostResult {
   success: boolean;
-  method: 'full' | 'partial' | 'body-only' | 'failed';
+  /**
+   * Posting method. `skipped` is a no-op success: every inline finding was
+   * already posted in a previous run (fingerprint dedup), so nothing was
+   * posted and `reviewId` is absent. Callers must tolerate a missing
+   * `reviewId` and should skip notifications/suggestions for `skipped`.
+   */
+  method: 'full' | 'partial' | 'body-only' | 'skipped' | 'failed';
   reviewId?: number;
   commentIds?: Array<{
     file: string;
