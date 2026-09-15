@@ -715,6 +715,23 @@ export interface ReviewConfig {
    */
   enableReviewsArrayInline?: boolean;
   /**
+   * Skip inline findings whose fingerprint already appears in a previously
+   * posted bot thread, so re-pushes never re-post identical findings.
+   * Each unique finding posts once with an embedded `<!-- inline-fp -->`
+   * marker; duplicates are skipped quietly with a debug log. Fail-open:
+   * absent means true, and unreadable history posts as today.
+   * Default true.
+   * @since NEXT
+   */
+  dedupFingerprints?: boolean;
+  /**
+   * Deprecated snake_case alias for `dedupFingerprints` (accepted for
+   * backward compatibility; the camelCase key wins when both are set).
+   * @deprecated Use `dedupFingerprints` instead.
+   * @since NEXT
+   */
+  dedup_fingerprints?: boolean;
+  /**
    * Opt-in to appending a one-click Fix-with-AI payload (```suggestion block
    * plus a Fix-with-AI prompt) to rendered findings for coding-agent handoff.
    * Default false (legacy output unchanged).
@@ -1571,6 +1588,23 @@ export interface PromptConfig {
      */
     enableReviewsArrayInline?: boolean;
     /**
+     * Skip inline findings whose fingerprint already appears in a previously
+     * posted bot thread, so re-pushes never re-post identical findings.
+     * Each unique finding posts once with an embedded `<!-- inline-fp -->`
+     * marker; duplicates are skipped quietly with a debug log. Fail-open:
+     * absent means true, and unreadable history posts as today.
+     * Default true.
+     * @since NEXT
+     */
+    dedupFingerprints?: boolean;
+    /**
+     * Deprecated snake_case alias for `dedupFingerprints` (accepted for
+     * backward compatibility; the camelCase key wins when both are set).
+     * @deprecated Use `dedupFingerprints` instead.
+     * @since NEXT
+     */
+    dedup_fingerprints?: boolean;
+    /**
      * Opt-in to appending a one-click Fix-with-AI payload to rendered findings.
      * Default false (legacy output unchanged).
      * @since NEXT
@@ -1928,6 +1962,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     suggestTitleAndLabels: false,
     streamComments: false,
     streamBatchSize: 0,
+    dedupFingerprints: true,
   },
   audit: {
     promptsDir: '.audit-prompts',

@@ -270,6 +270,8 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     customRules: null,
     inline: null,
     enableReviewsArrayInline: null,
+    dedupFingerprints: null,
+    dedup_fingerprints: null,
     emitFixPayload: null,
     suppressLowConfidence: null,
     excludePatterns: null,
@@ -681,6 +683,13 @@ export function validateConfig(
     }
     if (typeof config.review.enableReviewsArrayInline === 'boolean') {
       result.review.enableReviewsArrayInline = config.review.enableReviewsArrayInline;
+    }
+    // Canonical camelCase key wins over the deprecated snake_case alias;
+    // absent means "enabled" downstream (fail-open default true).
+    if (typeof config.review.dedupFingerprints === 'boolean') {
+      result.review.dedupFingerprints = config.review.dedupFingerprints;
+    } else if (typeof config.review.dedup_fingerprints === 'boolean') {
+      result.review.dedupFingerprints = config.review.dedup_fingerprints;
     }
     if (typeof config.review.emitFixPayload === 'boolean') {
       result.review.emitFixPayload = config.review.emitFixPayload;

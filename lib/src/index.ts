@@ -216,6 +216,22 @@ export {
 export type { ReviewBodyOptions } from './utils/review-body.js';
 export { looksLikeCode } from './utils/code-heuristic.js';
 export {
+  FingerprintStore,
+  collectFingerprintsFromBodies,
+  extractFingerprintFromBody,
+  filterIssuesByFingerprints,
+  fingerprintFinding,
+  fingerprintForIssue,
+  legacyInlineKey,
+  normalizeFingerprintPath,
+  normalizeFingerprintText,
+  shouldPostFingerprint,
+  withFingerprintMarker,
+  INLINE_FINGERPRINT_MARKER_PREFIX,
+  INLINE_FINGERPRINT_PATTERN,
+} from './utils/inline-fingerprint.js';
+export type { FingerprintableIssue } from './utils/inline-fingerprint.js';
+export {
   buildFixPayload,
   buildFixWithAiPrompt,
   formatFixPayloadMarkdown,

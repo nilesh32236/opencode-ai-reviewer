@@ -12,11 +12,15 @@ import {
   Logger,
   ReviewEngine,
   buildFunctionScoreOptions,
+  collectFingerprintsFromBodies,
+  fingerprintForIssue,
+  legacyInlineKey,
   postSuggestionComment,
   sanitizeErrorMessage,
   sanitizeMarkdown,
   sendNotification,
   shouldFailOnSeverity,
+  withFingerprintMarker,
 } from '@opencode-pr-agent/lib';
 import { runWithConcurrencyLimit } from '../utils/concurrency.js';
 import { mergeRepoConfig } from '../utils/config.js';
@@ -233,6 +237,29 @@ export async function handlePRReview(
     // posted via postInlineComment (not postReview), so their IDs are absent
     // from reviewResult.commentIds and must be tracked separately.
     const streamedCommentIds = new Map<string, number>();
+    // Cross-run fingerprint store from previously posted bot threads. The
+    // fingerprint covers path+line+rule+snippet, so identical findings on
+    // re-push are skipped while changed findings post. Fail-open: unreadable
+    // history posts as today.
+    const dedupEnabled = effectiveConfig.review.dedupFingerprints ?? true;
+    let previousFingerprints = new Set<string>();
+    let previousLegacyKeys = new Set<string>();
+    try {
+      if (dedupEnabled && previousBotComments && previousBotComments.length > 0) {
+        previousFingerprints = collectFingerprintsFromBodies(
+          previousBotComments.map((c) => c.body ?? ''),
+        );
+        previousLegacyKeys = new Set(
+          previousBotComments.map((c) =>
+            legacyInlineKey(c.file ?? '', c.line ?? null, c.body ?? ''),
+          ),
+        );
+      }
+    } catch {
+      previousFingerprints = new Set<string>();
+      previousLegacyKeys = new Set<string>();
+    }
+    const streamedFingerprints = new Set<string>();
     let streamedFindingCount = 0;
     // Attempts (not just successes) counted toward the streaming cap: when
     // posts persistently fail, continuing to fan out API calls before falling
@@ -275,7 +302,29 @@ export async function handlePRReview(
             ? async (batchIndex, totalBatches, batchResult) => {
                 for (const issue of batchResult.issues) {
                   if (issue.inline && issue.file && issue.line) {
-                    const key = `${issue.file}:${issue.line}`;
+                    // Fingerprint-aware key: file + line + normalized message
+                    // content. Distinct findings on the same line stay
+                    // independent (each posts inline), while identical findings
+                    // deduplicate within the run and against previous runs.
+                    let issueFingerprint: string | undefined;
+                    if (dedupEnabled) {
+                      try {
+                        issueFingerprint = fingerprintForIssue(issue);
+                        if (
+                          (previousFingerprints.size > 0 &&
+                            previousFingerprints.has(issueFingerprint)) ||
+                          streamedFingerprints.has(issueFingerprint)
+                        ) {
+                          logger.debug(
+                            `Skipping duplicate inline finding (fp ${issueFingerprint}) at ${issue.file}:${issue.line}`,
+                          );
+                          continue;
+                        }
+                      } catch {
+                        issueFingerprint = undefined;
+                      }
+                    }
+                    const key = issueFingerprint ?? `${issue.file}:${issue.line}`;
                     // Never post the same file:line twice across batches, and
                     // only mark a finding as streamed when the inline post
                     // actually succeeded — otherwise the final-result filter
@@ -291,10 +340,16 @@ export async function handlePRReview(
                       const posted = await gh.postInlineComment(prNumber, pr.headSha, {
                         path: issue.file,
                         line: issue.line,
-                        body: `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}`,
+                        body: issueFingerprint
+                          ? withFingerprintMarker(
+                              `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}`,
+                              issueFingerprint,
+                            )
+                          : `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}`,
                       });
                       if (posted) {
                         streamedIssueKeys.add(key);
+                        if (issueFingerprint) streamedFingerprints.add(issueFingerprint);
                         streamedCommentIds.set(`${issue.file}:${issue.line}`, posted.commentId);
                         streamedFindingCount++;
                       } else {
@@ -417,16 +472,33 @@ export async function handlePRReview(
         streamEnabled && streamedIssueKeys.size > 0
           ? {
               ...result,
-              issues: result.issues.filter(
-                (i) =>
-                  !i.inline || !i.file || !i.line || !streamedIssueKeys.has(`${i.file}:${i.line}`),
-              ),
+              issues: result.issues.filter((i) => {
+                if (!i.inline || !i.file || !i.line) return true;
+                if (streamedIssueKeys.has(`${i.file}:${i.line}`)) return false;
+                if (dedupEnabled) {
+                  try {
+                    const fp = fingerprintForIssue(i);
+                    if (streamedIssueKeys.has(fp) || streamedFingerprints.has(fp)) return false;
+                  } catch {
+                    // Fail-open: keep the finding on fingerprint errors.
+                  }
+                }
+                return true;
+              }),
             }
           : result;
       const scoreOptions = buildFunctionScoreOptions(
         effectiveConfig.review.showFunctionScores,
         pr.changedFiles,
       );
+      const dedupOptions =
+        dedupEnabled && (previousFingerprints.size > 0 || previousLegacyKeys.size > 0)
+          ? {
+              dedupFingerprints: true as const,
+              previousFingerprints,
+              previousInlineKeys: previousLegacyKeys,
+            }
+          : { dedupFingerprints: dedupEnabled };
       reviewResult = await gh.postReview(
         prNumber,
         pr.headSha,
@@ -434,8 +506,8 @@ export async function handlePRReview(
         effectiveConfig.review.inline,
         undefined,
         effectiveConfig.review.enableReviewsArrayInline === true
-          ? { ...(scoreOptions ?? {}), enableReviewsArrayInline: true as const }
-          : scoreOptions,
+          ? { ...(scoreOptions ?? {}), enableReviewsArrayInline: true as const, ...dedupOptions }
+          : { ...(scoreOptions ?? {}), ...dedupOptions },
       );
     } catch (err) {
       logger.error(
