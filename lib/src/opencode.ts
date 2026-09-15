@@ -5,7 +5,8 @@ import * as path from 'path';
 import * as core from '@actions/core';
 import * as io from '@actions/io';
 import * as tc from '@actions/tool-cache';
-import type { LLMConfig, LLMProviderConfig } from './types/index.js';
+import { toV1ServersMap, toV2ServersMap } from './mcp/servers.js';
+import type { LLMConfig, LLMProviderConfig, MCPServerConfig } from './types/index.js';
 import {
   buildMissingChecksumError,
   computeSha256,
@@ -118,6 +119,65 @@ export function resolveDualEmitSubagentPermissions(explicit?: boolean): boolean 
 }
 
 /**
+ * Default for dual-emitting the legacy V1 `mcp` map entries alongside the V2
+ * `mcp.servers` map. `true` keeps MCP servers loading on both newer CLIs
+ * (which prefer `mcp.servers` with the `disabled` flag) and older CLIs (which
+ * require the legacy `mcp: { <name>: {...} }` map). Overridable per call via
+ * an explicit `dualEmit` argument, per run via the `dualEmitMCP` option on
+ * {@link runOpenCode}, process-wide via {@link setDualEmitMCP}, or via the
+ * `OPENCODE_DUAL_EMIT_MCP` env var (`false` disables).
+ *
+ * Strict-schema note: dual-emit assumes V2 CLIs tolerate (ignore or warn on)
+ * the extra legacy sibling keys alongside `servers`. If a V2 CLI ever performs
+ * strict-schema validation and rejects the legacy keys, disable dual-emit via
+ * one of the opt-outs above to fall back to gated single-shape behavior
+ * (V2-only on new/unknown CLIs, legacy-only on old CLIs). A strict rejection
+ * also auto-disables dual-emit for the rest of the process (see
+ * {@link noteMCPConfigRejection}) and the failed run is retried once without
+ * the legacy keys.
+ * @since NEXT
+ */
+let dualEmitMCPDefault = true;
+
+/** Per-version cache of V2 MCP-servers gate decisions (no extra spawns). */
+const mcpV2DecisionCache = new Map<string, boolean>();
+
+/**
+ * Configure whether V2-capable MCP configs emit both the legacy V1 `mcp` map
+ * entries and the V2 `mcp.servers` map side by side.
+ *
+ * See the module-default comment above for the strict-schema caveat: if a V2
+ * CLI rejects the legacy keys, call `setDualEmitMCP(false)` or set
+ * `OPENCODE_DUAL_EMIT_MCP=false`.
+ * @param enabled - `true` (default) to dual-emit, `false` for gated
+ * single-shape behavior, `undefined` to restore the default (`true`).
+ * @since NEXT
+ */
+export function setDualEmitMCP(enabled?: boolean): void {
+  dualEmitMCPDefault = enabled ?? true;
+}
+
+/**
+ * Resolve the effective MCP dual-emit flag: an explicit per-call/per-run
+ * boolean wins, then the `OPENCODE_DUAL_EMIT_MCP` env var, then the module
+ * default set via {@link setDualEmitMCP} (`true`). Unrecognized env values
+ * fall through to the module default (fail-open).
+ * @param explicit - Optional explicit override for this call.
+ * @returns The effective dual-emit setting.
+ * @since NEXT
+ */
+export function resolveDualEmitMCP(explicit?: boolean): boolean {
+  if (typeof explicit === 'boolean') return explicit;
+  const raw = process.env.OPENCODE_DUAL_EMIT_MCP;
+  if (raw !== undefined) {
+    const normalized = raw.trim().toLowerCase();
+    if (['0', 'false', 'no', 'off', 'disabled'].includes(normalized)) return false;
+    if (['1', 'true', 'yes', 'on', 'enabled'].includes(normalized)) return true;
+  }
+  return dualEmitMCPDefault;
+}
+
+/**
  * Configure how the OpenCode CLI is invoked for the current process.
  *
  * The GitHub Action and App never call this and keep the default CI behavior
@@ -179,8 +239,10 @@ export function resetOpenCodeState(): void {
   cachedCIConfig = null;
   cachedOpenCodeVersionRaw = null;
   subagentV2DecisionCache.clear();
+  mcpV2DecisionCache.clear();
   runModeOverride = undefined;
   dualEmitSubagentPermissionsDefault = true;
+  dualEmitMCPDefault = true;
   llmProviderConfig = undefined;
   signalHandlersRegistered = false;
 }
@@ -1563,6 +1625,329 @@ export function buildReviewSubagent(
 }
 
 /**
+ * CLI version at or above which MCP servers use the V2 `mcp.servers` map
+ * shape (`mcp: { servers: { <name>: {..., disabled: false} } }`). Older
+ * versions keep the legacy V1 map shape (`mcp: { <name>: {...} }`).
+ *
+ * The V2 config schema belongs to the OpenCode 2.x line only, mirroring the
+ * {@link SUBAGENT_V2_PERMISSIONS_CUTOFF} precedent — so the cutoff stays on
+ * the 2.x major. Unknown or unparseable versions fail open to dual-emit (both
+ * shapes) rather than to either single shape, so reviews keep working on both
+ * old and new CLIs until the version is known.
+ *
+ * Docs: https://opencode.ai/docs/mcp/servers/ (V2 `mcp.servers` map +
+ * `disabled` flag) and https://opencode.ai/docs/config/ (V1 vs V2 migration).
+ * @since NEXT
+ */
+export const MCP_V2_SERVERS_CUTOFF = '2.0.0';
+
+/**
+ * Decide whether an MCP config should carry the V2 `mcp.servers` map shape
+ * for a given detected CLI version. Fail-open: unknown, missing, or
+ * unparseable versions return false (legacy shape only, unless the caller
+ * dual-emits) so config generation never fails because of this gate. Results
+ * are cached per version string.
+ * @param cliVersion - Raw detected CLI version (e.g. "v2.0.0"), or null/undefined when unknown.
+ * @returns True when the CLI is at or above {@link MCP_V2_SERVERS_CUTOFF}.
+ * @since NEXT
+ */
+export function shouldUseV2MCPServers(cliVersion?: string | null): boolean {
+  try {
+    if (typeof cliVersion !== 'string') return false;
+    const key = cliVersion.trim();
+    if (!key) return false;
+    const cached = mcpV2DecisionCache.get(key);
+    if (cached !== undefined) return cached;
+    const cmp = compareVersions(key, MCP_V2_SERVERS_CUTOFF);
+    if (cmp === UNPARSEABLE_VERSION) {
+      core.warning(
+        `OpenCode version "${key}" could not be parsed for the MCP servers gate — using the legacy mcp shape.`,
+      );
+      mcpV2DecisionCache.set(key, false);
+      return false;
+    }
+    const result = cmp >= 0;
+    mcpV2DecisionCache.set(key, result);
+    return result;
+  } catch (err) {
+    core.warning(
+      `MCP servers version gate failed (${err instanceof Error ? err.message : String(err)}) — using the legacy mcp shape.`,
+    );
+    return false;
+  }
+}
+
+/**
+ * Build the value for the `mcp` config key from a server list, selecting the
+ * wire shape by CLI version.
+ *
+ * - Unknown version (or unparseable): dual-emit — legacy V1 named entries
+ *   PLUS the V2 `servers` map (when dual-emit is enabled, the default);
+ *   legacy-only when dual-emit is disabled.
+ * - V1-only CLI (below {@link MCP_V2_SERVERS_CUTOFF}): legacy V1 named
+ *   entries only (dual-emit is still accepted by old CLIs, but a strict V1
+ *   reader may reject the unknown `servers` key, so single-shape is safer).
+ * - V2-only CLI: V2 `servers` map; legacy named entries are ADDED alongside
+ *   when dual-emit is enabled (the default) and omitted when disabled.
+ *
+ * V1 readers ignore the `servers` key; V2 readers ignore the legacy sibling
+ * keys — so the dual shape works on both. Fail-open: any error returns the
+ * legacy V1 map so config generation never throws.
+ * @param servers - The internal server configs to serialize.
+ * @param cliVersion - Raw detected CLI version; defaults to the last probed version.
+ * @param dualEmit - Optional dual-emit override; env/module default applies when omitted.
+ * @returns The `mcp` config value.
+ * @since NEXT
+ */
+export function buildMCPConfigBlock(
+  servers: MCPServerConfig[],
+  cliVersion?: string | null,
+  dualEmit?: boolean,
+): Record<string, unknown> {
+  try {
+    const list = Array.isArray(servers) ? servers : [];
+    const version = cliVersion ?? cachedOpenCodeVersionRaw;
+    const dual = resolveDualEmitMCP(dualEmit);
+    const v1 = toV1ServersMap(list);
+    if (!shouldUseV2MCPServers(version)) {
+      // Known-old CLI → legacy only. Unknown version → dual (fail-open) so
+      // new CLIs still pick up their servers via `mcp.servers`.
+      const known = typeof version === 'string' && version.trim() !== '';
+      if (known) return { ...v1 };
+      if (!dual) return { ...v1 };
+      return { ...v1, servers: toV2ServersMap(list) };
+    }
+    if (dual) return { ...v1, servers: toV2ServersMap(list) };
+    return { servers: toV2ServersMap(list) };
+  } catch (err) {
+    core.warning(
+      `MCP config block build failed (${err instanceof Error ? err.message : String(err)}) — using the legacy mcp shape.`,
+    );
+    try {
+      return { ...toV1ServersMap(Array.isArray(servers) ? servers : []) };
+    } catch {
+      return {};
+    }
+  }
+}
+
+/**
+ * Merge an MCP server list into a base OpenCode config JSON string under the
+ * `mcp` key, selecting the wire shape via {@link buildMCPConfigBlock}.
+ * Pre-existing `mcp` entries in the base config are preserved (the built
+ * block wins on key conflicts; `servers` maps are merged when both sides
+ * carry one) so custom MCP entries are not silently dropped.
+ * Fail-open: unparseable base configs are returned unchanged.
+ * @param baseConfig - The base OpenCode config JSON (CI or custom).
+ * @param servers - The internal server configs to inject.
+ * @param cliVersion - Optional detected CLI version; defaults to the last probed version.
+ * @param dualEmit - Optional dual-emit override; env/module default applies when omitted.
+ * @returns The config JSON with the `mcp` block merged in.
+ * @since NEXT
+ */
+export function mergeMCPConfig(
+  baseConfig: string,
+  servers: MCPServerConfig[],
+  cliVersion?: string | null,
+  dualEmit?: boolean,
+): string {
+  if (!Array.isArray(servers) || servers.length === 0) return baseConfig;
+  try {
+    const parsed = JSON.parse(baseConfig) as Record<string, unknown>;
+    const existing =
+      parsed.mcp && typeof parsed.mcp === 'object' && !Array.isArray(parsed.mcp)
+        ? (parsed.mcp as Record<string, unknown>)
+        : {};
+    const built = buildMCPConfigBlock(servers, cliVersion, dualEmit);
+    const existingServers =
+      existing.servers && typeof existing.servers === 'object' && !Array.isArray(existing.servers)
+        ? (existing.servers as Record<string, unknown>)
+        : undefined;
+    const builtServers =
+      built.servers && typeof built.servers === 'object' && !Array.isArray(built.servers)
+        ? (built.servers as Record<string, unknown>)
+        : undefined;
+    parsed.mcp = {
+      ...existing,
+      ...built,
+      ...(existingServers && builtServers
+        ? { servers: { ...existingServers, ...builtServers } }
+        : {}),
+    };
+    return JSON.stringify(parsed);
+  } catch {
+    return baseConfig;
+  }
+}
+
+/**
+ * Normalize the `mcp` block of an existing config JSON string for the
+ * detected CLI version, upgrading legacy named entries with the V2 `servers`
+ * map (each entry gaining `disabled: false` unless already set).
+ *
+ * - Empty/missing/non-object `mcp` blocks pass through untouched (the CI
+ *   config intentionally clears MCP with `mcp: {}`).
+ * - Blocks that already carry a `servers` map pass through untouched, except
+ *   with dual-emit disabled on a V2 CLI they are downgraded to servers-only,
+ *   on a known V1 CLI the `servers` key is stripped (legacy-only), and on an
+ *   unknown CLI with dual-emit disabled the `servers` key is stripped
+ *   (legacy-only per {@link buildMCPConfigBlock} semantics).
+ * - Legacy-only blocks on an unknown or V2 CLI gain the `servers` map when
+ *   dual-emit is enabled (the default); with dual-emit disabled they stay
+ *   legacy-only on unknown/V1 CLIs and become servers-only on a V2 CLI.
+ * - Legacy-only blocks on a known V1 CLI are returned unchanged.
+ *
+ * Fail-open: any error returns the input unchanged.
+ * @param configJson - The OpenCode config JSON to normalize.
+ * @param cliVersion - Optional detected CLI version; defaults to the last probed version.
+ * @param dualEmit - Optional dual-emit override; env/module default applies when omitted.
+ * @returns The (possibly upgraded) config JSON.
+ * @since NEXT
+ */
+export function normalizeMCPConfigForVersion(
+  configJson: string,
+  cliVersion?: string | null,
+  dualEmit?: boolean,
+): string {
+  try {
+    const parsed = JSON.parse(configJson) as Record<string, unknown>;
+    const mcp = parsed.mcp;
+    if (!mcp || typeof mcp !== 'object' || Array.isArray(mcp)) return configJson;
+    const block = mcp as Record<string, unknown>;
+    const keys = Object.keys(block);
+    if (keys.length === 0) return configJson;
+    const version = cliVersion ?? cachedOpenCodeVersionRaw;
+    const dual = resolveDualEmitMCP(dualEmit);
+    const onV2 = shouldUseV2MCPServers(version);
+    const known = typeof version === 'string' && version.trim() !== '';
+    if (block.servers && typeof block.servers === 'object' && !Array.isArray(block.servers)) {
+      // Already carries the V2 shape. Normalize symmetrically:
+      // - Known V1 reader: strip the `servers` key (legacy-only), since a
+      //   strict V1 CLI may reject the unknown key.
+      // - Unknown version with dual-emit disabled: strip the `servers` key
+      //   (legacy-only per buildMCPConfigBlock semantics).
+      // - V2 CLI with dual-emit disabled: downgrade to servers-only.
+      if (!onV2 && (known || !dual)) return stripV2ServersKey(configJson);
+      if (!dual && onV2) return stripLegacyMCPKeys(configJson);
+      return configJson;
+    }
+    if (!onV2 && known) return configJson;
+    const servers: Record<string, unknown> = {};
+    for (const [name, entry] of Object.entries(block)) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+      const rec = entry as Record<string, unknown>;
+      servers[name] =
+        typeof (rec as { disabled?: unknown }).disabled === 'boolean'
+          ? { ...rec }
+          : { ...rec, disabled: false };
+    }
+    if (Object.keys(servers).length === 0) return configJson;
+    if (dual) {
+      parsed.mcp = { ...block, servers };
+    } else if (onV2) {
+      parsed.mcp = { servers };
+    } else {
+      return configJson;
+    }
+    return JSON.stringify(parsed);
+  } catch {
+    return configJson;
+  }
+}
+
+/**
+ * Detect a strict-schema config rejection of the dual-emitted MCP block in
+ * CLI output (a V2 CLI refusing the legacy sibling keys, or a V1 CLI refusing
+ * the V2 `servers` key). Matching is substring-based and case-insensitive;
+ * non-string or empty input never matches. Only the `mcp` signal counts
+ * (which also covers `mcp.servers`); bare `disabled`/`servers`/`permissions`
+ * mentions without `mcp` (e.g. subagent permission rejections or unrelated
+ * "tool disabled" errors) must not trigger an MCP retry.
+ * @param output - Combined stdout/stderr of the failed CLI run.
+ * @returns True when the output looks like a strict MCP config rejection.
+ * @since NEXT
+ */
+export function isMCPConfigRejection(output: unknown): boolean {
+  if (typeof output !== 'string' || !output) return false;
+  const text = output.toLowerCase();
+  const mentionsConfigProblem =
+    text.includes('configuration is invalid') ||
+    text.includes('invalid configuration') ||
+    text.includes('config validation') ||
+    text.includes('failed to parse config') ||
+    text.includes('unknown field') ||
+    text.includes('unexpected field') ||
+    text.includes('strict') ||
+    text.includes('not supported by opencode');
+  if (!mentionsConfigProblem) return false;
+  return text.includes('mcp');
+}
+
+/**
+ * Strip the legacy V1 sibling keys from a dual-emitted `mcp` block, keeping
+ * only the V2 `servers` map — the single-shape payload for the retry after a
+ * strict-schema rejection. Configs without an `mcp.servers` map are returned
+ * unchanged. Fail-open: any error returns the input unchanged.
+ * @param configJson - The OpenCode config JSON that was rejected.
+ * @returns The config JSON with only `mcp: { servers: {...} }`.
+ * @since NEXT
+ */
+export function stripLegacyMCPKeys(configJson: string): string {
+  try {
+    const parsed = JSON.parse(configJson) as Record<string, unknown>;
+    const mcp = parsed.mcp;
+    if (!mcp || typeof mcp !== 'object' || Array.isArray(mcp)) return configJson;
+    const block = mcp as Record<string, unknown>;
+    const servers = block.servers;
+    if (!servers || typeof servers !== 'object' || Array.isArray(servers)) return configJson;
+    parsed.mcp = { servers };
+    return JSON.stringify(parsed);
+  } catch {
+    return configJson;
+  }
+}
+
+/**
+ * Strip the V2 `servers` key from a dual-emitted `mcp` block, keeping only
+ * the legacy V1 sibling keys — the single-shape payload for the retry after a
+ * strict V1 reader rejects the unknown `servers` key. Configs without a
+ * `servers` key are returned unchanged. Fail-open: any error returns the
+ * input unchanged.
+ * @param configJson - The OpenCode config JSON that was rejected.
+ * @returns The config JSON with only the legacy V1 `mcp` entries.
+ * @since NEXT
+ */
+export function stripV2ServersKey(configJson: string): string {
+  try {
+    const parsed = JSON.parse(configJson) as Record<string, unknown>;
+    const mcp = parsed.mcp;
+    if (!mcp || typeof mcp !== 'object' || Array.isArray(mcp)) return configJson;
+    const block = mcp as Record<string, unknown>;
+    if (!('servers' in block)) return configJson;
+    const { servers: _removed, ...legacy } = block;
+    parsed.mcp = legacy;
+    return JSON.stringify(parsed);
+  } catch {
+    return configJson;
+  }
+}
+
+/**
+ * Record a strict-schema MCP config rejection: auto-disable MCP dual-emit
+ * for the rest of the process so subsequent runs emit the gated single shape.
+ * Called automatically by {@link runOpenCode} before its one retry-without-
+ * legacy; exported so custom runners can share the same fail-open behavior.
+ * @since NEXT
+ */
+export function noteMCPConfigRejection(): void {
+  dualEmitMCPDefault = false;
+  core.warning(
+    'OpenCode CLI rejected the dual-emitted MCP config — dual-emit disabled for subsequent runs ' +
+      '(set OPENCODE_DUAL_EMIT_MCP=true to re-enable).',
+  );
+}
+
+/**
  * Resolve a model string, prefixing a configured default provider when the
  * model is bare (has no "provider/" prefix).
  *
@@ -1729,6 +2114,11 @@ export {
  * Strict-schema note: dual-emit assumes V2 CLIs tolerate the extra legacy key
  * (V2 docs say "Do not use `permission`..."). If a V2 CLI strictly validates
  * and rejects it, pass `false` here or set the env var to `false`.
+ * @param options.dualEmitMCP - When true (default), a custom `opencodeConfig`
+ * carrying legacy `mcp` entries gains the V2 `mcp.servers` map (each entry
+ * with `disabled: false`) on unknown/V2 CLIs. Set to `false` for gated
+ * single-shape behavior, or set `OPENCODE_DUAL_EMIT_MCP=false`. A
+ * strict-schema MCP rejection retries once without the legacy keys.
  * @param options.llm - Custom LLM provider configuration for this run. When
  * provided, it is used instead of the module-level config set via
  * {@link setLLMProviderConfig}, so long-lived processes can dispatch concurrent
@@ -1757,6 +2147,10 @@ export async function runOpenCode(
     autoApprove?: boolean;
     /** Dual-emit V2 `permissions` alongside legacy `permission` (default: true). */
     dualEmitSubagentPermissions?: boolean;
+    /** Dual-emit V2 `mcp.servers` alongside legacy `mcp` entries (default: true).
+     * On a strict-schema rejection the run retries once without the legacy
+     * keys and dual-emit is auto-disabled for the rest of the process. */
+    dualEmitMCP?: boolean;
     /** Custom LLM provider configuration for this run (see JSDoc above). */
     llm?: LLMConfig;
   },
@@ -1942,18 +2336,26 @@ export async function runOpenCode(
   // adds zero extra spawns. Unknown versions fail open to the legacy shape.
   // Dual-emit (default) preserves the legacy `permission` key alongside the V2
   // `permissions` array for maximum CLI compatibility.
+  // Likewise, legacy `mcp` map entries gain the V2 `mcp.servers` map (with
+  // `disabled: false`) when the version is unknown or V2-capable; the CI
+  // config's intentionally-empty `mcp: {}` passes through untouched.
   safeEnv.OPENCODE_CONFIG_CONTENT = mergeLLMProviderConfig(
-    mergeSubagentConfig(
-      options.opencodeConfig ?? runModeOverride?.opencodeConfig ?? buildCIConfig(),
-      normalizeSubagentPermissionsForVersion(
-        options.subagents ?? {},
-        undefined,
-        options.dualEmitSubagentPermissions,
+    normalizeMCPConfigForVersion(
+      mergeSubagentConfig(
+        options.opencodeConfig ?? runModeOverride?.opencodeConfig ?? buildCIConfig(),
+        normalizeSubagentPermissionsForVersion(
+          options.subagents ?? {},
+          undefined,
+          options.dualEmitSubagentPermissions,
+        ),
       ),
+      undefined,
+      options.dualEmitMCP,
     ),
     llm,
   );
   safeEnv.OPENCODE_DISABLE_AUTOUPDATE = 'true';
+  const initialConfigContent = safeEnv.OPENCODE_CONFIG_CONTENT;
 
   const stdio: cp.StdioOptions = useStdinForPrompt
     ? ['pipe', 'pipe', 'pipe'] // pipe stdin so we can send the large prompt
@@ -1961,189 +2363,231 @@ export async function runOpenCode(
       ? ['ignore', 'pipe', 'pipe'] // small prompt via argv, stdin ignored
       : ['inherit', 'pipe', 'pipe']; // interactive: forward terminal stdin
 
-  const childProcess = cp.spawn(binaryPath, args, {
-    cwd,
-    stdio,
-    env: safeEnv,
-    detached: true,
-  });
-
-  // When the prompt was too large for argv, pipe the full payload through stdin
-  // and close the stream immediately so the CLI receives EOF and starts work.
-  // The stdin 'error' listener prevents an uncaught EPIPE if the child exits
-  // before consuming all of stdin.
-  if (useStdinForPrompt) {
-    childProcess.stdin!.on('error', () => {});
-    childProcess.stdin!.end(prompt, 'utf8');
-  }
-
-  // Cap retained output to prevent memory exhaustion on verbose or stuck runs.
-  // We keep only the last 50 KB which is sufficient for token parsing while
-  // still forwarding all output to CI logs.
-  const MAX_CAPTURED_BYTES = 50 * 1024;
-  let capturedOutput = '';
-  let tokenUsageResult = 0;
-  let promptTokensResult = 0;
-  let completionTokensResult = 0;
-
-  function appendCaptured(text: string): void {
-    capturedOutput += text;
-    if (capturedOutput.length > MAX_CAPTURED_BYTES) {
-      capturedOutput = capturedOutput.slice(-MAX_CAPTURED_BYTES);
-    }
-    const parsed = parseTokenUsageDetailed(text);
-    if (parsed.totalTokens > 0) {
-      tokenUsageResult = parsed.totalTokens;
-    }
-    if (parsed.promptTokens !== undefined && parsed.promptTokens > 0) {
-      promptTokensResult = parsed.promptTokens;
-    }
-    if (parsed.completionTokens !== undefined && parsed.completionTokens > 0) {
-      completionTokensResult = parsed.completionTokens;
-    }
-  }
-
-  let timedOut = false;
-  let childExited = false;
-  let forceKillHandle: ReturnType<typeof setTimeout> | undefined;
-
-  function killProcessGroup(signal: 'SIGTERM' | 'SIGKILL'): void {
-    if (!childProcess.pid) return;
-    try {
-      if (os.platform() === 'win32') {
-        cp.execFileSync('taskkill', ['/PID', String(childProcess.pid), '/T', '/F'], {
-          stdio: 'ignore',
-        });
-      } else {
-        process.kill(-childProcess.pid, signal);
-      }
-    } catch (err) {
-      core.debug(`Failed to send ${signal} to process group: ${err}`);
-    }
-  }
-
-  // Listen for external abort signal (e.g. from EventBus subscriber timeout)
-  if (options.signal) {
-    options.signal.addEventListener(
-      'abort',
-      () => {
-        if (!childExited) {
-          killProcessGroup('SIGTERM');
-        }
-      },
-      { once: true },
-    );
-  }
-
-  const timeoutHandle = setTimeout(() => {
-    timedOut = true;
-    core.warning(
-      `OpenCode timeout of ${options.timeoutMinutes ?? 20}m exceeded — sending SIGTERM.`,
-    );
-    killProcessGroup('SIGTERM');
-    // If SIGTERM is ignored or too slow, force-kill after 5 seconds
-    forceKillHandle = setTimeout(() => {
-      if (!childExited) {
-        core.warning('OpenCode did not exit after SIGTERM — sending SIGKILL.');
-        killProcessGroup('SIGKILL');
-      }
-    }, 5_000);
-  }, timeoutMs);
-
-  childProcess.stdout?.on('data', (data: Buffer) => {
-    const text = data.toString();
-    appendCaptured(text);
-    if (!options.quiet) {
-      try {
-        process.stdout.write(data);
-      } catch {
-        // Stream closed
-      }
-    }
-  });
-  childProcess.stderr?.on('data', (data: Buffer) => {
-    const text = data.toString();
-    appendCaptured(text);
-    if (!options.quiet) {
-      try {
-        process.stderr.write(data);
-      } catch {
-        // Stream closed
-      }
-    }
-  });
-
-  let exitCode: number | null = null;
-  let processError: string | undefined;
-
-  try {
-    await new Promise<void>((resolve) => {
-      childProcess.on('close', (code) => {
-        childExited = true;
-        exitCode = code;
-        resolve();
-      });
-      childProcess.on('error', (err) => {
-        childExited = true;
-        processError = err.message;
-        resolve();
-      });
+  // A single `opencode run` attempt with the given injected config. Extracted
+  // so a strict-schema MCP rejection can retry once without the legacy keys
+  // (see below) instead of failing the review outright.
+  async function executeOnce(configContent: string): Promise<{
+    success: boolean;
+    output: string;
+    tokensUsed: number;
+    promptTokens?: number;
+    completionTokens?: number;
+  }> {
+    const runEnv: Record<string, string> = {
+      ...safeEnv,
+      OPENCODE_CONFIG_CONTENT: configContent,
+    };
+    const childProcess = cp.spawn(binaryPath, args, {
+      cwd,
+      stdio,
+      env: runEnv,
+      detached: true,
     });
 
-    const durationMs = Date.now() - startTime;
-    const finalBreakdown = resolveTokenBreakdown(
-      capturedOutput,
-      tokenUsageResult,
-      promptTokensResult,
-      completionTokensResult,
-    );
+    // When the prompt was too large for argv, pipe the full payload through stdin
+    // and close the stream immediately so the CLI receives EOF and starts work.
+    // The stdin 'error' listener prevents an uncaught EPIPE if the child exits
+    // before consuming all of stdin.
+    if (useStdinForPrompt) {
+      childProcess.stdin!.on('error', () => {});
+      childProcess.stdin!.end(prompt, 'utf8');
+    }
 
-    if (exitCode === 0 && !processError) {
-      core.info(`OpenCode finished in ${(durationMs / 1000).toFixed(1)}s`);
+    // Cap retained output to prevent memory exhaustion on verbose or stuck runs.
+    // We keep only the last 50 KB which is sufficient for token parsing while
+    // still forwarding all output to CI logs.
+    const MAX_CAPTURED_BYTES = 50 * 1024;
+    let capturedOutput = '';
+    let tokenUsageResult = 0;
+    let promptTokensResult = 0;
+    let completionTokensResult = 0;
+
+    function appendCaptured(text: string): void {
+      capturedOutput += text;
+      if (capturedOutput.length > MAX_CAPTURED_BYTES) {
+        capturedOutput = capturedOutput.slice(-MAX_CAPTURED_BYTES);
+      }
+      const parsed = parseTokenUsageDetailed(text);
+      if (parsed.totalTokens > 0) {
+        tokenUsageResult = parsed.totalTokens;
+      }
+      if (parsed.promptTokens !== undefined && parsed.promptTokens > 0) {
+        promptTokensResult = parsed.promptTokens;
+      }
+      if (parsed.completionTokens !== undefined && parsed.completionTokens > 0) {
+        completionTokensResult = parsed.completionTokens;
+      }
+    }
+
+    let timedOut = false;
+    let childExited = false;
+    let forceKillHandle: ReturnType<typeof setTimeout> | undefined;
+
+    function killProcessGroup(signal: 'SIGTERM' | 'SIGKILL'): void {
+      if (!childProcess.pid) return;
+      try {
+        if (os.platform() === 'win32') {
+          cp.execFileSync('taskkill', ['/PID', String(childProcess.pid), '/T', '/F'], {
+            stdio: 'ignore',
+          });
+        } else {
+          process.kill(-childProcess.pid, signal);
+        }
+      } catch (err) {
+        core.debug(`Failed to send ${signal} to process group: ${err}`);
+      }
+    }
+
+    // Listen for external abort signal (e.g. from EventBus subscriber timeout)
+    if (options.signal) {
+      options.signal.addEventListener(
+        'abort',
+        () => {
+          if (!childExited) {
+            killProcessGroup('SIGTERM');
+          }
+        },
+        { once: true },
+      );
+    }
+
+    const timeoutHandle = setTimeout(() => {
+      timedOut = true;
+      core.warning(
+        `OpenCode timeout of ${options.timeoutMinutes ?? 20}m exceeded — sending SIGTERM.`,
+      );
+      killProcessGroup('SIGTERM');
+      // If SIGTERM is ignored or too slow, force-kill after 5 seconds
+      forceKillHandle = setTimeout(() => {
+        if (!childExited) {
+          core.warning('OpenCode did not exit after SIGTERM — sending SIGKILL.');
+          killProcessGroup('SIGKILL');
+        }
+      }, 5_000);
+    }, timeoutMs);
+
+    childProcess.stdout?.on('data', (data: Buffer) => {
+      const text = data.toString();
+      appendCaptured(text);
+      if (!options.quiet) {
+        try {
+          process.stdout.write(data);
+        } catch {
+          // Stream closed
+        }
+      }
+    });
+    childProcess.stderr?.on('data', (data: Buffer) => {
+      const text = data.toString();
+      appendCaptured(text);
+      if (!options.quiet) {
+        try {
+          process.stderr.write(data);
+        } catch {
+          // Stream closed
+        }
+      }
+    });
+
+    let exitCode: number | null = null;
+    let processError: string | undefined;
+
+    try {
+      await new Promise<void>((resolve) => {
+        childProcess.on('close', (code) => {
+          childExited = true;
+          exitCode = code;
+          resolve();
+        });
+        childProcess.on('error', (err) => {
+          childExited = true;
+          processError = err.message;
+          resolve();
+        });
+      });
+
+      const finalBreakdown = resolveTokenBreakdown(
+        capturedOutput,
+        tokenUsageResult,
+        promptTokensResult,
+        completionTokensResult,
+      );
+
+      if (exitCode === 0 && !processError) {
+        core.info(`OpenCode finished in ${((Date.now() - startTime) / 1000).toFixed(1)}s`);
+        return {
+          success: true,
+          output: capturedOutput,
+          tokensUsed: finalBreakdown.tokensUsed,
+          promptTokens: finalBreakdown.promptTokens,
+          completionTokens: finalBreakdown.completionTokens,
+        };
+      }
+
+      core.warning(
+        `OpenCode did not complete successfully (timedOut: ${timedOut}, exitCode: ${exitCode}, error: ${processError ?? 'none'})`,
+      );
       return {
-        success: true,
+        success: false,
         output: capturedOutput,
-        durationMs,
         tokensUsed: finalBreakdown.tokensUsed,
         promptTokens: finalBreakdown.promptTokens,
         completionTokens: finalBreakdown.completionTokens,
       };
-    }
-
-    core.warning(
-      `OpenCode did not complete successfully (timedOut: ${timedOut}, exitCode: ${exitCode}, error: ${processError ?? 'none'})`,
-    );
-    return {
-      success: false,
-      output: capturedOutput,
-      durationMs,
-      tokensUsed: finalBreakdown.tokensUsed,
-      promptTokens: finalBreakdown.promptTokens,
-      completionTokens: finalBreakdown.completionTokens,
-    };
-  } catch (err) {
-    const durationMs = Date.now() - startTime;
-    const finalBreakdown = resolveTokenBreakdown(
-      capturedOutput,
-      tokenUsageResult,
-      promptTokensResult,
-      completionTokensResult,
-    );
-    core.error(`OpenCode execution failed: ${String(err)}`);
-    return {
-      success: false,
-      output: capturedOutput,
-      durationMs,
-      tokensUsed: finalBreakdown.tokensUsed,
-      promptTokens: finalBreakdown.promptTokens,
-      completionTokens: finalBreakdown.completionTokens,
-    };
-  } finally {
-    clearTimeout(timeoutHandle);
-    if (forceKillHandle !== undefined) {
-      clearTimeout(forceKillHandle);
+    } catch (err) {
+      const finalBreakdown = resolveTokenBreakdown(
+        capturedOutput,
+        tokenUsageResult,
+        promptTokensResult,
+        completionTokensResult,
+      );
+      core.error(`OpenCode execution failed: ${String(err)}`);
+      return {
+        success: false,
+        output: capturedOutput,
+        tokensUsed: finalBreakdown.tokensUsed,
+        promptTokens: finalBreakdown.promptTokens,
+        completionTokens: finalBreakdown.completionTokens,
+      };
+    } finally {
+      clearTimeout(timeoutHandle);
+      if (forceKillHandle !== undefined) {
+        clearTimeout(forceKillHandle);
+      }
     }
   }
+
+  let attempt = await executeOnce(initialConfigContent);
+  // Fail-open for strict-schema CLIs: when the run fails with a config
+  // rejection and the injected config carried a dual-emitted `mcp` block,
+  // retry exactly once with the offending side removed. A V1 reader rejects
+  // the unknown `servers` key (output names `servers`) → retry legacy-only;
+  // otherwise a V2 reader rejected the legacy siblings → retry servers-only.
+  // MCP stays non-blocking throughout — the worst case is a review without
+  // MCP enrichment, never a hard failure from dual-emit.
+  if (!attempt.success && isMCPConfigRejection(attempt.output)) {
+    // Direction-aware: only a V1 unknown-field rejection naming the V2
+    // `servers` key retries legacy-only; any other MCP rejection (e.g. a V2
+    // CLI refusing the legacy siblings, even when the message quotes
+    // `mcp.servers`) retries servers-only. A bare `servers` substring (help
+    // text, config dumps) must not flip the direction on its own.
+    const outputText = attempt.output.toLowerCase();
+    const v1RejectsServersKey = /(unknown|unexpected) field[^\n]*servers/.test(outputText);
+    const stripped = v1RejectsServersKey
+      ? stripV2ServersKey(initialConfigContent)
+      : stripLegacyMCPKeys(initialConfigContent);
+    if (stripped !== initialConfigContent) {
+      noteMCPConfigRejection();
+      core.warning(
+        v1RejectsServersKey
+          ? 'Retrying OpenCode run once without the V2 servers key (legacy-only).'
+          : 'Retrying OpenCode run once without legacy MCP keys.',
+      );
+      attempt = await executeOnce(stripped);
+    }
+  }
+  const durationMs = Date.now() - startTime;
+  return { ...attempt, durationMs };
 }
 
 /**
