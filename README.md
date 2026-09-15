@@ -549,7 +549,7 @@ The app listens for these commands in PR/issue comments:
 
 ## Development
 
-**Prerequisites:** Node.js >= 24.19.0 (Node 24 LTS "Jod"; matches the shipped `node24` action runtime), pnpm >= 10.8.
+**Prerequisites:** Node.js >= 24.19.0 (Node 24 LTS "Krypton"; matches the shipped `node24` action runtime), pnpm >= 10.8.
 Upgrade with `nvm install 24.19.0 && nvm use 24.19.0`. A below-floor runtime logs a warning (fail-open grace period); set `toolchain.enforceNodeFloor: true` to enforce. Note: `package.json` `engines` is an install-time gate (hard-fails only with `engine-strict` enabled, otherwise advisory), while the runtime floor check stays warn-only during the grace period. Phased plan: warn-only for one release, then harden toward fail-closed.
 
 ```bash

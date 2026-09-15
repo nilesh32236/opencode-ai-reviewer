@@ -286,7 +286,14 @@ export class ReviewEngine {
       const result = checkNodeFloorVersion();
       const enforce = this.config.toolchain?.enforceNodeFloor === true;
       if (result.unparseable) {
-        if (!enforce) return;
+        if (!enforce) {
+          // Fail-open, but stay observable: an unknown runtime must not pass silently.
+          this.logger.warn(
+            `Node runtime version ${result.current} could not be parsed against the minimum ${result.floor} ` +
+              `(see https://nodejs.org/en/blog/release/v${result.floor}). Review continues (fail-open).`,
+          );
+          return;
+        }
         enforcementError = new Error(
           `Node runtime ${result.current} is below the enforced minimum ${result.floor} ` +
             `(unparseable version, toolchain.enforceNodeFloor=true). Upgrade to Node >= ${result.floor} ` +

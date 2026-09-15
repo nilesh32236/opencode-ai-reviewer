@@ -112,8 +112,16 @@ describe('checkNodeFloor()', () => {
   it('passes above the floor', () => {
     // Derive the above-floor version from the constant so a floor bump does
     // not require editing this fixture (patch + 1 stays strictly above).
-    const [major, minor, patch] = MINIMUM_NODE_VERSION.split('.').map(Number);
-    const aboveFloor = `${major}.${minor}.${patch + 1}`;
+    // Guard the derivation so a malformed constant fails loudly instead of
+    // producing an unparseable fixture that checkNodeFloor would fail-open on.
+    const parsed = parseVersion(MINIMUM_NODE_VERSION);
+    expect(parsed).not.toBeNull();
+    const aboveFloor = formatVersion({
+      major: parsed!.major,
+      minor: parsed!.minor,
+      patch: parsed!.patch + 1,
+      prerelease: null,
+    });
     expect(checkNodeFloor(aboveFloor, MINIMUM_NODE_VERSION).ok).toBe(true);
     expect(checkNodeFloor(`v${MINIMUM_NODE_VERSION}`, MINIMUM_NODE_VERSION).ok).toBe(true);
   });

@@ -130,6 +130,8 @@ describe('ReviewEngine node floor', () => {
       () => new ReviewEngine({ ...DEFAULT_CONFIG, timeoutMinutes: 10 }, makeAdapter() as never),
     ).not.toThrow();
     expect(floorWarnings(warnSpy)).toHaveLength(0);
+    // Unparseable runtimes stay fail-open but must remain observable.
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('could not be parsed'));
   });
 
   it('throws on unparseable versions when enforcement is enabled', () => {
