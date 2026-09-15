@@ -524,6 +524,9 @@ describe('runFixIssue', () => {
       if (cmd === 'git' && args.includes('log')) {
         return { exitCode: 0, stdout: 'attacker@example.com', stderr: '' };
       }
+      if (cmd === 'git' && args.includes('rev-parse')) {
+        return { exitCode: 0, stdout: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n', stderr: '' };
+      }
       return { exitCode: 0, stdout: '', stderr: '' };
     });
 
@@ -542,21 +545,30 @@ describe('runFixIssue', () => {
       'autofix/issue-42',
       'origin/main',
     ]);
-    // The recreated branch deliberately replaces any remote content, so the push
-    // uses plain --force (never failing with "stale info" when the runner's
-    // shallow checkout has no tracking ref for the branch).
-    expect(mockExec).toHaveBeenCalledWith('git', ['push', 'origin', 'autofix/issue-42', '--force']);
+    // The recreated branch replaces remote content, but ONLY if the remote
+    // tip is still the one inspected above: the push pins its lease to the
+    // observed tip so a concurrent push is never silently clobbered.
+    expect(mockExec).toHaveBeenCalledWith('git', [
+      'push',
+      'origin',
+      'autofix/issue-42',
+      '--force-with-lease=autofix/issue-42:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    ]);
     expect(mockCreatePR).toHaveBeenCalled();
   });
 
   it('recreates the autofix branch from the default branch when no existing branch is present', async () => {
     // Self-contained mock: no existing `origin/autofix/issue-42` ref, so `git
-    // log` fails and the branch is recreated from the default branch.
+    // log` and `git rev-parse` fail and the branch is recreated from the
+    // default branch with a plain push (no remote tip to pin a lease to).
     mockGetExecOutput.mockImplementation(async (cmd: string, args: string[]) => {
       if (cmd === 'git' && args.includes('status')) {
         return { exitCode: 0, stdout: 'M src/fix.ts', stderr: '' };
       }
       if (cmd === 'git' && args.includes('log')) {
+        return { exitCode: 1, stdout: '', stderr: 'fatal: ambiguous argument' };
+      }
+      if (cmd === 'git' && args.includes('rev-parse')) {
         return { exitCode: 1, stdout: '', stderr: 'fatal: ambiguous argument' };
       }
       return { exitCode: 0, stdout: '', stderr: '' };
@@ -577,7 +589,7 @@ describe('runFixIssue', () => {
       'autofix/issue-42',
       'origin/main',
     ]);
-    expect(mockExec).toHaveBeenCalledWith('git', ['push', 'origin', 'autofix/issue-42', '--force']);
+    expect(mockExec).toHaveBeenCalledWith('git', ['push', 'origin', 'autofix/issue-42']);
     expect(mockCreatePR).toHaveBeenCalled();
   });
 

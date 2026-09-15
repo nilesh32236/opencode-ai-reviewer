@@ -575,9 +575,27 @@ export async function runFixIssue(
       await exec.exec('git', ['push', 'origin', branchName, '--force-with-lease']);
     } else {
       // Recreating from the trusted default branch: the remote tip is being
-      // deliberately replaced, so plain --force avoids a "stale info" rejection
-      // on runners whose shallow checkout has no tracking ref for the branch.
-      await exec.exec('git', ['push', 'origin', branchName, '--force']);
+      // deliberately replaced — but ONLY if it is still the tip inspected
+      // above. A bare --force would silently discard commits pushed
+      // concurrently (e.g. a human's manual fix pushed while the agent was
+      // working). Pin the lease to the observed remote tip instead.
+      // Shallow checkouts are covered: branchName was fetched explicitly
+      // above, so origin/branchName exists whenever the remote branch exists.
+      const remoteTip = await exec
+        .getExecOutput('git', ['rev-parse', `origin/${branchName}`], { ignoreReturnCode: true })
+        .then((r) => (r.exitCode === 0 ? r.stdout.trim() : ''))
+        .catch(() => '');
+      if (/^[0-9a-f]{40}$/.test(remoteTip)) {
+        await exec.exec('git', [
+          'push',
+          'origin',
+          branchName,
+          `--force-with-lease=${branchName}:${remoteTip}`,
+        ]);
+      } else {
+        // No remote branch (fresh create): nothing to clobber, plain push.
+        await exec.exec('git', ['push', 'origin', branchName]);
+      }
     }
   } catch (err) {
     core.warning(sanitize(`Git push failed: ${err instanceof Error ? err.message : err}`));

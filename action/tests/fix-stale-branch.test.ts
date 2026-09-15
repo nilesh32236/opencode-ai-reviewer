@@ -20,6 +20,8 @@ vi.mock('../src/utils.js', async (importOriginal) => {
 const BOT_EMAIL = 'bot@example.com';
 const DEFAULT_SHA = 'default-tip-sha';
 const STALE_BASE_SHA = 'stale-base-sha';
+// Realistic 40-hex remote tip for the lease-pinned recreate assertions.
+const REMOTE_TIP_SHA = '0123456789abcdef0123456789abcdef01234567';
 
 function mockGh() {
   return {
@@ -70,7 +72,12 @@ function mockGitProbes(
         : { exitCode: 0, stdout: `${tipEmail}\n`, stderr: '' };
     }
     if (cliArgs[0] === 'rev-parse') {
-      return { exitCode: 0, stdout: `${DEFAULT_SHA}\n`, stderr: '' };
+      // No remote branch (tipEmail null) → rev-parse fails, exercising the
+      // fresh-create plain-push path. Otherwise return a realistic tip SHA
+      // so the recreate path pins its force-with-lease to it.
+      return tipEmail === null
+        ? { exitCode: 1, stdout: '', stderr: '' }
+        : { exitCode: 0, stdout: `${REMOTE_TIP_SHA}\n`, stderr: '' };
     }
     if (cliArgs[0] === 'merge-base') {
       return { exitCode: 0, stdout: `${mergeBase}\n`, stderr: '' };
@@ -119,7 +126,7 @@ describe('runFixIssue stale autofix branch', () => {
     expect(pushes[0]).toEqual(['push', 'origin', 'autofix/issue-123', '--force-with-lease']);
   });
 
-  it('recreates from default with --force when bot branch base is stale', async () => {
+  it('recreates from default with lease-pinned force when bot branch base is stale', async () => {
     const { execCalls } = mockGitProbes(BOT_EMAIL, STALE_BASE_SHA, 1);
 
     await runFixIssue(
@@ -145,7 +152,12 @@ describe('runFixIssue stale autofix branch', () => {
     ]);
     const pushes = pushArgs(execCalls);
     expect(pushes).toHaveLength(1);
-    expect(pushes[0]).toEqual(['push', 'origin', 'autofix/issue-123', '--force']);
+    expect(pushes[0]).toEqual([
+      'push',
+      'origin',
+      'autofix/issue-123',
+      `--force-with-lease=autofix/issue-123:${REMOTE_TIP_SHA}`,
+    ]);
   });
 
   it('creates fresh branch from default when no remote branch exists', async () => {
@@ -168,7 +180,8 @@ describe('runFixIssue stale autofix branch', () => {
     ]);
     const pushes = pushArgs(execCalls);
     expect(pushes).toHaveLength(1);
-    expect(pushes[0]).toEqual(['push', 'origin', 'autofix/issue-123', '--force']);
+    // No remote tip to pin a lease to (fresh create): plain push, nothing to clobber.
+    expect(pushes[0]).toEqual(['push', 'origin', 'autofix/issue-123']);
   });
 
   it('treats probe failures as stale and recreates from default', async () => {
@@ -206,7 +219,9 @@ describe('runFixIssue stale autofix branch', () => {
     ]);
     const pushes = pushArgs(execCalls);
     expect(pushes).toHaveLength(1);
-    expect(pushes[0]).toEqual(['push', 'origin', 'autofix/issue-123', '--force']);
+    // Probe failures mean the remote tip is unknown: plain push so a
+    // concurrent update fails the push instead of being clobbered.
+    expect(pushes[0]).toEqual(['push', 'origin', 'autofix/issue-123']);
   });
 
   it('rejects invalid defaultBranch before any git exec', async () => {

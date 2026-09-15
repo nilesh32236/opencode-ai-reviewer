@@ -229,18 +229,56 @@ jobs:
           project_context: |
             TypeScript/pnpm monorepo. The repo IS the GitHub Action: action.yml at root bundles lib/* and cli/* into action/lib/index.js (node24). Do not modify generated bundles unless rebuild is required. Verification order: 1) pnpm install, 2) pnpm build, 3) pnpm typecheck, 4) pnpm test, 5) pnpm lint (biome). Keep changes backward-compatible and additive; never break the action input schema or drop support.
 
+  # Merge only after every check run is green. This repo enables no branch
+  # protection, so `gh pr merge --auto` would merge immediately regardless of
+  # CI state (this previously merged a PR with failing docstring coverage).
+  # The job therefore polls statusCheckRollup itself (up to ~20 min) and
+  # performs a direct merge only on full green. Anything else is a warning
+  # (the hourly orchestrator retries later).
   auto-merge:
     name: Auto-merge autofix PR
     if: github.event_name == 'pull_request' && github.event.action != 'closed' && contains(github.event.pull_request.labels.*.name, 'autofix:ready') && !github.event.pull_request.merged
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - name: Merge autofix PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh pr merge "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --squash --delete-branch --auto \
-            || echo "::warning::Autofix PR merge not possible (checks pending or merge conflict) — hourly orchestrator will retry."
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          REPO="${{ github.repository }}"
+          ATTEMPTS=0
+          PENDING=1
+          FAILED=0
+          while [ "$ATTEMPTS" -lt 20 ]; do
+            # statusCheckRollup mixes CheckRuns ({name,status,conclusion}) and
+            # legacy StatusContexts ({context,state}): normalize both shapes.
+            READY=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json statusCheckRollup --jq '
+              [.statusCheckRollup[] |
+                if .__typename == "StatusContext" then
+                  {done: (.state != "PENDING"), bad: (.state == "FAILURE" or .state == "ERROR")}
+                else
+                  {done: (.status == "COMPLETED"), bad: (.conclusion as $c | $c != null and (["SUCCESS","SKIPPED","NEUTRAL"] | index($c) | not))}
+                end] |
+              {pending: ([.[] | select(.done | not)] | length), failed: ([.[] | select(.bad)] | length)}')
+            PENDING=$(printf '%s' "$READY" | jq -r .pending)
+            FAILED=$(printf '%s' "$READY" | jq -r .failed)
+            if [ "$PENDING" -eq 0 ]; then break; fi
+            ATTEMPTS=$((ATTEMPTS + 1))
+            echo "Waiting for $PENDING check(s)... (attempt $ATTEMPTS/20)"
+            sleep 60
+          done
+          if [ "$PENDING" -ne 0 ]; then
+            echo "::warning::Autofix PR merge skipped — PR #${PR_NUMBER} still has $PENDING pending check(s) after ~20 min; hourly orchestrator will retry."
+            exit 0
+          fi
+          if [ "$FAILED" -ne 0 ]; then
+            echo "::warning::Autofix PR merge blocked — PR #${PR_NUMBER} has $FAILED failing check(s); hourly orchestrator will retry."
+            exit 0
+          fi
+          echo "All checks green — merging autofix PR #${PR_NUMBER}..."
+          gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --delete-branch \
+            || echo "::warning::Autofix PR merge not possible (merge conflict) — hourly orchestrator will retry."
 
   notify-merged:
     name: Notify merged autofix PR
