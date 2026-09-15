@@ -686,7 +686,7 @@ export function validateConfig(
     if (typeof config.review.enableReviewsArrayInline === 'boolean') {
       result.review.enableReviewsArrayInline = config.review.enableReviewsArrayInline;
     }
-    if (config.review.verdictMode !== undefined) {
+    if (config.review.verdictMode !== undefined && config.review.verdictMode !== null) {
       result.review.verdictMode = normalizeVerdictMode(config.review.verdictMode);
     }
     // Canonical camelCase key wins over the deprecated snake_case alias;

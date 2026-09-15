@@ -10,10 +10,10 @@ export declare function parseTimeoutMinutes(raw: string): number;
  * Parse and normalize the `verdict_mode` input (fail-open to `'comment'`).
  * Delegates to the shared lib normalizer so the allowlist cannot drift;
  * the lib normalizer already emits the fail-open `core.warning`.
- * @param raw - Raw mode string from the workflow input.
+ * @param raw - Raw mode value from the workflow input.
  * @returns A valid verdict mode, defaulting to `'comment'`.
  */
-export declare function parseVerdictMode(raw: string): VerdictMode;
+export declare function parseVerdictMode(raw: unknown): VerdictMode;
 /** Parsed and validated GitHub Action inputs for the OpenCode PR Agent. */
 export interface ActionInputs {
     /** The operation mode: review, fix, audit, or post. */

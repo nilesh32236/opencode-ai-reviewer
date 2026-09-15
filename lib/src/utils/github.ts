@@ -110,19 +110,43 @@ export function resolveReviewEvent(
 ): ReviewEvent {
   const mode = normalizeVerdictMode(verdictMode);
   if (mode === 'comment') return 'COMMENT';
-  const stats = result?.stats ?? { critical: 0, important: 0 };
-  const critical = stats.critical ?? 0;
-  const important = stats.important ?? 0;
+  // Count from the post-filter issues array (not result.stats, which was
+  // computed pre-filter): suppressLowConfidence filtering and fingerprint
+  // dedup remove issues without recomputing stats, so a suppressed or
+  // already-posted critical must not trigger REQUEST_CHANGES (or block
+  // APPROVE) for findings that will not be posted. Fall back to stats only
+  // when no issues array is present.
+  let critical: number;
+  let important: number;
+  if (Array.isArray(result?.issues)) {
+    critical = 0;
+    important = 0;
+    for (const issue of result.issues) {
+      if (issue?.severity === 'critical') critical += 1;
+      else if (issue?.severity === 'important') important += 1;
+    }
+  } else {
+    const stats = result?.stats ?? { critical: 0, important: 0 };
+    critical = stats.critical ?? 0;
+    important = stats.important ?? 0;
+  }
+  const unreliable =
+    (result?.failedBatches ?? 0) > 0 ||
+    (result?.failedAgents ?? 0) > 0 ||
+    VERDICT_FAILURE_SENTINELS.has(result?.verdict?.reasoning ?? '');
   if (mode === 'approve') {
     if (result?.verdict?.ready !== true) return 'COMMENT';
     if (critical > 0 || important > 0) return 'COMMENT';
-    if ((result?.failedBatches ?? 0) > 0 || (result?.failedAgents ?? 0) > 0) return 'COMMENT';
-    if (VERDICT_FAILURE_SENTINELS.has(result?.verdict?.reasoning ?? '')) return 'COMMENT';
+    if (unreliable) return 'COMMENT';
     return 'APPROVE';
   }
-  // request-changes: block only on criticals (ready===false with criticals
-  // included); everything else stays a comment.
-  if (critical > 0) return 'REQUEST_CHANGES';
+  // request-changes: block only on criticals from a reliable pass (fail-open
+  // on failed/unreliable passes, mirroring the approve-path guard, so stale
+  // critical counts never block the merge); everything else stays a comment.
+  if (critical > 0) {
+    if (unreliable) return 'COMMENT';
+    return 'REQUEST_CHANGES';
+  }
   return 'COMMENT';
 }
 
@@ -1077,7 +1101,7 @@ export class GitHubHelper implements PlatformAdapter {
         const isPermissionLike =
           status === 403 ||
           comments === undefined ||
-          /permission|forbidden|not permitted|resource not accessible|event/i.test(message);
+          /permission|forbidden|not permitted|resource not accessible/i.test(message);
         if (!isPermissionLike) throw err;
         core.warning(
           `Review event ${event} rejected (status ${status}), retrying as COMMENT: ${err}`,

@@ -63,10 +63,32 @@ describe('resolveReviewEvent()', () => {
   });
 
   it('stays COMMENT in approve mode when findings/partial-failures/sentinels block', () => {
-    const withCritical = makeResult({ stats: { total: 1, critical: 1, important: 0, minor: 0 } });
+    const withCritical = makeResult({
+      stats: { total: 1, critical: 1, important: 0, minor: 0 },
+      issues: [
+        {
+          type: 'issue',
+          severity: 'critical',
+          file: 'src/a.ts',
+          line: 1,
+          message: 'Bug.',
+        },
+      ],
+    });
     expect(resolveReviewEvent(withCritical, 'approve')).toBe('COMMENT');
 
-    const withImportant = makeResult({ stats: { total: 1, critical: 0, important: 1, minor: 0 } });
+    const withImportant = makeResult({
+      stats: { total: 1, critical: 0, important: 1, minor: 0 },
+      issues: [
+        {
+          type: 'issue',
+          severity: 'important',
+          file: 'src/a.ts',
+          line: 2,
+          message: 'Smell.',
+        },
+      ],
+    });
     expect(resolveReviewEvent(withImportant, 'approve')).toBe('COMMENT');
 
     const notReady = makeResult({
@@ -92,9 +114,52 @@ describe('resolveReviewEvent()', () => {
     const critical = makeResult({
       verdict: { ready: false, reasoning: 'Has issues.', autoFixable: false, confidence: 'high' },
       stats: { total: 1, critical: 2, important: 0, minor: 0 },
+      issues: [
+        {
+          type: 'issue',
+          severity: 'critical',
+          file: 'src/a.ts',
+          line: 1,
+          message: 'Bug.',
+        },
+      ],
     });
     expect(resolveReviewEvent(critical, 'request-changes')).toBe('REQUEST_CHANGES');
     expect(resolveReviewEvent(makeResult(), 'request-changes')).toBe('COMMENT');
+  });
+
+  it('ignores stale stats and counts post-filter issues', () => {
+    // Stats computed pre-filter must not gate: a suppressed critical that is
+    // no longer in the issues array stays COMMENT instead of REQUEST_CHANGES.
+    const staleStats = makeResult({
+      verdict: { ready: false, reasoning: 'Has issues.', autoFixable: false, confidence: 'high' },
+      stats: { total: 1, critical: 1, important: 0, minor: 0 },
+      issues: [],
+    });
+    expect(resolveReviewEvent(staleStats, 'request-changes')).toBe('COMMENT');
+  });
+
+  it('stays COMMENT in request-changes mode on failed/unreliable passes', () => {
+    const failedPass = makeResult({
+      verdict: {
+        ready: false,
+        reasoning: 'All review agents failed',
+        autoFixable: false,
+        confidence: 'low',
+      },
+      stats: { total: 1, critical: 1, important: 0, minor: 0 },
+      issues: [
+        {
+          type: 'issue',
+          severity: 'critical',
+          file: 'src/a.ts',
+          line: 1,
+          message: 'Bug.',
+        },
+      ],
+      failedBatches: 1,
+    });
+    expect(resolveReviewEvent(failedPass, 'request-changes')).toBe('COMMENT');
   });
 });
 
@@ -147,6 +212,15 @@ describe('verdictMode transport (postReview event propagation)', () => {
     const critical = makeResult({
       verdict: { ready: false, reasoning: 'Has issues.', autoFixable: false, confidence: 'high' },
       stats: { total: 1, critical: 2, important: 0, minor: 0 },
+      issues: [
+        {
+          type: 'issue',
+          severity: 'critical',
+          file: 'src/a.ts',
+          line: 1,
+          message: 'Bug.',
+        },
+      ],
     });
     const result = await helper.postReview(42, 'sha123', critical, false, undefined, {
       verdictMode: 'request-changes',

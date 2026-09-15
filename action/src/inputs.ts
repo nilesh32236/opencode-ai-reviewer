@@ -80,10 +80,10 @@ function parseCostTrackingVerbosity(raw: string): CostTrackingVerbosity {
  * Parse and normalize the `verdict_mode` input (fail-open to `'comment'`).
  * Delegates to the shared lib normalizer so the allowlist cannot drift;
  * the lib normalizer already emits the fail-open `core.warning`.
- * @param raw - Raw mode string from the workflow input.
+ * @param raw - Raw mode value from the workflow input.
  * @returns A valid verdict mode, defaulting to `'comment'`.
  */
-export function parseVerdictMode(raw: string): VerdictMode {
+export function parseVerdictMode(raw: unknown): VerdictMode {
   return normalizeVerdictMode(raw);
 }
 

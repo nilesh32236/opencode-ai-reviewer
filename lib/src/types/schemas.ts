@@ -729,6 +729,7 @@ export const PromptConfigSchema = z.object({
       enableTestGapDetection: z.boolean().optional(),
       showFunctionScores: z.boolean().optional(),
       enableReviewsArrayInline: z.boolean().optional(),
+      verdictMode: z.enum(VERDICT_MODES).optional(),
       emitFixPayload: z.boolean().optional(),
       enableCodebaseIndex: z.boolean().optional(),
       includePreExisting: z.boolean().optional(),

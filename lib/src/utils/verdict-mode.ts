@@ -15,12 +15,8 @@ export { VERDICT_MODES };
 export function normalizeVerdictMode(value: unknown): VerdictMode {
   if (typeof value !== 'string') return 'comment';
   const normalized = value.trim().toLowerCase();
-  if (
-    normalized === VERDICT_MODES[1] ||
-    normalized === VERDICT_MODES[2]
-  )
-    return normalized;
-  if (normalized !== '' && normalized !== VERDICT_MODES[0]) {
+  if (normalized === 'approve' || normalized === 'request-changes') return normalized;
+  if (normalized !== '' && normalized !== 'comment') {
     core.warning(
       `Ignoring invalid verdict_mode "${String(value)}". Must be "comment", "approve", or "request-changes"; falling back to "comment".`,
     );
