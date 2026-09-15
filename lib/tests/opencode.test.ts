@@ -149,14 +149,17 @@ import {
   configureGit,
   getGitStatus,
   isVersionCompatible,
+  mergeSubagentConfig,
   normalizeSubagentPermissionsForVersion,
   parseOpenCodeVersion,
   resetOpenCodeState,
   resolveDualEmitSubagentPermissions,
+  resolveDualEmitV2Config,
   resolveOpenCodePath,
   resolveRequireChecksum,
   runOpenCode,
   setDualEmitSubagentPermissions,
+  setDualEmitV2Config,
   setLLMProviderConfig,
   setupOpenCode,
   shouldUseV2SubagentPermissions,
@@ -2207,5 +2210,147 @@ describe('subagent V2 permissions gate', () => {
         undefined as unknown as Record<string, Record<string, unknown>>,
       ),
     ).not.toThrow();
+  });
+});
+
+describe('top-level V2 config dual-emit', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+    mockVersionOutput('opencode v1.2.3\n');
+  });
+
+  async function runAndGetConfig(
+    options: Record<string, unknown> = {},
+  ): Promise<Record<string, unknown>> {
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+    const pending = runOpenCode('test', {
+      model: 'openai/gpt-4',
+      ...options,
+    } as Parameters<typeof runOpenCode>[1]);
+    await new Promise((resolve) => setImmediate(resolve));
+    proc.emitClose(0);
+    await pending;
+    const env = (mockSpawn.mock.calls[0] as Array<{ env: Record<string, string> }>)[2].env;
+    return JSON.parse(env.OPENCODE_CONFIG_CONTENT) as Record<string, unknown>;
+  }
+
+  it('dual-emits V1+V2 top-level keys by default', async () => {
+    const config = await runAndGetConfig();
+    // V1 keys (unchanged behavior).
+    expect(config.permission).toBe('allow');
+    expect(config.mcp).toEqual({});
+    expect(config.plugin).toEqual([]);
+    // V2 aliases alongside V1.
+    expect(config.permissions).toEqual([{ action: '*', resource: '*', effect: 'allow' }]);
+    expect(config.mcpServers).toEqual({});
+    expect(config.plugins).toEqual([]);
+    expect(config.agent).toEqual({});
+    expect(config.agents).toEqual({});
+  });
+
+  it('emits V1-only output when dualEmitV2Config is false', async () => {
+    const config = await runAndGetConfig({ dualEmitV2Config: false });
+    expect(config.permission).toBe('allow');
+    expect(config.mcp).toEqual({});
+    expect(config.plugin).toEqual([]);
+    expect(config.permissions).toBeUndefined();
+    expect(config.mcpServers).toBeUndefined();
+    expect(config.plugins).toBeUndefined();
+    expect(config.agents).toBeUndefined();
+  });
+
+  it('V1-only output parses cleanly for older CLIs (V1 keys intact)', async () => {
+    const config = await runAndGetConfig({ dualEmitV2Config: false });
+    // An older CLI reading V1 only sees exactly the keys it understands.
+    const v1Keys = ['permission', 'autoupdate', 'share', 'mcp', 'plugin', 'agent'].filter(
+      (key) => config[key] !== undefined,
+    );
+    expect(v1Keys).toContain('permission');
+    expect(v1Keys).toContain('mcp');
+    expect(v1Keys).toContain('plugin');
+    for (const key of Object.keys(config)) {
+      expect(['$schema', 'permission', 'autoupdate', 'share', 'mcp', 'plugin', 'agent']).toContain(
+        key,
+      );
+    }
+  });
+
+  it('honors the module default, env override, and explicit precedence', () => {
+    expect(resolveDualEmitV2Config()).toBe(true);
+    setDualEmitV2Config(false);
+    expect(resolveDualEmitV2Config()).toBe(false);
+    // Explicit per-run argument wins over the module default.
+    expect(resolveDualEmitV2Config(true)).toBe(true);
+
+    setDualEmitV2Config(undefined);
+    vi.stubEnv('OPENCODE_DUAL_EMIT_V2', 'false');
+    try {
+      expect(resolveDualEmitV2Config()).toBe(false);
+      // Explicit per-run argument wins over the env var.
+      expect(resolveDualEmitV2Config(true)).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(resolveDualEmitV2Config()).toBe(true);
+
+    vi.stubEnv('OPENCODE_DUAL_EMIT_V2', 'not-a-bool');
+    try {
+      // Unrecognized env values fail open to the module default.
+      expect(resolveDualEmitV2Config()).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('disables dual-emit via the env var end to end', async () => {
+    vi.stubEnv('OPENCODE_DUAL_EMIT_V2', 'false');
+    try {
+      const config = await runAndGetConfig();
+      expect(config.permissions).toBeUndefined();
+      expect(config.agents).toBeUndefined();
+      expect(config.mcpServers).toBeUndefined();
+      expect(config.plugins).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('mergeSubagentConfig prefers agents on read and mirrors to both on write', () => {
+    const base = JSON.stringify({
+      agent: { legacy: { description: 'legacy' } },
+      agents: { v2: { description: 'v2' } },
+    });
+    const merged = JSON.parse(
+      mergeSubagentConfig(base, { added: { description: 'added' } }),
+    ) as Record<string, Record<string, unknown>>;
+    // Both variants preferred-merged (agents wins on conflict) and mirrored.
+    expect(merged.agent).toEqual(merged.agents);
+    expect(merged.agent.legacy).toEqual({ description: 'legacy' });
+    expect(merged.agent.v2).toEqual({ description: 'v2' });
+    expect(merged.agent.added).toEqual({ description: 'added' });
+    expect(core.info).toHaveBeenCalledWith(expect.stringContaining('preferring `agents`'));
+  });
+
+  it('mergeSubagentConfig writes V1-only when dual-emit is disabled', () => {
+    const base = JSON.stringify({
+      agent: { legacy: { description: 'legacy' } },
+      agents: { v2: { description: 'v2' } },
+    });
+    const merged = JSON.parse(
+      mergeSubagentConfig(base, { added: { description: 'added' } }, false),
+    ) as Record<string, unknown>;
+    expect(merged).toHaveProperty('agent');
+    expect(merged).not.toHaveProperty('agents');
+    expect(merged.agent).toEqual({
+      legacy: { description: 'legacy' },
+      added: { description: 'added' },
+    });
+  });
+
+  it('never throws from the top-level merge path', () => {
+    expect(() => mergeSubagentConfig('not-json', { a: { b: 1 } })).not.toThrow();
+    expect(mergeSubagentConfig('not-json', { a: { b: 1 } })).toBe('not-json');
   });
 });
