@@ -1049,7 +1049,14 @@ function normalizeProviderTimeout(value: unknown): number | undefined {
       core.debug(`Ignoring invalid provider timeout value: ${String(value)}.`);
     return undefined;
   }
-  return Math.round(value);
+  const rounded = Math.round(value);
+  // Sub-millisecond fractions (e.g. 0.4) round to 0, which is not a usable
+  // timeout — drop them so the key is omitted instead of stored/emitted as 0.
+  if (rounded < 1) {
+    core.debug(`Ignoring invalid provider timeout value: ${String(value)}.`);
+    return undefined;
+  }
+  return rounded;
 }
 
 /**
@@ -1357,10 +1364,12 @@ function mergeLLMProviderConfig(baseConfig: string, llm: LLMConfig | undefined):
  * @returns True when at least one provider has a valid timeout value.
  */
 function llmHasTimeoutOptions(llm: LLMConfig | undefined): boolean {
+  // Side-effect-free predicate: do not reuse normalizeProviderTimeout here
+  // (it emits core.debug for invalid values on every invocation).
+  const isValidTimeout = (v: unknown): boolean =>
+    typeof v === 'number' && Number.isFinite(v) && v > 0 && Math.round(v) >= 1;
   return Object.values(llm?.providers ?? {}).some(
-    (p) =>
-      normalizeProviderTimeout(p?.headerTimeoutMs) !== undefined ||
-      normalizeProviderTimeout(p?.chunkTimeoutMs) !== undefined,
+    (p) => isValidTimeout(p?.headerTimeoutMs) || isValidTimeout(p?.chunkTimeoutMs),
   );
 }
 
@@ -2248,7 +2257,9 @@ export async function runOpenCode(
       !timedOut &&
       !processError &&
       llmHasTimeoutOptions(llm) &&
-      /headerTimeout|chunkTimeout/i.test(capturedOutput)
+      /\b(unknown|invalid|unexpected|unrecognized)[\w\s'".:-]{0,80}(headerTimeout|chunkTimeout)|(headerTimeout|chunkTimeout)[\w\s'".:-]{0,80}\b(unknown|invalid|unexpected|unrecognized|not supported|not allowed)/i.test(
+        capturedOutput,
+      )
     ) {
       core.warning(
         'OpenCode CLI appears to reject provider timeout keys (headerTimeout/chunkTimeout) — retrying once without them.',

@@ -657,7 +657,14 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
       );
       return undefined;
     }
-    return Math.round(value);
+    const rounded = Math.round(value);
+    if (rounded < 1) {
+      core.warning(
+        `Ignoring invalid ${name} "${raw}": expected a positive number of milliseconds.`,
+      );
+      return undefined;
+    }
+    return rounded;
   };
   const llmHeaderTimeoutMs = parseTimeoutInput('llm_header_timeout_ms');
   const llmChunkTimeoutMs = parseTimeoutInput('llm_chunk_timeout_ms');

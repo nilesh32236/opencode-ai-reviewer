@@ -1483,7 +1483,8 @@ export function validateConfig(
           if (
             typeof timeoutValue === 'number' &&
             Number.isFinite(timeoutValue) &&
-            timeoutValue > 0
+            timeoutValue > 0 &&
+            Math.round(timeoutValue) >= 1
           ) {
             validated[timeoutField] = Math.round(timeoutValue);
           } else {
