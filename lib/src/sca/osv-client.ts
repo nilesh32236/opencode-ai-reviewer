@@ -350,11 +350,22 @@ const ABORT_ERR_NAME = 'AbortError';
 
 /**
  * True when the thrown value signals a scan-deadline abort.
+ *
+ * Checks `name === 'AbortError'` regardless of prototype: Node fetch aborts,
+ * `withRetryAndTimeout`, and explicit `signal.reason` throws surface as
+ * `DOMException` (not `instanceof Error`), so an `instanceof Error`-only
+ * check swallows cancellation in the Phase-1 catch-and-continue path.
  * @param err - The thrown value to inspect.
  * @returns True when the value is an `AbortError`.
  */
 export function isAbortError(err: unknown): boolean {
-  return err instanceof Error && err.name === ABORT_ERR_NAME;
+  if (typeof err !== 'object' || err === null) return false;
+  if (err instanceof Error && err.name === ABORT_ERR_NAME) return true;
+  if (typeof DOMException !== 'undefined' && err instanceof DOMException) {
+    return err.name === ABORT_ERR_NAME;
+  }
+  // Cross-realm / custom abort reasons: match on the name property alone.
+  return (err as { name?: unknown }).name === ABORT_ERR_NAME;
 }
 
 /**
@@ -372,9 +383,10 @@ async function queryBatch(
   signal?: AbortSignal,
 ): Promise<Array<{ dependency: SCADependency; match: OSVQueryMatch }>> {
   const payload = buildBatchQueries(deps);
-  // POST /v1/querybatch is non-idempotent: restrict retries to 429 (+
-  // Retry-After hint via attached headers) and never replay on 5xx or
-  // status-less errors.
+  // POST /v1/querybatch is semantically read-only (no side effects), so
+  // transient 5xx retries are safe alongside 429 (+ Retry-After hint via
+  // attached headers). Status-less errors still never retry
+  // (`retryUnknownStatus: false`).
   const body = await fetchOsvJson(
     `${OSV_API_BASE}/v1/querybatch`,
     {
@@ -385,7 +397,7 @@ async function queryBatch(
     'osv-querybatch',
     fetchImpl,
     signal,
-    { retryableStatuses: [429], retryUnknownStatus: false },
+    { retryableStatuses: [429, 500, 502, 503, 504], retryUnknownStatus: false },
   );
   const parsed = body as OSVQueryBatchResponse;
   const results = parsed.results ?? [];

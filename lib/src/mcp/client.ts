@@ -297,6 +297,12 @@ const MCP_CALL_TIMEOUT_MS = 30_000;
 /**
  * Race an MCP SDK promise against a per-call timeout and an optional caller
  * AbortSignal so hangs are bounded and cancellation propagates.
+ *
+ * NOTE: timeout/abort only rejects the returned promise — the underlying MCP
+ * SDK promise (`listTools`/`callTool` take no signal) is NOT cancelled and
+ * keeps the transport busy until it settles. Callers should treat a timeout
+ * as fail-open for that server rather than immediately starting a second
+ * in-flight call on the same transport.
  * @param fn - Factory producing the SDK promise (invoked immediately).
  * @param timeoutMs - Per-call timeout in milliseconds.
  * @param signal - Optional caller AbortSignal.
@@ -737,6 +743,15 @@ export class MCPManager {
       }
     }
 
+    // Cancellation must propagate: without this, an abort becomes per-server
+    // warnings in errors[] and the caller sees partial results instead of
+    // observing cancellation.
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error
+        ? signal.reason
+        : new DOMException('MCP query aborted by signal', 'AbortError');
+    }
+
     // Sort by relevance and trim to token budget
     entries.sort((a, b) => b.relevance - a.relevance);
     const trimmed = trimToTokenBudget(entries, maxTokens);
@@ -825,17 +840,32 @@ export class MCPManager {
       );
     }
 
+    // Propagate cancellation instead of returning partial docs on abort.
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error
+        ? signal.reason
+        : new DOMException('MCP query aborted by signal', 'AbortError');
+    }
+
     return sections.join('\n\n');
   }
 
   /**
    * Clean up all MCP connections.
-   * @param signal - Optional AbortSignal to skip remaining closes when cancelled.
+   * @param signal - Optional AbortSignal: when aborted, closes are attempted
+   * fire-and-forget (no 5s wait) so no transport is orphaned.
    */
   async disconnect(signal?: AbortSignal): Promise<void> {
     const disconnectTimeoutMs = 5_000;
     for (const [name, { client, transport }] of this.clients) {
-      if (signal?.aborted) break;
+      // On abort, do NOT break out of the loop (that would orphan the
+      // remaining transports and leak stdio child processes / sockets).
+      // Instead fire-and-forget the close without waiting and continue.
+      if (signal?.aborted) {
+        Promise.resolve(client.close()).catch(() => {});
+        Promise.resolve(transport.close()).catch(() => {});
+        continue;
+      }
       try {
         const closePromise = (async () => {
           await client.close();
