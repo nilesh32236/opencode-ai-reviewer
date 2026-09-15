@@ -549,6 +549,9 @@ The app listens for these commands in PR/issue comments:
 
 ## Development
 
+**Prerequisites:** Node.js >= 24.19.0 (Node 24 LTS "Jod"; matches the shipped `node24` action runtime), pnpm >= 10.8.
+Upgrade with `nvm install 24.19.0 && nvm use 24.19.0`. A below-floor runtime logs a warning (fail-open); set `toolchain.enforceNodeFloor: true` to enforce.
+
 ```bash
 pnpm install                # install all workspace dependencies
 pnpm build                  # build all packages (lib -> action, app)

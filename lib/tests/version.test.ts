@@ -110,7 +110,7 @@ describe('checkNodeFloor()', () => {
   });
 
   it('passes above the floor', () => {
-    expect(checkNodeFloor('24.19.0', MINIMUM_NODE_VERSION).ok).toBe(true);
+    expect(checkNodeFloor('24.20.0', MINIMUM_NODE_VERSION).ok).toBe(true);
     expect(checkNodeFloor(`v${MINIMUM_NODE_VERSION}`, MINIMUM_NODE_VERSION).ok).toBe(true);
   });
 
@@ -132,7 +132,7 @@ describe('checkNodeFloor()', () => {
   });
 
   it('defaults to the minimum Node floor and process.version', () => {
-    expect(MINIMUM_NODE_VERSION).toBe('24.18.1');
+    expect(MINIMUM_NODE_VERSION).toBe('24.19.0');
     const result = checkNodeFloor();
     expect(result.floor).toBe(MINIMUM_NODE_VERSION);
     expect(result.current).toBe(process.version);

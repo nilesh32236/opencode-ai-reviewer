@@ -21,12 +21,12 @@ export const UNPARSEABLE_VERSION = Number.MAX_SAFE_INTEGER;
 export const MINIMUM_OPENCODE_VERSION = '1.1.1';
 
 /**
- * Minimum recommended Node.js runtime version. The v24.18.1 release ships
- * fixes for July 2026 HIGH CVEs, so CI and the `node24`-bundled action
+ * Minimum recommended Node.js runtime version. The v24.19.0 release ships
+ * fixes for known runtime CVEs, so CI and the `node24`-bundled action
  * runtime should stay on a patched 24.x LTS.
  * @since NEXT
  */
-export const MINIMUM_NODE_VERSION = '24.18.1';
+export const MINIMUM_NODE_VERSION = '24.19.0';
 
 /** Result of {@link checkNodeFloor}. */
 export interface NodeFloorCheck {
