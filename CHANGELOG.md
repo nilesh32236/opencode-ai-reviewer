@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.13.9] — 2026-09-15
+
+
+### Fixed
+
+- pin recreate force-push to observed tip; gate auto-merge on green checks
+
+### Changed
+
+- build: regenerate action bundle (includes lease-pinned recreate push)
+- docs: restore nested options JSDoc lost when #508 merged ahead of the doc fix
+
+[v1.13.9]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.8...v1.13.9
+
 ## [v1.13.8] — 2026-09-15
 
 
