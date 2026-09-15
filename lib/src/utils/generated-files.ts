@@ -51,7 +51,9 @@ const GENERATED_FILE_RE =
  * Directory segments that hold agent configuration rather than reviewable
  * source (e.g. `.agents/`, `.claude/`). These churn frequently but rarely need
  * line-by-line code review, so they are default-excluded from LLM findings
- * while remaining visible in the summary count.
+ * while remaining visible in the summary count. Compared case-insensitively
+ * (like the `SKILL.md` basename below) so case-insensitive checkouts behave
+ * the same as case-sensitive ones.
  * @since NEXT
  */
 const AGENT_CONFIG_SEGMENTS: ReadonlySet<string> = new Set(['.agents', '.claude']);
@@ -96,7 +98,8 @@ export function isGeneratedArtifactPath(filePath: string): boolean {
 
 /**
  * Determine whether a path is agent configuration rather than reviewable
- * source: any non-final segment named `.agents` or `.claude`, or a file
+ * source: any non-final segment named `.agents` or `.claude`
+ * (case-insensitive, matching case-insensitive checkouts), or a file
  * basenamed `SKILL.md` (case-insensitive). Kept separate from
  * {@link isGeneratedArtifactPath} so generated-artifact semantics are unchanged.
  *
@@ -113,7 +116,7 @@ export function isAgentConfigPath(filePath: string): boolean {
     const segments = normalized.split('/');
     const lastIndex = segments.length - 1;
     for (let i = 0; i < lastIndex; i++) {
-      if (AGENT_CONFIG_SEGMENTS.has(segments[i])) return true;
+      if (AGENT_CONFIG_SEGMENTS.has(segments[i]?.toLowerCase() ?? '')) return true;
     }
     const base = segments[lastIndex] ?? '';
     return AGENT_CONFIG_BASENAME_RE.test(base);

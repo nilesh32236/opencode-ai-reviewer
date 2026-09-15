@@ -4,8 +4,14 @@ import * as path from 'path';
 import * as core from '@actions/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig, mergeConfigWithInputs, resolveConfig, validateConfig } from '../src/config.js';
+import { resolveExcludeAgentConfigs } from '../src/config.js';
 import { DEFAULT_CONFIG } from '../src/types/index.js';
-import { AgentConfigSchema, CostTrackingConfigSchema } from '../src/types/schemas.js';
+import {
+  AgentConfigSchema,
+  CostTrackingConfigSchema,
+  PromptConfigSchema,
+  ReviewConfigSchema,
+} from '../src/types/schemas.js';
 
 vi.mock('@actions/core', () => {
   const warning = vi.fn();
@@ -1703,6 +1709,71 @@ review:
       } as never);
       expect(result.describe?.useMarkers).toBe(false);
       expect(result.describe?.publishAsComment).toBe(true);
+    });
+  });
+
+  describe('excludeAgentConfigs', () => {
+    it('resolves the canonical camelCase key', () => {
+      expect(resolveExcludeAgentConfigs({ excludeAgentConfigs: false })).toBe(false);
+      expect(resolveExcludeAgentConfigs({ excludeAgentConfigs: true })).toBe(true);
+    });
+
+    it('falls back to the deprecated snake_case alias', () => {
+      expect(resolveExcludeAgentConfigs({ exclude_agent_configs: false })).toBe(false);
+      expect(resolveExcludeAgentConfigs({ exclude_agent_configs: true })).toBe(true);
+    });
+
+    it('prefers camelCase when both spellings are set', () => {
+      expect(
+        resolveExcludeAgentConfigs({ excludeAgentConfigs: false, exclude_agent_configs: true }),
+      ).toBe(false);
+      expect(
+        resolveExcludeAgentConfigs({ excludeAgentConfigs: true, exclude_agent_configs: false }),
+      ).toBe(true);
+    });
+
+    it('returns undefined when unset and ignores non-boolean values', () => {
+      expect(resolveExcludeAgentConfigs({})).toBeUndefined();
+      expect(resolveExcludeAgentConfigs(undefined)).toBeUndefined();
+      expect(resolveExcludeAgentConfigs(null)).toBeUndefined();
+      expect(
+        resolveExcludeAgentConfigs({ excludeAgentConfigs: 'yes', exclude_agent_configs: 1 }),
+      ).toBeUndefined();
+    });
+
+    it('validateConfig keeps both spellings in sync (canonical wins)', () => {
+      const camel = validateConfig({ review: { excludeAgentConfigs: false } });
+      expect(camel.review?.excludeAgentConfigs).toBe(false);
+      expect(camel.review?.exclude_agent_configs).toBe(false);
+      const snake = validateConfig({ review: { exclude_agent_configs: false } });
+      expect(snake.review?.excludeAgentConfigs).toBe(false);
+      expect(snake.review?.exclude_agent_configs).toBe(false);
+      const unset = validateConfig({ review: {} });
+      expect(unset.review?.excludeAgentConfigs).toBeUndefined();
+      expect(unset.review?.exclude_agent_configs).toBeUndefined();
+    });
+
+    it('ReviewConfigSchema accepts both spellings without defaults', () => {
+      expect(ReviewConfigSchema.parse({}).excludeAgentConfigs).toBeUndefined();
+      expect(ReviewConfigSchema.parse({ excludeAgentConfigs: false }).excludeAgentConfigs).toBe(
+        false,
+      );
+      expect(ReviewConfigSchema.parse({ exclude_agent_configs: false }).exclude_agent_configs).toBe(
+        false,
+      );
+    });
+
+    it('PromptConfigSchema preserves the flag so YAML opt-out reaches validateConfig', () => {
+      const camel = PromptConfigSchema.parse({ review: { excludeAgentConfigs: false } });
+      expect(camel.review?.excludeAgentConfigs).toBe(false);
+      const snake = PromptConfigSchema.parse({ review: { exclude_agent_configs: false } });
+      expect(snake.review?.exclude_agent_configs).toBe(false);
+      const validated = validateConfig(camel);
+      expect(validated.review?.excludeAgentConfigs).toBe(false);
+    });
+
+    it('DEFAULT_CONFIG enables agent-config exclusion by default', () => {
+      expect(DEFAULT_CONFIG.review.excludeAgentConfigs).toBe(true);
     });
   });
 });
