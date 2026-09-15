@@ -12,6 +12,7 @@ import type {
 } from '@opencode-pr-agent/lib';
 import { handleConversation } from '../handlers/conversation.js';
 import { isBotLogin } from '../utils/bot.js';
+import { satisfiesPrivilegeGate } from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import {
   type RepoFilter,
@@ -91,6 +92,15 @@ export function createConversationSubscriber(
           logger.info(
             `Skipping conversation for ${event.repo}#${prNumber} — repository filtered out`,
           );
+          return;
+        }
+
+        // `/ask` is an LLM-costly command reachable by any commenter without an
+        // @mention, so it gets the same privileged-author gate as the other
+        // slash commands. Plain @mention conversations stay ungated (they are
+        // the interactive Q&A surface, not a slash command).
+        if (isAsk && !satisfiesPrivilegeGate(event.payload)) {
+          logger.info(`Skipping /ask for ${event.repo}#${prNumber} — unprivileged author`);
           return;
         }
 

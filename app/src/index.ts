@@ -11,7 +11,7 @@ import { createHealthRouter } from './health.js';
 import { registerSubscribers } from './subscribers/index.js';
 import { isBotUser } from './utils/bot.js';
 import { buildConfig } from './utils/config.js';
-import { isRepoAllowed, logRepoFilter, repoFilter } from './utils/repo-filter.js';
+import { type RepoFilter, isRepoAllowed, logRepoFilter, repoFilter } from './utils/repo-filter.js';
 
 const logger = new Logger('App');
 
@@ -21,22 +21,37 @@ const logger = new Logger('App');
  * instead of each re-implementing bot/rate-limit/repo checks inconsistently.
  * Per-subscriber rate-limit and privilege checks still run inside subscribers.
  * @param payload - Raw webhook payload.
+ * @param filter - Optional repo allowlist/denylist override (defaults to the
+ * shared process-wide filter). Injectable so tests and runtime config changes
+ * do not see a stale import-time singleton.
  * @returns True when the event should be routed.
  *
  * Exported for unit testing.
  */
-export function isEventAllowed(payload: unknown): boolean {
+export function isEventAllowed(payload: unknown, filter: RepoFilter = repoFilter): boolean {
   if (typeof payload !== 'object' || payload === null) return false;
   const p = payload as Record<string, unknown>;
-  // Bot filter: never spend budget on bot-authored events.
-  const sender = p.sender as { type?: string; login?: string } | undefined;
-  const comment = p.comment as { user?: { type?: string; login?: string } } | undefined;
-  if (isBotUser(sender) || isBotUser(comment?.user)) return false;
+  // Bot filter: never spend budget on bot-authored events. Webhook actors can
+  // arrive under several shapes depending on the event, so check them all.
+  type MaybeUser = { type?: string; login?: string } | undefined;
+  const sender = p.sender as MaybeUser;
+  const comment = p.comment as { user?: MaybeUser } | undefined;
+  const issue = p.issue as { user?: MaybeUser } | undefined;
+  const pullRequest = p.pull_request as { user?: MaybeUser } | undefined;
+  const review = p.review as { user?: MaybeUser } | undefined;
+  if (
+    isBotUser(sender) ||
+    isBotUser(comment?.user) ||
+    isBotUser(issue?.user) ||
+    isBotUser(pullRequest?.user) ||
+    isBotUser(review?.user)
+  )
+    return false;
   // Repo allowlist/denylist gate: a denied repo never reaches subscribers.
   // When the payload carries no repository (e.g. synthetic events), let it
   // through so subscribers can decide based on event.repo.
   const repo = (p.repository as { full_name?: string } | undefined)?.full_name;
-  if (typeof repo === 'string' && repo.length > 0 && !isRepoAllowed(repo, repoFilter)) {
+  if (typeof repo === 'string' && repo.length > 0 && !isRepoAllowed(repo, filter)) {
     return false;
   }
   return true;

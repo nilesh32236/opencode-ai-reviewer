@@ -2,8 +2,10 @@ import type { EventBus, GitHubEvent } from '@opencode-pr-agent/lib';
 import { DEFAULT_CONFIG, EventBus as RealEventBus } from '@opencode-pr-agent/lib';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleCommand } from '../../src/handlers/commands.js';
+import { handleConversation } from '../../src/handlers/conversation.js';
 import { handlePRReview } from '../../src/handlers/pr-review.js';
 import { handleReply } from '../../src/handlers/reply.js';
+import { createConversationSubscriber } from '../../src/subscribers/conversation.js';
 import { createDescribeSubscriber } from '../../src/subscribers/describe.js';
 import { createDiscoverSubscriber } from '../../src/subscribers/discover.js';
 import { createDocsSubscriber } from '../../src/subscribers/docs.js';
@@ -25,6 +27,10 @@ vi.mock('../../src/handlers/reply.js', () => ({
   handleReply: vi.fn(),
 }));
 
+vi.mock('../../src/handlers/conversation.js', () => ({
+  handleConversation: vi.fn(),
+}));
+
 const { mockPostOrUpdateComment } = vi.hoisted(() => ({
   mockPostOrUpdateComment: vi.fn().mockResolvedValue(undefined),
 }));
@@ -42,6 +48,7 @@ vi.mock('@opencode-pr-agent/lib', async (importOriginal) => {
 });
 
 const mockedHandleCommand = vi.mocked(handleCommand);
+const mockedHandleConversation = vi.mocked(handleConversation);
 const mockedHandlePRReview = vi.mocked(handlePRReview);
 const mockedHandleReply = vi.mocked(handleReply);
 
@@ -84,6 +91,26 @@ function makeReplyEvent(): GitHubEvent {
   };
 }
 
+function makeAskEvent(body: string, authorAssociation?: string): GitHubEvent {
+  return {
+    type: 'comment.created',
+    category: 'comment',
+    timestamp: Date.now(),
+    repo: 'owner/repo',
+    prNumber: 42,
+    correlationId: 'test-corr-id',
+    payload: {
+      comment: {
+        id: 999,
+        body,
+        author_association: authorAssociation,
+        user: { type: 'User', login: 'octocat' },
+      },
+      issue: { number: 42 },
+    },
+  };
+}
+
 describe('privilege deny-path gates', () => {
   beforeEach(() => {
     process.env.GITHUB_TOKEN = 'test-token';
@@ -93,6 +120,8 @@ describe('privilege deny-path gates', () => {
     mockedHandlePRReview.mockResolvedValue(null);
     mockedHandleReply.mockReset();
     mockedHandleReply.mockResolvedValue(undefined);
+    mockedHandleConversation.mockReset();
+    mockedHandleConversation.mockResolvedValue(undefined);
     mockPostOrUpdateComment.mockReset();
     mockPostOrUpdateComment.mockResolvedValue(undefined);
   });
@@ -164,6 +193,34 @@ describe('privilege deny-path gates', () => {
       '<!-- permission-denied:docs -->',
       expect.stringContaining('/docs'),
     );
+  });
+
+  it('unprivileged /ask skips handleConversation', async () => {
+    const sub = createConversationSubscriber({} as never, null as never, {
+      ...DEFAULT_CONFIG,
+      conversation: {
+        ...DEFAULT_CONFIG.conversation,
+        enabled: true,
+        askCommandEnabled: true,
+        mentionHandle: 'bot',
+      },
+    });
+    await sub.handle(makeAskEvent('/ask why is this null?', 'NONE'));
+    expect(mockedHandleConversation).not.toHaveBeenCalled();
+  });
+
+  it('privileged /ask proceeds to handleConversation', async () => {
+    const sub = createConversationSubscriber({} as never, null as never, {
+      ...DEFAULT_CONFIG,
+      conversation: {
+        ...DEFAULT_CONFIG.conversation,
+        enabled: true,
+        askCommandEnabled: true,
+        mentionHandle: 'bot',
+      },
+    });
+    await sub.handle(makeAskEvent('/ask why is this null?', 'OWNER'));
+    expect(mockedHandleConversation).toHaveBeenCalledTimes(1);
   });
 });
 

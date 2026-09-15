@@ -1,7 +1,7 @@
 import type { AgentConfig, LearningStore, ReviewResult } from '@opencode-pr-agent/lib';
 import { DEFAULT_CONFIG } from '@opencode-pr-agent/lib';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { truncateToUtf8Bytes } from '../../src/handlers/pr-review.js';
+import { MAX_STREAMED_INLINE_COMMENTS, truncateToUtf8Bytes } from '../../src/handlers/pr-review.js';
 
 const {
   mockGetMR,
@@ -316,6 +316,108 @@ describe('handlePRReview check run reporting', () => {
         ]),
       }),
     );
+  });
+
+  it('caps streamed inline comments and keeps the overflow in the final body', async () => {
+    const total = MAX_STREAMED_INLINE_COMMENTS + 3;
+    const issues = Array.from({ length: total }, (_, i) => ({
+      type: 'issue',
+      severity: 'important',
+      file: `src/file-${i}.ts`,
+      line: i + 1,
+      message: `Finding ${i}`,
+      inline: true,
+    }));
+    const streamedResult: ReviewResult = {
+      ...cleanReview(),
+      issues,
+      stats: { total, critical: 0, important: total, minor: 0 },
+    };
+    mockReviewPR.mockImplementation(
+      async (
+        _pr: unknown,
+        _it?: unknown,
+        _pf?: unknown,
+        _pe?: unknown,
+        _tm?: unknown,
+        _pf2?: unknown,
+        _wd?: unknown,
+        _phs?: unknown,
+        _pbc?: unknown,
+        onBatchComplete?: (
+          batchIndex: number,
+          totalBatches: number,
+          batchResult: ReviewResult,
+        ) => Promise<void>,
+      ) => {
+        if (onBatchComplete) await onBatchComplete(0, 1, streamedResult);
+        return streamedResult;
+      },
+    );
+    mockPostInlineComment.mockResolvedValue({ commentId: 9000 });
+    const config = makeConfig({
+      review: { ...DEFAULT_CONFIG.review, failOnSeverity: 'critical', streamComments: true },
+    } as AgentConfig);
+
+    await handlePRReview(42, 'owner/repo', 'token', config);
+
+    // Write fan-out is bounded; the overflow stays in the final review body.
+    expect(mockPostInlineComment).toHaveBeenCalledTimes(MAX_STREAMED_INLINE_COMMENTS);
+    expect(mockPostReview).toHaveBeenCalled();
+    const postReviewCall = mockPostReview.mock.calls.at(-1);
+    const finalIssues = (postReviewCall?.[2] as { issues: { message: string }[] }).issues;
+    expect(finalIssues).toHaveLength(total - MAX_STREAMED_INLINE_COMMENTS);
+  });
+
+  it('stops fanning out after the cap even when streamed posts keep failing', async () => {
+    const total = MAX_STREAMED_INLINE_COMMENTS + 2;
+    const issues = Array.from({ length: total }, (_, i) => ({
+      type: 'issue',
+      severity: 'important',
+      file: `src/flaky-${i}.ts`,
+      line: i + 1,
+      message: `Flaky finding ${i}`,
+      inline: true,
+    }));
+    const streamedResult: ReviewResult = {
+      ...cleanReview(),
+      issues,
+      stats: { total, critical: 0, important: total, minor: 0 },
+    };
+    mockReviewPR.mockImplementation(
+      async (
+        _pr: unknown,
+        _it?: unknown,
+        _pf?: unknown,
+        _pe?: unknown,
+        _tm?: unknown,
+        _pf2?: unknown,
+        _wd?: unknown,
+        _phs?: unknown,
+        _pbc?: unknown,
+        onBatchComplete?: (
+          batchIndex: number,
+          totalBatches: number,
+          batchResult: ReviewResult,
+        ) => Promise<void>,
+      ) => {
+        if (onBatchComplete) await onBatchComplete(0, 1, streamedResult);
+        return streamedResult;
+      },
+    );
+    // Every streamed post fails: attempts (not successes) must bound fan-out,
+    // and all findings fall back to the final review body.
+    mockPostInlineComment.mockResolvedValue(null);
+    const config = makeConfig({
+      review: { ...DEFAULT_CONFIG.review, failOnSeverity: 'critical', streamComments: true },
+    } as AgentConfig);
+
+    await handlePRReview(42, 'owner/repo', 'token', config);
+
+    expect(mockPostInlineComment).toHaveBeenCalledTimes(MAX_STREAMED_INLINE_COMMENTS);
+    const postReviewCall = mockPostReview.mock.calls.at(-1);
+    const finalIssues = (postReviewCall?.[2] as { issues: { message: string }[] }).issues;
+    expect(finalIssues).toHaveLength(total);
   });
 
   it('records the streamed inline comment ID against the finding in the learning store', async () => {

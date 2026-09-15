@@ -28,4 +28,17 @@ describe('isValidRepoSlug', () => {
     expect(isValidRepoSlug('owner/re%po')).toBe(false);
     expect(isValidRepoSlug('owner/re\npo')).toBe(false);
   });
+
+  it('accepts GitLab nested-group paths', () => {
+    expect(isValidRepoSlug('group/subgroup/repo')).toBe(true);
+    expect(isValidRepoSlug('group/sub/nested/repo')).toBe(true);
+  });
+
+  it('rejects single-dot and empty segments', () => {
+    expect(isValidRepoSlug('owner/.')).toBe(false);
+    expect(isValidRepoSlug('./foo')).toBe(false);
+    expect(isValidRepoSlug('owner//repo')).toBe(false);
+    expect(isValidRepoSlug('owner/repo/')).toBe(false);
+    expect(isValidRepoSlug('/owner/repo')).toBe(false);
+  });
 });

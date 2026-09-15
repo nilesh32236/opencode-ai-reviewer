@@ -111,4 +111,94 @@ describe('createHealthRouter', () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('ok');
   });
+
+  it('GET /api/v1/health mirrors /health', async () => {
+    const store = {
+      ping: vi.fn(async () => ({ ok: true, responseMs: 5 })),
+    } as unknown as LearningStore;
+    const app = makeApp(store, () => ({
+      initialized: true,
+      connectedServers: 1,
+      totalServers: 1,
+    }));
+
+    const res = await request(app).get('/api/v1/health');
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('ok');
+  });
+
+  it('GET /api/v1/ready mirrors /ready', async () => {
+    const store = {
+      ping: vi.fn(async () => ({ ok: true, responseMs: 5 })),
+    } as unknown as LearningStore;
+    const app = makeApp(store, () => ({
+      initialized: false,
+      connectedServers: 0,
+      totalServers: 2,
+    }));
+
+    const res = await request(app).get('/api/v1/ready');
+
+    expect(res.status).toBe(503);
+    expect(res.body.status).toBe('degraded');
+  });
+
+  it('sends Cache-Control: no-store on probes', async () => {
+    const store = {
+      ping: vi.fn(async () => ({ ok: true, responseMs: 5 })),
+    } as unknown as LearningStore;
+    const app = makeApp(store);
+
+    const res = await request(app).get('/health');
+
+    expect(res.headers['cache-control']).toBe('no-store');
+  });
+
+  it('returns 429 with Retry-After and the error shape when throttled', async () => {
+    const store = {
+      ping: vi.fn(async () => ({ ok: true, responseMs: 5 })),
+    } as unknown as LearningStore;
+    const app = makeApp(store, () => ({
+      initialized: true,
+      connectedServers: 1,
+      totalServers: 1,
+    }));
+
+    let res = await request(app).get('/health');
+    expect(res.status).toBe(200);
+    // PROBE_RATE_MAX is 300 per IP per window; exceed it from the same client.
+    for (let i = 0; i < 300; i++) {
+      res = await request(app).get('/health');
+    }
+
+    expect(res.status).toBe(429);
+    expect(res.headers['retry-after']).toBe('60');
+    expect(res.body).toEqual({ status: 'error', components: [] });
+  });
+
+  it('error middleware returns the 503 error shape with no-store', async () => {
+    const store = {
+      ping: vi.fn(async () => ({ ok: true, responseMs: 5 })),
+    } as unknown as LearningStore;
+    const router = createHealthRouter(store);
+    // Reach the centralized error-handling layer (4-arg middleware) and mount
+    // it behind a route that forwards a failure, exercising the 503 path.
+    const stack = router.stack as unknown as Array<{
+      handle: (...args: unknown[]) => void;
+    }>;
+    const errorLayer = stack.find((l) => l.handle.length === 4);
+    expect(errorLayer).toBeDefined();
+    const probeApp = express();
+    probeApp.get('/boom', (_req, _res, next) => {
+      next(new Error('boom'));
+    });
+    probeApp.use(errorLayer?.handle as unknown as express.ErrorRequestHandler);
+
+    const res = await request(probeApp).get('/boom');
+
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({ status: 'error', components: [] });
+    expect(res.headers['cache-control']).toBe('no-store');
+  });
 });
