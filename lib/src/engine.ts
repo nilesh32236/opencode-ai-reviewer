@@ -295,7 +295,7 @@ export class ReviewEngine {
           return;
         }
         enforcementError = new Error(
-          `Node runtime ${result.current} is below the enforced minimum ${result.floor} ` +
+          `Node runtime ${result.current} could not be verified against the enforced minimum ${result.floor} ` +
             `(unparseable version, toolchain.enforceNodeFloor=true). Upgrade to Node >= ${result.floor} ` +
             `(see https://nodejs.org/en/blog/release/v${result.floor}).`,
         );
