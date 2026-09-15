@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import * as core from '@actions/core';
 import type { ReviewResult } from '../src/types/index.js';
-import { normalizeVerdictMode, resolveReviewEvent } from '../src/utils/github.js';
+import { GitHubHelper, normalizeVerdictMode, resolveReviewEvent } from '../src/utils/github.js';
 
 vi.mock('@actions/core', () => {
   const warning = vi.fn();
@@ -8,6 +9,11 @@ vi.mock('@actions/core', () => {
   const debug = vi.fn();
   return { warning, info, debug };
 });
+
+vi.mock('../src/utils/retry.js', () => ({
+  withRetry: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withRetryAndTimeout: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+}));
 
 function makeResult(overrides: Partial<ReviewResult> = {}): ReviewResult {
   return {
@@ -89,5 +95,148 @@ describe('resolveReviewEvent()', () => {
     });
     expect(resolveReviewEvent(critical, 'request-changes')).toBe('REQUEST_CHANGES');
     expect(resolveReviewEvent(makeResult(), 'request-changes')).toBe('COMMENT');
+  });
+});
+
+describe('verdictMode transport (postReview event propagation)', () => {
+  let helper: GitHubHelper;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  function mockOk(body: unknown = { id: 1 }) {
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      json: vi.fn().mockResolvedValue(body),
+      text: vi.fn().mockResolvedValue(JSON.stringify(body)),
+    } as unknown as Response;
+  }
+
+  function httpError(status: number, message: string): Error & { status: number } {
+    const err = new Error(message) as Error & { status: number };
+    err.status = status;
+    return err;
+  }
+
+  function reviewBodies(): Array<Record<string, unknown>> {
+    return fetchMock.mock.calls
+      .filter(([url]: [string]) => url.includes('/pulls/42/reviews'))
+      .map(([, options]) => JSON.parse((options as RequestInit).body as string));
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    helper = new GitHubHelper('test-token', 'owner/repo');
+  });
+
+  it('posts APPROVE for a clean ready verdict in approve mode', async () => {
+    fetchMock.mockImplementation(async () => mockOk({ id: 11 }));
+    const result = await helper.postReview(42, 'sha123', makeResult(), false, undefined, {
+      verdictMode: 'approve',
+    });
+    expect(result.success).toBe(true);
+    const bodies = reviewBodies();
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]['event']).toBe('APPROVE');
+  });
+
+  it('posts REQUEST_CHANGES for criticals in request-changes mode', async () => {
+    fetchMock.mockImplementation(async () => mockOk({ id: 12 }));
+    const critical = makeResult({
+      verdict: { ready: false, reasoning: 'Has issues.', autoFixable: false, confidence: 'high' },
+      stats: { total: 1, critical: 2, important: 0, minor: 0 },
+    });
+    const result = await helper.postReview(42, 'sha123', critical, false, undefined, {
+      verdictMode: 'request-changes',
+    });
+    expect(result.success).toBe(true);
+    const bodies = reviewBodies();
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]['event']).toBe('REQUEST_CHANGES');
+  });
+
+  it('retries a rejected APPROVE as summary-only COMMENT with a warning suffix', async () => {
+    fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+      if (url.includes('/pulls/42/reviews')) {
+        const body = JSON.parse((options as RequestInit).body as string);
+        if (body.event === 'APPROVE') {
+          throw httpError(403, 'GitHub API 403 on /pulls/42/reviews: Forbidden');
+        }
+        return mockOk({ id: 13 });
+      }
+      return mockOk({});
+    });
+    const result = await helper.postReview(42, 'sha123', makeResult(), false, undefined, {
+      verdictMode: 'approve',
+    });
+    expect(result.success).toBe(true);
+    const bodies = reviewBodies();
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]['event']).toBe('APPROVE');
+    expect(bodies[1]['event']).toBe('COMMENT');
+    expect(bodies[1]['body'] as string).toContain('was not permitted; posted as a comment instead');
+    expect(bodies[1]).not.toHaveProperty('comments');
+    expect(vi.mocked(core.warning)).toHaveBeenCalled();
+  });
+
+  it('preserves the REQUEST_CHANGES gate when the reviews-array batch fails', async () => {
+    const diffText = `@@ -42,1 +42,1 @@`;
+    const criticalInline: ReviewResult = {
+      ...makeResult({
+        verdict: { ready: false, reasoning: 'Has issues.', autoFixable: false, confidence: 'high' },
+        stats: { total: 1, critical: 1, important: 0, minor: 0 },
+      }),
+      issues: [
+        {
+          type: 'issue',
+          severity: 'critical',
+          file: 'src/b.ts',
+          line: 42,
+          message: 'Bug.',
+          suggestion: 'Fix it.',
+          inline: true,
+        },
+      ],
+    };
+    fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+      if (
+        url.includes('/pulls/42') &&
+        !url.includes('/reviews') &&
+        !url.includes('/comments') &&
+        !url.includes('/files')
+      ) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          json: vi.fn().mockResolvedValue({}),
+          text: vi.fn().mockResolvedValue(diffText),
+        } as unknown as Response;
+      }
+      if (url.includes('/pulls/42/reviews')) {
+        const body = JSON.parse((options as RequestInit).body as string);
+        if (body.comments !== undefined) {
+          throw httpError(422, 'GitHub API 422 on /pulls/42/reviews: Unprocessable');
+        }
+        return mockOk({ id: 14 });
+      }
+      return mockOk({});
+    });
+    const result = await helper.postReview(42, 'sha123', criticalInline, true, undefined, {
+      enableReviewsArrayInline: true,
+      verdictMode: 'request-changes',
+    });
+    expect(result.success).toBe(true);
+    expect(result.method).toBe('body-only');
+    const bodies = reviewBodies();
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]['event']).toBe('REQUEST_CHANGES');
+    expect(bodies[0]).toHaveProperty('comments');
+    // Summary-only retry preserves the gate (createReview falls back to
+    // COMMENT itself only on 403/422 permission rejections).
+    expect(bodies[1]['event']).toBe('REQUEST_CHANGES');
+    expect(bodies[1]).not.toHaveProperty('comments');
   });
 });

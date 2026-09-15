@@ -394,6 +394,31 @@ multiAgent:
       expect(result.review?.enableReviewsArrayInline).toBeUndefined();
     });
 
+    it('passes through valid review.verdictMode values normalized', () => {
+      expect(
+        validateConfig({ review: { verdictMode: 'approve' } } as never).review?.verdictMode,
+      ).toBe('approve');
+      expect(
+        validateConfig({ review: { verdictMode: ' Approve ' } } as never).review?.verdictMode,
+      ).toBe('approve');
+      expect(
+        validateConfig({ review: { verdictMode: 'REQUEST-CHANGES' } } as never).review
+          ?.verdictMode,
+      ).toBe('request-changes');
+    });
+
+    it('falls back to comment with a warning for invalid review.verdictMode', () => {
+      vi.mocked(core.warning).mockClear();
+      const result = validateConfig({ review: { verdictMode: 'bogus' } } as never);
+      expect(result.review?.verdictMode).toBe('comment');
+      expect(vi.mocked(core.warning)).toHaveBeenCalled();
+    });
+
+    it('leaves review.verdictMode undefined when absent', () => {
+      const result = validateConfig({ review: {} } as never);
+      expect(result.review?.verdictMode).toBeUndefined();
+    });
+
     it('passes through review.suppressLowConfidence', () => {
       const result = validateConfig({
         review: { suppressLowConfidence: true },

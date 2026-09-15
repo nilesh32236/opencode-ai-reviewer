@@ -11,6 +11,7 @@ import type {
   ReviewIssue,
   ReviewResult,
   ReviewStrength,
+  VerdictMode,
 } from '../types/index.js';
 import { CircuitBreaker, countHttpError } from './circuit-breaker.js';
 import { getErrorStatus } from './errors.js';
@@ -66,7 +67,7 @@ function toFingerprintSet(value: Set<string> | string[] | undefined): Set<string
 }
 
 /** Opt-in review gating mode mapped to the Pulls `createReview` event. */
-export type VerdictMode = 'comment' | 'approve' | 'request-changes';
+export type { VerdictMode } from '../types/index.js';
 
 /** Review event sent on `POST /pulls/{n}/reviews`. */
 export type ReviewEvent = 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES';
@@ -1040,33 +1041,6 @@ export class GitHubHelper implements PlatformAdapter {
   }
 
   /**
-   * Post a review on a pull request with optional inline comments.
-   * Posts the body first, then each inline comment individually so that
-   * a single out-of-diff comment does not fail the entire review.
-   * Inline comments rejected with 422 are gracefully downgraded to
-   * general issue comments with a file:line reference.
-   *
-   * When `options.enableReviewsArrayInline` is true (opt-in, default false),
-   * mappable findings are bundled into a single `POST /pulls/{n}/reviews`
-   * with a `comments[]` reviews-array instead of N per-comment requests.
-   * On 422/403/429 the batched request is retried once as a summary-only
-   * review preserving all findings. When the flag is absent or false, the
-   * legacy behavior below runs unchanged.
-   *
-   * @param prNumber - PR number.
-   * @param commitSha - SHA of the commit to attach the review to.
-   * @param result - Review result with issues and summary.
-   * @param postInlineComments - Whether to attempt inline comments (default: true).
-   * @param suppressLowConfidence - Whether to suppress low-confidence findings (default: false).
-   * @param options - Optional display flags (e.g. deterministic function scores).
-   * @param signal - Optional AbortSignal to cancel the review post.
-   * @returns Object indicating success and which posting method was used.
-   * @since NEXT `options.enableReviewsArrayInline` guards the reviews-array path.
-   * @since NEXT `options.verdictMode` maps the verdict to the `createReview`
-   * event (`comment` default, `approve`, `request-changes`) with fail-open
-   * fallback to `COMMENT` on 403/422.
-   */
-  /**
    * Single `POST /pulls/{n}/reviews` with fail-open permission fallback.
    *
    * Posts with the given event; when the API rejects a gated `APPROVE` or
@@ -1113,6 +1087,9 @@ export class GitHubHelper implements PlatformAdapter {
         core.warning(
           `Review event ${event} rejected (status ${status}), retrying as COMMENT: ${err}`,
         );
+        // Summary-only retry: drop the comments[] array so a
+        // position-validation 422 (stale/out-of-range line) cannot fail a
+        // second time; permission rejections still fall back to COMMENT.
         return this.api<T & { comments?: Array<{ id: number; path: string; line?: number }> }>(
           `/pulls/${prNumber}/reviews`,
           {
@@ -1122,7 +1099,6 @@ export class GitHubHelper implements PlatformAdapter {
               commit_id: commitSha,
               event: 'COMMENT',
               body: `${body}\n\n> ⚠️ Requested review event ${event} was not permitted; posted as a comment instead.`,
-              ...(comments !== undefined ? { comments } : {}),
             }),
           },
           undefined,
@@ -1133,6 +1109,33 @@ export class GitHubHelper implements PlatformAdapter {
     }
   }
 
+  /**
+   * Post a review on a pull request with optional inline comments.
+   * Posts the body first, then each inline comment individually so that
+   * a single out-of-diff comment does not fail the entire review.
+   * Inline comments rejected with 422 are gracefully downgraded to
+   * general issue comments with a file:line reference.
+   *
+   * When `options.enableReviewsArrayInline` is true (opt-in, default false),
+   * mappable findings are bundled into a single `POST /pulls/{n}/reviews`
+   * with a `comments[]` reviews-array instead of N per-comment requests.
+   * On 422/403/429 the batched request is retried once as a summary-only
+   * review preserving all findings. When the flag is absent or false, the
+   * legacy behavior below runs unchanged.
+   *
+   * @param prNumber - PR number.
+   * @param commitSha - SHA of the commit to attach the review to.
+   * @param result - Review result with issues and summary.
+   * @param postInlineComments - Whether to attempt inline comments (default: true).
+   * @param suppressLowConfidence - Whether to suppress low-confidence findings (default: false).
+   * @param options - Optional display flags (e.g. deterministic function scores).
+   * @param signal - Optional AbortSignal to cancel the review post.
+   * @returns Object indicating success and which posting method was used.
+   * @since NEXT `options.enableReviewsArrayInline` guards the reviews-array path.
+   * @since NEXT `options.verdictMode` maps the verdict to the `createReview`
+   * event (`comment` default, `approve`, `request-changes`) with fail-open
+   * fallback to `COMMENT` on 403/422.
+   */
   async postReview(
     prNumber: number,
     commitSha: string,
@@ -1332,7 +1335,7 @@ export class GitHubHelper implements PlatformAdapter {
    * Opt-in reviews-array path for {@link postReview}.
    *
    * Bundles diff-validated findings into a single `POST /pulls/{n}/reviews`
-   * with `event: COMMENT` and a `comments[]` array (path, line, side, body).
+   * with the resolved gating event and a `comments[]` array (path, line, side, body).
    * Unmappable findings stay in the summary body by design. On 422 (stale or
    * out-of-range position), 403, or 429 the batch is retried once as a
    * summary-only review built from the full result so no finding is lost.
@@ -1395,18 +1398,15 @@ export class GitHubHelper implements PlatformAdapter {
 
     const postSummaryOnly = async (event: ReviewEvent): Promise<ReviewPostResult> => {
       try {
-        // Fail-open summary-only retry always posts COMMENT: the gated event
-        // was already rejected (or the batch unmappable), so never retry the
-        // gate here. The no-inline primary path below passes the resolved
-        // event instead via createReview (which itself falls back to COMMENT
-        // on 403/422).
-        const reviewResponse = await this.api<{ id: number }>(
-          `/pulls/${prNumber}/reviews`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ commit_id: commitSha, event, body: fullBody }),
-          },
+        // Preserve the gated event via createReview so a REQUEST_CHANGES
+        // block survives position-422 batch failures; createReview itself
+        // falls back to COMMENT (summary-only) on 403/422 permission
+        // rejections.
+        const reviewResponse = await this.createReview<{ id: number }>(
+          prNumber,
+          commitSha,
+          fullBody,
+          event,
           undefined,
           signal,
         );
@@ -1470,7 +1470,7 @@ export class GitHubHelper implements PlatformAdapter {
       core.warning(
         `Reviews-array post failed${status !== undefined ? ` (status ${status})` : ''}, retrying summary-only: ${err}`,
       );
-      return postSummaryOnly('COMMENT');
+      return postSummaryOnly(reviewEvent);
     }
   }
 

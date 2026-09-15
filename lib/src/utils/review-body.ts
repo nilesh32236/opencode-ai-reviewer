@@ -1,4 +1,4 @@
-import type { ReviewIssue, ReviewResult, Severity, TokenUsage } from '../types/index.js';
+import type { ReviewIssue, ReviewResult, Severity, TokenUsage, VerdictMode } from '../types/index.js';
 import { buildFixPayload, formatFixPayloadMarkdown } from './fix-payload.js';
 import {
   type FunctionScore,
@@ -27,7 +27,7 @@ export interface ReviewBodyOptions {
    * body render is unchanged; `GitHubHelper.postReview()` resolves the event.
    * @since NEXT
    */
-  verdictMode?: 'comment' | 'approve' | 'request-changes';
+  verdictMode?: VerdictMode;
   /**
    * Skip inline findings whose fingerprint already appears in previously
    * posted bot threads. Default true (absent = enabled). Set false to post

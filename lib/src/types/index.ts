@@ -10,6 +10,16 @@ export type { ChangelogConfig } from '../changelog/types.js';
 /** Severity levels for review findings. */
 export type Severity = 'critical' | 'important' | 'minor';
 
+// ─── Review gating ──────────────────────────────────────────
+/**
+ * Opt-in review gating mode mapped to the Pulls `createReview` event.
+ * Single source of truth for the `verdictMode` allowlist.
+ * @since NEXT
+ */
+export const VERDICT_MODES = ['comment', 'approve', 'request-changes'] as const;
+/** Opt-in review gating mode mapped to the Pulls `createReview` event. */
+export type VerdictMode = (typeof VERDICT_MODES)[number];
+
 // ─── Review Output (JSONL) ────────────────────────────────
 /** A textual summary of the review. */
 export interface ReviewSummary {
@@ -723,7 +733,7 @@ export interface ReviewConfig {
    * Default 'comment' (legacy behavior unchanged).
    * @since NEXT
    */
-  verdictMode?: 'comment' | 'approve' | 'request-changes';
+  verdictMode?: VerdictMode;
   /**
    * Skip inline findings whose fingerprint already appears in a previously
    * posted bot thread, so re-pushes never re-post identical findings.
@@ -1602,7 +1612,7 @@ export interface PromptConfig {
      * (`comment` default, `approve`, `request-changes`). Default 'comment'.
      * @since NEXT
      */
-    verdictMode?: 'comment' | 'approve' | 'request-changes';
+    verdictMode?: VerdictMode;
     /**
      * Skip inline findings whose fingerprint already appears in a previously
      * posted bot thread, so re-pushes never re-post identical findings.

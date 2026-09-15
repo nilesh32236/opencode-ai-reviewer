@@ -33,6 +33,7 @@ import {
 } from './types/index.js';
 import { PromptConfigSchema } from './types/schemas.js';
 import { DEFAULT_ALLOWLIST } from './utils/command.js';
+import { normalizeVerdictMode } from './utils/github.js';
 import { Logger } from './utils/logger.js';
 import { parseReviewEffort } from './utils/review-effort.js';
 import {
@@ -685,19 +686,8 @@ export function validateConfig(
     if (typeof config.review.enableReviewsArrayInline === 'boolean') {
       result.review.enableReviewsArrayInline = config.review.enableReviewsArrayInline;
     }
-    if (typeof config.review.verdictMode === 'string') {
-      const normalized = config.review.verdictMode.trim().toLowerCase();
-      if (
-        normalized === 'comment' ||
-        normalized === 'approve' ||
-        normalized === 'request-changes'
-      ) {
-        result.review.verdictMode = normalized;
-      } else {
-        core.warning(
-          `Ignoring invalid review.verdictMode "${String(config.review.verdictMode)}". Must be "comment", "approve", or "request-changes"; falling back to "comment".`,
-        );
-      }
+    if (config.review.verdictMode !== undefined) {
+      result.review.verdictMode = normalizeVerdictMode(config.review.verdictMode);
     }
     // Canonical camelCase key wins over the deprecated snake_case alias;
     // absent means "enabled" downstream (fail-open default true).

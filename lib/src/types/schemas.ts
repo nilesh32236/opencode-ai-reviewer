@@ -9,6 +9,7 @@ import {
   DEFAULT_CHANGELOG_CATEGORIES,
   DEFAULT_SCA_LOCK_FILE_PATTERNS,
   DOC_STYLES,
+  VERDICT_MODES,
 } from './index.js';
 
 /** Error message shared by every model-field regex in AgentConfigSchema. */
@@ -265,7 +266,7 @@ export const ReviewConfigSchema = z.object({
   skipActors: z.array(z.string()).default(['github-actions[bot]']),
   inline: z.boolean().default(true),
   enableReviewsArrayInline: z.boolean().optional().default(false),
-  verdictMode: z.enum(['comment', 'approve', 'request-changes']).optional().default('comment'),
+  verdictMode: z.enum(VERDICT_MODES).optional().default('comment'),
   dedupFingerprints: z.boolean().optional().default(true),
   dedup_fingerprints: z.boolean().optional(),
   emitFixPayload: z.boolean().default(false),
