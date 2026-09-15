@@ -155,14 +155,17 @@ export async function runSelfHeal(
     return;
   }
 
-  // Push the branch with retry
+  // Push the branch with retry. exec errors carry no `.status`, so withRetry
+  // sees status 0: retryUnknownStatus must stay true (the default) or the
+  // wrapper never retries transient network failures. Re-pushing the same
+  // commits with --force-with-lease is safe to replay.
   try {
     validateRefName(branchName);
     await withRetry(() => exec.exec('git', ['push', 'origin', branchName, '--force-with-lease']), {
       operationName: 'self-heal.pushBranch',
       maxRetries: 2,
       baseDelayMs: 500,
-      retryUnknownStatus: false,
+      retryUnknownStatus: true,
     });
   } catch (err) {
     core.warning(sanitize(`Git push failed: ${err instanceof Error ? err.message : err}`));

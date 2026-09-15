@@ -109,6 +109,11 @@ export async function runFix(
   // direction), so the maxIterations gate may be bypassed. Fail closed when
   // the cap is hit instead of warning and continuing, so an attacker-inflated
   // comment list cannot buy extra autofix iterations.
+  // Conservative tradeoff: length can never exceed the cap, so a PR with
+  // exactly 1000 legitimate comments false-positives as truncated and aborts
+  // for manual review. There is no hasMore signal to distinguish a full from
+  // a truncated list, and failing closed (one manual review) is preferred
+  // over failing open (unbounded autofix iterations).
   if (comments.length >= COMMENT_PAGES_MAX * COMMENTS_PER_PAGE) {
     core.setFailed(
       sanitize(
@@ -124,6 +129,7 @@ export async function runFix(
     const errorMsg = `Max iterations reached (${config.maxIterations}). Needs manual review.`;
     await gh.setLabels(prNumber, ['autofix:needs-manual-review'], ['autofix', 'autofix:needs-fix']);
     core.setFailed(errorMsg);
+    core.setOutput('changes_made', 'false');
     return;
   }
 
@@ -270,8 +276,8 @@ export async function runFix(
               '-m',
               `fix: verification errors (iteration ${iteration + 1})`,
             ]);
-            validateRefName(pr.headRef);
-            await exec.exec('git', ['push', 'origin', pr.headRef]);
+            validateRefName(freshPr.headRef);
+            await exec.exec('git', ['push', 'origin', freshPr.headRef]);
           } catch (err) {
             // Mirror the main push path: a lost verification push must never
             // report changes_made=true, so fail loudly and return.
@@ -1017,8 +1023,8 @@ export async function runAutofixLoop(
               '-m',
               `fix: verification errors (attempt ${v + 1}) [skip ci]`,
             ]);
-            validateRefName(pr.headRef);
-            await exec.exec('git', ['push', 'origin', pr.headRef]);
+            validateRefName(prAgain.headRef);
+            await exec.exec('git', ['push', 'origin', prAgain.headRef]);
           } catch (err) {
             // Mirror the main push path and runFix retry handling: a lost
             // verification push must never be silently dropped, so fail loudly

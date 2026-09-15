@@ -141,7 +141,12 @@ export async function runDescribe(
       );
     }
 
-    core.setOutput('description', description);
+    // When both requested outputs failed nothing is visible on the PR, so
+    // the `description` step output must not imply success — skip setting it
+    // and leave only the setFailed signal above.
+    if (!(commentFailed && mergeFailed)) {
+      core.setOutput('description', description);
+    }
     core.info(
       `Describe output for PR #${prNumber}: comment ${commentPosted ? 'posted' : 'skipped'}, PR-body merge ${bodyMerged ? 'applied' : useMarkers === true ? 'skipped (unchanged or failed)' : 'skipped (disabled)'}`,
     );

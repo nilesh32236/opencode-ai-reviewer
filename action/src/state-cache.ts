@@ -173,9 +173,12 @@ export class StateCacheManager {
         }
         if (!skip) {
           // Quarantine the corrupt file so LearningStore never opens it;
-          // restore below then fetches fresh state from cache.
+          // restore below then fetches fresh state from cache. Unlink (do not
+          // rename in place): saveCache uploads the whole stateDir, so a
+          // `learning.db.corrupt-*` left inside would be preserved in cache
+          // snapshots and bloat every future save.
           try {
-            fs.renameSync(dbPath, `${dbPath}.corrupt-${Date.now()}`);
+            fs.unlinkSync(dbPath);
           } catch {
             /* ignore quarantine failure — restore proceeds anyway */
           }
