@@ -567,6 +567,7 @@ export class GitLabAdapter implements PlatformAdapter {
   /**
    * Get diff lines.
    * @param mrNumber - mrNumber argument.
+   * @param signal - Optional AbortSignal to cancel the diff fetch.
    * @returns Description.
    */
   async getDiffLines(mrNumber: number, signal?: AbortSignal): Promise<Set<string>> {
@@ -794,6 +795,7 @@ export class GitLabAdapter implements PlatformAdapter {
    * @param postInlineComments
    * @param suppressLowConfidence - suppressLowConfidence argument.
    * @param options - Optional display flags (e.g. deterministic function scores).
+   * @param signal - Optional AbortSignal to cancel the review post.
    * @returns Description.
    */
   async postReview(

@@ -393,6 +393,7 @@ export class GitHubHelper implements PlatformAdapter {
    * @param number - PR number.
    * @param options - Optional error handling (throwOnError accepted for
    * interface symmetry; getPR always throws on files failure).
+   * @param options.throwOnError - Accepted for interface symmetry; always throws on files failure.
    * @param signal - Optional AbortSignal to cancel the underlying requests.
    * @returns PR context including title, body, branches, author, labels, and changed files.
    */
@@ -586,6 +587,7 @@ export class GitHubHelper implements PlatformAdapter {
    *
    * @param prNumber - PR number.
    * @param headSha - Optional head SHA scoping the cache entry.
+   * @param signal - Optional AbortSignal to cancel the diff fetch.
    * @returns Set of "file:line" strings for lines in the diff.
    */
   async getDiffLines(
@@ -881,6 +883,7 @@ export class GitHubHelper implements PlatformAdapter {
    * @param postInlineComments - Whether to attempt inline comments (default: true).
    * @param suppressLowConfidence - Whether to suppress low-confidence findings (default: false).
    * @param options - Optional display flags (e.g. deterministic function scores).
+   * @param signal - Optional AbortSignal to cancel the review post.
    * @returns Object indicating success and which posting method was used.
    * @since NEXT `options.enableReviewsArrayInline` guards the reviews-array path.
    */
@@ -1087,6 +1090,7 @@ export class GitHubHelper implements PlatformAdapter {
    * @param workingResult - Review result after confidence filtering.
    * @param suppressLowConfidence - Passed through to inline mapping.
    * @param options - Display flags (flag itself is read by the caller).
+   * @param signal - Optional AbortSignal to cancel the review post.
    * @returns Review post result (`full` on batch success, `body-only` on fallback).
    * @since NEXT
    */

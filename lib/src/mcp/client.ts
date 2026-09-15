@@ -352,6 +352,12 @@ async function withMcpCallTimeout<T>(
  * default retry policy.
  * @param fn - SDK call factory.
  * @param options - Timeout, signal, and retry tuning.
+ * @param options.timeoutMs - Per-call timeout in milliseconds.
+ * @param options.signal - Optional AbortSignal: aborts the SDK leg.
+ * @param options.maxRetries - Handshake/call attempts before giving up.
+ * @param options.baseDelayMs - Base delay between attempts in milliseconds.
+ * @param options.retryableStatuses - HTTP statuses worth retrying.
+ * @param options.retryUnknownStatus - Whether to retry status-less errors.
  * @returns The SDK result.
  */
 async function withMcpRetry<T>(
@@ -479,6 +485,7 @@ export class MCPManager {
    * continues without MCP enrichment from that server.
    * @param server - Configuration for the remote MCP server to connect to
    * @param headers - HTTP headers applied to both transports via `requestInit`
+   * @param signal - Optional AbortSignal: aborts the handshake and cancels retries mid-flight.
    * @since NEXT
    */
   private async connectRemoteWithFallback(
