@@ -64,7 +64,18 @@ export async function runSelfHeal(
   // Ensure we're on a fix branch
   const runId = process.env.GITHUB_RUN_ID || String(Date.now());
   const branchName = `fix/ci-heal-${runId}`;
-  const defaultBranch = await gh.getDefaultBranch();
+  let defaultBranch: string;
+  try {
+    defaultBranch = await withRetry(() => gh.getDefaultBranch(), {
+      operationName: 'self-heal.getDefaultBranch',
+    });
+  } catch (err) {
+    core.setFailed(
+      sanitize(`Failed to get default branch: ${err instanceof Error ? err.message : String(err)}`),
+    );
+    core.setOutput('changes_made', 'false');
+    return;
+  }
 
   try {
     validateRefName(branchName);
@@ -144,12 +155,17 @@ export async function runSelfHeal(
     return;
   }
 
-  // Push the branch with retry
+  // Push the branch with retry. exec errors carry no `.status`, so withRetry
+  // sees status 0: retryUnknownStatus must stay true (the default) or the
+  // wrapper never retries transient network failures. Re-pushing the same
+  // commits with --force-with-lease is safe to replay.
   try {
     validateRefName(branchName);
     await withRetry(() => exec.exec('git', ['push', 'origin', branchName, '--force-with-lease']), {
-      maxRetries: 3,
-      baseDelayMs: 1000,
+      operationName: 'self-heal.pushBranch',
+      maxRetries: 2,
+      baseDelayMs: 500,
+      retryUnknownStatus: true,
     });
   } catch (err) {
     core.warning(sanitize(`Git push failed: ${err instanceof Error ? err.message : err}`));
@@ -178,7 +194,7 @@ export async function runSelfHeal(
   try {
     const result = await withRetry(
       async () => gh.createPR(prTitle, prBody, branchName, baseBranch),
-      { maxRetries: 3, baseDelayMs: 1000 },
+      { operationName: 'self-heal.createPR', maxRetries: 3, baseDelayMs: 1000 },
     );
     prUrl = result?.url || '';
     prNumber = result?.number;
@@ -235,12 +251,25 @@ export function readConstrainedLogFile(logsFilePath: string): string {
       `CI_FAILURE_LOGS_FILE must point inside GITHUB_WORKSPACE, /tmp, or the working directory: ${logsFilePath}`,
     );
   }
-  const stat = fs.statSync(resolved);
+  // Reject symlinks before following them: statSync/readFileSync follow links,
+  // so a planted symlink inside a safe root could otherwise exfiltrate files
+  // (e.g. .env/credentials) into the LLM prompt and PR body.
+  if (fs.lstatSync(resolved).isSymbolicLink()) {
+    throw new Error(`CI_FAILURE_LOGS_FILE must not be a symlink: ${logsFilePath}`);
+  }
+  const real = fs.realpathSync(resolved);
+  const realContained = safeRoots.some(
+    (root) => real === root || real.startsWith(`${root}${path.sep}`),
+  );
+  if (!realContained) {
+    throw new Error(`CI_FAILURE_LOGS_FILE resolves outside safe roots: ${logsFilePath}`);
+  }
+  const stat = fs.statSync(real);
   if (!stat.isFile()) {
     throw new Error(`CI_FAILURE_LOGS_FILE is not a regular file: ${logsFilePath}`);
   }
   if (stat.size > MAX_CI_LOGS_BYTES) {
-    const fd = fs.openSync(resolved, 'r');
+    const fd = fs.openSync(real, 'r');
     try {
       const buf = Buffer.alloc(MAX_CI_LOGS_BYTES);
       fs.readSync(fd, buf, 0, MAX_CI_LOGS_BYTES, 0);
@@ -249,7 +278,7 @@ export function readConstrainedLogFile(logsFilePath: string): string {
       fs.closeSync(fd);
     }
   }
-  return fs.readFileSync(resolved, 'utf-8');
+  return fs.readFileSync(real, 'utf-8');
 }
 
 /**

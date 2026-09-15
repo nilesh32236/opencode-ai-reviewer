@@ -738,6 +738,8 @@ describe('runOpenCode()', () => {
   });
 
   it('dual-emits subagent permissions in OPENCODE_CONFIG_CONTENT by default, V2-only when disabled', async () => {
+    // Probed CLI is 2.x here (V2-capable): both keys present by default.
+    mockVersionOutput('opencode v2.0.0\n');
     const subagents = {
       'sec-reviewer': {
         description: 'reviewer',
@@ -746,7 +748,7 @@ describe('runOpenCode()', () => {
       },
     };
 
-    // Default (mocked probe is v1.2.3, above the V2 cutoff): both keys present.
+    // Default: both keys present on a V2-capable CLI.
     const defaultProc = makeMockProcess();
     mockSpawn.mockReturnValueOnce(defaultProc);
     const defaultPromise = runOpenCode('test', { model: 'openai/gpt-4', subagents });
@@ -1995,8 +1997,8 @@ describe('subagent V2 permissions gate', () => {
     vi.clearAllMocks();
   });
 
-  it('dual-emits both permission shapes on CLI 1.1.1 and newer by default', () => {
-    for (const version of ['1.1.1', 'v1.1.1', '1.2.0', 'v2.0.0']) {
+  it('dual-emits both permission shapes on CLI 2.x by default', () => {
+    for (const version of ['2.0.0', 'v2.0.0', '2.1.3']) {
       expect(shouldUseV2SubagentPermissions(version)).toBe(true);
       const def = buildReviewSubagent('reviewer', undefined, version);
       expect(def.permission).toEqual({ edit: 'deny', bash: 'deny' });
@@ -2008,8 +2010,19 @@ describe('subagent V2 permissions gate', () => {
     }
   });
 
+  it('emits V1-only config on the whole 1.x line (V1 CLIs strictly reject the V2 key)', () => {
+    // Regression: 1.18.30 (V1) exited 1 with "V2 permissions are not
+    // supported by OpenCode V1" when the V2 array was dual-emitted.
+    for (const version of ['1.1.1', 'v1.1.1', '1.2.0', '1.2.3', '1.18.30', 'v1.18.30']) {
+      expect(shouldUseV2SubagentPermissions(version)).toBe(false);
+      const def = buildReviewSubagent('reviewer', undefined, version);
+      expect(def.permission).toEqual({ edit: 'deny', bash: 'deny' });
+      expect(def.permissions).toBeUndefined();
+    }
+  });
+
   it('uses gated single-shape behavior when dual-emit is disabled', () => {
-    for (const version of ['1.1.1', 'v1.1.1', '1.2.0', 'v2.0.0']) {
+    for (const version of ['2.0.0', 'v2.3.1']) {
       const def = buildReviewSubagent('reviewer', undefined, version, false);
       expect(def.permission).toBeUndefined();
       expect(def.permissions).toEqual([
@@ -2017,7 +2030,7 @@ describe('subagent V2 permissions gate', () => {
         { action: 'shell', resource: '*', effect: 'deny' },
       ]);
     }
-    for (const version of ['1.1.0', '1.0.5', 'v1.0.0']) {
+    for (const version of ['1.1.0', '1.0.5', 'v1.0.0', '1.1.1', '1.18.30']) {
       const def = buildReviewSubagent('reviewer', undefined, version, false);
       expect(def.permissions).toBeUndefined();
       expect(def.permission).toEqual({ edit: 'deny', bash: 'deny' });
@@ -2025,7 +2038,7 @@ describe('subagent V2 permissions gate', () => {
   });
 
   it('emits the legacy object shape unchanged on older CLIs', () => {
-    for (const version of ['1.1.0', '1.0.5', 'v1.0.0']) {
+    for (const version of ['1.1.0', '1.0.5', 'v1.0.0', '1.1.1', '1.18.30']) {
       expect(shouldUseV2SubagentPermissions(version)).toBe(false);
       const def = buildReviewSubagent('reviewer', 'openai/gpt-4', version);
       expect(def.permissions).toBeUndefined();
@@ -2052,12 +2065,33 @@ describe('subagent V2 permissions gate', () => {
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('legacy permission shape'));
   });
 
-  it('defaults to the last probed version and dual-emits at the runOpenCode choke point', async () => {
+  it('defaults to the last probed version at the runOpenCode choke point', async () => {
     mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
-    mockVersionOutput('opencode v1.2.3\n');
+    mockVersionOutput('opencode v1.18.30\n');
     await checkHealth();
 
-    // No explicit version: the cached probe result drives the dual-emit shape.
+    // No explicit version: the cached probe result drives the shape. A 1.x
+    // probe must yield V1-only config (no `permissions` key).
+    const def = buildReviewSubagent('reviewer');
+    expect(def.permission).toEqual({ edit: 'deny', bash: 'deny' });
+    expect(def.permissions).toBeUndefined();
+
+    const upgraded = normalizeSubagentPermissionsForVersion({
+      'sec-reviewer': {
+        description: 'reviewer',
+        mode: 'subagent',
+        permission: { edit: 'deny', bash: 'deny' },
+      },
+    });
+    expect(upgraded['sec-reviewer'].permissions).toBeUndefined();
+    expect(upgraded['sec-reviewer'].permission).toEqual({ edit: 'deny', bash: 'deny' });
+  });
+
+  it('dual-emits at the runOpenCode choke point for a probed 2.x CLI', async () => {
+    mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+    mockVersionOutput('opencode v2.0.1\n');
+    await checkHealth();
+
     const def = buildReviewSubagent('reviewer');
     expect(def.permission).toEqual({ edit: 'deny', bash: 'deny' });
     expect(def.permissions).toEqual([
@@ -2088,7 +2122,7 @@ describe('subagent V2 permissions gate', () => {
           permission: { edit: 'deny', bash: 'deny' },
         },
       },
-      'v1.2.3',
+      'v2.0.0',
       false,
     );
     expect(upgraded['sec-reviewer'].permissions).toEqual([
@@ -2096,6 +2130,22 @@ describe('subagent V2 permissions gate', () => {
       { action: 'shell', resource: '*', effect: 'deny' },
     ]);
     expect(upgraded['sec-reviewer'].permission).toBeUndefined();
+  });
+
+  it('leaves 1.x definitions untouched when dual-emit is disabled (gate off)', () => {
+    const upgraded = normalizeSubagentPermissionsForVersion(
+      {
+        'sec-reviewer': {
+          description: 'reviewer',
+          mode: 'subagent',
+          permission: { edit: 'deny', bash: 'deny' },
+        },
+      },
+      'v1.18.30',
+      false,
+    );
+    expect(upgraded['sec-reviewer'].permissions).toBeUndefined();
+    expect(upgraded['sec-reviewer'].permission).toEqual({ edit: 'deny', bash: 'deny' });
   });
 
   it('passes through already-dual definitions untouched', () => {
@@ -2117,7 +2167,7 @@ describe('subagent V2 permissions gate', () => {
     expect(resolveDualEmitSubagentPermissions()).toBe(false);
     // Explicit per-call argument wins over the module default.
     expect(resolveDualEmitSubagentPermissions(true)).toBe(true);
-    const def = buildReviewSubagent('reviewer', undefined, 'v1.2.3');
+    const def = buildReviewSubagent('reviewer', undefined, 'v2.0.0');
     expect(def.permission).toBeUndefined();
     expect(def.permissions).toEqual(buildV2SubagentDenyPermissions());
 
@@ -2125,11 +2175,11 @@ describe('subagent V2 permissions gate', () => {
     vi.stubEnv('OPENCODE_DUAL_EMIT_SUBAGENT_PERMISSIONS', 'false');
     try {
       expect(resolveDualEmitSubagentPermissions()).toBe(false);
-      const envDef = buildReviewSubagent('reviewer', undefined, 'v1.2.3');
+      const envDef = buildReviewSubagent('reviewer', undefined, 'v2.0.0');
       expect(envDef.permission).toBeUndefined();
       expect(envDef.permissions).toEqual(buildV2SubagentDenyPermissions());
       // Explicit per-call argument wins over the env var.
-      expect(buildReviewSubagent('reviewer', undefined, 'v1.2.3', true).permissions).toEqual(
+      expect(buildReviewSubagent('reviewer', undefined, 'v2.0.0', true).permissions).toEqual(
         buildV2SubagentDenyPermissions(),
       );
     } finally {

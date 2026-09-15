@@ -18,6 +18,7 @@ const {
   mockRunFix,
   mockMergeRepoConfig,
   mockExecFileSync,
+  mockExecFile,
 } = vi.hoisted(() => {
   const _mockGetMR = vi.fn();
   const _mockGetBotReviewThreads = vi.fn();
@@ -30,6 +31,26 @@ const {
   const _mockRunFix = vi.fn();
   const _mockMergeRepoConfig = vi.fn();
   const _mockExecFileSync = vi.fn();
+  // Async execFile mock delegating to the sync mock so sync/async
+  // implementations share one behavior script (callback style for promisify).
+  const _mockExecFile = vi.fn(
+    (
+      file: string,
+      args: string[],
+      opts: unknown,
+      cb?: (err: unknown, stdout?: unknown, stderr?: unknown) => void,
+    ) => {
+      const callback = typeof opts === 'function' ? (opts as typeof cb) : cb;
+      try {
+        const out = _mockExecFileSync(file, args, opts);
+        callback?.(null, out, '');
+      } catch (err) {
+        const e = err as Error & { stdout?: unknown; stderr?: unknown };
+        callback?.(e);
+      }
+      return undefined;
+    },
+  );
   return {
     mockGetMR: _mockGetMR,
     mockGetBotReviewThreads: _mockGetBotReviewThreads,
@@ -42,6 +63,7 @@ const {
     mockRunFix: _mockRunFix,
     mockMergeRepoConfig: _mockMergeRepoConfig,
     mockExecFileSync: _mockExecFileSync,
+    mockExecFile: _mockExecFile,
   };
 });
 
@@ -81,6 +103,7 @@ vi.mock('../../src/utils/config.js', () => ({
 
 vi.mock('child_process', () => ({
   execFileSync: mockExecFileSync,
+  execFile: mockExecFile,
 }));
 
 vi.mock('../../src/utils/git.js', () => ({

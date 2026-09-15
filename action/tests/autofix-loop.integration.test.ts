@@ -316,6 +316,88 @@ describe('runAutofixLoop', () => {
     );
   });
 
+  it('continues the loop when the fix agent reports changes but the tree is clean', async () => {
+    // Regression: the fix agent can report changesMade while leaving the
+    // tree clean (only ignored files written, or edits identical to HEAD).
+    // Committing then fails with "nothing to commit" (exit 1) — the loop
+    // must skip the commit and continue instead of failing with git-failure.
+    const reviewWithIssues: ReviewResult = {
+      summary: 'Found issues',
+      verdict: {
+        ready: false,
+        reasoning: 'Issues remain',
+        autoFixable: false,
+        confidence: 'medium',
+      },
+      strengths: [],
+      issues: [
+        {
+          type: 'issue',
+          severity: 'critical',
+          file: 'src/bug.ts',
+          line: 10,
+          message: 'Bug',
+          inline: true,
+        },
+      ],
+      stats: { total: 1, critical: 1, important: 0, minor: 0 },
+    };
+
+    const reviewApproved: ReviewResult = {
+      summary: 'All fixed',
+      verdict: { ready: true, reasoning: 'Fixed', autoFixable: false, confidence: 'high' },
+      strengths: [],
+      issues: [],
+      stats: { total: 0, critical: 0, important: 0, minor: 0 },
+    };
+
+    mockReviewPR.mockResolvedValueOnce(reviewWithIssues).mockResolvedValueOnce(reviewApproved);
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+    mockRunFix.mockResolvedValue({
+      changesMade: true,
+      filesChanged: [],
+    } as FixResult);
+    // Clean tree for every status probe in this test only.
+    mockGetExecOutput.mockImplementation(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+    try {
+      await runAutofixLoop(
+        makeInputs(),
+        makeConfig({ maxIterations: 3, enableMCP: false, mcpServers: [] }),
+        mockEngine,
+        mockGh,
+        'owner/repo',
+        'token',
+      );
+
+      expect(mockReviewPR).toHaveBeenCalledTimes(2);
+      expect(mockRunFix).toHaveBeenCalledTimes(1);
+      const commitCalls = mockExec.mock.calls.filter(
+        (call: unknown[]) => call[0] === 'git' && (call[1] as string[]).includes('commit'),
+      );
+      expect(commitCalls).toHaveLength(0);
+      expect(mockSetLabels).toHaveBeenCalledWith(
+        42,
+        ['autofix:ready'],
+        ['autofix', 'autofix:needs-fix'],
+      );
+      expect(mockSetOutput).toHaveBeenCalledWith('approved', 'true');
+      expect(mockSetFailed).not.toHaveBeenCalled();
+    } finally {
+      // Restore the default dirty-tree status probe for later tests.
+      mockGetExecOutput.mockImplementation(async (cmd: string, args: string[]) => {
+        if (cmd === 'git' && args.includes('status')) {
+          return { exitCode: 0, stdout: 'M src/fix.ts', stderr: '' };
+        }
+        return { exitCode: 0, stdout: '', stderr: '' };
+      });
+    }
+  });
+
   it('exhausts max iterations when never approved and fix always makes changes', async () => {
     const reviewWithIssues: ReviewResult = {
       summary: 'Still issues',

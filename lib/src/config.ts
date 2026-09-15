@@ -16,6 +16,7 @@ import type {
   MultiAgentAgentConfig,
   MultiAgentConfig,
   NotificationsConfig,
+  PathRule,
   PromptConfig,
   ReviewSensitivityConfig,
   SCAConfig,
@@ -65,6 +66,14 @@ const CATEGORY_OVERRIDE_SHAPE: Record<string, ConfigShape> = {
 export const MAX_PATH_INSTRUCTIONS_ENTRIES = 10;
 /** Max UTF-8 bytes kept per `review.pathInstructions` entry. */
 export const MAX_PATH_INSTRUCTION_BYTES = 2048;
+/** Max rules kept from `review.pathRules` (fail-open truncation).
+ * @since NEXT
+ */
+export const MAX_PATH_RULES = 20;
+/** Max entries kept per `review.pathRules` string list (reviewers/labels).
+ * @since NEXT
+ */
+export const MAX_PATH_RULE_ENTRIES = 20;
 
 /**
  * Validate a `review.pathInstructions` glob without relying on minimatch
@@ -144,6 +153,113 @@ export function sanitizePathInstructions(raw: unknown): Record<string, string> |
   return Object.keys(sanitized).length > 0 ? sanitized : undefined;
 }
 
+/**
+ * Sanitize a raw `review.pathRules` value fail-open: returns undefined when
+ * absent/invalid, drops invalid globs individually, drops rules with no
+ * usable paths or no effective action, and truncates extras with a warning.
+ * Accepts both the canonical camelCase keys (`suggestReviewers`/`addLabels`)
+ * and the legacy snake_case aliases (`suggest_reviewers`/`add_labels`),
+ * normalizing output to camelCase. Never throws; invalid input means
+ * "review all files" downstream.
+ * @param raw - The raw pathRules value to sanitize.
+ * @returns The sanitized rules, or undefined when nothing usable remains.
+ * @since NEXT
+ */
+export function sanitizePathRules(raw: unknown): PathRule[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!Array.isArray(raw)) {
+    core.warning('Ignoring review.pathRules: expected an array of { paths, ... } rules');
+    return undefined;
+  }
+  const sanitized: PathRule[] = [];
+  for (const entry of raw) {
+    if (sanitized.length >= MAX_PATH_RULES) {
+      core.warning(`review.pathRules exceeds ${MAX_PATH_RULES} entries, ignoring extras`);
+      break;
+    }
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      core.warning('Ignoring review.pathRules entry: expected an object with a paths array');
+      continue;
+    }
+    const candidate = entry as {
+      paths?: unknown;
+      suggestReviewers?: unknown;
+      addLabels?: unknown;
+      suggest_reviewers?: unknown;
+      add_labels?: unknown;
+      skip?: unknown;
+    };
+    if (!Array.isArray(candidate.paths) || candidate.paths.length === 0) {
+      core.warning('Ignoring review.pathRules entry: paths must be a non-empty string array');
+      continue;
+    }
+    const paths: string[] = [];
+    for (const g of candidate.paths) {
+      if (typeof g !== 'string') {
+        core.warning('Ignoring review.pathRules glob: invalid glob "(non-string)"');
+        continue;
+      }
+      const trimmed = g.trim();
+      if (trimmed.length === 0 || trimmed.length > 256 || !isValidPathGlob(trimmed)) {
+        const safeGlob = trimmed.replace(/[\r\n]+/g, ' ').slice(0, 200);
+        core.warning(`Ignoring review.pathRules glob: invalid glob "${safeGlob}"`);
+        continue;
+      }
+      if (!paths.includes(trimmed)) paths.push(trimmed);
+      if (paths.length >= MAX_PATH_RULE_ENTRIES) break;
+    }
+    if (paths.length === 0) {
+      core.warning('Ignoring review.pathRules entry: no valid globs remain');
+      continue;
+    }
+    const cleanStrings = (value: unknown): string[] | undefined => {
+      if (value === undefined) return undefined;
+      if (!Array.isArray(value)) return undefined;
+      const out: string[] = [];
+      for (const v of value) {
+        if (typeof v !== 'string' || v.trim().length === 0) continue;
+        const trimmed = v.trim().slice(0, 256);
+        if (!out.includes(trimmed)) out.push(trimmed);
+        if (out.length >= MAX_PATH_RULE_ENTRIES) break;
+      }
+      return out.length > 0 ? out : undefined;
+    };
+    const reviewers = cleanStrings(candidate.suggestReviewers ?? candidate.suggest_reviewers);
+    const labels = cleanStrings(candidate.addLabels ?? candidate.add_labels);
+    const skip = candidate.skip === true ? true : undefined;
+    if (!reviewers && !labels && !skip) {
+      core.warning('Ignoring review.pathRules entry: no effective action (reviewers/labels/skip)');
+      continue;
+    }
+    const rule: PathRule = { paths };
+    if (reviewers) rule.suggestReviewers = reviewers;
+    if (labels) rule.addLabels = labels;
+    if (skip) rule.skip = true;
+    sanitized.push(rule);
+  }
+  return sanitized.length > 0 ? sanitized : undefined;
+}
+
+/**
+ * Resolve the agent-config exclusion flag from a review config block.
+ * Canonical key is camelCase (`excludeAgentConfigs`); the snake_case spelling
+ * (`exclude_agent_configs`) is a deprecated alias kept for one release.
+ * The camelCase key wins when both are set. Returns undefined when neither is
+ * set so callers can apply the fail-open default (true).
+ * @param review - Review config block (may be undefined).
+ * @returns The resolved flag, or undefined when unset.
+ * @since NEXT
+ */
+export function resolveExcludeAgentConfigs(
+  review?: { excludeAgentConfigs?: unknown; exclude_agent_configs?: unknown } | null,
+): boolean | undefined {
+  const camel = review?.excludeAgentConfigs;
+  if (typeof camel === 'boolean') return camel;
+  const snake = review?.exclude_agent_configs;
+  if (typeof snake === 'boolean') return snake;
+  return undefined;
+}
+
 const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
   platform: null,
   review: {
@@ -154,8 +270,11 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     customRules: null,
     inline: null,
     enableReviewsArrayInline: null,
+    emitFixPayload: null,
     suppressLowConfidence: null,
     excludePatterns: null,
+    excludeAgentConfigs: null,
+    exclude_agent_configs: null,
     enableReachability: null,
     enableMetaVerification: null,
     enableTestGapDetection: null,
@@ -180,6 +299,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     },
     categories: [CATEGORY_OVERRIDE_SHAPE],
     pathInstructions: null,
+    pathRules: null,
   },
   fix: {
     systemPrompt: null,
@@ -562,6 +682,9 @@ export function validateConfig(
     if (typeof config.review.enableReviewsArrayInline === 'boolean') {
       result.review.enableReviewsArrayInline = config.review.enableReviewsArrayInline;
     }
+    if (typeof config.review.emitFixPayload === 'boolean') {
+      result.review.emitFixPayload = config.review.emitFixPayload;
+    }
     if (typeof config.review.suppressLowConfidence === 'boolean') {
       result.review.suppressLowConfidence = config.review.suppressLowConfidence;
     }
@@ -569,6 +692,13 @@ export function validateConfig(
       result.review.excludePatterns = config.review.excludePatterns.filter(
         (p) => typeof p === 'string',
       );
+    }
+    const resolvedExcludeAgentConfigs = resolveExcludeAgentConfigs(config.review);
+    if (resolvedExcludeAgentConfigs !== undefined) {
+      // Keep both spellings in sync so consumers of either key observe the
+      // resolved value (canonical key wins when both were set).
+      result.review.excludeAgentConfigs = resolvedExcludeAgentConfigs;
+      result.review.exclude_agent_configs = resolvedExcludeAgentConfigs;
     }
     if (typeof config.review.enableReachability === 'boolean') {
       result.review.enableReachability = config.review.enableReachability;
@@ -744,6 +874,12 @@ export function validateConfig(
       const sanitized = sanitizePathInstructions(config.review.pathInstructions);
       if (sanitized) {
         result.review.pathInstructions = sanitized;
+      }
+    }
+    if (config.review.pathRules !== undefined) {
+      const sanitized = sanitizePathRules(config.review.pathRules);
+      if (sanitized) {
+        result.review.pathRules = sanitized;
       }
     }
   }

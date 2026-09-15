@@ -208,7 +208,7 @@ vi.mock('fs', async () => {
 
 import * as fs from 'fs';
 import * as cp from 'node:child_process';
-import { ReviewEngine } from '../src/engine.js';
+import { ReviewEngine, expectedReviewOpenCodeCalls } from '../src/engine.js';
 import { getGitStatus } from '../src/opencode.js';
 
 function makePRContext(overrides: Partial<PRContext> = {}): PRContext {
@@ -245,6 +245,24 @@ function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
 }
 
 describe('ReviewEngine', () => {
+  describe('expectedReviewOpenCodeCalls', () => {
+    it('runs one pass for a single batch', () => {
+      expect(expectedReviewOpenCodeCalls(1)).toBe(1);
+      expect(expectedReviewOpenCodeCalls(0)).toBe(1);
+    });
+
+    it('runs one pass per batch plus synthesis on the legacy path', () => {
+      expect(expectedReviewOpenCodeCalls(2)).toBe(3);
+      expect(expectedReviewOpenCodeCalls(9)).toBe(10);
+    });
+
+    it('always runs exactly one pass under single-process dispatch', () => {
+      expect(expectedReviewOpenCodeCalls(1, true)).toBe(1);
+      expect(expectedReviewOpenCodeCalls(2, true)).toBe(1);
+      expect(expectedReviewOpenCodeCalls(9, true)).toBe(1);
+    });
+  });
+
   let engine: ReviewEngine;
 
   let mockAdapter: ReturnType<typeof createMockAdapter>;

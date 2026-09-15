@@ -57,6 +57,7 @@ export {
 } from './jsonl-parser.js';
 export type { InlineComment } from './jsonl-parser.js';
 export { loadConfig, mergeConfigWithInputs, resolveConfig, validateConfig } from './config.js';
+export { resolveExcludeAgentConfigs } from './config.js';
 export type { ResolveConfigOptions } from './config.js';
 export type { LinterConfig, LinterResult, LinterFinding } from './types/index.js';
 export { MCPManager } from './mcp/client.js';
@@ -213,6 +214,14 @@ export {
   getSeverityBadge,
 } from './utils/review-body.js';
 export type { ReviewBodyOptions } from './utils/review-body.js';
+export { looksLikeCode } from './utils/code-heuristic.js';
+export {
+  buildFixPayload,
+  buildFixWithAiPrompt,
+  formatFixPayloadMarkdown,
+  isCodeLikeSuggestion,
+} from './utils/fix-payload.js';
+export type { FixPayload } from './utils/fix-payload.js';
 export {
   buildFunctionScoreOptions,
   buildFunctionScoreTable,

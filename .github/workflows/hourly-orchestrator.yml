@@ -195,6 +195,16 @@ jobs:
             IS_READY=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json labels --jq '.labels[].name' | grep -x "autofix:ready" || true)
 
             if [ -n "$IS_READY" ]; then
+              # Guard: the Autofix review loop (ai-review.yml) may still be
+              # iterating on this branch. Squash-merging while it is running
+              # orphaned hardening commits (PR #466) — the loop pushed commits
+              # AFTER the branch was deleted. Skip the merge and let the loop
+              # finish; the next hourly run re-evaluates.
+              if [ -n "$(gh run list --workflow ai-review.yml --repo "${{ github.repository }}" --branch "$HEAD_REF" --limit 1 --json status --jq '.[].status' 2>/dev/null | grep -E '^(in_progress|queued)$' || true)" ]; then
+                echo "PR #${PR_NUMBER} has label 'autofix:ready' but an Autofix review loop run is still in_progress/queued for branch '${HEAD_REF}' — deferring merge to avoid orphaning loop commits."
+                PROCESSED_ANY=true
+                continue
+              fi
               echo "PR #${PR_NUMBER} has label 'autofix:ready' — squash merging..."
               gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch 2>/dev/null || \
               gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch --auto || {

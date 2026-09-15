@@ -145,15 +145,50 @@ export class StateCacheManager {
 
   /**
    * Restore the learning state from the Actions cache into `stateDir`.
-   * Skips when the state directory already exists (it already holds a fresh
-   * database for this run). Records the resolved cache key so `save()` can
+   * Skips when the state directory already holds a `learning.db` database
+   * for this run. Records the resolved cache key so `save()` can
    * derive a unique snapshot key instead of overwriting the restore key.
    *
    * @returns A promise that resolves when the restore attempt completes.
    */
   async restore(): Promise<void> {
-    if (fs.existsSync(this.stateDir)) {
-      core.info('.opencode/ directory already exists — skipping cache restore');
+    // Skip only when a usable state is already present. A pre-existing empty
+    // directory (e.g. a checkout artifact) without learning.db holds no state,
+    // so restore must still proceed instead of silently starting fresh.
+    // The db is validated as a non-empty regular file with a SQLite header so
+    // a zero-byte/corrupt db from a failed save never disables restore and
+    // perpetuates corruption downstream.
+    const dbPath = path.join(this.stateDir, 'learning.db');
+    let skip = false;
+    try {
+      const st = fs.statSync(dbPath);
+      if (st.isFile() && st.size > 100) {
+        const fd = fs.openSync(dbPath, 'r');
+        try {
+          const header = Buffer.alloc(16);
+          fs.readSync(fd, header, 0, 16, 0);
+          skip = header.toString('utf-8').startsWith('SQLite format 3');
+        } finally {
+          fs.closeSync(fd);
+        }
+        if (!skip) {
+          // Quarantine the corrupt file so LearningStore never opens it;
+          // restore below then fetches fresh state from cache. Unlink (do not
+          // rename in place): saveCache uploads the whole stateDir, so a
+          // `learning.db.corrupt-*` left inside would be preserved in cache
+          // snapshots and bloat every future save.
+          try {
+            fs.unlinkSync(dbPath);
+          } catch {
+            /* ignore quarantine failure — restore proceeds anyway */
+          }
+        }
+      }
+    } catch {
+      skip = false;
+    }
+    if (fs.existsSync(this.stateDir) && skip) {
+      core.info('.opencode/learning.db already exists and is valid — skipping cache restore');
       this.learningDbMtimeMs = this.getLearningDbMtime();
       return;
     }

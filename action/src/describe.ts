@@ -1,7 +1,12 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
-import { mergeDescribeBody, sanitizeErrorMessage, sanitizeMarkdown } from '@opencode-pr-agent/lib';
+import {
+  mergeDescribeBody,
+  sanitizeErrorMessage,
+  sanitizeMarkdown,
+  withRetry,
+} from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { resolvePrNumber, sanitize } from './utils.js';
 
@@ -73,14 +78,34 @@ export async function runDescribe(
 
     let commentPosted = false;
     let bodyMerged = false;
+    let commentFailed = false;
+    let mergeFailed = false;
 
     if (publishAsComment !== false) {
-      await gh.postOrUpdateComment(
-        prNumber,
-        '<!-- pr-description -->',
-        sanitizeMarkdown(description),
-      );
-      commentPosted = true;
+      try {
+        await withRetry(
+          () =>
+            gh.postOrUpdateComment(
+              prNumber,
+              '<!-- pr-description -->',
+              sanitizeMarkdown(description),
+            ),
+          { operationName: 'describe.postDescription', maxRetries: 1 },
+        );
+        commentPosted = true;
+      } catch (e) {
+        // Warn-and-continue: the description was generated successfully and is
+        // still exposed via the `description` step output, so a transient
+        // comment-upsert failure must not fail the whole describe run.
+        // Best-effort write: cap retries so a persistent failure warns fast
+        // instead of paying the full default backoff.
+        commentFailed = true;
+        core.warning(
+          sanitize(
+            `Failed to post PR description comment: ${e instanceof Error ? e.message : String(e)}`,
+          ),
+        );
+      }
     }
 
     if (useMarkers === true) {
@@ -95,13 +120,33 @@ export async function runDescribe(
           bodyMerged = true;
         }
       } catch (e) {
+        mergeFailed = true;
         core.warning(
-          `PR body merge failed, kept ${commentPosted ? 'comment output' : 'existing PR body'}: ${e instanceof Error ? e.message : String(e)}`,
+          sanitize(
+            `PR body merge failed, kept ${commentPosted ? 'comment output' : 'existing PR body'}: ${e instanceof Error ? e.message : String(e)}`,
+          ),
         );
       }
     }
 
-    core.setOutput('description', description);
+    // Fail closed only when every requested output failed: with both outputs
+    // enabled and both failing, nothing is visible on the PR while the
+    // `description` output implies success. Single-output failures keep the
+    // established warn-and-continue semantics.
+    if (publishAsComment !== false && useMarkers === true && commentFailed && mergeFailed) {
+      core.setFailed(
+        sanitize(
+          `Describe outputs failed for PR #${prNumber}: comment post and PR body merge both failed`,
+        ),
+      );
+    }
+
+    // When both requested outputs failed nothing is visible on the PR, so
+    // the `description` step output must not imply success — skip setting it
+    // and leave only the setFailed signal above.
+    if (!(commentFailed && mergeFailed)) {
+      core.setOutput('description', description);
+    }
     core.info(
       `Describe output for PR #${prNumber}: comment ${commentPosted ? 'posted' : 'skipped'}, PR-body merge ${bodyMerged ? 'applied' : useMarkers === true ? 'skipped (unchanged or failed)' : 'skipped (disabled)'}`,
     );
@@ -110,10 +155,18 @@ export async function runDescribe(
       sanitize(`Description generation failed for PR #${prNumber}: ${sanitizeErrorMessage(err)}`),
     );
     core.setFailed(sanitize(`Description generation failed for PR #${prNumber}`));
-    await gh.postOrUpdateComment(
-      prNumber,
-      '<!-- pr-description-error -->',
-      `❌ **Description Generation Failed**: Description generation failed for PR #${prNumber}. See the action logs for details.`,
-    );
+    try {
+      await gh.postOrUpdateComment(
+        prNumber,
+        '<!-- pr-description-error -->',
+        `❌ **Description Generation Failed**: Description generation failed for PR #${prNumber}. See the action logs for details.`,
+      );
+    } catch (commentErr) {
+      core.warning(
+        sanitize(
+          `Failed to post description error comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+        ),
+      );
+    }
   }
 }

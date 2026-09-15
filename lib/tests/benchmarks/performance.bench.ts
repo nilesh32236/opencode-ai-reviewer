@@ -290,7 +290,10 @@ describe('Engine orchestration overhead', () => {
 
         metrics.apiCalls = [
           ...dropMetrics(metrics.apiCalls, name),
-          { name, value: calls, meta: { batches } },
+          // singleProcess: single-process subagent dispatch is the default,
+          // so the engine runs exactly one OpenCode pass regardless of the
+          // legacy batch split recorded in `batches`.
+          { name, value: calls, meta: { batches, singleProcess: 1 } },
         ];
         metrics.e2eLatency = [
           ...dropMetrics(metrics.e2eLatency, name),

@@ -68,6 +68,10 @@ export function createHealthRouter(
    * Lightweight in-memory rate limit + cache-header hardening for probes.
    * Health scraping on a short interval must not pile DB-ping load, and
    * probes must never be cached by intermediaries.
+   * @param req - Incoming Express request (client IP for rate limiting).
+   * @param res - Express response (no-store header applied).
+   * @param next - Passes control to the probe handler.
+   * @returns Void.
    */
   function probeGuard(req: Request, res: Response, next: NextFunction): void {
     res.setHeader('Cache-Control', 'no-store');
@@ -180,6 +184,8 @@ export function createHealthRouter(
   // consistent error-shape 503 instead of an unhandled rejection / hung probe.
   // The headersSent guard comes first: touching headers after they were sent
   // would itself throw ERR_HTTP_HEADERS_SENT inside the error handler.
+  // NOTE: no eslint-disable needed here — the repo eslint config carries no
+  // unused-vars rule, and Express requires the 4-arg error-handler signature.
   router.use((err: unknown, _req: Request, res: Response, _next: NextFunction): void => {
     logger.error(`Health probe failed: ${err instanceof Error ? err.message : String(err)}`);
     if (!res.headersSent) {

@@ -25,6 +25,7 @@ import {
   mergeConfigWithInputs,
   parseReviewEffort,
   registerEventSubscribers,
+  resolveExcludeAgentConfigs,
   resolveReviewEffort,
   setupOpenCode,
   setupWorkspaceDependencies,
@@ -284,6 +285,12 @@ async function run(): Promise<void> {
         ...(loadedConfig?.review?.enableCodebaseIndex !== undefined && {
           enableCodebaseIndex: loadedConfig.review.enableCodebaseIndex,
         }),
+        // Canonical camelCase key wins over the deprecated snake_case alias;
+        // falls back to the built-in default (true) when neither is set.
+        excludeAgentConfigs:
+          resolveExcludeAgentConfigs(loadedConfig?.review) ??
+          DEFAULT_CONFIG.review.excludeAgentConfigs ??
+          true,
         reviewBudget: {
           enabled:
             loadedConfig?.review?.budget?.enabled ??

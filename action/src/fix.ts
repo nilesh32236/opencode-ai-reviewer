@@ -11,6 +11,7 @@ import {
   type CheckExecution,
   FIX_MARKER,
   type IterationRecord,
+  Logger,
   REVIEW_MARKER,
   buildAutofixPRBody,
   buildAutofixStatusBody,
@@ -23,10 +24,28 @@ import {
   postBlockingQuestions,
   resolveFixedComments,
   validateRefName,
+  withRetry,
 } from '@opencode-pr-agent/lib';
 import { sanitizeMarkdown } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { resolvePrNumber, sanitize } from './utils.js';
+
+/**
+ * Determine whether a PR/MR has already been closed or merged, so a fix
+ * loop can stop pushing iteration commits instead of force-pushing onto a
+ * merged branch (which is what orphaned PR #466's hardening).
+ *
+ * GitHub reports state as 'open' | 'closed' | 'merged'; GitLab reports
+ * 'opened' | 'closed' | 'merged'. An undefined state (older adapter builds
+ * that did not populate it) is treated as still open so existing callers are
+ * never silently blocked.
+ * @param state - The PR/MR state string, when known.
+ * @returns True when the PR/MR is closed or merged.
+ */
+export function isPrClosedOrMerged(state?: string): boolean {
+  if (!state) return false;
+  return state === 'closed' || state === 'merged';
+}
 
 /**
  * Run a single fix iteration on a PR: resolve PR, gather context, apply
@@ -45,9 +64,12 @@ export async function runFix(
   const prNumber = await resolvePrNumber();
   if (prNumber === null) {
     core.setFailed('Could not determine PR number for fix');
+    core.setOutput('changes_made', 'false');
     return;
   }
 
+  const COMMENTS_PER_PAGE = 100;
+  const COMMENT_PAGES_MAX = 10;
   let comments: IssueComment[];
   try {
     // Bound the fetch while preserving full-history semantics: pages stop
@@ -58,8 +80,8 @@ export async function runFix(
     // honors sort), so early-stop savings apply on GitLab while GitHub scans
     // oldest-first within the 10-page bound.
     const recent = await gh.listComments(prNumber, {
-      perPage: 100,
-      maxPages: 10,
+      perPage: COMMENTS_PER_PAGE,
+      maxPages: COMMENT_PAGES_MAX,
       direction: 'desc',
       throwOnError: true,
       stopWhen: (items) =>
@@ -78,6 +100,27 @@ export async function runFix(
         `Failed to fetch issue comments for iteration count: ${err instanceof Error ? err.message : err}`,
       ),
     );
+    core.setOutput('changes_made', 'false');
+    return;
+  }
+  // listComments is bounded to COMMENT_PAGES_MAX x COMMENTS_PER_PAGE (1000
+  // total). On repos with more comments the REVIEW_MARKER count below is
+  // computed from a truncated oldest-first list (GitHub ignores sort
+  // direction), so the maxIterations gate may be bypassed. Fail closed when
+  // the cap is hit instead of warning and continuing, so an attacker-inflated
+  // comment list cannot buy extra autofix iterations.
+  // Conservative tradeoff: length can never exceed the cap, so a PR with
+  // exactly 1000 legitimate comments false-positives as truncated and aborts
+  // for manual review. There is no hasMore signal to distinguish a full from
+  // a truncated list, and failing closed (one manual review) is preferred
+  // over failing open (unbounded autofix iterations).
+  if (comments.length >= COMMENT_PAGES_MAX * COMMENTS_PER_PAGE) {
+    core.setFailed(
+      sanitize(
+        `Issue comment list truncated at ${comments.length} comments (${COMMENT_PAGES_MAX} pages x ${COMMENTS_PER_PAGE}); REVIEW_MARKER iteration count may be incomplete and maxIterations (${config.maxIterations}) cannot be verified — aborting for manual review.`,
+      ),
+    );
+    core.setOutput('changes_made', 'false');
     return;
   }
   const iteration = comments.filter((c: IssueComment) => c.body.includes(REVIEW_MARKER)).length;
@@ -86,16 +129,54 @@ export async function runFix(
     const errorMsg = `Max iterations reached (${config.maxIterations}). Needs manual review.`;
     await gh.setLabels(prNumber, ['autofix:needs-manual-review'], ['autofix', 'autofix:needs-fix']);
     core.setFailed(errorMsg);
+    core.setOutput('changes_made', 'false');
     return;
   }
 
-  const pr = await gh.getMR(prNumber);
-  const contextMarkdown = await gh.gatherContext({ prNumber });
+  // Fetch PR and context in parallel: gatherContext internally re-fetches
+  // /pulls + /files, so sequential fetches pay 2x PR fetch plus two serial
+  // withRetry backoff windows. Plain try/catch matches every other withRetry
+  // call site (docs.ts, changelog.ts, describe.ts).
+  let pr: Awaited<ReturnType<typeof gh.getMR>>;
+  let contextMarkdown: string;
+  try {
+    [pr, contextMarkdown] = await Promise.all([
+      withRetry(() => gh.getMR(prNumber), { operationName: 'fix.getMR' }),
+      withRetry(() => gh.gatherContext({ prNumber }), {
+        operationName: 'fix.gatherContext',
+      }),
+    ]);
+  } catch (err) {
+    core.setFailed(
+      sanitize(
+        `Failed to fetch PR #${prNumber} context: ${err instanceof Error ? err.message : err}`,
+      ),
+    );
+    core.setOutput('changes_made', 'false');
+    return;
+  }
+  if (!pr) {
+    core.setFailed(sanitize(`Failed to get PR #${prNumber}: empty response`));
+    core.setOutput('changes_made', 'false');
+    return;
+  }
 
   const fixResult = await engine.runFix(prNumber, iteration, contextMarkdown, pr);
 
   let changesMade = false;
   if (fixResult?.changesMade) {
+    // Guard: if the PR was merged or closed by another actor (e.g. the
+    // orchestrator's auto-merge) while the fix loop was iterating, never
+    // push iteration commits onto a merged branch. Stop the loop cleanly.
+    if (isPrClosedOrMerged(pr.state)) {
+      core.warning(
+        sanitize(
+          `PR #${prNumber} is already ${pr.state ?? 'closed/merged'} — skipping push of iteration ${iteration + 1} and stopping the fix loop`,
+        ),
+      );
+      core.setOutput('changes_made', 'false');
+      return;
+    }
     try {
       await exec.exec('git', ['add', '-A']);
       await exec.exec('git', [
@@ -151,8 +232,23 @@ export async function runFix(
       );
 
       if (v < maxVerificationRetries) {
-        const freshPr = await gh.getMR(prNumber);
-        const freshContextMarkdown = await gh.gatherContext({ prNumber });
+        let freshPr: Awaited<ReturnType<typeof gh.getMR>>;
+        let freshContextMarkdown: string;
+        try {
+          [freshPr, freshContextMarkdown] = await Promise.all([
+            withRetry(() => gh.getMR(prNumber), { operationName: 'fix.getMR' }),
+            withRetry(() => gh.gatherContext({ prNumber }), {
+              operationName: 'fix.gatherContext',
+            }),
+          ]);
+        } catch (err) {
+          core.warning(
+            sanitize(
+              `Verification refetch failed, skipping retry: ${err instanceof Error ? err.message : String(err)}`,
+            ),
+          );
+          break;
+        }
         const retryResult = await engine.runFix(
           prNumber,
           iteration,
@@ -164,6 +260,15 @@ export async function runFix(
         );
 
         if (retryResult?.changesMade) {
+          if (isPrClosedOrMerged(freshPr.state)) {
+            core.warning(
+              sanitize(
+                `PR #${prNumber} is already ${freshPr.state ?? 'closed/merged'} — skipping verification-retry push (iteration ${iteration + 1})`,
+              ),
+            );
+            core.setOutput('changes_made', 'false');
+            return;
+          }
           try {
             await exec.exec('git', ['add', '-A']);
             await exec.exec('git', [
@@ -171,8 +276,8 @@ export async function runFix(
               '-m',
               `fix: verification errors (iteration ${iteration + 1})`,
             ]);
-            validateRefName(pr.headRef);
-            await exec.exec('git', ['push', 'origin', pr.headRef]);
+            validateRefName(freshPr.headRef);
+            await exec.exec('git', ['push', 'origin', freshPr.headRef]);
           } catch (err) {
             // Mirror the main push path: a lost verification push must never
             // report changes_made=true, so fail loudly and return.
@@ -201,6 +306,9 @@ export async function runFix(
  * whose base predates already-merged work is discarded rather than reused.
  * Callers must `validateRefName()` both args before calling (refs are
  * interpolated into git arguments).
+ * @param branchName - Remote branch to check (e.g. 'autofix/issue-123').
+ * @param defaultBranch - Default branch name (e.g. 'main').
+ * @returns True when the branch tip contains the current default tip.
  */
 async function isAutofixBranchFresh(branchName: string, defaultBranch: string): Promise<boolean> {
   try {
@@ -272,6 +380,7 @@ export async function runFixIssue(
   const issueNumber = await resolvePrNumber();
   if (!issueNumber) {
     core.setFailed('Could not determine issue number');
+    core.setOutput('changes_made', 'false');
     return;
   }
 
@@ -473,6 +582,8 @@ export async function runFixIssue(
   } catch (err) {
     core.warning(sanitize(`Git push failed: ${err instanceof Error ? err.message : err}`));
     core.setFailed(sanitize(`Git push failed: ${err instanceof Error ? err.message : err}`));
+    core.setOutput('changes_made', 'false');
+    return;
   }
 
   const prTitle = `[Autofix] ${issue.title}`;
@@ -592,8 +703,14 @@ export async function runAutofixLoop(
           body: t.firstComment.body,
           commentId: t.firstComment.databaseId,
         }));
-    } catch {
-      /* ignore */
+    } catch (err) {
+      const message = `Failed to fetch previous bot review threads: ${err instanceof Error ? err.message : err}`;
+      core.warning(sanitize(message));
+      new Logger('Autofix').warn('Failed to fetch previous bot review threads', {
+        operation: 'autofix.threads',
+        prNumber,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
 
     const result = await engine.reviewPR(
@@ -759,24 +876,36 @@ export async function runAutofixLoop(
     const commitMsg = `fix: autofix iteration ${i + 1} [skip ci]`;
     try {
       await exec.exec('git', ['add', '-A']);
-      await exec.exec('git', ['commit', '-m', commitMsg]);
-      validateRefName(pr.headRef);
-      await exec.exec('git', ['push', 'origin', pr.headRef]);
-      currentEntry.commitMessage = commitMsg;
-
-      previousFindings.push({
-        iteration: i + 1,
-        issues: result.issues,
-        fixSummary: fixResult.summary,
-        filesChanged: fixResult.filesChanged,
-        headSha: prHeadSha,
-        commentIds: currentCommentIds?.map((c) => ({
-          file: c.file,
-          line: c.line,
-          commentId: c.commentId,
-          nodeId: c.nodeId,
-        })),
+      // The fix agent can report changes while leaving the tree clean (only
+      // ignored files written, or edits identical to HEAD). Committing then
+      // fails with "nothing to commit" (exit 1) — a clean tree is not a git
+      // failure, so skip the commit and let the loop continue to verification
+      // and the next review iteration instead of misreporting git-failure.
+      const treeState = await exec.getExecOutput('git', ['status', '--porcelain'], {
+        silent: true,
       });
+      if (treeState.stdout.trim() === '') {
+        core.info('Working tree clean after fix — skipping commit, continuing loop');
+      } else {
+        await exec.exec('git', ['commit', '-m', commitMsg]);
+        validateRefName(pr.headRef);
+        await exec.exec('git', ['push', 'origin', pr.headRef]);
+        currentEntry.commitMessage = commitMsg;
+
+        previousFindings.push({
+          iteration: i + 1,
+          issues: result.issues,
+          fixSummary: fixResult.summary,
+          filesChanged: fixResult.filesChanged,
+          headSha: prHeadSha,
+          commentIds: currentCommentIds?.map((c) => ({
+            file: c.file,
+            line: c.line,
+            commentId: c.commentId,
+            nodeId: c.nodeId,
+          })),
+        });
+      }
     } catch (err) {
       core.warning(
         sanitize(
@@ -845,8 +974,23 @@ export async function runAutofixLoop(
           core.info(
             `Feeding verification error to fix engine (retry ${v + 1}/${maxVerificationRetries})...`,
           );
-          const prAgain = await gh.getMR(prNumber);
-          const freshContextMarkdown = await gh.gatherContext({ prNumber });
+          let prAgain: Awaited<ReturnType<typeof gh.getMR>>;
+          let freshContextMarkdown: string;
+          try {
+            [prAgain, freshContextMarkdown] = await Promise.all([
+              withRetry(() => gh.getMR(prNumber), { operationName: 'fix.getMR' }),
+              withRetry(() => gh.gatherContext({ prNumber }), {
+                operationName: 'fix.gatherContext',
+              }),
+            ]);
+          } catch (err) {
+            core.warning(
+              sanitize(
+                `Verification refetch failed, skipping retry: ${err instanceof Error ? err.message : String(err)}`,
+              ),
+            );
+            break;
+          }
           const retryResult = await engine.runFix(
             prNumber,
             i,
@@ -864,13 +1008,23 @@ export async function runAutofixLoop(
 
           try {
             await exec.exec('git', ['add', '-A']);
+            // Same clean-tree guard as the main iteration commit: the retry
+            // agent can report changes while leaving the tree clean, and
+            // "nothing to commit" must not fail verification loudly.
+            const retryTreeState = await exec.getExecOutput('git', ['status', '--porcelain'], {
+              silent: true,
+            });
+            if (retryTreeState.stdout.trim() === '') {
+              core.info('Working tree clean after verification retry — skipping commit');
+              break;
+            }
             await exec.exec('git', [
               'commit',
               '-m',
               `fix: verification errors (attempt ${v + 1}) [skip ci]`,
             ]);
-            validateRefName(pr.headRef);
-            await exec.exec('git', ['push', 'origin', pr.headRef]);
+            validateRefName(prAgain.headRef);
+            await exec.exec('git', ['push', 'origin', prAgain.headRef]);
           } catch (err) {
             // Mirror the main push path and runFix retry handling: a lost
             // verification push must never be silently dropped, so fail loudly
