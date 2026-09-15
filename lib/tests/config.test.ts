@@ -402,8 +402,7 @@ multiAgent:
         validateConfig({ review: { verdictMode: ' Approve ' } } as never).review?.verdictMode,
       ).toBe('approve');
       expect(
-        validateConfig({ review: { verdictMode: 'REQUEST-CHANGES' } } as never).review
-          ?.verdictMode,
+        validateConfig({ review: { verdictMode: 'REQUEST-CHANGES' } } as never).review?.verdictMode,
       ).toBe('request-changes');
     });
 

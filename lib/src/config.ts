@@ -33,7 +33,6 @@ import {
 } from './types/index.js';
 import { PromptConfigSchema } from './types/schemas.js';
 import { DEFAULT_ALLOWLIST } from './utils/command.js';
-import { normalizeVerdictMode } from './utils/verdict-mode.js';
 import { Logger } from './utils/logger.js';
 import { parseReviewEffort } from './utils/review-effort.js';
 import {
@@ -43,6 +42,7 @@ import {
   resolveConfinedEventLogPath,
   resolveConfinedWorkingDir,
 } from './utils/safe-exec.js';
+import { normalizeVerdictMode } from './utils/verdict-mode.js';
 
 /**
  * Shape descriptor used to detect unknown keys in a raw config object.

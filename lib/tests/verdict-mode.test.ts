@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as core from '@actions/core';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReviewResult } from '../src/types/index.js';
 import { GitHubHelper, normalizeVerdictMode, resolveReviewEvent } from '../src/utils/github.js';
 
@@ -204,7 +204,7 @@ describe('verdictMode transport (postReview event propagation)', () => {
     expect(result.success).toBe(true);
     const bodies = reviewBodies();
     expect(bodies).toHaveLength(1);
-    expect(bodies[0]['event']).toBe('APPROVE');
+    expect(bodies[0].event).toBe('APPROVE');
   });
 
   it('posts REQUEST_CHANGES for criticals in request-changes mode', async () => {
@@ -228,7 +228,7 @@ describe('verdictMode transport (postReview event propagation)', () => {
     expect(result.success).toBe(true);
     const bodies = reviewBodies();
     expect(bodies).toHaveLength(1);
-    expect(bodies[0]['event']).toBe('REQUEST_CHANGES');
+    expect(bodies[0].event).toBe('REQUEST_CHANGES');
   });
 
   it('retries a rejected APPROVE as summary-only COMMENT with a warning suffix', async () => {
@@ -248,9 +248,9 @@ describe('verdictMode transport (postReview event propagation)', () => {
     expect(result.success).toBe(true);
     const bodies = reviewBodies();
     expect(bodies).toHaveLength(2);
-    expect(bodies[0]['event']).toBe('APPROVE');
-    expect(bodies[1]['event']).toBe('COMMENT');
-    expect(bodies[1]['body'] as string).toContain('was not permitted; posted as a comment instead');
+    expect(bodies[0].event).toBe('APPROVE');
+    expect(bodies[1].event).toBe('COMMENT');
+    expect(bodies[1].body as string).toContain('was not permitted; posted as a comment instead');
     expect(bodies[1]).not.toHaveProperty('comments');
     expect(vi.mocked(core.warning)).toHaveBeenCalled();
   });
@@ -306,11 +306,11 @@ describe('verdictMode transport (postReview event propagation)', () => {
     expect(result.method).toBe('body-only');
     const bodies = reviewBodies();
     expect(bodies).toHaveLength(2);
-    expect(bodies[0]['event']).toBe('REQUEST_CHANGES');
+    expect(bodies[0].event).toBe('REQUEST_CHANGES');
     expect(bodies[0]).toHaveProperty('comments');
     // Summary-only retry preserves the gate (createReview falls back to
     // COMMENT itself only on 403/422 permission rejections).
-    expect(bodies[1]['event']).toBe('REQUEST_CHANGES');
+    expect(bodies[1].event).toBe('REQUEST_CHANGES');
     expect(bodies[1]).not.toHaveProperty('comments');
   });
 });

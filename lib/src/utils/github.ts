@@ -21,13 +21,13 @@ import {
   withFingerprintMarker,
 } from './inline-fingerprint.js';
 import { getLabelColor } from './label-color.js';
-import { normalizeVerdictMode } from './verdict-mode.js';
 import { withRetry } from './retry.js';
 import type { RetryOptions } from './retry.js';
 import { buildReviewBody } from './review-body.js';
 import type { ReviewBodyOptions } from './review-body.js';
 import { gatherReviewThread } from './review-thread.js';
 import type { ThreadComment } from './review-thread.js';
+import { normalizeVerdictMode } from './verdict-mode.js';
 
 /**
  * Single-flight registry for marker-based comment upserts (postOrUpdateComment).

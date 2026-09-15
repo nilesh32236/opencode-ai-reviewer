@@ -1,4 +1,10 @@
-import type { ReviewIssue, ReviewResult, Severity, TokenUsage, VerdictMode } from '../types/index.js';
+import type {
+  ReviewIssue,
+  ReviewResult,
+  Severity,
+  TokenUsage,
+  VerdictMode,
+} from '../types/index.js';
 import { buildFixPayload, formatFixPayloadMarkdown } from './fix-payload.js';
 import {
   type FunctionScore,
