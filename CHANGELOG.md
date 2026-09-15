@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.13.8] — 2026-09-15
+
+
+### Fixed
+
+- address issue #492 (#508) (#492
+#508)
+
+### Changed
+
+- [Autofix] [Audit:api-endpoints] 0 critical, 5 important, 5 minor (#486) (#486)
+- [Autofix] [Audit:api-data-fetching] 0 critical, 5 important, 3 minor (#488) (#488)
+- [Autofix] [Monitor][review-quality] Default-exclude agent-config dirs from review noise (#507) (#507)
+- feat(audit): add maintainability-modularity category
+
+[v1.13.8]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.7...v1.13.8
+
 ## [v1.13.7] — 2026-09-15
 
 
