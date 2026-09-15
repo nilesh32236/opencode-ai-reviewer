@@ -205,6 +205,8 @@ export function isSafeLinterArgs(args: unknown): boolean {
  * A bare `startsWith('..')` false-positives on benign in-base names such as
  * `..foo` (rel `..foo` stays inside the base). Only the exact parent (`..`),
  * the `../` prefix, and the Windows `..\` prefix are traversals.
+ * @param rel - Lexical relative path to classify.
+ * @returns True when the relative path escapes the base directory.
  */
 function isTraversalRel(rel: string): boolean {
   return rel === '..' || rel.startsWith('../') || rel.startsWith('..\\');
