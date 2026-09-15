@@ -10,7 +10,11 @@ const logger = new Logger('Privilege');
  */
 const PRIVILEGED_AUTHOR_ASSOCIATIONS = ['OWNER', 'MEMBER', 'COLLABORATOR'] as const;
 
-/** Marker for the permission-denied notice, scoped per command so concurrent denials don't clobber each other. */
+/**
+ * Marker for the permission-denied notice, scoped per command so concurrent denials don't clobber each other.
+ * @param command - Slash command name (e.g. 'fix').
+ * @returns The HTML comment marker for the denial notice.
+ */
 export const privilegeDenialMarker = (command: string): string =>
   `<!-- permission-denied:${command} -->`;
 
