@@ -15,6 +15,7 @@ const DISCOVER_WINDOW_DEFAULT = 2;
  * Create a subscriber that handles `/discover` commands to surface recurring review patterns.
  * @param learningStore - The learning store instance for pattern discovery.
  * @param rateLimiter - The shared rate limiter for cost control.
+ * @param repoFilter - Optional repo allowlist/denylist override (defaults to the shared process-wide filter).
  * @returns A subscriber object for the discover command.
  */
 export function createDiscoverSubscriber(

@@ -9,6 +9,11 @@ import type {
 import { handleAudit } from '../handlers/audit.js';
 import { postPrivilegeDenial, satisfiesPrivilegeGate } from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
+import {
+  type RepoFilter,
+  repoFilter as defaultRepoFilter,
+  isRepoAllowed,
+} from '../utils/repo-filter.js';
 import { getToken } from '../utils/token.js';
 
 /**
@@ -16,12 +21,14 @@ import { getToken } from '../utils/token.js';
  * @param rateLimiter - The shared rate limiter for cost control.
  * @param config - The resolved agent configuration (built once at startup).
  * @param eventBus - Optional event bus for publishing pipeline events.
+ * @param repoFilter - Optional repo allowlist/denylist override (defaults to the shared process-wide filter).
  * @returns A subscriber object for the audit command.
  */
 export function createAuditSubscriber(
   rateLimiter: RateLimiter,
   config: AgentConfig,
   eventBus?: EventBus,
+  repoFilter?: RepoFilter,
 ): Subscriber {
   const logger = new Logger('AuditSubscriber');
   return {
@@ -34,13 +41,31 @@ export function createAuditSubscriber(
         const auditComment = auditPayload.comment as Record<string, string> | undefined;
         const parsed = auditComment?.body ? parseCommand(auditComment.body) : null;
         if (!parsed || parsed.command !== 'audit') return;
+        if (!isRepoAllowed(event.repo || '', repoFilter ?? defaultRepoFilter)) {
+          logger.info(`Skipping /audit for ${event.repo} — repository filtered out`);
+          return;
+        }
         if (!satisfiesPrivilegeGate(event.payload)) {
-          const deniedTarget =
+          const rawIssue =
             auditPayload.issue && typeof auditPayload.issue === 'object'
-              ? ((auditPayload.issue as Record<string, unknown>).number as number | undefined)
+              ? (auditPayload.issue as Record<string, unknown>).number
               : undefined;
+          const rawPr =
+            auditPayload.pull_request && typeof auditPayload.pull_request === 'object'
+              ? (auditPayload.pull_request as Record<string, unknown>).number
+              : undefined;
+          const deniedTarget =
+            typeof rawIssue === 'number'
+              ? rawIssue
+              : typeof rawPr === 'number'
+                ? rawPr
+                : typeof event.prNumber === 'number' && event.prNumber > 0
+                  ? event.prNumber
+                  : undefined;
           logger.info(`Skipping /audit for ${event.repo}#${deniedTarget} — unprivileged author`);
-          if (deniedTarget) await postPrivilegeDenial(event.repo || '', deniedTarget, 'audit');
+          if (typeof deniedTarget === 'number') {
+            await postPrivilegeDenial(event.repo || '', deniedTarget, 'audit');
+          }
           return;
         }
         const auditIssue =

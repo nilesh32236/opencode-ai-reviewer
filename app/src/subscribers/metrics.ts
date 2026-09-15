@@ -10,6 +10,7 @@ import { getToken } from '../utils/token.js';
 /**
  * Create a subscriber that handles `/metrics` commands to display review metrics.
  * @param learningStore - The learning store instance for metrics data.
+ * @param repoFilter - Optional repo allowlist/denylist (defaults to the shared process-wide filter).
  * @returns A subscriber object for the metrics command.
  */
 export function createMetricsSubscriber(

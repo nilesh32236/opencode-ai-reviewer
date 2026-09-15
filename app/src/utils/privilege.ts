@@ -10,8 +10,9 @@ const logger = new Logger('Privilege');
  */
 const PRIVILEGED_AUTHOR_ASSOCIATIONS = ['OWNER', 'MEMBER', 'COLLABORATOR'] as const;
 
-/** Marker for the single permission-denied notice per PR/issue. */
-const PRIVILEGE_DENIAL_MARKER = '<!-- permission-denied -->';
+/** Marker for the permission-denied notice, scoped per command so concurrent denials don't clobber each other. */
+export const privilegeDenialMarker = (command: string): string =>
+  `<!-- permission-denied:${command} -->`;
 
 /**
  * Whether a GitHub `author_association` value is privileged.
@@ -73,11 +74,12 @@ export async function postPrivilegeDenial(
   prNumber: number,
   command: string,
 ): Promise<void> {
+  if (!repo || !prNumber || prNumber <= 0) return;
   try {
     const gh = new GitHubHelper(getToken(), repo);
     await gh.postOrUpdateComment(
       prNumber,
-      PRIVILEGE_DENIAL_MARKER,
+      privilegeDenialMarker(command),
       `⛔ Only repository collaborators can run \`/${command}\`. Your association does not have permission.`,
     );
   } catch (err) {

@@ -14,6 +14,7 @@ import { getToken } from '../utils/token.js';
  * Create a subscriber that handles reply-to-review comments.
  * @param rateLimiter - The shared rate limiter for cost control.
  * @param config - The resolved agent configuration (built once at startup).
+ * @param repoFilter - Optional repo allowlist/denylist override (defaults to the shared process-wide filter).
  * @returns A subscriber object for the reply event.
  */
 export function createReplySubscriber(

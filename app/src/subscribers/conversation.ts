@@ -40,6 +40,7 @@ import { getToken } from '../utils/token.js';
  * @param rateLimiter - The shared rate limiter for cost control.
  * @param config - The resolved agent configuration (built once at startup).
  * @param eventBus - Optional event bus for publishing pipeline events.
+ * @param repoFilter - Optional repo allowlist/denylist override (defaults to the shared process-wide filter).
  * @returns A subscriber object for conversation handling.
  */
 export function createConversationSubscriber(

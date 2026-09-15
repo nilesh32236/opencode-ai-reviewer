@@ -10,6 +10,7 @@ import {
 } from '@opencode-pr-agent/lib';
 import type { AgentConfig, EventBus, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
 import { createRateLimiter } from '../utils/rate-limit.js';
+import { repoFilter } from '../utils/repo-filter.js';
 import { createAdminSubscriber } from './admin.js';
 import { createAnalyzeSubscriber } from './analyze.js';
 import { createAuditSubscriber } from './audit.js';
@@ -53,11 +54,11 @@ export function registerSubscribers(
     createAnalyzeSubscriber(rateLimiter, resolvedConfig, bus),
     createAutoAnalyzeSubscriber(rateLimiter, resolvedConfig, bus),
     createQuestionAnsweredSubscriber(),
-    createReplySubscriber(rateLimiter, resolvedConfig),
+    createReplySubscriber(rateLimiter, resolvedConfig, repoFilter),
     createDismissSubscriber(learningStore, resolvedConfig),
     createExplainSubscriber(rateLimiter, resolvedConfig, bus),
     createDescribeSubscriber(rateLimiter, resolvedConfig, bus),
-    createConversationSubscriber(learningStore, rateLimiter, resolvedConfig, bus),
+    createConversationSubscriber(learningStore, rateLimiter, resolvedConfig, bus, repoFilter),
     createSetupSubscriber(resolvedConfig),
     createAdminSubscriber(rateLimiter, resolvedConfig),
   ];
@@ -84,8 +85,8 @@ export function registerSubscribers(
   );
   subscribers.push(metaReviewSub);
 
-  subscribers.push(createDiscoverSubscriber(learningStore, rateLimiter));
-  subscribers.push(createMetricsSubscriber(learningStore));
+  subscribers.push(createDiscoverSubscriber(learningStore, rateLimiter, repoFilter));
+  subscribers.push(createMetricsSubscriber(learningStore, repoFilter));
 
   // Prune stale rate-limit rows once at startup.
   rateLimiter.cleanup().catch((err) => {
