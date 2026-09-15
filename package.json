@@ -33,7 +33,7 @@
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@types/jest": "^29.5.14",
-    "@types/node": "^24.10.0",
+    "@types/node": "^24.13.4",
     "@typescript-eslint/parser": "^8.65.0",
     "eslint": "^10.7.0",
     "eslint-plugin-jsdoc": "^63.2.0",

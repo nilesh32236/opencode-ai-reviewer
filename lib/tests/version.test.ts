@@ -115,11 +115,11 @@ describe('checkNodeFloor()', () => {
     // Guard the derivation so a malformed constant fails loudly instead of
     // producing an unparseable fixture that checkNodeFloor would fail-open on.
     const parsed = parseVersion(MINIMUM_NODE_VERSION);
-    expect(parsed).not.toBeNull();
+    if (parsed === null) throw new Error(`Malformed MINIMUM_NODE_VERSION: ${MINIMUM_NODE_VERSION}`);
     const aboveFloor = formatVersion({
-      major: parsed!.major,
-      minor: parsed!.minor,
-      patch: parsed!.patch + 1,
+      major: parsed.major,
+      minor: parsed.minor,
+      patch: parsed.patch + 1,
       prerelease: null,
     });
     expect(checkNodeFloor(aboveFloor, MINIMUM_NODE_VERSION).ok).toBe(true);
