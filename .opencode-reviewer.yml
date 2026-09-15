@@ -50,6 +50,7 @@ audit:
     - "dockerfile-security"
     - "terraform-security"
     - "kubernetes-security"
+    - "maintainability-modularity"
   targetDirs:
     - "lib/src"
     - "action/src"
