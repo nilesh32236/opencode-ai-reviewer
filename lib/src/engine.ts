@@ -9,6 +9,7 @@ import { buildSubagentReviewPrompt } from './agents/index.js';
 import type { AgentPromptContext } from './agents/index.js';
 import { CodebaseIndex, CodebaseIndexCache } from './codebase-index/index.js';
 import type { CodebaseIndexData } from './codebase-index/types.js';
+import { resolveExcludeAgentConfigs } from './config.js';
 import { conversationThreadId } from './conversation/state.js';
 import type { ConversationStateManager } from './conversation/state.js';
 import type { EventBus } from './event-bus/bus.js';
@@ -75,7 +76,11 @@ import { MAX_BLAME_LINES_PER_FILE, UNCOMMITTED_SHA } from './utils/blame.js';
 import type { BlameRange } from './utils/blame.js';
 import { sanitizeDescribeDiagram } from './utils/describe-diagram.js';
 import { computeReviewStats, filterFindings, severityRank } from './utils/filter-findings.js';
-import { isGeneratedArtifact, isGeneratedArtifactPath } from './utils/generated-files.js';
+import {
+  isAgentConfigPath,
+  isGeneratedArtifact,
+  isGeneratedArtifactPath,
+} from './utils/generated-files.js';
 import { Logger } from './utils/logger.js';
 import {
   detectDotnetLibraries,
@@ -964,15 +969,35 @@ export class ReviewEngine {
       }
     }
 
-    // Filter out excluded files (lockfiles, generated code, dist/, etc.)
+    // Filter out excluded files (lockfiles, generated code, dist/, etc.).
+    // Agent-config paths (.agents/, .claude/, SKILL.md) are default-excluded
+    // from LLM findings (counted as skipped in the summary) unless
+    // `review.excludeAgentConfigs` is explicitly false (`review.exclude_agent_configs`
+    // is accepted as a deprecated alias). Fail-open: absent or
+    // unparseable config defaults to excluding; filtering errors include the
+    // file rather than dropping the review.
+    // @since NEXT
     const excludePatterns = this.config.review.excludePatterns || [];
-    let files =
-      excludePatterns.length > 0
-        ? pr.changedFiles.filter((f) => {
-            if (!f?.path) return false;
-            return !excludePatterns.some((pattern: string) => minimatch(f.path, pattern));
-          })
-        : pr.changedFiles;
+    const excludeAgentConfigs = resolveExcludeAgentConfigs(this.config.review) ?? true;
+    let agentConfigSkipped = 0;
+    let files = pr.changedFiles.filter((f) => {
+      if (!f?.path) return false;
+      if (excludePatterns.some((pattern: string) => minimatch(f.path, pattern))) return false;
+      if (excludeAgentConfigs) {
+        try {
+          if (isAgentConfigPath(f.path)) {
+            agentConfigSkipped++;
+            return false;
+          }
+        } catch (err) {
+          this.logger.warn(
+            `Agent-config exclusion check failed for ${f.path}, including file: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          return true;
+        }
+      }
+      return true;
+    });
 
     // Per-path skip rules (`review.pathRules` with `skip: true`). Fail-open:
     // invalid config or match errors keep the full file list.
@@ -1030,20 +1055,56 @@ export class ReviewEngine {
     }
 
     if (files.length === 0 && pr.changedFiles.length > 0) {
+      const agentConfigNote =
+        agentConfigSkipped > 0
+          ? ` (including ${agentConfigSkipped} agent-config file(s) excluded by review.excludeAgentConfigs)`
+          : '';
       this.logger.info(
-        `All ${pr.changedFiles.length} changed file(s) matched exclude patterns — skipping review`,
+        `All ${pr.changedFiles.length} changed file(s) matched exclude patterns${agentConfigNote} — skipping review`,
       );
-      // Even when every source file is excluded, deterministic SCA findings on
-      // the excluded lock files still surface (a lock-file-only PR is the
-      // primary SCA use case).
-      if (scaIssues.length > 0) {
-        return this.mergeScaIssues(emptyResult(), scaIssues);
+      if (agentConfigSkipped > 0) {
+        this.logger.info(
+          `Skipped ${agentConfigSkipped} agent-config file(s) from review (review.excludeAgentConfigs)`,
+        );
       }
-      return emptyResult();
+      // Even when every source file is excluded, deterministic findings still
+      // surface: SCA findings on the excluded lock files (a lock-file-only PR
+      // is the primary SCA use case) and hardcoded secrets scanned over the
+      // UNFILTERED changed-file list so agent-config exclusions can never
+      // hide a committed secret from the secret pass.
+      const skippedOnly = emptyResult();
+      if (agentConfigSkipped > 0) {
+        skippedOnly.summary = `Skipped review: ${agentConfigSkipped} agent-config file(s) excluded from review (review.excludeAgentConfigs).`;
+      }
+      let skippedResult = skippedOnly;
+      const skippedSecretConfig = this.config.secrets ?? DEFAULT_SECRET_DETECTOR_CONFIG;
+      if (skippedSecretConfig.enabled) {
+        try {
+          const skippedSecretIssues = await this.scanFilesForSecrets(pr.changedFiles, workDir);
+          if (skippedSecretIssues.length > 0) {
+            this.logger.info(
+              `Secret detection flagged ${skippedSecretIssues.length} hardcoded secret(s) in the changed files`,
+            );
+            skippedResult = this.mergeSecretIssues(skippedResult, skippedSecretIssues);
+          }
+        } catch (err) {
+          this.logger.warn(
+            `Secret detection failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      if (scaIssues.length > 0) {
+        return this.mergeScaIssues(skippedResult, scaIssues);
+      }
+      return skippedResult;
     }
     if (files.length < pr.changedFiles.length) {
+      const exclusionNote =
+        agentConfigSkipped > 0
+          ? ` (including ${agentConfigSkipped} agent-config file(s) excluded by review.excludeAgentConfigs)`
+          : '';
       this.logger.info(
-        `Excluded ${pr.changedFiles.length - files.length} file(s) from review by exclude patterns`,
+        `Excluded ${pr.changedFiles.length - files.length} file(s) from review by exclude patterns${exclusionNote}`,
       );
     }
 
@@ -1422,6 +1483,7 @@ export class ReviewEngine {
           totalDiffLines,
           files,
           scaIssues,
+          pr.changedFiles,
         );
 
         // Single-batch fast path still emits the streaming hook (batch 0 of 1)
@@ -1693,6 +1755,7 @@ export class ReviewEngine {
         totalDiffLines,
         files,
         scaIssues,
+        pr.changedFiles,
       );
     }
 
@@ -1753,6 +1816,7 @@ export class ReviewEngine {
         totalDiffLines,
         files,
         scaIssues,
+        pr.changedFiles,
       );
     } catch {
       this.logger.warn('Synthesis output parse failed, falling back to merged batch results');
@@ -1780,6 +1844,7 @@ export class ReviewEngine {
         totalDiffLines,
         files,
         scaIssues,
+        pr.changedFiles,
       );
     }
   }
@@ -2040,6 +2105,7 @@ export class ReviewEngine {
         totalDiffLines,
         files,
         scaIssues,
+        pr.changedFiles,
       );
     }
 
@@ -2136,6 +2202,7 @@ export class ReviewEngine {
       totalDiffLines,
       files,
       scaIssues,
+      pr.changedFiles,
     );
 
     // Single completion hook (the subagent path has no per-batch granularity):
@@ -3378,6 +3445,7 @@ export class ReviewEngine {
     totalDiffLines?: number,
     files?: PRContext['changedFiles'],
     scaIssues?: ReviewIssue[],
+    secretScanFiles?: PRContext['changedFiles'],
   ): Promise<ReviewResult> {
     let enrichedResult = result;
 
@@ -3586,11 +3654,16 @@ export class ReviewEngine {
     // static finding. Critical issues merge in and drive the severity-based CI
     // gate through the recomputed stats. Best-effort: a scan failure degrades
     // gracefully to the already-processed result.
-    if (files && files.length > 0) {
+    // Scans the UNFILTERED changed-file list (secretScanFiles) so LLM-review
+    // exclusions (excludePatterns, agent-config filtering, pathRules skips)
+    // can never hide a committed secret. Falls back to the review-scoped
+    // `files` list when no unfiltered list was provided.
+    const filesForSecrets = secretScanFiles ?? files;
+    if (filesForSecrets && filesForSecrets.length > 0) {
       const secretConfig = this.config.secrets ?? DEFAULT_SECRET_DETECTOR_CONFIG;
       if (secretConfig.enabled) {
         try {
-          const secretIssues = await this.scanFilesForSecrets(files, workDir);
+          const secretIssues = await this.scanFilesForSecrets(filesForSecrets, workDir);
           if (secretIssues.length > 0) {
             this.logger.info(
               `Secret detection flagged ${secretIssues.length} hardcoded secret(s) in the changed files`,

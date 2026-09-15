@@ -727,6 +727,22 @@ export interface ReviewConfig {
   commandTriggers: string[];
   /** Glob patterns for files to exclude from review (e.g., lockfiles, generated code) */
   excludePatterns: string[];
+  /**
+   * Default-exclude agent-config paths (`.agents/`, `.claude/`, `SKILL.md`)
+   * from LLM findings while counting them as skipped in the summary.
+   * Set to false to review them as before. Fail-open: absent/unparseable
+   * config is treated as true.
+   * @default true
+   * @since NEXT
+   */
+  excludeAgentConfigs?: boolean;
+  /**
+   * Deprecated alias for `excludeAgentConfigs` (accepted for backward
+   * compatibility; the camelCase key wins when both are set).
+   * @deprecated Use `excludeAgentConfigs` instead.
+   * @since NEXT
+   */
+  exclude_agent_configs?: boolean;
   /** Whether to run a meta-verification pass that drops false-positive findings */
   enableMetaVerification: boolean;
   /** Whether to run test-gap detection that flags code changes lacking
@@ -1564,6 +1580,22 @@ export interface PromptConfig {
     suppressLowConfidence?: boolean;
     /** Patterns to exclude from review */
     excludePatterns?: string[];
+    /**
+     * Default-exclude agent-config paths (`.agents/`, `.claude/`, `SKILL.md`)
+     * from LLM findings while counting them as skipped in the summary.
+     * Set to false to review them as before. Fail-open: absent/unparseable
+     * config is treated as true.
+     * @default true
+     * @since NEXT
+     */
+    excludeAgentConfigs?: boolean;
+    /**
+     * Deprecated alias for `excludeAgentConfigs` (accepted for backward
+     * compatibility; the camelCase key wins when both are set).
+     * @deprecated Use `excludeAgentConfigs` instead.
+     * @since NEXT
+     */
+    exclude_agent_configs?: boolean;
     /** Token budget configuration for smart context allocation */
     tokenBudget?: TokenBudgetConfig;
     /** Enable lightweight reachability analysis on security findings (default: true) */
@@ -1867,6 +1899,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     enableMetaVerification: false,
     enableTestGapDetection: false,
     emitFixPayload: false,
+    excludeAgentConfigs: true,
     showFunctionScores: false,
     suppressLowConfidence: false,
     enableReachability: true,

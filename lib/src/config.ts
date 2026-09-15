@@ -240,6 +240,26 @@ export function sanitizePathRules(raw: unknown): PathRule[] | undefined {
   return sanitized.length > 0 ? sanitized : undefined;
 }
 
+/**
+ * Resolve the agent-config exclusion flag from a review config block.
+ * Canonical key is camelCase (`excludeAgentConfigs`); the snake_case spelling
+ * (`exclude_agent_configs`) is a deprecated alias kept for one release.
+ * The camelCase key wins when both are set. Returns undefined when neither is
+ * set so callers can apply the fail-open default (true).
+ * @param review - Review config block (may be undefined).
+ * @returns The resolved flag, or undefined when unset.
+ * @since NEXT
+ */
+export function resolveExcludeAgentConfigs(
+  review?: { excludeAgentConfigs?: unknown; exclude_agent_configs?: unknown } | null,
+): boolean | undefined {
+  const camel = review?.excludeAgentConfigs;
+  if (typeof camel === 'boolean') return camel;
+  const snake = review?.exclude_agent_configs;
+  if (typeof snake === 'boolean') return snake;
+  return undefined;
+}
+
 const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
   platform: null,
   review: {
@@ -253,6 +273,8 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     emitFixPayload: null,
     suppressLowConfidence: null,
     excludePatterns: null,
+    excludeAgentConfigs: null,
+    exclude_agent_configs: null,
     enableReachability: null,
     enableMetaVerification: null,
     enableTestGapDetection: null,
@@ -670,6 +692,13 @@ export function validateConfig(
       result.review.excludePatterns = config.review.excludePatterns.filter(
         (p) => typeof p === 'string',
       );
+    }
+    const resolvedExcludeAgentConfigs = resolveExcludeAgentConfigs(config.review);
+    if (resolvedExcludeAgentConfigs !== undefined) {
+      // Keep both spellings in sync so consumers of either key observe the
+      // resolved value (canonical key wins when both were set).
+      result.review.excludeAgentConfigs = resolvedExcludeAgentConfigs;
+      result.review.exclude_agent_configs = resolvedExcludeAgentConfigs;
     }
     if (typeof config.review.enableReachability === 'boolean') {
       result.review.enableReachability = config.review.enableReachability;

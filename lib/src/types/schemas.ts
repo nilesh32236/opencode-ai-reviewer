@@ -286,6 +286,14 @@ export const ReviewConfigSchema = z.object({
       '**/action/lib/**',
       '**/*.bundle.js',
     ]),
+  // Canonical camelCase key; the snake_case spelling is a deprecated alias
+  // (see resolveExcludeAgentConfigs in lib/src/config.ts — camelCase wins when
+  // both are set). Both are default-free here on purpose: a schema `.default()`
+  // would be indistinguishable from an explicit value and break alias
+  // precedence. The default (true) lives in DEFAULT_CONFIG and the engine's
+  // fail-open `?? true` fallback.
+  excludeAgentConfigs: z.boolean().optional(),
+  exclude_agent_configs: z.boolean().optional(),
   enableReachability: z.boolean().optional().default(true),
   enableMetaVerification: z.boolean().optional().default(false),
   enableTestGapDetection: z.boolean().optional().default(false),
@@ -709,6 +717,8 @@ export const PromptConfigSchema = z.object({
       inline: z.boolean().optional(),
       suppressLowConfidence: z.boolean().optional(),
       excludePatterns: z.array(z.string()).optional(),
+      excludeAgentConfigs: z.boolean().optional(),
+      exclude_agent_configs: z.boolean().optional(),
       tokenBudget: TokenBudgetConfigSchema.optional(),
       enableReachability: z.boolean().optional(),
       enableMetaVerification: z.boolean().optional(),

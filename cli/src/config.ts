@@ -1,4 +1,9 @@
-import { type AgentConfig, DEFAULT_CONFIG, type PromptConfig } from '@opencode-pr-agent/lib';
+import {
+  type AgentConfig,
+  DEFAULT_CONFIG,
+  type PromptConfig,
+  resolveExcludeAgentConfigs,
+} from '@opencode-pr-agent/lib';
 
 /** Options for building a local AgentConfig. */
 export interface ConfigOptions {
@@ -70,6 +75,12 @@ export function buildAgentConfig(
       ...(loadedConfig?.review?.excludePatterns !== undefined && {
         excludePatterns: loadedConfig.review.excludePatterns,
       }),
+      // Canonical camelCase key wins over the deprecated snake_case alias;
+      // falls back to the built-in default (true) when neither is set.
+      excludeAgentConfigs:
+        resolveExcludeAgentConfigs(loadedConfig?.review) ??
+        DEFAULT_CONFIG.review.excludeAgentConfigs ??
+        true,
       enableMetaVerification:
         loadedConfig?.review?.enableMetaVerification ??
         DEFAULT_CONFIG.review.enableMetaVerification,

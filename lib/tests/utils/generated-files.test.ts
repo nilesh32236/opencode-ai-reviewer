@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  isAgentConfigPath,
   isGeneratedArtifact,
   isGeneratedArtifactPath,
   isMinifiedContent,
@@ -34,6 +35,12 @@ describe('isGeneratedArtifactPath', () => {
     expect(isGeneratedArtifactPath('')).toBe(false);
   });
 
+  it('keeps agent-config paths out of generated-artifact semantics', () => {
+    expect(isGeneratedArtifactPath('.agents/foo.md')).toBe(false);
+    expect(isGeneratedArtifactPath('.claude/settings.json')).toBe(false);
+    expect(isGeneratedArtifactPath('docs/SKILL.md')).toBe(false);
+  });
+
   it('handles Windows-style separators', () => {
     expect(isGeneratedArtifactPath('action\\lib\\index.js')).toBe(true);
     expect(isGeneratedArtifactPath('lib\\src\\engine.ts')).toBe(false);
@@ -60,6 +67,43 @@ describe('isMinifiedContent', () => {
 
   it('returns false for empty input', () => {
     expect(isMinifiedContent('')).toBe(false);
+  });
+});
+
+describe('isAgentConfigPath', () => {
+  it('flags .agents/ and .claude/ directory contents', () => {
+    expect(isAgentConfigPath('.agents/foo.md')).toBe(true);
+    expect(isAgentConfigPath('.claude/settings.json')).toBe(true);
+    expect(isAgentConfigPath('docs/.agents/nested/skill.md')).toBe(true);
+  });
+
+  it('flags SKILL.md basenames case-insensitively', () => {
+    expect(isAgentConfigPath('SKILL.md')).toBe(true);
+    expect(isAgentConfigPath('docs/SKILL.md')).toBe(true);
+    expect(isAgentConfigPath('docs/skill.md')).toBe(true);
+    expect(isAgentConfigPath('docs/Skill.MD')).toBe(true);
+  });
+
+  it('matches agent-config directory segments case-insensitively', () => {
+    expect(isAgentConfigPath('.AGENTS/foo.md')).toBe(true);
+    expect(isAgentConfigPath('.Claude/settings.json')).toBe(true);
+  });
+
+  it('handles Windows-style separators', () => {
+    expect(isAgentConfigPath('.agents\\foo.md')).toBe(true);
+    expect(isAgentConfigPath('docs\\SKILL.md')).toBe(true);
+  });
+
+  it('does not flag ordinary sources or near-miss segments', () => {
+    expect(isAgentConfigPath('lib/src/engine.ts')).toBe(false);
+    expect(isAgentConfigPath('.agents-nested/foo.md')).toBe(false);
+    expect(isAgentConfigPath('src/agents/foo.ts')).toBe(false);
+    expect(isAgentConfigPath('src/my-skill.md')).toBe(false);
+    expect(isAgentConfigPath('')).toBe(false);
+  });
+
+  it('does not treat a trailing .agents segment as a directory', () => {
+    expect(isAgentConfigPath('foo/.agents')).toBe(false);
   });
 });
 
