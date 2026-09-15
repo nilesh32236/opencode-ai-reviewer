@@ -536,6 +536,12 @@ export interface MCPServerConfig {
    * - `streamable-http`: Streamable HTTP only, no SSE fallback.
    * @since NEXT */
   remoteTransport?: RemoteTransportMode;
+  /** V2 config semantics: `false` (default) means the server is enabled,
+   * `true` means installed-but-off. Serialized into the V2
+   * `mcp.servers` map entry (as `disabled: false` when unset); ignored by
+   * the legacy V1 `mcp` map shape.
+   * @since NEXT */
+  disabled?: boolean;
 }
 
 /** Project-level context config fed into review prompts. */

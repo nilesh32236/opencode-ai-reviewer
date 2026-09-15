@@ -134,3 +134,72 @@ export function getDefaultMCPServers(githubToken: string): MCPServerConfig[] {
   }
   return servers;
 }
+
+/**
+ * Serialize one internal {@link MCPServerConfig} to its legacy V1 wire shape
+ * (`mcp: { <name>: {...} }` map entry).
+ *
+ * Internal-only fields (`name`, `allowedTools`, `allowedEnv`, `timeoutMs`,
+ * `remoteTransport`, `disabled`) are stripped: V1 has no `disabled` flag and
+ * the remaining fields are client-side connection policy, not CLI config.
+ * @param server - The internal server config to serialize.
+ * @returns The V1 wire entry (without the server name key).
+ * @since NEXT
+ */
+export function toV1ServerEntry(server: MCPServerConfig): Record<string, unknown> {
+  const entry: Record<string, unknown> = { type: server.type };
+  if (server.type === 'local') {
+    if (server.command !== undefined) entry.command = [...server.command];
+    if (server.environment !== undefined) entry.environment = { ...server.environment };
+  } else {
+    if (server.url !== undefined) entry.url = server.url;
+    if (server.environment !== undefined) entry.headers = { ...server.environment };
+  }
+  return entry;
+}
+
+/**
+ * Serialize a list of servers to the legacy V1 `mcp` map shape.
+ * @param servers - The internal server configs to serialize.
+ * @returns Map of server name → V1 wire entry.
+ * @since NEXT
+ */
+export function toV1ServersMap(
+  servers: MCPServerConfig[],
+): Record<string, Record<string, unknown>> {
+  const map: Record<string, Record<string, unknown>> = {};
+  for (const server of servers ?? []) {
+    if (!server || typeof server.name !== 'string' || !server.name) continue;
+    map[server.name] = toV1ServerEntry(server);
+  }
+  return map;
+}
+
+/**
+ * Serialize one internal {@link MCPServerConfig} to its V2 wire shape
+ * (`mcp.servers.<name>` map entry). Identical to {@link toV1ServerEntry}
+ * plus the V2 `disabled` flag (`false` = enabled, the default when unset).
+ * @param server - The internal server config to serialize.
+ * @returns The V2 wire entry (without the server name key).
+ * @since NEXT
+ */
+export function toV2ServerEntry(server: MCPServerConfig): Record<string, unknown> {
+  return { ...toV1ServerEntry(server), disabled: server.disabled ?? false };
+}
+
+/**
+ * Serialize a list of servers to the V2 `mcp.servers` map shape.
+ * @param servers - The internal server configs to serialize.
+ * @returns Map of server name → V2 wire entry (each carrying `disabled`).
+ * @since NEXT
+ */
+export function toV2ServersMap(
+  servers: MCPServerConfig[],
+): Record<string, Record<string, unknown>> {
+  const map: Record<string, Record<string, unknown>> = {};
+  for (const server of servers ?? []) {
+    if (!server || typeof server.name !== 'string' || !server.name) continue;
+    map[server.name] = toV2ServerEntry(server);
+  }
+  return map;
+}
