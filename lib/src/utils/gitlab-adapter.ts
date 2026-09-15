@@ -16,6 +16,11 @@ import type {
 } from '../types/index.js';
 import { CircuitBreaker, countHttpError } from './circuit-breaker.js';
 import { getErrorStatus } from './errors.js';
+import {
+  filterIssuesByFingerprints,
+  fingerprintForIssue,
+  withFingerprintMarker,
+} from './inline-fingerprint.js';
 import { getLabelColor } from './label-color.js';
 import { withRetry } from './retry.js';
 import { buildReviewBody } from './review-body.js';
@@ -41,6 +46,23 @@ const MAX_DIFF_BYTES_PER_FILE = 100_000;
 const MAX_DIFF_FILES = 300;
 /** Maximum raw diff text (bytes) parsed by getDiffLines before truncation. */
 const MAX_DIFF_TEXT_BYTES = 512 * 1024;
+
+/**
+ * Coerce an optional fingerprint collection to a Set (fail-open: invalid
+ * input yields an empty set so the dedup gate becomes a no-op).
+ * @param value - Set or array of fingerprint/legacy-key strings.
+ * @returns A Set of strings (possibly empty).
+ * @since NEXT
+ */
+function toGitLabFingerprintSet(value: Set<string> | string[] | undefined): Set<string> {
+  try {
+    if (value instanceof Set) return value;
+    if (Array.isArray(value)) return new Set(value.filter((v) => typeof v === 'string'));
+  } catch {
+    // fall through to empty set
+  }
+  return new Set<string>();
+}
 
 /**
  * Measure a string's UTF-8 byte length. `String.length` counts UTF-16 code
@@ -815,25 +837,77 @@ export class GitLabAdapter implements PlatformAdapter {
         }
       : result;
 
+    // Persistent fingerprint dedup (default on, fail-open): same gate as the
+    // GitHub path so re-pushes never re-post identical findings.
+    let dedupedIssues = workingResult.issues;
+    try {
+      if ((options?.dedupFingerprints ?? true) === true && postInlineComments) {
+        const previous = toGitLabFingerprintSet(options?.previousFingerprints);
+        const legacy = toGitLabFingerprintSet(options?.previousInlineKeys);
+        if (previous.size > 0 || legacy.size > 0) {
+          const inlineCandidates = workingResult.issues.filter((i) => i.inline === true);
+          const { kept, skipped } = filterIssuesByFingerprints(inlineCandidates, previous, {
+            enabled: true,
+            legacyKeys: legacy,
+          });
+          if (skipped.length > 0) {
+            const keptSet = new Set(kept);
+            core.debug(
+              `Skipping ${skipped.length} duplicate inline finding(s) already posted (fingerprints)`,
+            );
+            dedupedIssues = workingResult.issues.filter((i) => i.inline !== true || keptSet.has(i));
+          }
+        }
+      }
+    } catch (err) {
+      core.warning(
+        `Fingerprint dedup unavailable — posting all findings: ${err instanceof Error ? err.message : err}`,
+      );
+      dedupedIssues = workingResult.issues;
+    }
+    const dedupedResult = { ...workingResult, issues: dedupedIssues };
+
     const inlineComments = postInlineComments
       ? buildInlineComments(
-          workingResult,
+          dedupedResult,
           await this.getDiffLines(mrNumber, signal),
           suppressLowConfidence,
           options?.emitFixPayload,
         )
       : [];
 
+    try {
+      const queueByAnchor = new Map<string, string[]>();
+      for (const issue of dedupedIssues) {
+        if (issue.inline !== true) continue;
+        try {
+          const fp = fingerprintForIssue(issue);
+          const anchor = `${String(issue.file ?? '').replace(/^\//, '')}:${issue.line}`;
+          const queue = queueByAnchor.get(anchor);
+          if (queue) queue.push(fp);
+          else queueByAnchor.set(anchor, [fp]);
+        } catch {
+          // Fail-open: skip marker stamping for this issue.
+        }
+      }
+      for (const comment of inlineComments) {
+        const fp = queueByAnchor.get(`${comment.path}:${comment.line}`)?.shift();
+        if (fp) comment.body = withFingerprintMarker(comment.body, fp);
+      }
+    } catch {
+      // Fail-open: comments post without markers.
+    }
+
     const placedInlineKeys = new Set<string>();
     for (const c of inlineComments) {
       placedInlineKeys.add(`${c.path}:${c.line}`);
     }
     const issuesForBody = postInlineComments
-      ? workingResult.issues.filter(
+      ? dedupedResult.issues.filter(
           (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
         )
-      : workingResult.issues;
-    const body = buildReviewBody({ ...workingResult, issues: issuesForBody }, options);
+      : dedupedResult.issues;
+    const body = buildReviewBody({ ...dedupedResult, issues: issuesForBody }, options);
 
     const commentIds: Array<{
       file: string;

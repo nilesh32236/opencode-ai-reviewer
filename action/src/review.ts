@@ -5,12 +5,16 @@ import {
   GitLabAdapter,
   Logger,
   buildFunctionScoreOptions,
+  collectFingerprintsFromBodies,
   countAtOrAboveSeverity,
+  fingerprintForIssue,
   getErrorStatus,
+  legacyInlineKey,
   postSuggestionComment,
   sanitizeMarkdown,
   sendNotification,
   shouldFailOnSeverity,
+  withFingerprintMarker,
 } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { resolvePrNumber, sanitize } from './utils.js';
@@ -130,6 +134,27 @@ export async function runReview(
     });
   }
 
+  // Persistent fingerprint store: previously posted bot threads. Identical
+  // findings (same fingerprint) are skipped on re-push; changed line/snippet
+  // yields a new fingerprint and posts. Fail-open: absent history posts as
+  // today. Matches the postReview gate below so streaming and final post agree.
+  const dedupEnabled = config.review.dedupFingerprints ?? true;
+  let previousFingerprints = new Set<string>();
+  let previousLegacyKeys = new Set<string>();
+  try {
+    if (dedupEnabled && previousComments && previousComments.length > 0) {
+      previousFingerprints = collectFingerprintsFromBodies(
+        previousComments.map((c) => c.body ?? ''),
+      );
+      previousLegacyKeys = new Set(
+        previousComments.map((c) => legacyInlineKey(c.file ?? '', c.line ?? null, c.body ?? '')),
+      );
+    }
+  } catch {
+    previousFingerprints = new Set<string>();
+    previousLegacyKeys = new Set<string>();
+  }
+
   // The reviews-array path bundles all inline findings into a single
   // POST /pulls/{n}/reviews request. Streaming would fan out N per-comment
   // postInlineComment requests first, defeating that single-request goal, so
@@ -139,6 +164,7 @@ export async function runReview(
 
   // Track findings posted via streaming so the final summary avoids duplicates.
   const streamedIssueKeys = new Set<string>();
+  const streamedFingerprints = new Set<string>();
   let streamedFindingCount = 0;
 
   const result = await engine.reviewPR(
@@ -158,6 +184,27 @@ export async function runReview(
               // Guard the inline-comment API against model-generated garbage:
               // only positive integer lines within a sane range are posted.
               if (!Number.isInteger(issue.line) || issue.line < 1) continue;
+              // Cross-run fingerprint gate: skip findings already posted in a
+              // previous run (quiet debug log, no new comment). Fail-open:
+              // fingerprint errors never drop a finding here — the final
+              // postReview gate re-checks with the same store.
+              let issueFingerprint: string | undefined;
+              if (dedupEnabled) {
+                try {
+                  issueFingerprint = fingerprintForIssue(issue);
+                  if (
+                    (previousFingerprints.size > 0 && previousFingerprints.has(issueFingerprint)) ||
+                    streamedFingerprints.has(issueFingerprint)
+                  ) {
+                    core.debug(
+                      `Skipping duplicate inline finding (fp ${issueFingerprint}) at ${issue.file}:${issue.line}`,
+                    );
+                    continue;
+                  }
+                } catch {
+                  issueFingerprint = undefined;
+                }
+              }
               const key = streamedFindingKey(issue.file, issue.line, issue.message);
               // Never post the same finding twice across batches (distinct
               // findings on one line have distinct keys and stay independent),
@@ -168,10 +215,16 @@ export async function runReview(
               const posted = await gh.postInlineComment(prNumber, pr.headSha, {
                 path: issue.file,
                 line: issue.line,
-                body: `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}`,
+                body: issueFingerprint
+                  ? withFingerprintMarker(
+                      `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}`,
+                      issueFingerprint,
+                    )
+                  : `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}`,
               });
               if (posted) {
                 streamedIssueKeys.add(key);
+                if (issueFingerprint) streamedFingerprints.add(issueFingerprint);
                 streamedFindingCount++;
               } else {
                 core.warning(
@@ -231,6 +284,14 @@ export async function runReview(
     : result;
 
   const scoreOptions = buildFunctionScoreOptions(config.review.showFunctionScores, pr.changedFiles);
+  const dedupOptions =
+    dedupEnabled && (previousFingerprints.size > 0 || previousLegacyKeys.size > 0)
+      ? {
+          dedupFingerprints: true as const,
+          previousFingerprints,
+          previousInlineKeys: previousLegacyKeys,
+        }
+      : { dedupFingerprints: dedupEnabled };
   const reviewResult = await gh.postReview(
     prNumber,
     pr.headSha,
@@ -238,8 +299,8 @@ export async function runReview(
     config.review.inline,
     undefined,
     config.review.enableReviewsArrayInline === true
-      ? { ...(scoreOptions ?? {}), enableReviewsArrayInline: true as const }
-      : scoreOptions,
+      ? { ...(scoreOptions ?? {}), enableReviewsArrayInline: true as const, ...dedupOptions }
+      : { ...(scoreOptions ?? {}), ...dedupOptions },
   );
 
   if (!reviewResult.success) {

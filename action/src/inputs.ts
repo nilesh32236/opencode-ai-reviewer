@@ -216,6 +216,8 @@ export interface ActionInputs {
   timeoutMinutes: number;
   /** Whether to post review comments inline on the diff. */
   reviewInline: boolean;
+  /** Skip inline findings already posted in previous runs (default: true). */
+  dedupFingerprints: boolean;
   /** Opt-in to a single reviews-array request with summary-only 422 fallback (default: false). */
   enableReviewsArrayInline: boolean;
   /** Whether to stream review findings as batches complete. */
@@ -709,6 +711,7 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     probeAllModels: core.getInput('probe_all_models') === 'true',
     timeoutMinutes: parseTimeoutMinutes(core.getInput('timeout_minutes')),
     reviewInline: core.getInput('review_inline') !== 'false',
+    dedupFingerprints: core.getInput('dedup_fingerprints') !== 'false',
     enableReviewsArrayInline: core.getInput('enable_reviews_array_inline') === 'true',
     streamComments: core.getInput('stream_comments') === 'true',
     streamBatchSize: parseStreamBatchSize(core.getInput('stream_batch_size')),

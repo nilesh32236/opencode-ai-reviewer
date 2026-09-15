@@ -22,6 +22,26 @@ export interface ReviewBodyOptions {
    */
   enableReviewsArrayInline?: boolean;
   /**
+   * Skip inline findings whose fingerprint already appears in previously
+   * posted bot threads. Default true (absent = enabled). Set false to post
+   * as today.
+   * @since NEXT
+   */
+  dedupFingerprints?: boolean;
+  /**
+   * Previously posted inline-finding fingerprints (e.g. collected from bot
+   * review threads via `collectFingerprintsFromBodies`). When absent/empty
+   * the dedup gate is a no-op (fail-open, posts as today).
+   * @since NEXT
+   */
+  previousFingerprints?: Set<string> | string[];
+  /**
+   * Coarse legacy keys for threads posted before the fingerprint marker
+   * existed (see `legacyInlineKey`). Best-effort fallback only.
+   * @since NEXT
+   */
+  previousInlineKeys?: Set<string> | string[];
+  /**
    * Opt-in to appending a one-click Fix-with-AI payload (```suggestion block
    * plus a Fix-with-AI prompt) to each rendered finding. Default false
    * (legacy output unchanged). Fail-open: payload errors render plain finding.

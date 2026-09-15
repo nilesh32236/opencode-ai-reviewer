@@ -186,6 +186,9 @@ export function buildConfig(): AgentConfig {
       ...(process.env.ENABLE_REVIEWS_ARRAY_INLINE !== undefined
         ? { enableReviewsArrayInline: process.env.ENABLE_REVIEWS_ARRAY_INLINE === 'true' }
         : {}),
+      ...(process.env.DEDUP_FINGERPRINTS !== undefined
+        ? { dedupFingerprints: process.env.DEDUP_FINGERPRINTS !== 'false' }
+        : {}),
       ...(process.env.ENABLE_CODEBASE_INDEX !== undefined
         ? { enableCodebaseIndex: process.env.ENABLE_CODEBASE_INDEX !== 'false' }
         : {}),
@@ -352,6 +355,8 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const pathInstructions = repoConfig?.review?.pathInstructions;
   const showFunctionScores = repoConfig?.review?.showFunctionScores;
   const enableReviewsArrayInline = repoConfig?.review?.enableReviewsArrayInline;
+  const dedupFingerprints =
+    repoConfig?.review?.dedupFingerprints ?? repoConfig?.review?.dedup_fingerprints;
   const excludeAgentConfigs = resolveExcludeAgentConfigs(repoConfig?.review);
   const notifications = repoConfig?.notifications;
   const secrets = repoConfig?.secrets;
@@ -376,6 +381,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
     !pathInstructions &&
     showFunctionScores === undefined &&
     enableReviewsArrayInline === undefined &&
+    dedupFingerprints === undefined &&
     excludeAgentConfigs === undefined &&
     !notifications &&
     !secrets &&
@@ -418,6 +424,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       }),
       ...(showFunctionScores !== undefined && { showFunctionScores }),
       ...(enableReviewsArrayInline !== undefined && { enableReviewsArrayInline }),
+      ...(dedupFingerprints !== undefined && { dedupFingerprints }),
       ...(excludeAgentConfigs !== undefined && { excludeAgentConfigs }),
     },
     ...(notifications && {

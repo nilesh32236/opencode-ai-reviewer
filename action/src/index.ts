@@ -249,6 +249,10 @@ async function run(): Promise<void> {
         ...(loadedConfig?.review?.skipLabels && { skipLabels: loadedConfig.review.skipLabels }),
         ...(loadedConfig?.review?.skipActors && { skipActors: loadedConfig.review.skipActors }),
         inline: loadedConfig?.review?.inline ?? inputs.reviewInline,
+        dedupFingerprints:
+          loadedConfig?.review?.dedupFingerprints ??
+          loadedConfig?.review?.dedup_fingerprints ??
+          inputs.dedupFingerprints,
         enableReviewsArrayInline:
           loadedConfig?.review?.enableReviewsArrayInline ?? inputs.enableReviewsArrayInline,
         streamComments: inputs.streamComments,

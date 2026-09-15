@@ -14,6 +14,11 @@ import type {
 } from '../types/index.js';
 import { CircuitBreaker, countHttpError } from './circuit-breaker.js';
 import { getErrorStatus } from './errors.js';
+import {
+  filterIssuesByFingerprints,
+  fingerprintForIssue,
+  withFingerprintMarker,
+} from './inline-fingerprint.js';
 import { getLabelColor } from './label-color.js';
 import { withRetry } from './retry.js';
 import type { RetryOptions } from './retry.js';
@@ -41,6 +46,23 @@ const commentUpserts = new Map<
 export interface PaginatedResult<T> {
   items: T[];
   totalCount: number;
+}
+
+/**
+ * Coerce an optional fingerprint collection to a Set (fail-open: invalid
+ * input yields an empty set so the dedup gate becomes a no-op).
+ * @param value - Set or array of fingerprint/legacy-key strings.
+ * @returns A Set of strings (possibly empty).
+ * @since NEXT
+ */
+function toFingerprintSet(value: Set<string> | string[] | undefined): Set<string> {
+  try {
+    if (value instanceof Set) return value;
+    if (Array.isArray(value)) return new Set(value.filter((v) => typeof v === 'string'));
+  } catch {
+    // fall through to empty set
+  }
+  return new Set<string>();
 }
 
 /**
@@ -864,6 +886,84 @@ export class GitHubHelper implements PlatformAdapter {
   }
 
   /**
+   * Apply persistent fingerprint dedup to inline issues (fail-open).
+   * Identical findings (same path/line/rule/snippet) already present in
+   * `options.previousFingerprints` are dropped from the inline set so
+   * re-pushes never re-post them; changed line/snippet yields a new
+   * fingerprint and is kept. Non-inline issues always pass through.
+   * @param issues - Candidate issues.
+   * @param options - Display flags carrying the dedup gate + known prints.
+   * @returns Deduped issues (new array; input untouched).
+   * @since NEXT
+   */
+  private applyInlineFingerprintDedup(
+    issues: ReviewIssue[],
+    options?: ReviewBodyOptions,
+  ): ReviewIssue[] {
+    try {
+      const enabled = options?.dedupFingerprints ?? true;
+      if (enabled !== true) return issues;
+      const previous = toFingerprintSet(options?.previousFingerprints);
+      const legacy = toFingerprintSet(options?.previousInlineKeys);
+      if (previous.size === 0 && legacy.size === 0) return issues;
+      const inlineCandidates = issues.filter((i) => i.inline === true);
+      if (inlineCandidates.length === 0) return issues;
+      const { kept, skipped } = filterIssuesByFingerprints(inlineCandidates, previous, {
+        enabled: true,
+        legacyKeys: legacy,
+      });
+      if (skipped.length === 0) return issues;
+      const keptSet = new Set(kept);
+      core.debug(
+        `Skipping ${skipped.length} duplicate inline finding(s) already posted (fingerprints)`,
+      );
+      return issues.filter((i) => i.inline !== true || keptSet.has(i));
+    } catch (err) {
+      core.warning(
+        `Fingerprint dedup unavailable — posting all findings: ${err instanceof Error ? err.message : err}`,
+      );
+      return issues;
+    }
+  }
+
+  /**
+   * Embed `<!-- inline-fp -->` markers into built inline comments so future
+   * runs can recognize them as already posted. Matches comments to kept
+   * issues by anchor in order (fail-open: unmatched comments post as-is).
+   * @param comments - Built inline comments (mutated in place).
+   * @param issues - Deduped issues the comments were built from.
+   * @since NEXT
+   */
+  private stampInlineFingerprintMarkers(
+    comments: Array<{ path: string; line: number; body: string }>,
+    issues: ReviewIssue[],
+  ): void {
+    try {
+      const queueByAnchor = new Map<string, string[]>();
+      for (const issue of issues) {
+        if (issue.inline !== true) continue;
+        let fp: string;
+        try {
+          fp = fingerprintForIssue(issue);
+        } catch {
+          continue;
+        }
+        const anchor = `${String(issue.file ?? '').replace(/^\//, '')}:${issue.line}`;
+        const queue = queueByAnchor.get(anchor);
+        if (queue) queue.push(fp);
+        else queueByAnchor.set(anchor, [fp]);
+      }
+      for (const comment of comments) {
+        const queue = queueByAnchor.get(`${comment.path}:${comment.line}`);
+        const fp = queue?.shift();
+        if (fp) comment.body = withFingerprintMarker(comment.body, fp);
+      }
+    } catch {
+      // Fail-open: comments post without markers.
+    }
+  }
+
+  /**
    * Post a review on a pull request with optional inline comments.
    * Posts the body first, then each inline comment individually so that
    * a single out-of-diff comment does not fail the entire review.
@@ -904,6 +1004,18 @@ export class GitHubHelper implements PlatformAdapter {
         }
       : result;
 
+    // Persistent fingerprint dedup (default on, fail-open): drop inline
+    // issues already posted in previous runs so re-pushes never re-post
+    // identical findings. Skipped findings stay out of the body as well —
+    // they were already reported once.
+    const dedupedResult =
+      postInlineComments && (options?.dedupFingerprints ?? true) === true
+        ? {
+            ...workingResult,
+            issues: this.applyInlineFingerprintDedup(workingResult.issues, options),
+          }
+        : workingResult;
+
     // Additive opt-in path: single reviews-array request with fail-open
     // summary-only retry. Legacy path below runs byte-for-byte unchanged
     // when the flag is absent or false.
@@ -911,7 +1023,7 @@ export class GitHubHelper implements PlatformAdapter {
       return this.postReviewWithReviewsArray(
         prNumber,
         commitSha,
-        workingResult,
+        dedupedResult,
         suppressLowConfidence,
         options,
         signal,
@@ -920,23 +1032,24 @@ export class GitHubHelper implements PlatformAdapter {
 
     const inlineComments = postInlineComments
       ? buildInlineComments(
-          workingResult,
+          dedupedResult,
           await this.getDiffLines(prNumber, commitSha, signal),
           suppressLowConfidence,
           options?.emitFixPayload,
         )
       : [];
+    this.stampInlineFingerprintMarkers(inlineComments, dedupedResult.issues);
 
     const placedInlineKeys = new Set<string>();
     for (const c of inlineComments) {
       placedInlineKeys.add(`${c.path}:${c.line}`);
     }
     const issuesForBody = postInlineComments
-      ? workingResult.issues.filter(
+      ? dedupedResult.issues.filter(
           (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
         )
-      : workingResult.issues;
-    const body = buildReviewBody({ ...workingResult, issues: issuesForBody }, options);
+      : dedupedResult.issues;
+    const body = buildReviewBody({ ...dedupedResult, issues: issuesForBody }, options);
 
     const commentIds: Array<{
       file: string;
@@ -1110,24 +1223,32 @@ export class GitHubHelper implements PlatformAdapter {
       diffLines = new Set<string>();
     }
 
+    // Defense-in-depth: this entry already receives deduped input from
+    // postReview, but re-apply idempotently so direct callers also dedup.
+    const dedupedResult = {
+      ...workingResult,
+      issues: this.applyInlineFingerprintDedup(workingResult.issues, options),
+    };
+
     const inlineComments = buildInlineComments(
-      workingResult,
+      dedupedResult,
       diffLines,
       suppressLowConfidence,
       options?.emitFixPayload,
     );
+    this.stampInlineFingerprintMarkers(inlineComments, dedupedResult.issues);
 
     const placedInlineKeys = new Set<string>();
     for (const c of inlineComments) {
       placedInlineKeys.add(`${c.path}:${c.line}`);
     }
     // Mappable findings ride inline; unmappable findings stay in the body.
-    const issuesForBody = workingResult.issues.filter(
+    const issuesForBody = dedupedResult.issues.filter(
       (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
     );
-    const body = buildReviewBody({ ...workingResult, issues: issuesForBody }, options);
+    const body = buildReviewBody({ ...dedupedResult, issues: issuesForBody }, options);
     // Full-finding body used for the fail-open summary-only retry.
-    const fullBody = buildReviewBody(workingResult, options);
+    const fullBody = buildReviewBody(dedupedResult, options);
 
     const commentIds: ReviewPostResult['commentIds'] = [];
 
