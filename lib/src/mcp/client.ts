@@ -190,6 +190,47 @@ export function resolveRemoteTransportMode(server: MCPServerConfig): RemoteTrans
 }
 
 /**
+ * Client identity sent on the Streamable HTTP leg so Streamable-preferred
+ * servers/gateways can route on explicit MCP identity headers.
+ * Matches the `name` passed to `new Client({ name })` in `connectServer`.
+ * @since NEXT
+ */
+export const MCP_CLIENT_NAME = 'opencode-ai-reviewer';
+
+/**
+ * Default method advertised via the `Mcp-Method` header on the Streamable
+ * HTTP handshake leg. Static handshake-safe default (`initialize`).
+ * @since NEXT
+ */
+export const MCP_HANDSHAKE_METHOD = 'initialize';
+
+/**
+ * Build Streamable HTTP headers by merging MCP identity headers
+ * (`Mcp-Name` / `Mcp-Method`) over a base header map.
+ * User-supplied keys always win on (case-insensitive) collision, and a fresh
+ * object is returned per call so no mutable state leaks between the
+ * Streamable/SSE retry legs.
+ * @param server - MCP server configuration (provides the default `Mcp-Name`)
+ * @param baseHeaders - Base headers (e.g. from `buildRemoteHeaders`)
+ * @returns Fresh header map for the Streamable HTTP `requestInit`
+ * @since NEXT
+ */
+export function buildStreamableHeaders(
+  server: MCPServerConfig,
+  baseHeaders: Record<string, string>,
+): Record<string, string> {
+  const headers: Record<string, string> = { ...baseHeaders };
+  const lowerKeys = new Set(Object.keys(headers).map((k) => k.toLowerCase()));
+  if (!lowerKeys.has('mcp-name')) {
+    headers['Mcp-Name'] = server.name || MCP_CLIENT_NAME;
+  }
+  if (!lowerKeys.has('mcp-method')) {
+    headers['Mcp-Method'] = MCP_HANDSHAKE_METHOD;
+  }
+  return headers;
+}
+
+/**
  * Build HTTP headers forwarded to a remote MCP server from its explicit
  * `environment` map. No keys are forwarded beyond this allowlist-shaped
  * explicit map (privacy-safe; AI features stay optional).
@@ -235,12 +276,108 @@ export function createRemoteTransportFactories(
     new SSEClientTransport(new URL(rawUrl), { requestInit: { headers: { ...headers } } });
   const streamableFactory = (): Transport =>
     new StreamableHTTPClientTransport(new URL(rawUrl), {
-      requestInit: { headers: { ...headers } },
+      // Streamable leg only: merge Mcp-Name/Mcp-Method identity headers so
+      // Streamable-preferred gateways can route. The legacy SSE leg keeps
+      // byte-identical headers. Fresh object per invocation (no shared state).
+      requestInit: { headers: buildStreamableHeaders(server, headers) },
     });
   const mode = resolveRemoteTransportMode(server);
   if (mode === 'sse') return [sseFactory];
   if (mode === 'streamable-http') return [streamableFactory];
   return [streamableFactory, sseFactory];
+}
+
+/**
+ * Per-call timeout (ms) bounding MCP listTools/callTool legs, which otherwise
+ * hang unbounded (only the connect handshake had a timeout). Overridable per
+ * server via `timeoutMs`.
+ */
+const MCP_CALL_TIMEOUT_MS = 30_000;
+
+/**
+ * Race an MCP SDK promise against a per-call timeout and an optional caller
+ * AbortSignal so hangs are bounded and cancellation propagates.
+ *
+ * NOTE: timeout/abort only rejects the returned promise — the underlying MCP
+ * SDK promise (`listTools`/`callTool` take no signal) is NOT cancelled and
+ * keeps the transport busy until it settles. Callers should treat a timeout
+ * as fail-open for that server rather than immediately starting a second
+ * in-flight call on the same transport.
+ * @param fn - Factory producing the SDK promise (invoked immediately).
+ * @param timeoutMs - Per-call timeout in milliseconds.
+ * @param signal - Optional caller AbortSignal.
+ * @returns The SDK result.
+ * @throws TimeoutError when the timeout fires, AbortError on cancellation.
+ */
+async function withMcpCallTimeout<T>(
+  fn: () => Promise<T>,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new DOMException('MCP call aborted by signal', 'AbortError');
+  }
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let onAbort: (() => void) | null = null;
+  try {
+    return await new Promise<T>((resolve, reject) => {
+      timer = setTimeout(() => {
+        reject(new DOMException(`MCP call timed out after ${timeoutMs}ms`, 'TimeoutError'));
+      }, timeoutMs);
+      if (signal) {
+        onAbort = () => {
+          reject(
+            signal.reason instanceof Error
+              ? signal.reason
+              : new DOMException('MCP call aborted by signal', 'AbortError'),
+          );
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+      fn().then(resolve, reject);
+    });
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+    if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+  }
+}
+
+/**
+ * Run an MCP SDK leg under per-call timeout + withRetry. `callTool` legs are
+ * non-idempotent: callers must pass 429-only retryables with
+ * `retryUnknownStatus:false` so mutations are never replayed on 5xx or
+ * status-less SDK errors. `listTools` legs (idempotent reads) keep the
+ * default retry policy.
+ * @param fn - SDK call factory.
+ * @param options - Timeout, signal, and retry tuning.
+ * @param options.timeoutMs - Per-call timeout in milliseconds.
+ * @param options.signal - Optional AbortSignal: aborts the SDK leg.
+ * @param options.maxRetries - Handshake/call attempts before giving up.
+ * @param options.baseDelayMs - Base delay between attempts in milliseconds.
+ * @param options.retryableStatuses - HTTP statuses worth retrying.
+ * @param options.retryUnknownStatus - Whether to retry status-less errors.
+ * @returns The SDK result.
+ */
+async function withMcpRetry<T>(
+  fn: () => Promise<T>,
+  options: {
+    timeoutMs?: number;
+    signal?: AbortSignal;
+    maxRetries?: number;
+    baseDelayMs?: number;
+    retryableStatuses?: number[];
+    retryUnknownStatus?: boolean;
+  } = {},
+): Promise<T> {
+  const { timeoutMs = MCP_CALL_TIMEOUT_MS, signal, ...retryOpts } = options;
+  return withRetry(() => withMcpCallTimeout(fn, timeoutMs, signal), {
+    maxRetries: 3,
+    baseDelayMs: 2000,
+    ...retryOpts,
+    signal,
+  });
 }
 
 /**
@@ -275,8 +412,9 @@ export class MCPManager {
 
   /**
    * Initialize all configured MCP servers.
+   * @param signal - Optional AbortSignal to cancel connection attempts.
    */
-  async connect(): Promise<void> {
+  async connect(signal?: AbortSignal): Promise<void> {
     if (this.initialized) return;
     if (this.servers.length === 0) {
       core.startGroup('MCP: No servers configured, skipping');
@@ -308,6 +446,8 @@ export class MCPManager {
                 args: cmd.slice(1),
                 env: { ...filterEnv(server), ...server.environment } as Record<string, string>,
               }),
+            undefined,
+            signal,
           );
         }
         if (server.type === 'remote' && server.url) {
@@ -318,7 +458,7 @@ export class MCPManager {
             return Promise.resolve();
           }
           const headers = buildRemoteHeaders(server);
-          return this.connectRemoteWithFallback(server, headers);
+          return this.connectRemoteWithFallback(server, headers, signal);
         }
         return Promise.resolve();
       }),
@@ -345,11 +485,13 @@ export class MCPManager {
    * continues without MCP enrichment from that server.
    * @param server - Configuration for the remote MCP server to connect to
    * @param headers - HTTP headers applied to both transports via `requestInit`
+   * @param signal - Optional AbortSignal: aborts the handshake and cancels retries mid-flight.
    * @since NEXT
    */
   private async connectRemoteWithFallback(
     server: MCPServerConfig,
     headers: Record<string, string>,
+    signal?: AbortSignal,
   ): Promise<void> {
     let factories: Array<() => Transport>;
     try {
@@ -367,7 +509,7 @@ export class MCPManager {
       // attempt is { maxRetries: 1 } — { maxRetries: 0 } would run zero
       // attempts and throw undefined.
       const retryOpts = factories.length > 1 && i === 0 ? { maxRetries: 1 } : undefined;
-      const err = await this.connectServer(server, factory, retryOpts);
+      const err = await this.connectServer(server, factory, retryOpts, signal);
       if (err === null) return;
       if (i < factories.length - 1) {
         if (!isStreamableHandshakeMismatch(err)) {
@@ -390,18 +532,28 @@ export class MCPManager {
    * @param retryOpts - Optional retry-budget override for the handshake
    * (used to scope retries across Streamable→SSE fallback). Defaults to
    * `{ maxRetries: 3, baseDelayMs: 2000 }`.
+   * @param retryOpts.maxRetries - Handshake attempts before giving up.
+   * @param retryOpts.baseDelayMs - Base delay between attempts in milliseconds.
+   * @param signal - Optional AbortSignal: aborts the handshake and the
+   * post-handshake listTools leg, and cancels retries mid-flight.
    * @returns Null on success, otherwise the connection error (fail-open; already logged)
    */
   private async connectServer(
     server: MCPServerConfig,
     createTransport: () => Transport,
     retryOpts?: { maxRetries?: number; baseDelayMs?: number },
+    signal?: AbortSignal,
   ): Promise<Error | null> {
     const result: { client?: Client; transport?: Transport } = {};
     let lastError: Error | null = null;
     try {
       await withRetry(
         async () => {
+          if (signal?.aborted) {
+            throw signal.reason instanceof Error
+              ? signal.reason
+              : new DOMException('MCP connect aborted by signal', 'AbortError');
+          }
           if (result.transport) {
             try {
               await result.transport.close();
@@ -419,21 +571,55 @@ export class MCPManager {
           let timedOut = false;
           let connectTimer: ReturnType<typeof setTimeout> | null = null;
           const connectPromise = clientInstance.connect(newTransport);
-          await Promise.race([
-            connectPromise,
-            new Promise<never>((_, reject) => {
-              connectTimer = setTimeout(() => {
-                timedOut = true;
-                connectPromise.catch(() => {});
-                reject(new Error(`Connection timed out after ${connectionTimeout}ms`));
-              }, connectionTimeout);
-            }),
-          ]).finally(() => {
-            if (connectTimer !== null) clearTimeout(connectTimer);
-            if (timedOut) {
-              Promise.resolve(newTransport.close()).catch(() => {});
-            }
-          });
+          const onOuterAbort = () => {
+            timedOut = true;
+            connectPromise.catch(() => {});
+            Promise.resolve(newTransport.close()).catch(() => {});
+          };
+          if (signal) signal.addEventListener('abort', onOuterAbort, { once: true });
+          try {
+            await Promise.race([
+              connectPromise,
+              new Promise<never>((_, reject) => {
+                connectTimer = setTimeout(() => {
+                  timedOut = true;
+                  connectPromise.catch(() => {});
+                  reject(new Error(`Connection timed out after ${connectionTimeout}ms`));
+                }, connectionTimeout);
+              }),
+              ...(signal
+                ? [
+                    new Promise<never>((_, reject) => {
+                      if (signal.aborted) {
+                        reject(
+                          signal.reason instanceof Error
+                            ? signal.reason
+                            : new DOMException('MCP connect aborted by signal', 'AbortError'),
+                        );
+                      } else {
+                        signal.addEventListener(
+                          'abort',
+                          () =>
+                            reject(
+                              signal.reason instanceof Error
+                                ? signal.reason
+                                : new DOMException('MCP connect aborted by signal', 'AbortError'),
+                            ),
+                          { once: true },
+                        );
+                      }
+                    }),
+                  ]
+                : []),
+            ]).finally(() => {
+              if (connectTimer !== null) clearTimeout(connectTimer);
+              if (timedOut) {
+                Promise.resolve(newTransport.close()).catch(() => {});
+              }
+            });
+          } finally {
+            if (signal) signal.removeEventListener('abort', onOuterAbort);
+          }
 
           result.client = clientInstance;
           this.clients.set(server.name, { client: clientInstance, transport: newTransport });
@@ -441,14 +627,17 @@ export class MCPManager {
         {
           maxRetries: retryOpts?.maxRetries ?? 3,
           baseDelayMs: retryOpts?.baseDelayMs ?? 2000,
+          signal,
         },
       );
 
       const rc = result.client;
       if (rc) {
-        const tools = await withRetry(() => rc.listTools(), {
+        const tools = await withMcpRetry(() => rc.listTools(), {
           maxRetries: 3,
           baseDelayMs: 2000,
+          timeoutMs: server.timeoutMs ?? MCP_CALL_TIMEOUT_MS,
+          signal,
         });
         this.logger.info(`${server.name}: ${tools.tools.length} tools available`);
         this.toolsCache.set(server.name, tools.tools);
@@ -479,9 +668,14 @@ export class MCPManager {
    * log/metric the degradation instead of silently receiving fewer entries.
    * @param query - The search query to retrieve context for
    * @param maxTokens - Maximum token budget for the returned context
+   * @param signal - Optional AbortSignal to cancel the query mid-flight
    * @returns Aggregated context entries from all MCP servers within the token budget
    */
-  async queryContext(query: string, maxTokens = 4000): Promise<MCPQueryResult> {
+  async queryContext(
+    query: string,
+    maxTokens = 4000,
+    signal?: AbortSignal,
+  ): Promise<MCPQueryResult> {
     const entries: MCPContextEntry[] = [];
 
     if (!this.initialized) {
@@ -494,7 +688,12 @@ export class MCPManager {
       [...this.clients].map(async ([name, { client }]) => {
         let toolsList = this.toolsCache.get(name);
         if (!toolsList) {
-          const tools = await client.listTools();
+          const serverTimeout =
+            this.servers.find((s) => s.name === name)?.timeoutMs ?? MCP_CALL_TIMEOUT_MS;
+          const tools = await withMcpRetry(() => client.listTools(), {
+            timeoutMs: serverTimeout,
+            signal,
+          });
           toolsList = tools.tools;
           this.toolsCache.set(name, toolsList);
         }
@@ -505,13 +704,22 @@ export class MCPManager {
         );
 
         if (searchTool) {
-          const result = await withRetry(
+          const result = await withMcpRetry(
             () =>
               client.callTool({
                 name: searchTool.name,
                 arguments: { query, maxTokens: String(maxTokens / this.clients.size) },
               }),
-            { maxRetries: 3, baseDelayMs: 2000 },
+            {
+              maxRetries: 3,
+              baseDelayMs: 2000,
+              // callTool is non-idempotent: never replay on 5xx or
+              // status-less SDK errors, only on 429.
+              retryableStatuses: [429],
+              retryUnknownStatus: false,
+              timeoutMs: serverConfig?.timeoutMs ?? MCP_CALL_TIMEOUT_MS,
+              signal,
+            },
           );
 
           const text = extractTextFromResult(result);
@@ -544,6 +752,15 @@ export class MCPManager {
       }
     }
 
+    // Cancellation must propagate: without this, an abort becomes per-server
+    // warnings in errors[] and the caller sees partial results instead of
+    // observing cancellation.
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error
+        ? signal.reason
+        : new DOMException('MCP query aborted by signal', 'AbortError');
+    }
+
     // Sort by relevance and trim to token budget
     entries.sort((a, b) => b.relevance - a.relevance);
     const trimmed = trimToTokenBudget(entries, maxTokens);
@@ -554,9 +771,10 @@ export class MCPManager {
    * Get context specifically for library documentation.
    * Useful for resolving false positives caused by API changes.
    * @param libraries - List of library names to fetch documentation for
+   * @param signal - Optional AbortSignal to cancel the fetch mid-flight
    * @returns Concatenated markdown documentation for all requested libraries
    */
-  async getLibraryDocs(libraries: string[]): Promise<string> {
+  async getLibraryDocs(libraries: string[], signal?: AbortSignal): Promise<string> {
     const context7Client = this.clients.get('context7');
     if (!context7Client) return '';
 
@@ -564,7 +782,12 @@ export class MCPManager {
       libraries.map(async (lib) => {
         let toolsList = this.toolsCache.get('context7');
         if (!toolsList) {
-          const tools = await context7Client.client.listTools();
+          const serverTimeout =
+            this.servers.find((s) => s.name === 'context7')?.timeoutMs ?? MCP_CALL_TIMEOUT_MS;
+          const tools = await withMcpRetry(() => context7Client.client.listTools(), {
+            timeoutMs: serverTimeout,
+            signal,
+          });
           toolsList = tools.tools;
           this.toolsCache.set('context7', toolsList);
         }
@@ -575,13 +798,22 @@ export class MCPManager {
         );
 
         if (resolveTool) {
-          const result = await withRetry(
+          const result = await withMcpRetry(
             () =>
               context7Client.client.callTool({
                 name: resolveTool.name,
                 arguments: { libraryName: lib },
               }),
-            { maxRetries: 3, baseDelayMs: 2000 },
+            {
+              maxRetries: 3,
+              baseDelayMs: 2000,
+              // callTool is non-idempotent: never replay on 5xx or
+              // status-less SDK errors, only on 429.
+              retryableStatuses: [429],
+              retryUnknownStatus: false,
+              timeoutMs: serverConfig?.timeoutMs ?? MCP_CALL_TIMEOUT_MS,
+              signal,
+            },
           );
 
           const text = extractTextFromResult(result);
@@ -617,15 +849,32 @@ export class MCPManager {
       );
     }
 
+    // Propagate cancellation instead of returning partial docs on abort.
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error
+        ? signal.reason
+        : new DOMException('MCP query aborted by signal', 'AbortError');
+    }
+
     return sections.join('\n\n');
   }
 
   /**
    * Clean up all MCP connections.
+   * @param signal - Optional AbortSignal: when aborted, closes are attempted
+   * fire-and-forget (no 5s wait) so no transport is orphaned.
    */
-  async disconnect(): Promise<void> {
+  async disconnect(signal?: AbortSignal): Promise<void> {
     const disconnectTimeoutMs = 5_000;
     for (const [name, { client, transport }] of this.clients) {
+      // On abort, do NOT break out of the loop (that would orphan the
+      // remaining transports and leak stdio child processes / sockets).
+      // Instead fire-and-forget the close without waiting and continue.
+      if (signal?.aborted) {
+        Promise.resolve(client.close()).catch(() => {});
+        Promise.resolve(transport.close()).catch(() => {});
+        continue;
+      }
       try {
         const closePromise = (async () => {
           await client.close();

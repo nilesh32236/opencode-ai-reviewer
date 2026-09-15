@@ -1330,11 +1330,20 @@ export function mergeSubagentConfig(
  * with `bash` renamed to `shell`). Older or unknown versions keep the legacy
  * object shape (`permission: { edit: 'deny', bash: 'deny' }`).
  *
+ * The V2 config schema belongs to the OpenCode 2.x line (`opencode2`) only.
+ * The entire 1.x line — including the forks the action installs — is
+ * V1-config-only and strictly rejects any config containing the V2
+ * `permissions` key (`Error: Configuration is invalid at
+ * OPENCODE_CONFIG_CONTENT — V2 permissions are not supported by OpenCode V1`,
+ * CLI exit 1, observed in production with 1.18.30). Dual-emitting the V2
+ * array to a 1.x CLI therefore breaks subagent review dispatch, so the
+ * cutoff must stay on the 2.x major — never on {@link MINIMUM_OPENCODE_VERSION}.
+ *
  * Docs: https://v2.opencode.ai/docs/permissions ("Do not use `permission`,
  * `bash`, or `task` in V2 configuration; use `permissions`, `shell`, and
  * `subagent`") and https://opencode.ai/docs/permissions (V1 object syntax).
  */
-export const SUBAGENT_V2_PERMISSIONS_CUTOFF = MINIMUM_OPENCODE_VERSION;
+export const SUBAGENT_V2_PERMISSIONS_CUTOFF = '2.0.0';
 
 /** Legacy (V1) read-only deny block, emitted byte-for-byte for old/unknown CLIs. */
 export const LEGACY_SUBAGENT_PERMISSION: Record<string, string> = {

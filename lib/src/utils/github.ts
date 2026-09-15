@@ -318,25 +318,32 @@ export class GitHubHelper implements PlatformAdapter {
    * Also extracts linked issue numbers from the PR body (Fixes/Closes/Resolves).
    *
    * @param number - PR number.
+   * @param signal - Optional AbortSignal to cancel the underlying requests.
    * @returns PR context including title, body, branches, author, labels, and changed files.
    * @throws If the PR does not exist or the API call fails.
    */
-  async getPR(number: number): Promise<PRContext> {
+  async getPR(number: number, signal?: AbortSignal): Promise<PRContext> {
     const [prResult, filesResult] = await Promise.allSettled([
       this.api<{
         number: number;
         title: string;
         body: string | null;
+        /** 'open' | 'closed' | 'merged' (merged only when merged via the API view). */
+        state: string;
         head: { ref: string; sha: string; repo?: { full_name: string } | null };
         base: { ref: string; sha?: string };
         user: { login: string };
         labels: Array<{ name: string }>;
-      }>(`/pulls/${number}`),
-      this.paginate<ChangedFile & { filename?: string }>(`/pulls/${number}/files`, {
-        perPage: 100,
-        maxPages: 10,
-        throwOnError: true,
-      }),
+      }>(`/pulls/${number}`, {}, undefined, signal),
+      this.paginate<ChangedFile & { filename?: string }>(
+        `/pulls/${number}/files`,
+        {
+          perPage: 100,
+          maxPages: 10,
+          throwOnError: true,
+        },
+        signal,
+      ),
     ]);
 
     if (prResult.status === 'rejected') {
@@ -365,6 +372,9 @@ export class GitHubHelper implements PlatformAdapter {
       baseRef: pr.base.ref,
       baseSha: pr.base.sha,
       author: pr.user.login,
+      // GitHub reports PR state as 'open' | 'closed' | 'merged'. Carried
+      // through so fix loops can stop pushing once a PR has been merged.
+      state: pr.state,
       labels: pr.labels.map((l) => l.name),
       changedFiles: files.map((f) => ({
         path: f.filename || f.path || '',
@@ -381,10 +391,19 @@ export class GitHubHelper implements PlatformAdapter {
    * PlatformAdapter alias for getPR.
    *
    * @param number - PR number.
+   * @param options - Optional error handling (throwOnError accepted for
+   * interface symmetry; getPR always throws on files failure).
+   * @param options.throwOnError - Accepted for interface symmetry; always throws on files failure.
+   * @param signal - Optional AbortSignal to cancel the underlying requests.
    * @returns PR context including title, body, branches, author, labels, and changed files.
    */
-  async getMR(number: number): Promise<PRContext> {
-    return this.getPR(number);
+  async getMR(
+    number: number,
+    options?: { throwOnError?: boolean },
+    signal?: AbortSignal,
+  ): Promise<PRContext> {
+    void options;
+    return this.getPR(number, signal);
   }
 
   /**
@@ -436,34 +455,60 @@ export class GitHubHelper implements PlatformAdapter {
    * Fetch an issue's metadata and its comments (paginated).
    *
    * @param number - Issue number.
+   * @param options - Optional error/signal handling.
+   * @param options.throwOnError - When true, rethrow a comment-pagination failure
+   * instead of degrading to partial comments (default: false, warn + continue).
+   * @param signal - Optional AbortSignal to cancel the underlying requests.
    * @returns Issue context with title, body, labels, and comments.
    * @throws If the issue does not exist.
    */
-  async getIssue(number: number): Promise<IssueContext> {
+  async getIssue(
+    number: number,
+    options?: { throwOnError?: boolean },
+    signal?: AbortSignal,
+  ): Promise<IssueContext> {
     const [issueResult, commentsResult] = await Promise.allSettled([
       this.api<{
         number: number;
         title: string;
         body: string | null;
         labels: Array<{ name: string }>;
-      }>(`/issues/${number}`),
+      }>(`/issues/${number}`, {}, undefined, signal),
       this.paginate<{
         id: number;
         user: { login: string };
         created_at: string;
         body: string;
-      }>(`/issues/${number}/comments`, {
-        onTruncated: (page, err) =>
-          core.warning(
-            `getIssue(${number}): comments truncated at page ${page} — review context may be incomplete: ${err instanceof Error ? err.message : String(err)}`,
-          ),
-      }),
+      }>(
+        `/issues/${number}/comments`,
+        {
+          throwOnError: options?.throwOnError,
+          onTruncated: options?.throwOnError
+            ? undefined
+            : (page, err) =>
+                core.warning(
+                  `getIssue(${number}): comments truncated at page ${page} — review context may be incomplete: ${err instanceof Error ? err.message : String(err)}`,
+                ),
+        },
+        signal,
+      ),
     ]);
 
     if (issueResult.status === 'rejected') throw issueResult.reason;
 
     const issue = issueResult.value;
-    const comments = commentsResult.status === 'fulfilled' ? commentsResult.value : [];
+    let comments: Array<{ id: number; user: { login: string }; created_at: string; body: string }> =
+      [];
+    if (commentsResult.status === 'fulfilled') {
+      comments = commentsResult.value;
+    } else {
+      const status = getErrorStatus(commentsResult.reason);
+      const suffix = status !== undefined ? ` (status ${status})` : '';
+      core.warning(
+        `getIssue(${number}): comments unavailable${suffix} — proceeding with partial context (truncated:true): ${commentsResult.reason instanceof Error ? commentsResult.reason.message : String(commentsResult.reason)}`,
+      );
+      if (options?.throwOnError) throw commentsResult.reason;
+    }
 
     return {
       number: issue.number,
@@ -542,9 +587,14 @@ export class GitHubHelper implements PlatformAdapter {
    *
    * @param prNumber - PR number.
    * @param headSha - Optional head SHA scoping the cache entry.
+   * @param signal - Optional AbortSignal to cancel the diff fetch.
    * @returns Set of "file:line" strings for lines in the diff.
    */
-  async getDiffLines(prNumber: number, headSha?: string): Promise<Set<string>> {
+  async getDiffLines(
+    prNumber: number,
+    headSha?: string,
+    signal?: AbortSignal,
+  ): Promise<Set<string>> {
     const cacheKey = headSha ? `${prNumber}:${headSha}` : `${prNumber}`;
     const cached = this.diffLinesCache.get(cacheKey);
     if (cached && Date.now() - cached.ts < GitHubHelper.DIFF_CACHE_TTL_MS) {
@@ -557,6 +607,7 @@ export class GitHubHelper implements PlatformAdapter {
           headers: { Accept: 'application/vnd.github.v3.diff' },
         },
         'text',
+        signal,
       );
       const lines = new Set<string>();
       let currentFile = '';
@@ -832,6 +883,7 @@ export class GitHubHelper implements PlatformAdapter {
    * @param postInlineComments - Whether to attempt inline comments (default: true).
    * @param suppressLowConfidence - Whether to suppress low-confidence findings (default: false).
    * @param options - Optional display flags (e.g. deterministic function scores).
+   * @param signal - Optional AbortSignal to cancel the review post.
    * @returns Object indicating success and which posting method was used.
    * @since NEXT `options.enableReviewsArrayInline` guards the reviews-array path.
    */
@@ -842,7 +894,9 @@ export class GitHubHelper implements PlatformAdapter {
     postInlineComments = true,
     suppressLowConfidence?: boolean,
     options?: ReviewBodyOptions,
+    signal?: AbortSignal,
   ): Promise<ReviewPostResult> {
+    signal?.throwIfAborted?.();
     const workingResult = suppressLowConfidence
       ? {
           ...result,
@@ -860,14 +914,16 @@ export class GitHubHelper implements PlatformAdapter {
         workingResult,
         suppressLowConfidence,
         options,
+        signal,
       );
     }
 
     const inlineComments = postInlineComments
       ? buildInlineComments(
           workingResult,
-          await this.getDiffLines(prNumber, commitSha),
+          await this.getDiffLines(prNumber, commitSha, signal),
           suppressLowConfidence,
+          options?.emitFixPayload,
         )
       : [];
 
@@ -897,21 +953,26 @@ export class GitHubHelper implements PlatformAdapter {
         const reviewResponse = await this.api<{
           id: number;
           comments?: Array<{ id: number; path: string; line?: number }>;
-        }>(`/pulls/${prNumber}/reviews`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            commit_id: commitSha,
-            event: 'COMMENT',
-            body,
-            comments: inlineComments.map((c) => ({
-              path: c.path,
-              line: c.line,
-              side: c.side,
-              body: c.body,
-            })),
-          }),
-        });
+        }>(
+          `/pulls/${prNumber}/reviews`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              commit_id: commitSha,
+              event: 'COMMENT',
+              body,
+              comments: inlineComments.map((c) => ({
+                path: c.path,
+                line: c.line,
+                side: c.side,
+                body: c.body,
+              })),
+            }),
+          },
+          undefined,
+          signal,
+        );
         // Extract individual comment IDs from the batched response
         if (reviewResponse.comments) {
           for (const rc of reviewResponse.comments) {
@@ -935,15 +996,20 @@ export class GitHubHelper implements PlatformAdapter {
 
     // Fallback: post body-only review, then inline comments individually
     try {
-      const reviewResponse = await this.api<{ id: number }>(`/pulls/${prNumber}/reviews`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          commit_id: commitSha,
-          event: 'COMMENT',
-          body,
-        }),
-      });
+      const reviewResponse = await this.api<{ id: number }>(
+        `/pulls/${prNumber}/reviews`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            commit_id: commitSha,
+            event: 'COMMENT',
+            body,
+          }),
+        },
+        undefined,
+        signal,
+      );
       reviewId = reviewResponse.id;
     } catch (err) {
       core.warning(`Body-only review failed: ${err}`);
@@ -956,6 +1022,7 @@ export class GitHubHelper implements PlatformAdapter {
 
     // Post each inline comment individually with fallback
     for (const comment of inlineComments) {
+      signal?.throwIfAborted?.();
       try {
         const commentResponse = await this.api<{ id: number; node_id: string }>(
           `/pulls/${prNumber}/comments`,
@@ -970,6 +1037,8 @@ export class GitHubHelper implements PlatformAdapter {
               body: comment.body,
             }),
           },
+          undefined,
+          signal,
         );
         commentIds.push({
           file: comment.path,
@@ -982,11 +1051,16 @@ export class GitHubHelper implements PlatformAdapter {
         if (err instanceof Error && (err as Error & { status: number }).status === 422) {
           const fallbackBody = `**Inline comment (${comment.path}:${comment.line})**\n\n${comment.body}`;
           try {
-            await this.api(`/issues/${prNumber}/comments`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ body: fallbackBody }),
-            });
+            await this.api(
+              `/issues/${prNumber}/comments`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ body: fallbackBody }),
+              },
+              undefined,
+              signal,
+            );
           } catch (fallbackErr) {
             core.warning(
               `Fallback comment for ${comment.path}:${comment.line} also failed: ${fallbackErr}`,
@@ -1016,6 +1090,7 @@ export class GitHubHelper implements PlatformAdapter {
    * @param workingResult - Review result after confidence filtering.
    * @param suppressLowConfidence - Passed through to inline mapping.
    * @param options - Display flags (flag itself is read by the caller).
+   * @param signal - Optional AbortSignal to cancel the review post.
    * @returns Review post result (`full` on batch success, `body-only` on fallback).
    * @since NEXT
    */
@@ -1025,16 +1100,22 @@ export class GitHubHelper implements PlatformAdapter {
     workingResult: ReviewResult,
     suppressLowConfidence: boolean | undefined,
     options: ReviewBodyOptions | undefined,
+    signal?: AbortSignal,
   ): Promise<ReviewPostResult> {
     let diffLines: Set<string>;
     try {
-      diffLines = await this.getDiffLines(prNumber, commitSha);
+      diffLines = await this.getDiffLines(prNumber, commitSha, signal);
     } catch (err) {
       core.warning(`Diff validation unavailable, posting summary-only review: ${err}`);
       diffLines = new Set<string>();
     }
 
-    const inlineComments = buildInlineComments(workingResult, diffLines, suppressLowConfidence);
+    const inlineComments = buildInlineComments(
+      workingResult,
+      diffLines,
+      suppressLowConfidence,
+      options?.emitFixPayload,
+    );
 
     const placedInlineKeys = new Set<string>();
     for (const c of inlineComments) {
@@ -1052,11 +1133,16 @@ export class GitHubHelper implements PlatformAdapter {
 
     const postSummaryOnly = async (): Promise<ReviewPostResult> => {
       try {
-        const reviewResponse = await this.api<{ id: number }>(`/pulls/${prNumber}/reviews`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ commit_id: commitSha, event: 'COMMENT', body: fullBody }),
-        });
+        const reviewResponse = await this.api<{ id: number }>(
+          `/pulls/${prNumber}/reviews`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ commit_id: commitSha, event: 'COMMENT', body: fullBody }),
+          },
+          undefined,
+          signal,
+        );
         return { success: true, method: 'body-only', reviewId: reviewResponse.id };
       } catch (err) {
         core.warning(`Summary-only review retry failed: ${err}`);
@@ -1072,21 +1158,26 @@ export class GitHubHelper implements PlatformAdapter {
       const reviewResponse = await this.api<{
         id: number;
         comments?: Array<{ id: number; path: string; line?: number }>;
-      }>(`/pulls/${prNumber}/reviews`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          commit_id: commitSha,
-          event: 'COMMENT',
-          body,
-          comments: inlineComments.map((c) => ({
-            path: c.path,
-            line: c.line,
-            side: c.side,
-            body: c.body,
-          })),
-        }),
-      });
+      }>(
+        `/pulls/${prNumber}/reviews`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            commit_id: commitSha,
+            event: 'COMMENT',
+            body,
+            comments: inlineComments.map((c) => ({
+              path: c.path,
+              line: c.line,
+              side: c.side,
+              body: c.body,
+            })),
+          }),
+        },
+        undefined,
+        signal,
+      );
       if (reviewResponse.comments) {
         for (const rc of reviewResponse.comments) {
           const matched = inlineComments.find((c) => c.path === rc.path && c.line === rc.line);
@@ -1663,18 +1754,24 @@ export class GitHubHelper implements PlatformAdapter {
    * @param options - Context gathering options.
    * @param options.issueNumber - Optional issue number to include.
    * @param options.prNumber - Optional PR number to include.
+   * @param signal - Optional AbortSignal to cancel the fan-out requests.
    * @returns Markdown string with issue/PR details, comments, and reviews.
    */
-  async gatherContext(options: {
-    issueNumber?: number;
-    prNumber?: number;
-  }): Promise<string> {
+  async gatherContext(
+    options: {
+      issueNumber?: number;
+      prNumber?: number;
+    },
+    signal?: AbortSignal,
+  ): Promise<string> {
     const parts: string[] = [];
 
     // Fire all independent API fetches concurrently
     const [issue, pr, reviewComments, reviews] = await Promise.all([
-      options.issueNumber ? this.getIssue(options.issueNumber) : Promise.resolve(undefined),
-      options.prNumber ? this.getPR(options.prNumber) : Promise.resolve(undefined),
+      options.issueNumber
+        ? this.getIssue(options.issueNumber, undefined, signal)
+        : Promise.resolve(undefined),
+      options.prNumber ? this.getPR(options.prNumber, signal) : Promise.resolve(undefined),
       options.prNumber
         ? this.paginate<{
             user: { login: string };
@@ -1682,12 +1779,16 @@ export class GitHubHelper implements PlatformAdapter {
             line?: number;
             original_line?: number;
             body: string;
-          }>(`/pulls/${options.prNumber}/comments`, {
-            onTruncated: (page, err) =>
-              core.warning(
-                `gatherContext(pr ${options.prNumber}): review comments truncated at page ${page} — review context may be incomplete: ${err instanceof Error ? err.message : String(err)}`,
-              ),
-          })
+          }>(
+            `/pulls/${options.prNumber}/comments`,
+            {
+              onTruncated: (page, err) =>
+                core.warning(
+                  `gatherContext(pr ${options.prNumber}): review comments truncated at page ${page} — review context may be incomplete: ${err instanceof Error ? err.message : String(err)}`,
+                ),
+            },
+            signal,
+          )
         : Promise.resolve([]),
       options.prNumber
         ? this.paginate<{ user: { login: string }; state: string; body: string }>(
@@ -1698,6 +1799,7 @@ export class GitHubHelper implements PlatformAdapter {
                   `gatherContext(pr ${options.prNumber}): reviews truncated at page ${page} — review context may be incomplete: ${err instanceof Error ? err.message : String(err)}`,
                 ),
             },
+            signal,
           )
         : Promise.resolve([]),
     ]);
@@ -1830,18 +1932,24 @@ export class GitHubHelper implements PlatformAdapter {
    * Merge a PR using the squash method.
    *
    * @param prNumber - PR number to merge.
+   * @param signal - Optional AbortSignal to cancel the request.
    * @returns True if the merge succeeded.
    */
-  async mergePR(prNumber: number): Promise<boolean> {
+  async mergePR(prNumber: number, signal?: AbortSignal): Promise<boolean> {
     try {
-      await this.api(`/pulls/${prNumber}/merge`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          merge_method: 'squash',
-          auto: true,
-        }),
-      });
+      await this.api(
+        `/pulls/${prNumber}/merge`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            merge_method: 'squash',
+            auto: true,
+          }),
+        },
+        undefined,
+        signal,
+      );
       return true;
     } catch (err) {
       const status = getErrorStatus(err);
@@ -1857,10 +1965,11 @@ export class GitHubHelper implements PlatformAdapter {
    * PlatformAdapter alias for mergePR.
    *
    * @param mrNumber - PR number to merge.
+   * @param signal - Optional AbortSignal to cancel the request.
    * @returns True if the merge succeeded.
    */
-  async mergeMR(mrNumber: number): Promise<boolean> {
-    return this.mergePR(mrNumber);
+  async mergeMR(mrNumber: number, signal?: AbortSignal): Promise<boolean> {
+    return this.mergePR(mrNumber, signal);
   }
 
   /**
@@ -1892,17 +2001,23 @@ export class GitHubHelper implements PlatformAdapter {
    *
    * @param issueNumber - Issue number to close.
    * @param comment - Optional closing comment body.
+   * @param signal - Optional AbortSignal to cancel the request.
    */
-  async closeIssue(issueNumber: number, comment?: string): Promise<void> {
+  async closeIssue(issueNumber: number, comment?: string, signal?: AbortSignal): Promise<void> {
     try {
-      await this.api(`/issues/${issueNumber}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          state: 'closed',
-          ...(comment ? { state_reason: 'completed' } : {}),
-        }),
-      });
+      await this.api(
+        `/issues/${issueNumber}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            state: 'closed',
+            ...(comment ? { state_reason: 'completed' } : {}),
+          }),
+        },
+        undefined,
+        signal,
+      );
     } catch (err) {
       core.warning(
         `Failed to close issue ${issueNumber}: ${err instanceof Error ? err.message : err}`,
@@ -1912,11 +2027,16 @@ export class GitHubHelper implements PlatformAdapter {
 
     if (comment) {
       try {
-        await this.api(`/issues/${issueNumber}/comments`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ body: comment }),
-        });
+        await this.api(
+          `/issues/${issueNumber}/comments`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ body: comment }),
+          },
+          undefined,
+          signal,
+        );
       } catch (err) {
         core.warning(
           `Failed to post close comment on issue ${issueNumber}: ${err instanceof Error ? err.message : err}`,
@@ -1998,8 +2118,11 @@ export class GitHubHelper implements PlatformAdapter {
 
     return this.circuitBreaker.call(() =>
       withRetry(execute, {
-        retryableStatuses: [429, 500, 502, 503, 504],
-        retryUnknownStatus: true,
+        // graphql() is always POST: mirror api()'s isIdempotent gating so
+        // non-idempotent mutations are only retried on 429, never replayed
+        // on 5xx or status-less errors.
+        retryableStatuses: [429],
+        retryUnknownStatus: false,
         signal,
       }),
     );

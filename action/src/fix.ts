@@ -31,6 +31,23 @@ import type { ActionInputs } from './inputs.js';
 import { resolvePrNumber, sanitize } from './utils.js';
 
 /**
+ * Determine whether a PR/MR has already been closed or merged, so a fix
+ * loop can stop pushing iteration commits instead of force-pushing onto a
+ * merged branch (which is what orphaned PR #466's hardening).
+ *
+ * GitHub reports state as 'open' | 'closed' | 'merged'; GitLab reports
+ * 'opened' | 'closed' | 'merged'. An undefined state (older adapter builds
+ * that did not populate it) is treated as still open so existing callers are
+ * never silently blocked.
+ * @param state - The PR/MR state string, when known.
+ * @returns True when the PR/MR is closed or merged.
+ */
+export function isPrClosedOrMerged(state?: string): boolean {
+  if (!state) return false;
+  return state === 'closed' || state === 'merged';
+}
+
+/**
  * Run a single fix iteration on a PR: resolve PR, gather context, apply
  * changes, optionally verify with a user-configured command, and push.
  * @param inputs - Parsed action inputs.
@@ -134,6 +151,18 @@ export async function runFix(
 
   let changesMade = false;
   if (fixResult?.changesMade) {
+    // Guard: if the PR was merged or closed by another actor (e.g. the
+    // orchestrator's auto-merge) while the fix loop was iterating, never
+    // push iteration commits onto a merged branch. Stop the loop cleanly.
+    if (isPrClosedOrMerged(pr.state)) {
+      core.warning(
+        sanitize(
+          `PR #${prNumber} is already ${pr.state ?? 'closed/merged'} — skipping push of iteration ${iteration + 1} and stopping the fix loop`,
+        ),
+      );
+      core.setOutput('changes_made', 'false');
+      return;
+    }
     try {
       await exec.exec('git', ['add', '-A']);
       await exec.exec('git', [
@@ -202,6 +231,15 @@ export async function runFix(
         );
 
         if (retryResult?.changesMade) {
+          if (isPrClosedOrMerged(freshPr.state)) {
+            core.warning(
+              sanitize(
+                `PR #${prNumber} is already ${freshPr.state ?? 'closed/merged'} — skipping verification-retry push (iteration ${iteration + 1})`,
+              ),
+            );
+            core.setOutput('changes_made', 'false');
+            return;
+          }
           try {
             await exec.exec('git', ['add', '-A']);
             await exec.exec('git', [
@@ -239,6 +277,9 @@ export async function runFix(
  * whose base predates already-merged work is discarded rather than reused.
  * Callers must `validateRefName()` both args before calling (refs are
  * interpolated into git arguments).
+ * @param branchName - Remote branch to check (e.g. 'autofix/issue-123').
+ * @param defaultBranch - Default branch name (e.g. 'main').
+ * @returns True when the branch tip contains the current default tip.
  */
 async function isAutofixBranchFresh(branchName: string, defaultBranch: string): Promise<boolean> {
   try {
@@ -803,24 +844,36 @@ export async function runAutofixLoop(
     const commitMsg = `fix: autofix iteration ${i + 1} [skip ci]`;
     try {
       await exec.exec('git', ['add', '-A']);
-      await exec.exec('git', ['commit', '-m', commitMsg]);
-      validateRefName(pr.headRef);
-      await exec.exec('git', ['push', 'origin', pr.headRef]);
-      currentEntry.commitMessage = commitMsg;
-
-      previousFindings.push({
-        iteration: i + 1,
-        issues: result.issues,
-        fixSummary: fixResult.summary,
-        filesChanged: fixResult.filesChanged,
-        headSha: prHeadSha,
-        commentIds: currentCommentIds?.map((c) => ({
-          file: c.file,
-          line: c.line,
-          commentId: c.commentId,
-          nodeId: c.nodeId,
-        })),
+      // The fix agent can report changes while leaving the tree clean (only
+      // ignored files written, or edits identical to HEAD). Committing then
+      // fails with "nothing to commit" (exit 1) — a clean tree is not a git
+      // failure, so skip the commit and let the loop continue to verification
+      // and the next review iteration instead of misreporting git-failure.
+      const treeState = await exec.getExecOutput('git', ['status', '--porcelain'], {
+        silent: true,
       });
+      if (treeState.stdout.trim() === '') {
+        core.info('Working tree clean after fix — skipping commit, continuing loop');
+      } else {
+        await exec.exec('git', ['commit', '-m', commitMsg]);
+        validateRefName(pr.headRef);
+        await exec.exec('git', ['push', 'origin', pr.headRef]);
+        currentEntry.commitMessage = commitMsg;
+
+        previousFindings.push({
+          iteration: i + 1,
+          issues: result.issues,
+          fixSummary: fixResult.summary,
+          filesChanged: fixResult.filesChanged,
+          headSha: prHeadSha,
+          commentIds: currentCommentIds?.map((c) => ({
+            file: c.file,
+            line: c.line,
+            commentId: c.commentId,
+            nodeId: c.nodeId,
+          })),
+        });
+      }
     } catch (err) {
       core.warning(
         sanitize(
@@ -908,6 +961,16 @@ export async function runAutofixLoop(
 
           try {
             await exec.exec('git', ['add', '-A']);
+            // Same clean-tree guard as the main iteration commit: the retry
+            // agent can report changes while leaving the tree clean, and
+            // "nothing to commit" must not fail verification loudly.
+            const retryTreeState = await exec.getExecOutput('git', ['status', '--porcelain'], {
+              silent: true,
+            });
+            if (retryTreeState.stdout.trim() === '') {
+              core.info('Working tree clean after verification retry — skipping commit');
+              break;
+            }
             await exec.exec('git', [
               'commit',
               '-m',

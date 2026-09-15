@@ -138,6 +138,44 @@ describe('withRetryAndTimeout', () => {
     );
     expect(fn).toHaveBeenCalledTimes(2);
   });
+
+  it('aborts the in-flight attempt when the outer signal fires', async () => {
+    const controller = new AbortController();
+    let observedSignal: AbortSignal | undefined;
+    const fn = vi.fn().mockImplementation(async (signal: AbortSignal) => {
+      observedSignal = signal;
+      await new Promise<void>((_resolve, reject) => {
+        if (signal.aborted) {
+          reject(signal.reason);
+          return;
+        }
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+      return 'never';
+    });
+
+    const promise = withRetryAndTimeout(fn, 5000, {
+      maxRetries: 2,
+      baseDelayMs: 10,
+      signal: controller.signal,
+    });
+    controller.abort(new DOMException('User cancelled', 'AbortError'));
+
+    await expect(promise).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(observedSignal?.aborted).toBe(true);
+  });
+
+  it('throws immediately when the outer signal is already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort(new DOMException('Already gone', 'AbortError'));
+    const fn = vi.fn().mockResolvedValue('never');
+
+    await expect(
+      withRetryAndTimeout(fn, 5000, { maxRetries: 2, signal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fn).not.toHaveBeenCalled();
+  });
 });
 
 describe('withRetry Retry-After handling', () => {

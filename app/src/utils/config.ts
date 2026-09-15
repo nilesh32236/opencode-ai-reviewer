@@ -4,6 +4,7 @@ import {
   getDefaultMCPServers,
   isDocStyle,
   loadConfig,
+  resolveExcludeAgentConfigs,
 } from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
@@ -320,7 +321,7 @@ export function buildConfig(): AgentConfig {
  * / `review.enableMetaVerification` / `review.enableTestGapDetection` /
  * `review.showFunctionScores` / `review.enableReviewsArrayInline` /
  * `review.suppressLowConfidence` / `review.failOnSeverity` /
- * `review.suggestTitleAndLabels` fields, the `notifications`, `secrets`, `llm`,
+ * `review.excludeAgentConfigs` / `review.suggestTitleAndLabels` fields, the `notifications`, `secrets`, `llm`,
  * and `sca` sections are merged
  * (the engine filters findings off those fields and respects the codebase-index /
  * meta-verification / low-confidence-suppression toggles, the check-run
@@ -351,6 +352,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const pathInstructions = repoConfig?.review?.pathInstructions;
   const showFunctionScores = repoConfig?.review?.showFunctionScores;
   const enableReviewsArrayInline = repoConfig?.review?.enableReviewsArrayInline;
+  const excludeAgentConfigs = resolveExcludeAgentConfigs(repoConfig?.review);
   const notifications = repoConfig?.notifications;
   const secrets = repoConfig?.secrets;
   const llm = repoConfig?.llm;
@@ -374,6 +376,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
     !pathInstructions &&
     showFunctionScores === undefined &&
     enableReviewsArrayInline === undefined &&
+    excludeAgentConfigs === undefined &&
     !notifications &&
     !secrets &&
     !llm &&
@@ -415,6 +418,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       }),
       ...(showFunctionScores !== undefined && { showFunctionScores }),
       ...(enableReviewsArrayInline !== undefined && { enableReviewsArrayInline }),
+      ...(excludeAgentConfigs !== undefined && { excludeAgentConfigs }),
     },
     ...(notifications && {
       notifications: {

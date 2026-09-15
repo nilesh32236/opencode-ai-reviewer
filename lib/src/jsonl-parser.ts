@@ -14,6 +14,8 @@ import type {
   SummaryFinding,
   VerdictFinding,
 } from './types/index.js';
+import { looksLikeCode } from './utils/code-heuristic.js';
+import { buildFixPayload, formatFixPayloadMarkdown } from './utils/fix-payload.js';
 import { sanitizeMarkdown } from './utils/markdown.js';
 import { formatConfidenceLabel, getSeverityBadge } from './utils/review-body.js';
 
@@ -502,19 +504,30 @@ export interface InlineComment {
  * Build inline review comments from issues in a ReviewResult, filtered to lines present in the diff.
  * @param result - The review result containing issues.
  * @param diffLines - Optional set of "file:line" strings to filter inline comments to diff lines.
- * @param suppressLowConfidence - When true, filters out issues with low confidence.
+ * @param suppressLowConfidence - When true, filters out issues with low confidence. May also be
+ * an options object `{ suppressLowConfidence, emitFixPayload }` to avoid boolean-trap misordering.
+ * @param emitFixPayload - Opt-in to appending a Fix-with-AI payload (default false, legacy output unchanged).
  * @returns An array of inline comment objects.
  */
 export function buildInlineComments(
   result: ReviewResult,
   diffLines?: Set<string>,
-  suppressLowConfidence?: boolean,
+  suppressLowConfidence?: boolean | { suppressLowConfidence?: boolean; emitFixPayload?: boolean },
+  emitFixPayload?: boolean,
 ): InlineComment[] {
   const comments: InlineComment[] = [];
+  const suppress =
+    typeof suppressLowConfidence === 'object'
+      ? (suppressLowConfidence.suppressLowConfidence ?? false)
+      : (suppressLowConfidence ?? false);
+  const emitFix =
+    typeof suppressLowConfidence === 'object'
+      ? (suppressLowConfidence.emitFixPayload ?? emitFixPayload ?? false)
+      : (emitFixPayload ?? false);
 
   for (const issue of result.issues) {
     if (issue.inline !== true || !issue.line || issue.line < 1) continue;
-    if (suppressLowConfidence && issue.confidence === 'low') continue;
+    if (suppress && issue.confidence === 'low') continue;
     if (diffLines && diffLines.size > 0) {
       const key = `${issue.file.replace(/^\//, '')}:${issue.line}`;
       if (!diffLines.has(key)) continue;
@@ -564,6 +577,19 @@ export function buildInlineComments(
       }
     }
 
+    if (emitFix === true) {
+      try {
+        const payload = buildFixPayload(issue);
+        // Legacy body above may already render a ```suggestion block; skip the
+        // payload suggestion in that case and keep only the Fix-with-AI prompt.
+        if (body.includes('```suggestion')) payload.suggestedChange = undefined;
+        const rendered = formatFixPayloadMarkdown(payload);
+        if (rendered) body += `\n\n${rendered}`;
+      } catch {
+        // Fail-open: keep the plain comment when payload rendering fails.
+      }
+    }
+
     comments.push({
       path: issue.file.replace(/^\//, ''),
       line: issue.line,
@@ -575,41 +601,7 @@ export function buildInlineComments(
   return comments;
 }
 
-// Declaration keywords that strongly indicate code when combined with other
-// code-like patterns. Uses a word boundary (not whitespace) so standalone
-// statements such as `return;` match without forcing trailing whitespace.
-const STRONG_KEYWORD_PATTERN =
-  /^(const|let|var|import|export|return|if|else|for|while|async|await|function|class|interface|type|enum)\b/;
-
-// Weak code indicators that can also appear in natural language.
-const WEAK_CODE_PATTERNS = [
-  /[{};()=]/, // Syntax characters
-  /^\s*\/\//, // Comments
-  /\.\w+\(/, // Method calls
-  /=>\s*/, // Arrow functions
-  /\?\.\w+/, // Optional chaining
-  /\?\?\s/, // Nullish coalescing
-];
-
-/**
- * Heuristic to determine if a suggestion string looks like code rather than
- * a natural language description. A suggestion is treated as code only when
- * at least two code patterns match. A single match — even a strong
- * declaration keyword — is insufficient: keywords like `if`, `return`,
- * `type`, and `class` are also common English words, and a lone keyword
- * cannot distinguish a real declaration from prose such as
- * "if you have any questions, please ask" or "return the result to the
- * caller." Genuine declarations (`const x = 1;`, `function foo() {}`,
- * `return;`) also match a weak symbol pattern (`=`, `;`, `(`, `{`), so
- * they still classify as code under the >=2 rule.
- * @param suggestion - The suggestion string to evaluate.
- * @returns True if the suggestion contains enough code-like patterns.
- */
-function looksLikeCode(suggestion: string): boolean {
-  let matchCount = 0;
-  if (STRONG_KEYWORD_PATTERN.test(suggestion)) matchCount++;
-  for (const pattern of WEAK_CODE_PATTERNS) {
-    if (pattern.test(suggestion)) matchCount++;
-  }
-  return matchCount >= 2;
-}
+// `looksLikeCode` canonical implementation lives in
+// `./utils/code-heuristic.js` (imported above); re-exported here for
+// backward compatibility with any deep importers.
+export { looksLikeCode } from './utils/code-heuristic.js';

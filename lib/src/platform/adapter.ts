@@ -73,9 +73,17 @@ export interface PlatformAdapter {
   /**
    * Get merge request / pull request details.
    * @param number - Merge request number.
+   * @param options - Optional error handling.
+   * @param options.throwOnError - When true, rethrow a partial-data failure
+   * instead of degrading to partial context.
+   * @param signal - Optional AbortSignal to cancel the underlying requests.
    * @returns Promise resolving to PR context.
    */
-  getMR(number: number): Promise<PRContext>;
+  getMR(
+    number: number,
+    options?: { throwOnError?: boolean },
+    signal?: AbortSignal,
+  ): Promise<PRContext>;
   /**
    * Get the raw content of a file in the repository, without downloading the
    * entire pull request diff.
@@ -105,9 +113,17 @@ export interface PlatformAdapter {
   /**
    * Get issue details.
    * @param number - Issue number.
+   * @param options - Optional error handling.
+   * @param options.throwOnError - When true, rethrow a partial-data failure
+   * instead of degrading to partial comments.
+   * @param signal - Optional AbortSignal to cancel the underlying requests.
    * @returns Promise resolving to issue context.
    */
-  getIssue(number: number): Promise<IssueContext>;
+  getIssue(
+    number: number,
+    options?: { throwOnError?: boolean },
+    signal?: AbortSignal,
+  ): Promise<IssueContext>;
   /**
    * Get all comments on an issue.
    * @param number - Issue number.
@@ -205,6 +221,7 @@ export interface PlatformAdapter {
    * @param postInlineComments - Whether to post inline comments.
    * @param suppressLowConfidence - Whether to suppress low confidence comments.
    * @param options - Optional display flags (e.g. deterministic function scores).
+   * @param signal - Optional AbortSignal to cancel the post mid-flight.
    * @returns Promise resolving to review post result.
    */
   postReview(
@@ -214,6 +231,7 @@ export interface PlatformAdapter {
     postInlineComments?: boolean,
     suppressLowConfidence?: boolean,
     options?: ReviewBodyOptions,
+    signal?: AbortSignal,
   ): Promise<ReviewPostResult>;
   /**
    * Post a single inline review comment immediately (streaming). Implementations
@@ -379,9 +397,13 @@ export interface PlatformAdapter {
    * @param options - Options with optional issue or PR number.
    * @param options.issueNumber - Issue number for context.
    * @param options.prNumber - PR number for context.
+   * @param signal - Optional AbortSignal to cancel the fan-out requests.
    * @returns Promise resolving to context markdown string.
    */
-  gatherContext(options: { issueNumber?: number; prNumber?: number }): Promise<string>;
+  gatherContext(
+    options: { issueNumber?: number; prNumber?: number },
+    signal?: AbortSignal,
+  ): Promise<string>;
   /**
    * Close existing opencode PRs older than the given date.
    * @param since - Optional date string to close PRs older than.
@@ -391,9 +413,10 @@ export interface PlatformAdapter {
   /**
    * Merge a merge request.
    * @param mrNumber - Merge request number.
+   * @param signal - Optional AbortSignal to cancel the request.
    * @returns Promise resolving to true if merge was successful.
    */
-  mergeMR(mrNumber: number): Promise<boolean>;
+  mergeMR(mrNumber: number, signal?: AbortSignal): Promise<boolean>;
   /**
    * Enable auto-merge on a merge request.
    * @param mrNumber - Merge request number.
@@ -404,9 +427,10 @@ export interface PlatformAdapter {
    * Close an issue, optionally with a comment.
    * @param issueNumber - Issue number.
    * @param comment - Optional closing comment.
+   * @param signal - Optional AbortSignal to cancel the request.
    * @returns Promise resolving when issue is closed.
    */
-  closeIssue(issueNumber: number, comment?: string): Promise<void>;
+  closeIssue(issueNumber: number, comment?: string, signal?: AbortSignal): Promise<void>;
   /**
    * Get all review threads for a merge request.
    * @param mrNumber - Merge request number.
