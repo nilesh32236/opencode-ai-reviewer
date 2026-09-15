@@ -313,9 +313,17 @@ export class GitLabAdapter implements PlatformAdapter {
   /**
    * Get MR.
    * @param number - number argument.
+   * @param options - Optional error/signal handling.
+   * @param options.throwOnError - When true, rethrow a /changes fetch failure
+   * instead of degrading to partial data (default: false, warn + continue).
+   * @param signal - Optional AbortSignal to cancel the underlying requests.
    * @returns Description.
    */
-  async getMR(number: number): Promise<PRContext> {
+  async getMR(
+    number: number,
+    options?: { throwOnError?: boolean },
+    signal?: AbortSignal,
+  ): Promise<PRContext> {
     const [mrResult, changesResult] = await Promise.allSettled([
       this.api<{
         iid: number;
@@ -329,7 +337,7 @@ export class GitLabAdapter implements PlatformAdapter {
         source_project?: { path_with_namespace?: string } | null;
         author: { username: string };
         labels: string[];
-      }>(`/merge_requests/${number}`),
+      }>(`/merge_requests/${number}`, {}, undefined, signal),
       this.api<{
         changes: Array<{
           new_path: string;
@@ -339,7 +347,7 @@ export class GitLabAdapter implements PlatformAdapter {
           deleted_file: boolean;
           diff: string;
         }>;
-      }>(`/merge_requests/${number}/changes`),
+      }>(`/merge_requests/${number}/changes`, {}, undefined, signal),
     ]);
 
     if (mrResult.status === 'rejected') {
@@ -348,9 +356,27 @@ export class GitLabAdapter implements PlatformAdapter {
 
     const mr = mrResult.value;
     // Coerce malformed /changes shapes (undefined/null/non-array on partial
-    // failure) to [] instead of crashing on `.length`.
+    // failure) to [] instead of crashing on `.length` — but never silently:
+    // a rejected or malformed payload means the review proceeds on partial
+    // context, so warn with status like the truncation warns below.
+    if (changesResult.status === 'rejected') {
+      const status = getErrorStatus(changesResult.reason);
+      const suffix = status !== undefined ? ` (status ${status})` : '';
+      core.warning(
+        `MR !${number} changes unavailable${suffix}: proceeding with partial context (truncated:true): ${changesResult.reason instanceof Error ? changesResult.reason.message : String(changesResult.reason)}`,
+      );
+      if (options?.throwOnError) throw changesResult.reason;
+    }
     const rawChanges = changesResult.status === 'fulfilled' ? changesResult.value.changes : [];
     let changes = Array.isArray(rawChanges) ? rawChanges : [];
+    if (!Array.isArray(rawChanges) && changesResult.status === 'fulfilled') {
+      core.warning(
+        `MR !${number} changes malformed: expected array, proceeding with partial context (truncated:true)`,
+      );
+      if (options?.throwOnError) {
+        throw new Error(`MR !${number} changes payload malformed`);
+      }
+    }
     // Bound unbounded MR payloads: cap file count and per-file diff bytes so
     // large MRs neither truncate silently nor balloon LLM prompts / OOM.
     if (changes.length > MAX_DIFF_FILES) {
@@ -437,28 +463,63 @@ export class GitLabAdapter implements PlatformAdapter {
   /**
    * Get issue.
    * @param number - number argument.
+   * @param options - Optional error/signal handling.
+   * @param options.throwOnError - When true, rethrow a notes pagination failure
+   * instead of degrading to partial comments (default: false, warn + continue).
+   * @param signal - Optional AbortSignal to cancel the underlying requests.
    * @returns Description.
    */
-  async getIssue(number: number): Promise<IssueContext> {
+  async getIssue(
+    number: number,
+    options?: { throwOnError?: boolean },
+    signal?: AbortSignal,
+  ): Promise<IssueContext> {
     const [issueResult, commentsResult] = await Promise.allSettled([
       this.api<{
         iid: number;
         title: string;
         description: string | null;
         labels: string[];
-      }>(`/issues/${number}`),
+      }>(`/issues/${number}`, {}, undefined, signal),
       this.paginate<{
         id: number;
         author: { username: string };
         created_at: string;
         body: string;
-      }>(`/issues/${number}/notes`),
+      }>(
+        `/issues/${number}/notes`,
+        {
+          throwOnError: options?.throwOnError,
+          onTruncated: options?.throwOnError
+            ? undefined
+            : (page, err) =>
+                core.warning(
+                  `getIssue(${number}): notes truncated at page ${page} — review context may be incomplete: ${err instanceof Error ? err.message : String(err)}`,
+                ),
+        },
+        signal,
+      ),
     ]);
 
     if (issueResult.status === 'rejected') throw issueResult.reason;
 
     const issue = issueResult.value;
-    const comments = commentsResult.status === 'fulfilled' ? commentsResult.value : [];
+    let comments: Array<{
+      id: number;
+      author: { username: string };
+      created_at: string;
+      body: string;
+    }> = [];
+    if (commentsResult.status === 'fulfilled') {
+      comments = commentsResult.value;
+    } else {
+      const status = getErrorStatus(commentsResult.reason);
+      const suffix = status !== undefined ? ` (status ${status})` : '';
+      core.warning(
+        `getIssue(${number}): notes unavailable${suffix} — proceeding with partial context (truncated:true): ${commentsResult.reason instanceof Error ? commentsResult.reason.message : String(commentsResult.reason)}`,
+      );
+      if (options?.throwOnError) throw commentsResult.reason;
+    }
 
     return {
       number: issue.iid,
@@ -508,12 +569,13 @@ export class GitLabAdapter implements PlatformAdapter {
    * @param mrNumber - mrNumber argument.
    * @returns Description.
    */
-  async getDiffLines(mrNumber: number): Promise<Set<string>> {
+  async getDiffLines(mrNumber: number, signal?: AbortSignal): Promise<Set<string>> {
     try {
       const diffText = await this.api<string>(
         `/merge_requests/${mrNumber}/diff`,
         { headers: { Accept: 'text/plain' } },
         'text',
+        signal,
       );
       const lines = new Set<string>();
       // Slice at the last newline within the cap so the parser never sees a
@@ -741,7 +803,9 @@ export class GitLabAdapter implements PlatformAdapter {
     postInlineComments = true,
     suppressLowConfidence?: boolean,
     options?: ReviewBodyOptions,
+    signal?: AbortSignal,
   ): Promise<ReviewPostResult> {
+    signal?.throwIfAborted?.();
     const workingResult = suppressLowConfidence
       ? {
           ...result,
@@ -752,7 +816,7 @@ export class GitLabAdapter implements PlatformAdapter {
     const inlineComments = postInlineComments
       ? buildInlineComments(
           workingResult,
-          await this.getDiffLines(mrNumber),
+          await this.getDiffLines(mrNumber, signal),
           suppressLowConfidence,
           options?.emitFixPayload,
         )
@@ -779,11 +843,16 @@ export class GitLabAdapter implements PlatformAdapter {
 
     // Post summary comment
     try {
-      await this.api(`/merge_requests/${mrNumber}/notes`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body }),
-      });
+      await this.api(
+        `/merge_requests/${mrNumber}/notes`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ body }),
+        },
+        undefined,
+        signal,
+      );
     } catch (err) {
       core.warning(`Failed to post review body comment: ${err}`);
       return { success: false, method: 'failed' };
@@ -799,7 +868,7 @@ export class GitLabAdapter implements PlatformAdapter {
     try {
       const mrMeta = await this.api<{
         diff_refs?: { base_sha: string; head_sha: string; start_sha: string };
-      }>(`/merge_requests/${mrNumber}`);
+      }>(`/merge_requests/${mrNumber}`, {}, undefined, signal);
       if (mrMeta.diff_refs) {
         baseSha = mrMeta.diff_refs.base_sha;
         headSha = mrMeta.diff_refs.head_sha;
@@ -811,23 +880,29 @@ export class GitLabAdapter implements PlatformAdapter {
 
     // Post inline comments as individual discussion threads
     for (const comment of inlineComments) {
+      signal?.throwIfAborted?.();
       try {
-        await this.api(`/merge_requests/${mrNumber}/discussions`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            body: comment.body,
-            position: {
-              position_type: 'text',
-              base_sha: baseSha || startSha,
-              head_sha: headSha || startSha,
-              start_sha: startSha,
-              new_path: comment.path,
-              new_line: comment.line,
-              old_line: comment.side === 'LEFT' ? comment.line : undefined,
-            },
-          }),
-        });
+        await this.api(
+          `/merge_requests/${mrNumber}/discussions`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              body: comment.body,
+              position: {
+                position_type: 'text',
+                base_sha: baseSha || startSha,
+                head_sha: headSha || startSha,
+                start_sha: startSha,
+                new_path: comment.path,
+                new_line: comment.line,
+                old_line: comment.side === 'LEFT' ? comment.line : undefined,
+              },
+            }),
+          },
+          undefined,
+          signal,
+        );
         commentIds.push({
           file: comment.path,
           line: comment.line,
@@ -838,11 +913,16 @@ export class GitLabAdapter implements PlatformAdapter {
         if (err instanceof Error && (err as Error & { status: number }).status === 422) {
           const fallbackBody = `**Inline comment (${comment.path}:${comment.line})**\n\n${comment.body}`;
           try {
-            await this.api(`/merge_requests/${mrNumber}/notes`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ body: fallbackBody }),
-            });
+            await this.api(
+              `/merge_requests/${mrNumber}/notes`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ body: fallbackBody }),
+              },
+              undefined,
+              signal,
+            );
           } catch (fallbackErr) {
             core.warning(
               `Fallback comment for ${comment.path}:${comment.line} also failed: ${fallbackErr}`,
@@ -1271,24 +1351,34 @@ export class GitLabAdapter implements PlatformAdapter {
    * @param options
    * @param options.issueNumber
    * @param options.prNumber - options.prNumber argument.
+   * @param signal - Optional AbortSignal to cancel the fan-out requests.
    * @returns Description.
    */
-  async gatherContext(options: {
-    issueNumber?: number;
-    prNumber?: number;
-  }): Promise<string> {
+  async gatherContext(
+    options: {
+      issueNumber?: number;
+      prNumber?: number;
+    },
+    signal?: AbortSignal,
+  ): Promise<string> {
     const parts: string[] = [];
 
     let allNotes: Array<Record<string, unknown>> = [];
     if (options.prNumber) {
       allNotes = await this.paginate<Record<string, unknown>>(
         `/merge_requests/${options.prNumber}/notes`,
+        undefined,
+        signal,
       );
     }
 
     const [issue, mr] = await Promise.all([
-      options.issueNumber ? this.getIssue(options.issueNumber) : Promise.resolve(undefined),
-      options.prNumber ? this.getMR(options.prNumber) : Promise.resolve(undefined),
+      options.issueNumber
+        ? this.getIssue(options.issueNumber, undefined, signal)
+        : Promise.resolve(undefined),
+      options.prNumber
+        ? this.getMR(options.prNumber, undefined, signal)
+        : Promise.resolve(undefined),
     ]);
 
     const reviewComments = allNotes as Array<{
@@ -1393,14 +1483,20 @@ export class GitLabAdapter implements PlatformAdapter {
   /**
    * Merge MR.
    * @param mrNumber - mrNumber argument.
+   * @param signal - Optional AbortSignal to cancel the request.
    * @returns Description.
    */
-  async mergeMR(mrNumber: number): Promise<boolean> {
+  async mergeMR(mrNumber: number, signal?: AbortSignal): Promise<boolean> {
     try {
-      await this.api(`/merge_requests/${mrNumber}/merge`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
+      await this.api(
+        `/merge_requests/${mrNumber}/merge`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        },
+        undefined,
+        signal,
+      );
       return true;
     } catch (err) {
       const status = getErrorStatus(err);
@@ -1439,15 +1535,21 @@ export class GitLabAdapter implements PlatformAdapter {
    * Close issue.
    * @param issueNumber
    * @param comment - comment argument.
+   * @param signal - Optional AbortSignal to cancel the request.
    * @returns Description.
    */
-  async closeIssue(issueNumber: number, comment?: string): Promise<void> {
+  async closeIssue(issueNumber: number, comment?: string, signal?: AbortSignal): Promise<void> {
     try {
-      await this.api(`/issues/${issueNumber}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ state_event: 'close' }),
-      });
+      await this.api(
+        `/issues/${issueNumber}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ state_event: 'close' }),
+        },
+        undefined,
+        signal,
+      );
     } catch (err) {
       core.warning(
         `Failed to close issue ${issueNumber}: ${err instanceof Error ? err.message : err}`,
@@ -1457,11 +1559,16 @@ export class GitLabAdapter implements PlatformAdapter {
 
     if (comment) {
       try {
-        await this.api(`/issues/${issueNumber}/notes`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ body: comment }),
-        });
+        await this.api(
+          `/issues/${issueNumber}/notes`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ body: comment }),
+          },
+          undefined,
+          signal,
+        );
       } catch (err) {
         core.warning(
           `Failed to post close comment on issue ${issueNumber}: ${err instanceof Error ? err.message : err}`,

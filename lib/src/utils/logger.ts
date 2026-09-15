@@ -395,14 +395,13 @@ export class Logger {
     // Redact credentials BEFORE JSON serialization so the regex-based sanitizer
     // can never alter the JSON structure (a data key literally named e.g.
     // GITHUB_TOKEN must not corrupt the machine-parseable record).
-    entry.message = sanitizeError(entry.message);
-    if (isPlainObject(entry.data)) {
-      for (const [k, v] of Object.entries(entry.data)) {
-        if (typeof v !== 'string') continue;
-        // Values under credential-shaped keys are fully redacted (their secrets
-        // may not match a token pattern); everything else is pattern-scrubbed.
-        entry.data[k] = SECRET_KEY_PATTERN.test(k) ? '[REDACTED]' : sanitizeError(v);
-      }
+    // Deep-sanitize the whole entry: context-promoted top-level fields, nested
+    // objects/arrays inside `data`, and non-plain `data` all bypassed the old
+    // top-level-only scrub while the human path scrubs the full line.
+    const entryRecord = entry as unknown as Record<string, unknown>;
+    for (const key of Object.keys(entryRecord)) {
+      if (key === 'timestamp' || key === 'level' || key === 'name') continue;
+      entryRecord[key] = sanitizeStructuredValue(entryRecord[key], key);
     }
     const line = `${safeJsonStringify(entry)}\n`;
     // Route through the configured sink when one provides structured output so
@@ -513,6 +512,40 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null) return false;
   const proto = Object.getPrototypeOf(value);
   return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Recursively sanitize a structured log value before JSON serialization.
+ * Strings under credential-shaped keys are fully redacted (their secrets may
+ * not match a token pattern); all other strings are pattern-scrubbed via
+ * sanitizeError. Plain objects are walked key-by-key (so nested objects and
+ * context-promoted fields are covered), arrays are mapped element-wise, and
+ * Error instances are rendered to their sanitized stack/message. Primitives
+ * and class instances (Date, Map, etc.) pass through untouched so serialization
+ * semantics are preserved.
+ * @param value - The value to sanitize.
+ * @param key - The object key this value sits under (for secret-key matching).
+ * @returns The sanitized value with the same shape.
+ */
+function sanitizeStructuredValue(value: unknown, key?: string): unknown {
+  if (typeof value === 'string') {
+    if (key !== undefined && SECRET_KEY_PATTERN.test(key)) return '[REDACTED]';
+    return sanitizeError(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeStructuredValue(item));
+  }
+  if (value instanceof Error) {
+    return sanitizeError(value);
+  }
+  if (isPlainObject(value)) {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = sanitizeStructuredValue(v, k);
+    }
+    return out;
+  }
+  return value;
 }
 
 /**
