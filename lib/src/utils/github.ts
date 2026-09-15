@@ -21,6 +21,7 @@ import {
   withFingerprintMarker,
 } from './inline-fingerprint.js';
 import { getLabelColor } from './label-color.js';
+import { normalizeVerdictMode } from './verdict-mode.js';
 import { withRetry } from './retry.js';
 import type { RetryOptions } from './retry.js';
 import { buildReviewBody } from './review-body.js';
@@ -68,6 +69,7 @@ function toFingerprintSet(value: Set<string> | string[] | undefined): Set<string
 
 /** Opt-in review gating mode mapped to the Pulls `createReview` event. */
 export type { VerdictMode } from '../types/index.js';
+export { normalizeVerdictMode } from './verdict-mode.js';
 
 /** Review event sent on `POST /pulls/{n}/reviews`. */
 export type ReviewEvent = 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES';
@@ -85,24 +87,6 @@ const VERDICT_FAILURE_SENTINELS = new Set<string>([
   'All review agents failed',
   'All review batches failed',
 ]);
-
-/**
- * Normalize a raw `verdict_mode` value (fail-open to `'comment'`).
- * @param value - Raw mode value from config/input.
- * @returns Normalized mode.
- * @since NEXT
- */
-export function normalizeVerdictMode(value: unknown): VerdictMode {
-  if (typeof value !== 'string') return 'comment';
-  const normalized = value.trim().toLowerCase();
-  if (normalized === 'approve' || normalized === 'request-changes') return normalized;
-  if (normalized !== '' && normalized !== 'comment') {
-    core.warning(
-      `Ignoring invalid verdict_mode "${String(value)}". Must be "comment", "approve", or "request-changes"; falling back to "comment".`,
-    );
-  }
-  return 'comment';
-}
 
 /**
  * Resolve the Pulls `createReview` event for a review result + gating mode.
@@ -1084,6 +1068,17 @@ export class GitHubHelper implements PlatformAdapter {
     } catch (err) {
       const status = getErrorStatus(err);
       if (event !== 'COMMENT' && (status === 403 || status === 422)) {
+        const message = err instanceof Error ? err.message : String(err);
+        // Permission/event-scope rejections fall back to COMMENT; a
+        // position-validation 422 on a batched comments[] payload must
+        // preserve the gate — rethrow so the caller retries summary-only
+        // with the original event (the summary retry itself falls back to
+        // COMMENT below when it is also rejected).
+        const isPermissionLike =
+          status === 403 ||
+          comments === undefined ||
+          /permission|forbidden|not permitted|resource not accessible|event/i.test(message);
+        if (!isPermissionLike) throw err;
         core.warning(
           `Review event ${event} rejected (status ${status}), retrying as COMMENT: ${err}`,
         );

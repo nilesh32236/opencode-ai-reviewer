@@ -33,7 +33,7 @@ import {
 } from './types/index.js';
 import { PromptConfigSchema } from './types/schemas.js';
 import { DEFAULT_ALLOWLIST } from './utils/command.js';
-import { normalizeVerdictMode } from './utils/github.js';
+import { normalizeVerdictMode } from './utils/verdict-mode.js';
 import { Logger } from './utils/logger.js';
 import { parseReviewEffort } from './utils/review-effort.js';
 import {
