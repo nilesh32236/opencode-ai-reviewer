@@ -225,6 +225,7 @@ export {
   legacyInlineKey,
   normalizeFingerprintPath,
   normalizeFingerprintText,
+  normalizeLegacyThreadBody,
   shouldPostFingerprint,
   withFingerprintMarker,
   INLINE_FINGERPRINT_MARKER_PREFIX,

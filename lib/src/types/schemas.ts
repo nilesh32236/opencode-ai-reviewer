@@ -265,7 +265,12 @@ export const ReviewConfigSchema = z.object({
   skipActors: z.array(z.string()).default(['github-actions[bot]']),
   inline: z.boolean().default(true),
   enableReviewsArrayInline: z.boolean().optional().default(false),
-  dedupFingerprints: z.boolean().optional().default(true),
+  // Default-free on purpose (see excludeAgentConfigs below): a schema
+  // `.default(true)` would be indistinguishable from an explicit value and
+  // shadow the workflow `dedup_fingerprints` input — absent stays undefined
+  // and the default (true) comes from DEFAULT_CONFIG plus the fail-open
+  // `?? true` fallbacks at each consumption site.
+  dedupFingerprints: z.boolean().optional(),
   dedup_fingerprints: z.boolean().optional(),
   emitFixPayload: z.boolean().default(false),
   requireVerdict: z.boolean().default(true),
@@ -727,6 +732,8 @@ export const PromptConfigSchema = z.object({
       enableTestGapDetection: z.boolean().optional(),
       showFunctionScores: z.boolean().optional(),
       enableReviewsArrayInline: z.boolean().optional(),
+      dedupFingerprints: z.boolean().optional(),
+      dedup_fingerprints: z.boolean().optional(),
       emitFixPayload: z.boolean().optional(),
       enableCodebaseIndex: z.boolean().optional(),
       includePreExisting: z.boolean().optional(),

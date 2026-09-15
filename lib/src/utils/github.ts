@@ -930,18 +930,38 @@ export class GitHubHelper implements PlatformAdapter {
    * Embed `<!-- inline-fp -->` markers into built inline comments so future
    * runs can recognize them as already posted. Matches comments to kept
    * issues by anchor in order (fail-open: unmatched comments post as-is).
+   *
+   * Only issues that will actually produce a comment are queued: the same
+   * inline/line/suppress/diffLines filters as `buildInlineComments` apply, so
+   * a filtered-out issue can never donate its fingerprint to a same-anchor
+   * survivor (which would mistag the survivor and suppress the wrong finding
+   * on the next run).
    * @param comments - Built inline comments (mutated in place).
    * @param issues - Deduped issues the comments were built from.
+   * @param diffLines - Diff anchor set used for the build (same instance).
+   * @param suppressLowConfidence - Confidence filter used for the build.
    * @since NEXT
    */
   private stampInlineFingerprintMarkers(
     comments: Array<{ path: string; line: number; body: string }>,
     issues: ReviewIssue[],
+    diffLines?: Set<string>,
+    suppressLowConfidence?: boolean | { suppressLowConfidence?: boolean; emitFixPayload?: boolean },
   ): void {
     try {
+      const suppress =
+        typeof suppressLowConfidence === 'object'
+          ? (suppressLowConfidence.suppressLowConfidence ?? false)
+          : (suppressLowConfidence ?? false);
       const queueByAnchor = new Map<string, string[]>();
       for (const issue of issues) {
         if (issue.inline !== true) continue;
+        if (!issue.line || issue.line < 1) continue;
+        if (suppress && issue.confidence === 'low') continue;
+        if (diffLines && diffLines.size > 0) {
+          if (!diffLines.has(`${String(issue.file ?? '').replace(/^\//, '')}:${issue.line}`))
+            continue;
+        }
         let fp: string;
         try {
           fp = fingerprintForIssue(issue);
@@ -1030,15 +1050,23 @@ export class GitHubHelper implements PlatformAdapter {
       );
     }
 
+    const diffLines = postInlineComments
+      ? await this.getDiffLines(prNumber, commitSha, signal)
+      : undefined;
     const inlineComments = postInlineComments
       ? buildInlineComments(
           dedupedResult,
-          await this.getDiffLines(prNumber, commitSha, signal),
+          diffLines,
           suppressLowConfidence,
           options?.emitFixPayload,
         )
       : [];
-    this.stampInlineFingerprintMarkers(inlineComments, dedupedResult.issues);
+    this.stampInlineFingerprintMarkers(
+      inlineComments,
+      dedupedResult.issues,
+      diffLines,
+      suppressLowConfidence,
+    );
 
     const placedInlineKeys = new Set<string>();
     for (const c of inlineComments) {
@@ -1049,6 +1077,21 @@ export class GitHubHelper implements PlatformAdapter {
           (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
         )
       : dedupedResult.issues;
+    // Fully-deduped re-push: every inline finding was already posted in a
+    // previous run and nothing (inline or body) remains to report. Skip the
+    // review post so re-pushes add no noise review. Only applies when dedup
+    // actually removed something — a genuinely empty result still posts.
+    if (postInlineComments && (options?.dedupFingerprints ?? true) === true) {
+      const skippedInlineCount =
+        workingResult.issues.filter((i) => i.inline === true).length -
+        dedupedResult.issues.filter((i) => i.inline === true).length;
+      if (skippedInlineCount > 0 && inlineComments.length === 0 && issuesForBody.length === 0) {
+        core.debug(
+          `Skipping review post — all ${skippedInlineCount} inline finding(s) already posted (fingerprints)`,
+        );
+        return { success: true, method: 'body-only' };
+      }
+    }
     const body = buildReviewBody({ ...dedupedResult, issues: issuesForBody }, options);
 
     const commentIds: Array<{
@@ -1236,7 +1279,12 @@ export class GitHubHelper implements PlatformAdapter {
       suppressLowConfidence,
       options?.emitFixPayload,
     );
-    this.stampInlineFingerprintMarkers(inlineComments, dedupedResult.issues);
+    this.stampInlineFingerprintMarkers(
+      inlineComments,
+      dedupedResult.issues,
+      diffLines,
+      suppressLowConfidence,
+    );
 
     const placedInlineKeys = new Set<string>();
     for (const c of inlineComments) {
@@ -1246,6 +1294,19 @@ export class GitHubHelper implements PlatformAdapter {
     const issuesForBody = dedupedResult.issues.filter(
       (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
     );
+    // Fully-deduped re-push: nothing new to report inline or in the body, so
+    // skip even the summary-only fallback instead of posting a noise review.
+    if ((options?.dedupFingerprints ?? true) === true) {
+      const skippedInlineCount =
+        workingResult.issues.filter((i) => i.inline === true).length -
+        dedupedResult.issues.filter((i) => i.inline === true).length;
+      if (skippedInlineCount > 0 && inlineComments.length === 0 && issuesForBody.length === 0) {
+        core.debug(
+          `Skipping reviews-array post — all ${skippedInlineCount} inline finding(s) already posted (fingerprints)`,
+        );
+        return { success: true, method: 'body-only' };
+      }
+    }
     const body = buildReviewBody({ ...dedupedResult, issues: issuesForBody }, options);
     // Full-finding body used for the fail-open summary-only retry.
     const fullBody = buildReviewBody(dedupedResult, options);

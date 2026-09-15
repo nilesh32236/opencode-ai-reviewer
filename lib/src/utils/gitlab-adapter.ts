@@ -867,19 +867,31 @@ export class GitLabAdapter implements PlatformAdapter {
     }
     const dedupedResult = { ...workingResult, issues: dedupedIssues };
 
+    const diffLines = postInlineComments ? await this.getDiffLines(mrNumber, signal) : undefined;
     const inlineComments = postInlineComments
       ? buildInlineComments(
           dedupedResult,
-          await this.getDiffLines(mrNumber, signal),
+          diffLines,
           suppressLowConfidence,
           options?.emitFixPayload,
         )
       : [];
 
+    // Marker stamping queues only issues that will actually produce a
+    // comment (same inline/line/suppress/diffLines filters as
+    // buildInlineComments) so a filtered-out issue can never donate its
+    // fingerprint to a same-anchor survivor.
     try {
+      const suppress = suppressLowConfidence === true;
       const queueByAnchor = new Map<string, string[]>();
       for (const issue of dedupedIssues) {
         if (issue.inline !== true) continue;
+        if (!issue.line || issue.line < 1) continue;
+        if (suppress && issue.confidence === 'low') continue;
+        if (diffLines && diffLines.size > 0) {
+          if (!diffLines.has(`${String(issue.file ?? '').replace(/^\//, '')}:${issue.line}`))
+            continue;
+        }
         try {
           const fp = fingerprintForIssue(issue);
           const anchor = `${String(issue.file ?? '').replace(/^\//, '')}:${issue.line}`;
@@ -907,6 +919,20 @@ export class GitLabAdapter implements PlatformAdapter {
           (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
         )
       : dedupedResult.issues;
+    // Fully-deduped re-push: every inline finding was already posted and
+    // nothing (inline or body) remains — skip all posts so re-pushes add no
+    // noise note. Only applies when dedup actually removed something.
+    if (postInlineComments && (options?.dedupFingerprints ?? true) === true) {
+      const skippedInlineCount =
+        workingResult.issues.filter((i) => i.inline === true).length -
+        dedupedResult.issues.filter((i) => i.inline === true).length;
+      if (skippedInlineCount > 0 && inlineComments.length === 0 && issuesForBody.length === 0) {
+        core.debug(
+          `Skipping GitLab review post — all ${skippedInlineCount} inline finding(s) already posted (fingerprints)`,
+        );
+        return { success: true, method: 'body-only' };
+      }
+    }
     const body = buildReviewBody({ ...dedupedResult, issues: issuesForBody }, options);
 
     const commentIds: Array<{

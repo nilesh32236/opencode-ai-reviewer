@@ -150,6 +150,8 @@ export interface ActionInputs {
     reviewInline: boolean;
     /** Skip inline findings already posted in previous runs (default: true). */
     dedupFingerprints: boolean;
+    /** Whether the dedup_fingerprints input was explicitly set by the workflow. */
+    dedupFingerprintsExplicit: boolean;
     /** Opt-in to a single reviews-array request with summary-only 422 fallback (default: false). */
     enableReviewsArrayInline: boolean;
     /** Whether to stream review findings as batches complete. */

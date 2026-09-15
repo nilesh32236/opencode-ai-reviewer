@@ -74,6 +74,24 @@ function parseCostTrackingVerbosity(raw: string): CostTrackingVerbosity {
   return 'summary';
 }
 
+/**
+ * Parse the `dedup_fingerprints` workflow input with explicitness tracking.
+ * Unset/empty resolves to enabled (true) without marking the input explicit,
+ * so a repo `.opencode-reviewer.yml` value wins when the workflow leaves the
+ * input unset; an explicit `false` (or `true`) is authoritative over the repo
+ * config so a PR cannot re-enable dedup the workflow turned off (and the
+ * workflow can always force dedup back on).
+ * @returns The parsed value plus whether the workflow set it explicitly.
+ */
+function parseDedupFingerprintsInput(): {
+  dedupFingerprints: boolean;
+  dedupFingerprintsExplicit: boolean;
+} {
+  const raw = core.getInput('dedup_fingerprints').trim();
+  if (raw === '') return { dedupFingerprints: true, dedupFingerprintsExplicit: false };
+  return { dedupFingerprints: raw !== 'false', dedupFingerprintsExplicit: true };
+}
+
 /** Parsed and validated GitHub Action inputs for the OpenCode PR Agent. */
 export interface ActionInputs {
   /** The operation mode: review, fix, audit, or post. */
@@ -218,6 +236,8 @@ export interface ActionInputs {
   reviewInline: boolean;
   /** Skip inline findings already posted in previous runs (default: true). */
   dedupFingerprints: boolean;
+  /** Whether the dedup_fingerprints input was explicitly set by the workflow. */
+  dedupFingerprintsExplicit: boolean;
   /** Opt-in to a single reviews-array request with summary-only 422 fallback (default: false). */
   enableReviewsArrayInline: boolean;
   /** Whether to stream review findings as batches complete. */
@@ -711,7 +731,7 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     probeAllModels: core.getInput('probe_all_models') === 'true',
     timeoutMinutes: parseTimeoutMinutes(core.getInput('timeout_minutes')),
     reviewInline: core.getInput('review_inline') !== 'false',
-    dedupFingerprints: core.getInput('dedup_fingerprints') !== 'false',
+    ...parseDedupFingerprintsInput(),
     enableReviewsArrayInline: core.getInput('enable_reviews_array_inline') === 'true',
     streamComments: core.getInput('stream_comments') === 'true',
     streamBatchSize: parseStreamBatchSize(core.getInput('stream_batch_size')),

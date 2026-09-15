@@ -10,6 +10,7 @@ import {
   fingerprintForIssue,
   getErrorStatus,
   legacyInlineKey,
+  normalizeLegacyThreadBody,
   postSuggestionComment,
   sanitizeMarkdown,
   sendNotification,
@@ -147,7 +148,9 @@ export async function runReview(
         previousComments.map((c) => c.body ?? ''),
       );
       previousLegacyKeys = new Set(
-        previousComments.map((c) => legacyInlineKey(c.file ?? '', c.line ?? null, c.body ?? '')),
+        previousComments.map((c) =>
+          legacyInlineKey(c.file ?? '', c.line ?? null, normalizeLegacyThreadBody(c.body ?? '')),
+        ),
       );
     }
   } catch {
@@ -205,7 +208,12 @@ export async function runReview(
                   issueFingerprint = undefined;
                 }
               }
-              const key = streamedFindingKey(issue.file, issue.line, issue.message);
+              // In-run key agrees with the cross-run fingerprint identity:
+              // findings that differ in category/suggestion hash differently
+              // both here and in the final postReview gate, so distinct
+              // findings on one line stay independent.
+              const key =
+                issueFingerprint ?? streamedFindingKey(issue.file, issue.line, issue.message);
               // Never post the same finding twice across batches (distinct
               // findings on one line have distinct keys and stay independent),
               // and only mark a finding as streamed when the inline post
@@ -273,13 +281,21 @@ export async function runReview(
   const finalResult: typeof result = streamEnabled
     ? {
         ...result,
-        issues: result.issues.filter(
-          (i) =>
-            !i.inline ||
-            !i.file ||
-            !i.line ||
-            !streamedIssueKeys.has(streamedFindingKey(i.file, i.line, i.message)),
-        ),
+        issues: result.issues.filter((i) => {
+          if (!i.inline || !i.file || !i.line) return true;
+          // Mirror the streaming key exactly (fingerprint when computable,
+          // coarse message key otherwise) so only successfully streamed
+          // findings are removed from the final body.
+          let key: string;
+          try {
+            key = dedupEnabled
+              ? fingerprintForIssue(i)
+              : streamedFindingKey(i.file, i.line, i.message);
+          } catch {
+            key = streamedFindingKey(i.file, i.line, i.message);
+          }
+          return !streamedIssueKeys.has(key);
+        }),
       }
     : result;
 

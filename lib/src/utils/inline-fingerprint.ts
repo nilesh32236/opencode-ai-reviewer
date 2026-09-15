@@ -127,6 +127,33 @@ export function collectFingerprintsFromBodies(bodies: Iterable<string>): Set<str
 }
 
 /**
+ * Strip presentation wrappers from a previously posted thread body so it can
+ * be compared against freshly rendered finding text: removes the embedded
+ * fingerprint marker and any leading severity prefix (`**SEVERITY**:`, with
+ * or without a leading emoji badge as emitted by `buildInlineComments` and
+ * the streaming posters).
+ * @param body - Previously posted comment body (may be undefined/null).
+ * @returns Cleaned body text for legacy-key computation.
+ * @since NEXT
+ */
+export function normalizeLegacyThreadBody(body: string | null | undefined): string {
+  let clean = String(body ?? '');
+  try {
+    clean = clean.replace(new RegExp(INLINE_FINGERPRINT_PATTERN.source, 'g'), '');
+  } catch {
+    clean = clean.replace(/<!-- inline-fp:[0-9a-f]{16} -->/g, '');
+  }
+  clean = clean.trim();
+  // Leading emoji badge(s) + bold severity: "🔴 **CRITICAL**: msg"
+  clean = clean.replace(/^(?:\p{Extended_Pictographic}|\uFE0F|\u200D|\s)*\*\*[A-Z]+\*\*:\s*/u, '');
+  // Bold severity without badge: "**CRITICAL**: msg"
+  clean = clean.replace(/^\*\*[A-Z]+\*\*:\s*/, '');
+  // Plain severity without markup: "CRITICAL: msg"
+  clean = clean.replace(/^[A-Z]+:\s*/, '');
+  return clean.trim();
+}
+
+/**
  * Coarse legacy key for threads posted before the fingerprint marker existed:
  * `path:line:normalized-message-prefix`. Used only as a best-effort fallback
  * so old duplicates are still skipped when no marker is present.
@@ -205,7 +232,12 @@ export function filterIssuesByFingerprints<T extends FingerprintableIssue>(
       continue;
     }
     if (options?.legacyKeys && options.legacyKeys.size > 0) {
-      const legacy = legacyInlineKey(
+      // Legacy threads carry rendered bodies (`**SEV**: message …`), while a
+      // fresh issue only has `message`/`suggestion`. Compare both the
+      // message-only and message+suggestion coarse keys so findings with a
+      // suggestion still match pre-marker threads that rendered it inline.
+      const messageOnly = legacyInlineKey(issue.file, issue.line ?? null, issue.message ?? '');
+      const withSuggestion = legacyInlineKey(
         issue.file,
         issue.line ?? null,
         `${issue.message ?? ''} ${issue.suggestion ?? ''}`,
@@ -214,12 +246,7 @@ export function filterIssuesByFingerprints<T extends FingerprintableIssue>(
       // implies the same file+line and a near-identical message prefix.
       let legacyHit = false;
       try {
-        for (const knownLegacy of options.legacyKeys) {
-          if (knownLegacy === legacy) {
-            legacyHit = true;
-            break;
-          }
-        }
+        legacyHit = options.legacyKeys.has(messageOnly) || options.legacyKeys.has(withSuggestion);
       } catch {
         legacyHit = false;
       }

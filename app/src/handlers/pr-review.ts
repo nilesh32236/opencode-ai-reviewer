@@ -15,6 +15,7 @@ import {
   collectFingerprintsFromBodies,
   fingerprintForIssue,
   legacyInlineKey,
+  normalizeLegacyThreadBody,
   postSuggestionComment,
   sanitizeErrorMessage,
   sanitizeMarkdown,
@@ -251,7 +252,7 @@ export async function handlePRReview(
         );
         previousLegacyKeys = new Set(
           previousBotComments.map((c) =>
-            legacyInlineKey(c.file ?? '', c.line ?? null, c.body ?? ''),
+            legacyInlineKey(c.file ?? '', c.line ?? null, normalizeLegacyThreadBody(c.body ?? '')),
           ),
         );
       }
@@ -350,7 +351,11 @@ export async function handlePRReview(
                       if (posted) {
                         streamedIssueKeys.add(key);
                         if (issueFingerprint) streamedFingerprints.add(issueFingerprint);
-                        streamedCommentIds.set(`${issue.file}:${issue.line}`, posted.commentId);
+                        // Keyed by the same fingerprint-aware key as
+                        // streamedIssueKeys so distinct findings on one line
+                        // keep independent commentIds for learning-store
+                        // correlation.
+                        streamedCommentIds.set(key, posted.commentId);
                         streamedFindingCount++;
                       } else {
                         logger.warn(
@@ -474,11 +479,21 @@ export async function handlePRReview(
               ...result,
               issues: result.issues.filter((i) => {
                 if (!i.inline || !i.file || !i.line) return true;
-                if (streamedIssueKeys.has(`${i.file}:${i.line}`)) return false;
+                // Mirror the streaming key exactly (fingerprint when
+                // computable, coarse file:line otherwise) so only
+                // successfully streamed findings are removed and distinct
+                // findings on one line stay independent.
+                let key: string;
+                try {
+                  key = dedupEnabled ? fingerprintForIssue(i) : `${i.file}:${i.line}`;
+                } catch {
+                  key = `${i.file}:${i.line}`;
+                }
+                if (streamedIssueKeys.has(key)) return false;
                 if (dedupEnabled) {
                   try {
                     const fp = fingerprintForIssue(i);
-                    if (streamedIssueKeys.has(fp) || streamedFingerprints.has(fp)) return false;
+                    if (streamedFingerprints.has(fp)) return false;
                   } catch {
                     // Fail-open: keep the finding on fingerprint errors.
                   }
@@ -655,8 +670,9 @@ export async function handlePRReview(
 
     if (learningStore) {
       try {
-        // Correlate each posted inline comment back to its finding by file:line
-        // so dismissal feedback can use the exact comment_id instead of brittle
+        // Correlate each posted inline comment back to its finding by the
+        // fingerprint-aware streaming key (falling back to file:line) so
+        // dismissal feedback can use the exact comment_id instead of brittle
         // file/line matching. Falls back to undefined (no correlation) when a
         // finding had no inline comment.
         const commentIdByAnchor = new Map<string, number>();
@@ -670,16 +686,32 @@ export async function handlePRReview(
           commentIdByAnchor.set(anchor, commentId);
         }
         const findingsToStore = [
-          ...result.issues.map((i) => ({
-            prNumber,
-            type: 'issue' as const,
-            severity: i.severity,
-            file: i.file,
-            line: i.line,
-            message: i.message,
-            suggestion: i.suggestion,
-            commentId: i.file && i.line ? commentIdByAnchor.get(`${i.file}:${i.line}`) : undefined,
-          })),
+          ...result.issues.map((i) => {
+            // Look up streamed commentIds by the same fingerprint-aware key
+            // used when streaming (falling back to the coarse file:line
+            // anchor for findings that could not be fingerprinted), so
+            // distinct findings on one line correlate to their own comment.
+            let commentId: number | undefined;
+            if (i.file && i.line) {
+              try {
+                const key = dedupEnabled ? fingerprintForIssue(i) : `${i.file}:${i.line}`;
+                commentId =
+                  commentIdByAnchor.get(key) ?? commentIdByAnchor.get(`${i.file}:${i.line}`);
+              } catch {
+                commentId = commentIdByAnchor.get(`${i.file}:${i.line}`);
+              }
+            }
+            return {
+              prNumber,
+              type: 'issue' as const,
+              severity: i.severity,
+              file: i.file,
+              line: i.line,
+              message: i.message,
+              suggestion: i.suggestion,
+              commentId,
+            };
+          }),
           ...result.strengths.map((s) => ({
             prNumber,
             type: 'strength' as const,

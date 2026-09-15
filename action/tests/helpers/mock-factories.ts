@@ -46,6 +46,8 @@ export function makeInputs(overrides: Partial<ActionInputs> = {}): ActionInputs 
     auditTargetDirs: [],
     auditLabels: ['audit'],
     docStyle: 'auto',
+    dedupFingerprints: true,
+    dedupFingerprintsExplicit: false,
     ...overrides,
   };
 }

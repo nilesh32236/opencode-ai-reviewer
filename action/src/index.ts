@@ -249,10 +249,13 @@ async function run(): Promise<void> {
         ...(loadedConfig?.review?.skipLabels && { skipLabels: loadedConfig.review.skipLabels }),
         ...(loadedConfig?.review?.skipActors && { skipActors: loadedConfig.review.skipActors }),
         inline: loadedConfig?.review?.inline ?? inputs.reviewInline,
-        dedupFingerprints:
-          loadedConfig?.review?.dedupFingerprints ??
-          loadedConfig?.review?.dedup_fingerprints ??
-          inputs.dedupFingerprints,
+        // Explicit workflow input is authoritative (so `dedup_fingerprints:
+        // 'false'` always opts out); otherwise the repo config value applies,
+        // defaulting to enabled. validateConfig normalizes the snake_case
+        // alias into the canonical key, so only the canonical key is read.
+        dedupFingerprints: inputs.dedupFingerprintsExplicit
+          ? inputs.dedupFingerprints
+          : (loadedConfig?.review?.dedupFingerprints ?? inputs.dedupFingerprints),
         enableReviewsArrayInline:
           loadedConfig?.review?.enableReviewsArrayInline ?? inputs.enableReviewsArrayInline,
         streamComments: inputs.streamComments,
