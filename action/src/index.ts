@@ -255,7 +255,13 @@ async function run(): Promise<void> {
           inputs.dedupFingerprints,
         enableReviewsArrayInline:
           loadedConfig?.review?.enableReviewsArrayInline ?? inputs.enableReviewsArrayInline,
-        verdictMode: loadedConfig?.review?.verdictMode ?? inputs.verdictMode,
+        // When the workflow explicitly sets verdict_mode it is authoritative
+        // so a PR cannot weaken/strengthen its own gate by editing
+        // .opencode-reviewer.yml. Only when the input is omitted does the
+        // repo config value apply.
+        verdictMode: inputs.verdictModeExplicit
+          ? inputs.verdictMode
+          : (loadedConfig?.review?.verdictMode ?? inputs.verdictMode),
         streamComments: inputs.streamComments,
         streamBatchSize: inputs.streamBatchSize,
         // When the workflow explicitly sets fail_on_severity it is authoritative
