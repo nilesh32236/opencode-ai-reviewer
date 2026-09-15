@@ -109,15 +109,15 @@ const KNOWN_CHECKSUMS: Record<string, string> = {
 /**
  * Look up a known checksum for a specific version and architecture.
  *
- * The version is normalized by stripping a single leading `v` (release
- * `tag_name` values such as `v1.1.1` — the form passed by
- * `verifyDownloadedArchive()` in `opencode.ts` — resolve to the same stored
- * key as the bare semver `1.1.1`). Lookup stays fail-open: unknown
- * version/arch pairs return null instead of throwing.
- * @param version - Version string (e.g., "1.2.3" or "v1.2.3").
+ * The version is normalized by trimming surrounding whitespace and stripping
+ * a single leading `v`/`V` (release `tag_name` values such as `v1.1.1` — the
+ * form passed by `verifyDownloadedArchive()` in `opencode.ts` — resolve to
+ * the same stored key as the bare semver `1.1.1`). Lookup stays fail-open:
+ * unknown version/arch pairs return null instead of throwing.
+ * @param version - Version string (e.g., "1.2.3", "v1.2.3", or " V1.2.3 ").
  * @param arch - Architecture identifier (e.g., "linux-x64").
  * @returns The known SHA-256 hex string, or null if no match.
- * @since NEXT - Leading-`v` normalization so tag_name lookups hit pinned keys.
+ * @since NEXT - Added leading-v/V normalization (with whitespace trim) so tag_name lookups hit pinned keys; function itself pre-existed.
  */
 export function getKnownChecksum(version: string, arch: string): string | null {
   const normalizedVersion = version.trim().replace(/^v/i, '');
@@ -165,12 +165,12 @@ export function buildMissingChecksumError(version: string, assetName: string, ar
   const err = new Error(
     `OpenCode integrity verification failed: no checksum available for ${assetName} ` +
       `(version ${version}, arch ${arch}) and require_opencode_checksum is enabled.\n` +
-      `Pin opencode_version to a release that publishes a checksum asset ` +
+      `Pin opencode_version to a pinned version in docs/opencode-checksums.md or to a release that publishes a checksum asset ` +
       `(e.g. "${assetName}.sha256" or "checksums.txt") containing an entry for ${assetName}.\n` +
       `(Maintainers can additionally record a manually verified sha256 in KNOWN_CHECKSUMS ` +
-      `in lib/src/utils/checksum.ts for pinned versions.)\n` +
-      `To recover quickly, re-run with require_opencode_checksum disabled ` +
-      `(the default fail-open, warn-and-continue behavior) while you obtain the expected sha256.`,
+      `in lib/src/utils/checksum.ts for pinned versions; see docs/opencode-checksums.md.)\n` +
+      `Only as a last resort, and at your own risk (this disables integrity protection), re-run with require_opencode_checksum disabled ` +
+      `(the default fail-open, warn-and-continue behavior) while you obtain the expected sha256 out-of-band.`,
   );
   return markIntegrityError(err);
 }

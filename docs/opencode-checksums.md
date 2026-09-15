@@ -1,9 +1,15 @@
 # Pinned OpenCode CLI Checksums
 
-Tamper-evident install manifest for the OpenCode CLI archives downloaded by
+Install manifest for the OpenCode CLI archives downloaded by
 `setupOpenCode()` (`lib/src/opencode.ts`). Zero change for existing users:
 verification runs automatically when a checksum is available, and the default
 stays fail-open (warn-and-continue).
+
+Checksum-file verification is transport-integrity only: the checksum file is
+fetched from the same release/trust domain as the archive with no signature
+or attestation verification, so a compromised publisher token defeats both
+together. Authenticity comes solely from the offline `KNOWN_CHECKSUMS` pins
+below until attestation verification lands.
 
 > **Verified:** 2026-09-15 against the `anomalyco/opencode` release `v1.1.1`
 > (published 2026-01-04) via the GitHub Releases API `digest` field (sha256 of
@@ -22,8 +28,8 @@ Linux/macOS, `opencode-<arch>.zip` on Windows).
 |---|---|---|---|
 | 1.1.1 | linux-x64 | `opencode-linux-x64.tar.gz` | `c382005c97e4470596326675b5d6ba5bb9565c618666e9ee44026c163361c7bd` |
 | 1.1.1 | linux-arm64 | `opencode-linux-arm64.tar.gz` | `ba0a33ba77fbde8649b55208f6255cedd9797416d638ba4418fa83c879fc5d08` |
-| 1.1.1 | darwin-x64 | `opencode-darwin-x64.zip` | `684c948c88a7043671c7689b92b6657f671e007c1dbea23e9072a6ec8078cc78` |
-| 1.1.1 | darwin-arm64 | `opencode-darwin-arm64.zip` | `880c1bdbbb6dedf41089c509e8a8a5516b7358b181e5dda8213c2b90985b4332` |
+| 1.1.1 | darwin-x64 | `opencode-darwin-x64.tar.gz` | `684c948c88a7043671c7689b92b6657f671e007c1dbea23e9072a6ec8078cc78` |
+| 1.1.1 | darwin-arm64 | `opencode-darwin-arm64.tar.gz` | `880c1bdbbb6dedf41089c509e8a8a5516b7358b181e5dda8213c2b90985b4332` |
 | 1.1.1 | windows-x64 | `opencode-windows-x64.zip` | `adb80c1c5b902be3aafe27e5c4d4f109b6245593be3fd72e320efc36d3298579` |
 
 Notes:
@@ -48,7 +54,9 @@ echo "c382005c97e4470596326675b5d6ba5bb9565c618666e9ee44026c163361c7bd  opencode
   | sha256sum -c -
 
 # macOS (shasum instead of sha256sum)
-shasum -a 256 opencode-darwin-arm64.zip
+curl -sL -o opencode-darwin-arm64.tar.gz \
+  https://github.com/anomalyco/opencode/releases/download/v1.1.1/opencode-darwin-arm64.tar.gz
+shasum -a 256 opencode-darwin-arm64.tar.gz
 # compare against the table row above
 ```
 
@@ -74,16 +82,22 @@ Behavior (`verifyDownloadedArchive()` in `lib/src/opencode.ts`):
   warn-and-continue as today.
 - Enforcement **on**, no checksum available (no checksum asset entry and no
   `KNOWN_CHECKSUMS` hit): fail closed via `buildMissingChecksumError()` —
-  pin `opencode_version` to a release that publishes a checksum asset (or a
-  pinned version in the table above), or re-run with enforcement off while
-  you obtain the expected sha256.
+  pin `opencode_version` to a pinned version in the table above (or a
+  release that publishes a checksum asset). Only as a last resort, and at
+  your own risk (this disables integrity protection), re-run with
+  enforcement off while you obtain the expected sha256 out-of-band.
 - **Checksum mismatch always aborts** via `verifyChecksum()` in either mode
   (`Checksum mismatch … expected …, got …`), tagged non-retryable so the
   download is not retried with backoff.
-- Checksum-file fetch failure: warn-and-continue unless enforcement is on.
-- Scope note: the gate guards **fresh downloads only**. A binary already on
-  `PATH` or restored from the tool cache is returned as-is (with a warning
-  when strict mode is on) because no archive was downloaded to verify.
+- Checksum-file fetch failure: the download falls through to the
+  `KNOWN_CHECKSUMS` pinned lookup; warn-and-continue unless enforcement is on
+  and no pinned entry verifies (then fail closed).
+- Scope note: strict mode fails closed for **fresh downloads, pre-installed
+  `PATH` binaries, and tool-cache hits**. A binary already on `PATH` or a
+  cached entry (whose `.checksum` is self-recorded, not independently
+  verified) throws instead of silently passing the gate — remove the
+  pre-installed binary or clear the tool cache so a fresh verified download
+  runs.
 
 Maintainers: record newly verified hashes in `KNOWN_CHECKSUMS`
 (`lib/src/utils/checksum.ts`, key `<version>-<arch>`, no leading `v`) and add

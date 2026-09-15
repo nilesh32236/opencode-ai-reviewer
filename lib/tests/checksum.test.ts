@@ -214,6 +214,11 @@ describe('getKnownChecksum()', () => {
     expect(getKnownChecksum('v1.1.1', 'windows-x64')).not.toBeNull();
   });
 
+  it('normalizes uppercase V and surrounding whitespace like the documented behavior', () => {
+    expect(getKnownChecksum('V1.1.1', 'linux-x64')).toBe(getKnownChecksum('1.1.1', 'linux-x64'));
+    expect(getKnownChecksum(' 1.1.1 ', 'linux-x64')).toBe(getKnownChecksum('1.1.1', 'linux-x64'));
+  });
+
   it('returns null for an arch with no published asset (fail-open preserved)', () => {
     expect(getKnownChecksum('1.1.1', 'windows-arm64')).toBeNull();
   });
@@ -228,6 +233,8 @@ describe('buildMissingChecksumError()', () => {
     expect(err.message).toContain('linux-x64');
     expect(err.message).toContain('require_opencode_checksum');
     expect(err.message).toContain('Pin opencode_version');
+    expect(err.message).toContain('docs/opencode-checksums.md');
+    expect(err.message).toContain('at your own risk');
   });
 
   it('references the real action input instead of lib-internal config names', () => {
