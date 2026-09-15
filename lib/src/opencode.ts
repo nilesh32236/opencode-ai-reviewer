@@ -1734,6 +1734,9 @@ export function buildMCPConfigBlock(
 /**
  * Merge an MCP server list into a base OpenCode config JSON string under the
  * `mcp` key, selecting the wire shape via {@link buildMCPConfigBlock}.
+ * Pre-existing `mcp` entries in the base config are preserved (the built
+ * block wins on key conflicts; `servers` maps are merged when both sides
+ * carry one) so custom MCP entries are not silently dropped.
  * Fail-open: unparseable base configs are returned unchanged.
  * @param baseConfig - The base OpenCode config JSON (CI or custom).
  * @param servers - The internal server configs to inject.
@@ -1751,7 +1754,26 @@ export function mergeMCPConfig(
   if (!Array.isArray(servers) || servers.length === 0) return baseConfig;
   try {
     const parsed = JSON.parse(baseConfig) as Record<string, unknown>;
-    parsed.mcp = buildMCPConfigBlock(servers, cliVersion, dualEmit);
+    const existing =
+      parsed.mcp && typeof parsed.mcp === 'object' && !Array.isArray(parsed.mcp)
+        ? (parsed.mcp as Record<string, unknown>)
+        : {};
+    const built = buildMCPConfigBlock(servers, cliVersion, dualEmit);
+    const existingServers =
+      existing.servers && typeof existing.servers === 'object' && !Array.isArray(existing.servers)
+        ? (existing.servers as Record<string, unknown>)
+        : undefined;
+    const builtServers =
+      built.servers && typeof built.servers === 'object' && !Array.isArray(built.servers)
+        ? (built.servers as Record<string, unknown>)
+        : undefined;
+    parsed.mcp = {
+      ...existing,
+      ...built,
+      ...(existingServers && builtServers
+        ? { servers: { ...existingServers, ...builtServers } }
+        : {}),
+    };
     return JSON.stringify(parsed);
   } catch {
     return baseConfig;
@@ -1765,10 +1787,14 @@ export function mergeMCPConfig(
  *
  * - Empty/missing/non-object `mcp` blocks pass through untouched (the CI
  *   config intentionally clears MCP with `mcp: {}`).
- * - Blocks that already carry a `servers` map pass through untouched.
+ * - Blocks that already carry a `servers` map pass through untouched, except
+ *   with dual-emit disabled on a V2 CLI they are downgraded to servers-only,
+ *   on a known V1 CLI the `servers` key is stripped (legacy-only), and on an
+ *   unknown CLI with dual-emit disabled the `servers` key is stripped
+ *   (legacy-only per {@link buildMCPConfigBlock} semantics).
  * - Legacy-only blocks on an unknown or V2 CLI gain the `servers` map when
- *   dual-emit is enabled (the default); with dual-emit disabled and a V2 CLI
- *   the legacy keys are replaced by the `servers`-only shape.
+ *   dual-emit is enabled (the default); with dual-emit disabled they stay
+ *   legacy-only on unknown/V1 CLIs and become servers-only on a V2 CLI.
  * - Legacy-only blocks on a known V1 CLI are returned unchanged.
  *
  * Fail-open: any error returns the input unchanged.
@@ -1793,14 +1819,18 @@ export function normalizeMCPConfigForVersion(
     const version = cliVersion ?? cachedOpenCodeVersionRaw;
     const dual = resolveDualEmitMCP(dualEmit);
     const onV2 = shouldUseV2MCPServers(version);
+    const known = typeof version === 'string' && version.trim() !== '';
     if (block.servers && typeof block.servers === 'object' && !Array.isArray(block.servers)) {
-      // Already carries the V2 shape. With dual-emit disabled on a V2 CLI,
-      // downgrade to servers-only so the single-shape opt-out is honored for
-      // already-dual inputs too (not just legacy-only inputs/fresh builds).
+      // Already carries the V2 shape. Normalize symmetrically:
+      // - Known V1 reader: strip the `servers` key (legacy-only), since a
+      //   strict V1 CLI may reject the unknown key.
+      // - Unknown version with dual-emit disabled: strip the `servers` key
+      //   (legacy-only per buildMCPConfigBlock semantics).
+      // - V2 CLI with dual-emit disabled: downgrade to servers-only.
+      if (!onV2 && (known || !dual)) return stripV2ServersKey(configJson);
       if (!dual && onV2) return stripLegacyMCPKeys(configJson);
       return configJson;
     }
-    const known = typeof version === 'string' && version.trim() !== '';
     if (!onV2 && known) return configJson;
     const servers: Record<string, unknown> = {};
     for (const [name, entry] of Object.entries(block)) {
@@ -1812,10 +1842,12 @@ export function normalizeMCPConfigForVersion(
           : { ...rec, disabled: false };
     }
     if (Object.keys(servers).length === 0) return configJson;
-    if (dual || !onV2) {
+    if (dual) {
       parsed.mcp = { ...block, servers };
-    } else {
+    } else if (onV2) {
       parsed.mcp = { servers };
+    } else {
+      return configJson;
     }
     return JSON.stringify(parsed);
   } catch {
@@ -1827,9 +1859,10 @@ export function normalizeMCPConfigForVersion(
  * Detect a strict-schema config rejection of the dual-emitted MCP block in
  * CLI output (a V2 CLI refusing the legacy sibling keys, or a V1 CLI refusing
  * the V2 `servers` key). Matching is substring-based and case-insensitive;
- * non-string or empty input never matches. Only MCP-specific signals (`mcp`,
- * `mcp.servers`, `disabled`) count — generic `servers`/`permissions` mentions
- * (e.g. subagent permission rejections) must not trigger an MCP retry.
+ * non-string or empty input never matches. Only the `mcp` signal counts
+ * (which also covers `mcp.servers`); bare `disabled`/`servers`/`permissions`
+ * mentions without `mcp` (e.g. subagent permission rejections or unrelated
+ * "tool disabled" errors) must not trigger an MCP retry.
  * @param output - Combined stdout/stderr of the failed CLI run.
  * @returns True when the output looks like a strict MCP config rejection.
  * @since NEXT
@@ -1847,7 +1880,7 @@ export function isMCPConfigRejection(output: unknown): boolean {
     text.includes('strict') ||
     text.includes('not supported by opencode');
   if (!mentionsConfigProblem) return false;
-  return text.includes('mcp') || text.includes('mcp.servers') || text.includes('disabled');
+  return text.includes('mcp');
 }
 
 /**
@@ -2533,13 +2566,23 @@ export async function runOpenCode(
   // MCP stays non-blocking throughout — the worst case is a review without
   // MCP enrichment, never a hard failure from dual-emit.
   if (!attempt.success && isMCPConfigRejection(attempt.output)) {
-    const outputNamesServersKey = attempt.output.toLowerCase().includes('servers');
-    const stripped = outputNamesServersKey
+    // Direction-aware: only a V1 unknown-field rejection naming the V2
+    // `servers` key retries legacy-only; any other MCP rejection (e.g. a V2
+    // CLI refusing the legacy siblings, even when the message quotes
+    // `mcp.servers`) retries servers-only. A bare `servers` substring (help
+    // text, config dumps) must not flip the direction on its own.
+    const outputText = attempt.output.toLowerCase();
+    const v1RejectsServersKey = /(unknown|unexpected) field[^\n]*servers/.test(outputText);
+    const stripped = v1RejectsServersKey
       ? stripV2ServersKey(initialConfigContent)
       : stripLegacyMCPKeys(initialConfigContent);
     if (stripped !== initialConfigContent) {
       noteMCPConfigRejection();
-      core.warning('Retrying OpenCode run once without legacy MCP keys.');
+      core.warning(
+        v1RejectsServersKey
+          ? 'Retrying OpenCode run once without the V2 servers key (legacy-only).'
+          : 'Retrying OpenCode run once without legacy MCP keys.',
+      );
       attempt = await executeOnce(stripped);
     }
   }
