@@ -113,7 +113,7 @@ describe('resolveReviewEvent()', () => {
   it('requests changes only when criticals exist', () => {
     const critical = makeResult({
       verdict: { ready: false, reasoning: 'Has issues.', autoFixable: false, confidence: 'high' },
-      stats: { total: 1, critical: 2, important: 0, minor: 0 },
+      stats: { total: 1, critical: 1, important: 0, minor: 0 },
       issues: [
         {
           type: 'issue',
@@ -126,6 +126,56 @@ describe('resolveReviewEvent()', () => {
     });
     expect(resolveReviewEvent(critical, 'request-changes')).toBe('REQUEST_CHANGES');
     expect(resolveReviewEvent(makeResult(), 'request-changes')).toBe('COMMENT');
+  });
+
+  it('approves minor-only findings in approve mode', () => {
+    const minorOnly = makeResult({
+      stats: { total: 1, critical: 0, important: 0, minor: 1 },
+      issues: [
+        {
+          type: 'issue',
+          severity: 'minor',
+          file: 'src/a.ts',
+          line: 1,
+          message: 'Nit.',
+        },
+      ],
+    });
+    expect(resolveReviewEvent(minorOnly, 'approve')).toBe('APPROVE');
+  });
+
+  it('stays COMMENT for important-only findings in request-changes mode', () => {
+    const importantOnly = makeResult({
+      stats: { total: 1, critical: 0, important: 1, minor: 0 },
+      issues: [
+        {
+          type: 'issue',
+          severity: 'important',
+          file: 'src/a.ts',
+          line: 1,
+          message: 'Smell.',
+        },
+      ],
+    });
+    expect(resolveReviewEvent(importantOnly, 'request-changes')).toBe('COMMENT');
+  });
+
+  it('stays COMMENT on failedAgents in both gated modes (fail-open)', () => {
+    const failedAgents = makeResult({
+      stats: { total: 1, critical: 1, important: 0, minor: 0 },
+      issues: [
+        {
+          type: 'issue',
+          severity: 'critical',
+          file: 'src/a.ts',
+          line: 1,
+          message: 'Bug.',
+        },
+      ],
+      failedAgents: 2,
+    });
+    expect(resolveReviewEvent(failedAgents, 'request-changes')).toBe('COMMENT');
+    expect(resolveReviewEvent(makeResult({ failedAgents: 1 }), 'approve')).toBe('COMMENT');
   });
 
   it('ignores stale stats and counts post-filter issues', () => {
@@ -211,7 +261,7 @@ describe('verdictMode transport (postReview event propagation)', () => {
     fetchMock.mockImplementation(async () => mockOk({ id: 12 }));
     const critical = makeResult({
       verdict: { ready: false, reasoning: 'Has issues.', autoFixable: false, confidence: 'high' },
-      stats: { total: 1, critical: 2, important: 0, minor: 0 },
+      stats: { total: 1, critical: 1, important: 0, minor: 0 },
       issues: [
         {
           type: 'issue',
@@ -253,6 +303,65 @@ describe('verdictMode transport (postReview event propagation)', () => {
     expect(bodies[1].body as string).toContain('was not permitted; posted as a comment instead');
     expect(bodies[1]).not.toHaveProperty('comments');
     expect(vi.mocked(core.warning)).toHaveBeenCalled();
+  });
+
+  it('preserves inline comments when a batched gated review falls back to COMMENT', async () => {
+    const diffText = `@@ -7,1 +7,1 @@`;
+    const criticalInline: ReviewResult = {
+      ...makeResult({
+        verdict: { ready: false, reasoning: 'Has issues.', autoFixable: false, confidence: 'high' },
+        stats: { total: 1, critical: 1, important: 0, minor: 0 },
+      }),
+      issues: [
+        {
+          type: 'issue',
+          severity: 'critical',
+          file: 'src/c.ts',
+          line: 7,
+          message: 'Bug.',
+          suggestion: 'Fix it.',
+          inline: true,
+        },
+      ],
+    };
+    fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+      if (
+        url.includes('/pulls/42') &&
+        !url.includes('/reviews') &&
+        !url.includes('/comments') &&
+        !url.includes('/files')
+      ) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          json: vi.fn().mockResolvedValue({}),
+          text: vi.fn().mockResolvedValue(diffText),
+        } as unknown as Response;
+      }
+      if (url.includes('/pulls/42/reviews')) {
+        const body = JSON.parse((options as RequestInit).body as string);
+        if (body.event === 'REQUEST_CHANGES') {
+          throw httpError(403, 'GitHub API 403 on /pulls/42/reviews: Forbidden');
+        }
+        return mockOk({ id: 15 });
+      }
+      return mockOk({});
+    });
+    const result = await helper.postReview(42, 'sha123', criticalInline, true, undefined, {
+      enableReviewsArrayInline: true,
+      verdictMode: 'request-changes',
+    });
+    expect(result.success).toBe(true);
+    expect(result.method).toBe('full');
+    const bodies = reviewBodies();
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0].event).toBe('REQUEST_CHANGES');
+    expect(bodies[0]).toHaveProperty('comments');
+    expect(bodies[1].event).toBe('COMMENT');
+    // Permission fallback keeps the batched inline findings.
+    expect(bodies[1]).toHaveProperty('comments');
+    expect(bodies[1].body as string).toContain('was not permitted; posted as a comment instead');
   });
 
   it('preserves the REQUEST_CHANGES gate when the reviews-array batch fails', async () => {

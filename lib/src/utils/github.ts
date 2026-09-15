@@ -27,7 +27,7 @@ import { buildReviewBody } from './review-body.js';
 import type { ReviewBodyOptions } from './review-body.js';
 import { gatherReviewThread } from './review-thread.js';
 import type { ThreadComment } from './review-thread.js';
-import { normalizeVerdictMode } from './verdict-mode.js';
+import { VERDICT_FAILURE_SENTINELS, normalizeVerdictMode } from './verdict-mode.js';
 
 /**
  * Single-flight registry for marker-based comment upserts (postOrUpdateComment).
@@ -74,23 +74,21 @@ export { normalizeVerdictMode } from './verdict-mode.js';
 /** Review event sent on `POST /pulls/{n}/reviews`. */
 export type ReviewEvent = 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES';
 
+/** Maximum characters GitHub accepts in a review body (fallback retries cap here). */
+const GITHUB_REVIEW_BODY_LIMIT = 65535;
+
 /**
- * Reasoning strings marking a failed (not genuine) review pass. Mirrors
- * `ReviewEngine.REVIEW_FAILURE_SENTINELS` — a result carrying one of these
- * must never auto-approve.
+ * Reasoning strings marking a failed (not genuine) review pass.
+ * Re-exported from the shared verdict-mode module (which the review engine
+ * also consumes) so gating can never drift from the engine's sentinel list.
  * @since NEXT
  */
-const VERDICT_FAILURE_SENTINELS = new Set<string>([
-  'Review execution failed',
-  'Failed to parse review output',
-  'Review output could not be parsed',
-  'All review agents failed',
-  'All review batches failed',
-]);
+export { VERDICT_FAILURE_SENTINELS } from './verdict-mode.js';
 
 /**
  * Resolve the Pulls `createReview` event for a review result + gating mode.
- * Pure function (warns on invalid mode), safe to unit test.
+ * Deterministic mapping (emits a `core.warning` side effect on invalid mode),
+ * safe to unit test.
  *
  * - `comment` (or unset/invalid) → `COMMENT` always.
  * - `approve` → `APPROVE` only when the verdict is ready with zero
@@ -1053,8 +1051,11 @@ export class GitHubHelper implements PlatformAdapter {
    *
    * Posts with the given event; when the API rejects a gated `APPROVE` or
    * `REQUEST_CHANGES` event with 403/422 (missing permission), retries once
-   * as `COMMENT` (appending a short warning suffix) and succeeds — the
-   * workflow step never fails on gating.
+   * as `COMMENT` (preserving the batched `comments[]` array and appending a
+   * short warning suffix, truncated to the GitHub review-body limit) and
+   * succeeds — the workflow step never fails on gating. A position-
+   * validation 422 is rethrown so the caller retries summary-only with the
+   * original event preserved.
    *
    * @param prNumber - PR number.
    * @param commitSha - Head commit SHA the review anchors to.
@@ -1106,9 +1107,19 @@ export class GitHubHelper implements PlatformAdapter {
         core.warning(
           `Review event ${event} rejected (status ${status}), retrying as COMMENT: ${err}`,
         );
-        // Summary-only retry: drop the comments[] array so a
-        // position-validation 422 (stale/out-of-range line) cannot fail a
-        // second time; permission rejections still fall back to COMMENT.
+        // Permission fallback: preserve the comments[] array so inline
+        // findings ride along (both callers filter inline-mappable findings
+        // out of `body`, so a body-only retry would silently discard them).
+        // Cap the suffixed body at the GitHub review-body limit so a
+        // near-limit body plus suffix cannot 422 on the retry. When the
+        // retry itself fails (e.g. a misclassified position-422), the error
+        // propagates and the caller's summary-only/per-comment fallback still
+        // recovers with the gate preserved.
+        const suffix = `\n\n> ⚠️ Requested review event ${event} was not permitted; posted as a comment instead.`;
+        const retryBody =
+          body.length + suffix.length > GITHUB_REVIEW_BODY_LIMIT
+            ? `${body.slice(0, GITHUB_REVIEW_BODY_LIMIT - suffix.length - 1)}…${suffix}`
+            : `${body}${suffix}`;
         return this.api<T & { comments?: Array<{ id: number; path: string; line?: number }> }>(
           `/pulls/${prNumber}/reviews`,
           {
@@ -1117,7 +1128,8 @@ export class GitHubHelper implements PlatformAdapter {
             body: JSON.stringify({
               commit_id: commitSha,
               event: 'COMMENT',
-              body: `${body}\n\n> ⚠️ Requested review event ${event} was not permitted; posted as a comment instead.`,
+              body: retryBody,
+              ...(comments !== undefined ? { comments } : {}),
             }),
           },
           undefined,
@@ -1437,20 +1449,7 @@ export class GitHubHelper implements PlatformAdapter {
     };
 
     if (inlineComments.length === 0) {
-      try {
-        const reviewResponse = await this.createReview<{ id: number }>(
-          prNumber,
-          commitSha,
-          fullBody,
-          reviewEvent,
-          undefined,
-          signal,
-        );
-        return { success: true, method: 'body-only', reviewId: reviewResponse.id };
-      } catch (err) {
-        core.warning(`Summary-only review failed: ${err}`);
-        return { success: false, method: 'failed' };
-      }
+      return postSummaryOnly(reviewEvent);
     }
 
     try {
