@@ -61,4 +61,31 @@ describe('readConstrainedLogFile()', () => {
     fs.writeFileSync(file, 'x'.repeat(2 * 1024 * 1024));
     expect(readConstrainedLogFile('big.log')).toHaveLength(1024 * 1024);
   });
+
+  it('rejects a symlink inside the workspace pointing outside', () => {
+    const secret = path.join(outside, 'secret.txt');
+    fs.writeFileSync(secret, 'top-secret');
+    const link = path.join(workspace, 'logs.txt');
+    fs.symlinkSync(secret, link);
+    expect(() => readConstrainedLogFile('logs.txt')).toThrow(/must not be a symlink/);
+  });
+
+  it('rejects a file reached through a symlinked directory escaping safe roots', () => {
+    // os.tmpdir() nests under the /tmp safe root, so plant the secret in the
+    // home directory, which lies outside workspace, /tmp, and cwd.
+    const farOutside = fs.mkdtempSync(path.join(os.homedir(), 'sh-outside-'));
+    try {
+      fs.writeFileSync(path.join(farOutside, 'secret.txt'), 'top-secret');
+      // The file path itself is not a symlink (lstat passes), but its
+      // realpath resolves outside the safe roots — must be rejected, not
+      // exfiltrated into the LLM prompt.
+      const dirLink = path.join(workspace, 'linked-dir');
+      fs.symlinkSync(farOutside, dirLink);
+      expect(() => readConstrainedLogFile(path.join(dirLink, 'secret.txt'))).toThrow(
+        /resolves outside/,
+      );
+    } finally {
+      fs.rmSync(farOutside, { recursive: true, force: true });
+    }
+  });
 });
