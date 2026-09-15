@@ -25,3 +25,6 @@
 ## 2026-09-09 - Argument Injection Risk Fixed in Handlers and Actions
 **Learning:** Found that `defaultBranch` and `baseBranch` variables were fetched from the GitHub API using `gh.getDefaultBranch()` and used in sensitive operations (like git checkout, pull, and creating PRs) without prior validation. This could potentially allow for argument injection attacks if an attacker were somehow able to poison the API response.
 **Prevention:** Added `validateRefName` for `defaultBranch` and `baseBranch` immediately after fetching them via `gh.getDefaultBranch()` in `app/src/handlers/commands.ts`, `app/src/handlers/changelog.ts`, `action/src/changelog.ts`, and `action/src/fix.ts` to proactively ensure they meet strict structure and character constraints before being passed to Git commands.
+## 2026-09-15 - Argument Injection Risk Fixed in app/src/handlers/commands.ts
+**Learning:** Found that `startRef` in `handleDocsCommand` was dynamically constructed using string interpolation and passed to `execGit` for checking out a new branch, but it lacked its own explicit validation check, which could lead to argument injection.
+**Prevention:** Added `validateRefName(startRef)` immediately after its construction in `app/src/handlers/commands.ts` to strictly enforce defensive programming against unvalidated dynamic refs being passed to git commands.
