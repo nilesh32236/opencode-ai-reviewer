@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.13.7] — 2026-09-15
+
+
+### Fixed
+
+- stop pushing iteration commits onto merged/closed PRs (#504) (#504)
+
+### Changed
+
+- [Autofix] [Audit:error-handling-resilience] 3 critical, 7 important, 0 minor (#506) (#506)
+
+[v1.13.7]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.6...v1.13.7
+
 ## [v1.13.6] — 2026-09-14
 
 
