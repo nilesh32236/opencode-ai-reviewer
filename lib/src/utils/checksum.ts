@@ -165,11 +165,20 @@ export function markIntegrityError<T extends Error>(err: T): T {
  * @since NEXT
  */
 export function buildMissingChecksumError(version: string, assetName: string, arch: string): Error {
+  const unsupportedArchNote = ['darwin-x64', 'darwin-arm64', 'windows-arm64'].includes(arch)
+    ? `\nNote: strict enforcement is currently unsatisfiable on ${arch} for 1.1.1 — ` +
+      `no installer-compatible archive is pinned for this arch (darwin publishes .zip only, ` +
+      `windows-arm64 publishes no CLI archive), so no pin can satisfy this error on ${arch}. ` +
+      `Use a linux-x64, linux-arm64, or windows-x64 runner, or a release that publishes a checksum asset covering ${arch}.`
+    : '';
   const err = new Error(
     `OpenCode integrity verification failed: no checksum available for ${assetName} ` +
       `(version ${version}, arch ${arch}) and require_opencode_checksum is enabled.\n` +
-      `Pin opencode_version to a pinned version in docs/opencode-checksums.md or to a release that publishes a checksum asset ` +
-      `(e.g. "${assetName}.sha256" or "checksums.txt") containing an entry for ${assetName}.\n` +
+      `Pin opencode_version to a pinned version in docs/opencode-checksums.md ` +
+      `(https://github.com/anomalyco/opencode-ai-reviewer/blob/main/docs/opencode-checksums.md) ` +
+      `covering your arch (linux-x64, linux-arm64, windows-x64 for 1.1.1; no darwin/windows-arm64 pin exists) ` +
+      `or to a release that publishes a checksum asset ` +
+      `(e.g. "${assetName}.sha256" or "checksums.txt") containing an entry for ${assetName}.${unsupportedArchNote}\n` +
       `(Maintainers can additionally record a manually verified sha256 in KNOWN_CHECKSUMS ` +
       `in lib/src/utils/checksum.ts for pinned versions; see docs/opencode-checksums.md.)\n` +
       `Only as a last resort, and at your own risk (this disables integrity protection), re-run with require_opencode_checksum disabled ` +

@@ -627,11 +627,13 @@ export async function setupOpenCode(
       // downloaded, so there is nothing to checksum): fail closed instead of
       // silently passing the gate, so a poisoned PATH entry cannot bypass
       // enforcement.
-      throw new Error(
-        `OpenCode integrity verification failed: require_opencode_checksum is enabled but opencode was already on PATH at ${existingPath} — ` +
-          `no archive was downloaded to verify. ` +
-          `Remove the pre-installed binary (or clear it from PATH) so a fresh verified download runs, ` +
-          `or re-run with require_opencode_checksum disabled at your own risk (this disables integrity protection).`,
+      throw markIntegrityError(
+        new Error(
+          `OpenCode integrity verification failed: require_opencode_checksum is enabled but opencode was already on PATH at ${existingPath} — ` +
+            `no archive was downloaded to verify. ` +
+            `Remove the pre-installed binary (or clear it from PATH) so a fresh verified download runs, ` +
+            `or re-run with require_opencode_checksum disabled at your own risk (this disables integrity protection).`,
+        ),
       );
     }
     core.info(`OpenCode already available at: ${existingPath}`);
@@ -732,11 +734,13 @@ export async function setupOpenCode(
           // poisoned cache entry cannot bypass enforcement. Clear the tool
           // cache (or re-run with enforcement off at your own risk) to force
           // a fresh verified download.
-          throw new Error(
-            `OpenCode integrity verification failed: require_opencode_checksum is enabled but using cached OpenCode ${semver} from ${cachedBinPath} — ` +
-              `the cached checksum is self-recorded, not an independent verification. ` +
-              `Clear the tool cache so a fresh verified download runs, ` +
-              `or re-run with require_opencode_checksum disabled at your own risk (this disables integrity protection).`,
+          throw markIntegrityError(
+            new Error(
+              `OpenCode integrity verification failed: require_opencode_checksum is enabled but using cached OpenCode ${semver} from ${cachedBinPath} — ` +
+                `the cached checksum is self-recorded, not an independent verification. ` +
+                `Clear the tool cache so a fresh verified download runs, ` +
+                `or re-run with require_opencode_checksum disabled at your own risk (this disables integrity protection).`,
+            ),
           );
         }
         core.info(`Using cached OpenCode ${semver} from ${cachedBinPath}`);
@@ -851,7 +855,16 @@ async function verifyDownloadedArchive(
     let fetchFailed = false;
     try {
       core.info(`Downloading checksum file: ${checksumAsset.name}`);
-      const checksumPath = await tc.downloadTool(checksumAsset.browser_download_url);
+      let checksumTimeoutHandle: ReturnType<typeof setTimeout> | undefined = undefined;
+      const checksumPath = await Promise.race([
+        tc.downloadTool(checksumAsset.browser_download_url),
+        new Promise<never>((_, reject) => {
+          checksumTimeoutHandle = setTimeout(
+            () => reject(new Error('Checksum file download timed out after 120s')),
+            120_000,
+          );
+        }),
+      ]).finally(() => checksumTimeoutHandle !== undefined && clearTimeout(checksumTimeoutHandle));
       const checksumContent = fs.readFileSync(checksumPath, 'utf-8');
       expectedHash = parseChecksumFile(checksumContent, assetName);
     } catch (err) {
@@ -929,11 +942,13 @@ export async function resolveOpenCodePath(
   const existingPath = await io.which('opencode', false);
   if (existingPath) {
     if (resolveRequireChecksum(options)) {
-      throw new Error(
-        `OpenCode integrity verification failed: require_opencode_checksum is enabled but opencode was already on PATH at ${existingPath} — ` +
-          `no archive was downloaded to verify. ` +
-          `Remove the pre-installed binary (or clear it from PATH) so a fresh verified download runs, ` +
-          `or re-run with require_opencode_checksum disabled at your own risk (this disables integrity protection).`,
+      throw markIntegrityError(
+        new Error(
+          `OpenCode integrity verification failed: require_opencode_checksum is enabled but opencode was already on PATH at ${existingPath} — ` +
+            `no archive was downloaded to verify. ` +
+            `Remove the pre-installed binary (or clear it from PATH) so a fresh verified download runs, ` +
+            `or re-run with require_opencode_checksum disabled at your own risk (this disables integrity protection).`,
+        ),
       );
     }
     opencodePath = existingPath;

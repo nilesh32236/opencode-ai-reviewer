@@ -38,8 +38,10 @@ Notes:
   `opencode-darwin-*.tar.gz`, so `setupOpenCode()` (which requests `.tar.gz`
   on macOS) cannot download them — there are intentionally no darwin pins
   above and `getKnownChecksum()` returns `null` (fail-open) for darwin arches.
-  The `.zip` digests (`684c948c…` for x64, `880c1bdb…` for arm64) are therefore
-  useful for manual verification only, not for installer verification.
+  The full `.zip` digests (`684c948c88a7043671c7689b92b6657f671e007c1dbea23e9072a6ec8078cc78`
+  for x64, `880c1bdbbb6dedf41089c509e8a8a5516b7358b181e5dda8213c2b90985b4332`
+  for arm64) are therefore useful for manual verification only, not for
+  installer verification.
 
 - `windows-arm64` has **no published CLI archive** for `v1.1.1`, so there is
   no pinned entry — `getKnownChecksum()` returns `null` (fail-open) for it.
@@ -67,6 +69,8 @@ echo "c382005c97e4470596326675b5d6ba5bb9565c618666e9ee44026c163361c7bd  opencode
 #   https://github.com/anomalyco/opencode/releases/download/v1.1.1/opencode-darwin-arm64.zip
 # shasum -a 256 opencode-darwin-arm64.zip
 # compare against 880c1bdbbb6dedf41089c509e8a8a5516b7358b181e5dda8213c2b90985b4332
+# (x64: opencode-darwin-x64.zip compares against
+# 684c948c88a7043671c7689b92b6657f671e007c1dbea23e9072a6ec8078cc78)
 ```
 
 `parseChecksumFile()` (`lib/src/utils/checksum.ts`) documents the
@@ -91,8 +95,13 @@ Behavior (`verifyDownloadedArchive()` in `lib/src/opencode.ts`):
   warn-and-continue as today.
 - Enforcement **on**, no checksum available (no checksum asset entry and no
   `KNOWN_CHECKSUMS` hit): fail closed via `buildMissingChecksumError()` —
-  pin `opencode_version` to a pinned version in the table above (or a
-  release that publishes a checksum asset). Only as a last resort, and at
+  pin `opencode_version` to a pinned version in the table above covering your
+  arch (linux-x64, linux-arm64, windows-x64 for 1.1.1; no darwin/windows-arm64
+  pin exists) or to a release that publishes a checksum asset. Strict
+  enforcement is currently unsatisfiable on darwin-x64/darwin-arm64 and
+  windows-arm64 for 1.1.1 — a macOS or windows-arm64 runner following this
+  guidance has no valid pin and will hit the fail-closed error naming the
+  unsupported arch. Only as a last resort, and at
   your own risk (this disables integrity protection), re-run with
   enforcement off while you obtain the expected sha256 out-of-band.
 - **Checksum mismatch always aborts** via `verifyChecksum()` in either mode
