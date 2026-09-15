@@ -11,9 +11,11 @@
 // All calls go through `withRetryAndTimeout` and a failure in any phase is
 // degraded gracefully by the caller: the SCA pass never crashes a review.
 
+import * as core from '@actions/core';
 import type { SCADependency, SCAVulnerability, Severity } from '../types/index.js';
 import { CircuitBreaker, countHttpError } from '../utils/circuit-breaker.js';
 import { withRetryAndTimeout } from '../utils/retry.js';
+import type { RetryOptions } from '../utils/retry.js';
 import type {
   OSVQuery,
   OSVQueryBatchResponse,
@@ -284,6 +286,8 @@ export function resolveSeverity(vuln: OSVVulnerability): {
  * @param operationName - Name used in retry log messages.
  * @param fetchImpl - Fetch implementation (defaults to global fetch).
  * @param signal - Optional AbortSignal (overall scan deadline).
+ * @param retryOptions - Optional retry tuning (e.g. restrict non-idempotent
+ * POST legs to 429-only retries).
  * @returns The parsed JSON body.
  */
 async function fetchOsvJson(
@@ -292,6 +296,7 @@ async function fetchOsvJson(
   operationName: string,
   fetchImpl: typeof fetch = fetch,
   signal?: AbortSignal,
+  retryOptions?: Pick<RetryOptions, 'retryableStatuses' | 'retryUnknownStatus' | 'maxRetries'>,
 ): Promise<unknown> {
   return osvCircuitBreaker.call(() =>
     withRetryAndTimeout(
@@ -303,14 +308,17 @@ async function fetchOsvJson(
         if (!res.ok) {
           const err = new Error(`OSV API ${res.status} ${res.statusText}`) as Error & {
             status: number;
+            headers?: Headers;
           };
           err.status = res.status;
+          // Attach response headers so withRetry can honor Retry-After hints.
+          err.headers = res.headers;
           throw err;
         }
         return res.json();
       },
       OSV_TIMEOUT_MS,
-      { operationName, signal },
+      { operationName, signal, ...retryOptions },
     ),
   );
 }
@@ -364,6 +372,9 @@ async function queryBatch(
   signal?: AbortSignal,
 ): Promise<Array<{ dependency: SCADependency; match: OSVQueryMatch }>> {
   const payload = buildBatchQueries(deps);
+  // POST /v1/querybatch is non-idempotent: restrict retries to 429 (+
+  // Retry-After hint via attached headers) and never replay on 5xx or
+  // status-less errors.
   const body = await fetchOsvJson(
     `${OSV_API_BASE}/v1/querybatch`,
     {
@@ -374,6 +385,7 @@ async function queryBatch(
     'osv-querybatch',
     fetchImpl,
     signal,
+    { retryableStatuses: [429], retryUnknownStatus: false },
   );
   const parsed = body as OSVQueryBatchResponse;
   const results = parsed.results ?? [];
@@ -470,11 +482,27 @@ export async function queryOSV(
   const concurrency = options.concurrency ?? 8;
   const signal = options.signal;
 
-  // Phase 1: batched id matching.
+  // Phase 1: batched id matching. Per-chunk catch-and-continue: one chunk
+  // failure must never reject the whole scan (never-crashes-a-review
+  // contract); the failure is logged and the chunk is skipped, mirroring the
+  // Phase-2 per-id degradation below. AbortError still propagates so a scan
+  // deadline cancels immediately instead of being swallowed.
   const matched: Array<{ dependency: SCADependency; match: OSVQueryMatch }> = [];
   for (let i = 0; i < dependencies.length; i += maxBatch) {
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error
+        ? signal.reason
+        : new DOMException('OSV scan aborted', 'AbortError');
+    }
     const chunk = dependencies.slice(i, i + maxBatch);
-    matched.push(...(await queryBatch(chunk, fetchImpl, signal)));
+    try {
+      matched.push(...(await queryBatch(chunk, fetchImpl, signal)));
+    } catch (err) {
+      if (isAbortError(err)) throw err;
+      core.warning(
+        `OSV querybatch chunk ${Math.floor(i / maxBatch) + 1} failed — skipping ${chunk.length} dependencies: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   if (matched.length === 0) return [];
