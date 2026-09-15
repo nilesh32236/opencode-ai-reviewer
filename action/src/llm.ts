@@ -23,7 +23,11 @@ export function buildLLMConfig(
   const providers: Record<string, LLMProviderConfig> = {
     ...(loadedConfig?.llm?.providers ?? {}),
   };
-  if (inputs.llmBaseUrl) {
+  if (
+    inputs.llmBaseUrl ||
+    inputs.llmHeaderTimeoutMs !== undefined ||
+    inputs.llmChunkTimeoutMs !== undefined
+  ) {
     // Register the OpenAI-compatible provider under the same id ('custom-openai')
     // used by every other path (env vars, docs, model selection) so the
     // documented "custom-openai/<model>" model id resolves for action inputs too.
@@ -33,6 +37,10 @@ export function buildLLMConfig(
       type: 'openai-compatible',
       ...(inputs.llmBaseUrl && { baseUrl: inputs.llmBaseUrl }),
       ...(inputs.llmApiKey && { apiKey: inputs.llmApiKey }),
+      ...(inputs.llmHeaderTimeoutMs !== undefined && {
+        headerTimeoutMs: inputs.llmHeaderTimeoutMs,
+      }),
+      ...(inputs.llmChunkTimeoutMs !== undefined && { chunkTimeoutMs: inputs.llmChunkTimeoutMs }),
     };
   }
   if (inputs.ollamaBaseUrl || inputs.ollamaModel) {

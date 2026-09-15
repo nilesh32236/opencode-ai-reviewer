@@ -51,6 +51,14 @@ inputs:
     description: 'API key for the custom OpenAI-compatible base URL (llm_base_url)'
     required: false
 
+  llm_header_timeout_ms:
+    description: 'Advanced tuning: time in milliseconds to wait for response headers from the custom LLM provider before aborting (passed as provider.options.headerTimeout to opencode). Omit for default timeouts.'
+    required: false
+
+  llm_chunk_timeout_ms:
+    description: 'Advanced tuning: time in milliseconds to wait between response chunks from the custom LLM provider before aborting (passed as provider.options.chunkTimeout to opencode). Omit for default timeouts.'
+    required: false
+
   ollama_base_url:
     description: 'Ollama base URL (default: http://localhost:11434/v1). Select models as "ollama/<model>".'
     required: false

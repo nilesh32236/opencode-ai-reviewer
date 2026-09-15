@@ -94,6 +94,10 @@ export interface ActionInputs {
   llmBaseUrl?: string;
   /** Optional API key for the custom OpenAI-compatible base URL. */
   llmApiKey?: string;
+  /** Optional header timeout (ms) for the custom OpenAI-compatible provider. */
+  llmHeaderTimeoutMs?: number;
+  /** Optional chunk timeout (ms) for the custom OpenAI-compatible provider. */
+  llmChunkTimeoutMs?: number;
   /** Optional Ollama base URL (default: http://localhost:11434/v1). */
   ollamaBaseUrl?: string;
   /** Optional Ollama model name. */
@@ -640,6 +644,23 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   const opencodeKey = core.getInput('opencode_api_key') || undefined;
   const llmApiKey = core.getInput('llm_api_key') || undefined;
   const azureKey = core.getInput('azure_openai_key') || undefined;
+  // Advanced provider timeout tuning (milliseconds). Fail open: only finite
+  // positive numbers are accepted; absent/invalid input yields undefined and
+  // existing behavior is preserved.
+  const parseTimeoutInput = (name: string): number | undefined => {
+    const raw = core.getInput(name).trim();
+    if (!raw) return undefined;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value <= 0) {
+      core.warning(
+        `Ignoring invalid ${name} "${raw}": expected a positive number of milliseconds.`,
+      );
+      return undefined;
+    }
+    return Math.round(value);
+  };
+  const llmHeaderTimeoutMs = parseTimeoutInput('llm_header_timeout_ms');
+  const llmChunkTimeoutMs = parseTimeoutInput('llm_chunk_timeout_ms');
   for (const secret of [openAiKey, anthropicKey, geminiKey, opencodeKey, llmApiKey, azureKey]) {
     if (secret) core.setSecret(secret);
   }
@@ -654,6 +675,8 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     llmDefaultProvider: llmDefaultProviderInput,
     llmBaseUrl: core.getInput('llm_base_url') || undefined,
     llmApiKey,
+    llmHeaderTimeoutMs,
+    llmChunkTimeoutMs,
     ollamaBaseUrl: core.getInput('ollama_base_url') || undefined,
     ollamaModel: core.getInput('ollama_model') || undefined,
     azureEndpoint: core.getInput('azure_openai_endpoint') || undefined,

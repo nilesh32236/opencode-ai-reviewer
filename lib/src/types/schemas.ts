@@ -421,6 +421,8 @@ export const LLMProviderConfigSchema = z.object({
   region: z.string().optional(),
   model: z.string().optional(),
   models: z.array(z.string()).optional(),
+  headerTimeoutMs: z.number().finite().positive().optional(),
+  chunkTimeoutMs: z.number().finite().positive().optional(),
 });
 
 /**

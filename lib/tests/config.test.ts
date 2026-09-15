@@ -1635,6 +1635,37 @@ unknownSection: true
       });
     });
 
+    it('keeps valid provider timeout tuning and drops invalid values fail-open', () => {
+      const result = validateConfig({
+        llm: {
+          providers: {
+            gateway: {
+              type: 'openai-compatible',
+              baseUrl: 'https://llm.corp.example/v1',
+              headerTimeoutMs: 30000,
+              chunkTimeoutMs: 60000,
+            },
+            bad: {
+              type: 'openai-compatible',
+              baseUrl: 'https://other.example/v1',
+              headerTimeoutMs: -1,
+              chunkTimeoutMs: 'fast',
+            },
+          },
+        },
+      } as never);
+      expect(result.llm?.providers?.gateway).toEqual({
+        type: 'openai-compatible',
+        baseUrl: 'https://llm.corp.example/v1',
+        headerTimeoutMs: 30000,
+        chunkTimeoutMs: 60000,
+      });
+      expect(result.llm?.providers?.bad).toEqual({
+        type: 'openai-compatible',
+        baseUrl: 'https://other.example/v1',
+      });
+    });
+
     it('omits llm when nothing valid is configured', () => {
       const result = validateConfig({ llm: { providers: {} } } as never);
       expect(result.llm).toBeUndefined();

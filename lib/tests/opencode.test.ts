@@ -160,6 +160,7 @@ import {
   setLLMProviderConfig,
   setupOpenCode,
   shouldUseV2SubagentPermissions,
+  stripProviderTimeoutOptions,
   validateModelString,
 } from '../src/opencode.js';
 
@@ -1226,6 +1227,144 @@ describe('LLM provider support', () => {
     });
     expect(core.warning).not.toHaveBeenCalledWith(
       expect.stringContaining('literal value and will be embedded'),
+    );
+  });
+
+  it('omits headerTimeout/chunkTimeout keys when no timeouts are configured', () => {
+    const map = buildLLMProviderMap({
+      providers: {
+        gateway: {
+          type: 'openai-compatible',
+          baseUrl: 'https://llm.corp.example/v1',
+          models: ['qwen3-coder'],
+        },
+      },
+    }) as Record<string, { options: Record<string, unknown> }>;
+    expect(map.gateway.options).toEqual({ baseURL: 'https://llm.corp.example/v1' });
+    expect(map.gateway.options).not.toHaveProperty('headerTimeout');
+    expect(map.gateway.options).not.toHaveProperty('chunkTimeout');
+  });
+
+  it('emits headerTimeout/chunkTimeout options when timeouts are configured', () => {
+    const map = buildLLMProviderMap({
+      providers: {
+        gateway: {
+          type: 'openai-compatible',
+          baseUrl: 'https://llm.corp.example/v1',
+          headerTimeoutMs: 30000,
+          chunkTimeoutMs: 60000,
+          models: ['qwen3-coder'],
+        },
+      },
+    });
+    expect(map).toEqual({
+      gateway: {
+        npm: '@ai-sdk/openai-compatible',
+        options: {
+          baseURL: 'https://llm.corp.example/v1',
+          headerTimeout: 30000,
+          chunkTimeout: 60000,
+        },
+        models: { 'qwen3-coder': {} },
+      },
+    });
+  });
+
+  it('omits timeout keys for invalid values and continues without error', () => {
+    const map = buildLLMProviderMap({
+      providers: {
+        gateway: {
+          type: 'openai-compatible',
+          baseUrl: 'https://llm.corp.example/v1',
+          headerTimeoutMs: -1,
+          chunkTimeoutMs: Number.NaN,
+        },
+      },
+    }) as Record<string, { options: Record<string, unknown> }>;
+    expect(map.gateway.options).toEqual({ baseURL: 'https://llm.corp.example/v1' });
+  });
+
+  it('stripProviderTimeoutOptions removes timeout keys and leaves other options intact', () => {
+    const config = JSON.stringify({
+      provider: {
+        gateway: {
+          npm: '@ai-sdk/openai-compatible',
+          options: {
+            baseURL: 'https://llm.corp.example/v1',
+            headerTimeout: 30000,
+            chunkTimeout: 60000,
+          },
+        },
+      },
+    });
+    const stripped = JSON.parse(stripProviderTimeoutOptions(config)) as Record<
+      string,
+      Record<string, { options: Record<string, unknown> }>
+    >;
+    expect(stripped.provider.gateway.options).toEqual({
+      baseURL: 'https://llm.corp.example/v1',
+    });
+    // No-op when no timeout keys are present (byte-identical output).
+    const plain = JSON.stringify({ provider: {} });
+    expect(stripProviderTimeoutOptions(plain)).toBe(plain);
+  });
+
+  it('retries once without timeout keys when the CLI rejects them', async () => {
+    setLLMProviderConfig({
+      providers: {
+        gateway: {
+          type: 'openai-compatible',
+          baseUrl: 'https://llm.corp.example/v1',
+          headerTimeoutMs: 30000,
+          chunkTimeoutMs: 60000,
+          models: ['qwen3-coder'],
+        },
+      },
+    });
+    const firstProc = makeMockProcess();
+    const secondProc = makeMockProcess();
+    mockSpawn.mockReturnValueOnce(firstProc).mockReturnValueOnce(secondProc);
+
+    const resultPromise = runOpenCode('test', { model: 'gateway/qwen3-coder' });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // First attempt emits the timeout keys.
+    const firstEnv = mockSpawn.mock.calls[0][2].env;
+    const firstConfig = JSON.parse(firstEnv.OPENCODE_CONFIG_CONTENT) as Record<
+      string,
+      Record<string, { options: Record<string, unknown> }>
+    >;
+    expect(firstConfig.provider.gateway.options.headerTimeout).toBe(30000);
+
+    // Simulate an older CLI rejecting the unknown keys, then fail fast.
+    const dataHandlers = (firstProc.stdout.on as ReturnType<typeof vi.fn>).mock.calls
+      .filter(([event]) => event === 'data')
+      .map(([, handler]) => handler as (data: Buffer) => void);
+    expect(dataHandlers.length).toBeGreaterThan(0);
+    for (const handler of dataHandlers) {
+      handler(Buffer.from('Error: Configuration is invalid: Unrecognized key "headerTimeout"'));
+    }
+    firstProc.emitClose(1);
+
+    // Wait for the retry spawn, then succeed it.
+    const start = Date.now();
+    while (mockSpawn.mock.calls.length < 2 && Date.now() - start < 2000) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    secondProc.emitClose(0);
+    const result = await resultPromise;
+
+    expect(result.success).toBe(true);
+    const secondEnv = mockSpawn.mock.calls[1][2].env;
+    const secondConfig = JSON.parse(secondEnv.OPENCODE_CONFIG_CONTENT) as Record<
+      string,
+      Record<string, { options: Record<string, unknown> }>
+    >;
+    expect(secondConfig.provider.gateway.options).not.toHaveProperty('headerTimeout');
+    expect(secondConfig.provider.gateway.options).not.toHaveProperty('chunkTimeout');
+    expect(core.warning).toHaveBeenCalledWith(
+      expect.stringContaining('retrying once without them'),
     );
   });
 });
