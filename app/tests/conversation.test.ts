@@ -1,10 +1,11 @@
 import { ConversationStateManager } from '@opencode-pr-agent/lib';
-import type { LearningStore, PlatformAdapter } from '@opencode-pr-agent/lib';
+import type { AgentConfig, LearningStore, PlatformAdapter } from '@opencode-pr-agent/lib';
 import { describe, expect, it, vi } from 'vitest';
 import {
   extractAskQuestion,
   gatherIssueCommentThread,
   gatherReviewCommentThread,
+  handleConversation,
   persistSessionState,
 } from '../src/handlers/conversation.js';
 
@@ -405,5 +406,31 @@ describe('persistSessionState', () => {
     expect(calls.exchanges[0].userTurn?.fileRef).toBe('src/foo.ts');
     expect(calls.exchanges[0].userTurn?.lineRef).toBe(42);
     expect(calls.exchanges[0].assistantTurn?.fileRef).toBe('src/foo.ts');
+  });
+});
+
+describe('handleConversation repo allowlist gate', () => {
+  it('returns early for denied repos without spending LLM/API budget', async () => {
+    const deniedFilter = { allowed: new Set<string>(), denied: new Set(['o/r']) };
+    const config = { platform: 'github' } as AgentConfig;
+    // Gate runs before adapter construction / PR fetch / LLM, so this must
+    // resolve with no network even though no mocks are installed.
+    await expect(
+      handleConversation(
+        1,
+        1,
+        'o/r',
+        'token',
+        config,
+        false,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        deniedFilter,
+      ),
+    ).resolves.toBeUndefined();
   });
 });
