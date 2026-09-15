@@ -272,21 +272,34 @@ export class ReviewEngine {
 
   /**
    * Warn when the Node runtime is below the patched LTS floor
-   * (`MINIMUM_NODE_VERSION`, July 2026 HIGH CVE fixes). Fail-open: an
-   * unparseable version or a check failure only warns and the review
-   * continues. Opt-in strict mode (`toolchain.enforceNodeFloor`) throws.
+   * (`MINIMUM_NODE_VERSION`, July 2026 HIGH CVE fixes). Grace period:
+   * warn-only and fail-open by default (an unparseable version or a check
+   * failure only warns and the review continues). Opt-in strict mode
+   * (`toolchain.enforceNodeFloor`) throws — including for unparseable
+   * versions, since a security floor must not pass a runtime it cannot
+   * identify. Strict mode becomes the default after the grace period.
    * @since NEXT
    */
   private checkRuntimeNodeFloor(): void {
     let enforcementError: Error | null = null;
     try {
       const result = checkNodeFloorVersion();
-      if (result.unparseable || result.ok) return;
+      const enforce = this.config.toolchain?.enforceNodeFloor === true;
+      if (result.unparseable) {
+        if (!enforce) return;
+        enforcementError = new Error(
+          `Node runtime ${result.current} is below the enforced minimum ${result.floor} ` +
+            `(unparseable version, toolchain.enforceNodeFloor=true). Upgrade to Node >= ${result.floor} ` +
+            `(see https://nodejs.org/en/blog/release/v${result.floor}).`,
+        );
+        throw enforcementError;
+      }
+      if (result.ok) return;
       const message =
         `Node runtime ${result.current} is below the recommended minimum ${result.floor} ` +
         `(July 2026 HIGH CVE fixes in Node v${result.floor}; see https://nodejs.org/en/blog/release/v${result.floor}). ` +
         `Upgrade to Node >= ${result.floor} for security. Review continues.`;
-      if (this.config.toolchain?.enforceNodeFloor === true) {
+      if (enforce) {
         enforcementError = new Error(
           `Node runtime ${result.current} is below the enforced minimum ${result.floor} ` +
             `(toolchain.enforceNodeFloor=true). Upgrade to Node >= ${result.floor} ` +

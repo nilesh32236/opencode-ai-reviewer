@@ -12,7 +12,7 @@
 
 opencode-review:
   stage: review
-  image: node:20
+  image: node:24
   variables:
     PLATFORM: "gitlab"
     GITLAB_TOKEN: ${GITLAB_TOKEN}

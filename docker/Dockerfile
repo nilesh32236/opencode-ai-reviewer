@@ -10,7 +10,7 @@
 # builds are reproducible.
 
 # Stage 1 — build-time toolchain & compiled artifacts
-FROM node:22.11.0-bookworm-slim@sha256:f035ba7ffee18f67200e2eb8018e0f13c954ec16338f264940f701997e3c12da AS builder
+FROM node:24.19.0-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       curl ca-certificates git jq python3 make g++ \
@@ -57,7 +57,7 @@ COPY . .
 RUN pnpm --filter @opencode-pr-agent/lib --filter @opencode-pr-agent/app build
 
 # Stage 2 — slim runtime with compiled output and production deps only
-FROM node:22.11.0-bookworm-slim@sha256:f035ba7ffee18f67200e2eb8018e0f13c954ec16338f264940f701997e3c12da AS runtime
+FROM node:24.19.0-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df AS runtime
 
 ENV NODE_ENV=production
 

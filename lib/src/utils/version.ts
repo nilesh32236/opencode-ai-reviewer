@@ -21,9 +21,9 @@ export const UNPARSEABLE_VERSION = Number.MAX_SAFE_INTEGER;
 export const MINIMUM_OPENCODE_VERSION = '1.1.1';
 
 /**
- * Minimum recommended Node.js runtime version. The v24.19.0 release ships
- * fixes for known runtime CVEs, so CI and the `node24`-bundled action
- * runtime should stay on a patched 24.x LTS.
+ * Minimum supported Node.js runtime version (patched LTS floor). The v24.19.0
+ * release ships July 2026 HIGH CVE fixes, so CI and the `node24`-bundled
+ * action runtime should stay on a patched 24.x LTS.
  * @since NEXT
  */
 export const MINIMUM_NODE_VERSION = '24.19.0';
@@ -44,6 +44,8 @@ export interface NodeFloorCheck {
  * Check a Node runtime version against the minimum supported floor.
  * Fail-open: unparseable versions (e.g. "latest", "") report `ok: true`
  * with `unparseable: true` so callers warn-and-continue instead of breaking.
+ * Callers implementing opt-in strict mode (e.g. `ReviewEngine` with
+ * `toolchain.enforceNodeFloor`) treat `unparseable: true` as a failure.
  * @param current - Runtime version to check (defaults to `process.version`).
  * @param floor - Minimum version required (defaults to {@link MINIMUM_NODE_VERSION}).
  * @returns The floor-check result.

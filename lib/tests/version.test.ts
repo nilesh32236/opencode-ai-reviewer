@@ -110,7 +110,11 @@ describe('checkNodeFloor()', () => {
   });
 
   it('passes above the floor', () => {
-    expect(checkNodeFloor('24.20.0', MINIMUM_NODE_VERSION).ok).toBe(true);
+    // Derive the above-floor version from the constant so a floor bump does
+    // not require editing this fixture (patch + 1 stays strictly above).
+    const [major, minor, patch] = MINIMUM_NODE_VERSION.split('.').map(Number);
+    const aboveFloor = `${major}.${minor}.${patch + 1}`;
+    expect(checkNodeFloor(aboveFloor, MINIMUM_NODE_VERSION).ok).toBe(true);
     expect(checkNodeFloor(`v${MINIMUM_NODE_VERSION}`, MINIMUM_NODE_VERSION).ok).toBe(true);
   });
 

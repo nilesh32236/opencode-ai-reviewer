@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFIG } from '../src/types/index.js';
 import { Logger } from '../src/utils/logger.js';
+import { MINIMUM_NODE_VERSION } from '../src/utils/version.js';
 
 const { mockCheckNodeFloor } = vi.hoisted(() => ({
   mockCheckNodeFloor: vi.fn(),
@@ -63,7 +64,7 @@ describe('ReviewEngine node floor', () => {
     mockCheckNodeFloor.mockReturnValue({
       ok: false,
       current: '22.0.0',
-      floor: '24.18.1',
+      floor: MINIMUM_NODE_VERSION,
       unparseable: false,
     });
     const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
@@ -78,7 +79,7 @@ describe('ReviewEngine node floor', () => {
     mockCheckNodeFloor.mockReturnValue({
       ok: false,
       current: '22.0.0',
-      floor: '24.18.1',
+      floor: MINIMUM_NODE_VERSION,
       unparseable: false,
     });
     vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
@@ -98,8 +99,8 @@ describe('ReviewEngine node floor', () => {
   it('does not warn when at or above the floor', () => {
     mockCheckNodeFloor.mockReturnValue({
       ok: true,
-      current: '24.18.1',
-      floor: '24.18.1',
+      current: MINIMUM_NODE_VERSION,
+      floor: MINIMUM_NODE_VERSION,
       unparseable: false,
     });
     const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
@@ -117,11 +118,25 @@ describe('ReviewEngine node floor', () => {
     expect(floorWarnings(warnSpy)).toHaveLength(0);
   });
 
-  it('fails open on unparseable versions even with enforcement enabled', () => {
+  it('warns and continues on unparseable versions by default (grace period)', () => {
     mockCheckNodeFloor.mockReturnValue({
       ok: true,
       current: 'latest',
-      floor: '24.18.1',
+      floor: MINIMUM_NODE_VERSION,
+      unparseable: true,
+    });
+    const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    expect(
+      () => new ReviewEngine({ ...DEFAULT_CONFIG, timeoutMinutes: 10 }, makeAdapter() as never),
+    ).not.toThrow();
+    expect(floorWarnings(warnSpy)).toHaveLength(0);
+  });
+
+  it('throws on unparseable versions when enforcement is enabled', () => {
+    mockCheckNodeFloor.mockReturnValue({
+      ok: true,
+      current: 'latest',
+      floor: MINIMUM_NODE_VERSION,
       unparseable: true,
     });
     vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
@@ -135,7 +150,7 @@ describe('ReviewEngine node floor', () => {
           },
           makeAdapter() as never,
         ),
-    ).not.toThrow();
+    ).toThrow(/enforced minimum/);
   });
 
   it('fails open when the floor check itself throws', () => {
@@ -180,7 +195,7 @@ describe('ReviewEngine node floor', () => {
     mockCheckNodeFloor.mockReturnValue({
       ok: false,
       current: '22.0.0',
-      floor: '24.18.1',
+      floor: MINIMUM_NODE_VERSION,
       unparseable: false,
     });
     vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {
