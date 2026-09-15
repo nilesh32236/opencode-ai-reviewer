@@ -192,6 +192,8 @@ export function shouldPostFingerprint(
  * @param issues - Candidate inline issues.
  * @param known - Previously posted fingerprints.
  * @param options - Optional `{ enabled }` gate (default true, absent = true).
+ * @param options.enabled - Master switch; false keeps everything (default true).
+ * @param options.legacyKeys - Pre-fingerprint marker texts treated as already posted.
  * @returns `{ kept, skipped }` partition (new arrays, input untouched).
  * @since NEXT
  */
