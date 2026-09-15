@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.13.10] — 2026-09-15
+
+
+### Fixed
+
+- address issue #516 (#517) (#516
+#517)
+
+### Changed
+
+- ci: pin artifact actions to node24 majors (upload v7, download v8)
+
+[v1.13.10]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.9...v1.13.10
+
 ## [v1.13.9] — 2026-09-15
 
 
