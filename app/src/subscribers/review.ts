@@ -9,6 +9,7 @@ import type {
 } from '@opencode-pr-agent/lib';
 import { handlePRReview } from '../handlers/pr-review.js';
 import { isBotUser } from '../utils/bot.js';
+import { postPrivilegeDenial, satisfiesPrivilegeGate } from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
@@ -65,6 +66,13 @@ export function createReviewSubscriber(
         // would be misleading — enforce silently in that case.
         const isCommandInvoked =
           event.type === 'comment.created' || event.type === 'review_comment.created';
+        // Explicit /review commands are LLM-costly: only privileged authors may
+        // trigger them. Auto reviews (opened/synchronize) stay unprivileged.
+        if (isCommandInvoked && !satisfiesPrivilegeGate(evPayload)) {
+          logger.info(`Skipping /review for ${event.repo}#${prNumber} — unprivileged author`);
+          await postPrivilegeDenial(event.repo || '', prNumber, 'review');
+          return;
+        }
         const reservation = await checkRateLimit(rateLimiter, event, 'command', 'review', {
           postDenialComment: isCommandInvoked,
         });

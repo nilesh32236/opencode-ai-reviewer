@@ -8,7 +8,13 @@ import type {
   Subscriber,
 } from '@opencode-pr-agent/lib';
 import { handleCommand } from '../handlers/commands.js';
+import { postPrivilegeDenial, satisfiesPrivilegeGate } from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
+import {
+  type RepoFilter,
+  repoFilter as defaultRepoFilter,
+  isRepoAllowed,
+} from '../utils/repo-filter.js';
 import { getToken } from '../utils/token.js';
 
 /**
@@ -17,12 +23,14 @@ import { getToken } from '../utils/token.js';
  * rate limiting is unavailable, matching the `checkRateLimit` contract).
  * @param config - The resolved agent configuration (built once at startup).
  * @param eventBus - Optional event bus for publishing pipeline events.
+ * @param repoFilter - Optional repo allowlist/denylist override (defaults to the shared process-wide filter).
  * @returns A subscriber object for the changelog command.
  */
 export function createChangelogSubscriber(
   rateLimiter: RateLimiter | null,
   config: AgentConfig,
   eventBus?: EventBus,
+  repoFilter?: RepoFilter,
 ): Subscriber {
   const logger = new Logger('ChangelogSubscriber');
   return {
@@ -43,8 +51,21 @@ export function createChangelogSubscriber(
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;
 
+        if (!isRepoAllowed(event.repo || '', repoFilter ?? defaultRepoFilter)) {
+          logger.info(
+            `Skipping /changelog for ${event.repo}#${prNumber} — repository filtered out`,
+          );
+          return;
+        }
+
         if (config.changelog?.enabled === false) {
           logger.info(`Skipping /changelog for ${event.repo}#${prNumber} — changelog disabled`);
+          return;
+        }
+
+        if (!satisfiesPrivilegeGate(event.payload)) {
+          logger.info(`Skipping /changelog for ${event.repo}#${prNumber} — unprivileged author`);
+          await postPrivilegeDenial(event.repo || '', prNumber, 'changelog');
           return;
         }
 

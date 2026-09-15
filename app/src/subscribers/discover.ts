@@ -1,6 +1,11 @@
 import { GitHubHelper, Logger, PatternDetector, parseCommand } from '@opencode-pr-agent/lib';
 import type { GitHubEvent, LearningStore, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
+import {
+  type RepoFilter,
+  repoFilter as defaultRepoFilter,
+  isRepoAllowed,
+} from '../utils/repo-filter.js';
 import { getToken } from '../utils/token.js';
 
 /** Number of prior reviews to scan when discovering recurring patterns. */
@@ -10,11 +15,13 @@ const DISCOVER_WINDOW_DEFAULT = 2;
  * Create a subscriber that handles `/discover` commands to surface recurring review patterns.
  * @param learningStore - The learning store instance for pattern discovery.
  * @param rateLimiter - The shared rate limiter for cost control.
+ * @param repoFilter - Optional repo allowlist/denylist override (defaults to the shared process-wide filter).
  * @returns A subscriber object for the discover command.
  */
 export function createDiscoverSubscriber(
   learningStore: LearningStore,
   rateLimiter: RateLimiter,
+  repoFilter?: RepoFilter,
 ): Subscriber {
   const logger = new Logger('DiscoverSubscriber');
   return {
@@ -30,6 +37,13 @@ export function createDiscoverSubscriber(
 
         const issueNumber = event.prNumber || 0;
         if (!issueNumber) return;
+
+        if (!isRepoAllowed(event.repo || '', repoFilter ?? defaultRepoFilter)) {
+          logger.info(
+            `Skipping /discover for ${event.repo}#${issueNumber} — repository filtered out`,
+          );
+          return;
+        }
 
         const reservation = await checkRateLimit(rateLimiter, event, 'command', 'discover');
         if (!reservation) return;

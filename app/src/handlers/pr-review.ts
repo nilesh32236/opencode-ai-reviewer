@@ -29,6 +29,15 @@ import { handleAutofixLoop } from './autofix.js';
 /** Marker identifying the "review in progress" status comment on a PR. */
 const REVIEW_IN_PROGRESS_MARKER = '<!-- review-in-progress -->';
 
+/**
+ * Maximum streamed inline comments posted per review. Streaming posts one
+ * GitHub API request per issue inside a loop, so large reviews could fan out
+ * many sequential write calls per webhook and exhaust rate limits. Findings
+ * beyond the cap stay in the final review body (or the single-request
+ * reviews-array path when enabled) instead of being dropped.
+ */
+export const MAX_STREAMED_INLINE_COMMENTS = 10;
+
 /** Safety bound for check-run output text (GitHub caps it at 65535 bytes). */
 const MAX_CHECK_TEXT_BYTES = 60_000;
 
@@ -225,6 +234,11 @@ export async function handlePRReview(
     // from reviewResult.commentIds and must be tracked separately.
     const streamedCommentIds = new Map<string, number>();
     let streamedFindingCount = 0;
+    // Attempts (not just successes) counted toward the streaming cap: when
+    // posts persistently fail, continuing to fan out API calls before falling
+    // back to the body would defeat the cap. `streamedFindingCount` still
+    // tracks successes for progress reporting; this counter bounds requests.
+    let streamedAttempts = 0;
     // The reviews-array path bundles all inline findings into a single
     // POST /pulls/{n}/reviews request. Streaming would fan out N per-comment
     // postInlineComment requests first, defeating that single-request goal,
@@ -267,18 +281,34 @@ export async function handlePRReview(
                     // actually succeeded — otherwise the final-result filter
                     // below would drop it entirely (neither inline nor body).
                     if (streamedIssueKeys.has(key)) continue;
-                    const posted = await gh.postInlineComment(prNumber, pr.headSha, {
-                      path: issue.file,
-                      line: issue.line,
-                      body: `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}`,
-                    });
-                    if (posted) {
-                      streamedIssueKeys.add(key);
-                      streamedCommentIds.set(`${issue.file}:${issue.line}`, posted.commentId);
-                      streamedFindingCount++;
-                    } else {
+                    // Cap streamed write calls per review: remainder stays in
+                    // the final review body instead of fanning out N requests.
+                    // Attempts count toward the cap so persistently failing
+                    // posts also stop fanning out after the budget.
+                    if (streamedAttempts >= MAX_STREAMED_INLINE_COMMENTS) continue;
+                    streamedAttempts++;
+                    try {
+                      const posted = await gh.postInlineComment(prNumber, pr.headSha, {
+                        path: issue.file,
+                        line: issue.line,
+                        body: `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}`,
+                      });
+                      if (posted) {
+                        streamedIssueKeys.add(key);
+                        streamedCommentIds.set(`${issue.file}:${issue.line}`, posted.commentId);
+                        streamedFindingCount++;
+                      } else {
+                        logger.warn(
+                          `Inline comment post failed for ${key} — will retry in final review body`,
+                          { prNumber, repo },
+                        );
+                      }
+                    } catch (err) {
+                      // A transient GitHub 5xx / network throw must degrade to
+                      // final-body posting, not abort the whole review: leave
+                      // the key unmarked so the finding stays in the final body.
                       logger.warn(
-                        `Inline comment post failed for ${key} — will retry in final review body`,
+                        `Inline comment post threw for ${key} — will retry in final review body: ${err instanceof Error ? err.message : String(err)}`,
                         { prNumber, repo },
                       );
                     }

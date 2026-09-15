@@ -12,7 +12,13 @@ import type {
 } from '@opencode-pr-agent/lib';
 import { handleConversation } from '../handlers/conversation.js';
 import { isBotLogin } from '../utils/bot.js';
+import { satisfiesPrivilegeGate } from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
+import {
+  type RepoFilter,
+  repoFilter as defaultRepoFilter,
+  isRepoAllowed,
+} from '../utils/repo-filter.js';
 import { getToken } from '../utils/token.js';
 
 /**
@@ -35,6 +41,7 @@ import { getToken } from '../utils/token.js';
  * @param rateLimiter - The shared rate limiter for cost control.
  * @param config - The resolved agent configuration (built once at startup).
  * @param eventBus - Optional event bus for publishing pipeline events.
+ * @param repoFilter - Optional repo allowlist/denylist override (defaults to the shared process-wide filter).
  * @returns A subscriber object for conversation handling.
  */
 export function createConversationSubscriber(
@@ -42,6 +49,7 @@ export function createConversationSubscriber(
   rateLimiter: RateLimiter,
   config: AgentConfig,
   eventBus?: EventBus,
+  repoFilter?: RepoFilter,
 ): Subscriber {
   const logger = new Logger('ConversationSubscriber');
   const conversationStateManager = new ConversationStateManager();
@@ -77,6 +85,24 @@ export function createConversationSubscriber(
 
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;
+
+        // Repository allowlist/denylist gate: never spend LLM budget on repos
+        // the operator excluded.
+        if (!isRepoAllowed(event.repo || '', repoFilter ?? defaultRepoFilter)) {
+          logger.info(
+            `Skipping conversation for ${event.repo}#${prNumber} — repository filtered out`,
+          );
+          return;
+        }
+
+        // `/ask` is an LLM-costly command reachable by any commenter without an
+        // @mention, so it gets the same privileged-author gate as the other
+        // slash commands. Plain @mention conversations stay ungated (they are
+        // the interactive Q&A surface, not a slash command).
+        if (isAsk && !satisfiesPrivilegeGate(event.payload)) {
+          logger.info(`Skipping /ask for ${event.repo}#${prNumber} — unprivileged author`);
+          return;
+        }
 
         const commentId = (convComment?.id as number) || 0;
         if (!commentId) return;
