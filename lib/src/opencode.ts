@@ -1036,6 +1036,30 @@ const LLM_REF_ALLOWLIST = new Set([
 ]);
 
 /**
+ * Normalize an optional provider timeout (milliseconds) for emission as an
+ * upstream opencode `provider.options` timeout key. Returns the rounded
+ * positive int, or `undefined` when absent/invalid (fail open: the key is
+ * omitted and default CLI timeouts apply).
+ * @param value - The raw timeout value in milliseconds.
+ * @returns The rounded timeout, or `undefined` to omit the key.
+ */
+function normalizeProviderTimeout(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    if (value !== undefined)
+      core.debug(`Ignoring invalid provider timeout value: ${String(value)}.`);
+    return undefined;
+  }
+  const rounded = Math.round(value);
+  // Sub-millisecond fractions (e.g. 0.4) round to 0, which is not a usable
+  // timeout — drop them so the key is omitted instead of stored/emitted as 0.
+  if (rounded < 1) {
+    core.debug(`Ignoring invalid provider timeout value: ${String(value)}.`);
+    return undefined;
+  }
+  return rounded;
+}
+
+/**
  * Build an `@ai-sdk/openai-compatible` provider entry for the OpenCode CLI
  * `provider` map. Returns `undefined` when no usable base URL is configured.
  * @param provider - The OpenAI-compatible / Ollama provider configuration.
@@ -1046,7 +1070,7 @@ function buildCompatibleProviderEntry(
 ): Record<string, unknown> | undefined {
   const baseURL = provider.baseUrl?.trim();
   if (!baseURL) return undefined;
-  const options: Record<string, string> = { baseURL };
+  const options: Record<string, string | number> = { baseURL };
   if (provider.apiKey?.trim()) {
     // Keep the apiKey verbatim (including any "{env:VAR}" reference) so a raw
     // secret is never baked into the injected OPENCODE_CONFIG_CONTENT. The CLI
@@ -1069,6 +1093,14 @@ function buildCompatibleProviderEntry(
   const modelNames = [...(provider.models ?? []), provider.model ?? '']
     .map((m) => m.trim())
     .filter(Boolean);
+  // Optional upstream timeout tuning (provider.options.headerTimeout /
+  // provider.options.chunkTimeout). Fail open: omit keys entirely unless the
+  // value is a finite positive number, so unset/invalid input yields config
+  // output identical to before.
+  const headerTimeout = normalizeProviderTimeout(provider.headerTimeoutMs);
+  if (headerTimeout !== undefined) options.headerTimeout = headerTimeout;
+  const chunkTimeout = normalizeProviderTimeout(provider.chunkTimeoutMs);
+  if (chunkTimeout !== undefined) options.chunkTimeout = chunkTimeout;
   const models: Record<string, Record<string, never>> = {};
   for (const name of modelNames) models[name] = {};
   return { npm: LLM_OPENAI_COMPATIBLE_ADAPTER, options, models };
@@ -1154,13 +1186,13 @@ function mergeEnvProviderEntry(
   if (!existing) return envEntry;
   const existingOptions =
     existing.options && typeof existing.options === 'object'
-      ? (existing.options as Record<string, string>)
+      ? (existing.options as Record<string, string | number>)
       : {};
   const envOptions =
     envEntry.options && typeof envEntry.options === 'object'
-      ? (envEntry.options as Record<string, string>)
+      ? (envEntry.options as Record<string, string | number>)
       : {};
-  const mergedOptions: Record<string, string> = { ...existingOptions };
+  const mergedOptions: Record<string, string | number> = { ...existingOptions };
   for (const [key, value] of Object.entries(envOptions)) {
     if (mergedOptions[key] === undefined) mergedOptions[key] = value;
   }
@@ -1322,6 +1354,76 @@ function mergeLLMProviderConfig(baseConfig: string, llm: LLMConfig | undefined):
     return JSON.stringify(parsed);
   } catch {
     return baseConfig;
+  }
+}
+
+/**
+ * Whether any configured provider carries timeout tuning that would be
+ * emitted into the injected OpenCode config.
+ * @param llm - The custom LLM provider configuration (may be `undefined`).
+ * @returns True when at least one provider has a valid timeout value.
+ */
+function llmHasTimeoutOptions(llm: LLMConfig | undefined): boolean {
+  // Side-effect-free predicate: do not reuse normalizeProviderTimeout here
+  // (it emits core.debug for invalid values on every invocation).
+  const isValidTimeout = (v: unknown): boolean =>
+    typeof v === 'number' && Number.isFinite(v) && v > 0 && Math.round(v) >= 1;
+  return Object.values(llm?.providers ?? {}).some(
+    (p) => isValidTimeout(p?.headerTimeoutMs) || isValidTimeout(p?.chunkTimeoutMs),
+  );
+}
+
+/**
+ * Return a copy of the LLM config with provider timeout tuning removed, so a
+ * retry against an older CLI that rejects unknown provider option keys runs
+ * with default timeouts.
+ * @param llm - The custom LLM provider configuration (may be `undefined`).
+ * @returns The config without timeout fields (same reference when nothing to strip).
+ */
+function stripLLMTimeoutOptions(llm: LLMConfig | undefined): LLMConfig | undefined {
+  if (!llm?.providers || !llmHasTimeoutOptions(llm)) return llm;
+  const providers: Record<string, LLMProviderConfig> = {};
+  for (const [id, provider] of Object.entries(llm.providers)) {
+    if (!provider) continue;
+    const { headerTimeoutMs: _header, chunkTimeoutMs: _chunk, ...rest } = provider;
+    providers[id] = rest;
+  }
+  return { ...llm, providers };
+}
+
+/**
+ * Strip upstream provider timeout keys (`headerTimeout` / `chunkTimeout`)
+ * from every `provider.*.options` block in an OpenCode config JSON string.
+ * Fail-open helper for older CLI versions that reject unknown provider
+ * option keys: retrying with the stripped config lets the review proceed
+ * with default timeouts.
+ * @param configJson - The OpenCode config JSON (e.g. `OPENCODE_CONFIG_CONTENT`).
+ * @returns The config JSON without timeout keys (input unchanged on parse failure).
+ */
+export function stripProviderTimeoutOptions(configJson: string): string {
+  try {
+    const parsed = JSON.parse(configJson) as Record<string, unknown>;
+    const providerMap =
+      parsed.provider && typeof parsed.provider === 'object' && !Array.isArray(parsed.provider)
+        ? (parsed.provider as Record<string, unknown>)
+        : undefined;
+    if (!providerMap) return configJson;
+    let changed = false;
+    for (const entry of Object.values(providerMap)) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+      const options = (entry as Record<string, unknown>).options;
+      if (!options || typeof options !== 'object' || Array.isArray(options)) continue;
+      const opts = options as Record<string, unknown>;
+      for (const key of ['headerTimeout', 'chunkTimeout'] as const) {
+        if (key in opts) {
+          delete opts[key];
+          changed = true;
+        }
+      }
+    }
+    return changed ? JSON.stringify(parsed) : configJson;
+  } catch {
+    return configJson;
   }
 }
 
@@ -2147,6 +2249,29 @@ export async function runOpenCode(
     core.warning(
       `OpenCode did not complete successfully (timedOut: ${timedOut}, exitCode: ${exitCode}, error: ${processError ?? 'none'})`,
     );
+    // Fail open for older CLI versions that reject unknown provider option
+    // keys: when timeout tuning was emitted and the CLI output names the
+    // rejected keys, retry once without them (default timeouts). Bounded —
+    // the stripped config carries no timeout options, so this cannot recurse.
+    if (
+      !timedOut &&
+      !processError &&
+      llmHasTimeoutOptions(llm) &&
+      /\b(unknown|invalid|unexpected|unrecognized)[\w\s'".:-]{0,80}(headerTimeout|chunkTimeout)|(headerTimeout|chunkTimeout)[\w\s'".:-]{0,80}\b(unknown|invalid|unexpected|unrecognized|not supported|not allowed)/i.test(
+        capturedOutput,
+      )
+    ) {
+      core.warning(
+        'OpenCode CLI appears to reject provider timeout keys (headerTimeout/chunkTimeout) — retrying once without them.',
+      );
+      return runOpenCode(prompt, {
+        ...options,
+        opencodeConfig: options.opencodeConfig
+          ? stripProviderTimeoutOptions(options.opencodeConfig)
+          : undefined,
+        llm: stripLLMTimeoutOptions(llm),
+      });
+    }
     return {
       success: false,
       output: capturedOutput,

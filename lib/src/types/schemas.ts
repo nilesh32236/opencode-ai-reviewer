@@ -421,6 +421,12 @@ export const LLMProviderConfigSchema = z.object({
   region: z.string().optional(),
   model: z.string().optional(),
   models: z.array(z.string()).optional(),
+  // Fractional milliseconds are accepted and rounded to the nearest int
+  // downstream (e.g. 1500.5 -> 1501). Field-level .catch(undefined) keeps a
+  // single invalid timeout from failing the whole provider entry so
+  // validateConfig() can warn per-field and preserve baseUrl/type.
+  headerTimeoutMs: z.number().finite().positive().optional().catch(undefined),
+  chunkTimeoutMs: z.number().finite().positive().optional().catch(undefined),
 });
 
 /**

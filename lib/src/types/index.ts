@@ -295,6 +295,22 @@ export interface LLMProviderConfig {
   model?: string;
   /** Model names exposed by this provider (OpenAI-compatible / Ollama). */
   models?: string[];
+  /**
+   * Time in milliseconds to wait for response headers before aborting.
+   * Emitted as upstream opencode `provider.options.headerTimeout`.
+   * Fractional values are rounded to the nearest integer (e.g. 1500.5 -> 1501);
+   * values rounding to 0 are dropped.
+   * @since NEXT
+   */
+  headerTimeoutMs?: number;
+  /**
+   * Time in milliseconds to wait between response chunks before aborting.
+   * Emitted as upstream opencode `provider.options.chunkTimeout`.
+   * Fractional values are rounded to the nearest integer (e.g. 1500.5 -> 1501);
+   * values rounding to 0 are dropped.
+   * @since NEXT
+   */
+  chunkTimeoutMs?: number;
 }
 
 /**

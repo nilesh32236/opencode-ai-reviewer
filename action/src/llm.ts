@@ -23,7 +23,14 @@ export function buildLLMConfig(
   const providers: Record<string, LLMProviderConfig> = {
     ...(loadedConfig?.llm?.providers ?? {}),
   };
-  if (inputs.llmBaseUrl) {
+  const hasTimeoutInputs =
+    inputs.llmHeaderTimeoutMs !== undefined || inputs.llmChunkTimeoutMs !== undefined;
+  // A timeout-only input (no llm_base_url and no config-file custom-openai
+  // baseUrl) would register a dead provider entry with no baseUrl that is
+  // later dropped with a confusing warning — skip creation in that case.
+  const hasCustomBaseUrl =
+    inputs.llmBaseUrl?.trim() || loadedConfig?.llm?.providers?.['custom-openai']?.baseUrl?.trim();
+  if (inputs.llmBaseUrl || (hasTimeoutInputs && hasCustomBaseUrl)) {
     // Register the OpenAI-compatible provider under the same id ('custom-openai')
     // used by every other path (env vars, docs, model selection) so the
     // documented "custom-openai/<model>" model id resolves for action inputs too.
@@ -33,6 +40,10 @@ export function buildLLMConfig(
       type: 'openai-compatible',
       ...(inputs.llmBaseUrl && { baseUrl: inputs.llmBaseUrl }),
       ...(inputs.llmApiKey && { apiKey: inputs.llmApiKey }),
+      ...(inputs.llmHeaderTimeoutMs !== undefined && {
+        headerTimeoutMs: inputs.llmHeaderTimeoutMs,
+      }),
+      ...(inputs.llmChunkTimeoutMs !== undefined && { chunkTimeoutMs: inputs.llmChunkTimeoutMs }),
     };
   }
   if (inputs.ollamaBaseUrl || inputs.ollamaModel) {
