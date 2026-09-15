@@ -103,6 +103,7 @@ import { detectSecrets, mergeSecretFindings } from './utils/secret-detect.js';
 import type { SecretDetectOptions, SecretFinding } from './utils/secret-detect.js';
 import { TestGapDetector, buildContextString, isTestFile } from './utils/test-gap-detector.js';
 import type { TestGapResult } from './utils/test-gap-detector.js';
+import { VERDICT_FAILURE_SENTINELS } from './utils/verdict-mode.js';
 import { checkNodeFloor as checkNodeFloorVersion } from './utils/version.js';
 
 /** Maximum number of batch chunks processed concurrently by `reviewPR`. */
@@ -226,13 +227,9 @@ export class ReviewEngine {
   // and must not be cached as "already reviewed" — otherwise a transient
   // failure would silently suppress the next trigger for the TTL. A genuine
   // clean review ("No issues found") is NOT in this set and IS cached.
-  private static readonly REVIEW_FAILURE_SENTINELS = new Set<string>([
-    'Review execution failed',
-    'Failed to parse review output',
-    'Review output could not be parsed',
-    'All review agents failed',
-    'All review batches failed',
-  ]);
+  // Shared with review gating via `./utils/verdict-mode.js` so the engine and
+  // gating cannot drift when a sentinel is added or reworded.
+  private static readonly REVIEW_FAILURE_SENTINELS: ReadonlySet<string> = VERDICT_FAILURE_SENTINELS;
 
   /**
    * @param config - Agent configuration (models, batch size, MCP servers, etc.).

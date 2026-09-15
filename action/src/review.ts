@@ -298,9 +298,16 @@ export async function runReview(
     finalResult,
     config.review.inline,
     undefined,
-    config.review.enableReviewsArrayInline === true
-      ? { ...(scoreOptions ?? {}), enableReviewsArrayInline: true as const, ...dedupOptions }
-      : { ...(scoreOptions ?? {}), ...dedupOptions },
+    {
+      ...(scoreOptions ?? {}),
+      ...dedupOptions,
+      ...(config.review.enableReviewsArrayInline === true
+        ? { enableReviewsArrayInline: true as const }
+        : {}),
+      ...(config.review.verdictMode !== undefined
+        ? { verdictMode: config.review.verdictMode }
+        : {}),
+    },
   );
 
   if (!reviewResult.success) {

@@ -1,4 +1,4 @@
-import { type ActionMode, type CostTrackingVerbosity, DEFAULT_ALLOWLIST, type DocStyle, type FailOnSeverity, type LLMConfig, type ReviewEffort, type Severity, validateRunChecksCommand } from '@opencode-pr-agent/lib';
+import { type ActionMode, type CostTrackingVerbosity, DEFAULT_ALLOWLIST, type DocStyle, type FailOnSeverity, type LLMConfig, type ReviewEffort, type Severity, type VerdictMode, validateRunChecksCommand } from '@opencode-pr-agent/lib';
 export { DEFAULT_ALLOWLIST, validateRunChecksCommand };
 /**
  * Parse and validate a timeout value from a raw string.
@@ -6,6 +6,14 @@ export { DEFAULT_ALLOWLIST, validateRunChecksCommand };
  * @returns The parsed timeout in minutes.
  */
 export declare function parseTimeoutMinutes(raw: string): number;
+/**
+ * Parse and normalize the `verdict_mode` input (fail-open to `'comment'`).
+ * Delegates to the shared lib normalizer so the allowlist cannot drift;
+ * the lib normalizer already emits the fail-open `core.warning`.
+ * @param raw - Raw mode value from the workflow input.
+ * @returns A valid verdict mode, defaulting to `'comment'`.
+ */
+export declare function parseVerdictMode(raw: unknown): VerdictMode;
 /** Parsed and validated GitHub Action inputs for the OpenCode PR Agent. */
 export interface ActionInputs {
     /** The operation mode: review, fix, audit, or post. */
@@ -156,6 +164,10 @@ export interface ActionInputs {
     dedupFingerprints: boolean;
     /** Opt-in to a single reviews-array request with summary-only 422 fallback (default: false). */
     enableReviewsArrayInline: boolean;
+    /** Opt-in review gating mapped to the createReview event (default: 'comment'). */
+    verdictMode: VerdictMode;
+    /** Whether the verdict_mode input was explicitly set by the workflow. */
+    verdictModeExplicit: boolean;
     /** Whether to stream review findings as batches complete. */
     streamComments: boolean;
     /** Number of findings to accumulate before posting a streaming batch (0 = per-batch). */

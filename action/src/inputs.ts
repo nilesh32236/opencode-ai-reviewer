@@ -9,7 +9,9 @@ import {
   type LLMConfig,
   type ReviewEffort,
   type Severity,
+  type VerdictMode,
   isDocStyle,
+  normalizeVerdictMode,
   parseReviewEffort,
   validateModelString,
   validateRunChecksCommand,
@@ -72,6 +74,17 @@ function parseCostRate(raw: string): number | undefined {
 function parseCostTrackingVerbosity(raw: string): CostTrackingVerbosity {
   if (raw === 'off' || raw === 'detailed') return raw;
   return 'summary';
+}
+
+/**
+ * Parse and normalize the `verdict_mode` input (fail-open to `'comment'`).
+ * Delegates to the shared lib normalizer so the allowlist cannot drift;
+ * the lib normalizer already emits the fail-open `core.warning`.
+ * @param raw - Raw mode value from the workflow input.
+ * @returns A valid verdict mode, defaulting to `'comment'`.
+ */
+export function parseVerdictMode(raw: unknown): VerdictMode {
+  return normalizeVerdictMode(raw);
 }
 
 /** Parsed and validated GitHub Action inputs for the OpenCode PR Agent. */
@@ -224,6 +237,10 @@ export interface ActionInputs {
   dedupFingerprints: boolean;
   /** Opt-in to a single reviews-array request with summary-only 422 fallback (default: false). */
   enableReviewsArrayInline: boolean;
+  /** Opt-in review gating mapped to the createReview event (default: 'comment'). */
+  verdictMode: VerdictMode;
+  /** Whether the verdict_mode input was explicitly set by the workflow. */
+  verdictModeExplicit: boolean;
   /** Whether to stream review findings as batches complete. */
   streamComments: boolean;
   /** Number of findings to accumulate before posting a streaming batch (0 = per-batch). */
@@ -589,6 +606,12 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   const enforceNodeFloor = enforceNodeFloorRaw === 'true';
   const enforceNodeFloorExplicit = enforceNodeFloorRaw !== '';
 
+  // Workflow-authoritative like fail_on_severity/sca: track explicitness so an
+  // explicitly-set workflow input wins over PR-branch repo config.
+  const verdictModeRaw = core.getInput('verdict_mode');
+  const verdictModeExplicit = verdictModeRaw.trim() !== '';
+  const verdictMode = parseVerdictMode(verdictModeRaw);
+
   // Models for features that are active in the selected mode are hard-gated so
   // an invalid value fails the action before any work starts. Models whose
   // feature is disabled (or that the action never runs, e.g. conversation) only
@@ -743,6 +766,8 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     reviewInline: core.getInput('review_inline') !== 'false',
     dedupFingerprints: core.getInput('dedup_fingerprints') !== 'false',
     enableReviewsArrayInline: core.getInput('enable_reviews_array_inline') === 'true',
+    verdictMode,
+    verdictModeExplicit,
     streamComments: core.getInput('stream_comments') === 'true',
     streamBatchSize: parseStreamBatchSize(core.getInput('stream_batch_size')),
     failOnSeverity,

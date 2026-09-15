@@ -1,4 +1,10 @@
-import type { ReviewIssue, ReviewResult, Severity, TokenUsage } from '../types/index.js';
+import type {
+  ReviewIssue,
+  ReviewResult,
+  Severity,
+  TokenUsage,
+  VerdictMode,
+} from '../types/index.js';
 import { buildFixPayload, formatFixPayloadMarkdown } from './fix-payload.js';
 import {
   type FunctionScore,
@@ -21,6 +27,13 @@ export interface ReviewBodyOptions {
    * @since NEXT
    */
   enableReviewsArrayInline?: boolean;
+  /**
+   * Opt-in review gating mode mapped to the Pulls `createReview` event
+   * (`comment` default, `approve`, `request-changes`). Transport only — the
+   * body render is unchanged; `GitHubHelper.postReview()` resolves the event.
+   * @since NEXT
+   */
+  verdictMode?: VerdictMode;
   /**
    * Skip inline findings whose fingerprint already appears in previously
    * posted bot threads. Default true (absent = enabled). Set false to post

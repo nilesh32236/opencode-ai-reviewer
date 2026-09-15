@@ -42,6 +42,7 @@ import {
   resolveConfinedEventLogPath,
   resolveConfinedWorkingDir,
 } from './utils/safe-exec.js';
+import { normalizeVerdictMode } from './utils/verdict-mode.js';
 
 /**
  * Shape descriptor used to detect unknown keys in a raw config object.
@@ -270,6 +271,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     customRules: null,
     inline: null,
     enableReviewsArrayInline: null,
+    verdictMode: null,
     dedupFingerprints: null,
     dedup_fingerprints: null,
     emitFixPayload: null,
@@ -685,6 +687,9 @@ export function validateConfig(
     }
     if (typeof config.review.enableReviewsArrayInline === 'boolean') {
       result.review.enableReviewsArrayInline = config.review.enableReviewsArrayInline;
+    }
+    if (config.review.verdictMode !== undefined && config.review.verdictMode !== null) {
+      result.review.verdictMode = normalizeVerdictMode(config.review.verdictMode);
     }
     // Canonical camelCase key wins over the deprecated snake_case alias;
     // absent means "enabled" downstream (fail-open default true).
