@@ -87,17 +87,44 @@ const KNOWN_CHECKSUMS: Record<string, string> = {
   // Entries populated as releases are manually verified (only used when the
   // opencode_version input is pinned; 'latest' falls back to the release
   // checksum asset or a warning).
+  //
+  // Pinned 1.1.1 (== MINIMUM_OPENCODE_VERSION, see ./version.ts) CLI archives
+  // from anomalyco/opencode release v1.1.1 (published 2026-01-04, verified
+  // 2026-09-15 via the GitHub Releases API `digest` field, which is the
+  // sha256 of the uploaded asset blob):
+  // https://github.com/anomalyco/opencode/releases/tag/v1.1.1
+  // Keys use the `detectArch()` matrix (opencode.ts) without extension, e.g.
+  // `1.1.1-linux-x64` covers asset `opencode-linux-x64.tar.gz`.
+  // No checksums.txt / .sha256 asset is published for this release, so these
+  // pinned entries are currently the only offline verification source.
+  // windows-arm64 has no published CLI archive for v1.1.1 (no entry below —
+  // lookup stays fail-open null; see docs/opencode-checksums.md).
+  // NOTE: v1.1.1 publishes darwin CLI archives as .zip only
+  // (opencode-darwin-x64.zip, opencode-darwin-arm64.zip); there is no
+  // opencode-darwin-*.tar.gz, so setupOpenCode() (which requests .tar.gz
+  // on darwin) cannot download them — no darwin pins below (lookup stays
+  // fail-open null); see docs/opencode-checksums.md.
+  '1.1.1-linux-x64': 'c382005c97e4470596326675b5d6ba5bb9565c618666e9ee44026c163361c7bd',
+  '1.1.1-linux-arm64': 'ba0a33ba77fbde8649b55208f6255cedd9797416d638ba4418fa83c879fc5d08',
+  '1.1.1-windows-x64': 'adb80c1c5b902be3aafe27e5c4d4f109b6245593be3fd72e320efc36d3298579',
 };
 
 /**
  * Look up a known checksum for a specific version and architecture.
  *
- * @param version - Version string (e.g., "1.2.3").
- * @param arch - Architecture identifier (e.g., "linux-amd64").
+ * The version is normalized by trimming surrounding whitespace and stripping
+ * a single leading `v`/`V` (release `tag_name` values such as `v1.1.1` — the
+ * form passed by `verifyDownloadedArchive()` in `opencode.ts` — resolve to
+ * the same stored key as the bare semver `1.1.1`). Lookup stays fail-open:
+ * unknown version/arch pairs return null instead of throwing.
+ * @param version - Version string (e.g., "1.2.3", "v1.2.3", or " V1.2.3 ").
+ * @param arch - Architecture identifier (e.g., "linux-x64").
  * @returns The known SHA-256 hex string, or null if no match.
+ * @since NEXT - Added leading-v/V normalization (with whitespace trim) so tag_name lookups hit pinned keys; function itself pre-existed.
  */
 export function getKnownChecksum(version: string, arch: string): string | null {
-  const key = `${version}-${arch}`;
+  const normalizedVersion = version.trim().replace(/^v/i, '');
+  const key = `${normalizedVersion}-${arch}`;
   return KNOWN_CHECKSUMS[key] ?? null;
 }
 
@@ -138,15 +165,24 @@ export function markIntegrityError<T extends Error>(err: T): T {
  * @since NEXT
  */
 export function buildMissingChecksumError(version: string, assetName: string, arch: string): Error {
+  const unsupportedArchNote = ['darwin-x64', 'darwin-arm64', 'windows-arm64'].includes(arch)
+    ? `\nNote: strict enforcement is currently unsatisfiable on ${arch} for 1.1.1 — ` +
+      `no installer-compatible archive is pinned for this arch (darwin publishes .zip only, ` +
+      `windows-arm64 publishes no CLI archive), so no pin can satisfy this error on ${arch}. ` +
+      `Use a linux-x64, linux-arm64, or windows-x64 runner, or a release that publishes a checksum asset covering ${arch}.`
+    : '';
   const err = new Error(
     `OpenCode integrity verification failed: no checksum available for ${assetName} ` +
       `(version ${version}, arch ${arch}) and require_opencode_checksum is enabled.\n` +
-      `Pin opencode_version to a release that publishes a checksum asset ` +
-      `(e.g. "${assetName}.sha256" or "checksums.txt") containing an entry for ${assetName}.\n` +
+      `Pin opencode_version to a pinned version in docs/opencode-checksums.md ` +
+      `(https://github.com/anomalyco/opencode-ai-reviewer/blob/main/docs/opencode-checksums.md) ` +
+      `covering your arch (linux-x64, linux-arm64, windows-x64 for 1.1.1; no darwin/windows-arm64 pin exists) ` +
+      `or to a release that publishes a checksum asset ` +
+      `(e.g. "${assetName}.sha256" or "checksums.txt") containing an entry for ${assetName}.${unsupportedArchNote}\n` +
       `(Maintainers can additionally record a manually verified sha256 in KNOWN_CHECKSUMS ` +
-      `in lib/src/utils/checksum.ts for pinned versions.)\n` +
-      `To recover quickly, re-run with require_opencode_checksum disabled ` +
-      `(the default fail-open, warn-and-continue behavior) while you obtain the expected sha256.`,
+      `in lib/src/utils/checksum.ts for pinned versions; see docs/opencode-checksums.md.)\n` +
+      `Only as a last resort, and at your own risk (this disables integrity protection), re-run with require_opencode_checksum disabled ` +
+      `(the default fail-open, warn-and-continue behavior) while you obtain the expected sha256 out-of-band.`,
   );
   return markIntegrityError(err);
 }

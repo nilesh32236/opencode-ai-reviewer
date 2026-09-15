@@ -396,7 +396,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
       history[history.length - 1].status = 'fix-applied';
       history[history.length - 1].filesChanged = fixResult.filesChanged;
       history[history.length - 1].commitMessage =
-        `fix: address review feedback (iteration ${i + 1}) [skip ci]`;
+        `fix: address review feedback (iteration ${i + 1})`;
 
       try {
         await execGit(['add', '-A'], gitOpts);
@@ -410,7 +410,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           logger.info('Working tree clean after fix — skipping commit, continuing loop');
         } else {
           await execGit(
-            ['commit', '-m', `fix: address review feedback (iteration ${i + 1}) [skip ci]`],
+            ['commit', '-m', `fix: address review feedback (iteration ${i + 1})`],
             gitOpts,
           );
           validateRefName(pr.headRef);
@@ -566,7 +566,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
                       break;
                     }
                     await execGit(
-                      ['commit', '-m', `fix: verification errors (attempt ${v + 1}) [skip ci]`],
+                      ['commit', '-m', `fix: verification errors (attempt ${v + 1})`],
                       gitOpts,
                     );
                     validateRefName(pr.headRef);
