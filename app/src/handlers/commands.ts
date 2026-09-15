@@ -839,6 +839,7 @@ export async function handleDocsCommand(
       await execGit(['pull', '--rebase', forkRemote ?? 'origin', baseRef], gitOpts);
     } else {
       const startRef = forkRemote ? `${forkRemote}/${baseRef}` : `origin/${baseRef}`;
+      validateRefName(startRef);
       await execGit(['checkout', '-b', branchName, startRef], gitOpts);
       logger.info(`Created branch ${branchName} from ${startRef}`);
     }

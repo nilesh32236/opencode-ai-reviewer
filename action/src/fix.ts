@@ -891,7 +891,7 @@ export async function runAutofixLoop(
     currentEntry.filesChanged = fixResult.filesChanged;
     currentEntry.fixSummary = fixResult.summary;
 
-    const commitMsg = `fix: autofix iteration ${i + 1} [skip ci]`;
+    const commitMsg = `fix: autofix iteration ${i + 1}`;
     try {
       await exec.exec('git', ['add', '-A']);
       // The fix agent can report changes while leaving the tree clean (only
@@ -1036,11 +1036,7 @@ export async function runAutofixLoop(
               core.info('Working tree clean after verification retry — skipping commit');
               break;
             }
-            await exec.exec('git', [
-              'commit',
-              '-m',
-              `fix: verification errors (attempt ${v + 1}) [skip ci]`,
-            ]);
+            await exec.exec('git', ['commit', '-m', `fix: verification errors (attempt ${v + 1})`]);
             validateRefName(prAgain.headRef);
             await exec.exec('git', ['push', 'origin', prAgain.headRef]);
           } catch (err) {
@@ -1143,7 +1139,7 @@ async function handleTimeoutGracefully(
       const raw = await exec.getExecOutput('git', ['diff', '--name-only', 'HEAD']);
       filesChanged = raw.stdout.trim().split('\n').filter(Boolean);
 
-      commitMessage = `fix: address review feedback (partial changes due to timeout iteration ${iteration + 1}) [skip ci]`;
+      commitMessage = `fix: address review feedback (partial changes due to timeout iteration ${iteration + 1})`;
       await exec.exec('git', ['add', '-A']);
       await exec.exec('git', ['commit', '-m', commitMessage]);
 
