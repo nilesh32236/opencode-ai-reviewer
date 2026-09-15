@@ -48,6 +48,21 @@ const GENERATED_FILE_RE =
   /(?:\.min|\.bundle|\.generated|\.chunk|\.d)\.(?:[cm]?[jt]sx?|css)$|\.map$/i;
 
 /**
+ * Directory segments that hold agent configuration rather than reviewable
+ * source (e.g. `.agents/`, `.claude/`). These churn frequently but rarely need
+ * line-by-line code review, so they are default-excluded from LLM findings
+ * while remaining visible in the summary count.
+ * @since NEXT
+ */
+const AGENT_CONFIG_SEGMENTS: ReadonlySet<string> = new Set(['.agents', '.claude']);
+
+/**
+ * Basename match for agent skill definitions (`SKILL.md`, case-insensitive).
+ * @since NEXT
+ */
+const AGENT_CONFIG_BASENAME_RE = /^skill\.md$/i;
+
+/**
  * Paths that ship pre-bundled JavaScript into the repository. `action/lib` is
  * the committed @vercel/ncc bundle used by the GitHub Action distribution.
  */
@@ -77,6 +92,34 @@ export function isGeneratedArtifactPath(filePath: string): boolean {
   }
   const base = segments[lastIndex] ?? '';
   return GENERATED_FILE_RE.test(base);
+}
+
+/**
+ * Determine whether a path is agent configuration rather than reviewable
+ * source: any non-final segment named `.agents` or `.claude`, or a file
+ * basenamed `SKILL.md` (case-insensitive). Kept separate from
+ * {@link isGeneratedArtifactPath} so generated-artifact semantics are unchanged.
+ *
+ * Fail-open: empty input returns false; any error returns false (never throws).
+ *
+ * @param filePath - Repo-relative or absolute POSIX or Windows path.
+ * @returns True when the path is agent config excluded from LLM findings by default.
+ * @since NEXT
+ */
+export function isAgentConfigPath(filePath: string): boolean {
+  try {
+    if (!filePath) return false;
+    const normalized = filePath.replace(/\\/g, '/');
+    const segments = normalized.split('/');
+    const lastIndex = segments.length - 1;
+    for (let i = 0; i < lastIndex; i++) {
+      if (AGENT_CONFIG_SEGMENTS.has(segments[i])) return true;
+    }
+    const base = segments[lastIndex] ?? '';
+    return AGENT_CONFIG_BASENAME_RE.test(base);
+  } catch {
+    return false;
+  }
 }
 
 /**

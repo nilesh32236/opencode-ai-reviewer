@@ -76,6 +76,7 @@ import type { BlameRange } from './utils/blame.js';
 import { sanitizeDescribeDiagram } from './utils/describe-diagram.js';
 import { computeReviewStats, filterFindings, severityRank } from './utils/filter-findings.js';
 import { isGeneratedArtifact, isGeneratedArtifactPath } from './utils/generated-files.js';
+import { isAgentConfigPath } from './utils/generated-files.js';
 import { Logger } from './utils/logger.js';
 import {
   detectDotnetLibraries,
@@ -964,15 +965,34 @@ export class ReviewEngine {
       }
     }
 
-    // Filter out excluded files (lockfiles, generated code, dist/, etc.)
+    // Filter out excluded files (lockfiles, generated code, dist/, etc.).
+    // Agent-config paths (.agents/, .claude/, SKILL.md) are default-excluded
+    // from LLM findings (counted as skipped in the summary) unless
+    // `review.exclude_agent_configs` is explicitly false. Fail-open: absent or
+    // unparseable config defaults to excluding; filtering errors include the
+    // file rather than dropping the review.
+    // @since NEXT
     const excludePatterns = this.config.review.excludePatterns || [];
-    let files =
-      excludePatterns.length > 0
-        ? pr.changedFiles.filter((f) => {
-            if (!f?.path) return false;
-            return !excludePatterns.some((pattern: string) => minimatch(f.path, pattern));
-          })
-        : pr.changedFiles;
+    const excludeAgentConfigs = this.config.review.exclude_agent_configs ?? true;
+    let agentConfigSkipped = 0;
+    let files = pr.changedFiles.filter((f) => {
+      if (!f?.path) return false;
+      if (excludePatterns.some((pattern: string) => minimatch(f.path, pattern))) return false;
+      if (excludeAgentConfigs) {
+        try {
+          if (isAgentConfigPath(f.path)) {
+            agentConfigSkipped++;
+            return false;
+          }
+        } catch (err) {
+          this.logger.warn(
+            `Agent-config exclusion check failed for ${f.path}, including file: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          return true;
+        }
+      }
+      return true;
+    });
 
     // Per-path skip rules (`review.pathRules` with `skip: true`). Fail-open:
     // invalid config or match errors keep the full file list.
@@ -1033,17 +1053,30 @@ export class ReviewEngine {
       this.logger.info(
         `All ${pr.changedFiles.length} changed file(s) matched exclude patterns — skipping review`,
       );
+      if (agentConfigSkipped > 0) {
+        this.logger.info(
+          `Skipped ${agentConfigSkipped} agent-config file(s) from review (review.exclude_agent_configs)`,
+        );
+      }
       // Even when every source file is excluded, deterministic SCA findings on
       // the excluded lock files still surface (a lock-file-only PR is the
       // primary SCA use case).
       if (scaIssues.length > 0) {
         return this.mergeScaIssues(emptyResult(), scaIssues);
       }
-      return emptyResult();
+      const skippedOnly = emptyResult();
+      if (agentConfigSkipped > 0) {
+        skippedOnly.summary = `Skipped review: ${agentConfigSkipped} agent-config file(s) excluded from review (review.exclude_agent_configs).`;
+      }
+      return skippedOnly;
     }
     if (files.length < pr.changedFiles.length) {
+      const exclusionNote =
+        agentConfigSkipped > 0
+          ? ` (including ${agentConfigSkipped} agent-config file(s) excluded by review.exclude_agent_configs)`
+          : '';
       this.logger.info(
-        `Excluded ${pr.changedFiles.length - files.length} file(s) from review by exclude patterns`,
+        `Excluded ${pr.changedFiles.length - files.length} file(s) from review by exclude patterns${exclusionNote}`,
       );
     }
 
