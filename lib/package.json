@@ -1,6 +1,6 @@
 {
   "name": "@opencode-pr-agent/lib",
-  "version": "1.13.9",
+  "version": "1.13.11",
   "description": "Shared library for OpenCode AI Reviewer — types, engine, MCP, prompts, GitHub API",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -44,5 +44,8 @@
     "fast-check": "^4.0.0",
     "tsx": "^4.20.3",
     "vitest": "^4.1.10"
+  },
+  "engines": {
+    "node": ">=24.19.0"
   }
 }

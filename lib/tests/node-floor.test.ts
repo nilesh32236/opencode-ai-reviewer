@@ -155,30 +155,22 @@ describe('ReviewEngine node floor', () => {
     ).toThrow(/enforced minimum/);
   });
 
-  it('fails open when the floor check itself throws', () => {
+  it('fails open when the floor check itself throws (default warn-only mode)', () => {
     mockCheckNodeFloor.mockImplementation(() => {
       throw new Error('boom');
     });
     const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
     expect(
-      () =>
-        new ReviewEngine(
-          {
-            ...DEFAULT_CONFIG,
-            timeoutMinutes: 10,
-            toolchain: { enforceNodeFloor: true },
-          },
-          makeAdapter() as never,
-        ),
+      () => new ReviewEngine({ ...DEFAULT_CONFIG, timeoutMinutes: 10 }, makeAdapter() as never),
     ).not.toThrow();
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Node floor check skipped'));
   });
 
-  it('does not re-throw unrelated errors containing the enforcement phrase', () => {
+  it('throws in strict mode when the floor check itself throws', () => {
     mockCheckNodeFloor.mockImplementation(() => {
-      throw new Error('unrelated enforced minimum text');
+      throw new Error('boom');
     });
-    const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
     expect(
       () =>
         new ReviewEngine(
@@ -189,6 +181,16 @@ describe('ReviewEngine node floor', () => {
           },
           makeAdapter() as never,
         ),
+    ).toThrow(/could not be verified.*enforced minimum/);
+  });
+
+  it('does not re-throw unrelated errors containing the enforcement phrase (default mode)', () => {
+    mockCheckNodeFloor.mockImplementation(() => {
+      throw new Error('unrelated enforced minimum text');
+    });
+    const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    expect(
+      () => new ReviewEngine({ ...DEFAULT_CONFIG, timeoutMinutes: 10 }, makeAdapter() as never),
     ).not.toThrow();
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Node floor check skipped'));
   });

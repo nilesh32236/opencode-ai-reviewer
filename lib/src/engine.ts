@@ -276,15 +276,16 @@ export class ReviewEngine {
    * warn-only and fail-open by default (an unparseable version or a check
    * failure only warns and the review continues). Opt-in strict mode
    * (`toolchain.enforceNodeFloor`) throws — including for unparseable
-   * versions, since a security floor must not pass a runtime it cannot
-   * identify. Strict mode becomes the default after the grace period.
+   * versions and for check failures, since a security floor must not pass
+   * a runtime it cannot identify or evaluate. Strict mode becomes the
+   * default after the grace period.
    * @since NEXT
    */
   private checkRuntimeNodeFloor(): void {
+    const enforce = this.config.toolchain?.enforceNodeFloor === true;
     let enforcementError: Error | null = null;
     try {
       const result = checkNodeFloorVersion();
-      const enforce = this.config.toolchain?.enforceNodeFloor === true;
       if (result.unparseable) {
         if (!enforce) {
           // Fail-open, but stay observable: an unknown runtime must not pass silently.
@@ -320,6 +321,17 @@ export class ReviewEngine {
       // Identity comparison (not message substring) keeps strict mode robust
       // against future message rewording and avoids re-throwing unrelated errors.
       if (err === enforcementError && enforcementError !== null) throw err;
+      // Strict mode is fail-closed: when the floor check itself cannot be
+      // evaluated, the runtime cannot be proven safe, so enforcement throws
+      // instead of passing an unknown runtime. Default mode stays fail-open.
+      if (enforce && enforcementError === null) {
+        throw new Error(
+          `Node runtime could not be verified against the enforced minimum ` +
+            `(floor check failed with: ${err instanceof Error ? err.message : String(err)}; ` +
+            `toolchain.enforceNodeFloor=true). Upgrade to a supported Node 24.x LTS ` +
+            `(see https://nodejs.org/en/blog/release/v24.19.0).`,
+        );
+      }
       try {
         this.logger.warn(
           `Node floor check skipped: ${err instanceof Error ? err.message : String(err)}`,
