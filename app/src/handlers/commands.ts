@@ -49,11 +49,13 @@ import { handlePRReview } from './pr-review.js';
 const logger = new Logger('Command');
 
 /**
- * Owner/repo slug pattern. Rejects path separators beyond the single slash,
- * whitespace, `..` segments, and empty parts so a webhook-supplied repo value
- * can never escape into a crafted clone URL or git remote.
+ * Owner/repo slug pattern restricted to the GitHub/GitLab owner/repo charset
+ * (alphanumerics, dot, dash, underscore) with exactly one slash separator.
+ * Rejects whitespace, backslashes, `..` segments, URL-confusing characters
+ * (`@`, `:`, `%`, control chars), and empty parts so a webhook-supplied repo
+ * value can never escape into a crafted clone URL or git remote.
  */
-const REPO_SLUG_PATTERN = /^[^/\s]+\/[^/\s]+$/;
+const REPO_SLUG_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 /**
  * Whether a repository slug is safe to interpolate into a clone/remote URL.
@@ -63,6 +65,7 @@ const REPO_SLUG_PATTERN = /^[^/\s]+\/[^/\s]+$/;
  * Exported for unit testing.
  */
 export function isValidRepoSlug(repo: string): boolean {
+  if (repo.includes('\\')) return false;
   if (!REPO_SLUG_PATTERN.test(repo)) return false;
   if (repo.includes('..')) return false;
   return true;

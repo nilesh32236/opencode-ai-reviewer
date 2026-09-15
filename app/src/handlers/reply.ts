@@ -24,6 +24,8 @@ import { truncateToUtf8Bytes } from './pr-review.js';
  * @param config - Agent configuration.
  * @param parentCommentId - ID of the AI-originated comment being replied to.
  * @param userCommentBody - The developer's reply/question body.
+ * @param repoFilter - Optional repo allowlist/denylist; defaults to the shared
+ * process-wide filter built from ALLOWED_REPOS / DENIED_REPOS env.
  */
 export async function handleReply(
   prNumber: number,

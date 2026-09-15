@@ -8,7 +8,7 @@ import { GitHubHelper, Logger } from '@opencode-pr-agent/lib';
 import { isPrivilegedAuthor } from '../utils/privilege.js';
 
 // Re-export the shared privileged-author check so existing importers
-// (`handlers/dismiss.ts`) keep working while all callers share one definition.
+// (subscribers/dismiss.ts, tests) keep working while all callers share one definition.
 export { isPrivilegedAuthor };
 
 /** Structured dismissal reasons a user can pick from. */

@@ -279,18 +279,28 @@ export async function handlePRReview(
                     // Cap streamed write calls per review: remainder stays in
                     // the final review body instead of fanning out N requests.
                     if (streamedFindingCount >= MAX_STREAMED_INLINE_COMMENTS) continue;
-                    const posted = await gh.postInlineComment(prNumber, pr.headSha, {
-                      path: issue.file,
-                      line: issue.line,
-                      body: `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}`,
-                    });
-                    if (posted) {
-                      streamedIssueKeys.add(key);
-                      streamedCommentIds.set(`${issue.file}:${issue.line}`, posted.commentId);
-                      streamedFindingCount++;
-                    } else {
+                    try {
+                      const posted = await gh.postInlineComment(prNumber, pr.headSha, {
+                        path: issue.file,
+                        line: issue.line,
+                        body: `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}`,
+                      });
+                      if (posted) {
+                        streamedIssueKeys.add(key);
+                        streamedCommentIds.set(`${issue.file}:${issue.line}`, posted.commentId);
+                        streamedFindingCount++;
+                      } else {
+                        logger.warn(
+                          `Inline comment post failed for ${key} — will retry in final review body`,
+                          { prNumber, repo },
+                        );
+                      }
+                    } catch (err) {
+                      // A transient GitHub 5xx / network throw must degrade to
+                      // final-body posting, not abort the whole review: leave
+                      // the key unmarked so the finding stays in the final body.
                       logger.warn(
-                        `Inline comment post failed for ${key} — will retry in final review body`,
+                        `Inline comment post threw for ${key} — will retry in final review body: ${err instanceof Error ? err.message : String(err)}`,
                         { prNumber, repo },
                       );
                     }

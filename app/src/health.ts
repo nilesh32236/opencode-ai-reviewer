@@ -13,6 +13,9 @@
  *   only a non-critical component is down), `error` → 503.
  * - `/ready` (readiness): `ok` → 200, anything else (`degraded` or `error`)
  *   → 503 (the instance must not receive traffic).
+ * - Rate-limited probes (either path): `429` with a `Retry-After` header and
+ *   the same `{ status: 'error', components: [] }` shape so operators can
+ *   distinguish throttling from probe failure.
  */
 
 import { type LearningStore, Logger } from '@opencode-pr-agent/lib';
@@ -71,9 +74,18 @@ export function createHealthRouter(
     const ip = req.ip ?? req.socket?.remoteAddress ?? 'unknown';
     const now = Date.now();
     const hits = (probeHits.get(ip) ?? []).filter((t) => now - t < PROBE_RATE_WINDOW_MS);
+    // Prune the IP entry when its window is empty so a broad scan of spoofed
+    // IPs cannot grow the map unboundedly over process lifetime.
+    if (hits.length === 0 && probeHits.has(ip)) probeHits.delete(ip);
+    // Hard cap on tracked IPs: evict the oldest entry when over budget.
+    if (probeHits.size > 10000) {
+      const oldest = probeHits.keys().next().value;
+      if (oldest !== undefined) probeHits.delete(oldest);
+    }
     hits.push(now);
     probeHits.set(ip, hits);
     if (hits.length > PROBE_RATE_MAX) {
+      res.setHeader('Retry-After', '60');
       res.status(429).json({ status: 'error', components: [] } satisfies HealthResponse);
       return;
     }
@@ -166,11 +178,12 @@ export function createHealthRouter(
 
   // Centralized error middleware so an unexpected throw in check() becomes a
   // consistent error-shape 503 instead of an unhandled rejection / hung probe.
-  // biome-ignore lint/suspicious/noExplicitAny: Express error-middleware signature requires 4 args.
-  router.use((err: any, _req: Request, res: Response, _next: NextFunction): void => {
+  // The headersSent guard comes first: touching headers after they were sent
+  // would itself throw ERR_HTTP_HEADERS_SENT inside the error handler.
+  router.use((err: unknown, _req: Request, res: Response, _next: NextFunction): void => {
     logger.error(`Health probe failed: ${err instanceof Error ? err.message : String(err)}`);
-    res.setHeader('Cache-Control', 'no-store');
     if (!res.headersSent) {
+      res.setHeader('Cache-Control', 'no-store');
       res.status(503).json({ status: 'error', components: [] } satisfies HealthResponse);
     }
   });

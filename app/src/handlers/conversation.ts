@@ -52,6 +52,8 @@ import {
  * @param stateManager - Optional conversation state manager for context window management.
  * @param eventBus - Optional event bus for publishing pipeline events.
  * @param correlationId - Optional correlation ID for tracing this request.
+ * @param repoFilter - Optional repo allowlist/denylist; defaults to the shared
+ * process-wide filter built from ALLOWED_REPOS / DENIED_REPOS env.
  */
 export async function handleConversation(
   commentId: number,
