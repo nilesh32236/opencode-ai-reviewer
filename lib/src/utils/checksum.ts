@@ -87,17 +87,41 @@ const KNOWN_CHECKSUMS: Record<string, string> = {
   // Entries populated as releases are manually verified (only used when the
   // opencode_version input is pinned; 'latest' falls back to the release
   // checksum asset or a warning).
+  //
+  // Pinned 1.1.1 (== MINIMUM_OPENCODE_VERSION, see ../version.ts) CLI archives
+  // from anomalyco/opencode release v1.1.1 (published 2026-01-04, verified
+  // 2026-09-15 via the GitHub Releases API `digest` field, which is the
+  // sha256 of the uploaded asset blob):
+  // https://github.com/anomalyco/opencode/releases/tag/v1.1.1
+  // Keys use the `detectArch()` matrix (opencode.ts) without extension, e.g.
+  // `1.1.1-linux-x64` covers asset `opencode-linux-x64.tar.gz`.
+  // No checksums.txt / .sha256 asset is published for this release, so these
+  // pinned entries are currently the only offline verification source.
+  // windows-arm64 has no published CLI archive for v1.1.1 (no entry below —
+  // lookup stays fail-open null; see docs/opencode-checksums.md).
+  '1.1.1-linux-x64': 'c382005c97e4470596326675b5d6ba5bb9565c618666e9ee44026c163361c7bd',
+  '1.1.1-linux-arm64': 'ba0a33ba77fbde8649b55208f6255cedd9797416d638ba4418fa83c879fc5d08',
+  '1.1.1-darwin-x64': '684c948c88a7043671c7689b92b6657f671e007c1dbea23e9072a6ec8078cc78',
+  '1.1.1-darwin-arm64': '880c1bdbbb6dedf41089c509e8a8a5516b7358b181e5dda8213c2b90985b4332',
+  '1.1.1-windows-x64': 'adb80c1c5b902be3aafe27e5c4d4f109b6245593be3fd72e320efc36d3298579',
 };
 
 /**
  * Look up a known checksum for a specific version and architecture.
  *
- * @param version - Version string (e.g., "1.2.3").
- * @param arch - Architecture identifier (e.g., "linux-amd64").
+ * The version is normalized by stripping a single leading `v` (release
+ * `tag_name` values such as `v1.1.1` — the form passed by
+ * `verifyDownloadedArchive()` in `opencode.ts` — resolve to the same stored
+ * key as the bare semver `1.1.1`). Lookup stays fail-open: unknown
+ * version/arch pairs return null instead of throwing.
+ * @param version - Version string (e.g., "1.2.3" or "v1.2.3").
+ * @param arch - Architecture identifier (e.g., "linux-x64").
  * @returns The known SHA-256 hex string, or null if no match.
+ * @since NEXT - Leading-`v` normalization so tag_name lookups hit pinned keys.
  */
 export function getKnownChecksum(version: string, arch: string): string | null {
-  const key = `${version}-${arch}`;
+  const normalizedVersion = version.trim().replace(/^v/i, '');
+  const key = `${normalizedVersion}-${arch}`;
   return KNOWN_CHECKSUMS[key] ?? null;
 }
 

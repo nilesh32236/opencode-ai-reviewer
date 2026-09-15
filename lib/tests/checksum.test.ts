@@ -198,6 +198,25 @@ describe('getKnownChecksum()', () => {
   it('returns null for empty version', () => {
     expect(getKnownChecksum('', 'linux-x64')).toBeNull();
   });
+
+  it('returns the pinned sha256 for the minimum supported version', () => {
+    // Pinned 1.1.1 entries (see docs/opencode-checksums.md, verified 2026-09-15).
+    expect(getKnownChecksum('1.1.1', 'linux-x64')).toBe(
+      'c382005c97e4470596326675b5d6ba5bb9565c618666e9ee44026c163361c7bd',
+    );
+    expect(getKnownChecksum('1.1.1', 'darwin-arm64')).toBe(
+      '880c1bdbbb6dedf41089c509e8a8a5516b7358b181e5dda8213c2b90985b4332',
+    );
+  });
+
+  it('normalizes a leading v so tag_name lookups hit pinned keys', () => {
+    expect(getKnownChecksum('v1.1.1', 'linux-x64')).toBe(getKnownChecksum('1.1.1', 'linux-x64'));
+    expect(getKnownChecksum('v1.1.1', 'windows-x64')).not.toBeNull();
+  });
+
+  it('returns null for an arch with no published asset (fail-open preserved)', () => {
+    expect(getKnownChecksum('1.1.1', 'windows-arm64')).toBeNull();
+  });
 });
 
 describe('buildMissingChecksumError()', () => {

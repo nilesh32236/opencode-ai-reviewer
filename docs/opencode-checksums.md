@@ -1,0 +1,100 @@
+# Pinned OpenCode CLI Checksums
+
+Tamper-evident install manifest for the OpenCode CLI archives downloaded by
+`setupOpenCode()` (`lib/src/opencode.ts`). Zero change for existing users:
+verification runs automatically when a checksum is available, and the default
+stays fail-open (warn-and-continue).
+
+> **Verified:** 2026-09-15 against the `anomalyco/opencode` release `v1.1.1`
+> (published 2026-01-04) via the GitHub Releases API `digest` field (sha256 of
+> the uploaded asset blob).
+> Release page: https://github.com/anomalyco/opencode/releases/tag/v1.1.1
+> Pinned version equals `MINIMUM_OPENCODE_VERSION` (`lib/src/utils/version.ts`).
+
+## Pinned sha256 (`opencode_version: 1.1.1` / `v1.1.1`)
+
+Keys use the `detectArch()` matrix (`linux-x64`, `linux-arm64`, `darwin-x64`,
+`darwin-arm64`, `windows-x64`, `windows-arm64`); the file column is the exact
+asset name `setupOpenCode()` downloads (`opencode-<arch>.tar.gz` on
+Linux/macOS, `opencode-<arch>.zip` on Windows).
+
+| opencode_version | arch | file | sha256 |
+|---|---|---|---|
+| 1.1.1 | linux-x64 | `opencode-linux-x64.tar.gz` | `c382005c97e4470596326675b5d6ba5bb9565c618666e9ee44026c163361c7bd` |
+| 1.1.1 | linux-arm64 | `opencode-linux-arm64.tar.gz` | `ba0a33ba77fbde8649b55208f6255cedd9797416d638ba4418fa83c879fc5d08` |
+| 1.1.1 | darwin-x64 | `opencode-darwin-x64.zip` | `684c948c88a7043671c7689b92b6657f671e007c1dbea23e9072a6ec8078cc78` |
+| 1.1.1 | darwin-arm64 | `opencode-darwin-arm64.zip` | `880c1bdbbb6dedf41089c509e8a8a5516b7358b181e5dda8213c2b90985b4332` |
+| 1.1.1 | windows-x64 | `opencode-windows-x64.zip` | `adb80c1c5b902be3aafe27e5c4d4f109b6245593be3fd72e320efc36d3298579` |
+
+Notes:
+
+- `windows-arm64` has **no published CLI archive** for `v1.1.1`, so there is
+  no pinned entry — `getKnownChecksum()` returns `null` (fail-open) for it.
+- This release publishes **no `checksums.txt` / `.sha256` asset**
+  (`findChecksumAsset()` finds nothing), so these pinned `KNOWN_CHECKSUMS`
+  entries in `lib/src/utils/checksum.ts` are currently the only offline
+  verification source for `1.1.1`.
+- `getKnownChecksum()` accepts both `1.1.1` and `v1.1.1` (leading `v` is
+  stripped — the download path passes through `release.tag_name`, e.g.
+  `v1.1.1`).
+
+## Manual verify
+
+```bash
+# Linux (example: linux-x64)
+curl -sL -o opencode-linux-x64.tar.gz \
+  https://github.com/anomalyco/opencode/releases/download/v1.1.1/opencode-linux-x64.tar.gz
+echo "c382005c97e4470596326675b5d6ba5bb9565c618666e9ee44026c163361c7bd  opencode-linux-x64.tar.gz" \
+  | sha256sum -c -
+
+# macOS (shasum instead of sha256sum)
+shasum -a 256 opencode-darwin-arm64.zip
+# compare against the table row above
+```
+
+`parseChecksumFile()` (`lib/src/utils/checksum.ts`) documents the
+`SHA256SUMS`-style line format (`<hex>  <filename>`, `*` binary-marker and
+`./` prefixes accepted) used when a release *does* publish a checksum file.
+
+## Opt-in enforcement: `require_opencode_checksum`
+
+The existing action input (NOT a `security:` config key) turns a missing
+checksum into a hard error. Default `false` — existing workflows unaffected.
+
+```yaml
+- uses: anomalyco/opencode-ai-reviewer@<ref>
+  with:
+    opencode_version: 'v1.1.1' # pin to a checksummed release
+    require_opencode_checksum: 'true'
+```
+
+Behavior (`verifyDownloadedArchive()` in `lib/src/opencode.ts`):
+
+- Enforcement **off** (default), unknown version / no checksum asset:
+  warn-and-continue as today.
+- Enforcement **on**, no checksum available (no checksum asset entry and no
+  `KNOWN_CHECKSUMS` hit): fail closed via `buildMissingChecksumError()` —
+  pin `opencode_version` to a release that publishes a checksum asset (or a
+  pinned version in the table above), or re-run with enforcement off while
+  you obtain the expected sha256.
+- **Checksum mismatch always aborts** via `verifyChecksum()` in either mode
+  (`Checksum mismatch … expected …, got …`), tagged non-retryable so the
+  download is not retried with backoff.
+- Checksum-file fetch failure: warn-and-continue unless enforcement is on.
+- Scope note: the gate guards **fresh downloads only**. A binary already on
+  `PATH` or restored from the tool cache is returned as-is (with a warning
+  when strict mode is on) because no archive was downloaded to verify.
+
+Maintainers: record newly verified hashes in `KNOWN_CHECKSUMS`
+(`lib/src/utils/checksum.ts`, key `<version>-<arch>`, no leading `v`) and add
+a row to the table above.
+
+## Attestation / provenance
+
+- GitHub Actions hardening (verify downloaded binaries):
+  https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions
+- SLSA attestation model (build provenance):
+  https://slsa.dev/attestation-model
+- Release assets + per-asset `digest` (source of the table above):
+  https://github.com/anomalyco/opencode/releases
+  (API: `GET /repos/anomalyco/opencode/releases/tags/v1.1.1`)
