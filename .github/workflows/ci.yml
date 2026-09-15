@@ -83,6 +83,17 @@ jobs:
           test -f action/lib/index.js || { echo "action/lib/index.js missing!"; exit 1; }
           echo "Build artifacts verified."
 
+      - name: Verify committed action bundles are fresh
+        run: |
+          # The action executes the committed bundles (action/lib/*.js), not
+          # src/. A stale bundle ships unreviewed code, so a rebuild that
+          # differs from what is committed must fail the run.
+          if ! git diff --exit-code -- action/lib/; then
+            echo "ERROR: committed action bundles are stale — run 'pnpm --filter @opencode-pr-agent/action build' and commit the result." >&2
+            exit 1
+          fi
+          echo "Committed action bundles are fresh."
+
       - name: Check no duplicate action.yml
         run: |
           DUPES=$(find . -name 'action.yml' -not -path './action.yml' \

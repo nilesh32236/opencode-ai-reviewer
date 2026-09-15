@@ -328,6 +328,8 @@ export class GitHubHelper implements PlatformAdapter {
         number: number;
         title: string;
         body: string | null;
+        /** 'open' | 'closed' | 'merged' (merged only when merged via the API view). */
+        state: string;
         head: { ref: string; sha: string; repo?: { full_name: string } | null };
         base: { ref: string; sha?: string };
         user: { login: string };
@@ -370,6 +372,9 @@ export class GitHubHelper implements PlatformAdapter {
       baseRef: pr.base.ref,
       baseSha: pr.base.sha,
       author: pr.user.login,
+      // GitHub reports PR state as 'open' | 'closed' | 'merged'. Carried
+      // through so fix loops can stop pushing once a PR has been merged.
+      state: pr.state,
       labels: pr.labels.map((l) => l.name),
       changedFiles: files.map((f) => ({
         path: f.filename || f.path || '',
@@ -388,6 +393,7 @@ export class GitHubHelper implements PlatformAdapter {
    * @param number - PR number.
    * @param options - Optional error handling (throwOnError accepted for
    * interface symmetry; getPR always throws on files failure).
+   * @param options.throwOnError - Accepted for interface symmetry; always throws on files failure.
    * @param signal - Optional AbortSignal to cancel the underlying requests.
    * @returns PR context including title, body, branches, author, labels, and changed files.
    */
@@ -581,6 +587,7 @@ export class GitHubHelper implements PlatformAdapter {
    *
    * @param prNumber - PR number.
    * @param headSha - Optional head SHA scoping the cache entry.
+   * @param signal - Optional AbortSignal to cancel the diff fetch.
    * @returns Set of "file:line" strings for lines in the diff.
    */
   async getDiffLines(
@@ -876,6 +883,7 @@ export class GitHubHelper implements PlatformAdapter {
    * @param postInlineComments - Whether to attempt inline comments (default: true).
    * @param suppressLowConfidence - Whether to suppress low-confidence findings (default: false).
    * @param options - Optional display flags (e.g. deterministic function scores).
+   * @param signal - Optional AbortSignal to cancel the review post.
    * @returns Object indicating success and which posting method was used.
    * @since NEXT `options.enableReviewsArrayInline` guards the reviews-array path.
    */
@@ -1082,6 +1090,7 @@ export class GitHubHelper implements PlatformAdapter {
    * @param workingResult - Review result after confidence filtering.
    * @param suppressLowConfidence - Passed through to inline mapping.
    * @param options - Display flags (flag itself is read by the caller).
+   * @param signal - Optional AbortSignal to cancel the review post.
    * @returns Review post result (`full` on batch success, `body-only` on fallback).
    * @since NEXT
    */

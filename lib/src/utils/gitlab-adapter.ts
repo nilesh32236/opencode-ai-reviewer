@@ -81,8 +81,8 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Constructor.
-   * @param token
-   * @param repo
+   * @param token - GitLab personal access token for API authentication.
+   * @param repo - Repository path with namespace (e.g. 'group/project').
    * @param apiUrl - apiUrl argument.
    * @returns Description.
    */
@@ -225,9 +225,9 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Paginate through GitLab API endpoints.
-   * @param endpoint
-   * @param options
-   * @param options.perPage
+   * @param endpoint - API path relative to the project base (e.g. '/merge_requests').
+   * @param options - Pagination and error-handling options.
+   * @param options.perPage - Items requested per page (max 100).
    * @param options.maxPages
    * @param options.direction - options.direction argument.
    * @param options.throwOnError - When true, rethrow a page-fetch error instead of
@@ -329,6 +329,8 @@ export class GitLabAdapter implements PlatformAdapter {
         iid: number;
         title: string;
         description: string | null;
+        /** 'opened' | 'closed' | 'merged' | 'locked'. */
+        state: string;
         source_branch: string;
         sha: string;
         target_branch: string;
@@ -408,6 +410,9 @@ export class GitLabAdapter implements PlatformAdapter {
       headSha: mr.sha,
       baseRef: mr.target_branch,
       author: mr.author.username,
+      // GitLab reports MR state as 'opened' | 'closed' | 'merged'. Carried
+      // through so fix loops can stop pushing once an MR has been merged.
+      state: mr.state,
       labels: mr.labels || [],
       changedFiles: changes.map((f) => ({
         path: f.new_path,
@@ -562,6 +567,7 @@ export class GitLabAdapter implements PlatformAdapter {
   /**
    * Get diff lines.
    * @param mrNumber - mrNumber argument.
+   * @param signal - Optional AbortSignal to cancel the diff fetch.
    * @returns Description.
    */
   async getDiffLines(mrNumber: number, signal?: AbortSignal): Promise<Set<string>> {
@@ -789,6 +795,7 @@ export class GitLabAdapter implements PlatformAdapter {
    * @param postInlineComments
    * @param suppressLowConfidence - suppressLowConfidence argument.
    * @param options - Optional display flags (e.g. deterministic function scores).
+   * @param signal - Optional AbortSignal to cancel the review post.
    * @returns Description.
    */
   async postReview(

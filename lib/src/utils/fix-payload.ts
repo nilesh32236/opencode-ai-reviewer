@@ -73,10 +73,10 @@ export function buildFixPayload(issue: ReviewIssue): FixPayload {
 }
 
 /**
- * Render a fix payload as markdown: a ```suggestion block (when the payload
- * carries code-like `suggestedChange`) plus a collapsible Fix-with-AI prompt
- * for coding-agent handoff. All interpolated model text is sanitized except
- * the raw code inside the fenced block. Fail-open: returns '' on any error.
+ * Render a fix payload as markdown: a 'suggestion' fenced block (when the
+ * payload carries code-like `suggestedChange`) plus a collapsible Fix-with-AI
+ * prompt for coding-agent handoff. All interpolated model text is sanitized
+ * except the raw code inside the fenced block. Fail-open: returns '' on any error.
  * @param payload - The payload built by {@link buildFixPayload}.
  * @returns Markdown string, or '' when nothing renderable / on error.
  */

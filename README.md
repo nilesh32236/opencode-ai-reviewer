@@ -475,7 +475,12 @@ When `DATABASE_URL` is set, the learning store connects directly to the remote d
 
 ---
 
-## GitHub App (Probot)
+## GitHub App (Probot) — FROZEN
+
+> **Status: frozen, no new development.** The Probot app in `app/` still
+> builds and stays CI-green, but all new work targets the **GitHub Action**
+> (`action/` + `lib/`). The Action is the supported integration; the App
+> receives security fixes only. See the Action setup above.
 
 The App listens for webhooks and works like the Action but runs as a hosted service.
 

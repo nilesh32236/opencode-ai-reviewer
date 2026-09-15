@@ -27,6 +27,10 @@ export interface ExecProcessResult {
  * callers that ignore the return value don't lose debuggability.
  *
  * Falls back to `execFileSync` when only the sync mock exists (tests).
+ * @param file - Binary to execute (e.g. 'git').
+ * @param args - Arguments passed to the binary.
+ * @param options - Execution options (timeout, env, AbortSignal).
+ * @returns The process stdout and stderr tails.
  */
 export async function execProcess(
   file: string,
