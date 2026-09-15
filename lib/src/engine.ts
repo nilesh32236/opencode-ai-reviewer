@@ -176,11 +176,16 @@ export function computeChunkDelays(batchCount: number, concurrencyLimit: number)
 /**
  * Compute the expected number of `runOpenCode` invocations for a review.
  * Single-batch reviews run one pass; multi-batch reviews run one pass per
- * batch plus a final synthesis pass.
+ * batch plus a final synthesis pass. Single-process subagent dispatch (the
+ * default) always runs exactly one pass regardless of batch count.
  * @param batchCount - Number of file batches to process.
+ * @param singleProcess - Whether single-process subagent dispatch is active.
  * @returns The expected number of OpenCode invocations.
  */
-export function expectedReviewOpenCodeCalls(batchCount: number): number {
+export function expectedReviewOpenCodeCalls(batchCount: number, singleProcess = false): number {
+  if (singleProcess) {
+    return 1;
+  }
   return batchCount <= 1 ? 1 : batchCount + 1;
 }
 

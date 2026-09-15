@@ -187,7 +187,8 @@ function checkApiCalls(results: CheckResult[], metrics: BenchMetrics): void {
       continue;
     }
     const batches = entry.meta?.batches ?? 1;
-    const expectedCalls = expectedReviewOpenCodeCalls(batches);
+    const singleProcess = (entry.meta?.singleProcess ?? 0) === 1;
+    const expectedCalls = expectedReviewOpenCodeCalls(batches, singleProcess);
     results.push({
       name: `runOpenCode calls ${entry.name}`,
       measured: `${entry.value} calls`,
