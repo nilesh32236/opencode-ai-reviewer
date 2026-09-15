@@ -265,6 +265,7 @@ export const ReviewConfigSchema = z.object({
   skipActors: z.array(z.string()).default(['github-actions[bot]']),
   inline: z.boolean().default(true),
   enableReviewsArrayInline: z.boolean().optional().default(false),
+  verdictMode: z.enum(['comment', 'approve', 'request-changes']).optional().default('comment'),
   dedupFingerprints: z.boolean().optional().default(true),
   dedup_fingerprints: z.boolean().optional(),
   emitFixPayload: z.boolean().default(false),

@@ -270,6 +270,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     customRules: null,
     inline: null,
     enableReviewsArrayInline: null,
+    verdictMode: null,
     dedupFingerprints: null,
     dedup_fingerprints: null,
     emitFixPayload: null,
@@ -683,6 +684,20 @@ export function validateConfig(
     }
     if (typeof config.review.enableReviewsArrayInline === 'boolean') {
       result.review.enableReviewsArrayInline = config.review.enableReviewsArrayInline;
+    }
+    if (typeof config.review.verdictMode === 'string') {
+      const normalized = config.review.verdictMode.trim().toLowerCase();
+      if (
+        normalized === 'comment' ||
+        normalized === 'approve' ||
+        normalized === 'request-changes'
+      ) {
+        result.review.verdictMode = normalized;
+      } else {
+        core.warning(
+          `Ignoring invalid review.verdictMode "${String(config.review.verdictMode)}". Must be "comment", "approve", or "request-changes"; falling back to "comment".`,
+        );
+      }
     }
     // Canonical camelCase key wins over the deprecated snake_case alias;
     // absent means "enabled" downstream (fail-open default true).

@@ -299,8 +299,21 @@ export async function runReview(
     config.review.inline,
     undefined,
     config.review.enableReviewsArrayInline === true
-      ? { ...(scoreOptions ?? {}), enableReviewsArrayInline: true as const, ...dedupOptions }
-      : { ...(scoreOptions ?? {}), ...dedupOptions },
+      ? {
+          ...(scoreOptions ?? {}),
+          enableReviewsArrayInline: true as const,
+          ...dedupOptions,
+          ...(config.review.verdictMode !== undefined && {
+            verdictMode: config.review.verdictMode,
+          }),
+        }
+      : {
+          ...(scoreOptions ?? {}),
+          ...dedupOptions,
+          ...(config.review.verdictMode !== undefined && {
+            verdictMode: config.review.verdictMode,
+          }),
+        },
   );
 
   if (!reviewResult.success) {

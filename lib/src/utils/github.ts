@@ -65,6 +65,82 @@ function toFingerprintSet(value: Set<string> | string[] | undefined): Set<string
   return new Set<string>();
 }
 
+/** Opt-in review gating mode mapped to the Pulls `createReview` event. */
+export type VerdictMode = 'comment' | 'approve' | 'request-changes';
+
+/** Review event sent on `POST /pulls/{n}/reviews`. */
+export type ReviewEvent = 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES';
+
+/**
+ * Reasoning strings marking a failed (not genuine) review pass. Mirrors
+ * `ReviewEngine.REVIEW_FAILURE_SENTINELS` — a result carrying one of these
+ * must never auto-approve.
+ * @since NEXT
+ */
+const VERDICT_FAILURE_SENTINELS = new Set<string>([
+  'Review execution failed',
+  'Failed to parse review output',
+  'Review output could not be parsed',
+  'All review agents failed',
+  'All review batches failed',
+]);
+
+/**
+ * Normalize a raw `verdict_mode` value (fail-open to `'comment'`).
+ * @param value - Raw mode value from config/input.
+ * @returns Normalized mode.
+ * @since NEXT
+ */
+export function normalizeVerdictMode(value: unknown): VerdictMode {
+  if (typeof value !== 'string') return 'comment';
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'approve' || normalized === 'request-changes') return normalized;
+  if (normalized !== '' && normalized !== 'comment') {
+    core.warning(
+      `Ignoring invalid verdict_mode "${String(value)}". Must be "comment", "approve", or "request-changes"; falling back to "comment".`,
+    );
+  }
+  return 'comment';
+}
+
+/**
+ * Resolve the Pulls `createReview` event for a review result + gating mode.
+ * Pure function (warns on invalid mode), safe to unit test.
+ *
+ * - `comment` (or unset/invalid) → `COMMENT` always.
+ * - `approve` → `APPROVE` only when the verdict is ready with zero
+ *   critical/important findings, no partial failures, and no failure
+ *   sentinel reasoning; otherwise `COMMENT`.
+ * - `request-changes` → `REQUEST_CHANGES` only when critical findings are
+ *   present; otherwise `COMMENT`.
+ *
+ * @param result - Review result to gate on.
+ * @param verdictMode - Opt-in gating mode (default `'comment'`).
+ * @returns The review event to send.
+ * @since NEXT
+ */
+export function resolveReviewEvent(
+  result: ReviewResult,
+  verdictMode?: VerdictMode | string,
+): ReviewEvent {
+  const mode = normalizeVerdictMode(verdictMode);
+  if (mode === 'comment') return 'COMMENT';
+  const stats = result?.stats ?? { critical: 0, important: 0 };
+  const critical = stats.critical ?? 0;
+  const important = stats.important ?? 0;
+  if (mode === 'approve') {
+    if (result?.verdict?.ready !== true) return 'COMMENT';
+    if (critical > 0 || important > 0) return 'COMMENT';
+    if ((result?.failedBatches ?? 0) > 0 || (result?.failedAgents ?? 0) > 0) return 'COMMENT';
+    if (VERDICT_FAILURE_SENTINELS.has(result?.verdict?.reasoning ?? '')) return 'COMMENT';
+    return 'APPROVE';
+  }
+  // request-changes: block only on criticals (ready===false with criticals
+  // included); everything else stays a comment.
+  if (critical > 0) return 'REQUEST_CHANGES';
+  return 'COMMENT';
+}
+
 /**
  * Information about a single review comment thread on a PR.
  */
@@ -986,7 +1062,77 @@ export class GitHubHelper implements PlatformAdapter {
    * @param signal - Optional AbortSignal to cancel the review post.
    * @returns Object indicating success and which posting method was used.
    * @since NEXT `options.enableReviewsArrayInline` guards the reviews-array path.
+   * @since NEXT `options.verdictMode` maps the verdict to the `createReview`
+   * event (`comment` default, `approve`, `request-changes`) with fail-open
+   * fallback to `COMMENT` on 403/422.
    */
+  /**
+   * Single `POST /pulls/{n}/reviews` with fail-open permission fallback.
+   *
+   * Posts with the given event; when the API rejects a gated `APPROVE` or
+   * `REQUEST_CHANGES` event with 403/422 (missing permission), retries once
+   * as `COMMENT` (appending a short warning suffix) and succeeds — the
+   * workflow step never fails on gating.
+   *
+   * @param prNumber - PR number.
+   * @param commitSha - Head commit SHA the review anchors to.
+   * @param body - Review body markdown.
+   * @param event - Review event to send.
+   * @param comments - Optional inline comments array.
+   * @param signal - Optional AbortSignal.
+   * @returns The created review id plus any inline comment echoes.
+   * @since NEXT
+   */
+  private async createReview<T extends { id: number }>(
+    prNumber: number,
+    commitSha: string,
+    body: string,
+    event: ReviewEvent,
+    comments?: Array<{ path: string; line: number; side?: string; body: string }>,
+    signal?: AbortSignal,
+  ): Promise<T & { comments?: Array<{ id: number; path: string; line?: number }> }> {
+    try {
+      return await this.api<T & { comments?: Array<{ id: number; path: string; line?: number }> }>(
+        `/pulls/${prNumber}/reviews`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            commit_id: commitSha,
+            event,
+            body,
+            ...(comments !== undefined ? { comments } : {}),
+          }),
+        },
+        undefined,
+        signal,
+      );
+    } catch (err) {
+      const status = getErrorStatus(err);
+      if (event !== 'COMMENT' && (status === 403 || status === 422)) {
+        core.warning(
+          `Review event ${event} rejected (status ${status}), retrying as COMMENT: ${err}`,
+        );
+        return this.api<T & { comments?: Array<{ id: number; path: string; line?: number }> }>(
+          `/pulls/${prNumber}/reviews`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              commit_id: commitSha,
+              event: 'COMMENT',
+              body: `${body}\n\n> ⚠️ Requested review event ${event} was not permitted; posted as a comment instead.`,
+              ...(comments !== undefined ? { comments } : {}),
+            }),
+          },
+          undefined,
+          signal,
+        );
+      }
+      throw err;
+    }
+  }
+
   async postReview(
     prNumber: number,
     commitSha: string,
@@ -1059,31 +1205,28 @@ export class GitHubHelper implements PlatformAdapter {
       side?: string;
     }> = [];
 
+    // Additive opt-in gating: resolve the createReview event from the verdict.
+    // Default `comment` keeps every payload byte-identical to today.
+    const reviewEvent = resolveReviewEvent(dedupedResult, options?.verdictMode);
+
     // Try batched review creation with inline comments included
     let reviewId: number | undefined;
     if (inlineComments.length > 0) {
       try {
-        const reviewResponse = await this.api<{
+        const reviewResponse = await this.createReview<{
           id: number;
           comments?: Array<{ id: number; path: string; line?: number }>;
         }>(
-          `/pulls/${prNumber}/reviews`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              commit_id: commitSha,
-              event: 'COMMENT',
-              body,
-              comments: inlineComments.map((c) => ({
-                path: c.path,
-                line: c.line,
-                side: c.side,
-                body: c.body,
-              })),
-            }),
-          },
-          undefined,
+          prNumber,
+          commitSha,
+          body,
+          reviewEvent,
+          inlineComments.map((c) => ({
+            path: c.path,
+            line: c.line,
+            side: c.side,
+            body: c.body,
+          })),
           signal,
         );
         // Extract individual comment IDs from the batched response
@@ -1107,19 +1250,16 @@ export class GitHubHelper implements PlatformAdapter {
       }
     }
 
-    // Fallback: post body-only review, then inline comments individually
+    // Fallback: post body-only review, then inline comments individually.
+    // The gated event is preserved here (createReview retries as COMMENT on
+    // 403/422), so a clean approve is not silently downgraded when the
+    // batched request fails for a non-permission reason.
     try {
-      const reviewResponse = await this.api<{ id: number }>(
-        `/pulls/${prNumber}/reviews`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            commit_id: commitSha,
-            event: 'COMMENT',
-            body,
-          }),
-        },
+      const reviewResponse = await this.createReview<{ id: number }>(
+        prNumber,
+        commitSha,
+        body,
+        reviewEvent,
         undefined,
         signal,
       );
@@ -1251,15 +1391,21 @@ export class GitHubHelper implements PlatformAdapter {
     const fullBody = buildReviewBody(dedupedResult, options);
 
     const commentIds: ReviewPostResult['commentIds'] = [];
+    const reviewEvent = resolveReviewEvent(dedupedResult, options?.verdictMode);
 
-    const postSummaryOnly = async (): Promise<ReviewPostResult> => {
+    const postSummaryOnly = async (event: ReviewEvent): Promise<ReviewPostResult> => {
       try {
+        // Fail-open summary-only retry always posts COMMENT: the gated event
+        // was already rejected (or the batch unmappable), so never retry the
+        // gate here. The no-inline primary path below passes the resolved
+        // event instead via createReview (which itself falls back to COMMENT
+        // on 403/422).
         const reviewResponse = await this.api<{ id: number }>(
           `/pulls/${prNumber}/reviews`,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ commit_id: commitSha, event: 'COMMENT', body: fullBody }),
+            body: JSON.stringify({ commit_id: commitSha, event, body: fullBody }),
           },
           undefined,
           signal,
@@ -1272,31 +1418,37 @@ export class GitHubHelper implements PlatformAdapter {
     };
 
     if (inlineComments.length === 0) {
-      return postSummaryOnly();
+      try {
+        const reviewResponse = await this.createReview<{ id: number }>(
+          prNumber,
+          commitSha,
+          fullBody,
+          reviewEvent,
+          undefined,
+          signal,
+        );
+        return { success: true, method: 'body-only', reviewId: reviewResponse.id };
+      } catch (err) {
+        core.warning(`Summary-only review failed: ${err}`);
+        return { success: false, method: 'failed' };
+      }
     }
 
     try {
-      const reviewResponse = await this.api<{
+      const reviewResponse = await this.createReview<{
         id: number;
         comments?: Array<{ id: number; path: string; line?: number }>;
       }>(
-        `/pulls/${prNumber}/reviews`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            commit_id: commitSha,
-            event: 'COMMENT',
-            body,
-            comments: inlineComments.map((c) => ({
-              path: c.path,
-              line: c.line,
-              side: c.side,
-              body: c.body,
-            })),
-          }),
-        },
-        undefined,
+        prNumber,
+        commitSha,
+        body,
+        reviewEvent,
+        inlineComments.map((c) => ({
+          path: c.path,
+          line: c.line,
+          side: c.side,
+          body: c.body,
+        })),
         signal,
       );
       if (reviewResponse.comments) {
@@ -1318,7 +1470,7 @@ export class GitHubHelper implements PlatformAdapter {
       core.warning(
         `Reviews-array post failed${status !== undefined ? ` (status ${status})` : ''}, retrying summary-only: ${err}`,
       );
-      return postSummaryOnly();
+      return postSummaryOnly('COMMENT');
     }
   }
 

@@ -22,6 +22,13 @@ export interface ReviewBodyOptions {
    */
   enableReviewsArrayInline?: boolean;
   /**
+   * Opt-in review gating mode mapped to the Pulls `createReview` event
+   * (`comment` default, `approve`, `request-changes`). Transport only — the
+   * body render is unchanged; `GitHubHelper.postReview()` resolves the event.
+   * @since NEXT
+   */
+  verdictMode?: 'comment' | 'approve' | 'request-changes';
+  /**
    * Skip inline findings whose fingerprint already appears in previously
    * posted bot threads. Default true (absent = enabled). Set false to post
    * as today.

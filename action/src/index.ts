@@ -255,6 +255,7 @@ async function run(): Promise<void> {
           inputs.dedupFingerprints,
         enableReviewsArrayInline:
           loadedConfig?.review?.enableReviewsArrayInline ?? inputs.enableReviewsArrayInline,
+        verdictMode: loadedConfig?.review?.verdictMode ?? inputs.verdictMode,
         streamComments: inputs.streamComments,
         streamBatchSize: inputs.streamBatchSize,
         // When the workflow explicitly sets fail_on_severity it is authoritative

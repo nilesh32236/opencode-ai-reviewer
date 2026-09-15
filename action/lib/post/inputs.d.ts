@@ -6,6 +6,12 @@ export { DEFAULT_ALLOWLIST, validateRunChecksCommand };
  * @returns The parsed timeout in minutes.
  */
 export declare function parseTimeoutMinutes(raw: string): number;
+/**
+ * Parse and normalize the `verdict_mode` input (fail-open to `'comment'`).
+ * @param raw - Raw mode string from the workflow input.
+ * @returns A valid verdict mode, defaulting to `'comment'`.
+ */
+export declare function parseVerdictMode(raw: string): 'comment' | 'approve' | 'request-changes';
 /** Parsed and validated GitHub Action inputs for the OpenCode PR Agent. */
 export interface ActionInputs {
     /** The operation mode: review, fix, audit, or post. */
@@ -152,6 +158,8 @@ export interface ActionInputs {
     dedupFingerprints: boolean;
     /** Opt-in to a single reviews-array request with summary-only 422 fallback (default: false). */
     enableReviewsArrayInline: boolean;
+    /** Opt-in review gating mapped to the createReview event (default: 'comment'). */
+    verdictMode: 'comment' | 'approve' | 'request-changes';
     /** Whether to stream review findings as batches complete. */
     streamComments: boolean;
     /** Number of findings to accumulate before posting a streaming batch (0 = per-batch). */

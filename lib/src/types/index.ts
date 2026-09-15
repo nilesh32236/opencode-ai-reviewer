@@ -715,6 +715,16 @@ export interface ReviewConfig {
    */
   enableReviewsArrayInline?: boolean;
   /**
+   * Opt-in review gating mode mapped to the Pulls `createReview` event.
+   * `comment` (default) posts COMMENT; `approve` posts APPROVE only for a
+   * clean ready verdict (zero critical/important, no partial failures or
+   * failure sentinels), otherwise COMMENT; `request-changes` posts
+   * REQUEST_CHANGES only when criticals are present, otherwise COMMENT.
+   * Default 'comment' (legacy behavior unchanged).
+   * @since NEXT
+   */
+  verdictMode?: 'comment' | 'approve' | 'request-changes';
+  /**
    * Skip inline findings whose fingerprint already appears in a previously
    * posted bot thread, so re-pushes never re-post identical findings.
    * Each unique finding posts once with an embedded `<!-- inline-fp -->`
@@ -1587,6 +1597,12 @@ export interface PromptConfig {
      * @since NEXT
      */
     enableReviewsArrayInline?: boolean;
+    /**
+     * Opt-in review gating mode mapped to the Pulls `createReview` event
+     * (`comment` default, `approve`, `request-changes`). Default 'comment'.
+     * @since NEXT
+     */
+    verdictMode?: 'comment' | 'approve' | 'request-changes';
     /**
      * Skip inline findings whose fingerprint already appears in a previously
      * posted bot thread, so re-pushes never re-post identical findings.
