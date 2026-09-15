@@ -153,6 +153,8 @@ export function toV1ServerEntry(server: MCPServerConfig): Record<string, unknown
     if (server.environment !== undefined) entry.environment = { ...server.environment };
   } else {
     if (server.url !== undefined) entry.url = server.url;
+    // Remote entries carry auth material as `headers` (not `environment`) per
+    // the opencode MCP servers schema — see https://opencode.ai/docs/mcp/servers/.
     if (server.environment !== undefined) entry.headers = { ...server.environment };
   }
   return entry;

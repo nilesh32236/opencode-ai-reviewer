@@ -27,6 +27,7 @@ export {
   normalizeMCPConfigForVersion,
   isMCPConfigRejection,
   stripLegacyMCPKeys,
+  stripV2ServersKey,
   noteMCPConfigRejection,
   MCP_V2_SERVERS_CUTOFF,
   buildLocalOpenCodeConfig,
