@@ -204,9 +204,29 @@ describe('getKnownChecksum()', () => {
     expect(getKnownChecksum('1.1.1', 'linux-x64')).toBe(
       'c382005c97e4470596326675b5d6ba5bb9565c618666e9ee44026c163361c7bd',
     );
-    expect(getKnownChecksum('1.1.1', 'darwin-arm64')).toBe(
-      '880c1bdbbb6dedf41089c509e8a8a5516b7358b181e5dda8213c2b90985b4332',
+    expect(getKnownChecksum('1.1.1', 'windows-x64')).toBe(
+      'adb80c1c5b902be3aafe27e5c4d4f109b6245593be3fd72e320efc36d3298579',
     );
+  });
+
+  it('covers MINIMUM_OPENCODE_VERSION on all installer-compatible arches', async () => {
+    const { MINIMUM_OPENCODE_VERSION } = await import('../src/utils/version.js');
+    // v1.1.1 publishes installer-compatible archives only for these three
+    // arches; darwin has .zip only (installer requests .tar.gz) and
+    // windows-arm64 has no archive — both stay fail-open null.
+    for (const arch of ['linux-x64', 'linux-arm64', 'windows-x64']) {
+      expect(getKnownChecksum(MINIMUM_OPENCODE_VERSION, arch)).not.toBeNull();
+    }
+    for (const arch of ['darwin-x64', 'darwin-arm64', 'windows-arm64']) {
+      expect(getKnownChecksum(MINIMUM_OPENCODE_VERSION, arch)).toBeNull();
+    }
+  });
+
+  it('returns null for darwin arches with no installer-compatible archive (fail-open)', () => {
+    // v1.1.1 publishes darwin CLI archives as .zip only; setupOpenCode()
+    // requests .tar.gz on darwin, so no darwin pins exist.
+    expect(getKnownChecksum('1.1.1', 'darwin-x64')).toBeNull();
+    expect(getKnownChecksum('1.1.1', 'darwin-arm64')).toBeNull();
   });
 
   it('normalizes a leading v so tag_name lookups hit pinned keys', () => {

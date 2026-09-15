@@ -88,7 +88,7 @@ const KNOWN_CHECKSUMS: Record<string, string> = {
   // opencode_version input is pinned; 'latest' falls back to the release
   // checksum asset or a warning).
   //
-  // Pinned 1.1.1 (== MINIMUM_OPENCODE_VERSION, see ../version.ts) CLI archives
+  // Pinned 1.1.1 (== MINIMUM_OPENCODE_VERSION, see ./version.ts) CLI archives
   // from anomalyco/opencode release v1.1.1 (published 2026-01-04, verified
   // 2026-09-15 via the GitHub Releases API `digest` field, which is the
   // sha256 of the uploaded asset blob):
@@ -99,10 +99,13 @@ const KNOWN_CHECKSUMS: Record<string, string> = {
   // pinned entries are currently the only offline verification source.
   // windows-arm64 has no published CLI archive for v1.1.1 (no entry below —
   // lookup stays fail-open null; see docs/opencode-checksums.md).
+  // NOTE: v1.1.1 publishes darwin CLI archives as .zip only
+  // (opencode-darwin-x64.zip, opencode-darwin-arm64.zip); there is no
+  // opencode-darwin-*.tar.gz, so setupOpenCode() (which requests .tar.gz
+  // on darwin) cannot download them — no darwin pins below (lookup stays
+  // fail-open null); see docs/opencode-checksums.md.
   '1.1.1-linux-x64': 'c382005c97e4470596326675b5d6ba5bb9565c618666e9ee44026c163361c7bd',
   '1.1.1-linux-arm64': 'ba0a33ba77fbde8649b55208f6255cedd9797416d638ba4418fa83c879fc5d08',
-  '1.1.1-darwin-x64': '684c948c88a7043671c7689b92b6657f671e007c1dbea23e9072a6ec8078cc78',
-  '1.1.1-darwin-arm64': '880c1bdbbb6dedf41089c509e8a8a5516b7358b181e5dda8213c2b90985b4332',
   '1.1.1-windows-x64': 'adb80c1c5b902be3aafe27e5c4d4f109b6245593be3fd72e320efc36d3298579',
 };
 

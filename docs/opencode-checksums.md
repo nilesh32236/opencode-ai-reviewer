@@ -22,17 +22,24 @@ below until attestation verification lands.
 Keys use the `detectArch()` matrix (`linux-x64`, `linux-arm64`, `darwin-x64`,
 `darwin-arm64`, `windows-x64`, `windows-arm64`); the file column is the exact
 asset name `setupOpenCode()` downloads (`opencode-<arch>.tar.gz` on
-Linux/macOS, `opencode-<arch>.zip` on Windows).
+Linux/macOS, `opencode-<arch>.zip` on Windows). Only installer-compatible
+assets are pinned below.
 
 | opencode_version | arch | file | sha256 |
 |---|---|---|---|
 | 1.1.1 | linux-x64 | `opencode-linux-x64.tar.gz` | `c382005c97e4470596326675b5d6ba5bb9565c618666e9ee44026c163361c7bd` |
 | 1.1.1 | linux-arm64 | `opencode-linux-arm64.tar.gz` | `ba0a33ba77fbde8649b55208f6255cedd9797416d638ba4418fa83c879fc5d08` |
-| 1.1.1 | darwin-x64 | `opencode-darwin-x64.tar.gz` | `684c948c88a7043671c7689b92b6657f671e007c1dbea23e9072a6ec8078cc78` |
-| 1.1.1 | darwin-arm64 | `opencode-darwin-arm64.tar.gz` | `880c1bdbbb6dedf41089c509e8a8a5516b7358b181e5dda8213c2b90985b4332` |
 | 1.1.1 | windows-x64 | `opencode-windows-x64.zip` | `adb80c1c5b902be3aafe27e5c4d4f109b6245593be3fd72e320efc36d3298579` |
 
 Notes:
+
+- `v1.1.1` publishes darwin CLI archives as `.zip` only
+  (`opencode-darwin-x64.zip`, `opencode-darwin-arm64.zip`); there is no
+  `opencode-darwin-*.tar.gz`, so `setupOpenCode()` (which requests `.tar.gz`
+  on macOS) cannot download them — there are intentionally no darwin pins
+  above and `getKnownChecksum()` returns `null` (fail-open) for darwin arches.
+  The `.zip` digests (`684c948c…` for x64, `880c1bdb…` for arm64) are therefore
+  useful for manual verification only, not for installer verification.
 
 - `windows-arm64` has **no published CLI archive** for `v1.1.1`, so there is
   no pinned entry — `getKnownChecksum()` returns `null` (fail-open) for it.
@@ -53,11 +60,13 @@ curl -sL -o opencode-linux-x64.tar.gz \
 echo "c382005c97e4470596326675b5d6ba5bb9565c618666e9ee44026c163361c7bd  opencode-linux-x64.tar.gz" \
   | sha256sum -c -
 
-# macOS (shasum instead of sha256sum)
-curl -sL -o opencode-darwin-arm64.tar.gz \
-  https://github.com/anomalyco/opencode/releases/download/v1.1.1/opencode-darwin-arm64.tar.gz
-shasum -a 256 opencode-darwin-arm64.tar.gz
-# compare against the table row above
+# macOS: no installer-compatible archive exists for v1.1.1 (only .zip,
+# which setupOpenCode() never requests), so there is nothing to verify.
+# For reference, the published .zip blobs can be checked manually:
+# curl -sL -o opencode-darwin-arm64.zip \
+#   https://github.com/anomalyco/opencode/releases/download/v1.1.1/opencode-darwin-arm64.zip
+# shasum -a 256 opencode-darwin-arm64.zip
+# compare against 880c1bdbbb6dedf41089c509e8a8a5516b7358b181e5dda8213c2b90985b4332
 ```
 
 `parseChecksumFile()` (`lib/src/utils/checksum.ts`) documents the
