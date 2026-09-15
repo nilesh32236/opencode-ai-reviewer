@@ -33,7 +33,7 @@ vi.mock('@actions/core', () => ({
   setSecret: mockSetSecret,
 }));
 
-import { parseInputs, parseStreamBatchSize } from '../src/inputs.js';
+import { parseInputs, parseStreamBatchSize, parseVerdictMode } from '../src/inputs.js';
 
 const BASE_INPUTS: Record<string, string> = {
   mode: 'review',
@@ -521,6 +521,69 @@ describe('parseInputs() require_opencode_checksum', () => {
     expect(parseInputs().requireOpencodeChecksum).toBe(false);
     expect(mockWarning).toHaveBeenCalledWith(
       expect.stringContaining('Ignoring invalid require_opencode_checksum "ture"'),
+    );
+  });
+});
+
+describe('parseVerdictMode()', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('accepts every valid mode', () => {
+    for (const value of ['comment', 'approve', 'request-changes']) {
+      expect(parseVerdictMode(value)).toBe(value);
+    }
+  });
+
+  it('normalizes case and surrounding whitespace', () => {
+    expect(parseVerdictMode(' Approve ')).toBe('approve');
+    expect(parseVerdictMode('REQUEST-CHANGES')).toBe('request-changes');
+    expect(parseVerdictMode(' Comment ')).toBe('comment');
+  });
+
+  it('falls back to comment for empty input without warning', () => {
+    expect(parseVerdictMode('')).toBe('comment');
+    expect(parseVerdictMode('   ')).toBe('comment');
+    expect(mockWarning).not.toHaveBeenCalledWith(
+      expect.stringContaining('Ignoring invalid verdict_mode'),
+    );
+  });
+
+  it('warns and falls back to comment on invalid values', () => {
+    expect(parseVerdictMode('auto-approve')).toBe('comment');
+    expect(mockWarning).toHaveBeenCalledWith(
+      expect.stringContaining('Ignoring invalid verdict_mode "auto-approve"'),
+    );
+  });
+});
+
+describe('parseInputs() verdict_mode', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('defaults to comment (not explicit) when the input is omitted', () => {
+    setInputs(BASE_INPUTS);
+    const inputs = parseInputs();
+    expect(inputs.verdictMode).toBe('comment');
+    expect(inputs.verdictModeExplicit).toBe(false);
+  });
+
+  it('parses an explicit approve input (case/whitespace-insensitive)', () => {
+    setInputs({ ...BASE_INPUTS, verdict_mode: ' Approve ' });
+    const inputs = parseInputs();
+    expect(inputs.verdictMode).toBe('approve');
+    expect(inputs.verdictModeExplicit).toBe(true);
+  });
+
+  it('warns and falls back to comment on invalid input', () => {
+    setInputs({ ...BASE_INPUTS, verdict_mode: 'auto-approve' });
+    const inputs = parseInputs();
+    expect(inputs.verdictMode).toBe('comment');
+    expect(inputs.verdictModeExplicit).toBe(true);
+    expect(mockWarning).toHaveBeenCalledWith(
+      expect.stringContaining('Ignoring invalid verdict_mode "auto-approve"'),
     );
   });
 });

@@ -251,6 +251,10 @@ inputs:
     required: false
     default: 'false'
 
+  verdict_mode:
+    description: 'Advanced gating: map the AI verdict to the Pulls createReview event ("comment" default = comment only; "approve" = auto-approve clean ready PRs with zero critical/important findings, otherwise comment; "request-changes" = request changes when criticals are present, otherwise comment). Permission rejections (403/422) fall back to comment so the step never fails on gating. Defaults to comment when omitted.'
+    required: false
+
   stream_comments:
     description: 'Post review findings incrementally as each file batch completes (streaming) instead of only after the full review finishes. Ignored when enable_reviews_array_inline is true (batched single-request path takes precedence).'
     required: false
