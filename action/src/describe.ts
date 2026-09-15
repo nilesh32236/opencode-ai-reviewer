@@ -78,6 +78,8 @@ export async function runDescribe(
 
     let commentPosted = false;
     let bodyMerged = false;
+    let commentFailed = false;
+    let mergeFailed = false;
 
     if (publishAsComment !== false) {
       try {
@@ -88,13 +90,16 @@ export async function runDescribe(
               '<!-- pr-description -->',
               sanitizeMarkdown(description),
             ),
-          { operationName: 'describe.postDescription' },
+          { operationName: 'describe.postDescription', maxRetries: 1 },
         );
         commentPosted = true;
       } catch (e) {
         // Warn-and-continue: the description was generated successfully and is
         // still exposed via the `description` step output, so a transient
         // comment-upsert failure must not fail the whole describe run.
+        // Best-effort write: cap retries so a persistent failure warns fast
+        // instead of paying the full default backoff.
+        commentFailed = true;
         core.warning(
           sanitize(
             `Failed to post PR description comment: ${e instanceof Error ? e.message : String(e)}`,
@@ -115,10 +120,25 @@ export async function runDescribe(
           bodyMerged = true;
         }
       } catch (e) {
+        mergeFailed = true;
         core.warning(
-          `PR body merge failed, kept ${commentPosted ? 'comment output' : 'existing PR body'}: ${e instanceof Error ? e.message : String(e)}`,
+          sanitize(
+            `PR body merge failed, kept ${commentPosted ? 'comment output' : 'existing PR body'}: ${e instanceof Error ? e.message : String(e)}`,
+          ),
         );
       }
+    }
+
+    // Fail closed only when every requested output failed: with both outputs
+    // enabled and both failing, nothing is visible on the PR while the
+    // `description` output implies success. Single-output failures keep the
+    // established warn-and-continue semantics.
+    if (publishAsComment !== false && useMarkers === true && commentFailed && mergeFailed) {
+      core.setFailed(
+        sanitize(
+          `Describe outputs failed for PR #${prNumber}: comment post and PR body merge both failed`,
+        ),
+      );
     }
 
     core.setOutput('description', description);

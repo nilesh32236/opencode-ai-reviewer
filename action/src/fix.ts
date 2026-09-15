@@ -64,9 +64,12 @@ export async function runFix(
   const prNumber = await resolvePrNumber();
   if (prNumber === null) {
     core.setFailed('Could not determine PR number for fix');
+    core.setOutput('changes_made', 'false');
     return;
   }
 
+  const COMMENTS_PER_PAGE = 100;
+  const COMMENT_PAGES_MAX = 10;
   let comments: IssueComment[];
   try {
     // Bound the fetch while preserving full-history semantics: pages stop
@@ -77,8 +80,8 @@ export async function runFix(
     // honors sort), so early-stop savings apply on GitLab while GitHub scans
     // oldest-first within the 10-page bound.
     const recent = await gh.listComments(prNumber, {
-      perPage: 100,
-      maxPages: 10,
+      perPage: COMMENTS_PER_PAGE,
+      maxPages: COMMENT_PAGES_MAX,
       direction: 'desc',
       throwOnError: true,
       stopWhen: (items) =>
@@ -97,19 +100,23 @@ export async function runFix(
         `Failed to fetch issue comments for iteration count: ${err instanceof Error ? err.message : err}`,
       ),
     );
+    core.setOutput('changes_made', 'false');
     return;
   }
-  // listComments is bounded to 10 pages x 100 comments (1000 total). On repos
-  // with more than 1000 comments the REVIEW_MARKER count below is computed
-  // from a truncated oldest-first list (GitHub ignores sort direction), so
-  // the maxIterations gate may be bypassed. Warn loudly when the cap is hit
-  // so the truncation is visible in logs instead of silent.
-  if (comments.length >= 10 * 100) {
-    core.warning(
+  // listComments is bounded to COMMENT_PAGES_MAX x COMMENTS_PER_PAGE (1000
+  // total). On repos with more comments the REVIEW_MARKER count below is
+  // computed from a truncated oldest-first list (GitHub ignores sort
+  // direction), so the maxIterations gate may be bypassed. Fail closed when
+  // the cap is hit instead of warning and continuing, so an attacker-inflated
+  // comment list cannot buy extra autofix iterations.
+  if (comments.length >= COMMENT_PAGES_MAX * COMMENTS_PER_PAGE) {
+    core.setFailed(
       sanitize(
-        `Issue comment list truncated at ${comments.length} comments (10 pages x 100); REVIEW_MARKER iteration count may be incomplete and maxIterations (${config.maxIterations}) could be bypassed.`,
+        `Issue comment list truncated at ${comments.length} comments (${COMMENT_PAGES_MAX} pages x ${COMMENTS_PER_PAGE}); REVIEW_MARKER iteration count may be incomplete and maxIterations (${config.maxIterations}) cannot be verified — aborting for manual review.`,
       ),
     );
+    core.setOutput('changes_made', 'false');
+    return;
   }
   const iteration = comments.filter((c: IssueComment) => c.body.includes(REVIEW_MARKER)).length;
 
@@ -120,30 +127,31 @@ export async function runFix(
     return;
   }
 
-  const pr = await (async () => {
-    try {
-      return await withRetry(() => gh.getMR(prNumber), { operationName: 'fix.getMR' });
-    } catch (err) {
-      core.setFailed(
-        sanitize(`Failed to get PR #${prNumber}: ${err instanceof Error ? err.message : err}`),
-      );
-      return undefined;
-    }
-  })();
-  if (!pr) {
-    return;
-  }
+  // Fetch PR and context in parallel: gatherContext internally re-fetches
+  // /pulls + /files, so sequential fetches pay 2x PR fetch plus two serial
+  // withRetry backoff windows. Plain try/catch matches every other withRetry
+  // call site (docs.ts, changelog.ts, describe.ts).
+  let pr: Awaited<ReturnType<typeof gh.getMR>>;
   let contextMarkdown: string;
   try {
-    contextMarkdown = await withRetry(() => gh.gatherContext({ prNumber }), {
-      operationName: 'fix.gatherContext',
-    });
+    [pr, contextMarkdown] = await Promise.all([
+      withRetry(() => gh.getMR(prNumber), { operationName: 'fix.getMR' }),
+      withRetry(() => gh.gatherContext({ prNumber }), {
+        operationName: 'fix.gatherContext',
+      }),
+    ]);
   } catch (err) {
     core.setFailed(
       sanitize(
-        `Failed to gather context for PR #${prNumber}: ${err instanceof Error ? err.message : err}`,
+        `Failed to fetch PR #${prNumber} context: ${err instanceof Error ? err.message : err}`,
       ),
     );
+    core.setOutput('changes_made', 'false');
+    return;
+  }
+  if (!pr) {
+    core.setFailed(sanitize(`Failed to get PR #${prNumber}: empty response`));
+    core.setOutput('changes_made', 'false');
     return;
   }
 
@@ -218,8 +226,23 @@ export async function runFix(
       );
 
       if (v < maxVerificationRetries) {
-        const freshPr = await gh.getMR(prNumber);
-        const freshContextMarkdown = await gh.gatherContext({ prNumber });
+        let freshPr: Awaited<ReturnType<typeof gh.getMR>>;
+        let freshContextMarkdown: string;
+        try {
+          [freshPr, freshContextMarkdown] = await Promise.all([
+            withRetry(() => gh.getMR(prNumber), { operationName: 'fix.getMR' }),
+            withRetry(() => gh.gatherContext({ prNumber }), {
+              operationName: 'fix.gatherContext',
+            }),
+          ]);
+        } catch (err) {
+          core.warning(
+            sanitize(
+              `Verification refetch failed, skipping retry: ${err instanceof Error ? err.message : String(err)}`,
+            ),
+          );
+          break;
+        }
         const retryResult = await engine.runFix(
           prNumber,
           iteration,
@@ -351,6 +374,7 @@ export async function runFixIssue(
   const issueNumber = await resolvePrNumber();
   if (!issueNumber) {
     core.setFailed('Could not determine issue number');
+    core.setOutput('changes_made', 'false');
     return;
   }
 
@@ -552,6 +576,8 @@ export async function runFixIssue(
   } catch (err) {
     core.warning(sanitize(`Git push failed: ${err instanceof Error ? err.message : err}`));
     core.setFailed(sanitize(`Git push failed: ${err instanceof Error ? err.message : err}`));
+    core.setOutput('changes_made', 'false');
+    return;
   }
 
   const prTitle = `[Autofix] ${issue.title}`;
@@ -942,8 +968,23 @@ export async function runAutofixLoop(
           core.info(
             `Feeding verification error to fix engine (retry ${v + 1}/${maxVerificationRetries})...`,
           );
-          const prAgain = await gh.getMR(prNumber);
-          const freshContextMarkdown = await gh.gatherContext({ prNumber });
+          let prAgain: Awaited<ReturnType<typeof gh.getMR>>;
+          let freshContextMarkdown: string;
+          try {
+            [prAgain, freshContextMarkdown] = await Promise.all([
+              withRetry(() => gh.getMR(prNumber), { operationName: 'fix.getMR' }),
+              withRetry(() => gh.gatherContext({ prNumber }), {
+                operationName: 'fix.gatherContext',
+              }),
+            ]);
+          } catch (err) {
+            core.warning(
+              sanitize(
+                `Verification refetch failed, skipping retry: ${err instanceof Error ? err.message : String(err)}`,
+              ),
+            );
+            break;
+          }
           const retryResult = await engine.runFix(
             prNumber,
             i,

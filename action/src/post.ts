@@ -73,7 +73,7 @@ export async function runPost(
             '<!-- review-summary -->',
             `## Review Summary\n\n${sanitizeMarkdown(reviewSummary)}`,
           ),
-        { operationName: 'post review summary' },
+        { operationName: 'post.reviewSummary', maxRetries: 1 },
       );
       core.info('Posted review summary comment');
     } catch (err) {
@@ -132,7 +132,8 @@ export async function runPost(
       const section = buildTokenUsageSection(usage);
       if (section) {
         await withRetry(() => gh.postOrUpdateComment(prNumber, '<!-- token-usage -->', section), {
-          operationName: 'post token usage comment',
+          operationName: 'post.tokenUsage',
+          maxRetries: 1,
         });
         core.info('Posted token usage summary comment');
       }
