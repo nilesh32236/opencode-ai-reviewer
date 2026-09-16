@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING:** raise the minimum Node.js runtime to >=24.19.0 (patched 24.x LTS with July 2026 HIGH CVE fixes) across `engines.node`, `MINIMUM_NODE_VERSION`, docs, Docker bases, and rebuilt action bundles. `engines` is an install-time gate (hard-fails only with `engine-strict`, otherwise advisory) while the runtime floor check stays warn-only (fail-open) during the one-release grace period; opt into immediate enforcement with `toolchain.enforceNodeFloor: true` (`toolchain_enforce_node_floor` input). Strict mode now also rejects unparseable Node versions.
+
+---
+
 ## [v1.13.11] — 2026-09-15
 
 

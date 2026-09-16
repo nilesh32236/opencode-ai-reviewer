@@ -20,8 +20,11 @@
     "@opencode-pr-agent/lib": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^24.13.4",
     "@vercel/ncc": "^0.44.1",
     "vitest": "^4.1.10"
+  },
+  "engines": {
+    "node": ">=24.19.0"
   }
 }
