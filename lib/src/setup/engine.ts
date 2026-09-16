@@ -5,6 +5,7 @@ import { getConfigFilenames, loadConfig } from '../config.js';
 import { checkHealth, resolveOpenCodePath, runOpenCode } from '../opencode.js';
 import type { AgentConfig } from '../types/index.js';
 import { GitHubHelper } from '../utils/github.js';
+import { sanitizeMarkdown } from '../utils/markdown.js';
 import { withRetryAndTimeout } from '../utils/retry.js';
 import { sanitizeString } from '../utils/sanitize.js';
 import { MINIMUM_OPENCODE_VERSION, parseVersion } from '../utils/version.js';
@@ -546,9 +547,12 @@ export class SetupEngine {
       lines.push(`### ${check.name} — ${check.status.toUpperCase()} ${icon}`, '');
       lines.push(check.message, '');
       if (check.details) {
+        // Unique summary landmark per check so screen-reader users can
+        // distinguish repeated disclosures; check names are escaped so a
+        // name cannot inject markup into the summary.
         lines.push(
           '<details>',
-          '<summary>Details</summary>',
+          `<summary>Details for ${sanitizeMarkdown(check.name)}</summary>`,
           '',
           '',
           check.details,

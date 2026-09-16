@@ -110,6 +110,8 @@ export function computeMergeScore(result: ReviewResult): number {
  * Render a merge-readiness score as a short markdown line with an explicit
  * text label so the readiness band does not rely on color or emoji alone.
  * Screen readers and color-blind readers get the band meaning from the label.
+ * The leading emoji is decorative-only; the adjacent text label is the
+ * normative cue (raw GitHub markdown emoji cannot carry aria-hidden).
  * @param score - The 0-5 score.
  * @returns A markdown string like "**Merge-readiness:** 🟢 ready 5/5".
  */
@@ -128,6 +130,8 @@ export function formatMergeScore(score: number): string {
 
 /**
  * Get an emoji badge aligned with a finding's severity.
+ * The badge is decorative-only; every call site pairs it with an explicit
+ * `CRITICAL`/`IMPORTANT`/`MINOR` text label as the normative severity cue.
  * @param severity - Severity of the issue.
  * @returns Emoji string representing the severity.
  */
@@ -311,9 +315,10 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
     lines.push('### Strengths');
     lines.push('');
     for (const s of result.strengths) {
-      lines.push(
-        `- **${escapeInlineCode(`${s.file}:${s.line}`)}** — ${sanitizeMarkdown(s.message)}`,
-      );
+      // Same zero-width-space treatment as formatIssueBullet so long paths
+      // break at directory boundaries on narrow viewports.
+      const codePath = escapeInlineCode(`${s.file}:${s.line}`).replace(/\//g, '/\u200b');
+      lines.push(`- **\`${codePath}\`** — ${sanitizeMarkdown(s.message)}`);
     }
     lines.push('');
   }
@@ -327,7 +332,11 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
         lines.push(`  > 💡 **How to fix:** ${sanitizeMarkdown(i.suggestion)}`);
       }
       if (i.suggestionCode) {
-        lines.push('<details><summary>Show suggested fix</summary>');
+        // Unique summary landmark per finding so screen-reader users can
+        // distinguish N identical disclosures; anchor reuses the already
+        // inline-code-escaped file:line form.
+        const anchor = escapeInlineCode(`${i.file}:${i.line}`);
+        lines.push(`<details><summary>Show suggested fix for <code>${anchor}</code></summary>`);
         lines.push('');
         lines.push('```suggestion');
         lines.push(i.suggestionCode.trim());
@@ -340,7 +349,7 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
           // Summary body above already renders the suggestion fence; keep only
           // the Fix-with-AI prompt to avoid a duplicate suggestion block.
           if (i.suggestionCode?.trim()) payload.suggestedChange = undefined;
-          const rendered = formatFixPayloadMarkdown(payload);
+          const rendered = formatFixPayloadMarkdown(payload, `${i.file}:${i.line}`);
           if (rendered) {
             lines.push('');
             lines.push(rendered);

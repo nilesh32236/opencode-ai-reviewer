@@ -214,6 +214,35 @@ function findingBullet(issue: ReviewIssue): string {
 }
 
 /**
+ * Escape untrusted text for a Teams Adaptive Card TextBlock/Fact value.
+ * Adaptive Cards use a different markdown subset than Slack mrkdwn, so the
+ * Slack HTML-entity escapes (`&lt;` etc.) must not leak here. Backslash-escape
+ * formatting metacharacters and collapse newlines so a title or finding
+ * cannot break card layout.
+ * @param text - Raw text to embed in an Adaptive Card.
+ * @returns The text safe for Adaptive Card interpolation.
+ */
+function escapeTeamsText(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/([*_|`\[\]()#~\\])/g, '\\$1')
+    .replace(/[\r\n]+/g, ' ');
+}
+
+/**
+ * Build a compact Adaptive-Card bullet describing a finding, with
+ * Teams-specific escaping and layout-safe single-line text.
+ * @param issue - The finding to render.
+ * @returns A bullet string for Teams cards.
+ */
+function findingBulletTeams(issue: ReviewIssue): string {
+  const badge = issue.severity === 'critical' ? '🔴' : issue.severity === 'important' ? '🟠' : '🔵';
+  return `${badge} ${issue.severity.toUpperCase()}: \`${escapeTeamsText(`${issue.file}:${issue.line}`)}\` — ${escapeTeamsText(issue.message)}`;
+}
+
+/**
  * Format a review summary as a Slack Blocks payload.
  * @param result - Review result to summarize.
  * @param context - PR context (title, number, repo, URL).
@@ -287,7 +316,12 @@ export function formatTeamsMessage(
           },
           {
             type: 'TextBlock',
-            text: topFindings.map(findingBullet).join('\n'),
+            // Cap like the Slack section block: finding text is
+            // model-generated and unbounded.
+            text: truncateText(
+              topFindings.map(findingBulletTeams).join('\n'),
+              SLACK_SECTION_TEXT_LIMIT,
+            ),
             wrap: true,
           },
         ]
@@ -312,7 +346,7 @@ export function formatTeamsMessage(
             },
             {
               type: 'TextBlock',
-              text: `**${context.title}**`,
+              text: `**${escapeTeamsText(context.title)}**`,
               wrap: true,
             },
             {

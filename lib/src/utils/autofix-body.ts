@@ -1,5 +1,6 @@
 import type { PlatformAdapter } from '../platform/adapter.js';
 import type { PreviousFindingIteration, ReviewIssue, ReviewResult } from '../types/index.js';
+import { escapeInlineCode, sanitizeMarkdown } from './markdown.js';
 import { formatIssueBullet } from './review-body.js';
 
 /** Record of a single auto-fix iteration. */
@@ -56,16 +57,17 @@ export function buildAutofixStatusBody(
   }
 
   if (current) {
-    if (current.summary) lines.push('', '### Summary', '', current.summary);
+    if (current.summary) lines.push('', '### Summary', '', sanitizeMarkdown(current.summary));
     if (current.issues.length > 0) {
       lines.push('', '### Issues Found');
       for (const i of current.issues) {
         lines.push(formatIssueBullet(i));
         if (i.suggestion) {
-          lines.push(`  > 💡 **How to fix:** ${i.suggestion}`);
+          lines.push(`  > 💡 **How to fix:** ${sanitizeMarkdown(i.suggestion)}`);
         }
         if (i.suggestionCode) {
-          lines.push('<details><summary>Show suggested fix</summary>');
+          const anchor = escapeInlineCode(`${i.file}:${i.line}`);
+          lines.push(`<details><summary>Show suggested fix for <code>${anchor}</code></summary>`);
           lines.push('');
           lines.push('```suggestion');
           lines.push(i.suggestionCode.trim());
@@ -77,7 +79,8 @@ export function buildAutofixStatusBody(
     if (current.strengths.length > 0) {
       lines.push('', '### Strengths');
       for (const s of current.strengths) {
-        lines.push(`- ✅ **${s.file}:${s.line}** — ${s.message}`);
+        const codePath = escapeInlineCode(`${s.file}:${s.line}`).replace(/\//g, '/\u200b');
+        lines.push(`- ✅ **\`${codePath}\`** — ${sanitizeMarkdown(s.message)}`);
       }
     }
   }
@@ -139,13 +142,13 @@ export function buildFixBody(history: IterationRecord[]): string {
   if (last) {
     lines.push(`**Iteration:** ${last.iteration}`);
     lines.push(`**Files changed:** ${last.filesChanged?.length ?? 0}`);
-    if (last.commitMessage) lines.push(`**Commit:** \`${last.commitMessage}\``);
+    if (last.commitMessage) lines.push(`**Commit:** \`${escapeInlineCode(last.commitMessage)}\``);
     if (last.filesChanged && last.filesChanged.length > 0) {
       lines.push('', '### Changed Files');
-      for (const f of last.filesChanged) lines.push(`- \`${f}\``);
+      for (const f of last.filesChanged) lines.push(`- \`${escapeInlineCode(f)}\``);
     }
     if (last.fixSummary) {
-      lines.push('', '### Fix Details', '', last.fixSummary);
+      lines.push('', '### Fix Details', '', sanitizeMarkdown(last.fixSummary));
     }
   }
   lines.push(
@@ -174,7 +177,7 @@ export function buildReadyBody(history: IterationRecord[], prNumber: number): st
     lines.push('', '### Summary');
     const last = history[history.length - 1];
     if (last.summary) {
-      lines.push('', last.summary);
+      lines.push('', sanitizeMarkdown(last.summary));
     }
   }
   return lines.join('\n');
