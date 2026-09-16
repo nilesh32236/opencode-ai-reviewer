@@ -194,6 +194,8 @@ interface ReviewThreadsQueryResponse {
  * `originalCommit { oid }` selections on older GHES instances whose schema
  * does not expose those fields. Matched errors are safe to retry with the
  * legacy query that omits the OID selections.
+ * @param err - Caught error to classify.
+ * @returns True when the error is a schema-validation failure for the OID selections.
  */
 function isReviewThreadCommitSchemaError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err ?? '');
