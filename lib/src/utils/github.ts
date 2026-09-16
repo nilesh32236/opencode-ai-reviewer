@@ -154,6 +154,55 @@ export function resolveReviewEvent(
   return 'COMMENT';
 }
 
+/** Minimal inline position shape validated against diff hunks. */
+export interface InlinePosition {
+  path: string;
+  line: number;
+  body: string;
+  side?: string;
+}
+
+/**
+ * Pre-validate inline comment positions against parsed diff hunks.
+ *
+ * Pure, unit-testable helper that keeps only positions present in
+ * `diffLines` (`"path:line"` keys as produced by `getDiffLines`).
+ * Paths are normalized with a leading-`/` strip to match the
+ * `buildInlineComments` convention. Fail-open: `undefined` or empty
+ * `diffLines` yields `{ valid: [], dropped: [...comments] }` so the caller
+ * can skip the batched `POST /pulls/{n}/reviews` with `comments[]` entirely
+ * and go straight to a summary-only review instead of relying on the server
+ * to reject stale positions with 422.
+ *
+ * @param comments - Candidate inline comments to validate.
+ * @param diffLines - Set of `"path:line"` keys from the PR diff, or undefined when unavailable.
+ * @returns Partitioned `{ valid, dropped }` comments; no finding is discarded by the caller.
+ * @since NEXT
+ */
+export function validateInlinePositionsAgainstHunks<T extends InlinePosition>(
+  comments: T[],
+  diffLines: Set<string> | undefined,
+): { valid: T[]; dropped: T[] } {
+  if (!Array.isArray(comments) || comments.length === 0) {
+    return { valid: [], dropped: [] };
+  }
+  if (!diffLines || diffLines.size === 0) {
+    return { valid: [], dropped: [...comments] };
+  }
+  const valid: T[] = [];
+  const dropped: T[] = [];
+  for (const c of comments) {
+    const path = typeof c.path === 'string' ? c.path.replace(/^\//, '') : '';
+    const key = `${path}:${c.line}`;
+    if (diffLines.has(key)) {
+      valid.push(c);
+    } else {
+      dropped.push(c);
+    }
+  }
+  return { valid, dropped };
+}
+
 /**
  * Information about a single review comment thread on a PR.
  */
@@ -1513,12 +1562,15 @@ export class GitHubHelper implements PlatformAdapter {
   /**
    * Opt-in reviews-array path for {@link postReview}.
    *
-   * Bundles diff-validated findings into a single `POST /pulls/{n}/reviews`
-   * with the resolved gating event and a `comments[]` array (path, line, side, body).
-   * Unmappable findings stay in the summary body by design. On 422 (stale or
-   * out-of-range position), 403, or 429 the batch is retried once as a
-   * summary-only review built from the full result so no finding is lost.
-   * Never fans out to N per-comment requests.
+   * Pre-validates inline positions against diff hunks via
+   * {@link validateInlinePositionsAgainstHunks} and bundles the valid subset
+   * into a single `POST /pulls/{n}/reviews` with the resolved gating event
+   * and a `comments[]` array (path, line, side, body). Unmappable/dropped
+   * findings stay in the summary body by design. When hunks are unavailable
+   * or no position validates, the batched POST is skipped and a summary-only
+   * review is posted directly. On 422 (stale or out-of-range position), 403,
+   * or 429 the batch is retried once as a summary-only review built from the
+   * full result so no finding is lost. Never fans out to N per-comment requests.
    *
    * @param prNumber - PR number.
    * @param commitSha - Head commit SHA the review anchors to.
@@ -1560,20 +1612,18 @@ export class GitHubHelper implements PlatformAdapter {
     );
     this.stampInlineFingerprintMarkers(inlineComments, dedupedResult.issues);
 
-    const placedInlineKeys = new Set<string>();
-    for (const c of inlineComments) {
-      placedInlineKeys.add(`${c.path}:${c.line}`);
-    }
-    // Mappable findings ride inline; unmappable findings stay in the body.
-    const issuesForBody = dedupedResult.issues.filter(
-      (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
+    // Pre-validate positions against diff hunks so stale/out-of-diff lines
+    // never reach the batched POST. Empty/unavailable hunks degrade to
+    // "mappable = 0 → summary-only directly" (no wasted 422 round-trip).
+    const { valid: validInlineComments, dropped } = validateInlinePositionsAgainstHunks(
+      inlineComments,
+      diffLines,
     );
-    const body = buildReviewBody({ ...dedupedResult, issues: issuesForBody }, options);
-    // Full-finding body used for the fail-open summary-only retry.
-    const fullBody = buildReviewBody(dedupedResult, options);
 
     const commentIds: ReviewPostResult['commentIds'] = [];
     const reviewEvent = resolveReviewEvent(dedupedResult, options?.verdictMode);
+    // Full-finding body used for the fail-open summary-only retry.
+    const fullBody = buildReviewBody(dedupedResult, options);
 
     const postSummaryOnly = async (event: ReviewEvent): Promise<ReviewPostResult> => {
       try {
@@ -1596,9 +1646,37 @@ export class GitHubHelper implements PlatformAdapter {
       }
     };
 
-    if (inlineComments.length === 0) {
+    if (diffLines.size === 0) {
+      core.warning(
+        `Diff hunks unavailable, skipping ${inlineComments.length} inline position(s) and posting summary-only review`,
+      );
       return postSummaryOnly(reviewEvent);
     }
+
+    if (validInlineComments.length === 0) {
+      if (dropped.length > 0) {
+        core.warning(
+          `Dropped ${dropped.length} stale/out-of-diff inline position(s), posting summary-only review`,
+        );
+      }
+      return postSummaryOnly(reviewEvent);
+    }
+
+    if (dropped.length > 0) {
+      core.warning(
+        `Dropped ${dropped.length} stale/out-of-diff inline position(s), posting ${validInlineComments.length} inline comment(s) plus summary`,
+      );
+    }
+
+    const placedInlineKeys = new Set<string>();
+    for (const c of validInlineComments) {
+      placedInlineKeys.add(`${c.path}:${c.line}`);
+    }
+    // Mappable findings ride inline; unmappable/dropped findings stay in the body.
+    const issuesForBody = dedupedResult.issues.filter(
+      (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
+    );
+    const body = buildReviewBody({ ...dedupedResult, issues: issuesForBody }, options);
 
     try {
       const reviewResponse = await this.createReview<{
@@ -1609,7 +1687,7 @@ export class GitHubHelper implements PlatformAdapter {
         commitSha,
         body,
         reviewEvent,
-        inlineComments.map((c) => ({
+        validInlineComments.map((c) => ({
           path: c.path,
           line: c.line,
           side: c.side,
@@ -1619,7 +1697,7 @@ export class GitHubHelper implements PlatformAdapter {
       );
       if (reviewResponse.comments) {
         for (const rc of reviewResponse.comments) {
-          const matched = inlineComments.find((c) => c.path === rc.path && c.line === rc.line);
+          const matched = validInlineComments.find((c) => c.path === rc.path && c.line === rc.line);
           if (matched) {
             commentIds?.push({
               file: rc.path,
@@ -1633,10 +1711,16 @@ export class GitHubHelper implements PlatformAdapter {
       return { success: true, method: 'full', reviewId: reviewResponse.id, commentIds };
     } catch (err) {
       const status = getErrorStatus(err);
+      if (status === 422 || status === 403 || status === 429 || status === undefined) {
+        core.warning(
+          `Reviews-array post failed${status !== undefined ? ` (status ${status})` : ''}, retrying summary-only: ${err}`,
+        );
+        return postSummaryOnly(reviewEvent);
+      }
       core.warning(
-        `Reviews-array post failed${status !== undefined ? ` (status ${status})` : ''}, retrying summary-only: ${err}`,
+        `Reviews-array post failed with unexpected status ${status}, not retrying summary-only: ${err}`,
       );
-      return postSummaryOnly(reviewEvent);
+      return { success: false, method: 'failed' };
     }
   }
 
