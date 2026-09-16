@@ -12,12 +12,15 @@ import type { AgentConfig, PlatformAdapter } from '@opencode-pr-agent/lib';
  *
  * @param config - Full agent configuration.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
+ *   breaks withRetry backoff sleeps. Advisory-only: engine calls themselves
+ *   are not yet cancellable.
  * @returns A promise that resolves once changelog generation (and optionally the
  * release-prep PR) completes. When the PR number cannot be resolved or the
  * platform is GitLab, the function reports failure/skip via `core` and returns
  * early instead of rejecting.
  */
-export declare function runChangelog(config: AgentConfig, gh: PlatformAdapter): Promise<void>;
+export declare function runChangelog(config: AgentConfig, gh: PlatformAdapter, signal?: AbortSignal): Promise<void>;
 /**
  * Resolve a repo/PR-controlled changelog `filePath` to an absolute path
  * confined to `GITHUB_WORKSPACE`. Rejects absolute paths and `..` escapes so

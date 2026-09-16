@@ -174,7 +174,9 @@ export async function runReview(
   if (signal?.aborted) {
     // Signal is advisory-only: engine.reviewPR accepts no AbortSignal,
     // so this pre-check cannot cancel an in-flight LLM call.
-    const kind = describeAbortKind(signal.reason);
+    // Default to 'cancelled' when aborted without a reason: describeAbortKind
+    // returns 'error' for undefined, which would read as 'cancelled (error)'.
+    const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
     core.warning(sanitize(`Review cancelled before engine call (${kind}) — skipping`));
     core.setFailed(sanitize(`Review cancelled (${kind}) before the engine call`));
     return;

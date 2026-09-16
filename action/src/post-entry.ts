@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import { GitHubHelper, GitLabAdapter, type PlatformAdapter } from '@opencode-pr-agent/lib';
 import { parseInputs } from './inputs.js';
 import { runPost } from './post.js';
-import { sanitize } from './utils.js';
+import { createRunAbortController, sanitize } from './utils.js';
 
 /**
  * Standalone entry point for the GitHub Action's `post` phase.
@@ -15,8 +15,12 @@ import { sanitize } from './utils.js';
  * triggers a side-effecting top-level run.
  */
 async function main(): Promise<void> {
+  // The post phase runs as a separate process with no shared run controller,
+  // so it owns a per-process deadline (same helper/default as the main run).
+  // Per-command verification timeouts still apply inside runPost.
+  const inputs = parseInputs();
+  const runAbort = createRunAbortController(inputs.timeoutMinutes);
   try {
-    const inputs = parseInputs();
     const platform = (process.env.PLATFORM || 'github') as 'github' | 'gitlab';
     const token = inputs.githubToken;
     const repo =
@@ -25,11 +29,13 @@ async function main(): Promise<void> {
         : core.getInput('repo') || `${github.context.repo.owner}/${github.context.repo.repo}`;
     const gh: PlatformAdapter =
       platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
-    await runPost(inputs, gh, repo, token);
+    await runPost(inputs, gh, repo, token, runAbort.signal);
   } catch (error) {
     core.setFailed(
       `Post action failed: ${sanitize(error instanceof Error ? error.message : String(error))}`,
     );
+  } finally {
+    runAbort.dispose();
   }
 }
 

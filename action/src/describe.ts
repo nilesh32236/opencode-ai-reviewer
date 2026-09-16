@@ -21,6 +21,9 @@ import { resolvePrNumber, sanitize } from './utils.js';
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param _repo - Repository string (owner/repo, unused).
  * @param _token - GitHub authentication token (unused).
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
+ *   breaks withRetry backoff sleeps. Advisory-only: engine calls themselves
+ *   are not yet cancellable.
  */
 export async function runDescribe(
   inputs: ActionInputs,
@@ -29,6 +32,7 @@ export async function runDescribe(
   gh: PlatformAdapter,
   _repo: string,
   _token: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const prNumber = await resolvePrNumber();
   if (prNumber === null) {
@@ -42,6 +46,13 @@ export async function runDescribe(
     Boolean(core.getInput('pr-number'));
 
   core.info(`Generating description for PR #${prNumber}`);
+
+  if (signal?.aborted) {
+    // Signal is advisory-only: engine.runDescribe accepts no AbortSignal,
+    // so this pre-check cannot cancel an in-flight LLM call.
+    core.setFailed(sanitize(`Describe cancelled before run for PR #${prNumber}`));
+    return;
+  }
 
   try {
     const pr = await gh.getMR(prNumber);
@@ -90,7 +101,7 @@ export async function runDescribe(
               '<!-- pr-description -->',
               sanitizeMarkdown(description),
             ),
-          { operationName: 'describe.postDescription', maxRetries: 1 },
+          { operationName: 'describe.postDescription', maxRetries: 1, signal },
         );
         commentPosted = true;
       } catch (e) {

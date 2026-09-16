@@ -21,6 +21,9 @@ import { resolvePrNumber, sanitize } from './utils.js';
  * @param config - Full agent configuration.
  * @param engine - Review engine instance.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
+ *   breaks withRetry backoff sleeps. Advisory-only: engine calls themselves
+ *   are not yet cancellable.
  * @returns A promise that resolves once docs generation and (on success) the
  * push to the PR head branch complete. When the PR number cannot be resolved,
  * the target is not a pull request, or docs are disabled, the function reports
@@ -32,6 +35,7 @@ export async function runDocs(
   config: AgentConfig,
   engine: ReviewEngine,
   gh: PlatformAdapter,
+  signal?: AbortSignal,
 ): Promise<void> {
   if (config.docs?.enabled === false) {
     core.info('Skipping docs mode — docs generation is disabled (docs.enabled: false)');
@@ -44,15 +48,29 @@ export async function runDocs(
     return;
   }
 
-  const isMr = await withRetry(() => gh.isMR(prNumber), { operationName: 'docs.isMR' });
+  if (signal?.aborted) {
+    // Signal is advisory-only: engine.runDocs accepts no AbortSignal,
+    // so this pre-check cannot cancel an in-flight LLM call.
+    core.setFailed(sanitize(`Docs cancelled before run — PR #${prNumber}`));
+    return;
+  }
+
+  const isMr = await withRetry(() => gh.isMR(prNumber), {
+    operationName: 'docs.isMR',
+    signal,
+  });
   if (!isMr) {
     core.setFailed(`Docs mode requires a pull request, but #${prNumber} is not a PR`);
     return;
   }
 
-  const pr = await withRetry(() => gh.getMR(prNumber), { operationName: 'docs.getMR' });
+  const pr = await withRetry(() => gh.getMR(prNumber), {
+    operationName: 'docs.getMR',
+    signal,
+  });
   const contextMarkdown = await withRetry(() => gh.gatherContext({ prNumber }), {
     operationName: 'docs.gatherContext',
+    signal,
   });
 
   const docStyle = config.docs?.style ?? inputs.docStyle;

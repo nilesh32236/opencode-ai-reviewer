@@ -26,12 +26,19 @@ import { resolvePrNumber, sanitize } from './utils.js';
  *
  * @param config - Full agent configuration.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
+ *   breaks withRetry backoff sleeps. Advisory-only: engine calls themselves
+ *   are not yet cancellable.
  * @returns A promise that resolves once changelog generation (and optionally the
  * release-prep PR) completes. When the PR number cannot be resolved or the
  * platform is GitLab, the function reports failure/skip via `core` and returns
  * early instead of rejecting.
  */
-export async function runChangelog(config: AgentConfig, gh: PlatformAdapter): Promise<void> {
+export async function runChangelog(
+  config: AgentConfig,
+  gh: PlatformAdapter,
+  signal?: AbortSignal,
+): Promise<void> {
   if (config.changelog?.enabled === false) {
     core.info(
       'Skipping changelog mode — changelog generation is disabled (changelog.enabled: false)',
@@ -52,8 +59,16 @@ export async function runChangelog(config: AgentConfig, gh: PlatformAdapter): Pr
 
   const changelogConfig: ChangelogConfig = config.changelog ?? DEFAULT_CHANGELOG_CONFIG;
 
+  if (signal?.aborted) {
+    // Signal is advisory-only: generateChangelog accepts no AbortSignal,
+    // so this pre-check cannot cancel in-flight work.
+    core.setFailed(sanitize('Changelog cancelled before run'));
+    return;
+  }
+
   const result = await withRetry(() => generateChangelog(gh, changelogConfig, undefined), {
     operationName: 'changelog.generate',
+    signal,
   });
 
   core.setOutput('changes_made', String(result.entryCount > 0));
@@ -86,6 +101,7 @@ export async function runChangelog(config: AgentConfig, gh: PlatformAdapter): Pr
 
     const defaultBranch = await withRetry(() => gh.getDefaultBranch(), {
       operationName: 'changelog.getDefaultBranch',
+      signal,
     });
     validateRefName(defaultBranch);
 

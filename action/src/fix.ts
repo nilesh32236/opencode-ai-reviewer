@@ -141,7 +141,7 @@ export async function runFix(
       await withRetry(
         () =>
           gh.setLabels(prNumber, ['autofix:needs-manual-review'], ['autofix', 'autofix:needs-fix']),
-        { operationName: 'fix.setLabels.maxIterations', signal },
+        { operationName: 'fix.setLabels.maxIterations', maxRetries: 2, signal },
       );
     } catch (err) {
       core.warning(
@@ -794,12 +794,14 @@ export async function runAutofixLoop(
     if (signal?.aborted) {
       // Signal is advisory-only: engine.reviewPR accepts no AbortSignal, so
       // this pre-check cannot cancel an in-flight LLM call.
+      const cancelKind =
+        signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
       core.warning(
         sanitize(
-          `Autofix loop cancelled before iteration ${i + 1} (${describeAbortKind(signal.reason)}) — shutting down gracefully.`,
+          `Autofix loop cancelled before iteration ${i + 1} (${cancelKind}) — shutting down gracefully.`,
         ),
       );
-      await handleTimeoutGracefully(prNumber, history, i, config, gh);
+      await handleTimeoutGracefully(prNumber, history, i, config, gh, true);
       return;
     }
     const prHeadSha = pr.headSha;
@@ -1290,6 +1292,7 @@ async function handleTimeoutGracefully(
   iteration: number,
   config: AgentConfig,
   gh: PlatformAdapter,
+  cancelled = false,
 ): Promise<void> {
   const status = await exec.getExecOutput('git', ['status', '--porcelain']);
   const hasChanges = status.stdout.trim().length > 0;
@@ -1302,7 +1305,9 @@ async function handleTimeoutGracefully(
       const raw = await exec.getExecOutput('git', ['diff', '--name-only', 'HEAD']);
       filesChanged = raw.stdout.trim().split('\n').filter(Boolean);
 
-      commitMessage = `fix: address review feedback (partial changes due to timeout iteration ${iteration + 1})`;
+      commitMessage = cancelled
+        ? `fix: address review feedback (partial changes due to cancel at iteration ${iteration + 1})`
+        : `fix: address review feedback (partial changes due to timeout iteration ${iteration + 1})`;
       await exec.exec('git', ['add', '-A']);
       await exec.exec('git', ['commit', '-m', commitMessage]);
 
@@ -1321,7 +1326,9 @@ async function handleTimeoutGracefully(
   history.push({
     iteration: iteration + 1,
     status: 'timeout',
-    summary: 'Workflow execution timed out. Changes partially applied.',
+    summary: cancelled
+      ? 'Workflow execution cancelled. Changes partially applied.'
+      : 'Workflow execution timed out. Changes partially applied.',
     critical: 0,
     important: 0,
     minor: 0,
@@ -1329,21 +1336,34 @@ async function handleTimeoutGracefully(
     commitMessage,
   });
 
-  const commentBody = `<!-- autofix-timeout -->
-⚠️ **Autofix Timed Out (limit: ${config.timeoutMinutes} minutes)**
+  const marker = cancelled ? '<!-- autofix-cancelled -->' : '<!-- autofix-timeout -->';
+  const heading = cancelled
+    ? '⚠️ **Autofix Cancelled**'
+    : `⚠️ **Autofix Timed Out (limit: ${config.timeoutMinutes} minutes)**`;
+  const reasonLine = cancelled
+    ? 'The workflow run was cancelled.'
+    : 'The workflow run has reached its timeout limit.';
+  const commentBody = `${marker}
+${heading}
 
-The workflow run has reached its timeout limit.
+${reasonLine}
 ${hasChanges ? `Some changes were partially applied to ${filesChanged.length} files and pushed to the branch.` : 'No changes were pending or staged.'}
 
 Please run the workflow again to continue applying fixes.`;
 
   try {
-    await gh.postOrUpdateComment(prNumber, '<!-- autofix-timeout -->', commentBody);
+    await gh.postOrUpdateComment(prNumber, marker, commentBody);
   } catch (err) {
     core.warning(
       sanitize(`Failed to post timeout comment: ${err instanceof Error ? err.message : err}`),
     );
   }
 
-  core.setFailed(sanitize(`Autofix execution timed out after ${config.timeoutMinutes} minutes.`));
+  core.setFailed(
+    sanitize(
+      cancelled
+        ? 'Autofix execution cancelled before completion.'
+        : `Autofix execution timed out after ${config.timeoutMinutes} minutes.`,
+    ),
+  );
 }

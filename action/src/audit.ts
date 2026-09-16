@@ -176,17 +176,23 @@ export async function runAudit(
     allTargetDirs.length > 0
       ? allTargetDirs[Math.floor(Math.random() * allTargetDirs.length)]
       : '.';
+  // Check cancellation before the read so an abort surfaces as a distinct
+  // cancellation message instead of being conflated with an IO failure
+  // ('Failed to read audit prompt ... (cancelled)'). The try/catch below is
+  // purely for IO errors.
+  if (signal?.aborted) {
+    const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+    core.setFailed(
+      sanitize(`Audit cancelled (${kind}) — category: ${category}, target: ${auditTarget}`),
+    );
+    return;
+  }
   // Async read inside try/catch: the prompt file can vanish between the
   // readdir above and the read here (TOCTOU), and a sync throw would
   // otherwise surface only as the generic index.ts failure with no
   // category/target context.
   let promptContent: string;
   try {
-    if (signal?.aborted) {
-      throw signal.reason instanceof Error
-        ? signal.reason
-        : new DOMException('Audit cancelled', 'AbortError');
-    }
     promptContent = await fs.promises.readFile(selectedPrompt, 'utf-8');
   } catch (err) {
     const kind = describeAbortKind(err);

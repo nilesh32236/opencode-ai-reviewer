@@ -163,7 +163,13 @@ export async function execWithTimeout(
     silent?: boolean;
   } = {},
 ): Promise<{ exitCode: number; output: string }> {
-  const timeoutMs = options.timeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
+  // Coerce to a positive finite number, mirroring createRunAbortController:
+  // 0/negative/NaN would fire immediately and Infinity would never fire.
+  const rawTimeoutMs = Number(options.timeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS);
+  const timeoutMs =
+    Number.isFinite(rawTimeoutMs) && rawTimeoutMs > 0
+      ? rawTimeoutMs
+      : DEFAULT_VERIFICATION_TIMEOUT_MS;
   const chunks: Buffer[] = [];
   let totalBytes = 0;
   let settled = false;
@@ -221,12 +227,17 @@ export async function execWithTimeout(
   if (timeoutId) clearTimeout(timeoutId);
   if (onAbort) options.signal?.removeEventListener('abort', onAbort);
   if (winner.timedOut) {
-    const reason =
-      options.signal?.aborted && options.signal.reason instanceof DOMException
-        ? options.signal.reason.name
-        : 'TimeoutError';
+    // Reuse describeAbortKind so Error-named TimeoutError/AbortError reasons
+    // are labeled correctly (a hand-rolled DOMException-only check mislabels
+    // them). Defaults to TimeoutError when the race was won by the timer.
+    const abortKind =
+      options.signal?.aborted && options.signal.reason !== undefined
+        ? describeAbortKind(options.signal.reason)
+        : 'timeout';
+    const reason = abortKind === 'cancelled' ? 'AbortError' : 'TimeoutError';
+    const verb = abortKind === 'cancelled' ? 'cancelled' : 'timed out';
     const output = capVerificationOutput(
-      `${Buffer.concat(chunks).toString('utf-8')}\nVerification command timed out after ${Math.round(timeoutMs / 1000)}s (${reason}): ${program} ${args.join(' ')}`,
+      `${Buffer.concat(chunks).toString('utf-8')}\nVerification command ${verb} after ${Math.round(timeoutMs / 1000)}s (${reason}): ${program} ${args.join(' ')}`,
     );
     return { exitCode: 124, output };
   }

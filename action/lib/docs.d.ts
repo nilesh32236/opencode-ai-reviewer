@@ -16,10 +16,13 @@ import type { ActionInputs } from './inputs.js';
  * @param config - Full agent configuration.
  * @param engine - Review engine instance.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
+ *   breaks withRetry backoff sleeps. Advisory-only: engine calls themselves
+ *   are not yet cancellable.
  * @returns A promise that resolves once docs generation and (on success) the
  * push to the PR head branch complete. When the PR number cannot be resolved,
  * the target is not a pull request, or docs are disabled, the function reports
  * failure/skip via `core` and returns early instead of rejecting. Rejects only
  * when platform reads fail after retries or the git commit/push fails.
  */
-export declare function runDocs(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter): Promise<void>;
+export declare function runDocs(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, signal?: AbortSignal): Promise<void>;

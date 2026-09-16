@@ -53,9 +53,14 @@ export async function runPost(
         });
         if (exitCode !== 0) {
           const timedOut = exitCode === 124;
+          // Output is already byte-capped by capVerificationOutput inside
+          // execWithTimeout; truncate the warning excerpt on a code-point
+          // boundary so surrogate pairs/emoji are never split (String.slice
+          // operates on UTF-16 code units).
+          const excerpt = output ? Array.from(output).slice(0, 2000).join('') : '';
           core.warning(
             sanitize(
-              `Verification command "${step.program} ${step.args.join(' ')}" ${timedOut ? 'timed out' : `failed with exit code ${exitCode}`}${output ? `: ${output.slice(0, 2000)}` : ''}`,
+              `Verification command "${step.program} ${step.args.join(' ')}" ${timedOut ? 'timed out' : `failed with exit code ${exitCode}`}${excerpt ? `: ${excerpt}` : ''}`,
             ),
           );
           break;

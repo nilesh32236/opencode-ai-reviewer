@@ -525,12 +525,14 @@ async function run(): Promise<void> {
     const learningStore = new LearningStore();
 
     // Per-run AbortController: deadline derived from the effective run budget
-    // (config.timeoutMinutes, default 20m). The signal is threaded into mode
-    // runners (which forward it to withRetry/exec) so in-flight LLM calls and
-    // subprocesses are cancellable per-attempt; wall-clock Date.now() checks
-    // in fix.ts/self-heal.ts remain as the outer scheduling guard. The
-    // deadline fires with a TimeoutError reason so timeout-vs-cancel stays
-    // distinguishable in logs (see describeAbortKind).
+    // (config.timeoutMinutes, default 20m). The signal is advisory-only: it is
+    // threaded into mode runners for pre-iteration abort checks, withRetry
+    // backoff sleeps, and execWithTimeout races, but engine LLM calls accept
+    // no AbortSignal so in-flight LLM calls are not cancellable and hung
+    // subprocesses are reported (exit 124) rather than killed. Wall-clock
+    // Date.now() checks in fix.ts/self-heal.ts remain as the outer scheduling
+    // guard. The deadline fires with a TimeoutError reason so timeout-vs-cancel
+    // stays distinguishable in logs (see describeAbortKind).
     const runAbort = createRunAbortController(config.timeoutMinutes);
     const runSignal = runAbort.signal;
 
@@ -655,10 +657,10 @@ async function run(): Promise<void> {
             core.info('Skipping docs mode — docs generation is disabled (docs.enabled: false)');
             break;
           }
-          await runDocs(inputs, config, engine, gh);
+          await runDocs(inputs, config, engine, gh, runSignal);
           break;
         case 'changelog':
-          await runChangelog(config, gh);
+          await runChangelog(config, gh, runSignal);
           break;
         case 'describe':
           if (config.describe?.enabled === false) {
@@ -667,7 +669,7 @@ async function run(): Promise<void> {
             );
             break;
           }
-          await runDescribe(inputs, config, engine, gh, repo, token);
+          await runDescribe(inputs, config, engine, gh, repo, token, runSignal);
           break;
         case 'self-heal':
           await runSelfHeal(inputs, config, engine, gh, repo, token, runSignal);
@@ -676,7 +678,7 @@ async function run(): Promise<void> {
           await runPost(inputs, gh, repo, token, runSignal);
           break;
         case 'setup':
-          await runSetup(inputs, config, gh, repo, token);
+          await runSetup(inputs, config, gh, repo, token, runSignal);
           break;
         default:
           core.setFailed(`Unknown mode: ${inputs.mode}`);
