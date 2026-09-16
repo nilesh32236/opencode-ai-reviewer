@@ -4,6 +4,31 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.13.12] — 2026-09-16
+
+
+### Fixed
+
+- gate /fix comment trigger on privileged author association (#541) (#541)
+
+### Changed
+
+- chore(deps): bump pnpm/action-setup from 6.0.10 to 6.1.0 (#538) (#538)
+- chore: SHA-pin third-party actions, persist-credentials false, dependabot for actions (#537) (#537)
+- [Autofix] [Bug] Oversized reviews fall back to N concurrent opencode processes; concurrent instances crash on the shared opencode store (#534) (#534)
+- [Autofix] [Bug] /fix on a PR always runs a full fresh review even when a recent review already exists (#535) (#535)
+- [Autofix] [Bug] /fix comment body never reaches the fix agent (used only for auth gating) (#536) (#536)
+- [Autofix] [Bug] Auto-merge gate and ready-label must require green CI on the head SHA (fail closed on empty rollups) (#530) (#530)
+- [Autofix] [Audit:error-handling-resilience] 0 critical, 9 important, 1 minor (#528) (#528)
+- [Autofix] [Monitor][runtime] Enforce Node LTS floor at 24.19.0 and pin CI matrix off vulnerable runtimes (#520) (#520)
+- [Autofix] [Monitor][opencode-compat] Support opencode V2 config shape (mcp.servers, disabled flag) with version-gated dual emit (#523) (#523)
+- [Autofix] [Monitor][opencode-compat] Pass through provider headerTimeout and chunkTimeout to opencode config (#521) (#521)
+- [Autofix] [Monitor][review-gating] Add approve and request-changes verdict mode mapping to Pulls createReview event (#522) (#522)
+- 🛡️ Sentinel Daily Guard: Fix Argument Injection Risk in handleDocsCommand (#526) (#526)
+- [Autofix] [Monitor][supply-chain] Publish pinned opencode checksums and recommend require_opencode_checksum with attestation docs (#519) (#519)
+
+[v1.13.12]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.11...v1.13.12
+
 ## [Unreleased]
 
 ### Changed
