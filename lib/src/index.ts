@@ -56,6 +56,7 @@ export {
   buildChecksSummaryOutput,
   normalizeVerdictMode,
   resolveReviewEvent,
+  validateInlinePositionsAgainstHunks,
 } from './utils/github.js';
 export type { ReviewEvent } from './utils/github.js';
 export { GitLabAdapter } from './utils/gitlab-adapter.js';

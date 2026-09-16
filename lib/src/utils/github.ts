@@ -162,6 +162,67 @@ export function resolveReviewEvent(
 }
 
 /**
+ * Pre-validate inline candidate positions against PR diff hunks.
+ *
+ * Splits issues into `mappable` (safe to bundle into a single
+ * `POST /pulls/{n}/reviews` with a `comments[]` reviews-array) and
+ * `unmappable` (must stay in the summary body so no finding is lost).
+ * Key normalization (`file.replace(/^\//, '')` + `${path}:${line}`)
+ * matches `buildInlineComments` and the `placedInlineKeys` filters in
+ * `postReview`/`postReviewWithReviewsArray`.
+ *
+ * Fail-open contract: never throws. Invalid input, an unavailable/empty
+ * `diffLines` set, or non-inline issues all resolve to `unmappable` (body),
+ * so streaming failures never filter findings from the body.
+ *
+ * @param issues - Review issues to classify.
+ * @param diffLines - Set of `"path:line"` keys present in the PR diff.
+ * @returns Mappable vs unmappable issue lists.
+ * @since NEXT
+ */
+export function validateInlinePositionsAgainstHunks(
+  issues: ReviewIssue[],
+  diffLines: Set<string>,
+): { mappable: ReviewIssue[]; unmappable: ReviewIssue[] } {
+  try {
+    if (!Array.isArray(issues)) return { mappable: [], unmappable: [] };
+    if (!(diffLines instanceof Set) || diffLines.size === 0) {
+      return { mappable: [], unmappable: [...issues] };
+    }
+    const mappable: ReviewIssue[] = [];
+    const unmappable: ReviewIssue[] = [];
+    for (const issue of issues) {
+      try {
+        if (
+          !issue ||
+          issue.inline !== true ||
+          typeof issue.line !== 'number' ||
+          !Number.isFinite(issue.line) ||
+          issue.line < 1 ||
+          typeof issue.file !== 'string' ||
+          issue.file.length === 0
+        ) {
+          unmappable.push(issue);
+          continue;
+        }
+        const key = `${issue.file.replace(/^\//, '')}:${issue.line}`;
+        if (diffLines.has(key)) mappable.push(issue);
+        else unmappable.push(issue);
+      } catch {
+        unmappable.push(issue);
+      }
+    }
+    return { mappable, unmappable };
+  } catch {
+    try {
+      return { mappable: [], unmappable: Array.isArray(issues) ? [...issues] : [] };
+    } catch {
+      return { mappable: [], unmappable: [] };
+    }
+  }
+}
+
+/**
  * Information about a single review comment thread on a PR.
  */
 /** Raw GraphQL response shape for a review thread node. */
@@ -1912,10 +1973,17 @@ export class GitHubHelper implements PlatformAdapter {
     // opt-in reviews-array path): buildInlineComments already filters against
     // diffLines when available, but re-validate here so dropped positions are
     // logged and a doomed batched POST is never attempted.
+    // Deterministic pre-validation (see validateInlinePositionsAgainstHunks):
+    // only hunk-mappable findings ride in the single batched `comments[]`
+    // request; stale/out-of-diff findings stay in the summary body.
     if (diffLines.size === 0) {
       // Diff fetch failed or the diff parsed to zero hunks: buildInlineComments
       // fail-open would otherwise post ALL inline findings as batched,
       // deterministically 422ing on stale/out-of-diff/deleted-file positions.
+      // Empty-diff fail-open: without hunks every inline position would 422,
+      // so skip the batched POST attempt and post summary-only directly
+      // (zero extra queries when the diff is already cached — getDiffLines
+      // above is the single fetch).
       core.warning('Diff validation unavailable, posting summary-only review');
       return postSummaryOnly(reviewEvent);
     }
@@ -1990,10 +2058,15 @@ export class GitHubHelper implements PlatformAdapter {
       } as ReviewPostResult);
     } catch (err) {
       const status = getErrorStatus(err);
-      core.warning(
-        `Reviews-array post failed${status !== undefined ? ` (status ${status})` : ''}, retrying summary-only: ${err}`,
-      );
-      return postSummaryOnly(reviewEvent);
+      // Scoped fail-open retry: only stale/validation (422), permission
+      // (403), and rate-limit (429) retries go summary-only with zero
+      // findings lost. All other errors (5xx, network, aborts) rethrow so
+      // withRetry/CircuitBreaker own transient handling and aborts propagate.
+      if (status === 422 || status === 403 || status === 429) {
+        core.warning(`Reviews-array post failed (status ${status}), retrying summary-only: ${err}`);
+        return postSummaryOnly(reviewEvent);
+      }
+      throw err;
     }
   }
 
