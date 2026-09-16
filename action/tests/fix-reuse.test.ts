@@ -26,6 +26,8 @@ import {
   cleanReusedBody,
   filterHeadCurrentReuseThreads,
   findReusableHeadCurrentReview,
+  getFixTriggerBody,
+  hasReviewBodyFindingMarkers,
   isReviewStubBody,
   parseReusedSeverity,
   rehydrateReviewResultFromBotThreads,
@@ -145,6 +147,48 @@ describe('filterHeadCurrentReuseThreads()', () => {
     const stub = { ...thread({ commitId: 'abc123', body: 'Review timed out' }), threadId: 'stub' };
     const out = filterHeadCurrentReuseThreads([good, stale, stub], 'abc123');
     expect(out.map((t) => t.threadId)).toEqual(['t1']);
+  });
+
+  it('matches on originalCommitId when commitId is absent or differs', () => {
+    const viaOriginal = thread({ commitId: undefined, originalCommitId: 'abc123' });
+    expect(filterHeadCurrentReuseThreads([viaOriginal], 'abc123')).toHaveLength(1);
+    const bothDiffer = thread({ commitId: 'sha-new', originalCommitId: 'abc123' });
+    expect(filterHeadCurrentReuseThreads([bothDiffer], 'abc123')).toHaveLength(1);
+    expect(filterHeadCurrentReuseThreads([bothDiffer], 'sha-new')).toHaveLength(1);
+  });
+});
+
+describe('hasReviewBodyFindingMarkers()', () => {
+  it('flags badge, issues-heading, and severity-emoji markers', () => {
+    expect(hasReviewBodyFindingMarkers('🔴 **critical**: sql injection')).toBe(true);
+    expect(hasReviewBodyFindingMarkers('### Issues\n- 🔵 **MINOR:** nit')).toBe(true);
+    expect(hasReviewBodyFindingMarkers('needs work 🟠')).toBe(true);
+  });
+
+  it('treats empty/summary-only bodies as clean', () => {
+    expect(hasReviewBodyFindingMarkers('')).toBe(false);
+    expect(hasReviewBodyFindingMarkers('## MR Review Summary\n\nAll clean.')).toBe(false);
+    // 🟢 marks ready/clean summaries, not findings — and unrelated emoji
+    // (surrogate-pair neighbors) must not trip the severity-emoji class.
+    expect(hasReviewBodyFindingMarkers('All good 🟢')).toBe(false);
+    expect(hasReviewBodyFindingMarkers('All good 🎉')).toBe(false);
+  });
+});
+
+describe('getFixTriggerBody()', () => {
+  it('reads pull_request_review payload bodies', async () => {
+    const github = await import('@actions/github');
+    const ctx = github.context as unknown as { payload: Record<string, unknown> };
+    const saved = ctx.payload;
+    try {
+      ctx.payload = { review: { body: '/fix re-review' } };
+      expect(getFixTriggerBody()).toBe('/fix re-review');
+      expect(shouldForceFreshReview(getFixTriggerBody())).toBe(true);
+      ctx.payload = {};
+      expect(getFixTriggerBody()).toBe('');
+    } finally {
+      ctx.payload = saved;
+    }
   });
 });
 

@@ -2299,6 +2299,20 @@ diff --git a/deleted.ts b/deleted.ts
 
       await expect(helper.listBotReviews(42)).rejects.toBe(abortErr);
     });
+
+    it('forwards an AbortSignal to paginate', async () => {
+      stubUser('bot[bot]');
+      const paginateSpy = vi.spyOn(helper, 'paginate').mockResolvedValue([]);
+      const controller = new AbortController();
+
+      await helper.listBotReviews(42, controller.signal);
+
+      expect(paginateSpy).toHaveBeenCalledWith(
+        '/pulls/42/reviews',
+        { perPage: 100, maxPages: 10 },
+        controller.signal,
+      );
+    });
   });
 
   describe('getReviewThreads GHES fallback', () => {
@@ -2385,6 +2399,34 @@ diff --git a/deleted.ts b/deleted.ts
       const threads = await helper.getReviewThreads(42);
 
       expect(threads[0]?.firstComment.commitId).toBe('sha-1');
+    });
+
+    it('falls back to originalCommit.oid when commit.oid is absent', async () => {
+      fetchMock.mockImplementation(async () =>
+        mockResponse({
+          body: threadsPayload([threadNode({ originalCommit: { oid: 'sha-2' } })]),
+        }),
+      );
+
+      const threads = await helper.getReviewThreads(42);
+
+      expect(threads[0]?.firstComment.commitId).toBe('sha-2');
+      expect(threads[0]?.firstComment.originalCommitId).toBe('sha-2');
+    });
+
+    it('preserves both OIDs when commit and originalCommit differ', async () => {
+      fetchMock.mockImplementation(async () =>
+        mockResponse({
+          body: threadsPayload([
+            threadNode({ commit: { oid: 'sha-new' }, originalCommit: { oid: 'sha-orig' } }),
+          ]),
+        }),
+      );
+
+      const threads = await helper.getReviewThreads(42);
+
+      expect(threads[0]?.firstComment.commitId).toBe('sha-new');
+      expect(threads[0]?.firstComment.originalCommitId).toBe('sha-orig');
     });
   });
 });

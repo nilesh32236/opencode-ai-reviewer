@@ -157,15 +157,18 @@ export function isPrClosedOrMerged(state?: string): boolean {
 /**
  * Read the `/fix` trigger comment body from the workflow event payload, when
  * present. Used only to honor an explicit `/fix re-review` request; absent or
- * unreadable payloads fail-open to normal reuse behavior.
+ * unreadable payloads fail-open to normal reuse behavior. Covers
+ * `issue_comment` (`comment.body`), `pull_request_review_comment`
+ * (`comment.body`) and `pull_request_review` (`review.body`) payload shapes.
  * @returns Raw trigger comment body, or '' when unavailable.
  */
 export function getFixTriggerBody(): string {
   try {
     const payload = (github.context?.payload ?? {}) as {
       comment?: { body?: unknown };
+      review?: { body?: unknown };
     };
-    const body = payload.comment?.body;
+    const body = payload.comment?.body ?? payload.review?.body;
     return typeof body === 'string' ? body : '';
   } catch {
     return '';
@@ -216,6 +219,28 @@ export function isReviewStubBody(body: string): boolean {
     text.includes('review result empty') ||
     text.includes('no meaningful content')
   );
+}
+
+/**
+ * Whether a bot review body carries finding signals (severity badge, severity
+ * emoji, or an `### Issues` section). Used to guard the zero-thread clean
+ * reuse path: a head-current review whose body reports findings (body-only
+ * findings, inline-disabled runs) must NOT be treated as clean — fall through
+ * to a fresh review instead of silently dropping the findings.
+ * @param body - Bot review body text.
+ * @returns True when the body looks like it reports findings.
+ */
+export function hasReviewBodyFindingMarkers(body: string): boolean {
+  const text = String(body ?? '');
+  if (!text.trim()) return false;
+  if (/^\s*(?:🔴|🟠|🔵|🟡)?\s*\*\*(critical|important|minor)\*\*/imu.test(text)) return true;
+  if (/^###\s+Issues\b/imu.test(text)) return true;
+  // Note the `u` flag: without it the astral-plane emoji in the class decay
+  // to lone surrogates and the shared high surrogate matches unrelated emoji
+  // (e.g. 🟢/🎉), which would wrongly block clean reuse for summary bodies.
+  // 🟢 is deliberately excluded — it marks ready/clean summaries, not findings.
+  if (/[🔴🟠🔵🟡]/u.test(text)) return true;
+  return false;
 }
 
 /**
@@ -289,7 +314,11 @@ export function rehydrateReviewResultFromBotThreads(
  * Head-current, non-stub, unresolved subset of bot threads eligible for
  * reuse. Single source of truth shared by {@link findReusableHeadCurrentReview}
  * and the skipped-postReview id mapping so stale-head and stub-thread comment
- * IDs never leak into fix-progress tracking.
+ * IDs never leak into fix-progress tracking. A thread matches when either its
+ * `commitId` or its `originalCommitId` equals the head SHA (`commitId` takes
+ * precedence when populated — it is `commit.oid` with an `originalCommit.oid`
+ * fallback — but both are checked so a head match on the discarded OID is not
+ * missed).
  * @param threads - Bot review threads for the PR.
  * @param headSha - Current PR head SHA.
  * @param commitByCommentId - Optional databaseId → commit SHA map built from
@@ -307,7 +336,8 @@ export function filterHeadCurrentReuseThreads(
     if (t.isResolved || !t.firstComment) return false;
     if (isReviewStubBody(t.firstComment.body ?? '')) return false;
     const direct = String(t.firstComment.commitId ?? '').toLowerCase();
-    if (direct) return direct === head;
+    const original = String(t.firstComment.originalCommitId ?? '').toLowerCase();
+    if (direct || original) return direct === head || original === head;
     if (commitByCommentId) {
       const mapped = String(commitByCommentId.get(t.firstComment.databaseId) ?? '').toLowerCase();
       if (mapped) return mapped === head;
@@ -1225,11 +1255,12 @@ export async function runAutofixLoop(
     // fresh review against the post-fix head.
     let reusedResult: ReviewResult | null = null;
     let reuseCommitByCommentId: Map<number, string> | undefined;
+    let reuseGrantedHeadSha: string | undefined;
     if (i === 0 && !shouldForceFreshReview(getFixTriggerBody())) {
       try {
         let commitByCommentId: Map<number, string> | undefined;
         const needsCorrelation = botThreadsForReuse.some(
-          (t) => !t.isResolved && !t.firstComment?.commitId,
+          (t) => !t.isResolved && !t.firstComment?.commitId && !t.firstComment?.originalCommitId,
         );
         if (needsCorrelation) {
           try {
@@ -1263,11 +1294,17 @@ export async function runAutofixLoop(
         );
         if (!reusedResult) {
           try {
-            const botReviews = (await gh.listBotReviews?.(prNumber)) ?? [];
+            const botReviews = (await gh.listBotReviews?.(prNumber, signal)) ?? [];
             const latest = botReviews[0];
             const latestCommit = String(latest?.commitId ?? '').toLowerCase();
             const head = String(prHeadSha ?? '').toLowerCase();
-            if (latest && head && latestCommit === head && !isReviewStubBody(latest.body ?? '')) {
+            if (
+              latest &&
+              head &&
+              latestCommit === head &&
+              !isReviewStubBody(latest.body ?? '') &&
+              !hasReviewBodyFindingMarkers(latest.body ?? '')
+            ) {
               reusedResult = buildCleanReusedReviewResult(prHeadSha);
             }
           } catch {
@@ -1278,6 +1315,7 @@ export async function runAutofixLoop(
         reusedResult = null;
       }
       if (reusedResult) {
+        reuseGrantedHeadSha = prHeadSha;
         core.info(
           sanitize(
             `Reusing head-current bot review on ${String(prHeadSha ?? '').slice(0, 7)} (${reusedResult.issues.length} finding(s)) — skipping fresh reviewPR in iteration 1`,
@@ -1352,6 +1390,59 @@ export async function runAutofixLoop(
         ),
       );
       continue;
+    }
+
+    if (
+      reusedResult &&
+      skippedPostReview &&
+      reuseGrantedHeadSha &&
+      String(prHeadSha ?? '').toLowerCase() !== String(reuseGrantedHeadSha).toLowerCase()
+    ) {
+      // The head moved during the thread/listReviewComments fetches: the
+      // rehydrated issues were validated against the pre-review SHA and no
+      // longer describe the current head. Fall back to a fresh review against
+      // the refreshed PR instead of fixing stale-head findings.
+      core.warning(
+        sanitize(
+          `PR head moved during reuse fetch (${String(reuseGrantedHeadSha).slice(0, 7)} → ${String(prHeadSha ?? '').slice(0, 7) || 'unknown'}) — discarding reused review and running a fresh reviewPR`,
+        ),
+      );
+      reusedResult = null;
+      skippedPostReview = false;
+      result = await engine.reviewPR(
+        pr,
+        i,
+        inputs.reviewPromptFile,
+        inputs.reviewPromptExtra,
+        iterTimeoutMinutes,
+        previousFindings,
+        undefined,
+        undefined,
+        previousBotComments,
+        undefined,
+        { forceReview: true },
+      );
+      if (result?.skipped) {
+        core.info(`Review deduplicated in iteration ${i + 1} — continuing`);
+        continue;
+      }
+      if (
+        !result ||
+        (!result.summary && result.issues.length === 0 && result.strengths.length === 0)
+      ) {
+        core.warning(sanitize(`Review result empty in iteration ${i + 1} — treating as failure`));
+        const entry: IterationRecord = {
+          iteration: i + 1,
+          status: 'needs-fix',
+          summary: 'Review returned no meaningful content',
+          critical: 0,
+          important: 0,
+          minor: 0,
+        };
+        history.push(entry);
+        exitReason = 'no-changes';
+        break;
+      }
     }
 
     let currentCommentIds:

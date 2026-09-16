@@ -2813,6 +2813,7 @@ export class GitHubHelper implements PlatformAdapter {
             author: comment.author.login,
             createdAt: comment.createdAt,
             commitId: comment.commit?.oid ?? comment.originalCommit?.oid ?? undefined,
+            originalCommitId: comment.originalCommit?.oid ?? undefined,
           },
         });
       }
@@ -2885,18 +2886,24 @@ export class GitHubHelper implements PlatformAdapter {
   /**
    * List bot-authored reviews for a PR via REST `GET /pulls/{n}/reviews`,
    * newest first. Fail-open: any failure resolves to [] so callers fall back
-   * to a fresh review (today's behavior).
+   * to a fresh review (today's behavior), except cancellation (AbortError
+   * propagates, mirroring {@link paginate}).
    * @param prNumber - PR number.
+   * @param signal - Optional AbortSignal forwarded to the paginated fetch.
    * @returns Bot review summaries ordered newest first.
    */
-  async listBotReviews(prNumber: number): Promise<BotReviewInfo[]> {
+  async listBotReviews(prNumber: number, signal?: AbortSignal): Promise<BotReviewInfo[]> {
     try {
       const rawBotLogin = await this.getCurrentUser();
       const botBase = rawBotLogin.toLowerCase().replace(/\[bot\]$/, '');
-      const reviews = await this.paginate<Record<string, unknown>>(`/pulls/${prNumber}/reviews`, {
-        perPage: 100,
-        maxPages: 10,
-      });
+      const reviews = await this.paginate<Record<string, unknown>>(
+        `/pulls/${prNumber}/reviews`,
+        {
+          perPage: 100,
+          maxPages: 10,
+        },
+        signal,
+      );
       const botReviews: BotReviewInfo[] = [];
       for (const r of reviews) {
         const login = String((r as { user?: { login?: unknown } }).user?.login ?? '').toLowerCase();

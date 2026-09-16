@@ -30,6 +30,8 @@ const {
   mockGetDefaultBranch,
   mockGetIssue,
   mockGetHeadCIStatus,
+  mockListBotReviews,
+  mockListReviewComments,
   mockExec,
   mockGetExecOutput,
 } = vi.hoisted(() => {
@@ -59,6 +61,8 @@ const {
   const _mockCreatePR = vi.fn();
   const _mockGetDefaultBranch = vi.fn();
   const _mockGetIssue = vi.fn();
+  const _mockListBotReviews = vi.fn().mockResolvedValue([]);
+  const _mockListReviewComments = vi.fn().mockResolvedValue([]);
   const _mockGetHeadCIStatus = vi.fn().mockResolvedValue({
     commitSha: 'abc123',
     total: 3,
@@ -107,6 +111,8 @@ const {
     mockCreatePR: _mockCreatePR,
     mockGetDefaultBranch: _mockGetDefaultBranch,
     mockGetIssue: _mockGetIssue,
+    mockListBotReviews: _mockListBotReviews,
+    mockListReviewComments: _mockListReviewComments,
     mockGetHeadCIStatus: _mockGetHeadCIStatus,
     mockExec: _mockExec,
     mockGetExecOutput: _mockGetExecOutput,
@@ -137,12 +143,15 @@ vi.mock('@actions/exec', () => ({
   getExecOutput: mockGetExecOutput,
 }));
 
+import { context as ghContext } from '@actions/github';
 import { runAutofixLoop, runFixIssue } from '../src/fix.js';
 
 const mockGh = {
   getMR: mockGetPR,
   getIssueComments: mockGetIssueComments,
   getBotReviewThreads: mockGetBotReviewThreads,
+  listBotReviews: mockListBotReviews,
+  listReviewComments: mockListReviewComments,
   postReview: mockPostReview,
   setLabels: mockSetLabels,
   removeLabel: mockRemoveLabel,
@@ -177,6 +186,8 @@ describe('runAutofixLoop', () => {
     });
 
     mockGetBotReviewThreads.mockResolvedValue([]);
+    mockListBotReviews.mockResolvedValue([]);
+    mockListReviewComments.mockResolvedValue([]);
     mockGetIssueComments.mockResolvedValue([]);
     mockGetPR.mockResolvedValue(makePRContext());
     mockGatherContext.mockResolvedValue('## PR Context\nSome context');
@@ -592,6 +603,199 @@ describe('runAutofixLoop', () => {
       ['autofix:needs-manual-review'],
       ['autofix', 'autofix:needs-fix'],
     );
+  });
+
+  it('reuses a head-current bot review with zero reviewPR/postReview calls', async () => {
+    mockGetBotReviewThreads.mockResolvedValue([
+      {
+        threadId: 't1',
+        isResolved: false,
+        firstComment: {
+          commentId: 'c1',
+          databaseId: 101,
+          body: '🔴 **critical**: bug here',
+          filePath: 'src/bug.ts',
+          lineNumber: 10,
+          author: 'bot',
+          createdAt: '2026-01-01T00:00:00Z',
+          commitId: 'abc123',
+        },
+      },
+    ]);
+    mockRunFix.mockResolvedValue({ changesMade: false, filesChanged: [] } as FixResult);
+
+    await runAutofixLoop(
+      makeInputs(),
+      makeConfig({ maxIterations: 1, enableMCP: false, mcpServers: [] }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+      'token',
+    );
+
+    expect(mockReviewPR).not.toHaveBeenCalled();
+    expect(mockPostReview).not.toHaveBeenCalled();
+    expect(mockRunFix).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs a fresh review when bot threads are stale-head', async () => {
+    mockGetBotReviewThreads.mockResolvedValue([
+      {
+        threadId: 't1',
+        isResolved: false,
+        firstComment: {
+          commentId: 'c1',
+          databaseId: 101,
+          body: '🔴 **critical**: old bug',
+          filePath: 'src/bug.ts',
+          lineNumber: 10,
+          author: 'bot',
+          createdAt: '2026-01-01T00:00:00Z',
+          commitId: 'deadbeef',
+        },
+      },
+    ]);
+    mockReviewPR.mockResolvedValue({
+      summary: 'All good',
+      verdict: { ready: true, reasoning: 'LGTM', autoFixable: false, confidence: 'high' },
+      strengths: [],
+      issues: [],
+      stats: { total: 0, critical: 0, important: 0, minor: 0 },
+    } as ReviewResult);
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+
+    await runAutofixLoop(
+      makeInputs(),
+      makeConfig({ maxIterations: 1, enableMCP: false, mcpServers: [] }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+      'token',
+    );
+
+    expect(mockReviewPR).toHaveBeenCalledTimes(1);
+    expect(mockPostReview).toHaveBeenCalledTimes(1);
+  });
+
+  it('honors /fix re-review by running a fresh review despite head-current threads', async () => {
+    mockGetBotReviewThreads.mockResolvedValue([
+      {
+        threadId: 't1',
+        isResolved: false,
+        firstComment: {
+          commentId: 'c1',
+          databaseId: 101,
+          body: '🔴 **critical**: bug here',
+          filePath: 'src/bug.ts',
+          lineNumber: 10,
+          author: 'bot',
+          createdAt: '2026-01-01T00:00:00Z',
+          commitId: 'abc123',
+        },
+      },
+    ]);
+    mockReviewPR.mockResolvedValue({
+      summary: 'All good',
+      verdict: { ready: true, reasoning: 'LGTM', autoFixable: false, confidence: 'high' },
+      strengths: [],
+      issues: [],
+      stats: { total: 0, critical: 0, important: 0, minor: 0 },
+    } as ReviewResult);
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+    const payload = ghContext.payload as Record<string, unknown>;
+    const savedComment = payload.comment;
+    payload.comment = { body: '/fix re-review' };
+    try {
+      await runAutofixLoop(
+        makeInputs(),
+        makeConfig({ maxIterations: 1, enableMCP: false, mcpServers: [] }),
+        mockEngine,
+        mockGh,
+        'owner/repo',
+        'token',
+      );
+    } finally {
+      payload.comment = savedComment;
+    }
+
+    expect(mockReviewPR).toHaveBeenCalledTimes(1);
+    expect(mockPostReview).toHaveBeenCalledTimes(1);
+  });
+
+  it('clean-reuses a head-current review with a summary-only body but not one with finding markers', async () => {
+    mockGetBotReviewThreads.mockResolvedValue([]);
+    // Note: an empty body counts as a stub (isReviewStubBody('') === true) and
+    // falls through to a fresh review; clean reuse needs a non-stub body with
+    // no finding signals.
+    mockListBotReviews.mockResolvedValue([
+      {
+        id: 9,
+        commitId: 'abc123',
+        body: '## MR Review Summary\n\nAll clean. Ready to merge? Yes 🟢',
+        state: 'COMMENTED',
+        submittedAt: '2026-05-01T00:00:00Z',
+      },
+    ]);
+
+    await runAutofixLoop(
+      makeInputs(),
+      makeConfig({ maxIterations: 1, enableMCP: false, mcpServers: [] }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+      'token',
+    );
+
+    expect(mockReviewPR).not.toHaveBeenCalled();
+    expect(mockPostReview).not.toHaveBeenCalled();
+
+    vi.clearAllMocks();
+    mockGetPR.mockResolvedValue(makePRContext());
+    mockGatherContext.mockResolvedValue('## PR Context\nSome context');
+    mockGetBotReviewThreads.mockResolvedValue([]);
+    mockListBotReviews.mockResolvedValue([
+      {
+        id: 10,
+        commitId: 'abc123',
+        body: '### Issues\n- 🔴 **CRITICAL:** `src/b.ts:1` — bug',
+        state: 'COMMENTED',
+        submittedAt: '2026-05-01T00:00:00Z',
+      },
+    ]);
+    mockReviewPR.mockResolvedValue({
+      summary: 'All good',
+      verdict: { ready: true, reasoning: 'LGTM', autoFixable: false, confidence: 'high' },
+      strengths: [],
+      issues: [],
+      stats: { total: 0, critical: 0, important: 0, minor: 0 },
+    } as ReviewResult);
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+
+    await runAutofixLoop(
+      makeInputs(),
+      makeConfig({ maxIterations: 1, enableMCP: false, mcpServers: [] }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+      'token',
+    );
+
+    expect(mockReviewPR).toHaveBeenCalledTimes(1);
   });
 });
 

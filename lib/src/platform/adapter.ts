@@ -39,9 +39,17 @@ export interface ReviewThreadInfo {
      * Callers use it to decide whether a bot review is head-current without
      * an extra review-list fetch. Absent on older payloads and platforms that
      * do not expose it — callers must treat absent as unknown (fail-open to a
-     * fresh review).
+     * fresh review). Precedence: `commit.oid` wins when both OIDs are present;
+     * see `originalCommitId` for the fallback value.
      */
     commitId?: string;
+    /**
+     * Original commit the comment was made against (GraphQL
+     * `originalCommit { oid }`), preserved alongside `commitId` so callers can
+     * match on either OID when both are present and differ. Absent means
+     * unknown — same fail-open contract as `commitId`.
+     */
+    originalCommitId?: string;
   };
 }
 
@@ -518,11 +526,13 @@ export interface PlatformAdapter {
    * List bot-authored reviews for a merge request (newest first when the
    * platform can order them). Optional: adapters that cannot list reviews may
    * omit it — callers fall back to `getBotReviewThreads` + `listReviewComments`
-   * commit correlation. Fail-open: implementations return [] on any failure.
+   * commit correlation. Fail-open: implementations return [] on any failure
+   * except cancellation (AbortError propagates).
    * @param mrNumber - Merge request number.
+   * @param signal - Optional AbortSignal to cancel the fetch.
    * @returns Promise resolving to bot review summaries.
    */
-  listBotReviews?(mrNumber: number): Promise<BotReviewInfo[]>;
+  listBotReviews?(mrNumber: number, signal?: AbortSignal): Promise<BotReviewInfo[]>;
   /**
    * Get open human review threads as a markdown string.
    * @param mrNumber - Merge request number.

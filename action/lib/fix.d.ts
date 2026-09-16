@@ -68,7 +68,9 @@ export declare function isPrClosedOrMerged(state?: string): boolean;
 /**
  * Read the `/fix` trigger comment body from the workflow event payload, when
  * present. Used only to honor an explicit `/fix re-review` request; absent or
- * unreadable payloads fail-open to normal reuse behavior.
+ * unreadable payloads fail-open to normal reuse behavior. Covers
+ * `issue_comment` (`comment.body`), `pull_request_review_comment`
+ * (`comment.body`) and `pull_request_review` (`review.body`) payload shapes.
  * @returns Raw trigger comment body, or '' when unavailable.
  */
 export declare function getFixTriggerBody(): string;
@@ -97,6 +99,16 @@ export declare function parseReusedSeverity(body: string): ReviewIssue['severity
  */
 export declare function isReviewStubBody(body: string): boolean;
 /**
+ * Whether a bot review body carries finding signals (severity badge, severity
+ * emoji, or an `### Issues` section). Used to guard the zero-thread clean
+ * reuse path: a head-current review whose body reports findings (body-only
+ * findings, inline-disabled runs) must NOT be treated as clean — fall through
+ * to a fresh review instead of silently dropping the findings.
+ * @param body - Bot review body text.
+ * @returns True when the body looks like it reports findings.
+ */
+export declare function hasReviewBodyFindingMarkers(body: string): boolean;
+/**
  * Strip fingerprint markers and HTML comments from a posted body so the
  * reused finding message stays readable for the fix agent.
  * @param body - Posted inline comment body.
@@ -116,7 +128,11 @@ export declare function rehydrateReviewResultFromBotThreads(threads: ReviewThrea
  * Head-current, non-stub, unresolved subset of bot threads eligible for
  * reuse. Single source of truth shared by {@link findReusableHeadCurrentReview}
  * and the skipped-postReview id mapping so stale-head and stub-thread comment
- * IDs never leak into fix-progress tracking.
+ * IDs never leak into fix-progress tracking. A thread matches when either its
+ * `commitId` or its `originalCommitId` equals the head SHA (`commitId` takes
+ * precedence when populated — it is `commit.oid` with an `originalCommit.oid`
+ * fallback — but both are checked so a head match on the discarded OID is not
+ * missed).
  * @param threads - Bot review threads for the PR.
  * @param headSha - Current PR head SHA.
  * @param commitByCommentId - Optional databaseId → commit SHA map built from
