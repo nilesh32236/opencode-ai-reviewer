@@ -902,7 +902,7 @@ describe('runOpenCode()', () => {
     expect(proc.stdin.end).not.toHaveBeenCalled();
   });
 
-  it('still uses argv for large prompts in interactive (non-autoApprove) mode', async () => {
+  it('pipes large prompts via stdin regardless of autoApprove (E2BIG guard is size-gated)', async () => {
     const proc = makeMockProcess();
     mockSpawn.mockReturnValue(proc);
 
@@ -922,12 +922,11 @@ describe('runOpenCode()', () => {
     const spawnArgs = spawnCall[1] as string[];
     const spawnOpts = spawnCall[2] as { stdio: string[] };
 
-    // Interactive mode: prompt stays in argv regardless of size
-    expect(spawnArgs).toContain(largePrompt);
-    // stdio[0] must be 'inherit' (interactive TTY)
-    expect(spawnOpts.stdio[0]).toBe('inherit');
-    // stdin.end must NOT have been called
-    expect(proc.stdin.end).not.toHaveBeenCalled();
+    // Size-gated stdin piping: large prompts never ride argv (E2BIG), even
+    // in interactive mode — piping takes precedence over TTY inherit.
+    expect(spawnArgs).not.toContain(largePrompt);
+    expect(spawnOpts.stdio[0]).toBe('pipe');
+    expect(proc.stdin.end).toHaveBeenCalled();
   });
 });
 

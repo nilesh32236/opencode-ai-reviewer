@@ -38,6 +38,11 @@ export {
   resetOpenCodeRunChainForTests,
   createIsolatedOpenCodeHome,
   cleanupIsolatedOpenCodeHome,
+  cleanupIsolatedOpenCodeHomeAsync,
+  removeTempDirAsync,
+  ensureSignalHandlers,
+  downloadWithTimeout,
+  getOpenCodeState,
 } from './opencode.js';
 export type {
   TokenUsageBreakdown,
@@ -45,6 +50,7 @@ export type {
   OpenCodeVersion,
   CheckHealthOptions,
   OpenCodeRunMode,
+  OpenCodeStateSnapshot,
   SetupOpenCodeOptions,
 } from './opencode.js';
 export { GitHubHelper } from './utils/github.js';
@@ -118,7 +124,10 @@ export {
   SUBAGENT_REVIEW_CONTEXT_LIMIT,
   MAX_BATCH_CONCURRENCY,
   buildPartialBatchWarning,
+  computeChunkDelays,
+  expectedReviewOpenCodeCalls,
 } from './engine.js';
+export type { AgentBatchContextOptions, ReviewRunOptions } from './engine.js';
 export { SetupEngine } from './setup/engine.js';
 export { CodebaseIndex } from './codebase-index/index.js';
 export { CodebaseIndexCache } from './codebase-index/cache.js';

@@ -31,6 +31,24 @@ export { MINIMUM_OPENCODE_VERSION } from './utils/version.js';
 /** Default timeout for the `opencode --version` health probe, in milliseconds. */
 export const DEFAULT_HEALTH_TIMEOUT_MS = 5_000;
 
+/**
+ * Snapshot of the module-level opencode subprocess state (binary path,
+ * validation cache, CI config, LLM/run-mode overrides). The state itself
+ * remains in module `let` bindings (reset via {@link resetOpenCodeState});
+ * this grouped view exists so long-lived multi-repo processes (Probot) and
+ * tests can inspect/reset shared state in one place without touching eight
+ * separate globals. New code should prefer passing `llm`/`runMode` per run
+ * (see `runLLM` in engine.ts) over mutating shared state.
+ */
+export interface OpenCodeStateSnapshot {
+  binPath: string | null;
+  validatedBinPath: string | null;
+  ciConfigCached: boolean;
+  versionRaw: string | null;
+  hasLlmConfig: boolean;
+  hasRunModeOverride: boolean;
+}
+
 let opencodePath: string | null = null;
 /** Path of the opencode binary most recently confirmed compatible by checkHealth(). */
 let validatedOpenCodePath: string | null = null;
@@ -300,6 +318,22 @@ export function resetOpenCodeState(): void {
   signalHandlersRegistered = false;
 }
 
+/**
+ * Inspect the shared module-level opencode state as one grouped snapshot
+ * (see {@link OpenCodeStateSnapshot}). Read-only; mutate via the dedicated
+ * setters and {@link resetOpenCodeState}.
+ */
+export function getOpenCodeState(): OpenCodeStateSnapshot {
+  return {
+    binPath: opencodePath,
+    validatedBinPath: validatedOpenCodePath,
+    ciConfigCached: cachedCIConfig !== null,
+    versionRaw: cachedOpenCodeVersionRaw,
+    hasLlmConfig: llmProviderConfig !== undefined,
+    hasRunModeOverride: runModeOverride !== undefined,
+  };
+}
+
 let signalHandlersRegistered = false;
 
 /** Remove all tracked per-run isolated HOME directories (best-effort). */
@@ -318,6 +352,27 @@ function cleanupAskPassDirs(): void {
     }
   }
   cleanupOpenCodeRunHomes();
+}
+
+/**
+ * Remove one temp directory asynchronously (off the event-loop critical path).
+ * Best-effort, never throws. Preferred for per-run cleanup; the sync
+ * variants below remain for `exit`-handler use (async work is unavailable
+ * during `process.on('exit')`).
+ */
+export async function removeTempDirAsync(dir: string): Promise<void> {
+  try {
+    await fs.promises.rm(dir, { recursive: true, force: true });
+  } catch {
+    /* ok */
+  }
+}
+
+/** Async per-run isolated-HOME removal (see {@link removeTempDirAsync}). */
+export async function cleanupIsolatedOpenCodeHomeAsync(dir: string): Promise<void> {
+  await removeTempDirAsync(dir);
+  const idx = openCodeRunHomeDirs.indexOf(dir);
+  if (idx >= 0) openCodeRunHomeDirs.splice(idx, 1);
 }
 
 function registerSignalHandlers(): void {
@@ -341,7 +396,17 @@ function registerSignalHandlers(): void {
   process.on('SIGTERM', sigtermHandler);
 }
 
-registerSignalHandlers();
+/**
+ * Lazily install process exit/SIGINT/SIGTERM cleanup handlers (idempotent).
+ * Prefer calling this explicitly from setup/run entry points; the automatic
+ * registration below is kept for backward compatibility so existing entry
+ * points that never call it still clean up temp dirs.
+ */
+export function ensureSignalHandlers(): void {
+  registerSignalHandlers();
+}
+
+ensureSignalHandlers();
 
 /**
  * Parsed OpenCode CLI version, with the raw text matched from `--version` output.
@@ -721,6 +786,33 @@ export function resolveRequireChecksum(options?: SetupOpenCodeOptions): boolean 
 }
 
 /**
+ * Download with a timeout (single source of truth for the archive + checksum
+ * download paths, which previously duplicated the Promise.race + clearTimeout
+ * pattern and could drift).
+ * @param download - The download promise factory.
+ * @param ms - Timeout in milliseconds.
+ * @param message - Timeout error message.
+ * @returns The downloaded file path.
+ */
+export async function downloadWithTimeout(
+  download: () => Promise<string>,
+  ms = 120_000,
+  message = 'Download timed out after 120s',
+): Promise<string> {
+  let handle: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      download(),
+      new Promise<never>((_, reject) => {
+        handle = setTimeout(() => reject(new Error(message)), ms);
+      }),
+    ]);
+  } finally {
+    if (handle !== undefined) clearTimeout(handle);
+  }
+}
+
+/**
  * Ensure the OpenCode CLI binary is available.
  * Checks PATH first; if not found, downloads and caches the specified version.
  *
@@ -898,17 +990,10 @@ export async function setupOpenCode(
   try {
     const result = await withRetry(
       async () => {
-        let downloadTimeoutHandle: ReturnType<typeof setTimeout> | undefined = undefined;
-        const dlPath = await Promise.race([
-          tc.downloadTool(asset.browser_download_url),
-          new Promise<never>((_, reject) => {
-            downloadTimeoutHandle = setTimeout(
-              () => reject(new Error('Download timed out after 120s')),
-              120_000,
-            );
-          }),
-        ]).finally(
-          () => downloadTimeoutHandle !== undefined && clearTimeout(downloadTimeoutHandle),
+        const dlPath = await downloadWithTimeout(
+          () => tc.downloadTool(asset.browser_download_url),
+          120_000,
+          'Download timed out after 120s',
         );
 
         await verifyDownloadedArchive(
@@ -978,16 +1063,11 @@ async function verifyDownloadedArchive(
     let fetchFailed = false;
     try {
       core.info(`Downloading checksum file: ${checksumAsset.name}`);
-      let checksumTimeoutHandle: ReturnType<typeof setTimeout> | undefined = undefined;
-      const checksumPath = await Promise.race([
-        tc.downloadTool(checksumAsset.browser_download_url),
-        new Promise<never>((_, reject) => {
-          checksumTimeoutHandle = setTimeout(
-            () => reject(new Error('Checksum file download timed out after 120s')),
-            120_000,
-          );
-        }),
-      ]).finally(() => checksumTimeoutHandle !== undefined && clearTimeout(checksumTimeoutHandle));
+      const checksumPath = await downloadWithTimeout(
+        () => tc.downloadTool(checksumAsset.browser_download_url),
+        120_000,
+        'Checksum file download timed out after 120s',
+      );
       const checksumContent = fs.readFileSync(checksumPath, 'utf-8');
       expectedHash = parseChecksumFile(checksumContent, assetName);
     } catch (err) {
@@ -1099,22 +1179,44 @@ export async function resolveOpenCodePath(
  * We inject this as OPENCODE_CONFIG_CONTENT (highest-precedence env var,
  * overrides even a project-level opencode.json) so no file needs to be written
  * and the config can never be overridden by a repo's own config.
+ *
+ * SECURITY: `permission: "allow"` + `--auto` runs the primary agent with full
+ * tool access over untrusted PR content (prompt-injection surface) while
+ * GITHUB_TOKEN is in the subprocess env (needed for git-push fix flows), so a
+ * crafted diff could instruct tool use leading to token exfiltration or a
+ * malicious push. The default stays `allow` for backward compatibility (CI
+ * reviews need non-interactive tool use), but least-privilege operation is
+ * available without code changes: set `OPENCODE_LEAST_PRIVILEGE=true` (or pass
+ * a custom `opencodeConfig`/`runModeOverride` with `autoApprove: false`) to
+ * require approval-gated tools, and prefer a repo-scoped fine-grained PAT for
+ * GITHUB_TOKEN. Subagents remain read-only regardless of this setting (see
+ * `buildReviewSubagent`).
  * @returns A JSON string of the CI config.
  */
 function buildCIConfig(): string {
   if (cachedCIConfig) return cachedCIConfig;
-  const config = {
-    $schema: 'https://opencode.ai/config.json',
-    // "allow" as a string is the shorthand that enables every tool without
-    // prompting. Docs: https://opencode.ai/docs/permissions#configuration
-    permission: 'allow',
-    // Disable auto-update and sharing — irrelevant in CI and slow things down.
-    autoupdate: false,
-    share: 'disabled',
-    // Clear MCP and plugins to prevent downloading external dependencies in CI
-    mcp: {},
-    plugin: [],
-  };
+  const leastPrivilege = process.env.OPENCODE_LEAST_PRIVILEGE?.trim().toLowerCase() === 'true';
+  const config = leastPrivilege
+    ? {
+        $schema: 'https://opencode.ai/config.json',
+        permission: { edit: 'ask', bash: 'ask', task: 'allow' },
+        autoupdate: false,
+        share: 'disabled',
+        mcp: {},
+        plugin: [],
+      }
+    : {
+        $schema: 'https://opencode.ai/config.json',
+        // "allow" as a string is the shorthand that enables every tool without
+        // prompting. Docs: https://opencode.ai/docs/permissions#configuration
+        permission: 'allow',
+        // Disable auto-update and sharing — irrelevant in CI and slow things down.
+        autoupdate: false,
+        share: 'disabled',
+        // Clear MCP and plugins to prevent downloading external dependencies in CI
+        mcp: {},
+        plugin: [],
+      };
   cachedCIConfig = JSON.stringify(config);
   return cachedCIConfig;
 }
@@ -1157,6 +1259,53 @@ const LLM_REF_ALLOWLIST = new Set([
   'AZURE_RESOURCE_NAME',
   'AZURE_OPENAI_API_VERSION',
 ]);
+
+/**
+ * Hoisted (module-level) allowlist of env vars forwarded into the sandboxed
+ * `opencode run` subprocess. Hoisted out of `runOpenCodeInner` so the 40+
+ * entry array is not rebuilt on every run (hot path).
+ */
+const SAFE_ENV_ALLOWLIST: readonly string[] = [
+  'PATH',
+  'HOME',
+  'CI',
+  'GITHUB_ACTIONS',
+  'GITHUB_ACTOR',
+  'GITHUB_REPOSITORY',
+  'GITHUB_REPOSITORY_OWNER',
+  'GITHUB_SHA',
+  'GITHUB_REF',
+  'GITHUB_BASE_REF',
+  'GITHUB_HEAD_REF',
+  'GITHUB_WORKSPACE',
+  'GITHUB_ACTION',
+  'GITHUB_EVENT_NAME',
+  'GITHUB_EVENT_PATH',
+  'GITHUB_OUTPUT',
+  'GITHUB_STEP_SUMMARY',
+  'GITHUB_ENV',
+  'GITHUB_PATH',
+  'RUNNER_OS',
+  'RUNNER_ARCH',
+  'RUNNER_TEMP',
+  'RUNNER_TOOL_CACHE',
+  'NODE_PATH',
+  'GIT_ASKPASS',
+  'GIT_AUTHOR_NAME',
+  'GIT_AUTHOR_EMAIL',
+  'GIT_COMMITTER_NAME',
+  'GIT_COMMITTER_EMAIL',
+  'OPENCODE_CREDENTIAL_TOKEN',
+  'LLM_BASE_URL',
+  'LLM_API_KEY',
+  'LLM_MODEL',
+  'OLLAMA_BASE_URL',
+  'OLLAMA_MODEL',
+  'AZURE_OPENAI_API_KEY',
+  'AZURE_OPENAI_ENDPOINT',
+  'AZURE_RESOURCE_NAME',
+  'AZURE_OPENAI_API_VERSION',
+];
 
 /**
  * Normalize an optional provider timeout (milliseconds) for emission as an
@@ -2442,14 +2591,13 @@ async function runOpenCodeInner(
   // argv — binary path, flags, model string, and prompt — must stay below that
   // limit or the kernel throws E2BIG and child_process.spawn fails.  We allow
   // 96 KiB for the prompt alone, leaving ~32 KiB of headroom for the other
-  // argv elements.  When the prompt exceeds this threshold in CI/autoApprove
-  // mode, we pipe it via stdin instead of passing it as an argv element.
+  // argv elements.  When the prompt exceeds this threshold we pipe it via
+  // stdin instead of passing it as an argv element (gated on size alone, not
+  // on autoApprove, so large interactive-local prompts also avoid E2BIG).
   // The opencode CLI reads ALL of stdin to EOF as the message when stdin is
   // not a TTY (see packages/opencode/src/cli/cmd/run.ts).
-  // Interactive TTY path: large prompts are inherently argv-limited (the user
-  // is typing at the terminal, not pasting multi-hundred-KiB diffs).
   const MAX_ARG_BYTES = 96 * 1024;
-  const useStdinForPrompt = autoApprove && Buffer.byteLength(prompt, 'utf8') > MAX_ARG_BYTES;
+  const useStdinForPrompt = Buffer.byteLength(prompt, 'utf8') > MAX_ARG_BYTES;
   if (useStdinForPrompt) {
     core.info(
       `Prompt is ${Buffer.byteLength(prompt, 'utf8')} bytes (threshold ${MAX_ARG_BYTES}) — ` +
@@ -2470,52 +2618,11 @@ async function runOpenCodeInner(
   const opencodeApiKey = process.env.OPENCODE_API_KEY || process.env.INPUT_OPENCODE_API_KEY || '';
 
   const safeEnv: Record<string, string> = {};
-  const WHITELISTED_KEYS = [
-    'PATH',
-    'HOME',
-    'CI',
-    'GITHUB_ACTIONS',
-    'GITHUB_ACTOR',
-    'GITHUB_REPOSITORY',
-    'GITHUB_REPOSITORY_OWNER',
-    'GITHUB_SHA',
-    'GITHUB_REF',
-    'GITHUB_BASE_REF',
-    'GITHUB_HEAD_REF',
-    'GITHUB_WORKSPACE',
-    'GITHUB_ACTION',
-    'GITHUB_EVENT_NAME',
-    'GITHUB_EVENT_PATH',
-    'GITHUB_OUTPUT',
-    'GITHUB_STEP_SUMMARY',
-    'GITHUB_ENV',
-    'GITHUB_PATH',
-    'RUNNER_OS',
-    'RUNNER_ARCH',
-    'RUNNER_TEMP',
-    'RUNNER_TOOL_CACHE',
-    'NODE_PATH',
-    'GIT_ASKPASS',
-    'GIT_AUTHOR_NAME',
-    'GIT_AUTHOR_EMAIL',
-    'GIT_COMMITTER_NAME',
-    'GIT_COMMITTER_EMAIL',
-    'OPENCODE_CREDENTIAL_TOKEN',
-    'LLM_BASE_URL',
-    'LLM_API_KEY',
-    'LLM_MODEL',
-    'OLLAMA_BASE_URL',
-    'OLLAMA_MODEL',
-    'AZURE_OPENAI_API_KEY',
-    'AZURE_OPENAI_ENDPOINT',
-    'AZURE_RESOURCE_NAME',
-    'AZURE_OPENAI_API_VERSION',
-  ];
   // NOTE: DATABASE_URL is intentionally NOT forwarded — it is consumed by the
   // reviewer's own learning store in the parent process only. AWS_* ambient
   // credentials are intentionally NOT in the allowlist either; they are
   // forwarded only for Bedrock provider runs (see applyLLMEnvOverrides).
-  for (const key of WHITELISTED_KEYS) {
+  for (const key of SAFE_ENV_ALLOWLIST) {
     const val = process.env[key];
     if (val !== undefined) safeEnv[key] = val;
   }
@@ -2551,6 +2658,23 @@ async function runOpenCodeInner(
       if (value === undefined || key === 'OPENCODE_CONFIG_CONTENT') continue;
       if (key === 'DATABASE_URL') {
         core.warning('options.env DATABASE_URL is never forwarded to the subprocess; skipping.');
+        continue;
+      }
+      // options.env is a trusted-caller escape hatch (programmatic API only,
+      // never repo-controlled input), so generic keys still pass through.
+      // Only subprocess-hijack keys are denied even from trusted callers:
+      // dynamic-loader / runtime keys (LD_*, NODE_OPTIONS), PATH/HOME, and
+      // GIT_* overrides would otherwise bypass the sandbox (LD_PRELOAD code
+      // execution, binary shadowing, GIT_ASKPASS hijack).
+      if (
+        key.startsWith('LD_') ||
+        key === 'NODE_OPTIONS' ||
+        key === 'NODE_PRELOAD' ||
+        key === 'PATH' ||
+        key === 'HOME' ||
+        key.startsWith('GIT_')
+      ) {
+        core.warning(`options.env ${key} is never forwarded to the subprocess; skipping.`);
         continue;
       }
       if (key.startsWith('AWS_') && !(hasBedrockProvider && bedrockAwsKeys.has(key))) {
@@ -3133,20 +3257,24 @@ export async function setupWorkspaceDependencies(cwd: string): Promise<void> {
     }
   }
 
-  // 2. Install workspace dependencies if node_modules does not exist
+  // 2. Install workspace dependencies if node_modules does not exist.
+  // The workspace is PR-controlled (untrusted): always pass --ignore-scripts
+  // so attacker-controlled preinstall/postinstall hooks never execute with
+  // runner credentials. Run `pnpm approve-builds` / explicit build steps
+  // separately when scripts are actually needed.
   const hasNodeModules = fs.existsSync(path.join(cwd, 'node_modules'));
   if (!hasNodeModules) {
     core.info('node_modules not found. Installing dependencies...');
     try {
       if (hasPnpmLock) {
         core.info('Running pnpm install...');
-        cp.execFileSync('pnpm', ['install'], { cwd, stdio: 'inherit' });
+        cp.execFileSync('pnpm', ['install', '--ignore-scripts'], { cwd, stdio: 'inherit' });
       } else if (hasYarnLock) {
         core.info('Running yarn install...');
-        cp.execFileSync('yarn', ['install'], { cwd, stdio: 'inherit' });
+        cp.execFileSync('yarn', ['install', '--ignore-scripts'], { cwd, stdio: 'inherit' });
       } else {
         core.info('Running npm install...');
-        cp.execFileSync('npm', ['install'], { cwd, stdio: 'inherit' });
+        cp.execFileSync('npm', ['install', '--ignore-scripts'], { cwd, stdio: 'inherit' });
       }
       core.info('Workspace dependencies installed successfully.');
     } catch (err) {

@@ -16,8 +16,7 @@ import type { EventBus } from './event-bus/bus.js';
 import { emptyResult, parseAgentJsonlString, parseJsonlFile } from './jsonl-parser.js';
 import type { LearningStore } from './learning/store.js';
 import { MCPManager } from './mcp/client.js';
-import { ensureOutputDir, getGitStatus, runOpenCode } from './opencode.js';
-import { buildReviewSubagent } from './opencode.js';
+import { buildReviewSubagent, ensureOutputDir, getGitStatus, runOpenCode } from './opencode.js';
 import type { PlatformAdapter } from './platform/adapter.js';
 import {
   buildAnalyzePrompt,
@@ -147,6 +146,57 @@ export function buildPartialBatchWarning(failedBatches: number, totalBatches: nu
 }
 
 /**
+ * Options object for {@link ReviewEngine.buildAgentBatchContext} (preferred
+ * over the 12-positional-arg form, which is easy to mis-order).
+ */
+export interface AgentBatchContextOptions {
+  batchContext: string;
+  mcpDocs: string;
+  openThreadsContext: string;
+  codebaseIndexContext: string;
+  deltaContext?: string;
+  lessons?: string[];
+  falsePositiveRules?: string[];
+  previousFindings?: PreviousFindingIteration[];
+  previousBotComments?: Array<{
+    file: string;
+    line: number | null;
+    body: string;
+    commentId: number;
+  }>;
+  repoRulesContext?: string;
+  commitMessages?: string;
+  budget?: number;
+}
+
+/**
+ * Options object for {@link ReviewEngine.reviewPR} / pipeline entry points
+ * (preferred over the 11-positional-arg form, which is easy to mis-order).
+ * All fields optional except `pr`; positional callers keep working.
+ */
+export interface ReviewRunOptions {
+  iteration?: number;
+  promptFile?: string;
+  promptExtra?: string;
+  timeoutMinutes?: number;
+  previousFindings?: PreviousFindingIteration[];
+  workingDirectory?: string;
+  previousHeadSha?: string;
+  previousBotComments?: Array<{
+    file: string;
+    line: number | null;
+    body: string;
+    commentId: number;
+  }>;
+  onBatchComplete?: (
+    batchIndex: number,
+    totalBatches: number,
+    batchResult: ReviewResult,
+  ) => Promise<void>;
+  forceReview?: boolean;
+}
+
+/**
  * Section headers that carry defender-controlled policy rather than
  * attacker-controlled diff content. `budgetOrchestratorContext` never drops
  * these sections: truncation applies to the diff-heavy head only, so diff
@@ -239,6 +289,7 @@ const KNOWN_MODEL_RATES: Record<string, { inputCostPer1K: number; outputCostPer1
  * @returns The number of `INTER_CHUNK_DELAY_MS` waits applied.
  */
 export function computeChunkDelays(batchCount: number, concurrencyLimit: number): number {
+  if (batchCount <= 0 || concurrencyLimit <= 0 || !Number.isFinite(concurrencyLimit)) return 0;
   return Math.max(0, Math.ceil(batchCount / concurrencyLimit) - 1);
 }
 
@@ -421,14 +472,10 @@ export class ReviewEngine {
     // outcome. Use an explicit .then(onOk, onErr) pair instead of .finally()
     // so a rejecting pipeline never produces an unhandled rejection on the
     // derived (unobserved) promise.
-    promise.then(
-      () => {
-        ReviewEngine.IN_FLIGHT_REVIEWS.delete(key);
-      },
-      () => {
-        ReviewEngine.IN_FLIGHT_REVIEWS.delete(key);
-      },
-    );
+    const cleanup = (): void => {
+      ReviewEngine.IN_FLIGHT_REVIEWS.delete(key);
+    };
+    promise.then(cleanup, cleanup);
   }
 
   private isAlreadyReviewed(key: string, pr: PRContext): boolean {
@@ -453,9 +500,16 @@ export class ReviewEngine {
     // Check failure sentinels FIRST: a failed pipeline (execution/parse/all
     // batches failed) must never be cached as "already reviewed", even when its
     // fallback summary is truthy (e.g. "All N review batches failed — PR was
-    // not reviewed"). The content short-circuit below would otherwise treat
-    // that sentinel message as a meaningful review.
-    if (ReviewEngine.REVIEW_FAILURE_SENTINELS.has(result.verdict.reasoning ?? '')) return false;
+    // not reviewed"). Match by exact or prefix-with-degradation-suffix so
+    // degraded verdicts (e.g. "All review batches failed (Partial review: …)")
+    // still suppress caching and allow retries within the TTL. Explicit
+    // partial-failure flags also suppress caching even without a sentinel.
+    const reasoning = result.verdict?.reasoning ?? '';
+    for (const sentinel of ReviewEngine.REVIEW_FAILURE_SENTINELS) {
+      if (reasoning === sentinel || reasoning.startsWith(`${sentinel} (`)) return false;
+    }
+    if ((result.failedBatches ?? 0) > 0) return false;
+    if ((result.failedAgents ?? 0) > 0) return false;
     return true;
   }
 
@@ -674,23 +728,33 @@ export class ReviewEngine {
    */
   private async getPRCommits(pr: PRContext, workDir: string): Promise<Set<string> | undefined> {
     const head = pr.headSha;
-    if (!head) return undefined;
+    // Defense-in-depth: SHAs/refs flow from PR context (partially
+    // attacker-influenced on fork PRs). Reject leading-dash / metachar values
+    // so they can never become option injection at the `git` sink, and use
+    // `--` end-of-options on every rev-arg invocation below.
+    const isSafeRef = (v: string): boolean => /^[A-Za-z0-9][A-Za-z0-9._/+-]*$/.test(v);
+    const isSafeSha = (v: string): boolean => /^[0-9a-fA-F]{4,64}$/.test(v);
+    if (!head || (!isSafeSha(head) && !isSafeRef(head))) return undefined;
     try {
       const base = pr.baseSha;
       let range = '';
-      if (base) {
+      if (base && (isSafeSha(base) || isSafeRef(base))) {
         range = `${base}..${head}`;
-      } else if (pr.baseRef) {
+      } else if (pr.baseRef && isSafeRef(pr.baseRef)) {
+        // Values are validated above (never leading-dash), so option
+        // injection is blocked even on git versions without end-of-options.
         const mergeBase = await this.execGit(['merge-base', head, pr.baseRef], workDir);
         if (mergeBase) {
-          range = `${mergeBase}..${head}`;
+          range = `${mergeBase.trim()}..${head}`;
         }
       }
       if (!range) {
         // No base available — treat the head commit itself as the PR scope.
         return new Set([head]);
       }
-      const revList = await this.execGit(['rev-list', range], workDir);
+      // Trailing `--` terminates rev parsing so a crafted range can never be
+      // reinterpreted as paths (and vice versa).
+      const revList = await this.execGit(['rev-list', range, '--'], workDir);
       const commits = new Set<string>();
       for (const line of revList.split('\n')) {
         const sha = line.trim();
@@ -732,22 +796,39 @@ export class ReviewEngine {
     }
     const maxLinesPerFile =
       this.config.review.reviewBudget?.splitThreshold ?? MAX_BLAME_LINES_PER_FILE;
-    for (const file of files) {
-      if (!file?.path || !file.patch) continue;
-      const ranges = parsePatchHunks(file.patch);
-      if (ranges.length === 0) continue;
-      try {
-        const blame = await getGitBlame(file.path, ranges, {
-          cwd: repoRoot,
-          prCommits,
-          headSha: pr.headSha,
-          maxLinesPerFile,
-        });
-        if (blame.size > 0) blameData.set(file.path, blame);
-      } catch (err) {
-        this.logger.warn(
-          `Git blame skipped for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
-        );
+    // Bounded parallel batches (4 at a time): `git blame` spawns a process per
+    // file, so serial awaits sum spawn latency on the review critical path.
+    // Per-file fail-open is preserved — one file's failure never aborts others.
+    const candidates = files.filter(
+      (f) => f?.path && f.patch && parsePatchHunks(f.patch).length > 0,
+    );
+    const BLAME_CONCURRENCY = 4;
+    for (let i = 0; i < candidates.length; i += BLAME_CONCURRENCY) {
+      const chunk = candidates.slice(i, i + BLAME_CONCURRENCY);
+      const results = await Promise.all(
+        chunk.map(async (file) => {
+          try {
+            const blame = await getGitBlame(
+              file.path as string,
+              parsePatchHunks(file.patch as string),
+              {
+                cwd: repoRoot,
+                prCommits,
+                headSha: pr.headSha,
+                maxLinesPerFile,
+              },
+            );
+            return { path: file.path as string, blame };
+          } catch (err) {
+            this.logger.warn(
+              `Git blame skipped for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+            return null;
+          }
+        }),
+      );
+      for (const r of results) {
+        if (r && r.blame.size > 0) blameData.set(r.path, r.blame);
       }
     }
     return blameData;
@@ -870,7 +951,7 @@ export class ReviewEngine {
    */
   async reviewPR(
     pr: PRContext,
-    _iteration?: number,
+    _iterationOrOptions?: number | ReviewRunOptions,
     promptFile?: string,
     promptExtra?: string,
     timeoutMinutes?: number,
@@ -890,6 +971,27 @@ export class ReviewEngine {
     ) => Promise<void>,
     options?: { forceReview?: boolean },
   ): Promise<ReviewResult> {
+    // Options-object overload (preferred for new callers): reviewPR(pr, {...}).
+    // Positional form keeps working unchanged (backward-compatible). Resolved
+    // into locals (no parameter reassignment) for lint compliance.
+    const o: ReviewRunOptions =
+      typeof _iterationOrOptions === 'object' && _iterationOrOptions !== null
+        ? _iterationOrOptions
+        : {};
+    const _iteration: number | undefined =
+      typeof _iterationOrOptions === 'object' && _iterationOrOptions !== null
+        ? o.iteration
+        : _iterationOrOptions;
+    const effPromptFile = promptFile ?? o.promptFile;
+    const effPromptExtra = promptExtra ?? o.promptExtra;
+    const effTimeoutMinutes = timeoutMinutes ?? o.timeoutMinutes;
+    const effPreviousFindings = previousFindings ?? o.previousFindings;
+    const effWorkingDirectory = workingDirectory ?? o.workingDirectory;
+    const effPreviousHeadSha = previousHeadSha ?? o.previousHeadSha;
+    const effPreviousBotComments = previousBotComments ?? o.previousBotComments;
+    const effOnBatchComplete = onBatchComplete ?? o.onBatchComplete;
+    const effOptions =
+      options ?? (o.forceReview !== undefined ? { forceReview: o.forceReview } : undefined);
     // Reset telemetry so the reported usage reflects only this review invocation.
     this.telemetry = null;
 
@@ -906,7 +1008,7 @@ export class ReviewEngine {
         // skipped/in-flight-shared result as an informational no-op for posting.
         return { ...joined, skipped: true };
       }
-      if (!options?.forceReview && this.isAlreadyReviewed(dedupKey, pr)) {
+      if (!effOptions?.forceReview && this.isAlreadyReviewed(dedupKey, pr)) {
         this.logger.info(`PR already reviewed for ${dedupKey}, skipping`);
         return { ...emptyResult(), skipped: true };
       }
@@ -919,14 +1021,14 @@ export class ReviewEngine {
     const promise = this.runReviewPipeline(
       pr,
       _iteration,
-      promptFile,
-      promptExtra,
-      timeoutMinutes,
-      previousFindings,
-      workingDirectory,
-      previousHeadSha,
-      previousBotComments,
-      onBatchComplete,
+      effPromptFile,
+      effPromptExtra,
+      effTimeoutMinutes,
+      effPreviousFindings,
+      effWorkingDirectory,
+      effPreviousHeadSha,
+      effPreviousBotComments,
+      effOnBatchComplete,
     );
     if (dedupKey) this.setInFlightReview(dedupKey, promise);
 
@@ -1302,59 +1404,69 @@ export class ReviewEngine {
       const filePaths = pr.changedFiles
         .map((f) => f?.path)
         .filter((p): p is string => typeof p === 'string' && Boolean(p));
-      try {
-        lessons = await this.getRelevantLessons(filePaths);
-      } catch (err) {
+      // Independent learning-store reads run concurrently (fail-open each).
+      // Deferred into closures so a mock store missing one method still
+      // rejects (caught per-branch) instead of throwing synchronously during
+      // argument evaluation.
+      const store = this.learningStore;
+      const [lessonRes, fpRes] = await Promise.allSettled([
+        this.getRelevantLessons(filePaths),
+        (async () => {
+          if (typeof store?.getFalsePositiveRules !== 'function') return undefined;
+          return store.getFalsePositiveRules(filePaths);
+        })(),
+      ]);
+      if (lessonRes.status === 'fulfilled') lessons = lessonRes.value;
+      else
         this.logger.warn(
-          `Failed to get learning store lessons: ${err instanceof Error ? err.message : String(err)}`,
+          `Failed to get learning store lessons: ${lessonRes.reason instanceof Error ? lessonRes.reason.message : String(lessonRes.reason)}`,
         );
-      }
-      try {
-        falsePositiveRules = await this.learningStore.getFalsePositiveRules(filePaths);
-      } catch (err) {
+      if (fpRes.status === 'fulfilled') falsePositiveRules = fpRes.value ?? undefined;
+      else
         this.logger.warn(
-          `Failed to get false-positive rules: ${err instanceof Error ? err.message : String(err)}`,
+          `Failed to get false-positive rules: ${fpRes.reason instanceof Error ? fpRes.reason.message : String(fpRes.reason)}`,
         );
-      }
     }
 
-    // Repo-defined review rules (AGENTS.md/CLAUDE.md/GEMINI.md) and the PR's
-    // commit list are gathered once and threaded into every review path so the
-    // reviewer enforces the team's own conventions and can judge intent vs code.
-    let repoRulesContext: string | undefined;
-    let commitMessages: string | undefined;
-    try {
-      repoRulesContext = await this.buildRepoRulesContext(workDir);
-    } catch (err) {
-      this.logger.warn(
-        `Failed to build repository rules context: ${err instanceof Error ? err.message : String(err)}`,
-      );
+    // Repo-defined review rules (AGENTS.md/CLAUDE.md/GEMINI.md), head-SHA
+    // conventions, commit list, and linters are independent enrichment steps:
+    // run them concurrently (fail-open each) so wall-clock is max, not sum.
+    const [repoRulesBuilt, agentsMdLoaded, commitsBuilt, linterResults] = await Promise.all([
+      this.buildRepoRulesContext(workDir).catch((err) => {
+        this.logger.warn(
+          `Failed to build repository rules context: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return undefined as string | undefined;
+      }),
+      // Opt-in: auto-load AGENTS.md / copilot-instructions.md versioned at
+      // the PR head SHA (covers fork PRs and stale/shallow checkouts).
+      this.loadAgentsMdAtHeadSha(pr).catch((err) => {
+        this.logger.warn(
+          `Failed to load head-SHA conventions context: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return {} as { context?: string };
+      }),
+      this.buildCommitMessages(pr, workDir).catch((err) => {
+        this.logger.warn(
+          `Failed to build commit-message context: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return undefined as string | undefined;
+      }),
+      // Run configured linters as pre-processing step (concurrent internally).
+      this.runLinters(files, workDir).catch((err) => {
+        this.logger.warn(
+          `Linter enrichment failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return [] as LinterResult[];
+      }),
+    ]);
+    let repoRulesContext: string | undefined = repoRulesBuilt;
+    if (agentsMdLoaded.context) {
+      repoRulesContext = repoRulesContext
+        ? `${repoRulesContext}\n${agentsMdLoaded.context}`
+        : agentsMdLoaded.context;
     }
-    // Opt-in: auto-load AGENTS.md / copilot-instructions.md versioned at the PR
-    // head SHA (covers fork PRs and stale/shallow checkouts the local read
-    // above cannot see). Fail-open: any failure keeps the existing prompt.
-    try {
-      const agentsMd = await this.loadAgentsMdAtHeadSha(pr);
-      if (agentsMd.context) {
-        repoRulesContext = repoRulesContext
-          ? `${repoRulesContext}\n${agentsMd.context}`
-          : agentsMd.context;
-      }
-    } catch (err) {
-      this.logger.warn(
-        `Failed to load head-SHA conventions context: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-    try {
-      commitMessages = await this.buildCommitMessages(pr, workDir);
-    } catch (err) {
-      this.logger.warn(
-        `Failed to build commit-message context: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-
-    // Run configured linters as pre-processing step
-    const linterResults = await this.runLinters(files, workDir);
+    const commitMessages: string | undefined = commitsBuilt;
 
     // Test-gap detection: correlate changed source symbols with their test files
     // and surface structured gaps as prompt context. Non-critical: any failure
@@ -1428,7 +1540,9 @@ export class ReviewEngine {
         // `buildAgentBatchContext` so the unbounded string never materializes.
         // `budgetOrchestratorContext` remains as a byte-aware safety net that
         // additionally guarantees the defender-controlled suffix survives.
-        const assembledContext = this.buildAgentBatchContext(
+        // Explicit wasBudgeted propagation (no string scanning): a PR diff
+        // containing the marker literal must not force degradation.
+        const assembled = this.buildAgentBatchContext(
           baseContext,
           mcpDocs,
           openThreadsContext,
@@ -1447,14 +1561,13 @@ export class ReviewEngine {
         // down to SUBAGENT_REVIEW_CONTEXT_LIMIT in-process rather than
         // falling back to N concurrent `opencode run` processes.
         const { context: budgetedContext, wasBudgeted } = ReviewEngine.budgetOrchestratorContext(
-          assembledContext,
+          assembled.context,
           SUBAGENT_REVIEW_CONTEXT_LIMIT,
         );
-        const contextWasBudgeted =
-          wasBudgeted || budgetedContext.includes(ORCHESTRATOR_BUDGET_MARKER);
+        const contextWasBudgeted = assembled.wasBudgeted || wasBudgeted;
         if (contextWasBudgeted) {
           this.logger.warn(
-            `Orchestrator context (${assembledContext.length} chars) exceeds SUBAGENT_REVIEW_CONTEXT_LIMIT (${SUBAGENT_REVIEW_CONTEXT_LIMIT}) — budgeted to fit single-process path`,
+            `Orchestrator context (${assembled.context.length} chars) exceeds SUBAGENT_REVIEW_CONTEXT_LIMIT (${SUBAGENT_REVIEW_CONTEXT_LIMIT}) — budgeted to fit single-process path`,
           );
         }
         const multiAgentResult = await this.runMultiAgentReview(
@@ -1573,12 +1686,7 @@ export class ReviewEngine {
             finalResult = {
               ...parsed,
               issues: deduped,
-              stats: {
-                total: deduped.length,
-                critical: deduped.filter((i) => i.severity === 'critical').length,
-                important: deduped.filter((i) => i.severity === 'important').length,
-                minor: deduped.filter((i) => i.severity === 'minor').length,
-              },
+              stats: computeReviewStats(deduped),
             };
           }
         }
@@ -1909,12 +2017,7 @@ export class ReviewEngine {
           finalResult = {
             ...finalResult,
             issues: deduped,
-            stats: {
-              total: deduped.length,
-              critical: deduped.filter((i) => i.severity === 'critical').length,
-              important: deduped.filter((i) => i.severity === 'important').length,
-              minor: deduped.filter((i) => i.severity === 'minor').length,
-            },
+            stats: computeReviewStats(deduped),
           };
         }
       }
@@ -2138,7 +2241,7 @@ export class ReviewEngine {
           previousBotComments,
           repoRulesContext,
           commitMessages,
-        );
+        ).context;
       })();
 
     const promptBuilderInputs = {
@@ -2425,12 +2528,31 @@ export class ReviewEngine {
     const suffix = suffixStart >= 0 ? ctx.slice(suffixStart) : '';
     // Suffix alone exceeds the budget: keep the head empty and fit as much of
     // the safety suffix as possible (policy still wins over diff content).
-    if (suffix.length + marker.length >= effectiveBudget) {
+    // Byte-aware: multibyte suffixes can exceed the budget in bytes while
+    // fitting in chars, so shrink on byte length too (never return over-budget).
+    const markerBytes = Buffer.byteLength(marker, 'utf8');
+    if (
+      suffix.length + marker.length >= effectiveBudget ||
+      Buffer.byteLength(suffix, 'utf8') + markerBytes >= effectiveBudget
+    ) {
       const suffixBudget = effectiveBudget - marker.length;
-      const kept = truncateHeadOnBoundary(suffix, suffixBudget);
-      return { context: `${kept}${marker}`, wasBudgeted: true };
+      let kept = truncateHeadOnBoundary(suffix, Math.max(0, suffixBudget));
+      let keptAssembled = `${kept}${marker}`;
+      while (Buffer.byteLength(keptAssembled, 'utf8') > effectiveBudget && kept.length > 0) {
+        kept = truncateHeadOnBoundary(kept, Math.floor(kept.length / 2));
+        keptAssembled = `${kept}${marker}`;
+        if (kept.length === 0) break;
+      }
+      // Byte-truncate on a UTF-8 boundary as a last resort so the contract
+      // (byte length <= budget) always holds.
+      if (Buffer.byteLength(keptAssembled, 'utf8') > effectiveBudget) {
+        keptAssembled = truncateUtf8Bytes(keptAssembled, effectiveBudget);
+      }
+      return { context: keptAssembled, wasBudgeted: true };
     }
-    let headBudget = effectiveBudget - suffix.length - marker.length - (suffix ? 1 : 0);
+    const suffixBytes = Buffer.byteLength(suffix, 'utf8');
+    let headBudget = effectiveBudget - suffixBytes - markerBytes - (suffix ? 1 : 0);
+    if (headBudget < 0) headBudget = 0;
     let truncatedHead = truncateHeadOnBoundary(head, headBudget);
     // Byte-aware shrink: multibyte text can exceed `budget` bytes while
     // fitting in chars — walk back to earlier newline boundaries.
@@ -2444,6 +2566,9 @@ export class ReviewEngine {
       truncatedHead = truncateHeadOnBoundary(head, headBudget);
       assembled = suffix ? `${truncatedHead}${marker}\n${suffix}` : `${truncatedHead}${marker}`;
       if (headBudget <= 0) break;
+    }
+    if (Buffer.byteLength(assembled, 'utf8') > effectiveBudget) {
+      assembled = truncateUtf8Bytes(assembled, effectiveBudget);
     }
     return { context: assembled, wasBudgeted: true };
   }
@@ -2519,31 +2644,19 @@ export class ReviewEngine {
    * context, delta context, learning lessons, false-positive rules, and
    * previous iteration findings so the agent reviews with the same enrichment
    * the legacy path provides.
-   * @param batchContext - The batch PR context string.
-   * @param mcpDocs - MCP library documentation ('' when disabled/failed).
-   * @param openThreadsContext - Open human-thread discussion context ('' when none/failed).
-   * @param codebaseIndexContext - Cross-file codebase context ('' when unavailable).
-   * @param deltaContext - Optional incremental review context.
-   * @param lessons - Optional learning-store lessons.
-   * @param falsePositiveRules - Optional false-positive suppression rules.
-   * @param previousFindings - Optional findings from previous fix iterations.
-   * @param previousBotComments - Optional previous bot review comments.
-   * @param repoRulesContext - Optional repository rules context
-   * (AGENTS.md/CLAUDE.md/GEMINI.md/RULES.md) threaded into the agent prompt.
-   * @param commitMessages - Optional compact git log commit list for the PR.
-   * @param budget - Optional character budget. When provided and the assembled
-   * context would exceed it, the diff-heavy `batchContext` head is truncated
-   * on a hunk/newline boundary *during assembly* (before the full join), so
-   * oversized reviews never materialize the unbounded string. Suffix policy
-   * sections are always preserved (see `budgetOrchestratorContext`, which
-   * remains as a safety net for callers that assemble without a budget).
-   * @returns The enriched context string.
+   *
+   * Accepts either 12 positional args (legacy) or a single
+   * {@link AgentBatchContextOptions} object (preferred for new callers — the
+   * positional list is long enough to mis-order).
+   * @returns The enriched context and whether assembly-time budgeting applied
+   * (explicit boolean so callers never string-scan for the budget marker —
+   * a PR diff containing the marker literal must not force degradation).
    */
   private buildAgentBatchContext(
-    batchContext: string,
-    mcpDocs: string,
-    openThreadsContext: string,
-    codebaseIndexContext: string,
+    batchContextOrOptions: string | AgentBatchContextOptions,
+    mcpDocs?: string,
+    openThreadsContext?: string,
+    codebaseIndexContext?: string,
     deltaContext?: string,
     lessons?: string[],
     falsePositiveRules?: string[],
@@ -2557,31 +2670,59 @@ export class ReviewEngine {
     repoRulesContext?: string,
     commitMessages?: string,
     budget?: number,
-  ): string {
+  ): { context: string; wasBudgeted: boolean } {
+    const opts: AgentBatchContextOptions =
+      typeof batchContextOrOptions === 'string'
+        ? {
+            batchContext: batchContextOrOptions,
+            mcpDocs: mcpDocs ?? '',
+            openThreadsContext: openThreadsContext ?? '',
+            codebaseIndexContext: codebaseIndexContext ?? '',
+            deltaContext,
+            lessons,
+            falsePositiveRules,
+            previousFindings,
+            previousBotComments,
+            repoRulesContext,
+            commitMessages,
+            budget,
+          }
+        : batchContextOrOptions;
+    const {
+      batchContext,
+      mcpDocs: oMcpDocs,
+      openThreadsContext: oThreads,
+      codebaseIndexContext: oIndex,
+      deltaContext: oDelta,
+      lessons: oLessons,
+      falsePositiveRules: oFpRules,
+      previousFindings: oPrevFindings,
+      previousBotComments: oPrevComments,
+      repoRulesContext: oRepoRules,
+      commitMessages: oCommits,
+      budget: oBudget,
+    } = opts;
     const parts: string[] = [batchContext];
 
-    if (mcpDocs) {
-      parts.push('\n\n## Library Documentation\n\n' + mcpDocs);
+    if (oMcpDocs) {
+      parts.push('\n\n## Library Documentation\n\n' + oMcpDocs);
     }
-    if (openThreadsContext) {
+    if (oThreads) {
       // Mirror the legacy baseContext assembly, which appends open human-thread
       // context verbatim so agents respect unresolved discussion threads.
-      parts.push('\n\n' + openThreadsContext);
+      parts.push('\n\n' + oThreads);
     }
-    if (codebaseIndexContext) {
-      parts.push('\n\n## Codebase Context (Cross-File Analysis)\n\n' + codebaseIndexContext);
+    if (oIndex) {
+      parts.push('\n\n## Codebase Context (Cross-File Analysis)\n\n' + oIndex);
     }
-    if (deltaContext) {
+    if (oDelta) {
       // Mirror the legacy buildReviewPrompt cap: truncate the delta diff to
       // 5000 chars on a hunk or newline boundary so a large diff cannot push
       // the later enrichment sections past the agent prompt length cap.
-      let truncatedDelta = deltaContext;
-      if (deltaContext.length > 5000) {
-        const slice = deltaContext.slice(0, 5000);
-        const lastHunk = slice.lastIndexOf('\n@@');
-        const lastNewline = slice.lastIndexOf('\n');
-        const boundary = lastHunk > 0 ? lastHunk : lastNewline > 0 ? lastNewline : 5000;
-        truncatedDelta = `${slice.slice(0, boundary)}\n... (truncated)`;
+      // Reuses the shared hunk-boundary helper (single source of truth).
+      let truncatedDelta = oDelta;
+      if (oDelta.length > 5000) {
+        truncatedDelta = `${truncateHeadOnBoundary(oDelta, 5000)}\n... (truncated)`;
       }
       parts.push(
         '\n\n## Incremental Review (Delta Changes)\n\n' +
@@ -2591,40 +2732,40 @@ export class ReviewEngine {
           '\n```',
       );
     }
-    if (falsePositiveRules && falsePositiveRules.length > 0) {
+    if (oFpRules && oFpRules.length > 0) {
       parts.push(
         '\n\n## False Positive Suppression Rules\n\nThe following patterns were previously flagged but dismissed by human reviewers as intentional or not actual issues. DO NOT flag these patterns again:',
       );
-      for (const rule of falsePositiveRules) {
+      for (const rule of oFpRules) {
         parts.push(`- ${rule}`);
       }
     }
-    if (repoRulesContext) {
+    if (oRepoRules) {
       parts.push(
         '\n\n## Repository Review Rules\n\nThe repository defines its own review rules and coding conventions (from AGENTS.md/CLAUDE.md/GEMINI.md or a rules file). Treat these as authoritative — enforce them:',
       );
-      parts.push(repoRulesContext.slice(0, 32_000));
+      parts.push(oRepoRules.slice(0, 32_000));
     }
-    if (commitMessages) {
+    if (oCommits) {
       parts.push(
         "\n\n## Commits in this PR\n\nThe commit messages below capture the author's intent. Use them to judge whether the changes implement what the commits claim:",
       );
-      parts.push(commitMessages.slice(0, 8_000));
+      parts.push(oCommits.slice(0, 8_000));
     }
-    if (lessons && lessons.length > 0) {
+    if (oLessons && oLessons.length > 0) {
       parts.push(
         '\n\n## Historical Lessons\n\nThe following patterns were detected in similar code in past reviews:',
       );
-      for (const lesson of lessons) {
+      for (const lesson of oLessons) {
         parts.push(`- ${lesson}`);
       }
     }
-    if (previousFindings && previousFindings.length > 0) {
+    if (oPrevFindings && oPrevFindings.length > 0) {
       parts.push(
         '\n\n## Previous Review Iterations\n\n' +
           'This is not the first review of this PR. Report only issues that are STILL present.',
       );
-      for (const pf of previousFindings) {
+      for (const pf of oPrevFindings) {
         parts.push(`\n### Iteration ${pf.iteration}`);
         if (pf.fixSummary) parts.push(`Fix summary: ${pf.fixSummary}`);
         if (pf.filesChanged && pf.filesChanged.length > 0) {
@@ -2639,11 +2780,11 @@ export class ReviewEngine {
         }
       }
     }
-    if (previousBotComments && previousBotComments.length > 0) {
+    if (oPrevComments && oPrevComments.length > 0) {
       parts.push(
         '\n\n## Previously Reported Issues (Auto-Tracking)\n\nThe following issues were reported in previous reviews on this PR. Do NOT re-report issues that have been fixed:',
       );
-      for (const comment of previousBotComments) {
+      for (const comment of oPrevComments) {
         const location = comment.line != null ? `${comment.file}:${comment.line}` : comment.file;
         const snippet = sanitizeString(comment.body.split('\n')[0].substring(0, 200));
         parts.push(`- **${location}** — ${snippet}`);
@@ -2655,26 +2796,33 @@ export class ReviewEngine {
     // so oversized reviews never materialize the unbounded string (peak
     // memory ~1x budgeted instead of ~2x). Suffix policy sections are
     // preserved; the marker records that budgeting applied.
+    // Byte-aware: spawn/model limits are bytes, so the head budget is derived
+    // from byte lengths (not UTF-16 char lengths) to avoid overestimating the
+    // head for multibyte diffs.
+    let assemblyBudgeted = false;
     if (
-      budget !== undefined &&
-      Number.isFinite(budget) &&
-      budget > ORCHESTRATOR_BUDGET_MARKER.length
+      oBudget !== undefined &&
+      Number.isFinite(oBudget) &&
+      oBudget > ORCHESTRATOR_BUDGET_MARKER.length
     ) {
       const suffixJoined = parts.slice(1).join('\n');
       const estimated = parts[0].length + 1 + suffixJoined.length;
       const bytesEstimated =
         Buffer.byteLength(parts[0], 'utf8') + 1 + Buffer.byteLength(suffixJoined, 'utf8');
-      if (estimated > budget || bytesEstimated > budget) {
-        const headBudget = budget - suffixJoined.length - ORCHESTRATOR_BUDGET_MARKER.length - 2;
+      if (estimated > oBudget || bytesEstimated > oBudget) {
+        const suffixBytes = Buffer.byteLength(suffixJoined, 'utf8');
+        const markerBytes = Buffer.byteLength(ORCHESTRATOR_BUDGET_MARKER, 'utf8');
+        const headBudget = oBudget - suffixBytes - markerBytes - 2;
         if (headBudget <= 0) {
           parts[0] = ORCHESTRATOR_BUDGET_MARKER;
         } else {
           parts[0] = `${truncateHeadOnBoundary(parts[0], headBudget)}${ORCHESTRATOR_BUDGET_MARKER}`;
         }
+        assemblyBudgeted = true;
       }
     }
 
-    return parts.join('\n');
+    return { context: parts.join('\n'), wasBudgeted: assemblyBudgeted };
   }
 
   /**
@@ -2711,12 +2859,7 @@ export class ReviewEngine {
       },
       strengths,
       issues,
-      stats: {
-        total: issues.length,
-        critical: issues.filter((i) => i.severity === 'critical').length,
-        important: issues.filter((i) => i.severity === 'important').length,
-        minor: issues.filter((i) => i.severity === 'minor').length,
-      },
+      stats: computeReviewStats(issues),
       rawLines,
       failedLines,
       failedAgents,
@@ -3556,21 +3699,35 @@ export class ReviewEngine {
       allowlist: secretConfig.allowlist,
     };
     const excludePatterns = secretConfig.excludePatterns ?? [];
+    const candidates = files.filter(
+      (f) =>
+        f?.path &&
+        !excludePatterns.some((pattern) => minimatch(f.path as string, pattern)) &&
+        !isGeneratedArtifactPath(f.path as string),
+    );
+    // Bounded parallel batches (8 at a time) instead of serial awaits: disk
+    // reads + regex/entropy detection per file no longer sum on the pipeline.
     const issues: ReviewIssue[] = [];
-    for (const file of files) {
-      if (!file?.path) continue;
-      if (excludePatterns.some((pattern) => minimatch(file.path, pattern))) continue;
-      if (isGeneratedArtifactPath(file.path)) continue;
-      try {
-        const findings = await this.detectSecretsFromFile(path.join(workDir, file.path), options);
-        if (findings.length > 0) {
-          issues.push(...mergeSecretFindings(file.path, findings));
-        }
-      } catch (err) {
-        this.logger.warn(
-          `Secret scan skipped for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
+    const SECRET_CONCURRENCY = 8;
+    for (let i = 0; i < candidates.length; i += SECRET_CONCURRENCY) {
+      const chunk = candidates.slice(i, i + SECRET_CONCURRENCY);
+      const results = await Promise.all(
+        chunk.map(async (file) => {
+          try {
+            const findings = await this.detectSecretsFromFile(
+              path.join(workDir, file.path as string),
+              options,
+            );
+            return findings.length > 0 ? mergeSecretFindings(file.path as string, findings) : [];
+          } catch (err) {
+            this.logger.warn(
+              `Secret scan skipped for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+            return [];
+          }
+        }),
+      );
+      for (const r of results) issues.push(...r);
     }
     return issues;
   }
@@ -3602,6 +3759,7 @@ export class ReviewEngine {
       ...(secretConfig.excludePatterns ?? []),
     ];
     const issues: ReviewIssue[] = [];
+    const pendingFiles: Array<{ full: string; rel: string }> = [];
     const queue: string[] = [root];
     while (queue.length > 0) {
       const dir = queue.pop()!;
@@ -3628,17 +3786,27 @@ export class ReviewEngine {
         const rel = path.relative(repoRoot, full);
         if (excludePatterns.some((pattern) => minimatch(rel, pattern))) continue;
         if (isGeneratedArtifactPath(rel)) continue;
-        try {
-          const findings = await this.detectSecretsFromFile(full, options);
-          if (findings.length > 0) {
-            issues.push(...mergeSecretFindings(rel, findings));
-          }
-        } catch (err) {
-          this.logger.warn(
-            `Secret scan skipped for ${rel}: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
+        pendingFiles.push({ full, rel });
       }
+    }
+    // Bounded parallel scan (8 at a time) instead of serial per-file awaits.
+    const DIR_SCAN_CONCURRENCY = 8;
+    for (let i = 0; i < pendingFiles.length; i += DIR_SCAN_CONCURRENCY) {
+      const chunk = pendingFiles.slice(i, i + DIR_SCAN_CONCURRENCY);
+      const results = await Promise.all(
+        chunk.map(async ({ full, rel }) => {
+          try {
+            const findings = await this.detectSecretsFromFile(full, options);
+            return findings.length > 0 ? mergeSecretFindings(rel, findings) : [];
+          } catch (err) {
+            this.logger.warn(
+              `Secret scan skipped for ${rel}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+            return [];
+          }
+        }),
+      );
+      for (const r of results) issues.push(...r);
     }
     return issues;
   }
@@ -3766,12 +3934,7 @@ export class ReviewEngine {
         enrichedResult = {
           ...result,
           issues: enrichedIssues,
-          stats: {
-            total: enrichedIssues.length,
-            critical: enrichedIssues.filter((i) => i.severity === 'critical').length,
-            important: enrichedIssues.filter((i) => i.severity === 'important').length,
-            minor: enrichedIssues.filter((i) => i.severity === 'minor').length,
-          },
+          stats: computeReviewStats(enrichedIssues),
         };
       } catch (err) {
         this.logger.warn(
@@ -4568,127 +4731,144 @@ export class ReviewEngine {
   ): Promise<LinterResult[]> {
     if (!this.config.linters?.length) return [];
 
-    const results: LinterResult[] = [];
+    // Independent linters run concurrently (Promise.all, order preserved) so
+    // wall-clock is max, not sum. Each linter is fail-open in isolation.
+    const settled = await Promise.all(
+      this.config.linters.map((linterConfig) =>
+        this.runSingleLinter(linterConfig, changedFiles, workDir),
+      ),
+    );
+    return settled.filter((r): r is LinterResult => r !== null);
+  }
 
-    for (const linterConfig of this.config.linters) {
-      try {
-        // Defense in depth at the exec sink: never run a linter binary that
-        // is not on the basename allowlist, or whose args are not safe
-        // strings (PR-editable config is untrusted; config may bypass
-        // validateConfig when constructed programmatically).
-        if (!isAllowedLinterCommand(linterConfig.command)) {
-          this.logger.warn(
-            `Skipping linter: command "${linterConfig.command}" is not on the allowed list`,
-          );
-          continue;
-        }
-        if (!isSafeLinterArgs(linterConfig.args)) {
-          this.logger.warn(`Skipping linter "${linterConfig.command}": args are not safe strings`);
-          continue;
-        }
-
-        const matchedFiles = changedFiles
-          .map((f) => f.path)
-          .filter((p): p is string => typeof p === 'string' && Boolean(p))
-          .filter((p) => minimatch(p, linterConfig.pattern));
-
-        if (matchedFiles.length === 0) continue;
-
-        // Confine the working directory to the checkout: `path.resolve`
-        // alone permits `../../` escapes to arbitrary runner directories.
-        const linterDir = resolveConfinedWorkingDir(workDir, linterConfig.workingDirectory);
-        if (!linterDir) {
-          this.logger.warn(
-            `Skipping linter "${linterConfig.command}": workingDirectory "${linterConfig.workingDirectory}" escapes the working directory`,
-          );
-          continue;
-        }
-
-        const args = [...(linterConfig.args || []), ...matchedFiles];
-        const start = Date.now();
-
-        let stdout = '';
-        let stderr = '';
-        let status: number | null = null;
-        let spawnError: Error | undefined;
-
-        try {
-          const execResult = await new Promise<{
-            stdout: string;
-            stderr: string;
-            status: number | null;
-          }>((resolve) => {
-            cp.execFile(
-              linterConfig.command,
-              args,
-              {
-                cwd: linterDir,
-                encoding: 'utf-8',
-                maxBuffer: 50 * 1024 * 1024,
-                timeout: linterConfig.timeout ?? 60_000,
-              },
-              (error, out, errOut) => {
-                if (error) {
-                  const execErr = error as NodeJS.ErrnoException & {
-                    code?: number;
-                    stdout?: string;
-                    stderr?: string;
-                  };
-                  spawnError = error;
-                  resolve({
-                    stdout: (execErr.stdout as unknown as string) || (out as string) || '',
-                    stderr: (execErr.stderr as unknown as string) || (errOut as string) || '',
-                    status: typeof execErr.code === 'number' ? execErr.code : null,
-                  });
-                } else {
-                  resolve({ stdout: out as string, stderr: errOut as string, status: 0 });
-                }
-              },
-            );
-          });
-          stdout = execResult.stdout;
-          stderr = execResult.stderr;
-          status = execResult.status;
-        } catch (err) {
-          spawnError = err as Error;
-        }
-
-        const duration = Date.now() - start;
-
-        const result: LinterResult = {
-          tool: path.basename(linterConfig.command) || linterConfig.command,
-          command: `${linterConfig.command} ${args.join(' ')}`,
-          exitCode: status ?? -1,
-          stdout: stdout || '',
-          stderr: stderr || '',
-          findings:
-            status !== null
-              ? this.parseLinterOutput(linterConfig.parseFormat || 'generic', stdout || '')
-              : [],
-          success: status !== null && (status ?? 0) <= 1,
-        };
-
-        if (spawnError) {
-          this.logger.debug(`Linter "${result.tool}" spawn error: ${spawnError.message}`);
-        }
-        if (stderr) {
-          const truncated = stderr.length > 500 ? stderr.slice(0, 500) + '...' : stderr;
-          this.logger.debug(`Linter "${result.tool}" stderr: ${truncated}`);
-        }
-
-        this.logger.info(
-          `Linter "${result.tool}" finished in ${duration}ms with exit code ${status} (${result.findings.length} findings)`,
-        );
-
-        results.push(result);
-      } catch (err) {
+  /**
+   * Run one configured linter against changed files (fail-open, never throws).
+   * @returns The linter result, or null when skipped/no files matched.
+   */
+  private async runSingleLinter(
+    linterConfig: LinterConfig,
+    changedFiles: Array<{ path: string }>,
+    workDir: string,
+  ): Promise<LinterResult | null> {
+    try {
+      // Defense in depth at the exec sink: never run a linter binary that
+      // is not on the basename allowlist, or whose args are not safe
+      // strings (PR-editable config is untrusted; config may bypass
+      // validateConfig when constructed programmatically).
+      if (!isAllowedLinterCommand(linterConfig.command)) {
         this.logger.warn(
-          `Linter "${linterConfig.command}" failed: ${err instanceof Error ? err.message : String(err)}`,
+          `Skipping linter: command "${linterConfig.command}" is not on the allowed list`,
         );
+        return null;
       }
-    }
+      if (!isSafeLinterArgs(linterConfig.args)) {
+        this.logger.warn(`Skipping linter "${linterConfig.command}": args are not safe strings`);
+        return null;
+      }
 
-    return results;
+      const matchedFiles = changedFiles
+        .map((f) => f.path)
+        .filter((p): p is string => typeof p === 'string' && Boolean(p))
+        .filter((p) => minimatch(p, linterConfig.pattern));
+
+      if (matchedFiles.length === 0) return null;
+
+      // Confine the working directory to the checkout: `path.resolve`
+      // alone permits `../../` escapes to arbitrary runner directories.
+      const linterDir = resolveConfinedWorkingDir(workDir, linterConfig.workingDirectory);
+      if (!linterDir) {
+        this.logger.warn(
+          `Skipping linter "${linterConfig.command}": workingDirectory "${linterConfig.workingDirectory}" escapes the working directory`,
+        );
+        return null;
+      }
+
+      // `--` end-of-options before PR-controlled filenames so a filename
+      // like `--config=evil` can never become option injection
+      // (isSafeLinterArgs only validates config args, not filenames).
+      const args = [...(linterConfig.args || []), '--', ...matchedFiles];
+      const start = Date.now();
+
+      let stdout = '';
+      let stderr = '';
+      let status: number | null = null;
+      let spawnError: Error | undefined;
+
+      try {
+        const execResult = await new Promise<{
+          stdout: string;
+          stderr: string;
+          status: number | null;
+        }>((resolve) => {
+          cp.execFile(
+            linterConfig.command,
+            args,
+            {
+              cwd: linterDir,
+              encoding: 'utf-8',
+              maxBuffer: 50 * 1024 * 1024,
+              timeout: linterConfig.timeout ?? 60_000,
+            },
+            (error, out, errOut) => {
+              if (error) {
+                const execErr = error as NodeJS.ErrnoException & {
+                  code?: number;
+                  stdout?: string;
+                  stderr?: string;
+                };
+                spawnError = error;
+                resolve({
+                  stdout: (execErr.stdout as unknown as string) || (out as string) || '',
+                  stderr: (execErr.stderr as unknown as string) || (errOut as string) || '',
+                  status: typeof execErr.code === 'number' ? execErr.code : null,
+                });
+              } else {
+                resolve({ stdout: out as string, stderr: errOut as string, status: 0 });
+              }
+            },
+          );
+        });
+        stdout = execResult.stdout;
+        stderr = execResult.stderr;
+        status = execResult.status;
+      } catch (err) {
+        spawnError = err as Error;
+      }
+
+      const duration = Date.now() - start;
+
+      const result: LinterResult = {
+        tool: path.basename(linterConfig.command) || linterConfig.command,
+        command: `${linterConfig.command} ${args.join(' ')}`,
+        exitCode: status ?? -1,
+        stdout: stdout || '',
+        stderr: stderr || '',
+        findings:
+          status !== null
+            ? this.parseLinterOutput(linterConfig.parseFormat || 'generic', stdout || '')
+            : [],
+        success: status !== null && (status ?? 0) <= 1,
+      };
+
+      if (spawnError) {
+        this.logger.debug(`Linter "${result.tool}" spawn error: ${spawnError.message}`);
+      }
+      if (stderr) {
+        const truncated = stderr.length > 500 ? stderr.slice(0, 500) + '...' : stderr;
+        this.logger.debug(`Linter "${result.tool}" stderr: ${truncated}`);
+      }
+
+      this.logger.info(
+        `Linter "${result.tool}" finished in ${duration}ms with exit code ${status} (${result.findings.length} findings)`,
+      );
+
+      return result;
+    } catch (err) {
+      this.logger.warn(
+        `Linter "${linterConfig.command}" failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
   }
 
   /**
@@ -4802,29 +4982,31 @@ export class ReviewEngine {
   ): ReviewIssue[] {
     if (!linterResults.length || !issues.length) return issues;
 
-    const linterFindings: { key: string; message: string }[] = [];
+    // Index linter findings once (O(L)) instead of scanning the list per
+    // issue (O(I*L) with 2x path.resolve per comparison). Each side is
+    // normalized exactly once.
+    const normalize = (file: string): string =>
+      workDir ? path.relative(workDir, path.resolve(workDir, file)) : file;
+    const byKey = new Map<string, string[]>();
     for (const result of linterResults) {
       for (const finding of result.findings) {
-        const normalized = workDir
-          ? path.relative(workDir, path.resolve(workDir, finding.file))
-          : finding.file;
-        linterFindings.push({ key: `${normalized}:${finding.line}`, message: finding.message });
+        const key = `${normalize(finding.file)}:${finding.line}`;
+        const list = byKey.get(key);
+        if (list) list.push(finding.message);
+        else byKey.set(key, [finding.message]);
       }
     }
 
     const filtered = issues.filter((issue) => {
-      const normalized = workDir
-        ? path.relative(workDir, path.resolve(workDir, issue.file))
-        : issue.file;
-      const key = `${normalized}:${issue.line}`;
-      const match = linterFindings.find((lf) => lf.key === key);
-      if (match) {
-        const msgOverlap =
-          match.message &&
-          issue.message.toLowerCase().includes(match.message.toLowerCase().slice(0, 20));
-        if (msgOverlap) {
-          this.logger.debug(`Suppressing AI finding at ${key} — matches linter output`);
-          return false;
+      const key = `${normalize(issue.file)}:${issue.line}`;
+      const messages = byKey.get(key);
+      if (messages) {
+        const lower = issue.message.toLowerCase();
+        for (const m of messages) {
+          if (m && lower.includes(m.toLowerCase().slice(0, 20))) {
+            this.logger.debug(`Suppressing AI finding at ${key} — matches linter output`);
+            return false;
+          }
         }
       }
       return true;
@@ -4877,12 +5059,7 @@ export class ReviewEngine {
       },
       strengths: allStrengths,
       issues: allIssues,
-      stats: {
-        total: allIssues.length,
-        critical: allIssues.filter((i) => i.severity === 'critical').length,
-        important: allIssues.filter((i) => i.severity === 'important').length,
-        minor: allIssues.filter((i) => i.severity === 'minor').length,
-      },
+      stats: computeReviewStats(allIssues),
       rawLines: allRawLines,
       failedLines: totalFailedLines,
       failedBatches,
@@ -5060,10 +5237,13 @@ export class ReviewEngine {
       parts.push(`- \`${stats}\``);
     }
     parts.push('');
-    const totalDiffLines = pr.changedFiles.reduce(
-      (s, f) => s + (f.patch ? f.patch.split('\n').length : 0),
-      0,
-    );
+    // Split each patch once and reuse the lines/length below (total counter,
+    // per-file caps, complexity) instead of re-splitting 3-4x per file.
+    const patchLinesByFile = new Map<string, string[]>();
+    for (const f of pr.changedFiles) {
+      if (f.patch) patchLinesByFile.set(f.path, f.patch.split('\n'));
+    }
+    const totalDiffLines = [...patchLinesByFile.values()].reduce((s, lines) => s + lines.length, 0);
     if (totalDiffLines > maxLines && maxLines > 0) {
       parts.push(
         `> Total diff: ~${totalDiffLines} lines across ${pr.changedFiles.length} files. For large changes, read each file individually using the \`read\` tool.`,
@@ -5075,7 +5255,7 @@ export class ReviewEngine {
     parts.push('');
     for (const f of pr.changedFiles) {
       if (!f.patch) continue;
-      const patchLines = f.patch.split('\n');
+      const patchLines = patchLinesByFile.get(f.path) ?? [];
       const patchLineCount = patchLines.length;
 
       let effectiveCap = maxLines;
