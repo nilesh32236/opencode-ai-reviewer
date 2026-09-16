@@ -771,6 +771,8 @@ async function isAutofixBranchFresh(branchName: string, defaultBranch: string): 
  * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
  *   breaks withRetry backoff sleeps, and races verification timeouts.
  *   Advisory-only: engine calls themselves are not yet cancellable.
+ * @param operator - Optional operator instruction from the triggering `/fix`
+ *   comment (raw string or `{ instruction, actor }`); seeds fix-agent context.
  */
 export async function runFixIssue(
   inputs: ActionInputs,
@@ -1098,6 +1100,8 @@ export async function runFixIssue(
  * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
  *   breaks withRetry backoff sleeps, and races verification timeouts.
  *   Advisory-only: engine calls themselves are not yet cancellable.
+ * @param operator - Optional operator instruction from the triggering `/fix`
+ *   comment (raw string or `{ instruction, actor }`); seeds fix-agent context.
  */
 export async function runAutofixLoop(
   inputs: ActionInputs,

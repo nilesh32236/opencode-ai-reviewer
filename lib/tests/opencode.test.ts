@@ -123,12 +123,17 @@ vi.mock('../src/utils/checksum.js', () => ({
 // Mock fs to allow chmodSync on our fake paths without throwing ENOENT
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs')>();
+  // Unique temp dirs per mkdtempSync call so per-run store isolation can be
+  // asserted (each opencode run must get its own HOME).
+  let mkdtempCounter = 0;
   return {
     ...actual,
     chmodSync: vi.fn(),
     existsSync: vi.fn().mockReturnValue(true),
     writeFileSync: vi.fn(),
-    mkdtempSync: vi.fn().mockReturnValue('/tmp/opencode-askpass-xxx'),
+    mkdtempSync: vi
+      .fn()
+      .mockImplementation((prefix: string) => `${prefix}mock-${++mkdtempCounter}`),
     readFileSync: vi.fn().mockReturnValue(''),
     promises: {
       ...actual.promises,
@@ -519,6 +524,43 @@ describe('runOpenCode()', () => {
     );
   });
 
+  it('runs concurrently with an isolated store per run (no shared-store race, no global lock)', async () => {
+    const first = makeMockProcess();
+    const second = makeMockProcess();
+    mockSpawn.mockReturnValueOnce(first).mockReturnValueOnce(second);
+
+    const firstPromise = runOpenCode('first', { model: 'openai/gpt-4' });
+    const secondPromise = runOpenCode('second', { model: 'openai/gpt-4' });
+
+    // Both spawns start without waiting for each other: batch fan-out stays
+    // concurrent (no process-wide serialization).
+    for (let i = 0; i < 10 && mockSpawn.mock.calls.length < 2; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+
+    // Each run gets its own isolated HOME-backed store, distinct from the
+    // ambient HOME and from each other — so concurrent runs (even across
+    // processes) cannot race the embedded-store migrations.
+    const firstEnv = mockSpawn.mock.calls[0][2].env as Record<string, string>;
+    const secondEnv = mockSpawn.mock.calls[1][2].env as Record<string, string>;
+    for (const env of [firstEnv, secondEnv]) {
+      expect(env.HOME).toBeDefined();
+      expect(env.HOME).not.toBe(process.env.HOME);
+      expect(env.HOME).toContain('opencode-home-');
+      expect(env.XDG_DATA_HOME).toBeDefined();
+      expect(env.XDG_CONFIG_HOME).toBeDefined();
+      expect(env.XDG_CACHE_HOME).toBeDefined();
+    }
+    expect(firstEnv.HOME).not.toBe(secondEnv.HOME);
+
+    first.emitClose(0);
+    second.emitClose(0);
+    const [firstResult, secondResult] = await Promise.all([firstPromise, secondPromise]);
+    expect(firstResult.success).toBe(true);
+    expect(secondResult.success).toBe(true);
+  });
+
   it('trims whitespace-padded model values before spawning', async () => {
     const proc = makeMockProcess();
     mockSpawn.mockReturnValue(proc);
@@ -860,7 +902,7 @@ describe('runOpenCode()', () => {
     expect(proc.stdin.end).not.toHaveBeenCalled();
   });
 
-  it('still uses argv for large prompts in interactive (non-autoApprove) mode', async () => {
+  it('pipes large prompts via stdin regardless of autoApprove (E2BIG guard is size-gated)', async () => {
     const proc = makeMockProcess();
     mockSpawn.mockReturnValue(proc);
 
@@ -880,12 +922,11 @@ describe('runOpenCode()', () => {
     const spawnArgs = spawnCall[1] as string[];
     const spawnOpts = spawnCall[2] as { stdio: string[] };
 
-    // Interactive mode: prompt stays in argv regardless of size
-    expect(spawnArgs).toContain(largePrompt);
-    // stdio[0] must be 'inherit' (interactive TTY)
-    expect(spawnOpts.stdio[0]).toBe('inherit');
-    // stdin.end must NOT have been called
-    expect(proc.stdin.end).not.toHaveBeenCalled();
+    // Size-gated stdin piping: large prompts never ride argv (E2BIG), even
+    // in interactive mode — piping takes precedence over TTY inherit.
+    expect(spawnArgs).not.toContain(largePrompt);
+    expect(spawnOpts.stdio[0]).toBe('pipe');
+    expect(proc.stdin.end).toHaveBeenCalled();
   });
 });
 

@@ -175,6 +175,8 @@ export declare function runFix(inputs: ActionInputs, config: AgentConfig, engine
  * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
  *   breaks withRetry backoff sleeps, and races verification timeouts.
  *   Advisory-only: engine calls themselves are not yet cancellable.
+ * @param operator - Optional operator instruction from the triggering `/fix`
+ *   comment (raw string or `{ instruction, actor }`); seeds fix-agent context.
  */
 export declare function runFixIssue(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, _repo: string, gitEmail: string, signal?: AbortSignal, operator?: FixOperatorInstruction | string): Promise<void>;
 /**
@@ -190,5 +192,7 @@ export declare function runFixIssue(inputs: ActionInputs, config: AgentConfig, e
  * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
  *   breaks withRetry backoff sleeps, and races verification timeouts.
  *   Advisory-only: engine calls themselves are not yet cancellable.
+ * @param operator - Optional operator instruction from the triggering `/fix`
+ *   comment (raw string or `{ instruction, actor }`); seeds fix-agent context.
  */
 export declare function runAutofixLoop(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, _repo: string, _token: string, signal?: AbortSignal, operator?: FixOperatorInstruction | string): Promise<void>;
