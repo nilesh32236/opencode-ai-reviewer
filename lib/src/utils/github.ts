@@ -155,6 +155,67 @@ export function resolveReviewEvent(
 }
 
 /**
+ * Pre-validate inline candidate positions against PR diff hunks.
+ *
+ * Splits issues into `mappable` (safe to bundle into a single
+ * `POST /pulls/{n}/reviews` with a `comments[]` reviews-array) and
+ * `unmappable` (must stay in the summary body so no finding is lost).
+ * Key normalization (`file.replace(/^\//, '')` + `${path}:${line}`)
+ * matches `buildInlineComments` and the `placedInlineKeys` filters in
+ * `postReview`/`postReviewWithReviewsArray`.
+ *
+ * Fail-open contract: never throws. Invalid input, an unavailable/empty
+ * `diffLines` set, or non-inline issues all resolve to `unmappable` (body),
+ * so streaming failures never filter findings from the body.
+ *
+ * @param issues - Review issues to classify.
+ * @param diffLines - Set of `"path:line"` keys present in the PR diff.
+ * @returns Mappable vs unmappable issue lists.
+ * @since NEXT
+ */
+export function validateInlinePositionsAgainstHunks(
+  issues: ReviewIssue[],
+  diffLines: Set<string>,
+): { mappable: ReviewIssue[]; unmappable: ReviewIssue[] } {
+  try {
+    if (!Array.isArray(issues)) return { mappable: [], unmappable: [] };
+    if (!(diffLines instanceof Set) || diffLines.size === 0) {
+      return { mappable: [], unmappable: [...issues] };
+    }
+    const mappable: ReviewIssue[] = [];
+    const unmappable: ReviewIssue[] = [];
+    for (const issue of issues) {
+      try {
+        if (
+          !issue ||
+          issue.inline !== true ||
+          typeof issue.line !== 'number' ||
+          !Number.isFinite(issue.line) ||
+          issue.line < 1 ||
+          typeof issue.file !== 'string' ||
+          issue.file.length === 0
+        ) {
+          unmappable.push(issue);
+          continue;
+        }
+        const key = `${issue.file.replace(/^\//, '')}:${issue.line}`;
+        if (diffLines.has(key)) mappable.push(issue);
+        else unmappable.push(issue);
+      } catch {
+        unmappable.push(issue);
+      }
+    }
+    return { mappable, unmappable };
+  } catch {
+    try {
+      return { mappable: [], unmappable: Array.isArray(issues) ? [...issues] : [] };
+    } catch {
+      return { mappable: [], unmappable: [] };
+    }
+  }
+}
+
+/**
  * Information about a single review comment thread on a PR.
  */
 /** Raw GraphQL response shape for a review thread node. */
@@ -1552,24 +1613,8 @@ export class GitHubHelper implements PlatformAdapter {
       issues: this.applyInlineFingerprintDedup(workingResult.issues, options),
     };
 
-    const inlineComments = buildInlineComments(
-      dedupedResult,
-      diffLines,
-      suppressLowConfidence,
-      options?.emitFixPayload,
-    );
-    this.stampInlineFingerprintMarkers(inlineComments, dedupedResult.issues);
-
-    const placedInlineKeys = new Set<string>();
-    for (const c of inlineComments) {
-      placedInlineKeys.add(`${c.path}:${c.line}`);
-    }
-    // Mappable findings ride inline; unmappable findings stay in the body.
-    const issuesForBody = dedupedResult.issues.filter(
-      (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
-    );
-    const body = buildReviewBody({ ...dedupedResult, issues: issuesForBody }, options);
-    // Full-finding body used for the fail-open summary-only retry.
+    // Full-finding body used for the fail-open summary-only retry (zero
+    // findings lost: unmappable findings always stay in `body`/`fullBody`).
     const fullBody = buildReviewBody(dedupedResult, options);
 
     const commentIds: ReviewPostResult['commentIds'] = [];
@@ -1595,6 +1640,37 @@ export class GitHubHelper implements PlatformAdapter {
         return { success: false, method: 'failed' };
       }
     };
+
+    // Empty-diff fail-open: without hunks every inline position would 422,
+    // so skip the batched POST attempt and post summary-only directly
+    // (zero extra queries when the diff is already cached — getDiffLines
+    // above is the single fetch).
+    if (diffLines.size === 0) {
+      core.warning('Diff validation unavailable, posting summary-only review');
+      return postSummaryOnly(reviewEvent);
+    }
+
+    // Deterministic pre-validation: only hunk-mappable findings ride in the
+    // single batched `comments[]` request; stale/out-of-diff findings stay
+    // in the summary body.
+    const { mappable } = validateInlinePositionsAgainstHunks(dedupedResult.issues, diffLines);
+    const inlineComments = buildInlineComments(
+      { ...dedupedResult, issues: mappable },
+      diffLines,
+      suppressLowConfidence,
+      options?.emitFixPayload,
+    );
+    this.stampInlineFingerprintMarkers(inlineComments, dedupedResult.issues);
+
+    const placedInlineKeys = new Set<string>();
+    for (const c of inlineComments) {
+      placedInlineKeys.add(`${c.path}:${c.line}`);
+    }
+    // Mappable findings ride inline; unmappable findings stay in the body.
+    const issuesForBody = dedupedResult.issues.filter(
+      (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
+    );
+    const body = buildReviewBody({ ...dedupedResult, issues: issuesForBody }, options);
 
     if (inlineComments.length === 0) {
       return postSummaryOnly(reviewEvent);
@@ -1633,10 +1709,15 @@ export class GitHubHelper implements PlatformAdapter {
       return { success: true, method: 'full', reviewId: reviewResponse.id, commentIds };
     } catch (err) {
       const status = getErrorStatus(err);
-      core.warning(
-        `Reviews-array post failed${status !== undefined ? ` (status ${status})` : ''}, retrying summary-only: ${err}`,
-      );
-      return postSummaryOnly(reviewEvent);
+      // Scoped fail-open retry: only stale/validation (422), permission
+      // (403), and rate-limit (429) retries go summary-only with zero
+      // findings lost. All other errors (5xx, network, aborts) rethrow so
+      // withRetry/CircuitBreaker own transient handling and aborts propagate.
+      if (status === 422 || status === 403 || status === 429) {
+        core.warning(`Reviews-array post failed (status ${status}), retrying summary-only: ${err}`);
+        return postSummaryOnly(reviewEvent);
+      }
+      throw err;
     }
   }
 

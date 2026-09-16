@@ -306,7 +306,7 @@ describe('verdictMode transport (postReview event propagation)', () => {
   });
 
   it('preserves inline comments when a batched gated review falls back to COMMENT', async () => {
-    const diffText = `@@ -7,1 +7,1 @@`;
+    const diffText = `+++ b/src/c.ts\n@@ -7,1 +7,1 @@`;
     const criticalInline: ReviewResult = {
       ...makeResult({
         verdict: { ready: false, reasoning: 'Has issues.', autoFixable: false, confidence: 'high' },
@@ -365,7 +365,7 @@ describe('verdictMode transport (postReview event propagation)', () => {
   });
 
   it('preserves the REQUEST_CHANGES gate when the reviews-array batch fails', async () => {
-    const diffText = `@@ -42,1 +42,1 @@`;
+    const diffText = `+++ b/src/b.ts\n@@ -42,1 +42,1 @@`;
     const criticalInline: ReviewResult = {
       ...makeResult({
         verdict: { ready: false, reasoning: 'Has issues.', autoFixable: false, confidence: 'high' },
