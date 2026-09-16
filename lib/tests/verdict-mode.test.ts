@@ -306,7 +306,10 @@ describe('verdictMode transport (postReview event propagation)', () => {
   });
 
   it('preserves inline comments when a batched gated review falls back to COMMENT', async () => {
-    const diffText = `+++ b/src/c.ts\n@@ -7,1 +7,1 @@`;
+    const diffText = `diff --git a/src/c.ts b/src/c.ts
+--- a/src/c.ts
++++ b/src/c.ts
+@@ -7,1 +7,1 @@`;
     const criticalInline: ReviewResult = {
       ...makeResult({
         verdict: { ready: false, reasoning: 'Has issues.', autoFixable: false, confidence: 'high' },
@@ -365,7 +368,10 @@ describe('verdictMode transport (postReview event propagation)', () => {
   });
 
   it('preserves the REQUEST_CHANGES gate when the reviews-array batch fails', async () => {
-    const diffText = `+++ b/src/b.ts\n@@ -42,1 +42,1 @@`;
+    const diffText = `diff --git a/src/b.ts b/src/b.ts
+--- a/src/b.ts
++++ b/src/b.ts
+@@ -42,1 +42,1 @@`;
     const criticalInline: ReviewResult = {
       ...makeResult({
         verdict: { ready: false, reasoning: 'Has issues.', autoFixable: false, confidence: 'high' },
@@ -421,5 +427,103 @@ describe('verdictMode transport (postReview event propagation)', () => {
     // COMMENT itself only on 403/422 permission rejections).
     expect(bodies[1].event).toBe('REQUEST_CHANGES');
     expect(bodies[1]).not.toHaveProperty('comments');
+  });
+
+  it('skips the batched POST and goes summary-only when diff validation is unavailable', async () => {
+    const criticalInline: ReviewResult = {
+      ...makeResult({
+        verdict: { ready: false, reasoning: 'Has issues.', autoFixable: false, confidence: 'high' },
+        stats: { total: 1, critical: 1, important: 0, minor: 0 },
+      }),
+      issues: [
+        {
+          type: 'issue',
+          severity: 'critical',
+          file: 'src/b.ts',
+          line: 42,
+          message: 'Bug.',
+          suggestion: 'Fix it.',
+          inline: true,
+        },
+      ],
+    };
+    // Default mockOk diff fetch returns JSON text with no hunks, so the diff
+    // line set is empty: the reviews-array path must not attempt the doomed
+    // batched POST and instead posts a single summary-only review.
+    fetchMock.mockImplementation(async () => mockOk({ id: 16 }));
+    const result = await helper.postReview(42, 'sha123', criticalInline, true, undefined, {
+      enableReviewsArrayInline: true,
+      verdictMode: 'request-changes',
+    });
+    expect(result.success).toBe(true);
+    expect(result.method).toBe('body-only');
+    const bodies = reviewBodies();
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0].event).toBe('REQUEST_CHANGES');
+    expect(bodies[0]).not.toHaveProperty('comments');
+    // The full-finding body preserves the unmappable finding.
+    expect(bodies[0].body as string).toContain('Bug.');
+    expect(vi.mocked(core.warning)).toHaveBeenCalledWith(
+      expect.stringContaining('Diff validation unavailable'),
+    );
+  });
+
+  it('skips the batched POST and goes summary-only when all findings are out-of-hunk', async () => {
+    const criticalInline: ReviewResult = {
+      ...makeResult({
+        verdict: { ready: false, reasoning: 'Has issues.', autoFixable: false, confidence: 'high' },
+        stats: { total: 1, critical: 1, important: 0, minor: 0 },
+      }),
+      issues: [
+        {
+          type: 'issue',
+          severity: 'critical',
+          file: 'src/b.ts',
+          line: 42,
+          message: 'Bug.',
+          suggestion: 'Fix it.',
+          inline: true,
+        },
+      ],
+    };
+    const diffText = `diff --git a/src/other.ts b/src/other.ts
+--- a/src/other.ts
++++ b/src/other.ts
+@@ -1,1 +1,1 @@`;
+    fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+      if (
+        url.includes('/pulls/42') &&
+        !url.includes('/reviews') &&
+        !url.includes('/comments') &&
+        !url.includes('/files')
+      ) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          json: vi.fn().mockResolvedValue({}),
+          text: vi.fn().mockResolvedValue(diffText),
+        } as unknown as Response;
+      }
+      if (url.includes('/pulls/42/reviews')) {
+        const body = JSON.parse((options as RequestInit).body as string);
+        // The prevalidation must skip the batched attempt, so no review POST
+        // may carry a comments[] array.
+        expect(body).not.toHaveProperty('comments');
+        return mockOk({ id: 17 });
+      }
+      return mockOk({});
+    });
+    const result = await helper.postReview(42, 'sha123', criticalInline, true, undefined, {
+      enableReviewsArrayInline: true,
+      verdictMode: 'request-changes',
+    });
+    expect(result.success).toBe(true);
+    expect(result.method).toBe('body-only');
+    const bodies = reviewBodies();
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0].event).toBe('REQUEST_CHANGES');
+    expect(bodies[0]).not.toHaveProperty('comments');
+    expect(bodies[0].body as string).toContain('Bug.');
   });
 });

@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import { buildInlineComments } from '../jsonl-parser.js';
+import { buildInlineCommentsWithSpillover } from '../jsonl-parser.js';
 import type {
   HeadCIStatus,
   PlatformAdapter,
@@ -17,6 +17,7 @@ import type {
 } from '../types/index.js';
 import { CircuitBreaker, countHttpError } from './circuit-breaker.js';
 import { getErrorStatus } from './errors.js';
+import { applyBodyNoiseBudget, resolveNoiseBudget, stripNoiseBudget } from './github.js';
 import {
   filterIssuesByFingerprints,
   fingerprintForIssue,
@@ -811,6 +812,23 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
+   * Update an existing review comment in place. Not supported on GitLab —
+   * no-op that throws a fail-open error so callers fall back to posting a
+   * new thread as today.
+   * @param _commentId - Review comment ID (unused).
+   * @param _body - New comment body (unused).
+   * @param _signal - Optional AbortSignal (unused).
+   * @since NEXT
+   */
+  async updateReviewComment(
+    _commentId: number,
+    _body: string,
+    _signal?: AbortSignal,
+  ): Promise<void> {
+    throw new Error('updateReviewComment is not supported on GitLab — post a new thread instead');
+  }
+
+  /**
    * Get the aggregated CI status for a commit SHA. GitLab pipeline status is
    * not yet mapped to the Checks-style rollup, so this returns an empty
    * (never-green) rollup — callers MUST fail closed and refuse `ready`
@@ -896,12 +914,13 @@ export class GitLabAdapter implements PlatformAdapter {
     const dedupedResult = { ...workingResult, issues: dedupedIssues };
 
     const inlineComments = postInlineComments
-      ? buildInlineComments(
+      ? buildInlineCommentsWithSpillover(
           dedupedResult,
           await this.getDiffLines(mrNumber, signal),
           suppressLowConfidence,
           options?.emitFixPayload,
-        )
+          resolveNoiseBudget(options),
+        ).comments
       : [];
 
     try {
@@ -935,7 +954,10 @@ export class GitLabAdapter implements PlatformAdapter {
           (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
         )
       : dedupedResult.issues;
-    const body = buildReviewBody({ ...dedupedResult, issues: issuesForBody }, options);
+    const body = buildReviewBody(
+      applyBodyNoiseBudget(dedupedResult, issuesForBody, options),
+      stripNoiseBudget(options),
+    );
 
     const commentIds: Array<{
       file: string;

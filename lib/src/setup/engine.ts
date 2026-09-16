@@ -8,7 +8,12 @@ import { GitHubHelper } from '../utils/github.js';
 import { sanitizeMarkdown } from '../utils/markdown.js';
 import { withRetryAndTimeout } from '../utils/retry.js';
 import { sanitizeString } from '../utils/sanitize.js';
-import { MINIMUM_OPENCODE_VERSION, parseVersion } from '../utils/version.js';
+import {
+  MINIMUM_OPENCODE_VERSION,
+  TESTED_OPENCODE_VERSION,
+  isBelowWarnFloor,
+  parseVersion,
+} from '../utils/version.js';
 import type { SetupCheck, SetupEngineOptions, SetupResult } from './types.js';
 
 /** Default per-model connectivity probe timeout in milliseconds. */
@@ -337,10 +342,15 @@ export class SetupEngine {
         Date.now() - start,
       );
     }
+    const warnNote =
+      health.version && isBelowWarnFloor(health.version.raw) === true
+        ? `${installNote}. Note: ${health.version.raw} is below the tested version ${TESTED_OPENCODE_VERSION} — ` +
+          `consider upgrading with npm install -g opencode-ai@latest (see https://opencode.ai/docs/cli).`
+        : installNote;
     return this.pass(
       'OpenCode CLI',
       `OpenCode CLI v${health.version?.raw ?? 'unknown'} installed`,
-      installNote,
+      warnNote,
       Date.now() - start,
     );
   }

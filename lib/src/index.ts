@@ -53,6 +53,7 @@ export type {
 } from './opencode.js';
 export { GitHubHelper } from './utils/github.js';
 export {
+  buildChecksSummaryOutput,
   normalizeVerdictMode,
   resolveReviewEvent,
   validateInlinePositionsAgainstHunks,
@@ -267,14 +268,16 @@ export {
   fingerprintFinding,
   fingerprintForIssue,
   legacyInlineKey,
+  mapFingerprintsToCommentIds,
   normalizeFingerprintPath,
   normalizeFingerprintText,
   shouldPostFingerprint,
+  toFingerprintIdMap,
   withFingerprintMarker,
   INLINE_FINGERPRINT_MARKER_PREFIX,
   INLINE_FINGERPRINT_PATTERN,
 } from './utils/inline-fingerprint.js';
-export type { FingerprintableIssue } from './utils/inline-fingerprint.js';
+export type { FingerprintableIssue, FingerprintedThread } from './utils/inline-fingerprint.js';
 export {
   buildFixPayload,
   buildFixWithAiPrompt,

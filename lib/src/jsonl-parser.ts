@@ -8,6 +8,7 @@ import type {
   Finding,
   FindingType,
   IssueFinding,
+  ReviewIssue,
   ReviewResult,
   Severity,
   StrengthFinding,
@@ -15,6 +16,7 @@ import type {
   VerdictFinding,
 } from './types/index.js';
 import { looksLikeCode } from './utils/code-heuristic.js';
+import { type SpilloverSummary, applyNoiseBudget } from './utils/filter-findings.js';
 import { buildFixPayload, formatFixPayloadMarkdown } from './utils/fix-payload.js';
 import { sanitizeMarkdown } from './utils/markdown.js';
 import { formatConfidenceLabel, getSeverityBadge } from './utils/review-body.js';
@@ -501,6 +503,129 @@ export interface InlineComment {
 }
 
 /**
+ * Options controlling {@link buildInlineCommentsWithSpillover} (also accepted
+ * as the third argument of {@link buildInlineComments} to avoid boolean-trap
+ * misordering).
+ */
+export interface InlineCommentBuildOptions {
+  /** When true, filters out issues with low confidence. */
+  suppressLowConfidence?: boolean;
+  /** Opt-in to appending a Fix-with-AI payload (default false). */
+  emitFixPayload?: boolean;
+  /**
+   * Display noise budget: maximum inline comments posted (highest severity
+   * first). The hidden tail is reported as spillover instead of being
+   * silently dropped. Undefined = unlimited (legacy behavior).
+   */
+  maxVisibleFindings?: number;
+  /** Alias for `maxVisibleFindings`; `maxVisibleFindings` wins when both set. */
+  noiseBudget?: number;
+}
+
+/** Result of building inline comments under a noise budget. */
+export interface InlineCommentBuildResult {
+  /** Built inline comments (severity-ordered when a budget cap applied). */
+  comments: InlineComment[];
+  /** Eligible issues cut by the budget (severity-ordered). */
+  suppressed: ReviewIssue[];
+  /** Severity-aware accounting of `suppressed`, if any. */
+  spillover?: SpilloverSummary;
+}
+
+/**
+ * Normalize the overloaded suppress/options arguments shared by the inline
+ * comment builders.
+ */
+function normalizeInlineBuildArgs(
+  suppressLowConfidence?: boolean | InlineCommentBuildOptions,
+  emitFixPayload?: boolean,
+  maxVisibleFindings?: number,
+): Required<Pick<InlineCommentBuildOptions, 'suppressLowConfidence' | 'emitFixPayload'>> &
+  Pick<InlineCommentBuildOptions, 'maxVisibleFindings'> {
+  if (typeof suppressLowConfidence === 'object' && suppressLowConfidence !== null) {
+    return {
+      suppressLowConfidence: suppressLowConfidence.suppressLowConfidence ?? false,
+      emitFixPayload: suppressLowConfidence.emitFixPayload ?? emitFixPayload ?? false,
+      maxVisibleFindings:
+        suppressLowConfidence.maxVisibleFindings ??
+        suppressLowConfidence.noiseBudget ??
+        maxVisibleFindings,
+    };
+  }
+  return {
+    suppressLowConfidence: suppressLowConfidence ?? false,
+    emitFixPayload: emitFixPayload ?? false,
+    maxVisibleFindings,
+  };
+}
+
+/**
+ * Build the markdown body for a single inline finding.
+ * @param issue - Eligible inline issue to render.
+ * @param emitFix - Whether to append a Fix-with-AI payload.
+ * @returns The rendered comment body.
+ */
+function buildInlineCommentBody(issue: ReviewIssue, emitFix: boolean): string {
+  let body = `${getSeverityBadge(issue.severity)} **${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}${formatConfidenceLabel(issue.confidence)}`;
+  if (issue.suggestion) {
+    body += `\n\n> 💡 **How to fix:** ${sanitizeMarkdown(issue.suggestion)}`;
+  }
+  if (issue.suggestionCode) {
+    body += `\n\n\`\`\`suggestion\n${issue.suggestionCode.trim()}\n\`\`\``;
+  } else if (issue.suggestion) {
+    const suggestion = issue.suggestion.trim();
+    if (suggestion.includes('\n')) {
+      // Multi-line suggestion: check if it has diff-style +/- prefixes
+      const rawLines = suggestion.split('\n');
+      let hasDiffPrefixes = false;
+
+      for (let i = 0; i < rawLines.length; i++) {
+        const l = rawLines[i].trim();
+        if (l) {
+          if (l.startsWith('+') || l.startsWith('-')) {
+            hasDiffPrefixes = true;
+            break;
+          }
+        }
+      }
+
+      if (hasDiffPrefixes) {
+        // Render diff-shaped content in a diff fence without intermediate arrays
+        let diffSuggestion = '';
+        for (let i = 0; i < rawLines.length; i++) {
+          const l = rawLines[i];
+          if (!l.trim()) continue;
+
+          if (diffSuggestion.length > 0) diffSuggestion += '\n';
+          diffSuggestion += l.startsWith('+') || l.startsWith('-') ? l : ` ${l}`;
+        }
+        body += `\n\n\`\`\`diff\n${diffSuggestion}\n\`\`\``;
+      } else if (looksLikeCode(suggestion)) {
+        // Multi-line code replacement — wrap as suggestion block
+        body += `\n\n\`\`\`suggestion\n${suggestion}\n\`\`\``;
+      }
+    } else if (looksLikeCode(suggestion)) {
+      // Single-line code suggestion — use native GitHub suggestion block
+      body += `\n\n\`\`\`suggestion\n${suggestion}\n\`\`\``;
+    }
+  }
+
+  if (emitFix === true) {
+    try {
+      const payload = buildFixPayload(issue);
+      // Legacy body above may already render a ```suggestion block; skip the
+      // payload suggestion in that case and keep only the Fix-with-AI prompt.
+      if (body.includes('```suggestion')) payload.suggestedChange = undefined;
+      const rendered = formatFixPayloadMarkdown(payload);
+      if (rendered) body += `\n\n${rendered}`;
+    } catch {
+      // Fail-open: keep the plain comment when payload rendering fails.
+    }
+  }
+  return body;
+}
+
+/**
  * Build inline review comments from issues in a ReviewResult, filtered to lines present in the diff.
  * Fail-open contract: an absent or empty `diffLines` set disables position
  * filtering (all inline candidates pass through). Callers on the batched
@@ -511,26 +636,60 @@ export interface InlineComment {
  * @param result - The review result containing issues.
  * @param diffLines - Optional set of "file:line" strings to filter inline comments to diff lines.
  * @param suppressLowConfidence - When true, filters out issues with low confidence. May also be
- * an options object `{ suppressLowConfidence, emitFixPayload }` to avoid boolean-trap misordering.
+ * an options object `{ suppressLowConfidence, emitFixPayload, maxVisibleFindings, noiseBudget }`
+ * to avoid boolean-trap misordering.
  * @param emitFixPayload - Opt-in to appending a Fix-with-AI payload (default false, legacy output unchanged).
+ * @param maxVisibleFindings - Optional severity-ordered cap on posted inline comments
+ * (highest severity first); the hidden tail is dropped here and should be surfaced
+ * as spillover by the caller (see {@link buildInlineCommentsWithSpillover}).
+ * Undefined = unlimited (legacy behavior).
  * @returns An array of inline comment objects.
  */
 export function buildInlineComments(
   result: ReviewResult,
   diffLines?: Set<string>,
-  suppressLowConfidence?: boolean | { suppressLowConfidence?: boolean; emitFixPayload?: boolean },
+  suppressLowConfidence?: boolean | InlineCommentBuildOptions,
   emitFixPayload?: boolean,
+  maxVisibleFindings?: number,
 ): InlineComment[] {
-  const comments: InlineComment[] = [];
-  const suppress =
-    typeof suppressLowConfidence === 'object'
-      ? (suppressLowConfidence.suppressLowConfidence ?? false)
-      : (suppressLowConfidence ?? false);
-  const emitFix =
-    typeof suppressLowConfidence === 'object'
-      ? (suppressLowConfidence.emitFixPayload ?? emitFixPayload ?? false)
-      : (emitFixPayload ?? false);
+  return buildInlineCommentsWithSpillover(
+    result,
+    diffLines,
+    suppressLowConfidence,
+    emitFixPayload,
+    maxVisibleFindings,
+  ).comments;
+}
 
+/**
+ * Build inline review comments with severity-ordered noise-budget accounting.
+ * Eligible issues (inline, on-diff, confidence-passing) are capped most-severe
+ * first; the cut tail is returned as `suppressed`/`spillover` so callers can
+ * surface a user-visible "+N more" summary (e.g. in the review body) instead
+ * of silently dropping findings.
+ * @param result - The review result containing issues.
+ * @param diffLines - Optional set of "file:line" strings to filter inline comments to diff lines.
+ * @param suppressLowConfidence - Boolean or options object (see {@link buildInlineComments}).
+ * @param emitFixPayload - Opt-in to appending a Fix-with-AI payload.
+ * @param maxVisibleFindings - Optional severity-ordered cap (unlimited when unset).
+ * @returns Built comments plus any budget-suppressed issues and spillover summary.
+ */
+export function buildInlineCommentsWithSpillover(
+  result: ReviewResult,
+  diffLines?: Set<string>,
+  suppressLowConfidence?: boolean | InlineCommentBuildOptions,
+  emitFixPayload?: boolean,
+  maxVisibleFindings?: number,
+): InlineCommentBuildResult {
+  const normalized = normalizeInlineBuildArgs(
+    suppressLowConfidence,
+    emitFixPayload,
+    maxVisibleFindings,
+  );
+  const suppress = normalized.suppressLowConfidence;
+  const emitFix = normalized.emitFixPayload;
+
+  const eligible: ReviewIssue[] = [];
   for (const issue of result.issues) {
     if (issue.inline !== true || !issue.line || issue.line < 1) continue;
     if (suppress && issue.confidence === 'low') continue;
@@ -538,73 +697,25 @@ export function buildInlineComments(
       const key = `${issue.file.replace(/^\//, '')}:${issue.line}`;
       if (!diffLines.has(key)) continue;
     }
+    eligible.push(issue);
+  }
 
-    let body = `${getSeverityBadge(issue.severity)} **${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}${formatConfidenceLabel(issue.confidence)}`;
-    if (issue.suggestion) {
-      body += `\n\n> 💡 **How to fix:** ${sanitizeMarkdown(issue.suggestion)}`;
-    }
-    if (issue.suggestionCode) {
-      body += `\n\n\`\`\`suggestion\n${issue.suggestionCode.trim()}\n\`\`\``;
-    } else if (issue.suggestion) {
-      const suggestion = issue.suggestion.trim();
-      if (suggestion.includes('\n')) {
-        // Multi-line suggestion: check if it has diff-style +/- prefixes
-        const rawLines = suggestion.split('\n');
-        let hasDiffPrefixes = false;
+  const { visible, suppressed, spillover } = applyNoiseBudget(
+    eligible,
+    normalized.maxVisibleFindings,
+  );
 
-        for (let i = 0; i < rawLines.length; i++) {
-          const l = rawLines[i].trim();
-          if (l) {
-            if (l.startsWith('+') || l.startsWith('-')) {
-              hasDiffPrefixes = true;
-              break;
-            }
-          }
-        }
-
-        if (hasDiffPrefixes) {
-          // Render diff-shaped content in a diff fence without intermediate arrays
-          let diffSuggestion = '';
-          for (let i = 0; i < rawLines.length; i++) {
-            const l = rawLines[i];
-            if (!l.trim()) continue;
-
-            if (diffSuggestion.length > 0) diffSuggestion += '\n';
-            diffSuggestion += l.startsWith('+') || l.startsWith('-') ? l : ` ${l}`;
-          }
-          body += `\n\n\`\`\`diff\n${diffSuggestion}\n\`\`\``;
-        } else if (looksLikeCode(suggestion)) {
-          // Multi-line code replacement — wrap as suggestion block
-          body += `\n\n\`\`\`suggestion\n${suggestion}\n\`\`\``;
-        }
-      } else if (looksLikeCode(suggestion)) {
-        // Single-line code suggestion — use native GitHub suggestion block
-        body += `\n\n\`\`\`suggestion\n${suggestion}\n\`\`\``;
-      }
-    }
-
-    if (emitFix === true) {
-      try {
-        const payload = buildFixPayload(issue);
-        // Legacy body above may already render a ```suggestion block; skip the
-        // payload suggestion in that case and keep only the Fix-with-AI prompt.
-        if (body.includes('```suggestion')) payload.suggestedChange = undefined;
-        const rendered = formatFixPayloadMarkdown(payload);
-        if (rendered) body += `\n\n${rendered}`;
-      } catch {
-        // Fail-open: keep the plain comment when payload rendering fails.
-      }
-    }
-
+  const comments: InlineComment[] = [];
+  for (const issue of visible) {
     comments.push({
       path: issue.file.replace(/^\//, ''),
       line: issue.line,
       side: 'RIGHT' as const,
-      body,
+      body: buildInlineCommentBody(issue, emitFix),
     });
   }
 
-  return comments;
+  return spillover === undefined ? { comments, suppressed } : { comments, suppressed, spillover };
 }
 
 // `looksLikeCode` canonical implementation lives in
