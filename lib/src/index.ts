@@ -33,6 +33,7 @@ export {
   buildLocalOpenCodeConfig,
   buildLLMProviderMap,
   MINIMUM_OPENCODE_VERSION,
+  resetOpenCodeRunChainForTests,
   createIsolatedOpenCodeHome,
   cleanupIsolatedOpenCodeHome,
   cleanupIsolatedOpenCodeHomeAsync,

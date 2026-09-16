@@ -133,6 +133,14 @@ export const ORCHESTRATOR_BUDGET_MARKER =
 export const BUDGETED_CONTEXT_WARNING =
   'Partial review: context budgeted — findings may be missing';
 
+/** Bytes reserved when budgeting the orchestrator head: the `'\n'` joining the
+ * head to the preserved suffix, plus one byte of slack. */
+const ORCHESTRATOR_BUDGET_JOIN_RESERVE_BYTES = 2;
+
+/** Upper bound on halvings in the orchestrator byte-correction shrink loop.
+ * The loop always terminates (head empties or budget fits). */
+const ORCHESTRATOR_BUDGET_MAX_SHRINKS = 10;
+
 /**
  * Build the shared blind-coverage warning for partial batch failures.
  * Single source of truth for the wording surfaced in verdict reasoning,
@@ -2813,35 +2821,40 @@ export class ReviewEngine {
       Number.isFinite(oBudget) &&
       oBudget > ORCHESTRATOR_BUDGET_MARKER.length
     ) {
+      const flooredBudget = Math.floor(oBudget);
       const suffixJoined = parts.slice(1).join('\n');
+      // Single measurement reused below: rescanning the ~45k strings for
+      // every check would duplicate O(n) UTF-8 scans.
+      const headBytes = Buffer.byteLength(parts[0], 'utf8');
+      const suffixBytes = Buffer.byteLength(suffixJoined, 'utf8');
+      const bytesEstimated = headBytes + 1 + suffixBytes;
       const estimated = parts[0].length + 1 + suffixJoined.length;
-      const bytesEstimated =
-        Buffer.byteLength(parts[0], 'utf8') + 1 + Buffer.byteLength(suffixJoined, 'utf8');
       if (estimated > oBudget || bytesEstimated > oBudget) {
-        const suffixBytes = Buffer.byteLength(suffixJoined, 'utf8');
         const markerBytes = Buffer.byteLength(ORCHESTRATOR_BUDGET_MARKER, 'utf8');
-        const headBudget = oBudget - suffixBytes - markerBytes - 2;
+        const headBudget = Math.floor(
+          oBudget - suffixBytes - markerBytes - ORCHESTRATOR_BUDGET_JOIN_RESERVE_BYTES,
+        );
         // Keep the untruncated head for byte-correction below: the char-based
         // boundary helper can overestimate for multibyte diffs (byte budget
         // passed as a char limit), so the assembled result is re-checked in
         // bytes and the head is halved until it fits.
-        const rawHead = parts[0];
         if (headBudget <= 0) {
           parts[0] = ORCHESTRATOR_BUDGET_MARKER;
         } else {
-          parts[0] = `${truncateHeadOnBoundary(rawHead, headBudget)}${ORCHESTRATOR_BUDGET_MARKER}`;
+          parts[0] = `${truncateHeadOnBoundary(parts[0], headBudget)}${ORCHESTRATOR_BUDGET_MARKER}`;
         }
         assemblyBudgeted = true;
         // Byte-correction: multibyte heads can still exceed the budget in
         // bytes while fitting in chars. Shrink the head (bounded halvings —
         // the strings here are already <= budget in chars) so the returned
-        // context never violates spawn/model byte limits.
-        let guard = 0;
-        while (
-          Buffer.byteLength(parts.join('\n'), 'utf8') > oBudget &&
-          parts[0].length > ORCHESTRATOR_BUDGET_MARKER.length &&
-          guard++ < 10
-        ) {
+        // context never violates spawn/model byte limits. Only the head
+        // shrinks, so only head bytes are remeasured against the cached
+        // suffix size; the full join happens once after the loop.
+        const separatorBytes = suffixJoined ? 1 : 0;
+        for (let shrink = 0; shrink < ORCHESTRATOR_BUDGET_MAX_SHRINKS; shrink += 1) {
+          const headPartBytes = Buffer.byteLength(parts[0], 'utf8');
+          if (headPartBytes + separatorBytes + suffixBytes <= flooredBudget) break;
+          if (parts[0].length <= ORCHESTRATOR_BUDGET_MARKER.length) break;
           const headOnly = parts[0].slice(
             0,
             Math.max(0, parts[0].length - ORCHESTRATOR_BUDGET_MARKER.length),
@@ -2856,13 +2869,21 @@ export class ReviewEngine {
     let context = parts.join('\n');
     // Last-resort byte guarantee: if the safety suffix alone exceeds the
     // budget, the head is already minimal yet the join is still over budget.
-    // Truncate on a UTF-8 boundary so the byte contract always holds.
+    // Minimize the diff-heavy head to just the marker first so the
+    // defender-controlled suffix survives when possible; only byte-truncate
+    // the whole join when even the suffix alone does not fit. The budget is
+    // floored because truncateUtf8Bytes returns '' for non-integer budgets.
     if (
       oBudget !== undefined &&
       Number.isFinite(oBudget) &&
       Buffer.byteLength(context, 'utf8') > oBudget
     ) {
-      context = truncateUtf8Bytes(context, oBudget);
+      const flooredBudget = Math.floor(oBudget);
+      parts[0] = ORCHESTRATOR_BUDGET_MARKER;
+      context = parts.join('\n');
+      if (Buffer.byteLength(context, 'utf8') > oBudget) {
+        context = truncateUtf8Bytes(context, flooredBudget);
+      }
       assemblyBudgeted = true;
     }
 

@@ -345,12 +345,17 @@ function cleanupOpenCodeRunHomes(): void {
 }
 
 function cleanupAskPassDirs(): void {
-  for (const dir of askPassDirs) {
+  // Iterate over a copy: per-run async cleanup splices this same array, and
+  // mutating it mid-iteration would skip entries. Each entry is untracked
+  // after removal so repeated sweeps in long-lived processes stay O(n).
+  for (const dir of [...askPassDirs]) {
     try {
       fs.rmSync(dir, { recursive: true, force: true });
     } catch {
       /* ok */
     }
+    const idx = askPassDirs.indexOf(dir);
+    if (idx >= 0) askPassDirs.splice(idx, 1);
   }
   cleanupOpenCodeRunHomes();
 }
@@ -371,13 +376,25 @@ export async function removeTempDirAsync(dir: string): Promise<void> {
 }
 
 /**
+ * Remove one temp directory asynchronously and untrack it from `list`.
+ * Shared by isolated-HOME and GIT_ASKPASS per-run cleanup so future fixes
+ * (retry, logging, ordering) apply to both instead of drifting.
+ * Best-effort, never throws.
+ * @param dir - Temp directory to remove.
+ * @param list - Tracking array the directory was registered in.
+ */
+async function removeTrackedDirAsync(dir: string, list: string[]): Promise<void> {
+  await removeTempDirAsync(dir);
+  const idx = list.indexOf(dir);
+  if (idx >= 0) list.splice(idx, 1);
+}
+
+/**
  * Async per-run isolated-HOME removal (see {@link removeTempDirAsync}).
  * @param dir - Isolated HOME directory to remove.
  */
 export async function cleanupIsolatedOpenCodeHomeAsync(dir: string): Promise<void> {
-  await removeTempDirAsync(dir);
-  const idx = openCodeRunHomeDirs.indexOf(dir);
-  if (idx >= 0) openCodeRunHomeDirs.splice(idx, 1);
+  await removeTrackedDirAsync(dir, openCodeRunHomeDirs);
 }
 
 /**
@@ -387,9 +404,7 @@ export async function cleanupIsolatedOpenCodeHomeAsync(dir: string): Promise<voi
  * @param dir - Ask-pass temp directory to remove.
  */
 export async function cleanupAskPassDirAsync(dir: string): Promise<void> {
-  await removeTempDirAsync(dir);
-  const idx = askPassDirs.indexOf(dir);
-  if (idx >= 0) askPassDirs.splice(idx, 1);
+  await removeTrackedDirAsync(dir, askPassDirs);
 }
 
 function registerSignalHandlers(): void {
@@ -2720,6 +2735,11 @@ async function runOpenCodeInner(
     core.warning('options.env HOME is ignored: each opencode run uses an isolated store.');
   }
   const isolatedHome = createIsolatedOpenCodeHome();
+  // Baseline for per-run GIT_ASKPASS reclamation in the finally below: only
+  // helper dirs created during this run's window are drained there. Dirs that
+  // predate the run are owned by their creator (configureGit caller) and, as
+  // a backstop, by the process-exit sweep.
+  const askPassBaseline = askPassDirs.length;
   safeEnv.HOME = isolatedHome;
   safeEnv.XDG_DATA_HOME = path.join(isolatedHome, '.local', 'share');
   safeEnv.XDG_CONFIG_HOME = path.join(isolatedHome, '.config');
@@ -3009,6 +3029,11 @@ async function runOpenCodeInner(
     // Async removal keeps the recursive rm off the event-loop critical path;
     // the sync variant remains for process-exit handlers where async is unavailable.
     await cleanupIsolatedOpenCodeHomeAsync(isolatedHome);
+    // Reclaim GIT_ASKPASS helper dirs created during this run so long-lived
+    // server processes do not leak temp dirs waiting for process exit.
+    for (const dir of askPassDirs.slice(askPassBaseline)) {
+      await cleanupAskPassDirAsync(dir);
+    }
   }
   const durationMs = Date.now() - startTime;
   return { ...attempt, durationMs };
