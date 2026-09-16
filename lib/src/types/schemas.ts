@@ -260,6 +260,16 @@ export const ReviewSensitivitySchema = z.object({
   ignorePatterns: z.array(z.string()).optional().default([]),
 });
 
+/**
+ * Severity-ordered noise budget cap. No `.min()/.max()` here by convention —
+ * `validateConfig()` (config.ts) clamps `maxInline` to 1..500 fail-open.
+ * @since NEXT
+ */
+export const NoiseBudgetSchema = z.object({
+  maxInline: z.number().int().optional(),
+  spilloverToSummary: z.boolean().optional().default(true),
+});
+
 /** Zod schema validating review configuration. */
 export const ReviewConfigSchema = z.object({
   skipLabels: z.array(z.string()).default(['autofix', 'autofix:approved', 'autofix:merged']),
@@ -748,6 +758,7 @@ export const PromptConfigSchema = z.object({
         .optional(),
       costTracking: CostTrackingConfigSchema.optional(),
       sensitivity: ReviewSensitivitySchema.optional(),
+      noiseBudget: NoiseBudgetSchema.optional(),
       categories: z.record(CategoryOverrideSchema).optional(),
       // Permissive by design (fail-open): entry caps (10 entries / 2 KB each) and
       // glob validation live in sanitizePathInstructions (lib/src/config.ts) and

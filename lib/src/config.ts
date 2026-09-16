@@ -864,6 +864,28 @@ export function validateConfig(
       }
       result.review.sensitivity = sensitivity;
     }
+    if (config.review.noiseBudget && typeof config.review.noiseBudget === 'object') {
+      try {
+        const nb = config.review.noiseBudget as {
+          maxInline?: unknown;
+          spilloverToSummary?: unknown;
+        };
+        if (typeof nb.maxInline === 'number' && Number.isFinite(nb.maxInline)) {
+          const rounded = Math.round(nb.maxInline);
+          // Absent/zero/negative disables the cap (legacy output).
+          if (rounded > 0) {
+            const maxInline = Math.min(rounded, 500);
+            const spilloverToSummary =
+              typeof nb.spilloverToSummary === 'boolean' ? nb.spilloverToSummary : true;
+            result.review.noiseBudget = { maxInline, spilloverToSummary };
+          }
+        }
+        // Absent, zero, negative, or non-finite maxInline leaves noiseBudget
+        // undefined (fail-open legacy output). Never throws.
+      } catch {
+        // Fail-open: keep legacy output when the budget block is malformed.
+      }
+    }
     if (config.review.categories && typeof config.review.categories === 'object') {
       const categories: Record<string, CategoryOverride> = {};
       for (const [name, override] of Object.entries(config.review.categories)) {

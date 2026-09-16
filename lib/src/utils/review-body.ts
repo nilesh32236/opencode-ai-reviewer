@@ -65,6 +65,14 @@ export interface ReviewBodyOptions {
    * head SHA). Appended after the issues section when non-empty. Falls back to
    * `result.attributionFooter` when omitted. */
   attributionFooter?: string;
+  /**
+   * Deterministic noise-budget spillover section (see `applyNoiseBudget`).
+   * Appended after the issues section when non-empty. Falls back to
+   * `result.noiseBudgetSpillover` when omitted. Fail-open: render errors or
+   * malformed input keep the inline set with a plain count line.
+   * @since NEXT
+   */
+  noiseBudgetSpillover?: string;
 }
 
 /**
@@ -365,6 +373,21 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
   // via the dedicated post-step comment (action/src/post.ts), which is gated on
   // the saved state and is verbosity-aware. Rendering it here too would show
   // the same totals twice on the same PR.
+  // Severity-ordered noise budget spillover (fail-open): overflow findings
+  // capped from the inline set render here as counts plus titles so they are
+  // preserved in the summary body instead of being silently dropped. A render
+  // failure keeps the inline set above with a plain count line.
+  try {
+    const spillover = options?.noiseBudgetSpillover ?? result.noiseBudgetSpillover;
+    if (typeof spillover === 'string' && spillover.trim()) {
+      lines.push('');
+      lines.push('---');
+      lines.push('');
+      lines.push(spillover.trim());
+    }
+  } catch {
+    // Fail-open: the inline findings above are the complete review.
+  }
   const footer = options?.attributionFooter ?? result.attributionFooter;
   if (footer?.trim()) {
     lines.push('');

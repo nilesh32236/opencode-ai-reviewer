@@ -94,6 +94,24 @@ export interface FilterFindingsResult {
   dropped: number;
 }
 
+/** Options controlling the severity-ordered noise budget cap. */
+export interface NoiseBudgetOptions {
+  /** Maximum findings kept inline (severity-ordered, highest first). */
+  maxInline?: number;
+  /** When false, overflow is dropped without a summary spillover section. */
+  spilloverToSummary?: boolean;
+}
+
+/** Result of applying the noise budget cap to review findings. */
+export interface NoiseBudgetResult {
+  /** Findings kept inline (severity-ordered, at most `maxInline`). */
+  inline: ReviewIssue[];
+  /** Lower-severity findings moved to the summary spillover. */
+  overflow: ReviewIssue[];
+  /** Rendered markdown spillover section ('' when disabled or nothing overflowed). */
+  spillover: string;
+}
+
 function sortBySeverity(issues: ReviewIssue[]): ReviewIssue[] {
   return [...issues].sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
 }
@@ -174,6 +192,132 @@ export function filterFindings(
   }
 
   return { issues: remaining, dropped: issues.length - remaining.length };
+}
+
+/**
+ * Strip disallowed C0/DEL control characters (keeping tab and newline, which
+ * are legitimate in markdown bodies). Local copy of the markdown-utils logic
+ * kept here so filter-findings stays dependency-free.
+ *
+ * @param text - String to strip.
+ * @returns String without disallowed controls.
+ * @since NEXT
+ */
+function stripNoiseBudgetControls(text: string): string {
+  let first = -1;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if ((code < 0x20 || code === 0x7f) && code !== 0x09 && code !== 0x0a) {
+      first = i;
+      break;
+    }
+  }
+  if (first === -1) return text;
+  const out: string[] = [text.slice(0, first)];
+  for (let i = first; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if ((code < 0x20 || code === 0x7f) && code !== 0x09 && code !== 0x0a) continue;
+    out.push(text[i]);
+  }
+  return out.join('');
+}
+
+/**
+ * Render one overflow finding as a single-line spillover bullet.
+ * Self-contained (no markdown-utils import): neutralizes newlines, backticks,
+ * and control characters and truncates the title to ~120 chars so one crafted
+ * model message cannot inject fake sections into the summary body.
+ *
+ * @param issue - Overflow finding to render.
+ * @returns A single-line markdown bullet (without trailing newline).
+ * @since NEXT
+ */
+function formatNoiseBudgetOverflowLine(issue: ReviewIssue): string {
+  const rawFile = String(issue.file ?? '');
+  const rawLine = Number.isFinite(issue.line) ? issue.line : 0;
+  const safePath = rawFile
+    .replace(/[`\r\n]/g, '')
+    .replace(/\|\|/g, '')
+    .slice(0, 200);
+  const firstLine =
+    stripNoiseBudgetControls(String(issue.message ?? ''))
+      .split('\n')[0]
+      ?.trim() ?? '';
+  const title = firstLine.length > 120 ? `${firstLine.slice(0, 117)}...` : firstLine;
+  return `- ${issue.severity.toUpperCase()}: \`${safePath}:${rawLine}\` — ${title}`;
+}
+
+/**
+ * Render the deterministic summary spillover for noise-budget overflow.
+ * Pure function: severity-ordered (critical first), header line plus one
+ * bullet per overflow finding (title = first line, ~120 chars).
+ *
+ * @param overflow - Findings that exceeded the inline budget (any order).
+ * @param maxInline - Inline cap shown in the header for context.
+ * @returns Markdown spillover section, or '' when overflow is empty.
+ * @since NEXT
+ */
+export function formatNoiseBudgetSpillover(overflow: ReviewIssue[], maxInline: number): string {
+  if (!Array.isArray(overflow) || overflow.length === 0) return '';
+  const ordered = [...overflow].sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
+  const lines = [
+    `> ℹ️ **Additional findings (${ordered.length})** — showing top ${maxInline} inline.`,
+    '',
+  ];
+  for (const issue of ordered) {
+    lines.push(formatNoiseBudgetOverflowLine(issue));
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Apply the severity-ordered noise budget cap to review findings.
+ * Keeps the highest-severity top N findings inline and spills lower-severity
+ * overflow to a deterministic summary section. Fail-open: absent/zero/invalid
+ * budget returns all findings inline with an empty spillover; a spillover
+ * render failure still returns the inline set plus a plain count line.
+ *
+ * @param issues - Findings to cap (already filtered; order not required).
+ * @param options - Noise budget options (`maxInline`, `spilloverToSummary`).
+ * @returns Inline findings, overflow findings, and the spillover markdown.
+ * @since NEXT
+ */
+export function applyNoiseBudget(
+  issues: ReviewIssue[],
+  options?: NoiseBudgetOptions,
+): NoiseBudgetResult {
+  const passthrough = (list: ReviewIssue[]): NoiseBudgetResult => ({
+    inline: list,
+    overflow: [],
+    spillover: '',
+  });
+  try {
+    if (!Array.isArray(issues)) return { inline: [], overflow: [], spillover: '' };
+    const rawMax = options?.maxInline;
+    if (typeof rawMax !== 'number' || !Number.isFinite(rawMax)) return passthrough(issues);
+    const maxInline = Math.floor(rawMax);
+    if (maxInline <= 0) return passthrough(issues);
+    if (issues.length <= maxInline) return passthrough(issues);
+    const ordered = sortBySeverity(issues);
+    const inline = ordered.slice(0, maxInline);
+    const overflow = ordered.slice(maxInline);
+    if (options?.spilloverToSummary === false) {
+      return { inline, overflow, spillover: '' };
+    }
+    try {
+      return { inline, overflow, spillover: formatNoiseBudgetSpillover(overflow, maxInline) };
+    } catch {
+      // Fail-open: keep the inline set plus a plain count line.
+      return {
+        inline,
+        overflow,
+        spillover: `> ℹ️ **Additional findings (${overflow.length})** — showing top ${maxInline} inline.`,
+      };
+    }
+  } catch {
+    // Fail-open: never break the review when the budget block is malformed.
+    return passthrough(Array.isArray(issues) ? issues : []);
+  }
 }
 
 /**

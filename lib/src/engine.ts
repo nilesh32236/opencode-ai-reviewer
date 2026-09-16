@@ -74,7 +74,12 @@ import { filterBlameToPatch, getGitBlame, parsePatchHunks } from './utils/blame.
 import { MAX_BLAME_LINES_PER_FILE, UNCOMMITTED_SHA } from './utils/blame.js';
 import type { BlameRange } from './utils/blame.js';
 import { sanitizeDescribeDiagram } from './utils/describe-diagram.js';
-import { computeReviewStats, filterFindings, severityRank } from './utils/filter-findings.js';
+import {
+  applyNoiseBudget,
+  computeReviewStats,
+  filterFindings,
+  severityRank,
+} from './utils/filter-findings.js';
 import {
   isAgentConfigPath,
   isGeneratedArtifact,
@@ -3921,12 +3926,40 @@ export class ReviewEngine {
     if (dropped > 0) {
       this.logger.info(`Sensitivity filter dropped ${dropped} finding(s) (kept ${issues.length})`);
     }
+    // Additive severity-ordered noise budget cap (fail-open): keeps the top
+    // `maxInline` findings inline and spills lower-severity overflow to the
+    // summary body. Absent/disabled budget leaves the filter output unchanged.
+    let inlineIssues = issues;
+    let noiseBudgetSpillover: string | undefined;
+    try {
+      const noiseBudget = this.config.review.noiseBudget;
+      if (noiseBudget && typeof noiseBudget.maxInline === 'number' && noiseBudget.maxInline > 0) {
+        const budgeted = applyNoiseBudget(issues, {
+          maxInline: noiseBudget.maxInline,
+          spilloverToSummary: noiseBudget.spilloverToSummary ?? true,
+        });
+        inlineIssues = budgeted.inline;
+        if (budgeted.overflow.length > 0) {
+          this.logger.info(
+            `Noise budget kept top ${budgeted.inline.length} inline, spilled ${budgeted.overflow.length} to summary`,
+          );
+        }
+        if (budgeted.spillover) {
+          noiseBudgetSpillover = budgeted.spillover;
+        }
+      }
+    } catch {
+      // Fail-open: keep the sensitivity-filtered set when the budget fails.
+      inlineIssues = issues;
+      noiseBudgetSpillover = undefined;
+    }
     // Always apply the filter output so `category` normalization and severity
     // ordering are consistent regardless of whether any finding was dropped.
     return {
       ...result,
-      issues,
-      stats: computeReviewStats(issues),
+      issues: inlineIssues,
+      stats: computeReviewStats(inlineIssues),
+      ...(noiseBudgetSpillover ? { noiseBudgetSpillover } : {}),
     };
   }
 

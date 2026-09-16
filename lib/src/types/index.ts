@@ -693,6 +693,21 @@ export interface ReviewSensitivityConfig {
   ignorePatterns?: string[];
 }
 
+/**
+ * Severity-ordered noise budget cap for review findings.
+ * Keeps the highest-severity findings inline up to `maxInline` and spills
+ * lower-severity overflow into the summary body instead of dropping it.
+ * Absent or non-positive `maxInline` disables the cap (legacy output).
+ * Fail-open: rendering failures fall back to the inline set plus a count line.
+ * @since NEXT
+ */
+export interface NoiseBudgetConfig {
+  /** Maximum findings kept inline (severity-ordered, highest first). */
+  maxInline?: number;
+  /** When true (default), overflow counts plus titles render in the summary body. */
+  spilloverToSummary?: boolean;
+}
+
 /** Severity threshold for failing the action/check run when findings at or above
  * this severity are found. `'off'` disables failure from findings entirely. */
 export type FailOnSeverity = 'off' | 'critical' | 'important' | 'minor';
@@ -829,6 +844,13 @@ export interface ReviewConfig {
   costTracking?: CostTrackingConfig;
   /** Per-repository sensitivity configuration for tuning reviewer strictness */
   sensitivity?: ReviewSensitivityConfig;
+  /**
+   * Optional severity-ordered noise budget cap. Keeps the top `maxInline`
+   * findings inline and spills overflow to the summary body.
+   * Absent (default) means legacy output unchanged.
+   * @since NEXT
+   */
+  noiseBudget?: NoiseBudgetConfig;
   /** Per-category overrides for review sensitivity */
   categories?: Record<string, CategoryOverride>;
   /** Opt-in map of glob pattern to extra review instructions, applied
@@ -1323,6 +1345,14 @@ export interface ReviewResult {
    * head SHA). Set by the engine when context.autoLoadAgentsMd loads files;
    * rendered by buildReviewBody/postReview. Absent when nothing was loaded. */
   attributionFooter?: string;
+  /**
+   * Deterministic noise-budget spillover section appended to the summary body.
+   * Set by the engine when `review.noiseBudget` caps inline findings; rendered
+   * verbatim by `buildReviewBody()`. Absent when the budget is disabled or
+   * nothing overflowed. Fail-open: renderers fall back to a plain count line.
+   * @since NEXT
+   */
+  noiseBudgetSpillover?: string;
 }
 
 /** Result of an auto-fix operation. */
@@ -1706,6 +1736,13 @@ export interface PromptConfig {
     costTracking?: CostTrackingConfig;
     /** Per-repository sensitivity configuration for tuning reviewer strictness */
     sensitivity?: ReviewSensitivityConfig;
+    /**
+     * Optional severity-ordered noise budget cap. Keeps the top `maxInline`
+     * findings inline and spills overflow to the summary body.
+     * Absent (default) means legacy output unchanged.
+     * @since NEXT
+     */
+    noiseBudget?: NoiseBudgetConfig;
     /** Per-category overrides for review sensitivity */
     categories?: Record<string, CategoryOverride>;
     /** Opt-in map of glob pattern to extra review instructions, applied
