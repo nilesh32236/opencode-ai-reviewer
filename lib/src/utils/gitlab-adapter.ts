@@ -88,6 +88,99 @@ function truncateToBytes(text: string, maxBytes: number): string {
   return Buffer.from(text, 'utf8').subarray(0, maxBytes).toString('utf8');
 }
 
+/**
+ * Parse a unified diff into a set of `file:line` strings covering the
+ * new-side lines of each hunk. Hunk bodies are walked line by line (` ` and
+ * `+` consume one new-side line; `-` consumes none) so only lines that
+ * actually exist on the new side are reported.
+ *
+ * Fail-open fallback: when a hunk body yields fewer new-side lines than the
+ * hunk header declares (truncated diff), the full header-declared range is
+ * unioned in so valid positions are never dropped.
+ *
+ * @param diffText - Raw unified diff text (already truncated to the byte cap).
+ * @returns Set of `file:line` strings for new-side lines in the diff.
+ */
+export function parseDiffHunkLines(diffText: string): Set<string> {
+  const lines = new Set<string>();
+  let currentFile = '';
+  const linesArray = diffText.split('\n');
+  const hunkRegex = /^@@\s+-[0-9,]+\s+\+([0-9]+)(?:,([0-9]+))?\s+@@/;
+  let hunkActive = false;
+  let hunkStart = 0;
+  let hunkCount = 0;
+  let hunkWalked = 0;
+  let newLine = 0;
+
+  const flushHunk = (): void => {
+    if (hunkActive && currentFile && hunkCount > 0 && hunkWalked < hunkCount) {
+      for (let i = 0; i < hunkCount; i++) {
+        lines.add(`${currentFile}:${hunkStart + i}`);
+      }
+    }
+    hunkActive = false;
+    hunkWalked = 0;
+    hunkCount = 0;
+  };
+
+  for (const line of linesArray) {
+    if (line.startsWith('\\')) continue;
+    if (line.startsWith('Binary')) continue;
+
+    if (line.startsWith('+++ b/')) {
+      flushHunk();
+      currentFile = line.substring(6).trim();
+      continue;
+    }
+    if (line.startsWith('+++ /dev/null')) {
+      flushHunk();
+      currentFile = '';
+      continue;
+    }
+    if (line.startsWith('diff --git') || line.startsWith('--- ')) {
+      flushHunk();
+      continue;
+    }
+    const match = hunkRegex.exec(line);
+    if (match && currentFile) {
+      flushHunk();
+      hunkActive = true;
+      hunkStart = Number.parseInt(match[1], 10);
+      hunkCount = match[2] !== undefined ? Number.parseInt(match[2], 10) : 1;
+      hunkWalked = 0;
+      newLine = hunkStart;
+      continue;
+    }
+    if (match) {
+      flushHunk();
+      continue;
+    }
+    if (!hunkActive || !currentFile) continue;
+    if (line.startsWith('+')) {
+      lines.add(`${currentFile}:${newLine}`);
+      newLine++;
+      hunkWalked++;
+    } else if (line.startsWith(' ')) {
+      lines.add(`${currentFile}:${newLine}`);
+      newLine++;
+      hunkWalked++;
+    } else if (line.startsWith('-')) {
+      // Deletion: consumes no new-side line.
+    } else if (line === '') {
+      // Bare empty line renders an empty context line in unified diffs.
+      if (hunkWalked < hunkCount) {
+        lines.add(`${currentFile}:${newLine}`);
+        newLine++;
+        hunkWalked++;
+      }
+    } else {
+      flushHunk();
+    }
+  }
+  flushHunk();
+  return lines;
+}
+
 /** GitLab adapter. */
 export class GitLabAdapter implements PlatformAdapter {
   private circuitBreaker = new CircuitBreaker({
@@ -588,12 +681,17 @@ export class GitLabAdapter implements PlatformAdapter {
   // ─── Diff Operations ────────────────────────────────────
 
   /**
-   * Get diff lines.
+   * Get diff lines with an explicit availability flag so callers can
+   * distinguish "diff unavailable" (fetch failed: skip inline attempts) from
+   * "diff empty" (fetched fine, no new-side lines).
    * @param mrNumber - mrNumber argument.
    * @param signal - Optional AbortSignal to cancel the diff fetch.
-   * @returns Description.
+   * @returns The parsed `file:line` set plus `failed` (true on fetch error).
    */
-  async getDiffLines(mrNumber: number, signal?: AbortSignal): Promise<Set<string>> {
+  async getDiffLinesWithStatus(
+    mrNumber: number,
+    signal?: AbortSignal,
+  ): Promise<{ lines: Set<string>; failed: boolean }> {
     try {
       const diffText = await this.api<string>(
         `/merge_requests/${mrNumber}/diff`,
@@ -601,7 +699,6 @@ export class GitLabAdapter implements PlatformAdapter {
         'text',
         signal,
       );
-      const lines = new Set<string>();
       // Slice at the last newline within the cap so the parser never sees a
       // partial trailing line (e.g. a cut `+++ b/` file header that would
       // poison currentFile, or a cut hunk header). Intact leading hunks still
@@ -616,36 +713,24 @@ export class GitLabAdapter implements PlatformAdapter {
           `MR !${mrNumber} diff truncated: ${utf8ByteLength(diffText)} bytes exceeds cap of ${MAX_DIFF_TEXT_BYTES} (truncated:true)`,
         );
       }
-      let currentFile = '';
-      const linesArray = truncatedText.split('\n');
-      const hunkRegex = /^@@\s+-[0-9,]+\s+\+([0-9]+)(?:,([0-9]+))?\s+@@/;
-
-      for (const line of linesArray) {
-        if (line.startsWith('\\')) continue;
-        if (line.startsWith('Binary')) continue;
-
-        if (line.startsWith('+++ b/')) {
-          currentFile = line.substring(6).trim();
-        } else if (line.startsWith('+++ /dev/null')) {
-          currentFile = '';
-        } else {
-          const match = hunkRegex.exec(line);
-          if (match && currentFile) {
-            const startLine = Number.parseInt(match[1], 10);
-            const lineCount = match[2] !== undefined ? Number.parseInt(match[2], 10) : 1;
-            for (let i = 0; i < lineCount; i++) {
-              lines.add(`${currentFile}:${startLine + i}`);
-            }
-          }
-        }
-      }
-      return lines;
+      return { lines: parseDiffHunkLines(truncatedText), failed: false };
     } catch (err) {
       const status = getErrorStatus(err);
       const suffix = status !== undefined ? ` (status ${status})` : '';
       core.warning(`Could not fetch MR diff for line validation${suffix}: ${String(err)}`);
-      return new Set();
+      return { lines: new Set<string>(), failed: true };
     }
+  }
+
+  /**
+   * Get diff lines.
+   * @param mrNumber - mrNumber argument.
+   * @param signal - Optional AbortSignal to cancel the diff fetch.
+   * @returns Description.
+   */
+  async getDiffLines(mrNumber: number, signal?: AbortSignal): Promise<Set<string>> {
+    const { lines } = await this.getDiffLinesWithStatus(mrNumber, signal);
+    return lines;
   }
 
   /**
@@ -895,14 +980,52 @@ export class GitLabAdapter implements PlatformAdapter {
     }
     const dedupedResult = { ...workingResult, issues: dedupedIssues };
 
-    const inlineComments = postInlineComments
-      ? buildInlineComments(
-          dedupedResult,
-          await this.getDiffLines(mrNumber, signal),
-          suppressLowConfidence,
-          options?.emitFixPayload,
-        )
-      : [];
+    // Pre-validation: when the MR diff fetch fails, an empty diffLines set
+    // would disable buildInlineComments filtering and send every inline
+    // issue into a guaranteed-422 per-discussion attempt. Skip inline
+    // attempts up front and post the summary note only (findings preserved
+    // in the body instead of N wasted discussion POSTs).
+    let diffFailed = false;
+    let diffLines = new Set<string>();
+    if (postInlineComments) {
+      try {
+        const status = await this.getDiffLinesWithStatus(mrNumber, signal);
+        diffLines = status.lines;
+        diffFailed = status.failed;
+      } catch {
+        diffFailed = true;
+        diffLines = new Set<string>();
+      }
+      if (diffFailed) {
+        const demoted = dedupedResult.issues.filter(
+          (i) => i.inline === true && i.line !== undefined && i.line >= 1,
+        ).length;
+        core.warning(
+          `MR diff unavailable; skipping ${demoted} inline position(s) and posting a summary-only note (no per-discussion attempts).`,
+        );
+      }
+    }
+
+    const inlineComments =
+      postInlineComments && !diffFailed
+        ? buildInlineComments(
+            dedupedResult,
+            diffLines,
+            suppressLowConfidence,
+            options?.emitFixPayload,
+          )
+        : [];
+    if (postInlineComments && !diffFailed) {
+      const inlineCandidateCount = dedupedResult.issues.filter(
+        (i) => i.inline === true && i.line !== undefined && i.line >= 1,
+      ).length;
+      const droppedInline = inlineCandidateCount - inlineComments.length;
+      if (droppedInline > 0) {
+        core.debug(
+          `Pre-validated inline positions against MR diff hunks: dropped ${droppedInline} out-of-hunk finding(s), posting ${inlineComments.length} inline.`,
+        );
+      }
+    }
 
     try {
       const queueByAnchor = new Map<string, string[]>();

@@ -73,6 +73,105 @@ function toFingerprintSet(value: Set<string> | string[] | undefined): Set<string
   return new Set<string>();
 }
 
+/**
+ * Parse a unified diff into a set of `file:line` strings covering the
+ * new-side (RIGHT) lines of each hunk. Hunk bodies are walked line by line
+ * (` ` and `+` consume one new-side line; `-` consumes none) so only lines
+ * that actually exist on the new side are reported.
+ *
+ * Fail-open fallback: when a hunk body yields fewer new-side lines than the
+ * hunk header declares (truncated diff, missing body in fixtures), the full
+ * header-declared range is unioned in so valid positions are never dropped —
+ * the safe direction is allowing an extra comment (recovered downstream)
+ * rather than silently discarding a valid finding.
+ *
+ * @param diffText - Raw unified diff text.
+ * @returns Set of `file:line` strings for new-side lines in the diff.
+ */
+export function parseDiffHunkLines(diffText: string): Set<string> {
+  const lines = new Set<string>();
+  let currentFile = '';
+  const linesArray = diffText.split('\n');
+  const hunkRegex = /^@@\s+-[0-9,]+\s+\+([0-9]+)(?:,([0-9]+))?\s+@@/;
+  let hunkActive = false;
+  let hunkStart = 0;
+  let hunkCount = 0;
+  let hunkWalked = 0;
+  let newLine = 0;
+
+  const flushHunk = (): void => {
+    if (hunkActive && currentFile && hunkCount > 0 && hunkWalked < hunkCount) {
+      for (let i = 0; i < hunkCount; i++) {
+        lines.add(`${currentFile}:${hunkStart + i}`);
+      }
+    }
+    hunkActive = false;
+    hunkWalked = 0;
+    hunkCount = 0;
+  };
+
+  for (const line of linesArray) {
+    if (line.startsWith('\\')) continue;
+    if (line.startsWith('Binary')) continue;
+
+    if (line.startsWith('+++ b/')) {
+      flushHunk();
+      currentFile = line.substring(6).trim();
+      continue;
+    }
+    if (line.startsWith('+++ /dev/null')) {
+      flushHunk();
+      currentFile = '';
+      continue;
+    }
+    if (line.startsWith('diff --git') || line.startsWith('--- ')) {
+      flushHunk();
+      continue;
+    }
+    const match = hunkRegex.exec(line);
+    if (match && currentFile) {
+      flushHunk();
+      hunkActive = true;
+      hunkStart = Number.parseInt(match[1], 10);
+      hunkCount = match[2] !== undefined ? Number.parseInt(match[2], 10) : 1;
+      hunkWalked = 0;
+      newLine = hunkStart;
+      continue;
+    }
+    if (match) {
+      flushHunk();
+      continue;
+    }
+    if (!hunkActive || !currentFile) continue;
+    if (line.startsWith('+')) {
+      lines.add(`${currentFile}:${newLine}`);
+      newLine++;
+      hunkWalked++;
+    } else if (line.startsWith(' ')) {
+      lines.add(`${currentFile}:${newLine}`);
+      newLine++;
+      hunkWalked++;
+    } else if (line.startsWith('-')) {
+      // Deletion: consumes no new-side line.
+    } else if (line === '') {
+      // Blank diff line: unified diffs render an empty file line as a bare
+      // empty line (context). Consume one new-side line while the hunk still
+      // expects lines; the trailing split artifact past the last hunk has
+      // hunkWalked >= hunkCount (or no active hunk) and is ignored.
+      if (hunkWalked < hunkCount) {
+        lines.add(`${currentFile}:${newLine}`);
+        newLine++;
+        hunkWalked++;
+      }
+    } else {
+      // Unknown directive ends the hunk body (fail-open: header fallback applies).
+      flushHunk();
+    }
+  }
+  flushHunk();
+  return lines;
+}
+
 /** Opt-in review gating mode mapped to the Pulls `createReview` event. */
 export type { VerdictMode } from '../types/index.js';
 export { normalizeVerdictMode } from './verdict-mode.js';
@@ -705,6 +804,54 @@ export class GitHubHelper implements PlatformAdapter {
   // ─── Diff Operations ────────────────────────────────────
 
   /**
+   * Fetch the raw diff for a PR with an explicit availability flag so callers
+   * can distinguish "diff unavailable" (fetch failed: pre-validate strictly
+   * and skip inline attempts) from "diff empty" (fetched fine, no new-side
+   * lines: every inline position is out-of-hunk).
+   *
+   * Results are cached per instance keyed by PR number with a 60s TTL so
+   * repeated calls within one pipeline run (e.g. per review batch) share a
+   * single fetch. Pass `headSha` (e.g. the commit SHA being reviewed) so
+   * entries are scoped per head; unscoped entries fall back to the short TTL.
+   * Call {@link clearDiffLinesCache} when the PR head moves. Failures are
+   * never cached.
+   *
+   * @param prNumber - PR number.
+   * @param headSha - Optional head SHA scoping the cache entry.
+   * @param signal - Optional AbortSignal to cancel the diff fetch.
+   * @returns The parsed `file:line` set plus `failed` (true on fetch error).
+   */
+  async getDiffLinesWithStatus(
+    prNumber: number,
+    headSha?: string,
+    signal?: AbortSignal,
+  ): Promise<{ lines: Set<string>; failed: boolean }> {
+    const cacheKey = headSha ? `${prNumber}:${headSha}` : `${prNumber}`;
+    const cached = this.diffLinesCache.get(cacheKey);
+    if (cached && Date.now() - cached.ts < GitHubHelper.DIFF_CACHE_TTL_MS) {
+      return { lines: new Set(cached.lines), failed: false };
+    }
+    try {
+      const diffText = await this.api<string>(
+        `/pulls/${prNumber}`,
+        {
+          headers: { Accept: 'application/vnd.github.v3.diff' },
+        },
+        'text',
+        signal,
+      );
+      const lines = parseDiffHunkLines(diffText);
+      this.setDiffLinesCache(cacheKey, lines);
+      return { lines: new Set(lines), failed: false };
+    } catch (err) {
+      const status = getErrorStatus(err);
+      const suffix = status !== undefined ? ` (status ${status})` : '';
+      core.warning(`Could not fetch PR diff for line validation${suffix}: ${String(err)}`);
+      return { lines: new Set(), failed: true };
+    }
+  }
+
+  /**
    * Fetch the raw diff for a PR and parse it into a set of "file:line" strings
    * representing lines added/modified in the diff. Used for inline comment validation.
    *
@@ -713,6 +860,9 @@ export class GitHubHelper implements PlatformAdapter {
    * single fetch. Pass `headSha` (e.g. the commit SHA being reviewed) so
    * entries are scoped per head; unscoped entries fall back to the short TTL.
    * Call {@link clearDiffLinesCache} when the PR head moves.
+   *
+   * To distinguish a failed fetch from a genuinely empty diff, prefer
+   * {@link getDiffLinesWithStatus}.
    *
    * @param prNumber - PR number.
    * @param headSha - Optional head SHA scoping the cache entry.
@@ -724,52 +874,8 @@ export class GitHubHelper implements PlatformAdapter {
     headSha?: string,
     signal?: AbortSignal,
   ): Promise<Set<string>> {
-    const cacheKey = headSha ? `${prNumber}:${headSha}` : `${prNumber}`;
-    const cached = this.diffLinesCache.get(cacheKey);
-    if (cached && Date.now() - cached.ts < GitHubHelper.DIFF_CACHE_TTL_MS) {
-      return new Set(cached.lines);
-    }
-    try {
-      const diffText = await this.api<string>(
-        `/pulls/${prNumber}`,
-        {
-          headers: { Accept: 'application/vnd.github.v3.diff' },
-        },
-        'text',
-        signal,
-      );
-      const lines = new Set<string>();
-      let currentFile = '';
-      const linesArray = diffText.split('\n');
-      const hunkRegex = /^@@\s+-[0-9,]+\s+\+([0-9]+)(?:,([0-9]+))?\s+@@/;
-
-      for (const line of linesArray) {
-        if (line.startsWith('\\')) continue;
-        if (line.startsWith('Binary')) continue;
-
-        if (line.startsWith('+++ b/')) {
-          currentFile = line.substring(6).trim();
-        } else if (line.startsWith('+++ /dev/null')) {
-          currentFile = '';
-        } else {
-          const match = hunkRegex.exec(line);
-          if (match && currentFile) {
-            const startLine = Number.parseInt(match[1], 10);
-            const lineCount = match[2] !== undefined ? Number.parseInt(match[2], 10) : 1;
-            for (let i = 0; i < lineCount; i++) {
-              lines.add(`${currentFile}:${startLine + i}`);
-            }
-          }
-        }
-      }
-      this.setDiffLinesCache(cacheKey, lines);
-      return new Set(lines);
-    } catch (err) {
-      const status = getErrorStatus(err);
-      const suffix = status !== undefined ? ` (status ${status})` : '';
-      core.warning(`Could not fetch PR diff for line validation${suffix}: ${String(err)}`);
-      return new Set();
-    }
+    const { lines } = await this.getDiffLinesWithStatus(prNumber, headSha, signal);
+    return lines;
   }
 
   /**
@@ -1358,14 +1464,36 @@ export class GitHubHelper implements PlatformAdapter {
       );
     }
 
-    const inlineComments = postInlineComments
-      ? buildInlineComments(
-          dedupedResult,
-          await this.getDiffLines(prNumber, commitSha, signal),
-          suppressLowConfidence,
-          options?.emitFixPayload,
-        )
-      : [];
+    let diffFailed = false;
+    let diffLines = new Set<string>();
+    if (postInlineComments) {
+      try {
+        const status = await this.getDiffLinesWithStatus(prNumber, commitSha, signal);
+        diffLines = status.lines;
+        diffFailed = status.failed;
+      } catch {
+        diffFailed = true;
+        diffLines = new Set<string>();
+      }
+      if (diffFailed) {
+        const demoted = dedupedResult.issues.filter(
+          (i) => i.inline === true && i.line !== undefined && i.line >= 1,
+        ).length;
+        core.warning(
+          `PR diff unavailable; skipping ${demoted} inline position(s) and posting a body-only review with no batched comments[] attempt (findings preserved in body).`,
+        );
+      }
+    }
+
+    const inlineComments =
+      postInlineComments && !diffFailed
+        ? buildInlineComments(
+            dedupedResult,
+            diffLines,
+            suppressLowConfidence,
+            options?.emitFixPayload,
+          )
+        : [];
     this.stampInlineFingerprintMarkers(inlineComments, dedupedResult.issues);
 
     const placedInlineKeys = new Set<string>();
@@ -1538,11 +1666,15 @@ export class GitHubHelper implements PlatformAdapter {
     signal?: AbortSignal,
   ): Promise<ReviewPostResult> {
     let diffLines: Set<string>;
+    let diffFailed = false;
     try {
-      diffLines = await this.getDiffLines(prNumber, commitSha, signal);
+      const status = await this.getDiffLinesWithStatus(prNumber, commitSha, signal);
+      diffLines = status.lines;
+      diffFailed = status.failed;
     } catch (err) {
       core.warning(`Diff validation unavailable, posting summary-only review: ${err}`);
       diffLines = new Set<string>();
+      diffFailed = true;
     }
 
     // Defense-in-depth: this entry already receives deduped input from
@@ -1552,27 +1684,8 @@ export class GitHubHelper implements PlatformAdapter {
       issues: this.applyInlineFingerprintDedup(workingResult.issues, options),
     };
 
-    const inlineComments = buildInlineComments(
-      dedupedResult,
-      diffLines,
-      suppressLowConfidence,
-      options?.emitFixPayload,
-    );
-    this.stampInlineFingerprintMarkers(inlineComments, dedupedResult.issues);
-
-    const placedInlineKeys = new Set<string>();
-    for (const c of inlineComments) {
-      placedInlineKeys.add(`${c.path}:${c.line}`);
-    }
-    // Mappable findings ride inline; unmappable findings stay in the body.
-    const issuesForBody = dedupedResult.issues.filter(
-      (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
-    );
-    const body = buildReviewBody({ ...dedupedResult, issues: issuesForBody }, options);
     // Full-finding body used for the fail-open summary-only retry.
     const fullBody = buildReviewBody(dedupedResult, options);
-
-    const commentIds: ReviewPostResult['commentIds'] = [];
     const reviewEvent = resolveReviewEvent(dedupedResult, options?.verdictMode);
 
     const postSummaryOnly = async (event: ReviewEvent): Promise<ReviewPostResult> => {
@@ -1595,6 +1708,49 @@ export class GitHubHelper implements PlatformAdapter {
         return { success: false, method: 'failed' };
       }
     };
+
+    // Pre-validation: when the diff fetch failed, an empty diffLines set
+    // would disable buildInlineComments filtering and send every inline
+    // issue into a guaranteed-422 batched POST. Skip the batch up front
+    // and post summary-only instead (no wasted API calls).
+    if (diffFailed) {
+      const demoted = dedupedResult.issues.filter(
+        (i) => i.inline === true && i.line !== undefined && i.line >= 1,
+      ).length;
+      core.warning(
+        `PR diff unavailable; skipping batched comments[] attempt and posting summary-only review (${demoted} inline finding(s) preserved in body).`,
+      );
+      return postSummaryOnly(reviewEvent);
+    }
+
+    const inlineCandidateCount = dedupedResult.issues.filter(
+      (i) => i.inline === true && i.line !== undefined && i.line >= 1,
+    ).length;
+    const inlineComments = buildInlineComments(
+      dedupedResult,
+      diffLines,
+      suppressLowConfidence,
+      options?.emitFixPayload,
+    );
+    const droppedInline = inlineCandidateCount - inlineComments.length;
+    if (droppedInline > 0) {
+      core.debug(
+        `Pre-validated inline positions against diff hunks: dropped ${droppedInline} out-of-hunk finding(s), posting ${inlineComments.length} inline.`,
+      );
+    }
+    this.stampInlineFingerprintMarkers(inlineComments, dedupedResult.issues);
+
+    const placedInlineKeys = new Set<string>();
+    for (const c of inlineComments) {
+      placedInlineKeys.add(`${c.path}:${c.line}`);
+    }
+    // Mappable findings ride inline; unmappable findings stay in the body.
+    const issuesForBody = dedupedResult.issues.filter(
+      (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
+    );
+    const body = buildReviewBody({ ...dedupedResult, issues: issuesForBody }, options);
+
+    const commentIds: ReviewPostResult['commentIds'] = [];
 
     if (inlineComments.length === 0) {
       return postSummaryOnly(reviewEvent);
@@ -1664,6 +1820,23 @@ export class GitHubHelper implements PlatformAdapter {
       side?: 'LEFT' | 'RIGHT';
     },
   ): Promise<{ commentId: number; nodeId?: string } | null> {
+    // Pre-validation against the batch's cached diff lines: when the cache
+    // already holds this PR+sha and the position is absent, the POST is a
+    // known-422 — skip it without an API call. Fail-open: with no cache
+    // entry, POST as usual (never block streaming on an extra diff fetch).
+    const cacheKeys = commitSha ? [`${prNumber}:${commitSha}`, `${prNumber}`] : [`${prNumber}`];
+    for (const key of cacheKeys) {
+      const entry = this.diffLinesCache.get(key);
+      if (entry && Date.now() - entry.ts < GitHubHelper.DIFF_CACHE_TTL_MS) {
+        if (!entry.lines.has(`${comment.path}:${comment.line}`)) {
+          core.warning(
+            `Skipping streaming inline comment for ${comment.path}:${comment.line}: position not in diff hunks (pre-validated, no API call).`,
+          );
+          return null;
+        }
+        break;
+      }
+    }
     try {
       const response = await this.api<{ id: number; node_id: string }>(
         `/pulls/${prNumber}/comments`,
