@@ -1238,25 +1238,71 @@ describe('ReviewEngine', () => {
         });
         mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
 
-        await eng.reviewPR(oversizedPr);
+        const result = await eng.reviewPR(oversizedPr);
 
         // Oversized contexts are budgeted in-process: exactly 1 opencode run
         // with subagents injected (no legacy N-process fan-out).
         expect(mockRunOpenCode).toHaveBeenCalledTimes(1);
         expect(capturedSubagents).toBeDefined();
         expect(capturedPrompt.length).toBeGreaterThan(0);
+        // A budgeted review never saw the dropped tail: it must degrade to an
+        // explicitly partial verdict, never a clean ready:true.
+        expect(result.verdict.ready).toBe(false);
+        expect(result.verdict.reasoning).toContain('context budgeted');
+        expect(result.summary).toContain('findings may be missing');
       });
 
       it('budgetOrchestratorContext truncates oversized contexts with a marker', async () => {
-        const { ReviewEngine } = await import('../src/engine.js');
+        const { ReviewEngine, ORCHESTRATOR_BUDGET_MARKER } = await import('../src/engine.js');
         const big = `line1\n${'y'.repeat(50_000)}`;
         const { context, wasBudgeted } = ReviewEngine.budgetOrchestratorContext(big);
         expect(wasBudgeted).toBe(true);
         expect(context.length).toBeLessThanOrEqual(45_000);
-        expect(context).toContain('[orchestrator context budgeted to fit single-process path]');
+        expect(context).toContain(ORCHESTRATOR_BUDGET_MARKER);
         const small = ReviewEngine.budgetOrchestratorContext('tiny');
         expect(small.wasBudgeted).toBe(false);
         expect(small.context).toBe('tiny');
+      });
+
+      it('budgetOrchestratorContext preserves policy sections when truncating the diff head', async () => {
+        const { ReviewEngine } = await import('../src/engine.js');
+        const safety = '## False Positive Suppression Rules\n\n- never flag `intentional-x`';
+        const big = `${'diff-line\n'.repeat(20_000)}${safety}`;
+        const { context, wasBudgeted } = ReviewEngine.budgetOrchestratorContext(big);
+        expect(wasBudgeted).toBe(true);
+        expect(context.length).toBeLessThanOrEqual(45_000);
+        // Defender-controlled policy survives attacker-controlled diff bloat.
+        expect(context).toContain('never flag `intentional-x`');
+      });
+
+      it('budgetOrchestratorContext honors degenerate budgets without exceeding them', async () => {
+        const { ReviewEngine, ORCHESTRATOR_BUDGET_MARKER } = await import('../src/engine.js');
+        const tiny = ReviewEngine.budgetOrchestratorContext('x'.repeat(100), 10);
+        expect(tiny.wasBudgeted).toBe(true);
+        expect(tiny.context.length).toBeLessThanOrEqual(10);
+        expect(ORCHESTRATOR_BUDGET_MARKER.startsWith(tiny.context)).toBe(true);
+      });
+
+      it('degrades budgeted reviews to ready:false with a summary warning', async () => {
+        const { ReviewEngine } = await import('../src/engine.js');
+        const clean = {
+          ...mockEmptyResult(),
+          summary: 'No issues found',
+          verdict: {
+            ready: true,
+            reasoning: 'No issues found',
+            autoFixable: false,
+            confidence: 'high' as const,
+          },
+        };
+        const degraded = ReviewEngine.applyBudgetedContextDegradation(clean);
+        expect(degraded.verdict.ready).toBe(false);
+        expect(degraded.verdict.reasoning).toContain('context budgeted');
+        expect(degraded.summary).toContain('findings may be missing');
+        // Idempotent: re-applying does not duplicate the warning.
+        const twice = ReviewEngine.applyBudgetedContextDegradation(degraded);
+        expect(twice.summary).toBe(degraded.summary);
+        expect(twice.verdict.reasoning).toBe(degraded.verdict.reasoning);
       });
 
       it('marks partial batch failure as degraded (not clean)', async () => {
@@ -1274,6 +1320,7 @@ describe('ReviewEngine', () => {
         const degraded = ReviewEngine.applyPartialBatchDegradation(clean, 1, 3);
         expect(degraded.verdict.ready).toBe(false);
         expect(degraded.verdict.reasoning).toContain('Partial review');
+        expect(degraded.summary).toContain('findings may be missing');
         expect(degraded.failedBatches).toBe(1);
       });
 

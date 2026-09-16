@@ -65,35 +65,55 @@ export interface OpenCodeRunMode {
 let runModeOverride: OpenCodeRunMode | undefined;
 
 /**
- * Process-wide promise chain serializing `opencode run` spawns. Concurrent
- * `opencode run` processes share one embedded opencode store (same HOME /
- * working tree), and concurrent store migrations race (`CREATE TABLE
- * workspace` failure, exit 1). Queueing spawns behind this chain guarantees
- * no two `opencode run` children overlap in this process, so the legacy
- * batch fan-out cannot crash itself. The chain only gates process lifetime
- * (spawn → exit), not pre-spawn validation, and bounded single-retry paths
- * call the inner runner directly so they never re-acquire the lock.
+ * Isolated per-run HOME roots created for `opencode run` spawns, tracked so
+ * `cleanupOpenCodeRunHomes()` (process exit) and per-run finally blocks can
+ * remove them. Each entry is a temp dir prefix `opencode-home-`.
  */
-let opencodeRunChain: Promise<void> = Promise.resolve();
+const openCodeRunHomeDirs: string[] = [];
 
-/** Reset the `opencode run` serialization chain (tests only). */
-export function resetOpenCodeRunChainForTests(): void {
-  opencodeRunChain = Promise.resolve();
+/**
+ * Create an isolated HOME directory for a single `opencode run` spawn.
+ *
+ * Concurrent `opencode run` processes share one embedded opencode store
+ * derived from HOME (same HOME / working tree), and concurrent store
+ * migrations race (`CREATE TABLE workspace` failure, exit 1). The race is
+ * not confined to this process — two Node processes or CI runners sharing
+ * the same HOME collide too — so a process-local mutex cannot fix it.
+ * Giving every run its own HOME (plus XDG data/config/cache dirs beneath
+ * it) isolates the embedded store per run, which fixes cross-process
+ * collisions and preserves `MAX_BATCH_CONCURRENCY` parallelism (no global
+ * serialization, no ~8x wall-clock regression on large reviews).
+ * @returns The path of the freshly created temp HOME directory.
+ */
+export function createIsolatedOpenCodeHome(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-home-'));
+  openCodeRunHomeDirs.push(dir);
+  return dir;
 }
 
-async function withOpenCodeRunLock<T>(fn: () => Promise<T>): Promise<T> {
-  const prev = opencodeRunChain;
-  let release!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  opencodeRunChain = prev.then(() => gate);
-  await prev;
+/**
+ * Remove a per-run isolated HOME directory created by
+ * {@link createIsolatedOpenCodeHome}. Best-effort (never throws).
+ * @param dir - The temp HOME directory to remove.
+ */
+export function cleanupIsolatedOpenCodeHome(dir: string): void {
   try {
-    return await fn();
-  } finally {
-    release();
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {
+    /* ok */
   }
+  const idx = openCodeRunHomeDirs.indexOf(dir);
+  if (idx >= 0) openCodeRunHomeDirs.splice(idx, 1);
+}
+
+/**
+ * @deprecated Process-local run serialization was removed in favor of
+ * per-run store isolation (`createIsolatedOpenCodeHome`). Kept as a no-op
+ * for backward compatibility with existing imports/tests; runs are
+ * concurrent and each spawn gets its own HOME-backed store.
+ */
+export function resetOpenCodeRunChainForTests(): void {
+  // No-op: there is no serialization chain anymore.
 }
 
 /**
@@ -276,11 +296,18 @@ export function resetOpenCodeState(): void {
   dualEmitSubagentPermissionsDefault = true;
   dualEmitMCPDefault = true;
   llmProviderConfig = undefined;
-  opencodeRunChain = Promise.resolve();
+  cleanupOpenCodeRunHomes();
   signalHandlersRegistered = false;
 }
 
 let signalHandlersRegistered = false;
+
+/** Remove all tracked per-run isolated HOME directories (best-effort). */
+function cleanupOpenCodeRunHomes(): void {
+  for (const dir of [...openCodeRunHomeDirs]) {
+    cleanupIsolatedOpenCodeHome(dir);
+  }
+}
 
 function cleanupAskPassDirs(): void {
   for (const dir of askPassDirs) {
@@ -290,6 +317,7 @@ function cleanupAskPassDirs(): void {
       /* ok */
     }
   }
+  cleanupOpenCodeRunHomes();
 }
 
 function registerSignalHandlers(): void {
@@ -2331,7 +2359,7 @@ export async function runOpenCode(
   promptTokens?: number;
   completionTokens?: number;
 }> {
-  return withOpenCodeRunLock(() => runOpenCodeInner(prompt, options));
+  return runOpenCodeInner(prompt, options);
 }
 
 async function runOpenCodeInner(
@@ -2539,6 +2567,22 @@ async function runOpenCodeInner(
   // into OPENCODE_CONFIG_CONTENT; forward the referenced variables so the CLI's
   // own substitution resolves them inside the sandboxed subprocess environment.
   applyLLMEnvVarReferences(safeEnv, llm);
+  // Isolate the embedded opencode store per run: every spawn gets a fresh
+  // HOME (plus XDG dirs beneath it) so concurrent runs — in this process,
+  // in other Node processes, or on other runners sharing a HOME — never race
+  // the store migrations. This is what fixes the shared-store crash while
+  // keeping batch fan-out concurrent. A caller-supplied HOME via options.env
+  // is intentionally overridden (with a warning) because sharing a store is
+  // exactly the crash being fixed. The temp dir is removed before return;
+  // leftovers from abnormal throws are swept on process exit.
+  if (options.env?.HOME !== undefined) {
+    core.warning('options.env HOME is ignored: each opencode run uses an isolated store.');
+  }
+  const isolatedHome = createIsolatedOpenCodeHome();
+  safeEnv.HOME = isolatedHome;
+  safeEnv.XDG_DATA_HOME = path.join(isolatedHome, '.local', 'share');
+  safeEnv.XDG_CONFIG_HOME = path.join(isolatedHome, '.config');
+  safeEnv.XDG_CACHE_HOME = path.join(isolatedHome, '.cache');
   // Upgrade legacy subagent deny blocks to the V2 permissions array when the
   // probed binary is new enough. The version comes from the already-completed
   // checkHealth()/setupOpenCode() probe (cachedOpenCodeVersionRaw), so this
@@ -2789,34 +2833,39 @@ async function runOpenCodeInner(
     }
   }
 
-  let attempt = await executeOnce(initialConfigContent);
-  // Fail-open for strict-schema CLIs: when the run fails with a config
-  // rejection and the injected config carried a dual-emitted `mcp` block,
-  // retry exactly once with the offending side removed. A V1 reader rejects
-  // the unknown `servers` key (output names `servers`) → retry legacy-only;
-  // otherwise a V2 reader rejected the legacy siblings → retry servers-only.
-  // MCP stays non-blocking throughout — the worst case is a review without
-  // MCP enrichment, never a hard failure from dual-emit.
-  if (!attempt.success && isMCPConfigRejection(attempt.output)) {
-    // Direction-aware: only a V1 unknown-field rejection naming the V2
-    // `servers` key retries legacy-only; any other MCP rejection (e.g. a V2
-    // CLI refusing the legacy siblings, even when the message quotes
-    // `mcp.servers`) retries servers-only. A bare `servers` substring (help
-    // text, config dumps) must not flip the direction on its own.
-    const outputText = attempt.output.toLowerCase();
-    const v1RejectsServersKey = /(unknown|unexpected) field[^\n]*servers/.test(outputText);
-    const stripped = v1RejectsServersKey
-      ? stripV2ServersKey(initialConfigContent)
-      : stripLegacyMCPKeys(initialConfigContent);
-    if (stripped !== initialConfigContent) {
-      noteMCPConfigRejection();
-      core.warning(
-        v1RejectsServersKey
-          ? 'Retrying OpenCode run once without the V2 servers key (legacy-only).'
-          : 'Retrying OpenCode run once without legacy MCP keys.',
-      );
-      attempt = await executeOnce(stripped);
+  let attempt: Awaited<ReturnType<typeof executeOnce>>;
+  try {
+    attempt = await executeOnce(initialConfigContent);
+    // Fail-open for strict-schema CLIs: when the run fails with a config
+    // rejection and the injected config carried a dual-emitted `mcp` block,
+    // retry exactly once with the offending side removed. A V1 reader rejects
+    // the unknown `servers` key (output names `servers`) → retry legacy-only;
+    // otherwise a V2 reader rejected the legacy siblings → retry servers-only.
+    // MCP stays non-blocking throughout — the worst case is a review without
+    // MCP enrichment, never a hard failure from dual-emit.
+    if (!attempt.success && isMCPConfigRejection(attempt.output)) {
+      // Direction-aware: only a V1 unknown-field rejection naming the V2
+      // `servers` key retries legacy-only; any other MCP rejection (e.g. a V2
+      // CLI refusing the legacy siblings, even when the message quotes
+      // `mcp.servers`) retries servers-only. A bare `servers` substring (help
+      // text, config dumps) must not flip the direction on its own.
+      const outputText = attempt.output.toLowerCase();
+      const v1RejectsServersKey = /(unknown|unexpected) field[^\n]*servers/.test(outputText);
+      const stripped = v1RejectsServersKey
+        ? stripV2ServersKey(initialConfigContent)
+        : stripLegacyMCPKeys(initialConfigContent);
+      if (stripped !== initialConfigContent) {
+        noteMCPConfigRejection();
+        core.warning(
+          v1RejectsServersKey
+            ? 'Retrying OpenCode run once without the V2 servers key (legacy-only).'
+            : 'Retrying OpenCode run once without legacy MCP keys.',
+        );
+        attempt = await executeOnce(stripped);
+      }
     }
+  } finally {
+    cleanupIsolatedOpenCodeHome(isolatedHome);
   }
   const durationMs = Date.now() - startTime;
   return { ...attempt, durationMs };

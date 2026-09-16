@@ -33,7 +33,11 @@ export {
   buildLocalOpenCodeConfig,
   buildLLMProviderMap,
   MINIMUM_OPENCODE_VERSION,
+  // @deprecated Prefer per-run store isolation (automatic). Kept for
+  // backward compatibility; now a no-op (runs are concurrent by design).
   resetOpenCodeRunChainForTests,
+  createIsolatedOpenCodeHome,
+  cleanupIsolatedOpenCodeHome,
 } from './opencode.js';
 export type {
   TokenUsageBreakdown,
@@ -108,6 +112,13 @@ export {
 } from './agents/index.js';
 export type { AgentPromptContext } from './agents/index.js';
 export { ReviewEngine, AGENT_ORDER } from './engine.js';
+export {
+  ORCHESTRATOR_BUDGET_MARKER,
+  BUDGETED_CONTEXT_WARNING,
+  SUBAGENT_REVIEW_CONTEXT_LIMIT,
+  MAX_BATCH_CONCURRENCY,
+  buildPartialBatchWarning,
+} from './engine.js';
 export { SetupEngine } from './setup/engine.js';
 export { CodebaseIndex } from './codebase-index/index.js';
 export { CodebaseIndexCache } from './codebase-index/cache.js';

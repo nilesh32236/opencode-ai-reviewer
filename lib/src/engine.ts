@@ -118,6 +118,69 @@ export const MAX_BATCH_CONCURRENCY = 8;
  */
 export const SUBAGENT_REVIEW_CONTEXT_LIMIT = 45_000;
 
+/**
+ * Marker appended when an orchestrator context is budgeted down to fit the
+ * single-process subagent path. Exported so tests and renderers share one
+ * literal instead of duplicating the magic string.
+ */
+export const ORCHESTRATOR_BUDGET_MARKER =
+  '\n... [orchestrator context budgeted to fit single-process path]';
+
+/**
+ * Blind-coverage warning for reviews whose orchestrator context was budgeted
+ * (truncated). A budgeted review never saw the dropped tail, so it must never
+ * report a clean verdict.
+ */
+export const BUDGETED_CONTEXT_WARNING =
+  'Partial review: context budgeted — findings may be missing';
+
+/**
+ * Build the shared blind-coverage warning for partial batch failures.
+ * Single source of truth for the wording surfaced in verdict reasoning,
+ * summaries, and fallback results.
+ * @param failedBatches - Number of batches that failed.
+ * @param totalBatches - Total number of batches.
+ * @returns The warning string (without surrounding parentheses).
+ */
+export function buildPartialBatchWarning(failedBatches: number, totalBatches: number): string {
+  return `Partial review: ${failedBatches}/${totalBatches} file batch(es) failed — findings may be missing`;
+}
+
+/**
+ * Section headers that carry defender-controlled policy rather than
+ * attacker-controlled diff content. `budgetOrchestratorContext` never drops
+ * these sections: truncation applies to the diff-heavy head only, so diff
+ * bloat cannot evict suppression rules, repo rules, or lessons.
+ */
+const BUDGET_PRESERVED_SECTION_MARKERS = [
+  '## False Positive Suppression Rules',
+  '## Repository Review Rules',
+  '## Commits in this PR',
+  '## Historical Lessons',
+  '## Previous Review Iterations',
+  '## Previously Reported Issues',
+  '## Incremental Review',
+  '## Library Documentation',
+  '## Codebase Context',
+];
+
+/**
+ * Truncate `head` to at most `maxLength` characters on a hunk (`\n@@`) or
+ * newline boundary (mirroring the delta-truncation pattern in
+ * `buildAgentBatchContext`).
+ * @param head - The diff-heavy prefix to truncate.
+ * @param maxLength - Maximum characters to keep.
+ * @returns The truncated head (unmarked).
+ */
+function truncateHeadOnBoundary(head: string, maxLength: number): string {
+  if (head.length <= maxLength) return head;
+  const slice = head.slice(0, Math.max(0, maxLength));
+  const lastHunk = slice.lastIndexOf('\n@@');
+  const lastNewline = slice.lastIndexOf('\n');
+  const boundary = lastHunk > 0 ? lastHunk : lastNewline > 0 ? lastNewline : slice.length;
+  return slice.slice(0, boundary);
+}
+
 /** Fixed inter-chunk backoff delay in milliseconds between concurrent chunks. */
 export const INTER_CHUNK_DELAY_MS = 150;
 
@@ -1361,7 +1424,11 @@ export class ReviewEngine {
           codebaseIndexData,
           files,
         );
-        const orchestratorContext = this.buildAgentBatchContext(
+        // Budget during assembly: the diff-heavy head is pre-truncated inside
+        // `buildAgentBatchContext` so the unbounded string never materializes.
+        // `budgetOrchestratorContext` remains as a byte-aware safety net that
+        // additionally guarantees the defender-controlled suffix survives.
+        const assembledContext = this.buildAgentBatchContext(
           baseContext,
           mcpDocs,
           openThreadsContext,
@@ -1373,21 +1440,24 @@ export class ReviewEngine {
           previousBotComments,
           repoRulesContext,
           commitMessages,
+          SUBAGENT_REVIEW_CONTEXT_LIMIT,
         );
 
         // Always stay on the single-process path: budget oversized contexts
         // down to SUBAGENT_REVIEW_CONTEXT_LIMIT in-process rather than
         // falling back to N concurrent `opencode run` processes.
         const { context: budgetedContext, wasBudgeted } = ReviewEngine.budgetOrchestratorContext(
-          orchestratorContext,
+          assembledContext,
           SUBAGENT_REVIEW_CONTEXT_LIMIT,
         );
-        if (wasBudgeted) {
+        const contextWasBudgeted =
+          wasBudgeted || budgetedContext.includes(ORCHESTRATOR_BUDGET_MARKER);
+        if (contextWasBudgeted) {
           this.logger.warn(
-            `Orchestrator context (${orchestratorContext.length} chars) exceeds SUBAGENT_REVIEW_CONTEXT_LIMIT (${SUBAGENT_REVIEW_CONTEXT_LIMIT}) — budgeted to fit single-process path`,
+            `Orchestrator context (${assembledContext.length} chars) exceeds SUBAGENT_REVIEW_CONTEXT_LIMIT (${SUBAGENT_REVIEW_CONTEXT_LIMIT}) — budgeted to fit single-process path`,
           );
         }
-        return await this.runMultiAgentReview(
+        const multiAgentResult = await this.runMultiAgentReview(
           pr,
           files,
           baseContext,
@@ -1414,6 +1484,13 @@ export class ReviewEngine {
           commitMessages,
           budgetedContext,
         );
+        // A budgeted review never saw the dropped tail: degrade explicitly so
+        // a truncated review can never synthesize a clean ready:true verdict
+        // (blind-coverage false-clean). Mirrors applyPartialBatchDegradation.
+        if (contextWasBudgeted) {
+          return ReviewEngine.applyBudgetedContextDegradation(multiAgentResult);
+        }
+        return multiAgentResult;
       }
       // Small PR (files.length <= batchSize) with multi-agent enabled:
       // single-batch fast path (no subagents, no cost regression).
@@ -2305,12 +2382,21 @@ export class ReviewEngine {
   /**
    * Budget an assembled orchestrator context down to `budget` characters so
    * oversized reviews stay on the single-process subagent path instead of
-   * fanning out to N concurrent `opencode run` processes. Truncation happens
-   * on a hunk (`\n@@`) or newline boundary (mirroring the delta-truncation
-   * pattern in `buildAgentBatchContext`) with an explicit marker appended so
-   * the orchestrator knows coverage was budgeted.
+   * fanning out to N concurrent `opencode run` processes.
+   *
+   * Truncation applies to the diff-heavy head only: defender-controlled
+   * policy sections (false-positive rules, repo rules, lessons — see
+   * `BUDGET_PRESERVED_SECTION_MARKERS`) are split off first and always
+   * preserved verbatim, so attacker-controlled diff bloat cannot evict them
+   * (truncation/policy-evasion). The surviving head is cut on a hunk
+   * (`\n@@`) or newline boundary with an explicit marker appended between the
+   * truncated head and the preserved suffix.
+   *
+   * The gate is byte-aware: both UTF-16 length and UTF-8 byte length must fit
+   * `budget`, since spawn/model limits are bytes/tokens rather than UTF-16
+   * code units.
    * @param ctx - The assembled orchestrator context string.
-   * @param budget - Maximum characters to keep (defaults to
+   * @param budget - Maximum characters/bytes to keep (defaults to
    * `SUBAGENT_REVIEW_CONTEXT_LIMIT`).
    * @returns The (possibly truncated) context and whether budgeting applied.
    */
@@ -2318,13 +2404,48 @@ export class ReviewEngine {
     ctx: string,
     budget: number = SUBAGENT_REVIEW_CONTEXT_LIMIT,
   ): { context: string; wasBudgeted: boolean } {
-    if (ctx.length <= budget) return { context: ctx, wasBudgeted: false };
-    const marker = '\n... [orchestrator context budgeted to fit single-process path]';
-    const slice = ctx.slice(0, Math.max(0, budget - marker.length));
-    const lastHunk = slice.lastIndexOf('\n@@');
-    const lastNewline = slice.lastIndexOf('\n');
-    const boundary = lastHunk > 0 ? lastHunk : lastNewline > 0 ? lastNewline : slice.length;
-    return { context: `${slice.slice(0, boundary)}${marker}`, wasBudgeted: true };
+    const effectiveBudget = Number.isFinite(budget) ? budget : SUBAGENT_REVIEW_CONTEXT_LIMIT;
+    const marker = ORCHESTRATOR_BUDGET_MARKER;
+    // Degenerate budgets that cannot even hold the marker: return the marker
+    // truncated to fit (still flagged as budgeted) to honor the contract.
+    if (effectiveBudget <= marker.length) {
+      return { context: marker.slice(0, Math.max(0, effectiveBudget)), wasBudgeted: true };
+    }
+    if (ctx.length <= effectiveBudget && Buffer.byteLength(ctx, 'utf8') <= effectiveBudget) {
+      return { context: ctx, wasBudgeted: false };
+    }
+    // Split off the defender-controlled suffix so only the diff-heavy head
+    // is ever truncated.
+    let suffixStart = -1;
+    for (const header of BUDGET_PRESERVED_SECTION_MARKERS) {
+      const idx = ctx.indexOf(header);
+      if (idx >= 0 && (suffixStart < 0 || idx < suffixStart)) suffixStart = idx;
+    }
+    const head = suffixStart >= 0 ? ctx.slice(0, suffixStart) : ctx;
+    const suffix = suffixStart >= 0 ? ctx.slice(suffixStart) : '';
+    // Suffix alone exceeds the budget: keep the head empty and fit as much of
+    // the safety suffix as possible (policy still wins over diff content).
+    if (suffix.length + marker.length >= effectiveBudget) {
+      const suffixBudget = effectiveBudget - marker.length;
+      const kept = truncateHeadOnBoundary(suffix, suffixBudget);
+      return { context: `${kept}${marker}`, wasBudgeted: true };
+    }
+    let headBudget = effectiveBudget - suffix.length - marker.length - (suffix ? 1 : 0);
+    let truncatedHead = truncateHeadOnBoundary(head, headBudget);
+    // Byte-aware shrink: multibyte text can exceed `budget` bytes while
+    // fitting in chars — walk back to earlier newline boundaries.
+    let assembled = suffix ? `${truncatedHead}${marker}\n${suffix}` : `${truncatedHead}${marker}`;
+    while (
+      Buffer.byteLength(assembled, 'utf8') > effectiveBudget &&
+      truncatedHead.length > 0 &&
+      headBudget > 0
+    ) {
+      headBudget = Math.floor(headBudget / 2);
+      truncatedHead = truncateHeadOnBoundary(head, headBudget);
+      assembled = suffix ? `${truncatedHead}${marker}\n${suffix}` : `${truncatedHead}${marker}`;
+      if (headBudget <= 0) break;
+    }
+    return { context: assembled, wasBudgeted: true };
   }
 
   /**
@@ -2332,7 +2453,8 @@ export class ReviewEngine {
    * degraded verdict. A partial review was never fully verified, so it must
    * never synthesize a clean `ready:true` verdict from blinded coverage: the
    * verdict is forced to `ready:false` with an explicit blind-coverage
-   * warning appended to the reasoning.
+   * warning appended to both the reasoning and the summary (so the headline
+   * cannot contradict the verdict).
    * @param result - The parsed/synthesized review result.
    * @param failedBatches - Number of batches that failed.
    * @param totalBatches - Total number of batches.
@@ -2344,16 +2466,49 @@ export class ReviewEngine {
     totalBatches: number,
   ): ReviewResult {
     if (failedBatches <= 0) return result;
-    const warning = `Partial review: ${failedBatches}/${totalBatches} file batch(es) failed — findings may be missing`;
+    const warning = buildPartialBatchWarning(failedBatches, totalBatches);
     const reasoning = result.verdict?.reasoning?.includes(warning)
       ? result.verdict.reasoning
       : result.verdict?.reasoning
         ? `${result.verdict.reasoning} (${warning})`
         : warning;
+    const summary = result.summary?.includes(warning)
+      ? result.summary
+      : result.summary
+        ? `${result.summary} (${warning})`
+        : warning;
     return {
       ...result,
+      summary,
       verdict: { ...result.verdict, ready: false, autoFixable: false, reasoning },
       failedBatches,
+    };
+  }
+
+  /**
+   * Demote a review result whose orchestrator context was budgeted
+   * (truncated). The dropped tail was never reviewed, so the result must
+   * never report a clean verdict: forces `ready:false` with the budgeted-
+   * context warning appended to both reasoning and summary (idempotent).
+   * @param result - The parsed/verified review result.
+   * @returns The degraded result.
+   */
+  static applyBudgetedContextDegradation(result: ReviewResult): ReviewResult {
+    const warning = BUDGETED_CONTEXT_WARNING;
+    const reasoning = result.verdict?.reasoning?.includes(warning)
+      ? result.verdict.reasoning
+      : result.verdict?.reasoning
+        ? `${result.verdict.reasoning} (${warning})`
+        : warning;
+    const summary = result.summary?.includes(warning)
+      ? result.summary
+      : result.summary
+        ? `${result.summary} (${warning})`
+        : warning;
+    return {
+      ...result,
+      summary,
+      verdict: { ...result.verdict, ready: false, autoFixable: false, reasoning },
     };
   }
 
@@ -2376,6 +2531,12 @@ export class ReviewEngine {
    * @param repoRulesContext - Optional repository rules context
    * (AGENTS.md/CLAUDE.md/GEMINI.md/RULES.md) threaded into the agent prompt.
    * @param commitMessages - Optional compact git log commit list for the PR.
+   * @param budget - Optional character budget. When provided and the assembled
+   * context would exceed it, the diff-heavy `batchContext` head is truncated
+   * on a hunk/newline boundary *during assembly* (before the full join), so
+   * oversized reviews never materialize the unbounded string. Suffix policy
+   * sections are always preserved (see `budgetOrchestratorContext`, which
+   * remains as a safety net for callers that assemble without a budget).
    * @returns The enriched context string.
    */
   private buildAgentBatchContext(
@@ -2395,6 +2556,7 @@ export class ReviewEngine {
     }>,
     repoRulesContext?: string,
     commitMessages?: string,
+    budget?: number,
   ): string {
     const parts: string[] = [batchContext];
 
@@ -2485,6 +2647,30 @@ export class ReviewEngine {
         const location = comment.line != null ? `${comment.file}:${comment.line}` : comment.file;
         const snippet = sanitizeString(comment.body.split('\n')[0].substring(0, 200));
         parts.push(`- **${location}** — ${snippet}`);
+      }
+    }
+
+    // Budget during assembly: when a budget is provided, pre-truncate the
+    // diff-heavy head (parts[0], the batch PR context) before the full join
+    // so oversized reviews never materialize the unbounded string (peak
+    // memory ~1x budgeted instead of ~2x). Suffix policy sections are
+    // preserved; the marker records that budgeting applied.
+    if (
+      budget !== undefined &&
+      Number.isFinite(budget) &&
+      budget > ORCHESTRATOR_BUDGET_MARKER.length
+    ) {
+      const suffixJoined = parts.slice(1).join('\n');
+      const estimated = parts[0].length + 1 + suffixJoined.length;
+      const bytesEstimated =
+        Buffer.byteLength(parts[0], 'utf8') + 1 + Buffer.byteLength(suffixJoined, 'utf8');
+      if (estimated > budget || bytesEstimated > budget) {
+        const headBudget = budget - suffixJoined.length - ORCHESTRATOR_BUDGET_MARKER.length - 2;
+        if (headBudget <= 0) {
+          parts[0] = ORCHESTRATOR_BUDGET_MARKER;
+        } else {
+          parts[0] = `${truncateHeadOnBoundary(parts[0], headBudget)}${ORCHESTRATOR_BUDGET_MARKER}`;
+        }
       }
     }
 
@@ -4672,16 +4858,16 @@ export class ReviewEngine {
     const allBatchesFailed = failedBatches > 0 && failedBatches >= fileBatches.length;
     const partialFailure = failedBatches > 0 && !allBatchesFailed;
     const partialWarning = partialFailure
-      ? ` (Partial review: ${failedBatches}/${fileBatches.length} file batch(es) failed — findings may be missing)`
+      ? ` (${buildPartialBatchWarning(failedBatches, fileBatches.length)})`
       : '';
     return {
       summary:
         allIssues.length > 0
-          ? `Found ${allIssues.length} issues across ${fileBatches.length} batches${partialFailure ? ` (${failedBatches} batch(es) failed — findings may be missing)` : ''}`
+          ? `Found ${allIssues.length} issues across ${fileBatches.length} batches${partialFailure ? ` (${buildPartialBatchWarning(failedBatches, fileBatches.length)})` : ''}`
           : allBatchesFailed
             ? `All ${fileBatches.length} review batches failed — PR was not reviewed`
             : partialFailure
-              ? `Partial review: ${failedBatches}/${fileBatches.length} batch(es) failed — findings may be missing`
+              ? buildPartialBatchWarning(failedBatches, fileBatches.length)
               : 'No issues found',
       verdict: {
         ready: allIssues.length === 0 && !allBatchesFailed && !partialFailure,

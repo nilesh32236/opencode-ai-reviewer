@@ -123,12 +123,17 @@ vi.mock('../src/utils/checksum.js', () => ({
 // Mock fs to allow chmodSync on our fake paths without throwing ENOENT
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs')>();
+  // Unique temp dirs per mkdtempSync call so per-run store isolation can be
+  // asserted (each opencode run must get its own HOME).
+  let mkdtempCounter = 0;
   return {
     ...actual,
     chmodSync: vi.fn(),
     existsSync: vi.fn().mockReturnValue(true),
     writeFileSync: vi.fn(),
-    mkdtempSync: vi.fn().mockReturnValue('/tmp/opencode-askpass-xxx'),
+    mkdtempSync: vi
+      .fn()
+      .mockImplementation((prefix: string) => `${prefix}mock-${++mkdtempCounter}`),
     readFileSync: vi.fn().mockReturnValue(''),
     promises: {
       ...actual.promises,
@@ -519,7 +524,7 @@ describe('runOpenCode()', () => {
     );
   });
 
-  it('serializes concurrent runs so no two opencode processes overlap (shared-store race)', async () => {
+  it('runs concurrently with an isolated store per run (no shared-store race, no global lock)', async () => {
     const first = makeMockProcess();
     const second = makeMockProcess();
     mockSpawn.mockReturnValueOnce(first).mockReturnValueOnce(second);
@@ -527,20 +532,32 @@ describe('runOpenCode()', () => {
     const firstPromise = runOpenCode('first', { model: 'openai/gpt-4' });
     const secondPromise = runOpenCode('second', { model: 'openai/gpt-4' });
 
-    // Let the first spawn start; the second must wait for the first to exit.
-    await new Promise((resolve) => setImmediate(resolve));
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(mockSpawn).toHaveBeenCalledTimes(1);
+    // Both spawns start without waiting for each other: batch fan-out stays
+    // concurrent (no process-wide serialization).
+    for (let i = 0; i < 10 && mockSpawn.mock.calls.length < 2; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+
+    // Each run gets its own isolated HOME-backed store, distinct from the
+    // ambient HOME and from each other — so concurrent runs (even across
+    // processes) cannot race the embedded-store migrations.
+    const firstEnv = mockSpawn.mock.calls[0][2].env as Record<string, string>;
+    const secondEnv = mockSpawn.mock.calls[1][2].env as Record<string, string>;
+    for (const env of [firstEnv, secondEnv]) {
+      expect(env.HOME).toBeDefined();
+      expect(env.HOME).not.toBe(process.env.HOME);
+      expect(env.HOME).toContain('opencode-home-');
+      expect(env.XDG_DATA_HOME).toBeDefined();
+      expect(env.XDG_CONFIG_HOME).toBeDefined();
+      expect(env.XDG_CACHE_HOME).toBeDefined();
+    }
+    expect(firstEnv.HOME).not.toBe(secondEnv.HOME);
 
     first.emitClose(0);
-    const firstResult = await firstPromise;
-    expect(firstResult.success).toBe(true);
-
-    // Second spawn starts only after the first run released the lock.
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(mockSpawn).toHaveBeenCalledTimes(2);
     second.emitClose(0);
-    const secondResult = await secondPromise;
+    const [firstResult, secondResult] = await Promise.all([firstPromise, secondPromise]);
+    expect(firstResult.success).toBe(true);
     expect(secondResult.success).toBe(true);
   });
 
