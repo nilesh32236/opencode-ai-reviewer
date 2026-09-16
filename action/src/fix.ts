@@ -1,5 +1,6 @@
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
+import * as github from '@actions/github';
 import type {
   AgentConfig,
   IssueComment,
@@ -27,6 +28,7 @@ import {
   withRetry,
 } from '@opencode-pr-agent/lib';
 import { sanitizeMarkdown } from '@opencode-pr-agent/lib';
+import { extractOperatorInstruction } from './comment-commands.js';
 import type { ActionInputs } from './inputs.js';
 import {
   capVerificationOutput,
@@ -35,6 +37,96 @@ import {
   resolvePrNumber,
   sanitize,
 } from './utils.js';
+
+/**
+ * Operator instruction passed from the triggering `/fix` comment.
+ * A plain string is treated as raw comment text (classified internally);
+ * the object form additionally carries the authorized actor for provenance.
+ */
+export interface FixOperatorInstruction {
+  /** Raw comment text or pre-extracted instruction remainder. */
+  instruction?: string;
+  /** Authorized comment author login (used only for provenance header). */
+  actor?: string;
+}
+
+/**
+ * Build the provenanced operator-instruction section appended to fix-agent
+ * context. The header marks the text as an authorized operator instruction
+ * (highest priority after the system prompt) — never as untrusted
+ * third-party prompt content. The permission gate in `index.ts` still runs
+ * first; this helper only formats text that survived authorization.
+ * @param instruction - Classified instruction remainder (non-empty).
+ * @param actor - Authorized comment author login, when known.
+ * @returns The markdown section to append to the fix context.
+ */
+export function buildOperatorInstructionSection(instruction: string, actor?: string): string {
+  const safeActor = actor && /^[A-Za-z0-9-]{1,39}$/.test(actor) ? actor : undefined;
+  const header = safeActor
+    ? `## Operator Instruction (authorized /fix comment by @${safeActor} — highest priority after system prompt)`
+    : '## Operator Instruction (authorized /fix comment — highest priority after system prompt)';
+  return `${header}\n\n${instruction}`;
+}
+
+/**
+ * Append an operator-instruction section to fix-agent context.
+ * Returns `context` byte-identical when `instruction` is missing/blank, so
+ * no-comment triggers (label, dispatch, GitLab) behave exactly as today.
+ * @param context - Assembled issue/PR context markdown.
+ * @param instruction - Classified instruction remainder, when any.
+ * @param actor - Authorized comment author login, when known.
+ * @returns The context with the provenanced section appended, or unchanged.
+ */
+export function appendOperatorInstruction(
+  context: string,
+  instruction?: string,
+  actor?: string,
+): string {
+  if (!instruction || !instruction.trim()) return context;
+  return `${context}\n\n${buildOperatorInstructionSection(instruction, actor)}`;
+}
+
+/**
+ * Resolve the effective operator instruction from action inputs and/or an
+ * explicit trailing override. Classification (token stripping, truncation)
+ * runs here so callers may pass raw comment bodies safely; double extraction
+ * is idempotent for already-classified text.
+ * @param inputs - Parsed action inputs (`commentBody` when the workflow passes `comment-body`).
+ * @param operator - Trailing override (raw string or `{ instruction, actor }`).
+ * @returns The classified instruction, or `undefined` when there is none.
+ */
+export function resolveOperatorInstruction(
+  inputs: Pick<ActionInputs, 'commentBody'>,
+  operator?: FixOperatorInstruction | string,
+): string | undefined {
+  const raw =
+    typeof operator === 'string' ? operator : (operator?.instruction ?? inputs.commentBody);
+  return extractOperatorInstruction(raw);
+}
+
+/**
+ * Resolve the provenance actor: explicit override first, then the in-process
+ * GitHub comment payload, then the workflow actor. Returns `undefined` on
+ * GitLab / non-comment triggers (no-op provenance).
+ * @param operator - Trailing override carrying an optional actor.
+ * @returns The actor login, or `undefined` when unknown/unsafe.
+ */
+export function resolveOperatorActor(
+  operator?: FixOperatorInstruction | string,
+): string | undefined {
+  const explicit = typeof operator === 'object' ? operator?.actor : undefined;
+  if (explicit && /^[A-Za-z0-9-]{1,39}$/.test(explicit)) return explicit;
+  try {
+    const login = (github?.context?.payload?.comment as { user?: { login?: string } } | undefined)
+      ?.user?.login;
+    if (typeof login === 'string' && /^[A-Za-z0-9-]{1,39}$/.test(login)) return login;
+    const fallback = (github?.context as { actor?: unknown } | undefined)?.actor;
+    if (typeof fallback === 'string' && /^[A-Za-z0-9-]{1,39}$/.test(fallback)) return fallback;
+  } catch {
+    /* ignore — provenance is best-effort */
+  }
+  return undefined;
+}
 
 /**
  * Determine whether a PR/MR has already been closed or merged, so a fix
@@ -63,6 +155,9 @@ export function isPrClosedOrMerged(state?: string): boolean {
  * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
  *   breaks withRetry backoff sleeps, and races verification timeouts.
  *   Advisory-only: engine calls themselves are not yet cancellable.
+ * @param operator - Optional operator instruction from the triggering `/fix`
+ *   comment (raw string or `{ instruction, actor }`). Classified internally;
+ *   absent means behave exactly as today.
  */
 export async function runFix(
   inputs: ActionInputs,
@@ -70,6 +165,7 @@ export async function runFix(
   engine: ReviewEngine,
   gh: PlatformAdapter,
   signal?: AbortSignal,
+  operator?: FixOperatorInstruction | string,
 ): Promise<void> {
   const prNumber = await resolvePrNumber();
   if (prNumber === null) {
@@ -189,6 +285,20 @@ export async function runFix(
     return;
   }
 
+  // Operator instruction from the triggering /fix comment (highest priority
+  // after the system prompt). Resolved from the explicit override first,
+  // falling back to the `comment-body` input; absent means byte-identical
+  // context (label/dispatch/GitLab triggers unchanged).
+  const operatorInstruction = resolveOperatorInstruction(inputs, operator);
+  const operatorActor = resolveOperatorActor(operator);
+  if (operatorInstruction) {
+    contextMarkdown = appendOperatorInstruction(
+      contextMarkdown,
+      operatorInstruction,
+      operatorActor,
+    );
+  }
+
   const fixResult = await engine.runFix(prNumber, iteration, contextMarkdown, pr);
 
   let changesMade = false;
@@ -285,6 +395,13 @@ export async function runFix(
             ),
           );
           break;
+        }
+        if (operatorInstruction) {
+          freshContextMarkdown = appendOperatorInstruction(
+            freshContextMarkdown,
+            operatorInstruction,
+            operatorActor,
+          );
         }
         const retryResult = await engine.runFix(
           prNumber,
@@ -447,6 +564,7 @@ export async function runFixIssue(
   _repo: string,
   gitEmail: string,
   signal?: AbortSignal,
+  operator?: FixOperatorInstruction | string,
 ): Promise<void> {
   const issueNumber = await resolvePrNumber();
   if (!issueNumber) {
@@ -528,6 +646,17 @@ export async function runFixIssue(
 
   let issueContext = await gh.gatherContext({ issueNumber });
 
+  // Operator instruction from the triggering /fix comment. Resolved once here
+  // (explicit override wins over the `comment-body` input) and appended after
+  // every gatherContext so both the direct-fix and analyze-then-fix paths
+  // carry it. Absent means byte-identical context (label/dispatch/GitLab
+  // triggers unchanged). Consumed only after the index.ts permission gate.
+  const operatorInstruction = resolveOperatorInstruction(inputs, operator);
+  const operatorActor = resolveOperatorActor(operator);
+  if (operatorInstruction) {
+    issueContext = appendOperatorInstruction(issueContext, operatorInstruction, operatorActor);
+  }
+
   // Auto-analyze if no implementation plan exists yet
   // gatherContext() strips the marker and replaces it with the header below,
   // so check both.
@@ -558,6 +687,9 @@ export async function runFixIssue(
     await markAnalysisReady(gh, issueNumber);
 
     issueContext = await gh.gatherContext({ issueNumber });
+    if (operatorInstruction) {
+      issueContext = appendOperatorInstruction(issueContext, operatorInstruction, operatorActor);
+    }
   }
 
   const issue = await gh.getIssue(issueNumber);
@@ -759,12 +891,19 @@ export async function runAutofixLoop(
   _repo: string,
   _token: string,
   signal?: AbortSignal,
+  operator?: FixOperatorInstruction | string,
 ): Promise<void> {
   const prNumber = await resolvePrNumber();
   if (prNumber === null) {
     core.setFailed('Could not determine PR number for autofix loop');
     return;
   }
+
+  // Operator instruction from the triggering /fix comment (iteration-0 only,
+  // highest priority after the system prompt). Absent means byte-identical
+  // context (label/dispatch/GitLab triggers unchanged).
+  const operatorInstruction = resolveOperatorInstruction(inputs, operator);
+  const operatorActor = resolveOperatorActor(operator);
 
   const history: IterationRecord[] = [];
   const previousFindings: PreviousFindingIteration[] = [];
@@ -1001,6 +1140,13 @@ export async function runAutofixLoop(
       );
       return;
     }
+    if (i === 0 && operatorInstruction) {
+      contextMarkdown = appendOperatorInstruction(
+        contextMarkdown,
+        operatorInstruction,
+        operatorActor,
+      );
+    }
     const fixResult = await engine.runFix(
       prNumber,
       i,
@@ -1184,6 +1330,13 @@ export async function runAutofixLoop(
               ),
             );
             break;
+          }
+          if (i === 0 && operatorInstruction) {
+            freshContextMarkdown = appendOperatorInstruction(
+              freshContextMarkdown,
+              operatorInstruction,
+              operatorActor,
+            );
           }
           const retryResult = await engine.runFix(
             prNumber,

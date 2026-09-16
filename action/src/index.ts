@@ -33,10 +33,14 @@ import {
 import { runAnalyze } from './analyze.js';
 import { runAudit } from './audit.js';
 import { runChangelog } from './changelog.js';
-import { extractCommentCommand, verifyCommentActorPermission } from './comment-commands.js';
+import {
+  extractCommentCommand,
+  extractOperatorInstruction,
+  verifyCommentActorPermission,
+} from './comment-commands.js';
 import { runDescribe } from './describe.js';
 import { runDocs } from './docs.js';
-import { runAutofixLoop, runFix, runFixIssue } from './fix.js';
+import { type FixOperatorInstruction, runAutofixLoop, runFix, runFixIssue } from './fix.js';
 import { type ActionInputs, parseInputs } from './inputs.js';
 import { buildLLMConfig } from './llm.js';
 import { runPost } from './post.js';
@@ -577,6 +581,65 @@ async function run(): Promise<void> {
       // - The gate runs only when the comment body actually contains a
       //   slash-command, so stray non-command comments neither fail the run
       //   nor require permission.
+      // Triggering-comment body, hoisted so it survives the auth gate and can
+      // be forwarded to the fix agent as an operator instruction. Resolved in
+      // two layers: the explicit `comment-body` action input wins (future
+      // workflow wiring: ${{ github.event.comment.body }}), falling back to
+      // the in-process comment payload (covers workflows that omit the input).
+      // Classification (token stripping/truncation) happens in fix.ts; here we
+      // only decide *whether* a comment qualifies. The permission gate above
+      // still runs first — content is consumed only after authorization, and
+      // stays an operator instruction, never untrusted third-party content.
+      // GitLab path: no comment payload exists, so this resolves to undefined
+      // (documented no-op) unless the input is explicitly passed.
+      let fixOperator: FixOperatorInstruction | undefined;
+      const resolveFixOperator = (): FixOperatorInstruction | undefined => {
+        if (inputs?.mode !== 'fix') return undefined;
+        const explicitRaw = inputs?.commentBody?.trim() ? inputs.commentBody : undefined;
+        const payloadBody =
+          platform === 'github'
+            ? ((): string | undefined => {
+                const c = github.context.payload.comment as
+                  | { body?: unknown; user?: { login?: string } }
+                  | undefined;
+                return typeof c?.body === 'string' ? c.body : undefined;
+              })()
+            : undefined;
+        const payloadActor =
+          platform === 'github'
+            ? ((): string | undefined => {
+                const c = github.context.payload.comment as
+                  | { user?: { login?: string } }
+                  | undefined;
+                const login = c?.user?.login;
+                if (typeof login === 'string' && /^[A-Za-z0-9-]{1,39}$/.test(login)) return login;
+                const fallback = github.context.actor;
+                if (typeof fallback === 'string' && /^[A-Za-z0-9-]{1,39}$/.test(fallback))
+                  return fallback;
+                return undefined;
+              })()
+            : undefined;
+        // Explicit input wins: the workflow author deliberately threaded it.
+        if (explicitRaw) {
+          const classified = extractOperatorInstruction(explicitRaw);
+          if (!classified) return undefined;
+          return payloadActor
+            ? { instruction: explicitRaw, actor: payloadActor }
+            : { instruction: explicitRaw };
+        }
+        // Payload fallback: only for authorized /fix (/oc alias) triggers, so
+        // stray non-command comments never become fix instructions.
+        if (payloadBody) {
+          const command = extractCommentCommand(payloadBody);
+          if (command !== 'fix' && command !== 'oc') return undefined;
+          const classified = extractOperatorInstruction(payloadBody);
+          if (!classified) return undefined;
+          return payloadActor
+            ? { instruction: payloadBody, actor: payloadActor }
+            : { instruction: payloadBody };
+        }
+        return undefined;
+      };
       if (platform === 'github') {
         const gatedEvent =
           github.context.eventName === 'issue_comment' ||
@@ -594,6 +657,7 @@ async function run(): Promise<void> {
           core.info('Ignoring non-command comment event — skipping authorization gate');
         }
       }
+      fixOperator = resolveFixOperator();
 
       switch (inputs.mode) {
         case 'analyze':
@@ -615,9 +679,9 @@ async function run(): Promise<void> {
                 : github.context.payload.issue?.number ||
                   github.context.payload.pull_request?.number;
             if (isPr) {
-              await runAutofixLoop(inputs, config, engine, gh, repo, token, runSignal);
+              await runAutofixLoop(inputs, config, engine, gh, repo, token, runSignal, fixOperator);
             } else if (issueNum && !isPr) {
-              await runFixIssue(inputs, config, engine, gh, repo, gitEmail, runSignal);
+              await runFixIssue(inputs, config, engine, gh, repo, gitEmail, runSignal, fixOperator);
             } else {
               // No PR/issue in the event payload (e.g. schedule/workflow_dispatch).
               // Fall back to the explicit `pr-number` input and classify the target
@@ -640,11 +704,29 @@ async function run(): Promise<void> {
                 }
               }
               if (explicitNum !== null && !isExplicitMr) {
-                await runFixIssue(inputs, config, engine, gh, repo, gitEmail, runSignal);
+                await runFixIssue(
+                  inputs,
+                  config,
+                  engine,
+                  gh,
+                  repo,
+                  gitEmail,
+                  runSignal,
+                  fixOperator,
+                );
               } else if (inputs.enableFix) {
-                await runAutofixLoop(inputs, config, engine, gh, repo, token, runSignal);
+                await runAutofixLoop(
+                  inputs,
+                  config,
+                  engine,
+                  gh,
+                  repo,
+                  token,
+                  runSignal,
+                  fixOperator,
+                );
               } else {
-                await runFix(inputs, config, engine, gh, runSignal);
+                await runFix(inputs, config, engine, gh, runSignal, fixOperator);
               }
             }
           }
