@@ -783,6 +783,11 @@ export async function runAutofixLoop(
   const gracePeriodMs = Math.max(30_000, totalTimeoutMs * 0.1);
 
   for (let i = 0; i < config.maxIterations; i++) {
+    // A CI-waiting block from a prior iteration must not latch across
+    // iterations: later fix work that exhausts must still reach the
+    // needs-manual-review terminal. Only a terminal CI-block (the last
+    // iteration ending in `continue` below) preserves the waiting state.
+    if (exitReason === 'ci-waiting') exitReason = 'exhausted';
     const elapsedMs = Date.now() - startTime;
     const timeLeftMs = totalTimeoutMs - elapsedMs;
 
@@ -831,7 +836,7 @@ export async function runAutofixLoop(
       await handleTimeoutGracefully(prNumber, history, i, config, gh, true);
       return;
     }
-    const prHeadSha = pr.headSha;
+    let prHeadSha = pr.headSha;
 
     let previousBotComments:
       | Array<{ file: string; line: number | null; body: string; commentId: number }>
@@ -895,6 +900,26 @@ export async function runAutofixLoop(
       break;
     }
 
+    // The review above is a long LLM call: a push during review leaves the
+    // pre-review head SHA stale. Re-fetch so both postReview and the CI gate
+    // below target the current head. A refetch failure fails closed for this
+    // iteration (skip on stale SHA) instead of gating on uncertain state.
+    try {
+      const fresh = await withRetry(() => gh.getMR(prNumber), {
+        operationName: 'autofix.getMR.refresh',
+        signal,
+      });
+      pr = fresh;
+      prHeadSha = fresh.headSha;
+    } catch (err) {
+      core.warning(
+        sanitize(
+          `Failed to re-fetch PR #${prNumber} after review in iteration ${i + 1} — skipping CI gate on stale SHA: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
+      continue;
+    }
+
     let currentCommentIds:
       | Array<{ file: string; line: number; commentId: number; nodeId?: string }>
       | undefined;
@@ -939,7 +964,14 @@ export async function runAutofixLoop(
       // `autofix` for another cycle instead of becoming mergeable.
       let ciGate: { ok: boolean; reason: string };
       try {
-        ciGate = await checkHeadCIGreen(gh, prHeadSha, undefined, signal);
+        // Retried like the surrounding hot-loop fetches: a single transient
+        // 429/5xx must not consume a whole iteration (including the expensive
+        // review above). Persistent failures still fail closed via the catch.
+        ciGate = await withRetry(() => checkHeadCIGreen(gh, prHeadSha, undefined, signal), {
+          operationName: 'autofix.checkHeadCI',
+          maxRetries: 2,
+          signal,
+        });
       } catch (err) {
         ciGate = {
           ok: false,

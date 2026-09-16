@@ -183,6 +183,10 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
 
     for (let i = 0; i < config.maxIterations; i++) {
       if (signal?.aborted) return;
+      // A CI-waiting block from a prior iteration must not latch: later fix
+      // work that exhausts must still reach the needs-manual-review terminal.
+      // Only a terminal CI-block preserves the waiting state.
+      ciWaiting = false;
       let verificationPassed = false;
       logger.info(`=== Autofix iteration ${i + 1}/${config.maxIterations} ===`);
 

@@ -88,6 +88,7 @@ describe('isHeadCIGreen', () => {
     const dup = makeStatus({
       total: 3,
       successful: 2,
+      failed: 1,
       checks: [
         { name: 'build', status: 'completed', conclusion: 'success' },
         { name: 'build', status: 'completed', conclusion: 'failure' },
@@ -115,6 +116,16 @@ describe('isHeadCIGreen', () => {
     });
     expect(() => isHeadCIGreen(malformed, { requireNames: ['build'] })).not.toThrow();
     expect(isHeadCIGreen(malformed, { requireNames: ['build'] })).toBe(false);
+  });
+
+  it('tolerates non-string requireNames entries without throwing', () => {
+    const mixed = { requireNames: [null, undefined, 'build'] as unknown as string[] };
+    expect(() => isHeadCIGreen(makeStatus(), mixed)).not.toThrow();
+    expect(isHeadCIGreen(makeStatus(), mixed)).toBe(true);
+    // Null entries never bypass a valid requirement: a missing name still
+    // fails closed.
+    const missing = { requireNames: [null, 'security-scan'] as unknown as string[] };
+    expect(isHeadCIGreen(makeStatus(), missing)).toBe(false);
   });
 });
 
