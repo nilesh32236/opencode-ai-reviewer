@@ -42,6 +42,38 @@ export function extractCommentCommand(body: string | undefined | null): string |
 }
 
 /**
+ * Whether a `/fix` trigger comment explicitly asks for a fresh review.
+ * Additive helper — `extractCommentCommand` intentionally drops args, so the
+ * autofix loop uses this to honor `/fix re-review` / `/fix re_review` /
+ * `/fix force-review` (and the `/oc fix …` alias form) without changing the
+ * auth gate. Only tokens on the same line as the command count, so quoted
+ * docs or code snippets elsewhere in the body cannot force an expensive
+ * fresh pass.
+ * @param body - Raw comment body (may be undefined/null).
+ * @returns True when a re-review token follows the fix command on its line.
+ */
+export function hasFixReReviewFlag(body: string | undefined | null): boolean {
+  if (!body) return false;
+  const token = /\b(re-review|re_review|rereview|force-review|force_review)\b/i;
+  for (const line of String(body).split('\n')) {
+    const fixMatch = line.match(/(?:^|\s)\/fix\b/i);
+    if (fixMatch?.index !== undefined) {
+      if (token.test(line.slice(fixMatch.index + fixMatch[0].length))) return true;
+      continue;
+    }
+    const ocMatch = line.match(/(?:^|\s)\/oc\b/i);
+    if (ocMatch?.index !== undefined) {
+      const afterOc = line.slice(ocMatch.index + ocMatch[0].length);
+      const innerFix = afterOc.match(/\bfix\b/i);
+      if (innerFix?.index !== undefined) {
+        if (token.test(afterOc.slice(innerFix.index + innerFix[0].length))) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
  * Maximum operator-instruction length (chars) forwarded to the fix agent.
  * Consistent with the prompt-builder section caps (tens of KB); deliberately
  * small so a pasted log cannot blow up the fix prompt.

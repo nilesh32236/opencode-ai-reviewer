@@ -33,7 +33,30 @@ export interface ReviewThreadInfo {
     lineNumber: number | null;
     author: string;
     createdAt: string;
+    /**
+     * Git commit the comment was made against, when the platform exposes it
+     * (GitHub review comments carry `commit_id` / GraphQL `commit { oid }`).
+     * Callers use it to decide whether a bot review is head-current without
+     * an extra review-list fetch. Absent on older payloads and platforms that
+     * do not expose it — callers must treat absent as unknown (fail-open to a
+     * fresh review).
+     */
+    commitId?: string;
   };
+}
+
+/** Minimal bot-authored review summary used for head-freshness checks. */
+export interface BotReviewInfo {
+  /** Review id (REST id). */
+  id: number;
+  /** Head commit the review was submitted against (may be empty when unknown). */
+  commitId: string;
+  /** Review body text. */
+  body: string;
+  /** Review state (e.g. COMMENTED, APPROVED, CHANGES_REQUESTED). */
+  state: string;
+  /** Submission timestamp (ISO string, may be empty when unknown). */
+  submittedAt: string;
 }
 
 /** Details of a review comment. */
@@ -491,6 +514,15 @@ export interface PlatformAdapter {
    * @returns Promise resolving to array of bot review threads.
    */
   getBotReviewThreads(mrNumber: number): Promise<ReviewThreadInfo[]>;
+  /**
+   * List bot-authored reviews for a merge request (newest first when the
+   * platform can order them). Optional: adapters that cannot list reviews may
+   * omit it — callers fall back to `getBotReviewThreads` + `listReviewComments`
+   * commit correlation. Fail-open: implementations return [] on any failure.
+   * @param mrNumber - Merge request number.
+   * @returns Promise resolving to bot review summaries.
+   */
+  listBotReviews?(mrNumber: number): Promise<BotReviewInfo[]>;
   /**
    * Get open human review threads as a markdown string.
    * @param mrNumber - Merge request number.

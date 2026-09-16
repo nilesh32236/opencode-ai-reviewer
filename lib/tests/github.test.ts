@@ -2174,4 +2174,217 @@ diff --git a/deleted.ts b/deleted.ts
       });
     });
   });
+
+  describe('listBotReviews', () => {
+    beforeEach(() => {
+      process.env.GITHUB_ACTOR = '';
+    });
+
+    function stubUser(login: string): void {
+      vi.spyOn(helper, 'getCurrentUser').mockResolvedValue(login);
+    }
+
+    it('returns bot reviews newest-first and filters out non-bot authors', async () => {
+      stubUser('opencode-ai-reviewer[bot]');
+      vi.spyOn(helper, 'paginate').mockResolvedValue([
+        {
+          id: 1,
+          user: { login: 'opencode-ai-reviewer[bot]' },
+          commit_id: 'sha-old',
+          body: 'old',
+          state: 'COMMENTED',
+          submitted_at: '2026-01-01T00:00:00Z',
+        },
+        {
+          id: 2,
+          user: { login: 'human' },
+          commit_id: 'sha-old',
+          body: 'human review',
+          state: 'COMMENTED',
+          submitted_at: '2026-06-01T00:00:00Z',
+        },
+        {
+          id: 3,
+          user: { login: 'opencode-ai-reviewer[bot]' },
+          commit_id: 'sha-new',
+          body: 'new',
+          state: 'COMMENTED',
+          submitted_at: '2026-05-01T00:00:00Z',
+        },
+      ]);
+
+      const reviews = await helper.listBotReviews(42);
+
+      expect(reviews.map((r) => r.id)).toEqual([3, 1]);
+      expect(reviews[0]).toMatchObject({ commitId: 'sha-new', body: 'new' });
+    });
+
+    it('normalizes the [bot] suffix when matching logins', async () => {
+      stubUser('my-bot');
+      vi.spyOn(helper, 'paginate').mockResolvedValue([
+        {
+          id: 7,
+          user: { login: 'my-bot[bot]' },
+          commit_id: 'abc',
+          body: 'hi',
+          state: 'COMMENTED',
+          submitted_at: '2026-02-01T00:00:00Z',
+        },
+      ]);
+
+      const reviews = await helper.listBotReviews(42);
+
+      expect(reviews).toHaveLength(1);
+      expect(reviews[0]?.id).toBe(7);
+    });
+
+    it('coerces missing commit_id/body to empty strings and skips invalid ids', async () => {
+      stubUser('bot[bot]');
+      vi.spyOn(helper, 'paginate').mockResolvedValue([
+        {
+          id: 9,
+          user: { login: 'bot[bot]' },
+          state: 'COMMENTED',
+          submitted_at: '2026-03-01T00:00:00Z',
+        },
+        { user: { login: 'bot[bot]' }, commit_id: 'x', body: 'no id' },
+        { id: 0, user: { login: 'bot[bot]' }, commit_id: 'x', body: 'zero id' },
+        { id: -5, user: { login: 'bot[bot]' }, commit_id: 'x', body: 'neg id' },
+      ]);
+
+      const reviews = await helper.listBotReviews(42);
+
+      expect(reviews).toHaveLength(1);
+      expect(reviews[0]).toMatchObject({ id: 9, commitId: '', body: '' });
+    });
+
+    it('keeps submissions with equal timestamps (comparator returns 0)', async () => {
+      stubUser('bot[bot]');
+      vi.spyOn(helper, 'paginate').mockResolvedValue([
+        {
+          id: 11,
+          user: { login: 'bot[bot]' },
+          commit_id: 'a',
+          body: 'a',
+          state: 'COMMENTED',
+          submitted_at: '',
+        },
+        {
+          id: 12,
+          user: { login: 'bot[bot]' },
+          commit_id: 'b',
+          body: 'b',
+          state: 'COMMENTED',
+          submitted_at: '',
+        },
+      ]);
+
+      const reviews = await helper.listBotReviews(42);
+
+      expect(reviews).toHaveLength(2);
+      expect(reviews.map((r) => r.id).sort()).toEqual([11, 12]);
+    });
+
+    it('fails open to [] on fetch errors', async () => {
+      stubUser('bot[bot]');
+      vi.spyOn(helper, 'paginate').mockRejectedValue(new Error('boom'));
+
+      await expect(helper.listBotReviews(42)).resolves.toEqual([]);
+    });
+
+    it('rethrows AbortError instead of failing open', async () => {
+      stubUser('bot[bot]');
+      const abortErr = new DOMException('aborted', 'AbortError');
+      vi.spyOn(helper, 'paginate').mockRejectedValue(abortErr);
+
+      await expect(helper.listBotReviews(42)).rejects.toBe(abortErr);
+    });
+  });
+
+  describe('getReviewThreads GHES fallback', () => {
+    function threadNode(extra: Record<string, unknown> = {}): Record<string, unknown> {
+      return {
+        id: 'thread-1',
+        isResolved: false,
+        comments: {
+          nodes: [
+            {
+              id: 'comment-1',
+              databaseId: 101,
+              body: 'nit',
+              path: 'src/a.ts',
+              line: 1,
+              originalLine: 1,
+              author: { login: 'bot' },
+              createdAt: '2026-01-01T00:00:00Z',
+              ...extra,
+            },
+          ],
+        },
+      };
+    }
+
+    function threadsPayload(nodes: Record<string, unknown>[]): Record<string, unknown> {
+      return {
+        data: {
+          repository: {
+            pullRequest: {
+              reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes },
+            },
+          },
+        },
+      };
+    }
+
+    it('falls back to the legacy query when commit OID fields are rejected', async () => {
+      const seenQueries: string[] = [];
+      fetchMock.mockImplementation(async (_url: string, options?: RequestInit) => {
+        const query = String(JSON.parse((options as RequestInit).body as string).query as string);
+        seenQueries.push(query);
+        if (query.includes('commit { oid }')) {
+          return mockResponse({
+            body: {
+              data: null,
+              errors: [
+                { message: "Field 'commit' doesn't exist on type 'PullRequestReviewComment'" },
+              ],
+            },
+          });
+        }
+        return mockResponse({ body: threadsPayload([threadNode()]) });
+      });
+
+      const threads = await helper.getReviewThreads(42);
+
+      expect(seenQueries.length).toBe(2);
+      expect(seenQueries[1]).not.toContain('commit { oid }');
+      expect(threads).toHaveLength(1);
+      expect(threads[0]?.firstComment.commitId).toBeUndefined();
+    });
+
+    it('rethrows non-schema GraphQL errors without falling back', async () => {
+      fetchMock.mockResolvedValue(
+        mockResponse({
+          body: { data: null, errors: [{ message: 'Could not resolve to a node with id X' }] },
+        }),
+      );
+
+      await expect(helper.getReviewThreads(42)).rejects.toMatchObject({ status: 422 });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('maps commit OID fields to commitId when the schema supports them', async () => {
+      fetchMock.mockImplementation(async (_url: string, options?: RequestInit) => {
+        const query = String(JSON.parse((options as RequestInit).body as string).query as string);
+        expect(query).toContain('commit { oid }');
+        return mockResponse({
+          body: threadsPayload([threadNode({ commit: { oid: 'sha-1' } })]),
+        });
+      });
+
+      const threads = await helper.getReviewThreads(42);
+
+      expect(threads[0]?.firstComment.commitId).toBe('sha-1');
+    });
+  });
 });
