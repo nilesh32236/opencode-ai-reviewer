@@ -152,6 +152,8 @@ export interface ActionInputs {
     auditLabels: string[];
     /** Version of opencode to use. */
     opencodeVersion: string;
+    /** Optional model variant passed as `opencode run --variant <value>` (undefined when unset/invalid). */
+    opencodeVariant?: string;
     /** Fail closed when the downloaded OpenCode CLI cannot be checksum-verified. */
     requireOpencodeChecksum: boolean;
     /** In setup mode, probe every configured model instead of only the review model. */
