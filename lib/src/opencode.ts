@@ -2663,6 +2663,29 @@ export async function runOpenCode(
       core.warning(
         `OpenCode did not complete successfully (timedOut: ${timedOut}, exitCode: ${exitCode}, error: ${processError ?? 'none'})`,
       );
+      // Fail open for older CLI versions that reject unknown provider option
+      // keys: when timeout tuning was emitted and the CLI output names the
+      // rejected keys, retry once without them (default timeouts). Bounded —
+      // the stripped config carries no timeout options, so this cannot recurse.
+      if (
+        !timedOut &&
+        !processError &&
+        llmHasTimeoutOptions(llm) &&
+        /\b(unknown|invalid|unexpected|unrecognized)[\w\s'".:-]{0,80}(headerTimeout|chunkTimeout)|(headerTimeout|chunkTimeout)[\w\s'".:-]{0,80}\b(unknown|invalid|unexpected|unrecognized|not supported|not allowed)/i.test(
+          capturedOutput,
+        )
+      ) {
+        core.warning(
+          'OpenCode CLI appears to reject provider timeout keys (headerTimeout/chunkTimeout) — retrying once without them.',
+        );
+        return runOpenCode(prompt, {
+          ...options,
+          opencodeConfig: options.opencodeConfig
+            ? stripProviderTimeoutOptions(options.opencodeConfig)
+            : undefined,
+          llm: stripLLMTimeoutOptions(llm),
+        });
+      }
       return {
         success: false,
         output: capturedOutput,
@@ -2670,63 +2693,26 @@ export async function runOpenCode(
         promptTokens: finalBreakdown.promptTokens,
         completionTokens: finalBreakdown.completionTokens,
       };
-    }
-
-    core.warning(
-      `OpenCode did not complete successfully (timedOut: ${timedOut}, exitCode: ${exitCode}, error: ${processError ?? 'none'})`,
-    );
-    // Fail open for older CLI versions that reject unknown provider option
-    // keys: when timeout tuning was emitted and the CLI output names the
-    // rejected keys, retry once without them (default timeouts). Bounded —
-    // the stripped config carries no timeout options, so this cannot recurse.
-    if (
-      !timedOut &&
-      !processError &&
-      llmHasTimeoutOptions(llm) &&
-      /\b(unknown|invalid|unexpected|unrecognized)[\w\s'".:-]{0,80}(headerTimeout|chunkTimeout)|(headerTimeout|chunkTimeout)[\w\s'".:-]{0,80}\b(unknown|invalid|unexpected|unrecognized|not supported|not allowed)/i.test(
+    } catch (err) {
+      const finalBreakdown = resolveTokenBreakdown(
         capturedOutput,
-      )
-    ) {
-      core.warning(
-        'OpenCode CLI appears to reject provider timeout keys (headerTimeout/chunkTimeout) — retrying once without them.',
+        tokenUsageResult,
+        promptTokensResult,
+        completionTokensResult,
       );
-      return runOpenCode(prompt, {
-        ...options,
-        opencodeConfig: options.opencodeConfig
-          ? stripProviderTimeoutOptions(options.opencodeConfig)
-          : undefined,
-        llm: stripLLMTimeoutOptions(llm),
-      });
-    }
-    return {
-      success: false,
-      output: capturedOutput,
-      durationMs,
-      tokensUsed: finalBreakdown.tokensUsed,
-      promptTokens: finalBreakdown.promptTokens,
-      completionTokens: finalBreakdown.completionTokens,
-    };
-  } catch (err) {
-    const durationMs = Date.now() - startTime;
-    const finalBreakdown = resolveTokenBreakdown(
-      capturedOutput,
-      tokenUsageResult,
-      promptTokensResult,
-      completionTokensResult,
-    );
-    core.error(`OpenCode execution failed: ${String(err)}`);
-    return {
-      success: false,
-      output: capturedOutput,
-      durationMs,
-      tokensUsed: finalBreakdown.tokensUsed,
-      promptTokens: finalBreakdown.promptTokens,
-      completionTokens: finalBreakdown.completionTokens,
-    };
-  } finally {
-    clearTimeout(timeoutHandle);
-    if (forceKillHandle !== undefined) {
-      clearTimeout(forceKillHandle);
+      core.error(`OpenCode execution failed: ${String(err)}`);
+      return {
+        success: false,
+        output: capturedOutput,
+        tokensUsed: finalBreakdown.tokensUsed,
+        promptTokens: finalBreakdown.promptTokens,
+        completionTokens: finalBreakdown.completionTokens,
+      };
+    } finally {
+      clearTimeout(timeoutHandle);
+      if (forceKillHandle !== undefined) {
+        clearTimeout(forceKillHandle);
+      }
     }
   }
 

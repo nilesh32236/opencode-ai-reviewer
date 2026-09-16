@@ -168,8 +168,8 @@ import {
   setupOpenCode,
   shouldUseV2MCPServers,
   shouldUseV2SubagentPermissions,
-  stripProviderTimeoutOptions,
   stripLegacyMCPKeys,
+  stripProviderTimeoutOptions,
   stripV2ServersKey,
   validateModelString,
 } from '../src/opencode.js';
