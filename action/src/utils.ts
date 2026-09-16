@@ -203,6 +203,10 @@ function advanceToCharBoundary(buf: Buffer, start: number): number {
  * @param program - Executable.
  * @param args - Arguments.
  * @param options - Exec options plus optional timeout/signal/cwd.
+ * @param options.cwd - Working directory for the subprocess.
+ * @param options.timeoutMs - Per-command timeout in milliseconds.
+ * @param options.signal - AbortSignal to cancel the exec race.
+ * @param options.silent - When true, suppress live output forwarding.
  * @returns Exit code and capped combined output.
  */
 export async function execWithTimeout(
