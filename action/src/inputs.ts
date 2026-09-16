@@ -237,6 +237,10 @@ export interface ActionInputs {
   dedupFingerprints: boolean;
   /** Opt-in to a single reviews-array request with summary-only 422 fallback (default: false). */
   enableReviewsArrayInline: boolean;
+  /** Opt-in to editing matched inline threads in place instead of re-posting (default: false). */
+  updateInPlace: boolean;
+  /** Opt-in to emitting one Checks run carrying deterministic finding counts (default: false). */
+  emitChecksSummary: boolean;
   /** Opt-in review gating mapped to the createReview event (default: 'comment'). */
   verdictMode: VerdictMode;
   /** Whether the verdict_mode input was explicitly set by the workflow. */
@@ -774,6 +778,8 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     reviewInline: core.getInput('review_inline') !== 'false',
     dedupFingerprints: core.getInput('dedup_fingerprints') !== 'false',
     enableReviewsArrayInline: core.getInput('enable_reviews_array_inline') === 'true',
+    updateInPlace: core.getInput('update_in_place') === 'true',
+    emitChecksSummary: core.getInput('emit_checks_summary') === 'true',
     verdictMode,
     verdictModeExplicit,
     streamComments: core.getInput('stream_comments') === 'true',

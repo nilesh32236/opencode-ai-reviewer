@@ -21,6 +21,23 @@ export const UNPARSEABLE_VERSION = Number.MAX_SAFE_INTEGER;
 export const MINIMUM_OPENCODE_VERSION = '1.1.1';
 
 /**
+ * Tested OpenCode CLI version that reviews are validated against.
+ * Documented so health-check warnings can point at a known-good pin.
+ * Sources: https://opencode.ai/docs/cli (v1.18, accessed 2026-09-16),
+ * https://github.com/sst/opencode/releases (accessed 2026-09-16).
+ * @since NEXT
+ */
+export const TESTED_OPENCODE_VERSION = '1.18.31';
+
+/**
+ * Warning floor for the OpenCode CLI. Versions at or above
+ * {@link MINIMUM_OPENCODE_VERSION} but below this floor are compatible yet
+ * untested, so callers should warn with upgrade guidance (fail-open).
+ * @since NEXT
+ */
+export const WARN_BELOW_OPENCODE_VERSION = '1.15.0';
+
+/**
  * Minimum supported Node.js runtime version (patched LTS floor). The v24.19.0
  * release ships July 2026 HIGH CVE fixes, so CI and the `node24`-bundled
  * action runtime should stay on a patched 24.x LTS.
@@ -158,4 +175,22 @@ export function formatVersion(version: ParsedVersion): string {
   return version.prerelease
     ? `${version.major}.${version.minor}.${version.patch}-${version.prerelease}`
     : `${version.major}.${version.minor}.${version.patch}`;
+}
+
+/**
+ * Check whether a version string falls below the untested-CLI warning floor.
+ * Fail-open: returns `null` when the input is unparseable so callers can
+ * warn-and-continue instead of treating it as a pass or a failure.
+ * @param version - Version string to check (e.g. "1.14.0").
+ * @param warnFloor - Warning floor (defaults to {@link WARN_BELOW_OPENCODE_VERSION}).
+ * @returns True when below the floor, false when at/above, null when unparseable.
+ * @since NEXT
+ */
+export function isBelowWarnFloor(
+  version: string,
+  warnFloor: string = WARN_BELOW_OPENCODE_VERSION,
+): boolean | null {
+  const cmp = compareVersions(version, warnFloor);
+  if (cmp === UNPARSEABLE_VERSION) return null;
+  return cmp < 0;
 }
