@@ -17,7 +17,7 @@ import {
   withFingerprintMarker,
 } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { resolvePrNumber, sanitize } from './utils.js';
+import { describeAbortKind, resolvePrNumber, sanitize } from './utils.js';
 
 /**
  * Stable key for a streamed finding: file, line, and normalized message
@@ -43,6 +43,9 @@ function streamedFindingKey(file: string, line: number, message: string): string
  * @param engine - Review engine instance.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param repo - Repository string (owner/repo).
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly.
+ *   Advisory-only: engine.reviewPR accepts no AbortSignal, so this pre-check
+ *   cannot cancel an in-flight LLM call.
  */
 export async function runReview(
   inputs: ActionInputs,
@@ -169,7 +172,9 @@ export async function runReview(
   let streamedFindingCount = 0;
 
   if (signal?.aborted) {
-    const kind = signal.reason instanceof DOMException ? signal.reason.name : 'AbortError';
+    // Signal is advisory-only: engine.reviewPR accepts no AbortSignal,
+    // so this pre-check cannot cancel an in-flight LLM call.
+    const kind = describeAbortKind(signal.reason);
     core.warning(sanitize(`Review cancelled before engine call (${kind}) — skipping`));
     core.setFailed(sanitize(`Review cancelled (${kind}) before the engine call`));
     return;
@@ -272,11 +277,9 @@ export async function runReview(
     // failure must post a visible marker comment (best-effort, guarded)
     // before failing, so the PR never goes silent on the highest-traffic path.
     const kind =
-      signal?.aborted && signal.reason instanceof DOMException
-        ? signal.reason.name
-        : err instanceof DOMException
-          ? err.name
-          : 'error';
+      signal?.aborted && signal.reason !== undefined
+        ? describeAbortKind(signal.reason)
+        : describeAbortKind(err);
     core.warning(
       sanitize(
         `Review engine failed for PR #${prNumber} (${kind}): ${err instanceof Error ? err.message : String(err)}`,

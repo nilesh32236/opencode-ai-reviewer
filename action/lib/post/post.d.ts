@@ -7,6 +7,8 @@ import type { ActionInputs } from './inputs.js';
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param _repo - Repository string (owner/repo, unused).
  * @param _token - GitHub authentication token (unused).
+ * @param signal - Optional per-run AbortSignal; races verification timeouts.
+ *   Advisory-only: no engine calls run on this path.
  */
 export declare function runPost(inputs: ActionInputs, gh: PlatformAdapter, _repo: string, _token: string, signal?: AbortSignal): Promise<void>;
 /**

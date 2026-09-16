@@ -28,7 +28,13 @@ import {
 } from '@opencode-pr-agent/lib';
 import { sanitizeMarkdown } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { capVerificationOutput, execWithTimeout, resolvePrNumber, sanitize } from './utils.js';
+import {
+  capVerificationOutput,
+  describeAbortKind,
+  execWithTimeout,
+  resolvePrNumber,
+  sanitize,
+} from './utils.js';
 
 /**
  * Determine whether a PR/MR has already been closed or merged, so a fix
@@ -54,6 +60,9 @@ export function isPrClosedOrMerged(state?: string): boolean {
  * @param config - Full agent configuration.
  * @param engine - Review engine instance.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
+ *   breaks withRetry backoff sleeps, and races verification timeouts.
+ *   Advisory-only: engine calls themselves are not yet cancellable.
  */
 export async function runFix(
   inputs: ActionInputs,
@@ -159,9 +168,10 @@ export async function runFix(
   let contextMarkdown: string;
   try {
     [pr, contextMarkdown] = await Promise.all([
-      withRetry(() => gh.getMR(prNumber), { operationName: 'fix.getMR' }),
+      withRetry(() => gh.getMR(prNumber), { operationName: 'fix.getMR', signal }),
       withRetry(() => gh.gatherContext({ prNumber }), {
         operationName: 'fix.gatherContext',
+        signal,
       }),
     ]);
   } catch (err) {
@@ -254,9 +264,10 @@ export async function runFix(
         let freshContextMarkdown: string;
         try {
           [freshPr, freshContextMarkdown] = await Promise.all([
-            withRetry(() => gh.getMR(prNumber), { operationName: 'fix.getMR' }),
+            withRetry(() => gh.getMR(prNumber), { operationName: 'fix.getMR', signal }),
             withRetry(() => gh.gatherContext({ prNumber }), {
               operationName: 'fix.gatherContext',
+              signal,
             }),
           ]);
         } catch (err) {
@@ -406,6 +417,9 @@ async function isAutofixBranchFresh(branchName: string, defaultBranch: string): 
  * @param gitEmail - Configured bot commit author email, used to verify that an
  *   existing `autofix/issue-N` branch tip was authored by this bot before it is
  *   reused (see `configureGit`).
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
+ *   breaks withRetry backoff sleeps, and races verification timeouts.
+ *   Advisory-only: engine calls themselves are not yet cancellable.
  */
 export async function runFixIssue(
   inputs: ActionInputs,
@@ -557,7 +571,10 @@ export async function runFixIssue(
   const elapsedMs = Date.now() - runStartedAt;
   const timeLeftMs = configTimeoutMs - elapsedMs;
   if (signal?.aborted) {
-    const kind = signal.reason instanceof DOMException ? signal.reason.name : 'AbortError';
+    // Signal is advisory-only: engine.runFix accepts no AbortSignal, so this
+    // pre-check cannot cancel an in-flight LLM call — it only fails fast
+    // before starting work.
+    const kind = describeAbortKind(signal.reason);
     const abortMsg = `Fix cancelled before engine call (${kind}) — run deadline exceeded or workflow cancelled.`;
     core.warning(sanitize(abortMsg));
     core.setFailed(sanitize(abortMsg));
@@ -710,6 +727,9 @@ export async function runFixIssue(
  * @param gh - GitHub API helper.
  * @param _repo - Repository string (owner/repo, unused).
  * @param _token - GitHub authentication token (unused).
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
+ *   breaks withRetry backoff sleeps, and races verification timeouts.
+ *   Advisory-only: engine calls themselves are not yet cancellable.
  */
 export async function runAutofixLoop(
   inputs: ActionInputs,
@@ -772,9 +792,11 @@ export async function runAutofixLoop(
       return;
     }
     if (signal?.aborted) {
+      // Signal is advisory-only: engine.reviewPR accepts no AbortSignal, so
+      // this pre-check cannot cancel an in-flight LLM call.
       core.warning(
         sanitize(
-          `Autofix loop cancelled before iteration ${i + 1} (${signal.reason instanceof DOMException ? signal.reason.name : 'aborted'}) — shutting down gracefully.`,
+          `Autofix loop cancelled before iteration ${i + 1} (${describeAbortKind(signal.reason)}) — shutting down gracefully.`,
         ),
       );
       await handleTimeoutGracefully(prNumber, history, i, config, gh);
@@ -1118,9 +1140,10 @@ export async function runAutofixLoop(
           let freshContextMarkdown: string;
           try {
             [prAgain, freshContextMarkdown] = await Promise.all([
-              withRetry(() => gh.getMR(prNumber), { operationName: 'fix.getMR' }),
+              withRetry(() => gh.getMR(prNumber), { operationName: 'fix.getMR', signal }),
               withRetry(() => gh.gatherContext({ prNumber }), {
                 operationName: 'fix.gatherContext',
+                signal,
               }),
             ]);
           } catch (err) {

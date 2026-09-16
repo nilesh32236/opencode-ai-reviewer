@@ -86,7 +86,12 @@ export function createRunAbortController(timeoutMinutes?: number): {
   dispose: () => void;
 } {
   const controller = new AbortController();
-  const timeoutMs = (timeoutMinutes ?? 20) * 60 * 1000;
+  // Coerce to a positive finite number: 0/negative/NaN would fire the
+  // deadline immediately (cancelling the whole run) and Infinity would
+  // silently disable the deadline. Fall back to the 20-minute default.
+  const minutes = Number(timeoutMinutes ?? 20);
+  const safeMinutes = Number.isFinite(minutes) && minutes > 0 ? minutes : 20;
+  const timeoutMs = safeMinutes * 60 * 1000;
   const timeoutId = setTimeout(() => {
     controller.abort(new DOMException('Run deadline exceeded', 'TimeoutError'));
   }, timeoutMs);
@@ -135,6 +140,14 @@ export function capVerificationOutput(output: string): string {
  * Run a subprocess with a per-command timeout and output-byte cap.
  * A timeout (or an aborted outer signal) is reported as a non-zero exit with
  * a clear message so callers treat it as verification failure, never a hang.
+ *
+ * NOTE — report-only timeout: `@actions/exec` exposes no child handle, so a
+ * hung check cannot be killed here and may keep running in the background
+ * (holding CPU/locks/ports) after the race settles. The signal is
+ * advisory-only for the exec race: capture stops being consumed after the
+ * race settles, listeners are detached, and the caller sees exit 124. Switch
+ * to `node:child_process` spawn + `child.kill('SIGTERM')` with a SIGKILL
+ * fallback if true subprocess reaping is ever required.
  * @param program - Executable.
  * @param args - Arguments.
  * @param options - Exec options plus optional timeout/signal/cwd.
@@ -153,7 +166,11 @@ export async function execWithTimeout(
   const timeoutMs = options.timeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
   const chunks: Buffer[] = [];
   let totalBytes = 0;
+  let settled = false;
   const pushChunk = (data: Buffer): void => {
+    // Stop capturing once the race has settled so a still-running hung child
+    // cannot grow memory after the caller already received exit 124.
+    if (settled) return;
     // Cap in-memory capture: keep the head of the log (most useful for
     // diagnosis) and drop the tail beyond 2x the feedback cap.
     if (totalBytes < MAX_VERIFICATION_OUTPUT_BYTES * 2) {
@@ -172,27 +189,37 @@ export async function execWithTimeout(
     ignoreReturnCode: true,
   });
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
   const timeoutPromise = new Promise<{ timedOut: true }>((resolve) => {
     timeoutId = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
     (timeoutId as unknown as { unref?: () => void }).unref?.();
-    options.signal?.addEventListener(
-      'abort',
-      () => {
-        if (timeoutId) clearTimeout(timeoutId);
-        resolve({ timedOut: true });
-      },
-      { once: true },
-    );
+    onAbort = (): void => {
+      if (timeoutId) clearTimeout(timeoutId);
+      resolve({ timedOut: true });
+    };
+    options.signal?.addEventListener('abort', onAbort, { once: true });
     if (options.signal?.aborted) {
       if (timeoutId) clearTimeout(timeoutId);
       resolve({ timedOut: true });
     }
   });
+  // Spawn/startup failures (ENOENT, EACCES) reject execPromise: convert to a
+  // failure result so verification fails closed with diagnostics instead of
+  // throwing out of a call site that expects an {exitCode, output} tuple.
   const winner = await Promise.race([
-    execPromise.then((exitCode) => ({ timedOut: false as const, exitCode })),
+    execPromise.then(
+      (exitCode) => ({ timedOut: false as const, exitCode }),
+      (err: unknown) => ({
+        timedOut: false as const,
+        exitCode: 1,
+        execError: err instanceof Error ? err.message : String(err),
+      }),
+    ),
     timeoutPromise,
   ]);
+  settled = true;
   if (timeoutId) clearTimeout(timeoutId);
+  if (onAbort) options.signal?.removeEventListener('abort', onAbort);
   if (winner.timedOut) {
     const reason =
       options.signal?.aborted && options.signal.reason instanceof DOMException
@@ -203,6 +230,10 @@ export async function execWithTimeout(
     );
     return { exitCode: 124, output };
   }
-  const output = capVerificationOutput(Buffer.concat(chunks).toString('utf-8'));
+  const rawOutput = Buffer.concat(chunks).toString('utf-8');
+  const execError = 'execError' in winner ? winner.execError : undefined;
+  const output = capVerificationOutput(
+    execError ? `${rawOutput}\nVerification command failed to start: ${execError}` : rawOutput,
+  );
   return { exitCode: winner.exitCode, output };
 }

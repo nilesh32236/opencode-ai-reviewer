@@ -10,7 +10,7 @@ import {
   sanitizeMarkdown,
 } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { sanitize } from './utils.js';
+import { describeAbortKind, sanitize } from './utils.js';
 
 /**
  * Tracks the last audit issue number per category for this process. When the
@@ -79,6 +79,8 @@ function normalizeAuditCategory(category: string): string {
  * @param config - Full agent configuration.
  * @param engine - Review engine instance.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly.
+ *   Advisory-only: engine calls themselves are not yet cancellable.
  */
 export async function runAudit(
   inputs: ActionInputs,
@@ -187,7 +189,7 @@ export async function runAudit(
     }
     promptContent = await fs.promises.readFile(selectedPrompt, 'utf-8');
   } catch (err) {
-    const kind = err instanceof DOMException ? err.name : err instanceof Error ? err.name : 'error';
+    const kind = describeAbortKind(err);
     core.setFailed(
       sanitize(
         `Failed to read audit prompt ${selectedPrompt} (category: ${category}, target: ${auditTarget}, ${kind}): ${err instanceof Error ? err.message : String(err)}`,
@@ -206,7 +208,7 @@ export async function runAudit(
   try {
     result = await engine.runAudit(promptContent, auditTarget, category);
   } catch (err) {
-    const kind = err instanceof DOMException ? err.name : err instanceof Error ? err.name : 'error';
+    const kind = describeAbortKind(err);
     new Logger('Audit').warn('Audit engine failed', {
       operation: 'audit.run',
       category,

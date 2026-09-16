@@ -53,6 +53,14 @@ export declare function capVerificationOutput(output: string): string;
  * Run a subprocess with a per-command timeout and output-byte cap.
  * A timeout (or an aborted outer signal) is reported as a non-zero exit with
  * a clear message so callers treat it as verification failure, never a hang.
+ *
+ * NOTE — report-only timeout: `@actions/exec` exposes no child handle, so a
+ * hung check cannot be killed here and may keep running in the background
+ * (holding CPU/locks/ports) after the race settles. The signal is
+ * advisory-only for the exec race: capture stops being consumed after the
+ * race settles, listeners are detached, and the caller sees exit 124. Switch
+ * to `node:child_process` spawn + `child.kill('SIGTERM')` with a SIGKILL
+ * fallback if true subprocess reaping is ever required.
  * @param program - Executable.
  * @param args - Arguments.
  * @param options - Exec options plus optional timeout/signal/cwd.

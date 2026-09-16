@@ -5,7 +5,7 @@ import * as exec from '@actions/exec';
 import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
 import { Logger, validateRefName, withRetry } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { capVerificationOutput, execWithTimeout, sanitize } from './utils.js';
+import { capVerificationOutput, describeAbortKind, execWithTimeout, sanitize } from './utils.js';
 
 /**
  * Run the self-heal workflow: diagnose a CI failure, apply a fix,
@@ -23,6 +23,9 @@ import { capVerificationOutput, execWithTimeout, sanitize } from './utils.js';
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param _repo - Repository string (owner/repo).
  * @param _token - GitHub authentication token.
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly
+ *   and race verification timeouts. Advisory-only: engine calls themselves
+ *   are not yet cancellable.
  */
 export async function runSelfHeal(
   inputs: ActionInputs,
@@ -99,7 +102,9 @@ export async function runSelfHeal(
     core.info(`=== Self-heal attempt ${attempt + 1}/${maxHealRetries} ===`);
 
     if (signal?.aborted) {
-      const kind = signal.reason instanceof DOMException ? signal.reason.name : 'AbortError';
+      // Signal is advisory-only: engine.runSelfHeal accepts no AbortSignal,
+      // so this pre-check cannot cancel an in-flight LLM call.
+      const kind = describeAbortKind(signal.reason);
       lastVerificationError = `Self-heal cancelled before attempt ${attempt + 1} (${kind})`;
       core.warning(sanitize(lastVerificationError));
       break;
@@ -120,8 +125,7 @@ export async function runSelfHeal(
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const kind =
-        err instanceof DOMException ? err.name : err instanceof Error ? err.name : 'error';
+      const kind = describeAbortKind(err);
       lastVerificationError = `Self-heal attempt ${attempt + 1} engine error (${kind}): ${msg}`;
       core.warning(sanitize(lastVerificationError));
       new Logger('SelfHeal').warn('Self-heal engine attempt failed', {
@@ -178,9 +182,24 @@ export async function runSelfHeal(
       return;
     }
 
-    // Run verification
+    // Run verification — guarded so a harness throw (spawn rejection, OOM,
+    // cap bug) is recorded as the attempt error and retried instead of
+    // escaping the loop and skipping outputs/PR section.
     core.info('Running verification: pnpm build && typecheck && test && lint');
-    const { exitCode, output: verifyOutput } = await runFullVerification(signal);
+    let exitCode: number;
+    let verifyOutput: string;
+    try {
+      ({ exitCode, output: verifyOutput } = await runFullVerification(signal));
+    } catch (err) {
+      lastVerificationError = `Verification harness error: ${err instanceof Error ? err.message : String(err)}`;
+      core.warning(sanitize(lastVerificationError));
+      new Logger('SelfHeal').warn('Verification harness failed', {
+        operation: 'self-heal.verify',
+        attempt: attempt + 1,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      continue;
+    }
 
     if (exitCode === 0) {
       core.info(`✅ Verification passed on attempt ${attempt + 1}`);
