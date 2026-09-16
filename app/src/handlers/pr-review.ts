@@ -13,13 +13,14 @@ import {
   ReviewEngine,
   buildFunctionScoreOptions,
   collectFingerprintsFromBodies,
-  fingerprintForIssue,
+  fingerprintForIssueFull,
   legacyInlineKey,
   postSuggestionComment,
   sanitizeErrorMessage,
   sanitizeMarkdown,
   sendNotification,
   shouldFailOnSeverity,
+  shouldPostFingerprint,
   withFingerprintMarker,
 } from '@opencode-pr-agent/lib';
 import { runWithConcurrencyLimit } from '../utils/concurrency.js';
@@ -309,10 +310,10 @@ export async function handlePRReview(
                     let issueFingerprint: string | undefined;
                     if (dedupEnabled) {
                       try {
-                        issueFingerprint = fingerprintForIssue(issue);
+                        issueFingerprint = fingerprintForIssueFull(issue);
                         if (
                           (previousFingerprints.size > 0 &&
-                            previousFingerprints.has(issueFingerprint)) ||
+                            !shouldPostFingerprint(issueFingerprint, previousFingerprints)) ||
                           streamedFingerprints.has(issueFingerprint)
                         ) {
                           logger.debug(
@@ -477,7 +478,7 @@ export async function handlePRReview(
                 if (streamedIssueKeys.has(`${i.file}:${i.line}`)) return false;
                 if (dedupEnabled) {
                   try {
-                    const fp = fingerprintForIssue(i);
+                    const fp = fingerprintForIssueFull(i);
                     if (streamedIssueKeys.has(fp) || streamedFingerprints.has(fp)) return false;
                   } catch {
                     // Fail-open: keep the finding on fingerprint errors.

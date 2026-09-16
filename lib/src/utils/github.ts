@@ -23,7 +23,7 @@ import { CircuitBreaker, countHttpError } from './circuit-breaker.js';
 import { getErrorStatus } from './errors.js';
 import {
   filterIssuesByFingerprints,
-  fingerprintForIssue,
+  fingerprintForIssueFull,
   withFingerprintMarker,
 } from './inline-fingerprint.js';
 import { getLabelColor } from './label-color.js';
@@ -1175,7 +1175,7 @@ export class GitHubHelper implements PlatformAdapter {
         if (issue.inline !== true) continue;
         let fp: string;
         try {
-          fp = fingerprintForIssue(issue);
+          fp = fingerprintForIssueFull(issue);
         } catch {
           continue;
         }
