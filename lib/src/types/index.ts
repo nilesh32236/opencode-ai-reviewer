@@ -687,6 +687,14 @@ export interface ReviewSensitivityConfig {
   maxFindingsPerCategory?: number;
   /** Maximum total findings kept (highest severity first). */
   maxTotalFindings?: number;
+  /**
+   * Display/post noise budget: maximum findings rendered across the review
+   * body, inline comments, and notifications (highest severity first). The
+   * hidden tail is reported as a user-visible "+N more" spillover summary
+   * instead of being silently dropped. Undefined = unlimited (legacy behavior).
+   * Layered on top of `maxTotalFindings` (which still hard-filters first).
+   */
+  noiseBudget?: number;
   /** If set, only findings whose category matches one of these are kept. */
   focusAreas?: string[];
   /** Glob patterns applied to finding file paths. */
@@ -1323,6 +1331,22 @@ export interface ReviewResult {
    * head SHA). Set by the engine when context.autoLoadAgentsMd loads files;
    * rendered by buildReviewBody/postReview. Absent when nothing was loaded. */
   attributionFooter?: string;
+  /**
+   * Severity-aware accounting for findings hidden by sensitivity caps or a
+   * display noise budget (`{ count, critical, important, minor }`). Renderers
+   * surface it as a user-visible "+N more" spillover line so capped findings
+   * are never silently dropped. Absent when nothing was hidden.
+   */
+  spillover?: {
+    /** Total number of hidden findings. */
+    count: number;
+    /** Hidden critical findings. */
+    critical: number;
+    /** Hidden important findings. */
+    important: number;
+    /** Hidden minor findings. */
+    minor: number;
+  };
 }
 
 /** Result of an auto-fix operation. */
