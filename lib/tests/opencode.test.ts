@@ -2131,6 +2131,9 @@ describe('requireChecksum integrity gate', () => {
 
     it('stays silent about checksums for PATH binaries in default mode', async () => {
       mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+      // Use the tested version so the untested-CLI warning tier stays silent
+      // and this assertion isolates checksum warnings.
+      mockVersionOutput('opencode v1.18.31\n');
 
       const result = await setupOpenCode('v1.2.0');
 
@@ -2169,6 +2172,9 @@ describe('requireChecksum integrity gate', () => {
 
     it('stays silent about checksums for cached binaries in default mode', async () => {
       await mockCacheHit();
+      // Use the tested version so the untested-CLI warning tier stays silent
+      // and this assertion isolates checksum warnings.
+      mockVersionOutput('opencode v1.18.31\n');
 
       const result = await setupOpenCode('v1.2.0');
 
