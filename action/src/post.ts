@@ -52,7 +52,25 @@ export async function runPost(
           signal,
         });
         if (exitCode !== 0) {
-          const timedOut = exitCode === 124;
+          // exit 124 conflates three cases: helper timeout, helper
+          // cancellation (aborted run signal also returns 124), and a genuine
+          // command exit 124 (e.g. GNU timeout). execWithTimeout appends a
+          // 'timed out after … (TimeoutError)' or 'cancelled after …
+          // (AbortError)' marker, so only treat 124 as a helper timeout/cancel
+          // when that marker is present; otherwise report the raw exit code.
+          const isHelperTimeout =
+            exitCode === 124 &&
+            (output.includes('timed out after') || output.includes('(TimeoutError)'));
+          const isHelperCancel =
+            exitCode === 124 &&
+            (signal?.aborted === true ||
+              output.includes('cancelled after') ||
+              output.includes('(AbortError)'));
+          const outcome = isHelperCancel
+            ? 'was cancelled'
+            : isHelperTimeout
+              ? 'timed out'
+              : `failed with exit code ${exitCode}`;
           // Output is already byte-capped by capVerificationOutput inside
           // execWithTimeout; truncate the warning excerpt on a code-point
           // boundary so surrogate pairs/emoji are never split (String.slice
@@ -60,7 +78,7 @@ export async function runPost(
           const excerpt = output ? Array.from(output).slice(0, 2000).join('') : '';
           core.warning(
             sanitize(
-              `Verification command "${step.program} ${step.args.join(' ')}" ${timedOut ? 'timed out' : `failed with exit code ${exitCode}`}${excerpt ? `: ${excerpt}` : ''}`,
+              `Verification command "${step.program} ${step.args.join(' ')}" ${outcome}${excerpt ? `: ${excerpt}` : ''}`,
             ),
           );
           break;

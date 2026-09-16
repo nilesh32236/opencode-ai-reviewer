@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import { GitHubHelper, GitLabAdapter, type PlatformAdapter } from '@opencode-pr-agent/lib';
 import { parseInputs } from './inputs.js';
 import { runPost } from './post.js';
-import { createRunAbortController, sanitize } from './utils.js';
+import { createRunAbortController, describeAbortKind, sanitize } from './utils.js';
 
 /**
  * Standalone entry point for the GitHub Action's `post` phase.
@@ -34,8 +34,17 @@ async function main(): Promise<void> {
       platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
     await runPost(inputs, gh, repo, token, runAbort.signal);
   } catch (error) {
+    // Mirror index.ts: append a timeout-vs-cancelled suffix so a deadline
+    // expiry in the post process is as triageable as in the main run.
+    const kind = describeAbortKind(error);
+    const abortSuffix =
+      kind === 'timeout'
+        ? ' (run deadline exceeded: TimeoutError)'
+        : kind === 'cancelled'
+          ? ' (run cancelled: AbortError)'
+          : '';
     core.setFailed(
-      `Post action failed: ${sanitize(error instanceof Error ? error.message : String(error))}`,
+      `Post action failed${abortSuffix}: ${sanitize(error instanceof Error ? error.message : String(error))}`,
     );
   } finally {
     runAbort?.dispose();

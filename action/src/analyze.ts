@@ -45,7 +45,7 @@ export async function runAnalyze(
     // Signal is advisory-only: engine.runAnalyze accepts no AbortSignal,
     // so this pre-check cannot cancel an in-flight LLM call.
     const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
-    core.warning(sanitize(`Analysis cancelled before engine call (${kind}) — skipping`));
+    core.info(sanitize(`Analysis cancelled before engine call (${kind}) — skipping`));
     core.setFailed(sanitize(`Analysis cancelled (${kind})`));
     return;
   }

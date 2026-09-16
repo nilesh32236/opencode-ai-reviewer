@@ -231,7 +231,10 @@ export async function runSelfHeal(
     const kind =
       signal && signal.reason !== undefined ? describeAbortKind(signal.reason) : 'cancelled';
     const message = lastVerificationError ?? `Self-heal cancelled (${kind})`;
-    core.setOutput('changes_made', String(changesMade));
+    // Report changes_made=false: local commits were never pushed to the heal
+    // branch, so downstream automation must not treat unpublished work as
+    // progress.
+    core.setOutput('changes_made', 'false');
     core.setOutput('verification_passed', 'false');
     core.setFailed(sanitize(message));
     return;

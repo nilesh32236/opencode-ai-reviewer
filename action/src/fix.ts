@@ -241,12 +241,14 @@ export async function runFix(
     }
 
     const maxVerificationRetries = 2;
+    let verificationCancelled = false;
     for (let v = 0; v <= maxVerificationRetries; v++) {
       const { exitCode, output: checkOutput } = await runVerificationSteps(steps, signal);
 
       // A cancelled run must stop instead of feeding the cancelled output
       // back into the engine as ordinary verification failure.
       if (signal?.aborted) {
+        verificationCancelled = true;
         break;
       }
 
@@ -324,6 +326,16 @@ export async function runFix(
           }
         }
       }
+    }
+    if (verificationCancelled) {
+      // Fail visibly: without setFailed a cancelled run would fall through
+      // to label cleanup and report success. changes_made reflects the push
+      // that already happened above, so downstream steps see truthful state.
+      const kind =
+        signal && signal.reason !== undefined ? describeAbortKind(signal.reason) : 'cancelled';
+      core.setFailed(sanitize(`Fix verification cancelled before completion (${kind}).`));
+      core.setOutput('changes_made', String(changesMade ?? false));
+      return;
     }
   }
 
@@ -1127,6 +1139,15 @@ export async function runAutofixLoop(
       for (let v = 0; v <= maxVerificationRetries; v++) {
         const { exitCode, output: checkOutput } = await runVerificationSteps(steps, signal);
 
+        // A cancelled run must stop instead of feeding the cancelled output
+        // back into the engine as ordinary verification failure. Route
+        // through the graceful cancel path so history/marker/message stay
+        // consistent with other cancellation exits.
+        if (signal?.aborted) {
+          await handleTimeoutGracefully(prNumber, history, i, config, gh, true);
+          return;
+        }
+
         if (steps.length === 0) {
           break;
         }
@@ -1344,6 +1365,10 @@ async function handleTimeoutGracefully(
   }
 
   // Update history
+  // NOTE: `IterationRecord.status` has no 'cancelled' member (lib type), so
+  // the cancelled branch intentionally reuses 'timeout' here; the summary,
+  // marker (<!-- autofix-cancelled -->), and setFailed message above carry
+  // the cancel distinction for history consumers.
   history.push({
     iteration: iteration + 1,
     status: 'timeout',

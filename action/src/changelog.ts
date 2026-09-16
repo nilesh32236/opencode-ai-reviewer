@@ -67,10 +67,25 @@ export async function runChangelog(
     return;
   }
 
-  const result = await withRetry(() => generateChangelog(gh, changelogConfig, undefined), {
-    operationName: 'changelog.generate',
-    signal,
-  });
+  // Local error boundary (mirrors audit.ts): an abort mid-generation
+  // (AbortError/TimeoutError from withRetry) or exhausted-retries failure
+  // gets a labelled setFailed here instead of escaping to the generic
+  // index.ts outer handler.
+  let result: Awaited<ReturnType<typeof generateChangelog>>;
+  try {
+    result = await withRetry(() => generateChangelog(gh, changelogConfig, undefined), {
+      operationName: 'changelog.generate',
+      signal,
+    });
+  } catch (err) {
+    const kind = describeAbortKind(err);
+    core.setFailed(
+      sanitize(
+        `Changelog generation failed (${kind}): ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
+    return;
+  }
 
   core.setOutput('changes_made', String(result.entryCount > 0));
   core.setOutput('entry_count', String(result.entryCount));

@@ -73,6 +73,16 @@ export async function runDocs(
     signal,
   });
 
+  // Re-check after the awaited fetches: a signal fired during isMR/getMR/
+  // gatherContext must fail fast before the expensive engine.runDocs call
+  // instead of paying for LLM work on a cancelled run.
+  if (signal?.aborted) {
+    // Signal is advisory-only: engine.runDocs accepts no AbortSignal,
+    // so this pre-check cannot cancel an in-flight LLM call.
+    core.setFailed(sanitize(`Docs cancelled before run — PR #${prNumber}`));
+    return;
+  }
+
   const docStyle = config.docs?.style ?? inputs.docStyle;
   const docsResult = await engine.runDocs(pr, contextMarkdown, undefined, undefined, docStyle);
 

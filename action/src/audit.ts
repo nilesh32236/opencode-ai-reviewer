@@ -204,10 +204,14 @@ export async function runAudit(
   try {
     promptContent = await fs.promises.readFile(selectedPrompt, 'utf-8');
   } catch (err) {
+    // Only append the abort-kind suffix for timeout/cancelled; an ordinary
+    // IO error (e.g. ENOENT) would otherwise render a noisy '(error)' token
+    // that conflates the timeout/cancelled taxonomy with plain IO failures.
     const kind = describeAbortKind(err);
+    const kindSuffix = kind === 'error' ? '' : `, ${kind}`;
     core.setFailed(
       sanitize(
-        `Failed to read audit prompt ${selectedPrompt} (category: ${category}, target: ${auditTarget}, ${kind}): ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to read audit prompt ${selectedPrompt} (category: ${category}, target: ${auditTarget}${kindSuffix}): ${err instanceof Error ? err.message : String(err)}`,
       ),
     );
     new Logger('Audit').warn('Failed to read audit prompt', {
