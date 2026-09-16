@@ -306,7 +306,12 @@ describe('verdictMode transport (postReview event propagation)', () => {
   });
 
   it('preserves inline comments when a batched gated review falls back to COMMENT', async () => {
-    const diffText = `@@ -7,1 +7,1 @@`;
+    const diffText = [
+      'diff --git a/src/c.ts b/src/c.ts',
+      '--- a/src/c.ts',
+      '+++ b/src/c.ts',
+      '@@ -7,1 +7,1 @@',
+    ].join('\n');
     const criticalInline: ReviewResult = {
       ...makeResult({
         verdict: { ready: false, reasoning: 'Has issues.', autoFixable: false, confidence: 'high' },
@@ -365,7 +370,12 @@ describe('verdictMode transport (postReview event propagation)', () => {
   });
 
   it('preserves the REQUEST_CHANGES gate when the reviews-array batch fails', async () => {
-    const diffText = `@@ -42,1 +42,1 @@`;
+    const diffText = [
+      'diff --git a/src/b.ts b/src/b.ts',
+      '--- a/src/b.ts',
+      '+++ b/src/b.ts',
+      '@@ -42,1 +42,1 @@',
+    ].join('\n');
     const criticalInline: ReviewResult = {
       ...makeResult({
         verdict: { ready: false, reasoning: 'Has issues.', autoFixable: false, confidence: 'high' },

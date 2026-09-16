@@ -332,4 +332,185 @@ describe('GitHubHelper postReview Integration', () => {
     expect(reviewBody.comments[0].path).toBe('src/auth/jwt.ts');
     expect(reviewBody.comments[0].line).toBe(28);
   });
+
+  it('g) reviews-array flag bundles all mappable findings into one request', async () => {
+    const diffText = [
+      'diff --git a/src/auth/jwt.ts b/src/auth/jwt.ts',
+      'index abc..def 100644',
+      '--- a/src/auth/jwt.ts',
+      '+++ b/src/auth/jwt.ts',
+      '@@ -25,7 +25,7 @@',
+      ' const SECRET = "hardcoded";',
+      '+const SECRET = process.env.JWT_SECRET;',
+      'diff --git a/src/auth/middleware.ts b/src/auth/middleware.ts',
+      'index abc..def 100644',
+      '--- a/src/auth/middleware.ts',
+      '+++ b/src/auth/middleware.ts',
+      '@@ -50,7 +55,7 @@',
+      ' const token = req.headers.authorization;',
+      '+if (!token) throw new Error("missing token");',
+    ].join('\n');
+
+    fetchMock.mockImplementation(async (url: string | URL | Request, options?: RequestInit) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+
+      if (urlStr.endsWith(`/pulls/${PR_NUMBER}`)) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ 'Content-Type': 'text/plain' }),
+          json: vi.fn().mockRejectedValue(new Error('Not JSON')),
+          text: vi.fn().mockResolvedValue(diffText),
+        } as unknown as Response;
+      }
+
+      if (urlStr.includes('/reviews') && (options?.method as string) === 'POST') {
+        const body = JSON.parse((options?.body as string) || '{}');
+        if (body.comments && body.comments.length > 0) {
+          return mockJsonResponse({
+            id: 105,
+            comments: body.comments.map((c: { path: string; line: number }, i: number) => ({
+              id: 20 + i,
+              path: c.path,
+              line: c.line,
+            })),
+          });
+        }
+        return mockJsonResponse({ id: 105 });
+      }
+
+      return mockJsonResponse({});
+    });
+
+    const result = makeTestReviewResult();
+    const response = await gh.postReview(PR_NUMBER, SHA, result, true, undefined, {
+      enableReviewsArrayInline: true,
+    });
+
+    expect(response.success).toBe(true);
+    expect(response.method).toBe('full');
+
+    const reviewCalls = fetchMock.mock.calls.filter(
+      ([url, opts]) =>
+        typeof url === 'string' && url.includes('/reviews') && opts?.method === 'POST',
+    );
+    // One batched reviews-array request carrying both inline comments.
+    expect(reviewCalls).toHaveLength(1);
+    const reviewBody = JSON.parse((reviewCalls[0][1]?.body as string) || '{}');
+    expect(reviewBody.comments).toHaveLength(2);
+    expect(reviewBody.comments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: 'src/auth/jwt.ts', line: 28 }),
+        expect.objectContaining({ path: 'src/auth/middleware.ts', line: 55 }),
+      ]),
+    );
+
+    // No per-comment fan-out.
+    const perCommentCalls = fetchMock.mock.calls.filter(
+      ([url, opts]) =>
+        typeof url === 'string' &&
+        url.includes('/pulls/') &&
+        url.includes('/comments') &&
+        opts?.method === 'POST',
+    );
+    expect(perCommentCalls).toHaveLength(0);
+  });
+
+  it('h) reviews-array 422 retries summary-only with zero findings lost', async () => {
+    const diffText = [
+      'diff --git a/src/auth/jwt.ts b/src/auth/jwt.ts',
+      'index abc..def 100644',
+      '--- a/src/auth/jwt.ts',
+      '+++ b/src/auth/jwt.ts',
+      '@@ -25,7 +25,7 @@',
+      ' const SECRET = "hardcoded";',
+      '+const SECRET = process.env.JWT_SECRET;',
+      'diff --git a/src/auth/middleware.ts b/src/auth/middleware.ts',
+      'index abc..def 100644',
+      '--- a/src/auth/middleware.ts',
+      '+++ b/src/auth/middleware.ts',
+      '@@ -50,7 +55,7 @@',
+      ' const token = req.headers.authorization;',
+      '+if (!token) throw new Error("missing token");',
+    ].join('\n');
+
+    fetchMock.mockImplementation(async (url: string | URL | Request, options?: RequestInit) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+
+      if (urlStr.endsWith(`/pulls/${PR_NUMBER}`)) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ 'Content-Type': 'text/plain' }),
+          json: vi.fn().mockRejectedValue(new Error('Not JSON')),
+          text: vi.fn().mockResolvedValue(diffText),
+        } as unknown as Response;
+      }
+
+      if (urlStr.includes('/reviews') && (options?.method as string) === 'POST') {
+        const body = JSON.parse((options?.body as string) || '{}');
+        if (body.comments && body.comments.length > 0) {
+          return mockErrorJsonResponse(422, { message: 'Validation error' });
+        }
+        return mockJsonResponse({ id: 106 });
+      }
+
+      return mockJsonResponse({});
+    });
+
+    const result = makeTestReviewResult();
+    const response = await gh.postReview(PR_NUMBER, SHA, result, true, undefined, {
+      enableReviewsArrayInline: true,
+    });
+
+    expect(response.success).toBe(true);
+    expect(response.method).toBe('body-only');
+
+    const reviewCalls = fetchMock.mock.calls.filter(
+      ([url, opts]) =>
+        typeof url === 'string' && url.includes('/reviews') && opts?.method === 'POST',
+    );
+    // Batch attempt + exactly one summary-only retry.
+    expect(reviewCalls).toHaveLength(2);
+    const retryBody = JSON.parse((reviewCalls[1][1]?.body as string) || '{}');
+    expect(retryBody.comments).toBeUndefined();
+    // No finding lost: every issue still rendered in the summary body.
+    expect(retryBody.body).toContain('JWT secret hardcoded');
+    expect(retryBody.body).toContain('No token expiration check');
+    expect(retryBody.body).toContain('Unused import');
+  });
+
+  it('i) reviews-array with unavailable diff posts summary-only without a batch attempt', async () => {
+    fetchMock.mockImplementation(async (url: string | URL | Request, options?: RequestInit) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+
+      if (urlStr.endsWith(`/pulls/${PR_NUMBER}`)) {
+        return mockErrorJsonResponse(500, { message: 'Server error' });
+      }
+
+      if (urlStr.includes('/reviews') && (options?.method as string) === 'POST') {
+        return mockJsonResponse({ id: 107 });
+      }
+
+      return mockJsonResponse({});
+    });
+
+    const result = makeTestReviewResult();
+    const response = await gh.postReview(PR_NUMBER, SHA, result, true, undefined, {
+      enableReviewsArrayInline: true,
+    });
+
+    expect(response.success).toBe(true);
+    expect(response.method).toBe('body-only');
+
+    const reviewCalls = fetchMock.mock.calls.filter(
+      ([url, opts]) =>
+        typeof url === 'string' && url.includes('/reviews') && opts?.method === 'POST',
+    );
+    expect(reviewCalls).toHaveLength(1);
+    const summaryBody = JSON.parse((reviewCalls[0][1]?.body as string) || '{}');
+    expect(summaryBody.comments).toBeUndefined();
+    expect(summaryBody.body).toContain('JWT secret hardcoded');
+    expect(summaryBody.body).toContain('No token expiration check');
+  });
 });
