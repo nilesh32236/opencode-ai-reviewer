@@ -248,6 +248,22 @@ export const AGENTS_MD_HEAD_FILES = ['AGENTS.md', '.github/copilot-instructions.
 /** Per-file byte cap for head-SHA convention auto-load (~8KB each). */
 export const AGENTS_MD_MAX_BYTES = 8 * 1024;
 
+/**
+ * Resolve whether head-SHA convention auto-load is enabled. Canonical key
+ * `autoLoadAgentsMd` wins; `autoLoadConventions` (issue #593 key) is a
+ * deprecated alias. Default off preserves existing behavior.
+ * @param projectContext - Project context config (may carry either key).
+ * @returns True when auto-load is explicitly enabled via either key.
+ */
+export function isAgentsMdAutoLoadEnabled(projectContext?: {
+  autoLoadAgentsMd?: boolean;
+  autoLoadConventions?: boolean;
+}): boolean {
+  // OR (not ??): the zod schema defaults autoLoadAgentsMd to false, which
+  // must not shadow an explicitly-set alias.
+  return projectContext?.autoLoadAgentsMd === true || projectContext?.autoLoadConventions === true;
+}
+
 /** Max entries in the per-instance head-SHA conventions memo cache. Bounds
  * memory in long-lived processes (e.g. Probot) where each PR adds a key. */
 export const AGENTS_MD_HEAD_CACHE_MAX_ENTRIES = 100;
@@ -5430,7 +5446,7 @@ export class ReviewEngine {
    * least one convention file was loaded.
    */
   private loadAgentsMdAtHeadSha(pr: PRContext): Promise<{ context?: string; footer?: string }> {
-    const autoLoad = this.config.projectContext?.autoLoadAgentsMd === true;
+    const autoLoad = isAgentsMdAutoLoadEnabled(this.config.projectContext);
     const key = `${pr.number}:${pr.headSha}:${autoLoad ? 'on' : 'off'}`;
     const cached = this.agentsMdHeadCache.get(key);
     if (cached) return cached;
@@ -5460,7 +5476,7 @@ export class ReviewEngine {
   private async fetchAgentsMdAtHeadSha(
     pr: PRContext,
   ): Promise<{ context?: string; footer?: string }> {
-    if (this.config.projectContext?.autoLoadAgentsMd !== true) return {};
+    if (!isAgentsMdAutoLoadEnabled(this.config.projectContext)) return {};
     const shortSha = (pr.headSha || '').slice(0, 7) || 'unknown';
     const sections: string[] = [];
     const loaded: string[] = [];

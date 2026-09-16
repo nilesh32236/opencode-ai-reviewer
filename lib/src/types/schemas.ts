@@ -123,6 +123,7 @@ export const ProjectContextConfigSchema = z.object({
   lintCommands: z.array(z.string()).default([]),
   customRules: z.string().optional(),
   autoLoadAgentsMd: z.boolean().default(false),
+  autoLoadConventions: z.boolean().optional(),
   attributionFooter: z.boolean().optional(),
 });
 
@@ -826,6 +827,7 @@ export const PromptConfigSchema = z.object({
       conventions: z.array(z.string()).optional(),
       commandReference: z.record(z.string()).optional(),
       autoLoadAgentsMd: z.boolean().optional(),
+      autoLoadConventions: z.boolean().optional(),
       attributionFooter: z.boolean().optional(),
     })
     .optional(),

@@ -353,6 +353,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     conventions: null,
     commandReference: null,
     autoLoadAgentsMd: null,
+    autoLoadConventions: null,
     attributionFooter: null,
   },
   conversation: {
@@ -1119,6 +1120,12 @@ export function validateConfig(
     }
     if (typeof config.project.autoLoadAgentsMd === 'boolean') {
       result.project.autoLoadAgentsMd = config.project.autoLoadAgentsMd;
+    } else if (typeof config.project.autoLoadConventions === 'boolean') {
+      // Deprecated alias for issue #593 key; canonical key wins when both set.
+      result.project.autoLoadAgentsMd = config.project.autoLoadConventions;
+    }
+    if (typeof config.project.autoLoadConventions === 'boolean') {
+      result.project.autoLoadConventions = config.project.autoLoadConventions;
     }
     if (typeof config.project.attributionFooter === 'boolean') {
       result.project.attributionFooter = config.project.attributionFooter;

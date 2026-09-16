@@ -55,7 +55,10 @@ export function buildAgentConfig(
       typecheckCommands: loadedConfig?.fix?.runChecks || [],
       lintCommands: [],
       customRules: loadedConfig?.review?.customRules?.join('\n') || undefined,
-      autoLoadAgentsMd: loadedConfig?.project?.autoLoadAgentsMd ?? false,
+      autoLoadAgentsMd:
+        loadedConfig?.project?.autoLoadAgentsMd ??
+        loadedConfig?.project?.autoLoadConventions ??
+        false,
       ...(loadedConfig?.project?.attributionFooter !== undefined && {
         attributionFooter: loadedConfig.project.attributionFooter,
       }),

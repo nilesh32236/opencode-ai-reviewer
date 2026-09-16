@@ -365,7 +365,8 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const changelog = repoConfig?.changelog;
   const describe = repoConfig?.describe;
   const multiAgent = repoConfig?.multiAgent;
-  const projectAutoLoadAgentsMd = repoConfig?.project?.autoLoadAgentsMd;
+  const projectAutoLoadAgentsMd =
+    repoConfig?.project?.autoLoadAgentsMd ?? repoConfig?.project?.autoLoadConventions;
   const projectAttributionFooter = repoConfig?.project?.attributionFooter;
   if (
     !sensitivity &&
