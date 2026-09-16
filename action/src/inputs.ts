@@ -608,10 +608,6 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   const enforceNodeFloor = enforceNodeFloorRaw === 'true';
   const enforceNodeFloorExplicit = enforceNodeFloorRaw !== '';
 
-  // Operator instruction from the triggering /fix comment. Additive optional:
-  // empty/absent resolves to undefined so label/dispatch/GitLab triggers (and
-  // any workflow that does not pass the input) behave exactly as today.
-
   // Workflow-authoritative like fail_on_severity/sca: track explicitness so an
   // explicitly-set workflow input wins over PR-branch repo config.
   const verdictModeRaw = core.getInput('verdict_mode');
@@ -701,6 +697,9 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     if (secret) core.setSecret(secret);
   }
 
+  // Operator instruction from the triggering /fix comment. Additive optional:
+  // empty/absent resolves to undefined so label/dispatch/GitLab triggers (and
+  // any workflow that does not pass the input) behave exactly as today.
   const commentBodyRaw = core.getInput('comment-body').trim();
   const commentBody = commentBodyRaw ? commentBodyRaw : undefined;
 

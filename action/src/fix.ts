@@ -106,8 +106,10 @@ export function resolveOperatorInstruction(
 
 /**
  * Resolve the provenance actor: explicit override first, then the in-process
- * GitHub comment payload, then the workflow actor. Returns `undefined` on
- * GitLab / non-comment triggers (no-op provenance).
+ * GitHub comment payload, then the workflow actor (only when a comment payload
+ * body exists). Returns `undefined` on non-comment triggers (schedule,
+ * dispatch, label) and on GitLab / non-comment triggers (no-op provenance),
+ * so provenance is never misattributed to e.g. a scheduler.
  * @param operator - Trailing override carrying an optional actor.
  * @returns The actor login, or `undefined` when unknown/unsafe.
  */
@@ -117,9 +119,12 @@ export function resolveOperatorActor(
   const explicit = typeof operator === 'object' ? operator?.actor : undefined;
   if (explicit && /^[A-Za-z0-9-]{1,39}$/.test(explicit)) return explicit;
   try {
-    const login = (github?.context?.payload?.comment as { user?: { login?: string } } | undefined)
-      ?.user?.login;
+    const comment = github?.context?.payload?.comment as
+      | { body?: unknown; user?: { login?: string } }
+      | undefined;
+    const login = comment?.user?.login;
     if (typeof login === 'string' && /^[A-Za-z0-9-]{1,39}$/.test(login)) return login;
+    if (typeof comment?.body !== 'string') return undefined;
     const fallback = (github?.context as { actor?: unknown } | undefined)?.actor;
     if (typeof fallback === 'string' && /^[A-Za-z0-9-]{1,39}$/.test(fallback)) return fallback;
   } catch {

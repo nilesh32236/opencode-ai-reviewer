@@ -586,7 +586,7 @@ async function run(): Promise<void> {
       // two layers: the explicit `comment-body` action input wins (future
       // workflow wiring: ${{ github.event.comment.body }}), falling back to
       // the in-process comment payload (covers workflows that omit the input).
-      // Classification (token stripping/truncation) happens in fix.ts; here we
+      // Classification (token stripping/truncation) lives in extractOperatorInstruction (comment-commands.ts); here we
       // only decide *whether* a comment qualifies. The permission gate above
       // still runs first — content is consumed only after authorization, and
       // stays an operator instruction, never untrusted third-party content.
@@ -609,10 +609,15 @@ async function run(): Promise<void> {
           platform === 'github'
             ? ((): string | undefined => {
                 const c = github.context.payload.comment as
-                  | { user?: { login?: string } }
+                  | { body?: unknown; user?: { login?: string } }
                   | undefined;
                 const login = c?.user?.login;
                 if (typeof login === 'string' && /^[A-Za-z0-9-]{1,39}$/.test(login)) return login;
+                // Only fall back to the workflow actor when a comment payload
+                // body exists; otherwise a non-comment trigger
+                // (schedule/dispatch/label) with an explicit input would get a
+                // misleading 'authorized /fix comment by @<scheduler>' header.
+                if (typeof c?.body !== 'string') return undefined;
                 const fallback = github.context.actor;
                 if (typeof fallback === 'string' && /^[A-Za-z0-9-]{1,39}$/.test(fallback))
                   return fallback;
@@ -620,7 +625,12 @@ async function run(): Promise<void> {
               })()
             : undefined;
         // Explicit input wins: the workflow author deliberately threaded it.
+        // Gated on the same fix/oc command check as the payload fallback so a
+        // miswired workflow passing '/review ...' via comment-body never
+        // becomes a fix operator instruction.
         if (explicitRaw) {
+          const cmd = extractCommentCommand(explicitRaw);
+          if (cmd !== 'fix' && cmd !== 'oc') return undefined;
           const classified = extractOperatorInstruction(explicitRaw);
           if (!classified) return undefined;
           return payloadActor

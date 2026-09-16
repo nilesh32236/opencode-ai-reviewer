@@ -57,8 +57,10 @@ export const OPERATOR_INSTRUCTION_TRUNCATION_MARKER = '\n\n[truncated]';
  * and truncates to {@link MAX_OPERATOR_INSTRUCTION_CHARS} with an explicit
  * `[truncated]` marker.
  *
- * Returns `undefined` for empty input or for a bare command (`/fix` alone),
- * so no-comment triggers (label, dispatch, GitLab) behave exactly as today.
+ * Returns `undefined` for empty input, for a bare command (`/fix` alone),
+ * or when the body contains no `/fix` (`/oc` alias) token, so non-fix text
+ * (e.g. `/review do X`) is never misclassified as a fix instruction and
+ * no-comment triggers (label, dispatch, GitLab) behave exactly as today.
  * @param body - Raw comment body or explicit `comment-body` input value.
  * @returns The classified instruction text, or `undefined` when there is none.
  */
@@ -66,6 +68,11 @@ export function extractOperatorInstruction(body: string | undefined | null): str
   if (body === undefined || body === null) return undefined;
   const trimmed = body.trim();
   if (!trimmed) return undefined;
+  // Presence guard: only bodies that actually carry a /fix (/oc alias) token
+  // qualify — without it '/review do X' would be returned verbatim as a fix
+  // instruction. Mirrors extractCommentCommand matching (mid-body, word
+  // boundary, case-insensitive).
+  if (!/(?:^|\s)\/(fix|oc)\b/i.test(trimmed)) return undefined;
   // Strip only the fix-trigger tokens (/fix and the /oc alias honored by
   // production workflows). Other slash-commands are left intact so their
   // text is not silently misclassified as a fix instruction.
