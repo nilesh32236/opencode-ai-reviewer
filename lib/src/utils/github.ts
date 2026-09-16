@@ -1626,23 +1626,20 @@ export class GitHubHelper implements PlatformAdapter {
     ).comments;
     this.stampInlineFingerprintMarkers(inlineComments, dedupedResult.issues);
 
-    const placedInlineKeys = new Set<string>();
-    for (const c of inlineComments) {
-      placedInlineKeys.add(`${c.path}:${c.line}`);
-    }
-    // Mappable findings ride inline; unmappable findings stay in the body.
-    const issuesForBody = dedupedResult.issues.filter(
-      (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
-    );
-    const body = buildReviewBody(
-      applyBodyNoiseBudget(dedupedResult, issuesForBody, options),
-      stripNoiseBudget(options),
-    );
-    // Full-finding body used for the fail-open summary-only retry.
-    const fullBody = buildReviewBody(dedupedResult, options);
-
     const commentIds: ReviewPostResult['commentIds'] = [];
     const reviewEvent = resolveReviewEvent(dedupedResult, options?.verdictMode);
+
+    // Full-finding body used for the fail-open summary-only retry. Lazily
+    // built so the diff-unavailable early return below does not pay for it
+    // twice; always built from the full deduped result so no finding is lost
+    // and the gated event survives.
+    let cachedFullBody: string | undefined;
+    const fullBodyForSummary = (): string => {
+      if (cachedFullBody === undefined) {
+        cachedFullBody = buildReviewBody(dedupedResult, options);
+      }
+      return cachedFullBody;
+    };
 
     const postSummaryOnly = async (event: ReviewEvent): Promise<ReviewPostResult> => {
       try {
@@ -1653,7 +1650,7 @@ export class GitHubHelper implements PlatformAdapter {
         const reviewResponse = await this.createReview<{ id: number }>(
           prNumber,
           commitSha,
-          fullBody,
+          fullBodyForSummary(),
           event,
           undefined,
           signal,
@@ -1665,9 +1662,48 @@ export class GitHubHelper implements PlatformAdapter {
       }
     };
 
-    if (inlineComments.length === 0) {
+    // Explicit inline-hunk prevalidation (additive, guarded by the existing
+    // opt-in reviews-array path): buildInlineComments already filters against
+    // diffLines when available, but re-validate here so dropped positions are
+    // logged and a doomed batched POST is never attempted.
+    if (diffLines.size === 0) {
+      // Diff fetch failed or the diff parsed to zero hunks: buildInlineComments
+      // fail-open would otherwise post ALL inline findings as batched,
+      // deterministically 422ing on stale/out-of-diff/deleted-file positions.
+      core.warning('Diff validation unavailable, posting summary-only review');
       return postSummaryOnly(reviewEvent);
     }
+
+    const validInlineComments = inlineComments.filter((c) => diffLines.has(`${c.path}:${c.line}`));
+    const droppedCount = inlineComments.length - validInlineComments.length;
+    if (droppedCount > 0) {
+      const droppedKeys = inlineComments
+        .filter((c) => !diffLines.has(`${c.path}:${c.line}`))
+        .slice(0, 10)
+        .map((c) => `${c.path}:${c.line}`);
+      core.warning(
+        `Dropped ${droppedCount} inline comment(s) outside the diff hunk range: ${droppedKeys.join(', ')}${droppedCount > droppedKeys.length ? ', …' : ''}`,
+      );
+      core.debug(`Inline hunk prevalidation dropped: ${droppedKeys.join(', ')}`);
+    }
+    if (validInlineComments.length === 0) {
+      // Nothing mappable survived validation; skip the doomed batched POST
+      // and post the summary-only body (all findings preserved).
+      return postSummaryOnly(reviewEvent);
+    }
+
+    const placedInlineKeys = new Set<string>();
+    for (const c of validInlineComments) {
+      placedInlineKeys.add(`${c.path}:${c.line}`);
+    }
+    // Mappable findings ride inline; unmappable findings stay in the body.
+    const issuesForBody = dedupedResult.issues.filter(
+      (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
+    );
+    const body = buildReviewBody(
+      applyBodyNoiseBudget(dedupedResult, issuesForBody, options),
+      stripNoiseBudget(options),
+    );
 
     try {
       const reviewResponse = await this.createReview<{
@@ -1678,7 +1714,7 @@ export class GitHubHelper implements PlatformAdapter {
         commitSha,
         body,
         reviewEvent,
-        inlineComments.map((c) => ({
+        validInlineComments.map((c) => ({
           path: c.path,
           line: c.line,
           side: c.side,
@@ -1688,7 +1724,7 @@ export class GitHubHelper implements PlatformAdapter {
       );
       if (reviewResponse.comments) {
         for (const rc of reviewResponse.comments) {
-          const matched = inlineComments.find((c) => c.path === rc.path && c.line === rc.line);
+          const matched = validInlineComments.find((c) => c.path === rc.path && c.line === rc.line);
           if (matched) {
             commentIds?.push({
               file: rc.path,
