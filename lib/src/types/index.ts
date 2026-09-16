@@ -811,6 +811,9 @@ export interface ReviewConfig {
   /** Deterministic per-function quality table in review body (default: false).
    * Heuristic only, no verdict influence. */
   showFunctionScores: boolean;
+  /** Deterministic blast-radius section listing callers/importers of changed
+   * files from the cached codebase index graph (default: false). */
+  showBlastRadius: boolean;
   /** Whether to suppress low-confidence findings from review output */
   suppressLowConfidence?: boolean;
   /** Whether to enable lightweight reachability analysis on security findings */
@@ -1689,6 +1692,8 @@ export interface PromptConfig {
     /** Deterministic per-function quality table in review body (default: false).
      * Heuristic only, no verdict influence. */
     showFunctionScores?: boolean;
+    /** Deterministic blast-radius section from the codebase index graph (default: false) */
+    showBlastRadius?: boolean;
     /** Enable codebase indexing for cross-file review context (default: true) */
     enableCodebaseIndex?: boolean;
     /** Review pre-existing (non-PR) code at full audit priority (default: false) */
@@ -1983,6 +1988,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     emitFixPayload: false,
     excludeAgentConfigs: true,
     showFunctionScores: false,
+    showBlastRadius: false,
     suppressLowConfidence: false,
     enableReachability: true,
     enableCodebaseIndex: true,

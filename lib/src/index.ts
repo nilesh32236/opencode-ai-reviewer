@@ -252,8 +252,12 @@ export {
   formatConfidenceLabel,
   formatIssueBullet,
   getSeverityBadge,
+  buildBlastRadiusSection,
+  buildBlastRadiusOptions,
+  MAX_BLAST_RADIUS_DEPENDENTS,
+  MAX_BLAST_RADIUS_CHARS,
 } from './utils/review-body.js';
-export type { ReviewBodyOptions } from './utils/review-body.js';
+export type { ReviewBodyOptions, BlastRadiusSectionOptions } from './utils/review-body.js';
 export { looksLikeCode } from './utils/code-heuristic.js';
 export {
   FingerprintStore,
