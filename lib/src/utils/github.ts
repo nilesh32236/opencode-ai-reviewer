@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto';
 import * as core from '@actions/core';
 import { buildInlineComments } from '../jsonl-parser.js';
-import type { PlatformAdapter, ReviewPostResult, ReviewThreadInfo } from '../platform/adapter.js';
+import type {
+  BotReviewInfo,
+  PlatformAdapter,
+  ReviewPostResult,
+  ReviewThreadInfo,
+} from '../platform/adapter.js';
 import type {
   ChangedFile,
   IssueComment,
@@ -165,6 +170,8 @@ interface ReviewThreadNode {
       originalLine?: number | null;
       author: { login: string };
       createdAt: string;
+      commit?: { oid?: string } | null;
+      originalCommit?: { oid?: string } | null;
     }>;
   };
 }
@@ -2595,6 +2602,8 @@ export class GitHubHelper implements PlatformAdapter {
                       originalLine
                       author { login }
                       createdAt
+                      commit { oid }
+                      originalCommit { oid }
                     }
                   }
                 }
@@ -2639,6 +2648,7 @@ export class GitHubHelper implements PlatformAdapter {
             lineNumber: comment.line ?? comment.originalLine ?? null,
             author: comment.author.login,
             createdAt: comment.createdAt,
+            commitId: comment.commit?.oid ?? comment.originalCommit?.oid ?? undefined,
           },
         });
       }
@@ -2706,6 +2716,41 @@ export class GitHubHelper implements PlatformAdapter {
       const author = t.firstComment.author.toLowerCase().replace(/\[bot\]$/, '');
       return author === botLogin;
     });
+  }
+
+  /**
+   * List bot-authored reviews for a PR via REST `GET /pulls/{n}/reviews`,
+   * newest first. Fail-open: any failure resolves to [] so callers fall back
+   * to a fresh review (today's behavior).
+   * @param prNumber - PR number.
+   * @returns Bot review summaries ordered newest first.
+   */
+  async listBotReviews(prNumber: number): Promise<BotReviewInfo[]> {
+    try {
+      const rawBotLogin = await this.getCurrentUser();
+      const botBase = rawBotLogin.toLowerCase().replace(/\[bot\]$/, '');
+      const reviews = await this.paginate<Record<string, unknown>>(`/pulls/${prNumber}/reviews`, {
+        perPage: 100,
+        maxPages: 10,
+      });
+      const botReviews: BotReviewInfo[] = [];
+      for (const r of reviews) {
+        const login = String((r as { user?: { login?: unknown } }).user?.login ?? '').toLowerCase();
+        if (login.replace(/\[bot\]$/, '') !== botBase) continue;
+        botReviews.push({
+          id: Number((r as { id?: unknown }).id ?? 0),
+          commitId: String((r as { commit_id?: unknown }).commit_id ?? ''),
+          body: String((r as { body?: unknown }).body ?? ''),
+          state: String((r as { state?: unknown }).state ?? ''),
+          submittedAt: String((r as { submitted_at?: unknown }).submitted_at ?? ''),
+        });
+      }
+      // Newest first so callers can take [0] as the latest bot review.
+      botReviews.sort((a, b) => (a.submittedAt < b.submittedAt ? 1 : -1));
+      return botReviews;
+    } catch {
+      return [];
+    }
   }
 
   /**

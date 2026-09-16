@@ -57,6 +57,7 @@ export type {
   PlatformAdapter,
   ReviewPostResult,
   ReviewThreadInfo,
+  BotReviewInfo,
   ReviewCommentDetail,
   ReviewCommentThread,
 } from './platform/adapter.js';

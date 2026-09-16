@@ -1,11 +1,15 @@
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
+import * as github from '@actions/github';
 import type {
   AgentConfig,
   IssueComment,
   PlatformAdapter,
   PreviousFindingIteration,
   ReviewEngine,
+  ReviewIssue,
+  ReviewResult,
+  ReviewThreadInfo,
 } from '@opencode-pr-agent/lib';
 import {
   type CheckExecution,
@@ -27,6 +31,7 @@ import {
   withRetry,
 } from '@opencode-pr-agent/lib';
 import { sanitizeMarkdown } from '@opencode-pr-agent/lib';
+import { hasFixReReviewFlag } from './comment-commands.js';
 import type { ActionInputs } from './inputs.js';
 import {
   capVerificationOutput,
@@ -51,6 +56,168 @@ import {
 export function isPrClosedOrMerged(state?: string): boolean {
   if (!state) return false;
   return state === 'closed' || state === 'merged';
+}
+
+/**
+ * Read the `/fix` trigger comment body from the workflow event payload, when
+ * present. Used only to honor an explicit `/fix re-review` request; absent or
+ * unreadable payloads fail-open to normal reuse behavior.
+ * @returns Raw trigger comment body, or '' when unavailable.
+ */
+export function getFixTriggerBody(): string {
+  try {
+    const payload = (github.context?.payload ?? {}) as {
+      comment?: { body?: unknown };
+    };
+    const body = payload.comment?.body;
+    return typeof body === 'string' ? body : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Whether the `/fix` trigger explicitly requests a fresh review.
+ * Exported for unit testing; the loop reads the live payload via
+ * {@link getFixTriggerBody} so `/fix re-review` bypasses review reuse.
+ * @param body - Raw trigger comment body.
+ * @returns True when a re-review token follows the /fix token.
+ */
+export function shouldForceFreshReview(body: string | undefined | null): boolean {
+  return hasFixReReviewFlag(body);
+}
+
+/**
+ * Parse a finding severity from a posted inline body. Posted bodies render as
+ * `<badge> **SEVERITY**: message`, so reuse recovers the original bucket
+ * instead of defaulting everything to one level.
+ * @param body - Posted inline comment body.
+ * @returns Parsed severity (defaults to 'important').
+ */
+export function parseReusedSeverity(body: string): ReviewIssue['severity'] {
+  const text = String(body ?? '').toLowerCase();
+  if (text.includes('critical') || text.includes('🔴')) return 'critical';
+  if (text.includes('minor') || text.includes('🔵')) return 'minor';
+  return 'important';
+}
+
+/**
+ * Bodies that indicate the previous review never produced usable findings
+ * (LLM timeout, empty stub). Reusing them would loop on the same failure the
+ * issue reports, so they force a fresh review instead.
+ * @param body - Posted bot thread body.
+ * @returns True when the body looks like a timeout/empty stub.
+ */
+export function isReviewStubBody(body: string): boolean {
+  const text = String(body ?? '').toLowerCase();
+  if (!text.trim()) return true;
+  return (
+    text.includes('timed out') ||
+    text.includes('timeout') ||
+    text.includes('review result empty') ||
+    text.includes('no meaningful content')
+  );
+}
+
+/**
+ * Strip fingerprint markers and HTML comments from a posted body so the
+ * reused finding message stays readable for the fix agent.
+ * @param body - Posted inline comment body.
+ * @returns Cleaned message text (truncated to 2000 chars).
+ */
+export function cleanReusedBody(body: string): string {
+  const cleaned = String(body ?? '')
+    .replace(/<!--\s*inline-fp:[0-9a-f]{16}\s*-->/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .trim();
+  return cleaned.length > 2000 ? `${cleaned.slice(0, 2000)}…` : cleaned;
+}
+
+/**
+ * Rehydrate fixable findings from head-current bot threads. Only unresolved
+ * threads with usable (non-stub) bodies become issues; resolved threads are
+ * already fixed and must not reseed the fix phase.
+ * @param threads - Bot review threads (already filtered to the bot author).
+ * @param headSha - Current PR head SHA (used only for the summary line).
+ * @returns Rehydrated ReviewResult, or null when nothing usable remains.
+ */
+export function rehydrateReviewResultFromBotThreads(
+  threads: ReviewThreadInfo[],
+  headSha: string,
+): ReviewResult | null {
+  const issues: ReviewIssue[] = [];
+  for (const t of threads) {
+    if (t.isResolved) continue;
+    const fc = t.firstComment;
+    if (!fc) continue;
+    if (isReviewStubBody(fc.body)) continue;
+    const message = cleanReusedBody(fc.body);
+    if (!message) continue;
+    const line = typeof fc.lineNumber === 'number' && fc.lineNumber > 0 ? fc.lineNumber : 0;
+    issues.push({
+      type: 'issue',
+      severity: parseReusedSeverity(fc.body),
+      file: fc.filePath,
+      line,
+      message,
+      inline: line > 0,
+      previouslyReported: true,
+    });
+  }
+  if (issues.length === 0) return null;
+  const critical = issues.filter((i) => i.severity === 'critical').length;
+  const important = issues.filter((i) => i.severity === 'important').length;
+  const minor = issues.filter((i) => i.severity === 'minor').length;
+  const ready = critical === 0 && important === 0;
+  const shortSha = String(headSha ?? '').slice(0, 7) || 'unknown';
+  return {
+    summary: `Reusing head-current bot review on ${shortSha} (${issues.length} open finding(s)) — skipped fresh review for /fix iteration 1.`,
+    verdict: {
+      ready,
+      reasoning: ready
+        ? 'Reused review reports no blocking findings.'
+        : 'Reused head-current review still reports open findings.',
+      autoFixable: false,
+      confidence: 'medium',
+    },
+    strengths: [],
+    issues,
+    stats: { total: issues.length, critical, important, minor },
+  };
+}
+
+/**
+ * Decide whether iteration 1 can reuse an existing bot review instead of
+ * paying for a fresh `engine.reviewPR` LLM pass. Head-current means at least
+ * one unresolved, non-stub bot thread is anchored to the current head SHA
+ * (via `firstComment.commitId`, or via `listReviewComments` commit
+ * correlation when the adapter does not populate it).
+ * @param threads - Bot review threads for the PR.
+ * @param headSha - Current PR head SHA.
+ * @param commitByCommentId - Optional databaseId → commit SHA map built from
+ * `listReviewComments` (each record's `commit_id`).
+ * @returns Rehydrated ReviewResult when reuse applies, else null.
+ */
+export function findReusableHeadCurrentReview(
+  threads: ReviewThreadInfo[],
+  headSha: string,
+  commitByCommentId?: Map<number, string>,
+): ReviewResult | null {
+  const head = String(headSha ?? '').toLowerCase();
+  if (!head || !Array.isArray(threads) || threads.length === 0) return null;
+  const headCurrent = threads.filter((t) => {
+    if (t.isResolved) return false;
+    if (isReviewStubBody(t.firstComment?.body ?? '')) return false;
+    const direct = String(t.firstComment?.commitId ?? '').toLowerCase();
+    if (direct) return direct === head;
+    if (commitByCommentId) {
+      const mapped = String(commitByCommentId.get(t.firstComment?.databaseId) ?? '').toLowerCase();
+      if (mapped) return mapped === head;
+    }
+    return false;
+  });
+  if (headCurrent.length === 0) return null;
+  return rehydrateReviewResultFromBotThreads(headCurrent, headSha);
 }
 
 /**
@@ -829,8 +996,10 @@ export async function runAutofixLoop(
     let previousBotComments:
       | Array<{ file: string; line: number | null; body: string; commentId: number }>
       | undefined;
+    let botThreadsForReuse: ReviewThreadInfo[] = [];
     try {
       const botThreads = await gh.getBotReviewThreads(prNumber);
+      botThreadsForReuse = botThreads;
       previousBotComments = botThreads
         .filter((t) => !t.isResolved && t.firstComment)
         .map((t) => ({
@@ -849,19 +1018,78 @@ export async function runAutofixLoop(
       });
     }
 
-    const result = await engine.reviewPR(
-      pr,
-      i,
-      inputs.reviewPromptFile,
-      inputs.reviewPromptExtra,
-      iterTimeoutMinutes,
-      previousFindings,
-      undefined,
-      undefined,
-      previousBotComments,
-      undefined,
-      { forceReview: true },
-    );
+    // Iteration 1 reuse: when the head already carries a complete bot review,
+    // skip the fresh `engine.reviewPR` LLM pass and seed the fix phase with
+    // the existing findings. Fresh reviews still run when no review exists,
+    // the head moved, the prior review is a timeout/empty stub, or the caller
+    // explicitly asks (`/fix re-review`). Subsequent iterations always run a
+    // fresh review against the post-fix head.
+    let reusedResult: ReviewResult | null = null;
+    if (i === 0 && !shouldForceFreshReview(getFixTriggerBody())) {
+      try {
+        let commitByCommentId: Map<number, string> | undefined;
+        const needsCorrelation = botThreadsForReuse.some(
+          (t) => !t.isResolved && !t.firstComment?.commitId,
+        );
+        if (needsCorrelation) {
+          try {
+            const reviewComments = await gh.listReviewComments(prNumber, {
+              perPage: 100,
+              maxPages: 10,
+            });
+            commitByCommentId = new Map<number, string>();
+            for (const rc of reviewComments) {
+              const id = Number((rc as { id?: unknown }).id);
+              const commitId = String(
+                (rc as { commit_id?: unknown }).commit_id ??
+                  (rc as { commitId?: unknown }).commitId ??
+                  '',
+              );
+              if (Number.isInteger(id) && commitId) commitByCommentId.set(id, commitId);
+            }
+          } catch {
+            commitByCommentId = undefined;
+          }
+        }
+        reusedResult = findReusableHeadCurrentReview(
+          botThreadsForReuse,
+          prHeadSha,
+          commitByCommentId,
+        );
+      } catch {
+        reusedResult = null;
+      }
+      if (reusedResult) {
+        core.info(
+          sanitize(
+            `Reusing head-current bot review on ${String(prHeadSha ?? '').slice(0, 7)} (${reusedResult.issues.length} finding(s)) — skipping fresh reviewPR in iteration 1`,
+          ),
+        );
+      }
+    } else if (i === 0) {
+      core.info('Fresh review requested via /fix re-review — skipping review reuse');
+    }
+
+    let result: ReviewResult | null;
+    let skippedPostReview = false;
+    if (reusedResult) {
+      result = reusedResult;
+      skippedPostReview = true;
+    } else {
+      result = await engine.reviewPR(
+        pr,
+        i,
+        inputs.reviewPromptFile,
+        inputs.reviewPromptExtra,
+        iterTimeoutMinutes,
+        previousFindings,
+        undefined,
+        undefined,
+        previousBotComments,
+        undefined,
+        { forceReview: true },
+      );
+    }
 
     if (result?.skipped) {
       // forceReview was set, so a skip should not normally happen; guard
@@ -900,16 +1128,28 @@ export async function runAutofixLoop(
     }
 
     try {
-      const reviewResult = await gh.postReview(
-        prNumber,
-        prHeadSha,
-        result,
-        config.review.inline,
-        undefined,
-        buildFunctionScoreOptions(config.review.showFunctionScores, pr.changedFiles),
-      );
-      if (reviewResult.commentIds) {
-        currentCommentIds = reviewResult.commentIds;
+      if (skippedPostReview) {
+        // Findings are already posted as the head-current bot review — repost
+        // only the id mapping so fix-progress tracking keeps working.
+        currentCommentIds = botThreadsForReuse
+          .filter((t) => !t.isResolved && t.firstComment)
+          .map((t) => ({
+            file: t.firstComment.filePath,
+            line: typeof t.firstComment.lineNumber === 'number' ? t.firstComment.lineNumber : 0,
+            commentId: t.firstComment.databaseId,
+          }));
+      } else {
+        const reviewResult = await gh.postReview(
+          prNumber,
+          prHeadSha,
+          result,
+          config.review.inline,
+          undefined,
+          buildFunctionScoreOptions(config.review.showFunctionScores, pr.changedFiles),
+        );
+        if (reviewResult.commentIds) {
+          currentCommentIds = reviewResult.commentIds;
+        }
       }
     } catch (err) {
       core.warning(sanitize(`Failed to post review: ${err instanceof Error ? err.message : err}`));

@@ -42,6 +42,21 @@ export function extractCommentCommand(body: string | undefined | null): string |
 }
 
 /**
+ * Whether a `/fix` trigger comment explicitly asks for a fresh review.
+ * Additive helper — `extractCommentCommand` intentionally drops args, so the
+ * autofix loop uses this to honor `/fix re-review` / `/fix re_review` /
+ * `/fix force-review` without changing the auth gate.
+ * @param body - Raw comment body (may be undefined/null).
+ * @returns True when the body contains a re-review token after the /fix token.
+ */
+export function hasFixReReviewFlag(body: string | undefined | null): boolean {
+  if (!body) return false;
+  return /(?:^|\s)\/fix\b[\s\S]*\b(re-review|re_review|rereview|force-review|force_review)\b/i.test(
+    body,
+  );
+}
+
+/**
  * Verify that the actor who triggered an `issue_comment` (or
  * `pull_request_review_comment`) event holds write/admin permission on the
  * repository before honoring manual commands (/fix, /analyze, manual
