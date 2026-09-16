@@ -1,3 +1,4 @@
+import * as dns from 'node:dns/promises';
 import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as path from 'node:path';
@@ -772,4 +773,34 @@ export function isSafeRemoteMcpUrl(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * DNS-rebinding guard (issue #546): resolve a hostname and report whether ANY
+ * resolved address targets a blocked internal endpoint
+ * (see {@link isBlockedIpHost}).
+ *
+ * Resolution errors (NXDOMAIN, timeout, sandboxed CI without DNS) return
+ * `false` — fail-open — so legitimate webhooks keep working where DNS is
+ * unavailable; only a *positive* resolution to a blocked address denies the
+ * fetch. Callers must still run the synchronous {@link isSafeRemoteMcpUrl} /
+ * `isHttpsUrl` checks first. Residual TOCTOU (re-resolution between this
+ * check and `fetch`) is accepted: pin URLs to operator-known hosts where a
+ * hostile resolver is in scope.
+ * @param host - Bare hostname (no port, brackets, or zone ID).
+ * @returns True when at least one resolved address is blocked (deny the fetch).
+ */
+export async function dnsResolvesBlockedHost(host: string): Promise<boolean> {
+  const clean = host.toLowerCase().replace(/\.$/, '').split('%')[0] ?? '';
+  if (clean === '') return true;
+  // Literal IPs need no resolution — classify directly.
+  if (net.isIP(clean) !== 0) return isBlockedIpHost(clean);
+  let records: Array<{ address: string }>;
+  try {
+    records = await dns.lookup(clean, { all: true });
+  } catch {
+    return false;
+  }
+  if (records.length === 0) return false;
+  return records.some((r) => isBlockedIpHost(r.address));
 }

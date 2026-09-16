@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  dnsResolvesBlockedHost,
   isAllowedLinterCommand,
   isAllowedMcpLocalCommand,
   isBlockedIpHost,
@@ -11,6 +12,12 @@ import {
   isSafeRemoteMcpUrl,
   resolveConfinedWorkingDir,
 } from '../../src/utils/safe-exec.js';
+
+vi.mock('node:dns/promises', () => ({
+  lookup: vi.fn(),
+}));
+
+import { lookup } from 'node:dns/promises';
 
 describe('isAllowedLinterCommand', () => {
   it('allows single-purpose linter binaries', () => {
@@ -229,5 +236,47 @@ describe('isSafeRemoteMcpUrl', () => {
     // before the host-policy check — mapped loopback must still be blocked.
     expect(isSafeRemoteMcpUrl('https://[::ffff:127.0.0.1]/sse')).toBe(false);
     expect(isSafeRemoteMcpUrl('https://[::1]/sse')).toBe(false);
+  });
+});
+
+describe('dnsResolvesBlockedHost (issue #546)', () => {
+  const mockLookup = lookup as unknown as ReturnType<typeof vi.fn>;
+
+  it('denies hostnames resolving to blocked addresses', async () => {
+    mockLookup.mockResolvedValue([{ address: '10.1.2.3', family: 4 }]);
+    await expect(dnsResolvesBlockedHost('evil.example.com')).resolves.toBe(true);
+    mockLookup.mockResolvedValue([{ address: '169.254.169.254', family: 4 }]);
+    await expect(dnsResolvesBlockedHost('metadata.example.com')).resolves.toBe(true);
+  });
+
+  it('denies when any of several records is blocked', async () => {
+    mockLookup.mockResolvedValue([
+      { address: '93.184.216.34', family: 4 },
+      { address: '192.168.1.10', family: 4 },
+    ]);
+    await expect(dnsResolvesBlockedHost('mixed.example.com')).resolves.toBe(true);
+  });
+
+  it('allows public resolutions', async () => {
+    mockLookup.mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
+    await expect(dnsResolvesBlockedHost('mcp.example.com')).resolves.toBe(false);
+  });
+
+  it('classifies literal IPs without DNS', async () => {
+    mockLookup.mockClear();
+    await expect(dnsResolvesBlockedHost('127.0.0.1')).resolves.toBe(true);
+    await expect(dnsResolvesBlockedHost('8.8.8.8')).resolves.toBe(false);
+    expect(mockLookup).not.toHaveBeenCalled();
+  });
+
+  it('fails open on DNS errors (sandboxed CI without DNS keeps working)', async () => {
+    mockLookup.mockRejectedValue(
+      Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' }),
+    );
+    await expect(dnsResolvesBlockedHost('mcp.example.com')).resolves.toBe(false);
+  });
+
+  it('fails closed on empty host', async () => {
+    await expect(dnsResolvesBlockedHost('')).resolves.toBe(true);
   });
 });

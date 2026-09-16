@@ -23,7 +23,11 @@ import type {
 } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
 import { withRetry } from '../utils/retry.js';
-import { isAllowedMcpLocalCommand, isSafeRemoteMcpUrl } from '../utils/safe-exec.js';
+import {
+  dnsResolvesBlockedHost,
+  isAllowedMcpLocalCommand,
+  isSafeRemoteMcpUrl,
+} from '../utils/safe-exec.js';
 import { estimateTokens } from '../utils/token-estimate.js';
 
 /**
@@ -425,7 +429,7 @@ export class MCPManager {
     core.startGroup(`MCP: Connecting to ${this.servers.length} server(s)`);
 
     const results = await Promise.allSettled(
-      this.servers.map((server) => {
+      this.servers.map(async (server) => {
         // SECURITY: `mcpServers` entries may come from PR-editable repo-file
         // config (untrusted). Local commands are constrained to a launcher
         // allowlist (no shells/paths) and remote URLs must pass the SSRF
@@ -455,6 +459,20 @@ export class MCPManager {
             this.logger.warn(
               `Skipping MCP server "${server.name}": remote URL failed the SSRF policy (https-only, no internal hosts)`,
             );
+            return Promise.resolve();
+          }
+          // DNS-rebinding guard (issue #546): refuse hostnames that resolve
+          // to internal addresses even though the literal hostname is clean.
+          try {
+            const remoteHost = new URL(server.url).hostname;
+            if (await dnsResolvesBlockedHost(remoteHost)) {
+              this.logger.warn(
+                `Skipping MCP server "${server.name}": hostname resolves to a blocked internal address`,
+              );
+              return Promise.resolve();
+            }
+          } catch {
+            this.logger.warn(`Skipping MCP server "${server.name}": unparsable remote URL`);
             return Promise.resolve();
           }
           const headers = buildRemoteHeaders(server);
