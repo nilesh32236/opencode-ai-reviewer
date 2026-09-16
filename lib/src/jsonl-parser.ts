@@ -504,16 +504,30 @@ export interface InlineComment {
  * Build inline review comments from issues in a ReviewResult, filtered to lines present in the diff.
  * @param result - The review result containing issues.
  * @param diffLines - Optional set of "file:line" strings to filter inline comments to diff lines.
+ * `undefined` means no diff data was fetched (fail-open: all inline issues are
+ * kept). An explicitly-passed empty `Set` means the diff was fetched but
+ * contains no mappable lines; by default this also fails open (legacy
+ * behavior) unless `strictDiffValidation` is enabled, in which case every
+ * inline issue is treated as out-of-diff and dropped.
  * @param suppressLowConfidence - When true, filters out issues with low confidence. May also be
- * an options object `{ suppressLowConfidence, emitFixPayload }` to avoid boolean-trap misordering.
+ * an options object `{ suppressLowConfidence, emitFixPayload, strictDiffValidation }` to avoid boolean-trap misordering.
  * @param emitFixPayload - Opt-in to appending a Fix-with-AI payload (default false, legacy output unchanged).
+ * @param options - Optional extras; `strictDiffValidation` also enables strict
+ * diff filtering for an explicitly-passed (possibly empty) `diffLines` set.
  * @returns An array of inline comment objects.
  */
 export function buildInlineComments(
   result: ReviewResult,
   diffLines?: Set<string>,
-  suppressLowConfidence?: boolean | { suppressLowConfidence?: boolean; emitFixPayload?: boolean },
+  suppressLowConfidence?:
+    | boolean
+    | {
+        suppressLowConfidence?: boolean;
+        emitFixPayload?: boolean;
+        strictDiffValidation?: boolean;
+      },
   emitFixPayload?: boolean,
+  options?: { strictDiffValidation?: boolean },
 ): InlineComment[] {
   const comments: InlineComment[] = [];
   const suppress =
@@ -524,11 +538,16 @@ export function buildInlineComments(
     typeof suppressLowConfidence === 'object'
       ? (suppressLowConfidence.emitFixPayload ?? emitFixPayload ?? false)
       : (emitFixPayload ?? false);
+  const strictDiffValidation =
+    (typeof suppressLowConfidence === 'object'
+      ? (suppressLowConfidence.strictDiffValidation ?? false)
+      : false) ||
+    (options?.strictDiffValidation ?? false);
 
   for (const issue of result.issues) {
     if (issue.inline !== true || !issue.line || issue.line < 1) continue;
     if (suppress && issue.confidence === 'low') continue;
-    if (diffLines && diffLines.size > 0) {
+    if (diffLines && (strictDiffValidation || diffLines.size > 0)) {
       const key = `${issue.file.replace(/^\//, '')}:${issue.line}`;
       if (!diffLines.has(key)) continue;
     }

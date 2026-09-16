@@ -272,6 +272,19 @@ export async function handlePRReview(
     // so the reviews-array flag takes precedence and disables streaming.
     const reviewsArrayEnabled = effectiveConfig.review.enableReviewsArrayInline === true;
     const streamEnabled = effectiveConfig.review.streamComments === true && !reviewsArrayEnabled;
+    // Pre-validate streaming inline positions against the PR diff so
+    // out-of-diff findings never burn a postInlineComment API call (they would
+    // 422). Fail-open: when the diff cannot be fetched (`undefined`), post as
+    // before. Skipped findings are NOT marked as streamed, so the final-result
+    // filter below keeps them for the summary body — nothing is lost.
+    let streamDiffLines: Set<string> | undefined;
+    if (streamEnabled) {
+      try {
+        streamDiffLines = await gh.getDiffLines(prNumber);
+      } catch {
+        streamDiffLines = undefined;
+      }
+    }
     try {
       try {
         await gh.postOrUpdateComment(
@@ -330,6 +343,16 @@ export async function handlePRReview(
                     // actually succeeded — otherwise the final-result filter
                     // below would drop it entirely (neither inline nor body).
                     if (streamedIssueKeys.has(key)) continue;
+                    // Pre-validated against the PR diff: out-of-diff positions
+                    // would 422, so skip the API call (without consuming cap
+                    // budget) and leave the finding for the final review body
+                    // (fail-open when diff data is absent).
+                    if (
+                      streamDiffLines &&
+                      !streamDiffLines.has(`${issue.file.replace(/^\//, '')}:${issue.line}`)
+                    ) {
+                      continue;
+                    }
                     // Cap streamed write calls per review: remainder stays in
                     // the final review body instead of fanning out N requests.
                     // Attempts count toward the cap so persistently failing

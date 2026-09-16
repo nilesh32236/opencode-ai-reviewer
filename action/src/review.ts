@@ -196,6 +196,20 @@ export async function runReview(
     return;
   }
 
+  // Pre-validate streaming inline positions against the PR diff so
+  // out-of-diff findings never burn a postInlineComment API call (they would
+  // 422). Fail-open: when the diff cannot be fetched (`undefined`), post as
+  // before. Skipped findings are NOT marked as streamed, so the final-result
+  // filter below keeps them for the summary body — nothing is lost.
+  let streamDiffLines: Set<string> | undefined;
+  if (streamEnabled) {
+    try {
+      streamDiffLines = await gh.getDiffLines(prNumber);
+    } catch {
+      streamDiffLines = undefined;
+    }
+  }
+
   let result: Awaited<ReturnType<typeof engine.reviewPR>>;
   try {
     result = await engine.reviewPR(
@@ -215,6 +229,15 @@ export async function runReview(
                 // Guard the inline-comment API against model-generated garbage:
                 // only positive integer lines within a sane range are posted.
                 if (!Number.isInteger(issue.line) || issue.line < 1) continue;
+                // Pre-validated against the PR diff: out-of-diff positions
+                // would 422, so skip the API call and leave the finding for
+                // the final review body (fail-open when diff data is absent).
+                if (
+                  streamDiffLines &&
+                  !streamDiffLines.has(`${issue.file.replace(/^\//, '')}:${issue.line}`)
+                ) {
+                  continue;
+                }
                 // Cross-run fingerprint gate: skip findings already posted in a
                 // previous run (quiet debug log, no new comment). Fail-open:
                 // fingerprint errors never drop a finding here — the final

@@ -724,10 +724,34 @@ export class GitHubHelper implements PlatformAdapter {
     headSha?: string,
     signal?: AbortSignal,
   ): Promise<Set<string>> {
+    return (await this.getDiffLinesWithStatus(prNumber, headSha, signal)).lines;
+  }
+
+  /**
+   * Fetch the raw diff for a PR and parse it into a set of "file:line" strings,
+   * additionally reporting whether the fetch failed.
+   *
+   * {@link getDiffLines} swallows fetch errors into an empty set for backward
+   * compatibility, which makes a failed fetch indistinguishable from a
+   * genuinely empty diff. Review-posting paths use this variant instead so an
+   * unavailable diff can fall back to a summary-only review rather than
+   * sending unvalidated inline positions that the API rejects with 422.
+   *
+   * @param prNumber - PR number.
+   * @param headSha - Optional head SHA scoping the cache entry.
+   * @param signal - Optional AbortSignal to cancel the diff fetch.
+   * @returns The parsed `lines` plus `failed` (true when the diff could not be
+   * fetched; `lines` is then empty).
+   */
+  async getDiffLinesWithStatus(
+    prNumber: number,
+    headSha?: string,
+    signal?: AbortSignal,
+  ): Promise<{ lines: Set<string>; failed: boolean }> {
     const cacheKey = headSha ? `${prNumber}:${headSha}` : `${prNumber}`;
     const cached = this.diffLinesCache.get(cacheKey);
     if (cached && Date.now() - cached.ts < GitHubHelper.DIFF_CACHE_TTL_MS) {
-      return new Set(cached.lines);
+      return { lines: new Set(cached.lines), failed: false };
     }
     try {
       const diffText = await this.api<string>(
@@ -763,12 +787,12 @@ export class GitHubHelper implements PlatformAdapter {
         }
       }
       this.setDiffLinesCache(cacheKey, lines);
-      return new Set(lines);
+      return { lines: new Set(lines), failed: false };
     } catch (err) {
       const status = getErrorStatus(err);
       const suffix = status !== undefined ? ` (status ${status})` : '';
       core.warning(`Could not fetch PR diff for line validation${suffix}: ${String(err)}`);
-      return new Set();
+      return { lines: new Set(), failed: true };
     }
   }
 
@@ -1358,15 +1382,31 @@ export class GitHubHelper implements PlatformAdapter {
       );
     }
 
+    // Pre-validate inline positions against the PR diff. When the diff fetch
+    // itself failed (`diffUnavailable`), positions are unvalidated: skip the
+    // batched `createReview(..., comments)` attempt (it would burn an API call
+    // and 422) and go straight to the body-only + per-comment fallback below,
+    // whose per-comment 422 downgrade to issue comments guarantees no finding
+    // is lost. A successfully-fetched (even empty) diff keeps the legacy
+    // fail-open filtering in buildInlineComments byte-for-byte unchanged.
+    const { lines: diffLines, failed: diffUnavailable } = postInlineComments
+      ? await this.getDiffLinesWithStatus(prNumber, commitSha, signal)
+      : { lines: new Set<string>(), failed: false };
     const inlineComments = postInlineComments
       ? buildInlineComments(
           dedupedResult,
-          await this.getDiffLines(prNumber, commitSha, signal),
+          diffLines,
           suppressLowConfidence,
           options?.emitFixPayload,
         )
       : [];
     this.stampInlineFingerprintMarkers(inlineComments, dedupedResult.issues);
+
+    if (diffUnavailable && inlineComments.length > 0) {
+      core.warning(
+        'Diff validation unavailable — skipping batched inline review, using body-only + per-comment fallback',
+      );
+    }
 
     const placedInlineKeys = new Set<string>();
     for (const c of inlineComments) {
@@ -1391,9 +1431,12 @@ export class GitHubHelper implements PlatformAdapter {
     // Default `comment` keeps every payload byte-identical to today.
     const reviewEvent = resolveReviewEvent(dedupedResult, options?.verdictMode);
 
-    // Try batched review creation with inline comments included
+    // Try batched review creation with inline comments included.
+    // Skipped when diff validation was unavailable (see above): unvalidated
+    // positions would 422, so fall through to the body-only review and the
+    // per-comment fallback with its 422→issue-comment downgrade.
     let reviewId: number | undefined;
-    if (inlineComments.length > 0) {
+    if (inlineComments.length > 0 && !diffUnavailable) {
       try {
         const reviewResponse = await this.createReview<{
           id: number;
@@ -1538,11 +1581,15 @@ export class GitHubHelper implements PlatformAdapter {
     signal?: AbortSignal,
   ): Promise<ReviewPostResult> {
     let diffLines: Set<string>;
+    let diffUnavailable = false;
     try {
-      diffLines = await this.getDiffLines(prNumber, commitSha, signal);
+      const status = await this.getDiffLinesWithStatus(prNumber, commitSha, signal);
+      diffLines = status.lines;
+      diffUnavailable = status.failed;
     } catch (err) {
       core.warning(`Diff validation unavailable, posting summary-only review: ${err}`);
       diffLines = new Set<string>();
+      diffUnavailable = true;
     }
 
     // Defense-in-depth: this entry already receives deduped input from
@@ -1597,6 +1644,16 @@ export class GitHubHelper implements PlatformAdapter {
     };
 
     if (inlineComments.length === 0) {
+      return postSummaryOnly(reviewEvent);
+    }
+
+    // Proactive fallback: when the diff fetch failed, inline positions are
+    // unvalidated and would 422, so skip the batched `comments[]` attempt
+    // entirely and post the summary-only body (built from the full result, so
+    // no finding is lost). A successfully-fetched diff keeps the reactive
+    // 422→summary-only retry below.
+    if (diffUnavailable) {
+      core.warning('Diff validation unavailable, posting summary-only review');
       return postSummaryOnly(reviewEvent);
     }
 
