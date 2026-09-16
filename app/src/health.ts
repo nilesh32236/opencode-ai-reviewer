@@ -184,8 +184,9 @@ export function createHealthRouter(
   // consistent error-shape 503 instead of an unhandled rejection / hung probe.
   // The headersSent guard comes first: touching headers after they were sent
   // would itself throw ERR_HTTP_HEADERS_SENT inside the error handler.
-  // NOTE: no eslint-disable needed here — the repo eslint config carries no
-  // unused-vars rule, and Express requires the 4-arg error-handler signature.
+  // NOTE: no biome-ignore needed here — Biome tolerates the 4-arg Express
+  // error-handler signature, and the underscore-prefixed params mark the
+  // intentionally unused ones.
   router.use((err: unknown, _req: Request, res: Response, _next: NextFunction): void => {
     logger.error(`Health probe failed: ${err instanceof Error ? err.message : String(err)}`);
     if (!res.headersSent) {
