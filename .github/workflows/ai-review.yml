@@ -247,36 +247,85 @@ jobs:
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
           REPO="${{ github.repository }}"
+          # Checks that must be SUCCESS (substring match) for the merge to
+          # proceed. Everything else must at worst be neutral — failures
+          # anywhere block. SKIPPED required checks block: skipped != verified
+          # (this previously merged PRs whose CI never ran).
+          REQUIRED='["test (22)","test (24)","benchmarks","coverage","Analyze (javascript-typescript)","CodeQL"]'
+          # Pin the head SHA before waiting: a new push invalidates the poll.
+          PINNED_SHA="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid)"
+          echo "Pinned head SHA: $PINNED_SHA"
           ATTEMPTS=0
-          PENDING=1
-          FAILED=0
+          GATE_OK=0
           while [ "$ATTEMPTS" -lt 20 ]; do
+            DATA="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid,statusCheckRollup)"
+            CUR_SHA="$(printf '%s' "$DATA" | jq -r .headRefOid)"
+            if [ "$CUR_SHA" != "$PINNED_SHA" ]; then
+              echo "::warning::Autofix PR merge aborted — head moved $PINNED_SHA -> $CUR_SHA during the wait; a fresh run will re-evaluate."
+              exit 0
+            fi
             # statusCheckRollup mixes CheckRuns ({name,status,conclusion}) and
-            # legacy StatusContexts ({context,state}): normalize both shapes.
-            READY=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json statusCheckRollup --jq '
+            # legacy StatusContexts ({context,state}): normalize both shapes,
+            # then evaluate fail-closed: empty rollup, pending, failures, or
+            # missing/non-SUCCESS required checks all block.
+            EVAL="$(printf '%s' "$DATA" | jq --argjson required "$REQUIRED" '
               [.statusCheckRollup[] |
                 if .__typename == "StatusContext" then
-                  {done: (.state != "PENDING"), bad: (.state == "FAILURE" or .state == "ERROR")}
+                  {name: .context, done: (.state != "PENDING"), bad: (.state == "FAILURE" or .state == "ERROR"), success: (.state == "SUCCESS")}
                 else
-                  {done: (.status == "COMPLETED"), bad: (.conclusion as $c | $c != null and (["SUCCESS","SKIPPED","NEUTRAL"] | index($c) | not))}
-                end] |
-              {pending: ([.[] | select(.done | not)] | length), failed: ([.[] | select(.bad)] | length)}')
-            PENDING=$(printf '%s' "$READY" | jq -r .pending)
-            FAILED=$(printf '%s' "$READY" | jq -r .failed)
-            if [ "$PENDING" -eq 0 ]; then break; fi
+                  {done: (.status == "COMPLETED"), bad: (.conclusion as $c | $c != null and (["SUCCESS","SKIPPED","NEUTRAL"] | index($c) | not)), success: (.conclusion == "SUCCESS")} + {name: .name}
+                end] as $checks |
+              {
+                total: ($checks | length),
+                pending: ([$checks[] | select(.done | not)] | length),
+                failed: ([$checks[] | select(.bad)] | length),
+                missing: [$required[] as $r | select([$checks[] | select(.success and (.name | contains($r)))] | length == 0) | $r]
+              }')"
+            TOTAL=$(printf '%s' "$EVAL" | jq -r .total)
+            PENDING=$(printf '%s' "$EVAL" | jq -r .pending)
+            FAILED=$(printf '%s' "$EVAL" | jq -r .failed)
+            MISSING=$(printf '%s' "$EVAL" | jq -r '.missing | join(", ")')
+            if [ "$TOTAL" -eq 0 ]; then
+              echo "::warning::Autofix PR merge blocked — no CI checks reported for head $PINNED_SHA (empty rollup); hourly orchestrator will retry."
+              exit 0
+            fi
+            if [ "$FAILED" -ne 0 ]; then
+              echo "::warning::Autofix PR merge blocked — PR #${PR_NUMBER} has $FAILED failing check(s); hourly orchestrator will retry."
+              exit 0
+            fi
+            if [ -n "$MISSING" ]; then
+              echo "::warning::Autofix PR merge blocked — required checks not SUCCESS on head $PINNED_SHA: $MISSING; hourly orchestrator will retry."
+              exit 0
+            fi
+            if [ "$PENDING" -eq 0 ]; then GATE_OK=1; break; fi
             ATTEMPTS=$((ATTEMPTS + 1))
             echo "Waiting for $PENDING check(s)... (attempt $ATTEMPTS/20)"
             sleep 60
           done
-          if [ "$PENDING" -ne 0 ]; then
-            echo "::warning::Autofix PR merge skipped — PR #${PR_NUMBER} still has $PENDING pending check(s) after ~20 min; hourly orchestrator will retry."
+          if [ "$GATE_OK" -ne 1 ]; then
+            echo "::warning::Auto-merge skipped — PR #${PR_NUMBER} still has pending check(s) after ~20 min; hourly orchestrator will retry."
             exit 0
           fi
-          if [ "$FAILED" -ne 0 ]; then
-            echo "::warning::Autofix PR merge blocked — PR #${PR_NUMBER} has $FAILED failing check(s); hourly orchestrator will retry."
+          # Final re-verification on the pinned SHA immediately before merge.
+          FINAL_OK="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid,statusCheckRollup | jq --arg sha "$PINNED_SHA" --argjson required "$REQUIRED" '
+            if .headRefOid != $sha then false
+            else
+              [.statusCheckRollup[] |
+                if .__typename == "StatusContext" then
+                  {name: .context, done: (.state != "PENDING"), bad: (.state == "FAILURE" or .state == "ERROR"), success: (.state == "SUCCESS")}
+                else
+                  {done: (.status == "COMPLETED"), bad: (.conclusion as $c | $c != null and (["SUCCESS","SKIPPED","NEUTRAL"] | index($c) | not)), success: (.conclusion == "SUCCESS")} + {name: .name}
+                end] as $checks |
+              ($checks | length) > 0
+              and ([$checks[] | select(.done | not)] | length == 0)
+              and ([$checks[] | select(.bad)] | length == 0)
+              and ([$required[] as $r | select([$checks[] | select(.success and (.name | contains($r)))] | length == 0)] | length == 0)
+            end')"
+          if [ "$FINAL_OK" != "true" ]; then
+            echo "::warning::Autofix PR merge aborted — final gate re-check failed (head moved or checks regressed); hourly orchestrator will retry."
             exit 0
           fi
-          echo "All checks green — merging autofix PR #${PR_NUMBER}..."
+          echo "All checks green on pinned head $PINNED_SHA — merging autofix PR #${PR_NUMBER}..."
           gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --delete-branch \
             || echo "::warning::Autofix PR merge not possible (merge conflict) — hourly orchestrator will retry."
 

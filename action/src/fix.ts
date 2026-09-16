@@ -22,6 +22,7 @@ import {
   buildFixBody,
   buildFunctionScoreOptions,
   buildReadyBody,
+  checkHeadCIGreen,
   markAnalysisReady,
   parseAnalysisPlan,
   parseRunChecksCommands,
@@ -31,7 +32,7 @@ import {
   withRetry,
 } from '@opencode-pr-agent/lib';
 import { sanitizeMarkdown } from '@opencode-pr-agent/lib';
-import { hasFixReReviewFlag } from './comment-commands.js';
+import { extractOperatorInstruction, hasFixReReviewFlag } from './comment-commands.js';
 import type { ActionInputs } from './inputs.js';
 import {
   capVerificationOutput,
@@ -40,6 +41,101 @@ import {
   resolvePrNumber,
   sanitize,
 } from './utils.js';
+
+/**
+ * Operator instruction passed from the triggering `/fix` comment.
+ * A plain string is treated as raw comment text (classified internally);
+ * the object form additionally carries the authorized actor for provenance.
+ */
+export interface FixOperatorInstruction {
+  /** Raw comment text or pre-extracted instruction remainder. */
+  instruction?: string;
+  /** Authorized comment author login (used only for provenance header). */
+  actor?: string;
+}
+
+/**
+ * Build the provenanced operator-instruction section appended to fix-agent
+ * context. The header marks the text as an authorized operator instruction
+ * (highest priority after the system prompt) — never as untrusted
+ * third-party prompt content. The permission gate in `index.ts` still runs
+ * first; this helper only formats text that survived authorization.
+ * @param instruction - Classified instruction remainder (non-empty).
+ * @param actor - Authorized comment author login, when known.
+ * @returns The markdown section to append to the fix context.
+ */
+export function buildOperatorInstructionSection(instruction: string, actor?: string): string {
+  const safeActor = actor && /^[A-Za-z0-9-]{1,39}$/.test(actor) ? actor : undefined;
+  const header = safeActor
+    ? `## Operator Instruction (authorized /fix comment by @${safeActor} — highest priority after system prompt)`
+    : '## Operator Instruction (authorized /fix comment — highest priority after system prompt)';
+  return `${header}\n\n${instruction}`;
+}
+
+/**
+ * Append an operator-instruction section to fix-agent context.
+ * Returns `context` byte-identical when `instruction` is missing/blank, so
+ * no-comment triggers (label, dispatch, GitLab) behave exactly as today.
+ * @param context - Assembled issue/PR context markdown.
+ * @param instruction - Classified instruction remainder, when any.
+ * @param actor - Authorized comment author login, when known.
+ * @returns The context with the provenanced section appended, or unchanged.
+ */
+export function appendOperatorInstruction(
+  context: string,
+  instruction?: string,
+  actor?: string,
+): string {
+  if (!instruction || !instruction.trim()) return context;
+  return `${context}\n\n${buildOperatorInstructionSection(instruction, actor)}`;
+}
+
+/**
+ * Resolve the effective operator instruction from action inputs and/or an
+ * explicit trailing override. Classification (token stripping, truncation)
+ * runs here so callers may pass raw comment bodies safely; double extraction
+ * is idempotent for already-classified text.
+ * @param inputs - Parsed action inputs (`commentBody` when the workflow passes `comment-body`).
+ * @param operator - Trailing override (raw string or `{ instruction, actor }`).
+ * @returns The classified instruction, or `undefined` when there is none.
+ */
+export function resolveOperatorInstruction(
+  inputs: Pick<ActionInputs, 'commentBody'>,
+  operator?: FixOperatorInstruction | string,
+): string | undefined {
+  const raw =
+    typeof operator === 'string' ? operator : (operator?.instruction ?? inputs.commentBody);
+  return extractOperatorInstruction(raw);
+}
+
+/**
+ * Resolve the provenance actor: explicit override first, then the in-process
+ * GitHub comment payload, then the workflow actor (only when a comment payload
+ * body exists). Returns `undefined` on non-comment triggers (schedule,
+ * dispatch, label) and on GitLab / non-comment triggers (no-op provenance),
+ * so provenance is never misattributed to e.g. a scheduler.
+ * @param operator - Trailing override carrying an optional actor.
+ * @returns The actor login, or `undefined` when unknown/unsafe.
+ */
+export function resolveOperatorActor(
+  operator?: FixOperatorInstruction | string,
+): string | undefined {
+  const explicit = typeof operator === 'object' ? operator?.actor : undefined;
+  if (explicit && /^[A-Za-z0-9-]{1,39}$/.test(explicit)) return explicit;
+  try {
+    const comment = github?.context?.payload?.comment as
+      | { body?: unknown; user?: { login?: string } }
+      | undefined;
+    const login = comment?.user?.login;
+    if (typeof login === 'string' && /^[A-Za-z0-9-]{1,39}$/.test(login)) return login;
+    if (typeof comment?.body !== 'string') return undefined;
+    const fallback = (github?.context as { actor?: unknown } | undefined)?.actor;
+    if (typeof fallback === 'string' && /^[A-Za-z0-9-]{1,39}$/.test(fallback)) return fallback;
+  } catch {
+    /* ignore — provenance is best-effort */
+  }
+  return undefined;
+}
 
 /**
  * Determine whether a PR/MR has already been closed or merged, so a fix
@@ -275,6 +371,9 @@ export function findReusableHeadCurrentReview(
  * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
  *   breaks withRetry backoff sleeps, and races verification timeouts.
  *   Advisory-only: engine calls themselves are not yet cancellable.
+ * @param operator - Optional operator instruction from the triggering `/fix`
+ *   comment (raw string or `{ instruction, actor }`). Classified internally;
+ *   absent means behave exactly as today.
  */
 export async function runFix(
   inputs: ActionInputs,
@@ -282,6 +381,7 @@ export async function runFix(
   engine: ReviewEngine,
   gh: PlatformAdapter,
   signal?: AbortSignal,
+  operator?: FixOperatorInstruction | string,
 ): Promise<void> {
   const prNumber = await resolvePrNumber();
   if (prNumber === null) {
@@ -401,6 +501,20 @@ export async function runFix(
     return;
   }
 
+  // Operator instruction from the triggering /fix comment (highest priority
+  // after the system prompt). Resolved from the explicit override first,
+  // falling back to the `comment-body` input; absent means byte-identical
+  // context (label/dispatch/GitLab triggers unchanged).
+  const operatorInstruction = resolveOperatorInstruction(inputs, operator);
+  const operatorActor = resolveOperatorActor(operator);
+  if (operatorInstruction) {
+    contextMarkdown = appendOperatorInstruction(
+      contextMarkdown,
+      operatorInstruction,
+      operatorActor,
+    );
+  }
+
   const fixResult = await engine.runFix(prNumber, iteration, contextMarkdown, pr);
 
   let changesMade = false;
@@ -497,6 +611,13 @@ export async function runFix(
             ),
           );
           break;
+        }
+        if (operatorInstruction) {
+          freshContextMarkdown = appendOperatorInstruction(
+            freshContextMarkdown,
+            operatorInstruction,
+            operatorActor,
+          );
         }
         const retryResult = await engine.runFix(
           prNumber,
@@ -659,6 +780,7 @@ export async function runFixIssue(
   _repo: string,
   gitEmail: string,
   signal?: AbortSignal,
+  operator?: FixOperatorInstruction | string,
 ): Promise<void> {
   const issueNumber = await resolvePrNumber();
   if (!issueNumber) {
@@ -740,6 +862,17 @@ export async function runFixIssue(
 
   let issueContext = await gh.gatherContext({ issueNumber });
 
+  // Operator instruction from the triggering /fix comment. Resolved once here
+  // (explicit override wins over the `comment-body` input) and appended after
+  // every gatherContext so both the direct-fix and analyze-then-fix paths
+  // carry it. Absent means byte-identical context (label/dispatch/GitLab
+  // triggers unchanged). Consumed only after the index.ts permission gate.
+  const operatorInstruction = resolveOperatorInstruction(inputs, operator);
+  const operatorActor = resolveOperatorActor(operator);
+  if (operatorInstruction) {
+    issueContext = appendOperatorInstruction(issueContext, operatorInstruction, operatorActor);
+  }
+
   // Auto-analyze if no implementation plan exists yet
   // gatherContext() strips the marker and replaces it with the header below,
   // so check both.
@@ -770,6 +903,9 @@ export async function runFixIssue(
     await markAnalysisReady(gh, issueNumber);
 
     issueContext = await gh.gatherContext({ issueNumber });
+    if (operatorInstruction) {
+      issueContext = appendOperatorInstruction(issueContext, operatorInstruction, operatorActor);
+    }
   }
 
   const issue = await gh.getIssue(issueNumber);
@@ -971,6 +1107,7 @@ export async function runAutofixLoop(
   _repo: string,
   _token: string,
   signal?: AbortSignal,
+  operator?: FixOperatorInstruction | string,
 ): Promise<void> {
   const prNumber = await resolvePrNumber();
   if (prNumber === null) {
@@ -978,16 +1115,33 @@ export async function runAutofixLoop(
     return;
   }
 
+  // Operator instruction from the triggering /fix comment (iteration-0 only,
+  // highest priority after the system prompt). Absent means byte-identical
+  // context (label/dispatch/GitLab triggers unchanged).
+  const operatorInstruction = resolveOperatorInstruction(inputs, operator);
+  const operatorActor = resolveOperatorActor(operator);
+
   const history: IterationRecord[] = [];
   const previousFindings: PreviousFindingIteration[] = [];
   let approved = false;
-  let exitReason: 'approved' | 'no-changes' | 'git-failure' | 'timeout' | 'exhausted' = 'exhausted';
+  let exitReason:
+    | 'approved'
+    | 'no-changes'
+    | 'git-failure'
+    | 'timeout'
+    | 'ci-waiting'
+    | 'exhausted' = 'exhausted';
 
   const startTime = Date.now();
   const totalTimeoutMs = (config.timeoutMinutes ?? 20) * 60 * 1000;
   const gracePeriodMs = Math.max(30_000, totalTimeoutMs * 0.1);
 
   for (let i = 0; i < config.maxIterations; i++) {
+    // A CI-waiting block from a prior iteration must not latch across
+    // iterations: later fix work that exhausts must still reach the
+    // needs-manual-review terminal. Only a terminal CI-block (the last
+    // iteration ending in `continue` below) preserves the waiting state.
+    if (exitReason === 'ci-waiting') exitReason = 'exhausted';
     const elapsedMs = Date.now() - startTime;
     const timeLeftMs = totalTimeoutMs - elapsedMs;
 
@@ -1036,7 +1190,7 @@ export async function runAutofixLoop(
       await handleTimeoutGracefully(prNumber, history, i, config, gh, true);
       return;
     }
-    const prHeadSha = pr.headSha;
+    let prHeadSha = pr.headSha;
 
     let previousBotComments:
       | Array<{ file: string; line: number | null; body: string; commentId: number }>
@@ -1180,6 +1334,26 @@ export async function runAutofixLoop(
       break;
     }
 
+    // The review above is a long LLM call: a push during review leaves the
+    // pre-review head SHA stale. Re-fetch so both postReview and the CI gate
+    // below target the current head. A refetch failure fails closed for this
+    // iteration (skip on stale SHA) instead of gating on uncertain state.
+    try {
+      const fresh = await withRetry(() => gh.getMR(prNumber), {
+        operationName: 'autofix.getMR.refresh',
+        signal,
+      });
+      pr = fresh;
+      prHeadSha = fresh.headSha;
+    } catch (err) {
+      core.warning(
+        sanitize(
+          `Failed to re-fetch PR #${prNumber} after review in iteration ${i + 1} — skipping CI gate on stale SHA: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
+      continue;
+    }
+
     let currentCommentIds:
       | Array<{ file: string; line: number; commentId: number; nodeId?: string }>
       | undefined;
@@ -1234,6 +1408,73 @@ export async function runAutofixLoop(
     };
 
     if (result.verdict.ready && result.stats.critical === 0 && result.stats.important === 0) {
+      // Fail-closed CI gate: a clean review is not enough — the exact head
+      // SHA must have green CI CheckRuns. Empty rollups (`[skip ci]` pushes,
+      // event-delivery gaps), pending/failed/skipped checks, query errors, or
+      // a missing adapter method all block `autofix:ready`. The PR stays in
+      // `autofix` for another cycle instead of becoming mergeable.
+      let ciGate: { ok: boolean; reason: string };
+      try {
+        // Retried like the surrounding hot-loop fetches: a single transient
+        // 429/5xx must not consume a whole iteration (including the expensive
+        // review above). Persistent failures still fail closed via the catch.
+        ciGate = await withRetry(() => checkHeadCIGreen(gh, prHeadSha, undefined, signal), {
+          operationName: 'autofix.checkHeadCI',
+          maxRetries: 2,
+          signal,
+        });
+      } catch (err) {
+        ciGate = {
+          ok: false,
+          reason: `CI gate error for ${String(prHeadSha ?? '').slice(0, 7) || 'unknown'}: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+      if (!ciGate.ok) {
+        core.warning(
+          sanitize(
+            `PR #${prNumber} review clean but ${ciGate.reason} — refusing autofix:ready, staying in autofix`,
+          ),
+        );
+        new Logger('Autofix').warn('CI gate blocked autofix:ready', {
+          operation: 'autofix.ciGate',
+          prNumber,
+          headSha: prHeadSha,
+          reason: ciGate.reason,
+        });
+        entry.status = 'needs-fix';
+        history.push(entry);
+        try {
+          await withRetry(() => gh.setLabels(prNumber, ['autofix'], ['autofix:ready']), {
+            operationName: 'autofix.setLabels.ciBlocked',
+            maxRetries: 2,
+            signal,
+          });
+        } catch (err) {
+          core.warning(
+            sanitize(
+              `Failed to set autofix labels on PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+            ),
+          );
+        }
+        try {
+          await gh.postOrUpdateComment(
+            prNumber,
+            REVIEW_MARKER,
+            `${buildAutofixStatusBody(history, config.maxIterations, 'reviewing', result)}\n\n⏳ **Waiting on CI** — ${sanitize(ciGate.reason)}. \`autofix:ready\` will be applied once CI is green on the head SHA.`,
+          );
+        } catch (err) {
+          core.warning(
+            sanitize(
+              `Failed to post CI-waiting comment: ${err instanceof Error ? err.message : err}`,
+            ),
+          );
+        }
+        // CI-only block (review is clean): preserve the `autofix` waiting
+        // state instead of falling through to the exhausted/manual-review
+        // terminal below.
+        exitReason = 'ci-waiting';
+        continue;
+      }
       core.info('PR approved — all issues resolved');
       approved = true;
       exitReason = 'approved';
@@ -1309,6 +1550,13 @@ export async function runAutofixLoop(
         ),
       );
       return;
+    }
+    if (i === 0 && operatorInstruction) {
+      contextMarkdown = appendOperatorInstruction(
+        contextMarkdown,
+        operatorInstruction,
+        operatorActor,
+      );
     }
     const fixResult = await engine.runFix(
       prNumber,
@@ -1494,6 +1742,13 @@ export async function runAutofixLoop(
             );
             break;
           }
+          if (i === 0 && operatorInstruction) {
+            freshContextMarkdown = appendOperatorInstruction(
+              freshContextMarkdown,
+              operatorInstruction,
+              operatorActor,
+            );
+          }
           const retryResult = await engine.runFix(
             prNumber,
             i,
@@ -1542,7 +1797,10 @@ export async function runAutofixLoop(
     }
   }
 
-  if (!approved) {
+  // A CI-waiting exit (review clean, CI not yet green) preserves the
+  // `autofix` label and the Waiting-on-CI comment: it must not be relabeled
+  // `autofix:needs-manual-review` or failed as if iterations were exhausted.
+  if (!approved && exitReason !== 'ci-waiting') {
     // Terminal label update is best-effort: on the needs-manual-review path
     // a transient setLabels failure must not skip the intended
     // setFailed/outputs below or propagate a generic error to index.ts.

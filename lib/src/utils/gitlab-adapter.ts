@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 import { buildInlineComments } from '../jsonl-parser.js';
 import type {
+  HeadCIStatus,
   PlatformAdapter,
   ReviewCommentDetail,
   ReviewCommentThread,
@@ -807,6 +808,33 @@ export class GitLabAdapter implements PlatformAdapter {
     _output?: { title: string; summary: string; text?: string },
   ): Promise<{ id: number }> {
     return { id: 0 };
+  }
+
+  /**
+   * Get the aggregated CI status for a commit SHA. GitLab pipeline status is
+   * not yet mapped to the Checks-style rollup, so this returns an empty
+   * (never-green) rollup — callers MUST fail closed and refuse `ready`
+   * labels/merges until a real mapping lands.
+   * @param commitSha - Exact head commit SHA queried.
+   * @param _signal - Optional AbortSignal (unused, accepted for interface parity).
+   * @returns Empty (never-green) CI status for the SHA.
+   */
+  async getHeadCIStatus(commitSha: string, _signal?: AbortSignal): Promise<HeadCIStatus> {
+    const short =
+      typeof commitSha === 'string' && commitSha.length > 0 ? commitSha.slice(0, 7) : 'none';
+    core.warning(
+      `getHeadCIStatus(${short}): GitLab CI rollup not implemented — reporting empty (not green)`,
+    );
+    return {
+      commitSha,
+      total: 0,
+      successful: 0,
+      failed: 0,
+      pending: 0,
+      skipped: 0,
+      green: false,
+      checks: [],
+    };
   }
 
   /**

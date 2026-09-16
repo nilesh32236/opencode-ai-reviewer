@@ -34,7 +34,12 @@ vi.mock('@actions/github', () => ({
   getOctokit: mockGetOctokit,
 }));
 
-import { extractCommentCommand, verifyCommentActorPermission } from '../src/comment-commands.js';
+import {
+  MAX_OPERATOR_INSTRUCTION_CHARS,
+  extractCommentCommand,
+  extractOperatorInstruction,
+  verifyCommentActorPermission,
+} from '../src/comment-commands.js';
 
 describe('extractCommentCommand()', () => {
   it('extracts known commands', () => {
@@ -57,6 +62,44 @@ describe('extractCommentCommand()', () => {
     expect(extractCommentCommand('')).toBeNull();
     expect(extractCommentCommand(undefined)).toBeNull();
     expect(extractCommentCommand(null)).toBeNull();
+  });
+});
+
+describe('extractOperatorInstruction()', () => {
+  it('returns undefined for empty input or a bare command', () => {
+    expect(extractOperatorInstruction(undefined)).toBeUndefined();
+    expect(extractOperatorInstruction(null)).toBeUndefined();
+    expect(extractOperatorInstruction('')).toBeUndefined();
+    expect(extractOperatorInstruction('   ')).toBeUndefined();
+    expect(extractOperatorInstruction('/fix')).toBeUndefined();
+    expect(extractOperatorInstruction('/oc')).toBeUndefined();
+  });
+
+  it('returns undefined when no /fix (/oc) token is present', () => {
+    expect(extractOperatorInstruction('/review do X')).toBeUndefined();
+    expect(extractOperatorInstruction('looks good, thanks!')).toBeUndefined();
+    expect(extractOperatorInstruction('please fix this')).toBeUndefined();
+  });
+
+  it('strips the fix token and returns the remainder', () => {
+    expect(extractOperatorInstruction('/fix please rebase onto main')).toBe(
+      'please rebase onto main',
+    );
+    expect(extractOperatorInstruction('please /fix this file')).toContain('please');
+    expect(extractOperatorInstruction('please /fix this file')).toContain('this file');
+    expect(extractOperatorInstruction('/oc handle the timeout error')).toBe(
+      'handle the timeout error',
+    );
+  });
+
+  it('truncates long instructions with a marker', () => {
+    const long = `/fix ${'a'.repeat(MAX_OPERATOR_INSTRUCTION_CHARS + 100)}`;
+    const result = extractOperatorInstruction(long);
+    expect(result).toBeDefined();
+    expect(result!.length).toBeLessThanOrEqual(
+      MAX_OPERATOR_INSTRUCTION_CHARS + '\n\n[truncated]'.length,
+    );
+    expect(result!.endsWith('[truncated]')).toBe(true);
   });
 });
 

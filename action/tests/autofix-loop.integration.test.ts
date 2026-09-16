@@ -29,6 +29,7 @@ const {
   mockCreatePR,
   mockGetDefaultBranch,
   mockGetIssue,
+  mockGetHeadCIStatus,
   mockExec,
   mockGetExecOutput,
 } = vi.hoisted(() => {
@@ -58,6 +59,20 @@ const {
   const _mockCreatePR = vi.fn();
   const _mockGetDefaultBranch = vi.fn();
   const _mockGetIssue = vi.fn();
+  const _mockGetHeadCIStatus = vi.fn().mockResolvedValue({
+    commitSha: 'abc123',
+    total: 3,
+    successful: 3,
+    failed: 0,
+    pending: 0,
+    skipped: 0,
+    green: true,
+    checks: [
+      { name: 'build', status: 'completed', conclusion: 'success' },
+      { name: 'test', status: 'completed', conclusion: 'success' },
+      { name: 'security-scan', status: 'completed', conclusion: 'success' },
+    ],
+  });
   const _mockExec = vi.fn().mockResolvedValue(0);
   const _mockGetExecOutput = vi.fn().mockImplementation(async (cmd: string, args: string[]) => {
     if (cmd === 'git' && args.includes('status')) {
@@ -92,6 +107,7 @@ const {
     mockCreatePR: _mockCreatePR,
     mockGetDefaultBranch: _mockGetDefaultBranch,
     mockGetIssue: _mockGetIssue,
+    mockGetHeadCIStatus: _mockGetHeadCIStatus,
     mockExec: _mockExec,
     mockGetExecOutput: _mockGetExecOutput,
   };
@@ -141,6 +157,7 @@ const mockGh = {
   createPR: mockCreatePR,
   getDefaultBranch: mockGetDefaultBranch,
   getIssue: mockGetIssue,
+  getHeadCIStatus: mockGetHeadCIStatus,
 } as unknown as GitHubHelper;
 
 const mockEngine = {
@@ -164,6 +181,20 @@ describe('runAutofixLoop', () => {
     mockGetPR.mockResolvedValue(makePRContext());
     mockGatherContext.mockResolvedValue('## PR Context\nSome context');
     mockGetReviewThreads.mockResolvedValue([]);
+    mockGetHeadCIStatus.mockResolvedValue({
+      commitSha: 'abc123',
+      total: 3,
+      successful: 3,
+      failed: 0,
+      pending: 0,
+      skipped: 0,
+      green: true,
+      checks: [
+        { name: 'build', status: 'completed', conclusion: 'success' },
+        { name: 'test', status: 'completed', conclusion: 'success' },
+        { name: 'security-scan', status: 'completed', conclusion: 'success' },
+      ],
+    });
   });
 
   it('approves on first iteration when all issues resolved', async () => {
@@ -199,6 +230,110 @@ describe('runAutofixLoop', () => {
     );
     expect(mockCreateComment).toHaveBeenCalledWith(42, expect.stringContaining('Ready'));
     expect(mockSetOutput).toHaveBeenCalledWith('approved', 'true');
+  });
+
+  it('refuses autofix:ready when the head SHA has an empty CI rollup', async () => {
+    mockReviewPR.mockResolvedValue({
+      summary: 'All good',
+      verdict: { ready: true, reasoning: 'LGTM', autoFixable: false, confidence: 'high' },
+      strengths: [],
+      issues: [],
+      stats: { total: 0, critical: 0, important: 0, minor: 0 },
+    } as ReviewResult);
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+    mockGetHeadCIStatus.mockResolvedValue({
+      commitSha: 'abc123',
+      total: 0,
+      successful: 0,
+      failed: 0,
+      pending: 0,
+      skipped: 0,
+      green: false,
+      checks: [],
+    });
+
+    await runAutofixLoop(
+      makeInputs(),
+      makeConfig({ maxIterations: 1, enableMCP: false, mcpServers: [] }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+      'token',
+    );
+
+    expect(mockGetHeadCIStatus).toHaveBeenCalledWith('abc123', undefined);
+    expect(mockSetLabels).not.toHaveBeenCalledWith(42, ['autofix:ready'], expect.anything());
+    expect(mockCreateComment).not.toHaveBeenCalledWith(42, expect.stringContaining('Ready'));
+    expect(mockSetOutput).not.toHaveBeenCalledWith('approved', 'true');
+    // Positive waiting-on-CI behavior: stays in `autofix`, posts a status
+    // comment, and skips the needs-manual-review terminal (no setFailed).
+    expect(mockSetLabels).toHaveBeenCalledWith(42, ['autofix'], ['autofix:ready']);
+    expect(mockSetLabels).not.toHaveBeenCalledWith(
+      42,
+      ['autofix:needs-manual-review'],
+      expect.anything(),
+    );
+    expect(mockPostOrUpdateComment).toHaveBeenCalledWith(
+      42,
+      expect.anything(),
+      expect.stringContaining('Waiting on CI'),
+    );
+    expect(mockSetFailed).not.toHaveBeenCalled();
+  });
+
+  it('refuses autofix:ready when CI is skipped or failing on the head SHA', async () => {
+    mockReviewPR.mockResolvedValue({
+      summary: 'All good',
+      verdict: { ready: true, reasoning: 'LGTM', autoFixable: false, confidence: 'high' },
+      strengths: [],
+      issues: [],
+      stats: { total: 0, critical: 0, important: 0, minor: 0 },
+    } as ReviewResult);
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+    mockGetHeadCIStatus.mockResolvedValue({
+      commitSha: 'abc123',
+      total: 2,
+      successful: 1,
+      failed: 0,
+      pending: 0,
+      skipped: 1,
+      green: false,
+      checks: [
+        { name: 'build', status: 'completed', conclusion: 'success' },
+        { name: 'test', status: 'completed', conclusion: 'skipped' },
+      ],
+    });
+
+    await runAutofixLoop(
+      makeInputs(),
+      makeConfig({ maxIterations: 1, enableMCP: false, mcpServers: [] }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+      'token',
+    );
+
+    expect(mockSetLabels).not.toHaveBeenCalledWith(42, ['autofix:ready'], expect.anything());
+    expect(mockSetOutput).not.toHaveBeenCalledWith('approved', 'true');
+    // Positive waiting-on-CI behavior: stays in `autofix`, posts a status
+    // comment, and skips the needs-manual-review terminal (no setFailed).
+    expect(mockSetLabels).toHaveBeenCalledWith(42, ['autofix'], ['autofix:ready']);
+    expect(mockPostOrUpdateComment).toHaveBeenCalledWith(
+      42,
+      expect.anything(),
+      expect.stringContaining('Waiting on CI'),
+    );
+    expect(mockSetFailed).not.toHaveBeenCalled();
   });
 
   it('runs fix iteration when issues are found', async () => {

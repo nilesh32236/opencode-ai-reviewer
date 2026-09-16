@@ -279,6 +279,8 @@ export interface ActionInputs {
   enforceNodeFloor: boolean;
   /** Whether the toolchain_enforce_node_floor input was explicitly set by the workflow. */
   enforceNodeFloorExplicit: boolean;
+  /** Operator instruction text from the triggering /fix comment (trimmed; undefined when empty/absent). */
+  commentBody?: string;
 }
 
 /**
@@ -695,6 +697,12 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     if (secret) core.setSecret(secret);
   }
 
+  // Operator instruction from the triggering /fix comment. Additive optional:
+  // empty/absent resolves to undefined so label/dispatch/GitLab triggers (and
+  // any workflow that does not pass the input) behave exactly as today.
+  const commentBodyRaw = core.getInput('comment-body').trim();
+  const commentBody = commentBodyRaw ? commentBodyRaw : undefined;
+
   return {
     mode,
     githubToken,
@@ -793,5 +801,6 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     scaMinSeverityExplicit,
     enforceNodeFloor,
     enforceNodeFloorExplicit,
+    commentBody,
   };
 }
