@@ -154,6 +154,54 @@ export function resolveReviewEvent(
   return 'COMMENT';
 }
 
+/** Minimal inline-comment shape pre-validated against diff hunks. */
+export interface InlinePositionComment {
+  path: string;
+  line: number;
+  body: string;
+  side?: string;
+}
+
+/**
+ * Pre-validate inline comment positions against fetched diff hunks.
+ * Partitions comments into mappable (`valid`) and stale (`dropped`) by
+ * `path:line` membership in `diffLines` (leading `/` stripped).
+ * Fail-open: when hunks are unavailable (`undefined`, `null`, or empty set)
+ * every comment is returned as valid so the batched POST still carries them
+ * and a stale-position 422 is recovered by the summary-only retry.
+ *
+ * @param comments - Inline comments built by `buildInlineComments`.
+ * @param diffLines - Set of `file:line` strings from `getDiffLines`.
+ * @returns Partitioned `{ valid, dropped }` comment lists.
+ * @since NEXT
+ */
+export function validateInlinePositionsAgainstHunks<T extends InlinePositionComment>(
+  comments: T[],
+  diffLines?: Set<string> | null,
+): { valid: T[]; dropped: T[] } {
+  if (!Array.isArray(comments) || comments.length === 0) return { valid: [], dropped: [] };
+  if (!diffLines || diffLines.size === 0) {
+    core.warning(
+      'Diff hunks unavailable for inline position pre-validation; posting all inline comments and relying on summary-only retry on 422/403/429.',
+    );
+    return { valid: [...comments], dropped: [] };
+  }
+  const valid: T[] = [];
+  const dropped: T[] = [];
+  for (const c of comments) {
+    const key = `${(c?.path ?? '').replace(/^\//, '')}:${c?.line}`;
+    if (diffLines.has(key)) valid.push(c);
+    else dropped.push(c);
+  }
+  if (dropped.length > 0) {
+    const list = dropped.map((c) => `${(c?.path ?? '').replace(/^\//, '')}:${c?.line}`).join(', ');
+    core.warning(
+      `Dropping ${dropped.length} stale inline position(s) not in diff hunks (${list}); they remain in the summary body.`,
+    );
+  }
+  return { valid, dropped };
+}
+
 /**
  * Information about a single review comment thread on a PR.
  */
@@ -1552,13 +1600,21 @@ export class GitHubHelper implements PlatformAdapter {
       issues: this.applyInlineFingerprintDedup(workingResult.issues, options),
     };
 
-    const inlineComments = buildInlineComments(
+    const builtInlineComments = buildInlineComments(
       dedupedResult,
       diffLines,
       suppressLowConfidence,
       options?.emitFixPayload,
     );
-    this.stampInlineFingerprintMarkers(inlineComments, dedupedResult.issues);
+    this.stampInlineFingerprintMarkers(builtInlineComments, dedupedResult.issues);
+
+    // Pre-validate positions against diff hunks so a single stale line cannot
+    // 422 the whole batched `POST /pulls/{n}/reviews` request. Dropped
+    // findings stay in the summary body via the placed-key exclusion below.
+    const { valid: inlineComments } = validateInlinePositionsAgainstHunks(
+      builtInlineComments,
+      diffLines,
+    );
 
     const placedInlineKeys = new Set<string>();
     for (const c of inlineComments) {
@@ -1633,10 +1689,16 @@ export class GitHubHelper implements PlatformAdapter {
       return { success: true, method: 'full', reviewId: reviewResponse.id, commentIds };
     } catch (err) {
       const status = getErrorStatus(err);
+      if (status === 422 || status === 403 || status === 429) {
+        core.warning(
+          `Reviews-array post failed${status !== undefined ? ` (status ${status})` : ''}, retrying summary-only: ${err}`,
+        );
+        return postSummaryOnly(reviewEvent);
+      }
       core.warning(
-        `Reviews-array post failed${status !== undefined ? ` (status ${status})` : ''}, retrying summary-only: ${err}`,
+        `Reviews-array post failed with non-retryable error${status !== undefined ? ` (status ${status})` : ''}: ${err}`,
       );
-      return postSummaryOnly(reviewEvent);
+      return { success: false, method: 'failed' };
     }
   }
 
