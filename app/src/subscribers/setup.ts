@@ -1,24 +1,28 @@
-import { Logger, parseCommand } from '@opencode-pr-agent/lib';
-import type { AgentConfig, GitHubEvent, Subscriber } from '@opencode-pr-agent/lib';
+import { Logger, createGuardedCommandSubscriber } from '@opencode-pr-agent/lib';
+import type { AgentConfig, GitHubEvent, ParsedCommand, Subscriber } from '@opencode-pr-agent/lib';
 import { handleCommand } from '../handlers/commands.js';
 
 /**
  * Create a subscriber that handles `/setup` commands on comments.
+ *
+ * Uses the shared guarded-subscriber pipeline (single owner in lib/) with an
+ * intentional documented exception: no privilege gate and no rate limit.
+ * `/setup` runs read-only pre-flight diagnostics (never spends LLM budget on
+ * code changes) and must produce a report even when rate limiting is
+ * unavailable, so gates are disabled here rather than forgotten.
  * @param config - The resolved agent configuration (built once at startup).
  * @returns A subscriber object for the setup command.
  */
 export function createSetupSubscriber(config: AgentConfig): Subscriber {
   const logger = new Logger('SetupSubscriber');
-  return {
+  return createGuardedCommandSubscriber({
     name: 'SetupSubscriber',
-    subscribedEvents: ['comment.created', 'review_comment.created'],
-    async handle(event: GitHubEvent, signal?: AbortSignal) {
-      if (signal?.aborted) return;
+    command: 'setup',
+    events: ['comment.created', 'review_comment.created'],
+    requirePrivilege: false,
+    requireRateLimit: false,
+    handler: async (event: GitHubEvent, parsed: ParsedCommand | null, signal?: AbortSignal) => {
       try {
-        const setupPayload = event.payload as Record<string, unknown>;
-        const setupComment = setupPayload.comment as Record<string, string> | undefined;
-        const parsed = setupComment?.body ? parseCommand(setupComment.body) : null;
-        if (!parsed || parsed.command !== 'setup') return;
         const issueNumber = event.prNumber || 0;
         if (!issueNumber) return;
         // Pass the raw token (possibly empty) so the setup engine can produce a
@@ -30,7 +34,7 @@ export function createSetupSubscriber(config: AgentConfig): Subscriber {
           event.repo || '',
           token,
           config,
-          parsed,
+          parsed ?? undefined,
           signal,
           undefined,
           event.correlationId,
@@ -41,5 +45,5 @@ export function createSetupSubscriber(config: AgentConfig): Subscriber {
         );
       }
     },
-  };
+  });
 }

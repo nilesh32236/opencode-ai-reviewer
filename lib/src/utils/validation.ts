@@ -38,6 +38,36 @@ export function validateRefName(ref: string): void {
 }
 
 /**
+ * Owner/repo slug pattern restricted to the GitHub/GitLab owner/repo charset
+ * (alphanumerics, dot, dash, underscore) with one or more slash-separated
+ * segments. Multiple segments support GitLab nested-group paths
+ * (`group/subgroup/repo`); single-slash `owner/repo` is the GitHub form.
+ * Rejects whitespace, backslashes, `..` segments, single-dot segments,
+ * URL-confusing characters (`@`, `:`, `%`, control chars), and empty parts so
+ * a webhook-supplied repo value can never escape into a crafted clone URL or
+ * git remote.
+ *
+ * Single owner for fork-slug validation shared by app/ branch-workspace flows
+ * (previously triplicated in `app/src/handlers/commands.ts`).
+ */
+export const REPO_SLUG_PATTERN = /^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+)+$/;
+
+/**
+ * Whether a repository slug is safe to interpolate into a clone/remote URL.
+ *
+ * @param repo - Repository string in "owner/repo" (or GitLab nested-group) form.
+ * @returns True when the slug matches slash-separated segments with no traversal.
+ */
+export function isValidRepoSlug(repo: string): boolean {
+  if (typeof repo !== 'string' || repo.length === 0) return false;
+  if (repo.includes('\\')) return false;
+  if (!REPO_SLUG_PATTERN.test(repo)) return false;
+  if (repo.includes('..')) return false;
+  if (repo.split('/').some((p) => p === '.' || p === '')) return false;
+  return true;
+}
+
+/**
  * Validate a single program/args pair against the allowlist and shell-safety
  * rules (dangerous flags, unsafe shell characters). Throws on any violation.
  *

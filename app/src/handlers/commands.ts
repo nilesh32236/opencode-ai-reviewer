@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import type {
@@ -19,12 +19,18 @@ import {
   buildAutofixPRBody,
   buildDocsPRBody,
   configureGit,
+  ensureWorkspaceDeps,
+  findLinkedPRByMarker,
+  findLinkedPRNumberByMarker,
   getErrorStatus,
   isDocStyle,
+  isValidRepoSlug,
   markAnalysisReady,
   mergeDescribeBody,
   parseAnalysisPlan,
   postBlockingQuestions,
+  prepareBranchWorkspace,
+  pushBranchWithLease,
   sanitizeErrorMessage,
   sanitizeMarkdown,
   validateRefName,
@@ -48,31 +54,13 @@ import { handlePRReview } from './pr-review.js';
 const logger = new Logger('Command');
 
 /**
- * Owner/repo slug pattern restricted to the GitHub/GitLab owner/repo charset
- * (alphanumerics, dot, dash, underscore) with one or more slash-separated
- * segments. Multiple segments support GitLab nested-group paths
- * (`group/subgroup/repo`); single-slash `owner/repo` is the GitHub form.
- * Rejects whitespace, backslashes, `..` segments, single-dot segments,
- * URL-confusing characters (`@`, `:`, `%`, control chars), and empty parts so
- * a webhook-supplied repo value can never escape into a crafted clone URL or
- * git remote.
- */
-const REPO_SLUG_PATTERN = /^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+)+$/;
-
-/**
  * Whether a repository slug is safe to interpolate into a clone/remote URL.
+ * Single owner lives in `lib/src/utils/validation.ts`; re-exported here for
+ * backward compatibility with existing importers and unit tests.
  * @param repo - Repository string in "owner/repo" (or GitLab nested-group) form.
  * @returns True when the slug matches slash-separated segments with no traversal.
- *
- * Exported for unit testing.
  */
-export function isValidRepoSlug(repo: string): boolean {
-  if (repo.includes('\\')) return false;
-  if (!REPO_SLUG_PATTERN.test(repo)) return false;
-  if (repo.includes('..')) return false;
-  if (repo.split('/').some((p) => p === '.' || p === '')) return false;
-  return true;
-}
+export { isValidRepoSlug };
 
 /**
  * Return true when an error represents cancellation: an aborted signal or an
@@ -749,29 +737,6 @@ export async function handleDocsCommand(
       '📝 **Docs generation in progress...** The docs agent is identifying changed code that lacks documentation and generating comments. This may take a few minutes.',
     );
 
-    try {
-      await execGit(['fetch', 'origin'], gitOpts);
-      // The shallow clone is single-branch: `fetch origin` only updates the
-      // default branch. Fetch the docs branch into its remote-tracking ref so
-      // existing-branch detection and checkout below can reference it.
-      await execGit(
-        ['fetch', 'origin', `+${branchName}:refs/remotes/origin/${branchName}`],
-        gitOpts,
-      );
-    } catch (err) {
-      logger.warn(
-        `Git fetch failed: ${err instanceof Error ? err.message : String(err)} — continuing with local state`,
-      );
-    }
-
-    let branchExists = false;
-    try {
-      await execGit(['rev-parse', '--verify', `origin/${branchName}`], gitOpts);
-      branchExists = true;
-    } catch {
-      branchExists = false;
-    }
-
     const defaultBranch = await gh.getDefaultBranch();
     validateRefName(defaultBranch);
     // Base the docs branch on the source PR's head so the changed code the PR
@@ -784,65 +749,20 @@ export async function handleDocsCommand(
     }
     const baseRef = pr.headRef || defaultBranch;
 
-    // Fork-backed PRs keep the head branch on the fork, not on origin. Resolve
-    // the head repo (when it differs from the target repo) and fetch the head
-    // branch from that remote so the checkout/rebase below references a real
-    // ref instead of assuming `origin/<headRef>`.
-    let forkRemote: string | undefined;
-    if (pr.headRepoFullName && pr.headRepoFullName !== repo) {
-      if (!isValidRepoSlug(pr.headRepoFullName)) {
-        logger.warn(
-          `Skipping fork fetch — invalid head repo slug "${pr.headRepoFullName}" — falling back to origin`,
-        );
-      } else {
-        try {
-          await execGit(
-            ['remote', 'add', 'fork', `https://github.com/${pr.headRepoFullName}.git`],
-            gitOpts,
-          );
-          await execGit(['fetch', 'fork', baseRef], gitOpts);
-          forkRemote = 'fork';
-          logger.info(`Fetched docs base branch ${baseRef} from fork ${pr.headRepoFullName}`);
-        } catch (err) {
-          logger.warn(
-            `Could not fetch docs base branch from fork ${pr.headRepoFullName}: ${err instanceof Error ? err.message : String(err)} — falling back to origin`,
-          );
-        }
-      }
-    }
-
     if (signal?.aborted) return;
 
-    // Same-repository PR head branches are not present in the single-branch
-    // shallow clone; fetch the source PR head into its remote-tracking ref so
-    // the new-branch checkout below can reference `origin/<baseRef>`.
-    if (!forkRemote) {
-      try {
-        await execGit(['fetch', 'origin', `+${baseRef}:refs/remotes/origin/${baseRef}`], gitOpts);
-      } catch (err) {
-        logger.warn(
-          `Could not fetch docs base branch ${baseRef} from origin: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
-
-    if (branchExists) {
-      await execGit(['checkout', '-B', branchName, `origin/${branchName}`], gitOpts);
-      logger.info(`Checked out existing branch ${branchName}`);
-      // A depth-1 clone has no merge-base between the existing branch tip and
-      // the updated base; deepen so `pull --rebase` can compute the merge-base
-      // instead of treating both boundary commits as roots.
-      await execGit(['fetch', '--unshallow', 'origin'], gitOpts);
-      if (forkRemote) {
-        await execGit(['fetch', '--unshallow', forkRemote], gitOpts);
-      }
-      await execGit(['pull', '--rebase', forkRemote ?? 'origin', baseRef], gitOpts);
-    } else {
-      const startRef = forkRemote ? `${forkRemote}/${baseRef}` : `origin/${baseRef}`;
-      validateRefName(startRef);
-      await execGit(['checkout', '-b', branchName, startRef], gitOpts);
-      logger.info(`Created branch ${branchName} from ${startRef}`);
-    }
+    // Single owner for fetch → fork-aware checkout → rebase (lib/branch-workspace).
+    await prepareBranchWorkspace(execGit, {
+      branchName,
+      defaultBranch,
+      baseRef,
+      ...(pr.headRepoFullName ? { headRepoFullName: pr.headRepoFullName } : {}),
+      repo,
+      cwd: tempDir,
+      ...(gitEnv ? { env: gitEnv } : {}),
+      ...(signal ? { signal } : {}),
+      logger,
+    });
 
     const contextMarkdown = await gh.gatherContext({ prNumber: issueNumber });
 
@@ -873,7 +793,12 @@ export async function handleDocsCommand(
     await execGit(['commit', '-m', `docs: add API documentation for #${issueNumber}`], gitOpts);
 
     try {
-      await execGit(['push', 'origin', branchName, '--force-with-lease'], gitOpts);
+      await pushBranchWithLease(execGit, {
+        branchName,
+        cwd: tempDir,
+        ...(gitEnv ? { env: gitEnv } : {}),
+        ...(signal ? { signal } : {}),
+      });
     } catch (err) {
       logger.error(`Git push failed: ${sanitizeErrorMessage(err)}`);
       try {
@@ -1053,25 +978,24 @@ export async function handleSetup(
   }
 }
 
+/**
+ * Find a previously-created autofix PR by scanning the issue body and comments
+ * for the `<!-- autofix-pr-link -->` marker (single owner:
+ * `lib/src/utils/linked-pr.ts#findLinkedPRNumberByMarker`).
+ * @param issueNumber - Issue number that triggered the fix.
+ * @param issue - Issue context with body and comments to scan.
+ * @returns The linked PR number, or null.
+ */
 async function findExistingAutofixPR(
   issueNumber: number,
   issue: IssueContext,
 ): Promise<number | null> {
   const logger = new Logger('Command', { prNumber: issueNumber });
   try {
-    let prLink = issue.body?.match(/PR #(\d+)/)?.[1];
-    if (!prLink) {
-      for (const comment of issue.comments) {
-        if (comment.body?.startsWith('<!-- autofix-pr-link -->')) {
-          const urlMatch = comment.body.match(/\/pull\/(\d+)/);
-          if (urlMatch) {
-            prLink = urlMatch[1];
-            break;
-          }
-        }
-      }
-    }
-    if (prLink) return Number.parseInt(prLink, 10);
+    return findLinkedPRNumberByMarker(
+      { body: issue.body, comments: issue.comments },
+      '<!-- autofix-pr-link -->',
+    );
   } catch (err) {
     logger.debug(
       `Failed to find existing autofix PR for issue ${issueNumber}: ${err instanceof Error ? err.message : err}`,
@@ -1080,6 +1004,14 @@ async function findExistingAutofixPR(
   return null;
 }
 
+/**
+ * Find a previously-created docs PR by scanning the source PR's comments for
+ * the `<!-- docs-pr-link -->` marker (single owner:
+ * `lib/src/utils/linked-pr.ts#findLinkedPRByMarker`).
+ * @param gh - Platform adapter.
+ * @param issueNumber - PR/issue number that triggered the command.
+ * @returns The existing docs PR number/URL, or null.
+ */
 async function findExistingDocsPR(
   gh: PlatformAdapter,
   issueNumber: number,
@@ -1087,14 +1019,7 @@ async function findExistingDocsPR(
   const logger = new Logger('Command', { prNumber: issueNumber });
   try {
     const issue = await gh.getIssue(issueNumber);
-    for (const comment of issue.comments) {
-      if (comment.body?.startsWith('<!-- docs-pr-link -->')) {
-        const match = comment.body.match(/(https:\/\/github\.com\/[^\s)]+\/pull\/(\d+))/);
-        if (match) {
-          return { number: Number.parseInt(match[2], 10), url: match[1] };
-        }
-      }
-    }
+    return findLinkedPRByMarker(issue.comments, '<!-- docs-pr-link -->');
   } catch (err) {
     logger.debug(
       `Failed to find existing docs PR for issue ${issueNumber}: ${err instanceof Error ? err.message : err}`,
@@ -1103,6 +1028,24 @@ async function findExistingDocsPR(
   return null;
 }
 
+/**
+ * Create an autofix PR for an issue: set up the `autofix/issue-N` branch
+ * workspace (single owner: `lib/src/utils/branch-workspace.ts`), ensure
+ * workspace dependencies (single owner: `lib/src/utils/workspace-deps.ts`),
+ * run the fix engine, and push with `--force-with-lease`.
+ * @param gh - Platform adapter.
+ * @param issueNumber - Issue number that triggered the fix.
+ * @param repo - Repository string (owner/repo).
+ * @param config - Agent configuration.
+ * @param tempDir - Temporary working directory containing the cloned repo.
+ * @param gitEnv - Optional git environment variables for authenticated commands.
+ * @param signal - Optional abort signal.
+ * @param force - Auto-answer blocking analysis questions.
+ * @param eventBus - Optional event bus for pipeline events.
+ * @param correlationId - Optional correlation ID for tracing.
+ * @param initialIssue - Optional pre-fetched issue context.
+ * @returns The created PR number, or null.
+ */
 async function createAutofixPR(
   gh: PlatformAdapter,
   issueNumber: number,
@@ -1138,77 +1081,41 @@ async function createAutofixPR(
   validateRefName(branchName);
 
   try {
-    try {
-      await execGit(['fetch', 'origin'], gitOpts);
-      // The shallow clone is single-branch: `fetch origin` only updates the
-      // default branch. Fetch the autofix branch into its remote-tracking ref
-      // so existing-branch detection and checkout below can reference it.
-      await execGit(
-        ['fetch', 'origin', `+${branchName}:refs/remotes/origin/${branchName}`],
-        gitOpts,
-      );
-    } catch (err) {
-      logger.warn(
-        `Git fetch failed: ${err instanceof Error ? err.message : String(err)} — continuing with local state`,
-      );
-    }
-
-    let branchExists = false;
-    try {
-      await execGit(['rev-parse', '--verify', `origin/${branchName}`], gitOpts);
-      branchExists = true;
-    } catch {
-      branchExists = false;
-    }
-
     const defaultBranch = await gh.getDefaultBranch();
     validateRefName(defaultBranch);
 
     if (signal?.aborted) return null;
 
-    if (branchExists) {
-      await execGit(['checkout', '-B', branchName, `origin/${branchName}`], gitOpts);
-      logger.info(`Checked out existing branch ${branchName}`);
-      // A depth-1 clone has no merge-base between the existing branch tip and
-      // the updated default branch; deepen so `pull --rebase` works.
-      await execGit(['fetch', '--unshallow', 'origin'], gitOpts);
-      await execGit(['pull', '--rebase', 'origin', defaultBranch], gitOpts);
-    } else {
-      await execGit(['checkout', '-b', branchName, `origin/${defaultBranch}`], gitOpts);
-      logger.info(`Created branch ${branchName} from ${defaultBranch}`);
-    }
+    // Single owner for fetch → checkout → rebase (lib/branch-workspace).
+    await prepareBranchWorkspace(execGit, {
+      branchName,
+      defaultBranch,
+      repo,
+      cwd: tempDir,
+      ...(gitEnv ? { env: gitEnv } : {}),
+      ...(signal ? { signal } : {}),
+      logger,
+    });
 
     // The fix workspace is a fresh clone with no node_modules, so the AI agent's
     // verification commands (pnpm build/typecheck/lint) would fail with
-    // "tsc: not found". Install dependencies once up front so the agent's own
-    // checks and the structured verification steps all work.
+    // "tsc: not found". Install dependencies once up front (single matrix in
+    // lib/workspace-deps, incl. lockfileVersion 9 handling).
     try {
-      logger.info('Installing workspace dependencies for autofix PR...');
       signal?.throwIfAborted();
-      const installEnv: Record<string, string> = {
-        ...(gitEnv ? { GIT_ASKPASS: 'echo', GIT_TERMINAL_PROMPT: '0' } : {}),
-      };
-      const installBase = { cwd: tempDir, env: installEnv, timeout: 600_000 } as const;
-      const withSignal = signal ? { ...installBase, signal } : installBase;
-      let installed = false;
-      if (existsSync(path.join(tempDir, 'pnpm-lock.yaml'))) {
-        await execProcess('pnpm', ['install'], withSignal);
-        installed = true;
-      } else if (existsSync(path.join(tempDir, 'package-lock.json'))) {
-        await execProcess('npm', ['ci'], withSignal);
-        installed = true;
-      }
-      if (!installed) {
-        logger.warn('No lockfile found in autofix workspace — skipping dependency install');
-      } else {
-        // Build the shared lib so its compiled `.d.ts` exists. Workspace
-        // packages (app/cli) resolve `@opencode-pr-agent/lib` via its `exports`
-        // → `./dist/index.d.ts`, which is absent after a fresh install; without
-        // building lib first, their typecheck fails with "Cannot find module".
-        logger.info('Building lib for autofix workspace...');
-        signal?.throwIfAborted();
-        await execProcess('pnpm', ['--filter', '@opencode-pr-agent/lib', 'build'], withSignal);
-      }
+      await ensureWorkspaceDeps({
+        cwd: tempDir,
+        ...(signal ? { signal } : {}),
+        ...(gitEnv ? { env: { GIT_ASKPASS: 'echo', GIT_TERMINAL_PROMPT: '0' } } : {}),
+        run: (program, args, opts) =>
+          execProcess(program, args, {
+            cwd: opts.cwd,
+            ...(opts.env ? { env: opts.env } : {}),
+            timeout: opts.timeout,
+            ...(opts.signal ? { signal: opts.signal } : {}),
+          }),
+        logger,
+      });
     } catch (installErr) {
       if (signal?.aborted) return null;
       logger.warn(
@@ -1335,7 +1242,12 @@ async function createAutofixPR(
     await execGit(['commit', '-m', `fix: address issue #${issueNumber}`], gitOpts);
 
     try {
-      await execGit(['push', 'origin', branchName, '--force-with-lease'], gitOpts);
+      await pushBranchWithLease(execGit, {
+        branchName,
+        cwd: tempDir,
+        ...(gitEnv ? { env: gitEnv } : {}),
+        ...(signal ? { signal } : {}),
+      });
     } catch (err) {
       logger.error(`Git push failed: ${sanitizeErrorMessage(err)}`);
       try {
@@ -1434,6 +1346,15 @@ async function createAutofixPR(
   }
 }
 
+/**
+ * Check whether an issue has unanswered blocking analysis questions: the
+ * `<!-- issue-analysis-questions -->` marker is present, the
+ * `analysis:needs-input` label is set, and no human replied after the
+ * questions comment. Fails closed (true) on unexpected errors.
+ * @param issue - Issue context with labels and comments.
+ * @param issueContext - Gathered markdown context containing analysis markers.
+ * @returns True when blocking questions are still unanswered.
+ */
 async function checkForUnansweredQuestions(
   issue: IssueContext,
   issueContext: string,
@@ -1463,6 +1384,13 @@ async function checkForUnansweredQuestions(
   }
 }
 
+/**
+ * Build Q&A context from human replies posted after the
+ * `<!-- issue-analysis-questions -->` comment, so the fix engine observes
+ * answers given after analysis.
+ * @param comments - Issue comments in chronological order.
+ * @returns Markdown Q&A section, or empty string when no answers exist.
+ */
 function buildQAContext(comments: Array<{ author: string; body: string }>): string {
   const questionsIdx = comments.findIndex((c) =>
     c.body.startsWith('<!-- issue-analysis-questions -->'),

@@ -348,6 +348,36 @@ export {
 export { RuleApprovalSubscriber } from './pattern-detector/rule-approval.js';
 export * from './utils/validation.js';
 export {
+  findLinkedPRByMarker,
+  findLinkedPRNumberByMarker,
+  extractPRNumberFromText,
+} from './utils/linked-pr.js';
+export type { LinkedPRComment, LinkedPRIssue } from './utils/linked-pr.js';
+export { prepareBranchWorkspace, pushBranchWithLease } from './utils/branch-workspace.js';
+export type {
+  ExecGitFn,
+  PrepareBranchWorkspaceOptions,
+  BranchWorkspaceResult,
+  PushBranchOptions,
+} from './utils/branch-workspace.js';
+export { resolveInstallPlan, ensureWorkspaceDeps } from './utils/workspace-deps.js';
+export type {
+  InstallPlan,
+  ResolveInstallPlanOptions,
+  ExecProcessFn,
+  EnsureWorkspaceDepsOptions,
+} from './utils/workspace-deps.js';
+export { runVerificationCycle, MAX_VERIFICATION_RETRIES } from './utils/verify-cycle.js';
+export type { VerificationCycleOptions, VerificationCycleResult } from './utils/verify-cycle.js';
+export { createGuardedCommandSubscriber } from './utils/guarded-subscriber.js';
+export type {
+  PrivilegeHooks,
+  RateLimitHooks,
+  GuardedSubscriberOptions,
+} from './utils/guarded-subscriber.js';
+export { REPO_CONFIG_MERGE_FIELDS, hasRepoConfigOverrides } from './utils/repo-config-spec.js';
+export type { RepoMergeField } from './utils/repo-config-spec.js';
+export {
   REVIEW_EFFORT_PRESETS,
   parseReviewEffort,
   resolveReviewEffort,
