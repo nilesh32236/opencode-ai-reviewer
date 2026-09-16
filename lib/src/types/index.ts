@@ -788,6 +788,23 @@ export interface ReviewConfig {
    * @since NEXT
    */
   emitFixPayload?: boolean;
+  /**
+   * Opt-in to persistent inline update-in-place: findings whose fingerprint
+   * already matches a previously posted bot thread are edited via
+   * `PATCH /pulls/comments/{id}` instead of being skipped or re-posted, so
+   * re-pushes never create duplicate threads. Default false (legacy behavior
+   * unchanged). Fail-open: match/update failures post a new thread as today.
+   * @since NEXT
+   */
+  updateInPlace?: boolean;
+  /**
+   * Opt-in to emitting one Checks run carrying deterministic finding counts
+   * after the review posts (a single extra `createCheckRun` call only when
+   * enabled). Default false (no Checks call). Fail-open: Checks API errors
+   * warn and never fail the review.
+   * @since NEXT
+   */
+  emitChecksSummary?: boolean;
   /** Whether to require a verdict */
   requireVerdict: boolean;
   /** Command triggers (e.g., /oc, /review) */
@@ -1682,6 +1699,19 @@ export interface PromptConfig {
      * @since NEXT
      */
     emitFixPayload?: boolean;
+    /**
+     * Opt-in to persistent inline update-in-place: findings whose fingerprint
+     * already matches a previously posted bot thread are edited in place
+     * instead of being skipped or re-posted. Default false.
+     * @since NEXT
+     */
+    updateInPlace?: boolean;
+    /**
+     * Opt-in to emitting one Checks run carrying deterministic finding counts
+     * after the review posts. Default false.
+     * @since NEXT
+     */
+    emitChecksSummary?: boolean;
     /** Suppress low-confidence findings from review output (default: false) */
     suppressLowConfidence?: boolean;
     /** Patterns to exclude from review */
@@ -2005,6 +2035,8 @@ export const DEFAULT_CONFIG: AgentConfig = {
     enableMetaVerification: false,
     enableTestGapDetection: false,
     emitFixPayload: false,
+    updateInPlace: false,
+    emitChecksSummary: false,
     excludeAgentConfigs: true,
     showFunctionScores: false,
     suppressLowConfidence: false,

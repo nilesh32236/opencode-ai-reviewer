@@ -812,6 +812,23 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
+   * Update an existing review comment in place. Not supported on GitLab —
+   * no-op that throws a fail-open error so callers fall back to posting a
+   * new thread as today.
+   * @param _commentId - Review comment ID (unused).
+   * @param _body - New comment body (unused).
+   * @param _signal - Optional AbortSignal (unused).
+   * @since NEXT
+   */
+  async updateReviewComment(
+    _commentId: number,
+    _body: string,
+    _signal?: AbortSignal,
+  ): Promise<void> {
+    throw new Error('updateReviewComment is not supported on GitLab — post a new thread instead');
+  }
+
+  /**
    * Get the aggregated CI status for a commit SHA. GitLab pipeline status is
    * not yet mapped to the Checks-style rollup, so this returns an empty
    * (never-green) rollup — callers MUST fail closed and refuse `ready`
