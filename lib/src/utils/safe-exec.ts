@@ -182,6 +182,244 @@ export function isSafeLinterArgs(args: unknown): boolean {
   );
 }
 
+// ─── Autofix safety ceiling ───────────────────────────────────
+
+/**
+ * Allowlisted destructive-operation patterns for autofix payloads/diffs.
+ * Pure local regex set — no model call, <1ms per fix. Case-insensitive.
+ * Covers data loss (`rm -rf`, `DROP TABLE/DATABASE/SCHEMA`, bulk `DELETE
+ * FROM`), history rewriting (`git push --force`), irreversible migrations
+ * (`migration down`), privilege escalation (`chmod 777`/`+s`), and shell
+ * destructive primitives (`mkfs`, `dd if=`, fork bombs).
+ */
+const DESTRUCTIVE_FIX_PATTERNS: ReadonlyArray<{ name: string; pattern: RegExp }> = [
+  { name: 'rm-rf', pattern: /\brm\s+[^;\n]*-\s*r[f]|\brm\s+-rf?\b/i },
+  { name: 'drop-table', pattern: /\bdrop\s+(table|database|schema)\b/i },
+  { name: 'delete-from', pattern: /\bdelete\s+from\b/i },
+  { name: 'force-push', pattern: /\bgit\s+push\b.*--force\b/i },
+  { name: 'migration-down', pattern: /\bmigration\s+down\b/i },
+  { name: 'chmod-risky', pattern: /\bchmod\s+(777|\+s|u\+s)\b/i },
+  {
+    name: 'destructive-shell',
+    pattern: /\bmkfs\b|\bdd\s+if=|:\(\)\s*\{\s*:\|\s*:?\s*&\s*\}\s*;?\s*:/i,
+  },
+];
+
+/** Labels that count as explicit manual approval for a destructive autofix. */
+export const AUTOFIX_APPROVAL_LABELS: ReadonlySet<string> = new Set([
+  'autofix:approved',
+  'autofix-approve',
+  'autofix-approved',
+]);
+
+/** Comment commands that count as explicit manual approval for a destructive autofix. */
+export const AUTOFIX_APPROVAL_COMMANDS: ReadonlyArray<string> = [
+  '/approve-fix',
+  '/approve-autofix',
+];
+
+/**
+ * Normalize an allowlist value to an array of non-empty strings.
+ * Fail-open: non-array input yields an empty allowlist (deny destructive).
+ * @param allowlist - Raw `autofixSafety.destructiveAllowlist` value.
+ * @returns Lowercased non-empty allowlist entries.
+ */
+function normalizeDestructiveAllowlist(allowlist: unknown): string[] {
+  if (!Array.isArray(allowlist)) return [];
+  const out: string[] = [];
+  for (const entry of allowlist) {
+    if (typeof entry !== 'string') continue;
+    const trimmed = entry.trim().toLowerCase();
+    if (trimmed !== '') out.push(trimmed);
+  }
+  return out;
+}
+
+/**
+ * Check whether fix text contains a destructive operation.
+ * Pure local pattern match — no model call, no I/O.
+ *
+ * Fail-open per the safety spec: non-string, missing, or empty input is
+ * treated as safe (`false`) and logged at most by the caller, so a missing
+ * fix body never blocks safe fixes. When the safety check itself cannot run,
+ * callers must hold destructive-by-default and let safe fixes through.
+ * An allowlist entry permits a fix when the entry appears as a
+ * case-insensitive substring of the fix text.
+ * @param fixText - Fix prompt, suggestion, or diff text to classify.
+ * @param allowlist - Optional `autofixSafety.destructiveAllowlist` entries.
+ * @returns True when the text matches a destructive pattern without an allowlist entry.
+ */
+export function isDestructiveFix(
+  fixText: unknown,
+  allowlist?: readonly string[] | unknown,
+): boolean {
+  try {
+    if (typeof fixText !== 'string') return false;
+    const trimmed = fixText.trim();
+    if (trimmed === '') return false;
+    const matched = matchDestructivePattern(trimmed);
+    if (!matched) return false;
+    const allowed = normalizeDestructiveAllowlist(allowlist);
+    if (allowed.length === 0) return true;
+    const lower = trimmed.toLowerCase();
+    return !allowed.some((entry) => lower.includes(entry));
+  } catch {
+    // Fail-open: a classifier error must never break the review itself.
+    // Callers treat classifier errors as "hold destructive for manual
+    // review"; returning false here keeps the pure predicate total while
+    // evaluateFixSafety() maps errors to held.
+    return false;
+  }
+}
+
+/**
+ * Return the name of the first destructive pattern matching the text.
+ * @param fixText - Text to scan (assumed non-empty string).
+ * @returns The matched pattern name, or undefined when safe.
+ */
+export function matchDestructivePattern(fixText: string): string | undefined {
+  for (const { name, pattern } of DESTRUCTIVE_FIX_PATTERNS) {
+    if (pattern.test(fixText)) return name;
+  }
+  return undefined;
+}
+
+/**
+ * Check whether manual-approval signals grant consent for a destructive fix.
+ * Approval is explicit only: an approval label or an approval command in a
+ * review comment. Fail-open: unreadable/absent signals mean "no approval".
+ * @param labels - PR labels (any case, with or without surrounding whitespace).
+ * @param comments - Comment bodies to scan for approval commands (optional).
+ * @returns True when an explicit approval signal is present.
+ */
+export function hasManualApprovalForFix(labels: unknown, comments?: unknown): boolean {
+  try {
+    if (Array.isArray(labels)) {
+      for (const label of labels) {
+        if (typeof label !== 'string') continue;
+        if (AUTOFIX_APPROVAL_LABELS.has(label.trim().toLowerCase())) return true;
+      }
+    }
+    const bodies: string[] =
+      typeof comments === 'string'
+        ? [comments]
+        : Array.isArray(comments)
+          ? comments.filter((c): c is string => typeof c === 'string')
+          : [];
+    for (const body of bodies) {
+      const lower = body.toLowerCase();
+      if (AUTOFIX_APPROVAL_COMMANDS.some((cmd) => lower.includes(cmd))) return true;
+      if (/approved\b.*\bautofix\b|\bautofix\b.*\bapproved\b/i.test(body)) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/** Verdict of the autofix safety-ceiling evaluation. */
+export interface FixSafetyVerdict {
+  /** True when the fix text matches a destructive pattern (pre-allowlist). */
+  destructive: boolean;
+  /** True when the fix must pause for human review instead of applying/pushing. */
+  held: boolean;
+  /** Machine-readable hold cause (`allowlist` | `approval` | `error`), when held. */
+  holdCause?: 'allowlist' | 'approval' | 'error';
+  /** Human-readable explanation for logs and hold comments. */
+  reason: string;
+}
+
+/**
+ * Evaluate an autofix payload against the safety ceiling.
+ * Additive, guarded, fail-open: never throws — on any internal error it
+ * returns a held verdict so the review completes and the risky fix pauses
+ * for manual review while safe fixes still flow.
+ * @param fixText - Fix prompt, suggestion, or diff text to evaluate.
+ * @param options - Safety config plus optional approval signals.
+ * @returns The safety verdict (`held=true` means post guidance, do not apply/push).
+ */
+export function evaluateFixSafety(
+  fixText: unknown,
+  options?: {
+    destructiveAllowlist?: readonly string[] | unknown;
+    requireManualApproval?: unknown;
+    labels?: unknown;
+    comments?: unknown;
+  },
+): FixSafetyVerdict {
+  try {
+    const destructive = isDestructiveFix(fixText, options?.destructiveAllowlist);
+    if (!destructive) {
+      return { destructive: false, held: false, reason: 'Fix is safe; no approval required.' };
+    }
+    const requireApproval =
+      options?.requireManualApproval === undefined ? true : options.requireManualApproval === true;
+    if (!requireApproval) {
+      return {
+        destructive: true,
+        held: false,
+        reason: 'Destructive pattern allowlisted by operator config (approval gate disabled).',
+      };
+    }
+    let approved = false;
+    try {
+      approved =
+        options?.labels !== undefined || options?.comments !== undefined
+          ? hasManualApprovalForFix(options?.labels, options?.comments)
+          : false;
+    } catch {
+      approved = false;
+    }
+    if (approved) {
+      return {
+        destructive: true,
+        held: false,
+        reason: 'Destructive fix explicitly approved by manual approval signal.',
+      };
+    }
+    // No allowlist entry covering the match and no approval signal: hold.
+    // Distinguish "no allowlist entry" from "no approval" for audit logs.
+    const allowed = normalizeDestructiveAllowlist(options?.destructiveAllowlist);
+    const cause: 'allowlist' | 'approval' = allowed.length > 0 ? 'approval' : 'allowlist';
+    return {
+      destructive: true,
+      held: true,
+      holdCause: cause,
+      reason:
+        cause === 'approval'
+          ? 'Destructive fix needs manual approval (label `autofix:approved` or comment `/approve-fix`).'
+          : 'Destructive operation detected and not allowlisted; held for manual approval.',
+    };
+  } catch {
+    return {
+      destructive: true,
+      held: true,
+      holdCause: 'error',
+      reason: 'Safety check errored; holding fix for manual review (fail-open).',
+    };
+  }
+}
+
+/**
+ * Build the guidance comment posted when a destructive fix is held.
+ * Pure template — no I/O, safe to call from any publisher.
+ * @param verdict - The held verdict from {@link evaluateFixSafety}.
+ * @param files - Files the held fix touched (for context).
+ * @returns Markdown guidance comment body.
+ */
+export function buildSafetyHoldComment(verdict: FixSafetyVerdict, files?: string[]): string {
+  const scope =
+    Array.isArray(files) && files.length > 0 ? ` (${files.slice(0, 5).join(', ')})` : '';
+  return (
+    `⚠️ Autofix held for manual approval${scope}.\n\n` +
+    `${verdict.reason}\n\n` +
+    `To proceed, a maintainer can:\n` +
+    `- add an \`autofix:approved\` label, or comment \`/approve-fix\`, then re-run autofix; or\n` +
+    `- add a covering entry to \`autofixSafety.destructiveAllowlist\` for this operation.\n\n` +
+    `Safe fixes are unaffected and continue to apply automatically.`
+  );
+}
+
 // ─── Path confinement ───────────────────────────────────────────
 
 /**

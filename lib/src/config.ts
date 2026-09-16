@@ -411,6 +411,10 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
   toolchain: {
     enforceNodeFloor: null,
   },
+  autofixSafety: {
+    destructiveAllowlist: null,
+    requireManualApproval: null,
+  },
   llm: {
     defaultProvider: null,
     providers: [
@@ -1419,6 +1423,29 @@ export function validateConfig(
     } else if (raw.enforceNodeFloor !== undefined) {
       core.warning('Ignoring invalid toolchain.enforceNodeFloor: expected a boolean.');
     }
+  }
+
+  if (config.autofixSafety && typeof config.autofixSafety === 'object') {
+    const raw = config.autofixSafety as {
+      destructiveAllowlist?: unknown;
+      requireManualApproval?: unknown;
+    };
+    const next: import('./types/index.js').AutofixSafetyConfig = {
+      ...(result.autofixSafety ?? {}),
+    };
+    if (Array.isArray(raw.destructiveAllowlist)) {
+      next.destructiveAllowlist = raw.destructiveAllowlist.filter(
+        (e): e is string => typeof e === 'string',
+      );
+    } else if (raw.destructiveAllowlist !== undefined) {
+      core.warning('Ignoring invalid autofixSafety.destructiveAllowlist: expected a string array.');
+    }
+    if (typeof raw.requireManualApproval === 'boolean') {
+      next.requireManualApproval = raw.requireManualApproval;
+    } else if (raw.requireManualApproval !== undefined) {
+      core.warning('Ignoring invalid autofixSafety.requireManualApproval: expected a boolean.');
+    }
+    result.autofixSafety = next;
   }
 
   if (config.llm && typeof config.llm === 'object') {

@@ -93,6 +93,8 @@ import { analyzeBatchReachability } from './utils/reachability.js';
 import { withRetry } from './utils/retry.js';
 import { buildAgentsMdAttributionFooter } from './utils/review-body.js';
 import {
+  buildSafetyHoldComment,
+  evaluateFixSafety,
   isAllowedLinterCommand,
   isSafeLinterArgs,
   resolveConfinedWorkingDir,
@@ -3047,7 +3049,62 @@ export class ReviewEngine {
       );
     }
 
-    const fixResult = { changesMade, filesChanged, stuck, stuckReason, summary };
+    // Safety ceiling: scan the produced diff for destructive operations.
+    // Additive, guarded, fail-open — a classifier error never fails the
+    // review; it only decides whether the fix pauses for manual approval.
+    let heldForApproval = false;
+    let holdReason: string | undefined;
+    if (changesMade) {
+      try {
+        let diffText = '';
+        try {
+          diffText = cp
+            .execFileSync(
+              'git',
+              ['diff', 'HEAD', '--', '.', ':(exclude).fix-summary.md', ':(exclude).fix-stuck.md'],
+              {
+                encoding: 'utf-8',
+                cwd: workDir,
+                maxBuffer: 4 * 1024 * 1024,
+              },
+            )
+            .toString()
+            .slice(0, 200_000);
+        } catch {
+          this.logger.warn('Could not get git diff for autofix safety check');
+        }
+        const safetyText = [diffText, summary ?? '', stuckReason ?? '']
+          .filter((s) => s.trim() !== '')
+          .join('\n');
+        const verdict = evaluateFixSafety(safetyText, {
+          destructiveAllowlist: this.config.autofixSafety?.destructiveAllowlist,
+          requireManualApproval: this.config.autofixSafety?.requireManualApproval,
+        });
+        if (verdict.held) {
+          heldForApproval = true;
+          holdReason = verdict.reason;
+          this.logger.warn(sanitizeString(`Autofix held for manual approval: ${verdict.reason}`));
+          const holdComment = buildSafetyHoldComment(verdict, filesChanged);
+          summary = summary ? `${summary}\n\n${holdComment}` : holdComment;
+        }
+      } catch (err) {
+        // Fail-open: the review completes; safe fixes flow, and only a
+        // positively-identified destructive fix is held above.
+        this.logger.warn(
+          `Autofix safety check errored; proceeding without hold: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    const fixResult = {
+      changesMade,
+      filesChanged,
+      stuck,
+      stuckReason,
+      summary,
+      heldForApproval,
+      holdReason,
+    };
     this.publishCompleted(PIPELINE_EVENT_TYPES.FIX_COMPLETED, {
       prNumber,
       iteration,
@@ -3055,6 +3112,8 @@ export class ReviewEngine {
       filesChanged,
       stuck,
       stuckReason,
+      heldForApproval,
+      holdReason,
       modelUsed: this.config.fixModel,
     });
     return fixResult;
