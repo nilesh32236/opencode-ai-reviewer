@@ -2344,6 +2344,39 @@ function resolveModel(model: string, llm: LLMConfig | undefined): string {
 }
 
 /**
+ * Map of OpenCode provider prefixes (the part before `/` in a resolved
+ * `provider/model` string) to the single API-key env var that provider
+ * authenticates with.
+ */
+const PROVIDER_API_KEY: Readonly<Record<string, string>> = {
+  opencode: 'OPENCODE_API_KEY',
+  openai: 'OPENAI_API_KEY',
+  anthropic: 'ANTHROPIC_API_KEY',
+  gemini: 'GEMINI_API_KEY',
+  google: 'GEMINI_API_KEY',
+};
+
+/**
+ * Names the LLM API-key env vars that must be forwarded into the sandboxed
+ * `opencode run` subprocess for a given resolved model.
+ *
+ * SECURITY (issue #544): the subprocess runs with `--auto` over untrusted
+ * repo content (prompt-injection surface), so it receives only the active
+ * provider's key instead of every configured key — a harvested `env` dump
+ * then yields one credential, not four. Models whose provider is unknown
+ * (custom/bedrock/azure/ollama setups carry their own auth) return an empty
+ * list and callers fall back to forwarding all configured keys with a
+ * warning, so no working configuration breaks.
+ * @param model - The resolved `provider/model` string (see {@link resolveModel}).
+ * @returns The env var name(s) to forward, or an empty array when the provider is unknown.
+ */
+export function llmApiKeysForModel(model: string): string[] {
+  const prefix = model.split('/')[0]?.trim().toLowerCase() ?? '';
+  const key = PROVIDER_API_KEY[prefix];
+  return key ? [key] : [];
+}
+
+/**
  * Breakdown of token usage parsed from OpenCode CLI output.
  */
 export interface TokenUsageBreakdown {
@@ -2655,10 +2688,35 @@ async function runOpenCodeInner(
     safeEnv.GITHUB_TOKEN = githubToken;
     safeEnv.GH_TOKEN = githubToken;
   }
-  if (openaiApiKey) safeEnv.OPENAI_API_KEY = openaiApiKey;
-  if (anthropicApiKey) safeEnv.ANTHROPIC_API_KEY = anthropicApiKey;
-  if (geminiApiKey) safeEnv.GEMINI_API_KEY = geminiApiKey;
-  if (opencodeApiKey) safeEnv.OPENCODE_API_KEY = opencodeApiKey;
+  // Least-exposure forwarding (issue #544): only the active provider's key
+  // reaches the `--auto` subprocess running over untrusted repo content.
+  // Unknown providers (custom/bedrock/azure/ollama carry their own auth, see
+  // applyLLMEnvOverrides) or a missing scoped key fall back to forwarding all
+  // configured keys with a warning, so no working setup breaks.
+  const scopedKeys = llmApiKeysForModel(model);
+  const keyValues: Record<string, string> = {
+    OPENAI_API_KEY: openaiApiKey,
+    ANTHROPIC_API_KEY: anthropicApiKey,
+    GEMINI_API_KEY: geminiApiKey,
+    OPENCODE_API_KEY: opencodeApiKey,
+  };
+  if (scopedKeys.length === 1 && keyValues[scopedKeys[0]]) {
+    safeEnv[scopedKeys[0]] = keyValues[scopedKeys[0]];
+  } else {
+    if (scopedKeys.length === 1) {
+      core.warning(
+        `Active provider key ${scopedKeys[0]} is unset for model ${model}; forwarding all configured LLM keys (status quo).`,
+      );
+    } else {
+      core.warning(
+        `Unknown model provider for ${model}; forwarding all configured LLM keys (status quo).`,
+      );
+    }
+    if (openaiApiKey) safeEnv.OPENAI_API_KEY = openaiApiKey;
+    if (anthropicApiKey) safeEnv.ANTHROPIC_API_KEY = anthropicApiKey;
+    if (geminiApiKey) safeEnv.GEMINI_API_KEY = geminiApiKey;
+    if (opencodeApiKey) safeEnv.OPENCODE_API_KEY = opencodeApiKey;
+  }
   // NOTE: options.env is a trusted-caller escape hatch (programmatic API only,
   // never repo-controlled input) and merges after the allowlist above. To keep
   // the subprocess hardening (audit authz) from being silently bypassed by a
