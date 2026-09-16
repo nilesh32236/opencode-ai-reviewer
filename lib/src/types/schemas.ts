@@ -309,6 +309,11 @@ export const ReviewConfigSchema = z.object({
   reviewBudget: ReviewBudgetConfigSchema.default(ReviewBudgetConfigSchema.parse({})),
   costTracking: CostTrackingConfigSchema.optional(),
   sensitivity: ReviewSensitivitySchema.optional(),
+  // No `.min()/.max()` by design — out-of-range values are clamped by
+  // `validateConfig()` (config.ts) rather than failing the parse, mirroring
+  // the sensitivity numeric caps. No `.default()` so unset stays undefined
+  // (legacy byte-for-byte output).
+  noiseBudget: z.number().int().optional(),
   categories: z.record(CategoryOverrideSchema).optional(),
   pathInstructions: z.record(z.string()).optional(),
   pathRules: PathRulesArraySchema,
@@ -748,6 +753,8 @@ export const PromptConfigSchema = z.object({
         .optional(),
       costTracking: CostTrackingConfigSchema.optional(),
       sensitivity: ReviewSensitivitySchema.optional(),
+      // No bounds here — clamped by validateConfig(); unset stays undefined.
+      noiseBudget: z.number().int().optional(),
       categories: z.record(CategoryOverrideSchema).optional(),
       // Permissive by design (fail-open): entry caps (10 entries / 2 KB each) and
       // glob validation live in sanitizePathInstructions (lib/src/config.ts) and

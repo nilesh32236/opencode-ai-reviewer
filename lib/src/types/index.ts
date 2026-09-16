@@ -829,6 +829,15 @@ export interface ReviewConfig {
   costTracking?: CostTrackingConfig;
   /** Per-repository sensitivity configuration for tuning reviewer strictness */
   sensitivity?: ReviewSensitivityConfig;
+  /**
+   * Maximum findings rendered inline in the review body, highest severity
+   * first (ties broken by confidence). Overflow is relocated — never
+   * dropped — into a collapsed summary section. Unset means legacy output
+   * (all findings inline, byte-for-byte unchanged). Fail-open: invalid
+   * values are ignored by `validateConfig()`.
+   * @since NEXT
+   */
+  noiseBudget?: number;
   /** Per-category overrides for review sensitivity */
   categories?: Record<string, CategoryOverride>;
   /** Opt-in map of glob pattern to extra review instructions, applied
@@ -1704,6 +1713,14 @@ export interface PromptConfig {
     };
     /** Token usage / cost tracking configuration */
     costTracking?: CostTrackingConfig;
+    /**
+     * Display-layer noise budget: max findings rendered inline (severity
+     * then confidence first); overflow relocates to a collapsed summary,
+     * never dropped. Unset means legacy output. Clamped 1..500 by
+     * `validateConfig()`; invalid values are ignored (fail-open).
+     * @since NEXT
+     */
+    noiseBudget?: number;
     /** Per-repository sensitivity configuration for tuning reviewer strictness */
     sensitivity?: ReviewSensitivityConfig;
     /** Per-category overrides for review sensitivity */

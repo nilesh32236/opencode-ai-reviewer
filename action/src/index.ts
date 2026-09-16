@@ -294,6 +294,11 @@ async function run(): Promise<void> {
           loadedConfig?.review?.suggestTitleAndLabels ??
           DEFAULT_CONFIG.review.suggestTitleAndLabels,
         ...(loadedConfig?.review?.tokenBudget && { tokenBudget: loadedConfig.review.tokenBudget }),
+        // Display-layer noise budget (already clamped 1..500 by validateConfig);
+        // unset means legacy output (all findings inline).
+        ...(loadedConfig?.review?.noiseBudget !== undefined && {
+          noiseBudget: loadedConfig.review.noiseBudget,
+        }),
         ...(loadedConfig?.review?.enableReachability !== undefined && {
           enableReachability: loadedConfig.review.enableReachability,
         }),

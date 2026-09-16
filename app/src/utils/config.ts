@@ -323,6 +323,7 @@ export function buildConfig(): AgentConfig {
  * Only the `review.sensitivity` / `review.categories` / `review.pathInstructions` / `review.enableCodebaseIndex`
  * / `review.enableMetaVerification` / `review.enableTestGapDetection` /
  * `review.showFunctionScores` / `review.enableReviewsArrayInline` /
+ * `review.noiseBudget` /
  * `review.suppressLowConfidence` / `review.failOnSeverity` /
  * `review.excludeAgentConfigs` / `review.suggestTitleAndLabels` fields, the `notifications`, `secrets`, `llm`,
  * and `sca` sections are merged
@@ -355,6 +356,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const pathInstructions = repoConfig?.review?.pathInstructions;
   const showFunctionScores = repoConfig?.review?.showFunctionScores;
   const enableReviewsArrayInline = repoConfig?.review?.enableReviewsArrayInline;
+  const noiseBudget = repoConfig?.review?.noiseBudget;
   const dedupFingerprints =
     repoConfig?.review?.dedupFingerprints ?? repoConfig?.review?.dedup_fingerprints;
   const excludeAgentConfigs = resolveExcludeAgentConfigs(repoConfig?.review);
@@ -381,6 +383,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
     !pathInstructions &&
     showFunctionScores === undefined &&
     enableReviewsArrayInline === undefined &&
+    noiseBudget === undefined &&
     dedupFingerprints === undefined &&
     excludeAgentConfigs === undefined &&
     !notifications &&
@@ -424,6 +427,7 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       }),
       ...(showFunctionScores !== undefined && { showFunctionScores }),
       ...(enableReviewsArrayInline !== undefined && { enableReviewsArrayInline }),
+      ...(noiseBudget !== undefined && { noiseBudget }),
       ...(dedupFingerprints !== undefined && { dedupFingerprints }),
       ...(excludeAgentConfigs !== undefined && { excludeAgentConfigs }),
     },

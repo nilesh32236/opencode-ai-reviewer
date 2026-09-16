@@ -98,6 +98,53 @@ function sortBySeverity(issues: ReviewIssue[]): ReviewIssue[] {
   return [...issues].sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
 }
 
+/** Result of applying the display-layer noise budget cap. */
+export interface NoiseBudgetResult {
+  /** Top-N findings (severity then confidence) kept inline in the body. */
+  inline: ReviewIssue[];
+  /** Overflow findings relocated to the collapsed summary (never dropped). */
+  spilled: ReviewIssue[];
+}
+
+/**
+ * Apply the severity-ordered noise budget cap to already-filtered findings.
+ *
+ * Sorts a copy by severity rank desc, then confidence rank desc (missing
+ * confidence counts as 'low'), and keeps the top N inline. Overflow moves
+ * to `spilled` for the collapsed summary section — no finding is dropped.
+ * Pure function with zero API calls; fail-open by design.
+ *
+ * @param issues - Filtered findings to cap (not mutated).
+ * @param budget - Max inline findings; unset/non-finite/<=0 means no cap
+ * (returns all findings inline, same array order, byte-for-byte legacy).
+ * @returns Inline and spilled findings.
+ * @since NEXT
+ */
+export function applyNoiseBudgetCap(issues: ReviewIssue[], budget?: number): NoiseBudgetResult {
+  try {
+    if (
+      budget === undefined ||
+      !Number.isFinite(budget) ||
+      budget <= 0 ||
+      issues.length <= budget
+    ) {
+      return { inline: issues, spilled: [] };
+    }
+    const sorted = [...issues].sort((a, b) => {
+      const severityDiff = severityRank(b.severity) - severityRank(a.severity);
+      if (severityDiff !== 0) return severityDiff;
+      const aConfidence = a.confidence ? (CONFIDENCE_RANK[a.confidence] ?? 1) : 1;
+      const bConfidence = b.confidence ? (CONFIDENCE_RANK[b.confidence] ?? 1) : 1;
+      return bConfidence - aConfidence;
+    });
+    const count = Math.floor(budget);
+    return { inline: sorted.slice(0, count), spilled: sorted.slice(count) };
+  } catch {
+    // Fail-open: keep all findings inline as today.
+    return { inline: issues, spilled: [] };
+  }
+}
+
 /**
  * Filter review findings against the configured sensitivity settings.
  *

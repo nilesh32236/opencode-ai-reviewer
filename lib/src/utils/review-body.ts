@@ -5,6 +5,7 @@ import type {
   TokenUsage,
   VerdictMode,
 } from '../types/index.js';
+import { applyNoiseBudgetCap } from './filter-findings.js';
 import { buildFixPayload, formatFixPayloadMarkdown } from './fix-payload.js';
 import {
   type FunctionScore,
@@ -61,6 +62,25 @@ export interface ReviewBodyOptions {
    * @since NEXT
    */
   emitFixPayload?: boolean;
+  /**
+   * Display-layer noise budget: max findings rendered inline in the body,
+   * highest severity first (ties broken by confidence). Overflow is
+   * relocated — never dropped — into a collapsed `<details>` summary
+   * listing every spilled finding plus severity counts. Unset means legacy
+   * output (all findings inline, byte-for-byte unchanged). Fail-open:
+   * invalid values render as today.
+   * @since NEXT
+   */
+  noiseBudget?: number;
+  /**
+   * Pre-split overflow findings for the collapsed summary section. When
+   * non-empty, these render as the spillover list and `result.issues`
+   * renders inline as-is; otherwise the spillover is derived from
+   * `noiseBudget` via `applyNoiseBudgetCap()`. Prefer `noiseBudget` —
+   * this escape hatch exists for callers that split upstream.
+   * @since NEXT
+   */
+  spilledIssues?: ReviewIssue[];
   /** Attribution footer for auto-loaded review conventions (e.g. AGENTS.md @
    * head SHA). Appended after the issues section when non-empty. Falls back to
    * `result.attributionFooter` when omitted. */
@@ -246,6 +266,37 @@ export function buildAgentsMdAttributionFooter(
 }
 
 /**
+ * Build the collapsed spillover summary for findings relocated by the noise
+ * budget cap. Pure function, safe to unit test. Returns an empty string when
+ * there is nothing to spill so callers render no extra section.
+ * @param spilled - Overflow findings (already severity-ordered).
+ * @param budget - The active noise budget (rendered for transparency).
+ * @returns Markdown `<details>` block, or '' when `spilled` is empty.
+ * @since NEXT
+ */
+export function buildNoiseBudgetSpillover(spilled: ReviewIssue[], budget: number): string {
+  if (!spilled || spilled.length === 0) return '';
+  const critical = spilled.filter((i) => i.severity === 'critical').length;
+  const important = spilled.filter((i) => i.severity === 'important').length;
+  const minor = spilled.filter((i) => i.severity === 'minor').length;
+  const parts: string[] = [];
+  if (critical > 0) parts.push(`${critical} critical`);
+  if (important > 0) parts.push(`${important} important`);
+  if (minor > 0) parts.push(`${minor} minor`);
+  const breakdown = parts.length > 0 ? ` (${parts.join(', ')})` : '';
+  const lines: string[] = [
+    `<details><summary>Show ${spilled.length} additional finding${spilled.length === 1 ? '' : 's'}${breakdown} — noise budget ${budget}</summary>`,
+    '',
+  ];
+  for (const issue of spilled) {
+    lines.push(formatIssueBullet(issue));
+  }
+  lines.push('');
+  lines.push('</details>');
+  return lines.join('\n');
+}
+
+/**
  * Build a markdown review body from a ReviewResult.
  * @param result - Review result to render.
  * @param options - Optional rendering options (attribution footer and/or
@@ -324,9 +375,27 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
   }
 
   if (result.issues.length > 0) {
+    // Display-layer noise budget: keep the highest-severity findings inline
+    // and relocate overflow to a collapsed summary (never dropped).
+    // Fail-open: any error renders all findings inline as today.
+    let inlineIssues: ReviewIssue[] = result.issues;
+    let spilledIssues: ReviewIssue[] = [];
+    try {
+      const explicitSpilled = options?.spilledIssues;
+      if (explicitSpilled && explicitSpilled.length > 0) {
+        spilledIssues = explicitSpilled;
+      } else if (options?.noiseBudget !== undefined) {
+        const capped = applyNoiseBudgetCap(result.issues, options.noiseBudget);
+        inlineIssues = capped.inline;
+        spilledIssues = capped.spilled;
+      }
+    } catch {
+      inlineIssues = result.issues;
+      spilledIssues = [];
+    }
     lines.push('### Issues');
     lines.push('');
-    for (const i of result.issues) {
+    for (const i of inlineIssues) {
       lines.push(formatIssueBullet(i));
       if (i.suggestion) {
         lines.push(`  > 💡 **How to fix:** ${sanitizeMarkdown(i.suggestion)}`);
@@ -356,6 +425,29 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
           }
         } catch {
           // Fail-open: keep the plain finding when payload rendering fails.
+        }
+      }
+    }
+    if (spilledIssues.length > 0) {
+      try {
+        const budget =
+          typeof options?.noiseBudget === 'number' && Number.isFinite(options.noiseBudget)
+            ? Math.floor(options.noiseBudget)
+            : inlineIssues.length;
+        const spillover = buildNoiseBudgetSpillover(spilledIssues, budget);
+        if (spillover) {
+          lines.push('');
+          lines.push(spillover);
+        }
+      } catch {
+        // Fail-open: spillover must never drop findings — render the
+        // overflow as plain inline bullets when the details block fails.
+        for (const issue of spilledIssues) {
+          try {
+            lines.push(formatIssueBullet(issue));
+          } catch {
+            // Skip a single unrenderable finding, keep the rest.
+          }
         }
       }
     }

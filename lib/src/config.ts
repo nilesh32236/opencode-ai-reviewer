@@ -293,6 +293,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     tokenBudget: null,
     budget: null,
     costTracking: null,
+    noiseBudget: null,
     sensitivity: {
       minSeverity: null,
       confidenceThreshold: null,
@@ -742,6 +743,15 @@ export function validateConfig(
     }
     if (typeof config.review.streamBatchSize === 'number' && config.review.streamBatchSize >= 0) {
       result.review.streamBatchSize = config.review.streamBatchSize;
+    }
+    // Display-layer noise budget (relocates overflow to a collapsed summary,
+    // never drops). Clamped 1..500 mirroring maxTotalFindings; invalid/NaN
+    // leaves the key unset (fail-open, legacy output).
+    if (
+      typeof config.review.noiseBudget === 'number' &&
+      Number.isFinite(config.review.noiseBudget)
+    ) {
+      result.review.noiseBudget = Math.min(Math.max(Math.round(config.review.noiseBudget), 1), 500);
     }
     const parsedEffort = parseReviewEffort(config.review.effort);
     if (parsedEffort !== null) {

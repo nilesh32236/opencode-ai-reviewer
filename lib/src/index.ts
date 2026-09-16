@@ -249,11 +249,14 @@ export type { SCAScanOptions } from './sca/types.js';
 export { getLabelColor } from './utils/label-color.js';
 export {
   buildTokenUsageSection,
+  buildNoiseBudgetSpillover,
   formatConfidenceLabel,
   formatIssueBullet,
   getSeverityBadge,
 } from './utils/review-body.js';
 export type { ReviewBodyOptions } from './utils/review-body.js';
+export { applyNoiseBudgetCap } from './utils/filter-findings.js';
+export type { NoiseBudgetResult } from './utils/filter-findings.js';
 export { looksLikeCode } from './utils/code-heuristic.js';
 export {
   FingerprintStore,
