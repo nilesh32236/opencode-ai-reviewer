@@ -259,6 +259,8 @@ async function run(): Promise<void> {
           inputs.dedupFingerprints,
         enableReviewsArrayInline:
           loadedConfig?.review?.enableReviewsArrayInline ?? inputs.enableReviewsArrayInline,
+        updateInPlace: loadedConfig?.review?.updateInPlace ?? inputs.updateInPlace,
+        emitChecksSummary: loadedConfig?.review?.emitChecksSummary ?? inputs.emitChecksSummary,
         // When the workflow explicitly sets verdict_mode it is authoritative
         // so a PR cannot weaken/strengthen its own gate by editing
         // .opencode-reviewer.yml. Only when the input is omitted does the
@@ -357,6 +359,9 @@ async function run(): Promise<void> {
           maxTotalFindings:
             loadedConfig?.review?.sensitivity?.maxTotalFindings ??
             DEFAULT_CONFIG.review.sensitivity?.maxTotalFindings,
+          noiseBudget:
+            loadedConfig?.review?.sensitivity?.noiseBudget ??
+            DEFAULT_CONFIG.review.sensitivity?.noiseBudget,
           focusAreas:
             loadedConfig?.review?.sensitivity?.focusAreas ??
             DEFAULT_CONFIG.review.sensitivity?.focusAreas,

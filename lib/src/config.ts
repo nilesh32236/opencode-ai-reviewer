@@ -275,6 +275,8 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     dedupFingerprints: null,
     dedup_fingerprints: null,
     emitFixPayload: null,
+    updateInPlace: null,
+    emitChecksSummary: null,
     suppressLowConfidence: null,
     excludePatterns: null,
     excludeAgentConfigs: null,
@@ -299,6 +301,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
       confidenceThreshold: null,
       maxFindingsPerCategory: null,
       maxTotalFindings: null,
+      noiseBudget: null,
       focusAreas: null,
       ignorePatterns: null,
     },
@@ -702,6 +705,12 @@ export function validateConfig(
     if (typeof config.review.emitFixPayload === 'boolean') {
       result.review.emitFixPayload = config.review.emitFixPayload;
     }
+    if (typeof config.review.updateInPlace === 'boolean') {
+      result.review.updateInPlace = config.review.updateInPlace;
+    }
+    if (typeof config.review.emitChecksSummary === 'boolean') {
+      result.review.emitChecksSummary = config.review.emitChecksSummary;
+    }
     if (typeof config.review.suppressLowConfidence === 'boolean') {
       result.review.suppressLowConfidence = config.review.suppressLowConfidence;
     }
@@ -863,6 +872,9 @@ export function validateConfig(
       }
       if (typeof s.maxTotalFindings === 'number' && Number.isFinite(s.maxTotalFindings)) {
         sensitivity.maxTotalFindings = Math.min(Math.max(Math.round(s.maxTotalFindings), 1), 500);
+      }
+      if (typeof s.noiseBudget === 'number' && Number.isFinite(s.noiseBudget)) {
+        sensitivity.noiseBudget = Math.min(Math.max(Math.round(s.noiseBudget), 1), 500);
       }
       if (Array.isArray(s.focusAreas)) {
         sensitivity.focusAreas = s.focusAreas.filter((a): a is string => typeof a === 'string');

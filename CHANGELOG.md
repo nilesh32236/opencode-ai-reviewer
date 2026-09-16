@@ -4,6 +4,56 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.13.19] — 2026-09-16
+
+
+### Fixed
+
+- address issue #602 (#621) (#602
+#621)
+
+[v1.13.19]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.18...v1.13.19
+
+## [v1.13.18] — 2026-09-16
+
+
+### Fixed
+
+- address issue #582 (#608) (#582
+#608)
+
+[v1.13.18]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.17...v1.13.18
+
+## [v1.13.17] — 2026-09-16
+
+
+### Fixed
+
+- address issue #585 (#609) (#585
+#609)
+- address issue #591 (#613) (#591
+#613)
+
+### Changed
+
+- chore: release v1.13.16 [skip ci]
+
+[v1.13.17]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.16...v1.13.17
+
+## [v1.13.16] — 2026-09-16
+
+
+### Fixed
+
+- address issue #587 (#615) (#587
+#615)
+
+### Changed
+
+- [Security] DNS-rebinding guard for MCP/webhook fetches (#552) (#552)
+
+[v1.13.16]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.15...v1.13.16
+
 ## [v1.13.15] — 2026-09-16
 
 

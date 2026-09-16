@@ -15,6 +15,7 @@ import {
   collectFingerprintsFromBodies,
   fingerprintForIssue,
   legacyInlineKey,
+  mapFingerprintsToCommentIds,
   postSuggestionComment,
   sanitizeErrorMessage,
   sanitizeMarkdown,
@@ -499,6 +500,21 @@ export async function handlePRReview(
               previousInlineKeys: previousLegacyKeys,
             }
           : { dedupFingerprints: dedupEnabled };
+      // Persistent inline update-in-place (opt-in, default false): match new
+      // findings to previously posted bot threads by fingerprint so re-pushes
+      // edit the existing thread instead of re-posting. Fail-open: an empty
+      // or unmatchable map posts as today.
+      const updateInPlaceEnabled = effectiveConfig.review.updateInPlace === true;
+      let previousFingerprintCommentIds: Map<string, number> | undefined;
+      try {
+        if (updateInPlaceEnabled && previousBotComments && previousBotComments.length > 0) {
+          previousFingerprintCommentIds = mapFingerprintsToCommentIds(
+            previousBotComments.map((c) => ({ body: c.body ?? '', commentId: c.commentId })),
+          );
+        }
+      } catch {
+        previousFingerprintCommentIds = undefined;
+      }
       reviewResult = await gh.postReview(
         prNumber,
         pr.headSha,
@@ -508,8 +524,22 @@ export async function handlePRReview(
         {
           ...(scoreOptions ?? {}),
           ...dedupOptions,
+          ...(updateInPlaceEnabled
+            ? {
+                updateInPlace: true as const,
+                ...(previousFingerprintCommentIds && previousFingerprintCommentIds.size > 0
+                  ? { previousFingerprintCommentIds }
+                  : {}),
+              }
+            : {}),
+          ...(effectiveConfig.review.emitChecksSummary === true
+            ? { emitChecksSummary: true as const }
+            : {}),
           ...(effectiveConfig.review.enableReviewsArrayInline === true
             ? { enableReviewsArrayInline: true as const }
+            : {}),
+          ...(effectiveConfig.review.sensitivity?.noiseBudget !== undefined
+            ? { maxVisibleFindings: effectiveConfig.review.sensitivity.noiseBudget }
             : {}),
           ...(effectiveConfig.review.noiseBudget !== undefined
             ? { noiseBudget: effectiveConfig.review.noiseBudget }
