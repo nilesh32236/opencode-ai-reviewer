@@ -816,6 +816,7 @@ export class GitLabAdapter implements PlatformAdapter {
    * (never-green) rollup — callers MUST fail closed and refuse `ready`
    * labels/merges until a real mapping lands.
    * @param commitSha - Exact head commit SHA queried.
+   * @param _signal - Optional AbortSignal (unused, accepted for interface parity).
    * @returns Empty (never-green) CI status for the SHA.
    */
   async getHeadCIStatus(commitSha: string, _signal?: AbortSignal): Promise<HeadCIStatus> {
