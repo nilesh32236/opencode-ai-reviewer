@@ -118,6 +118,12 @@ jobs:
             echo "----------------------------------------"
             echo "Processing PR #${PR_NUMBER}: ${TITLE} (branch: ${HEAD_REF}, mergeable: ${MERGEABLE})"
 
+            # Prompt hygiene (issue #550): HEAD_REF/TITLE are PR-controlled.
+            # Strip backticks/newlines and cap length before they reach AI
+            # prompts below so prompt structure cannot be broken out of.
+            SAFE_REF=$(printf '%s' "$HEAD_REF" | tr -d '`' | tr '\n\r' '  ' | head -c 200)
+            SAFE_TITLE=$(printf '%s' "$TITLE" | tr -d '`' | tr '\n\r' '  ' | head -c 200)
+
             if [[ "$HEAD_REF" == -* ]] || ! git check-ref-format --branch "$HEAD_REF" >/dev/null 2>&1; then
               echo "::warning::Skipping PR #${PR_NUMBER}: invalid or option-like head ref."
               gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "autofix:skipped" || true
@@ -176,7 +182,7 @@ jobs:
                 echo "Merge conflicts detected on PR #${PR_NUMBER}. Attempting AI conflict resolution..."
 
                 cat << CONFLICT_EOF > /tmp/conflict-prompt.txt
-          You are an AI conflict resolution agent. Merge conflicts occurred while merging origin/main into branch ${HEAD_REF}.
+          You are an AI conflict resolution agent. Merge conflicts occurred while merging origin/main into branch ${SAFE_REF}.
 
           ## Conflicts Summary
           \`\`\`
@@ -243,8 +249,8 @@ jobs:
             # Run AI review on PR
             echo "Running AI review on PR #${PR_NUMBER}..."
             cat << REVIEW_PROMPT_EOF > /tmp/review-prompt.txt
-          You are an AI code reviewer evaluating PR #${PR_NUMBER}: "${TITLE}".
-          Perform a thorough review of the changes between origin/main and ${HEAD_REF}.
+          You are an AI code reviewer evaluating PR #${PR_NUMBER}: "${SAFE_TITLE}".
+          Perform a thorough review of the changes between origin/main and ${SAFE_REF}.
           Check for bugs, TypeScript type errors, ESM import extensions (.js), and test failures.
 
           Determine if the PR has HIGH CONFIDENCE and is ready to merge into main.
