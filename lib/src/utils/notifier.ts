@@ -423,9 +423,7 @@ export async function postToWebhook(
       return false;
     }
   } catch {
-    log.warn(
-      `Skipping webhook notification: unparsable URL: ${redactWebhookUrl(url)}`,
-    );
+    log.warn(`Skipping webhook notification: unparsable URL: ${redactWebhookUrl(url)}`);
     return false;
   }
 

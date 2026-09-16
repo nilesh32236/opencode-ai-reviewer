@@ -23,7 +23,11 @@ import type {
 } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
 import { withRetry } from '../utils/retry.js';
-import { dnsResolvesBlockedHost, isAllowedMcpLocalCommand, isSafeRemoteMcpUrl } from '../utils/safe-exec.js';
+import {
+  dnsResolvesBlockedHost,
+  isAllowedMcpLocalCommand,
+  isSafeRemoteMcpUrl,
+} from '../utils/safe-exec.js';
 import { estimateTokens } from '../utils/token-estimate.js';
 
 /**
@@ -468,9 +472,7 @@ export class MCPManager {
               return Promise.resolve();
             }
           } catch {
-            this.logger.warn(
-              `Skipping MCP server "${server.name}": unparsable remote URL`,
-            );
+            this.logger.warn(`Skipping MCP server "${server.name}": unparsable remote URL`);
             return Promise.resolve();
           }
           const headers = buildRemoteHeaders(server);

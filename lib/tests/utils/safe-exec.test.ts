@@ -270,7 +270,9 @@ describe('dnsResolvesBlockedHost (issue #546)', () => {
   });
 
   it('fails open on DNS errors (sandboxed CI without DNS keeps working)', async () => {
-    mockLookup.mockRejectedValue(Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' }));
+    mockLookup.mockRejectedValue(
+      Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' }),
+    );
     await expect(dnsResolvesBlockedHost('mcp.example.com')).resolves.toBe(false);
   });
 
