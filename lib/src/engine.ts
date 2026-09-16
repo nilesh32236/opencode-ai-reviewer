@@ -3907,12 +3907,13 @@ export class ReviewEngine {
     extraMinSeverityRank?: number,
   ): ReviewResult {
     const sensitivity = this.config.review.sensitivity ?? {};
-    const { issues, dropped } = filterFindings(result.issues, {
+    const { issues, dropped, overflowCount, overflowBySeverity } = filterFindings(result.issues, {
       minSeverity: sensitivity.minSeverity,
       minSeverityRankValue: extraMinSeverityRank,
       confidenceThreshold: sensitivity.confidenceThreshold,
       maxFindingsPerCategory: sensitivity.maxFindingsPerCategory,
       maxTotalFindings: sensitivity.maxTotalFindings,
+      noiseBudget: sensitivity.noiseBudget,
       focusAreas: sensitivity.focusAreas,
       ignorePatterns: sensitivity.ignorePatterns,
       categories: this.config.review.categories,
@@ -3921,12 +3922,25 @@ export class ReviewEngine {
     if (dropped > 0) {
       this.logger.info(`Sensitivity filter dropped ${dropped} finding(s) (kept ${issues.length})`);
     }
+    if (overflowCount !== undefined && overflowCount > 0) {
+      this.logger.info(
+        `Noise budget kept ${issues.length}/${issues.length + overflowCount} (+${overflowCount} in summary)`,
+      );
+    }
     // Always apply the filter output so `category` normalization and severity
     // ordering are consistent regardless of whether any finding was dropped.
     return {
       ...result,
       issues,
       stats: computeReviewStats(issues),
+      ...(overflowCount !== undefined &&
+        overflowCount > 0 &&
+        overflowBySeverity !== undefined && {
+          noiseOverflow: {
+            hidden: overflowCount,
+            bySeverity: { ...overflowBySeverity },
+          },
+        }),
     };
   }
 

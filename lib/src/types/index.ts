@@ -687,6 +687,13 @@ export interface ReviewSensitivityConfig {
   maxFindingsPerCategory?: number;
   /** Maximum total findings kept (highest severity first). */
   maxTotalFindings?: number;
+  /**
+   * Max inline findings rendered; severity-ordered (critical > important > minor),
+   * overflow collapsed into a summary `+N more` line. Absent = legacy
+   * (`maxTotalFindings` behavior unchanged).
+   * @since NEXT
+   */
+  noiseBudget?: number;
   /** If set, only findings whose category matches one of these are kept. */
   focusAreas?: string[];
   /** Glob patterns applied to finding file paths. */
@@ -1323,6 +1330,15 @@ export interface ReviewResult {
    * head SHA). Set by the engine when context.autoLoadAgentsMd loads files;
    * rendered by buildReviewBody/postReview. Absent when nothing was loaded. */
   attributionFooter?: string;
+  /**
+   * Findings hidden by the `noiseBudget` inline cap, collapsed into a summary
+   * `+N more` spillover line. Absent/zero = render nothing (legacy).
+   * @since NEXT
+   */
+  noiseOverflow?: {
+    hidden: number;
+    bySeverity: { critical: number; important: number; minor: number };
+  };
 }
 
 /** Result of an auto-fix operation. */

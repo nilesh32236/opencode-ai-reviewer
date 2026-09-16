@@ -361,6 +361,33 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
     }
   }
 
+  try {
+    const hidden = result.noiseOverflow?.hidden;
+    if (typeof hidden === 'number' && Number.isFinite(hidden) && hidden > 0) {
+      const by = result.noiseOverflow?.bySeverity;
+      const crit =
+        by && typeof by.critical === 'number' && Number.isFinite(by.critical)
+          ? Math.max(0, Math.floor(by.critical))
+          : 0;
+      const imp =
+        by && typeof by.important === 'number' && Number.isFinite(by.important)
+          ? Math.max(0, Math.floor(by.important))
+          : 0;
+      const min =
+        by && typeof by.minor === 'number' && Number.isFinite(by.minor)
+          ? Math.max(0, Math.floor(by.minor))
+          : 0;
+      const total = Math.max(0, Math.floor(hidden));
+      const plural = total === 1 ? 'finding' : 'findings';
+      lines.push('');
+      lines.push(
+        `> …and ${total} more ${plural} (${crit} critical, ${imp} important, ${min} minor) — see full list in logs / full review output.`,
+      );
+    }
+  } catch {
+    // Fail-open: skip the spillover line when overflow metadata is malformed.
+  }
+
   // Token usage / cost is deliberately NOT rendered here: it is surfaced once
   // via the dedicated post-step comment (action/src/post.ts), which is gated on
   // the saved state and is verbosity-aware. Rendering it here too would show

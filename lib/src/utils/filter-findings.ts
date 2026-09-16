@@ -76,6 +76,14 @@ export interface FilterFindingsOptions {
   maxFindingsPerCategory?: number;
   /** Maximum total findings kept (undefined = unlimited). */
   maxTotalFindings?: number;
+  /**
+   * Max inline findings rendered; applied after existing caps, severity-ordered
+   * (critical > important > minor). Overflow is reported via
+   * `FilterFindingsResult.overflowCount` / `overflowBySeverity` for summary
+   * spillover. Absent/invalid = legacy behavior. Fail-open on error.
+   * @since NEXT
+   */
+  noiseBudget?: number;
   /** If set, only findings whose category matches one of these are kept. */
   focusAreas?: string[];
   /** Glob patterns applied to finding file paths. */
@@ -92,6 +100,16 @@ export interface FilterFindingsResult {
   issues: ReviewIssue[];
   /** Number of findings dropped by the filter. */
   dropped: number;
+  /**
+   * Findings cut by `noiseBudget` (subset of `dropped`).
+   * @since NEXT
+   */
+  overflowCount?: number;
+  /**
+   * Severity breakdown of findings cut by `noiseBudget`.
+   * @since NEXT
+   */
+  overflowBySeverity?: { critical: number; important: number; minor: number };
 }
 
 function sortBySeverity(issues: ReviewIssue[]): ReviewIssue[] {
@@ -173,7 +191,38 @@ export function filterFindings(
     remaining = sortBySeverity(remaining).slice(0, options.maxTotalFindings);
   }
 
-  return { issues: remaining, dropped: issues.length - remaining.length };
+  let overflowCount: number | undefined;
+  let overflowBySeverity: FilterFindingsResult['overflowBySeverity'];
+  try {
+    const budget = options.noiseBudget;
+    if (
+      budget !== undefined &&
+      Number.isFinite(budget) &&
+      budget >= 1 &&
+      remaining.length > Math.floor(budget)
+    ) {
+      const cap = Math.floor(budget);
+      const sorted = sortBySeverity(remaining);
+      const overflow = sorted.slice(cap);
+      overflowBySeverity = { critical: 0, important: 0, minor: 0 };
+      for (const issue of overflow) {
+        if (issue.severity === 'critical') overflowBySeverity.critical++;
+        else if (issue.severity === 'important') overflowBySeverity.important++;
+        else overflowBySeverity.minor++;
+      }
+      overflowCount = overflow.length;
+      remaining = sorted.slice(0, cap);
+    }
+  } catch {
+    // Fail-open: keep legacy `remaining` on any unexpected error.
+  }
+
+  return {
+    issues: remaining,
+    dropped: issues.length - remaining.length,
+    ...(overflowCount !== undefined && { overflowCount }),
+    ...(overflowBySeverity !== undefined && { overflowBySeverity }),
+  };
 }
 
 /**
