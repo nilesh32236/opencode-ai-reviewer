@@ -226,7 +226,7 @@ export function isReviewStubBody(body: string): boolean {
  */
 export function cleanReusedBody(body: string): string {
   const cleaned = String(body ?? '')
-    .replace(/<!--\s*inline-fp:[0-9a-f]{16}\s*-->/gi, '')
+    .replace(/<!--\s*inline-fp:[0-9a-f]{16}(?:[0-9a-f]{48})?\s*-->/gi, '')
     .replace(/<!--[\s\S]*?-->/g, '')
     .trim();
   return cleaned.length > 2000 ? `${cleaned.slice(0, 2000)}…` : cleaned;

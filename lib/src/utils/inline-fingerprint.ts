@@ -6,8 +6,20 @@ import { Logger } from './logger.js';
 /** HTML marker embedding a finding fingerprint in a posted comment body. */
 export const INLINE_FINGERPRINT_MARKER_PREFIX = '<!-- inline-fp:';
 
-/** Regex matching the embedded fingerprint marker. */
+/** Regex matching the embedded fingerprint marker (legacy 16-char form). */
 export const INLINE_FINGERPRINT_PATTERN = /<!-- inline-fp:([0-9a-f]{16}) -->/;
+
+/**
+ * Regex matching the embedded fingerprint marker (full-range 64-char sha256 form).
+ * @since NEXT
+ */
+export const INLINE_FINGERPRINT_PATTERN_FULL = /<!-- inline-fp:([0-9a-f]{64}) -->/;
+
+/**
+ * Regex matching either fingerprint marker form (full 64-char preferred).
+ * @since NEXT
+ */
+export const INLINE_FINGERPRINT_PATTERN_ANY = /<!-- inline-fp:([0-9a-f]{64}|[0-9a-f]{16}) -->/;
 
 /**
  * Normalize a file path for fingerprinting: strip leading slashes and
@@ -39,7 +51,37 @@ export function normalizeFingerprintText(text: string): string {
 }
 
 /**
- * Compute a stable 16-char fingerprint for an inline finding. The fingerprint
+ * Whether a string is a valid inline fingerprint: either the legacy 16-char
+ * truncated form or the full-range 64-char sha256 form.
+ * @param fingerprint - Candidate fingerprint string.
+ * @returns True for 16- or 64-char lowercase hex strings.
+ * @since NEXT
+ */
+export function isValidFingerprint(fingerprint: string | undefined): boolean {
+  return (
+    typeof fingerprint === 'string' &&
+    (/^[0-9a-f]{16}$/.test(fingerprint) || /^[0-9a-f]{64}$/.test(fingerprint))
+  );
+}
+
+/**
+ * Derive the short 16-char marker form from a fingerprint. Full-range (64-char)
+ * fingerprints truncate to their first 16 chars; legacy 16-char fingerprints
+ * pass through unchanged. Used to compare new full keys against threads that
+ * only carry the short marker.
+ * @param fingerprint - Full (64-char) or legacy (16-char) fingerprint.
+ * @returns 16-char marker form (empty string for invalid input).
+ * @since NEXT
+ */
+export function shortFingerprint(fingerprint: string): string {
+  if (typeof fingerprint !== 'string' || fingerprint.length === 0) return '';
+  if (/^[0-9a-f]{16}$/.test(fingerprint)) return fingerprint;
+  if (/^[0-9a-f]{64}$/.test(fingerprint)) return fingerprint.slice(0, 16);
+  return '';
+}
+
+/**
+ * Compute a stable full-range fingerprint for an inline finding. The fingerprint
  * covers path + line + rule/category + normalized snippet (message +
  * suggestion), so an identical finding on re-push hashes identically while a
  * changed line or snippet produces a new fingerprint.
@@ -47,7 +89,7 @@ export function normalizeFingerprintText(text: string): string {
  * @param line - 1-based finding line.
  * @param rule - Rule id, category, or severity fallback.
  * @param snippet - Normalized message/suggestion text.
- * @returns First 16 hex chars of the sha1 digest (<10ms per finding).
+ * @returns Full 64-char sha256 hex digest (<10ms per finding).
  * @since NEXT
  */
 export function fingerprintFinding(
@@ -63,7 +105,7 @@ export function fingerprintFinding(
     normalizeFingerprintText(rule),
     normalizeFingerprintText(snippet),
   ].join('|');
-  return createHash('sha1').update(key).digest('hex').slice(0, 16);
+  return createHash('sha256').update(key).digest('hex');
 }
 
 /** Minimal finding shape needed for fingerprinting (subset of ReviewIssue). */
@@ -83,7 +125,8 @@ export interface FingerprintableIssue {
  * with a severity fallback so findings without a structured category still
  * hash stably.
  * @param issue - Review finding.
- * @returns 16-char fingerprint.
+ * @returns 64-char sha256 fingerprint (short 16-char marker derivable via
+ * `shortFingerprint()`).
  * @since NEXT
  */
 export function fingerprintForIssue(issue: FingerprintableIssue): string {
@@ -95,15 +138,19 @@ export function fingerprintForIssue(issue: FingerprintableIssue): string {
 }
 
 /**
- * Extract an embedded fingerprint from a posted comment body.
+ * Extract an embedded fingerprint from a posted comment body. Accepts both the
+ * full-range 64-char sha256 marker (preferred) and the legacy 16-char marker
+ * from threads posted before hardening.
  * @param body - Comment body text.
- * @returns The 16-char fingerprint, or undefined when absent.
+ * @returns The fingerprint (64- or 16-char), or undefined when absent.
  * @since NEXT
  */
 export function extractFingerprintFromBody(body: string): string | undefined {
   if (!body || typeof body !== 'string') return undefined;
-  const match = INLINE_FINGERPRINT_PATTERN.exec(body);
-  return match?.[1];
+  const full = INLINE_FINGERPRINT_PATTERN_FULL.exec(body);
+  if (full?.[1]) return full[1];
+  const legacy = INLINE_FINGERPRINT_PATTERN.exec(body);
+  return legacy?.[1];
 }
 
 /**
@@ -144,8 +191,12 @@ export function legacyInlineKey(file: string, line: number | null, body: string)
 /**
  * Decide whether a fingerprint should be posted given the known set.
  * Missing/empty fingerprints always post (never drop new findings).
- * @param fingerprint - Finding fingerprint (may be undefined).
- * @param known - Previously posted fingerprints.
+ * Compares full-range keys server-side: an exact match skips, and a
+ * cross-format match skips too (a full key whose 16-char short form is known,
+ * or a short key that prefixes a known full key) so mixed old/new marker
+ * threads dedup correctly.
+ * @param fingerprint - Finding fingerprint (64- or 16-char, may be undefined).
+ * @param known - Previously posted fingerprints (mixed 16/64-char).
  * @returns True when the finding should be posted.
  * @since NEXT
  */
@@ -154,7 +205,20 @@ export function shouldPostFingerprint(
   known: Set<string> | undefined,
 ): boolean {
   if (!fingerprint || !known || known.size === 0) return true;
-  return !known.has(fingerprint);
+  if (known.has(fingerprint)) return false;
+  try {
+    if (fingerprint.length === 64 && known.has(fingerprint.slice(0, 16))) return false;
+    if (fingerprint.length === 16) {
+      for (const entry of known) {
+        if (typeof entry === 'string' && entry.length === 64 && entry.startsWith(fingerprint)) {
+          return false;
+        }
+      }
+    }
+  } catch {
+    // Fail-open: fall through to posting.
+  }
+  return true;
 }
 
 /**
@@ -238,14 +302,18 @@ export function filterIssuesByFingerprints<T extends FingerprintableIssue>(
 
 /**
  * Append the fingerprint marker to a comment body (idempotent — bodies that
- * already carry a marker are returned unchanged).
+ * already carry a marker are returned unchanged). Full-range (64-char) keys
+ * are embedded in full so future runs compare collision-resistant keys
+ * server-side; legacy 16-char keys embed as before.
  * @param body - Rendered comment body.
- * @param fingerprint - 16-char fingerprint.
+ * @param fingerprint - 64-char (preferred) or legacy 16-char fingerprint.
  * @returns Body with an embedded `<!-- inline-fp:xxx -->` trailer.
  * @since NEXT
  */
 export function withFingerprintMarker(body: string, fingerprint: string): string {
-  if (!fingerprint || extractFingerprintFromBody(body)) return body;
+  if (!fingerprint || !isValidFingerprint(fingerprint) || extractFingerprintFromBody(body)) {
+    return body;
+  }
   return `${body}\n\n${INLINE_FINGERPRINT_MARKER_PREFIX}${fingerprint} -->`;
 }
 
@@ -285,7 +353,7 @@ export class FingerprintStore {
       if (!Array.isArray(list)) throw new Error('unexpected fingerprint store shape');
       const fps = new Set<string>();
       for (const entry of list) {
-        if (typeof entry === 'string' && /^[0-9a-f]{16}$/.test(entry)) fps.add(entry);
+        if (isValidFingerprint(entry)) fps.add(entry);
       }
       this.known = fps;
       return fps;
@@ -328,7 +396,7 @@ export class FingerprintStore {
     const known = this.load();
     try {
       for (const fp of fingerprints) {
-        if (typeof fp === 'string' && /^[0-9a-f]{16}$/.test(fp)) known.add(fp);
+        if (isValidFingerprint(fp)) known.add(fp);
       }
       fs.mkdirSync(this.filePath.split('/').slice(0, -1).join('/') || '.', { recursive: true });
       fs.writeFileSync(this.filePath, JSON.stringify([...known].sort()), 'utf-8');

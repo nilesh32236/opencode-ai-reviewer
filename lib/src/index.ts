@@ -262,6 +262,8 @@ export {
   filterIssuesByFingerprints,
   fingerprintFinding,
   fingerprintForIssue,
+  isValidFingerprint,
+  shortFingerprint,
   legacyInlineKey,
   normalizeFingerprintPath,
   normalizeFingerprintText,
@@ -269,6 +271,8 @@ export {
   withFingerprintMarker,
   INLINE_FINGERPRINT_MARKER_PREFIX,
   INLINE_FINGERPRINT_PATTERN,
+  INLINE_FINGERPRINT_PATTERN_ANY,
+  INLINE_FINGERPRINT_PATTERN_FULL,
 } from './utils/inline-fingerprint.js';
 export type { FingerprintableIssue } from './utils/inline-fingerprint.js';
 export {

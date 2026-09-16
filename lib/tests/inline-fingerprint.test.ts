@@ -17,6 +17,8 @@ import {
   filterIssuesByFingerprints,
   fingerprintFinding,
   fingerprintForIssue,
+  isValidFingerprint,
+  shortFingerprint,
   shouldPostFingerprint,
   withFingerprintMarker,
 } from '../src/utils/inline-fingerprint.js';
@@ -31,12 +33,40 @@ const ISSUE = {
 };
 
 describe('inline-fingerprint', () => {
-  it('produces a stable 16-char sha1 fingerprint', () => {
+  it('produces a stable full-range 64-char sha256 fingerprint', () => {
     const a = fingerprintForIssue({ ...ISSUE });
     const b = fingerprintForIssue({ ...ISSUE, file: '/SRC/foo.ts' });
-    expect(a).toMatch(/^[0-9a-f]{16}$/);
+    expect(a).toMatch(/^[0-9a-f]{64}$/);
     expect(b).toBe(a);
-    expect(fingerprintFinding('a.ts', 1, 'bugs', 'x')).toHaveLength(16);
+    expect(fingerprintFinding('a.ts', 1, 'bugs', 'x')).toHaveLength(64);
+  });
+
+  it('derives a short marker and validates both fingerprint forms', () => {
+    const full = fingerprintForIssue({ ...ISSUE });
+    expect(isValidFingerprint(full)).toBe(true);
+    expect(isValidFingerprint(shortFingerprint(full))).toBe(true);
+    expect(shortFingerprint(full)).toBe(full.slice(0, 16));
+    expect(shortFingerprint('deadbeefdeadbeef')).toBe('deadbeefdeadbeef');
+    expect(isValidFingerprint('deadbeefdeadbeef')).toBe(true);
+    expect(isValidFingerprint('not-a-fingerprint')).toBe(false);
+    expect(isValidFingerprint(undefined)).toBe(false);
+  });
+
+  it('extracts both full-range and legacy markers', () => {
+    const full = fingerprintForIssue({ ...ISSUE });
+    expect(extractFingerprintFromBody(withFingerprintMarker('hello', full))).toBe(full);
+    expect(extractFingerprintFromBody('hello <!-- inline-fp:deadbeefdeadbeef -->')).toBe(
+      'deadbeefdeadbeef',
+    );
+  });
+
+  it('dedups across short/full marker forms server-side', () => {
+    const full = fingerprintForIssue({ ...ISSUE });
+    const short = shortFingerprint(full);
+    // Full key against a known short marker, and vice versa.
+    expect(shouldPostFingerprint(full, new Set([short]))).toBe(false);
+    expect(shouldPostFingerprint(short, new Set([full]))).toBe(false);
+    expect(shouldPostFingerprint(full, new Set([full]))).toBe(false);
   });
 
   it('changes fingerprint when line or snippet changes', () => {
@@ -74,11 +104,20 @@ describe('inline-fingerprint', () => {
     const body = withFingerprintMarker('hello', fp);
     expect(extractFingerprintFromBody(body)).toBe(fp);
     expect(shouldPostFingerprint(fp, collectFingerprintsFromBodies([body]))).toBe(false);
-    expect(shouldPostFingerprint('deadbeefdeadbeef', collectFingerprintsFromBodies([body]))).toBe(
-      true,
-    );
+    expect(
+      shouldPostFingerprint(
+        'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+        collectFingerprintsFromBodies([body]),
+      ),
+    ).toBe(true);
     // Idempotent: never double-stamp.
     expect(withFingerprintMarker(body, fp)).toBe(body);
+    // Legacy 16-char threads still dedup and round-trip.
+    const legacyBody = withFingerprintMarker('hello', 'deadbeefdeadbeef');
+    expect(extractFingerprintFromBody(legacyBody)).toBe('deadbeefdeadbeef');
+    expect(
+      shouldPostFingerprint('deadbeefdeadbeef', collectFingerprintsFromBodies([legacyBody])),
+    ).toBe(false);
   });
 
   it('posts everything and warns on a corrupt store (fail-open)', () => {
@@ -104,7 +143,11 @@ describe('inline-fingerprint', () => {
       store.markPosted([fp]);
       const reloaded = new FingerprintStore(file);
       expect(reloaded.shouldPost(fp)).toBe(false);
-      expect(reloaded.shouldPost('aaaaaaaaaaaaaaaa')).toBe(true);
+      expect(reloaded.shouldPost('a'.repeat(64))).toBe(true);
+      // Legacy 16-char entries persist and still gate their short form.
+      reloaded.markPosted(['bbbbbbbbbbbbbbbb']);
+      const reloadedAgain = new FingerprintStore(file);
+      expect(reloadedAgain.shouldPost('bbbbbbbbbbbbbbbb')).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
