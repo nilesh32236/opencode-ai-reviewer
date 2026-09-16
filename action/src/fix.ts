@@ -95,9 +95,12 @@ export function shouldForceFreshReview(body: string | undefined | null): boolean
  * @returns Parsed severity (defaults to 'important').
  */
 export function parseReusedSeverity(body: string): ReviewIssue['severity'] {
-  const text = String(body ?? '').toLowerCase();
-  if (text.includes('critical') || text.includes('🔴')) return 'critical';
-  if (text.includes('minor') || text.includes('🔵')) return 'minor';
+  const raw = String(body ?? '');
+  const badge = raw.match(/^\s*(?:🔴|🔵|🟡)?\s*\*\*(critical|important|minor)\*\*/i);
+  if (badge) return badge[1]!.toLowerCase() as ReviewIssue['severity'];
+  const text = raw.toLowerCase();
+  if (text.includes('🔴')) return 'critical';
+  if (text.includes('🔵')) return 'minor';
   return 'important';
 }
 
@@ -112,8 +115,8 @@ export function isReviewStubBody(body: string): boolean {
   const text = String(body ?? '').toLowerCase();
   if (!text.trim()) return true;
   return (
-    text.includes('timed out') ||
-    text.includes('timeout') ||
+    text.includes('review timed out') ||
+    text.includes('review timeout') ||
     text.includes('review result empty') ||
     text.includes('no meaningful content')
   );
@@ -187,6 +190,60 @@ export function rehydrateReviewResultFromBotThreads(
 }
 
 /**
+ * Head-current, non-stub, unresolved subset of bot threads eligible for
+ * reuse. Single source of truth shared by {@link findReusableHeadCurrentReview}
+ * and the skipped-postReview id mapping so stale-head and stub-thread comment
+ * IDs never leak into fix-progress tracking.
+ * @param threads - Bot review threads for the PR.
+ * @param headSha - Current PR head SHA.
+ * @param commitByCommentId - Optional databaseId → commit SHA map built from
+ * `listReviewComments` (each record's `commit_id`).
+ * @returns Threads anchored to the current head SHA.
+ */
+export function filterHeadCurrentReuseThreads(
+  threads: ReviewThreadInfo[],
+  headSha: string,
+  commitByCommentId?: Map<number, string>,
+): ReviewThreadInfo[] {
+  const head = String(headSha ?? '').toLowerCase();
+  if (!head || !Array.isArray(threads) || threads.length === 0) return [];
+  return threads.filter((t) => {
+    if (t.isResolved || !t.firstComment) return false;
+    if (isReviewStubBody(t.firstComment.body ?? '')) return false;
+    const direct = String(t.firstComment.commitId ?? '').toLowerCase();
+    if (direct) return direct === head;
+    if (commitByCommentId) {
+      const mapped = String(commitByCommentId.get(t.firstComment.databaseId) ?? '').toLowerCase();
+      if (mapped) return mapped === head;
+    }
+    return false;
+  });
+}
+
+/**
+ * Ready verdict for a head-current bot review that carries zero inline
+ * threads (clean review or body-only findings). Lets `/fix` skip the fresh
+ * `engine.reviewPR` LLM pass instead of repaying it for an already-clean head.
+ * @param headSha - Current PR head SHA (used only for the summary line).
+ * @returns ReviewResult with zero issues and a ready verdict.
+ */
+export function buildCleanReusedReviewResult(headSha: string): ReviewResult {
+  const shortSha = String(headSha ?? '').slice(0, 7) || 'unknown';
+  return {
+    summary: `Reusing head-current bot review on ${shortSha} (0 open finding(s)) — skipped fresh review for /fix iteration 1.`,
+    verdict: {
+      ready: true,
+      reasoning: 'Reused head-current bot review reports no open findings.',
+      autoFixable: false,
+      confidence: 'medium',
+    },
+    strengths: [],
+    issues: [],
+    stats: { total: 0, critical: 0, important: 0, minor: 0 },
+  };
+}
+
+/**
  * Decide whether iteration 1 can reuse an existing bot review instead of
  * paying for a fresh `engine.reviewPR` LLM pass. Head-current means at least
  * one unresolved, non-stub bot thread is anchored to the current head SHA
@@ -203,19 +260,7 @@ export function findReusableHeadCurrentReview(
   headSha: string,
   commitByCommentId?: Map<number, string>,
 ): ReviewResult | null {
-  const head = String(headSha ?? '').toLowerCase();
-  if (!head || !Array.isArray(threads) || threads.length === 0) return null;
-  const headCurrent = threads.filter((t) => {
-    if (t.isResolved) return false;
-    if (isReviewStubBody(t.firstComment?.body ?? '')) return false;
-    const direct = String(t.firstComment?.commitId ?? '').toLowerCase();
-    if (direct) return direct === head;
-    if (commitByCommentId) {
-      const mapped = String(commitByCommentId.get(t.firstComment?.databaseId) ?? '').toLowerCase();
-      if (mapped) return mapped === head;
-    }
-    return false;
-  });
+  const headCurrent = filterHeadCurrentReuseThreads(threads, headSha, commitByCommentId);
   if (headCurrent.length === 0) return null;
   return rehydrateReviewResultFromBotThreads(headCurrent, headSha);
 }
@@ -1025,6 +1070,7 @@ export async function runAutofixLoop(
     // explicitly asks (`/fix re-review`). Subsequent iterations always run a
     // fresh review against the post-fix head.
     let reusedResult: ReviewResult | null = null;
+    let reuseCommitByCommentId: Map<number, string> | undefined;
     if (i === 0 && !shouldForceFreshReview(getFixTriggerBody())) {
       try {
         let commitByCommentId: Map<number, string> | undefined;
@@ -1033,10 +1079,14 @@ export async function runAutofixLoop(
         );
         if (needsCorrelation) {
           try {
-            const reviewComments = await gh.listReviewComments(prNumber, {
-              perPage: 100,
-              maxPages: 10,
-            });
+            const reviewComments = await gh.listReviewComments(
+              prNumber,
+              {
+                perPage: 100,
+                maxPages: 10,
+              },
+              signal,
+            );
             commitByCommentId = new Map<number, string>();
             for (const rc of reviewComments) {
               const id = Number((rc as { id?: unknown }).id);
@@ -1051,11 +1101,25 @@ export async function runAutofixLoop(
             commitByCommentId = undefined;
           }
         }
+        reuseCommitByCommentId = commitByCommentId;
         reusedResult = findReusableHeadCurrentReview(
           botThreadsForReuse,
           prHeadSha,
           commitByCommentId,
         );
+        if (!reusedResult) {
+          try {
+            const botReviews = (await gh.listBotReviews?.(prNumber)) ?? [];
+            const latest = botReviews[0];
+            const latestCommit = String(latest?.commitId ?? '').toLowerCase();
+            const head = String(prHeadSha ?? '').toLowerCase();
+            if (latest && head && latestCommit === head && !isReviewStubBody(latest.body ?? '')) {
+              reusedResult = buildCleanReusedReviewResult(prHeadSha);
+            }
+          } catch {
+            // Fail-open: no usable bot review listing keeps today's fresh review.
+          }
+        }
       } catch {
         reusedResult = null;
       }
@@ -1130,14 +1194,19 @@ export async function runAutofixLoop(
     try {
       if (skippedPostReview) {
         // Findings are already posted as the head-current bot review — repost
-        // only the id mapping so fix-progress tracking keeps working.
-        currentCommentIds = botThreadsForReuse
-          .filter((t) => !t.isResolved && t.firstComment)
-          .map((t) => ({
-            file: t.firstComment.filePath,
-            line: typeof t.firstComment.lineNumber === 'number' ? t.firstComment.lineNumber : 0,
-            commentId: t.firstComment.databaseId,
-          }));
+        // only the id mapping so fix-progress tracking keeps working. Scoped
+        // to the same head-current, non-stub, unresolved subset that granted
+        // reuse, so stale-head/stub IDs never leak into progress tracking.
+        // Zero-thread (clean) reuse simply yields an empty mapping.
+        currentCommentIds = filterHeadCurrentReuseThreads(
+          botThreadsForReuse,
+          prHeadSha,
+          reuseCommitByCommentId,
+        ).map((t) => ({
+          file: t.firstComment.filePath,
+          line: typeof t.firstComment.lineNumber === 'number' ? t.firstComment.lineNumber : 0,
+          commentId: t.firstComment.databaseId,
+        }));
       } else {
         const reviewResult = await gh.postReview(
           prNumber,

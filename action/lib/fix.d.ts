@@ -61,6 +61,26 @@ export declare function cleanReusedBody(body: string): string;
  */
 export declare function rehydrateReviewResultFromBotThreads(threads: ReviewThreadInfo[], headSha: string): ReviewResult | null;
 /**
+ * Head-current, non-stub, unresolved subset of bot threads eligible for
+ * reuse. Single source of truth shared by {@link findReusableHeadCurrentReview}
+ * and the skipped-postReview id mapping so stale-head and stub-thread comment
+ * IDs never leak into fix-progress tracking.
+ * @param threads - Bot review threads for the PR.
+ * @param headSha - Current PR head SHA.
+ * @param commitByCommentId - Optional databaseId → commit SHA map built from
+ * `listReviewComments` (each record's `commit_id`).
+ * @returns Threads anchored to the current head SHA.
+ */
+export declare function filterHeadCurrentReuseThreads(threads: ReviewThreadInfo[], headSha: string, commitByCommentId?: Map<number, string>): ReviewThreadInfo[];
+/**
+ * Ready verdict for a head-current bot review that carries zero inline
+ * threads (clean review or body-only findings). Lets `/fix` skip the fresh
+ * `engine.reviewPR` LLM pass instead of repaying it for an already-clean head.
+ * @param headSha - Current PR head SHA (used only for the summary line).
+ * @returns ReviewResult with zero issues and a ready verdict.
+ */
+export declare function buildCleanReusedReviewResult(headSha: string): ReviewResult;
+/**
  * Decide whether iteration 1 can reuse an existing bot review instead of
  * paying for a fresh `engine.reviewPR` LLM pass. Head-current means at least
  * one unresolved, non-stub bot thread is anchored to the current head SHA
