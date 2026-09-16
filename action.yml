@@ -389,6 +389,10 @@ inputs:
     description: 'Fail the run when the Node runtime is below the patched LTS floor (>=24.19.0, July 2026 HIGH CVE fixes). Default false (warn-only); also settable via toolchain.enforceNodeFloor in the config file'
     required: false
 
+  comment-body:
+    description: 'Operator instruction text from the triggering /fix comment (remainder after stripping the /fix command token). Empty/absent is a no-op. When omitted, the action falls back to github.context.payload.comment.body in-process.'
+    required: false
+
 outputs:
   review_summary:
     description: 'Summary of the review'
