@@ -11,6 +11,18 @@
  */
 export declare function extractCommentCommand(body: string | undefined | null): string | null;
 /**
+ * Whether a `/fix` trigger comment explicitly asks for a fresh review.
+ * Additive helper — `extractCommentCommand` intentionally drops args, so the
+ * autofix loop uses this to honor `/fix re-review` / `/fix re_review` /
+ * `/fix force-review` (and the `/oc fix …` alias form) without changing the
+ * auth gate. Only tokens on the same line as the command count, so quoted
+ * docs or code snippets elsewhere in the body cannot force an expensive
+ * fresh pass.
+ * @param body - Raw comment body (may be undefined/null).
+ * @returns True when a re-review token follows the fix command on its line.
+ */
+export declare function hasFixReReviewFlag(body: string | undefined | null): boolean;
+/**
  * Maximum operator-instruction length (chars) forwarded to the fix agent.
  * Consistent with the prompt-builder section caps (tens of KB); deliberately
  * small so a pasted log cannot blow up the fix prompt.

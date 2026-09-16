@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import * as core from '@actions/core';
 import { buildInlineComments } from '../jsonl-parser.js';
 import type {
+  BotReviewInfo,
   HeadCIStatus,
   PlatformAdapter,
   ReviewPostResult,
@@ -170,6 +171,8 @@ interface ReviewThreadNode {
       originalLine?: number | null;
       author: { login: string };
       createdAt: string;
+      commit?: { oid?: string } | null;
+      originalCommit?: { oid?: string } | null;
     }>;
   };
 }
@@ -184,6 +187,20 @@ interface ReviewThreadsQueryResponse {
       };
     };
   };
+}
+
+/**
+ * Detect GraphQL schema-validation errors caused by the `commit { oid }` /
+ * `originalCommit { oid }` selections on older GHES instances whose schema
+ * does not expose those fields. Matched errors are safe to retry with the
+ * legacy query that omits the OID selections.
+ */
+function isReviewThreadCommitSchemaError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err ?? '');
+  if (!/commit/i.test(message)) return false;
+  return /doesn'?t exist|does not exist|unknown field|cannot query field|was removed|no longer/i.test(
+    message,
+  );
 }
 
 /**
@@ -2702,10 +2719,15 @@ export class GitHubHelper implements PlatformAdapter {
     let hasNextPage = true;
     let pageCount = 0;
     const maxPages = 50;
+    // Older GHES schemas may reject `commit { oid }` / `originalCommit { oid }`
+    // on review comments. When the schema validation error is detected, fall
+    // back to the legacy query without those fields (commitId degrades to
+    // undefined → callers treat it as unknown and fail open).
+    let useLegacyQuery = false;
 
     while (hasNextPage && pageCount < maxPages) {
       pageCount++;
-      const query = `
+      const buildQuery = (includeCommitOids: boolean): string => `
         query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
           repository(owner: $owner, name: $repo) {
             pullRequest(number: $number) {
@@ -2724,6 +2746,7 @@ export class GitHubHelper implements PlatformAdapter {
                       originalLine
                       author { login }
                       createdAt
+                      ${includeCommitOids ? 'commit { oid }\n                      originalCommit { oid }' : ''}
                     }
                   }
                 }
@@ -2732,25 +2755,46 @@ export class GitHubHelper implements PlatformAdapter {
           }
         }
         `;
+      const variables = {
+        owner,
+        repo,
+        number: prNumber,
+        cursor,
+      };
       // graphql() retries internally via withRetry (default maxRetries 3). A
       // final page failure is rethrown so getBotReviewThreads/getOpenHumanThreads
       // callers (which already guard with try/catch) know the thread data may be
       // truncated rather than silently operating on partial thread data.
       let data: ReviewThreadsQueryResponse;
       try {
-        data = (await this.graphql(query, {
-          owner,
-          repo,
-          number: prNumber,
-          cursor,
-        })) as ReviewThreadsQueryResponse;
+        data = (await this.graphql(
+          buildQuery(!useLegacyQuery),
+          variables,
+        )) as ReviewThreadsQueryResponse;
       } catch (err) {
-        core.warning(
-          `Failed to fetch review thread page ${pageCount} for PR #${prNumber} — thread data may be incomplete: ${
-            err instanceof Error ? err.message : err
-          }`,
-        );
-        throw err;
+        if (!useLegacyQuery && isReviewThreadCommitSchemaError(err)) {
+          useLegacyQuery = true;
+          core.debug(
+            `getReviewThreads: commit OID fields rejected by GraphQL schema for PR #${prNumber}, falling back to legacy query`,
+          );
+          try {
+            data = (await this.graphql(buildQuery(false), variables)) as ReviewThreadsQueryResponse;
+          } catch (legacyErr) {
+            core.warning(
+              `Failed to fetch review thread page ${pageCount} for PR #${prNumber} — thread data may be incomplete: ${
+                legacyErr instanceof Error ? legacyErr.message : legacyErr
+              }`,
+            );
+            throw legacyErr;
+          }
+        } else {
+          core.warning(
+            `Failed to fetch review thread page ${pageCount} for PR #${prNumber} — thread data may be incomplete: ${
+              err instanceof Error ? err.message : err
+            }`,
+          );
+          throw err;
+        }
       }
 
       const threadsData = data.repository.pullRequest.reviewThreads;
@@ -2768,6 +2812,7 @@ export class GitHubHelper implements PlatformAdapter {
             lineNumber: comment.line ?? comment.originalLine ?? null,
             author: comment.author.login,
             createdAt: comment.createdAt,
+            commitId: comment.commit?.oid ?? comment.originalCommit?.oid ?? undefined,
           },
         });
       }
@@ -2835,6 +2880,53 @@ export class GitHubHelper implements PlatformAdapter {
       const author = t.firstComment.author.toLowerCase().replace(/\[bot\]$/, '');
       return author === botLogin;
     });
+  }
+
+  /**
+   * List bot-authored reviews for a PR via REST `GET /pulls/{n}/reviews`,
+   * newest first. Fail-open: any failure resolves to [] so callers fall back
+   * to a fresh review (today's behavior).
+   * @param prNumber - PR number.
+   * @returns Bot review summaries ordered newest first.
+   */
+  async listBotReviews(prNumber: number): Promise<BotReviewInfo[]> {
+    try {
+      const rawBotLogin = await this.getCurrentUser();
+      const botBase = rawBotLogin.toLowerCase().replace(/\[bot\]$/, '');
+      const reviews = await this.paginate<Record<string, unknown>>(`/pulls/${prNumber}/reviews`, {
+        perPage: 100,
+        maxPages: 10,
+      });
+      const botReviews: BotReviewInfo[] = [];
+      for (const r of reviews) {
+        const login = String((r as { user?: { login?: unknown } }).user?.login ?? '').toLowerCase();
+        if (login.replace(/\[bot\]$/, '') !== botBase) continue;
+        const id = Number((r as { id?: unknown }).id ?? 0);
+        // Zero is never a valid REST review id — skip malformed records so
+        // callers taking [0] as the latest never see an id-0 stub.
+        if (!Number.isFinite(id) || id <= 0) continue;
+        botReviews.push({
+          id,
+          commitId: String((r as { commit_id?: unknown }).commit_id ?? ''),
+          body: String((r as { body?: unknown }).body ?? ''),
+          state: String((r as { state?: unknown }).state ?? ''),
+          submittedAt: String((r as { submitted_at?: unknown }).submitted_at ?? ''),
+        });
+      }
+      // Newest first so callers can take [0] as the latest bot review.
+      botReviews.sort((a, b) => {
+        if (a.submittedAt < b.submittedAt) return 1;
+        if (a.submittedAt > b.submittedAt) return -1;
+        return 0;
+      });
+      return botReviews;
+    } catch (err) {
+      // Preserve cancellation semantics (mirrors paginate): an aborted fetch
+      // must propagate instead of degrading to [] + a fresh review LLM pass.
+      if (err instanceof DOMException && err.name === 'AbortError') throw err;
+      if (err instanceof Error && err.name === 'AbortError') throw err;
+      return [];
+    }
   }
 
   /**
