@@ -54,12 +54,15 @@ export {
 } from './utils/blame.js';
 export type { BlameRange, BlameAttribution, GetGitBlameOptions } from './utils/blame.js';
 export type {
+  HeadCIStatus,
   PlatformAdapter,
   ReviewPostResult,
   ReviewThreadInfo,
   ReviewCommentDetail,
   ReviewCommentThread,
 } from './platform/adapter.js';
+export { checkHeadCIGreen, isHeadCIGreen } from './utils/head-ci.js';
+export type { HeadCICheck, HeadCIGateResult, HeadCIGreenOptions } from './utils/head-ci.js';
 export {
   emptyResult,
   parseJsonlFile,

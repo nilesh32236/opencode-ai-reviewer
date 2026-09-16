@@ -19,6 +19,7 @@ import {
   buildFixBody,
   buildFunctionScoreOptions,
   buildReadyBody,
+  checkHeadCIGreen,
   markAnalysisReady,
   parseAnalysisPlan,
   parseRunChecksCommands,
@@ -913,13 +914,24 @@ export async function runAutofixLoop(
   const history: IterationRecord[] = [];
   const previousFindings: PreviousFindingIteration[] = [];
   let approved = false;
-  let exitReason: 'approved' | 'no-changes' | 'git-failure' | 'timeout' | 'exhausted' = 'exhausted';
+  let exitReason:
+    | 'approved'
+    | 'no-changes'
+    | 'git-failure'
+    | 'timeout'
+    | 'ci-waiting'
+    | 'exhausted' = 'exhausted';
 
   const startTime = Date.now();
   const totalTimeoutMs = (config.timeoutMinutes ?? 20) * 60 * 1000;
   const gracePeriodMs = Math.max(30_000, totalTimeoutMs * 0.1);
 
   for (let i = 0; i < config.maxIterations; i++) {
+    // A CI-waiting block from a prior iteration must not latch across
+    // iterations: later fix work that exhausts must still reach the
+    // needs-manual-review terminal. Only a terminal CI-block (the last
+    // iteration ending in `continue` below) preserves the waiting state.
+    if (exitReason === 'ci-waiting') exitReason = 'exhausted';
     const elapsedMs = Date.now() - startTime;
     const timeLeftMs = totalTimeoutMs - elapsedMs;
 
@@ -968,7 +980,7 @@ export async function runAutofixLoop(
       await handleTimeoutGracefully(prNumber, history, i, config, gh, true);
       return;
     }
-    const prHeadSha = pr.headSha;
+    let prHeadSha = pr.headSha;
 
     let previousBotComments:
       | Array<{ file: string; line: number | null; body: string; commentId: number }>
@@ -1032,6 +1044,26 @@ export async function runAutofixLoop(
       break;
     }
 
+    // The review above is a long LLM call: a push during review leaves the
+    // pre-review head SHA stale. Re-fetch so both postReview and the CI gate
+    // below target the current head. A refetch failure fails closed for this
+    // iteration (skip on stale SHA) instead of gating on uncertain state.
+    try {
+      const fresh = await withRetry(() => gh.getMR(prNumber), {
+        operationName: 'autofix.getMR.refresh',
+        signal,
+      });
+      pr = fresh;
+      prHeadSha = fresh.headSha;
+    } catch (err) {
+      core.warning(
+        sanitize(
+          `Failed to re-fetch PR #${prNumber} after review in iteration ${i + 1} — skipping CI gate on stale SHA: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
+      continue;
+    }
+
     let currentCommentIds:
       | Array<{ file: string; line: number; commentId: number; nodeId?: string }>
       | undefined;
@@ -1069,6 +1101,73 @@ export async function runAutofixLoop(
     };
 
     if (result.verdict.ready && result.stats.critical === 0 && result.stats.important === 0) {
+      // Fail-closed CI gate: a clean review is not enough — the exact head
+      // SHA must have green CI CheckRuns. Empty rollups (`[skip ci]` pushes,
+      // event-delivery gaps), pending/failed/skipped checks, query errors, or
+      // a missing adapter method all block `autofix:ready`. The PR stays in
+      // `autofix` for another cycle instead of becoming mergeable.
+      let ciGate: { ok: boolean; reason: string };
+      try {
+        // Retried like the surrounding hot-loop fetches: a single transient
+        // 429/5xx must not consume a whole iteration (including the expensive
+        // review above). Persistent failures still fail closed via the catch.
+        ciGate = await withRetry(() => checkHeadCIGreen(gh, prHeadSha, undefined, signal), {
+          operationName: 'autofix.checkHeadCI',
+          maxRetries: 2,
+          signal,
+        });
+      } catch (err) {
+        ciGate = {
+          ok: false,
+          reason: `CI gate error for ${String(prHeadSha ?? '').slice(0, 7) || 'unknown'}: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+      if (!ciGate.ok) {
+        core.warning(
+          sanitize(
+            `PR #${prNumber} review clean but ${ciGate.reason} — refusing autofix:ready, staying in autofix`,
+          ),
+        );
+        new Logger('Autofix').warn('CI gate blocked autofix:ready', {
+          operation: 'autofix.ciGate',
+          prNumber,
+          headSha: prHeadSha,
+          reason: ciGate.reason,
+        });
+        entry.status = 'needs-fix';
+        history.push(entry);
+        try {
+          await withRetry(() => gh.setLabels(prNumber, ['autofix'], ['autofix:ready']), {
+            operationName: 'autofix.setLabels.ciBlocked',
+            maxRetries: 2,
+            signal,
+          });
+        } catch (err) {
+          core.warning(
+            sanitize(
+              `Failed to set autofix labels on PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+            ),
+          );
+        }
+        try {
+          await gh.postOrUpdateComment(
+            prNumber,
+            REVIEW_MARKER,
+            `${buildAutofixStatusBody(history, config.maxIterations, 'reviewing', result)}\n\n⏳ **Waiting on CI** — ${sanitize(ciGate.reason)}. \`autofix:ready\` will be applied once CI is green on the head SHA.`,
+          );
+        } catch (err) {
+          core.warning(
+            sanitize(
+              `Failed to post CI-waiting comment: ${err instanceof Error ? err.message : err}`,
+            ),
+          );
+        }
+        // CI-only block (review is clean): preserve the `autofix` waiting
+        // state instead of falling through to the exhausted/manual-review
+        // terminal below.
+        exitReason = 'ci-waiting';
+        continue;
+      }
       core.info('PR approved — all issues resolved');
       approved = true;
       exitReason = 'approved';
@@ -1391,7 +1490,10 @@ export async function runAutofixLoop(
     }
   }
 
-  if (!approved) {
+  // A CI-waiting exit (review clean, CI not yet green) preserves the
+  // `autofix` label and the Waiting-on-CI comment: it must not be relabeled
+  // `autofix:needs-manual-review` or failed as if iterations were exhausted.
+  if (!approved && exitReason !== 'ci-waiting') {
     // Terminal label update is best-effort: on the needs-manual-review path
     // a transient setLabels failure must not skip the intended
     // setFailed/outputs below or propagate a generic error to index.ts.

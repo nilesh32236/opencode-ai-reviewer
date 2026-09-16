@@ -1,4 +1,5 @@
 import type {
+  HeadCIStatus,
   IssueComment,
   IssueContext,
   PRContext,
@@ -220,6 +221,17 @@ export class LocalAdapter implements PlatformAdapter {
     _output?: { title: string; summary: string; text?: string },
   ): Promise<{ id: number }> {
     return { id: 0 };
+  }
+
+  /**
+   * Get the aggregated CI status for a commit SHA. Local CLI mode has no CI,
+   * so this throws fail-closed — callers must treat it as not-green.
+   * @param _commitSha - Commit SHA (unused).
+   * @param _signal - Optional AbortSignal (unused, accepted for interface parity).
+   * @throws Error Always, unsupported in local CLI mode.
+   */
+  async getHeadCIStatus(_commitSha: string, _signal?: AbortSignal): Promise<HeadCIStatus> {
+    throw new Error('getHeadCIStatus is not available in local CLI mode');
   }
 
   /**
