@@ -3899,12 +3899,14 @@ export class ReviewEngine {
    * @param result - Review result containing candidate issues.
    * @param defaultCategory - Default category assigned to findings without one.
    * @param extraMinSeverityRank - Optional extra minimum severity rank applied on top of the configured floor.
+   * @param budgetMode - Optional budget mode; 'summary'/'split' tightens to critical-only (fail-open otherwise).
    * @returns ReviewResult with the filtered issues and recomputed stats.
    */
   private applySensitivityFilter(
     result: ReviewResult,
     defaultCategory = 'general',
     extraMinSeverityRank?: number,
+    budgetMode?: ReviewBudgetMode,
   ): ReviewResult {
     const sensitivity = this.config.review.sensitivity ?? {};
     const { issues, dropped } = filterFindings(result.issues, {
@@ -3917,9 +3919,12 @@ export class ReviewEngine {
       ignorePatterns: sensitivity.ignorePatterns,
       categories: this.config.review.categories,
       defaultCategory,
+      budgetMode,
     });
     if (dropped > 0) {
-      this.logger.info(`Sensitivity filter dropped ${dropped} finding(s) (kept ${issues.length})`);
+      this.logger.info(
+        `Sensitivity filter dropped ${dropped} finding(s) (kept ${issues.length})${budgetMode && budgetMode !== 'full' ? ` [budgetMode=${budgetMode}]` : ''}`,
+      );
     }
     // Always apply the filter output so `category` normalization and severity
     // ordering are consistent regardless of whether any finding was dropped.
@@ -4136,7 +4141,7 @@ export class ReviewEngine {
     // Apply per-repository sensitivity filters (severity/confidence floors,
     // focus areas, ignore patterns, finding caps). Runs after verification and
     // low-confidence suppression so the filters see final severities.
-    enrichedResult = this.applySensitivityFilter(enrichedResult);
+    enrichedResult = this.applySensitivityFilter(enrichedResult, 'general', undefined, budgetMode);
 
     // Deterministic hardcoded-secret scan. Runs after all LLM-based passes so a
     // secret finding can never be downgraded by reachability, dropped by

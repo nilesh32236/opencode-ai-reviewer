@@ -3,6 +3,7 @@ import type {
   CategoryOverride,
   ConfidenceThreshold,
   MinSeverity,
+  ReviewBudgetMode,
   ReviewIssue,
   Severity,
 } from '../types/index.js';
@@ -84,6 +85,13 @@ export interface FilterFindingsOptions {
   categories?: Record<string, CategoryOverride>;
   /** Category to assign to findings without one (default 'general'). */
   defaultCategory?: string;
+  /**
+   * Deterministic budget-mode tightening for large-PR reviews.
+   * `undefined`/`'full'` = no change (fail-open); `'summary'`/`'split'` =
+   * critical-only (mirrors `buildBudgetBanner` semantics). Only ever tightens,
+   * never loosens, the existing sensitivity floors.
+   */
+  budgetMode?: ReviewBudgetMode;
 }
 
 /** Result of a filtering pass over review findings. */
@@ -106,6 +114,12 @@ function sortBySeverity(issues: ReviewIssue[]): ReviewIssue[] {
  * severity floor, confidence floor, per-category finding cap, then the total
  * finding cap (keeping the highest-severity findings).
  *
+ * When `options.budgetMode` is `'summary'` or `'split'`, the global severity
+ * floor is deterministically tightened to critical-only (rank 3), mirroring
+ * the `buildBudgetBanner` prompt semantics so large-PR reviews stay concise
+ * even if the model ignores the banner. Any other value (including
+ * `undefined`/`'full'`) leaves behavior unchanged (fail-open).
+ *
  * @param issues - Raw findings from the model (after verification/reachability).
  * @param options - Sensitivity configuration to apply.
  * @returns Filtered findings with recomputed count of dropped findings.
@@ -120,6 +134,12 @@ export function filterFindings(
     options.minSeverityRankValue !== undefined
       ? Math.max(baseMinRank, options.minSeverityRankValue)
       : baseMinRank;
+  // Budget adaptation: 'summary'/'split' modes tighten to critical-only.
+  // Fail-open: 'full', undefined, or any unknown value keeps current behavior.
+  const effectiveMinRank =
+    options.budgetMode === 'summary' || options.budgetMode === 'split'
+      ? Math.max(globalMinRank, SEVERITY_RANK.critical)
+      : globalMinRank;
   const globalConfidenceRank = confidenceThresholdRank(options.confidenceThreshold);
   const ignorePatterns = options.ignorePatterns ?? [];
   const focusAreas = options.focusAreas ?? [];
@@ -140,7 +160,9 @@ export function filterFindings(
     const overrideMinRank =
       override?.minSeverity !== undefined ? minSeverityRank(override.minSeverity) : undefined;
     const minRank =
-      overrideMinRank !== undefined ? Math.max(overrideMinRank, globalMinRank) : globalMinRank;
+      overrideMinRank !== undefined
+        ? Math.max(overrideMinRank, effectiveMinRank)
+        : effectiveMinRank;
     if (severityRank(issue.severity) < minRank) continue;
 
     // A missing confidence is treated as 'low' (rank 1) so a confidence floor
