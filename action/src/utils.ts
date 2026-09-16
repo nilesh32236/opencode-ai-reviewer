@@ -200,7 +200,7 @@ function advanceToCharBoundary(buf: Buffer, start: number): number {
  * race settles, listeners are detached, and the caller sees exit 124. Switch
  * to `node:child_process` spawn + `child.kill('SIGTERM')` with a SIGKILL
  * fallback if true subprocess reaping is ever required.
- * @param program - Executable.
+ * @param program - Bare executable name (PATH-resolved; paths and shell metacharacters are rejected).
  * @param args - Arguments.
  * @param options - Exec options plus optional timeout/signal/cwd.
  * @param options.cwd - Working directory for the subprocess.
@@ -219,6 +219,15 @@ export async function execWithTimeout(
     silent?: boolean;
   } = {},
 ): Promise<{ exitCode: number; output: string }> {
+  // Fail closed on a non-trivial program name: this helper runs with the
+  // workflow's token in scope, so the executable must be a bare command
+  // resolved via PATH — never a path (absolute, relative, or UNC, which
+  // would bypass PATH and allow a planted binary) and never shell
+  // metacharacters (exec.exec spawns without a shell, but a hostile value
+  // here would still misdirect execution). Callers pass literals ('pnpm').
+  if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(program)) {
+    throw new Error(`Refusing to execute non-bare program name: ${program}`);
+  }
   // Coerce to a positive finite number, mirroring createRunAbortController:
   // 0/negative/NaN would fire immediately and Infinity would never fire.
   const rawTimeoutMs = Number(options.timeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS);

@@ -364,21 +364,27 @@ export function readConstrainedLogFile(logsFilePath: string): string {
   if (!realContained) {
     throw new Error(`CI_FAILURE_LOGS_FILE resolves outside safe roots: ${logsFilePath}`);
   }
-  const stat = fs.statSync(real);
-  if (!stat.isFile()) {
-    throw new Error(`CI_FAILURE_LOGS_FILE is not a regular file: ${logsFilePath}`);
-  }
-  if (stat.size > MAX_CI_LOGS_BYTES) {
-    const fd = fs.openSync(real, 'r');
-    try {
+  // Pin the file with an open descriptor before inspecting it: checking
+  // metadata and then reading by path (statSync + readFileSync) is a
+  // TOCTOU race — the path can be swapped between the two calls. fstatSync
+  // on the descriptor observes the same file that is subsequently read.
+  const fd = fs.openSync(real, 'r');
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) {
+      throw new Error(`CI_FAILURE_LOGS_FILE is not a regular file: ${logsFilePath}`);
+    }
+    if (stat.size > MAX_CI_LOGS_BYTES) {
       const buf = Buffer.alloc(MAX_CI_LOGS_BYTES);
       fs.readSync(fd, buf, 0, MAX_CI_LOGS_BYTES, 0);
       return buf.toString('utf-8');
-    } finally {
-      fs.closeSync(fd);
     }
+    // Small file: read the whole descriptor (never re-open by path, so the
+    // validated file and the read file cannot diverge).
+    return fs.readFileSync(fd, 'utf-8');
+  } finally {
+    fs.closeSync(fd);
   }
-  return fs.readFileSync(real, 'utf-8');
 }
 
 /**

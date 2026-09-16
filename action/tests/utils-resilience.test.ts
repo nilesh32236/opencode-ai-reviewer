@@ -82,6 +82,17 @@ describe('capVerificationOutput', () => {
   });
 });
 
+describe('execWithTimeout program validation', () => {
+  it.each([['/usr/bin/pnpm'], ['../bin/evil'], ['pnpm --version'], [''], ['.pnpm']])(
+    'refuses non-bare program name %s',
+    async (program) => {
+      await expect(execWithTimeout(program, [], { timeoutMs: 1000 })).rejects.toThrow(
+        /non-bare program name/,
+      );
+    },
+  );
+});
+
 describe('describeAbortKind', () => {
   it('maps DOMException TimeoutError to timeout', () => {
     expect(describeAbortKind(new DOMException('deadline', 'TimeoutError'))).toBe('timeout');

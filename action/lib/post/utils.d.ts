@@ -66,7 +66,7 @@ export declare function capVerificationOutput(output: string): string;
  * race settles, listeners are detached, and the caller sees exit 124. Switch
  * to `node:child_process` spawn + `child.kill('SIGTERM')` with a SIGKILL
  * fallback if true subprocess reaping is ever required.
- * @param program - Executable.
+ * @param program - Bare executable name (PATH-resolved; paths and shell metacharacters are rejected).
  * @param args - Arguments.
  * @param options - Exec options plus optional timeout/signal/cwd.
  * @param options.cwd - Working directory for the subprocess.
