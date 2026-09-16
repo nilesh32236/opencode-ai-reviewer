@@ -322,6 +322,7 @@ export function resetOpenCodeState(): void {
  * Inspect the shared module-level opencode state as one grouped snapshot
  * (see {@link OpenCodeStateSnapshot}). Read-only; mutate via the dedicated
  * setters and {@link resetOpenCodeState}.
+ * @returns The current module-level opencode state snapshot.
  */
 export function getOpenCodeState(): OpenCodeStateSnapshot {
   return {
@@ -359,6 +360,7 @@ function cleanupAskPassDirs(): void {
  * Best-effort, never throws. Preferred for per-run cleanup; the sync
  * variants below remain for `exit`-handler use (async work is unavailable
  * during `process.on('exit')`).
+ * @param dir - Temp directory to remove.
  */
 export async function removeTempDirAsync(dir: string): Promise<void> {
   try {
@@ -368,7 +370,10 @@ export async function removeTempDirAsync(dir: string): Promise<void> {
   }
 }
 
-/** Async per-run isolated-HOME removal (see {@link removeTempDirAsync}). */
+/**
+ * Async per-run isolated-HOME removal (see {@link removeTempDirAsync}).
+ * @param dir - Isolated HOME directory to remove.
+ */
 export async function cleanupIsolatedOpenCodeHomeAsync(dir: string): Promise<void> {
   await removeTempDirAsync(dir);
   const idx = openCodeRunHomeDirs.indexOf(dir);

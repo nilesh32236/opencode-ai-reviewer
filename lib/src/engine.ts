@@ -932,6 +932,7 @@ export class ReviewEngine {
    *
    * @param pr - Pull request context with changed files.
    * @param _iteration - Optional fix iteration index (0-indexed).
+   * @param _iterationOrOptions - Fix iteration index or options object (legacy positional overload).
    * @param promptFile - Optional custom review prompt file path.
    * @param promptExtra - Optional extra instructions appended to the review prompt.
    * @param timeoutMinutes - Optional timeout override per run.
@@ -2643,6 +2644,18 @@ export class ReviewEngine {
    * Accepts either 12 positional args (legacy) or a single
    * {@link AgentBatchContextOptions} object (preferred for new callers — the
    * positional list is long enough to mis-order).
+   * @param batchContextOrOptions - Batch context or options object (overload input).
+   * @param mcpDocs - MCP library documentation context.
+   * @param openThreadsContext - Open human review-thread context.
+   * @param codebaseIndexContext - Codebase index context for the batch.
+   * @param deltaContext - Inter-iteration diff context.
+   * @param lessons - Learning-store lessons context.
+   * @param falsePositiveRules - False-positive suppression rules context.
+   * @param previousFindings - Previous iteration findings.
+   * @param previousBotComments - Previous bot review comments.
+   * @param repoRulesContext - Repository rules context.
+   * @param commitMessages - PR commit messages context.
+   * @param budget - Orchestrator context size budget.
    * @returns The enriched context and whether assembly-time budgeting applied
    * (explicit boolean so callers never string-scan for the budget marker —
    * a PR diff containing the marker literal must not force degradation).
@@ -4738,6 +4751,9 @@ export class ReviewEngine {
 
   /**
    * Run one configured linter against changed files (fail-open, never throws).
+   * @param linterConfig - Linter configuration to run.
+   * @param changedFiles - Changed files to lint.
+   * @param workDir - Working directory for the linter.
    * @returns The linter result, or null when skipped/no files matched.
    */
   private async runSingleLinter(
