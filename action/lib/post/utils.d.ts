@@ -45,6 +45,11 @@ export declare const DEFAULT_VERIFICATION_TIMEOUT_MS: number;
 export declare const MAX_VERIFICATION_OUTPUT_BYTES: number;
 /**
  * Truncate captured verification output to the byte cap, annotating truncation.
+ * Over-cap output keeps the head (first 128 KiB) and the tail (last 128 KiB)
+ * with a gap marker: for failing verification commands the tail usually holds
+ * the actual error, so head-only retention would hide the diagnostic the
+ * engine needs most. Both cut points are clamped to UTF-8 character
+ * boundaries so capping never emits a U+FFFD replacement character.
  * @param output - Full captured output.
  * @returns Output within the cap.
  */

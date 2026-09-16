@@ -97,16 +97,20 @@ export async function runSelfHeal(
   const maxHealRetries = 3;
   let lastVerificationError: string | undefined;
   let changesMade = false;
+  let aborted = false;
 
   for (let attempt = 0; attempt < maxHealRetries; attempt++) {
     core.info(`=== Self-heal attempt ${attempt + 1}/${maxHealRetries} ===`);
 
     if (signal?.aborted) {
       // Signal is advisory-only: engine.runSelfHeal accepts no AbortSignal,
-      // so this pre-check cannot cancel an in-flight LLM call.
-      const kind = describeAbortKind(signal.reason);
+      // so this pre-check cannot cancel an in-flight LLM call. Record the
+      // cancellation and break; the post-loop abort gate below fails visibly
+      // instead of falling through to push a branch / open a PR.
+      const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
       lastVerificationError = `Self-heal cancelled before attempt ${attempt + 1} (${kind})`;
       core.warning(sanitize(lastVerificationError));
+      aborted = true;
       break;
     }
 
@@ -219,17 +223,32 @@ export async function runSelfHeal(
     }
   }
 
+  // A cancelled run must never fall through to push a branch and open a PR:
+  // break preserves changesMade=true, so gate on cancellation explicitly and
+  // fail visibly with outputs instead. Also covers a signal that fired during
+  // the final in-flight (non-cancellable) engine call, where no pre-check ran.
+  if (aborted || signal?.aborted) {
+    const kind =
+      signal && signal.reason !== undefined ? describeAbortKind(signal.reason) : 'cancelled';
+    const message = lastVerificationError ?? `Self-heal cancelled (${kind})`;
+    core.setOutput('changes_made', String(changesMade));
+    core.setOutput('verification_passed', 'false');
+    core.setFailed(sanitize(message));
+    return;
+  }
+
   if (!changesMade) {
     // Never report success with zero progress: set explicit outputs and fail
-    // visibly so the run is re-triable instead of silently green.
+    // visibly so the run is re-triable instead of silently green. The
+    // embedded engine error is capped (~2000 chars, surrogate-safe) so a
+    // large message cannot exceed annotation limits.
     core.info('No changes were made by the self-heal agent');
     core.setOutput('changes_made', 'false');
     core.setOutput('verification_passed', 'false');
-    core.setFailed(
-      sanitize(
-        `Self-heal made no progress${lastVerificationError ? `: ${lastVerificationError}` : ' — the agent produced no committable fix'}`,
-      ),
-    );
+    const detail = lastVerificationError
+      ? Array.from(lastVerificationError).slice(0, 2000).join('')
+      : 'the agent produced no committable fix';
+    core.setFailed(sanitize(`Self-heal made no progress: ${detail}`));
     return;
   }
 

@@ -88,6 +88,20 @@ export async function runReview(
     return;
   }
 
+  // Early abort pre-check before any platform fetches: a cancelled/timed-out
+  // run must not pay for hot-loop getMR/threads work before bailing. A second
+  // guard sits right before the engine call in case the signal fired mid-fetch.
+  // Signal is advisory-only: engine.reviewPR accepts no AbortSignal, so these
+  // pre-checks cannot cancel an in-flight LLM call.
+  if (signal?.aborted) {
+    // Default to 'cancelled' when aborted without a reason: describeAbortKind
+    // returns 'error' for undefined, which would read as 'cancelled (error)'.
+    const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+    core.warning(sanitize(`Review cancelled before fetch (${kind}) — skipping`));
+    core.setFailed(sanitize(`Review cancelled (${kind}) before fetching the PR`));
+    return;
+  }
+
   let pr: PRContext;
   try {
     pr = await gh.getMR(prNumber);
@@ -278,10 +292,11 @@ export async function runReview(
     // Error boundary mirroring analyze.ts/describe.ts: an LLM/transient
     // failure must post a visible marker comment (best-effort, guarded)
     // before failing, so the PR never goes silent on the highest-traffic path.
-    const kind =
-      signal?.aborted && signal.reason !== undefined
-        ? describeAbortKind(signal.reason)
-        : describeAbortKind(err);
+    const kind = signal?.aborted
+      ? signal.reason === undefined
+        ? 'cancelled'
+        : describeAbortKind(signal.reason)
+      : describeAbortKind(err);
     core.warning(
       sanitize(
         `Review engine failed for PR #${prNumber} (${kind}): ${err instanceof Error ? err.message : String(err)}`,

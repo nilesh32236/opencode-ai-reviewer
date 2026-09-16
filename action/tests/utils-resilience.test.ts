@@ -45,6 +45,7 @@ vi.mock('@actions/github', () => ({
 
 import { runReview } from '../src/review.js';
 import {
+  DEFAULT_VERIFICATION_TIMEOUT_MS,
   MAX_VERIFICATION_OUTPUT_BYTES,
   capVerificationOutput,
   createRunAbortController,
@@ -61,9 +62,23 @@ describe('capVerificationOutput', () => {
     const big = 'x'.repeat(300 * 1024);
     const capped = capVerificationOutput(big);
     expect(Buffer.byteLength(capped, 'utf-8')).toBeLessThanOrEqual(
-      MAX_VERIFICATION_OUTPUT_BYTES + 200,
+      MAX_VERIFICATION_OUTPUT_BYTES + 400,
     );
     expect(capped).toContain('truncated');
+  });
+
+  it('preserves the tail (where the error usually is) when over the cap', () => {
+    const big = `HEAD-MARKER-${'h'.repeat(200 * 1024)}TAIL-MARKER-${'t'.repeat(100 * 1024)}`;
+    const capped = capVerificationOutput(big);
+    expect(capped).toContain('HEAD-MARKER');
+    expect(capped).toContain('TAIL-MARKER');
+    expect(capped).toContain('truncated');
+  });
+
+  it('never splits a multi-byte sequence at the cut (no U+FFFD)', () => {
+    const big = 'é'.repeat(200 * 1024); // 2 bytes each → ~400 KiB
+    const capped = capVerificationOutput(big);
+    expect(capped.replace(/…\[truncated.*?\]/, '')).not.toContain('�');
   });
 });
 
@@ -176,6 +191,50 @@ describe('execWithTimeout', () => {
     });
     expect(result.exitCode).toBe(124);
     expect(removeSpy).toHaveBeenCalledWith('abort', expect.any(Function));
+  });
+
+  it.each([0, -5, Number.NaN, Number.POSITIVE_INFINITY])(
+    'falls back to the default timeout for invalid timeoutMs %s',
+    async (bad) => {
+      mockExec.mockResolvedValue(0);
+      const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+      const result = await execWithTimeout('echo', ['hi'], { timeoutMs: bad });
+      expect(setTimeoutSpy).toHaveBeenCalledWith(
+        expect.any(Function),
+        DEFAULT_VERIFICATION_TIMEOUT_MS,
+      );
+      expect(result.exitCode).toBe(0);
+      setTimeoutSpy.mockRestore();
+    },
+  );
+
+  it('labels an AbortError-aborted signal as cancelled in the output', async () => {
+    mockExec.mockImplementation(() => new Promise<number>(() => {}));
+    const controller = new AbortController();
+    controller.abort(new DOMException('user cancelled', 'AbortError'));
+    const result = await execWithTimeout('sleep', ['60'], {
+      timeoutMs: 5000,
+      signal: controller.signal,
+    });
+    expect(result.exitCode).toBe(124);
+    expect(result.output).toContain('cancelled');
+    expect(result.output).toContain('AbortError');
+  });
+
+  it('retains the tail of verbose output for diagnosis', async () => {
+    mockExec.mockImplementation(
+      async (
+        _program: string,
+        _args: string[],
+        opts?: { listeners?: { stdout?: (d: Buffer) => void } },
+      ) => {
+        opts?.listeners?.stdout?.(Buffer.from(`${'h'.repeat(200 * 1024)}TAIL-ERROR-XYZ`));
+        return 1;
+      },
+    );
+    const result = await execWithTimeout('pnpm', ['test'], { timeoutMs: 5000 });
+    expect(result.exitCode).toBe(1);
+    expect(result.output).toContain('TAIL-ERROR-XYZ');
   });
 });
 

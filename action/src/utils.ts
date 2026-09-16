@@ -126,14 +126,66 @@ export const MAX_VERIFICATION_OUTPUT_BYTES = 256 * 1024;
 
 /**
  * Truncate captured verification output to the byte cap, annotating truncation.
+ * Over-cap output keeps the head (first 128 KiB) and the tail (last 128 KiB)
+ * with a gap marker: for failing verification commands the tail usually holds
+ * the actual error, so head-only retention would hide the diagnostic the
+ * engine needs most. Both cut points are clamped to UTF-8 character
+ * boundaries so capping never emits a U+FFFD replacement character.
  * @param output - Full captured output.
  * @returns Output within the cap.
  */
 export function capVerificationOutput(output: string): string {
   const byteLen = Buffer.byteLength(output, 'utf-8');
   if (byteLen <= MAX_VERIFICATION_OUTPUT_BYTES) return output;
-  const buf = Buffer.from(output, 'utf-8').subarray(0, MAX_VERIFICATION_OUTPUT_BYTES);
-  return `${buf.toString('utf-8')}\n…[truncated ${byteLen - MAX_VERIFICATION_OUTPUT_BYTES} bytes: output capped at ${MAX_VERIFICATION_OUTPUT_BYTES} bytes]`;
+  const buf = Buffer.from(output, 'utf-8');
+  const HEAD_KEEP_BYTES = 128 * 1024;
+  const TAIL_KEEP_BYTES = 128 * 1024;
+  const headEnd = clampToCharBoundary(buf, Math.min(HEAD_KEEP_BYTES, buf.length));
+  const tailStart = advanceToCharBoundary(buf, Math.max(headEnd, buf.length - TAIL_KEEP_BYTES));
+  const head = buf.subarray(0, headEnd).toString('utf-8');
+  const tail = buf.subarray(tailStart).toString('utf-8');
+  return `${head}\n…[truncated ${byteLen - MAX_VERIFICATION_OUTPUT_BYTES} bytes: output capped at ${MAX_VERIFICATION_OUTPUT_BYTES} bytes — showing head and tail]…\n${tail}`;
+}
+
+/**
+ * Move a head-truncation end index left until it lands on a UTF-8 character
+ * boundary, so decoding never splits a multi-byte sequence (which would emit
+ * U+FFFD). `Buffer.subarray(0, N).toString('utf-8')` does not do this.
+ * @param buf - UTF-8 encoded bytes.
+ * @param end - Proposed end index.
+ * @returns Adjusted end index on a character boundary.
+ */
+function clampToCharBoundary(buf: Buffer, end: number): number {
+  const e = Math.min(end, buf.length);
+  let i = e - 1;
+  let cont = 0;
+  while (i >= 0 && (buf[i] & 0xc0) === 0x80) {
+    cont++;
+    i--;
+  }
+  if (cont === 0) return e;
+  if (i < 0) return 0;
+  const lead = buf[i];
+  let need = 0;
+  if (lead >= 0xc2 && lead <= 0xdf) need = 1;
+  else if (lead >= 0xe0 && lead <= 0xef) need = 2;
+  else if (lead >= 0xf0 && lead <= 0xf4) need = 3;
+  else return e;
+  // Available continuation bytes: e - i - 1. Incomplete sequence → drop it.
+  return e - i - 1 < need ? i : e;
+}
+
+/**
+ * Move a tail-truncation start index right until it lands on a UTF-8
+ * character boundary (skipping continuation bytes of a split sequence).
+ * @param buf - UTF-8 encoded bytes.
+ * @param start - Proposed start index.
+ * @returns Adjusted start index on a character boundary.
+ */
+function advanceToCharBoundary(buf: Buffer, start: number): number {
+  let s = Math.max(0, start);
+  while (s < buf.length && (buf[s] & 0xc0) === 0x80) s++;
+  return s;
 }
 
 /**
@@ -170,20 +222,59 @@ export async function execWithTimeout(
     Number.isFinite(rawTimeoutMs) && rawTimeoutMs > 0
       ? rawTimeoutMs
       : DEFAULT_VERIFICATION_TIMEOUT_MS;
-  const chunks: Buffer[] = [];
+  // In-memory capture retains head + tail (not head-only): the tail usually
+  // holds the actual error for failing commands. Head keeps the first 128
+  // KiB; the tail is a sliding window over the last 384 KiB, so live memory
+  // stays bounded at ~512 KiB no matter how much a runaway process emits.
+  const HEAD_KEEP_BYTES = 128 * 1024;
+  const TAIL_KEEP_BYTES = 384 * 1024;
+  let headChunk: Buffer | null = null;
+  let headBytes = 0;
+  const tailQueue: Buffer[] = [];
+  let tailBytes = 0;
   let totalBytes = 0;
   let settled = false;
   const pushChunk = (data: Buffer): void => {
     // Stop capturing once the race has settled so a still-running hung child
     // cannot grow memory after the caller already received exit 124.
     if (settled) return;
-    // Cap in-memory capture: keep the head of the log (most useful for
-    // diagnosis) and drop the tail beyond 2x the feedback cap.
-    if (totalBytes < MAX_VERIFICATION_OUTPUT_BYTES * 2) {
-      const remaining = MAX_VERIFICATION_OUTPUT_BYTES * 2 - totalBytes;
-      chunks.push(data.subarray(0, remaining));
-      totalBytes += Math.min(data.length, remaining);
+    totalBytes += data.length;
+    if (headBytes < HEAD_KEEP_BYTES) {
+      const slice = data.subarray(0, HEAD_KEEP_BYTES - headBytes);
+      headChunk = headChunk ? Buffer.concat([headChunk, slice]) : Buffer.from(slice);
+      headBytes += slice.length;
     }
+    tailQueue.push(data);
+    tailBytes += data.length;
+    while (tailBytes > TAIL_KEEP_BYTES && tailQueue.length > 0) {
+      const first = tailQueue[0];
+      const excess = tailBytes - TAIL_KEEP_BYTES;
+      if (first.length <= excess) {
+        tailQueue.shift();
+        tailBytes -= first.length;
+      } else {
+        tailQueue[0] = first.subarray(excess);
+        tailBytes -= excess;
+        break;
+      }
+    }
+  };
+  // Assemble head + gap marker + tail, decoding each side on a UTF-8
+  // character boundary so a multi-byte sequence split across the cut never
+  // surfaces as U+FFFD.
+  const combinedRawOutput = (): string => {
+    const head = headChunk ?? Buffer.alloc(0);
+    if (totalBytes <= TAIL_KEEP_BYTES) {
+      return Buffer.concat(tailQueue).toString('utf-8');
+    }
+    const tail = Buffer.concat(tailQueue);
+    const headEnd = clampToCharBoundary(head, head.length);
+    const tailStart = advanceToCharBoundary(tail, 0);
+    const omitted = Math.max(0, totalBytes - headEnd - (tail.length - tailStart));
+    return (
+      `${head.subarray(0, headEnd).toString('utf-8')}\n…[omitted ${omitted} bytes of middle output]…\n` +
+      tail.subarray(tailStart).toString('utf-8')
+    );
   };
   const execPromise = exec.exec(program, args, {
     ...(options.cwd ? { cwd: options.cwd } : {}),
@@ -229,19 +320,21 @@ export async function execWithTimeout(
   if (winner.timedOut) {
     // Reuse describeAbortKind so Error-named TimeoutError/AbortError reasons
     // are labeled correctly (a hand-rolled DOMException-only check mislabels
-    // them). Defaults to TimeoutError when the race was won by the timer.
-    const abortKind =
-      options.signal?.aborted && options.signal.reason !== undefined
-        ? describeAbortKind(options.signal.reason)
-        : 'timeout';
+    // them). Defaults to TimeoutError when the race was won by the timer;
+    // an aborted signal without a reason still reads as 'cancelled'.
+    const abortKind = !options.signal?.aborted
+      ? 'timeout'
+      : options.signal.reason === undefined
+        ? 'cancelled'
+        : describeAbortKind(options.signal.reason);
     const reason = abortKind === 'cancelled' ? 'AbortError' : 'TimeoutError';
     const verb = abortKind === 'cancelled' ? 'cancelled' : 'timed out';
     const output = capVerificationOutput(
-      `${Buffer.concat(chunks).toString('utf-8')}\nVerification command ${verb} after ${Math.round(timeoutMs / 1000)}s (${reason}): ${program} ${args.join(' ')}`,
+      `${combinedRawOutput()}\nVerification command ${verb} after ${Math.round(timeoutMs / 1000)}s (${reason}): ${program} ${args.join(' ')}`,
     );
     return { exitCode: 124, output };
   }
-  const rawOutput = Buffer.concat(chunks).toString('utf-8');
+  const rawOutput = combinedRawOutput();
   const execError = 'execError' in winner ? winner.execError : undefined;
   const output = capVerificationOutput(
     execError ? `${rawOutput}\nVerification command failed to start: ${execError}` : rawOutput,
