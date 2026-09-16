@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.13.13] — 2026-09-16
+
+
+### Fixed
+
+- SHA-pin PR checkouts and guard forks in secret-bearing loops (#543) (#543)
+
+[v1.13.13]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.12...v1.13.13
+
 ## [v1.13.12] — 2026-09-16
 
 
