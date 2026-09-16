@@ -47,21 +47,75 @@ export function extractValidMermaidDiagram(content: string): string | null {
 }
 
 /**
+ * Build a text alternative for a validated Mermaid flowchart body so
+ * screen-reader and text-only users get an equivalent of the visual diagram.
+ * Lists the diagram direction plus one `source -> target` line per edge-like
+ * row (node labels sanitized to plain text); falls back to a one-sentence
+ * flow summary when no edges are detected.
+ *
+ * @param body - Validated Mermaid diagram body (flowchart/graph source).
+ * @returns Markdown lines forming the text alternative.
+ */
+export function buildDiagramTextAlternative(body: string): string {
+  const lines = body
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !l.startsWith('%%'));
+  const direction = /^(flowchart|graph)\s+(TD|TB|BT|RL|LR)\b/i.exec(body)?.[2]?.toUpperCase();
+  // Keep only edge-like rows; sanitize node labels to plain text so a
+  // prompt-injected label cannot smuggle markdown/HTML into the alternative.
+  const edges = lines
+    .filter((l) => /--|==|->/.test(l))
+    .map((l) =>
+      l
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/[%#[\]()`*_~|]/g, '')
+        .trim(),
+    )
+    .filter((l) => l.length > 0);
+  const out: string[] = [
+    '<details>',
+    '<summary>Text version of the diagram (screen-reader friendly)</summary>',
+    '',
+  ];
+  if (direction) out.push(`Flow direction: ${direction}.`);
+  if (edges.length > 0) {
+    out.push('', 'Flow steps:');
+    for (const e of edges) out.push(`- ${e}`);
+  } else {
+    out.push('', `Flow with ${lines.length} step(s): ${lines.slice(0, 12).join(' → ')}.`);
+  }
+  out.push('', '</details>');
+  return out.join('\n');
+}
+
+/**
  * Fail-open post-processing for describe output with diagrams.
  *
- * Returns the content unchanged when it contains a valid diagram; strips the
- * Diagram section (heading + fenced block) when the diagram is invalid so the
- * description still posts cleanly.
+ * Returns the content with an auto-generated text alternative appended after
+ * a valid diagram; strips the Diagram section (heading + fenced block) when
+ * the diagram is invalid so the description still posts cleanly. Diagrams
+ * that ship without a text equivalent are flagged by appending one — a valid
+ * fence never posts without its screen-reader alternative.
  *
  * @param content - Full describe markdown output.
- * @returns Content with an invalid Diagram section removed, or unchanged.
+ * @returns Content with a text alternative ensured, or with an invalid
+ * Diagram section removed.
  */
 export function sanitizeDescribeDiagram(content: string): string {
-  if (extractValidMermaidDiagram(content) !== null) return content;
-  // Remove a trailing "## Diagram" section with its mermaid fence (or any fence).
-  const stripped = content.replace(
-    /\n?##\s+Diagram\s*\n(?:```mermaid[\s\S]*?```|```[\s\S]*?```)/,
-    '',
-  );
-  return stripped.trimEnd();
+  const body = extractValidMermaidDiagram(content);
+  if (body === null) {
+    // Remove a trailing "## Diagram" section with its mermaid fence (or any fence).
+    const stripped = content.replace(
+      /\n?##\s+Diagram\s*\n(?:```mermaid[\s\S]*?```|```[\s\S]*?```)/,
+      '',
+    );
+    return stripped.trimEnd();
+  }
+  // A valid diagram posts only with a text alternative alongside the fence.
+  if (content.includes('Text version of the diagram')) return content;
+  const alternative = buildDiagramTextAlternative(body);
+  return `${content.trimEnd()}\n\n${alternative}`;
 }

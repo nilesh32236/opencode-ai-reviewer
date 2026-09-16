@@ -1,6 +1,6 @@
 import type { ReviewIssue } from '../types/index.js';
 import { looksLikeCode } from './code-heuristic.js';
-import { sanitizeMarkdown } from './markdown.js';
+import { escapeInlineCode, sanitizeMarkdown } from './markdown.js';
 
 /**
  * Machine-readable fix payload for one-click Fix-with-AI / coding-agent handoff.
@@ -78,9 +78,12 @@ export function buildFixPayload(issue: ReviewIssue): FixPayload {
  * prompt for coding-agent handoff. All interpolated model text is sanitized
  * except the raw code inside the fenced block. Fail-open: returns '' on any error.
  * @param payload - The payload built by {@link buildFixPayload}.
+ * @param anchor - Optional `file:line` anchor rendered into the `<summary>`
+ * landmark so screen readers can distinguish repeated disclosures. Defaults
+ * to the payload's first file when available.
  * @returns Markdown string, or '' when nothing renderable / on error.
  */
-export function formatFixPayloadMarkdown(payload: FixPayload): string {
+export function formatFixPayloadMarkdown(payload: FixPayload, anchor?: string): string {
   try {
     const lines: string[] = [];
     if (payload.suggestedChange?.trim()) {
@@ -93,7 +96,11 @@ export function formatFixPayloadMarkdown(payload: FixPayload): string {
     }
     if (payload.prompt?.trim()) {
       if (lines.length > 0) lines.push('');
-      lines.push('<details><summary>Fix with AI</summary>');
+      const rawAnchor = anchor ?? payload.files[0] ?? '';
+      const summary = rawAnchor
+        ? `Fix with AI for <code>${escapeInlineCode(rawAnchor)}</code>`
+        : 'Fix with AI';
+      lines.push(`<details><summary>${summary}</summary>`);
       lines.push('');
       lines.push(sanitizeMarkdown(payload.prompt.trim()));
       lines.push('');
