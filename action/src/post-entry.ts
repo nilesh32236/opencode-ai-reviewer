@@ -15,12 +15,15 @@ import { createRunAbortController, sanitize } from './utils.js';
  * triggers a side-effecting top-level run.
  */
 async function main(): Promise<void> {
-  // The post phase runs as a separate process with no shared run controller,
-  // so it owns a per-process deadline (same helper/default as the main run).
-  // Per-command verification timeouts still apply inside runPost.
-  const inputs = parseInputs();
-  const runAbort = createRunAbortController(inputs.timeoutMinutes);
+  // Parse inputs inside try so a validation throw is reported via setFailed
+  // instead of escaping as an unhandled rejection.
+  let runAbort: { signal: AbortSignal; dispose: () => void } | undefined;
   try {
+    // The post phase runs as a separate process with no shared run controller,
+    // so it owns a per-process deadline (same helper/default as the main run).
+    // Per-command verification timeouts still apply inside runPost.
+    const inputs = parseInputs();
+    runAbort = createRunAbortController(inputs.timeoutMinutes);
     const platform = (process.env.PLATFORM || 'github') as 'github' | 'gitlab';
     const token = inputs.githubToken;
     const repo =
@@ -35,7 +38,7 @@ async function main(): Promise<void> {
       `Post action failed: ${sanitize(error instanceof Error ? error.message : String(error))}`,
     );
   } finally {
-    runAbort.dispose();
+    runAbort?.dispose();
   }
 }
 

@@ -11,7 +11,7 @@ import {
   validateRefName,
   withRetry,
 } from '@opencode-pr-agent/lib';
-import { resolvePrNumber, sanitize } from './utils.js';
+import { describeAbortKind, resolvePrNumber, sanitize } from './utils.js';
 
 /**
  * Run changelog generation: gather merged PRs since the last release tag,
@@ -62,7 +62,8 @@ export async function runChangelog(
   if (signal?.aborted) {
     // Signal is advisory-only: generateChangelog accepts no AbortSignal,
     // so this pre-check cannot cancel in-flight work.
-    core.setFailed(sanitize('Changelog cancelled before run'));
+    const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+    core.setFailed(sanitize(`Changelog cancelled before run (${kind})`));
     return;
   }
 

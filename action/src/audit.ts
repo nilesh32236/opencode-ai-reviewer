@@ -97,6 +97,15 @@ export async function runAudit(
   // older, undeclared name so those configs keep working.
   const promptName = core.getInput('audit_prompt_name') || core.getInput('audit-prompt-name');
 
+  // Cheap early gate: bail before paying for ensureLabels network calls and
+  // FS round-trips on a cancelled/timed-out run. The pre-read check below is
+  // kept as the second gate.
+  if (signal?.aborted) {
+    const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+    core.setFailed(sanitize(`Audit cancelled (${kind}) before run`));
+    return;
+  }
+
   try {
     await gh.ensureLabels([
       'audit',
@@ -207,6 +216,16 @@ export async function runAudit(
       targetDir: auditTarget,
       error: err instanceof Error ? err.message : String(err),
     });
+    return;
+  }
+
+  // Re-check after the awaited read: a signal fired during readFile must bail
+  // before the expensive engine.runAudit call instead of falling through.
+  if (signal?.aborted) {
+    const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+    core.setFailed(
+      sanitize(`Audit cancelled (${kind}) — category: ${category}, target: ${auditTarget}`),
+    );
     return;
   }
 

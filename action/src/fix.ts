@@ -244,6 +244,12 @@ export async function runFix(
     for (let v = 0; v <= maxVerificationRetries; v++) {
       const { exitCode, output: checkOutput } = await runVerificationSteps(steps, signal);
 
+      // A cancelled run must stop instead of feeding the cancelled output
+      // back into the engine as ordinary verification failure.
+      if (signal?.aborted) {
+        break;
+      }
+
       if (steps.length === 0) {
         break;
       }
@@ -574,7 +580,7 @@ export async function runFixIssue(
     // Signal is advisory-only: engine.runFix accepts no AbortSignal, so this
     // pre-check cannot cancel an in-flight LLM call — it only fails fast
     // before starting work.
-    const kind = describeAbortKind(signal.reason);
+    const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
     const abortMsg = `Fix cancelled before engine call (${kind}) — run deadline exceeded or workflow cancelled.`;
     core.warning(sanitize(abortMsg));
     core.setFailed(sanitize(abortMsg));
@@ -617,6 +623,7 @@ export async function runFixIssue(
 
   if (!fixResult?.changesMade) {
     core.info('No changes made by fix agent');
+    core.setOutput('changes_made', 'false');
     return;
   }
 
@@ -627,6 +634,7 @@ export async function runFixIssue(
 
   if (!hasChanges) {
     core.info('No file changes to commit');
+    core.setOutput('changes_made', 'false');
     return;
   }
 
@@ -1294,8 +1302,21 @@ async function handleTimeoutGracefully(
   gh: PlatformAdapter,
   cancelled = false,
 ): Promise<void> {
-  const status = await exec.getExecOutput('git', ['status', '--porcelain']);
-  const hasChanges = status.stdout.trim().length > 0;
+  // Probe the working tree best-effort: a status failure (no git repo,
+  // runner I/O error) must not mask the original timeout/cancel with an
+  // unhandled rejection before the comment and setFailed below.
+  let hasChanges = false;
+  try {
+    const status = await exec.getExecOutput('git', ['status', '--porcelain']);
+    hasChanges = status.stdout.trim().length > 0;
+  } catch (err) {
+    core.warning(
+      sanitize(
+        `Timeout handler status check failed: ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
+    hasChanges = false;
+  }
 
   let commitMessage = '';
   let filesChanged: string[] = [];
