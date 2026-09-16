@@ -2404,12 +2404,7 @@ export class ReviewEngine {
         result = {
           ...result,
           issues: deduped,
-          stats: {
-            total: deduped.length,
-            critical: deduped.filter((i) => i.severity === 'critical').length,
-            important: deduped.filter((i) => i.severity === 'important').length,
-            minor: deduped.filter((i) => i.severity === 'minor').length,
-          },
+          stats: computeReviewStats(deduped),
         };
       }
     }
@@ -5089,12 +5084,15 @@ export class ReviewEngine {
 
     for (const f of files) {
       if (!f.patch) continue;
-      const patchLineCount = f.patch.split('\n').length;
+      // Split once per file and reuse for both the line count and the
+      // complexity score (avoids 2-3x repeated splits on large diffs).
+      const patchLines = f.patch.split('\n');
+      const patchLineCount = patchLines.length;
       const baseline =
         globalMaxLines > 0 ? Math.min(patchLineCount, globalMaxLines) : patchLineCount;
       totalBaselineLines += baseline;
 
-      const score = this.computeFileComplexity(f);
+      const score = this.computeFileComplexity(f, patchLines);
       const { effectiveCap, category } = this.computeEffectiveCap(
         score,
         tokenBudgetConfig,
@@ -5155,16 +5153,19 @@ export class ReviewEngine {
     return { effectiveCap, category };
   }
 
-  private computeFileComplexity(file: {
-    additions: number;
-    deletions: number;
-    patch?: string;
-  }): number {
+  private computeFileComplexity(
+    file: {
+      additions: number;
+      deletions: number;
+      patch?: string;
+    },
+    preSplitLines?: string[],
+  ): number {
     if (!file.patch) return 0;
 
-    const diffContentLines = file.patch
-      .split('\n')
-      .filter((line) => line.startsWith('+') || line.startsWith('-'));
+    const diffContentLines = (preSplitLines ?? file.patch.split('\n')).filter(
+      (line) => line.startsWith('+') || line.startsWith('-'),
+    );
     const diffContent = diffContentLines.join('\n');
 
     const controlFlowRegex = /\b(if|else if|switch|case|for|while|catch)\b|\?\:|\&\&|\|\||\?\?/g;

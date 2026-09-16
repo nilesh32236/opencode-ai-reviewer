@@ -2989,7 +2989,9 @@ async function runOpenCodeInner(
       }
     }
   } finally {
-    cleanupIsolatedOpenCodeHome(isolatedHome);
+    // Async removal keeps the recursive rm off the event-loop critical path;
+    // the sync variant remains for process-exit handlers where async is unavailable.
+    await cleanupIsolatedOpenCodeHomeAsync(isolatedHome);
   }
   const durationMs = Date.now() - startTime;
   return { ...attempt, durationMs };
