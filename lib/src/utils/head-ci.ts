@@ -66,7 +66,8 @@ export function isHeadCIGreen(
     opts?.requireNames?.filter((n): n is string => typeof n === 'string' && n.length > 0) ?? [];
   if (requireNames.length > 0) {
     const byName = new Map<string, HeadCICheck[]>();
-    for (const check of status.checks ?? []) {
+    const checks = Array.isArray(status.checks) ? status.checks : [];
+    for (const check of checks) {
       // Coerce: malformed adapter entries (undefined name) must block green,
       // never throw. Empty-string keys simply never match a required name.
       const key = String(check?.name ?? '').toLowerCase();
