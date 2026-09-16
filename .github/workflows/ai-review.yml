@@ -172,7 +172,9 @@ jobs:
     # (OWNER/MEMBER/COLLABORATOR, mirroring app/src/utils/privilege.ts):
     # otherwise any GitHub user could spend model budget and run the
     # secret-bearing fix loop (GH_PAT + LLM keys) on any PR (issue #540).
-    if: github.event_name != 'schedule' && github.event.action != 'closed' && ((github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'autofix') && !contains(github.event.pull_request.labels.*.name, 'autofix:approved') && !contains(github.event.pull_request.labels.*.name, 'autofix:merged') && !contains(github.event.pull_request.labels.*.name, 'autofix:ready')) || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null && contains(github.event.comment.body, '/fix') && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)))
+    # The pull_request path additionally requires a same-repo head (fork PRs
+    # fail closed in resolve-ref too, but never start the job at all).
+    if: github.event_name != 'schedule' && github.event.action != 'closed' && ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'autofix') && !contains(github.event.pull_request.labels.*.name, 'autofix:approved') && !contains(github.event.pull_request.labels.*.name, 'autofix:merged') && !contains(github.event.pull_request.labels.*.name, 'autofix:ready')) || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null && contains(github.event.comment.body, '/fix') && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)))
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
@@ -185,15 +187,32 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           EVENT_NAME: ${{ github.event_name }}
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
         run: |
           if [ "$EVENT_NAME" = "issue_comment" ]; then
             PR_REF="$(gh pr view "$ISSUE_NUMBER" --repo "$REPO" --json headRefName --jq '.headRefName')"
+            PR_SHA="$(gh pr view "$ISSUE_NUMBER" --repo "$REPO" --json headRefOid --jq '.headRefOid')"
+            IS_FORK="$(gh pr view "$ISSUE_NUMBER" --repo "$REPO" --json isCrossRepository --jq '.isCrossRepository')"
           else
             PR_REF="$PR_HEAD_REF"
+            PR_SHA="$PR_HEAD_SHA"
+            if [ "$PR_HEAD_REPO" = "$REPO" ]; then IS_FORK="false"; else IS_FORK="true"; fi
           fi
-          echo "ref=${PR_REF}" >> "$GITHUB_OUTPUT"
+          # Fail closed: fork PRs must never enter the secret-bearing fix
+          # loop, and an unresolvable SHA must never fall back to a mutable
+          # branch ref (TOCTOU between review/checkout/push, issue #542).
+          if [ "$IS_FORK" = "true" ]; then
+            echo "::error::Refusing to run secret-bearing autofix on cross-repository PR."
+            exit 1
+          fi
+          if [ -z "$PR_SHA" ]; then
+            echo "::error::Could not resolve PR head SHA; refusing mutable-ref checkout."
+            exit 1
+          fi
+          echo "ref=${PR_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
