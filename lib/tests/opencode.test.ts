@@ -141,26 +141,36 @@ vi.mock('fs', async (importOriginal) => {
 // Mock global fetch for setupOpenCode's API call
 vi.stubGlobal('fetch', mockFetch);
 
+import { toV1ServersMap, toV2ServersMap } from '../src/mcp/servers.js';
 import {
   buildLLMProviderMap,
+  buildMCPConfigBlock,
   buildReviewSubagent,
   buildV2SubagentDenyPermissions,
   checkHealth,
   configureGit,
   getGitStatus,
+  isMCPConfigRejection,
   isVersionCompatible,
+  mergeMCPConfig,
+  normalizeMCPConfigForVersion,
   normalizeSubagentPermissionsForVersion,
   parseOpenCodeVersion,
   resetOpenCodeState,
+  resolveDualEmitMCP,
   resolveDualEmitSubagentPermissions,
   resolveOpenCodePath,
   resolveRequireChecksum,
   runOpenCode,
+  setDualEmitMCP,
   setDualEmitSubagentPermissions,
   setLLMProviderConfig,
   setupOpenCode,
+  shouldUseV2MCPServers,
   shouldUseV2SubagentPermissions,
   stripProviderTimeoutOptions,
+  stripLegacyMCPKeys,
+  stripV2ServersKey,
   validateModelString,
 } from '../src/opencode.js';
 
@@ -2438,5 +2448,141 @@ describe('subagent V2 permissions gate', () => {
         undefined as unknown as Record<string, Record<string, unknown>>,
       ),
     ).not.toThrow();
+  });
+});
+
+describe('MCP dual-emit (mcp.servers)', () => {
+  const servers = [
+    {
+      name: 'context7',
+      type: 'local' as const,
+      command: ['npx', '-y', 'ctx'],
+      environment: { CONTEXT7_API_KEY: 'k' },
+    },
+  ];
+
+  it('emits dual shape on unknown version and legacy-only on known V1', () => {
+    const dual = buildMCPConfigBlock(servers, null);
+    expect(dual.context7).toBeDefined();
+    expect(dual.servers).toBeDefined();
+    expect((dual.servers as Record<string, Record<string, unknown>>).context7.disabled).toBe(false);
+
+    const legacy = buildMCPConfigBlock(servers, 'v1.9.0');
+    expect(legacy.context7).toBeDefined();
+    expect(legacy.servers).toBeUndefined();
+  });
+
+  it('emits dual by default on V2 and servers-only with dualEmit=false', () => {
+    const dual = buildMCPConfigBlock(servers, 'v2.0.0');
+    expect(dual.context7).toBeDefined();
+    expect(dual.servers).toBeDefined();
+
+    const single = buildMCPConfigBlock(servers, 'v2.0.0', false);
+    expect(single.context7).toBeUndefined();
+    expect(single.servers).toBeDefined();
+  });
+
+  it('gates shouldUseV2MCPServers fail-open for unknown versions', () => {
+    expect(shouldUseV2MCPServers(null)).toBe(false);
+    expect(shouldUseV2MCPServers('')).toBe(false);
+    expect(shouldUseV2MCPServers('v1.9.0')).toBe(false);
+    expect(shouldUseV2MCPServers('v2.0.0')).toBe(true);
+  });
+
+  it('passes empty mcp:{} through untouched', () => {
+    const base = JSON.stringify({ mcp: {} });
+    expect(normalizeMCPConfigForVersion(base, null)).toBe(base);
+    expect(normalizeMCPConfigForVersion(base, 'v2.0.0')).toBe(base);
+  });
+
+  it('upgrades legacy-only blocks on unknown/V2 and leaves V1 alone', () => {
+    const legacy = JSON.stringify({
+      mcp: { context7: { type: 'local', command: ['npx'] } },
+    });
+    const upgraded = JSON.parse(normalizeMCPConfigForVersion(legacy, null));
+    expect(upgraded.mcp.context7).toBeDefined();
+    expect(upgraded.mcp.servers.context7.disabled).toBe(false);
+
+    const v1 = JSON.parse(normalizeMCPConfigForVersion(legacy, 'v1.9.0'));
+    expect(v1.mcp.servers).toBeUndefined();
+
+    const single = JSON.parse(normalizeMCPConfigForVersion(legacy, 'v2.0.0', false));
+    expect(single.mcp.context7).toBeUndefined();
+    expect(single.mcp.servers.context7).toBeDefined();
+  });
+
+  it('downgrades already-dual inputs to servers-only with dualEmit=false on V2', () => {
+    const dualInput = JSON.stringify({
+      mcp: {
+        context7: { type: 'local', command: ['npx'] },
+        servers: { context7: { type: 'local', command: ['npx'], disabled: false } },
+      },
+    });
+    const downgraded = JSON.parse(normalizeMCPConfigForVersion(dualInput, 'v2.0.0', false));
+    expect(downgraded.mcp.context7).toBeUndefined();
+    expect(downgraded.mcp.servers.context7).toBeDefined();
+    // Default dual-emit keeps already-dual inputs unchanged.
+    expect(normalizeMCPConfigForVersion(dualInput, 'v2.0.0')).toBe(dualInput);
+  });
+
+  it('merges a server list into a base config', () => {
+    const out = JSON.parse(mergeMCPConfig(JSON.stringify({ model: 'x' }), servers, null));
+    expect(out.mcp.context7).toBeDefined();
+    expect(out.mcp.servers.context7.disabled).toBe(false);
+    expect(mergeMCPConfig('not-json', servers, null)).toBe('not-json');
+  });
+
+  it('strips the correct side for retry', () => {
+    const dualInput = JSON.stringify({
+      mcp: {
+        context7: { type: 'local' },
+        servers: { context7: { type: 'local', disabled: false } },
+      },
+    });
+    const serversOnly = JSON.parse(stripLegacyMCPKeys(dualInput));
+    expect(serversOnly.mcp.context7).toBeUndefined();
+    expect(serversOnly.mcp.servers.context7).toBeDefined();
+
+    const legacyOnly = JSON.parse(stripV2ServersKey(dualInput));
+    expect(legacyOnly.mcp.context7).toBeDefined();
+    expect(legacyOnly.mcp.servers).toBeUndefined();
+    // No servers key → unchanged.
+    const legacyInput = JSON.stringify({ mcp: { context7: { type: 'local' } } });
+    expect(stripV2ServersKey(legacyInput)).toBe(legacyInput);
+  });
+
+  it('matches only MCP-specific rejections', () => {
+    expect(isMCPConfigRejection('strict: configuration is invalid for mcp block')).toBe(true);
+    expect(isMCPConfigRejection('strict unknown field mcp.servers')).toBe(true);
+    expect(isMCPConfigRejection('strict: unknown field disabled in mcp')).toBe(true);
+    // Generic servers/permissions mentions without mcp must not trigger an MCP retry.
+    expect(isMCPConfigRejection('strict: unknown field servers in agent config')).toBe(false);
+    expect(isMCPConfigRejection('strict: unknown field permissions in subagent config')).toBe(
+      false,
+    );
+    expect(isMCPConfigRejection('some unrelated error')).toBe(false);
+    expect(isMCPConfigRejection(undefined)).toBe(false);
+  });
+
+  it('serializes V1 without disabled and V2 with disabled:false', () => {
+    const v1 = toV1ServersMap(servers);
+    expect(v1.context7.disabled).toBeUndefined();
+    const v2 = toV2ServersMap(servers);
+    expect(v2.context7.disabled).toBe(false);
+  });
+
+  it('resolves the OPENCODE_DUAL_EMIT_MCP opt-out', () => {
+    expect(resolveDualEmitMCP()).toBe(true);
+    vi.stubEnv('OPENCODE_DUAL_EMIT_MCP', 'false');
+    try {
+      expect(resolveDualEmitMCP()).toBe(false);
+      expect(resolveDualEmitMCP(true)).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    setDualEmitMCP(false);
+    expect(resolveDualEmitMCP()).toBe(false);
+    setDualEmitMCP(undefined);
+    expect(resolveDualEmitMCP()).toBe(true);
   });
 });
