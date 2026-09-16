@@ -3915,6 +3915,8 @@ export class ReviewEngine {
       maxTotalFindings: sensitivity.maxTotalFindings,
       focusAreas: sensitivity.focusAreas,
       ignorePatterns: sensitivity.ignorePatterns,
+      severityGate: sensitivity.severityGate,
+      reviewPreset: sensitivity.reviewPreset,
       categories: this.config.review.categories,
       defaultCategory,
     });

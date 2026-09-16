@@ -9,6 +9,8 @@ import {
   DEFAULT_CHANGELOG_CATEGORIES,
   DEFAULT_SCA_LOCK_FILE_PATTERNS,
   DOC_STYLES,
+  REVIEW_PRESETS,
+  SEVERITY_GATES,
   VERDICT_MODES,
 } from './index.js';
 
@@ -258,6 +260,14 @@ export const ReviewSensitivitySchema = z.object({
   maxTotalFindings: z.number().int().optional(),
   focusAreas: z.array(z.string()).optional().default([]),
   ignorePatterns: z.array(z.string()).optional().default([]),
+  // Fail-open by design: optional with no default so absent keys stay
+  // undefined and legacy output is bit-identical; `.catch(undefined)` drops
+  // invalid values to undefined (legacy path) instead of rejecting the whole
+  // config file via `PromptConfigSchema.parse` (same pattern as `effort`).
+  /** @since NEXT */
+  severityGate: z.enum(SEVERITY_GATES).optional().catch(undefined),
+  /** @since NEXT */
+  reviewPreset: z.enum(REVIEW_PRESETS).optional().catch(undefined),
 });
 
 /** Zod schema validating review configuration. */

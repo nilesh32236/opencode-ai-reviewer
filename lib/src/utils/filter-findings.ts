@@ -4,7 +4,9 @@ import type {
   ConfidenceThreshold,
   MinSeverity,
   ReviewIssue,
+  ReviewPreset,
   Severity,
+  SeverityGate,
 } from '../types/index.js';
 
 /** Rank of each existing Severity value on the shared severity scale. */
@@ -84,6 +86,23 @@ export interface FilterFindingsOptions {
   categories?: Record<string, CategoryOverride>;
   /** Category to assign to findings without one (default 'general'). */
   defaultCategory?: string;
+  /**
+   * Quiet-mode severity gate. `'blocking-only'` keeps only `critical`
+   * findings plus security-tagged findings (`category === 'security'`,
+   * case-insensitive); findings with a missing severity are kept
+   * (fail-open). Absent or `'all'` preserves legacy behavior. AND-composed
+   * with (never loosening) the existing minSeverity/confidence/caps pipeline.
+   * @since NEXT
+   */
+  severityGate?: SeverityGate;
+  /**
+   * Noise preset. `'chill'` suppresses low-signal nitpicks: drops `minor`
+   * findings and `style`-category findings (case-insensitive) and raises the
+   * effective confidence floor to at least `medium`. Pure local filter, no
+   * model change. Absent or `'default'` preserves legacy behavior.
+   * @since NEXT
+   */
+  reviewPreset?: ReviewPreset;
 }
 
 /** Result of a filtering pass over review findings. */
@@ -102,9 +121,12 @@ function sortBySeverity(issues: ReviewIssue[]): ReviewIssue[] {
  * Filter review findings against the configured sensitivity settings.
  *
  * Applies, in order: per-category `enabled: false` and category overrides,
- * `focusAreas` allowlist, `ignorePatterns` file globs, global/per-category
- * severity floor, confidence floor, per-category finding cap, then the total
- * finding cap (keeping the highest-severity findings).
+ * `focusAreas` allowlist, `ignorePatterns` file globs, the `blocking-only`
+ * severity gate and `chill` preset noise suppression (both AND-composed, never
+ * loosening), global/per-category severity floor, confidence floor
+ * (`chill` raises the effective floor to at least `medium`), per-category
+ * finding cap, then the total finding cap (keeping the highest-severity
+ * findings).
  *
  * @param issues - Raw findings from the model (after verification/reachability).
  * @param options - Sensitivity configuration to apply.
@@ -120,7 +142,13 @@ export function filterFindings(
     options.minSeverityRankValue !== undefined
       ? Math.max(baseMinRank, options.minSeverityRankValue)
       : baseMinRank;
-  const globalConfidenceRank = confidenceThresholdRank(options.confidenceThreshold);
+  // `chill` is a pure-local preset: raise the effective confidence floor to at
+  // least `medium` (never loosening an explicitly stricter `high` floor).
+  const isChill = options.reviewPreset === 'chill';
+  const effectiveConfidenceThreshold =
+    isChill && options.confidenceThreshold !== 'high' ? 'medium' : options.confidenceThreshold;
+  const globalConfidenceRank = confidenceThresholdRank(effectiveConfidenceThreshold);
+  const isBlockingOnly = options.severityGate === 'blocking-only';
   const ignorePatterns = options.ignorePatterns ?? [];
   const focusAreas = options.focusAreas ?? [];
   const categories = options.categories ?? {};
@@ -134,6 +162,21 @@ export function filterFindings(
     if (override?.enabled === false) continue;
     if (focusAreas.length > 0 && !focusAreas.includes(category)) continue;
     if (issue.file && ignorePatterns.some((pattern) => minimatch(issue.file, pattern))) continue;
+
+    // Blocking-only gate (fail-open): keep critical findings and
+    // security-tagged findings; a missing severity is kept rather than
+    // dropped. AND-composed with every other check below.
+    if (isBlockingOnly && issue.severity !== undefined) {
+      const categoryLower = category.toLowerCase();
+      if (issue.severity !== 'critical' && categoryLower !== 'security') continue;
+    }
+
+    // Chill preset noise suppression: drop minor-severity nitpicks and
+    // style-category nitpicks (case-insensitive).
+    if (isChill) {
+      if (issue.severity === 'minor') continue;
+      if (category.toLowerCase() === 'style') continue;
+    }
 
     // Per-category overrides only tighten the effective floor; they can never
     // loosen a global/audit severity floor (e.g. the audit issueSeverityThreshold).

@@ -300,6 +300,8 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
       maxTotalFindings: null,
       focusAreas: null,
       ignorePatterns: null,
+      severityGate: null,
+      reviewPreset: null,
     },
     categories: [CATEGORY_OVERRIDE_SHAPE],
     pathInstructions: null,
@@ -861,6 +863,13 @@ export function validateConfig(
         sensitivity.ignorePatterns = s.ignorePatterns.filter(
           (p): p is string => typeof p === 'string',
         );
+      }
+      // Fail-open: absent or invalid values are ignored (legacy behavior).
+      if (s.severityGate === 'all' || s.severityGate === 'blocking-only') {
+        sensitivity.severityGate = s.severityGate;
+      }
+      if (s.reviewPreset === 'default' || s.reviewPreset === 'chill') {
+        sensitivity.reviewPreset = s.reviewPreset;
       }
       result.review.sensitivity = sensitivity;
     }
