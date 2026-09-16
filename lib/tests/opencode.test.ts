@@ -157,6 +157,7 @@ import {
   getGitStatus,
   isMCPConfigRejection,
   isVersionCompatible,
+  llmApiKeysForModel,
   mergeMCPConfig,
   normalizeMCPConfigForVersion,
   normalizeSubagentPermissionsForVersion,
@@ -2625,5 +2626,26 @@ describe('MCP dual-emit (mcp.servers)', () => {
     expect(resolveDualEmitMCP()).toBe(false);
     setDualEmitMCP(undefined);
     expect(resolveDualEmitMCP()).toBe(true);
+  });
+});
+
+describe('llmApiKeysForModel (issue #544)', () => {
+  it('scopes stock providers to their single key', () => {
+    expect(llmApiKeysForModel('opencode/muse-spark-1.3')).toEqual(['OPENCODE_API_KEY']);
+    expect(llmApiKeysForModel('openai/gpt-5')).toEqual(['OPENAI_API_KEY']);
+    expect(llmApiKeysForModel('anthropic/claude-4')).toEqual(['ANTHROPIC_API_KEY']);
+    expect(llmApiKeysForModel('gemini/gemini-3')).toEqual(['GEMINI_API_KEY']);
+    expect(llmApiKeysForModel('google/gemini-3')).toEqual(['GEMINI_API_KEY']);
+  });
+
+  it('is case- and whitespace-tolerant', () => {
+    expect(llmApiKeysForModel('  OpenAI/gpt-5 ')).toEqual(['OPENAI_API_KEY']);
+  });
+
+  it('returns empty for custom/self-hosted providers (caller falls back)', () => {
+    expect(llmApiKeysForModel('ollama/llama3')).toEqual([]);
+    expect(llmApiKeysForModel('amazon-bedrock/anthropic.claude')).toEqual([]);
+    expect(llmApiKeysForModel('azure/my-deployment')).toEqual([]);
+    expect(llmApiKeysForModel('bare-model-no-slash')).toEqual([]);
   });
 });
