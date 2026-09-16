@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.13.14] — 2026-09-16
+
+
+### Fixed
+
+- scope ai-review.yml tokens to per-job least privilege (#549) (#549)
+
+### Changed
+
+- [Security] Forward only the active provider LLM key to subprocess (#545) (#545)
+
+[v1.13.14]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.13...v1.13.14
+
 ## [v1.13.13] — 2026-09-16
 
 
