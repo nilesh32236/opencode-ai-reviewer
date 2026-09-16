@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import * as core from '@actions/core';
-import { buildInlineComments } from '../jsonl-parser.js';
+import { buildInlineCommentsWithSpillover } from '../jsonl-parser.js';
 import type {
   BotReviewInfo,
   HeadCIStatus,
@@ -21,6 +21,11 @@ import type {
 } from '../types/index.js';
 import { CircuitBreaker, countHttpError } from './circuit-breaker.js';
 import { getErrorStatus } from './errors.js';
+import {
+  applyNoiseBudget,
+  mergeSpilloverSummaries,
+  normalizeNoiseBudget,
+} from './filter-findings.js';
 import {
   filterIssuesByFingerprints,
   fingerprintForIssue,
@@ -203,6 +208,59 @@ function isReviewThreadCommitSchemaError(err: unknown): boolean {
   return /doesn'?t exist|does not exist|unknown field|cannot query field|was removed|no longer/i.test(
     message,
   );
+}
+
+/**
+ * Resolve the severity-ordered noise budget for review posting from display
+ * options (`maxVisibleFindings` wins over the `noiseBudget` alias).
+ * @param options - Display options carrying the budget, if any.
+ * @returns A positive integer budget, or undefined for unlimited (legacy).
+ */
+export function resolveNoiseBudget(options?: ReviewBodyOptions): number | undefined {
+  return normalizeNoiseBudget(options?.maxVisibleFindings ?? options?.noiseBudget ?? null);
+}
+
+/**
+ * Strip the noise-budget keys from display options after the caller already
+ * applied the cap, so a downstream renderer does not cap (and double-count)
+ * a second time.
+ * @param options - Display options to strip.
+ * @returns The original options when no budget is set, otherwise a copy
+ * without budget keys.
+ */
+export function stripNoiseBudget(options?: ReviewBodyOptions): ReviewBodyOptions | undefined {
+  if (options?.maxVisibleFindings === undefined && options?.noiseBudget === undefined) {
+    return options;
+  }
+  return { ...options, maxVisibleFindings: undefined, noiseBudget: undefined };
+}
+
+/**
+ * Apply the severity-ordered body noise budget to the issues left for the
+ * review body, merging the incoming filter spillover with the body tail
+ * itself into one spillover summary. Issues cut by the inline budget stay
+ * unplaced, so they are already part of `issuesForBody` — the body tail
+ * accounting subsumes them (no double counting).
+ * @param base - Result carrying prior state (stats, incoming spillover).
+ * @param issuesForBody - Issues not posted inline, in posting order.
+ * @param options - Display options carrying the budget, if any.
+ * @returns The result to render with `stripNoiseBudget(options)`.
+ */
+export function applyBodyNoiseBudget(
+  base: ReviewResult,
+  issuesForBody: ReviewIssue[],
+  options?: ReviewBodyOptions,
+): ReviewResult {
+  const { visible, spillover: bodySpillover } = applyNoiseBudget(
+    issuesForBody,
+    resolveNoiseBudget(options),
+  );
+  const combined = mergeSpilloverSummaries(base.spillover, bodySpillover);
+  const out: ReviewResult = { ...base, issues: visible };
+  if (combined !== undefined) {
+    out.spillover = combined;
+  }
+  return out;
 }
 
 /**
@@ -1358,13 +1416,17 @@ export class GitHubHelper implements PlatformAdapter {
       );
     }
 
+    // Severity-ordered inline budget (unlimited when unset — legacy output
+    // byte-identical). Issues cut here stay unplaced, so they flow into
+    // issuesForBody below and remain visible via the body cap accounting.
     const inlineComments = postInlineComments
-      ? buildInlineComments(
+      ? buildInlineCommentsWithSpillover(
           dedupedResult,
           await this.getDiffLines(prNumber, commitSha, signal),
           suppressLowConfidence,
           options?.emitFixPayload,
-        )
+          resolveNoiseBudget(options),
+        ).comments
       : [];
     this.stampInlineFingerprintMarkers(inlineComments, dedupedResult.issues);
 
@@ -1377,7 +1439,10 @@ export class GitHubHelper implements PlatformAdapter {
           (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
         )
       : dedupedResult.issues;
-    const body = buildReviewBody({ ...dedupedResult, issues: issuesForBody }, options);
+    const body = buildReviewBody(
+      applyBodyNoiseBudget(dedupedResult, issuesForBody, options),
+      stripNoiseBudget(options),
+    );
 
     const commentIds: Array<{
       file: string;
@@ -1552,12 +1617,13 @@ export class GitHubHelper implements PlatformAdapter {
       issues: this.applyInlineFingerprintDedup(workingResult.issues, options),
     };
 
-    const inlineComments = buildInlineComments(
+    const inlineComments = buildInlineCommentsWithSpillover(
       dedupedResult,
       diffLines,
       suppressLowConfidence,
       options?.emitFixPayload,
-    );
+      resolveNoiseBudget(options),
+    ).comments;
     this.stampInlineFingerprintMarkers(inlineComments, dedupedResult.issues);
 
     const placedInlineKeys = new Set<string>();
@@ -1568,7 +1634,10 @@ export class GitHubHelper implements PlatformAdapter {
     const issuesForBody = dedupedResult.issues.filter(
       (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
     );
-    const body = buildReviewBody({ ...dedupedResult, issues: issuesForBody }, options);
+    const body = buildReviewBody(
+      applyBodyNoiseBudget(dedupedResult, issuesForBody, options),
+      stripNoiseBudget(options),
+    );
     // Full-finding body used for the fail-open summary-only retry.
     const fullBody = buildReviewBody(dedupedResult, options);
 
