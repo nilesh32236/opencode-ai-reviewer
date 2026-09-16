@@ -35,6 +35,13 @@ export interface HeadCIGreenOptions {
  * - Any failed check blocks green.
  * - Unless `allowSkipped` is true, skipped/neutral/cancelled conclusions
  *   block green (skipped != verified).
+ * - Negative counters are malformed and block green (a buggy adapter must
+ *   never read green).
+ * - Raw `checks[]` entries are cross-checked even without `requireNames`:
+ *   every observed entry must be `completed`/`success` (modulo
+ *   `allowSkipped`), so a failure entry paired with clean counters (buggy
+ *   adapter) still blocks green. An empty `checks[]` trusts the counters
+ *   (counter-only adapters); a non-array `checks` value is malformed.
  * - When `requireNames` is supplied, every listed name must be present with
  *   a `success` conclusion (case-insensitive name match).
  *
@@ -48,7 +55,8 @@ export function isHeadCIGreen(
   opts?: HeadCIGreenOptions,
 ): boolean {
   if (!status) return false;
-  // Fail closed on malformed counters: missing/NaN/Infinity must never be green.
+  // Fail closed on malformed counters: missing/NaN/Infinity/negative must
+  // never be green.
   if (
     !Number.isFinite(status.total) ||
     !Number.isFinite(status.pending) ||
@@ -57,9 +65,33 @@ export function isHeadCIGreen(
   )
     return false;
   if (status.total <= 0) return false;
+  // Fail closed on negative counters: a buggy adapter reporting e.g.
+  // `pending: -1` must never read green.
+  if (status.pending < 0 || status.failed < 0 || status.skipped < 0) return false;
   if (status.pending > 0) return false;
   if (status.failed > 0) return false;
   if (opts?.allowSkipped !== true && status.skipped > 0) return false;
+  const allowSkipped = opts?.allowSkipped === true;
+  // Cross-check raw entries even without `requireNames`: a failure/skipped
+  // entry in `checks[]` with clean counters (buggy adapter) must block
+  // green. Malformed entries (missing status/conclusion) coerce to
+  // non-success and block. Empty `checks[]` trusts the counters above
+  // (counter-only adapters); a non-array value is malformed.
+  if (status.checks !== undefined) {
+    if (!Array.isArray(status.checks)) return false;
+    for (const check of status.checks) {
+      const entryStatus = String(check?.status ?? '').toLowerCase();
+      const conclusion = String(check?.conclusion ?? '').toLowerCase();
+      if (entryStatus !== 'completed') return false;
+      if (conclusion === 'success') continue;
+      if (
+        allowSkipped &&
+        (conclusion === 'skipped' || conclusion === 'neutral' || conclusion === 'cancelled')
+      )
+        continue;
+      return false;
+    }
+  }
   // Coerce before filtering: type-violating null/undefined entries must fail
   // closed (no match) instead of throwing on `n.length`.
   const requireNames =
@@ -157,7 +189,11 @@ export async function checkHeadCIGreen(
       !Number.isFinite(status.total) ||
       !Number.isFinite(status.pending) ||
       !Number.isFinite(status.failed) ||
-      !Number.isFinite(status.skipped)
+      !Number.isFinite(status.skipped) ||
+      status.total < 0 ||
+      status.pending < 0 ||
+      status.failed < 0 ||
+      status.skipped < 0
     ) {
       return {
         ok: false,

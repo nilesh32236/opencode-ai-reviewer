@@ -118,6 +118,41 @@ describe('isHeadCIGreen', () => {
     expect(isHeadCIGreen(malformed, { requireNames: ['build'] })).toBe(false);
   });
 
+  it('fails closed on negative counters', () => {
+    expect(isHeadCIGreen(makeStatus({ total: 2, pending: -1 }))).toBe(false);
+    expect(isHeadCIGreen(makeStatus({ total: 2, failed: -1 }))).toBe(false);
+    expect(isHeadCIGreen(makeStatus({ total: -1 }))).toBe(false);
+  });
+
+  it('cross-checks checks[] on the default path even with clean counters', () => {
+    // Buggy adapter: clean counters but a failure entry in checks.
+    const divergent = makeStatus({
+      checks: [
+        { name: 'build', status: 'completed', conclusion: 'success' },
+        { name: 'test', status: 'completed', conclusion: 'failure' },
+      ],
+    });
+    expect(isHeadCIGreen(divergent)).toBe(false);
+    // Skipped entry with clean counters still blocks by default...
+    const skippedEntry = makeStatus({
+      checks: [
+        { name: 'build', status: 'completed', conclusion: 'success' },
+        { name: 'test', status: 'completed', conclusion: 'skipped' },
+      ],
+    });
+    expect(isHeadCIGreen(skippedEntry)).toBe(false);
+    // ...but passes with allowSkipped.
+    expect(isHeadCIGreen(skippedEntry, { allowSkipped: true })).toBe(true);
+    // Non-completed entries block even with clean counters.
+    const pendingEntry = makeStatus({
+      checks: [
+        { name: 'build', status: 'completed', conclusion: 'success' },
+        { name: 'test', status: 'in_progress', conclusion: 'pending' },
+      ],
+    });
+    expect(isHeadCIGreen(pendingEntry)).toBe(false);
+  });
+
   it('tolerates non-string requireNames entries without throwing', () => {
     const mixed = { requireNames: [null, undefined, 'build'] as unknown as string[] };
     expect(() => isHeadCIGreen(makeStatus(), mixed)).not.toThrow();
@@ -195,6 +230,15 @@ describe('checkHeadCIGreen', () => {
     };
     expect((await checkHeadCIGreen(infinityAdapter, 'abc123')).ok).toBe(false);
     expect(isHeadCIGreen(makeStatus({ total: Number.POSITIVE_INFINITY as number }))).toBe(false);
+  });
+
+  it('fails closed on negative counters via checkHeadCIGreen', async () => {
+    const negativeAdapter = {
+      getHeadCIStatus: vi.fn().mockResolvedValue(makeStatus({ pending: -1 })),
+    };
+    const result = await checkHeadCIGreen(negativeAdapter, 'abc123');
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/malformed/);
   });
 
   it('forwards opts and signal to the adapter and evaluator', async () => {

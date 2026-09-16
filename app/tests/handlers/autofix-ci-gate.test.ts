@@ -321,4 +321,48 @@ describe('autofix head-CI gate (Probot loop)', () => {
       expect.anything(),
     );
   });
+
+  it('gates CI on the post-review refreshed head SHA (push during review)', async () => {
+    // A push during the long reviewPR call leaves the pre-review SHA stale:
+    // the initial fetch returns sha A, the post-review refresh returns sha B.
+    mockGetMR
+      .mockResolvedValueOnce({ ...makePR(), headSha: 'aaa111' })
+      .mockResolvedValue({ ...makePR(), headSha: 'bbb222' });
+    // Echo the queried SHA so the gate evaluates the fresh head, not a stale one.
+    mockGetHeadCIStatus.mockImplementation(async (sha: string) => ({
+      commitSha: sha,
+      total: 2,
+      successful: 2,
+      failed: 0,
+      pending: 0,
+      skipped: 0,
+      green: true,
+      checks: [
+        { name: 'build', status: 'completed', conclusion: 'success' },
+        { name: 'test', status: 'completed', conclusion: 'success' },
+      ],
+    }));
+
+    await runLoop();
+
+    expect(mockGetHeadCIStatus).toHaveBeenCalledWith('bbb222', undefined);
+    expect(mockSetLabels).toHaveBeenCalledWith(
+      42,
+      ['autofix:ready'],
+      expect.arrayContaining(['autofix']),
+    );
+    expect(mockCreateComment).toHaveBeenCalledWith(42, expect.stringContaining('Ready'));
+  });
+
+  it('skips the iteration without promoting to ready when the post-review refetch fails', async () => {
+    // Initial fetch succeeds; every post-review refresh rejects, so withRetry
+    // exhausts and the iteration is skipped on the stale SHA (fail closed).
+    mockGetMR.mockResolvedValueOnce(makePR()).mockRejectedValue(new Error('refetch boom'));
+
+    await runLoop();
+
+    expect(mockGetHeadCIStatus).not.toHaveBeenCalled();
+    expect(mockSetLabels).not.toHaveBeenCalledWith(42, ['autofix:ready'], expect.anything());
+    expect(mockCreateComment).not.toHaveBeenCalledWith(42, expect.stringContaining('Ready'));
+  });
 });

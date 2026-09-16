@@ -336,6 +336,123 @@ describe('runAutofixLoop', () => {
     expect(mockSetFailed).not.toHaveBeenCalled();
   });
 
+  it('gates CI on the post-review refreshed head SHA (push during review)', async () => {
+    // A push during the long reviewPR call leaves the pre-review SHA stale:
+    // the initial fetch returns sha A, the post-review refresh returns sha B.
+    mockGetPR
+      .mockResolvedValueOnce(makePRContext({ headSha: 'aaa111' }))
+      .mockResolvedValue(makePRContext({ headSha: 'bbb222' }));
+    mockReviewPR.mockResolvedValue({
+      summary: 'All good',
+      verdict: { ready: true, reasoning: 'LGTM', autoFixable: false, confidence: 'high' },
+      strengths: [],
+      issues: [],
+      stats: { total: 0, critical: 0, important: 0, minor: 0 },
+    } as ReviewResult);
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+    // Echo the queried SHA so the gate evaluates the fresh head, not a stale one.
+    mockGetHeadCIStatus.mockImplementation(async (sha: string) => ({
+      commitSha: sha,
+      total: 2,
+      successful: 2,
+      failed: 0,
+      pending: 0,
+      skipped: 0,
+      green: true,
+      checks: [
+        { name: 'build', status: 'completed', conclusion: 'success' },
+        { name: 'test', status: 'completed', conclusion: 'success' },
+      ],
+    }));
+
+    await runAutofixLoop(
+      makeInputs(),
+      makeConfig({ maxIterations: 1, enableMCP: false, mcpServers: [] }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+      'token',
+    );
+
+    expect(mockGetHeadCIStatus).toHaveBeenCalledWith('bbb222', undefined);
+    expect(mockSetLabels).toHaveBeenCalledWith(
+      42,
+      ['autofix:ready'],
+      ['autofix', 'autofix:needs-fix'],
+    );
+    expect(mockSetOutput).toHaveBeenCalledWith('approved', 'true');
+  });
+
+  it('resets ci-waiting so later exhausted work still reaches needs-manual-review', async () => {
+    // First iteration: clean review but empty CI rollup (CI-blocked). Second
+    // iteration: dirty review with no fix progress, so the loop exhausts via
+    // no-changes and must reach the needs-manual-review terminal.
+    mockGetHeadCIStatus.mockResolvedValue({
+      commitSha: 'abc123',
+      total: 0,
+      successful: 0,
+      failed: 0,
+      pending: 0,
+      skipped: 0,
+      green: false,
+      checks: [],
+    });
+    const cleanReview: ReviewResult = {
+      summary: 'All good',
+      verdict: { ready: true, reasoning: 'LGTM', autoFixable: false, confidence: 'high' },
+      strengths: [],
+      issues: [],
+      stats: { total: 0, critical: 0, important: 0, minor: 0 },
+    };
+    const dirtyReview: ReviewResult = {
+      summary: 'Found issues',
+      verdict: { ready: false, reasoning: 'Issues remain', autoFixable: false, confidence: 'high' },
+      strengths: [],
+      issues: [
+        {
+          type: 'issue',
+          severity: 'critical',
+          file: 'src/bug.ts',
+          line: 10,
+          message: 'Bug',
+          inline: true,
+        },
+      ],
+      stats: { total: 1, critical: 1, important: 0, minor: 0 },
+    };
+    mockReviewPR.mockResolvedValueOnce(cleanReview).mockResolvedValueOnce(dirtyReview);
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+    mockRunFix.mockResolvedValue({ changesMade: false } as FixResult);
+
+    await runAutofixLoop(
+      makeInputs(),
+      makeConfig({ maxIterations: 2, enableMCP: false, mcpServers: [] }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+      'token',
+    );
+
+    // First iteration stayed in the waiting state...
+    expect(mockSetLabels).toHaveBeenCalledWith(42, ['autofix'], ['autofix:ready']);
+    // ...but the terminal CI-block must not latch: exhausted work relabels.
+    expect(mockSetLabels).toHaveBeenCalledWith(
+      42,
+      ['autofix:needs-manual-review'],
+      expect.anything(),
+    );
+  });
+
   it('runs fix iteration when issues are found', async () => {
     const reviewWithIssues: ReviewResult = {
       summary: 'Found issues',

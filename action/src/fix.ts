@@ -964,14 +964,25 @@ export async function runAutofixLoop(
       // `autofix` for another cycle instead of becoming mergeable.
       let ciGate: { ok: boolean; reason: string };
       try {
-        // Retried like the surrounding hot-loop fetches: a single transient
-        // 429/5xx must not consume a whole iteration (including the expensive
-        // review above). Persistent failures still fail closed via the catch.
-        ciGate = await withRetry(() => checkHeadCIGreen(gh, prHeadSha, undefined, signal), {
-          operationName: 'autofix.checkHeadCI',
-          maxRetries: 2,
-          signal,
-        });
+        // withRetry only retries thrown errors, while checkHeadCIGreen
+        // converts adapter query failures into `{ ok: false }` (reason
+        // `CI query failed ...`). Re-throw that case so a single transient
+        // 429/5xx is retried instead of consuming a whole iteration
+        // (including the expensive review above). Definitive not-green
+        // verdicts (empty rollup, pending/failed/skipped) return immediately;
+        // persistent query failures still fail closed via the catch below.
+        ciGate = await withRetry(
+          async () => {
+            const gate = await checkHeadCIGreen(gh, prHeadSha, undefined, signal);
+            if (!gate.ok && gate.reason.includes('CI query failed')) throw new Error(gate.reason);
+            return gate;
+          },
+          {
+            operationName: 'autofix.checkHeadCI',
+            maxRetries: 2,
+            signal,
+          },
+        );
       } catch (err) {
         ciGate = {
           ok: false,
