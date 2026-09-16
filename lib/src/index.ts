@@ -33,12 +33,10 @@ export {
   buildLocalOpenCodeConfig,
   buildLLMProviderMap,
   MINIMUM_OPENCODE_VERSION,
-  // @deprecated Prefer per-run store isolation (automatic). Kept for
-  // backward compatibility; now a no-op (runs are concurrent by design).
-  resetOpenCodeRunChainForTests,
   createIsolatedOpenCodeHome,
   cleanupIsolatedOpenCodeHome,
   cleanupIsolatedOpenCodeHomeAsync,
+  cleanupAskPassDirAsync,
   removeTempDirAsync,
   ensureSignalHandlers,
   downloadWithTimeout,

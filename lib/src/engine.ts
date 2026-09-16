@@ -2821,16 +2821,52 @@ export class ReviewEngine {
         const suffixBytes = Buffer.byteLength(suffixJoined, 'utf8');
         const markerBytes = Buffer.byteLength(ORCHESTRATOR_BUDGET_MARKER, 'utf8');
         const headBudget = oBudget - suffixBytes - markerBytes - 2;
+        // Keep the untruncated head for byte-correction below: the char-based
+        // boundary helper can overestimate for multibyte diffs (byte budget
+        // passed as a char limit), so the assembled result is re-checked in
+        // bytes and the head is halved until it fits.
+        const rawHead = parts[0];
         if (headBudget <= 0) {
           parts[0] = ORCHESTRATOR_BUDGET_MARKER;
         } else {
-          parts[0] = `${truncateHeadOnBoundary(parts[0], headBudget)}${ORCHESTRATOR_BUDGET_MARKER}`;
+          parts[0] = `${truncateHeadOnBoundary(rawHead, headBudget)}${ORCHESTRATOR_BUDGET_MARKER}`;
         }
         assemblyBudgeted = true;
+        // Byte-correction: multibyte heads can still exceed the budget in
+        // bytes while fitting in chars. Shrink the head (bounded halvings —
+        // the strings here are already <= budget in chars) so the returned
+        // context never violates spawn/model byte limits.
+        let guard = 0;
+        while (
+          Buffer.byteLength(parts.join('\n'), 'utf8') > oBudget &&
+          parts[0].length > ORCHESTRATOR_BUDGET_MARKER.length &&
+          guard++ < 10
+        ) {
+          const headOnly = parts[0].slice(
+            0,
+            Math.max(0, parts[0].length - ORCHESTRATOR_BUDGET_MARKER.length),
+          );
+          const shrunk = truncateHeadOnBoundary(headOnly, Math.floor(headOnly.length / 2));
+          parts[0] = `${shrunk}${ORCHESTRATOR_BUDGET_MARKER}`;
+          if (shrunk.length === 0) break;
+        }
       }
     }
 
-    return { context: parts.join('\n'), wasBudgeted: assemblyBudgeted };
+    let context = parts.join('\n');
+    // Last-resort byte guarantee: if the safety suffix alone exceeds the
+    // budget, the head is already minimal yet the join is still over budget.
+    // Truncate on a UTF-8 boundary so the byte contract always holds.
+    if (
+      oBudget !== undefined &&
+      Number.isFinite(oBudget) &&
+      Buffer.byteLength(context, 'utf8') > oBudget
+    ) {
+      context = truncateUtf8Bytes(context, oBudget);
+      assemblyBudgeted = true;
+    }
+
+    return { context, wasBudgeted: assemblyBudgeted };
   }
 
   /**

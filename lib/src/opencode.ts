@@ -380,6 +380,18 @@ export async function cleanupIsolatedOpenCodeHomeAsync(dir: string): Promise<voi
   if (idx >= 0) openCodeRunHomeDirs.splice(idx, 1);
 }
 
+/**
+ * Async removal of one GIT_ASKPASS helper dir (see {@link removeTempDirAsync}).
+ * Best-effort, never throws. Preferred off the event-loop critical path; the
+ * sync sweep below remains for `exit`-handler use where async is unavailable.
+ * @param dir - Ask-pass temp directory to remove.
+ */
+export async function cleanupAskPassDirAsync(dir: string): Promise<void> {
+  await removeTempDirAsync(dir);
+  const idx = askPassDirs.indexOf(dir);
+  if (idx >= 0) askPassDirs.splice(idx, 1);
+}
+
 function registerSignalHandlers(): void {
   if (signalHandlersRegistered) return;
   signalHandlersRegistered = true;
