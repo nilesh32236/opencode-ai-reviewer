@@ -8,7 +8,7 @@ import type {
 import { CircuitBreaker } from './circuit-breaker.js';
 import { Logger } from './logger.js';
 import { withRetryAndTimeout } from './retry.js';
-import { isBlockedIpHost } from './safe-exec.js';
+import { dnsResolvesBlockedHost, isBlockedIpHost } from './safe-exec.js';
 import { countAtOrAboveSeverity } from './threshold.js';
 import type { SeverityStats } from './threshold.js';
 
@@ -409,6 +409,22 @@ export async function postToWebhook(
   if (!isHttpsUrl(url)) {
     log.warn(
       `Skipping webhook notification: URL is not a valid https webhook URL: ${redactWebhookUrl(url)}`,
+    );
+    return false;
+  }
+
+  // DNS-rebinding guard (issue #546): refuse hostnames that resolve to
+  // internal addresses even though the literal hostname is clean.
+  try {
+    if (await dnsResolvesBlockedHost(new URL(url).hostname)) {
+      log.warn(
+        `Skipping webhook notification: hostname resolves to a blocked internal address: ${redactWebhookUrl(url)}`,
+      );
+      return false;
+    }
+  } catch {
+    log.warn(
+      `Skipping webhook notification: unparsable URL: ${redactWebhookUrl(url)}`,
     );
     return false;
   }
