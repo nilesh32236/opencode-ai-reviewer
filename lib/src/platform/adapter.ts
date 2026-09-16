@@ -19,6 +19,12 @@ export interface ReviewPostResult {
     nodeId?: string;
     side?: string;
   }>;
+  /**
+   * Number of inline threads edited in place (opt-in `updateInPlace` path).
+   * Absent/zero on the legacy create-only path.
+   * @since NEXT
+   */
+  updatedInlineCount?: number;
 }
 
 /** Information about a review thread. */
@@ -380,6 +386,17 @@ export interface PlatformAdapter {
     commentId: number,
     signal?: AbortSignal,
   ): Promise<ReviewCommentDetail>;
+  /**
+   * Update an existing review comment in place (GitHub `PATCH
+   * /pulls/comments/{id}`). Optional so platforms without review-comment
+   * updates (GitLab, local CLI) can omit it — callers treat absence as
+   * unsupported and fall back to posting a new thread (fail-open).
+   * @param commentId - Review comment ID to update.
+   * @param body - New comment body markdown.
+   * @param signal - Optional AbortSignal to cancel the request.
+   * @since NEXT
+   */
+  updateReviewComment?(commentId: number, body: string, signal?: AbortSignal): Promise<void>;
   /**
    * Get the thread containing a review comment.
    * @param commentId - Comment ID.

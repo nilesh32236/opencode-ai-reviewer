@@ -259,6 +259,16 @@ inputs:
     required: false
     default: 'false'
 
+  update_in_place:
+    description: 'Edit existing inline threads in place (PATCH /pulls/comments/{id}) when a finding fingerprint already matches a previously posted bot thread, instead of re-posting a duplicate (false = legacy create-only behavior; match/update failures fall back to posting as today).'
+    required: false
+    default: 'false'
+
+  emit_checks_summary:
+    description: 'Emit one Checks run carrying deterministic finding counts after the review posts (a single extra createCheckRun call only when true; false = no Checks call; API errors warn and never fail the review).'
+    required: false
+    default: 'false'
+
   verdict_mode:
     description: 'Advanced gating: map the AI verdict to the Pulls createReview event ("comment" default = comment only; "approve" = auto-approve clean ready PRs with zero critical/important findings, otherwise comment; "request-changes" = request changes when criticals are present, otherwise comment). Permission rejections (403/422) fall back to comment so the step never fails on gating. Defaults to comment when omitted.'
     required: false
