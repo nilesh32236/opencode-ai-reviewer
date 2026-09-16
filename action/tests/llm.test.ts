@@ -108,6 +108,61 @@ describe('buildLLMConfig()', () => {
     });
   });
 
+  it('threads llm timeout inputs into the custom-openai provider entry', () => {
+    const llm = buildLLMConfig(
+      {
+        ...BASE_INPUTS,
+        llmBaseUrl: 'https://gateway.example/v1',
+        llmHeaderTimeoutMs: 30000,
+        llmChunkTimeoutMs: 60000,
+      },
+      null,
+    );
+    expect(llm?.providers?.['custom-openai']).toEqual({
+      type: 'openai-compatible',
+      baseUrl: 'https://gateway.example/v1',
+      headerTimeoutMs: 30000,
+      chunkTimeoutMs: 60000,
+    });
+  });
+
+  it('omits timeout fields when timeout inputs are unset', () => {
+    const llm = buildLLMConfig({ ...BASE_INPUTS, llmBaseUrl: 'https://gateway.example/v1' }, null);
+    expect(llm?.providers?.['custom-openai']).toEqual({
+      type: 'openai-compatible',
+      baseUrl: 'https://gateway.example/v1',
+    });
+  });
+
+  it('skips creating a custom-openai entry for timeout-only inputs without a baseUrl', () => {
+    const llm = buildLLMConfig(
+      { ...BASE_INPUTS, llmHeaderTimeoutMs: 30000, llmChunkTimeoutMs: 60000 },
+      null,
+    );
+    expect(llm).toBeUndefined();
+  });
+
+  it('merges timeout inputs into an existing config-file custom-openai entry', () => {
+    const llm = buildLLMConfig(
+      { ...BASE_INPUTS, llmHeaderTimeoutMs: 30000 },
+      {
+        llm: {
+          providers: {
+            'custom-openai': {
+              type: 'openai-compatible',
+              baseUrl: 'https://gateway.example/v1',
+            },
+          },
+        },
+      },
+    );
+    expect(llm?.providers?.['custom-openai']).toEqual({
+      type: 'openai-compatible',
+      baseUrl: 'https://gateway.example/v1',
+      headerTimeoutMs: 30000,
+    });
+  });
+
   it('defaults the provider to azure when only an azure deployment input is set', () => {
     const llm = buildLLMConfig({ ...BASE_INPUTS, azureDeployment: 'my-deployment' }, null);
     expect(llm?.defaultProvider).toBe('azure');

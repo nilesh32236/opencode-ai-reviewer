@@ -34,6 +34,10 @@ export interface ActionInputs {
     llmBaseUrl?: string;
     /** Optional API key for the custom OpenAI-compatible base URL. */
     llmApiKey?: string;
+    /** Optional header timeout (ms) for the custom OpenAI-compatible provider. */
+    llmHeaderTimeoutMs?: number;
+    /** Optional chunk timeout (ms) for the custom OpenAI-compatible provider. */
+    llmChunkTimeoutMs?: number;
     /** Optional Ollama base URL (default: http://localhost:11434/v1). */
     ollamaBaseUrl?: string;
     /** Optional Ollama model name. */

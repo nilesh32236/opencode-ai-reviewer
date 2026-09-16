@@ -426,6 +426,8 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
         region: null,
         model: null,
         models: null,
+        headerTimeoutMs: null,
+        chunkTimeoutMs: null,
       },
     ],
   },
@@ -1476,6 +1478,25 @@ export function validateConfig(
             .filter((m): m is string => typeof m === 'string' && m.trim() !== '')
             .map((m) => m.trim());
           if (models.length > 0) validated.models = models;
+        }
+        // Optional provider timeout tuning (milliseconds). Fail open: copy
+        // only finite positive numbers (rounded to int); otherwise warn and
+        // drop so the run proceeds with default timeouts.
+        for (const timeoutField of ['headerTimeoutMs', 'chunkTimeoutMs'] as const) {
+          const timeoutValue = provider[timeoutField];
+          if (timeoutValue === undefined || timeoutValue === null) continue;
+          if (
+            typeof timeoutValue === 'number' &&
+            Number.isFinite(timeoutValue) &&
+            timeoutValue > 0 &&
+            Math.round(timeoutValue) >= 1
+          ) {
+            validated[timeoutField] = Math.round(timeoutValue);
+          } else {
+            core.warning(
+              `Ignoring LLM provider "${id}" field "${timeoutField}": expected a positive number of milliseconds, got ${String(timeoutValue)}.`,
+            );
+          }
         }
         // Warn about providers that lack the minimum fields their type needs,
         // so the eventual "model not found"/auth failure is surfaced early.

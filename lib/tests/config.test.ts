@@ -1659,6 +1659,92 @@ unknownSection: true
       });
     });
 
+    it('keeps valid provider timeout tuning and drops invalid values fail-open', () => {
+      const result = validateConfig({
+        llm: {
+          providers: {
+            gateway: {
+              type: 'openai-compatible',
+              baseUrl: 'https://llm.corp.example/v1',
+              headerTimeoutMs: 30000,
+              chunkTimeoutMs: 60000,
+            },
+            bad: {
+              type: 'openai-compatible',
+              baseUrl: 'https://other.example/v1',
+              headerTimeoutMs: -1,
+              chunkTimeoutMs: 'fast',
+            },
+          },
+        },
+      } as never);
+      expect(result.llm?.providers?.gateway).toEqual({
+        type: 'openai-compatible',
+        baseUrl: 'https://llm.corp.example/v1',
+        headerTimeoutMs: 30000,
+        chunkTimeoutMs: 60000,
+      });
+      expect(result.llm?.providers?.bad).toEqual({
+        type: 'openai-compatible',
+        baseUrl: 'https://other.example/v1',
+      });
+    });
+
+    it('drops sub-millisecond timeouts that round to zero', () => {
+      const result = validateConfig({
+        llm: {
+          providers: {
+            gateway: {
+              type: 'openai-compatible',
+              baseUrl: 'https://llm.corp.example/v1',
+              headerTimeoutMs: 0.4,
+              chunkTimeoutMs: 0.2,
+            },
+          },
+        },
+      } as never);
+      expect(result.llm?.providers?.gateway).toEqual({
+        type: 'openai-compatible',
+        baseUrl: 'https://llm.corp.example/v1',
+      });
+    });
+
+    it('rounds fractional timeouts and drops zero/NaN/Infinity via loadConfig', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-llm-timeout-'));
+      try {
+        fs.writeFileSync(
+          path.join(dir, '.opencode-reviewer.yml'),
+          `llm:
+  providers:
+    gateway:
+      type: openai-compatible
+      baseUrl: https://llm.corp.example/v1
+      headerTimeoutMs: 1500.5
+      chunkTimeoutMs: 60000
+    bad:
+      type: openai-compatible
+      baseUrl: https://other.example/v1
+      headerTimeoutMs: -1
+`,
+        );
+        const config = loadConfig(dir);
+        // Invalid timeout degrades to undefined: the provider survives with
+        // baseUrl/type intact and no timeout keys.
+        expect(config.llm?.providers?.bad).toMatchObject({
+          type: 'openai-compatible',
+          baseUrl: 'https://other.example/v1',
+        });
+        expect(config.llm?.providers?.bad).not.toHaveProperty('headerTimeoutMs');
+        // Fractional values survive the schema parse (rounding is documented
+        // and applied downstream in validateConfig).
+        expect(config.llm?.providers?.gateway).toMatchObject({
+          baseUrl: 'https://llm.corp.example/v1',
+        });
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     it('omits llm when nothing valid is configured', () => {
       const result = validateConfig({ llm: { providers: {} } } as never);
       expect(result.llm).toBeUndefined();
