@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import { buildInlineComments } from '../jsonl-parser.js';
+import { buildInlineCommentsWithSpillover } from '../jsonl-parser.js';
 import type {
   HeadCIStatus,
   PlatformAdapter,
@@ -17,6 +17,7 @@ import type {
 } from '../types/index.js';
 import { CircuitBreaker, countHttpError } from './circuit-breaker.js';
 import { getErrorStatus } from './errors.js';
+import { applyBodyNoiseBudget, resolveNoiseBudget, stripNoiseBudget } from './github.js';
 import {
   filterIssuesByFingerprints,
   fingerprintForIssue,
@@ -896,12 +897,13 @@ export class GitLabAdapter implements PlatformAdapter {
     const dedupedResult = { ...workingResult, issues: dedupedIssues };
 
     const inlineComments = postInlineComments
-      ? buildInlineComments(
+      ? buildInlineCommentsWithSpillover(
           dedupedResult,
           await this.getDiffLines(mrNumber, signal),
           suppressLowConfidence,
           options?.emitFixPayload,
-        )
+          resolveNoiseBudget(options),
+        ).comments
       : [];
 
     try {
@@ -935,7 +937,10 @@ export class GitLabAdapter implements PlatformAdapter {
           (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
         )
       : dedupedResult.issues;
-    const body = buildReviewBody({ ...dedupedResult, issues: issuesForBody }, options);
+    const body = buildReviewBody(
+      applyBodyNoiseBudget(dedupedResult, issuesForBody, options),
+      stripNoiseBudget(options),
+    );
 
     const commentIds: Array<{
       file: string;

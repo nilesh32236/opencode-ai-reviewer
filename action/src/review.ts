@@ -376,6 +376,9 @@ export async function runReview(
         ...(config.review.verdictMode !== undefined
           ? { verdictMode: config.review.verdictMode }
           : {}),
+        ...(config.review.sensitivity?.noiseBudget !== undefined
+          ? { maxVisibleFindings: config.review.sensitivity.noiseBudget }
+          : {}),
       },
     );
   } catch (err) {

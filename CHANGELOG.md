@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.13.16] — 2026-09-16
+
+
+### Fixed
+
+- address issue #587 (#615) (#587
+#615)
+
+### Changed
+
+- [Security] DNS-rebinding guard for MCP/webhook fetches (#552) (#552)
+
+[v1.13.16]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.15...v1.13.16
+
 ## [v1.13.15] — 2026-09-16
 
 
