@@ -110,7 +110,19 @@ describe('checkNodeFloor()', () => {
   });
 
   it('passes above the floor', () => {
-    expect(checkNodeFloor('24.19.0', MINIMUM_NODE_VERSION).ok).toBe(true);
+    // Derive the above-floor version from the constant so a floor bump does
+    // not require editing this fixture (patch + 1 stays strictly above).
+    // Guard the derivation so a malformed constant fails loudly instead of
+    // producing an unparseable fixture that checkNodeFloor would fail-open on.
+    const parsed = parseVersion(MINIMUM_NODE_VERSION);
+    if (parsed === null) throw new Error(`Malformed MINIMUM_NODE_VERSION: ${MINIMUM_NODE_VERSION}`);
+    const aboveFloor = formatVersion({
+      major: parsed.major,
+      minor: parsed.minor,
+      patch: parsed.patch + 1,
+      prerelease: null,
+    });
+    expect(checkNodeFloor(aboveFloor, MINIMUM_NODE_VERSION).ok).toBe(true);
     expect(checkNodeFloor(`v${MINIMUM_NODE_VERSION}`, MINIMUM_NODE_VERSION).ok).toBe(true);
   });
 
@@ -132,7 +144,7 @@ describe('checkNodeFloor()', () => {
   });
 
   it('defaults to the minimum Node floor and process.version', () => {
-    expect(MINIMUM_NODE_VERSION).toBe('24.18.1');
+    expect(MINIMUM_NODE_VERSION).toBe('24.19.0');
     const result = checkNodeFloor();
     expect(result.floor).toBe(MINIMUM_NODE_VERSION);
     expect(result.current).toBe(process.version);
