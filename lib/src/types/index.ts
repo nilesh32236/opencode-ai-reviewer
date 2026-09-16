@@ -688,10 +688,11 @@ export interface ReviewSensitivityConfig {
   /** Maximum total findings kept (highest severity first). */
   maxTotalFindings?: number;
   /**
-   * Max inline findings rendered; severity-ordered (critical > important > minor),
-   * overflow collapsed into a summary `+N more` line. Absent = legacy
-   * (`maxTotalFindings` behavior unchanged).
-   * @since NEXT
+   * Display/post noise budget: maximum findings rendered across the review
+   * body, inline comments, and notifications (highest severity first). The
+   * hidden tail is reported as a user-visible "+N more" spillover summary
+   * instead of being silently dropped. Undefined = unlimited (legacy behavior).
+   * Layered on top of `maxTotalFindings` (which still hard-filters first).
    */
   noiseBudget?: number;
   /** If set, only findings whose category matches one of these are kept. */
@@ -1331,13 +1332,20 @@ export interface ReviewResult {
    * rendered by buildReviewBody/postReview. Absent when nothing was loaded. */
   attributionFooter?: string;
   /**
-   * Findings hidden by the `noiseBudget` inline cap, collapsed into a summary
-   * `+N more` spillover line. Absent/zero = render nothing (legacy).
-   * @since NEXT
+   * Severity-aware accounting for findings hidden by sensitivity caps or a
+   * display noise budget (`{ count, critical, important, minor }`). Renderers
+   * surface it as a user-visible "+N more" spillover line so capped findings
+   * are never silently dropped. Absent when nothing was hidden.
    */
-  noiseOverflow?: {
-    hidden: number;
-    bySeverity: { critical: number; important: number; minor: number };
+  spillover?: {
+    /** Total number of hidden findings. */
+    count: number;
+    /** Hidden critical findings. */
+    critical: number;
+    /** Hidden important findings. */
+    important: number;
+    /** Hidden minor findings. */
+    minor: number;
   };
 }
 

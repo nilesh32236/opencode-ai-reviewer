@@ -5,6 +5,12 @@ import type {
   TokenUsage,
   VerdictMode,
 } from '../types/index.js';
+import {
+  type SpilloverSummary,
+  applyNoiseBudget,
+  formatSpilloverLine,
+  mergeSpilloverSummaries,
+} from './filter-findings.js';
 import { buildFixPayload, formatFixPayloadMarkdown } from './fix-payload.js';
 import {
   type FunctionScore,
@@ -65,6 +71,21 @@ export interface ReviewBodyOptions {
    * head SHA). Appended after the issues section when non-empty. Falls back to
    * `result.attributionFooter` when omitted. */
   attributionFooter?: string;
+  /**
+   * Display noise budget: maximum findings rendered in the `### Issues`
+   * section (highest severity first). The hidden tail is reported as a
+   * user-visible "+N more" spillover line instead of being silently dropped.
+   * Undefined = unlimited (legacy behavior).
+   * @since NEXT
+   */
+  maxVisibleFindings?: number;
+  /**
+   * Alias for `maxVisibleFindings` mirroring the
+   * `review.sensitivity.noiseBudget` config key. `maxVisibleFindings` wins
+   * when both are set.
+   * @since NEXT
+   */
+  noiseBudget?: number;
 }
 
 /**
@@ -326,7 +347,16 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
   if (result.issues.length > 0) {
     lines.push('### Issues');
     lines.push('');
-    for (const i of result.issues) {
+    // Severity-ordered noise budget: cap the rendered findings (most severe
+    // first) and account for the hidden tail as a visible spillover line.
+    // Incoming `result.spillover` (e.g. from sensitivity-cap filtering or
+    // capped inline comments) is merged in so nothing is silently dropped.
+    const budget = options?.maxVisibleFindings ?? options?.noiseBudget;
+    const { visible: visibleIssues, spillover: budgetSpillover } = applyNoiseBudget(
+      result.issues,
+      budget,
+    );
+    for (const i of visibleIssues) {
       lines.push(formatIssueBullet(i));
       if (i.suggestion) {
         lines.push(`  > 💡 **How to fix:** ${sanitizeMarkdown(i.suggestion)}`);
@@ -359,33 +389,23 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
         }
       }
     }
-  }
-
-  try {
-    const hidden = result.noiseOverflow?.hidden;
-    if (typeof hidden === 'number' && Number.isFinite(hidden) && hidden > 0) {
-      const by = result.noiseOverflow?.bySeverity;
-      const crit =
-        by && typeof by.critical === 'number' && Number.isFinite(by.critical)
-          ? Math.max(0, Math.floor(by.critical))
-          : 0;
-      const imp =
-        by && typeof by.important === 'number' && Number.isFinite(by.important)
-          ? Math.max(0, Math.floor(by.important))
-          : 0;
-      const min =
-        by && typeof by.minor === 'number' && Number.isFinite(by.minor)
-          ? Math.max(0, Math.floor(by.minor))
-          : 0;
-      const total = Math.max(0, Math.floor(hidden));
-      const plural = total === 1 ? 'finding' : 'findings';
-      lines.push('');
-      lines.push(
-        `> …and ${total} more ${plural} (${crit} critical, ${imp} important, ${min} minor) — see full list in logs / full review output.`,
-      );
+    const spillover: SpilloverSummary | undefined = mergeSpilloverSummaries(
+      result.spillover,
+      budgetSpillover,
+    );
+    const spilloverLine = formatSpilloverLine(spillover);
+    if (spilloverLine) {
+      lines.push(`- _${sanitizeMarkdown(spilloverLine)}_`);
     }
-  } catch {
-    // Fail-open: skip the spillover line when overflow metadata is malformed.
+  } else if (result.spillover !== undefined && result.spillover.count > 0) {
+    // Every finding was capped away (e.g. the sensitivity filter kept none):
+    // still surface the spillover accounting instead of rendering no section.
+    const spilloverLine = formatSpilloverLine(result.spillover);
+    if (spilloverLine) {
+      lines.push('### Issues');
+      lines.push('');
+      lines.push(`- _${sanitizeMarkdown(spilloverLine)}_`);
+    }
   }
 
   // Token usage / cost is deliberately NOT rendered here: it is surfaced once

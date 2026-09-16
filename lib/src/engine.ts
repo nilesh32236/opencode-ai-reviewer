@@ -74,7 +74,12 @@ import { filterBlameToPatch, getGitBlame, parsePatchHunks } from './utils/blame.
 import { MAX_BLAME_LINES_PER_FILE, UNCOMMITTED_SHA } from './utils/blame.js';
 import type { BlameRange } from './utils/blame.js';
 import { sanitizeDescribeDiagram } from './utils/describe-diagram.js';
-import { computeReviewStats, filterFindings, severityRank } from './utils/filter-findings.js';
+import {
+  computeReviewStats,
+  filterFindings,
+  mergeSpilloverSummaries,
+  severityRank,
+} from './utils/filter-findings.js';
 import {
   isAgentConfigPath,
   isGeneratedArtifact,
@@ -3907,13 +3912,12 @@ export class ReviewEngine {
     extraMinSeverityRank?: number,
   ): ReviewResult {
     const sensitivity = this.config.review.sensitivity ?? {};
-    const { issues, dropped, overflowCount, overflowBySeverity } = filterFindings(result.issues, {
+    const { issues, dropped, spillover } = filterFindings(result.issues, {
       minSeverity: sensitivity.minSeverity,
       minSeverityRankValue: extraMinSeverityRank,
       confidenceThreshold: sensitivity.confidenceThreshold,
       maxFindingsPerCategory: sensitivity.maxFindingsPerCategory,
       maxTotalFindings: sensitivity.maxTotalFindings,
-      noiseBudget: sensitivity.noiseBudget,
       focusAreas: sensitivity.focusAreas,
       ignorePatterns: sensitivity.ignorePatterns,
       categories: this.config.review.categories,
@@ -3922,26 +3926,24 @@ export class ReviewEngine {
     if (dropped > 0) {
       this.logger.info(`Sensitivity filter dropped ${dropped} finding(s) (kept ${issues.length})`);
     }
-    if (overflowCount !== undefined && overflowCount > 0) {
-      this.logger.info(
-        `Noise budget kept ${issues.length}/${issues.length + overflowCount} (+${overflowCount} in summary)`,
-      );
-    }
     // Always apply the filter output so `category` normalization and severity
     // ordering are consistent regardless of whether any finding was dropped.
-    return {
+    // Cap spillover rides along on the result so renderers can surface a
+    // user-visible "+N more" line instead of silently dropping findings.
+    // Merged with any incoming spillover so repeated filter passes accumulate
+    // rather than clobbering earlier accounting.
+    const mergedSpillover = mergeSpilloverSummaries(result.spillover, spillover);
+    const filtered: ReviewResult = {
       ...result,
       issues,
       stats: computeReviewStats(issues),
-      ...(overflowCount !== undefined &&
-        overflowCount > 0 &&
-        overflowBySeverity !== undefined && {
-          noiseOverflow: {
-            hidden: overflowCount,
-            bySeverity: { ...overflowBySeverity },
-          },
-        }),
     };
+    if (mergedSpillover !== undefined) {
+      filtered.spillover = mergedSpillover;
+    } else {
+      filtered.spillover = undefined;
+    }
+    return filtered;
   }
 
   private async verifyReviewResult(

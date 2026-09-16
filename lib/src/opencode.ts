@@ -20,13 +20,20 @@ import { validateModelString } from './utils/model-string.js';
 import { withRetry, withRetryAndTimeout } from './utils/retry.js';
 import {
   MINIMUM_OPENCODE_VERSION,
+  TESTED_OPENCODE_VERSION,
   UNPARSEABLE_VERSION,
+  WARN_BELOW_OPENCODE_VERSION,
   compareVersions,
   formatVersion,
+  isBelowWarnFloor,
   parseVersion,
 } from './utils/version.js';
 
-export { MINIMUM_OPENCODE_VERSION } from './utils/version.js';
+export {
+  MINIMUM_OPENCODE_VERSION,
+  TESTED_OPENCODE_VERSION,
+  WARN_BELOW_OPENCODE_VERSION,
+} from './utils/version.js';
 
 /** Default timeout for the `opencode --version` health probe, in milliseconds. */
 export const DEFAULT_HEALTH_TIMEOUT_MS = 5_000;
@@ -516,6 +523,33 @@ const INSTALL_MESSAGE =
   'Or download from: https://github.com/anomalyco/opencode/releases';
 
 /**
+ * Whether the untested-CLI version warning is disabled.
+ * Set `OPENCODE_DISABLE_VERSION_WARN=true` to restore the previous silent
+ * behavior for versions between the hard floor and the warn floor.
+ * @returns True when the warning tier should stay silent.
+ * @since NEXT
+ */
+export function isVersionWarnDisabled(): boolean {
+  const raw = process.env.OPENCODE_DISABLE_VERSION_WARN?.trim().toLowerCase();
+  return raw === 'true' || raw === '1' || raw === 'yes' || raw === 'on';
+}
+
+/**
+ * Build the upgrade-guidance warning for an untested but compatible CLI.
+ * @param raw - Raw version string of the installed CLI.
+ * @returns Warning text with upgrade guidance and docs links.
+ * @since NEXT
+ */
+export function buildUntestedVersionWarning(raw: string): string {
+  return (
+    `OpenCode ${raw} is below the tested version ${TESTED_OPENCODE_VERSION} ` +
+    `(warning floor ${WARN_BELOW_OPENCODE_VERSION}). Reviews may behave unexpectedly. ` +
+    `Upgrade with: npm install -g opencode-ai@latest. ` +
+    `See https://opencode.ai/docs/cli and releases at https://github.com/sst/opencode/releases.`
+  );
+}
+
+/**
  * Run `opencode --version` asynchronously, bounded by a timeout.
  * The probe is deliberately non-blocking (unlike execFileSync) so a slow or
  * hung binary cannot stall the event loop for concurrent batch processing.
@@ -581,6 +615,13 @@ export async function checkHealth(options: CheckHealthOptions = {}): Promise<Ope
       cachedOpenCodeVersionRaw = version.raw;
     }
     if (!version) {
+      if (!isVersionWarnDisabled()) {
+        core.warning(
+          `OpenCode CLI version could not be determined from output: ${(stdout || '').trim()}. ` +
+            `Continuing without failing; for reliable reviews use tested version ${TESTED_OPENCODE_VERSION}. ` +
+            `See https://opencode.ai/docs/cli.`,
+        );
+      }
       return {
         available: true,
         version: null,
@@ -591,6 +632,9 @@ export async function checkHealth(options: CheckHealthOptions = {}): Promise<Ope
     const compatible = isVersionCompatible(version, minimumVersion);
     if (compatible) {
       validatedOpenCodePath = binPath;
+      if (!isVersionWarnDisabled() && isBelowWarnFloor(version.raw) === true) {
+        core.warning(buildUntestedVersionWarning(version.raw));
+      }
       return {
         available: true,
         version,

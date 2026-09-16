@@ -6,6 +6,11 @@ import type {
   Severity,
 } from '../types/index.js';
 import { CircuitBreaker } from './circuit-breaker.js';
+import {
+  type SpilloverSummary,
+  computeSpilloverSummary,
+  mergeSpilloverSummaries,
+} from './filter-findings.js';
 import { Logger } from './logger.js';
 import { withRetryAndTimeout } from './retry.js';
 import { dnsResolvesBlockedHost, isBlockedIpHost } from './safe-exec.js';
@@ -153,6 +158,62 @@ export function getTopFindings(issues: ReviewIssue[], count: number): ReviewIssu
     .slice(0, Math.max(0, count));
 }
 
+/** Default number of findings shown in Slack/Teams notifications. */
+export const DEFAULT_NOTIFICATION_FINDINGS = 3;
+
+/** Options controlling notification message rendering. */
+export interface NotificationMessageOptions {
+  /**
+   * Maximum findings listed (highest severity first); the hidden tail is
+   * reported as a "+N more" spillover line. Defaults to 3 (legacy behavior
+   * lists the top 3, now with visible spillover accounting).
+   */
+  maxFindings?: number;
+}
+
+/**
+ * Compute severity-aware spillover accounting for notification findings
+ * hidden beyond the listed top N, merged with any pre-existing spillover
+ * carried on the review result (e.g. from sensitivity-cap filtering).
+ * @param result - Review result whose issues were ranked.
+ * @param visibleCount - Number of findings actually listed.
+ * @returns The combined spillover summary, or undefined when nothing is hidden.
+ */
+export function getNotificationSpillover(
+  result: ReviewResult,
+  visibleCount: number,
+): SpilloverSummary | undefined {
+  const ranked = [...result.issues].sort(
+    (a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity],
+  );
+  const tail = ranked.slice(Math.max(0, visibleCount));
+  return mergeSpilloverSummaries(
+    result.spillover,
+    tail.length > 0 ? computeSpilloverSummary(tail) : undefined,
+  );
+}
+
+/**
+ * Format a notification-safe spillover suffix for findings hidden beyond the
+ * listed top N, e.g. `…and 4 more (1 critical · 2 important · 1 minor)`. The
+ * line is fully generated (counts plus fixed words) so it needs no
+ * Slack-mrkdwn or Adaptive-Card escaping.
+ * @param spillover - Spillover accounting.
+ * @returns The spillover line, or undefined when nothing was hidden.
+ */
+export function formatNotificationSpilloverLine(
+  spillover: SpilloverSummary | undefined | null,
+): string | undefined {
+  if (!spillover || spillover.count <= 0) return undefined;
+  const parts: string[] = [];
+  if (spillover.critical > 0) parts.push(`${spillover.critical} critical`);
+  if (spillover.important > 0) parts.push(`${spillover.important} important`);
+  if (spillover.minor > 0) parts.push(`${spillover.minor} minor`);
+  const breakdown = parts.length > 0 ? ` (${parts.join(' · ')})` : '';
+  const noun = spillover.count === 1 ? 'finding' : 'findings';
+  return `…and ${spillover.count} more ${noun}${breakdown}`;
+}
+
 /**
  * Build the default PR/MR URL for a repository/PR pair, honoring the platform
  * the review ran on so GitLab merge requests do not link to a nonexistent
@@ -246,14 +307,20 @@ function findingBulletTeams(issue: ReviewIssue): string {
  * Format a review summary as a Slack Blocks payload.
  * @param result - Review result to summarize.
  * @param context - PR context (title, number, repo, URL).
+ * @param options - Optional rendering options (listed-findings budget).
  * @returns A Slack incoming-webhook payload with a `blocks` array.
  */
 export function formatSlackMessage(
   result: ReviewResult,
   context: NotificationContext,
+  options?: NotificationMessageOptions,
 ): { blocks: SlackBlock[] } {
   const prUrl = context.url ?? defaultPrUrl(context);
-  const topFindings = getTopFindings(result.issues, 3);
+  const maxFindings = Math.max(0, options?.maxFindings ?? DEFAULT_NOTIFICATION_FINDINGS);
+  const topFindings = getTopFindings(result.issues, maxFindings);
+  const spilloverLine = formatNotificationSpilloverLine(
+    getNotificationSpillover(result, topFindings.length),
+  );
 
   const blocks: SlackBlock[] = [
     {
@@ -275,15 +342,18 @@ export function formatSlackMessage(
     },
   ];
 
-  if (topFindings.length > 0) {
+  if (topFindings.length > 0 || spilloverLine !== undefined) {
     const findingsText = `*Top findings:*\n${topFindings.map(findingBullet).join('\n')}`;
+    // Reserve room for the spillover suffix so the appended accounting can
+    // never push the section block over Slack's 3000-character limit.
+    const suffix = spilloverLine !== undefined ? `\n${spilloverLine}` : '';
     blocks.push({
       type: 'section',
       text: {
         type: 'mrkdwn',
         // Slack rejects a section block whose text exceeds 3000 characters;
         // issue messages are model-generated and unbounded, so cap the body.
-        text: truncateText(findingsText, SLACK_SECTION_TEXT_LIMIT),
+        text: `${truncateText(findingsText, Math.max(0, SLACK_SECTION_TEXT_LIMIT - suffix.length))}${suffix}`,
       },
     });
   }
@@ -296,18 +366,25 @@ export function formatSlackMessage(
  * Format a review summary as a Teams Adaptive Card payload.
  * @param result - Review result to summarize.
  * @param context - PR context (title, number, repo, URL).
+ * @param options - Optional rendering options (listed-findings budget).
  * @returns A Teams message payload containing an Adaptive Card attachment.
  */
 export function formatTeamsMessage(
   result: ReviewResult,
   context: NotificationContext,
+  options?: NotificationMessageOptions,
 ): TeamsMessage {
   const prUrl = context.url ?? defaultPrUrl(context);
-  const topFindings = getTopFindings(result.issues, 3);
+  const maxFindings = Math.max(0, options?.maxFindings ?? DEFAULT_NOTIFICATION_FINDINGS);
+  const topFindings = getTopFindings(result.issues, maxFindings);
   const verdict = verdictLabel(result);
+  const spilloverLine = formatNotificationSpilloverLine(
+    getNotificationSpillover(result, topFindings.length),
+  );
+  const spilloverSuffix = spilloverLine !== undefined ? `\n${spilloverLine}` : '';
 
   const topFindingBlocks: TeamsTextBlock[] =
-    topFindings.length > 0
+    topFindings.length > 0 || spilloverLine !== undefined
       ? [
           {
             type: 'TextBlock',
@@ -318,10 +395,11 @@ export function formatTeamsMessage(
             type: 'TextBlock',
             // Cap like the Slack section block: finding text is
             // model-generated and unbounded.
-            text: truncateText(
+            text: `${truncateText(
               topFindings.map(findingBulletTeams).join('\n'),
-              SLACK_SECTION_TEXT_LIMIT,
-            ),
+              // Reserve room for the spillover suffix (see Slack path above).
+              Math.max(0, SLACK_SECTION_TEXT_LIMIT - spilloverSuffix.length),
+            )}${spilloverSuffix}`,
             wrap: true,
           },
         ]

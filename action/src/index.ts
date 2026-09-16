@@ -352,6 +352,9 @@ async function run(): Promise<void> {
           maxTotalFindings:
             loadedConfig?.review?.sensitivity?.maxTotalFindings ??
             DEFAULT_CONFIG.review.sensitivity?.maxTotalFindings,
+          noiseBudget:
+            loadedConfig?.review?.sensitivity?.noiseBudget ??
+            DEFAULT_CONFIG.review.sensitivity?.noiseBudget,
           focusAreas:
             loadedConfig?.review?.sensitivity?.focusAreas ??
             DEFAULT_CONFIG.review.sensitivity?.focusAreas,
