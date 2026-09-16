@@ -168,7 +168,11 @@ jobs:
 
   autofix:
     name: Autofix review loop
-    if: github.event_name != 'schedule' && github.event.action != 'closed' && ((github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'autofix') && !contains(github.event.pull_request.labels.*.name, 'autofix:approved') && !contains(github.event.pull_request.labels.*.name, 'autofix:merged') && !contains(github.event.pull_request.labels.*.name, 'autofix:ready')) || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null && contains(github.event.comment.body, '/fix')))
+    # The issue_comment (/fix) path additionally requires a privileged author
+    # (OWNER/MEMBER/COLLABORATOR, mirroring app/src/utils/privilege.ts):
+    # otherwise any GitHub user could spend model budget and run the
+    # secret-bearing fix loop (GH_PAT + LLM keys) on any PR (issue #540).
+    if: github.event_name != 'schedule' && github.event.action != 'closed' && ((github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'autofix') && !contains(github.event.pull_request.labels.*.name, 'autofix:approved') && !contains(github.event.pull_request.labels.*.name, 'autofix:merged') && !contains(github.event.pull_request.labels.*.name, 'autofix:ready')) || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null && contains(github.event.comment.body, '/fix') && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)))
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
