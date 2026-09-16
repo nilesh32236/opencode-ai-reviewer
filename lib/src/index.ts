@@ -33,6 +33,7 @@ export {
   buildLocalOpenCodeConfig,
   buildLLMProviderMap,
   MINIMUM_OPENCODE_VERSION,
+  resetOpenCodeRunChainForTests,
 } from './opencode.js';
 export type {
   TokenUsageBreakdown,

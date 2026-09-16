@@ -1218,7 +1218,7 @@ describe('ReviewEngine', () => {
         expect(capturedSubagents).toBeUndefined();
       });
 
-      it('falls back to the legacy batch path when the orchestrator context overflows', async () => {
+      it('stays on the single-process path when the orchestrator context overflows (budgeted)', async () => {
         const bigPatch = 'x'.repeat(15_000);
         const oversizedPr = makePRContext({
           changedFiles: [
@@ -1230,7 +1230,9 @@ describe('ReviewEngine', () => {
         });
         const eng = defaultEngine();
         let capturedSubagents: unknown;
-        mockRunOpenCode.mockImplementation(async (_p: string, opts?: { subagents?: unknown }) => {
+        let capturedPrompt = '';
+        mockRunOpenCode.mockImplementation(async (p: string, opts?: { subagents?: unknown }) => {
+          capturedPrompt = p;
           capturedSubagents = opts?.subagents;
           return { success: true, output: '', durationMs: 500, tokensUsed: 10 };
         });
@@ -1238,9 +1240,41 @@ describe('ReviewEngine', () => {
 
         await eng.reviewPR(oversizedPr);
 
-        // 4 files / batchSize 3 = 2 batches + 1 synthesis = 3 calls; no subagents.
-        expect(mockRunOpenCode).toHaveBeenCalledTimes(3);
-        expect(capturedSubagents).toBeUndefined();
+        // Oversized contexts are budgeted in-process: exactly 1 opencode run
+        // with subagents injected (no legacy N-process fan-out).
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(1);
+        expect(capturedSubagents).toBeDefined();
+        expect(capturedPrompt.length).toBeGreaterThan(0);
+      });
+
+      it('budgetOrchestratorContext truncates oversized contexts with a marker', async () => {
+        const { ReviewEngine } = await import('../src/engine.js');
+        const big = `line1\n${'y'.repeat(50_000)}`;
+        const { context, wasBudgeted } = ReviewEngine.budgetOrchestratorContext(big);
+        expect(wasBudgeted).toBe(true);
+        expect(context.length).toBeLessThanOrEqual(45_000);
+        expect(context).toContain('[orchestrator context budgeted to fit single-process path]');
+        const small = ReviewEngine.budgetOrchestratorContext('tiny');
+        expect(small.wasBudgeted).toBe(false);
+        expect(small.context).toBe('tiny');
+      });
+
+      it('marks partial batch failure as degraded (not clean)', async () => {
+        const { ReviewEngine } = await import('../src/engine.js');
+        const clean = {
+          ...mockEmptyResult(),
+          summary: 'No issues found',
+          verdict: {
+            ready: true,
+            reasoning: 'No issues found',
+            autoFixable: false,
+            confidence: 'high' as const,
+          },
+        };
+        const degraded = ReviewEngine.applyPartialBatchDegradation(clean, 1, 3);
+        expect(degraded.verdict.ready).toBe(false);
+        expect(degraded.verdict.reasoning).toContain('Partial review');
+        expect(degraded.failedBatches).toBe(1);
       });
 
       it('streams the real parsed result through onBatchComplete (not a placeholder)', async () => {

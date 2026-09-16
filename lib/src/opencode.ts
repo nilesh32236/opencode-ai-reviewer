@@ -65,6 +65,38 @@ export interface OpenCodeRunMode {
 let runModeOverride: OpenCodeRunMode | undefined;
 
 /**
+ * Process-wide promise chain serializing `opencode run` spawns. Concurrent
+ * `opencode run` processes share one embedded opencode store (same HOME /
+ * working tree), and concurrent store migrations race (`CREATE TABLE
+ * workspace` failure, exit 1). Queueing spawns behind this chain guarantees
+ * no two `opencode run` children overlap in this process, so the legacy
+ * batch fan-out cannot crash itself. The chain only gates process lifetime
+ * (spawn → exit), not pre-spawn validation, and bounded single-retry paths
+ * call the inner runner directly so they never re-acquire the lock.
+ */
+let opencodeRunChain: Promise<void> = Promise.resolve();
+
+/** Reset the `opencode run` serialization chain (tests only). */
+export function resetOpenCodeRunChainForTests(): void {
+  opencodeRunChain = Promise.resolve();
+}
+
+async function withOpenCodeRunLock<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = opencodeRunChain;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  opencodeRunChain = prev.then(() => gate);
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
+
+/**
  * Default for dual-emitting V2 permissions-array subagent rules alongside V1
  * permission keys. `true` keeps subagent reviews working on both newer CLIs
  * (which prefer `permissions`) and older CLIs (which require `permission`).
@@ -244,6 +276,7 @@ export function resetOpenCodeState(): void {
   dualEmitSubagentPermissionsDefault = true;
   dualEmitMCPDefault = true;
   llmProviderConfig = undefined;
+  opencodeRunChain = Promise.resolve();
   signalHandlersRegistered = false;
 }
 
@@ -2298,6 +2331,46 @@ export async function runOpenCode(
   promptTokens?: number;
   completionTokens?: number;
 }> {
+  return withOpenCodeRunLock(() => runOpenCodeInner(prompt, options));
+}
+
+async function runOpenCodeInner(
+  prompt: string,
+  options: {
+    model: string;
+    workingDirectory?: string;
+    /** Timeout in minutes before killing OpenCode. Default: 10. */
+    timeoutMinutes?: number;
+    /** Optional AbortSignal to cancel the OpenCode process externally. */
+    signal?: AbortSignal;
+    env?: Record<string, string>;
+    /** When true, do not stream the transcript to the CI logs. */
+    quiet?: boolean;
+    /** Custom OpenCode config JSON to inject as OPENCODE_CONFIG_CONTENT. */
+    opencodeConfig?: string;
+    /** Optional subagent definitions merged into the injected OpenCode config.
+     * When provided, the primary agent can dispatch these subagents via the
+     * task tool within a single `opencode run` session. */
+    subagents?: Record<string, Record<string, unknown>>;
+    /** Pass `--auto` to auto-approve tool permissions (default: true). */
+    autoApprove?: boolean;
+    /** Dual-emit V2 `permissions` alongside legacy `permission` (default: true). */
+    dualEmitSubagentPermissions?: boolean;
+    /** Dual-emit V2 `mcp.servers` alongside legacy `mcp` entries (default: true).
+     * On a strict-schema rejection the run retries once without the legacy
+     * keys and dual-emit is auto-disabled for the rest of the process. */
+    dualEmitMCP?: boolean;
+    /** Custom LLM provider configuration for this run (see JSDoc above). */
+    llm?: LLMConfig;
+  },
+): Promise<{
+  success: boolean;
+  output: string;
+  durationMs: number;
+  tokensUsed: number;
+  promptTokens?: number;
+  completionTokens?: number;
+}> {
   // Explicit per-run config wins; the module global is only a fallback for
   // legacy callers that never pass `llm`. Engines always pass their own config
   // so concurrent runs never observe another engine's providers.
@@ -2678,7 +2751,7 @@ export async function runOpenCode(
         core.warning(
           'OpenCode CLI appears to reject provider timeout keys (headerTimeout/chunkTimeout) — retrying once without them.',
         );
-        return runOpenCode(prompt, {
+        return runOpenCodeInner(prompt, {
           ...options,
           opencodeConfig: options.opencodeConfig
             ? stripProviderTimeoutOptions(options.opencodeConfig)

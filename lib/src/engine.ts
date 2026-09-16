@@ -111,10 +111,10 @@ export const MAX_BATCH_CONCURRENCY = 8;
 
 /**
  * Maximum character length of the assembled orchestrator context for the
- * single-process subagent review path. When the context exceeds this gate the
- * review falls back to the legacy N-process batch path so per-batch context
- * budgeting is preserved (the 50k truncation in `buildSubagentReviewPrompt`
- * becomes unreachable for subagent-routed reviews).
+ * single-process subagent review path. Oversized contexts are budgeted down
+ * *inside* the single process (truncated with an explicit marker) so large
+ * PRs still review with exactly one `opencode run` instead of fanning out
+ * to N concurrent processes that race the shared opencode store.
  */
 export const SUBAGENT_REVIEW_CONTEXT_LIMIT = 45_000;
 
@@ -1343,13 +1343,14 @@ export class ReviewEngine {
     // single `opencode run` process. The single-process path is preferred when:
     //  - active agent categories > 0,
     //  - files.length > batchSize (multi-batch PRs — the only case that
-    //    previously spawned N concurrent processes), AND
-    //  - the assembled orchestrator context fits within the context-size gate.
+    //    previously spawned N concurrent processes).
     //
     // Small PRs (files.length <= batchSize) keep the legacy single-batch fast
-    // path (1 process, 1 model pass — no cost regression). Oversized-context
-    // multi-batch PRs fall through to the legacy batch path (context budgeting
-    // preserved). All agents explicitly disabled → legacy path.
+    // path (1 process, 1 model pass — no cost regression). Oversized orchestrator
+    // contexts are budgeted down inside the single process (see
+    // `budgetOrchestratorContext`) instead of fanning out to N concurrent
+    // processes that race the shared opencode store. All agents explicitly
+    // disabled → legacy path.
     const activeCategories = this.getActiveAgentCategories();
     if (activeCategories.length > 0) {
       // Context-aware gate: build orchestrator context once and measure it.
@@ -1374,39 +1375,44 @@ export class ReviewEngine {
           commitMessages,
         );
 
-        if (orchestratorContext.length <= SUBAGENT_REVIEW_CONTEXT_LIMIT) {
-          return await this.runMultiAgentReview(
-            pr,
-            files,
-            baseContext,
-            mcpDocs,
-            openThreadsContext,
-            workDir,
-            promptFile,
-            promptExtra,
-            timeoutMinutes,
-            codebaseIndex,
-            codebaseIndexData,
-            linterResults,
-            budgetMode,
-            totalDiffLines,
-            lessons,
-            falsePositiveRules,
-            deltaContext,
-            previousFindings,
-            previousBotComments,
-            scaIssues,
-            testGapResult,
-            onBatchComplete,
-            repoRulesContext,
-            commitMessages,
-            orchestratorContext,
+        // Always stay on the single-process path: budget oversized contexts
+        // down to SUBAGENT_REVIEW_CONTEXT_LIMIT in-process rather than
+        // falling back to N concurrent `opencode run` processes.
+        const { context: budgetedContext, wasBudgeted } = ReviewEngine.budgetOrchestratorContext(
+          orchestratorContext,
+          SUBAGENT_REVIEW_CONTEXT_LIMIT,
+        );
+        if (wasBudgeted) {
+          this.logger.warn(
+            `Orchestrator context (${orchestratorContext.length} chars) exceeds SUBAGENT_REVIEW_CONTEXT_LIMIT (${SUBAGENT_REVIEW_CONTEXT_LIMIT}) — budgeted to fit single-process path`,
           );
         }
-        // Oversized context → fall through to the legacy batch path so
-        // per-batch context budgeting is preserved.
-        this.logger.warn(
-          `Orchestrator context (${orchestratorContext.length} chars) exceeds SUBAGENT_REVIEW_CONTEXT_LIMIT (${SUBAGENT_REVIEW_CONTEXT_LIMIT}) — falling back to legacy batch path`,
+        return await this.runMultiAgentReview(
+          pr,
+          files,
+          baseContext,
+          mcpDocs,
+          openThreadsContext,
+          workDir,
+          promptFile,
+          promptExtra,
+          timeoutMinutes,
+          codebaseIndex,
+          codebaseIndexData,
+          linterResults,
+          budgetMode,
+          totalDiffLines,
+          lessons,
+          falsePositiveRules,
+          deltaContext,
+          previousFindings,
+          previousBotComments,
+          scaIssues,
+          testGapResult,
+          onBatchComplete,
+          repoRulesContext,
+          commitMessages,
+          budgetedContext,
         );
       }
       // Small PR (files.length <= batchSize) with multi-agent enabled:
@@ -1792,9 +1798,6 @@ export class ReviewEngine {
       const parsed = await parseJsonlFile(finalOutputPath);
 
       let finalResult = parsed;
-      if (failedBatches > 0) {
-        finalResult = { ...parsed, failedBatches };
-      }
       // When every batch failed, the synthesis model is fed an empty findings
       // payload and may still emit a clean verdict. Never green-light a PR that
       // was never actually reviewed — mirror the multi-agent forceFailedVerdict.
@@ -1808,7 +1811,17 @@ export class ReviewEngine {
             autoFixable: false,
             reasoning: 'All review batches failed',
           },
+          failedBatches,
         };
+      } else if (failedBatches > 0) {
+        // Partial failure: the synthesis ran over blinded coverage. Degrade
+        // explicitly (forced ready:false + blind-coverage warning) instead of
+        // returning a clean-looking synthesis.
+        finalResult = ReviewEngine.applyPartialBatchDegradation(
+          { ...parsed, failedBatches },
+          failedBatches,
+          fileBatches.length,
+        );
       }
       if (linterResults.length > 0) {
         // Dedup from finalResult (not parsed) so the forced all-batches-failed
@@ -2287,6 +2300,61 @@ export class ReviewEngine {
     };
     const context = buildContextString(filtered);
     return context ? context : undefined;
+  }
+
+  /**
+   * Budget an assembled orchestrator context down to `budget` characters so
+   * oversized reviews stay on the single-process subagent path instead of
+   * fanning out to N concurrent `opencode run` processes. Truncation happens
+   * on a hunk (`\n@@`) or newline boundary (mirroring the delta-truncation
+   * pattern in `buildAgentBatchContext`) with an explicit marker appended so
+   * the orchestrator knows coverage was budgeted.
+   * @param ctx - The assembled orchestrator context string.
+   * @param budget - Maximum characters to keep (defaults to
+   * `SUBAGENT_REVIEW_CONTEXT_LIMIT`).
+   * @returns The (possibly truncated) context and whether budgeting applied.
+   */
+  static budgetOrchestratorContext(
+    ctx: string,
+    budget: number = SUBAGENT_REVIEW_CONTEXT_LIMIT,
+  ): { context: string; wasBudgeted: boolean } {
+    if (ctx.length <= budget) return { context: ctx, wasBudgeted: false };
+    const marker = '\n... [orchestrator context budgeted to fit single-process path]';
+    const slice = ctx.slice(0, Math.max(0, budget - marker.length));
+    const lastHunk = slice.lastIndexOf('\n@@');
+    const lastNewline = slice.lastIndexOf('\n');
+    const boundary = lastHunk > 0 ? lastHunk : lastNewline > 0 ? lastNewline : slice.length;
+    return { context: `${slice.slice(0, boundary)}${marker}`, wasBudgeted: true };
+  }
+
+  /**
+   * Demote a review result with partial batch failures to an explicitly
+   * degraded verdict. A partial review was never fully verified, so it must
+   * never synthesize a clean `ready:true` verdict from blinded coverage: the
+   * verdict is forced to `ready:false` with an explicit blind-coverage
+   * warning appended to the reasoning.
+   * @param result - The parsed/synthesized review result.
+   * @param failedBatches - Number of batches that failed.
+   * @param totalBatches - Total number of batches.
+   * @returns The degraded result (with `failedBatches` recorded).
+   */
+  static applyPartialBatchDegradation(
+    result: ReviewResult,
+    failedBatches: number,
+    totalBatches: number,
+  ): ReviewResult {
+    if (failedBatches <= 0) return result;
+    const warning = `Partial review: ${failedBatches}/${totalBatches} file batch(es) failed — findings may be missing`;
+    const reasoning = result.verdict?.reasoning?.includes(warning)
+      ? result.verdict.reasoning
+      : result.verdict?.reasoning
+        ? `${result.verdict.reasoning} (${warning})`
+        : warning;
+    return {
+      ...result,
+      verdict: { ...result.verdict, ready: false, autoFixable: false, reasoning },
+      failedBatches,
+    };
   }
 
   /**
@@ -4598,18 +4666,26 @@ export class ReviewEngine {
     // When EVERY batch failed (and we are here because synthesis also failed),
     // the PR was never actually reviewed. Mirror the multi-agent path's
     // forceFailedVerdict guard: a merge gate must never green-light an
-    // unreviewed PR just because zero issues were parsed.
+    // unreviewed PR just because zero issues were parsed. Partial failures
+    // are likewise degraded: blinded coverage must never synthesize a clean
+    // verdict.
     const allBatchesFailed = failedBatches > 0 && failedBatches >= fileBatches.length;
+    const partialFailure = failedBatches > 0 && !allBatchesFailed;
+    const partialWarning = partialFailure
+      ? ` (Partial review: ${failedBatches}/${fileBatches.length} file batch(es) failed — findings may be missing)`
+      : '';
     return {
       summary:
         allIssues.length > 0
-          ? `Found ${allIssues.length} issues across ${fileBatches.length} batches`
+          ? `Found ${allIssues.length} issues across ${fileBatches.length} batches${partialFailure ? ` (${failedBatches} batch(es) failed — findings may be missing)` : ''}`
           : allBatchesFailed
             ? `All ${fileBatches.length} review batches failed — PR was not reviewed`
-            : 'No issues found',
+            : partialFailure
+              ? `Partial review: ${failedBatches}/${fileBatches.length} batch(es) failed — findings may be missing`
+              : 'No issues found',
       verdict: {
-        ready: allIssues.length === 0 && !allBatchesFailed,
-        reasoning: allBatchesFailed ? 'All review batches failed' : reasoning,
+        ready: allIssues.length === 0 && !allBatchesFailed && !partialFailure,
+        reasoning: allBatchesFailed ? 'All review batches failed' : `${reasoning}${partialWarning}`,
         autoFixable: false,
         confidence: 'medium' as const,
       },

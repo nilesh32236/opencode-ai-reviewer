@@ -519,6 +519,31 @@ describe('runOpenCode()', () => {
     );
   });
 
+  it('serializes concurrent runs so no two opencode processes overlap (shared-store race)', async () => {
+    const first = makeMockProcess();
+    const second = makeMockProcess();
+    mockSpawn.mockReturnValueOnce(first).mockReturnValueOnce(second);
+
+    const firstPromise = runOpenCode('first', { model: 'openai/gpt-4' });
+    const secondPromise = runOpenCode('second', { model: 'openai/gpt-4' });
+
+    // Let the first spawn start; the second must wait for the first to exit.
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+
+    first.emitClose(0);
+    const firstResult = await firstPromise;
+    expect(firstResult.success).toBe(true);
+
+    // Second spawn starts only after the first run released the lock.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    second.emitClose(0);
+    const secondResult = await secondPromise;
+    expect(secondResult.success).toBe(true);
+  });
+
   it('trims whitespace-padded model values before spawning', async () => {
     const proc = makeMockProcess();
     mockSpawn.mockReturnValue(proc);
