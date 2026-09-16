@@ -1,4 +1,15 @@
-/** Semantic label colors chosen for at least 4.5:1 contrast against white text. */
+/**
+ * Semantic label colors for severity labels.
+ *
+ * The GitHub Labels API only accepts a 6-character hex color (no theming
+ * support), so a single palette is shipped for both light and dark mode.
+ * Palette colors are chosen for at least 4.5:1 contrast against the label's
+ * white text (WCAG AA) in light mode; GitHub dark mode renders label text
+ * and backgrounds differently (dimmed backgrounds, adapted foregrounds), so
+ * the light-mode ratio is a best-effort signal there rather than a guarantee.
+ * Re-verify contrast against GitHub's dark-mode label rendering if severity
+ * colors change, or expose a dark-mode palette alongside this one.
+ */
 const SEVERITY_LABEL_COLORS: Record<string, string> = {
   'audit:critical': 'b60205',
   'audit:important': '9a5a00',

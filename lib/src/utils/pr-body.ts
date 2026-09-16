@@ -70,14 +70,24 @@ export function buildAutofixPRBody(opts: PRBodyOptions): string {
     lines.push('## Files Changed');
     lines.push('');
     for (const f of opts.filesChanged) {
-      lines.push(`- \`${escapeCodeSpan(f)}\``);
+      // Zero-width space after each '/' gives narrow viewports a break
+      // opportunity inside the inline code span (mirrors review-body.ts).
+      lines.push(`- \`${escapeCodeSpan(f).replace(/\//g, '/\u200b')}\``);
     }
     lines.push('');
   }
 
   if (opts.analysisApproach && opts.analysisApproach.trim().length > 0) {
     lines.push('<details>');
-    lines.push('<summary>Implementation Approach (from analysis)</summary>');
+    // Unique summary landmark per PR so screen-reader users listing
+    // disclosures can distinguish it; anchor on the issue number when known,
+    // otherwise the branch name. Keeps the generic label as a prefix for
+    // backward compatibility.
+    const approachAnchor =
+      opts.issueNumber !== undefined
+        ? `for issue #${opts.issueNumber}`
+        : `for <code>${escapeMarkdownText(opts.branchName)}</code>`;
+    lines.push(`<summary>Implementation Approach (from analysis) ${approachAnchor}</summary>`);
     lines.push('');
     lines.push(escapeMarkdownText(opts.analysisApproach.trim()));
     lines.push('');
@@ -142,7 +152,11 @@ export function buildChangelogPRBody(opts: ChangelogPRBodyOptions): string {
 
   if (opts.changelogMarkdown.trim().length > 0) {
     lines.push('<details>');
-    lines.push('<summary>Generated changelog entry</summary>');
+    // Unique summary landmark anchored on the version so screen-reader users
+    // listing disclosures can distinguish it from other collapsibles.
+    lines.push(
+      `<summary>Generated changelog entry for <code>${escapeMarkdownText(opts.version)}</code></summary>`,
+    );
     lines.push('');
     lines.push(escapeMarkdownText(opts.changelogMarkdown.trim()));
     lines.push('');
@@ -212,7 +226,9 @@ export function buildDocsPRBody(opts: DocsPRBodyOptions): string {
     lines.push('## Files Changed');
     lines.push('');
     for (const f of opts.filesChanged) {
-      lines.push(`- \`${escapeCodeSpan(f)}\``);
+      // Zero-width space after each '/' gives narrow viewports a break
+      // opportunity inside the inline code span (mirrors review-body.ts).
+      lines.push(`- \`${escapeCodeSpan(f).replace(/\//g, '/\u200b')}\``);
     }
     lines.push('');
   }

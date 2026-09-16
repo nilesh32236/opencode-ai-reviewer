@@ -264,7 +264,39 @@ describe('formatSlackMessage', () => {
     const payload = formatSlackMessage(result, CONTEXT);
     const text = (payload.blocks[2].text as { text: string }).text;
     expect(text.length).toBeLessThanOrEqual(2900);
-    expect(text.endsWith('…')).toBe(true);
+    // A bare ellipsis is not enough — users must be told findings were omitted.
+    expect(text).toContain('see PR for full');
+  });
+
+  it('appends an omitted-findings count when issues exceed the top 3', () => {
+    const result = makeResult([
+      makeIssue('critical', 'one'),
+      makeIssue('critical', 'two'),
+      makeIssue('important', 'three'),
+      makeIssue('minor', 'four'),
+      makeIssue('minor', 'five'),
+    ]);
+    const payload = formatSlackMessage(result, CONTEXT);
+    const text = (payload.blocks[2].text as { text: string }).text;
+    expect(text.length).toBeLessThanOrEqual(2900);
+    expect(text).toContain('+2 more findings');
+    expect(text).toContain('see PR for full list');
+  });
+
+  it('appends an omitted-findings count to Teams cards when issues exceed the top 3', () => {
+    const result = makeResult([
+      makeIssue('critical', 'one'),
+      makeIssue('critical', 'two'),
+      makeIssue('important', 'three'),
+      makeIssue('minor', 'four'),
+    ]);
+    const payload = formatTeamsMessage(result, CONTEXT);
+    const allText = payload.attachments[0].content.body
+      .filter((b): b is TeamsTextBlock => b.type === 'TextBlock')
+      .map((b) => b.text ?? '')
+      .join('\n');
+    expect(allText).toContain('+1 more findings');
+    expect(allText).toContain('see PR for full list');
   });
 });
 

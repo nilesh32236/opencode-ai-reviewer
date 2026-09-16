@@ -276,14 +276,33 @@ export function formatSlackMessage(
   ];
 
   if (topFindings.length > 0) {
+    const omittedCount = result.issues.length - topFindings.length;
     const findingsText = `*Top findings:*\n${topFindings.map(findingBullet).join('\n')}`;
+    // A bare '…' does not tell users findings were omitted, so append an
+    // explicit count line. Budget is reserved up front so the notice itself
+    // is never cut by the cap below.
+    const overflowLine =
+      omittedCount > 0
+        ? `\n… +${omittedCount} more findings — see PR for full list`
+        : '\n… list truncated — see PR for full findings';
+    const reserve = Math.max(
+      `\n… +${Math.max(omittedCount, 0)} more findings — see PR for full list`.length,
+      '\n… list truncated — see PR for full findings'.length,
+    );
+    let body = truncateText(findingsText, SLACK_SECTION_TEXT_LIMIT - reserve);
+    if (omittedCount > 0) {
+      body += overflowLine;
+    } else if (body.endsWith('…')) {
+      // Top-3 text itself was cut (very long messages) — say so explicitly.
+      body += overflowLine;
+    }
     blocks.push({
       type: 'section',
       text: {
         type: 'mrkdwn',
         // Slack rejects a section block whose text exceeds 3000 characters;
         // issue messages are model-generated and unbounded, so cap the body.
-        text: truncateText(findingsText, SLACK_SECTION_TEXT_LIMIT),
+        text: body,
       },
     });
   }
@@ -308,23 +327,40 @@ export function formatTeamsMessage(
 
   const topFindingBlocks: TeamsTextBlock[] =
     topFindings.length > 0
-      ? [
-          {
-            type: 'TextBlock',
-            text: '**Top findings:**',
-            wrap: true,
-          },
-          {
-            type: 'TextBlock',
-            // Cap like the Slack section block: finding text is
-            // model-generated and unbounded.
-            text: truncateText(
-              topFindings.map(findingBulletTeams).join('\n'),
-              SLACK_SECTION_TEXT_LIMIT,
-            ),
-            wrap: true,
-          },
-        ]
+      ? (() => {
+          const omittedCount = result.issues.length - topFindings.length;
+          const findingsText = topFindings.map(findingBulletTeams).join('\n');
+          // Mirror the Slack overflow notice: a bare '…' never tells users
+          // findings were omitted. Reserve budget so the notice is never cut.
+          const overflowLine =
+            omittedCount > 0
+              ? `\n… +${omittedCount} more findings — see PR for full list`
+              : '\n… list truncated — see PR for full findings';
+          const reserve = Math.max(
+            `\n… +${Math.max(omittedCount, 0)} more findings — see PR for full list`.length,
+            '\n… list truncated — see PR for full findings'.length,
+          );
+          let body = truncateText(findingsText, SLACK_SECTION_TEXT_LIMIT - reserve);
+          if (omittedCount > 0) {
+            body += overflowLine;
+          } else if (body.endsWith('…')) {
+            body += overflowLine;
+          }
+          return [
+            {
+              type: 'TextBlock',
+              text: '**Top findings:**',
+              wrap: true,
+            },
+            {
+              type: 'TextBlock',
+              // Cap like the Slack section block: finding text is
+              // model-generated and unbounded.
+              text: body,
+              wrap: true,
+            },
+          ] as TeamsTextBlock[];
+        })()
       : [];
 
   return {

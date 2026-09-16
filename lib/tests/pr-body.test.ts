@@ -17,8 +17,9 @@ describe('buildAutofixPRBody', () => {
     expect(body).not.toContain('## Fixes #42');
     expect(body).toContain('## What Was Changed');
     expect(body).toContain('Added null check before iterating over items');
-    expect(body).toContain('- `lib/src/parser.ts`');
-    expect(body).toContain('- `lib/tests/parser.test.ts`');
+    // Zero-width spaces after '/' give narrow viewports a break opportunity.
+    expect(body).toContain('- `lib/\u200bsrc/\u200bparser.ts`');
+    expect(body).toContain('- `lib/\u200btests/\u200bparser.test.ts`');
     expect(body).toContain('Implementation Approach (from analysis)');
     expect(body).toContain('Check for null input at entry point');
     expect(body).toContain('- Automated tests were run and passed');
@@ -54,7 +55,7 @@ describe('buildDocsPRBody', () => {
     expect(body).toContain('## Adds documentation for #199');
     expect(body).toContain('## What Was Documented');
     expect(body).toContain('Added JSDoc to the changed API surface');
-    expect(body).toContain('- `lib/src/engine.ts`');
+    expect(body).toContain('- `lib/\u200bsrc/\u200bengine.ts`');
     expect(body).toContain('## Doc Style');
     expect(body).toContain('`tsdoc`');
     expect(body).toContain('docs/issue-199');
@@ -95,8 +96,8 @@ describe('buildDocsPRBody', () => {
     });
 
     expect(body).toContain('Add \\`docs\\` \\[generation\\] \\(final\\)');
-    expect(body).toContain('- `src/odd\\`file.ts`');
-    expect(body).toContain('- `src/back\\\\slash.ts`');
-    expect(body).toContain('- `src/normal.ts`');
+    expect(body).toContain('- `src/\u200bodd\\`file.ts`');
+    expect(body).toContain('- `src/\u200bback\\\\slash.ts`');
+    expect(body).toContain('- `src/\u200bnormal.ts`');
   });
 });
