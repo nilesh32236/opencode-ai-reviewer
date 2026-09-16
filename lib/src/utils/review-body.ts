@@ -318,7 +318,7 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
       // Same zero-width-space treatment as formatIssueBullet so long paths
       // break at directory boundaries on narrow viewports.
       const codePath = escapeInlineCode(`${s.file}:${s.line}`).replace(/\//g, '/\u200b');
-      lines.push(`- **\`${codePath}\`** — ${sanitizeMarkdown(s.message)}`);
+      lines.push(`- **\`${codePath}\`** — ${sanitizeMarkdown(s.message ?? '')}`);
     }
     lines.push('');
   }

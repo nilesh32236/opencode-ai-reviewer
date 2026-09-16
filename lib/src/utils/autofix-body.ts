@@ -80,7 +80,7 @@ export function buildAutofixStatusBody(
       lines.push('', '### Strengths');
       for (const s of current.strengths) {
         const codePath = escapeInlineCode(`${s.file}:${s.line}`).replace(/\//g, '/\u200b');
-        lines.push(`- ✅ **\`${codePath}\`** — ${sanitizeMarkdown(s.message)}`);
+        lines.push(`- ✅ **\`${codePath}\`** — ${sanitizeMarkdown(s.message ?? '')}`);
       }
     }
   }
