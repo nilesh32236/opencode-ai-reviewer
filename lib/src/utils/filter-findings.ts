@@ -86,6 +86,26 @@ export interface FilterFindingsOptions {
   defaultCategory?: string;
 }
 
+/** Options controlling the severity-ordered inline noise budget.
+ * @since NEXT
+ */
+export interface NoiseBudgetOptions {
+  /** Maximum findings posted inline (severity-ordered, highest first). */
+  maxInline?: number;
+  /** When false, overflow is truncated (legacy); when true/absent it spills to `spilled`. */
+  spilloverToSummary?: boolean;
+}
+
+/** Result of applying the inline noise budget to review findings.
+ * @since NEXT
+ */
+export interface NoiseBudgetResult {
+  /** Findings kept for inline posting (severity-ordered, highest first). */
+  inline: ReviewIssue[];
+  /** Overflow beyond `maxInline` for the summary body (severity-ordered). Empty when no cap applies. */
+  spilled: ReviewIssue[];
+}
+
 /** Result of a filtering pass over review findings. */
 export interface FilterFindingsResult {
   /** Findings that survived filtering (category always populated). */
@@ -174,6 +194,75 @@ export function filterFindings(
   }
 
   return { issues: remaining, dropped: issues.length - remaining.length };
+}
+
+/**
+ * Apply the severity-ordered inline noise budget to review findings.
+ *
+ * Pure, stable, and fail-open: when `maxInline` is absent, non-finite, or
+ * non-positive the input is returned untouched (`{ inline: issues,
+ * spilled: [] }`, same array reference — legacy behavior). Otherwise the
+ * findings are severity-ordered (critical > important > minor, stable for
+ * ties so criticals never sort below minors) and split into the first
+ * `maxInline` inline findings plus the `spilled` overflow. When
+ * `spilloverToSummary === false` the overflow is truncated (legacy drop)
+ * instead of spilled.
+ *
+ * @param issues - Findings to budget (already sensitivity-filtered).
+ * @param options - Noise-budget configuration to apply.
+ * @returns Inline findings plus spilled overflow for the summary body.
+ * @since NEXT
+ */
+export function applyNoiseBudget(
+  issues: ReviewIssue[],
+  options?: NoiseBudgetOptions,
+): NoiseBudgetResult {
+  const maxInline = options?.maxInline;
+  if (maxInline === undefined || !Number.isFinite(maxInline) || Math.round(maxInline) < 1) {
+    return { inline: issues, spilled: [] };
+  }
+  const cap = Math.min(Math.round(maxInline), 500);
+  if (issues.length <= cap) {
+    return { inline: issues, spilled: [] };
+  }
+  const sorted = sortBySeverity(issues);
+  const inline = sorted.slice(0, cap);
+  if (options?.spilloverToSummary === false) {
+    return { inline, spilled: [] };
+  }
+  return { inline, spilled: sorted.slice(cap) };
+}
+
+/**
+ * Split a result's inline-flagged findings by the severity-ordered noise
+ * budget for the posting layer.
+ *
+ * Pure and fail-open: without a usable `maxInline` cap the input array is
+ * returned by reference with an empty `spilled` list (legacy behavior — call
+ * sites stay byte-identical). Otherwise inline-flagged findings are capped
+ * severity-ordered (highest first) and the overflow is returned as `spilled`
+ * for the summary body, so capped findings are surfaced instead of silently
+ * dropped. Non-inline findings always pass through untouched.
+ *
+ * @param issues - Findings to split (already deduped/filtered).
+ * @param options - Noise-budget configuration to apply.
+ * @returns Issues with over-budget inline findings removed, plus the spillover.
+ * @since NEXT
+ */
+export function splitInlineByNoiseBudget(
+  issues: ReviewIssue[],
+  options?: NoiseBudgetOptions,
+): { issues: ReviewIssue[]; spilled: ReviewIssue[] } {
+  const { inline, spilled } = applyNoiseBudget(
+    issues.filter((i) => i.inline === true),
+    options,
+  );
+  if (spilled.length === 0) return { issues, spilled };
+  const kept = new Set(inline);
+  return {
+    issues: issues.filter((i) => i.inline !== true || kept.has(i)),
+    spilled,
+  };
 }
 
 /**

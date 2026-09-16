@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { ReviewIssue, Severity } from '../src/types/index.js';
 import {
+  applyNoiseBudget,
   computeReviewStats,
   confidenceThresholdRank,
   filterFindings,
   minSeverityRank,
   severityRank,
+  splitInlineByNoiseBudget,
 } from '../src/utils/filter-findings.js';
 
 function issue(partial: Partial<ReviewIssue> & { severity: Severity }): ReviewIssue {
@@ -252,6 +254,79 @@ describe('filterFindings', () => {
   });
 });
 
+describe('applyNoiseBudget', () => {
+  it('returns the input untouched when no cap is configured', () => {
+    const issues = [issue({ severity: 'minor', file: 'a.ts' })];
+    expect(applyNoiseBudget(issues, {})).toEqual({ inline: issues, spilled: [] });
+    expect(applyNoiseBudget(issues, {}).inline).toBe(issues);
+    expect(applyNoiseBudget(issues).spilled).toEqual([]);
+  });
+
+  it('treats zero, negative, and non-finite caps as no cap (legacy)', () => {
+    const issues = [issue({ severity: 'minor', file: 'a.ts' })];
+    for (const maxInline of [0, -3, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const result = applyNoiseBudget(issues, { maxInline });
+      expect(result.inline).toBe(issues);
+      expect(result.spilled).toEqual([]);
+    }
+  });
+
+  it('caps severity-ordered, spilling minors before criticals', () => {
+    const issues = [
+      issue({ severity: 'minor', file: 'a.ts' }),
+      issue({ severity: 'critical', file: 'b.ts' }),
+      issue({ severity: 'important', file: 'c.ts' }),
+      issue({ severity: 'minor', file: 'd.ts' }),
+    ];
+    const { inline, spilled } = applyNoiseBudget(issues, { maxInline: 2 });
+    expect(inline.map((i) => i.severity)).toEqual(['critical', 'important']);
+    expect(spilled.map((i) => i.severity)).toEqual(['minor', 'minor']);
+  });
+
+  it('truncates instead of spilling when spilloverToSummary is false', () => {
+    const issues = [
+      issue({ severity: 'minor', file: 'a.ts' }),
+      issue({ severity: 'critical', file: 'b.ts' }),
+    ];
+    const { inline, spilled } = applyNoiseBudget(issues, {
+      maxInline: 1,
+      spilloverToSummary: false,
+    });
+    expect(inline.map((i) => i.severity)).toEqual(['critical']);
+    expect(spilled).toEqual([]);
+  });
+
+  it('keeps everything inline when under the cap', () => {
+    const issues = [issue({ severity: 'critical', file: 'a.ts' })];
+    const result = applyNoiseBudget(issues, { maxInline: 10 });
+    expect(result.inline).toBe(issues);
+    expect(result.spilled).toEqual([]);
+  });
+});
+
+describe('splitInlineByNoiseBudget', () => {
+  function inlineIssue(partial: Partial<ReviewIssue> & { severity: Severity }): ReviewIssue {
+    return issue({ inline: true, ...partial });
+  }
+
+  it('is a no-op without a usable cap', () => {
+    const issues = [inlineIssue({ severity: 'minor', file: 'a.ts' })];
+    const result = splitInlineByNoiseBudget(issues, {});
+    expect(result.issues).toBe(issues);
+    expect(result.spilled).toEqual([]);
+  });
+
+  it('caps only inline-flagged findings, passing non-inline through', () => {
+    const issues = [
+      inlineIssue({ severity: 'minor', file: 'a.ts' }),
+      inlineIssue({ severity: 'critical', file: 'b.ts' }),
+      issue({ severity: 'minor', file: 'c.ts' }),
+    ];
+    const { issues: kept, spilled } = splitInlineByNoiseBudget(issues, { maxInline: 1 });
+    expect(kept.map((i) => i.file)).toEqual(['b.ts', 'c.ts']);
+    expect(spilled.map((i) => i.file)).toEqual(['a.ts']);
+  });
+});
 describe('computeReviewStats', () => {
   it('recomputes severity and confidence counts', () => {
     const issues = [

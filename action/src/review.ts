@@ -376,6 +376,9 @@ export async function runReview(
         ...(config.review.verdictMode !== undefined
           ? { verdictMode: config.review.verdictMode }
           : {}),
+        ...(config.review.noiseBudget !== undefined
+          ? { noiseBudget: config.review.noiseBudget }
+          : {}),
       },
     );
   } catch (err) {

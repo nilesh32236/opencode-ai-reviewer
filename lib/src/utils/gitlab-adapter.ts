@@ -17,6 +17,7 @@ import type {
 } from '../types/index.js';
 import { CircuitBreaker, countHttpError } from './circuit-breaker.js';
 import { getErrorStatus } from './errors.js';
+import { splitInlineByNoiseBudget } from './filter-findings.js';
 import {
   filterIssuesByFingerprints,
   fingerprintForIssue,
@@ -895,9 +896,29 @@ export class GitLabAdapter implements PlatformAdapter {
     }
     const dedupedResult = { ...workingResult, issues: dedupedIssues };
 
+    // Severity-ordered noise budget (fail-open, additive): cap inline-flagged
+    // findings to `maxInline` (highest severity first); the overflow spills
+    // into the summary body instead of being silently dropped. Without a
+    // usable cap this is a no-op (same array reference, empty spill).
+    const noiseBudgetSplit = postInlineComments
+      ? splitInlineByNoiseBudget(dedupedResult.issues, options?.noiseBudget)
+      : { issues: dedupedResult.issues, spilled: [] as typeof dedupedResult.issues };
+    const budgetedResult =
+      noiseBudgetSplit.spilled.length > 0
+        ? { ...dedupedResult, issues: noiseBudgetSplit.issues }
+        : dedupedResult;
+    const noiseBudgetSpilledSet = new Set(noiseBudgetSplit.spilled);
+    // Explicit `spilledIssues` (even empty) wins over the render-time
+    // `noiseBudget` split in buildReviewBody, so capped findings render once
+    // in the dedicated spillover section instead of twice.
+    const bodyOptions: ReviewBodyOptions | undefined =
+      noiseBudgetSplit.spilled.length > 0 || options?.noiseBudget !== undefined
+        ? { ...options, spilledIssues: noiseBudgetSplit.spilled }
+        : options;
+
     const inlineComments = postInlineComments
       ? buildInlineComments(
-          dedupedResult,
+          budgetedResult,
           await this.getDiffLines(mrNumber, signal),
           suppressLowConfidence,
           options?.emitFixPayload,
@@ -906,7 +927,7 @@ export class GitLabAdapter implements PlatformAdapter {
 
     try {
       const queueByAnchor = new Map<string, string[]>();
-      for (const issue of dedupedIssues) {
+      for (const issue of budgetedResult.issues) {
         if (issue.inline !== true) continue;
         try {
           const fp = fingerprintForIssue(issue);
@@ -932,10 +953,12 @@ export class GitLabAdapter implements PlatformAdapter {
     }
     const issuesForBody = postInlineComments
       ? dedupedResult.issues.filter(
-          (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
+          (i) =>
+            !noiseBudgetSpilledSet.has(i) &&
+            (!i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`)),
         )
       : dedupedResult.issues;
-    const body = buildReviewBody({ ...dedupedResult, issues: issuesForBody }, options);
+    const body = buildReviewBody({ ...dedupedResult, issues: issuesForBody }, bodyOptions);
 
     const commentIds: Array<{
       file: string;

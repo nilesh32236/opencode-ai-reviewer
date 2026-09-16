@@ -1181,6 +1181,31 @@ fix:
       expect(config!.review?.sensitivity?.maxFindingsPerCategory).toBe(1);
     });
 
+    it('loads a noiseBudget block with spillover defaulting to true', () => {
+      const result = validateConfig({ review: { noiseBudget: { maxInline: 10 } } } as never);
+      expect(result.review?.noiseBudget).toEqual({ maxInline: 10, spilloverToSummary: true });
+    });
+
+    it('clamps noiseBudget.maxInline to the 1-500 range and drops zero/negative (legacy)', () => {
+      expect(
+        validateConfig({ review: { noiseBudget: { maxInline: 9999 } } } as never).review
+          ?.noiseBudget?.maxInline,
+      ).toBe(500);
+      expect(
+        validateConfig({ review: { noiseBudget: { maxInline: 0 } } } as never).review?.noiseBudget,
+      ).toBeUndefined();
+      expect(
+        validateConfig({ review: { noiseBudget: { maxInline: -5 } } } as never).review?.noiseBudget,
+      ).toBeUndefined();
+    });
+
+    it('honors an explicit spilloverToSummary false', () => {
+      const result = validateConfig({
+        review: { noiseBudget: { maxInline: 5, spilloverToSummary: false } },
+      } as never);
+      expect(result.review?.noiseBudget).toEqual({ maxInline: 5, spilloverToSummary: false });
+    });
+
     it('loads skipLabels and skipActors without unknown-key warnings', () => {
       fs.writeFileSync(
         path.join(tmpDir, '.opencode-reviewer.yml'),

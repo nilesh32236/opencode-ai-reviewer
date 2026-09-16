@@ -1386,13 +1386,23 @@ export async function runAutofixLoop(
           commentId: t.firstComment.databaseId,
         }));
       } else {
+        const scoreOptions = buildFunctionScoreOptions(
+          config.review.showFunctionScores,
+          pr.changedFiles,
+        );
+        const noiseBudgetOption =
+          config.review.noiseBudget !== undefined
+            ? { noiseBudget: config.review.noiseBudget }
+            : undefined;
         const reviewResult = await gh.postReview(
           prNumber,
           prHeadSha,
           result,
           config.review.inline,
           undefined,
-          buildFunctionScoreOptions(config.review.showFunctionScores, pr.changedFiles),
+          (scoreOptions ?? noiseBudgetOption)
+            ? { ...scoreOptions, ...noiseBudgetOption }
+            : undefined,
         );
         if (reviewResult.commentIds) {
           currentCommentIds = reviewResult.commentIds;

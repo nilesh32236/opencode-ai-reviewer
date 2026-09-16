@@ -260,6 +260,21 @@ export const ReviewSensitivitySchema = z.object({
   ignorePatterns: z.array(z.string()).optional().default([]),
 });
 
+/**
+ * Zod schema validating the severity-ordered noise-budget configuration.
+ * Numeric bounds intentionally omitted — out-of-range values are clamped by
+ * `validateConfig()` (config.ts) rather than failing the parse (mirrors
+ * `ReviewSensitivitySchema`).
+ * Fail-open: unparseable input falls back to `{ spilloverToSummary: true }`.
+ * @since NEXT
+ */
+export const NoiseBudgetConfigSchema = z
+  .object({
+    maxInline: z.number().int().optional(),
+    spilloverToSummary: z.boolean().optional().default(true),
+  })
+  .catch({ spilloverToSummary: true });
+
 /** Zod schema validating review configuration. */
 export const ReviewConfigSchema = z.object({
   skipLabels: z.array(z.string()).default(['autofix', 'autofix:approved', 'autofix:merged']),
@@ -309,6 +324,7 @@ export const ReviewConfigSchema = z.object({
   reviewBudget: ReviewBudgetConfigSchema.default(ReviewBudgetConfigSchema.parse({})),
   costTracking: CostTrackingConfigSchema.optional(),
   sensitivity: ReviewSensitivitySchema.optional(),
+  noiseBudget: NoiseBudgetConfigSchema.optional(),
   categories: z.record(CategoryOverrideSchema).optional(),
   pathInstructions: z.record(z.string()).optional(),
   pathRules: PathRulesArraySchema,
@@ -748,6 +764,7 @@ export const PromptConfigSchema = z.object({
         .optional(),
       costTracking: CostTrackingConfigSchema.optional(),
       sensitivity: ReviewSensitivitySchema.optional(),
+      noiseBudget: NoiseBudgetConfigSchema.optional(),
       categories: z.record(CategoryOverrideSchema).optional(),
       // Permissive by design (fail-open): entry caps (10 entries / 2 KB each) and
       // glob validation live in sanitizePathInstructions (lib/src/config.ts) and

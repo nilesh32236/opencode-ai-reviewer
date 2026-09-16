@@ -499,6 +499,10 @@ export async function handlePRReview(
               previousInlineKeys: previousLegacyKeys,
             }
           : { dedupFingerprints: dedupEnabled };
+      const noiseBudgetOption =
+        effectiveConfig.review.noiseBudget !== undefined
+          ? { noiseBudget: effectiveConfig.review.noiseBudget }
+          : {};
       reviewResult = await gh.postReview(
         prNumber,
         pr.headSha,
@@ -506,8 +510,13 @@ export async function handlePRReview(
         effectiveConfig.review.inline,
         undefined,
         effectiveConfig.review.enableReviewsArrayInline === true
-          ? { ...(scoreOptions ?? {}), enableReviewsArrayInline: true as const, ...dedupOptions }
-          : { ...(scoreOptions ?? {}), ...dedupOptions },
+          ? {
+              ...(scoreOptions ?? {}),
+              enableReviewsArrayInline: true as const,
+              ...dedupOptions,
+              ...noiseBudgetOption,
+            }
+          : { ...(scoreOptions ?? {}), ...dedupOptions, ...noiseBudgetOption },
       );
     } catch (err) {
       logger.error(

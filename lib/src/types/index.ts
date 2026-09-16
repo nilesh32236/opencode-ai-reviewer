@@ -677,6 +677,16 @@ export interface CategoryOverride {
   maxFindings?: number;
 }
 
+/** Noise-budget configuration capping inline findings with summary spillover.
+ * @since NEXT
+ */
+export interface NoiseBudgetConfig {
+  /** Maximum findings posted inline (severity-ordered, highest first). Absent/non-positive = unlimited (legacy). */
+  maxInline?: number;
+  /** When true (default), overflow beyond `maxInline` spills into the summary body instead of being dropped. */
+  spilloverToSummary?: boolean;
+}
+
 /** Per-repository sensitivity configuration for tuning reviewer strictness. */
 export interface ReviewSensitivityConfig {
   /** Minimum severity floor: 'warning' keeps everything, 'error' drops minor, 'critical' keeps only critical. */
@@ -829,6 +839,11 @@ export interface ReviewConfig {
   costTracking?: CostTrackingConfig;
   /** Per-repository sensitivity configuration for tuning reviewer strictness */
   sensitivity?: ReviewSensitivityConfig;
+  /** Severity-ordered noise budget capping inline findings with summary spillover.
+   * Absent = legacy behavior (unbounded inline, overflow dropped by caps).
+   * @since NEXT
+   */
+  noiseBudget?: NoiseBudgetConfig;
   /** Per-category overrides for review sensitivity */
   categories?: Record<string, CategoryOverride>;
   /** Opt-in map of glob pattern to extra review instructions, applied
@@ -1706,6 +1721,11 @@ export interface PromptConfig {
     costTracking?: CostTrackingConfig;
     /** Per-repository sensitivity configuration for tuning reviewer strictness */
     sensitivity?: ReviewSensitivityConfig;
+    /** Severity-ordered noise budget capping inline findings with summary spillover.
+     * Absent = legacy behavior (unbounded inline).
+     * @since NEXT
+     */
+    noiseBudget?: NoiseBudgetConfig;
     /** Per-category overrides for review sensitivity */
     categories?: Record<string, CategoryOverride>;
     /** Opt-in map of glob pattern to extra review instructions, applied

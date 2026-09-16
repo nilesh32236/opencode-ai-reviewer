@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ReviewResult } from '../src/types/index.js';
 import {
   buildAgentsMdAttributionFooter,
+  buildNoiseBudgetSpilloverSection,
   buildReviewBody,
   computeMergeScore,
   formatConfidenceLabel,
@@ -281,6 +282,65 @@ describe('review-body', () => {
       expect(blank).not.toContain('from opts');
       expect(blank).not.toContain('auto-loaded from');
       expect(blank.split('---').length).toBeLessThanOrEqual(2);
+    });
+  });
+
+  describe('noise budget spillover', () => {
+    function noisyResult(): ReviewResult {
+      return {
+        summary: 'Large PR.',
+        verdict: { ready: false, reasoning: 'Too many nits.' },
+        strengths: [],
+        issues: [
+          {
+            type: 'issue',
+            severity: 'critical',
+            file: 'src/a.ts',
+            line: 1,
+            message: 'Auth bypass.',
+          },
+          { type: 'issue', severity: 'minor', file: 'src/b.ts', line: 2, message: 'Typo.' },
+          { type: 'issue', severity: 'minor', file: 'src/c.ts', line: 3, message: 'Nit.' },
+        ],
+        stats: { total: 3, critical: 1, important: 0, minor: 2 },
+        rawLines: [],
+        failedLines: 0,
+      };
+    }
+
+    it('returns an empty section when nothing spilled', () => {
+      expect(buildNoiseBudgetSpilloverSection([])).toBe('');
+    });
+
+    it('renders spilled issues in a dedicated section, once each', () => {
+      const result = noisyResult();
+      const spilled = [result.issues[1], result.issues[2]];
+      const body = buildReviewBody(
+        { ...result, issues: [result.issues[0]] },
+        { spilledIssues: spilled },
+      );
+      expect(body).toContain('### Additional findings (beyond inline budget)');
+      expect(body).toContain('2 finding(s) exceeded the inline budget');
+      expect(body).toContain('Typo.');
+      expect(body).toContain('Nit.');
+      // Each spilled finding renders exactly once (not duplicated in Issues).
+      expect(body.match(/Typo\./g)).toHaveLength(1);
+    });
+
+    it('splits render-time via the noiseBudget option, highest severity first', () => {
+      const body = buildReviewBody(noisyResult(), { noiseBudget: { maxInline: 1 } });
+      expect(body).toContain('### Additional findings (beyond inline budget)');
+      expect(body).toContain('Auth bypass.');
+      // Critical stays in Issues; minors spill over.
+      const issuesSection = body.split('### Additional findings')[0];
+      expect(issuesSection).toContain('Auth bypass.');
+      expect(issuesSection).not.toContain('Typo.');
+    });
+
+    it('renders no spillover section without a budget (legacy)', () => {
+      const body = buildReviewBody(noisyResult());
+      expect(body).not.toContain('beyond inline budget');
+      expect(body).toContain('Typo.');
     });
   });
 

@@ -21,6 +21,7 @@ import type {
 } from '../types/index.js';
 import { CircuitBreaker, countHttpError } from './circuit-breaker.js';
 import { getErrorStatus } from './errors.js';
+import { splitInlineByNoiseBudget } from './filter-findings.js';
 import {
   filterIssuesByFingerprints,
   fingerprintForIssue,
@@ -1358,15 +1359,35 @@ export class GitHubHelper implements PlatformAdapter {
       );
     }
 
+    // Severity-ordered noise budget (fail-open, additive): cap inline-flagged
+    // findings to `maxInline` (highest severity first); the overflow spills
+    // into the summary body instead of being silently dropped. Without a
+    // usable cap this is a no-op (same array reference, empty spill).
+    const noiseBudgetSplit = postInlineComments
+      ? splitInlineByNoiseBudget(dedupedResult.issues, options?.noiseBudget)
+      : { issues: dedupedResult.issues, spilled: [] as ReviewIssue[] };
+    const budgetedResult =
+      noiseBudgetSplit.spilled.length > 0
+        ? { ...dedupedResult, issues: noiseBudgetSplit.issues }
+        : dedupedResult;
+    const noiseBudgetSpilledSet = new Set(noiseBudgetSplit.spilled);
+    // Explicit `spilledIssues` (even empty) wins over the render-time
+    // `noiseBudget` split in buildReviewBody, so capped findings render once
+    // in the dedicated spillover section instead of twice.
+    const bodyOptions: ReviewBodyOptions | undefined =
+      noiseBudgetSplit.spilled.length > 0 || options?.noiseBudget !== undefined
+        ? { ...options, spilledIssues: noiseBudgetSplit.spilled }
+        : options;
+
     const inlineComments = postInlineComments
       ? buildInlineComments(
-          dedupedResult,
+          budgetedResult,
           await this.getDiffLines(prNumber, commitSha, signal),
           suppressLowConfidence,
           options?.emitFixPayload,
         )
       : [];
-    this.stampInlineFingerprintMarkers(inlineComments, dedupedResult.issues);
+    this.stampInlineFingerprintMarkers(inlineComments, budgetedResult.issues);
 
     const placedInlineKeys = new Set<string>();
     for (const c of inlineComments) {
@@ -1374,10 +1395,12 @@ export class GitHubHelper implements PlatformAdapter {
     }
     const issuesForBody = postInlineComments
       ? dedupedResult.issues.filter(
-          (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
+          (i) =>
+            !noiseBudgetSpilledSet.has(i) &&
+            (!i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`)),
         )
       : dedupedResult.issues;
-    const body = buildReviewBody({ ...dedupedResult, issues: issuesForBody }, options);
+    const body = buildReviewBody({ ...dedupedResult, issues: issuesForBody }, bodyOptions);
 
     const commentIds: Array<{
       file: string;
@@ -1552,23 +1575,40 @@ export class GitHubHelper implements PlatformAdapter {
       issues: this.applyInlineFingerprintDedup(workingResult.issues, options),
     };
 
+    // Severity-ordered noise budget (fail-open, additive): cap inline-flagged
+    // findings to `maxInline` (highest severity first); the overflow spills
+    // into the summary body instead of being silently dropped.
+    const noiseBudgetSplit = splitInlineByNoiseBudget(dedupedResult.issues, options?.noiseBudget);
+    const budgetedResult =
+      noiseBudgetSplit.spilled.length > 0
+        ? { ...dedupedResult, issues: noiseBudgetSplit.issues }
+        : dedupedResult;
+    const noiseBudgetSpilledSet = new Set(noiseBudgetSplit.spilled);
+    const bodyOptions: ReviewBodyOptions | undefined =
+      noiseBudgetSplit.spilled.length > 0 || options?.noiseBudget !== undefined
+        ? { ...options, spilledIssues: noiseBudgetSplit.spilled }
+        : options;
+
     const inlineComments = buildInlineComments(
-      dedupedResult,
+      budgetedResult,
       diffLines,
       suppressLowConfidence,
       options?.emitFixPayload,
     );
-    this.stampInlineFingerprintMarkers(inlineComments, dedupedResult.issues);
+    this.stampInlineFingerprintMarkers(inlineComments, budgetedResult.issues);
 
     const placedInlineKeys = new Set<string>();
     for (const c of inlineComments) {
       placedInlineKeys.add(`${c.path}:${c.line}`);
     }
     // Mappable findings ride inline; unmappable findings stay in the body.
+    // Noise-budget overflow renders in the dedicated spillover section.
     const issuesForBody = dedupedResult.issues.filter(
-      (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
+      (i) =>
+        !noiseBudgetSpilledSet.has(i) &&
+        (!i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`)),
     );
-    const body = buildReviewBody({ ...dedupedResult, issues: issuesForBody }, options);
+    const body = buildReviewBody({ ...dedupedResult, issues: issuesForBody }, bodyOptions);
     // Full-finding body used for the fail-open summary-only retry.
     const fullBody = buildReviewBody(dedupedResult, options);
 

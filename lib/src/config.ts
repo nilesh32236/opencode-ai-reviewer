@@ -301,6 +301,10 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
       focusAreas: null,
       ignorePatterns: null,
     },
+    noiseBudget: {
+      maxInline: null,
+      spilloverToSummary: null,
+    },
     categories: [CATEGORY_OVERRIDE_SHAPE],
     pathInstructions: null,
     pathRules: null,
@@ -863,6 +867,25 @@ export function validateConfig(
         );
       }
       result.review.sensitivity = sensitivity;
+    }
+    if (config.review.noiseBudget && typeof config.review.noiseBudget === 'object') {
+      const nb = config.review.noiseBudget;
+      const noiseBudget: import('./types/index.js').NoiseBudgetConfig = {};
+      if (typeof nb.maxInline === 'number' && Number.isFinite(nb.maxInline)) {
+        const rounded = Math.round(nb.maxInline);
+        // Zero/non-positive means "no cap" (legacy behavior) — drop it.
+        if (rounded >= 1) {
+          noiseBudget.maxInline = Math.min(rounded, 500);
+        }
+      }
+      if (typeof nb.spilloverToSummary === 'boolean') {
+        noiseBudget.spilloverToSummary = nb.spilloverToSummary;
+      } else if (noiseBudget.maxInline !== undefined) {
+        noiseBudget.spilloverToSummary = true;
+      }
+      if (noiseBudget.maxInline !== undefined || noiseBudget.spilloverToSummary !== undefined) {
+        result.review.noiseBudget = noiseBudget;
+      }
     }
     if (config.review.categories && typeof config.review.categories === 'object') {
       const categories: Record<string, CategoryOverride> = {};

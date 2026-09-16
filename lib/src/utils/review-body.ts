@@ -5,6 +5,7 @@ import type {
   TokenUsage,
   VerdictMode,
 } from '../types/index.js';
+import { type NoiseBudgetOptions, applyNoiseBudget } from './filter-findings.js';
 import { buildFixPayload, formatFixPayloadMarkdown } from './fix-payload.js';
 import {
   type FunctionScore,
@@ -65,6 +66,22 @@ export interface ReviewBodyOptions {
    * head SHA). Appended after the issues section when non-empty. Falls back to
    * `result.attributionFooter` when omitted. */
   attributionFooter?: string;
+  /**
+   * Overflow findings beyond the inline noise budget, rendered as a dedicated
+   * "Additional findings (beyond inline budget)" section after `Issues` so
+   * capped findings are surfaced in the summary instead of silently dropped.
+   * Absent/empty = no section (legacy output unchanged).
+   * @since NEXT
+   */
+  spilledIssues?: ReviewIssue[];
+  /**
+   * Severity-ordered noise budget applied at render time: `result.issues` is
+   * split via `applyNoiseBudget()` (highest severity first) and the overflow
+   * renders as the spillover section. Ignored when `spilledIssues` is set
+   * explicitly. Absent = no cap (legacy output unchanged).
+   * @since NEXT
+   */
+  noiseBudget?: NoiseBudgetOptions;
 }
 
 /**
@@ -222,6 +239,29 @@ export function formatIssueBullet(issue: ReviewIssue): string {
 }
 
 /**
+ * Build the deterministic "overflow beyond inline budget" markdown section for
+ * findings capped by the severity-ordered noise budget. Pure and fail-open:
+ * returns an empty string when there is nothing to spill so callers never
+ * render an empty heading.
+ * @param spilled - Overflow findings beyond `maxInline` (severity-ordered).
+ * @returns Markdown section string, or '' when `spilled` is absent/empty.
+ * @since NEXT
+ */
+export function buildNoiseBudgetSpilloverSection(spilled: ReviewIssue[]): string {
+  if (!spilled || spilled.length === 0) return '';
+  const lines: string[] = [
+    '### Additional findings (beyond inline budget)',
+    '',
+    `*${spilled.length} finding(s) exceeded the inline budget and are listed here instead of as inline comments.*`,
+    '',
+  ];
+  for (const issue of spilled) {
+    lines.push(formatIssueBullet(issue));
+  }
+  return lines.join('\n');
+}
+
+/**
  * @deprecated Use {@link ReviewBodyOptions} instead — retained as an alias for
  * backward compatibility with callers written against the earlier name.
  */
@@ -323,10 +363,24 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
     lines.push('');
   }
 
-  if (result.issues.length > 0) {
+  // Severity-ordered noise-budget spillover, resolved up front so spilled
+  // findings render once (in the dedicated section below) instead of twice.
+  // An explicit `spilledIssues` list wins; otherwise `noiseBudget` splits
+  // `result.issues` deterministically (highest severity first). Fail-open: no
+  // cap configured (or an empty spill) leaves the Issues list untouched —
+  // legacy output unchanged.
+  const spilled =
+    options?.spilledIssues ??
+    (options?.noiseBudget !== undefined
+      ? applyNoiseBudget(result.issues, options.noiseBudget).spilled
+      : []);
+  const spilledSet = new Set(spilled);
+
+  const visibleIssues = result.issues.filter((i) => !spilledSet.has(i));
+  if (visibleIssues.length > 0) {
     lines.push('### Issues');
     lines.push('');
-    for (const i of result.issues) {
+    for (const i of visibleIssues) {
       lines.push(formatIssueBullet(i));
       if (i.suggestion) {
         lines.push(`  > 💡 **How to fix:** ${sanitizeMarkdown(i.suggestion)}`);
@@ -365,6 +419,10 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
   // via the dedicated post-step comment (action/src/post.ts), which is gated on
   // the saved state and is verbosity-aware. Rendering it here too would show
   // the same totals twice on the same PR.
+  if (spilled.length > 0) {
+    lines.push('');
+    lines.push(buildNoiseBudgetSpilloverSection(spilled));
+  }
   const footer = options?.attributionFooter ?? result.attributionFooter;
   if (footer?.trim()) {
     lines.push('');

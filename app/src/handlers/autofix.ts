@@ -282,13 +282,23 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         | Array<{ file: string; line: number; commentId: number; nodeId?: string }>
         | undefined;
       try {
+        const scoreOptions = buildFunctionScoreOptions(
+          effectiveConfig.review.showFunctionScores,
+          pr.changedFiles,
+        );
+        const noiseBudgetOption =
+          effectiveConfig.review.noiseBudget !== undefined
+            ? { noiseBudget: effectiveConfig.review.noiseBudget }
+            : undefined;
         const reviewResult = await gh.postReview(
           prNumber,
           pr.headSha,
           result,
           effectiveConfig.review.inline,
           undefined,
-          buildFunctionScoreOptions(effectiveConfig.review.showFunctionScores, pr.changedFiles),
+          (scoreOptions ?? noiseBudgetOption)
+            ? { ...scoreOptions, ...noiseBudgetOption }
+            : undefined,
         );
         if (reviewResult.commentIds) {
           currentCommentIds = reviewResult.commentIds;

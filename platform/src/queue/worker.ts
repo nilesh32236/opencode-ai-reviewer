@@ -93,13 +93,21 @@ export async function runReview(
     workspace,
   );
   if (!result.skipped) {
+    const scoreOptions = buildFunctionScoreOptions(
+      config?.review.showFunctionScores,
+      pr.changedFiles,
+    );
+    const noiseBudgetOption =
+      config?.review.noiseBudget !== undefined
+        ? { noiseBudget: config.review.noiseBudget }
+        : undefined;
     await gh.postReview(
       prNumber,
       pr.headSha,
       result,
       inline,
       undefined,
-      buildFunctionScoreOptions(config?.review.showFunctionScores, pr.changedFiles),
+      (scoreOptions ?? noiseBudgetOption) ? { ...scoreOptions, ...noiseBudgetOption } : undefined,
     );
   }
   return result;
