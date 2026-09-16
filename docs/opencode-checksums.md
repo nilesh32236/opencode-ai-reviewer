@@ -17,6 +17,14 @@ below until attestation verification lands.
 > Release page: https://github.com/anomalyco/opencode/releases/tag/v1.1.1
 > Pinned version equals `MINIMUM_OPENCODE_VERSION` (`lib/src/utils/version.ts`).
 
+> **Tested CLI version:** `1.18.31` (`TESTED_OPENCODE_VERSION` in
+> `lib/src/utils/version.ts`). Versions `>= 1.1.1` (minimum) but `< 1.15.0`
+> (`WARN_BELOW_OPENCODE_VERSION`) pass the health check with a fail-open
+> upgrade warning (see `checkHealth()` in `lib/src/opencode.ts`, opt out via
+> `OPENCODE_VERSION_WARN=off`). CLI install and versioning:
+> https://opencode.ai/docs/cli — release notes:
+> https://github.com/sst/opencode/releases.
+
 ## Pinned sha256 (`opencode_version: 1.1.1` / `v1.1.1`)
 
 Keys use the `detectArch()` matrix (`linux-x64`, `linux-arm64`, `darwin-x64`,

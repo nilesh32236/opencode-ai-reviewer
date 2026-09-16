@@ -2135,7 +2135,7 @@ describe('requireChecksum integrity gate', () => {
       const result = await setupOpenCode('v1.2.0');
 
       expect(result).toBe('/usr/local/bin/opencode');
-      expect(core.warning).not.toHaveBeenCalled();
+      expect(core.warning).not.toHaveBeenCalledWith(expect.stringContaining('checksum'));
     });
 
     it('resolveOpenCodePath fails closed for PATH binaries in strict mode', async () => {
@@ -2173,7 +2173,7 @@ describe('requireChecksum integrity gate', () => {
       const result = await setupOpenCode('v1.2.0');
 
       expect(result).toBe('/cache/opencode/1.2.0/linux-x64/opencode');
-      expect(core.warning).not.toHaveBeenCalled();
+      expect(core.warning).not.toHaveBeenCalledWith(expect.stringContaining('checksum'));
     });
   });
 });

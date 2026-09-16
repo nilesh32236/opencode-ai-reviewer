@@ -21,6 +21,23 @@ export const UNPARSEABLE_VERSION = Number.MAX_SAFE_INTEGER;
 export const MINIMUM_OPENCODE_VERSION = '1.1.1';
 
 /**
+ * Tested OpenCode CLI version. Reviews are validated against this release;
+ * newer versions at or above {@link WARN_BELOW_OPENCODE_VERSION} are expected
+ * to work, older versions in `[MINIMUM, WARN_BELOW)` pass the hard floor but
+ * are untested (config shapes, permission gates may differ).
+ * @since NEXT
+ */
+export const TESTED_OPENCODE_VERSION = '1.18.31';
+
+/**
+ * Warn threshold for the OpenCode CLI version. Versions `>= 1.1.1` (hard
+ * floor) but `< 1.15.0` are compatible yet untested — `checkHealth()` logs a
+ * fail-open upgrade warning instead of passing silently.
+ * @since NEXT
+ */
+export const WARN_BELOW_OPENCODE_VERSION = '1.15.0';
+
+/**
  * Minimum supported Node.js runtime version (patched LTS floor). The v24.19.0
  * release ships July 2026 HIGH CVE fixes, so CI and the `node24`-bundled
  * action runtime should stay on a patched 24.x LTS.
@@ -158,4 +175,22 @@ export function formatVersion(version: ParsedVersion): string {
   return version.prerelease
     ? `${version.major}.${version.minor}.${version.patch}-${version.prerelease}`
     : `${version.major}.${version.minor}.${version.patch}`;
+}
+
+/**
+ * Check whether a version is at or above the tested/warn threshold.
+ * Fail-open: unparseable input returns `true` so callers do not warn on
+ * versions they cannot evaluate (the unparseable path warns separately).
+ * @param version - Version string (or pre-formatted version) to check.
+ * @param threshold - Warn threshold (defaults to {@link WARN_BELOW_OPENCODE_VERSION}).
+ * @returns True when at/above the threshold or unparseable.
+ * @since NEXT
+ */
+export function isTestedVersion(
+  version: string,
+  threshold: string = WARN_BELOW_OPENCODE_VERSION,
+): boolean {
+  const cmp = compareVersions(version, threshold);
+  if (cmp === UNPARSEABLE_VERSION) return true;
+  return cmp >= 0;
 }

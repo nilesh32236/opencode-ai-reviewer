@@ -20,13 +20,19 @@ import { validateModelString } from './utils/model-string.js';
 import { withRetry, withRetryAndTimeout } from './utils/retry.js';
 import {
   MINIMUM_OPENCODE_VERSION,
+  TESTED_OPENCODE_VERSION,
   UNPARSEABLE_VERSION,
+  WARN_BELOW_OPENCODE_VERSION,
   compareVersions,
   formatVersion,
   parseVersion,
 } from './utils/version.js';
 
-export { MINIMUM_OPENCODE_VERSION } from './utils/version.js';
+export {
+  MINIMUM_OPENCODE_VERSION,
+  TESTED_OPENCODE_VERSION,
+  WARN_BELOW_OPENCODE_VERSION,
+} from './utils/version.js';
 
 /** Default timeout for the `opencode --version` health probe, in milliseconds. */
 export const DEFAULT_HEALTH_TIMEOUT_MS = 5_000;
@@ -491,6 +497,12 @@ export interface OpenCodeHealth {
   compatible: boolean;
   /** Human-readable status with install/upgrade instructions when needed. */
   message: string;
+  /**
+   * Fail-open warning for compatible-but-untested versions
+   * (`< WARN_BELOW_OPENCODE_VERSION`). Present only when a warning was emitted.
+   * @since NEXT
+   */
+  warning?: string;
 }
 
 /**
@@ -509,6 +521,18 @@ export interface CheckHealthOptions {
    * paths, where a global npm upgrade would not fix the installed binary.
    */
   upgradeHint?: string;
+  /**
+   * Override for the untested-version warn threshold
+   * (defaults to {@link WARN_BELOW_OPENCODE_VERSION}). Used for testability.
+   * @since NEXT
+   */
+  warnBelowVersion?: string;
+  /**
+   * Override for the tested-version pin named in the warning
+   * (defaults to {@link TESTED_OPENCODE_VERSION}). Used for testability.
+   * @since NEXT
+   */
+  testedVersion?: string;
 }
 
 const INSTALL_MESSAGE =
@@ -547,6 +571,21 @@ function execVersion(binPath: string, timeoutMs: number): Promise<string> {
 }
 
 /**
+ * Whether the untested-CLI warning is enabled. Opt out via
+ * `OPENCODE_VERSION_WARN=off|false|0|no|disabled` (default on). Unrecognized
+ * values fall through to enabled (fail-open).
+ * @returns False when the warning is explicitly disabled.
+ * @since NEXT
+ */
+export function isVersionWarnEnabled(): boolean {
+  const raw = process.env.OPENCODE_VERSION_WARN;
+  if (raw === undefined) return true;
+  const normalized = raw.trim().toLowerCase();
+  if (['0', 'false', 'no', 'off', 'disabled'].includes(normalized)) return false;
+  return true;
+}
+
+/**
  * Pre-flight health check for the OpenCode CLI integration.
  * Runs `opencode --version` with a short timeout and verifies the installed
  * version meets the minimum supported version. External consumers can call
@@ -581,16 +620,41 @@ export async function checkHealth(options: CheckHealthOptions = {}): Promise<Ope
       cachedOpenCodeVersionRaw = version.raw;
     }
     if (!version) {
+      // Fail-open: warn and continue without throwing — callers decide how to
+      // treat `compatible: false` (setupOpenCode surfaces health.message).
+      const raw = (stdout || '').trim();
+      core.warning(
+        `OpenCode CLI version could not be determined from output: ${raw || '(empty)'}. ` +
+          `Reviews continue with untested-version behavior; install a tested release (tested: ${TESTED_OPENCODE_VERSION}, see https://opencode.ai/docs/cli).`,
+      );
       return {
         available: true,
         version: null,
         compatible: false,
-        message: `OpenCode binary found at ${binPath} but version could not be determined from output: ${(stdout || '').trim()}`,
+        message: `OpenCode binary found at ${binPath} but version could not be determined from output: ${raw}`,
       };
     }
     const compatible = isVersionCompatible(version, minimumVersion);
     if (compatible) {
       validatedOpenCodePath = binPath;
+      const warnBelow = options.warnBelowVersion ?? WARN_BELOW_OPENCODE_VERSION;
+      const tested = options.testedVersion ?? TESTED_OPENCODE_VERSION;
+      const cmp = compareVersions(formatVersion(version), warnBelow);
+      if (cmp !== UNPARSEABLE_VERSION && cmp < 0 && isVersionWarnEnabled()) {
+        const warning =
+          `OpenCode ${version.raw} is below the tested threshold ${warnBelow} (tested: ${tested}, minimum: ${minimumVersion}). ` +
+          `Reviews may behave differently than the tested path. Upgrade with: npm install -g opencode-ai@latest. ` +
+          `See https://opencode.ai/docs/cli and https://github.com/sst/opencode/releases. ` +
+          `Set OPENCODE_VERSION_WARN=off to silence this warning.`;
+        core.warning(warning);
+        return {
+          available: true,
+          version,
+          compatible: true,
+          message: `OpenCode ${version.raw} is available and compatible. ${warning}`,
+          warning,
+        };
+      }
       return {
         available: true,
         version,
