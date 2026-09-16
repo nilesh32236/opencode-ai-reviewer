@@ -85,6 +85,7 @@ export async function runAudit(
   config: AgentConfig,
   engine: ReviewEngine,
   gh: PlatformAdapter,
+  signal?: AbortSignal,
 ): Promise<void> {
   const promptsDirRaw = core.getInput('audit-prompts-dir');
   let promptsDir = promptsDirRaw || config.audit.promptsDir;
@@ -173,9 +174,52 @@ export async function runAudit(
     allTargetDirs.length > 0
       ? allTargetDirs[Math.floor(Math.random() * allTargetDirs.length)]
       : '.';
-  const promptContent = fs.readFileSync(selectedPrompt, 'utf-8');
+  // Async read inside try/catch: the prompt file can vanish between the
+  // readdir above and the read here (TOCTOU), and a sync throw would
+  // otherwise surface only as the generic index.ts failure with no
+  // category/target context.
+  let promptContent: string;
+  try {
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error
+        ? signal.reason
+        : new DOMException('Audit cancelled', 'AbortError');
+    }
+    promptContent = await fs.promises.readFile(selectedPrompt, 'utf-8');
+  } catch (err) {
+    const kind = err instanceof DOMException ? err.name : err instanceof Error ? err.name : 'error';
+    core.setFailed(
+      sanitize(
+        `Failed to read audit prompt ${selectedPrompt} (category: ${category}, target: ${auditTarget}, ${kind}): ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
+    new Logger('Audit').warn('Failed to read audit prompt', {
+      operation: 'audit.readPrompt',
+      category,
+      targetDir: auditTarget,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return;
+  }
 
-  const result = await engine.runAudit(promptContent, auditTarget, category);
+  let result: Awaited<ReturnType<typeof engine.runAudit>>;
+  try {
+    result = await engine.runAudit(promptContent, auditTarget, category);
+  } catch (err) {
+    const kind = err instanceof DOMException ? err.name : err instanceof Error ? err.name : 'error';
+    new Logger('Audit').warn('Audit engine failed', {
+      operation: 'audit.run',
+      category,
+      targetDir: auditTarget,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    core.setFailed(
+      sanitize(
+        `Audit failed (category: ${category}, target: ${auditTarget}, ${kind}): ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
+    return;
+  }
 
   if (!result || (!result.summary && result.issues.length === 0)) {
     core.warning('Audit returned no meaningful content');

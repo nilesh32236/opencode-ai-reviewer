@@ -28,6 +28,7 @@ export async function runAnalyze(
   gh: PlatformAdapter,
   _repo: string,
   _token: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const issueNumber =
     github.context.payload.issue?.number || github.context.payload.pull_request?.number;
@@ -37,6 +38,13 @@ export async function runAnalyze(
   }
 
   core.info(`Analyzing issue #${issueNumber}`);
+
+  if (signal?.aborted) {
+    const kind = signal.reason instanceof DOMException ? signal.reason.name : 'AbortError';
+    core.warning(sanitize(`Analysis cancelled before engine call (${kind}) — skipping`));
+    core.setFailed(sanitize(`Analysis cancelled (${kind})`));
+    return;
+  }
 
   try {
     const issueContext = await gh.gatherContext({ issueNumber });

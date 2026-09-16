@@ -28,7 +28,7 @@ import {
 } from '@opencode-pr-agent/lib';
 import { sanitizeMarkdown } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { resolvePrNumber, sanitize } from './utils.js';
+import { capVerificationOutput, execWithTimeout, resolvePrNumber, sanitize } from './utils.js';
 
 /**
  * Determine whether a PR/MR has already been closed or merged, so a fix
@@ -60,6 +60,7 @@ export async function runFix(
   config: AgentConfig,
   engine: ReviewEngine,
   gh: PlatformAdapter,
+  signal?: AbortSignal,
 ): Promise<void> {
   const prNumber = await resolvePrNumber();
   if (prNumber === null) {
@@ -127,7 +128,24 @@ export async function runFix(
 
   if (iteration >= config.maxIterations) {
     const errorMsg = `Max iterations reached (${config.maxIterations}). Needs manual review.`;
-    await gh.setLabels(prNumber, ['autofix:needs-manual-review'], ['autofix', 'autofix:needs-fix']);
+    try {
+      await withRetry(
+        () =>
+          gh.setLabels(prNumber, ['autofix:needs-manual-review'], ['autofix', 'autofix:needs-fix']),
+        { operationName: 'fix.setLabels.maxIterations', signal },
+      );
+    } catch (err) {
+      core.warning(
+        sanitize(
+          `Failed to set max-iterations labels on PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
+      new Logger('Fix').warn('Failed to set max-iterations labels', {
+        operation: 'fix.setLabels.maxIterations',
+        prNumber,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
     core.setFailed(errorMsg);
     core.setOutput('changes_made', 'false');
     return;
@@ -214,7 +232,7 @@ export async function runFix(
 
     const maxVerificationRetries = 2;
     for (let v = 0; v <= maxVerificationRetries; v++) {
-      const { exitCode, output: checkOutput } = await runVerificationSteps(steps);
+      const { exitCode, output: checkOutput } = await runVerificationSteps(steps, signal);
 
       if (steps.length === 0) {
         break;
@@ -292,7 +310,27 @@ export async function runFix(
     }
   }
 
-  await gh.removeLabel(prNumber, 'autofix:needs-fix');
+  // Post-success label cleanup is best-effort: a transient API failure here
+  // must never flip an actually-successful run to failed, and
+  // changes_made outputs must still be set below.
+  try {
+    await withRetry(() => gh.removeLabel(prNumber, 'autofix:needs-fix'), {
+      operationName: 'fix.removeLabel',
+      maxRetries: 2,
+      signal,
+    });
+  } catch (err) {
+    core.warning(
+      sanitize(
+        `Failed to remove autofix:needs-fix label on PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
+    new Logger('Fix').warn('Failed to remove label after success', {
+      operation: 'fix.removeLabel',
+      prNumber,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   core.setOutput('changes_made', String(changesMade ?? false));
 }
@@ -376,6 +414,7 @@ export async function runFixIssue(
   gh: PlatformAdapter,
   _repo: string,
   gitEmail: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const issueNumber = await resolvePrNumber();
   if (!issueNumber) {
@@ -517,6 +556,14 @@ export async function runFixIssue(
   // Check remaining time budget just before calling OpenCode, after setup steps.
   const elapsedMs = Date.now() - runStartedAt;
   const timeLeftMs = configTimeoutMs - elapsedMs;
+  if (signal?.aborted) {
+    const kind = signal.reason instanceof DOMException ? signal.reason.name : 'AbortError';
+    const abortMsg = `Fix cancelled before engine call (${kind}) — run deadline exceeded or workflow cancelled.`;
+    core.warning(sanitize(abortMsg));
+    core.setFailed(sanitize(abortMsg));
+    core.setOutput('changes_made', 'false');
+    return;
+  }
   if (timeLeftMs < minRequiredMs) {
     const elapsedMin = (elapsedMs / 60_000).toFixed(1);
     const budgetMin = (configTimeoutMs / 60_000).toFixed(0);
@@ -671,6 +718,7 @@ export async function runAutofixLoop(
   gh: PlatformAdapter,
   _repo: string,
   _token: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const prNumber = await resolvePrNumber();
   if (prNumber === null) {
@@ -705,7 +753,33 @@ export async function runAutofixLoop(
 
     core.info(`=== Autofix iteration ${i + 1}/${config.maxIterations} ===`);
 
-    const pr = await gh.getMR(prNumber);
+    // Hot-loop fetches must tolerate transient 429/5xx like every other call
+    // site (runFix, docs.ts, self-heal verification refetch): without
+    // withRetry a single transient failure aborts the whole multi-iteration
+    // loop. A persistent failure still aborts the loop via setFailed below.
+    let pr: Awaited<ReturnType<typeof gh.getMR>>;
+    try {
+      pr = await withRetry(() => gh.getMR(prNumber), {
+        operationName: 'autofix.getMR',
+        signal,
+      });
+    } catch (err) {
+      core.setFailed(
+        sanitize(
+          `Failed to fetch PR #${prNumber} in autofix iteration ${i + 1}: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
+      return;
+    }
+    if (signal?.aborted) {
+      core.warning(
+        sanitize(
+          `Autofix loop cancelled before iteration ${i + 1} (${signal.reason instanceof DOMException ? signal.reason.name : 'aborted'}) — shutting down gracefully.`,
+        ),
+      );
+      await handleTimeoutGracefully(prNumber, history, i, config, gh);
+      return;
+    }
     const prHeadSha = pr.headSha;
 
     let previousBotComments:
@@ -813,8 +887,43 @@ export async function runAutofixLoop(
       entry.status = 'approved';
       history.push(entry);
 
-      await gh.setLabels(prNumber, ['autofix:ready'], ['autofix', 'autofix:needs-fix']);
-      await gh.createComment(prNumber, buildReadyBody(history, prNumber));
+      // Post-success writes are best-effort: a transient labels/comment
+      // failure must not flip an approved run to failed.
+      try {
+        await withRetry(
+          () => gh.setLabels(prNumber, ['autofix:ready'], ['autofix', 'autofix:needs-fix']),
+          { operationName: 'autofix.setLabels.ready', maxRetries: 2, signal },
+        );
+      } catch (err) {
+        core.warning(
+          sanitize(
+            `Failed to set autofix:ready labels on PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+        );
+        new Logger('Autofix').warn('Failed to set ready labels after approval', {
+          operation: 'autofix.setLabels.ready',
+          prNumber,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      try {
+        await withRetry(() => gh.createComment(prNumber, buildReadyBody(history, prNumber)), {
+          operationName: 'autofix.createComment.ready',
+          maxRetries: 2,
+          signal,
+        });
+      } catch (err) {
+        core.warning(
+          sanitize(
+            `Failed to post ready comment on PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+        );
+        new Logger('Autofix').warn('Failed to post ready comment after approval', {
+          operation: 'autofix.createComment.ready',
+          prNumber,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       core.info('Posted ready-to-merge notification');
       break;
     }
@@ -834,7 +943,20 @@ export async function runAutofixLoop(
       );
     }
 
-    const contextMarkdown = await gh.gatherContext({ prNumber });
+    let contextMarkdown: string;
+    try {
+      contextMarkdown = await withRetry(() => gh.gatherContext({ prNumber }), {
+        operationName: 'autofix.gatherContext',
+        signal,
+      });
+    } catch (err) {
+      core.setFailed(
+        sanitize(
+          `Failed to gather context for PR #${prNumber} in autofix iteration ${i + 1}: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
+      return;
+    }
     const fixResult = await engine.runFix(
       prNumber,
       i,
@@ -971,7 +1093,7 @@ export async function runAutofixLoop(
 
       const maxVerificationRetries = 2;
       for (let v = 0; v <= maxVerificationRetries; v++) {
-        const { exitCode, output: checkOutput } = await runVerificationSteps(steps);
+        const { exitCode, output: checkOutput } = await runVerificationSteps(steps, signal);
 
         if (steps.length === 0) {
           break;
@@ -1058,7 +1180,27 @@ export async function runAutofixLoop(
   }
 
   if (!approved) {
-    await gh.setLabels(prNumber, ['autofix:needs-manual-review'], ['autofix', 'autofix:needs-fix']);
+    // Terminal label update is best-effort: on the needs-manual-review path
+    // a transient setLabels failure must not skip the intended
+    // setFailed/outputs below or propagate a generic error to index.ts.
+    try {
+      await withRetry(
+        () =>
+          gh.setLabels(prNumber, ['autofix:needs-manual-review'], ['autofix', 'autofix:needs-fix']),
+        { operationName: 'autofix.setLabels.terminal', maxRetries: 2, signal },
+      );
+    } catch (err) {
+      core.warning(
+        sanitize(
+          `Failed to set terminal autofix labels on PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
+      new Logger('Autofix').warn('Failed to set terminal labels', {
+        operation: 'autofix.setLabels.terminal',
+        prNumber,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
 
     // Only post max-iterations comment if we actually exhausted all iterations.
     // Other exit reasons (no-changes, git-failure) already posted their own comments.
@@ -1092,32 +1234,30 @@ export async function runAutofixLoop(
 
 async function runVerificationSteps(
   steps: CheckExecution[],
+  signal?: AbortSignal,
 ): Promise<{ exitCode: number; output: string }> {
   if (steps.length === 0) {
     return { exitCode: 0, output: '' };
   }
-  const chunks: Buffer[] = [];
-  const execOptions = {
-    listeners: {
-      stdout: (data: Buffer) => {
-        chunks.push(data);
-      },
-      stderr: (data: Buffer) => {
-        chunks.push(data);
-      },
-    },
-    ignoreReturnCode: true,
-  };
 
+  const chunks: string[] = [];
   let exitCode = 0;
   for (const step of steps) {
-    const stepOpts = step.cwd ? { ...execOptions, cwd: step.cwd } : execOptions;
-    exitCode = await exec.exec(step.program, step.args, stepOpts);
+    // Per-command timeout (default 5 min) so a hung check (e.g. pnpm test
+    // waiting on network) fails verification instead of blocking the runner
+    // until the job is killed. Timeout surfaces as exit 124 with a clear
+    // message; output is byte-capped before feedback to the fix engine.
+    const { exitCode: stepExit, output } = await execWithTimeout(step.program, step.args, {
+      ...(step.cwd ? { cwd: step.cwd } : {}),
+      signal,
+    });
+    if (output) chunks.push(output);
+    exitCode = stepExit;
     if (exitCode !== 0) {
       break;
     }
   }
-  const output = Buffer.concat(chunks).toString('utf-8');
+  const output = capVerificationOutput(chunks.join('\n\n'));
   return { exitCode, output };
 }
 

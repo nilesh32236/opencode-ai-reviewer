@@ -21,7 +21,7 @@ export declare function isPrClosedOrMerged(state?: string): boolean;
  * @param engine - Review engine instance.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  */
-export declare function runFix(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter): Promise<void>;
+export declare function runFix(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, signal?: AbortSignal): Promise<void>;
 /**
  * Run a fix triggered from an issue (non-PR): create a branch, apply the fix,
  * commit, push, and open a new PR.
@@ -35,7 +35,7 @@ export declare function runFix(inputs: ActionInputs, config: AgentConfig, engine
  *   existing `autofix/issue-N` branch tip was authored by this bot before it is
  *   reused (see `configureGit`).
  */
-export declare function runFixIssue(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, _repo: string, gitEmail: string): Promise<void>;
+export declare function runFixIssue(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, _repo: string, gitEmail: string, signal?: AbortSignal): Promise<void>;
 /**
  * Run the complete review-fix loop on a PR. Iterates up to config.maxIterations:
  * reviews the PR, applies fixes, runs optional verification, and posts
@@ -47,4 +47,4 @@ export declare function runFixIssue(inputs: ActionInputs, config: AgentConfig, e
  * @param _repo - Repository string (owner/repo, unused).
  * @param _token - GitHub authentication token (unused).
  */
-export declare function runAutofixLoop(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, _repo: string, _token: string): Promise<void>;
+export declare function runAutofixLoop(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, _repo: string, _token: string, signal?: AbortSignal): Promise<void>;

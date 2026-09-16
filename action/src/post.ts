@@ -1,5 +1,4 @@
 import * as core from '@actions/core';
-import * as exec from '@actions/exec';
 import * as github from '@actions/github';
 import type { PlatformAdapter, TokenUsage } from '@opencode-pr-agent/lib';
 import {
@@ -10,7 +9,7 @@ import {
 } from '@opencode-pr-agent/lib';
 import { sanitizeMarkdown } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { resolveGitLabMrIid, sanitize } from './utils.js';
+import { execWithTimeout, resolveGitLabMrIid, sanitize } from './utils.js';
 
 /**
  * Run post-processing after a review/fix action: optionally run a
@@ -25,6 +24,7 @@ export async function runPost(
   gh: PlatformAdapter,
   _repo: string,
   _token: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const gitlabMrIid = resolveGitLabMrIid();
   const prNumber =
@@ -43,14 +43,17 @@ export async function runPost(
     try {
       const steps = parseRunChecksCommands(inputs.runChecksAfterFix, inputs.checkAllowlist);
       for (const step of steps) {
-        const exitCode = await exec.exec(step.program, step.args, {
+        // Per-command timeout so a hung check fails verification with a
+        // clear message instead of blocking the runner until it is killed.
+        const { exitCode, output } = await execWithTimeout(step.program, step.args, {
           ...(step.cwd ? { cwd: step.cwd } : {}),
-          ignoreReturnCode: true,
+          signal,
         });
         if (exitCode !== 0) {
+          const timedOut = exitCode === 124;
           core.warning(
             sanitize(
-              `Verification command "${step.program} ${step.args.join(' ')}" failed with exit code ${exitCode}`,
+              `Verification command "${step.program} ${step.args.join(' ')}" ${timedOut ? 'timed out' : `failed with exit code ${exitCode}`}${output ? `: ${output.slice(0, 2000)}` : ''}`,
             ),
           );
           break;

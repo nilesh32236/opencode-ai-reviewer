@@ -3,9 +3,9 @@ import * as path from 'node:path';
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
-import { validateRefName, withRetry } from '@opencode-pr-agent/lib';
+import { Logger, validateRefName, withRetry } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { sanitize } from './utils.js';
+import { capVerificationOutput, execWithTimeout, sanitize } from './utils.js';
 
 /**
  * Run the self-heal workflow: diagnose a CI failure, apply a fix,
@@ -31,6 +31,7 @@ export async function runSelfHeal(
   gh: PlatformAdapter,
   _repo: string,
   _token: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   // Read CI failure logs from input or from a file. The file path comes from
   // the CI_FAILURE_LOGS_FILE env var, which may be attacker-influenced via
@@ -97,18 +98,53 @@ export async function runSelfHeal(
   for (let attempt = 0; attempt < maxHealRetries; attempt++) {
     core.info(`=== Self-heal attempt ${attempt + 1}/${maxHealRetries} ===`);
 
-    const healResult = await engine.runSelfHeal(
-      ciFailureLogs,
-      failedStep,
-      failedWorkflow,
-      config.timeoutMinutes,
-      lastVerificationError,
-    );
+    if (signal?.aborted) {
+      const kind = signal.reason instanceof DOMException ? signal.reason.name : 'AbortError';
+      lastVerificationError = `Self-heal cancelled before attempt ${attempt + 1} (${kind})`;
+      core.warning(sanitize(lastVerificationError));
+      break;
+    }
+
+    // Exception-safe attempt: a single LLM/transient throw must not escape
+    // the loop, orphan the heal branch, and skip verification/PR/outputs.
+    // Record the message as the verification error (auditable trail) and
+    // continue; escalation via setFailed happens only after attempt 3.
+    let healResult: Awaited<ReturnType<typeof engine.runSelfHeal>>;
+    try {
+      healResult = await engine.runSelfHeal(
+        ciFailureLogs,
+        failedStep,
+        failedWorkflow,
+        config.timeoutMinutes,
+        lastVerificationError,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const kind =
+        err instanceof DOMException ? err.name : err instanceof Error ? err.name : 'error';
+      lastVerificationError = `Self-heal attempt ${attempt + 1} engine error (${kind}): ${msg}`;
+      core.warning(sanitize(lastVerificationError));
+      new Logger('SelfHeal').warn('Self-heal engine attempt failed', {
+        operation: 'self-heal.run',
+        attempt: attempt + 1,
+        error: msg,
+      });
+      if (attempt >= maxHealRetries - 1) {
+        core.setFailed(
+          sanitize(`Self-heal failed after ${maxHealRetries} attempts: last error: ${msg}`),
+        );
+        core.setOutput('changes_made', 'false');
+        core.setOutput('verification_passed', 'false');
+      }
+      continue;
+    }
 
     if (!healResult.changesMade) {
       core.info('Self-heal agent made no changes');
       if (attempt === 0) {
         core.setFailed('Self-heal agent could not determine a fix for the CI failure');
+        core.setOutput('changes_made', 'false');
+        core.setOutput('verification_passed', 'false');
         return;
       }
       break;
@@ -124,13 +160,27 @@ export async function runSelfHeal(
       ]);
       changesMade = true;
     } catch (err) {
-      core.warning(sanitize(`Git commit failed: ${err instanceof Error ? err.message : err}`));
-      break;
+      // Fail loudly: the agent produced a fix but it was lost at commit
+      // time. A warn-and-break followed by a silent INFO return would report
+      // success despite zero progress (fail-open, hides lost work from
+      // branch protection). Escalate visibly so the run is re-triable.
+      const msg = `Self-heal attempt ${attempt + 1} commit failed, losing agent-produced changes: ${err instanceof Error ? err.message : String(err)}`;
+      core.warning(sanitize(msg));
+      new Logger('SelfHeal').warn('Self-heal commit failed', {
+        operation: 'self-heal.commit',
+        attempt: attempt + 1,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      lastVerificationError = msg;
+      core.setFailed(sanitize(msg));
+      core.setOutput('changes_made', 'false');
+      core.setOutput('verification_passed', 'false');
+      return;
     }
 
     // Run verification
     core.info('Running verification: pnpm build && typecheck && test && lint');
-    const { exitCode, output: verifyOutput } = await runFullVerification();
+    const { exitCode, output: verifyOutput } = await runFullVerification(signal);
 
     if (exitCode === 0) {
       core.info(`✅ Verification passed on attempt ${attempt + 1}`);
@@ -151,7 +201,16 @@ export async function runSelfHeal(
   }
 
   if (!changesMade) {
+    // Never report success with zero progress: set explicit outputs and fail
+    // visibly so the run is re-triable instead of silently green.
     core.info('No changes were made by the self-heal agent');
+    core.setOutput('changes_made', 'false');
+    core.setOutput('verification_passed', 'false');
+    core.setFailed(
+      sanitize(
+        `Self-heal made no progress${lastVerificationError ? `: ${lastVerificationError}` : ' — the agent produced no committable fix'}`,
+      ),
+    );
     return;
   }
 
@@ -283,9 +342,16 @@ export function readConstrainedLogFile(logsFilePath: string): string {
 
 /**
  * Run full verification suite (build, typecheck, test, lint) as a single pipeline.
+ * Each step runs with a per-command timeout (default 5 min) so a hung check
+ * fails verification with a clear message instead of blocking the runner
+ * (multiplied across 3 heal attempts). Output is byte-capped before it is
+ * fed back to the fix engine.
+ * @param signal - Optional run-level abort signal composed with each per-command timeout.
  * @returns Object containing exit code (0 for success) and combined stdout/stderr output for diagnosis.
  */
-async function runFullVerification(): Promise<{ exitCode: number; output: string }> {
+async function runFullVerification(
+  signal?: AbortSignal,
+): Promise<{ exitCode: number; output: string }> {
   const commands = [
     { program: 'pnpm', args: ['build'], label: 'build' },
     { program: 'pnpm', args: ['typecheck'], label: 'typecheck' },
@@ -296,27 +362,21 @@ async function runFullVerification(): Promise<{ exitCode: number; output: string
   const outputChunks: string[] = [];
 
   for (const cmd of commands) {
-    const chunks: Buffer[] = [];
-    const exitCode = await exec.exec(cmd.program, cmd.args, {
-      listeners: {
-        stdout: (data: Buffer) => chunks.push(data),
-        stderr: (data: Buffer) => chunks.push(data),
-      },
-      ignoreReturnCode: true,
+    const { exitCode, output: stepOutput } = await execWithTimeout(cmd.program, cmd.args, {
+      signal,
     });
 
-    const stepOutput = Buffer.concat(chunks).toString('utf-8');
     outputChunks.push(`=== ${cmd.label} (exit: ${exitCode}) ===\n${stepOutput}`);
 
     if (exitCode !== 0) {
       return {
         exitCode,
-        output: outputChunks.join('\n\n'),
+        output: capVerificationOutput(outputChunks.join('\n\n')),
       };
     }
   }
 
-  return { exitCode: 0, output: outputChunks.join('\n\n') };
+  return { exitCode: 0, output: capVerificationOutput(outputChunks.join('\n\n')) };
 }
 
 /**

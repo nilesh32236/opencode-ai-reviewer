@@ -50,6 +50,7 @@ export async function runReview(
   engine: ReviewEngine,
   gh: PlatformAdapter,
   repo: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   let prNumber = await resolvePrNumber();
 
@@ -167,95 +168,141 @@ export async function runReview(
   const streamedFingerprints = new Set<string>();
   let streamedFindingCount = 0;
 
-  const result = await engine.reviewPR(
-    pr,
-    undefined,
-    inputs.reviewPromptFile,
-    inputs.reviewPromptExtra,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    previousComments,
-    streamEnabled
-      ? async (batchIndex, totalBatches, batchResult) => {
-          for (const issue of batchResult.issues) {
-            if (issue.inline && issue.file && issue.line) {
-              // Guard the inline-comment API against model-generated garbage:
-              // only positive integer lines within a sane range are posted.
-              if (!Number.isInteger(issue.line) || issue.line < 1) continue;
-              // Cross-run fingerprint gate: skip findings already posted in a
-              // previous run (quiet debug log, no new comment). Fail-open:
-              // fingerprint errors never drop a finding here — the final
-              // postReview gate re-checks with the same store.
-              let issueFingerprint: string | undefined;
-              if (dedupEnabled) {
-                try {
-                  issueFingerprint = fingerprintForIssue(issue);
-                  if (
-                    (previousFingerprints.size > 0 && previousFingerprints.has(issueFingerprint)) ||
-                    streamedFingerprints.has(issueFingerprint)
-                  ) {
-                    core.debug(
-                      `Skipping duplicate inline finding (fp ${issueFingerprint}) at ${issue.file}:${issue.line}`,
-                    );
-                    continue;
+  if (signal?.aborted) {
+    const kind = signal.reason instanceof DOMException ? signal.reason.name : 'AbortError';
+    core.warning(sanitize(`Review cancelled before engine call (${kind}) — skipping`));
+    core.setFailed(sanitize(`Review cancelled (${kind}) before the engine call`));
+    return;
+  }
+
+  let result: Awaited<ReturnType<typeof engine.reviewPR>>;
+  try {
+    result = await engine.reviewPR(
+      pr,
+      undefined,
+      inputs.reviewPromptFile,
+      inputs.reviewPromptExtra,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      previousComments,
+      streamEnabled
+        ? async (batchIndex, totalBatches, batchResult) => {
+            for (const issue of batchResult.issues) {
+              if (issue.inline && issue.file && issue.line) {
+                // Guard the inline-comment API against model-generated garbage:
+                // only positive integer lines within a sane range are posted.
+                if (!Number.isInteger(issue.line) || issue.line < 1) continue;
+                // Cross-run fingerprint gate: skip findings already posted in a
+                // previous run (quiet debug log, no new comment). Fail-open:
+                // fingerprint errors never drop a finding here — the final
+                // postReview gate re-checks with the same store.
+                let issueFingerprint: string | undefined;
+                if (dedupEnabled) {
+                  try {
+                    issueFingerprint = fingerprintForIssue(issue);
+                    if (
+                      (previousFingerprints.size > 0 &&
+                        previousFingerprints.has(issueFingerprint)) ||
+                      streamedFingerprints.has(issueFingerprint)
+                    ) {
+                      core.debug(
+                        `Skipping duplicate inline finding (fp ${issueFingerprint}) at ${issue.file}:${issue.line}`,
+                      );
+                      continue;
+                    }
+                  } catch {
+                    issueFingerprint = undefined;
                   }
-                } catch {
-                  issueFingerprint = undefined;
+                }
+                const key = streamedFindingKey(issue.file, issue.line, issue.message);
+                // Never post the same finding twice across batches (distinct
+                // findings on one line have distinct keys and stay independent),
+                // and only mark a finding as streamed when the inline post
+                // actually succeeded — otherwise the final-result filter below
+                // would drop it entirely (neither inline nor body).
+                if (streamedIssueKeys.has(key)) continue;
+                const posted = await gh.postInlineComment(prNumber, pr.headSha, {
+                  path: issue.file,
+                  line: issue.line,
+                  body: issueFingerprint
+                    ? withFingerprintMarker(
+                        `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}`,
+                        issueFingerprint,
+                      )
+                    : `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}`,
+                });
+                if (posted) {
+                  streamedIssueKeys.add(key);
+                  if (issueFingerprint) streamedFingerprints.add(issueFingerprint);
+                  streamedFindingCount++;
+                } else {
+                  core.warning(
+                    sanitize(
+                      `Inline comment post failed for ${key} — will retry in final review body`,
+                    ),
+                  );
                 }
               }
-              const key = streamedFindingKey(issue.file, issue.line, issue.message);
-              // Never post the same finding twice across batches (distinct
-              // findings on one line have distinct keys and stay independent),
-              // and only mark a finding as streamed when the inline post
-              // actually succeeded — otherwise the final-result filter below
-              // would drop it entirely (neither inline nor body).
-              if (streamedIssueKeys.has(key)) continue;
-              const posted = await gh.postInlineComment(prNumber, pr.headSha, {
-                path: issue.file,
-                line: issue.line,
-                body: issueFingerprint
-                  ? withFingerprintMarker(
-                      `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}`,
-                      issueFingerprint,
-                    )
-                  : `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}`,
-              });
-              if (posted) {
-                streamedIssueKeys.add(key);
-                if (issueFingerprint) streamedFingerprints.add(issueFingerprint);
-                streamedFindingCount++;
-              } else {
-                core.warning(
-                  sanitize(
-                    `Inline comment post failed for ${key} — will retry in final review body`,
-                  ),
-                );
-              }
             }
+            await gh
+              .postStreamingProgress(
+                prNumber,
+                batchIndex + 1,
+                totalBatches,
+                streamedFindingCount,
+                batchResult.issues[batchResult.issues.length - 1]?.file,
+              )
+              .catch((err: unknown) => {
+                new Logger('Review').warn(
+                  `Failed to post streaming progress: ${err instanceof Error ? err.message : String(err)}`,
+                  { operation: 'review.stream', prNumber },
+                );
+              });
           }
-          await gh
-            .postStreamingProgress(
-              prNumber,
-              batchIndex + 1,
-              totalBatches,
-              streamedFindingCount,
-              batchResult.issues[batchResult.issues.length - 1]?.file,
-            )
-            .catch((err: unknown) => {
-              new Logger('Review').warn(
-                `Failed to post streaming progress: ${err instanceof Error ? err.message : String(err)}`,
-                { operation: 'review.stream', prNumber },
-              );
-            });
-        }
-      : undefined,
-    // A manual trigger (issue comment / workflow dispatch / explicit PR number)
-    // must bypass the dedup cache so it always re-reviews the current head;
-    // automatic events keep dedup to avoid redundant re-review work.
-    { forceReview: isManualTrigger },
-  );
+        : undefined,
+      // A manual trigger (issue comment / workflow dispatch / explicit PR number)
+      // must bypass the dedup cache so it always re-reviews the current head;
+      // automatic events keep dedup to avoid redundant re-review work.
+      { forceReview: isManualTrigger },
+    );
+  } catch (err) {
+    // Error boundary mirroring analyze.ts/describe.ts: an LLM/transient
+    // failure must post a visible marker comment (best-effort, guarded)
+    // before failing, so the PR never goes silent on the highest-traffic path.
+    const kind =
+      signal?.aborted && signal.reason instanceof DOMException
+        ? signal.reason.name
+        : err instanceof DOMException
+          ? err.name
+          : 'error';
+    core.warning(
+      sanitize(
+        `Review engine failed for PR #${prNumber} (${kind}): ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
+    new Logger('Review').warn('Review engine failed', {
+      operation: 'review.run',
+      prNumber,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    try {
+      await gh.postOrUpdateComment(
+        prNumber,
+        '<!-- review-error -->',
+        `❌ **Review Failed**: Review failed for PR #${prNumber} (${kind}). See the action logs for details.`,
+      );
+    } catch (commentErr) {
+      core.warning(
+        sanitize(
+          `Failed to post review error comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+        ),
+      );
+    }
+    core.setFailed(sanitize(`Review failed for PR #${prNumber} (${kind})`));
+    return;
+  }
 
   if (result?.skipped) {
     core.info('Review deduplicated — this PR/commit was already reviewed. Skipping.');
@@ -292,23 +339,55 @@ export async function runReview(
           previousInlineKeys: previousLegacyKeys,
         }
       : { dedupFingerprints: dedupEnabled };
-  const reviewResult = await gh.postReview(
-    prNumber,
-    pr.headSha,
-    finalResult,
-    config.review.inline,
-    undefined,
-    {
-      ...(scoreOptions ?? {}),
-      ...dedupOptions,
-      ...(config.review.enableReviewsArrayInline === true
-        ? { enableReviewsArrayInline: true as const }
-        : {}),
-      ...(config.review.verdictMode !== undefined
-        ? { verdictMode: config.review.verdictMode }
-        : {}),
-    },
-  );
+  let reviewResult: Awaited<ReturnType<typeof gh.postReview>>;
+  try {
+    reviewResult = await gh.postReview(
+      prNumber,
+      pr.headSha,
+      finalResult,
+      config.review.inline,
+      undefined,
+      {
+        ...(scoreOptions ?? {}),
+        ...dedupOptions,
+        ...(config.review.enableReviewsArrayInline === true
+          ? { enableReviewsArrayInline: true as const }
+          : {}),
+        ...(config.review.verdictMode !== undefined
+          ? { verdictMode: config.review.verdictMode }
+          : {}),
+      },
+    );
+  } catch (err) {
+    // A postReview throw must not surface as the generic index.ts failure
+    // with no PR marker: post the review-error marker (best-effort, guarded)
+    // before failing, mirroring the engine boundary above.
+    core.warning(
+      sanitize(
+        `Failed to post review for PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
+    new Logger('Review').warn('Failed to post review', {
+      operation: 'review.post',
+      prNumber,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    try {
+      await gh.postOrUpdateComment(
+        prNumber,
+        '<!-- review-error -->',
+        `❌ **Review Failed**: Review failed for PR #${prNumber}. See the action logs for details.`,
+      );
+    } catch (commentErr) {
+      core.warning(
+        sanitize(
+          `Failed to post review error comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+        ),
+      );
+    }
+    core.setFailed(sanitize(`Failed to post review for PR #${prNumber}`));
+    return;
+  }
 
   if (!reviewResult.success) {
     core.warning('Failed to post review to GitHub');

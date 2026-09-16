@@ -44,7 +44,7 @@ import { runReview } from './review.js';
 import { runSelfHeal } from './self-heal.js';
 import { runSetup } from './setup.js';
 import { StateCacheManager } from './state-cache.js';
-import { resolvePrNumber, sanitize } from './utils.js';
+import { createRunAbortController, describeAbortKind, resolvePrNumber, sanitize } from './utils.js';
 
 async function run(): Promise<void> {
   // The GitHub Action defaults to human-readable logs because CI already
@@ -524,6 +524,16 @@ async function run(): Promise<void> {
 
     const learningStore = new LearningStore();
 
+    // Per-run AbortController: deadline derived from the effective run budget
+    // (config.timeoutMinutes, default 20m). The signal is threaded into mode
+    // runners (which forward it to withRetry/exec) so in-flight LLM calls and
+    // subprocesses are cancellable per-attempt; wall-clock Date.now() checks
+    // in fix.ts/self-heal.ts remain as the outer scheduling guard. The
+    // deadline fires with a TimeoutError reason so timeout-vs-cancel stays
+    // distinguishable in logs (see describeAbortKind).
+    const runAbort = createRunAbortController(config.timeoutMinutes);
+    const runSignal = runAbort.signal;
+
     try {
       const eventBus = new EventBus();
       // Persist duration/token telemetry for completed pipeline stages so
@@ -585,10 +595,10 @@ async function run(): Promise<void> {
 
       switch (inputs.mode) {
         case 'analyze':
-          await runAnalyze(inputs, config, engine, gh, repo, token);
+          await runAnalyze(inputs, config, engine, gh, repo, token, runSignal);
           break;
         case 'review':
-          await runReview(inputs, config, engine, gh, repo);
+          await runReview(inputs, config, engine, gh, repo, runSignal);
           break;
         case 'fix':
           {
@@ -603,9 +613,9 @@ async function run(): Promise<void> {
                 : github.context.payload.issue?.number ||
                   github.context.payload.pull_request?.number;
             if (isPr) {
-              await runAutofixLoop(inputs, config, engine, gh, repo, token);
+              await runAutofixLoop(inputs, config, engine, gh, repo, token, runSignal);
             } else if (issueNum && !isPr) {
-              await runFixIssue(inputs, config, engine, gh, repo, gitEmail);
+              await runFixIssue(inputs, config, engine, gh, repo, gitEmail, runSignal);
             } else {
               // No PR/issue in the event payload (e.g. schedule/workflow_dispatch).
               // Fall back to the explicit `pr-number` input and classify the target
@@ -628,17 +638,17 @@ async function run(): Promise<void> {
                 }
               }
               if (explicitNum !== null && !isExplicitMr) {
-                await runFixIssue(inputs, config, engine, gh, repo, gitEmail);
+                await runFixIssue(inputs, config, engine, gh, repo, gitEmail, runSignal);
               } else if (inputs.enableFix) {
-                await runAutofixLoop(inputs, config, engine, gh, repo, token);
+                await runAutofixLoop(inputs, config, engine, gh, repo, token, runSignal);
               } else {
-                await runFix(inputs, config, engine, gh);
+                await runFix(inputs, config, engine, gh, runSignal);
               }
             }
           }
           break;
         case 'audit':
-          await runAudit(inputs, config, engine, gh);
+          await runAudit(inputs, config, engine, gh, runSignal);
           break;
         case 'docs':
           if (config.docs?.enabled === false) {
@@ -660,10 +670,10 @@ async function run(): Promise<void> {
           await runDescribe(inputs, config, engine, gh, repo, token);
           break;
         case 'self-heal':
-          await runSelfHeal(inputs, config, engine, gh, repo, token);
+          await runSelfHeal(inputs, config, engine, gh, repo, token, runSignal);
           break;
         case 'post':
-          await runPost(inputs, gh, repo, token);
+          await runPost(inputs, gh, repo, token, runSignal);
           break;
         case 'setup':
           await runSetup(inputs, config, gh, repo, token);
@@ -672,8 +682,21 @@ async function run(): Promise<void> {
           core.setFailed(`Unknown mode: ${inputs.mode}`);
       }
     } finally {
+      runAbort.dispose();
       if (engine) {
-        await engine.cleanup();
+        // Never let a cleanup failure mask the run's real outcome (or fail an
+        // otherwise-successful run): warn-and-continue, mirroring the
+        // learningStore.close() guard below.
+        try {
+          await engine.cleanup();
+        } catch (err) {
+          const msg = `engine.cleanup failed: ${err instanceof Error ? err.message : String(err)}`;
+          core.warning(sanitize(msg));
+          new Logger('Action').warn(msg, {
+            operation: 'engine.cleanup',
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       } else {
         try {
           await learningStore.close();
@@ -689,12 +712,31 @@ async function run(): Promise<void> {
       : github.context.payload.pull_request?.number ||
         github.context.payload.issue?.number ||
         'unknown';
+    const abortKind = describeAbortKind(error);
+    const abortSuffix =
+      abortKind === 'timeout'
+        ? ' (run deadline exceeded: TimeoutError)'
+        : abortKind === 'cancelled'
+          ? ' (run cancelled: AbortError)'
+          : '';
     core.setFailed(
-      `Action failed (mode: ${mode}, pr/issue: ${prNumber}): ${sanitize(withDownloadRemediation(error instanceof Error ? error.message : String(error)))}`,
+      `Action failed (mode: ${mode}, pr/issue: ${prNumber})${abortSuffix}: ${sanitize(withDownloadRemediation(error instanceof Error ? error.message : String(error)))}`,
     );
   } finally {
     if (inputs?.enableStateCache && cacheManager) {
-      await cacheManager.save();
+      // Defensive: cache persistence must never alter the run's pass/fail
+      // signal. StateCacheManager.save() currently swallows internally, but a
+      // future rejection from inside this finally block would otherwise mask
+      // the real outcome.
+      try {
+        await cacheManager.save();
+      } catch (err) {
+        core.warning(
+          sanitize(
+            `Failed to save state cache: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+        );
+      }
     }
   }
 }
