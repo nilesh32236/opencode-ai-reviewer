@@ -206,6 +206,8 @@ export interface ActionInputs {
     enforceNodeFloor: boolean;
     /** Whether the toolchain_enforce_node_floor input was explicitly set by the workflow. */
     enforceNodeFloorExplicit: boolean;
+    /** Operator instruction text from the triggering /fix comment (trimmed; undefined when empty/absent). */
+    commentBody?: string;
 }
 /**
  * Parse and validate the stream_batch_size input: an empty value means 0
