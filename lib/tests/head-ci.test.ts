@@ -31,7 +31,7 @@ describe('isHeadCIGreen', () => {
   });
 
   it('blocks on pending and failed checks', () => {
-    expect(isHeadCIGreen(makeStatus({ pending: 1 }))).toBe(false);
+    expect(isHeadCIGreen(makeStatus({ pending: 1, successful: 1 }))).toBe(false);
     expect(isHeadCIGreen(makeStatus({ failed: 1, successful: 1 }))).toBe(false);
   });
 
@@ -52,6 +52,53 @@ describe('isHeadCIGreen', () => {
   it('requires named checks when requireNames is supplied', () => {
     expect(isHeadCIGreen(makeStatus(), { requireNames: ['build', 'test'] })).toBe(true);
     expect(isHeadCIGreen(makeStatus(), { requireNames: ['security-scan'] })).toBe(false);
+  });
+
+  it('matches required names case-insensitively', () => {
+    expect(
+      isHeadCIGreen(
+        makeStatus({
+          checks: [
+            { name: 'BUILD', status: 'completed', conclusion: 'success' },
+            { name: 'Test', status: 'completed', conclusion: 'success' },
+          ],
+        }),
+        { requireNames: ['build', 'test'] },
+      ),
+    ).toBe(true);
+  });
+
+  it('blocks when any same-named required check is non-success', () => {
+    const dup = makeStatus({
+      total: 3,
+      successful: 2,
+      checks: [
+        { name: 'build', status: 'completed', conclusion: 'success' },
+        { name: 'build', status: 'completed', conclusion: 'failure' },
+        { name: 'test', status: 'completed', conclusion: 'success' },
+      ],
+    });
+    expect(isHeadCIGreen(dup, { requireNames: ['build'] })).toBe(false);
+  });
+
+  it('fails closed on malformed counters and malformed checks', () => {
+    expect(
+      isHeadCIGreen(makeStatus({ total: Number.NaN as number, pending: 0, failed: 0, skipped: 0 })),
+    ).toBe(false);
+    expect(
+      isHeadCIGreen(
+        makeStatus({ total: undefined as unknown as number, pending: 0, failed: 0, skipped: 0 }),
+      ),
+    ).toBe(false);
+    // Malformed check entry (missing name) must not throw and must block green.
+    const malformed = makeStatus({
+      checks: [
+        { name: undefined as unknown as string, status: 'completed', conclusion: 'success' },
+        { name: 'test', status: 'completed', conclusion: 'success' },
+      ],
+    });
+    expect(() => isHeadCIGreen(malformed, { requireNames: ['build'] })).not.toThrow();
+    expect(isHeadCIGreen(malformed, { requireNames: ['build'] })).toBe(false);
   });
 });
 
@@ -87,5 +134,56 @@ describe('checkHeadCIGreen', () => {
     const result = await checkHeadCIGreen(adapter, 'abc123');
     expect(result.ok).toBe(false);
     expect(result.reason).toMatch(/empty rollup/);
+  });
+
+  it('fails closed on empty head SHA and null status', async () => {
+    const adapter = { getHeadCIStatus: vi.fn() };
+    expect((await checkHeadCIGreen(adapter, '')).ok).toBe(false);
+    expect((await checkHeadCIGreen(adapter, '   ')).ok).toBe(false);
+    expect(adapter.getHeadCIStatus).not.toHaveBeenCalled();
+
+    const nullAdapter = { getHeadCIStatus: vi.fn().mockResolvedValue(null) };
+    expect((await checkHeadCIGreen(nullAdapter, 'abc123')).ok).toBe(false);
+  });
+
+  it('fails closed on malformed numeric counters', async () => {
+    const nanAdapter = {
+      getHeadCIStatus: vi.fn().mockResolvedValue(makeStatus({ total: Number.NaN as number })),
+    };
+    const nanResult = await checkHeadCIGreen(nanAdapter, 'abc123');
+    expect(nanResult.ok).toBe(false);
+    expect(nanResult.reason).toMatch(/malformed/);
+
+    const undefinedAdapter = {
+      getHeadCIStatus: vi
+        .fn()
+        .mockResolvedValue(makeStatus({ pending: undefined as unknown as number })),
+    };
+    expect((await checkHeadCIGreen(undefinedAdapter, 'abc123')).ok).toBe(false);
+  });
+
+  it('forwards opts and signal to the adapter and evaluator', async () => {
+    const signal = new AbortController().signal;
+    const green = {
+      getHeadCIStatus: vi.fn().mockResolvedValue(makeStatus()),
+    };
+    const okResult = await checkHeadCIGreen(green, 'abc123', { requireNames: ['build'] }, signal);
+    expect(okResult.ok).toBe(true);
+    expect(green.getHeadCIStatus).toHaveBeenCalledWith('abc123', signal);
+
+    const skippedStatus = makeStatus({
+      skipped: 1,
+      successful: 1,
+      green: false,
+      checks: [
+        { name: 'build', status: 'completed', conclusion: 'success' },
+        { name: 'test', status: 'completed', conclusion: 'skipped' },
+      ],
+    });
+    const skippedAdapter = { getHeadCIStatus: vi.fn().mockResolvedValue(skippedStatus) };
+    expect((await checkHeadCIGreen(skippedAdapter, 'abc123')).ok).toBe(false);
+    expect((await checkHeadCIGreen(skippedAdapter, 'abc123', { allowSkipped: true })).ok).toBe(
+      true,
+    );
   });
 });

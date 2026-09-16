@@ -1,4 +1,4 @@
-import type { PlatformAdapter } from '../platform/adapter.js';
+import type { HeadCIStatus, PlatformAdapter } from '../platform/adapter.js';
 
 /** Single CI check entry contributing to a head-SHA rollup. */
 export interface HeadCICheck {
@@ -44,13 +44,19 @@ export interface HeadCIGreenOptions {
  * @returns True only when the head SHA has verified green CI.
  */
 export function isHeadCIGreen(
-  status: Pick<
-    import('../platform/adapter.js').HeadCIStatus,
-    'total' | 'pending' | 'failed' | 'skipped' | 'checks'
-  >,
+  status: Pick<HeadCIStatus, 'total' | 'pending' | 'failed' | 'skipped' | 'checks'>,
   opts?: HeadCIGreenOptions,
 ): boolean {
-  if (!status || status.total <= 0) return false;
+  if (!status) return false;
+  // Fail closed on malformed counters: missing/NaN/Infinity must never be green.
+  if (
+    !Number.isFinite(status.total) ||
+    !Number.isFinite(status.pending) ||
+    !Number.isFinite(status.failed) ||
+    !Number.isFinite(status.skipped)
+  )
+    return false;
+  if (status.total <= 0) return false;
   if (status.pending > 0) return false;
   if (status.failed > 0) return false;
   if (opts?.allowSkipped !== true && status.skipped > 0) return false;
@@ -58,18 +64,23 @@ export function isHeadCIGreen(
   if (requireNames.length > 0) {
     const byName = new Map<string, HeadCICheck[]>();
     for (const check of status.checks ?? []) {
-      const key = check.name.toLowerCase();
+      // Coerce: malformed adapter entries (undefined name) must block green,
+      // never throw. Empty-string keys simply never match a required name.
+      const key = String(check?.name ?? '').toLowerCase();
       const list = byName.get(key);
       if (list) list.push(check);
       else byName.set(key, [check]);
     }
     for (const required of requireNames) {
-      const entries = byName.get(required.toLowerCase());
+      const entries = byName.get(String(required).toLowerCase());
       if (!entries || entries.length === 0) return false;
       // Every matching check for a required name must be successful; a
-      // same-named failure/pending/skipped run blocks green.
+      // same-named failure/pending/skipped run blocks green. Malformed
+      // entries (missing status/conclusion) coerce to non-success and block.
       const allSuccess = entries.every(
-        (c) => c.status.toLowerCase() === 'completed' && c.conclusion.toLowerCase() === 'success',
+        (c) =>
+          String(c?.status ?? '').toLowerCase() === 'completed' &&
+          String(c?.conclusion ?? '').toLowerCase() === 'success',
       );
       if (!allSuccess) return false;
     }
@@ -116,14 +127,13 @@ export async function checkHeadCIGreen(
       reason: `no CI signal for ${commitSha.slice(0, 7)} (adapter has no CI query)`,
     };
   }
-  let status: import('../platform/adapter.js').HeadCIStatus;
+  let status: HeadCIStatus;
   try {
-    status = await (
-      getStatus as (
-        sha: string,
-        signal?: AbortSignal,
-      ) => Promise<import('../platform/adapter.js').HeadCIStatus>
-    ).call(adapter, commitSha, signal);
+    status = await (getStatus as (sha: string, signal?: AbortSignal) => Promise<HeadCIStatus>).call(
+      adapter,
+      commitSha,
+      signal,
+    );
   } catch (err) {
     return {
       ok: false,
@@ -136,16 +146,34 @@ export async function checkHeadCIGreen(
       reason: `CI status SHA mismatch (expected ${commitSha.slice(0, 7)}, got ${String(status?.commitSha ?? 'none').slice(0, 7)}) — treating as not green`,
     };
   }
-  if (status.total <= 0) {
+  try {
+    if (
+      !Number.isFinite(status.total) ||
+      !Number.isFinite(status.pending) ||
+      !Number.isFinite(status.failed) ||
+      !Number.isFinite(status.skipped)
+    ) {
+      return {
+        ok: false,
+        reason: `malformed CI status for ${commitSha.slice(0, 7)} — treating as not green`,
+      };
+    }
+    if (status.total <= 0) {
+      return {
+        ok: false,
+        reason: `no CI checks reported for ${commitSha.slice(0, 7)} (empty rollup) — treating as not green`,
+      };
+    }
+    if (!isHeadCIGreen(status, opts)) {
+      return {
+        ok: false,
+        reason: `CI not green for ${commitSha.slice(0, 7)} (total=${status.total} pending=${status.pending} failed=${status.failed} skipped=${status.skipped})`,
+      };
+    }
+  } catch (err) {
     return {
       ok: false,
-      reason: `no CI checks reported for ${commitSha.slice(0, 7)} (empty rollup) — treating as not green`,
-    };
-  }
-  if (!isHeadCIGreen(status, opts)) {
-    return {
-      ok: false,
-      reason: `CI not green for ${commitSha.slice(0, 7)} (total=${status.total} pending=${status.pending} failed=${status.failed} skipped=${status.skipped})`,
+      reason: `malformed CI status for ${commitSha.slice(0, 7)} — treating as not green: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
   return { ok: true, reason: `CI green for ${commitSha.slice(0, 7)} (${status.total} checks)` };

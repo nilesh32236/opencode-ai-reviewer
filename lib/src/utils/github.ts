@@ -976,12 +976,15 @@ export class GitHubHelper implements PlatformAdapter {
   /**
    * Get the aggregated CI status for a commit SHA (fail-closed rollup).
    *
-   * Queries `GET /commits/{sha}/check-runs` (up to 3 pages) plus the legacy
-   * combined commit status (`GET /commits/{sha}/status`). An empty rollup
-   * (`total == 0`, e.g. `[skip ci]` pushes or event-delivery gaps) is
-   * returned as-is and MUST be treated as not-green by callers — never
-   * synthesized to green. `skipped`/`neutral`/`cancelled` conclusions are
-   * counted separately so callers can block on them (skipped != verified).
+   * Queries `GET /commits/{sha}/check-runs` (up to 3 pages, 300 runs) plus
+   * the legacy combined commit status (`GET /commits/{sha}/status`). An
+   * empty rollup (`total == 0`, e.g. `[skip ci]` pushes or event-delivery
+   * gaps) is returned as-is and MUST be treated as not-green by callers —
+   * never synthesized to green. `skipped`/`neutral`/`cancelled` conclusions
+   * are counted separately so callers can block on them (skipped !=
+   * verified). When the CheckRuns `total_count` exceeds the fetched runs
+   * (pagination cap hit), a pending `ci-rollup-truncated` blocker is added
+   * so the rollup fails closed instead of reporting green on a partial set.
    * @param commitSha - Exact head commit SHA to query.
    * @param signal - Optional AbortSignal to cancel the requests.
    * @returns Aggregated CI status for the SHA.
@@ -1002,13 +1005,19 @@ export class GitHubHelper implements PlatformAdapter {
     const checks: Array<{ name: string; status: string; conclusion: string }> = [];
 
     // CheckRuns (required — a fetch failure throws so the caller fails closed).
+    // Pagination is capped at 3 pages (300 runs); truncation fails closed
+    // via a pending blocker below (a missed failing check must never read green).
     const seen = new Set<string>();
+    let reportedTotal: number | undefined;
+    let fetchedRuns = 0;
     for (let page = 1; page <= 3; page++) {
       const res = await this.api<{
         total_count: number;
         check_runs: Array<{ name?: string; status?: string; conclusion?: string | null }>;
       }>(`/commits/${sha}/check-runs?per_page=100&page=${page}`, {}, undefined, signal);
+      if (page === 1 && Number.isFinite(res?.total_count)) reportedTotal = res.total_count;
       const runs = Array.isArray(res?.check_runs) ? res.check_runs : [];
+      fetchedRuns += runs.length;
       for (const run of runs) {
         const name = String(run?.name ?? 'unknown');
         const status = String(run?.status ?? 'unknown');
@@ -1021,6 +1030,12 @@ export class GitHubHelper implements PlatformAdapter {
         checks.push({ name, status, conclusion });
       }
       if (runs.length < 100) break;
+    }
+    if (reportedTotal !== undefined && reportedTotal > fetchedRuns) {
+      core.warning(
+        `getHeadCIStatus(${commitSha.slice(0, 7)}): check-run rollup truncated (${fetchedRuns}/${reportedTotal} fetched, 3-page cap) — treating as not green`,
+      );
+      checks.push({ name: 'ci-rollup-truncated', status: 'in_progress', conclusion: 'pending' });
     }
 
     // Legacy commit statuses (best-effort — failure warns and continues with

@@ -818,9 +818,11 @@ export class GitLabAdapter implements PlatformAdapter {
    * @param commitSha - Exact head commit SHA queried.
    * @returns Empty (never-green) CI status for the SHA.
    */
-  async getHeadCIStatus(commitSha: string): Promise<HeadCIStatus> {
+  async getHeadCIStatus(commitSha: string, _signal?: AbortSignal): Promise<HeadCIStatus> {
+    const short =
+      typeof commitSha === 'string' && commitSha.length > 0 ? commitSha.slice(0, 7) : 'none';
     core.warning(
-      `getHeadCIStatus(${commitSha.slice(0, 7)}): GitLab CI rollup not implemented — reporting empty (not green)`,
+      `getHeadCIStatus(${short}): GitLab CI rollup not implemented — reporting empty (not green)`,
     );
     return {
       commitSha,
