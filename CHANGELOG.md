@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.13.15] — 2026-09-16
+
+
+### Fixed
+
+- sanitize PR-controlled ref/title before AI prompt interpolation (#551) (#551)
+
+### Changed
+
+- [Autofix] [Audit:ui-ux-accessibility] 0 critical, 4 important, 3 minor (#547) (#547)
+- chore: release v1.13.14 [skip ci]
+
+[v1.13.15]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.14...v1.13.15
+
 ## [v1.13.14] — 2026-09-16
 
 
