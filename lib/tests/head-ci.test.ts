@@ -49,6 +49,22 @@ describe('isHeadCIGreen', () => {
     expect(isHeadCIGreen(skipped, { allowSkipped: true })).toBe(true);
   });
 
+  it('treats neutral/cancelled as blocking by default but allows opt-in', () => {
+    for (const conclusion of ['neutral', 'cancelled']) {
+      const status = makeStatus({
+        skipped: 1,
+        successful: 1,
+        green: false,
+        checks: [
+          { name: 'build', status: 'completed', conclusion: 'success' },
+          { name: 'test', status: 'completed', conclusion },
+        ],
+      });
+      expect(isHeadCIGreen(status)).toBe(false);
+      expect(isHeadCIGreen(status, { allowSkipped: true })).toBe(true);
+    }
+  });
+
   it('requires named checks when requireNames is supplied', () => {
     expect(isHeadCIGreen(makeStatus(), { requireNames: ['build', 'test'] })).toBe(true);
     expect(isHeadCIGreen(makeStatus(), { requireNames: ['security-scan'] })).toBe(false);
@@ -160,6 +176,14 @@ describe('checkHeadCIGreen', () => {
         .mockResolvedValue(makeStatus({ pending: undefined as unknown as number })),
     };
     expect((await checkHeadCIGreen(undefinedAdapter, 'abc123')).ok).toBe(false);
+
+    const infinityAdapter = {
+      getHeadCIStatus: vi
+        .fn()
+        .mockResolvedValue(makeStatus({ total: Number.POSITIVE_INFINITY as number })),
+    };
+    expect((await checkHeadCIGreen(infinityAdapter, 'abc123')).ok).toBe(false);
+    expect(isHeadCIGreen(makeStatus({ total: Number.POSITIVE_INFINITY as number }))).toBe(false);
   });
 
   it('forwards opts and signal to the adapter and evaluator', async () => {

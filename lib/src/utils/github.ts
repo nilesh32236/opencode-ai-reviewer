@@ -1031,7 +1031,13 @@ export class GitHubHelper implements PlatformAdapter {
       }
       if (runs.length < 100) break;
     }
-    if (reportedTotal !== undefined && reportedTotal > fetchedRuns) {
+    // Fail closed on truncation: either the API reports more runs than we
+    // fetched, or the 3-page cap was hit with full pages while total_count is
+    // unknown (a partial rollup must never read green).
+    if (
+      (reportedTotal !== undefined && reportedTotal > fetchedRuns) ||
+      (reportedTotal === undefined && fetchedRuns >= 300)
+    ) {
       core.warning(
         `getHeadCIStatus(${commitSha.slice(0, 7)}): check-run rollup truncated (${fetchedRuns}/${reportedTotal} fetched, 3-page cap) — treating as not green`,
       );

@@ -229,7 +229,7 @@ export class LocalAdapter implements PlatformAdapter {
    * @param _commitSha - Commit SHA (unused).
    * @throws Error Always, unsupported in local CLI mode.
    */
-  async getHeadCIStatus(_commitSha: string): Promise<HeadCIStatus> {
+  async getHeadCIStatus(_commitSha: string, _signal?: AbortSignal): Promise<HeadCIStatus> {
     throw new Error('getHeadCIStatus is not available in local CLI mode');
   }
 

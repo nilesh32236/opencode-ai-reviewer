@@ -270,6 +270,20 @@ describe('runAutofixLoop', () => {
     expect(mockSetLabels).not.toHaveBeenCalledWith(42, ['autofix:ready'], expect.anything());
     expect(mockCreateComment).not.toHaveBeenCalledWith(42, expect.stringContaining('Ready'));
     expect(mockSetOutput).not.toHaveBeenCalledWith('approved', 'true');
+    // Positive waiting-on-CI behavior: stays in `autofix`, posts a status
+    // comment, and skips the needs-manual-review terminal (no setFailed).
+    expect(mockSetLabels).toHaveBeenCalledWith(42, ['autofix'], ['autofix:ready']);
+    expect(mockSetLabels).not.toHaveBeenCalledWith(
+      42,
+      ['autofix:needs-manual-review'],
+      expect.anything(),
+    );
+    expect(mockPostOrUpdateComment).toHaveBeenCalledWith(
+      42,
+      expect.anything(),
+      expect.stringContaining('Waiting on CI'),
+    );
+    expect(mockSetFailed).not.toHaveBeenCalled();
   });
 
   it('refuses autofix:ready when CI is skipped or failing on the head SHA', async () => {
@@ -311,6 +325,15 @@ describe('runAutofixLoop', () => {
 
     expect(mockSetLabels).not.toHaveBeenCalledWith(42, ['autofix:ready'], expect.anything());
     expect(mockSetOutput).not.toHaveBeenCalledWith('approved', 'true');
+    // Positive waiting-on-CI behavior: stays in `autofix`, posts a status
+    // comment, and skips the needs-manual-review terminal (no setFailed).
+    expect(mockSetLabels).toHaveBeenCalledWith(42, ['autofix'], ['autofix:ready']);
+    expect(mockPostOrUpdateComment).toHaveBeenCalledWith(
+      42,
+      expect.anything(),
+      expect.stringContaining('Waiting on CI'),
+    );
+    expect(mockSetFailed).not.toHaveBeenCalled();
   });
 
   it('runs fix iteration when issues are found', async () => {

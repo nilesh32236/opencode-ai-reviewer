@@ -317,7 +317,7 @@ export interface PlatformAdapter {
    * @param signal - Optional AbortSignal to cancel the request.
    * @returns Aggregated CI status (with `total == 0` when nothing ran).
    */
-  getHeadCIStatus(commitSha: string, signal?: AbortSignal): Promise<HeadCIStatus>;
+  getHeadCIStatus?(commitSha: string, signal?: AbortSignal): Promise<HeadCIStatus>;
   /**
    * Post or update a marker-based comment.
    * @param issueNumber - Issue number.

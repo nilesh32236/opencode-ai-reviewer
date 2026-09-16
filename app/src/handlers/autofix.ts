@@ -29,7 +29,9 @@ import {
   configureGit,
   parseRunChecksCommands,
   resolveFixedComments,
+  sanitizeString,
   validateRefName,
+  withRetry,
 } from '@opencode-pr-agent/lib';
 import { mergeRepoConfig } from '../utils/config.js';
 import { execProcess } from '../utils/exec.js';
@@ -99,6 +101,10 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
   const history: IterationRecord[] = [];
   const previousFindings: PreviousFindingIteration[] = [];
   let approved = false;
+  // Tracks a CI-only block (review clean, CI not yet green) so the terminal
+  // below preserves the `autofix` waiting state instead of relabeling to
+  // `autofix:needs-manual-review`.
+  let ciWaiting = false;
 
   let gitEnv = initialGitEnv;
   let ownTempDir: string | undefined;
@@ -292,7 +298,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         } catch (err) {
           ciGate = {
             ok: false,
-            reason: `CI gate error for ${pr.headSha.slice(0, 7)}: ${err instanceof Error ? err.message : String(err)}`,
+            reason: `CI gate error for ${String(pr.headSha ?? '').slice(0, 7) || 'unknown'}: ${err instanceof Error ? err.message : String(err)}`,
           };
         }
         if (!ciGate.ok) {
@@ -302,29 +308,35 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           entry.status = 'needs-fix';
           history.push(entry);
           try {
-            await gh.setLabels(prNumber, ['autofix'], ['autofix:ready']);
+            await withRetry(() => gh.setLabels(prNumber, ['autofix'], ['autofix:ready']), {
+              operationName: 'autofix.setLabels.ciBlocked',
+              maxRetries: 2,
+              signal,
+            });
           } catch (err) {
             logger.error(
               `Failed to set autofix labels: ${err instanceof Error ? err.message : err}`,
             );
           }
           try {
-            await gh.postOrUpdateComment(
-              prNumber,
-              REVIEW_MARKER,
-              `${buildAutofixStatusBody(history, config.maxIterations, 'reviewing', result)}\n\n⏳ **Waiting on CI** — ${ciGate.reason}. \`autofix:ready\` will be applied once CI is green on the head SHA.`,
+            await withRetry(
+              () =>
+                gh.postOrUpdateComment(
+                  prNumber,
+                  REVIEW_MARKER,
+                  `${buildAutofixStatusBody(history, config.maxIterations, 'reviewing', result)}\n\n⏳ **Waiting on CI** — ${sanitizeString(ciGate.reason)}. \`autofix:ready\` will be applied once CI is green on the head SHA.`,
+                ),
+              { operationName: 'autofix.postComment.ciBlocked', maxRetries: 2, signal },
             );
           } catch (err) {
             logger.error(
               `Failed to post CI-waiting comment: ${err instanceof Error ? err.message : err}`,
             );
           }
-          // Fall through to the normal needs-fix path below would re-push
-          // `needs-fix` history; instead continue so this iteration counts
-          // once and the loop re-reviews CI on the next cycle.
-          // Reuse the shared needs-fix posting below by jumping there: mark
-          // the entry already pushed and continue.
-          // (entry already pushed; skip fix work for a clean review.)
+          // CI is not green: skip fix work for this clean review and re-check
+          // on the next cycle. Mark CI-waiting so the terminal below preserves
+          // the waiting state instead of relabeling to needs-manual-review.
+          ciWaiting = true;
           continue;
         }
         approved = true;
@@ -660,7 +672,10 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
       }
     }
 
-    if (!approved) {
+    // A CI-waiting exit (review clean, CI not yet green) keeps the `autofix`
+    // label and Waiting-on-CI comment written above — skip the
+    // needs-manual-review relabel/comment.
+    if (!approved && !ciWaiting) {
       logger.info(
         `Loop ended without approval for PR #${prNumber} (reached iteration ${config.maxIterations})`,
       );

@@ -770,7 +770,13 @@ export async function runAutofixLoop(
   const history: IterationRecord[] = [];
   const previousFindings: PreviousFindingIteration[] = [];
   let approved = false;
-  let exitReason: 'approved' | 'no-changes' | 'git-failure' | 'timeout' | 'exhausted' = 'exhausted';
+  let exitReason:
+    | 'approved'
+    | 'no-changes'
+    | 'git-failure'
+    | 'timeout'
+    | 'ci-waiting'
+    | 'exhausted' = 'exhausted';
 
   const startTime = Date.now();
   const totalTimeoutMs = (config.timeoutMinutes ?? 20) * 60 * 1000;
@@ -937,7 +943,7 @@ export async function runAutofixLoop(
       } catch (err) {
         ciGate = {
           ok: false,
-          reason: `CI gate error for ${prHeadSha.slice(0, 7)}: ${err instanceof Error ? err.message : String(err)}`,
+          reason: `CI gate error for ${String(prHeadSha ?? '').slice(0, 7) || 'unknown'}: ${err instanceof Error ? err.message : String(err)}`,
         };
       }
       if (!ciGate.ok) {
@@ -971,7 +977,7 @@ export async function runAutofixLoop(
           await gh.postOrUpdateComment(
             prNumber,
             REVIEW_MARKER,
-            `${buildAutofixStatusBody(history, config.maxIterations, 'reviewing', result)}\n\n⏳ **Waiting on CI** — ${ciGate.reason}. \`autofix:ready\` will be applied once CI is green on the head SHA.`,
+            `${buildAutofixStatusBody(history, config.maxIterations, 'reviewing', result)}\n\n⏳ **Waiting on CI** — ${sanitize(ciGate.reason)}. \`autofix:ready\` will be applied once CI is green on the head SHA.`,
           );
         } catch (err) {
           core.warning(
@@ -980,6 +986,10 @@ export async function runAutofixLoop(
             ),
           );
         }
+        // CI-only block (review is clean): preserve the `autofix` waiting
+        // state instead of falling through to the exhausted/manual-review
+        // terminal below.
+        exitReason = 'ci-waiting';
         continue;
       }
       core.info('PR approved — all issues resolved');
@@ -1290,7 +1300,10 @@ export async function runAutofixLoop(
     }
   }
 
-  if (!approved) {
+  // A CI-waiting exit (review clean, CI not yet green) preserves the
+  // `autofix` label and the Waiting-on-CI comment: it must not be relabeled
+  // `autofix:needs-manual-review` or failed as if iterations were exhausted.
+  if (!approved && exitReason !== 'ci-waiting') {
     // Terminal label update is best-effort: on the needs-manual-review path
     // a transient setLabels failure must not skip the intended
     // setFailed/outputs below or propagate a generic error to index.ts.

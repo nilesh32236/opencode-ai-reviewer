@@ -60,7 +60,10 @@ export function isHeadCIGreen(
   if (status.pending > 0) return false;
   if (status.failed > 0) return false;
   if (opts?.allowSkipped !== true && status.skipped > 0) return false;
-  const requireNames = opts?.requireNames?.filter((n) => n.length > 0) ?? [];
+  // Coerce before filtering: type-violating null/undefined entries must fail
+  // closed (no match) instead of throwing on `n.length`.
+  const requireNames =
+    opts?.requireNames?.filter((n): n is string => typeof n === 'string' && n.length > 0) ?? [];
   if (requireNames.length > 0) {
     const byName = new Map<string, HeadCICheck[]>();
     for (const check of status.checks ?? []) {
@@ -117,7 +120,9 @@ export async function checkHeadCIGreen(
   opts?: HeadCIGreenOptions,
   signal?: AbortSignal,
 ): Promise<HeadCIGateResult> {
-  if (!commitSha || commitSha.trim() === '') {
+  // Guard typeof before trim: a non-string truthy value (via `any`) must fail
+  // closed with a reason instead of throwing a TypeError.
+  if (typeof commitSha !== 'string' || commitSha.trim() === '') {
     return { ok: false, reason: 'missing head SHA — cannot verify CI' };
   }
   const getStatus = (adapter as Pick<PlatformAdapter, 'getHeadCIStatus'>)?.getHeadCIStatus;
