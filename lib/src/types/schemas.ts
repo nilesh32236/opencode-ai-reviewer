@@ -271,6 +271,8 @@ export const ReviewConfigSchema = z.object({
   dedupFingerprints: z.boolean().optional().default(true),
   dedup_fingerprints: z.boolean().optional(),
   emitFixPayload: z.boolean().default(false),
+  updateInPlace: z.boolean().optional().default(false),
+  emitChecksSummary: z.boolean().optional().default(false),
   requireVerdict: z.boolean().default(true),
   commandTriggers: z.array(z.string()).default(['/oc', '/review']),
   excludePatterns: z
@@ -738,6 +740,8 @@ export const PromptConfigSchema = z.object({
       enableReviewsArrayInline: z.boolean().optional(),
       verdictMode: z.enum(VERDICT_MODES).optional(),
       emitFixPayload: z.boolean().optional(),
+      updateInPlace: z.boolean().optional(),
+      emitChecksSummary: z.boolean().optional(),
       enableCodebaseIndex: z.boolean().optional(),
       includePreExisting: z.boolean().optional(),
       budget: z

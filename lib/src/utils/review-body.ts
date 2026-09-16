@@ -43,7 +43,8 @@ export interface ReviewBodyOptions {
   /**
    * Skip inline findings whose fingerprint already appears in previously
    * posted bot threads. Default true (absent = enabled). Set false to post
-   * as today.
+   * as today. Ignored when `updateInPlace` is true (matched threads are
+   * updated instead of skipped).
    * @since NEXT
    */
   dedupFingerprints?: boolean;
@@ -67,6 +68,32 @@ export interface ReviewBodyOptions {
    * @since NEXT
    */
   emitFixPayload?: boolean;
+  /**
+   * Opt-in to persistent inline update-in-place: findings whose fingerprint
+   * already matches a previously posted bot thread (see
+   * `previousFingerprintCommentIds`) are edited via
+   * `PATCH /pulls/comments/{id}` instead of being skipped or re-posted, so
+   * re-pushes never create duplicate threads. Default false (legacy behavior
+   * unchanged). Fail-open: match/update failures fall back to posting a new
+   * thread as today.
+   * @since NEXT
+   */
+  updateInPlace?: boolean;
+  /**
+   * Fingerprint-to-commentId map for `updateInPlace` matching (e.g. built via
+   * `mapFingerprintsToCommentIds` from previously posted bot threads). When
+   * absent/empty with `updateInPlace` enabled, all findings post as today.
+   * @since NEXT
+   */
+  previousFingerprintCommentIds?: Map<string, number> | Record<string, number>;
+  /**
+   * Opt-in to emitting one Checks run carrying deterministic finding counts
+   * after the review posts (a single extra `createCheckRun` call only when
+   * enabled). Default false (no Checks call). Fail-open: Checks API errors
+   * warn and never fail the review.
+   * @since NEXT
+   */
+  emitChecksSummary?: boolean;
   /** Attribution footer for auto-loaded review conventions (e.g. AGENTS.md @
    * head SHA). Appended after the issues section when non-empty. Falls back to
    * `result.attributionFooter` when omitted. */

@@ -275,6 +275,8 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     dedupFingerprints: null,
     dedup_fingerprints: null,
     emitFixPayload: null,
+    updateInPlace: null,
+    emitChecksSummary: null,
     suppressLowConfidence: null,
     excludePatterns: null,
     excludeAgentConfigs: null,
@@ -701,6 +703,12 @@ export function validateConfig(
     }
     if (typeof config.review.emitFixPayload === 'boolean') {
       result.review.emitFixPayload = config.review.emitFixPayload;
+    }
+    if (typeof config.review.updateInPlace === 'boolean') {
+      result.review.updateInPlace = config.review.updateInPlace;
+    }
+    if (typeof config.review.emitChecksSummary === 'boolean') {
+      result.review.emitChecksSummary = config.review.emitChecksSummary;
     }
     if (typeof config.review.suppressLowConfidence === 'boolean') {
       result.review.suppressLowConfidence = config.review.suppressLowConfidence;
