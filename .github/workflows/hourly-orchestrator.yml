@@ -125,6 +125,16 @@ jobs:
               continue
             fi
 
+            # Fail closed on cross-repository PRs: the steps below run with
+            # GH_PAT + LLM keys in env, so fork code must never be checked
+            # out here (issue #542).
+            if [ "$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json isCrossRepository --jq '.isCrossRepository')" = "true" ]; then
+              echo "::warning::Skipping PR #${PR_NUMBER}: cross-repository head."
+              gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "autofix:skipped" || true
+              PROCESSED_ANY=true
+              continue
+            fi
+
             # Ensure a pristine tree before switching branches. A previous
             # iteration may have left conflict-resolution edits or rebuilt
             # bundles in the working tree (e.g. after a failed verification),
@@ -133,6 +143,18 @@ jobs:
             git clean -fd >/dev/null 2>&1 || true
             git fetch origin "${HEAD_REF}:${HEAD_REF}" 2>/dev/null || git checkout -b "${HEAD_REF}" "origin/${HEAD_REF}"
             git checkout "${HEAD_REF}"
+
+            # SHA-pin (issue #542): record the exact commit under review and
+            # re-verify it against the API. A concurrent head move between
+            # fetch/review/push must fail closed instead of pushing over
+            # unknown commits.
+            PINNED_SHA="$(git rev-parse HEAD)"
+            API_SHA="$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq '.headRefOid')"
+            if [ -z "$API_SHA" ] || [ "$PINNED_SHA" != "$API_SHA" ]; then
+              echo "::warning::Skipping PR #${PR_NUMBER}: head moved during processing (pinned ${PINNED_SHA}, API ${API_SHA:-empty})."
+              PROCESSED_ANY=true
+              continue
+            fi
 
             # Check if PR has merge conflicts or is behind main
             if [ "$MERGEABLE" = "DIRTY" ] || ! git merge-base --is-ancestor origin/main HEAD; then
@@ -144,7 +166,10 @@ jobs:
                 # and the working tree is left clean for the next loop iteration
                 # (a dangling staged merge would make the next `git checkout` fail).
                 git commit -m "chore: merge main into ${HEAD_REF} [autofix]"
-                git push origin "${HEAD_REF}" --force-with-lease || {
+                # Lease against the pinned SHA: if the head moved since the
+                # pin check above, the push fails instead of overwriting
+                # unknown commits (issue #542).
+                git push origin "${HEAD_REF}" --force-with-lease="${HEAD_REF}:${PINNED_SHA}" || {
                   echo "::warning::Failed to push merge commit for PR #${PR_NUMBER}"
                 }
               else
@@ -174,7 +199,7 @@ jobs:
                   echo "✅ Conflict resolution verified successfully."
                   git add -A
                   git commit -m "chore: resolve merge conflicts with main [autofix]"
-                  git push origin "${HEAD_REF}" --force-with-lease
+                  git push origin "${HEAD_REF}" --force-with-lease="${HEAD_REF}:${PINNED_SHA}"
                 else
                   echo "❌ AI could not resolve merge conflicts cleanly."
                   git merge --abort 2>/dev/null || true
