@@ -225,6 +225,8 @@ export interface ActionInputs {
   auditLabels: string[];
   /** Version of opencode to use. */
   opencodeVersion: string;
+  /** Optional model variant passed as `opencode run --variant <value>` (undefined when unset/invalid). */
+  opencodeVariant?: string;
   /** Fail closed when the downloaded OpenCode CLI cannot be checksum-verified. */
   requireOpencodeChecksum: boolean;
   /** In setup mode, probe every configured model instead of only the review model. */
@@ -237,6 +239,10 @@ export interface ActionInputs {
   dedupFingerprints: boolean;
   /** Opt-in to a single reviews-array request with summary-only 422 fallback (default: false). */
   enableReviewsArrayInline: boolean;
+  /** Opt-in to editing matched inline threads in place instead of re-posting (default: false). */
+  updateInPlace: boolean;
+  /** Opt-in to emitting one Checks run carrying deterministic finding counts (default: false). */
+  emitChecksSummary: boolean;
   /** Opt-in review gating mapped to the createReview event (default: 'comment'). */
   verdictMode: VerdictMode;
   /** Whether the verdict_mode input was explicitly set by the workflow. */
@@ -387,6 +393,21 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
 
   const opencodeVersion =
     core.getInput('opencode_version') || core.getInput('opencode-version') || 'latest';
+
+  // Optional `--variant` passthrough (fail-open): only allowlisted values are
+  // accepted; absent/invalid input resolves to undefined (default behavior).
+  const opencodeVariantRaw = core.getInput('opencode_variant').trim();
+  let opencodeVariant: string | undefined;
+  if (opencodeVariantRaw === '') {
+    opencodeVariant = undefined;
+  } else if (/^[A-Za-z0-9_-]{1,64}$/.test(opencodeVariantRaw)) {
+    opencodeVariant = opencodeVariantRaw;
+  } else {
+    core.warning(
+      `Ignoring invalid opencode_variant "${opencodeVariantRaw}": expected [A-Za-z0-9_-], max 64 chars.`,
+    );
+    opencodeVariant = undefined;
+  }
 
   // Opt-in strict integrity gate (default false for backward compat).
   // core.getBooleanInput throws on invalid values, so fall back to a
@@ -768,12 +789,15 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     auditAutoFix: core.getInput('audit_auto_fix') === 'true',
     auditLabels,
     opencodeVersion,
+    opencodeVariant,
     requireOpencodeChecksum,
     probeAllModels: core.getInput('probe_all_models') === 'true',
     timeoutMinutes: parseTimeoutMinutes(core.getInput('timeout_minutes')),
     reviewInline: core.getInput('review_inline') !== 'false',
     dedupFingerprints: core.getInput('dedup_fingerprints') !== 'false',
     enableReviewsArrayInline: core.getInput('enable_reviews_array_inline') === 'true',
+    updateInPlace: core.getInput('update_in_place') === 'true',
+    emitChecksSummary: core.getInput('emit_checks_summary') === 'true',
     verdictMode,
     verdictModeExplicit,
     streamComments: core.getInput('stream_comments') === 'true',

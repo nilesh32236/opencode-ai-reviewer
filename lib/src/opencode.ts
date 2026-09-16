@@ -20,13 +20,20 @@ import { validateModelString } from './utils/model-string.js';
 import { withRetry, withRetryAndTimeout } from './utils/retry.js';
 import {
   MINIMUM_OPENCODE_VERSION,
+  TESTED_OPENCODE_VERSION,
   UNPARSEABLE_VERSION,
+  WARN_BELOW_OPENCODE_VERSION,
   compareVersions,
   formatVersion,
+  isBelowWarnFloor,
   parseVersion,
 } from './utils/version.js';
 
-export { MINIMUM_OPENCODE_VERSION } from './utils/version.js';
+export {
+  MINIMUM_OPENCODE_VERSION,
+  TESTED_OPENCODE_VERSION,
+  WARN_BELOW_OPENCODE_VERSION,
+} from './utils/version.js';
 
 /** Default timeout for the `opencode --version` health probe, in milliseconds. */
 export const DEFAULT_HEALTH_TIMEOUT_MS = 5_000;
@@ -78,6 +85,98 @@ export interface OpenCodeRunMode {
    * approve permissions at the prompt. Defaults to `true`.
    */
   autoApprove?: boolean;
+  /**
+   * Optional model variant passed as `opencode run --variant <value>` (e.g.
+   * `low`, `medium`, `high` reasoning-effort aliases — exact values depend on
+   * the provider). String passthrough only, allowlisted to `[A-Za-z0-9_-]`
+   * (max 64 chars). Off by default; absent/empty/invalid means no flag.
+   * @since NEXT
+   */
+  opencodeVariant?: string;
+}
+
+/**
+ * Minimum CLI version that supports `opencode run --variant`. Kept equal to
+ * the minimum compatible CLI so every health-checked binary passes the gate;
+ * older or unparseable versions skip the flag silently (fail-open).
+ * @since NEXT
+ */
+export const OPENCODE_VARIANT_MIN_VERSION = MINIMUM_OPENCODE_VERSION;
+
+/** Allowlist for the `--variant` passthrough (alphanumeric plus dash/underscore, max 64 chars). */
+const OPENCODE_VARIANT_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * Validate an `opencode run --variant` value. Pure (no env reads; the caller
+ * resolves precedence) so it stays unit-testable.
+ * @param raw - The raw candidate value.
+ * @returns The trimmed value when it matches the allowlist, else `undefined`.
+ * @since NEXT
+ */
+export function sanitizeVariant(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  if (!OPENCODE_VARIANT_PATTERN.test(trimmed)) return undefined;
+  return trimmed;
+}
+
+/**
+ * Resolve the effective `--variant` value for a run. Explicit per-run option
+ * wins, then the run-mode override, then `OPENCODE_VARIANT` /
+ * `INPUT_OPENCODE_VARIANT` env. Returns `undefined` when absent or invalid.
+ * An explicitly-passed empty string suppresses the env fallback (used by the
+ * unknown-flag retry so the stripped retry sends no flag).
+ * @param explicit - Optional explicit per-run value.
+ * @returns The sanitized variant, or `undefined` when the flag must be omitted.
+ * @since NEXT
+ */
+export function resolveOpenCodeVariant(explicit?: string): string | undefined {
+  const raw =
+    explicit ??
+    runModeOverride?.opencodeVariant ??
+    process.env.OPENCODE_VARIANT ??
+    process.env.INPUT_OPENCODE_VARIANT;
+  if (raw === undefined) return undefined;
+  const sanitized = sanitizeVariant(raw);
+  if (sanitized === undefined) {
+    core.debug('Ignoring invalid opencode variant (expected [A-Za-z0-9_-], max 64 chars).');
+  }
+  return sanitized;
+}
+
+/**
+ * Decide whether the detected CLI supports `opencode run --variant`.
+ * Fail-open toward skipping: unknown, missing, or unparseable versions return
+ * false so the run proceeds without the flag. Zero extra spawns — uses the
+ * already-probed cached version by default.
+ * @param cliVersion - Raw detected CLI version; defaults to the last probed version.
+ * @returns True when the CLI is at or above {@link OPENCODE_VARIANT_MIN_VERSION}.
+ * @since NEXT
+ */
+export function supportsOpenCodeVariant(cliVersion?: string | null): boolean {
+  try {
+    const version = cliVersion ?? cachedOpenCodeVersionRaw;
+    if (typeof version !== 'string' || !version.trim()) return false;
+    const cmp = compareVersions(version, OPENCODE_VARIANT_MIN_VERSION);
+    if (cmp === UNPARSEABLE_VERSION) return false;
+    return cmp >= 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Detect a CLI rejection of the unknown `--variant` flag in captured output.
+ * Mirrors the existing provider-timeout retry pattern (bounded substring scan).
+ * @param output - The captured CLI output.
+ * @returns True when the output blames an unknown/invalid `variant` flag.
+ * @since NEXT
+ */
+export function isVariantFlagRejection(output: string): boolean {
+  return /(unknown|invalid|unexpected|unrecognized)[\w\s'".:-]{0,80}variant|variant[\w\s'".:-]{0,80}(unknown|invalid|unexpected|unrecognized|not supported|not allowed)/i.test(
+    output,
+  );
 }
 
 let runModeOverride: OpenCodeRunMode | undefined;
@@ -516,6 +615,33 @@ const INSTALL_MESSAGE =
   'Or download from: https://github.com/anomalyco/opencode/releases';
 
 /**
+ * Whether the untested-CLI version warning is disabled.
+ * Set `OPENCODE_DISABLE_VERSION_WARN=true` to restore the previous silent
+ * behavior for versions between the hard floor and the warn floor.
+ * @returns True when the warning tier should stay silent.
+ * @since NEXT
+ */
+export function isVersionWarnDisabled(): boolean {
+  const raw = process.env.OPENCODE_DISABLE_VERSION_WARN?.trim().toLowerCase();
+  return raw === 'true' || raw === '1' || raw === 'yes' || raw === 'on';
+}
+
+/**
+ * Build the upgrade-guidance warning for an untested but compatible CLI.
+ * @param raw - Raw version string of the installed CLI.
+ * @returns Warning text with upgrade guidance and docs links.
+ * @since NEXT
+ */
+export function buildUntestedVersionWarning(raw: string): string {
+  return (
+    `OpenCode ${raw} is below the tested version ${TESTED_OPENCODE_VERSION} ` +
+    `(warning floor ${WARN_BELOW_OPENCODE_VERSION}). Reviews may behave unexpectedly. ` +
+    `Upgrade with: npm install -g opencode-ai@latest. ` +
+    `See https://opencode.ai/docs/cli and releases at https://github.com/sst/opencode/releases.`
+  );
+}
+
+/**
  * Run `opencode --version` asynchronously, bounded by a timeout.
  * The probe is deliberately non-blocking (unlike execFileSync) so a slow or
  * hung binary cannot stall the event loop for concurrent batch processing.
@@ -581,6 +707,13 @@ export async function checkHealth(options: CheckHealthOptions = {}): Promise<Ope
       cachedOpenCodeVersionRaw = version.raw;
     }
     if (!version) {
+      if (!isVersionWarnDisabled()) {
+        core.warning(
+          `OpenCode CLI version could not be determined from output: ${(stdout || '').trim()}. ` +
+            `Continuing without failing; for reliable reviews use tested version ${TESTED_OPENCODE_VERSION}. ` +
+            `See https://opencode.ai/docs/cli.`,
+        );
+      }
       return {
         available: true,
         version: null,
@@ -591,6 +724,9 @@ export async function checkHealth(options: CheckHealthOptions = {}): Promise<Ope
     const compatible = isVersionCompatible(version, minimumVersion);
     if (compatible) {
       validatedOpenCodePath = binPath;
+      if (!isVersionWarnDisabled() && isBelowWarnFloor(version.raw) === true) {
+        core.warning(buildUntestedVersionWarning(version.raw));
+      }
       return {
         available: true,
         version,
@@ -2547,6 +2683,11 @@ export async function runOpenCode(
      * On a strict-schema rejection the run retries once without the legacy
      * keys and dual-emit is auto-disabled for the rest of the process. */
     dualEmitMCP?: boolean;
+    /** Optional model variant passed as `opencode run --variant <value>`.
+     * String passthrough only (`[A-Za-z0-9_-]`, max 64 chars); off by default.
+     * Falls back to the run-mode override and `OPENCODE_VARIANT` env.
+     * @since NEXT */
+    opencodeVariant?: string;
     /** Custom LLM provider configuration for this run (see JSDoc above). */
     llm?: LLMConfig;
   },
@@ -2587,6 +2728,11 @@ async function runOpenCodeInner(
      * On a strict-schema rejection the run retries once without the legacy
      * keys and dual-emit is auto-disabled for the rest of the process. */
     dualEmitMCP?: boolean;
+    /** Optional model variant passed as `opencode run --variant <value>`.
+     * String passthrough only (`[A-Za-z0-9_-]`, max 64 chars); off by default.
+     * Falls back to the run-mode override and `OPENCODE_VARIANT` env.
+     * @since NEXT */
+    opencodeVariant?: string;
     /** Custom LLM provider configuration for this run (see JSDoc above). */
     llm?: LLMConfig;
   },
@@ -2636,6 +2782,22 @@ async function runOpenCodeInner(
     args.push('--auto');
   }
   args.push('--model', model);
+  // Optional `--variant` passthrough for reasoning-effort models (off by
+  // default). Fail-open: absent/empty/invalid values and CLIs below the
+  // variant cutoff run exactly as today (debug log, no flag, zero extra
+  // spawns — the version comes from the already-completed health probe).
+  let variantSent: string | undefined;
+  const resolvedVariant = resolveOpenCodeVariant(options.opencodeVariant);
+  if (resolvedVariant !== undefined) {
+    if (!supportsOpenCodeVariant()) {
+      core.debug(
+        `Skipping opencode --variant "${resolvedVariant}": CLI version does not support it.`,
+      );
+    } else {
+      variantSent = resolvedVariant;
+      args.push('--variant', resolvedVariant);
+    }
+  }
 
   // Linux MAX_ARG_STRLEN is ~128 KiB (131 072 bytes).  The entire execve()
   // argv — binary path, flags, model string, and prompt — must stay below that
@@ -3000,6 +3162,24 @@ async function runOpenCodeInner(
             ? stripProviderTimeoutOptions(options.opencodeConfig)
             : undefined,
           llm: stripLLMTimeoutOptions(llm),
+        });
+      }
+      // Fail open for older CLIs that reject the unknown `--variant` flag:
+      // retry once without it. Bounded — the stripped call passes an explicit
+      // empty variant which suppresses the env fallback in
+      // resolveOpenCodeVariant(), so the retry sends no flag and cannot recurse.
+      if (
+        !timedOut &&
+        !processError &&
+        variantSent !== undefined &&
+        isVariantFlagRejection(capturedOutput)
+      ) {
+        core.warning(
+          'OpenCode CLI appears to reject the --variant flag — retrying once without it.',
+        );
+        return runOpenCodeInner(prompt, {
+          ...options,
+          opencodeVariant: '',
         });
       }
       return {
