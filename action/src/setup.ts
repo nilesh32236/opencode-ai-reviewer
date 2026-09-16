@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import type { AgentConfig, PlatformAdapter } from '@opencode-pr-agent/lib';
 import { SetupEngine } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { sanitize } from './utils.js';
+import { describeAbortKind, sanitize } from './utils.js';
 
 /**
  * Run the setup validation flow: execute all pre-flight checks, emit the
@@ -14,6 +14,9 @@ import { sanitize } from './utils.js';
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param repo - Repository string (owner/repo).
  * @param token - GitHub authentication token.
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly.
+ *   Advisory-only: SetupEngine accepts no AbortSignal, so this pre-check
+ *   cannot cancel in-flight checks.
  */
 export async function runSetup(
   inputs: ActionInputs,
@@ -21,10 +24,22 @@ export async function runSetup(
   gh: PlatformAdapter,
   repo: string,
   token: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const issueNumber =
     github.context.payload.issue?.number || github.context.payload.pull_request?.number;
   const platform = (process.env.PLATFORM || config.platform || 'github') as 'github' | 'gitlab';
+
+  if (signal?.aborted) {
+    // Signal is advisory-only: SetupEngine accepts no AbortSignal,
+    // so this pre-check cannot cancel in-flight checks. Label timeout vs
+    // cancel distinctly (defaulting to 'cancelled' when aborted without a
+    // reason) and set setup_passed=false for automation consumers.
+    const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+    core.setOutput('setup_passed', 'false');
+    core.setFailed(sanitize(`Setup cancelled before run (${kind})`));
+    return;
+  }
 
   core.info(`Running setup validation for ${repo}...`);
 

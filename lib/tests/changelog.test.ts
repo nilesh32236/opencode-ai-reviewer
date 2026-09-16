@@ -5,6 +5,7 @@ import {
   formatMarkdown,
   generateChangelog,
   monorepoFilter,
+  sanitizeChangelogText,
 } from '../src/changelog/index.js';
 import type { MergedPR } from '../src/changelog/types.js';
 import type { GitHubHelper } from '../src/utils/github.js';
@@ -133,6 +134,28 @@ describe('formatMarkdown', () => {
       },
     );
     expect(markdown).toContain('No pull requests merged in this range.');
+  });
+
+  it('sanitizes remote-sourced entry text so titles cannot inject markdown structure', () => {
+    const hostile: MergedPR[] = [
+      {
+        number: 666,
+        title: 'fix: innocent\n# Injected heading\n[evil](https://example.com)',
+        body: 'x',
+        author: 'mallory\ninjected',
+        mergedAt: '2026-08-04T10:00:00Z',
+        baseRef: 'main',
+      },
+    ];
+    const markdown = formatMarkdown(categorizePRs(hostile, CATEGORIES), {
+      tag: null,
+      since: '2026-08-01T00:00:00Z',
+      categories: CATEGORIES,
+      entryCount: hostile.length,
+    });
+    expect(markdown).not.toContain('\n# Injected heading');
+    expect(markdown).toContain('innocent # Injected heading');
+    expect(sanitizeChangelogText('a	b\x00c\x7fd')).toBe('a bcd');
   });
 
   it('uses Unreleased when no tag is provided', () => {

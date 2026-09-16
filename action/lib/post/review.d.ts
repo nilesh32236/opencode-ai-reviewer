@@ -10,8 +10,11 @@ import type { ActionInputs } from './inputs.js';
  * @param engine - Review engine instance.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param repo - Repository string (owner/repo).
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly.
+ *   Advisory-only: engine.reviewPR accepts no AbortSignal, so this pre-check
+ *   cannot cancel an in-flight LLM call.
  */
-export declare function runReview(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, repo: string): Promise<void>;
+export declare function runReview(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, repo: string, signal?: AbortSignal): Promise<void>;
 /**
  * Secret-specific predicate for the `secrets.failCI` gate: a finding only
  * counts when its message carries the hardcoded-secret prefix (emitted by

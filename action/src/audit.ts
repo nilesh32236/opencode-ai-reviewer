@@ -10,7 +10,7 @@ import {
   sanitizeMarkdown,
 } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { sanitize } from './utils.js';
+import { describeAbortKind, sanitize } from './utils.js';
 
 /**
  * Tracks the last audit issue number per category for this process. When the
@@ -79,12 +79,15 @@ function normalizeAuditCategory(category: string): string {
  * @param config - Full agent configuration.
  * @param engine - Review engine instance.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly.
+ *   Advisory-only: engine calls themselves are not yet cancellable.
  */
 export async function runAudit(
   inputs: ActionInputs,
   config: AgentConfig,
   engine: ReviewEngine,
   gh: PlatformAdapter,
+  signal?: AbortSignal,
 ): Promise<void> {
   const promptsDirRaw = core.getInput('audit-prompts-dir');
   let promptsDir = promptsDirRaw || config.audit.promptsDir;
@@ -93,6 +96,15 @@ export async function runAudit(
   // kebab-case variant is read as a fallback for workflows written against the
   // older, undeclared name so those configs keep working.
   const promptName = core.getInput('audit_prompt_name') || core.getInput('audit-prompt-name');
+
+  // Cheap early gate: bail before paying for ensureLabels network calls and
+  // FS round-trips on a cancelled/timed-out run. The pre-read check below is
+  // kept as the second gate.
+  if (signal?.aborted) {
+    const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+    core.setFailed(sanitize(`Audit cancelled (${kind}) before run`));
+    return;
+  }
 
   try {
     await gh.ensureLabels([
@@ -173,9 +185,72 @@ export async function runAudit(
     allTargetDirs.length > 0
       ? allTargetDirs[Math.floor(Math.random() * allTargetDirs.length)]
       : '.';
-  const promptContent = fs.readFileSync(selectedPrompt, 'utf-8');
+  // Check cancellation before the read so an abort surfaces as a distinct
+  // cancellation message instead of being conflated with an IO failure
+  // ('Failed to read audit prompt ... (cancelled)'). The try/catch below is
+  // purely for IO errors.
+  if (signal?.aborted) {
+    const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+    core.setFailed(
+      sanitize(`Audit cancelled (${kind}) — category: ${category}, target: ${auditTarget}`),
+    );
+    return;
+  }
+  // Async read inside try/catch: the prompt file can vanish between the
+  // readdir above and the read here (TOCTOU), and a sync throw would
+  // otherwise surface only as the generic index.ts failure with no
+  // category/target context.
+  let promptContent: string;
+  try {
+    promptContent = await fs.promises.readFile(selectedPrompt, 'utf-8');
+  } catch (err) {
+    // Only append the abort-kind suffix for timeout/cancelled; an ordinary
+    // IO error (e.g. ENOENT) would otherwise render a noisy '(error)' token
+    // that conflates the timeout/cancelled taxonomy with plain IO failures.
+    const kind = describeAbortKind(err);
+    const kindSuffix = kind === 'error' ? '' : `, ${kind}`;
+    core.setFailed(
+      sanitize(
+        `Failed to read audit prompt ${selectedPrompt} (category: ${category}, target: ${auditTarget}${kindSuffix}): ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
+    new Logger('Audit').warn('Failed to read audit prompt', {
+      operation: 'audit.readPrompt',
+      category,
+      targetDir: auditTarget,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return;
+  }
 
-  const result = await engine.runAudit(promptContent, auditTarget, category);
+  // Re-check after the awaited read: a signal fired during readFile must bail
+  // before the expensive engine.runAudit call instead of falling through.
+  if (signal?.aborted) {
+    const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+    core.setFailed(
+      sanitize(`Audit cancelled (${kind}) — category: ${category}, target: ${auditTarget}`),
+    );
+    return;
+  }
+
+  let result: Awaited<ReturnType<typeof engine.runAudit>>;
+  try {
+    result = await engine.runAudit(promptContent, auditTarget, category);
+  } catch (err) {
+    const kind = describeAbortKind(err);
+    new Logger('Audit').warn('Audit engine failed', {
+      operation: 'audit.run',
+      category,
+      targetDir: auditTarget,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    core.setFailed(
+      sanitize(
+        `Audit failed (category: ${category}, target: ${auditTarget}, ${kind}): ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
+    return;
+  }
 
   if (!result || (!result.summary && result.issues.length === 0)) {
     core.warning('Audit returned no meaningful content');

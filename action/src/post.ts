@@ -1,5 +1,4 @@
 import * as core from '@actions/core';
-import * as exec from '@actions/exec';
 import * as github from '@actions/github';
 import type { PlatformAdapter, TokenUsage } from '@opencode-pr-agent/lib';
 import {
@@ -10,7 +9,7 @@ import {
 } from '@opencode-pr-agent/lib';
 import { sanitizeMarkdown } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { resolveGitLabMrIid, sanitize } from './utils.js';
+import { execWithTimeout, resolveGitLabMrIid, sanitize } from './utils.js';
 
 /**
  * Run post-processing after a review/fix action: optionally run a
@@ -19,12 +18,15 @@ import { resolveGitLabMrIid, sanitize } from './utils.js';
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param _repo - Repository string (owner/repo, unused).
  * @param _token - GitHub authentication token (unused).
+ * @param signal - Optional per-run AbortSignal; races verification timeouts.
+ *   Advisory-only: no engine calls run on this path.
  */
 export async function runPost(
   inputs: ActionInputs,
   gh: PlatformAdapter,
   _repo: string,
   _token: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const gitlabMrIid = resolveGitLabMrIid();
   const prNumber =
@@ -43,14 +45,40 @@ export async function runPost(
     try {
       const steps = parseRunChecksCommands(inputs.runChecksAfterFix, inputs.checkAllowlist);
       for (const step of steps) {
-        const exitCode = await exec.exec(step.program, step.args, {
+        // Per-command timeout so a hung check fails verification with a
+        // clear message instead of blocking the runner until it is killed.
+        const { exitCode, output } = await execWithTimeout(step.program, step.args, {
           ...(step.cwd ? { cwd: step.cwd } : {}),
-          ignoreReturnCode: true,
+          signal,
         });
         if (exitCode !== 0) {
+          // exit 124 conflates three cases: helper timeout, helper
+          // cancellation (aborted run signal also returns 124), and a genuine
+          // command exit 124 (e.g. GNU timeout). execWithTimeout appends a
+          // 'timed out after … (TimeoutError)' or 'cancelled after …
+          // (AbortError)' marker, so only treat 124 as a helper timeout/cancel
+          // when that marker is present; otherwise report the raw exit code.
+          const isHelperTimeout =
+            exitCode === 124 &&
+            (output.includes('timed out after') || output.includes('(TimeoutError)'));
+          const isHelperCancel =
+            exitCode === 124 &&
+            (signal?.aborted === true ||
+              output.includes('cancelled after') ||
+              output.includes('(AbortError)'));
+          const outcome = isHelperCancel
+            ? 'was cancelled'
+            : isHelperTimeout
+              ? 'timed out'
+              : `failed with exit code ${exitCode}`;
+          // Output is already byte-capped by capVerificationOutput inside
+          // execWithTimeout; truncate the warning excerpt on a code-point
+          // boundary so surrogate pairs/emoji are never split (String.slice
+          // operates on UTF-16 code units).
+          const excerpt = output ? Array.from(output).slice(0, 2000).join('') : '';
           core.warning(
             sanitize(
-              `Verification command "${step.program} ${step.args.join(' ')}" failed with exit code ${exitCode}`,
+              `Verification command "${step.program} ${step.args.join(' ')}" ${outcome}${excerpt ? `: ${excerpt}` : ''}`,
             ),
           );
           break;

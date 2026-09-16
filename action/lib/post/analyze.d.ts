@@ -9,5 +9,7 @@ import type { ActionInputs } from './inputs.js';
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param _repo - Repository string (owner/repo, unused).
  * @param _token - GitHub authentication token (unused).
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly.
+ *   Advisory-only: engine calls themselves are not yet cancellable.
  */
-export declare function runAnalyze(_inputs: ActionInputs, _config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, _repo: string, _token: string): Promise<void>;
+export declare function runAnalyze(_inputs: ActionInputs, _config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, _repo: string, _token: string, signal?: AbortSignal): Promise<void>;

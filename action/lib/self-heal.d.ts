@@ -16,8 +16,11 @@ import type { ActionInputs } from './inputs.js';
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param _repo - Repository string (owner/repo).
  * @param _token - GitHub authentication token.
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly
+ *   and race verification timeouts. Advisory-only: engine calls themselves
+ *   are not yet cancellable.
  */
-export declare function runSelfHeal(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, _repo: string, _token: string): Promise<void>;
+export declare function runSelfHeal(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, _repo: string, _token: string, signal?: AbortSignal): Promise<void>;
 /**
  * Read a CI failure-logs file confined to safe directories.
  * Resolves the path and requires containment in GITHUB_WORKSPACE, /tmp, or

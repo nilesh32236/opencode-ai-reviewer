@@ -28,7 +28,13 @@ import {
 } from '@opencode-pr-agent/lib';
 import { sanitizeMarkdown } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { resolvePrNumber, sanitize } from './utils.js';
+import {
+  capVerificationOutput,
+  describeAbortKind,
+  execWithTimeout,
+  resolvePrNumber,
+  sanitize,
+} from './utils.js';
 
 /**
  * Determine whether a PR/MR has already been closed or merged, so a fix
@@ -54,12 +60,16 @@ export function isPrClosedOrMerged(state?: string): boolean {
  * @param config - Full agent configuration.
  * @param engine - Review engine instance.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
+ *   breaks withRetry backoff sleeps, and races verification timeouts.
+ *   Advisory-only: engine calls themselves are not yet cancellable.
  */
 export async function runFix(
   inputs: ActionInputs,
   config: AgentConfig,
   engine: ReviewEngine,
   gh: PlatformAdapter,
+  signal?: AbortSignal,
 ): Promise<void> {
   const prNumber = await resolvePrNumber();
   if (prNumber === null) {
@@ -127,7 +137,24 @@ export async function runFix(
 
   if (iteration >= config.maxIterations) {
     const errorMsg = `Max iterations reached (${config.maxIterations}). Needs manual review.`;
-    await gh.setLabels(prNumber, ['autofix:needs-manual-review'], ['autofix', 'autofix:needs-fix']);
+    try {
+      await withRetry(
+        () =>
+          gh.setLabels(prNumber, ['autofix:needs-manual-review'], ['autofix', 'autofix:needs-fix']),
+        { operationName: 'fix.setLabels.maxIterations', maxRetries: 2, signal },
+      );
+    } catch (err) {
+      core.warning(
+        sanitize(
+          `Failed to set max-iterations labels on PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
+      new Logger('Fix').warn('Failed to set max-iterations labels', {
+        operation: 'fix.setLabels.maxIterations',
+        prNumber,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
     core.setFailed(errorMsg);
     core.setOutput('changes_made', 'false');
     return;
@@ -141,9 +168,10 @@ export async function runFix(
   let contextMarkdown: string;
   try {
     [pr, contextMarkdown] = await Promise.all([
-      withRetry(() => gh.getMR(prNumber), { operationName: 'fix.getMR' }),
+      withRetry(() => gh.getMR(prNumber), { operationName: 'fix.getMR', signal }),
       withRetry(() => gh.gatherContext({ prNumber }), {
         operationName: 'fix.gatherContext',
+        signal,
       }),
     ]);
   } catch (err) {
@@ -213,8 +241,16 @@ export async function runFix(
     }
 
     const maxVerificationRetries = 2;
+    let verificationCancelled = false;
     for (let v = 0; v <= maxVerificationRetries; v++) {
-      const { exitCode, output: checkOutput } = await runVerificationSteps(steps);
+      const { exitCode, output: checkOutput } = await runVerificationSteps(steps, signal);
+
+      // A cancelled run must stop instead of feeding the cancelled output
+      // back into the engine as ordinary verification failure.
+      if (signal?.aborted) {
+        verificationCancelled = true;
+        break;
+      }
 
       if (steps.length === 0) {
         break;
@@ -236,9 +272,10 @@ export async function runFix(
         let freshContextMarkdown: string;
         try {
           [freshPr, freshContextMarkdown] = await Promise.all([
-            withRetry(() => gh.getMR(prNumber), { operationName: 'fix.getMR' }),
+            withRetry(() => gh.getMR(prNumber), { operationName: 'fix.getMR', signal }),
             withRetry(() => gh.gatherContext({ prNumber }), {
               operationName: 'fix.gatherContext',
+              signal,
             }),
           ]);
         } catch (err) {
@@ -290,9 +327,39 @@ export async function runFix(
         }
       }
     }
+    if (verificationCancelled) {
+      // Fail visibly: without setFailed a cancelled run would fall through
+      // to label cleanup and report success. changes_made reflects the push
+      // that already happened above, so downstream steps see truthful state.
+      const kind =
+        signal && signal.reason !== undefined ? describeAbortKind(signal.reason) : 'cancelled';
+      core.setFailed(sanitize(`Fix verification cancelled before completion (${kind}).`));
+      core.setOutput('changes_made', String(changesMade ?? false));
+      return;
+    }
   }
 
-  await gh.removeLabel(prNumber, 'autofix:needs-fix');
+  // Post-success label cleanup is best-effort: a transient API failure here
+  // must never flip an actually-successful run to failed, and
+  // changes_made outputs must still be set below.
+  try {
+    await withRetry(() => gh.removeLabel(prNumber, 'autofix:needs-fix'), {
+      operationName: 'fix.removeLabel',
+      maxRetries: 2,
+      signal,
+    });
+  } catch (err) {
+    core.warning(
+      sanitize(
+        `Failed to remove autofix:needs-fix label on PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
+    new Logger('Fix').warn('Failed to remove label after success', {
+      operation: 'fix.removeLabel',
+      prNumber,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   core.setOutput('changes_made', String(changesMade ?? false));
 }
@@ -368,6 +435,9 @@ async function isAutofixBranchFresh(branchName: string, defaultBranch: string): 
  * @param gitEmail - Configured bot commit author email, used to verify that an
  *   existing `autofix/issue-N` branch tip was authored by this bot before it is
  *   reused (see `configureGit`).
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
+ *   breaks withRetry backoff sleeps, and races verification timeouts.
+ *   Advisory-only: engine calls themselves are not yet cancellable.
  */
 export async function runFixIssue(
   inputs: ActionInputs,
@@ -376,6 +446,7 @@ export async function runFixIssue(
   gh: PlatformAdapter,
   _repo: string,
   gitEmail: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const issueNumber = await resolvePrNumber();
   if (!issueNumber) {
@@ -517,6 +588,17 @@ export async function runFixIssue(
   // Check remaining time budget just before calling OpenCode, after setup steps.
   const elapsedMs = Date.now() - runStartedAt;
   const timeLeftMs = configTimeoutMs - elapsedMs;
+  if (signal?.aborted) {
+    // Signal is advisory-only: engine.runFix accepts no AbortSignal, so this
+    // pre-check cannot cancel an in-flight LLM call — it only fails fast
+    // before starting work.
+    const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+    const abortMsg = `Fix cancelled before engine call (${kind}) — run deadline exceeded or workflow cancelled.`;
+    core.warning(sanitize(abortMsg));
+    core.setFailed(sanitize(abortMsg));
+    core.setOutput('changes_made', 'false');
+    return;
+  }
   if (timeLeftMs < minRequiredMs) {
     const elapsedMin = (elapsedMs / 60_000).toFixed(1);
     const budgetMin = (configTimeoutMs / 60_000).toFixed(0);
@@ -553,6 +635,7 @@ export async function runFixIssue(
 
   if (!fixResult?.changesMade) {
     core.info('No changes made by fix agent');
+    core.setOutput('changes_made', 'false');
     return;
   }
 
@@ -563,6 +646,7 @@ export async function runFixIssue(
 
   if (!hasChanges) {
     core.info('No file changes to commit');
+    core.setOutput('changes_made', 'false');
     return;
   }
 
@@ -663,6 +747,9 @@ export async function runFixIssue(
  * @param gh - GitHub API helper.
  * @param _repo - Repository string (owner/repo, unused).
  * @param _token - GitHub authentication token (unused).
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
+ *   breaks withRetry backoff sleeps, and races verification timeouts.
+ *   Advisory-only: engine calls themselves are not yet cancellable.
  */
 export async function runAutofixLoop(
   inputs: ActionInputs,
@@ -671,6 +758,7 @@ export async function runAutofixLoop(
   gh: PlatformAdapter,
   _repo: string,
   _token: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const prNumber = await resolvePrNumber();
   if (prNumber === null) {
@@ -705,7 +793,37 @@ export async function runAutofixLoop(
 
     core.info(`=== Autofix iteration ${i + 1}/${config.maxIterations} ===`);
 
-    const pr = await gh.getMR(prNumber);
+    // Hot-loop fetches must tolerate transient 429/5xx like every other call
+    // site (runFix, docs.ts, self-heal verification refetch): without
+    // withRetry a single transient failure aborts the whole multi-iteration
+    // loop. A persistent failure still aborts the loop via setFailed below.
+    let pr: Awaited<ReturnType<typeof gh.getMR>>;
+    try {
+      pr = await withRetry(() => gh.getMR(prNumber), {
+        operationName: 'autofix.getMR',
+        signal,
+      });
+    } catch (err) {
+      core.setFailed(
+        sanitize(
+          `Failed to fetch PR #${prNumber} in autofix iteration ${i + 1}: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
+      return;
+    }
+    if (signal?.aborted) {
+      // Signal is advisory-only: engine.reviewPR accepts no AbortSignal, so
+      // this pre-check cannot cancel an in-flight LLM call.
+      const cancelKind =
+        signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+      core.warning(
+        sanitize(
+          `Autofix loop cancelled before iteration ${i + 1} (${cancelKind}) — shutting down gracefully.`,
+        ),
+      );
+      await handleTimeoutGracefully(prNumber, history, i, config, gh, true);
+      return;
+    }
     const prHeadSha = pr.headSha;
 
     let previousBotComments:
@@ -813,8 +931,43 @@ export async function runAutofixLoop(
       entry.status = 'approved';
       history.push(entry);
 
-      await gh.setLabels(prNumber, ['autofix:ready'], ['autofix', 'autofix:needs-fix']);
-      await gh.createComment(prNumber, buildReadyBody(history, prNumber));
+      // Post-success writes are best-effort: a transient labels/comment
+      // failure must not flip an approved run to failed.
+      try {
+        await withRetry(
+          () => gh.setLabels(prNumber, ['autofix:ready'], ['autofix', 'autofix:needs-fix']),
+          { operationName: 'autofix.setLabels.ready', maxRetries: 2, signal },
+        );
+      } catch (err) {
+        core.warning(
+          sanitize(
+            `Failed to set autofix:ready labels on PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+        );
+        new Logger('Autofix').warn('Failed to set ready labels after approval', {
+          operation: 'autofix.setLabels.ready',
+          prNumber,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      try {
+        await withRetry(() => gh.createComment(prNumber, buildReadyBody(history, prNumber)), {
+          operationName: 'autofix.createComment.ready',
+          maxRetries: 2,
+          signal,
+        });
+      } catch (err) {
+        core.warning(
+          sanitize(
+            `Failed to post ready comment on PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+        );
+        new Logger('Autofix').warn('Failed to post ready comment after approval', {
+          operation: 'autofix.createComment.ready',
+          prNumber,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       core.info('Posted ready-to-merge notification');
       break;
     }
@@ -834,7 +987,20 @@ export async function runAutofixLoop(
       );
     }
 
-    const contextMarkdown = await gh.gatherContext({ prNumber });
+    let contextMarkdown: string;
+    try {
+      contextMarkdown = await withRetry(() => gh.gatherContext({ prNumber }), {
+        operationName: 'autofix.gatherContext',
+        signal,
+      });
+    } catch (err) {
+      core.setFailed(
+        sanitize(
+          `Failed to gather context for PR #${prNumber} in autofix iteration ${i + 1}: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
+      return;
+    }
     const fixResult = await engine.runFix(
       prNumber,
       i,
@@ -971,7 +1137,16 @@ export async function runAutofixLoop(
 
       const maxVerificationRetries = 2;
       for (let v = 0; v <= maxVerificationRetries; v++) {
-        const { exitCode, output: checkOutput } = await runVerificationSteps(steps);
+        const { exitCode, output: checkOutput } = await runVerificationSteps(steps, signal);
+
+        // A cancelled run must stop instead of feeding the cancelled output
+        // back into the engine as ordinary verification failure. Route
+        // through the graceful cancel path so history/marker/message stay
+        // consistent with other cancellation exits.
+        if (signal?.aborted) {
+          await handleTimeoutGracefully(prNumber, history, i, config, gh, true);
+          return;
+        }
 
         if (steps.length === 0) {
           break;
@@ -996,9 +1171,10 @@ export async function runAutofixLoop(
           let freshContextMarkdown: string;
           try {
             [prAgain, freshContextMarkdown] = await Promise.all([
-              withRetry(() => gh.getMR(prNumber), { operationName: 'fix.getMR' }),
+              withRetry(() => gh.getMR(prNumber), { operationName: 'fix.getMR', signal }),
               withRetry(() => gh.gatherContext({ prNumber }), {
                 operationName: 'fix.gatherContext',
+                signal,
               }),
             ]);
           } catch (err) {
@@ -1058,7 +1234,27 @@ export async function runAutofixLoop(
   }
 
   if (!approved) {
-    await gh.setLabels(prNumber, ['autofix:needs-manual-review'], ['autofix', 'autofix:needs-fix']);
+    // Terminal label update is best-effort: on the needs-manual-review path
+    // a transient setLabels failure must not skip the intended
+    // setFailed/outputs below or propagate a generic error to index.ts.
+    try {
+      await withRetry(
+        () =>
+          gh.setLabels(prNumber, ['autofix:needs-manual-review'], ['autofix', 'autofix:needs-fix']),
+        { operationName: 'autofix.setLabels.terminal', maxRetries: 2, signal },
+      );
+    } catch (err) {
+      core.warning(
+        sanitize(
+          `Failed to set terminal autofix labels on PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
+      new Logger('Autofix').warn('Failed to set terminal labels', {
+        operation: 'autofix.setLabels.terminal',
+        prNumber,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
 
     // Only post max-iterations comment if we actually exhausted all iterations.
     // Other exit reasons (no-changes, git-failure) already posted their own comments.
@@ -1092,32 +1288,30 @@ export async function runAutofixLoop(
 
 async function runVerificationSteps(
   steps: CheckExecution[],
+  signal?: AbortSignal,
 ): Promise<{ exitCode: number; output: string }> {
   if (steps.length === 0) {
     return { exitCode: 0, output: '' };
   }
-  const chunks: Buffer[] = [];
-  const execOptions = {
-    listeners: {
-      stdout: (data: Buffer) => {
-        chunks.push(data);
-      },
-      stderr: (data: Buffer) => {
-        chunks.push(data);
-      },
-    },
-    ignoreReturnCode: true,
-  };
 
+  const chunks: string[] = [];
   let exitCode = 0;
   for (const step of steps) {
-    const stepOpts = step.cwd ? { ...execOptions, cwd: step.cwd } : execOptions;
-    exitCode = await exec.exec(step.program, step.args, stepOpts);
+    // Per-command timeout (default 5 min) so a hung check (e.g. pnpm test
+    // waiting on network) fails verification instead of blocking the runner
+    // until the job is killed. Timeout surfaces as exit 124 with a clear
+    // message; output is byte-capped before feedback to the fix engine.
+    const { exitCode: stepExit, output } = await execWithTimeout(step.program, step.args, {
+      ...(step.cwd ? { cwd: step.cwd } : {}),
+      signal,
+    });
+    if (output) chunks.push(output);
+    exitCode = stepExit;
     if (exitCode !== 0) {
       break;
     }
   }
-  const output = Buffer.concat(chunks).toString('utf-8');
+  const output = capVerificationOutput(chunks.join('\n\n'));
   return { exitCode, output };
 }
 
@@ -1127,9 +1321,23 @@ async function handleTimeoutGracefully(
   iteration: number,
   config: AgentConfig,
   gh: PlatformAdapter,
+  cancelled = false,
 ): Promise<void> {
-  const status = await exec.getExecOutput('git', ['status', '--porcelain']);
-  const hasChanges = status.stdout.trim().length > 0;
+  // Probe the working tree best-effort: a status failure (no git repo,
+  // runner I/O error) must not mask the original timeout/cancel with an
+  // unhandled rejection before the comment and setFailed below.
+  let hasChanges = false;
+  try {
+    const status = await exec.getExecOutput('git', ['status', '--porcelain']);
+    hasChanges = status.stdout.trim().length > 0;
+  } catch (err) {
+    core.warning(
+      sanitize(
+        `Timeout handler status check failed: ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
+    hasChanges = false;
+  }
 
   let commitMessage = '';
   let filesChanged: string[] = [];
@@ -1139,7 +1347,9 @@ async function handleTimeoutGracefully(
       const raw = await exec.getExecOutput('git', ['diff', '--name-only', 'HEAD']);
       filesChanged = raw.stdout.trim().split('\n').filter(Boolean);
 
-      commitMessage = `fix: address review feedback (partial changes due to timeout iteration ${iteration + 1})`;
+      commitMessage = cancelled
+        ? `fix: address review feedback (partial changes due to cancel at iteration ${iteration + 1})`
+        : `fix: address review feedback (partial changes due to timeout iteration ${iteration + 1})`;
       await exec.exec('git', ['add', '-A']);
       await exec.exec('git', ['commit', '-m', commitMessage]);
 
@@ -1155,10 +1365,16 @@ async function handleTimeoutGracefully(
   }
 
   // Update history
+  // NOTE: `IterationRecord.status` has no 'cancelled' member (lib type), so
+  // the cancelled branch intentionally reuses 'timeout' here; the summary,
+  // marker (<!-- autofix-cancelled -->), and setFailed message above carry
+  // the cancel distinction for history consumers.
   history.push({
     iteration: iteration + 1,
     status: 'timeout',
-    summary: 'Workflow execution timed out. Changes partially applied.',
+    summary: cancelled
+      ? 'Workflow execution cancelled. Changes partially applied.'
+      : 'Workflow execution timed out. Changes partially applied.',
     critical: 0,
     important: 0,
     minor: 0,
@@ -1166,21 +1382,34 @@ async function handleTimeoutGracefully(
     commitMessage,
   });
 
-  const commentBody = `<!-- autofix-timeout -->
-⚠️ **Autofix Timed Out (limit: ${config.timeoutMinutes} minutes)**
+  const marker = cancelled ? '<!-- autofix-cancelled -->' : '<!-- autofix-timeout -->';
+  const heading = cancelled
+    ? '⚠️ **Autofix Cancelled**'
+    : `⚠️ **Autofix Timed Out (limit: ${config.timeoutMinutes} minutes)**`;
+  const reasonLine = cancelled
+    ? 'The workflow run was cancelled.'
+    : 'The workflow run has reached its timeout limit.';
+  const commentBody = `${marker}
+${heading}
 
-The workflow run has reached its timeout limit.
+${reasonLine}
 ${hasChanges ? `Some changes were partially applied to ${filesChanged.length} files and pushed to the branch.` : 'No changes were pending or staged.'}
 
 Please run the workflow again to continue applying fixes.`;
 
   try {
-    await gh.postOrUpdateComment(prNumber, '<!-- autofix-timeout -->', commentBody);
+    await gh.postOrUpdateComment(prNumber, marker, commentBody);
   } catch (err) {
     core.warning(
       sanitize(`Failed to post timeout comment: ${err instanceof Error ? err.message : err}`),
     );
   }
 
-  core.setFailed(sanitize(`Autofix execution timed out after ${config.timeoutMinutes} minutes.`));
+  core.setFailed(
+    sanitize(
+      cancelled
+        ? 'Autofix execution cancelled before completion.'
+        : `Autofix execution timed out after ${config.timeoutMinutes} minutes.`,
+    ),
+  );
 }

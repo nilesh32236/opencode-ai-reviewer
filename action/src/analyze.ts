@@ -9,7 +9,7 @@ import {
   sanitizeMarkdown,
 } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { sanitize } from './utils.js';
+import { describeAbortKind, sanitize } from './utils.js';
 
 /**
  * Execute an issue analysis: gather issue context, run the analysis engine,
@@ -20,6 +20,8 @@ import { sanitize } from './utils.js';
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param _repo - Repository string (owner/repo, unused).
  * @param _token - GitHub authentication token (unused).
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly.
+ *   Advisory-only: engine calls themselves are not yet cancellable.
  */
 export async function runAnalyze(
   _inputs: ActionInputs,
@@ -28,6 +30,7 @@ export async function runAnalyze(
   gh: PlatformAdapter,
   _repo: string,
   _token: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const issueNumber =
     github.context.payload.issue?.number || github.context.payload.pull_request?.number;
@@ -37,6 +40,15 @@ export async function runAnalyze(
   }
 
   core.info(`Analyzing issue #${issueNumber}`);
+
+  if (signal?.aborted) {
+    // Signal is advisory-only: engine.runAnalyze accepts no AbortSignal,
+    // so this pre-check cannot cancel an in-flight LLM call.
+    const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+    core.info(sanitize(`Analysis cancelled before engine call (${kind}) — skipping`));
+    core.setFailed(sanitize(`Analysis cancelled (${kind})`));
+    return;
+  }
 
   try {
     const issueContext = await gh.gatherContext({ issueNumber });

@@ -16,6 +16,24 @@ const DEFAULT_SINCE_DAYS = 90;
 /** Fallback heading for types absent from the configured category map. */
 const OTHER_HEADING = 'Other Changes';
 
+/**
+ * Sanitize API-sourced text before embedding it in generated markdown.
+ * PR titles/authors are remote input: a crafted title containing newlines
+ * could break out of its list item (heading injection, link-definition
+ * smuggling), and control characters corrupt the committed file. Collapse
+ * all newline/control runs to a single space so each value renders inline.
+ * @param value - Raw API-sourced text.
+ * @returns Single-line sanitized text.
+ */
+export function sanitizeChangelogText(value: string): string {
+  // No control-character literals: collapse all whitespace runs (spaces,
+  // tabs, newlines) first, then drop any remaining non-printable ASCII.
+  return value
+    .replace(/\s+/g, ' ')
+    .replace(/[^ -~]/g, '')
+    .trim();
+}
+
 /** Heading for PRs whose title carries a breaking-change `!` marker. */
 const BREAKING_HEADING = 'Breaking Changes';
 
@@ -124,7 +142,11 @@ export function formatMarkdown(
     lines.push(`### ${heading}`);
     lines.push('');
     for (const entry of entries) {
-      lines.push(`- #${entry.prNumber} by @${entry.author}: ${entry.title}`);
+      // entry.title/author are remote (GitHub API) input — sanitize so a
+      // crafted PR title cannot inject markdown structure into the file.
+      lines.push(
+        `- #${entry.prNumber} by @${sanitizeChangelogText(entry.author)}: ${sanitizeChangelogText(entry.title)}`,
+      );
     }
     lines.push('');
   }

@@ -19,3 +19,68 @@ export declare function resolvePrNumber(): Promise<number | null>;
  * @returns The MR IID, or `undefined` when unset or invalid (with a warning).
  */
 export declare function resolveGitLabMrIid(raw?: string): number | undefined;
+/**
+ * Create a per-run AbortController whose signal aborts at the run deadline.
+ * The deadline derives from `timeoutMinutes` (default 20m). The returned
+ * controller fires with a `TimeoutError` reason so callers can distinguish a
+ * deadline expiry from a deliberate cancel (`AbortError`).
+ * @param timeoutMinutes - Run budget in minutes.
+ * @returns The controller plus a `dispose` that clears the deadline timer.
+ */
+export declare function createRunAbortController(timeoutMinutes?: number): {
+    controller: AbortController;
+    signal: AbortSignal;
+    dispose: () => void;
+};
+/**
+ * Describe an abort/cancellation error distinctly: deadline (`TimeoutError`)
+ * vs deliberate cancel (`AbortError`).
+ * @param err - The thrown value.
+ * @returns Human-readable label (`timeout`, `cancelled`, or `error`).
+ */
+export declare function describeAbortKind(err: unknown): 'timeout' | 'cancelled' | 'error';
+/** Default per-command verification timeout (5 minutes). */
+export declare const DEFAULT_VERIFICATION_TIMEOUT_MS: number;
+/** Cap on captured verification output fed back to the fix engine (256 KiB). */
+export declare const MAX_VERIFICATION_OUTPUT_BYTES: number;
+/**
+ * Truncate captured verification output to the byte cap, annotating truncation.
+ * Over-cap output keeps the head (first 128 KiB) and the tail (last 128 KiB)
+ * with a gap marker: for failing verification commands the tail usually holds
+ * the actual error, so head-only retention would hide the diagnostic the
+ * engine needs most. Both cut points are clamped to UTF-8 character
+ * boundaries so capping never emits a U+FFFD replacement character.
+ * @param output - Full captured output.
+ * @returns Output within the cap.
+ */
+export declare function capVerificationOutput(output: string): string;
+/**
+ * Run a subprocess with a per-command timeout and output-byte cap.
+ * A timeout (or an aborted outer signal) is reported as a non-zero exit with
+ * a clear message so callers treat it as verification failure, never a hang.
+ *
+ * NOTE — report-only timeout: `@actions/exec` exposes no child handle, so a
+ * hung check cannot be killed here and may keep running in the background
+ * (holding CPU/locks/ports) after the race settles. The signal is
+ * advisory-only for the exec race: capture stops being consumed after the
+ * race settles, listeners are detached, and the caller sees exit 124. Switch
+ * to `node:child_process` spawn + `child.kill('SIGTERM')` with a SIGKILL
+ * fallback if true subprocess reaping is ever required.
+ * @param program - Bare executable name (PATH-resolved; paths and shell metacharacters are rejected).
+ * @param args - Arguments.
+ * @param options - Exec options plus optional timeout/signal/cwd.
+ * @param options.cwd - Working directory for the subprocess.
+ * @param options.timeoutMs - Per-command timeout in milliseconds.
+ * @param options.signal - AbortSignal to cancel the exec race.
+ * @param options.silent - When true, suppress live output forwarding.
+ * @returns Exit code and capped combined output.
+ */
+export declare function execWithTimeout(program: string, args: string[], options?: {
+    cwd?: string;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+    silent?: boolean;
+}): Promise<{
+    exitCode: number;
+    output: string;
+}>;
