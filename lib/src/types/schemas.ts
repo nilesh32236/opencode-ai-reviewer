@@ -256,6 +256,7 @@ export const ReviewSensitivitySchema = z.object({
   confidenceThreshold: z.enum(['low', 'medium', 'high']).default('low'),
   maxFindingsPerCategory: z.number().int().optional(),
   maxTotalFindings: z.number().int().optional(),
+  noiseBudget: z.number().int().optional(),
   focusAreas: z.array(z.string()).optional().default([]),
   ignorePatterns: z.array(z.string()).optional().default([]),
 });

@@ -505,9 +505,16 @@ export async function handlePRReview(
         finalResult,
         effectiveConfig.review.inline,
         undefined,
-        effectiveConfig.review.enableReviewsArrayInline === true
-          ? { ...(scoreOptions ?? {}), enableReviewsArrayInline: true as const, ...dedupOptions }
-          : { ...(scoreOptions ?? {}), ...dedupOptions },
+        {
+          ...(scoreOptions ?? {}),
+          ...dedupOptions,
+          ...(effectiveConfig.review.enableReviewsArrayInline === true
+            ? { enableReviewsArrayInline: true as const }
+            : {}),
+          ...(effectiveConfig.review.sensitivity?.noiseBudget !== undefined
+            ? { maxVisibleFindings: effectiveConfig.review.sensitivity.noiseBudget }
+            : {}),
+        },
       );
     } catch (err) {
       logger.error(
