@@ -782,6 +782,27 @@ export interface ReviewConfig {
    */
   dedup_fingerprints?: boolean;
   /**
+   * Opt-in to updating existing fingerprint-matched inline threads in place
+   * (PATCH) instead of re-posting duplicates on re-pushes. When a built
+   * inline comment's fingerprint matches a previously posted bot thread, the
+   * existing thread is PATCHed with the fresh body; unmatched findings post
+   * as today. Fail-open: match/PATCH failures post as today with a warning.
+   * Default false (legacy behavior unchanged). Streaming stays create-only;
+   * only the final `postReview` sync updates.
+   * @since NEXT
+   */
+  updateInPlace?: boolean;
+  /**
+   * Opt-in to emitting one Checks run (`createCheckRun`) carrying
+   * deterministic review counts (total/critical/important/minor + verdict).
+   * Fail-open: Checks API errors warn and never fail the review. One extra
+   * Checks call only when enabled. Default false (legacy behavior unchanged).
+   * Conclusion mapping is verdict-based: partial reviews yield `neutral`,
+   * otherwise ready yields `success` and not-ready yields `failure`.
+   * @since NEXT
+   */
+  emitChecksSummary?: boolean;
+  /**
    * Opt-in to appending a one-click Fix-with-AI payload (```suggestion block
    * plus a Fix-with-AI prompt) to rendered findings for coding-agent handoff.
    * Default false (legacy output unchanged).
@@ -1677,6 +1698,19 @@ export interface PromptConfig {
      */
     dedup_fingerprints?: boolean;
     /**
+     * Opt-in to updating existing fingerprint-matched inline threads in place
+     * (PATCH) instead of re-posting duplicates on re-pushes. Fail-open:
+     * match/PATCH failures post as today. Default false (legacy unchanged).
+     * @since NEXT
+     */
+    updateInPlace?: boolean;
+    /**
+     * Opt-in to emitting one Checks run carrying deterministic review counts.
+     * Fail-open: Checks API errors warn only. Default false (legacy unchanged).
+     * @since NEXT
+     */
+    emitChecksSummary?: boolean;
+    /**
      * Opt-in to appending a one-click Fix-with-AI payload to rendered findings.
      * Default false (legacy output unchanged).
      * @since NEXT
@@ -2035,6 +2069,8 @@ export const DEFAULT_CONFIG: AgentConfig = {
     streamComments: false,
     streamBatchSize: 0,
     dedupFingerprints: true,
+    updateInPlace: false,
+    emitChecksSummary: false,
   },
   audit: {
     promptsDir: '.audit-prompts',

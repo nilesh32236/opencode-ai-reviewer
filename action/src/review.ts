@@ -4,6 +4,7 @@ import type { AgentConfig, PRContext, PlatformAdapter, ReviewEngine } from '@ope
 import {
   GitLabAdapter,
   Logger,
+  buildFingerprintCommentIds,
   buildFunctionScoreOptions,
   collectFingerprintsFromBodies,
   countAtOrAboveSeverity,
@@ -351,6 +352,20 @@ export async function runReview(
     : result;
 
   const scoreOptions = buildFunctionScoreOptions(config.review.showFunctionScores, pr.changedFiles);
+  // Update-in-place map: fingerprint → previously posted bot comment id, so
+  // the final postReview sync PATCHes matched threads instead of re-posting.
+  // Fail-open: empty/unreadable history posts as today. Streaming stays
+  // create-only (no PATCH mid-run) per the issue default.
+  const updateInPlaceEnabled = config.review.updateInPlace === true;
+  const emitChecksSummaryEnabled = config.review.emitChecksSummary === true;
+  let previousFingerprintCommentIds: Map<string, number> | undefined;
+  try {
+    if (updateInPlaceEnabled && previousComments && previousComments.length > 0) {
+      previousFingerprintCommentIds = buildFingerprintCommentIds(previousComments);
+    }
+  } catch {
+    previousFingerprintCommentIds = undefined;
+  }
   const dedupOptions =
     dedupEnabled && (previousFingerprints.size > 0 || previousLegacyKeys.size > 0)
       ? {
@@ -370,6 +385,17 @@ export async function runReview(
       {
         ...(scoreOptions ?? {}),
         ...dedupOptions,
+        ...(updateInPlaceEnabled &&
+        previousFingerprintCommentIds &&
+        previousFingerprintCommentIds.size > 0
+          ? {
+              updateInPlace: true as const,
+              previousFingerprintCommentIds: Object.fromEntries(previousFingerprintCommentIds),
+            }
+          : updateInPlaceEnabled
+            ? { updateInPlace: true as const }
+            : {}),
+        ...(emitChecksSummaryEnabled ? { emitChecksSummary: true as const } : {}),
         ...(config.review.enableReviewsArrayInline === true
           ? { enableReviewsArrayInline: true as const }
           : {}),
@@ -414,6 +440,13 @@ export async function runReview(
 
   if (!reviewResult.success) {
     core.warning('Failed to post review to GitHub');
+  }
+
+  if ((reviewResult.updatedInlineCount ?? 0) > 0) {
+    core.info(`Updated ${reviewResult.updatedInlineCount} inline thread(s) in place`);
+  }
+  if (reviewResult.checksRunId !== undefined) {
+    core.info(`Emitted Checks summary run ${reviewResult.checksRunId}`);
   }
 
   // Flip the streaming progress marker to a terminal state so a "Batches x/y

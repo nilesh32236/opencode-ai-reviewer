@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import * as core from '@actions/core';
 import { buildInlineCommentsWithSpillover } from '../jsonl-parser.js';
+import type { InlineComment } from '../jsonl-parser.js';
 import type {
   BotReviewInfo,
   HeadCIStatus,
@@ -27,6 +28,7 @@ import {
   normalizeNoiseBudget,
 } from './filter-findings.js';
 import {
+  extractFingerprintFromBody,
   filterIssuesByFingerprints,
   fingerprintForIssue,
   withFingerprintMarker,
@@ -157,6 +159,129 @@ export function resolveReviewEvent(
     return 'REQUEST_CHANGES';
   }
   return 'COMMENT';
+}
+
+/**
+ * Resolve the Checks conclusion for a deterministic review-counts summary.
+ * Verdict-based (consistent with the required-check story when
+ * `failOnSeverity` is unset): partial reviews (failed batches/agents) yield
+ * `neutral` so an unverified pass never reports success; otherwise a ready
+ * verdict yields `success` and a not-ready verdict yields `failure`.
+ * Pure function, safe to unit test.
+ * @param result - Review result to summarize.
+ * @returns Checks conclusion string.
+ * @since NEXT
+ */
+export function resolveChecksConclusion(result: ReviewResult): 'success' | 'failure' | 'neutral' {
+  try {
+    if ((result?.failedBatches ?? 0) > 0 || (result?.failedAgents ?? 0) > 0) return 'neutral';
+    return result?.verdict?.ready === true ? 'success' : 'failure';
+  } catch {
+    return 'neutral';
+  }
+}
+
+/**
+ * Build a deterministic Checks output (title/summary/text) carrying review
+ * counts for branch-protection / dashboard consumption. Counts come from the
+ * post-filter issues array when present (falling back to `result.stats`).
+ * Pure function, safe to unit test.
+ * @param result - Review result to summarize.
+ * @returns Checks output with title, summary, and details text.
+ * @since NEXT
+ */
+export function buildChecksSummary(result: ReviewResult): {
+  title: string;
+  summary: string;
+  text: string;
+} {
+  let critical = 0;
+  let important = 0;
+  let minor = 0;
+  try {
+    if (Array.isArray(result?.issues)) {
+      for (const issue of result.issues) {
+        if (issue?.severity === 'critical') critical += 1;
+        else if (issue?.severity === 'important') important += 1;
+        else if (issue?.severity === 'minor') minor += 1;
+      }
+    } else {
+      critical = result?.stats?.critical ?? 0;
+      important = result?.stats?.important ?? 0;
+      minor = result?.stats?.minor ?? 0;
+    }
+  } catch {
+    // Fail-open: counts stay zero, summary still renders.
+  }
+  const total = critical + important + minor;
+  const ready = result?.verdict?.ready === true ? 'Yes' : 'No';
+  const partial =
+    (result?.failedBatches ?? 0) > 0 || (result?.failedAgents ?? 0) > 0 ? ' (partial review)' : '';
+  const title = `OpenCode AI Review: ${critical} critical, ${important} important, ${minor} minor${partial}`;
+  const summary = `${total} finding(s) — critical: ${critical}, important: ${important}, minor: ${minor}. Ready to merge: ${ready}${partial}.`;
+  const reasoning = String(result?.verdict?.reasoning ?? '').slice(0, 2000);
+  const text = reasoning
+    ? `Verdict: ${ready}${partial}\nReasoning: ${reasoning}`
+    : `Verdict: ${ready}${partial}`;
+  return { title, summary, text };
+}
+
+/**
+ * Normalize the `previousFingerprintCommentIds` option to a Map (fail-open:
+ * invalid input yields an empty map so update-in-place degrades to create).
+ * @param value - Map or plain record of fingerprint → REST comment id.
+ * @returns Map of fingerprint to comment id (possibly empty).
+ * @since NEXT
+ */
+export function normalizeFingerprintCommentIds(
+  value: Map<string, number> | Record<string, number> | undefined,
+): Map<string, number> {
+  const out = new Map<string, number>();
+  try {
+    if (value instanceof Map) {
+      for (const [k, v] of value) {
+        if (typeof k === 'string' && /^[0-9a-f]{16}$/.test(k) && Number.isInteger(v) && v > 0) {
+          out.set(k, v);
+        }
+      }
+      return out;
+    }
+    if (value && typeof value === 'object') {
+      for (const [k, v] of Object.entries(value)) {
+        if (/^[0-9a-f]{16}$/.test(k) && Number.isInteger(v) && (v as number) > 0) {
+          out.set(k, v as number);
+        }
+      }
+    }
+  } catch {
+    // Fail-open: return whatever was collected so far.
+  }
+  return out;
+}
+
+/**
+ * Build a fingerprint → comment-id map from previously posted bot threads.
+ * Pure helper so action/app callers share one code path. Fail-open: bad
+ * entries are skipped, never throw.
+ * @param threads - Previous bot threads (file/line/body/commentId).
+ * @returns Map of fingerprint to REST comment id.
+ * @since NEXT
+ */
+export function buildFingerprintCommentIds(
+  threads: Array<{ body: string; commentId: number }> | undefined,
+): Map<string, number> {
+  const out = new Map<string, number>();
+  try {
+    if (!Array.isArray(threads)) return out;
+    for (const t of threads) {
+      const fp = extractFingerprintFromBody(String(t?.body ?? ''));
+      const id = Number(t?.commentId ?? 0);
+      if (fp && Number.isInteger(id) && id > 0 && !out.has(fp)) out.set(fp, id);
+    }
+  } catch {
+    // Fail-open.
+  }
+  return out;
 }
 
 /**
@@ -1394,8 +1519,14 @@ export class GitHubHelper implements PlatformAdapter {
     // issues already posted in previous runs so re-pushes never re-post
     // identical findings. Skipped findings stay out of the body as well —
     // they were already reported once.
+    // `updateInPlace` bypasses the drop when a fingerprint→comment map is
+    // present so matched threads can be PATCHed with the fresh body instead
+    // of skipped; without a map it falls back to the dedup gate (no dupes).
+    const updateInPlaceEnabled =
+      options?.updateInPlace === true &&
+      normalizeFingerprintCommentIds(options?.previousFingerprintCommentIds).size > 0;
     const dedupedResult =
-      postInlineComments && (options?.dedupFingerprints ?? true) === true
+      postInlineComments && (options?.dedupFingerprints ?? true) === true && !updateInPlaceEnabled
         ? {
             ...workingResult,
             issues: this.applyInlineFingerprintDedup(workingResult.issues, options),
@@ -1406,7 +1537,7 @@ export class GitHubHelper implements PlatformAdapter {
     // summary-only retry. Legacy path below runs byte-for-byte unchanged
     // when the flag is absent or false.
     if (options?.enableReviewsArrayInline === true && postInlineComments) {
-      return this.postReviewWithReviewsArray(
+      const arrayResult = await this.postReviewWithReviewsArray(
         prNumber,
         commitSha,
         dedupedResult,
@@ -1414,12 +1545,17 @@ export class GitHubHelper implements PlatformAdapter {
         options,
         signal,
       );
+      if (options?.emitChecksSummary === true && arrayResult.success) {
+        const checksRunId = await this.emitChecksSummaryRun(commitSha, dedupedResult);
+        if (checksRunId !== undefined) arrayResult.checksRunId = checksRunId;
+      }
+      return arrayResult;
     }
 
     // Severity-ordered inline budget (unlimited when unset — legacy output
     // byte-identical). Issues cut here stay unplaced, so they flow into
     // issuesForBody below and remain visible via the body cap accounting.
-    const inlineComments = postInlineComments
+    const builtInlineComments = postInlineComments
       ? buildInlineCommentsWithSpillover(
           dedupedResult,
           await this.getDiffLines(prNumber, commitSha, signal),
@@ -1428,10 +1564,42 @@ export class GitHubHelper implements PlatformAdapter {
           resolveNoiseBudget(options),
         ).comments
       : [];
-    this.stampInlineFingerprintMarkers(inlineComments, dedupedResult.issues);
+    this.stampInlineFingerprintMarkers(builtInlineComments, dedupedResult.issues);
+
+    // Update-in-place (opt-in, default off): PATCH fingerprint-matched threads
+    // with the fresh body instead of re-posting. Fail-open: PATCH failures
+    // fall back to create as today. `placedInlineKeys` uses the full built
+    // list so updated findings stay out of the summary body (no duplicates).
+    let inlineComments = builtInlineComments;
+    let updatedInlineCount = 0;
+    if (updateInPlaceEnabled && builtInlineComments.length > 0) {
+      try {
+        const fpIds = normalizeFingerprintCommentIds(options?.previousFingerprintCommentIds);
+        const { creates, updatedIds } = await this.applyInlineUpdates(
+          builtInlineComments,
+          fpIds,
+          signal,
+        );
+        inlineComments = creates;
+        updatedInlineCount = updatedIds.length;
+        if (updatedIds.length > 0) {
+          core.info(
+            `Updated ${updatedIds.length} inline thread(s) in place (fingerprints matched)`,
+          );
+        }
+      } catch (err) {
+        core.warning(`Inline update-in-place unavailable — posting as today: ${err}`);
+        inlineComments = builtInlineComments;
+        updatedInlineCount = 0;
+      }
+    }
+    const emitChecks = async (): Promise<number | undefined> => {
+      if (options?.emitChecksSummary !== true) return undefined;
+      return this.emitChecksSummaryRun(commitSha, dedupedResult);
+    };
 
     const placedInlineKeys = new Set<string>();
-    for (const c of inlineComments) {
+    for (const c of builtInlineComments) {
       placedInlineKeys.add(`${c.path}:${c.line}`);
     }
     const issuesForBody = postInlineComments
@@ -1490,7 +1658,15 @@ export class GitHubHelper implements PlatformAdapter {
             }
           }
         }
-        return { success: true, method: 'full', reviewId: reviewResponse.id, commentIds };
+        const checksRunId = await emitChecks();
+        return {
+          success: true,
+          method: 'full',
+          reviewId: reviewResponse.id,
+          commentIds,
+          ...(updatedInlineCount > 0 ? { updatedInlineCount } : {}),
+          ...(checksRunId !== undefined ? { checksRunId } : {}),
+        };
       } catch (err) {
         core.warning(`Batched review with inline comments failed: ${err}`);
         // Fall through to per-comment fallback
@@ -1517,7 +1693,14 @@ export class GitHubHelper implements PlatformAdapter {
     }
 
     if (inlineComments.length === 0) {
-      return { success: true, method: 'body-only', reviewId };
+      const checksRunId = await emitChecks();
+      return {
+        success: true,
+        method: 'body-only',
+        reviewId,
+        ...(updatedInlineCount > 0 ? { updatedInlineCount } : {}),
+        ...(checksRunId !== undefined ? { checksRunId } : {}),
+      };
     }
 
     // Post each inline comment individually with fallback
@@ -1572,7 +1755,15 @@ export class GitHubHelper implements PlatformAdapter {
       }
     }
 
-    return { success: true, method: 'partial', reviewId, commentIds };
+    const checksRunId = await emitChecks();
+    return {
+      success: true,
+      method: 'partial',
+      reviewId,
+      commentIds,
+      ...(updatedInlineCount > 0 ? { updatedInlineCount } : {}),
+      ...(checksRunId !== undefined ? { checksRunId } : {}),
+    };
   }
 
   /**
@@ -1612,22 +1803,48 @@ export class GitHubHelper implements PlatformAdapter {
 
     // Defense-in-depth: this entry already receives deduped input from
     // postReview, but re-apply idempotently so direct callers also dedup.
-    const dedupedResult = {
-      ...workingResult,
-      issues: this.applyInlineFingerprintDedup(workingResult.issues, options),
-    };
+    // `updateInPlace` bypasses the drop when a fingerprint→comment map is
+    // present so matched threads PATCH instead of being skipped.
+    const updateInPlaceEnabled =
+      options?.updateInPlace === true &&
+      normalizeFingerprintCommentIds(options?.previousFingerprintCommentIds).size > 0;
+    const dedupedResult = updateInPlaceEnabled
+      ? workingResult
+      : {
+          ...workingResult,
+          issues: this.applyInlineFingerprintDedup(workingResult.issues, options),
+        };
 
-    const inlineComments = buildInlineCommentsWithSpillover(
+    const builtInlineComments = buildInlineCommentsWithSpillover(
       dedupedResult,
       diffLines,
       suppressLowConfidence,
       options?.emitFixPayload,
       resolveNoiseBudget(options),
     ).comments;
-    this.stampInlineFingerprintMarkers(inlineComments, dedupedResult.issues);
+    this.stampInlineFingerprintMarkers(builtInlineComments, dedupedResult.issues);
+
+    let inlineComments = builtInlineComments;
+    let updatedInlineCount = 0;
+    if (updateInPlaceEnabled && builtInlineComments.length > 0) {
+      try {
+        const fpIds = normalizeFingerprintCommentIds(options?.previousFingerprintCommentIds);
+        const { creates, updatedIds } = await this.applyInlineUpdates(
+          builtInlineComments,
+          fpIds,
+          signal,
+        );
+        inlineComments = creates;
+        updatedInlineCount = updatedIds.length;
+      } catch (err) {
+        core.warning(`Inline update-in-place unavailable — posting as today: ${err}`);
+        inlineComments = builtInlineComments;
+        updatedInlineCount = 0;
+      }
+    }
 
     const placedInlineKeys = new Set<string>();
-    for (const c of inlineComments) {
+    for (const c of builtInlineComments) {
       placedInlineKeys.add(`${c.path}:${c.line}`);
     }
     // Mappable findings ride inline; unmappable findings stay in the body.
@@ -1658,7 +1875,12 @@ export class GitHubHelper implements PlatformAdapter {
           undefined,
           signal,
         );
-        return { success: true, method: 'body-only', reviewId: reviewResponse.id };
+        return {
+          success: true,
+          method: 'body-only',
+          reviewId: reviewResponse.id,
+          ...(updatedInlineCount > 0 ? { updatedInlineCount } : {}),
+        };
       } catch (err) {
         core.warning(`Summary-only review retry failed: ${err}`);
         return { success: false, method: 'failed' };
@@ -1699,7 +1921,13 @@ export class GitHubHelper implements PlatformAdapter {
           }
         }
       }
-      return { success: true, method: 'full', reviewId: reviewResponse.id, commentIds };
+      return {
+        success: true,
+        method: 'full',
+        reviewId: reviewResponse.id,
+        commentIds,
+        ...(updatedInlineCount > 0 ? { updatedInlineCount } : {}),
+      };
     } catch (err) {
       const status = getErrorStatus(err);
       core.warning(
@@ -1754,6 +1982,122 @@ export class GitHubHelper implements PlatformAdapter {
         `Streaming inline comment for ${comment.path}:${comment.line} failed: ${err instanceof Error ? err.message : err}`,
       );
       return null;
+    }
+  }
+
+  /**
+   * Update an existing inline review comment in place (PATCH).
+   * Used by the `updateInPlace` opt-in to edit fingerprint-matched threads
+   * instead of re-posting duplicates on re-pushes. Fail-open: any error
+   * warns and resolves false so the caller falls back to creating a new
+   * thread as today.
+   * @param commentId - REST id (databaseId) of the review comment to update.
+   * @param body - Fresh comment body (fingerprint marker preserved by caller).
+   * @param signal - Optional AbortSignal to cancel the request.
+   * @returns True when the PATCH succeeded, false otherwise.
+   * @since NEXT
+   */
+  async updateReviewComment(
+    commentId: number,
+    body: string,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    try {
+      if (!Number.isInteger(commentId) || commentId <= 0) return false;
+      await this.api(
+        `/pulls/comments/${commentId}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ body }),
+        },
+        undefined,
+        signal,
+      );
+      return true;
+    } catch (err) {
+      core.warning(`Inline update-in-place PATCH failed for comment ${commentId}: ${err}`);
+      return false;
+    }
+  }
+
+  /**
+   * Partition built inline comments into fingerprint-matched updates vs fresh
+   * creates, PATCHing the matched threads. Fail-open: PATCH failures fall
+   * back to create so no finding is lost.
+   * @param comments - Built inline comments (with fingerprint markers stamped).
+   * @param fingerprintCommentIds - Fingerprint → previously posted comment id.
+   * @param signal - Optional AbortSignal to cancel PATCH requests.
+   * @returns `{ updates, creates, updatedIds }` partition plus PATCHed ids.
+   * @since NEXT
+   */
+  private async applyInlineUpdates(
+    comments: InlineComment[],
+    fingerprintCommentIds: Map<string, number>,
+    signal?: AbortSignal,
+  ): Promise<{
+    creates: InlineComment[];
+    updatedIds: number[];
+  }> {
+    const creates: InlineComment[] = [];
+    const updatedIds: number[] = [];
+    if (!fingerprintCommentIds || fingerprintCommentIds.size === 0)
+      return { creates: comments, updatedIds };
+    const seenFp = new Set<string>();
+    for (const comment of comments) {
+      signal?.throwIfAborted?.();
+      let fp: string | undefined;
+      try {
+        fp = extractFingerprintFromBody(comment.body);
+      } catch {
+        fp = undefined;
+      }
+      // One PATCH per fingerprint: a second new finding sharing an identical
+      // fingerprint in the same run posts fresh so both stay visible.
+      const target = fp && !seenFp.has(fp) ? fingerprintCommentIds.get(fp) : undefined;
+      if (fp && target !== undefined) {
+        seenFp.add(fp);
+        const ok = await this.updateReviewComment(target, comment.body, signal);
+        if (ok) {
+          updatedIds.push(target);
+          continue;
+        }
+        // PATCH failed — fall through to create as today (fail-open).
+        core.warning(
+          `Inline update-in-place fallback: creating a new thread for fingerprint ${fp}`,
+        );
+      }
+      creates.push(comment);
+    }
+    return { creates, updatedIds };
+  }
+
+  /**
+   * Emit one deterministic Checks run carrying review counts. Fail-open: any
+   * error warns and resolves undefined so the review never fails on Checks.
+   * @param headSha - Head commit SHA the check run attaches to.
+   * @param result - Review result to summarize.
+   * @returns The created check run id, or undefined when skipped/failed.
+   * @since NEXT
+   */
+  private async emitChecksSummaryRun(
+    headSha: string,
+    result: ReviewResult,
+  ): Promise<number | undefined> {
+    try {
+      if (!headSha || headSha.trim() === '') return undefined;
+      const conclusion = resolveChecksConclusion(result);
+      const { title, summary, text } = buildChecksSummary(result);
+      const safeText = text.length > 60000 ? `${text.slice(0, 60000)}…` : text;
+      const run = await this.createCheckRun('OpenCode AI Reviewer', headSha, conclusion, {
+        title,
+        summary,
+        text: safeText,
+      });
+      return run?.id;
+    } catch (err) {
+      core.warning(`Checks summary emission failed — continuing: ${err}`);
+      return undefined;
     }
   }
 

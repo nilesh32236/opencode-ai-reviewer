@@ -254,6 +254,16 @@ inputs:
     required: false
     default: 'true'
 
+  update_in_place:
+    description: 'Update fingerprint-matched inline threads in place (PATCH) instead of re-posting duplicates on re-pushes. Unmatched findings post as today; PATCH failures fall back to create. Applies only to the final postReview sync (streaming stays create-only). Defaults to false (legacy behavior).'
+    required: false
+    default: 'false'
+
+  emit_checks_summary:
+    description: 'Emit one Checks run carrying deterministic review counts (total/critical/important/minor + verdict) for branch protection and dashboards. Fail-open: Checks errors warn only. Defaults to false (no extra API call).'
+    required: false
+    default: 'false'
+
   enable_reviews_array_inline:
     description: 'Bundle mappable inline findings into a single reviews-array request (POST /pulls/{n}/reviews with comments[]), falling back to summary-only on 422/403/429 so no finding is lost (false = legacy behavior). Takes precedence over stream_comments: when both are true, streaming is disabled so findings are posted only via the single batched request.'
     required: false

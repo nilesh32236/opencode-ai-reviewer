@@ -257,6 +257,9 @@ async function run(): Promise<void> {
           loadedConfig?.review?.dedupFingerprints ??
           loadedConfig?.review?.dedup_fingerprints ??
           inputs.dedupFingerprints,
+        updateInPlace: loadedConfig?.review?.updateInPlace ?? inputs.updateInPlace ?? false,
+        emitChecksSummary:
+          loadedConfig?.review?.emitChecksSummary ?? inputs.emitChecksSummary ?? false,
         enableReviewsArrayInline:
           loadedConfig?.review?.enableReviewsArrayInline ?? inputs.enableReviewsArrayInline,
         // When the workflow explicitly sets verdict_mode it is authoritative

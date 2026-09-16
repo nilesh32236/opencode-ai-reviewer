@@ -587,3 +587,30 @@ describe('parseInputs() verdict_mode', () => {
     );
   });
 });
+
+describe('parseInputs() update_in_place / emit_checks_summary', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('defaults both flags to false when the inputs are omitted', () => {
+    setInputs(BASE_INPUTS);
+    const inputs = parseInputs();
+    expect(inputs.updateInPlace).toBe(false);
+    expect(inputs.emitChecksSummary).toBe(false);
+  });
+
+  it('parses explicit true inputs', () => {
+    setInputs({ ...BASE_INPUTS, update_in_place: 'true', emit_checks_summary: 'true' });
+    const inputs = parseInputs();
+    expect(inputs.updateInPlace).toBe(true);
+    expect(inputs.emitChecksSummary).toBe(true);
+  });
+
+  it('treats explicit false inputs as false', () => {
+    setInputs({ ...BASE_INPUTS, update_in_place: 'false', emit_checks_summary: 'false' });
+    const inputs = parseInputs();
+    expect(inputs.updateInPlace).toBe(false);
+    expect(inputs.emitChecksSummary).toBe(false);
+  });
+});

@@ -52,7 +52,14 @@ export type {
   SetupOpenCodeOptions,
 } from './opencode.js';
 export { GitHubHelper } from './utils/github.js';
-export { normalizeVerdictMode, resolveReviewEvent } from './utils/github.js';
+export {
+  buildChecksSummary,
+  buildFingerprintCommentIds,
+  normalizeFingerprintCommentIds,
+  normalizeVerdictMode,
+  resolveChecksConclusion,
+  resolveReviewEvent,
+} from './utils/github.js';
 export type { ReviewEvent } from './utils/github.js';
 export { GitLabAdapter } from './utils/gitlab-adapter.js';
 export {

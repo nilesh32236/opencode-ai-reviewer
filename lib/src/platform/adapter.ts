@@ -19,6 +19,17 @@ export interface ReviewPostResult {
     nodeId?: string;
     side?: string;
   }>;
+  /**
+   * Inline threads updated in place (PATCH) instead of re-posted. Present
+   * only when the `updateInPlace` opt-in matched existing threads.
+   * @since NEXT
+   */
+  updatedInlineCount?: number;
+  /**
+   * Checks run id emitted when the `emitChecksSummary` opt-in fired.
+   * @since NEXT
+   */
+  checksRunId?: number;
 }
 
 /** Information about a review thread. */

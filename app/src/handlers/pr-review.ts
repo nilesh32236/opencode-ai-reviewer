@@ -11,6 +11,7 @@ import {
   GitLabAdapter,
   Logger,
   ReviewEngine,
+  buildFingerprintCommentIds,
   buildFunctionScoreOptions,
   collectFingerprintsFromBodies,
   fingerprintForIssue,
@@ -499,6 +500,19 @@ export async function handlePRReview(
               previousInlineKeys: previousLegacyKeys,
             }
           : { dedupFingerprints: dedupEnabled };
+      // Update-in-place (opt-in): fingerprint → comment-id map for PATCHing
+      // matched threads in the final postReview sync. Fail-open: absent map
+      // posts as today. Streaming stays create-only.
+      const updateInPlaceEnabled = effectiveConfig.review.updateInPlace === true;
+      const emitChecksSummaryEnabled = effectiveConfig.review.emitChecksSummary === true;
+      let previousFingerprintCommentIds: Map<string, number> | undefined;
+      try {
+        if (updateInPlaceEnabled && previousBotComments && previousBotComments.length > 0) {
+          previousFingerprintCommentIds = buildFingerprintCommentIds(previousBotComments);
+        }
+      } catch {
+        previousFingerprintCommentIds = undefined;
+      }
       reviewResult = await gh.postReview(
         prNumber,
         pr.headSha,
@@ -508,6 +522,17 @@ export async function handlePRReview(
         {
           ...(scoreOptions ?? {}),
           ...dedupOptions,
+          ...(updateInPlaceEnabled &&
+          previousFingerprintCommentIds &&
+          previousFingerprintCommentIds.size > 0
+            ? {
+                updateInPlace: true as const,
+                previousFingerprintCommentIds: Object.fromEntries(previousFingerprintCommentIds),
+              }
+            : updateInPlaceEnabled
+              ? { updateInPlace: true as const }
+              : {}),
+          ...(emitChecksSummaryEnabled ? { emitChecksSummary: true as const } : {}),
           ...(effectiveConfig.review.enableReviewsArrayInline === true
             ? { enableReviewsArrayInline: true as const }
             : {}),

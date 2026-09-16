@@ -235,6 +235,10 @@ export interface ActionInputs {
   reviewInline: boolean;
   /** Skip inline findings already posted in previous runs (default: true). */
   dedupFingerprints: boolean;
+  /** Update fingerprint-matched inline threads in place via PATCH (default: false). */
+  updateInPlace: boolean;
+  /** Emit one Checks run carrying deterministic review counts (default: false). */
+  emitChecksSummary: boolean;
   /** Opt-in to a single reviews-array request with summary-only 422 fallback (default: false). */
   enableReviewsArrayInline: boolean;
   /** Opt-in review gating mapped to the createReview event (default: 'comment'). */
@@ -773,6 +777,8 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     timeoutMinutes: parseTimeoutMinutes(core.getInput('timeout_minutes')),
     reviewInline: core.getInput('review_inline') !== 'false',
     dedupFingerprints: core.getInput('dedup_fingerprints') !== 'false',
+    updateInPlace: core.getInput('update_in_place') === 'true',
+    emitChecksSummary: core.getInput('emit_checks_summary') === 'true',
     enableReviewsArrayInline: core.getInput('enable_reviews_array_inline') === 'true',
     verdictMode,
     verdictModeExplicit,

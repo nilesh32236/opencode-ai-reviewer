@@ -61,6 +61,28 @@ export interface ReviewBodyOptions {
    */
   previousInlineKeys?: Set<string> | string[];
   /**
+   * Opt-in to updating existing fingerprint-matched inline threads in place
+   * (PATCH) instead of re-posting on re-pushes. Default false (legacy
+   * create-only behavior). Applies only to the final `postReview` sync;
+   * streaming stays create-only to avoid PATCH races mid-run. Fail-open:
+   * match/PATCH failures post as today.
+   * @since NEXT
+   */
+  updateInPlace?: boolean;
+  /**
+   * Fingerprint → previously posted inline comment id (REST databaseId) used
+   * by `updateInPlace` to PATCH matched threads. Accepts a Map or a plain
+   * record; absent/empty falls back to create-only (posts as today).
+   * @since NEXT
+   */
+  previousFingerprintCommentIds?: Map<string, number> | Record<string, number>;
+  /**
+   * Opt-in to emitting one Checks run carrying deterministic review counts.
+   * Default false (no extra API call). Fail-open: Checks errors warn only.
+   * @since NEXT
+   */
+  emitChecksSummary?: boolean;
+  /**
    * Opt-in to appending a one-click Fix-with-AI payload (```suggestion block
    * plus a Fix-with-AI prompt) to each rendered finding. Default false
    * (legacy output unchanged). Fail-open: payload errors render plain finding.
