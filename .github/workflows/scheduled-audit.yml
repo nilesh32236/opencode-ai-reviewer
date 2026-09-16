@@ -31,10 +31,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 1
           token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          # persist-credentials left enabled: Downstream steps use gh CLI with GH_TOKEN; checkout token retained for fetch parity.
 
       - name: Ensure autofix labels exist
         env:
