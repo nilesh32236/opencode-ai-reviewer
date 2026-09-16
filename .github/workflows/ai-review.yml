@@ -14,10 +14,10 @@ on:
         type: boolean
         default: false
 
+# Least privilege (issue #548): jobs declare their own scopes below; the
+# top-level default is read-only.
 permissions:
-  contents: write
-  pull-requests: write
-  issues: write
+  contents: read
 
 concurrency:
   group: ai-review-${{ github.event.pull_request.number || github.event.issue.number || github.sha }}-${{ github.actor }}
@@ -26,6 +26,10 @@ concurrency:
 jobs:
   fix-issue:
     name: Fix audit issue
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
     if: github.event.issue && github.event.issue.pull_request == null && ((github.event_name == 'issues' && github.event.label.name == 'autofix-trigger') || (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/fix')))
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -79,6 +83,8 @@ jobs:
 
   review:
     name: AI Code Review
+    permissions:
+      pull-requests: write
     if: github.event_name == 'pull_request' && !startsWith(github.event.pull_request.head.ref, 'autofix/') && !contains(fromJson('["github-actions[bot]","opencode-ai-reviewer[bot]","dependabot[bot]"]'), github.actor)
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -119,6 +125,7 @@ jobs:
 
   fast-review:
     name: Fast review (experimental)
+    permissions: {}
     if: github.event_name == 'workflow_dispatch' && inputs.fast_review == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -168,6 +175,10 @@ jobs:
 
   autofix:
     name: Autofix review loop
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
     # The issue_comment (/fix) path additionally requires a privileged author
     # (OWNER/MEMBER/COLLABORATOR, mirroring app/src/utils/privilege.ts):
     # otherwise any GitHub user could spend model budget and run the
@@ -260,6 +271,9 @@ jobs:
   # (the hourly orchestrator retries later).
   auto-merge:
     name: Auto-merge autofix PR
+    permissions:
+      contents: write
+      pull-requests: write
     if: github.event_name == 'pull_request' && github.event.action != 'closed' && contains(github.event.pull_request.labels.*.name, 'autofix:ready') && !github.event.pull_request.merged
     runs-on: ubuntu-latest
     timeout-minutes: 25
