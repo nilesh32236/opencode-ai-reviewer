@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto';
 import * as core from '@actions/core';
 import { buildInlineComments } from '../jsonl-parser.js';
-import type { PlatformAdapter, ReviewPostResult, ReviewThreadInfo } from '../platform/adapter.js';
+import type {
+  HeadCIStatus,
+  PlatformAdapter,
+  ReviewPostResult,
+  ReviewThreadInfo,
+} from '../platform/adapter.js';
 import type {
   ChangedFile,
   IssueComment,
@@ -966,6 +971,109 @@ export class GitHubHelper implements PlatformAdapter {
         output,
       }),
     });
+  }
+
+  /**
+   * Get the aggregated CI status for a commit SHA (fail-closed rollup).
+   *
+   * Queries `GET /commits/{sha}/check-runs` (up to 3 pages) plus the legacy
+   * combined commit status (`GET /commits/{sha}/status`). An empty rollup
+   * (`total == 0`, e.g. `[skip ci]` pushes or event-delivery gaps) is
+   * returned as-is and MUST be treated as not-green by callers — never
+   * synthesized to green. `skipped`/`neutral`/`cancelled` conclusions are
+   * counted separately so callers can block on them (skipped != verified).
+   * @param commitSha - Exact head commit SHA to query.
+   * @param signal - Optional AbortSignal to cancel the requests.
+   * @returns Aggregated CI status for the SHA.
+   */
+  async getHeadCIStatus(commitSha: string, signal?: AbortSignal): Promise<HeadCIStatus> {
+    const empty: HeadCIStatus = {
+      commitSha,
+      total: 0,
+      successful: 0,
+      failed: 0,
+      pending: 0,
+      skipped: 0,
+      green: false,
+      checks: [],
+    };
+    if (!commitSha || commitSha.trim() === '') return empty;
+    const sha = encodeURIComponent(commitSha);
+    const checks: Array<{ name: string; status: string; conclusion: string }> = [];
+
+    // CheckRuns (required — a fetch failure throws so the caller fails closed).
+    const seen = new Set<string>();
+    for (let page = 1; page <= 3; page++) {
+      const res = await this.api<{
+        total_count: number;
+        check_runs: Array<{ name?: string; status?: string; conclusion?: string | null }>;
+      }>(`/commits/${sha}/check-runs?per_page=100&page=${page}`, {}, undefined, signal);
+      const runs = Array.isArray(res?.check_runs) ? res.check_runs : [];
+      for (const run of runs) {
+        const name = String(run?.name ?? 'unknown');
+        const status = String(run?.status ?? 'unknown');
+        const conclusion = String(run?.conclusion ?? run?.status ?? 'unknown');
+        const key = `${name}\u0000${status}\u0000${conclusion}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        // Deduplicate identical repeats across pages only; same-named reruns
+        // with different conclusions are all kept so a failed rerun is visible.
+        checks.push({ name, status, conclusion });
+      }
+      if (runs.length < 100) break;
+    }
+
+    // Legacy commit statuses (best-effort — failure warns and continues with
+    // CheckRuns only; an empty status list is normal on Checks-only repos).
+    try {
+      const combined = await this.api<{
+        state?: string;
+        statuses?: Array<{ context?: string; state?: string }>;
+      }>(`/commits/${sha}/status`, {}, undefined, signal);
+      const statuses = Array.isArray(combined?.statuses) ? combined.statuses : [];
+      for (const s of statuses) {
+        const name = String(s?.context ?? 'status');
+        const state = String(s?.state ?? 'pending').toLowerCase();
+        if (state === 'success') {
+          checks.push({ name, status: 'completed', conclusion: 'success' });
+        } else if (state === 'pending') {
+          checks.push({ name, status: 'pending', conclusion: 'pending' });
+        } else {
+          checks.push({ name, status: 'completed', conclusion: state });
+        }
+      }
+    } catch (err) {
+      core.warning(
+        `getHeadCIStatus(${commitSha.slice(0, 7)}): legacy commit status unavailable — using CheckRuns only: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    let successful = 0;
+    let failed = 0;
+    let pending = 0;
+    let skipped = 0;
+    for (const c of checks) {
+      const status = c.status.toLowerCase();
+      const conclusion = c.conclusion.toLowerCase();
+      if (status !== 'completed') {
+        pending += 1;
+        continue;
+      }
+      if (conclusion === 'success') {
+        successful += 1;
+      } else if (
+        conclusion === 'skipped' ||
+        conclusion === 'neutral' ||
+        conclusion === 'cancelled'
+      ) {
+        skipped += 1;
+      } else {
+        failed += 1;
+      }
+    }
+    const total = checks.length;
+    const green = total > 0 && pending === 0 && failed === 0 && skipped === 0;
+    return { commitSha, total, successful, failed, pending, skipped, green, checks };
   }
 
   /**

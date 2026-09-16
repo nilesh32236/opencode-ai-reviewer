@@ -68,6 +68,26 @@ export interface ReviewCommentThread {
   commitId?: string;
 }
 
+/** Aggregated CI status for a single commit SHA (fail-closed rollup). */
+export interface HeadCIStatus {
+  /** Commit SHA this rollup was queried for. */
+  commitSha: string;
+  /** Total checks + statuses observed (0 = CI never ran → never green). */
+  total: number;
+  /** Checks with a `success` conclusion. */
+  successful: number;
+  /** Checks with a failure-like conclusion (`failure`, `timed_out`, `action_required`, `error`, …). */
+  failed: number;
+  /** Checks not yet completed (`queued`, `in_progress`, legacy `pending`, …). */
+  pending: number;
+  /** Completed-but-unverified conclusions (`skipped`, `neutral`, `cancelled`). */
+  skipped: number;
+  /** True only when the rollup is non-empty and fully verified green. */
+  green: boolean;
+  /** Raw per-check entries backing the counts. */
+  checks: Array<{ name: string; status: string; conclusion: string }>;
+}
+
 /** Platform-agnostic adapter interface for interacting with Git hosting services. */
 export interface PlatformAdapter {
   /**
@@ -286,6 +306,18 @@ export interface PlatformAdapter {
     conclusion: 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required',
     output?: { title: string; summary: string; text?: string },
   ): Promise<{ id: number }>;
+  /**
+   * Get the aggregated CI status for a commit SHA (fail-closed rollup).
+   *
+   * Queries commit CheckRuns (+ legacy commit statuses on GitHub) for the
+   * exact SHA. Callers MUST treat throw/empty/non-green as not-green: an
+   * empty rollup (CI never ran on the head) must never be considered
+   * mergeable, and `skipped` conclusions must not count as verified.
+   * @param commitSha - Exact head commit SHA to query.
+   * @param signal - Optional AbortSignal to cancel the request.
+   * @returns Aggregated CI status (with `total == 0` when nothing ran).
+   */
+  getHeadCIStatus(commitSha: string, signal?: AbortSignal): Promise<HeadCIStatus>;
   /**
    * Post or update a marker-based comment.
    * @param issueNumber - Issue number.

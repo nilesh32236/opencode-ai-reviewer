@@ -18,6 +18,7 @@ import {
   buildFixBody,
   buildFunctionScoreOptions,
   buildReadyBody,
+  checkHeadCIGreen,
   markAnalysisReady,
   parseAnalysisPlan,
   parseRunChecksCommands,
@@ -925,6 +926,62 @@ export async function runAutofixLoop(
     };
 
     if (result.verdict.ready && result.stats.critical === 0 && result.stats.important === 0) {
+      // Fail-closed CI gate: a clean review is not enough — the exact head
+      // SHA must have green CI CheckRuns. Empty rollups (`[skip ci]` pushes,
+      // event-delivery gaps), pending/failed/skipped checks, query errors, or
+      // a missing adapter method all block `autofix:ready`. The PR stays in
+      // `autofix` for another cycle instead of becoming mergeable.
+      let ciGate: { ok: boolean; reason: string };
+      try {
+        ciGate = await checkHeadCIGreen(gh, prHeadSha, undefined, signal);
+      } catch (err) {
+        ciGate = {
+          ok: false,
+          reason: `CI gate error for ${prHeadSha.slice(0, 7)}: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+      if (!ciGate.ok) {
+        core.warning(
+          sanitize(
+            `PR #${prNumber} review clean but ${ciGate.reason} — refusing autofix:ready, staying in autofix`,
+          ),
+        );
+        new Logger('Autofix').warn('CI gate blocked autofix:ready', {
+          operation: 'autofix.ciGate',
+          prNumber,
+          headSha: prHeadSha,
+          reason: ciGate.reason,
+        });
+        entry.status = 'needs-fix';
+        history.push(entry);
+        try {
+          await withRetry(() => gh.setLabels(prNumber, ['autofix'], ['autofix:ready']), {
+            operationName: 'autofix.setLabels.ciBlocked',
+            maxRetries: 2,
+            signal,
+          });
+        } catch (err) {
+          core.warning(
+            sanitize(
+              `Failed to set autofix labels on PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+            ),
+          );
+        }
+        try {
+          await gh.postOrUpdateComment(
+            prNumber,
+            REVIEW_MARKER,
+            `${buildAutofixStatusBody(history, config.maxIterations, 'reviewing', result)}\n\n⏳ **Waiting on CI** — ${ciGate.reason}. \`autofix:ready\` will be applied once CI is green on the head SHA.`,
+          );
+        } catch (err) {
+          core.warning(
+            sanitize(
+              `Failed to post CI-waiting comment: ${err instanceof Error ? err.message : err}`,
+            ),
+          );
+        }
+        continue;
+      }
       core.info('PR approved — all issues resolved');
       approved = true;
       exitReason = 'approved';

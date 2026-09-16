@@ -25,6 +25,7 @@ import {
   buildFixBody,
   buildFunctionScoreOptions,
   buildReadyBody,
+  checkHeadCIGreen,
   configureGit,
   parseRunChecksCommands,
   resolveFixedComments,
@@ -281,6 +282,51 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         result.verdict.ready && result.stats.critical === 0 && result.stats.important === 0;
 
       if (isApproved) {
+        // Fail-closed CI gate (mirrors action/src/fix.ts): a clean review must
+        // not yield `autofix:ready` without green CI on the exact head SHA.
+        // Empty rollups, pending/failed/skipped checks, or query errors keep
+        // the PR in `autofix` for another cycle.
+        let ciGate: { ok: boolean; reason: string };
+        try {
+          ciGate = await checkHeadCIGreen(gh, pr.headSha, undefined, signal);
+        } catch (err) {
+          ciGate = {
+            ok: false,
+            reason: `CI gate error for ${pr.headSha.slice(0, 7)}: ${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+        if (!ciGate.ok) {
+          logger.warn(
+            `Review clean but ${ciGate.reason} — refusing autofix:ready, staying in autofix`,
+          );
+          entry.status = 'needs-fix';
+          history.push(entry);
+          try {
+            await gh.setLabels(prNumber, ['autofix'], ['autofix:ready']);
+          } catch (err) {
+            logger.error(
+              `Failed to set autofix labels: ${err instanceof Error ? err.message : err}`,
+            );
+          }
+          try {
+            await gh.postOrUpdateComment(
+              prNumber,
+              REVIEW_MARKER,
+              `${buildAutofixStatusBody(history, config.maxIterations, 'reviewing', result)}\n\n⏳ **Waiting on CI** — ${ciGate.reason}. \`autofix:ready\` will be applied once CI is green on the head SHA.`,
+            );
+          } catch (err) {
+            logger.error(
+              `Failed to post CI-waiting comment: ${err instanceof Error ? err.message : err}`,
+            );
+          }
+          // Fall through to the normal needs-fix path below would re-push
+          // `needs-fix` history; instead continue so this iteration counts
+          // once and the loop re-reviews CI on the next cycle.
+          // Reuse the shared needs-fix posting below by jumping there: mark
+          // the entry already pushed and continue.
+          // (entry already pushed; skip fix work for a clean review.)
+          continue;
+        }
         approved = true;
         entry.status = 'approved';
         history.push(entry);
