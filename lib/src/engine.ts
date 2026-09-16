@@ -3899,12 +3899,20 @@ export class ReviewEngine {
    * @param result - Review result containing candidate issues.
    * @param defaultCategory - Default category assigned to findings without one.
    * @param extraMinSeverityRank - Optional extra minimum severity rank applied on top of the configured floor.
+   * @param scopeContext - Optional diff-hunk / changed-line-text / blame maps for the
+   * finding-scope guard (`review.sensitivity.findingScope`). Absent maps skip
+   * that check fail-open.
    * @returns ReviewResult with the filtered issues and recomputed stats.
    */
   private applySensitivityFilter(
     result: ReviewResult,
     defaultCategory = 'general',
     extraMinSeverityRank?: number,
+    scopeContext?: {
+      diffHunks?: Map<string, Set<number>> | Record<string, Set<number>>;
+      changedLineTexts?: Map<string, Set<string>> | Record<string, Set<string>>;
+      blameMap?: Map<string, Map<number, BlameInfo>> | Record<string, Map<number, BlameInfo>>;
+    },
   ): ReviewResult {
     const sensitivity = this.config.review.sensitivity ?? {};
     const { issues, dropped } = filterFindings(result.issues, {
@@ -3917,6 +3925,9 @@ export class ReviewEngine {
       ignorePatterns: sensitivity.ignorePatterns,
       categories: this.config.review.categories,
       defaultCategory,
+      findingScope: sensitivity.findingScope,
+      ...scopeContext,
+      onScopeEvent: (message, data) => this.logger.debug(message, data),
     });
     if (dropped > 0) {
       this.logger.info(`Sensitivity filter dropped ${dropped} finding(s) (kept ${issues.length})`);

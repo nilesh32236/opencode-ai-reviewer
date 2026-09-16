@@ -245,6 +245,18 @@ const PathRulesArraySchema = z.preprocess((value: unknown): unknown => {
 }, z.array(PathRuleSchema).max(MAX_PATH_RULES_ENTRIES).optional());
 
 /**
+ * Zod schema validating the diff-scoping guard for review findings.
+ * Fail-open: the field-level `.catch(undefined)` on the parent degrades a
+ * malformed block to `undefined` (legacy path) instead of failing the parse.
+ * @since NEXT
+ */
+export const FindingScopeConfigSchema = z.object({
+  enforceDiffScope: z.boolean().optional(),
+  requireLineQuote: z.boolean().optional(),
+  blameDemotion: z.boolean().optional(),
+});
+
+/**
  * Zod schema validating per-repository sensitivity configuration.
  * Numeric caps intentionally omit `.min()/.max()` bounds — out-of-range values
  * are clamped by `validateConfig()` (config.ts) rather than failing the parse.
@@ -258,6 +270,7 @@ export const ReviewSensitivitySchema = z.object({
   maxTotalFindings: z.number().int().optional(),
   focusAreas: z.array(z.string()).optional().default([]),
   ignorePatterns: z.array(z.string()).optional().default([]),
+  findingScope: FindingScopeConfigSchema.optional().catch(undefined),
 });
 
 /** Zod schema validating review configuration. */

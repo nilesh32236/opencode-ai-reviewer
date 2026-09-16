@@ -677,6 +677,32 @@ export interface CategoryOverride {
   maxFindings?: number;
 }
 
+/** Diff-scoping guard for review findings (additive, fail-open).
+ * When all flags are absent/false the legacy filter path runs unchanged.
+ * @since NEXT
+ */
+export interface FindingScopeConfig {
+  /**
+   * Drop findings whose `file:line` is not in the changed diff hunks.
+   * Skipped fail-open when diff hunk data is absent.
+   * @since NEXT
+   */
+  enforceDiffScope?: boolean;
+  /**
+   * Drop findings whose quoted code does not exactly match a changed line
+   * (after trim). Skipped fail-open when changed-line text is absent.
+   * @since NEXT
+   */
+  requireLineQuote?: boolean;
+  /**
+   * Demote (one severity level, floored at `minor`) findings on lines that
+   * blame attributes outside this PR instead of dropping them. Skipped
+   * fail-open when blame data is absent.
+   * @since NEXT
+   */
+  blameDemotion?: boolean;
+}
+
 /** Per-repository sensitivity configuration for tuning reviewer strictness. */
 export interface ReviewSensitivityConfig {
   /** Minimum severity floor: 'warning' keeps everything, 'error' drops minor, 'critical' keeps only critical. */
@@ -691,6 +717,12 @@ export interface ReviewSensitivityConfig {
   focusAreas?: string[];
   /** Glob patterns applied to finding file paths. */
   ignorePatterns?: string[];
+  /**
+   * Optional diff-scoping guard plus line-quote validator with blame-aware
+   * demotion. Absent (default) preserves the legacy filter path.
+   * @since NEXT
+   */
+  findingScope?: FindingScopeConfig;
 }
 
 /** Severity threshold for failing the action/check run when findings at or above
