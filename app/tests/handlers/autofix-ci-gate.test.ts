@@ -169,12 +169,30 @@ describe('autofix head-CI gate (Probot loop)', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  async function runLoop(): Promise<void> {
+  function dirtyReview(): ReviewResult {
+    return {
+      summary: 'Needs fixes',
+      verdict: { ready: false, reasoning: 'Issues found', autoFixable: true, confidence: 'high' },
+      strengths: [],
+      issues: [
+        {
+          file: 'src/a.ts',
+          line: 1,
+          severity: 'important',
+          message: 'Fix this',
+          confidence: 'high',
+        },
+      ],
+      stats: { total: 1, critical: 0, important: 1, minor: 0 },
+    } as unknown as ReviewResult;
+  }
+
+  async function runLoop(configOverrides: Partial<AgentConfig> = {}): Promise<void> {
     await handleAutofixLoop({
       prNumber: 42,
       repo: 'owner/repo',
       token: 'token',
-      config: makeConfig(),
+      config: makeConfig(configOverrides),
       tempDir,
       initialGitEnv: {},
     });
@@ -196,11 +214,7 @@ describe('autofix head-CI gate (Probot loop)', () => {
 
     expect(mockGetHeadCIStatus).toHaveBeenCalledWith('abc123', undefined);
     // Never promotes to ready...
-    expect(mockSetLabels).not.toHaveBeenCalledWith(
-      42,
-      ['autofix:ready'],
-      expect.anything(),
-    );
+    expect(mockSetLabels).not.toHaveBeenCalledWith(42, ['autofix:ready'], expect.anything());
     expect(mockCreateComment).not.toHaveBeenCalledWith(42, expect.stringContaining('Ready'));
     // ...stays in `autofix`, posts the Waiting-on-CI status comment...
     expect(mockSetLabels).toHaveBeenCalledWith(42, ['autofix'], ['autofix:ready']);
@@ -234,11 +248,7 @@ describe('autofix head-CI gate (Probot loop)', () => {
 
     await runLoop();
 
-    expect(mockSetLabels).not.toHaveBeenCalledWith(
-      42,
-      ['autofix:ready'],
-      expect.anything(),
-    );
+    expect(mockSetLabels).not.toHaveBeenCalledWith(42, ['autofix:ready'], expect.anything());
     expect(mockSetLabels).toHaveBeenCalledWith(42, ['autofix'], ['autofix:ready']);
     expect(mockPostOrUpdateComment).toHaveBeenCalledWith(
       42,
@@ -246,6 +256,66 @@ describe('autofix head-CI gate (Probot loop)', () => {
       expect.stringContaining('Waiting on CI'),
     );
     expect(mockSetLabels).not.toHaveBeenCalledWith(
+      42,
+      ['autofix:needs-manual-review'],
+      expect.anything(),
+    );
+  });
+
+  it('promotes to autofix:ready when the review is clean and CI is green', async () => {
+    mockGetHeadCIStatus.mockResolvedValue({
+      commitSha: 'abc123',
+      total: 2,
+      successful: 2,
+      failed: 0,
+      pending: 0,
+      skipped: 0,
+      green: true,
+      checks: [
+        { name: 'build', status: 'completed', conclusion: 'success' },
+        { name: 'test', status: 'completed', conclusion: 'success' },
+      ],
+    });
+
+    await runLoop();
+
+    expect(mockGetHeadCIStatus).toHaveBeenCalledWith('abc123', undefined);
+    expect(mockSetLabels).toHaveBeenCalledWith(
+      42,
+      ['autofix:ready'],
+      expect.arrayContaining(['autofix']),
+    );
+    expect(mockCreateComment).toHaveBeenCalledWith(42, expect.stringContaining('Ready'));
+    expect(mockSetLabels).not.toHaveBeenCalledWith(
+      42,
+      ['autofix:needs-manual-review'],
+      expect.anything(),
+    );
+  });
+
+  it('resets ciWaiting so a CI-block followed by exhausted work reaches needs-manual-review', async () => {
+    mockGetHeadCIStatus.mockResolvedValue({
+      commitSha: 'abc123',
+      total: 0,
+      successful: 0,
+      failed: 0,
+      pending: 0,
+      skipped: 0,
+      green: false,
+      checks: [],
+    });
+    // First iteration: clean review (CI-blocked). Second iteration: dirty
+    // review that makes no fix progress, so the loop exhausts via no-changes
+    // and must reach the needs-manual-review terminal.
+    mockReviewPR.mockResolvedValueOnce(cleanReview()).mockResolvedValueOnce(dirtyReview());
+    mockRunFix.mockResolvedValue({ changesMade: false });
+
+    await runLoop({ maxIterations: 2 });
+
+    // First iteration stayed in waiting state...
+    expect(mockSetLabels).toHaveBeenCalledWith(42, ['autofix'], ['autofix:ready']);
+    // ...but the terminal CI-block must not latch: exhausted work relabels.
+    expect(mockSetLabels).toHaveBeenCalledWith(
       42,
       ['autofix:needs-manual-review'],
       expect.anything(),

@@ -256,6 +256,24 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         break;
       }
 
+      // The review above is a long LLM call: a push during review leaves the
+      // pre-review head SHA stale. Re-fetch so both postReview and the CI gate
+      // below target the current head. A refetch failure fails closed for this
+      // iteration (skip on stale SHA) instead of gating on uncertain state.
+      try {
+        const fresh = await withRetry(() => gh.getMR(prNumber), {
+          operationName: 'autofix.getMR.refresh',
+          signal,
+        });
+        pr = fresh;
+      } catch (err) {
+        logger.warn(
+          `Failed to re-fetch PR #${prNumber} after review in iteration ${i + 1} — skipping CI gate on stale SHA: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        continue;
+      }
+      const gateSha = pr.headSha;
+
       if (i > 0 && previousFindings.length > 0) {
         await resolveFixedComments(gh, prNumber, previousFindings, result.issues, logger);
       }
@@ -298,11 +316,19 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         // the PR in `autofix` for another cycle.
         let ciGate: { ok: boolean; reason: string };
         try {
-          ciGate = await checkHeadCIGreen(gh, pr.headSha, undefined, signal);
+          // Retried like the surrounding hot-loop fetches and the Action
+          // mirror: a single transient 429/5xx must not consume a whole
+          // iteration (including the expensive review above). Persistent
+          // failures still fail closed via the catch.
+          ciGate = await withRetry(() => checkHeadCIGreen(gh, gateSha, undefined, signal), {
+            operationName: 'autofix.checkHeadCI',
+            maxRetries: 2,
+            signal,
+          });
         } catch (err) {
           ciGate = {
             ok: false,
-            reason: `CI gate error for ${String(pr.headSha ?? '').slice(0, 7) || 'unknown'}: ${err instanceof Error ? err.message : String(err)}`,
+            reason: `CI gate error for ${String(gateSha ?? '').slice(0, 7) || 'unknown'}: ${err instanceof Error ? err.message : String(err)}`,
           };
         }
         if (!ciGate.ok) {
