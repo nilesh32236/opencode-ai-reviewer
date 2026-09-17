@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ReviewResult } from '../src/types/index.js';
 import {
   buildAgentsMdAttributionFooter,
+  buildInlinePrelude,
   buildReviewBody,
   computeMergeScore,
   formatConfidenceLabel,
@@ -378,6 +379,28 @@ describe('review-body', () => {
       expect(five).toContain('🟢');
       expect(four).toContain('🟡');
       expect(five).not.toBe(four);
+    });
+  });
+
+  describe('buildInlinePrelude', () => {
+    it('is byte-identical to the postReview 422-fallback prelude', () => {
+      const path = 'src/foo.ts';
+      const line = 42;
+      const body = 'Consider handling the edge case here.';
+      expect(buildInlinePrelude(path, line, body)).toBe(
+        `**Inline comment (${path}:${line})**\n\n${body}`,
+      );
+    });
+
+    it('passes through empty body and leading-slash paths without normalization', () => {
+      expect(buildInlinePrelude('/src/foo.ts', 1, '')).toBe(
+        '**Inline comment (/src/foo.ts:1)**\n\n',
+      );
+    });
+
+    it('preserves multiline bodies verbatim after the blank line', () => {
+      const body = 'line one\nline two\n```suggestion\nfix\n```';
+      expect(buildInlinePrelude('a.ts', 7, body)).toBe(`**Inline comment (a.ts:7)**\n\n${body}`);
     });
   });
 });
