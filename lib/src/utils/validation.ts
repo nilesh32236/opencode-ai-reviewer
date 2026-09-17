@@ -37,6 +37,22 @@ export function validateRefName(ref: string): void {
   }
 }
 
+/** Plausible git commit SHA: hex, 4–64 chars (full or abbreviated). */
+const COMMIT_SHA_REGEX = /^[0-9a-fA-F]{4,64}$/;
+
+/**
+ * Whether a value is a plausible git commit SHA (hex string, 4–64 chars).
+ *
+ * Interpolating an unvalidated revision into a git argv risks flag injection
+ * (`git blame --output=<path>` writes files; a leading `-` parses as a flag).
+ * Callers must gate SHA-typed argv entries on this predicate and fail closed.
+ * @param sha - Candidate SHA value.
+ * @returns True when the value looks like a hex commit SHA.
+ */
+export function isValidCommitSha(sha: unknown): sha is string {
+  return typeof sha === 'string' && COMMIT_SHA_REGEX.test(sha);
+}
+
 /**
  * Owner/repo slug pattern restricted to the GitHub/GitLab owner/repo charset
  * (alphanumerics, dot, dash, underscore) with one or more slash-separated

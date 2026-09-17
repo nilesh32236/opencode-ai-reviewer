@@ -1,6 +1,7 @@
 import * as cp from 'node:child_process';
 import * as core from '@actions/core';
 import type { BlameInfo } from '../types/index.js';
+import { isValidCommitSha } from './validation.js';
 
 /** A contiguous 1-indexed (inclusive) range of new-file line numbers to blame. */
 export interface BlameRange {
@@ -249,8 +250,19 @@ export async function getGitBlame(
   }
 
   const args = ['blame', '--line-porcelain'];
-  if (options.headSha) args.push(options.headSha);
+  // Fail closed: an unvalidated revision in argv risks git flag injection
+  // (e.g. `--output=<path>` writes files). Callers catch and degrade to
+  // no-blame enrichment, so throwing here never breaks a review.
+  if (options.headSha !== undefined) {
+    if (!isValidCommitSha(options.headSha)) {
+      throw new Error(`Refusing git blame with invalid headSha: ${String(options.headSha)}`);
+    }
+    args.push(options.headSha);
+  }
   for (const range of ranges) {
+    if (!Number.isFinite(range.start) || !Number.isFinite(range.end)) {
+      throw new Error('Refusing git blame with non-finite line range');
+    }
     args.push('-L', `${range.start},${range.end}`);
   }
   args.push('--', filePath);

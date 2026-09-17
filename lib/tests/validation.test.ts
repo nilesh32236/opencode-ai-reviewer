@@ -1,4 +1,4 @@
-import { validateRefName } from '../src/utils/validation.js';
+import { isValidCommitSha, validateRefName } from '../src/utils/validation.js';
 
 describe('validateRefName()', () => {
   it('accepts simple branch names', () => {
@@ -57,5 +57,29 @@ describe('validateRefName()', () => {
   it('accepts very long branch names (256 chars)', () => {
     const longName = 'a'.repeat(256);
     expect(() => validateRefName(longName)).not.toThrow();
+  });
+});
+
+describe('isValidCommitSha()', () => {
+  it('accepts full and abbreviated hex SHAs', () => {
+    expect(isValidCommitSha('f0e2a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c')).toBe(true);
+    expect(isValidCommitSha('abc123')).toBe(true);
+    expect(isValidCommitSha('ABCDEF1234')).toBe(true);
+  });
+
+  it('rejects flag-injection shapes', () => {
+    expect(isValidCommitSha('--output=/tmp/x')).toBe(false);
+    expect(isValidCommitSha('-upload-pack=id')).toBe(false);
+    expect(isValidCommitSha('--upload-pack=touch pwned')).toBe(false);
+  });
+
+  it('rejects non-hex, empty, and non-string input', () => {
+    expect(isValidCommitSha('main')).toBe(false);
+    expect(isValidCommitSha('HEAD@{1}')).toBe(false);
+    expect(isValidCommitSha('abc')).toBe(false);
+    expect(isValidCommitSha('')).toBe(false);
+    expect(isValidCommitSha(undefined)).toBe(false);
+    expect(isValidCommitSha(null)).toBe(false);
+    expect(isValidCommitSha(1234)).toBe(false);
   });
 });
