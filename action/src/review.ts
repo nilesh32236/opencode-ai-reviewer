@@ -222,6 +222,16 @@ export async function runReview(
       previousComments,
       streamEnabled
         ? async (batchIndex, totalBatches, batchResult) => {
+            // Collect postable findings first (dedup gates stay synchronous so
+            // duplicates within the same batch are filtered before dispatch),
+            // then post with bounded concurrency (5) instead of serial awaits.
+            const pending: Array<{
+              issue: (typeof batchResult.issues)[number];
+              key: string;
+              fingerprint: string | undefined;
+              body: string;
+            }> = [];
+            const batchSeen = new Set<string>();
             for (const issue of batchResult.issues) {
               if (issue.inline && issue.file && issue.line) {
                 // Guard the inline-comment API against model-generated garbage:
@@ -255,10 +265,12 @@ export async function runReview(
                 // and only mark a finding as streamed when the inline post
                 // actually succeeded — otherwise the final-result filter below
                 // would drop it entirely (neither inline nor body).
-                if (streamedIssueKeys.has(key)) continue;
-                const posted = await gh.postInlineComment(prNumber, pr.headSha, {
-                  path: issue.file,
-                  line: issue.line,
+                if (streamedIssueKeys.has(key) || batchSeen.has(key)) continue;
+                batchSeen.add(key);
+                pending.push({
+                  issue,
+                  key,
+                  fingerprint: issueFingerprint,
                   body: issueFingerprint
                     ? withFingerprintMarker(
                         `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}`,
@@ -266,9 +278,29 @@ export async function runReview(
                       )
                     : `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}`,
                 });
+              }
+            }
+            const STREAM_POST_CONCURRENCY = 5;
+            for (let i = 0; i < pending.length; i += STREAM_POST_CONCURRENCY) {
+              const chunk = pending.slice(i, i + STREAM_POST_CONCURRENCY);
+              const results = await Promise.all(
+                chunk.map(async ({ issue, key, fingerprint, body }) => {
+                  try {
+                    const posted = await gh.postInlineComment(prNumber, pr.headSha, {
+                      path: issue.file as string,
+                      line: issue.line as number,
+                      body,
+                    });
+                    return { key, fingerprint, posted };
+                  } catch {
+                    return { key, fingerprint, posted: false };
+                  }
+                }),
+              );
+              for (const { key, fingerprint, posted } of results) {
                 if (posted) {
                   streamedIssueKeys.add(key);
-                  if (issueFingerprint) streamedFingerprints.add(issueFingerprint);
+                  if (fingerprint) streamedFingerprints.add(fingerprint);
                   streamedFindingCount++;
                 } else {
                   core.warning(

@@ -113,7 +113,9 @@ describe('StateCacheManager mtime comparison (issue #188 regression)', () => {
     const firstSave = manager.save();
     const secondSave = manager.save();
 
-    expect(mockSaveCache).toHaveBeenCalledTimes(1);
+    // Content hashing is async (streamed file I/O), so wait until the
+    // debounced saveCache call lands exactly once before resolving it.
+    await vi.waitFor(() => expect(mockSaveCache).toHaveBeenCalledTimes(1));
     resolveSave();
     await Promise.all([firstSave, secondSave]);
   });
