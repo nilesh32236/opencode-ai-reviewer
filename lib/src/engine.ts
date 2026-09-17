@@ -246,6 +246,8 @@ export const INTER_CHUNK_DELAY_MS = 150;
  * wins when both are explicitly set (its value takes precedence).
  * Default is off (fail-open, behavior-preserving).
  * @param projectContext - Project context config, if any.
+ * @param projectContext.autoLoadAgentsMd - Canonical flag enabling the fetch.
+ * @param projectContext.autoLoadConventions - Alias flag enabling the fetch.
  * @returns True when the head-SHA convention fetch should run.
  * @since NEXT
  */
