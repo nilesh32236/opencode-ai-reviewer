@@ -60,7 +60,7 @@ jobs:
         run: bash .github/scripts/setup-opencode.sh
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          OPENCODE_VERSION: v1.18.29
+          OPENCODE_VERSION: v1.18.31
 
       - name: Research upstream ecosystem
         id: research
@@ -143,7 +143,7 @@ jobs:
         run: bash .github/scripts/setup-opencode.sh
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          OPENCODE_VERSION: v1.18.29
+          OPENCODE_VERSION: v1.18.31
 
       - name: Publish improvement issues
         id: publish

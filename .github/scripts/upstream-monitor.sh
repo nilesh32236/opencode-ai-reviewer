@@ -29,7 +29,7 @@
 #   OPENCODE_API_KEY      Required for research/publish (CI). Local: opencode auth.
 #   CONTEXT7_API_KEY      Optional enrichment.
 #   OPENCODE_MODEL        Model id (default opencode/muse-spark-1.3-contributor-free)
-#   OPENCODE_VERSION      Pinned CLI version for CI installs (v1.18.29)
+#   OPENCODE_VERSION      Pinned CLI version for CI installs (v1.18.31)
 #   GH_TOKEN / GITHUB_TOKEN  Used for label creation and gh calls.
 #   GITHUB_REPOSITORY     owner/repo (CI). Locally inferred from git remote.
 #   GITHUB_OUTPUT         CI: append outputs (improvements_found, actionable_found,
@@ -48,7 +48,7 @@ AGENT_RESEARCHER="monitor-researcher"
 AGENT_LANE="monitor-lane-researcher"
 AGENT_PUBLISHER="monitor-issue-publisher"
 DEFAULT_MODEL="opencode/muse-spark-1.3-contributor-free"
-PINNED_OPENCODE_VERSION="v1.18.29"
+PINNED_OPENCODE_VERSION="v1.18.31"
 
 MODEL="${OPENCODE_MODEL:-${DEFAULT_MODEL}}"
 OUT_DIR="${MONITOR_OUT_DIR:-$HOME/.opencode-reviewer/monitor}"
