@@ -252,7 +252,7 @@ export class GitLabAdapter implements PlatformAdapter {
    * @param endpoint - API path relative to the project base (e.g. '/merge_requests').
    * @param options - Pagination and error-handling options.
    * @param options.perPage - Items requested per page (max 100).
-   * @param options.maxPages
+   * @param options.maxPages - Maximum pages to fetch before stopping.
    * @param options.direction - options.direction argument.
    * @param options.throwOnError - When true, rethrow a page-fetch error instead of
    * silently returning partial data (default: false).
@@ -651,7 +651,7 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Get diff since SHA.
-   * @param fromSha
+   * @param fromSha - Base commit SHA for the comparison.
    * @param toSha - toSha argument.
    * @returns Description.
    */
@@ -677,10 +677,10 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * List review comments.
-   * @param mrNumber
-   * @param options
-   * @param options.perPage
-   * @param options.maxPages
+   * @param mrNumber - Merge request number (iid) within the project.
+   * @param options - Optional behavior overrides.
+   * @param options.perPage - Items requested per page (max 100).
+   * @param options.maxPages - Maximum pages to fetch before stopping.
    * @param options.direction - options.direction argument.
    * @param signal - Optional AbortSignal to cancel the paginated fetch.
    * @returns Description.
@@ -699,8 +699,8 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Create review comment reply.
-   * @param mrNumber
-   * @param commentId
+   * @param mrNumber - Merge request number (iid) within the project.
+   * @param commentId - Note/comment ID to target.
    * @param body - body argument.
    * @returns Description.
    */
@@ -718,10 +718,10 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * List comments.
-   * @param issueNumber
-   * @param options
-   * @param options.perPage
-   * @param options.maxPages
+   * @param issueNumber - Issue number (iid) within the project.
+   * @param options - Optional behavior overrides.
+   * @param options.perPage - Items requested per page (max 100).
+   * @param options.maxPages - Maximum pages to fetch before stopping.
    * @param options.direction - options.direction argument.
    * @param options.throwOnError - When true, rethrow a page-fetch error instead of
    * silently returning partial data (default: false).
@@ -746,7 +746,7 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Post comment.
-   * @param issueNumber
+   * @param issueNumber - Issue number (iid) within the project.
    * @param body - body argument.
    * @returns Description.
    */
@@ -857,10 +857,10 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Post review.
-   * @param mrNumber
-   * @param _commitSha
-   * @param result
-   * @param postInlineComments
+   * @param mrNumber - Merge request number (iid) within the project.
+   * @param _commitSha - Unused commit SHA placeholder (reserved for future use).
+   * @param result - Review result to summarize.
+   * @param postInlineComments - Whether to post the built inline comments.
    * @param suppressLowConfidence - suppressLowConfidence argument.
    * @param options - Optional display flags (e.g. deterministic function scores).
    * @param signal - Optional AbortSignal to cancel the review post.
@@ -1134,8 +1134,8 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Post or update comment.
-   * @param issueNumber
-   * @param marker
+   * @param issueNumber - Issue number (iid) within the project.
+   * @param marker - Idempotency marker identifying managed content.
    * @param body - body argument.
    * @returns Description.
    */
@@ -1229,7 +1229,7 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Create comment.
-   * @param issueNumber
+   * @param issueNumber - Issue number (iid) within the project.
    * @param body - body argument.
    * @returns Description.
    */
@@ -1244,8 +1244,8 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Reply to review comment.
-   * @param mrNumber
-   * @param commentId
+   * @param mrNumber - Merge request number (iid) within the project.
+   * @param commentId - Note/comment ID to target.
    * @param body - body argument.
    * @returns Description.
    */
@@ -1271,7 +1271,7 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Get review comment.
-   * @param mrNumber
+   * @param mrNumber - Merge request number (iid) within the project.
    * @param commentId - commentId argument.
    * @param signal - Optional AbortSignal to cancel the request.
    * @returns Description.
@@ -1332,8 +1332,8 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Create issue.
-   * @param title
-   * @param body
+   * @param title - Title text for the created or updated resource.
+   * @param body - Body markdown for the created or updated resource.
    * @param labels - labels argument.
    * @returns Description.
    */
@@ -1357,9 +1357,9 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Create PR.
-   * @param title
-   * @param body
-   * @param head
+   * @param title - Title text for the created or updated resource.
+   * @param body - Body markdown for the created or updated resource.
+   * @param head - Head ref (branch or SHA) for the comparison.
    * @param base - base argument.
    * @returns Description.
    */
@@ -1393,7 +1393,7 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Add labels.
-   * @param issueNumber
+   * @param issueNumber - Issue number (iid) within the project.
    * @param labels - labels argument.
    * @returns Description.
    */
@@ -1409,7 +1409,7 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Remove label.
-   * @param issueNumber
+   * @param issueNumber - Issue number (iid) within the project.
    * @param label - label argument.
    * @returns Description.
    */
@@ -1433,8 +1433,8 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Set labels.
-   * @param issueNumber
-   * @param add
+   * @param issueNumber - Issue number (iid) within the project.
+   * @param add - When true, add the label(s); otherwise remove them.
    * @param remove - remove argument.
    * @returns Description.
    */
@@ -1474,8 +1474,8 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Gather context.
-   * @param options
-   * @param options.issueNumber
+   * @param options - Optional behavior overrides.
+   * @param options.issueNumber - Issue number (iid) scoping the request.
    * @param options.prNumber - options.prNumber argument.
    * @param signal - Optional AbortSignal to cancel the fan-out requests.
    * @returns Description.
@@ -1659,7 +1659,7 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Close issue.
-   * @param issueNumber
+   * @param issueNumber - Issue number (iid) within the project.
    * @param comment - comment argument.
    * @param signal - Optional AbortSignal to cancel the request.
    * @returns Description.
@@ -1726,7 +1726,7 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Minimize review comment.
-   * @param _commentId
+   * @param _commentId - Unused comment ID placeholder (reserved for future use).
    * @param _classifier - _classifier argument.
    * @returns Description.
    */
@@ -1757,9 +1757,9 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Update MR.
-   * @param mrNumber
-   * @param updates
-   * @param updates.title
+   * @param mrNumber - Merge request number (iid) within the project.
+   * @param updates - Matched update payloads to apply.
+   * @param updates.title - New title text carried by the update.
    * @param updates.body - updates.body argument.
    * @returns Description.
    */
