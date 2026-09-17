@@ -107,9 +107,9 @@ import {
   resolveConfinedWorkingDir,
 } from './utils/safe-exec.js';
 import { sanitizeString } from './utils/sanitize.js';
-import { attachShellEvidence, resolveShellValidateOptions } from './utils/shell-validate.js';
 import { detectSecrets, mergeSecretFindings } from './utils/secret-detect.js';
 import type { SecretDetectOptions, SecretFinding } from './utils/secret-detect.js';
+import { attachShellEvidence, resolveShellValidateOptions } from './utils/shell-validate.js';
 import { TestGapDetector, buildContextString, isTestFile } from './utils/test-gap-detector.js';
 import type { TestGapResult } from './utils/test-gap-detector.js';
 import { VERDICT_FAILURE_SENTINELS } from './utils/verdict-mode.js';

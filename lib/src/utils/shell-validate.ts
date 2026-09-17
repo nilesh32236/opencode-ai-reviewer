@@ -1,10 +1,6 @@
 import { execFile } from 'node:child_process';
 import type { ReviewIssue } from '../types/index.js';
-import {
-  isAllowedLinterCommand,
-  isConfinedPath,
-  isSafeLinterArgs,
-} from './safe-exec.js';
+import { isAllowedLinterCommand, isConfinedPath, isSafeLinterArgs } from './safe-exec.js';
 
 /** Default per-command timeout for shell validation (ms). */
 export const SHELL_VALIDATE_TIMEOUT_MS = 30_000;
@@ -44,9 +40,7 @@ function substitutePlaceholders(
 ): string[] | undefined {
   try {
     const out = template.map((arg) =>
-      String(arg)
-        .replaceAll('{file}', file)
-        .replaceAll('{line}', String(line)),
+      String(arg).replaceAll('{file}', file).replaceAll('{line}', String(line)),
     );
     if (out.some((a) => a.includes('\0'))) return undefined;
     if (typeof file === 'string' && file !== '' && !isConfinedPath(workDir, file)) return undefined;
@@ -216,9 +210,7 @@ export function resolveShellValidateOptions(
         return undefined;
       }
       if (!isAllowedLinterCommand(c[0])) return undefined;
-      const probe = c
-        .slice(1)
-        .map((a) => a.replaceAll('{file}', 'f').replaceAll('{line}', '1'));
+      const probe = c.slice(1).map((a) => a.replaceAll('{file}', 'f').replaceAll('{line}', '1'));
       if (!isSafeLinterArgs(probe)) return undefined;
     }
     const valid = (commands as string[][]).slice(0, 3);

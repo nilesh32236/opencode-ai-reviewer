@@ -626,9 +626,7 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
         // proof the finding reproduces. Sanitized — validator output is
         // untrusted subprocess text.
         const anchor = escapeInlineCode(`${i.file}:${i.line}`);
-        lines.push(
-          `<details><summary>Validation evidence for <code>${anchor}</code></summary>`,
-        );
+        lines.push(`<details><summary>Validation evidence for <code>${anchor}</code></summary>`);
         lines.push('');
         lines.push('```');
         lines.push(sanitizeMarkdown(i.validationEvidence.trim()).slice(0, 2048));

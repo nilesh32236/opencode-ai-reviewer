@@ -49,7 +49,14 @@ describe('resolveShellValidateOptions', () => {
   it('rejects non-allowlisted basenames at resolve time', () => {
     expect(resolveShellValidateOptions(true, [['rm', '-rf', 'x']], root)).toBeUndefined();
     expect(
-      resolveShellValidateOptions(true, [['tsc', '--version'], ['evil', 'x']], root),
+      resolveShellValidateOptions(
+        true,
+        [
+          ['tsc', '--version'],
+          ['evil', 'x'],
+        ],
+        root,
+      ),
     ).toBeUndefined();
   });
 
@@ -96,14 +103,18 @@ describe('collectFindingEvidence', () => {
   });
 
   it('fails open when the runner throws', async () => {
-    const evidence = await collectFindingEvidence(makeIssue(), {
-      commands: [['tsc', '--version']],
-      workDir: path.join(root, 'does-not-exist'),
-    }, {
-      run: async () => {
-        throw new Error('ENOENT');
+    const evidence = await collectFindingEvidence(
+      makeIssue(),
+      {
+        commands: [['tsc', '--version']],
+        workDir: path.join(root, 'does-not-exist'),
       },
-    });
+      {
+        run: async () => {
+          throw new Error('ENOENT');
+        },
+      },
+    );
     expect(evidence).toEqual([]);
   });
 });
