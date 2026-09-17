@@ -61,6 +61,14 @@ export declare class StateCacheManager {
     private readonly sha;
     private readonly logger;
     private savePromise;
+    /**
+     * Content hash of the last successfully saved snapshot. Skipping saves
+     * when the hash is unchanged bounds Actions-cache growth (GitHub caps the
+     * cache at 10 GB and each unique `${baseKey}-${hash}` key is an additional
+     * entry): repeated runs with identical db content reuse the existing entry
+     * instead of minting a duplicate snapshot key.
+     */
+    private lastSavedContentHash;
     private readonly circuitBreaker;
     /**
      * Create a state cache manager.
@@ -70,6 +78,13 @@ export declare class StateCacheManager {
      */
     constructor(cacheKeyPrefix: string, options?: StateCacheManagerOptions);
     private getLearningDbMtime;
+    /**
+     * Hash the learning.db content without loading the whole file into memory.
+     * Streams the file through SHA-256 so a large DB does not spike heap on
+     * every save. Only called after the mtime fast-path already detected a
+     * change, so hashing runs solely when the db was actually modified.
+     * @returns Hex SHA-256 of the file content (empty string on read failure).
+     */
     private hashLearningDbContent;
     /**
      * Restore the learning state from the Actions cache into `stateDir`.
@@ -82,12 +97,14 @@ export declare class StateCacheManager {
     restore(): Promise<void>;
     /**
      * Save the learning state to the Actions cache.
-     * Skips when the state directory or `learning.db` is absent, or when the db
+     * Skips when the state directory or `learning.db` is absent, when the db
      * mtime is unchanged from restore within a 1ms epsilon (saving happens only
-     * when the difference exceeds 1ms). The save key is derived from the most
-     * recent restore key plus a hash of the current db content, so repeated
-     * saves produce unique snapshot keys rather than re-using (and colliding
-     * with) the stable repository-and-branch key used for restore.
+     * when the difference exceeds 1ms), or when the streamed content hash
+     * matches the last saved snapshot (bounds cache growth toward distinct
+     * content states instead of one entry per run). The save key is derived
+     * from the most recent restore key plus a hash of the current db content,
+     * so repeated saves produce unique snapshot keys rather than re-using (and
+     * colliding with) the stable repository-and-branch key used for restore.
      *
      * @returns A promise that resolves when the save attempt completes.
      */
