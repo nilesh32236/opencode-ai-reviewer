@@ -348,6 +348,8 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
       findingScope: null,
       severityGate: null,
       reviewPreset: null,
+      shellValidate: null,
+      shellCommands: null,
     },
     categories: [CATEGORY_OVERRIDE_SHAPE],
     pathInstructions: null,
@@ -958,6 +960,16 @@ export function validateConfig(
       }
       if (s.reviewPreset === 'default' || s.reviewPreset === 'chill') {
         sensitivity.reviewPreset = s.reviewPreset;
+      }
+      if (s.shellValidate === true || s.shellValidate === false) {
+        sensitivity.shellValidate = s.shellValidate;
+      }
+      if (Array.isArray(s.shellCommands)) {
+        const commands = s.shellCommands.filter(
+          (c): c is string[] =>
+            Array.isArray(c) && c.length > 0 && c.every((a) => typeof a === 'string'),
+        );
+        if (commands.length > 0) sensitivity.shellCommands = commands;
       }
       result.review.sensitivity = sensitivity;
     }

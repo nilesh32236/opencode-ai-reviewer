@@ -85,6 +85,12 @@ export interface ReviewIssue {
   entryPointFile?: string;
   /** Confidence level of the finding */
   confidence?: 'high' | 'medium' | 'low';
+  /**
+   * Shell-validation evidence attached by opt-in `review.sensitivity.shellValidate`
+   * (annotation-only; validators never demote findings).
+   * @since NEXT
+   */
+  validationEvidence?: string;
   /** Category of the finding (e.g. security, performance); defaults to 'general'. */
   category?: string;
   /** Specialized agent that reported this finding (set on the multi-agent path). */
@@ -771,6 +777,22 @@ export interface ReviewSensitivityConfig {
    * @since NEXT
    */
   reviewPreset?: ReviewPreset;
+  /**
+   * Opt-in shell validation of findings with read-only allowlisted commands.
+   * Default false (pipeline unchanged). When true with well-formed
+   * `shellCommands`, validators run per finding and attach evidence snippets;
+   * they can only annotate, never demote or drop findings.
+   * @since NEXT
+   */
+  shellValidate?: boolean;
+  /**
+   * Argv templates for shell validation (`{file}`/`{line}` placeholders).
+   * Each command basename must pass the safe-exec allowlist; commands run via
+   * `execFile` (no shell) in the review workdir with a timeout. Capped at 3
+   * commands per finding. Ignored unless `shellValidate` is true.
+   * @since NEXT
+   */
+  shellCommands?: string[][];
 }
 
 /** Severity threshold for failing the action/check run when findings at or above

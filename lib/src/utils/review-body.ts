@@ -459,7 +459,11 @@ export function formatIssueBullet(issue: ReviewIssue): string {
   // The path is inline-code-escaped first: it is model-generated and could
   // otherwise break out of the code span with backticks or newlines.
   const codePath = escapeInlineCode(`${issue.file}:${issue.line}`).replace(/\//g, '/\u200b');
-  return `- ${getSeverityBadge(issue.severity)} **[${getSeverityPriority(issue.severity)}] ${issue.severity.toUpperCase()}:** \`${codePath}\` — ${sanitizeMarkdown(issue.message)}${formatConfidenceLabel(issue.confidence)}${formatReachabilityLabel(issue)}`;
+  const validated =
+    typeof issue.validationEvidence === 'string' && issue.validationEvidence.trim() !== ''
+      ? ' · ✅ Validated'
+      : '';
+  return `- ${getSeverityBadge(issue.severity)} **[${getSeverityPriority(issue.severity)}] ${issue.severity.toUpperCase()}:** \`${codePath}\` — ${sanitizeMarkdown(issue.message)}${formatConfidenceLabel(issue.confidence)}${formatReachabilityLabel(issue)}${validated}`;
 }
 
 /**
@@ -614,6 +618,20 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
         lines.push('');
         lines.push('```suggestion');
         lines.push(i.suggestionCode.trim());
+        lines.push('```');
+        lines.push('</details>');
+      }
+      if (typeof i.validationEvidence === 'string' && i.validationEvidence.trim() !== '') {
+        // Shell-validation evidence (opt-in): validator stdout attached as
+        // proof the finding reproduces. Sanitized — validator output is
+        // untrusted subprocess text.
+        const anchor = escapeInlineCode(`${i.file}:${i.line}`);
+        lines.push(
+          `<details><summary>Validation evidence for <code>${anchor}</code></summary>`,
+        );
+        lines.push('');
+        lines.push('```');
+        lines.push(sanitizeMarkdown(i.validationEvidence.trim()).slice(0, 2048));
         lines.push('```');
         lines.push('</details>');
       }
