@@ -10,6 +10,19 @@ vi.mock('../../src/handlers/commands.js', () => ({
 
 const mockedHandleCommand = vi.mocked(handleCommand);
 
+/** Allowing stub limiter so tests exercise behavior, not rate limits. */
+function makeAllowLimiter() {
+  return {
+    checkReview: vi.fn(async () => ({
+      allowed: true,
+      remaining: 10,
+      resetAt: Date.now() + 60_000,
+      reservationId: 'res-allow',
+    })),
+    recordReview: vi.fn(async () => undefined),
+  } as never;
+}
+
 const originalToken = process.env.GITHUB_TOKEN;
 
 function makeCommentEvent(body: string): GitHubEvent {
@@ -20,7 +33,7 @@ function makeCommentEvent(body: string): GitHubEvent {
     repo: 'owner/repo',
     prNumber: 42,
     payload: {
-      comment: { body },
+      comment: { body, author_association: 'OWNER' },
     },
   };
 }
@@ -51,7 +64,7 @@ describe('DocsSubscriber', () => {
   });
 
   it('triggers the docs command on /docs', async () => {
-    const sub = createDocsSubscriber(null, makeEnabledConfig());
+    const sub = createDocsSubscriber(makeAllowLimiter(), makeEnabledConfig());
 
     await sub.handle(makeCommentEvent('/docs'));
 
@@ -70,7 +83,7 @@ describe('DocsSubscriber', () => {
   });
 
   it('triggers the docs command with a parsed style flag', async () => {
-    const sub = createDocsSubscriber(null, makeEnabledConfig());
+    const sub = createDocsSubscriber(makeAllowLimiter(), makeEnabledConfig());
 
     await sub.handle(makeCommentEvent('/docs --style=tsdoc'));
 
@@ -92,7 +105,7 @@ describe('DocsSubscriber', () => {
   });
 
   it('does not trigger the docs command for unrelated comments', async () => {
-    const sub = createDocsSubscriber(null, makeEnabledConfig());
+    const sub = createDocsSubscriber(makeAllowLimiter(), makeEnabledConfig());
 
     await sub.handle(makeCommentEvent('lgtm'));
 
@@ -100,7 +113,7 @@ describe('DocsSubscriber', () => {
   });
 
   it('does not trigger the docs command for other slash commands', async () => {
-    const sub = createDocsSubscriber(null, makeEnabledConfig());
+    const sub = createDocsSubscriber(makeAllowLimiter(), makeEnabledConfig());
 
     await sub.handle(makeCommentEvent('/review'));
 
@@ -108,7 +121,7 @@ describe('DocsSubscriber', () => {
   });
 
   it('skips the docs command when docs generation is disabled', async () => {
-    const sub = createDocsSubscriber(null, DEFAULT_CONFIG);
+    const sub = createDocsSubscriber(makeAllowLimiter(), DEFAULT_CONFIG);
 
     await sub.handle(makeCommentEvent('/docs'));
 

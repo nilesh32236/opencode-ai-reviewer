@@ -16,6 +16,14 @@ below until attestation verification lands.
 > the uploaded asset blob).
 > Release page: https://github.com/anomalyco/opencode/releases/tag/v1.1.1
 > Pinned version equals `MINIMUM_OPENCODE_VERSION` (`lib/src/utils/version.ts`).
+>
+> **Tested version:** `1.18.31` (`TESTED_OPENCODE_VERSION` in
+> `lib/src/utils/version.ts`). The health check (`checkHealth()` in
+> `lib/src/opencode.ts`) warns — without failing — when the installed CLI is
+> `>= 1.1.1` but below `1.15.0` (`WARN_BELOW_OPENCODE_VERSION`), pointing at
+> the tested version. CLI docs: https://opencode.ai/docs/cli (v1.18, accessed
+> 2026-09-16). Releases: https://github.com/sst/opencode/releases (accessed
+> 2026-09-16).
 
 ## Pinned sha256 (`opencode_version: 1.1.1` / `v1.1.1`)
 

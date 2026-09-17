@@ -10,6 +10,19 @@ vi.mock('../../src/handlers/pr-review.js', () => ({
 
 const mockedHandlePRReview = vi.mocked(handlePRReview);
 
+/** Allowing stub limiter so tests exercise behavior, not rate limits. */
+function makeAllowLimiter() {
+  return {
+    checkReview: vi.fn(async () => ({
+      allowed: true,
+      remaining: 10,
+      resetAt: Date.now() + 60_000,
+      reservationId: 'res-allow',
+    })),
+    recordReview: vi.fn(async () => undefined),
+  } as never;
+}
+
 function makeSynchronizeEvent(prNumber: number, payload: Record<string, unknown>): GitHubEvent {
   return {
     type: 'pr.synchronize',
@@ -37,7 +50,7 @@ function makeCommentCreatedEvent(prNumber: number, body: string): GitHubEvent {
     prNumber,
     correlationId: 'cmd-corr-id',
     payload: {
-      comment: { body, user: { login: 'octocat' } },
+      comment: { body, author_association: 'OWNER', user: { login: 'octocat' } },
       issue: { number: prNumber },
       pull_request: { number: prNumber, user: { login: 'octocat' } },
     },
@@ -57,7 +70,12 @@ describe('ReviewSubscriber', () => {
 
   it('passes the top-level before SHA to handlePRReview on pr.synchronize', async () => {
     const bus: EventBus = new RealEventBus();
-    const sub = createReviewSubscriber({} as LearningStore, bus, undefined, DEFAULT_CONFIG);
+    const sub = createReviewSubscriber(
+      {} as LearningStore,
+      bus,
+      makeAllowLimiter(),
+      DEFAULT_CONFIG,
+    );
 
     await sub.handle(makeSynchronizeEvent(42, { before: 'abcdef123456' }));
 
@@ -78,7 +96,12 @@ describe('ReviewSubscriber', () => {
 
   it('falls back to pull_request.before when the top-level before is missing', async () => {
     const bus: EventBus = new RealEventBus();
-    const sub = createReviewSubscriber({} as LearningStore, bus, undefined, DEFAULT_CONFIG);
+    const sub = createReviewSubscriber(
+      {} as LearningStore,
+      bus,
+      makeAllowLimiter(),
+      DEFAULT_CONFIG,
+    );
 
     await sub.handle(
       makeSynchronizeEvent(7, {
@@ -107,7 +130,12 @@ describe('ReviewSubscriber', () => {
 
   it('serializes concurrent events for the same PR into one review invocation', async () => {
     const bus: EventBus = new RealEventBus();
-    const sub = createReviewSubscriber({} as LearningStore, bus, undefined, DEFAULT_CONFIG);
+    const sub = createReviewSubscriber(
+      {} as LearningStore,
+      bus,
+      makeAllowLimiter(),
+      DEFAULT_CONFIG,
+    );
 
     let resolveHandler: (value: unknown) => void = () => {};
     let resolveFirstInvocation: () => void = () => {};
@@ -138,7 +166,12 @@ describe('ReviewSubscriber', () => {
 
   it('queues an explicit /review command behind an in-flight auto review, then executes it', async () => {
     const bus: EventBus = new RealEventBus();
-    const sub = createReviewSubscriber({} as LearningStore, bus, undefined, DEFAULT_CONFIG);
+    const sub = createReviewSubscriber(
+      {} as LearningStore,
+      bus,
+      makeAllowLimiter(),
+      DEFAULT_CONFIG,
+    );
 
     const pendingHandlers: Array<(value: unknown) => void> = [];
     let resolveFirstInvocation: () => void = () => {};
@@ -190,7 +223,12 @@ describe('ReviewSubscriber', () => {
 
   it('allows a subsequent event after the previous run finished', async () => {
     const bus: EventBus = new RealEventBus();
-    const sub = createReviewSubscriber({} as LearningStore, bus, undefined, DEFAULT_CONFIG);
+    const sub = createReviewSubscriber(
+      {} as LearningStore,
+      bus,
+      makeAllowLimiter(),
+      DEFAULT_CONFIG,
+    );
     mockedHandlePRReview.mockResolvedValue(null);
 
     await sub.handle(makeSynchronizeEvent(42, { before: 'abcdef123456' }));

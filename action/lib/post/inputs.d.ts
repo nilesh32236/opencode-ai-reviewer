@@ -152,6 +152,8 @@ export interface ActionInputs {
     auditLabels: string[];
     /** Version of opencode to use. */
     opencodeVersion: string;
+    /** Optional model variant passed as `opencode run --variant <value>` (undefined when unset/invalid). */
+    opencodeVariant?: string;
     /** Fail closed when the downloaded OpenCode CLI cannot be checksum-verified. */
     requireOpencodeChecksum: boolean;
     /** In setup mode, probe every configured model instead of only the review model. */
@@ -164,6 +166,10 @@ export interface ActionInputs {
     dedupFingerprints: boolean;
     /** Opt-in to a single reviews-array request with summary-only 422 fallback (default: false). */
     enableReviewsArrayInline: boolean;
+    /** Opt-in to editing matched inline threads in place instead of re-posting (default: false). */
+    updateInPlace: boolean;
+    /** Opt-in to emitting one Checks run carrying deterministic finding counts (default: false). */
+    emitChecksSummary: boolean;
     /** Opt-in review gating mapped to the createReview event (default: 'comment'). */
     verdictMode: VerdictMode;
     /** Whether the verdict_mode input was explicitly set by the workflow. */

@@ -365,7 +365,9 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const changelog = repoConfig?.changelog;
   const describe = repoConfig?.describe;
   const multiAgent = repoConfig?.multiAgent;
-  const projectAutoLoadAgentsMd = repoConfig?.project?.autoLoadAgentsMd;
+  const projectAutoLoadAgentsMd =
+    repoConfig?.project?.autoLoadAgentsMd ?? repoConfig?.project?.autoLoadConventions;
+  const projectAutoLoadConventions = repoConfig?.project?.autoLoadConventions;
   const projectAttributionFooter = repoConfig?.project?.attributionFooter;
   if (
     !sensitivity &&
@@ -499,13 +501,17 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
         },
       },
     }),
-    // Opt-in head-SHA convention auto-load (`project.autoLoadAgentsMd`) and its
+    // Opt-in head-SHA convention auto-load (`project.autoLoadAgentsMd`, alias
+    // `project.autoLoadConventions`) and its
     // attribution footer (`project.attributionFooter`) via `.opencode-reviewer.yml`.
     ...((projectAutoLoadAgentsMd !== undefined || projectAttributionFooter !== undefined) && {
       projectContext: {
         ...baseConfig.projectContext,
         ...(projectAutoLoadAgentsMd !== undefined && {
           autoLoadAgentsMd: projectAutoLoadAgentsMd,
+        }),
+        ...(projectAutoLoadConventions !== undefined && {
+          autoLoadConventions: projectAutoLoadConventions,
         }),
         ...(projectAttributionFooter !== undefined && {
           attributionFooter: projectAttributionFooter,

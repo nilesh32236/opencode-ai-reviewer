@@ -275,6 +275,8 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     dedupFingerprints: null,
     dedup_fingerprints: null,
     emitFixPayload: null,
+    updateInPlace: null,
+    emitChecksSummary: null,
     suppressLowConfidence: null,
     excludePatterns: null,
     excludeAgentConfigs: null,
@@ -298,6 +300,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
       confidenceThreshold: null,
       maxFindingsPerCategory: null,
       maxTotalFindings: null,
+      noiseBudget: null,
       focusAreas: null,
       ignorePatterns: null,
       severityGate: null,
@@ -354,6 +357,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     conventions: null,
     commandReference: null,
     autoLoadAgentsMd: null,
+    autoLoadConventions: null,
     attributionFooter: null,
   },
   conversation: {
@@ -412,6 +416,10 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
   },
   toolchain: {
     enforceNodeFloor: null,
+  },
+  autofixSafety: {
+    destructiveAllowlist: null,
+    requireManualApproval: null,
   },
   llm: {
     defaultProvider: null,
@@ -703,6 +711,12 @@ export function validateConfig(
     if (typeof config.review.emitFixPayload === 'boolean') {
       result.review.emitFixPayload = config.review.emitFixPayload;
     }
+    if (typeof config.review.updateInPlace === 'boolean') {
+      result.review.updateInPlace = config.review.updateInPlace;
+    }
+    if (typeof config.review.emitChecksSummary === 'boolean') {
+      result.review.emitChecksSummary = config.review.emitChecksSummary;
+    }
     if (typeof config.review.suppressLowConfidence === 'boolean') {
       result.review.suppressLowConfidence = config.review.suppressLowConfidence;
     }
@@ -855,6 +869,9 @@ export function validateConfig(
       }
       if (typeof s.maxTotalFindings === 'number' && Number.isFinite(s.maxTotalFindings)) {
         sensitivity.maxTotalFindings = Math.min(Math.max(Math.round(s.maxTotalFindings), 1), 500);
+      }
+      if (typeof s.noiseBudget === 'number' && Number.isFinite(s.noiseBudget)) {
+        sensitivity.noiseBudget = Math.min(Math.max(Math.round(s.noiseBudget), 1), 500);
       }
       if (Array.isArray(s.focusAreas)) {
         sensitivity.focusAreas = s.focusAreas.filter((a): a is string => typeof a === 'string');
@@ -1124,6 +1141,9 @@ export function validateConfig(
     }
     if (typeof config.project.autoLoadAgentsMd === 'boolean') {
       result.project.autoLoadAgentsMd = config.project.autoLoadAgentsMd;
+    }
+    if (typeof config.project.autoLoadConventions === 'boolean') {
+      result.project.autoLoadConventions = config.project.autoLoadConventions;
     }
     if (typeof config.project.attributionFooter === 'boolean') {
       result.project.attributionFooter = config.project.attributionFooter;
@@ -1428,6 +1448,29 @@ export function validateConfig(
     } else if (raw.enforceNodeFloor !== undefined) {
       core.warning('Ignoring invalid toolchain.enforceNodeFloor: expected a boolean.');
     }
+  }
+
+  if (config.autofixSafety && typeof config.autofixSafety === 'object') {
+    const raw = config.autofixSafety as {
+      destructiveAllowlist?: unknown;
+      requireManualApproval?: unknown;
+    };
+    const next: import('./types/index.js').AutofixSafetyConfig = {
+      ...(result.autofixSafety ?? {}),
+    };
+    if (Array.isArray(raw.destructiveAllowlist)) {
+      next.destructiveAllowlist = raw.destructiveAllowlist.filter(
+        (e): e is string => typeof e === 'string',
+      );
+    } else if (raw.destructiveAllowlist !== undefined) {
+      core.warning('Ignoring invalid autofixSafety.destructiveAllowlist: expected a string array.');
+    }
+    if (typeof raw.requireManualApproval === 'boolean') {
+      next.requireManualApproval = raw.requireManualApproval;
+    } else if (raw.requireManualApproval !== undefined) {
+      core.warning('Ignoring invalid autofixSafety.requireManualApproval: expected a boolean.');
+    }
+    result.autofixSafety = next;
   }
 
   if (config.llm && typeof config.llm === 'object') {
