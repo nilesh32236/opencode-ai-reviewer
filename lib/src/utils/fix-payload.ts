@@ -1,6 +1,7 @@
 import type { ReviewIssue } from '../types/index.js';
 import { looksLikeCode } from './code-heuristic.js';
 import { escapeInlineCode, sanitizeMarkdown } from './markdown.js';
+import { buildSafetyHoldComment, evaluateFixSafety, isDestructiveFix } from './safe-exec.js';
 
 /**
  * Machine-readable fix payload for one-click Fix-with-AI / coding-agent handoff.
@@ -109,5 +110,68 @@ export function formatFixPayloadMarkdown(payload: FixPayload, anchor?: string): 
     return lines.join('\n');
   } catch {
     return '';
+  }
+}
+
+/**
+ * Collect the scannable fix text for one finding (message + suggestion +
+ * suggestion code). Used by the safety ceiling so destructive payloads are
+ * held before they are proposed or applied.
+ * @param issue - The finding to collect fix text for.
+ * @returns Combined fix text (may be empty for text-only findings).
+ */
+export function collectFixText(issue: ReviewIssue): string {
+  try {
+    if (!issue || typeof issue !== 'object') return '';
+    return [issue.message ?? '', issue.suggestion ?? '', issue.suggestionCode ?? '']
+      .filter((s): s is string => typeof s === 'string' && s.trim() !== '')
+      .join('\n');
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Check whether a finding's fix payload is destructive under the safety
+ * ceiling. Pure local pattern match — no model call. Fail-open: missing or
+ * malformed input returns false (treated as safe).
+ * @param issue - The finding to classify.
+ * @param allowlist - Optional `autofixSafety.destructiveAllowlist` entries.
+ * @returns True when the payload matches a destructive pattern without cover.
+ */
+export function fixPayloadNeedsApproval(
+  issue: ReviewIssue,
+  allowlist?: readonly string[] | unknown,
+): boolean {
+  try {
+    return isDestructiveFix(collectFixText(issue), allowlist);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Build the manual-approval guidance posted when a fix payload is held.
+ * Fail-open: never throws — returns a generic hold note on error.
+ * @param issue - The held finding (for file context).
+ * @param allowlist - Optional allowlist entries used in the evaluation.
+ * @returns Markdown guidance comment body.
+ */
+export function buildFixApprovalPrompt(
+  issue: ReviewIssue,
+  allowlist?: readonly string[] | unknown,
+): string {
+  try {
+    const verdict = evaluateFixSafety(collectFixText(issue), {
+      destructiveAllowlist: allowlist,
+      requireManualApproval: true,
+    });
+    const files = issue && typeof issue.file === 'string' ? [issue.file] : [];
+    return buildSafetyHoldComment(verdict, files);
+  } catch {
+    return (
+      '⚠️ Autofix held for manual approval.\n\n' +
+      'Add an `autofix:approved` label or comment `/approve-fix` to proceed.'
+    );
   }
 }

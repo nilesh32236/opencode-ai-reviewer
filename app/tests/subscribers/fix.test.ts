@@ -10,6 +10,19 @@ vi.mock('../../src/handlers/commands.js', () => ({
 
 const mockedHandleCommand = vi.mocked(handleCommand);
 
+/** Allowing stub limiter so tests exercise behavior, not rate limits. */
+function makeAllowLimiter() {
+  return {
+    checkReview: vi.fn(async () => ({
+      allowed: true,
+      remaining: 10,
+      resetAt: Date.now() + 60_000,
+      reservationId: 'res-allow',
+    })),
+    recordReview: vi.fn(async () => undefined),
+  } as never;
+}
+
 function makeLabeledEvent(prNumber: number, labelNames: string[]): GitHubEvent {
   return {
     type: 'issue.labeled',
@@ -38,7 +51,7 @@ describe('FixSubscriber', () => {
   });
 
   it('triggers the fix command when an issue is labeled autofix-trigger', async () => {
-    const sub = createFixSubscriber(undefined, DEFAULT_CONFIG);
+    const sub = createFixSubscriber(makeAllowLimiter(), DEFAULT_CONFIG);
 
     await sub.handle(makeLabeledEvent(123, ['autofix-trigger']));
 
@@ -57,7 +70,7 @@ describe('FixSubscriber', () => {
   });
 
   it('does not trigger the fix command for unrelated labels', async () => {
-    const sub = createFixSubscriber(undefined, DEFAULT_CONFIG);
+    const sub = createFixSubscriber(makeAllowLimiter(), DEFAULT_CONFIG);
 
     await sub.handle(makeLabeledEvent(124, ['bug']));
 
@@ -65,7 +78,7 @@ describe('FixSubscriber', () => {
   });
 
   it('does not trigger the fix command when the labeled item is a pull request', async () => {
-    const sub = createFixSubscriber(undefined, DEFAULT_CONFIG);
+    const sub = createFixSubscriber(makeAllowLimiter(), DEFAULT_CONFIG);
 
     await sub.handle({
       type: 'issue.labeled',

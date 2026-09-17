@@ -71,6 +71,11 @@ describe('ConsolePlatformLogger', () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.stubEnv('OPENCODE_LOG_BACKGROUND', 'light');
     vi.stubEnv('FORCE_COLOR', '1');
+    // Isolate from ambient env: NO_COLOR takes precedence over FORCE_COLOR,
+    // so a leaked NO_COLOR=1 (common on dumb-terminal CI) would disable
+    // colors and make this test order/env-dependent.
+    vi.stubEnv('NO_COLOR', '');
+    vi.stubEnv('CLICOLOR', '');
     try {
       const logger = new ConsolePlatformLogger('Test');
       logger.info('light line');

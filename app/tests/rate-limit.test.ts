@@ -136,11 +136,10 @@ describe('checkRateLimit / recordRateLimit', () => {
     );
   });
 
-  it('returns a no-op result when the limiter is unavailable', async () => {
+  it('fails closed (returns null) when the limiter is unavailable', async () => {
     const result = await checkRateLimit(null, makeEvent('/review'), 'command', 'review');
 
-    expect(result).not.toBeNull();
-    expect(result?.allowed).toBe(true);
+    expect(result).toBeNull();
     expect(mockPostOrUpdateComment).not.toHaveBeenCalled();
   });
 });

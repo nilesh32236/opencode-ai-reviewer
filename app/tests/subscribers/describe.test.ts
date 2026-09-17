@@ -10,6 +10,19 @@ vi.mock('../../src/handlers/commands.js', () => ({
 
 const mockedHandleCommand = vi.mocked(handleCommand);
 
+/** Allowing stub limiter so tests exercise behavior, not rate limits. */
+function makeAllowLimiter() {
+  return {
+    checkReview: vi.fn(async () => ({
+      allowed: true,
+      remaining: 10,
+      resetAt: Date.now() + 60_000,
+      reservationId: 'res-allow',
+    })),
+    recordReview: vi.fn(async () => undefined),
+  } as never;
+}
+
 const originalToken = process.env.GITHUB_TOKEN;
 
 function makeCommentEvent(body: string): GitHubEvent {
@@ -20,7 +33,7 @@ function makeCommentEvent(body: string): GitHubEvent {
     repo: 'owner/repo',
     prNumber: 42,
     payload: {
-      comment: { body },
+      comment: { body, author_association: 'OWNER' },
     },
   };
 }
@@ -49,7 +62,7 @@ describe('DescribeSubscriber', () => {
   });
 
   it('triggers the describe command on /describe', async () => {
-    const sub = createDescribeSubscriber(null, makeEnabledConfig());
+    const sub = createDescribeSubscriber(makeAllowLimiter(), makeEnabledConfig());
 
     await sub.handle(makeCommentEvent('/describe'));
 
@@ -68,7 +81,7 @@ describe('DescribeSubscriber', () => {
   });
 
   it('does not trigger the describe command for unrelated comments', async () => {
-    const sub = createDescribeSubscriber(null, makeEnabledConfig());
+    const sub = createDescribeSubscriber(makeAllowLimiter(), makeEnabledConfig());
 
     await sub.handle(makeCommentEvent('lgtm'));
 
@@ -76,7 +89,7 @@ describe('DescribeSubscriber', () => {
   });
 
   it('does not trigger the describe command for other slash commands', async () => {
-    const sub = createDescribeSubscriber(null, makeEnabledConfig());
+    const sub = createDescribeSubscriber(makeAllowLimiter(), makeEnabledConfig());
 
     await sub.handle(makeCommentEvent('/review'));
 
@@ -84,7 +97,7 @@ describe('DescribeSubscriber', () => {
   });
 
   it('skips the describe command when describe generation is disabled', async () => {
-    const sub = createDescribeSubscriber(null, {
+    const sub = createDescribeSubscriber(makeAllowLimiter(), {
       ...DEFAULT_CONFIG,
       describe: { enabled: false },
     });
