@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import { restoreCache, saveCache } from '@actions/cache';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
@@ -102,6 +103,14 @@ export class StateCacheManager {
   private readonly sha: string;
   private readonly logger: Logger;
   private savePromise: Promise<void> | undefined;
+  /**
+   * Content hash of the last successfully saved snapshot. Skipping saves
+   * when the hash is unchanged bounds Actions-cache growth (GitHub caps the
+   * cache at 10 GB and each unique `${baseKey}-${hash}` key is an additional
+   * entry): repeated runs with identical db content reuse the existing entry
+   * instead of minting a duplicate snapshot key.
+   */
+  private lastSavedContentHash: string | undefined;
   private readonly circuitBreaker = new CircuitBreaker({
     failureThreshold: 5,
     successThreshold: 2,
@@ -133,11 +142,18 @@ export class StateCacheManager {
     }
   }
 
-  private hashLearningDbContent(): string {
+  /**
+   * Hash the learning.db content without loading the whole file into memory.
+   * Streams the file through SHA-256 so a large DB does not spike heap on
+   * every save. Only called after the mtime fast-path already detected a
+   * change, so hashing runs solely when the db was actually modified.
+   */
+  private async hashLearningDbContent(): Promise<string> {
     const dbPath = path.join(this.stateDir, 'learning.db');
     try {
-      const content = fs.readFileSync(dbPath);
-      return createHash('sha256').update(content).digest('hex').slice(0, 16);
+      const hash = createHash('sha256');
+      await pipeline(fs.createReadStream(dbPath), hash);
+      return hash.digest('hex').slice(0, 16);
     } catch {
       return 'empty';
     }
@@ -225,12 +241,14 @@ export class StateCacheManager {
 
   /**
    * Save the learning state to the Actions cache.
-   * Skips when the state directory or `learning.db` is absent, or when the db
+   * Skips when the state directory or `learning.db` is absent, when the db
    * mtime is unchanged from restore within a 1ms epsilon (saving happens only
-   * when the difference exceeds 1ms). The save key is derived from the most
-   * recent restore key plus a hash of the current db content, so repeated
-   * saves produce unique snapshot keys rather than re-using (and colliding
-   * with) the stable repository-and-branch key used for restore.
+   * when the difference exceeds 1ms), or when the streamed content hash
+   * matches the last saved snapshot (bounds cache growth toward distinct
+   * content states instead of one entry per run). The save key is derived
+   * from the most recent restore key plus a hash of the current db content,
+   * so repeated saves produce unique snapshot keys rather than re-using (and
+   * colliding with) the stable repository-and-branch key used for restore.
    *
    * @returns A promise that resolves when the save attempt completes.
    */
@@ -266,15 +284,22 @@ export class StateCacheManager {
       return;
     }
 
+    const contentHash = await this.hashLearningDbContent();
+    if (this.lastSavedContentHash !== undefined && contentHash === this.lastSavedContentHash) {
+      core.info('Learning state content unchanged since last save — skipping cache save');
+      return;
+    }
     const baseKey =
       this.restoredCacheKey ?? buildCacheKey(this.cacheKeyPrefix, this.repo, this.branch, this.sha);
-    const cacheKey = `${baseKey}-${this.hashLearningDbContent()}`;
+    const cacheKey = `${baseKey}-${contentHash}`;
     try {
       await this.circuitBreaker.call(() =>
         withRetry(() => saveCache([this.stateDir], cacheKey), {
           operationName: 'state-cache.save',
         }),
       );
+      this.lastSavedContentHash = contentHash;
+      this.learningDbMtimeMs = currentMtime;
       core.info(`Saved learning state to cache key: ${cacheKey}`);
     } catch (error) {
       const message = `Failed to save learning state cache: ${error}`;

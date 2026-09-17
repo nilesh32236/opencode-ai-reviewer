@@ -64,14 +64,19 @@ export async function runDocs(
     return;
   }
 
-  const pr = await withRetry(() => gh.getMR(prNumber), {
-    operationName: 'docs.getMR',
-    signal,
-  });
-  const contextMarkdown = await withRetry(() => gh.gatherContext({ prNumber }), {
-    operationName: 'docs.gatherContext',
-    signal,
-  });
+  // Fetch PR and context in parallel: gatherContext internally re-fetches
+  // pulls/files, so sequential fetches pay 2x PR fetch plus two serial
+  // withRetry backoff windows (mirrors fix.ts Promise.all pattern).
+  const [pr, contextMarkdown] = await Promise.all([
+    withRetry(() => gh.getMR(prNumber), {
+      operationName: 'docs.getMR',
+      signal,
+    }),
+    withRetry(() => gh.gatherContext({ prNumber }), {
+      operationName: 'docs.gatherContext',
+      signal,
+    }),
+  ]);
 
   // Re-check after the awaited fetches: a signal fired during isMR/getMR/
   // gatherContext must fail fast before the expensive engine.runDocs call

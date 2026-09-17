@@ -283,7 +283,7 @@ export async function execWithTimeout(
   // stays bounded at ~512 KiB no matter how much a runaway process emits.
   const HEAD_KEEP_BYTES = 128 * 1024;
   const TAIL_KEEP_BYTES = 384 * 1024;
-  let headChunk: Buffer | null = null;
+  const headQueue: Buffer[] = [];
   let headBytes = 0;
   const tailQueue: Buffer[] = [];
   let tailBytes = 0;
@@ -296,7 +296,9 @@ export async function execWithTimeout(
     totalBytes += data.length;
     if (headBytes < HEAD_KEEP_BYTES) {
       const slice = data.subarray(0, HEAD_KEEP_BYTES - headBytes);
-      headChunk = headChunk ? Buffer.concat([headChunk, slice]) : Buffer.from(slice);
+      // Accumulate head slices and concat once at read time: Buffer.concat on
+      // every chunk is O(n^2) for runaway commands emitting many small chunks.
+      headQueue.push(Buffer.from(slice));
       headBytes += slice.length;
     }
     tailQueue.push(data);
@@ -318,7 +320,7 @@ export async function execWithTimeout(
   // character boundary so a multi-byte sequence split across the cut never
   // surfaces as U+FFFD.
   const combinedRawOutput = (): string => {
-    const head = headChunk ?? Buffer.alloc(0);
+    const head = headQueue.length > 0 ? Buffer.concat(headQueue) : Buffer.alloc(0);
     if (totalBytes <= TAIL_KEEP_BYTES) {
       return Buffer.concat(tailQueue).toString('utf-8');
     }
@@ -384,6 +386,15 @@ export async function execWithTimeout(
         : describeAbortKind(options.signal.reason);
     const reason = abortKind === 'cancelled' ? 'AbortError' : 'TimeoutError';
     const verb = abortKind === 'cancelled' ? 'cancelled' : 'timed out';
+    // Documented @actions/exec limitation: no child handle is exposed, so the
+    // hung process cannot be killed here and may keep running in the
+    // background (notably on self-hosted runners). Warn so operators can
+    // correlate stray CPU/lock/port usage with verification timeouts.
+    core.warning(
+      sanitize(
+        `Verification command ${verb} after ${Math.round(timeoutMs / 1000)}s (${reason}): ${formatVerificationCommandForLog(program, args)} — the hung process cannot be killed via @actions/exec and may keep running in the background`,
+      ),
+    );
     const output = capVerificationOutput(
       `${combinedRawOutput()}\nVerification command ${verb} after ${Math.round(timeoutMs / 1000)}s (${reason}): ${formatVerificationCommandForLog(program, args)}`,
     );

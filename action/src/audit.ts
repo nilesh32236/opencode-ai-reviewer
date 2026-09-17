@@ -279,14 +279,23 @@ export async function runAudit(
       const issueState = process.env.PLATFORM === 'gitlab' ? 'opened' : 'open';
       const openAuditIssues = (await gh.paginate(
         `/issues?state=${issueState}&labels=audit:${encodeURIComponent(safeCategory)}`,
-        { perPage: 100, maxPages: 10, throwOnError: true },
+        {
+          perPage: 100,
+          maxPages: 3,
+          throwOnError: true,
+          stopWhen: (items) =>
+            (items as Array<{ title?: string }>).some((issue) =>
+              issue.title?.startsWith(titlePrefix),
+            ),
+        },
       )) as Array<{ number: number; title: string }>;
-      // The dedup scan caps at 1000 issues (10 pages of 100). A full result
-      // set may mean pagination ended naturally at exactly 1000 with nothing
-      // truncated, so this is worded as a possibility rather than a certainty.
-      if (openAuditIssues.length >= 1000) {
+      // The dedup scan caps at 300 issues (3 pages of 100) and stops early
+      // once a title-prefix match is found. A full result set may mean
+      // pagination ended naturally at exactly 300 with nothing truncated, so
+      // this is worded as a possibility rather than a certainty.
+      if (openAuditIssues.length >= 300) {
         core.warning(
-          `Dedup scan may have hit the 1000-issue cap for category ${safeCategory} — an existing issue may have been missed and a duplicate could be created`,
+          `Dedup scan may have hit the 300-issue cap for category ${safeCategory} — an existing issue may have been missed and a duplicate could be created`,
         );
       }
       const match = openAuditIssues.find((issue: { number: number; title: string }) =>

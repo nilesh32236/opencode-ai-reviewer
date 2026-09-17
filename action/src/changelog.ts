@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
@@ -147,11 +147,11 @@ export async function runChangelog(
     }
     let existingContent: string | null = null;
     try {
-      existingContent = readFileSync(changelogPath, 'utf-8');
+      existingContent = await readFile(changelogPath, 'utf-8');
     } catch {
       existingContent = null;
     }
-    writeFileSync(
+    await writeFile(
       changelogPath,
       buildChangelogFileContent(result.markdown, existingContent),
       'utf-8',

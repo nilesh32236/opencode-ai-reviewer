@@ -840,16 +840,13 @@ export async function runFixIssue(
   let reuseBotBranch = false;
   // Best-effort refresh of remote refs so the freshness check below sees
   // current remote tips even on runners with stale refs.
-  try {
-    await exec.exec('git', ['fetch', 'origin', defaultBranch], { ignoreReturnCode: true });
-  } catch {
-    /* ignore — freshness probes below fail closed toward "stale" */
-  }
-  try {
-    await exec.exec('git', ['fetch', 'origin', branchName], { ignoreReturnCode: true });
-  } catch {
-    /* ignore — freshness probes below fail closed toward "stale" */
-  }
+  // Refresh both refs concurrently: independent remote ref updates, and the
+  // freshness probes below fail closed toward "stale" so partial failure
+  // stays safe.
+  await Promise.allSettled([
+    exec.exec('git', ['fetch', 'origin', defaultBranch], { ignoreReturnCode: true }),
+    exec.exec('git', ['fetch', 'origin', branchName], { ignoreReturnCode: true }),
+  ]);
   const tipEmail = await exec
     .getExecOutput('git', ['log', '-1', '--format=%ae', `origin/${branchName}`], {
       ignoreReturnCode: true,
@@ -1250,7 +1247,7 @@ export async function runAutofixLoop(
               prNumber,
               {
                 perPage: 100,
-                maxPages: 10,
+                maxPages: 3,
               },
               signal,
             );
