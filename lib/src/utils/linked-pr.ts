@@ -29,7 +29,10 @@ export interface LinkedPRIssue {
  */
 export function extractPRNumberFromText(text: string): number | null {
   if (!text) return null;
-  const urlMatch = text.match(/github\.com\/[^\s)]+\/pull\/(\d+)/);
+  // NOTE: path segments exclude `/` (owner/repo names never contain one) so
+  // the pattern is linear-time: a greedy segment can never swallow `/pull/`
+  // and backtrack (js/polynomial-redos).
+  const urlMatch = text.match(/github\.com\/[^/\s)]+\/[^/\s)]+\/pull\/(\d+)/);
   if (urlMatch?.[1]) return Number.parseInt(urlMatch[1], 10);
   const pullMatch = text.match(/\/pull\/(\d+)/);
   if (pullMatch?.[1]) return Number.parseInt(pullMatch[1], 10);
@@ -76,7 +79,7 @@ export function findLinkedPRByMarker(
   for (const comment of comments ?? []) {
     if (!comment.body?.startsWith(marker)) continue;
     const urlMatch =
-      comment.body.match(/(https:\/\/github\.com\/[^\s)]+\/pull\/(\d+))/) ??
+      comment.body.match(/(https:\/\/github\.com\/[^/\s)]+\/[^/\s)]+\/pull\/(\d+))/) ??
       comment.body.match(/(\/pull\/(\d+))/);
     if (urlMatch) {
       return {
