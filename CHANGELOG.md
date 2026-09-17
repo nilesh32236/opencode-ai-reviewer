@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.14.0] — 2026-09-17
+
+### Added
+
+- auto-ingest CLAUDE.md, cursor rules at head SHA (#639) (#639)
+
+### Changed
+
+- refactor: delete duplicated minhash.ts, standardize on minhash-optimized (#637) (#637)
+- chore: bump monitor OPENCODE_VERSION pin v1.18.29 -> v1.18.31 (fixes #632) (#636) (#632
+#636)
+- fix(security): validate blame headSha as hex (git flag-injection hardening) (#628) (#628)
+- ci: enforce Node 24 floor — drop Node 22 matrix, pin ubuntu-24.04 runners (#627) (#627)
+
+[v1.14.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.32...v1.14.0
+
 ## [v1.13.32] — 2026-09-17
 
 

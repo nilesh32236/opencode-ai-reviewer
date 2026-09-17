@@ -266,6 +266,7 @@ export {
 export type { SCAScanOptions } from './sca/types.js';
 export { getLabelColor } from './utils/label-color.js';
 export {
+  buildInlinePrelude,
   buildTokenUsageSection,
   formatConfidenceLabel,
   formatIssueBullet,
@@ -275,7 +276,11 @@ export {
   MAX_BLAST_RADIUS_DEPENDENTS,
   MAX_BLAST_RADIUS_CHARS,
 } from './utils/review-body.js';
-export type { ReviewBodyOptions, BlastRadiusSectionOptions } from './utils/review-body.js';
+export type {
+  ReviewBodyOptions,
+  BlastRadiusSectionOptions,
+  InlinePreludeInput,
+} from './utils/review-body.js';
 export { looksLikeCode } from './utils/code-heuristic.js';
 export {
   FingerprintStore,
@@ -376,12 +381,13 @@ export {
 export type { ClusterResult } from './pattern-detector/cluster.js';
 export {
   hashToken,
-  computeMinHashSignature,
+  // Array variant preserves the legacy `number[]` return shape.
+  computeMinHashSignatureArray as computeMinHashSignature,
   lshCandidates,
   MINHASH_SIGNATURE_SIZE,
   LSH_BANDS,
   LSH_ROWS,
-} from './pattern-detector/minhash.js';
+} from './pattern-detector/minhash-optimized.js';
 export { RuleApprovalSubscriber } from './pattern-detector/rule-approval.js';
 export * from './utils/validation.js';
 export {
