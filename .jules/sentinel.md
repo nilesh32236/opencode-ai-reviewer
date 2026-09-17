@@ -28,3 +28,6 @@
 ## 2026-09-15 - Argument Injection Risk Fixed in app/src/handlers/commands.ts
 **Learning:** Found that `startRef` in `handleDocsCommand` was dynamically constructed using string interpolation and passed to `execGit` for checking out a new branch, but it lacked its own explicit validation check, which could lead to argument injection.
 **Prevention:** Added `validateRefName(startRef)` immediately after its construction in `app/src/handlers/commands.ts` to strictly enforce defensive programming against unvalidated dynamic refs being passed to git commands.
+## 2026-09-17 - Token Leaks Fixed in Handlers
+**Learning:** Found that errors thrown during git operations or API requests in handlers (such as `app/src/handlers/autofix.ts`, `app/src/handlers/pr-review.ts`, `app/src/handlers/conversation.ts` and others) were being logged directly using `err instanceof Error ? err.message : err`. This could expose the `GITHUB_TOKEN` and other sensitive environment variables if the error message contains the clone URL or request context.
+**Prevention:** Replaced these direct logging calls with `sanitizeErrorMessage(err)` to explicitly strip tokens, API keys, and credentials from all log outputs.
