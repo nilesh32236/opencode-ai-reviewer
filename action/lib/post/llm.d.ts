@@ -28,7 +28,9 @@ export declare function isAllowedEndpointScheme(urlStr: string): boolean;
  * `{env:}` apiKey refs) are preserved.
  *
  * Final `baseUrl`/`endpoint` values require https (http allowed only for
- * localhost/loopback); cleartext non-local http endpoints emit a warning.
+ * localhost/loopback); cleartext non-local http endpoints are dropped
+ * fail-closed unless `inputs.llmAllowInsecureHttp` explicitly opts in
+ * (warn-but-keep for `http://ollama.corp`-style gateways).
  * @param inputs - Parsed action inputs (may lack LLM fields).
  * @param loadedConfig - Parsed config file, or null.
  * @returns An LLMConfig, or undefined when nothing is configured.

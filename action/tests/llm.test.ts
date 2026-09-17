@@ -38,6 +38,7 @@ const BASE_INPUTS = {
   stateCacheKey: 'opencode-learning-state',
   costTrackingEnabled: false,
   costTrackingVerbosity: 'summary',
+  llmAllowInsecureHttp: false,
 } as ActionInputs;
 
 describe('buildLLMConfig()', () => {
@@ -83,6 +84,7 @@ describe('buildLLMConfig()', () => {
     const inputs: ActionInputs = {
       ...BASE_INPUTS,
       ollamaBaseUrl: 'http://ollama.corp:11434/v1',
+      llmAllowInsecureHttp: true,
     };
     const llm = buildLLMConfig(inputs, {
       llm: {
@@ -243,7 +245,7 @@ describe('buildLLMConfig()', () => {
     expect(llm?.providers?.['custom-openai']).toBeUndefined();
   });
 
-  it('keeps https and loopback http endpoints, warns on cleartext non-local http', () => {
+  it('keeps https and loopback http endpoints, drops cleartext non-local http fail-closed', () => {
     expect(isLoopbackHost('localhost')).toBe(true);
     expect(isLoopbackHost('127.0.0.1')).toBe(true);
     expect(isLoopbackHost('example.com')).toBe(false);
@@ -251,11 +253,28 @@ describe('buildLLMConfig()', () => {
     expect(isAllowedEndpointScheme('http://localhost:11434/v1')).toBe(true);
     expect(isAllowedEndpointScheme('http://llm.example/v1')).toBe(false);
     expect(isAllowedEndpointScheme('ftp://llm.example/v1')).toBe(false);
-    const llm = buildLLMConfig(
+    // Fail-closed by default: non-local http drops the provider entry so
+    // apiKey values and code diffs are never transmitted unencrypted.
+    const dropped = buildLLMConfig(
       { ...BASE_INPUTS, ollamaBaseUrl: 'http://ollama.corp:11434/v1' },
       null,
     );
-    // Backward compatible: non-local http warns but is kept.
-    expect(llm?.providers?.ollama?.baseUrl).toBe('http://ollama.corp:11434/v1');
+    expect(dropped?.providers?.ollama).toBeUndefined();
+    // Explicit opt-in restores warn-but-keep for http://ollama.corp gateways.
+    const kept = buildLLMConfig(
+      {
+        ...BASE_INPUTS,
+        ollamaBaseUrl: 'http://ollama.corp:11434/v1',
+        llmAllowInsecureHttp: true,
+      },
+      null,
+    );
+    expect(kept?.providers?.ollama?.baseUrl).toBe('http://ollama.corp:11434/v1');
+    // Loopback http still works without the opt-in.
+    const loopback = buildLLMConfig(
+      { ...BASE_INPUTS, ollamaBaseUrl: 'http://localhost:11434/v1' },
+      null,
+    );
+    expect(loopback?.providers?.ollama?.baseUrl).toBe('http://localhost:11434/v1');
   });
 });

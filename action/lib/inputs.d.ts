@@ -38,6 +38,8 @@ export interface ActionInputs {
     llmHeaderTimeoutMs?: number;
     /** Optional chunk timeout (ms) for the custom OpenAI-compatible provider. */
     llmChunkTimeoutMs?: number;
+    /** Opt-in to cleartext http LLM endpoints on non-loopback hosts (default: false, fail-closed). */
+    llmAllowInsecureHttp: boolean;
     /** Optional Ollama base URL (default: http://localhost:11434/v1). */
     ollamaBaseUrl?: string;
     /** Optional Ollama model name. */

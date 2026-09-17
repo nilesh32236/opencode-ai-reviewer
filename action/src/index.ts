@@ -34,6 +34,8 @@ import { runAnalyze } from './analyze.js';
 import { runAudit } from './audit.js';
 import { runChangelog } from './changelog.js';
 import {
+  GATED_COMMENT_EVENTS,
+  PRIVILEGED_MODES,
   extractCommentCommand,
   extractOperatorInstruction,
   verifyCommentActorPermission,
@@ -118,7 +120,9 @@ async function run(): Promise<void> {
       const dropped = requested.filter((c) => !DEFAULT_ALLOWLIST.includes(c));
       if (dropped.length > 0) {
         core.warning(
-          `Ignoring checkAllowlist entries not in the workflow allowlist (${DEFAULT_ALLOWLIST.join(', ')}): ${dropped.join(', ')}`,
+          sanitize(
+            `Ignoring checkAllowlist entries not in the workflow allowlist (${DEFAULT_ALLOWLIST.join(', ')}): ${dropped.join(', ')}`,
+          ),
         );
       }
       if (allowed.length > 0) {
@@ -593,12 +597,18 @@ async function run(): Promise<void> {
       //   pipeline jobs and never parses a comment webhook in-process (there
       //   is no note-event payload or actor available), so there is no
       //   untrusted comment-actor vector to gate here.
-      // - pull_request_review (submitted-review) events are out of scope: the
-      //   action parses slash-commands only from comment bodies, and a bare
-      //   review approval/request-changes carries no command.
-      // - The gate runs only when the comment body actually contains a
-      //   slash-command, so stray non-command comments neither fail the run
-      //   nor require permission.
+      // - Covers issue_comment, pull_request_review_comment, AND
+      //   pull_request_review (submitted-review) events: a review body can
+      //   carry `/fix` / `/review` and trigger a workflow, so it must pass
+      //   the same permission check (payload.review.body).
+      // - Fail-closed on trigger/gate mismatch: workflow triggers use
+      //   substring `contains(body, '/fix')` semantics, which fire on text
+      //   like 'a/fix' that the strict gate regex intentionally does not
+      //   recognize. When a comment event reaches a privileged mode (fix,
+      //   review) the gate therefore requires permission EVEN when no
+      //   recognized command extracts — otherwise the workflow would run
+      //   privileged work unauthenticated. Non-privileged modes keep the
+      //   command-presence check so stray comments neither fail nor gate.
       // Triggering-comment body, hoisted so it survives the auth gate and can
       // be forwarded to the fix agent as an operator instruction. Resolved in
       // two layers: the explicit `comment-body` action input wins (future
@@ -610,8 +620,21 @@ async function run(): Promise<void> {
       // stays an operator instruction, never untrusted third-party content.
       // GitLab path: no comment payload exists, so this resolves to undefined
       // (documented no-op) unless the input is explicitly passed.
+      // Tracks whether the comment-event gate already authorized this run, so
+      // explicit `comment-body` inputs on comment events are not re-checked
+      // (and explicit inputs on non-comment events get their own check).
+      let commentEventAuthorized = false;
+      const resolveGateBody = (): string | undefined => {
+        if (platform !== 'github') return undefined;
+        if (!GATED_COMMENT_EVENTS.has(github.context.eventName)) return undefined;
+        const comment = github.context.payload.comment as { body?: unknown } | undefined;
+        if (comment && typeof comment.body === 'string') return comment.body;
+        const review = github.context.payload.review as { body?: unknown } | undefined;
+        if (review && typeof review.body === 'string') return review.body;
+        return undefined;
+      };
       let fixOperator: FixOperatorInstruction | undefined;
-      const resolveFixOperator = (): FixOperatorInstruction | undefined => {
+      const resolveFixOperator = async (): Promise<FixOperatorInstruction | undefined> => {
         if (inputs?.mode !== 'fix') return undefined;
         const explicitRaw = inputs?.commentBody?.trim() ? inputs.commentBody : undefined;
         const payloadBody =
@@ -620,7 +643,9 @@ async function run(): Promise<void> {
                 const c = github.context.payload.comment as
                   | { body?: unknown; user?: { login?: string } }
                   | undefined;
-                return typeof c?.body === 'string' ? c.body : undefined;
+                if (typeof c?.body === 'string') return c.body;
+                const r = github.context.payload.review as { body?: unknown } | undefined;
+                return typeof r?.body === 'string' ? r.body : undefined;
               })()
             : undefined;
         const payloadActor =
@@ -629,13 +654,19 @@ async function run(): Promise<void> {
                 const c = github.context.payload.comment as
                   | { body?: unknown; user?: { login?: string } }
                   | undefined;
-                const login = c?.user?.login;
+                const login =
+                  c?.user?.login ??
+                  (github.context.payload.review as { user?: { login?: string } } | undefined)?.user
+                    ?.login;
                 if (typeof login === 'string' && /^[A-Za-z0-9-]{1,39}$/.test(login)) return login;
                 // Only fall back to the workflow actor when a comment payload
                 // body exists; otherwise a non-comment trigger
                 // (schedule/dispatch/label) with an explicit input would get a
                 // misleading 'authorized /fix comment by @<scheduler>' header.
-                if (typeof c?.body !== 'string') return undefined;
+                if (typeof c?.body !== 'string') {
+                  const r = github.context.payload.review as { body?: unknown } | undefined;
+                  if (typeof r?.body !== 'string') return undefined;
+                }
                 const fallback = github.context.actor;
                 if (typeof fallback === 'string' && /^[A-Za-z0-9-]{1,39}$/.test(fallback))
                   return fallback;
@@ -645,12 +676,23 @@ async function run(): Promise<void> {
         // Explicit input wins: the workflow author deliberately threaded it.
         // Gated on the same fix/oc command check as the payload fallback so a
         // miswired workflow passing '/review ...' via comment-body never
-        // becomes a fix operator instruction.
+        // becomes a fix operator instruction. On non-comment events
+        // (schedule/workflow_dispatch/label) the comment-event gate never ran,
+        // so the explicit input gets its own permission check here (checking
+        // the workflow actor) instead of driving privileged work
+        // unauthenticated; on comment events the gate above already authorized.
         if (explicitRaw) {
           const cmd = extractCommentCommand(explicitRaw);
           if (cmd !== 'fix' && cmd !== 'oc') return undefined;
           const classified = extractOperatorInstruction(explicitRaw);
           if (!classified) return undefined;
+          if (!commentEventAuthorized) {
+            const authorized = await verifyCommentActorPermission(token);
+            if (!authorized) {
+              return undefined;
+            }
+            commentEventAuthorized = true;
+          }
           return payloadActor
             ? { instruction: explicitRaw, actor: payloadActor }
             : { instruction: explicitRaw };
@@ -668,24 +710,54 @@ async function run(): Promise<void> {
         }
         return undefined;
       };
-      if (platform === 'github') {
-        const gatedEvent =
-          github.context.eventName === 'issue_comment' ||
-          github.context.eventName === 'pull_request_review_comment'
-            ? (github.context.payload.comment as { body?: unknown } | undefined)
-            : undefined;
-        const commentBody =
-          gatedEvent && typeof gatedEvent.body === 'string' ? gatedEvent.body : '';
-        if (gatedEvent && extractCommentCommand(commentBody) !== null) {
+      if (platform === 'github' && GATED_COMMENT_EVENTS.has(github.context.eventName)) {
+        const gateBody = resolveGateBody();
+        const command = extractCommentCommand(gateBody ?? '');
+        const isPrivileged = inputs?.mode ? PRIVILEGED_MODES.has(inputs.mode) : false;
+        if (command !== null) {
           const authorized = await verifyCommentActorPermission(token);
           if (!authorized) {
             return;
           }
-        } else if (gatedEvent) {
+          commentEventAuthorized = true;
+        } else if (isPrivileged && gateBody !== undefined) {
+          // Fail closed: the workflow may have triggered on a substring
+          // ('a/fix') the strict gate regex does not recognize. A
+          // privileged mode must never run unauthenticated, so require
+          // permission even without a recognized command.
+          core.warning(
+            sanitize(
+              'Comment event reached privileged mode without a recognized slash-command — requiring write permission anyway (fail-closed for substring triggers like "a/fix")',
+            ),
+          );
+          const authorized = await verifyCommentActorPermission(token);
+          if (!authorized) {
+            return;
+          }
+          commentEventAuthorized = true;
+        } else if (gateBody !== undefined) {
           core.info('Ignoring non-command comment event — skipping authorization gate');
         }
       }
-      fixOperator = resolveFixOperator();
+      fixOperator = await resolveFixOperator();
+      // Harden the explicit-input path: resolveFixOperator authorizes the
+      // workflow actor for non-comment events, but a denial there returns
+      // undefined rather than stopping the run. When fix mode was explicitly
+      // driven by a `comment-body` /fix input yet authorization failed,
+      // fail closed instead of silently running an unprompted fix.
+      // (verifyCommentActorPermission already recorded the failure via
+      // setFailed; this return just prevents the run from continuing.)
+      if (platform === 'github' && inputs?.mode === 'fix' && inputs?.commentBody?.trim()) {
+        const explicitCmd = extractCommentCommand(inputs.commentBody);
+        if (
+          (explicitCmd === 'fix' || explicitCmd === 'oc') &&
+          extractOperatorInstruction(inputs.commentBody) !== undefined &&
+          !commentEventAuthorized &&
+          fixOperator === undefined
+        ) {
+          return;
+        }
+      }
 
       switch (inputs.mode) {
         case 'analyze':
