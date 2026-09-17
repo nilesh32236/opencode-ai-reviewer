@@ -1467,6 +1467,7 @@ export class GitHubHelper implements PlatformAdapter {
    * no call is made when the flag is absent/false.
    * @param commitSha - Head commit SHA to attach the run to.
    * @param result - Review result to count.
+   * @param options - Review body options gating the Checks summary emission.
    * @param signal - Optional AbortSignal.
    * @since NEXT
    */
