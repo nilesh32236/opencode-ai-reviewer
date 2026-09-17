@@ -30,7 +30,7 @@ env:
 
 jobs:
   self-improve:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
 
     steps:
@@ -46,9 +46,9 @@ jobs:
           version: 10.8.0
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7 (node24 line; runner floor ubuntu-24.04; engine floor Node >=24.19.0 — July 2026 HIGH CVE fixes)
         with:
-          node-version: 22
+          node-version: 24
           cache: 'pnpm'
 
       - name: Install Workspace Dependencies
