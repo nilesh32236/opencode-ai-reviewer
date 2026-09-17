@@ -1,5 +1,5 @@
-import { execFile, execFileSync } from 'child_process';
-import { promisify } from 'util';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import { Logger } from '@opencode-pr-agent/lib';
 
 const logger = new Logger('Exec');

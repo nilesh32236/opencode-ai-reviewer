@@ -1392,7 +1392,12 @@ export async function runAutofixLoop(
           result,
           config.review.inline,
           undefined,
-          buildFunctionScoreOptions(config.review.showFunctionScores, pr.changedFiles),
+          {
+            ...(buildFunctionScoreOptions(config.review.showFunctionScores, pr.changedFiles) ?? {}),
+            ...(config.review.sensitivity?.noiseBudget !== undefined
+              ? { maxVisibleFindings: config.review.sensitivity.noiseBudget }
+              : {}),
+          },
         );
         if (reviewResult.commentIds) {
           currentCommentIds = reviewResult.commentIds;

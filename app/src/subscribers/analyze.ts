@@ -36,7 +36,7 @@ export function createAnalyzeSubscriber(
         if (!parsed || parsed.command !== 'analyze') return;
         const issueNumber = event.prNumber || 0;
         if (!issueNumber) return;
-        if (!satisfiesPrivilegeGate(event.payload)) {
+        if (!satisfiesPrivilegeGate(event.payload, event.type)) {
           logger.info(`Skipping /analyze for ${event.repo}#${issueNumber} — unprivileged author`);
           await postPrivilegeDenial(event.repo || '', issueNumber, 'analyze');
           return;

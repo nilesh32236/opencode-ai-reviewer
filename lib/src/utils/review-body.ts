@@ -5,6 +5,12 @@ import type {
   TokenUsage,
   VerdictMode,
 } from '../types/index.js';
+import {
+  type SpilloverSummary,
+  applyNoiseBudget,
+  formatSpilloverLine,
+  mergeSpilloverSummaries,
+} from './filter-findings.js';
 import { buildFixPayload, formatFixPayloadMarkdown } from './fix-payload.js';
 import {
   type FunctionScore,
@@ -37,7 +43,8 @@ export interface ReviewBodyOptions {
   /**
    * Skip inline findings whose fingerprint already appears in previously
    * posted bot threads. Default true (absent = enabled). Set false to post
-   * as today.
+   * as today. Ignored when `updateInPlace` is true (matched threads are
+   * updated instead of skipped).
    * @since NEXT
    */
   dedupFingerprints?: boolean;
@@ -61,10 +68,51 @@ export interface ReviewBodyOptions {
    * @since NEXT
    */
   emitFixPayload?: boolean;
+  /**
+   * Opt-in to persistent inline update-in-place: findings whose fingerprint
+   * already matches a previously posted bot thread (see
+   * `previousFingerprintCommentIds`) are edited via
+   * `PATCH /pulls/comments/{id}` instead of being skipped or re-posted, so
+   * re-pushes never create duplicate threads. Default false (legacy behavior
+   * unchanged). Fail-open: match/update failures fall back to posting a new
+   * thread as today.
+   * @since NEXT
+   */
+  updateInPlace?: boolean;
+  /**
+   * Fingerprint-to-commentId map for `updateInPlace` matching (e.g. built via
+   * `mapFingerprintsToCommentIds` from previously posted bot threads). When
+   * absent/empty with `updateInPlace` enabled, all findings post as today.
+   * @since NEXT
+   */
+  previousFingerprintCommentIds?: Map<string, number> | Record<string, number>;
+  /**
+   * Opt-in to emitting one Checks run carrying deterministic finding counts
+   * after the review posts (a single extra `createCheckRun` call only when
+   * enabled). Default false (no Checks call). Fail-open: Checks API errors
+   * warn and never fail the review.
+   * @since NEXT
+   */
+  emitChecksSummary?: boolean;
   /** Attribution footer for auto-loaded review conventions (e.g. AGENTS.md @
    * head SHA). Appended after the issues section when non-empty. Falls back to
    * `result.attributionFooter` when omitted. */
   attributionFooter?: string;
+  /**
+   * Display noise budget: maximum findings rendered in the `### Issues`
+   * section (highest severity first). The hidden tail is reported as a
+   * user-visible "+N more" spillover line instead of being silently dropped.
+   * Undefined = unlimited (legacy behavior).
+   * @since NEXT
+   */
+  maxVisibleFindings?: number;
+  /**
+   * Alias for `maxVisibleFindings` mirroring the
+   * `review.sensitivity.noiseBudget` config key. `maxVisibleFindings` wins
+   * when both are set.
+   * @since NEXT
+   */
+  noiseBudget?: number;
 }
 
 /**
@@ -326,7 +374,16 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
   if (result.issues.length > 0) {
     lines.push('### Issues');
     lines.push('');
-    for (const i of result.issues) {
+    // Severity-ordered noise budget: cap the rendered findings (most severe
+    // first) and account for the hidden tail as a visible spillover line.
+    // Incoming `result.spillover` (e.g. from sensitivity-cap filtering or
+    // capped inline comments) is merged in so nothing is silently dropped.
+    const budget = options?.maxVisibleFindings ?? options?.noiseBudget;
+    const { visible: visibleIssues, spillover: budgetSpillover } = applyNoiseBudget(
+      result.issues,
+      budget,
+    );
+    for (const i of visibleIssues) {
       lines.push(formatIssueBullet(i));
       if (i.suggestion) {
         lines.push(`  > 💡 **How to fix:** ${sanitizeMarkdown(i.suggestion)}`);
@@ -358,6 +415,23 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
           // Fail-open: keep the plain finding when payload rendering fails.
         }
       }
+    }
+    const spillover: SpilloverSummary | undefined = mergeSpilloverSummaries(
+      result.spillover,
+      budgetSpillover,
+    );
+    const spilloverLine = formatSpilloverLine(spillover);
+    if (spilloverLine) {
+      lines.push(`- _${sanitizeMarkdown(spilloverLine)}_`);
+    }
+  } else if (result.spillover !== undefined && result.spillover.count > 0) {
+    // Every finding was capped away (e.g. the sensitivity filter kept none):
+    // still surface the spillover accounting instead of rendering no section.
+    const spilloverLine = formatSpilloverLine(result.spillover);
+    if (spilloverLine) {
+      lines.push('### Issues');
+      lines.push('');
+      lines.push(`- _${sanitizeMarkdown(spilloverLine)}_`);
     }
   }
 
